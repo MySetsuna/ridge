@@ -33,7 +33,7 @@ fn main() {
         "split-window" | "splitw" => cmd_split(rest, &url, &token),
         "capture-pane" | "capturep" => cmd_capture(rest, &url, &token),
         "send-keys" | "send" => cmd_send_keys(rest, &url, &token),
-        "list-panes" | "lsp" => cmd_list_panes(&url, &token),
+        "list-panes" | "lsp" => cmd_list_panes(rest, &url, &token),
         "has-session" | "has" => Ok(()),
         "new-session" | "new" => Ok(()),
         "list-sessions" | "ls" => {
@@ -41,10 +41,7 @@ fn main() {
             Ok(())
         }
         // 探测 / 会话生命周期：返回成功即可，避免 Claude 判定 tmux 不可用
-        "display-message" | "display" => {
-            println!("%0");
-            Ok(())
-        }
+        "display-message" | "display" => cmd_display_message(rest),
         "start-server" | "start" => Ok(()),
         "attach-session" | "attach" => Ok(()),
         "kill-session" => Ok(()),
@@ -80,6 +77,48 @@ fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
 fn parse_pane_target(s: &str) -> usize {
     let s = s.strip_prefix('%').unwrap_or(s);
     s.parse().unwrap_or(0)
+}
+
+fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
+    let pane_id = format!("%{pane_index}");
+    let mut out = fmt.to_string();
+    let replacements = [
+        ("#{pane_id}", pane_id.as_str()),
+        ("#{window_id}", "@0"),
+        ("#{window_index}", "0"),
+        ("#{pane_index}", &pane_index.to_string()),
+        ("#{pane_active}", "1"),
+        ("#{window_active}", "1"),
+        ("#{session_id}", "$0"),
+        ("#{session_name}", "wind"),
+        ("#{pane_tty}", "/dev/pts/0"),
+    ];
+    for (k, v) in replacements {
+        out = out.replace(k, v);
+    }
+    out
+}
+
+fn cmd_display_message(rest: &[String]) -> Result<(), ()> {
+    let mut pane_index = 0usize;
+    let mut format = "#{pane_id}".to_string();
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "-p" => {}
+            "-t" if i + 1 < rest.len() => {
+                pane_index = parse_pane_target(&rest[i + 1]);
+                i += 1;
+            }
+            s if s.starts_with('-') => {}
+            s => {
+                format = s.to_string();
+            }
+        }
+        i += 1;
+    }
+    println!("{}", render_tmux_format(&format, pane_index));
+    Ok(())
 }
 
 fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
@@ -239,7 +278,30 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     Ok(())
 }
 
-fn cmd_list_panes(url: &str, token: &str) -> Result<(), ()> {
+fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    // Claude Code 常用 tmux `list-panes -F ...` 推断 pane/window；优先返回兼容格式。
+    let mut pane_index = 0usize;
+    let mut format: Option<String> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "-t" if i + 1 < rest.len() => {
+                pane_index = parse_pane_target(&rest[i + 1]);
+                i += 1;
+            }
+            "-F" if i + 1 < rest.len() => {
+                format = Some(rest[i + 1].clone());
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if let Some(fmt) = format {
+        println!("{}", render_tmux_format(&fmt, pane_index));
+        return Ok(());
+    }
+
     let u = format!("{}/api/v1/list-panes", url.trim_end_matches('/'));
     let res = client()
         .get(u)
