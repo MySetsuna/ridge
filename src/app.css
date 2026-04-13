@@ -1,0 +1,86 @@
+
+@import "tailwindcss";
+
+/**
+ * Warp-like 视觉令牌（对齐 technical_architecture.md §1：现代 UI、玻璃态）
+ * 紫系强调 + 深底 + Inter / JetBrains Mono
+ */
+:root {
+  --wf-bg: #09090b;
+  --wf-bg-raised: #0c0c0f;
+  --wf-surface: #101014;
+  --wf-surface-2: #16161d;
+  --wf-glass: rgba(22, 22, 30, 0.65);
+  --wf-border: rgba(255, 255, 255, 0.055);
+  --wf-border-bright: rgba(255, 255, 255, 0.1);
+  --wf-fg: #ececf1;
+  --wf-fg-muted: #8b8b9a;
+  --wf-accent: #a78bfa;
+  --wf-accent-glow: rgba(167, 139, 250, 0.35);
+  --wf-term-bg: #0c0b12;
+  --wf-scrollbar: rgba(255, 255, 255, 0.1);
+  --wf-scrollbar-hover: rgba(167, 139, 250, 0.5);
+  --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--wf-bg);
+  color: var(--wf-fg);
+  font-family: var(--font-ui);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 侧栏、主区等通用细滚动条 */
+.wf-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--wf-scrollbar) transparent;
+}
+.wf-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.wf-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wf-scroll::-webkit-scrollbar-thumb {
+  background: var(--wf-scrollbar);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.wf-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--wf-scrollbar-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* xterm 滚动区域：圆角轨道 + 细拇指（避免默认粗灰条） */
+.xterm-viewport {
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--wf-scrollbar) transparent !important;
+}
+.xterm-viewport::-webkit-scrollbar {
+  width: 9px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 6px 0;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--wf-scrollbar);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  min-height: 48px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--wf-scrollbar-hover);
+  background-clip: content-box;
+}

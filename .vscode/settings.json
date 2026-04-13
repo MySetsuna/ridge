@@ -1,0 +1,15 @@
+{
+  "svelte.enable-ts-plugin": true,
+  "ProjectTree": {
+    "ignoreFolders": [
+      "node_modules",
+      ".git",
+      ".vscode",
+      "dist",
+      "build",
+      "target",
+      "gen",
+    ],
+    "commentDistance": 2
+  }
+}
