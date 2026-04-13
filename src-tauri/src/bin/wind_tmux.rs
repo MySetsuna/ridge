@@ -2,28 +2,79 @@
 //! 使用：将本二进制放到 PATH 且命名为 `tmux`，或在 Claude 配置中指向本程序。
 
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_ts() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => format!("{}.{}", d.as_secs(), d.subsec_millis()),
+        Err(_) => "0.000".to_string(),
+    }
+}
+
+fn log_stderr(msg: &str) {
+    let line = format!("[wind-tmux][{}] {msg}", now_ts());
+    eprintln!("{line}");
+    log_file_append(&line);
+}
+
+fn log_file_path() -> Option<PathBuf> {
+    env::current_dir().ok().map(|p| p.join("wind-tmux.log"))
+}
+
+fn log_file_append(line: &str) {
+    let Some(path) = log_file_path() else {
+        return;
+    };
+    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(f, "{line}");
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let joined_args = args
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tmux_env = env::var("TMUX").unwrap_or_default();
+    let url_set = env::var("WIND_TEAMMATE_URL")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let token_set = env::var("WIND_TEAMMATE_TOKEN")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    log_stderr(&format!(
+        "invoke args=[{joined_args}] tmux_env={tmux_env:?} teammate_url_set={url_set} teammate_token_set={token_set}"
+    ));
+
     // Claude Code 等会先跑 `tmux -V` 判断是否存在 tmux；此前落到 unsupported 会导致永远不启用 split。
     for a in args.iter().skip(1) {
         if a == "-V" || a == "--version" {
+            log_stderr("probe version -> tmux 3.4");
             println!("tmux 3.4");
             process::exit(0);
         }
         if a == "-h" || a == "--help" {
+            log_stderr("probe help");
             eprintln!("wind-tmux shim: split-window capture-pane send-keys list-panes … (needs WIND_TEAMMATE_*)");
             process::exit(0);
         }
     }
     if args.len() < 2 {
+        log_stderr("missing subcommand");
         eprintln!("wind-tmux: missing subcommand");
         process::exit(1);
     }
     let url = env::var("WIND_TEAMMATE_URL").unwrap_or_default();
     let token = env::var("WIND_TEAMMATE_TOKEN").unwrap_or_default();
     if url.is_empty() || token.is_empty() {
+        log_stderr("missing WIND_TEAMMATE_URL/TOKEN");
         eprintln!("wind-tmux: set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in PTY)");
         process::exit(1);
     }
@@ -51,10 +102,15 @@ fn main() {
             Ok(())
         }
         _ => {
+            log_stderr(&format!("unsupported subcommand={sub}"));
             eprintln!("wind-tmux: unsupported subcommand {sub:?}");
             Err(())
         }
     };
+    log_stderr(&format!(
+        "exit subcommand={sub} status={}",
+        if r.is_ok() { "ok" } else { "err" }
+    ));
     process::exit(if r.is_ok() { 0 } else { 1 });
 }
 
