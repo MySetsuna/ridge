@@ -73,6 +73,8 @@ pub fn ensure_pane_pty_workspace(
         // Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
         // 值格式与 tmux 类似（socket 占位 + ,session,pane），Wind 不解析该路径。
         cmd.env("TMUX", "/wind/teammate.sock,0,0");
+        // 某些 tmux 客户端逻辑会优先读取 TMUX_PANE 再回退 display-message 查询。
+        cmd.env("TMUX_PANE", "%0");
     }
 
     let pair = pty_system

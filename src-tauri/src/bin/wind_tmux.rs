@@ -6,6 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ts() -> String {
@@ -22,17 +23,34 @@ fn log_stderr(msg: &str) {
 }
 
 fn log_file_path() -> Option<PathBuf> {
-    env::current_dir().ok().map(|p| p.join("wind-tmux.log"))
+    if let Ok(p) = env::current_dir() {
+        return Some(p.join("wind-tmux.log"));
+    }
+    Some(env::temp_dir().join("wind-tmux.log"))
 }
 
 fn log_file_append(line: &str) {
     let Some(path) = log_file_path() else {
         return;
     };
-    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) else {
-        return;
+    let actual_path = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{line}");
+            path
+        }
+        Err(_) => {
+            let fallback = env::temp_dir().join("wind-tmux.log");
+            let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&fallback) else {
+                return;
+            };
+            let _ = writeln!(f, "{line}");
+            fallback
+        }
     };
-    let _ = writeln!(f, "{line}");
+    static LOG_PATH_ONCE: OnceLock<()> = OnceLock::new();
+    let _ = LOG_PATH_ONCE.get_or_init(|| {
+        eprintln!("[wind-tmux][{}] file-log={}", now_ts(), actual_path.display());
+    });
 }
 
 fn main() {
@@ -135,22 +153,34 @@ fn parse_pane_target(s: &str) -> usize {
     s.parse().unwrap_or(0)
 }
 
-fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
+fn tmux_replacements(pane_index: usize) -> Vec<(&'static str, String)> {
     let pane_id = format!("%{pane_index}");
+    vec![
+        ("#{pane_id}", pane_id.clone()),
+        ("#{window_id}", "@0".to_string()),
+        ("#{window_index}", "0".to_string()),
+        ("#{pane_index}", pane_index.to_string()),
+        ("#{pane_active}", "1".to_string()),
+        ("#{window_active}", "1".to_string()),
+        ("#{session_id}", "$0".to_string()),
+        ("#{session_name}", "wind".to_string()),
+        ("#{window_name}", "wind".to_string()),
+        ("#{pane_tty}", "/dev/pts/0".to_string()),
+        // tmux 短格式
+        ("#D", pane_id),
+        ("#I", "0".to_string()),
+        ("#P", pane_index.to_string()),
+        ("#S", "wind".to_string()),
+        ("#W", "wind".to_string()),
+        ("#T", "wind".to_string()),
+    ]
+}
+
+fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
     let mut out = fmt.to_string();
-    let replacements = [
-        ("#{pane_id}", pane_id.as_str()),
-        ("#{window_id}", "@0"),
-        ("#{window_index}", "0"),
-        ("#{pane_index}", &pane_index.to_string()),
-        ("#{pane_active}", "1"),
-        ("#{window_active}", "1"),
-        ("#{session_id}", "$0"),
-        ("#{session_name}", "wind"),
-        ("#{pane_tty}", "/dev/pts/0"),
-    ];
+    let replacements = tmux_replacements(pane_index);
     for (k, v) in replacements {
-        out = out.replace(k, v);
+        out = out.replace(k, &v);
     }
     out
 }
