@@ -1,20 +1,38 @@
 mod commands;
+mod db;
 mod engine;
+mod fs;
 mod state;
 mod teammate;
 mod types;
 mod utils;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use tauri::Emitter;
 use tokio::sync::mpsc;
-use crate::commands::{git, pane, terminal, workspace};
+use crate::commands::{git, pane, project, terminal, workspace};
+use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (event_tx, mut event_rx) = mpsc::channel::<GlobalEvent>(256);
-    let app_state = AppState::new(event_tx);
+
+    // Initialize project store
+    let app_data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("wind");
+    std::fs::create_dir_all(&app_data_dir).ok();
+    let db_path = app_data_dir.join("projects.db");
+    let project_store = ProjectStore::new(&db_path)
+        .map_err(|e| eprintln!("Failed to initialize project store: {}", e))
+        .ok();
+
+    let mut app_state = AppState::new(event_tx);
+    app_state.project_store = project_store.map(Arc::new);
     let teammate_state = app_state.clone();
 
     tauri::Builder::default()
@@ -89,6 +107,17 @@ pub fn run() {
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
             workspace::switch_workspace,
+    // Project management commands
+    project::open_project,
+    project::get_recent_projects,
+    project::remove_project,
+    project::get_file_tree,
+    project::get_directory_children,
+    project::text_search,
+    project::filename_search,
+    project::replace_in_files,
+    project::read_file,
+    project::get_current_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

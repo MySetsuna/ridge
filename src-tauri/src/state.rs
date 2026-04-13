@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::types::GlobalEvent;
@@ -32,6 +34,10 @@ pub struct AppState {
     pub pty_scrollback: Arc<RwLock<HashMap<(Uuid, Uuid), String>>>,
     /// 本进程 teammate HTTP 绑定信息；存在时新 PTY 会注入 WIND_TEAMMATE_*。
     pub teammate_binding: Arc<RwLock<Option<TeammateBinding>>>,
+    /// Project store for managing projects
+    pub project_store: Option<Arc<ProjectStore>>,
+    /// Current active project path
+    pub current_project: Arc<RwLock<Option<PathBuf>>>,
 }
 
 impl AppState {
@@ -52,6 +58,8 @@ impl AppState {
             event_tx,
             pty_scrollback: Arc::new(RwLock::new(HashMap::new())),
             teammate_binding: Arc::new(RwLock::new(None)),
+            project_store: None,
+            current_project: Arc::new(RwLock::new(None)),
         }
     }
 
