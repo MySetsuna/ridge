@@ -28,12 +28,24 @@
   let ptyClosedUnlisten: (() => void) | undefined;
   let recoveringPty = false;
 
+  /** 组件已销毁后为 false，避免工作区切换后仍执行 rAF/invoke 碰已 dispose 的 xterm（Windows 上可致 WebView 进程异常退出 0xc0000142）。 */
+  let alive = true;
+  let layoutRaf: number | undefined;
+
+  function cancelLayoutRaf() {
+    if (layoutRaf !== undefined) {
+      cancelAnimationFrame(layoutRaf);
+      layoutRaf = undefined;
+    }
+  }
+
   $effect(() => {
     if (!isTauri() || !workspaceId) return;
     const ch = `pane-mode-changed-${workspaceId}-${paneId}`;
     let cancelled = false;
     let unlistenMode: (() => void) | undefined;
     void listen<{ mode: string }>(ch, (e) => {
+      if (!alive) return;
       mode = e.payload.mode === 'Editor' ? 'editor' : 'terminal';
       void renderView();
     }).then((u) => {
@@ -49,10 +61,12 @@
   function attachTerminalFocusHandlers() {
     if (!term || !container) return;
     const focusTerm = () => {
+      if (!alive) return;
       activePaneId.set(paneId);
       requestAnimationFrame(() => {
-        term?.focus();
-        fitAddon?.fit();
+        if (!alive || !term || !fitAddon) return;
+        term.focus();
+        fitAddon.fit();
       });
     };
     container.addEventListener('pointerdown', focusTerm);
@@ -60,7 +74,7 @@
   }
 
   function fitAndSyncPty() {
-    if (!term || !fitAddon) return;
+    if (!alive || !term || !fitAddon) return;
     fitAddon.fit();
     if (isTauri() && term) {
       const rows = Math.max(1, term.rows);
@@ -74,10 +88,11 @@
   }
 
   async function recoverPtySession() {
-    if (!isTauri() || recoveringPty) return;
+    if (!isTauri() || recoveringPty || !alive) return;
     recoveringPty = true;
     try {
       await invoke('create_pane', { paneId });
+      if (!alive) return;
       await renderView();
     } catch (e) {
       console.error('recoverPtySession', paneId, e);
@@ -87,6 +102,8 @@
   }
 
   async function renderView() {
+    if (!alive) return;
+    cancelLayoutRaf();
     if (resizeDebounceTimer !== undefined) {
       clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = undefined;
@@ -145,9 +162,16 @@
       if (isTauri() && workspaceId) {
         const outCh = `pty-output-${workspaceId}-${paneId}`;
         ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
+          if (!alive) return;
           term?.write(e.payload.data);
         });
+        if (!alive) {
+          ptyUnlisten();
+          ptyUnlisten = undefined;
+          return;
+        }
         term.onData((d) => {
+          if (!alive) return;
           void invoke('write_to_pty', { paneId, data: d }).catch((err) => {
             const msg = String(err);
             console.error('write_to_pty', paneId, err);
@@ -159,15 +183,24 @@
       }
 
       resizeObserver = new ResizeObserver(() => {
+        if (!alive) return;
         if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
         resizeDebounceTimer = setTimeout(() => {
           resizeDebounceTimer = undefined;
-          requestAnimationFrame(() => fitAndSyncPty());
+          if (!alive) return;
+          cancelLayoutRaf();
+          layoutRaf = requestAnimationFrame(() => {
+            layoutRaf = undefined;
+            fitAndSyncPty();
+          });
         }, 48);
       });
       resizeObserver.observe(container);
 
-      requestAnimationFrame(() => {
+      cancelLayoutRaf();
+      layoutRaf = requestAnimationFrame(() => {
+        layoutRaf = undefined;
+        if (!alive) return;
         fitAndSyncPty();
         term?.focus();
       });
@@ -189,6 +222,7 @@
     if (isTauri()) {
       void (async () => {
         void listen<{ workspaceId: string; paneId: string }>('pane-pty-closed', (e) => {
+          if (!alive) return;
           if (e.payload.workspaceId !== workspaceId || e.payload.paneId !== paneId) return;
           void recoverPtySession();
         }).then((u) => {
@@ -198,10 +232,13 @@
           await invoke('create_pane', { paneId });
         } catch (e) {
           console.error('create_pane failed', paneId, e);
+          if (!alive) return;
           await renderView();
+          if (!alive) return;
           term?.writeln(`\r\n\x1b[31m[PTY] 启动失败: ${String(e)}\x1b[0m\r\n`);
           return;
         }
+        if (!alive) return;
         await renderView();
       })();
     } else {
@@ -210,6 +247,8 @@
   });
 
   onDestroy(() => {
+    alive = false;
+    cancelLayoutRaf();
     if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
     ptyClosedUnlisten?.();
     resizeObserver?.disconnect();

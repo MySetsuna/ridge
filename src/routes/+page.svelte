@@ -10,13 +10,15 @@
     workspacesList,
     activeWorkspaceId,
     createWorkspace,
-    switchWorkspace
+    switchWorkspace,
+    getAllPaneIds
   } from '$lib/stores/paneTree';
   import { onMount } from 'svelte';
   import { isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
   let rootNode = $derived($paneTreeStore);
+  let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
   type SidebarTab = 'terminal' | 'git' | 'files';
   let sidebarTab = $state<SidebarTab>('terminal');
@@ -145,7 +147,7 @@
     </header>
 
     <div class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col bg-[var(--wf-bg-raised)]">
-      {#if $activeWorkspaceId}
+      {#if $activeWorkspaceId && hasPaneLayout}
         {#key $activeWorkspaceId}
           <SplitContainer workspaceId={$activeWorkspaceId} node={rootNode} />
         {/key}

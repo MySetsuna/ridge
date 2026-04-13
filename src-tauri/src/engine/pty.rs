@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 use crate::types::GlobalEvent;
+use crate::utils::pty_log;
 
 pub struct PtyHandle {
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -41,13 +42,17 @@ pub fn spawn_pty_reader(
         .name(format!("pty-reader-{pane_id}"))
         .spawn(move || {
             let Ok(rt) = handle else {
+                pty_log::reader_no_runtime(workspace_id, pane_id);
                 return;
             };
             let mut buf = [0u8; 8192];
             let read_result = catch_unwind(AssertUnwindSafe(|| {
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) => break,
+                        Ok(0) => {
+                            pty_log::reader_eof(workspace_id, pane_id);
+                            break;
+                        }
                         Ok(n) => {
                             let data = String::from_utf8_lossy(&buf[0..n]).into_owned();
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
@@ -62,7 +67,10 @@ pub fn spawn_pty_reader(
                                     .await
                             });
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            pty_log::reader_io_err(workspace_id, pane_id, &e);
+                            break;
+                        }
                     }
                 }
             }));

@@ -7,19 +7,9 @@ mod utils;
 
 use tauri::Emitter;
 use tokio::sync::mpsc;
-use uuid::Uuid;
-
 use crate::commands::{git, pane, terminal, workspace};
 use crate::state::AppState;
-use crate::types::{GlobalEvent, PaneMode, ROOT_PANE_ID};
-
-fn pane_event_channel_suffix(id: Uuid) -> String {
-    if id == ROOT_PANE_ID {
-        "root".to_string()
-    } else {
-        id.to_string()
-    }
-}
+use crate::types::{GlobalEvent, PaneMode};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,7 +22,13 @@ pub fn run() {
         .manage(app_state)
         .setup(move |app| {
             let handle = app.handle().clone();
-            teammate::spawn_teammate_server(handle.clone(), teammate_state.clone());
+            let (teammate_ready_tx, teammate_ready_rx) = std::sync::mpsc::channel();
+            teammate::spawn_teammate_server(
+                handle.clone(),
+                teammate_state.clone(),
+                Some(teammate_ready_tx),
+            );
+            let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
             tauri::async_runtime::spawn(async move {
                 while let Some(ev) = event_rx.recv().await {
                     match ev {
@@ -41,7 +37,7 @@ pub fn run() {
                             pane_id,
                             data,
                         } => {
-                            let label = pane_event_channel_suffix(pane_id);
+                            let label = pane_id.to_string();
                             let _ = handle.emit(
                                 &format!("pty-output-{workspace_id}-{label}"),
                                 serde_json::json!({ "data": data }),
@@ -51,16 +47,11 @@ pub fn run() {
                             workspace_id,
                             pane_id,
                         } => {
-                            let pane_id_str = if pane_id == ROOT_PANE_ID {
-                                "root".to_string()
-                            } else {
-                                pane_id.to_string()
-                            };
                             let _ = handle.emit(
                                 "pane-pty-closed",
                                 serde_json::json!({
                                     "workspaceId": workspace_id.to_string(),
-                                    "paneId": pane_id_str,
+                                    "paneId": pane_id.to_string(),
                                 }),
                             );
                         }
@@ -73,7 +64,7 @@ pub fn run() {
                                 PaneMode::Terminal => "Terminal",
                                 PaneMode::Editor { .. } => "Editor",
                             };
-                            let label = pane_event_channel_suffix(pane_id);
+                            let label = pane_id.to_string();
                             let _ = handle.emit(
                                 &format!("pane-mode-changed-{workspace_id}-{label}"),
                                 serde_json::json!({ "mode": mode_str }),

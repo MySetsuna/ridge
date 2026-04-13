@@ -10,6 +10,7 @@ use crate::engine::pty::{spawn_pty_reader, PtyHandle};
 use crate::state::AppState;
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
+use crate::utils::pty_log;
 
 #[tauri::command]
 pub async fn create_pane(
@@ -48,6 +49,9 @@ fn create_pane_inner(
         cmd.env("WIND_TEAMMATE_URL", bind.base_url.as_str());
         cmd.env("WIND_TEAMMATE_TOKEN", bind.token.as_str());
         cmd.env("WIND_TERMINAL", "1");
+        // Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
+        // 值格式与 tmux 类似（socket 占位 + ,session,pane），Wind 不解析该路径。
+        cmd.env("TMUX", "/wind/teammate.sock,0,0");
     }
 
     let pair = pty_system
@@ -87,11 +91,13 @@ fn create_pane_inner(
             .get_mut(&workspace_id)
             .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
         if ws.terminals.contains_key(&pane_id) {
+            pty_log::create_skip(workspace_id, pane_id);
             return Ok(());
         }
         ws.terminals.insert(pane_id, handle);
     }
 
+    pty_log::create_spawned(workspace_id, pane_id);
     let st = (*state).clone();
     spawn_pty_reader(st, workspace_id, pane_id, reader);
     Ok(())
@@ -123,6 +129,7 @@ fn write_to_pty_inner(
         w.flush()?;
         Ok(())
     } else {
+        pty_log::pane_not_found("write", wid, pane_id);
         Err(AppError::PaneNotFound(pane_id))
     }
 }
@@ -154,16 +161,25 @@ fn resize_pane_inner(
         .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
     if let Some(handle) = ws.terminals.get(&pane_id) {
         let master = handle.master.lock();
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
-        Ok(())
+        let r = master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        match r {
+            Ok(()) => {
+                pty_log::resize_ok(wid, pane_id, rows, cols);
+                Ok(())
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                pty_log::resize_err(wid, pane_id, rows, cols, &msg);
+                Err(AppError::PtyError(msg))
+            }
+        }
     } else {
+        pty_log::pane_not_found("resize", wid, pane_id);
         Err(AppError::PaneNotFound(pane_id))
     }
 }

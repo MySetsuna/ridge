@@ -6,6 +6,17 @@ use std::process;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    // Claude Code 等会先跑 `tmux -V` 判断是否存在 tmux；此前落到 unsupported 会导致永远不启用 split。
+    for a in args.iter().skip(1) {
+        if a == "-V" || a == "--version" {
+            println!("tmux 3.4");
+            process::exit(0);
+        }
+        if a == "-h" || a == "--help" {
+            eprintln!("wind-tmux shim: split-window capture-pane send-keys list-panes … (needs WIND_TEAMMATE_*)");
+            process::exit(0);
+        }
+    }
     if args.len() < 2 {
         eprintln!("wind-tmux: missing subcommand");
         process::exit(1);
@@ -27,6 +38,19 @@ fn main() {
         "new-session" | "new" => Ok(()),
         "list-sessions" | "ls" => {
             println!("wind: 1 windows (created Mon Jan 1 00:00:00 2020)");
+            Ok(())
+        }
+        // 探测 / 会话生命周期：返回成功即可，避免 Claude 判定 tmux 不可用
+        "display-message" | "display" => {
+            println!("%0");
+            Ok(())
+        }
+        "start-server" | "start" => Ok(()),
+        "attach-session" | "attach" => Ok(()),
+        "kill-session" => Ok(()),
+        "kill-server" => Ok(()),
+        "list-windows" | "lsw" => {
+            println!("0: wind* (1 panes) [80x24] @0 (active)");
             Ok(())
         }
         _ => {

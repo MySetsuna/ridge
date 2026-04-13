@@ -37,7 +37,12 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
 }
 
 /// 后台线程跑 Axum，避免阻塞 Tauri 主循环。
-pub fn spawn_teammate_server(handle: tauri::AppHandle, state: AppState) {
+/// `ready` 在 HTTP 已绑定且 `teammate_binding` 写入后发送一次，供 setup 等待首个 PTY 注入环境变量。
+pub fn spawn_teammate_server(
+    handle: tauri::AppHandle,
+    state: AppState,
+    ready: Option<std::sync::mpsc::Sender<()>>,
+) {
     std::thread::Builder::new()
         .name("wind-teammate-http".into())
         .spawn(move || {
@@ -48,20 +53,30 @@ pub fn spawn_teammate_server(handle: tauri::AppHandle, state: AppState) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("[wind] teammate runtime: {e}");
+                    if let Some(tx) = ready {
+                        let _ = tx.send(());
+                    }
                     return;
                 }
             };
-            rt.block_on(run_server(handle, state));
+            rt.block_on(run_server(handle, state, ready));
         })
         .ok();
 }
 
-async fn run_server(handle: tauri::AppHandle, app_state: AppState) {
+async fn run_server(
+    handle: tauri::AppHandle,
+    app_state: AppState,
+    ready: Option<std::sync::mpsc::Sender<()>>,
+) {
     let token = uuid::Uuid::new_v4().to_string();
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => {
             eprintln!("[wind] teammate bind failed: {e}");
+            if let Some(tx) = ready {
+                let _ = tx.send(());
+            }
             return;
         }
     };
@@ -73,6 +88,9 @@ async fn run_server(handle: tauri::AppHandle, app_state: AppState) {
             base_url: base_url.clone(),
             token: token.clone(),
         });
+    }
+    if let Some(tx) = ready {
+        let _ = tx.send(());
     }
     eprintln!(
         "[wind] teammate HTTP {base_url} (inject WIND_TEAMMATE_* into PTY; use wind-tmux as tmux on PATH)"

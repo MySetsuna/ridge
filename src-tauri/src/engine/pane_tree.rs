@@ -37,7 +37,7 @@ pub struct PaneTree {
 impl PaneTree {
     /// 创建初始根节点（Fiber 根 Fiber）
     pub fn new() -> Self {
-        let root_id = crate::types::ROOT_PANE_ID;
+        let root_id = Uuid::new_v4();
         let mut panes = HashMap::new();
         panes.insert(root_id, Pane { id: root_id, mode: PaneMode::Terminal });
 

@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::commands::terminal;
 use crate::engine::pane_tree::{PaneNode as EnginePaneNode, SplitDirection};
 use crate::state::AppState;
-use crate::types::{GlobalEvent, PaneMode, ROOT_PANE_ID};
+use crate::types::{GlobalEvent, PaneMode};
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
 
@@ -24,18 +24,10 @@ pub enum LayoutNode {
     },
 }
 
-fn uuid_to_pane_id(u: Uuid) -> String {
-    if u == ROOT_PANE_ID {
-        "root".to_string()
-    } else {
-        u.to_string()
-    }
-}
-
 fn engine_node_to_layout(node: &EnginePaneNode, split_counter: &mut u64) -> LayoutNode {
     match node {
         EnginePaneNode::Leaf(id) => LayoutNode::Leaf {
-            id: uuid_to_pane_id(*id),
+            id: id.to_string(),
         },
         EnginePaneNode::Split {
             direction,
