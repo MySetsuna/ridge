@@ -2,6 +2,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { get, writable } from 'svelte/store';
 import type { PaneNode } from '$lib/types';
+import { reportDevIssue } from '$lib/devIssue';
 
 /** 占位；首屏 hydrate 前不挂载终端。根 pane 的 id 由后端按工作区生成唯一 UUID。 */
 export const paneTreeStore = writable<PaneNode>({
@@ -39,36 +40,76 @@ function reconcileActivePaneId(layout: PaneNode) {
 
 export async function syncPaneLayoutFromBackend() {
   if (!isTauri()) return;
-  const layout = await invoke<PaneNode>('get_pane_layout');
-  paneTreeStore.set(layout);
-  reconcileActivePaneId(layout);
+  try {
+    const layout = await invoke<PaneNode>('get_pane_layout');
+    paneTreeStore.set(layout);
+    reconcileActivePaneId(layout);
+  } catch (e) {
+    console.error('syncPaneLayoutFromBackend', e);
+    reportDevIssue({
+      title: 'Layout sync failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
 }
 
 /** 列表 + 活动区 id + 分屏树一次拉齐，再连续 set，避免 {#key activeWorkspaceId} 已变而 paneTree 仍是上一工作区的竞态。 */
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
-  const list = await invoke<{ id: string; index: number }[]>('list_workspaces');
-  const active = await invoke<string>('get_active_workspace_id');
-  const layout = await invoke<PaneNode>('get_pane_layout');
-  workspacesList.set(list);
-  paneTreeStore.set(layout);
-  activeWorkspaceId.set(active);
-  reconcileActivePaneId(layout);
+  try {
+    const list = await invoke<{ id: string; index: number }[]>('list_workspaces');
+    const active = await invoke<string>('get_active_workspace_id');
+    const layout = await invoke<PaneNode>('get_pane_layout');
+    workspacesList.set(list);
+    paneTreeStore.set(layout);
+    activeWorkspaceId.set(active);
+    reconcileActivePaneId(layout);
+  } catch (e) {
+    console.error('refreshWorkspaces', e);
+    reportDevIssue({
+      title: 'Workspace refresh failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
 }
 
 export async function createWorkspace() {
   if (!isTauri()) return;
-  await invoke<string>('create_workspace');
-  await refreshWorkspaces();
+  try {
+    await invoke<string>('create_workspace');
+    await refreshWorkspaces();
+  } catch (e) {
+    console.error('createWorkspace', e);
+    reportDevIssue({
+      title: 'Workspace create failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
 }
 
 export async function switchWorkspace(workspaceId: string) {
   if (!isTauri()) return;
-  await invoke('switch_workspace', { workspaceId });
-  const layout = await invoke<PaneNode>('get_pane_layout');
-  paneTreeStore.set(layout);
-  activeWorkspaceId.set(workspaceId);
-  reconcileActivePaneId(layout);
+  try {
+    await invoke('switch_workspace', { workspaceId });
+    const layout = await invoke<PaneNode>('get_pane_layout');
+    paneTreeStore.set(layout);
+    activeWorkspaceId.set(workspaceId);
+    reconcileActivePaneId(layout);
+  } catch (e) {
+    console.error('switchWorkspace', workspaceId, e);
+    reportDevIssue({
+      title: 'Workspace switch failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
 }
 
 export async function splitPane(paneId: string, direction: 'horizontal' | 'vertical') {

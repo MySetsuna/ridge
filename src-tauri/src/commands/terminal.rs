@@ -28,6 +28,27 @@ fn create_pane_inner(
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     let workspace_id = state.active_workspace_id();
+    ensure_pane_pty_workspace(&*state, workspace_id, pane_id, shell)
+}
+
+/// 确保指定 workspace/pane 存在 PTY（已存在则跳过，幂等）。
+/// teammate split 路径可直接复用，避免依赖前端 Pane 挂载后才创建。
+pub fn ensure_pane_pty_workspace(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    shell: Option<String>,
+) -> Result<(), AppError> {
+    {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&workspace_id)
+            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+        if ws.terminals.contains_key(&pane_id) {
+            pty_log::create_skip(workspace_id, pane_id);
+            return Ok(());
+        }
+    }
 
     let pty_system = native_pty_system();
     let mut cmd = if let Some(s) = shell {
@@ -79,7 +100,7 @@ fn create_pane_inner(
         .spawn_command(cmd)
         .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-    let handle = PtyHandle {
+    let mut handle = PtyHandle {
         master,
         writer,
         _child: child,
@@ -92,13 +113,14 @@ fn create_pane_inner(
             .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
         if ws.terminals.contains_key(&pane_id) {
             pty_log::create_skip(workspace_id, pane_id);
+            let _ = handle._child.kill();
             return Ok(());
         }
         ws.terminals.insert(pane_id, handle);
     }
 
     pty_log::create_spawned(workspace_id, pane_id);
-    let st = (*state).clone();
+    let st = state.clone();
     spawn_pty_reader(st, workspace_id, pane_id, reader);
     Ok(())
 }

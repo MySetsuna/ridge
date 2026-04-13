@@ -13,6 +13,9 @@
     switchWorkspace,
     getAllPaneIds
   } from '$lib/stores/paneTree';
+  import { reportDevIssue } from '$lib/devIssue';
+  import { dev } from '$app/environment';
+  import { get } from 'svelte/store';
   import { onMount } from 'svelte';
   import { isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -23,13 +26,34 @@
   type SidebarTab = 'terminal' | 'git' | 'files';
   let sidebarTab = $state<SidebarTab>('terminal');
 
+  function openDevIssueHelp() {
+    reportDevIssue({
+      title: 'Wind Dev',
+      message:
+        '排障入口：切换工作区报错请先看运行 wind / cargo tauri dev 的终端日志（搜索 [wind][pty]）。Claude split 需在 Wind 内建终端中运行，并确保 tmux 指向 wind-tmux shim。若出现 0xc0000142 这类进程级崩溃，需同时查看 Windows 事件查看器（应用程序日志）。'
+    });
+  }
+
   onMount(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     void (async () => {
       await refreshWorkspaces();
       unlisten = await listen('teammate-layout-changed', () => {
-        void syncPaneLayoutFromBackend();
+        void (async () => {
+          await syncPaneLayoutFromBackend();
+          if (!dev) return;
+          requestAnimationFrame(() => {
+            const storeCount = getAllPaneIds(get(paneTreeStore)).length;
+            const domCount = document.querySelectorAll('.wf-pane-root').length;
+            if (storeCount > 0 && domCount !== storeCount) {
+              reportDevIssue({
+                title: 'Layout sync mismatch',
+                message: `teammate-layout-changed 后 store panes=${storeCount}, mounted panes=${domCount}`,
+              });
+            }
+          });
+        })();
       });
     })();
     return () => {
@@ -141,6 +165,16 @@
           <span class="text-lg leading-none">+</span>
         </button>
       </div>
+      {#if dev}
+        <button
+          type="button"
+          class="shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium border border-red-500/30 text-red-300/90 hover:bg-red-500/10 transition-colors"
+          title="开发排障入口"
+          onclick={openDevIssueHelp}
+        >
+          Dev Issue
+        </button>
+      {/if}
       <span class="hidden sm:inline text-[11px] text-[var(--wf-fg-muted)] shrink-0 pr-2 truncate max-w-[8rem]"
         >WarpForge</span
       >

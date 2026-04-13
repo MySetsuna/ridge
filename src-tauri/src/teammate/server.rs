@@ -143,6 +143,19 @@ async fn route_split(
     };
     match pane::teammate_split_pane(&ctx.state, wid, idx, dir) {
         Ok(new_id) => {
+            if let Err(e) = terminal::ensure_pane_pty_workspace(&ctx.state, wid, new_id, None) {
+                {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+                        let _ = ws.pane_tree.close(new_id);
+                    }
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("split created pane but PTY init failed: {e}"),
+                )
+                    .into_response();
+            }
             let _ = ctx.handle.emit("teammate-layout-changed", ());
             if let Some(cmd) = body.command.filter(|s| !s.is_empty()) {
                 let app = ctx.state.clone();

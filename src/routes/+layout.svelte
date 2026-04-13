@@ -1,8 +1,7 @@
 <!-- src/routes/+layout.svelte -->
 <script>
   import '../app.css';
-  // import { browser, dev } from '$app/environment';
-  import { dev } from '$app/environment';
+  import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
 </script>
 
@@ -10,7 +9,6 @@
   <slot />
 </div>
 
-<!-- {#if dev && browser} -->
-{#if dev }
+{#if dev && browser}
   <DevIssueDialog />
 {/if}
