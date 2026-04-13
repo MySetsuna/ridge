@@ -34,11 +34,14 @@ export async function syncPaneLayoutFromBackend() {
   paneTreeStore.set(layout);
 }
 
+/** 列表 + 活动区 id + 分屏树一次拉齐，再连续 set，避免 {#key activeWorkspaceId} 已变而 paneTree 仍是上一工作区的竞态。 */
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   const list = await invoke<{ id: string; index: number }[]>('list_workspaces');
-  workspacesList.set(list);
   const active = await invoke<string>('get_active_workspace_id');
+  const layout = await invoke<PaneNode>('get_pane_layout');
+  workspacesList.set(list);
+  paneTreeStore.set(layout);
   activeWorkspaceId.set(active);
 }
 
@@ -46,15 +49,15 @@ export async function createWorkspace() {
   if (!isTauri()) return;
   await invoke<string>('create_workspace');
   await refreshWorkspaces();
-  await syncPaneLayoutFromBackend();
   activePaneId.set('root');
 }
 
 export async function switchWorkspace(workspaceId: string) {
   if (!isTauri()) return;
   await invoke('switch_workspace', { workspaceId });
+  const layout = await invoke<PaneNode>('get_pane_layout');
+  paneTreeStore.set(layout);
   activeWorkspaceId.set(workspaceId);
-  await syncPaneLayoutFromBackend();
   activePaneId.set('root');
 }
 

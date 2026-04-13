@@ -26,7 +26,6 @@
     let unlisten: (() => void) | undefined;
     void (async () => {
       await refreshWorkspaces();
-      await syncPaneLayoutFromBackend();
       unlisten = await listen('teammate-layout-changed', () => {
         void syncPaneLayoutFromBackend();
       });
