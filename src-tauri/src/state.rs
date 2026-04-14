@@ -72,9 +72,16 @@ impl AppState {
         let mut map = self.pty_scrollback.write();
         let buf = map.entry((ws, pane)).or_insert_with(String::new);
         buf.push_str(chunk);
-        if buf.len() > MAX {
-            buf.drain(..(buf.len() - MAX));
+    if buf.len() > MAX {
+        // Drain requires character boundaries, not byte offsets.
+        // Find the nearest valid character boundary before the cut point.
+        let cut_point = buf.len() - MAX;
+        let mut valid_boundary = cut_point;
+        while !buf.is_char_boundary(valid_boundary) {
+            valid_boundary += 1;
         }
+        buf.drain(..valid_boundary);
+    }
     }
 
     pub fn clear_pty_scrollback(&self, ws: Uuid, pane: Uuid) {
