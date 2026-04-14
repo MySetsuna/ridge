@@ -132,6 +132,9 @@ struct SplitBody {
     horizontal: bool,
     #[serde(default)]
     command: Option<String>,
+    /// `tmux split-window -c start-directory`
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 async fn route_split(
@@ -149,9 +152,35 @@ async fn route_split(
     } else {
         "vertical"
     };
+    let cwd = body
+        .cwd
+        .as_ref()
+        .map(|s| std::path::PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty());
+
     match pane::teammate_split_pane(&ctx.state, wid, idx, dir) {
         Ok(new_id) => {
-            if let Err(e) = terminal::ensure_pane_pty_workspace(&ctx.state, wid, new_id, None) {
+            let new_idx = {
+                let map = ctx.state.workspaces.read();
+                let Some(ws) = map.get(&wid) else {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing").into_response();
+                };
+                ws.pane_tree
+                    .get_all_leaves()
+                    .iter()
+                    .position(|u| *u == new_id)
+                    .unwrap_or(0)
+            };
+            let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            if let Err(e) = terminal::ensure_pane_pty_workspace(
+                &ctx.state,
+                wid,
+                new_id,
+                None,
+                cwd.as_deref(),
+                cmd,
+                Some(new_idx),
+            ) {
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
@@ -164,29 +193,22 @@ async fn route_split(
                 )
                     .into_response();
             }
-            let _ = ctx.handle.emit("teammate-layout-changed", ());
-            if let Some(cmd) = body.command.filter(|s| !s.is_empty()) {
-                let app = ctx.state.clone();
-                let h = ctx.handle.clone();
-                tokio::spawn(async move {
-                    for _ in 0..80 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-                        if terminal::write_pty_bytes_workspace(&app, wid, new_id, cmd.as_bytes())
-                            .is_ok()
-                        {
-                            let _ =
-                                terminal::write_pty_bytes_workspace(&app, wid, new_id, b"\r");
-                            break;
-                        }
-                    }
-                    let _ = h.emit("teammate-layout-changed", ());
-                });
+            {
+                let mut map = ctx.state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.teammate_tmux_pane_cursor = new_idx;
+                }
             }
+            let _ = ctx.handle.emit("teammate-layout-changed", ());
+            let _ = ctx
+                .handle
+                .emit("teammate-active-pane-changed", new_id.to_string());
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "ok": true,
                     "new_pane_id": new_id.to_string(),
+                    "new_pane_index": new_idx,
                 })),
             )
                 .into_response()
@@ -222,8 +244,12 @@ async fn route_capture(
 
 #[derive(Deserialize)]
 struct SendBody {
+    /// 显式 `send-keys -t %N`；与 `use_tmux_current_pane` 互斥。
     #[serde(default)]
-    pane: usize,
+    pane: Option<usize>,
+    /// `send-keys -t ""` 或未带 `-t`：与真实 tmux 一致，发往「当前」窗格（由 `split-window` / `select-pane` 维护）。
+    #[serde(default)]
+    use_tmux_current_pane: bool,
     text: String,
 }
 
@@ -236,7 +262,17 @@ async fn route_send_keys(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let wid = ctx.state.active_workspace_id();
-    let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, body.pane) {
+    let pane_idx = if body.use_tmux_current_pane {
+        ctx.state
+            .workspaces
+            .read()
+            .get(&wid)
+            .map(|ws| ws.teammate_tmux_pane_cursor)
+            .unwrap_or(0)
+    } else {
+        body.pane.unwrap_or(0)
+    };
+    let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane_idx) {
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
@@ -289,14 +325,28 @@ async fn route_select_pane(
     // For now, just acknowledge the request
     log_stderr_server(&format!("select-pane: index={:?}, last={:?}", body.pane_index, body.last));
 
-    // Update active pane in state if needed
     if let Some(idx) = body.pane_index {
-        let map = ctx.state.workspaces.read();
-        if let Some(ws) = map.get(&wid) {
+        let leaf_id = {
+            let map = ctx.state.workspaces.read();
+            let Some(ws) = map.get(&wid) else {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
+            };
             let leaves = ws.pane_tree.get_all_leaves();
-            if idx < leaves.len() {
-                let _ = ctx.handle.emit("teammate-active-pane-changed", leaves[idx].to_string());
+            if idx >= leaves.len() {
+                return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
             }
+            Some(leaves[idx])
+        };
+        {
+            let mut map = ctx.state.workspaces.write();
+            if let Some(ws) = map.get_mut(&wid) {
+                ws.teammate_tmux_pane_cursor = idx;
+            }
+        }
+        if let Some(pid) = leaf_id {
+            let _ = ctx
+                .handle
+                .emit("teammate-active-pane-changed", pid.to_string());
         }
     }
 
@@ -382,7 +432,15 @@ async fn route_new_window(
 
     match pane::teammate_split_pane(&ctx.state, wid, 0, "vertical") {
         Ok(new_id) => {
-            if let Err(e) = crate::commands::terminal::ensure_pane_pty_workspace(&ctx.state, wid, new_id, None) {
+            if let Err(e) = crate::commands::terminal::ensure_pane_pty_workspace(
+                &ctx.state,
+                wid,
+                new_id,
+                None,
+                None,
+                None,
+                None,
+            ) {
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("PTY init failed: {e}")).into_response();
             }
             let _ = ctx.handle.emit("teammate-layout-changed", ());

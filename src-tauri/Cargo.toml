@@ -39,6 +39,7 @@ regex = "1"
 ignore = "0.4"
 dirs = "5"
 tracing = "0.1"
+once_cell = "1"
 
 [[bin]]
 name = "wind-tmux"

@@ -23,6 +23,12 @@ fn log_stderr(msg: &str) {
 }
 
 fn log_file_path() -> Option<PathBuf> {
+    if let Ok(p) = env::var("WIND_TMUX_LOG") {
+        let t = p.trim();
+        if !t.is_empty() {
+            return Some(PathBuf::from(t));
+        }
+    }
     if let Ok(p) = env::current_dir() {
         return Some(p.join("wind-tmux.log"));
     }
@@ -78,7 +84,7 @@ fn main() {
             println!("tmux 3.4");
             process::exit(0);
         }
-        if a == "-h" || a == "--help" {
+        if a == "--help" {
             log_stderr("probe help");
             eprintln!("wind-tmux shim: supports all tmux commands (needs WIND_TEAMMATE_*)");
             process::exit(0);
@@ -126,7 +132,7 @@ fn main() {
         "last-window" | "lastw" => cmd_last_window(rest),
 
         // ========== Session Management ==========
-        "new-session" | "new" => cmd_new_session(rest),
+        "new-session" | "new" => cmd_new_session(rest, &url, &token),
         "has-session" | "has" => cmd_has_session(rest),
         "list-sessions" | "ls" => cmd_list_sessions(),
         "attach-session" | "attach" => cmd_attach_session(rest),
@@ -269,41 +275,88 @@ fn cmd_display_message(rest: &[String]) -> Result<(), ()> {
     Ok(())
 }
 
+/// tmux `cmd-split-window.c`：`split-window -P` 且未指定 `-F` 时的默认模板。
+const SPLIT_WINDOW_PRINT_DEFAULT: &str = "#{session_name}:#{window_index}.#{pane_index}";
+
 fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut horizontal = false;
     let mut pane_index: Option<usize> = None;
-    let mut i = 0;
+    let mut print_pane = false;
+    let mut output_format: Option<String> = None;
+    let mut cwd: Option<String> = None;
+    let mut shell_start: Option<usize> = None;
+    let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
             "-h" => horizontal = true,
             "-v" => horizontal = false,
-            "-l" | "-b" | "-f" | "-d" | "-Z" => {}
+            "-P" => print_pane = true,
+            "-F" if i + 1 < rest.len() => {
+                output_format = Some(rest[i + 1].clone());
+                i += 1;
+            }
             "-t" if i + 1 < rest.len() => {
                 pane_index = Some(parse_pane_target(&rest[i + 1]));
                 i += 1;
             }
             "-c" if i + 1 < rest.len() => {
-                let cmd = rest[i + 1].clone();
-                return post_split(url, token, horizontal, pane_index, Some(cmd));
+                cwd = Some(rest[i + 1].clone());
+                i += 1;
             }
+            "-l" | "-p" => {
+                if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                    i += 1;
+                }
+            }
+            "-e" if i + 1 < rest.len() && !rest[i + 1].starts_with('-') => {
+                i += 1;
+            }
+            "-b" | "-f" | "-d" | "-Z" | "-I" => {}
             "--" => {
                 i += 1;
-                let cmd = if i < rest.len() {
-                    Some(rest[i..].join(" "))
-                } else {
-                    None
-                };
-                return post_split(url, token, horizontal, pane_index, cmd);
+                if i < rest.len() {
+                    shell_start = Some(i);
+                }
+                break;
             }
             s if s.starts_with('-') => {}
             _ => {
-                let cmd = Some(rest[i..].join(" "));
-                return post_split(url, token, horizontal, pane_index, cmd);
+                shell_start = Some(i);
+                break;
             }
         }
         i += 1;
     }
-    post_split(url, token, horizontal, pane_index, None)
+
+    let command = shell_start
+        .and_then(|j| {
+            let s = rest[j..].join(" ");
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        });
+
+    let print_template = if print_pane {
+        Some(
+            output_format
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| SPLIT_WINDOW_PRINT_DEFAULT.to_string()),
+        )
+    } else {
+        None
+    };
+
+    post_split(
+        url,
+        token,
+        horizontal,
+        pane_index,
+        command,
+        cwd,
+        print_template.as_deref(),
+    )
 }
 
 fn post_split(
@@ -312,7 +365,17 @@ fn post_split(
     horizontal: bool,
     pane_index: Option<usize>,
     command: Option<String>,
+    cwd: Option<String>,
+    print_template: Option<&str>,
 ) -> Result<(), ()> {
+    log_stderr(&format!(
+        "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}",
+        horizontal,
+        pane_index,
+        command,
+        cwd,
+        print_template.is_some()
+    ));
     let mut body = serde_json::json!({ "horizontal": horizontal });
     if let Some(p) = pane_index {
         body["pane_index"] = serde_json::json!(p);
@@ -320,17 +383,44 @@ fn post_split(
     if let Some(c) = command {
         body["command"] = serde_json::json!(c);
     }
+    if let Some(c) = cwd.filter(|s| !s.is_empty()) {
+        body["cwd"] = serde_json::json!(c);
+    }
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
-    let res = client()
-        .post(u)
+    log_stderr(&format!("post_split: posting to {}", u));
+    let res = match client()
+        .post(&u)
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
-    if !res.status().is_success() {
-        let t = res.text().unwrap_or_default();
-        eprintln!("wind-tmux: split-window {}", t);
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log_stderr(&format!("wind-tmux: HTTP error: {e}"));
+            return Err(());
+        }
+    };
+    log_stderr(&format!("post_split: response status={}", res.status()));
+    let status = res.status();
+    let text = match res.text() {
+        Ok(t) => t,
+        Err(e) => {
+            log_stderr(&format!("wind-tmux: split-window read body: {e}"));
+            return Err(());
+        }
+    };
+    if !status.is_success() {
+        log_stderr(&format!("wind-tmux: split-window error: {}", text));
         return Err(());
+    }
+    let new_idx: usize = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("new_pane_index")?.as_u64())
+        .map(|u| u as usize)
+        .unwrap_or(0);
+    log_stderr(&format!("post_split: success new_pane_index={new_idx}"));
+    if let Some(tpl) = print_template {
+        println!("{}", render_tmux_format(tpl, new_idx));
     }
     Ok(())
 }
@@ -393,11 +483,22 @@ fn tmux_key_to_bytes(word: &str) -> Vec<u8> {
 }
 
 fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
-    let mut pane = 0usize;
+    /// `-t ""` 或未出现 `-t` 时与 tmux 一致：发往当前窗格（由 teammate HTTP 侧 `teammate_tmux_pane_cursor` 记录）。
+    #[derive(Clone, Copy)]
+    enum SendTarget {
+        TmuxCurrent,
+        Index(usize),
+    }
+    let mut target = SendTarget::TmuxCurrent;
     let mut i = 0;
     while i < rest.len() {
         if rest[i] == "-t" && i + 1 < rest.len() {
-            pane = parse_pane_target(&rest[i + 1]);
+            let v = rest[i + 1].trim();
+            if v.is_empty() {
+                target = SendTarget::TmuxCurrent;
+            } else {
+                target = SendTarget::Index(parse_pane_target(v));
+            }
             i += 2;
             continue;
         }
@@ -412,11 +513,22 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         buf.extend(tmux_key_to_bytes(w));
     }
     let text = String::from_utf8_lossy(&buf).into_owned();
+    let body = match target {
+        SendTarget::TmuxCurrent => serde_json::json!({
+            "use_tmux_current_pane": true,
+            "text": text,
+        }),
+        SendTarget::Index(p) => serde_json::json!({
+            "pane": p,
+            "use_tmux_current_pane": false,
+            "text": text,
+        }),
+    };
     let u = format!("{}/api/v1/send-keys", url.trim_end_matches('/'));
     let res = client()
         .post(u)
         .headers(auth_headers(token))
-        .json(&serde_json::json!({ "pane": pane, "text": text }))
+        .json(&body)
         .send()
         .map_err(|e| eprintln!("wind-tmux: {e}"))?;
     if !res.status().is_success() {
@@ -483,7 +595,13 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     while i < rest.len() {
         match rest[i].as_str() {
             "-t" if i + 1 < rest.len() => {
-                pane_index = Some(parse_pane_target(&rest[i + 1]));
+                let raw = rest[i + 1].trim();
+                if raw.is_empty() {
+                    // `-t ""` 常见于与 `-P`/`-T` 等组合，不改变当前窗格索引。
+                    pane_index = None;
+                } else {
+                    pane_index = Some(parse_pane_target(raw));
+                }
                 i += 1;
             }
             "-L" => direction = Some("left"),
@@ -516,13 +634,15 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         return Ok(());
     }
 
-    // Otherwise, use the HTTP API to select the pane
-    let idx = pane_index.unwrap_or(0);
     let u = format!("{}/api/v1/select-pane", url.trim_end_matches('/'));
+    let body = match pane_index {
+        Some(idx) => serde_json::json!({ "pane_index": idx }),
+        None => serde_json::json!({}),
+    };
     let res = client()
         .post(u)
         .headers(auth_headers(token))
-        .json(&serde_json::json!({ "pane_index": idx }))
+        .json(&body)
         .send()
         .map_err(|e| eprintln!("wind-tmux: {e}"))?;
     if !res.status().is_success() {
@@ -780,7 +900,7 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     // Create new pane in a new window - just use split for now
-    post_split(url, token, false, None, command)
+    post_split(url, token, false, None, command, cwd, None)
 }
 
 fn cmd_select_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
@@ -963,7 +1083,7 @@ fn cmd_last_window(rest: &[String]) -> Result<(), ()> {
 
 // ========== Session Management Commands ==========
 
-fn cmd_new_session(rest: &[String]) -> Result<(), ()> {
+fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut session_name: Option<String> = None;
     let mut detached = false;
     let mut i = 0;
@@ -991,7 +1111,12 @@ fn cmd_new_session(rest: &[String]) -> Result<(), ()> {
         i += 1;
     }
     log_stderr(&format!("new-session: name={:?}, detached={}", session_name, detached));
-    Ok(())
+
+    // tmux new-session creates window 0 with one pane by default.
+    // We need to create at least one pane to match tmux semantics.
+    // The split creates a new pane (pane 1) and returns success.
+    // Claude Code will use this as the working pane for the team session.
+    post_split(url, token, false, None, None, None, None)
 }
 
 fn cmd_has_session(rest: &[String]) -> Result<(), ()> {

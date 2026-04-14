@@ -51,3 +51,14 @@ pub fn reader_no_runtime(workspace_id: Uuid, pane_id: Uuid) {
         "[wind][pty] reader_no_tokio_runtime ws={workspace_id} pane={pane_id} (PTY 读线程退出，请检查是否在 async 上下文中 spawn)"
     );
 }
+
+/// 前端 `create_pane` 先于 teammate split 挂了交互 shell，拆掉以便按 `initial_command` 重起。
+#[cfg(debug_assertions)]
+pub fn teammate_replace_pty(workspace_id: Uuid, pane_id: Uuid) {
+    eprintln!(
+        "[wind][pty] teammate_replace_pty ws={workspace_id} pane={pane_id} (remove existing PTY for split command)"
+    );
+}
+
+#[cfg(not(debug_assertions))]
+pub fn teammate_replace_pty(_workspace_id: Uuid, _pane_id: Uuid) {}

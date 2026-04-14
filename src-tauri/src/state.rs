@@ -22,12 +22,15 @@ pub struct TeammateBinding {
 pub struct Workspace {
     pub pane_tree: PaneTree,
     pub terminals: HashMap<Uuid, PtyHandle>,
+    /// Claude `send-keys -t ""` / 无 `-t` 时 tmux「当前窗格」：在 Wind 里对应 `split-window` / `select-pane` 最后指向的 pane 索引。
+    pub teammate_tmux_pane_cursor: usize,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
     pub workspace_order: Arc<RwLock<Vec<Uuid>>>,
+    pub workspace_names: Arc<RwLock<HashMap<Uuid, String>>>,
     pub active_workspace: Arc<RwLock<Uuid>>,
     pub event_tx: mpsc::Sender<GlobalEvent>,
     /// 供 `capture-pane` 读取的最近输出（与 UI 展示同源 PTY 流）。
@@ -49,11 +52,13 @@ impl AppState {
             Workspace {
                 pane_tree: PaneTree::new(),
                 terminals: HashMap::new(),
+                teammate_tmux_pane_cursor: 0,
             },
         );
         Self {
             workspaces: Arc::new(RwLock::new(map)),
             workspace_order: Arc::new(RwLock::new(vec![id])),
+        workspace_names: Arc::new(RwLock::new(HashMap::new())),
             active_workspace: Arc::new(RwLock::new(id)),
             event_tx,
             pty_scrollback: Arc::new(RwLock::new(HashMap::new())),

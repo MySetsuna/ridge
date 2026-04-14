@@ -10,9 +10,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const releaseDir = join(root, 'src-tauri', 'target', 'release');
 const binName = process.platform === 'win32' ? 'wind-tmux.exe' : 'wind-tmux';
+const targetName = process.platform === 'win32' ? 'tmux.exe' : 'tmux';
 const from = join(releaseDir, binName);
 const toDir = join(root, 'dist', 'teammate-shim');
-const to = join(toDir, binName);
+const to = join(toDir, targetName);
 
 if (!existsSync(from)) {
   console.error(`[copy-teammate-shim] 未找到 ${from}，请先执行: cargo build --release --bin wind-tmux`);

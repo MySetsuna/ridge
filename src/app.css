@@ -61,6 +61,12 @@ body {
   background-clip: padding-box;
 }
 
+/* 无边框窗口：与 data-tauri-drag-region 并存时，避免按钮触发系统拖动 */
+.wf-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 /* xterm 滚动区域：圆角轨道 + 细拇指（避免默认粗灰条） */
 .xterm-viewport {
   scrollbar-width: thin !important;

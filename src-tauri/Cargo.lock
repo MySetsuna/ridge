@@ -5126,6 +5126,7 @@ dependencies = [
  "dirs 5.0.1",
  "glob",
  "ignore",
+ "once_cell",
  "parking_lot",
  "portable-pty",
  "regex",

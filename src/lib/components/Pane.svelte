@@ -1,268 +1,337 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { Terminal } from 'xterm';
-  import { FitAddon } from 'xterm-addon-fit';
-  import * as monaco from 'monaco-editor';
-  import { invoke, isTauri } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
-  import { activePaneId } from '$lib/stores/paneTree';
-  import 'xterm/css/xterm.css';
+import { onMount, onDestroy } from 'svelte';
+import { Terminal } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
+import * as monaco from 'monaco-editor';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { activePaneId } from '$lib/stores/paneTree';
+import 'xterm/css/xterm.css';
 
-  interface Props {
-    paneId: string;
-    workspaceId: string;
-  }
-  let { paneId, workspaceId }: Props = $props();
+interface DiffFile {
+	path: string;
+	additions: number;
+	deletions: number;
+	status: string;
+}
 
-  let container: HTMLElement;
-  let term: Terminal | null = null;
-  let editor: monaco.editor.IStandaloneCodeEditor | null = null;
-  let mode: 'terminal' | 'editor' = $state('terminal');
+interface GitDiffStatus {
+	files: DiffFile[];
+	total_additions: number;
+	total_deletions: number;
+	is_git_repo: boolean;
+}
 
-  let ptyUnlisten: (() => void) | undefined;
+interface Props {
+	paneId: string;
+	workspaceId: string;
+}
 
-  let fitAddon: FitAddon | null = null;
-  let removeFocusHandlers: (() => void) | undefined;
-  let resizeObserver: ResizeObserver | undefined;
-  let resizeDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-  let ptyClosedUnlisten: (() => void) | undefined;
-  let recoveringPty = false;
+let { paneId, workspaceId }: Props = $props();
 
-  /** 组件已销毁后为 false，避免工作区切换后仍执行 rAF/invoke 碰已 dispose 的 xterm（Windows 上可致 WebView 进程异常退出 0xc0000142）。 */
-  let alive = true;
-  let layoutRaf: number | undefined;
+let container: HTMLElement;
 
-  function cancelLayoutRaf() {
-    if (layoutRaf !== undefined) {
-      cancelAnimationFrame(layoutRaf);
-      layoutRaf = undefined;
-    }
-  }
+// Git diff 状态
+let diffStatus: GitDiffStatus | null = $state(null);
+let diffLoading = $state(false);
+let diffUnlisten: (() => void) | undefined;
 
-  $effect(() => {
-    if (!isTauri() || !workspaceId) return;
-    const ch = `pane-mode-changed-${workspaceId}-${paneId}`;
-    let cancelled = false;
-    let unlistenMode: (() => void) | undefined;
-    void listen<{ mode: string }>(ch, (e) => {
-      if (!alive) return;
-      mode = e.payload.mode === 'Editor' ? 'editor' : 'terminal';
-      void renderView();
-    }).then((u) => {
-      if (cancelled) u();
-      else unlistenMode = u;
-    });
-    return () => {
-      cancelled = true;
-      unlistenMode?.();
-    };
-  });
+async function loadDiffStatus() {
+	if (!isTauri() || !workspaceId || !paneId) return;
+	diffLoading = true;
+	try {
+		const status = await invoke<GitDiffStatus>('get_git_diff', { paneId });
+		diffStatus = status;
+	} catch (e) {
+		console.error('get_git_diff failed', e);
+	} finally {
+		diffLoading = false;
+	}
+}
 
-  function attachTerminalFocusHandlers() {
-    if (!term || !container) return;
-    const focusTerm = () => {
-      if (!alive) return;
-      activePaneId.set(paneId);
-      requestAnimationFrame(() => {
-        if (!alive || !term || !fitAddon) return;
-        term.focus();
-        fitAddon.fit();
-      });
-    };
-    container.addEventListener('pointerdown', focusTerm);
-    return () => container.removeEventListener('pointerdown', focusTerm);
-  }
+let term: Terminal | null = null;
+let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+let mode: 'terminal' | 'editor' = $state('terminal');
 
-  function fitAndSyncPty() {
-    if (!alive || !term || !fitAddon) return;
-    fitAddon.fit();
-    if (isTauri() && term) {
-      const rows = Math.max(1, term.rows);
-      const cols = Math.max(1, term.cols);
-      void invoke('resize_pane', {
-        paneId,
-        rows,
-        cols
-      }).catch(() => {});
-    }
-  }
+let ptyUnlisten: (() => void) | undefined;
 
-  async function recoverPtySession() {
-    if (!isTauri() || recoveringPty || !alive) return;
-    recoveringPty = true;
-    try {
-      await invoke('create_pane', { paneId });
-      if (!alive) return;
-      await renderView();
-    } catch (e) {
-      console.error('recoverPtySession', paneId, e);
-    } finally {
-      recoveringPty = false;
-    }
-  }
+let fitAddon: FitAddon | null = null;
+let removeFocusHandlers: (() => void) | undefined;
+let resizeObserver: ResizeObserver | undefined;
+let resizeDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+let ptyClosedUnlisten: (() => void) | undefined;
+let recoveringPty = false;
 
-  async function renderView() {
-    if (!alive) return;
-    cancelLayoutRaf();
-    if (resizeDebounceTimer !== undefined) {
-      clearTimeout(resizeDebounceTimer);
-      resizeDebounceTimer = undefined;
-    }
-    resizeObserver?.disconnect();
-    resizeObserver = undefined;
-    ptyUnlisten?.();
-    ptyUnlisten = undefined;
-    removeFocusHandlers?.();
-    removeFocusHandlers = undefined;
-    if (term) term.dispose();
-    if (editor) editor.dispose();
-    term = null;
-    fitAddon = null;
+/** 组件已销毁后为 false，避免工作区切换后仍执行 rAF/invoke 碰已 dispose 的 xterm（Windows 上可致 WebView 进程异常退出 0xc0000142）。 */
+let alive = true;
+let layoutRaf: number | undefined;
 
-    if (mode === 'terminal') {
-      term = new Terminal({
-        fontSize: 13,
-        lineHeight: 1.48,
-        fontFamily:
-          '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
-        cursorBlink: true,
-        scrollback: 8000,
-        theme: {
-          background: '#0c0b12',
-          foreground: '#e6e4ef',
-          cursor: '#a78bfa',
-          cursorAccent: '#0c0b12',
-          selectionBackground: 'rgba(167, 139, 250, 0.28)',
-          selectionForeground: '#f5f3ff',
-          black: '#1a1628',
-          red: '#f87171',
-          green: '#4ade80',
-          yellow: '#facc15',
-          blue: '#60a5fa',
-          magenta: '#e879f9',
-          cyan: '#2dd4bf',
-          white: '#f5f3ff',
-          brightBlack: '#6b6680',
-          brightRed: '#fca5a5',
-          brightGreen: '#86efac',
-          brightYellow: '#fde047',
-          brightBlue: '#93c5fd',
-          brightMagenta: '#f0abfc',
-          brightCyan: '#5eead4',
-          brightWhite: '#faf5ff'
-        }
-      });
-      fitAddon = new FitAddon();
-      term.loadAddon(fitAddon);
-      term.open(container);
-      fitAddon.fit();
+function cancelLayoutRaf() {
+	if (layoutRaf !== undefined) {
+		cancelAnimationFrame(layoutRaf);
+		layoutRaf = undefined;
+	}
+}
 
-      removeFocusHandlers = attachTerminalFocusHandlers();
+$effect(() => {
+	if (!isTauri() || !workspaceId) return;
+	const ch = `pane-mode-changed-${workspaceId}-${paneId}`;
+	let cancelled = false;
+	let unlistenMode: (() => void) | undefined;
+	void listen<{ mode: string }>(ch, (e) => {
+		if (!alive) return;
+		mode = e.payload.mode === 'Editor' ? 'editor' : 'terminal';
+		void renderView();
+	}).then((u) => {
+		if (cancelled) u();
+		else unlistenMode = u;
+	});
+	return () => {
+		cancelled = true;
+		unlistenMode?.();
+	};
+});
 
-      if (isTauri() && workspaceId) {
-        const outCh = `pty-output-${workspaceId}-${paneId}`;
-        ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
-          if (!alive) return;
-          term?.write(e.payload.data);
-        });
-        if (!alive) {
-          ptyUnlisten();
-          ptyUnlisten = undefined;
-          return;
-        }
-        term.onData((d) => {
-          if (!alive) return;
-          void invoke('write_to_pty', { paneId, data: d }).catch((err) => {
-            const msg = String(err);
-            console.error('write_to_pty', paneId, err);
-            if (msg.includes('Pane not found')) {
-              void recoverPtySession();
-            }
-          });
-        });
-      }
+function attachTerminalFocusHandlers() {
+	if (!term || !container) return;
+	const focusTerm = () => {
+		if (!alive) return;
+		activePaneId.set(paneId);
+		requestAnimationFrame(() => {
+			if (!alive || !term || !fitAddon) return;
+			term.focus();
+			fitAddon.fit();
+		});
+	};
+	container.addEventListener('pointerdown', focusTerm);
+	return () => container.removeEventListener('pointerdown', focusTerm);
+}
 
-      resizeObserver = new ResizeObserver(() => {
-        if (!alive) return;
-        if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
-        resizeDebounceTimer = setTimeout(() => {
-          resizeDebounceTimer = undefined;
-          if (!alive) return;
-          cancelLayoutRaf();
-          layoutRaf = requestAnimationFrame(() => {
-            layoutRaf = undefined;
-            fitAndSyncPty();
-          });
-        }, 48);
-      });
-      resizeObserver.observe(container);
+function fitAndSyncPty() {
+	if (!alive || !term || !fitAddon) return;
+	fitAddon.fit();
+	if (isTauri() && term) {
+		const rows = Math.max(1, term.rows);
+		const cols = Math.max(1, term.cols);
+		void invoke('resize_pane', { paneId, rows, cols }).catch(() => {});
+	}
+}
 
-      cancelLayoutRaf();
-      layoutRaf = requestAnimationFrame(() => {
-        layoutRaf = undefined;
-        if (!alive) return;
-        fitAndSyncPty();
-        term?.focus();
-      });
-    } else {
-      editor = monaco.editor.create(container, {
-        value: '// Welcome to WarpForge Editor',
-        language: 'rust',
-        theme: 'vs-dark',
-        automaticLayout: true,
-        fontFamily:
-          '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
-        fontSize: 13,
-        padding: { top: 12, bottom: 12 }
-      });
-    }
-  }
+async function recoverPtySession() {
+	if (!isTauri() || recoveringPty || !alive) return;
+	recoveringPty = true;
+	try {
+		await invoke('create_pane', { paneId });
+		if (!alive) return;
+		await renderView();
+	} catch (e) {
+		console.error('recoverPtySession', paneId, e);
+	} finally {
+		recoveringPty = false;
+	}
+}
 
-  onMount(() => {
-    if (isTauri()) {
-      void (async () => {
-        void listen<{ workspaceId: string; paneId: string }>('pane-pty-closed', (e) => {
-          if (!alive) return;
-          if (e.payload.workspaceId !== workspaceId || e.payload.paneId !== paneId) return;
-          void recoverPtySession();
-        }).then((u) => {
-          ptyClosedUnlisten = u;
-        });
-        try {
-          await invoke('create_pane', { paneId });
-        } catch (e) {
-          console.error('create_pane failed', paneId, e);
-          if (!alive) return;
-          await renderView();
-          if (!alive) return;
-          term?.writeln(`\r\n\x1b[31m[PTY] 启动失败: ${String(e)}\x1b[0m\r\n`);
-          return;
-        }
-        if (!alive) return;
-        await renderView();
-      })();
-    } else {
-      void renderView();
-    }
-  });
+async function renderView() {
+	if (!alive) return;
+	cancelLayoutRaf();
+	if (resizeDebounceTimer !== undefined) {
+		clearTimeout(resizeDebounceTimer);
+		resizeDebounceTimer = undefined;
+	}
+	resizeObserver?.disconnect();
+	resizeObserver = undefined;
+	ptyUnlisten?.();
+	ptyUnlisten = undefined;
+	removeFocusHandlers?.();
+	removeFocusHandlers = undefined;
+	if (term) term.dispose();
+	if (editor) editor.dispose();
+	term = null;
+	fitAddon = null;
 
-  onDestroy(() => {
-    alive = false;
-    cancelLayoutRaf();
-    if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
-    ptyClosedUnlisten?.();
-    resizeObserver?.disconnect();
-    ptyUnlisten?.();
-    removeFocusHandlers?.();
-    if (term) term.dispose();
-    if (editor) editor.dispose();
-  });
+	if (mode === 'terminal') {
+		term = new Terminal({
+			fontSize: 15,
+			lineHeight: 1,
+			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
+			cursorBlink: true,
+			scrollback: 8000,
+			theme: {
+				background: '#0c0b12',
+				foreground: '#e6e4ef',
+				cursor: '#a78bfa',
+				cursorAccent: '#0c0b12',
+				selectionBackground: 'rgba(167, 139, 250, 0.28)',
+				selectionForeground: '#f5f3ff',
+				black: '#1a1628',
+				red: '#f87171',
+				green: '#4ade80',
+				yellow: '#facc15',
+				blue: '#60a5fa',
+				magenta: '#e879f9',
+				cyan: '#2dd4bf',
+				white: '#f5f3ff',
+				brightBlack: '#6b6680',
+				brightRed: '#fca5a5',
+				brightGreen: '#86efac',
+				brightYellow: '#fde047',
+				brightBlue: '#93c5fd',
+				brightMagenta: '#f0abfc',
+				brightCyan: '#5eead4',
+				brightWhite: '#faf5ff'
+			}
+		});
+		fitAddon = new FitAddon();
+		term.loadAddon(fitAddon);
+		term.open(container);
+		fitAddon.fit();
+
+		removeFocusHandlers = attachTerminalFocusHandlers();
+
+		if (isTauri() && workspaceId) {
+			const outCh = `pty-output-${workspaceId}-${paneId}`;
+			ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
+				if (!alive) return;
+				term?.write(e.payload.data);
+			});
+			if (!alive) {
+				ptyUnlisten();
+				ptyUnlisten = undefined;
+				return;
+			}
+			term.onData((d) => {
+				if (!alive) return;
+				void invoke('write_to_pty', { paneId, data: d }).catch((err) => {
+					const msg = String(err);
+					console.error('write_to_pty', paneId, err);
+					if (msg.includes('Pane not found')) {
+						void recoverPtySession();
+					}
+				});
+			});
+		}
+
+		resizeObserver = new ResizeObserver(() => {
+			if (!alive) return;
+			if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
+			resizeDebounceTimer = setTimeout(() => {
+				resizeDebounceTimer = undefined;
+				if (!alive) return;
+				cancelLayoutRaf();
+				layoutRaf = requestAnimationFrame(() => {
+					layoutRaf = undefined;
+					fitAndSyncPty();
+				});
+			}, 48);
+		});
+		resizeObserver.observe(container);
+
+		cancelLayoutRaf();
+		layoutRaf = requestAnimationFrame(() => {
+			layoutRaf = undefined;
+			if (!alive) return;
+			fitAndSyncPty();
+			term?.focus();
+		});
+	} else {
+		editor = monaco.editor.create(container, {
+			value: '// Welcome to WarpForge Editor',
+			language: 'rust',
+			theme: 'vs-dark',
+			automaticLayout: true,
+			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
+			fontSize: 13,
+			padding: { top: 12, bottom: 12 }
+		});
+	}
+}
+
+onMount(() => {
+	if (isTauri()) {
+		void (async () => {
+			void listen<{ workspaceId: string; paneId: string }>('pane-pty-closed', (e) => {
+				if (!alive) return;
+				if (e.payload.workspaceId !== workspaceId || e.payload.paneId !== paneId) return;
+				void recoverPtySession();
+			}).then((u) => {
+				ptyClosedUnlisten = u;
+			});
+			try {
+				await invoke('create_pane', { paneId });
+			} catch (e) {
+				console.error('create_pane failed', paneId, e);
+				if (!alive) return;
+				await renderView();
+				if (!alive) return;
+				term?.writeln(`\r\n\x1b[31m[PTY] 启动失败: ${String(e)}\x1b[0m\r\n`);
+				return;
+			}
+			if (!alive) return;
+			await renderView();
+
+			// 加载 git diff 状态
+			await loadDiffStatus();
+
+			// 监听命令执行后刷新 diff
+			const cmdCh = `pty-output-${workspaceId}-${paneId}`;
+			diffUnlisten = await listen<{ data: string }>(cmdCh, (e) => {
+				// 检测命令执行完成（简单策略：命令输出后延迟刷新）
+				if (!alive) return;
+				setTimeout(() => {
+					if (!alive) return;
+					void loadDiffStatus();
+				}, 500);
+			});
+		})();
+	} else {
+		void renderView();
+	}
+});
+
+onDestroy(() => {
+	alive = false;
+	cancelLayoutRaf();
+	if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
+	ptyClosedUnlisten?.();
+	resizeObserver?.disconnect();
+	ptyUnlisten?.();
+	removeFocusHandlers?.();
+	diffUnlisten?.();
+	if (term) term.dispose();
+	if (editor) editor.dispose();
+});
 </script>
 
-<div class="wf-pane-root h-full w-full min-h-0 min-w-0 flex flex-col p-2">
-  <div
-    bind:this={container}
-    class="wf-terminal-surface flex-1 min-h-0 min-w-0 rounded-xl outline-none ring-1 ring-white/[0.06] bg-[var(--wf-term-bg)] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]"
-    tabindex="-1"
-  ></div>
+<div class="wf-pane-root h-full w-full min-h-0 min-w-0 flex flex-col">
+	<!-- Git diff 状态栏 -->
+	{#if diffStatus && diffStatus.is_git_repo && diffStatus.files.length > 0}
+		<div class="wf-diff-bar flex items-center gap-2 px-2 py-1 text-[11px] bg-[var(--wf-surface)] border-b border-[var(--wf-border)]">
+			<span class="text-[var(--wf-fg-muted)]">Git:</span>
+			<span class="text-amber-400 font-medium">{diffStatus.files.length} 文件</span>
+			{#if diffStatus.total_additions > 0}
+				<span class="text-green-400">+{diffStatus.total_additions}</span>
+			{/if}
+			{#if diffStatus.total_deletions > 0}
+				<span class="text-red-400">-{diffStatus.total_deletions}</span>
+			{/if}
+			<button
+				type="button"
+				class="ml-auto text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors"
+				onclick={() => loadDiffStatus()}
+				title="刷新"
+			>
+				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+				</svg>
+			</button>
+		</div>
+	{/if}
+
+	<div class="flex-1 min-h-0 min-w-0 p-1">
+		<div
+			bind:this={container}
+			class="wf-terminal-surface h-full w-full rounded-lg outline-none bg-[var(--wf-term-bg)]"
+			tabindex="-1"
+		></div>
+	</div>
 </div>

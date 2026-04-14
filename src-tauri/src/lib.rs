@@ -95,6 +95,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             git::get_git_graph,
+    git::get_git_diff,
+    git::set_pane_workdir,
+    git::is_git_repo,
             pane::close_pane,
             pane::get_pane_layout,
             pane::split_pane,
@@ -107,6 +110,16 @@ pub fn run() {
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
             workspace::switch_workspace,
+    workspace::close_workspace,
+    workspace::reorder_workspaces,
+    workspace::rename_workspace,
+    // Workspace history commands
+    workspace::list_workspace_history,
+    workspace::save_workspace,
+    workspace::delete_workspace_history,
+    workspace::restore_workspace,
+    workspace::toggle_pin_workspace_history,
+    workspace::rename_workspace_history,
     // Project management commands
     project::open_project,
     project::get_recent_projects,

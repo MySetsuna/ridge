@@ -21,14 +21,14 @@ pub enum PaneNode {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pane {
     pub id: Uuid,
     pub mode: PaneMode,
     // 可扩展：pty_handle、editor_state 等
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneTree {
     pub root: PaneNode,
     pub panes: HashMap<Uuid, Pane>,   // 所有 Leaf 的元数据（Fiber 风格的 alternate 存储）

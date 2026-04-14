@@ -15,7 +15,10 @@ export const activePaneId = writable<string>('');
 
 export const activeWorkspaceId = writable<string>('');
 
-export const workspacesList = writable<{ id: string; index: number }[]>([]);
+export const workspacesList = writable<{ id: string; index: number; name?: string }[]>([]);
+
+// 工作区名称映射（用于UI显示）
+export const workspaceNames = writable<Record<string, string>>({});
 
 export function getAllPaneIds(node: PaneNode): string[] {
   const ids: string[] = [];
@@ -146,4 +149,140 @@ export async function toggleEditor(paneId: string, filePath?: string) {
       Editor: { file_path: filePath || null, language: 'rust' }
     }
   });
+}
+
+/** 关闭工作区 */
+export async function closeWorkspace(workspaceId: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('close_workspace', { workspaceId });
+    await refreshWorkspaces();
+  } catch (e) {
+    console.error('closeWorkspace', e);
+    reportDevIssue({
+      title: 'Workspace close failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
+}
+
+/** 重新排序工作区 */
+export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
+  if (!isTauri()) return;
+  try {
+    await invoke('reorder_workspaces', { fromIndex, toIndex });
+    await refreshWorkspaces();
+  } catch (e) {
+    console.error('reorderWorkspaces', e);
+    reportDevIssue({
+      title: 'Workspace reorder failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
+}
+
+/** 重命名工作区 */
+export async function renameWorkspace(workspaceId: string, name: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('rename_workspace', { workspaceId, name });
+    // 更新本地名称映射
+    workspaceNames.update(names => ({ ...names, [workspaceId]: name }));
+    await refreshWorkspaces();
+  } catch (e) {
+    console.error('renameWorkspace', e);
+    reportDevIssue({
+      title: 'Workspace rename failed',
+      message: String(e),
+      stack: e instanceof Error ? e.stack : undefined
+    });
+    throw e;
+  }
+}
+
+// ============ 历史工作区相关 ============
+
+export interface WorkspaceHistoryItem {
+  id: string;
+  name: string;
+  savedAt: string;
+  paneCount: number;
+  isPinned: boolean;
+}
+
+export const workspaceHistoryList = writable<WorkspaceHistoryItem[]>([]);
+
+/** 获取历史工作区列表 */
+export async function loadWorkspaceHistory() {
+  if (!isTauri()) return;
+  try {
+    const history = await invoke<WorkspaceHistoryItem[]>('list_workspace_history');
+    workspaceHistoryList.set(history);
+  } catch (e) {
+    console.error('loadWorkspaceHistory', e);
+  }
+}
+
+/** 保存当前工作区到历史 */
+export async function saveWorkspaceToHistory(name?: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('save_workspace', { name: name || `工作区 ${Date.now()}` });
+    await loadWorkspaceHistory();
+  } catch (e) {
+    console.error('saveWorkspaceToHistory', e);
+    throw e;
+  }
+}
+
+/** 从历史恢复工作区 */
+export async function restoreWorkspaceFromHistory(historyId: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('restore_workspace', { historyId });
+    await refreshWorkspaces();
+  } catch (e) {
+    console.error('restoreWorkspaceFromHistory', e);
+    throw e;
+  }
+}
+
+/** 删除历史工作区 */
+export async function deleteWorkspaceHistory(historyId: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('delete_workspace_history', { historyId });
+    await loadWorkspaceHistory();
+  } catch (e) {
+    console.error('deleteWorkspaceHistory', e);
+    throw e;
+  }
+}
+
+/** 固定/取消固定历史工作区 */
+export async function togglePinWorkspaceHistory(historyId: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('toggle_pin_workspace_history', { historyId });
+    await loadWorkspaceHistory();
+  } catch (e) {
+    console.error('togglePinWorkspaceHistory', e);
+    throw e;
+  }
+}
+
+/** 重命名历史工作区 */
+export async function renameWorkspaceHistory(historyId: string, name: string) {
+  if (!isTauri()) return;
+  try {
+    await invoke('rename_workspace_history', { historyId, name });
+    await loadWorkspaceHistory();
+  } catch (e) {
+    console.error('renameWorkspaceHistory', e);
+    throw e;
+  }
 }

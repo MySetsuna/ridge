@@ -44,7 +44,7 @@
   {#if node.type === 'leaf'}
     <SPane>
       <div
-        class="flex flex-col h-full min-h-0 min-w-0 overflow-hidden rounded-xl border border-[var(--wf-border)] bg-[var(--wf-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
+        class="flex flex-col h-full min-h-0 min-w-0 overflow-hidden bg-[var(--wf-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
       >
         <header
           class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md"
