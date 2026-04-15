@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../tmux"
+		}
+	],
+	"settings": {
+		"svelte.enable-ts-plugin": true
+	}
+}
