@@ -271,8 +271,7 @@ pub fn ensure_pane_pty_workspace(
 		cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
 		// Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
 		cmd.env("TMUX_PANE", format!("{pane_slot}"));
-		// let log_path = std::env::var("WIND_TMUX_LOG")
-		let log_path = Some(("D:/novel/wind-tmux.log".to_string()))
+		let log_path = std::env::var("WIND_TMUX_LOG")
 			.ok()
 			.filter(|s| !s.trim().is_empty())
 			.or_else(|| {
