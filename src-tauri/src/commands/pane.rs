@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
@@ -15,6 +17,8 @@ use crate::utils::pane_id::parse_pane_id;
 pub enum LayoutNode {
     Leaf {
         id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     Split {
         id: String,
@@ -24,10 +28,15 @@ pub enum LayoutNode {
     },
 }
 
-fn engine_node_to_layout(node: &EnginePaneNode, split_counter: &mut u64) -> LayoutNode {
+fn engine_node_to_layout(
+    node: &EnginePaneNode,
+    split_counter: &mut u64,
+    titles: &HashMap<Uuid, String>,
+) -> LayoutNode {
     match node {
         EnginePaneNode::Leaf(id) => LayoutNode::Leaf {
             id: id.to_string(),
+            title: titles.get(id).cloned(),
         },
         EnginePaneNode::Split {
             direction,
@@ -44,7 +53,7 @@ fn engine_node_to_layout(node: &EnginePaneNode, split_counter: &mut u64) -> Layo
                 .to_string(),
                 children: children
                     .iter()
-                    .map(|c| engine_node_to_layout(c, split_counter))
+                    .map(|c| engine_node_to_layout(c, split_counter, titles))
                     .collect(),
                 ratios: ratios.clone(),
             }
@@ -60,7 +69,11 @@ pub fn get_pane_layout(state: State<'_, AppState>) -> Result<LayoutNode, String>
         .get(&wid)
         .ok_or_else(|| "无活动工作区".to_string())?;
     let mut c = 0u64;
-    Ok(engine_node_to_layout(&ws.pane_tree.root, &mut c))
+    Ok(engine_node_to_layout(
+        &ws.pane_tree.root,
+        &mut c,
+        &ws.teammate_pane_titles,
+    ))
 }
 
 #[tauri::command]
@@ -157,6 +170,7 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
     {
         let mut map = state.workspaces.write();
         let ws = map.get_mut(&wid).ok_or_else(|| "无活动工作区".to_string())?;
+        ws.teammate_pane_titles.remove(&pane_id);
         ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
     }
     Ok(())

@@ -24,6 +24,8 @@ pub struct Workspace {
     pub terminals: HashMap<Uuid, PtyHandle>,
     /// Claude `send-keys -t ""` / 无 `-t` 时 tmux「当前窗格」：在 Wind 里对应 `split-window` / `select-pane` 最后指向的 pane 索引。
     pub teammate_tmux_pane_cursor: usize,
+    /// `new-window -n` / `split-window -n` 等经 teammate 写入的窗格展示名（按 pane id）。
+    pub teammate_pane_titles: HashMap<Uuid, String>,
 }
 
 #[derive(Clone)]
@@ -53,6 +55,7 @@ impl AppState {
                 pane_tree: PaneTree::new(),
                 terminals: HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
+                teammate_pane_titles: HashMap::new(),
             },
         );
         Self {

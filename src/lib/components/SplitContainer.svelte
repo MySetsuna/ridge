@@ -56,7 +56,11 @@
             role="presentation"
           >
             <span class="text-[11px] font-medium text-[var(--wf-fg-muted)] truncate tracking-wide">
-              终端
+              {#if node.title}
+                <span class="text-[var(--wf-fg)]">{node.title}</span>
+              {:else}
+                终端
+              {/if}
               <span class="text-[var(--wf-border-bright)] font-normal"> · </span>
               <span class="font-mono text-[10px] opacity-80">{node.id}</span>
             </span>

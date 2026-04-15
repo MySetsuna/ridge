@@ -152,7 +152,7 @@ async function renderView() {
 	if (mode === 'terminal') {
 		term = new Terminal({
 			fontSize: 15,
-			lineHeight: 1,
+			lineHeight: 0.6,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
 			cursorBlink: true,
 			scrollback: 8000,

@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::commands::{pane, terminal};
@@ -135,6 +135,9 @@ struct SplitBody {
     /// `tmux split-window -c start-directory`
     #[serde(default)]
     cwd: Option<String>,
+    /// `tmux split-window -n` / `new-window -n` 经客户端转发时的窗格名。
+    #[serde(default)]
+    window_name: Option<String>,
 }
 
 async fn route_split(
@@ -197,6 +200,15 @@ async fn route_split(
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
+                    if let Some(name) = body
+                        .window_name
+                        .as_ref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        ws.teammate_pane_titles
+                            .insert(new_id, name.to_string());
+                    }
                 }
             }
             let _ = ctx.handle.emit("teammate-layout-changed", ());
@@ -282,23 +294,91 @@ async fn route_send_keys(
     }
 }
 
-async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
+/// `GET /api/v1/list-panes?json=1` — Claude Code agent-teams 用：真实窗格数、`active_index`、与 `#{pane_active}` 一致。
+#[derive(Serialize)]
+struct ListPanesJsonBody {
+    active_index: usize,
+    pane_count: usize,
+    panes: Vec<PaneRowJson>,
+}
+
+#[derive(Serialize)]
+struct PaneRowJson {
+    index: usize,
+    pane_id: String,
+    uuid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+}
+
+async fn route_list_panes(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
+    let want_json = q.get("json").map(|s| s == "1").unwrap_or(false);
     let wid = ctx.state.active_workspace_id();
-    let lines: Vec<String> = {
+
+    let (lines, json_body) = {
         let map = ctx.state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
             return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
         };
-        ws.pane_tree
-            .get_all_leaves()
-            .iter()
-            .enumerate()
-            .map(|(i, u)| format!("%{} {}", i, u))
-            .collect()
+        let leaves = ws.pane_tree.get_all_leaves();
+        let pane_count = leaves.len();
+        let active_index = if pane_count == 0 {
+            0
+        } else {
+            ws.teammate_tmux_pane_cursor.min(pane_count - 1)
+        };
+
+        // 与真实 tmux `list-panes` 默认输出形态对齐，供 Claude Code TmuxBackend 解析（需含 `N: [colsxrows]`、`%N`、`(active)`）。
+        const DEFAULT_COLS: u16 = 120;
+        const DEFAULT_ROWS: u16 = 80;
+        let lines: Vec<String> = if leaves.is_empty() {
+            // 空树时仍输出一行，避免 TmuxBackend 收到空 stdout 而无法判定当前窗格。
+            vec![format!("0: [{DEFAULT_COLS}x{DEFAULT_ROWS}] %0 (active)")]
+        } else {
+            leaves
+                .iter()
+                .enumerate()
+                .map(|(i, _u)| {
+                    let mut line = format!("{i}: [{DEFAULT_COLS}x{DEFAULT_ROWS}] %{i}");
+                    if i == active_index {
+                        line.push_str(" (active)");
+                    }
+                    line
+                })
+                .collect()
+        };
+
+        let json_body = ListPanesJsonBody {
+            active_index: if leaves.is_empty() { 0 } else { active_index },
+            pane_count: if leaves.is_empty() {
+                1
+            } else {
+                pane_count
+            },
+            panes: leaves
+                .iter()
+                .enumerate()
+                .map(|(i, u)| PaneRowJson {
+                    index: i,
+                    pane_id: format!("%{i}"),
+                    uuid: u.to_string(),
+                    title: ws.teammate_pane_titles.get(u).cloned(),
+                })
+                .collect(),
+        };
+        (lines, json_body)
     };
+
+    if want_json {
+        return Json(json_body).into_response();
+    }
     (StatusCode::OK, lines.join("\n")).into_response()
 }
 
@@ -371,6 +451,7 @@ async fn route_kill_pane(
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
+                        ws.teammate_pane_titles.remove(&pid);
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
@@ -416,6 +497,8 @@ struct NewWindowBody {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
     window_name: Option<String>,
 }
 
@@ -429,32 +512,143 @@ async fn route_new_window(
     }
 
     let wid = ctx.state.active_workspace_id();
+    let cwd = body
+        .cwd
+        .as_ref()
+        .map(|s| std::path::PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty());
+    let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
     match pane::teammate_split_pane(&ctx.state, wid, 0, "vertical") {
         Ok(new_id) => {
+            let new_idx = {
+                let map = ctx.state.workspaces.read();
+                let Some(ws) = map.get(&wid) else {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing").into_response();
+                };
+                ws.pane_tree
+                    .get_all_leaves()
+                    .iter()
+                    .position(|u| *u == new_id)
+                    .unwrap_or(0)
+            };
             if let Err(e) = crate::commands::terminal::ensure_pane_pty_workspace(
                 &ctx.state,
                 wid,
                 new_id,
                 None,
-                None,
-                None,
-                None,
+                cwd.as_deref(),
+                cmd,
+                Some(new_idx),
             ) {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("PTY init failed: {e}")).into_response();
+                {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+                        let _ = ws.pane_tree.close(new_id);
+                    }
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("new-window: PTY init failed: {e}"),
+                )
+                    .into_response();
+            }
+            {
+                let mut map = ctx.state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.teammate_tmux_pane_cursor = new_idx;
+                    if let Some(name) = body
+                        .window_name
+                        .as_ref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        ws.teammate_pane_titles
+                            .insert(new_id, name.to_string());
+                    }
+                }
             }
             let _ = ctx.handle.emit("teammate-layout-changed", ());
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true, "window_id": new_id.to_string() }))).into_response()
+            let _ = ctx
+                .handle
+                .emit("teammate-active-pane-changed", new_id.to_string());
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "new_pane_id": new_id.to_string(),
+                    "new_pane_index": new_idx,
+                })),
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 
-async fn route_list_windows(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
+#[derive(Serialize)]
+struct ListWindowsRowJson {
+    index: usize,
+    name: String,
+    pane_count: usize,
+    active_pane_index: usize,
+    active: bool,
+}
+
+#[derive(Serialize)]
+struct ListWindowsJsonBody {
+    windows: Vec<ListWindowsRowJson>,
+}
+
+async fn route_list_windows(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    (StatusCode::OK, "0: wind* (1 panes) [80x24] @0 (active)").into_response()
+    let want_json = q.get("json").map(|s| s == "1").unwrap_or(false);
+    let wid = ctx.state.active_workspace_id();
+
+    let (line, json_body) = {
+        let map = ctx.state.workspaces.read();
+        let Some(ws) = map.get(&wid) else {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
+        };
+        let leaves = ws.pane_tree.get_all_leaves();
+        let pane_count = leaves.len().max(1);
+        let active_pane_index = if leaves.is_empty() {
+            0usize
+        } else {
+            ws.teammate_tmux_pane_cursor.min(leaves.len() - 1)
+        };
+        let primary_name = leaves
+            .get(active_pane_index)
+            .and_then(|u| ws.teammate_pane_titles.get(u))
+            .cloned()
+            .or_else(|| leaves.iter().find_map(|u| ws.teammate_pane_titles.get(u).cloned()))
+            .unwrap_or_else(|| "wind".to_string());
+        let line = format!(
+            "0: {}* ({} panes) [80x24] @0 (active)",
+            primary_name, pane_count
+        );
+        let json_body = ListWindowsJsonBody {
+            windows: vec![ListWindowsRowJson {
+                index: 0,
+                name: primary_name.clone(),
+                pane_count,
+                active_pane_index,
+                active: true,
+            }],
+        };
+        (line, json_body)
+    };
+
+    if want_json {
+        return Json(json_body).into_response();
+    }
+    (StatusCode::OK, line).into_response()
 }
 
 async fn route_list_clients(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {

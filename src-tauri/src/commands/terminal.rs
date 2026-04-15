@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -115,6 +115,63 @@ fn windows_powershell_cmd_c_for_line(line: &str) -> CommandBuilder {
 	c
 }
 
+/// Claude Code shells out to `tmux`, while Cargo places `wind-tmux(.exe)` beside the main binary.
+fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) {
+	let Ok(exe) = std::env::current_exe() else {
+		return;
+	};
+	let Some(dir) = exe.parent() else {
+		return;
+	};
+	let wind_tmux = dir.join(if cfg!(windows) {
+		"wind-tmux.exe"
+	} else {
+		"wind-tmux"
+	});
+	let tmux = dir.join(if cfg!(windows) { "tmux.exe" } else { "tmux" });
+	if !wind_tmux.is_file() {
+		return;
+	}
+	if !tmux.is_file() {
+		if std::fs::hard_link(&wind_tmux, &tmux).is_err() {
+			#[cfg(unix)]
+			{
+				let _ = std::os::unix::fs::symlink(&wind_tmux, &tmux);
+			}
+		}
+	}
+	if !tmux.is_file() {
+		return;
+	}
+	let sep = if cfg!(windows) { ';' } else { ':' };
+	let path = std::env::var("PATH").unwrap_or_default();
+	let new_path = format!("{}{}{}", dir.display(), sep, path);
+	cmd.env("PATH", new_path);
+}
+
+/// tmux `TMUX` is `socket_path,session_index,pane_index`. Wind uses a sentinel path (no real socket).
+/// Claude Code's TmuxBackend on Windows may validate the first segment as a Windows path; `/wind/...`
+/// fails that check — use `{cwd|project|pwd|~/wind}/teammate.sock` with `/` separators.
+fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> String {
+	#[cfg(windows)]
+	{
+		let base = cwd
+			.map(Path::to_path_buf)
+			.or_else(|| state.current_project.read().clone())
+			.or_else(|| std::env::current_dir().ok())
+			.or_else(|| dirs::home_dir().map(|h| h.join("wind")))
+			.unwrap_or_else(|| PathBuf::from(r"C:\wind"));
+		let sock = base.join("teammate.sock");
+		let prefix = sock.to_string_lossy().replace('\\', "/");
+		format!("{prefix},0,{pane_slot}")
+	}
+	#[cfg(not(windows))]
+	{
+		let _ = (cwd, state);
+		format!("/wind/teammate.sock,0,{pane_slot}")
+	}
+}
+
 /// 拆掉已有 PTY（不发 `PaneClosed` 全局事件，避免前端 `recoverPtySession` 与 teammate 重起打架）。
 fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
 	let handle = {
@@ -205,16 +262,15 @@ pub fn ensure_pane_pty_workspace(
 	};
 	cmd.env("TERM", "xterm-256color");
 	if let Some(ref bind) = *state.teammate_binding.read() {
+		prepend_path_with_wind_tmux_shim(&mut cmd);
 		cmd.env("WIND_TEAMMATE_URL", bind.base_url.as_str());
 		cmd.env("WIND_TEAMMATE_TOKEN", bind.token.as_str());
 		cmd.env("WIND_TERMINAL", "1");
 		// Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
 		let pane_slot = tmux_pane_index.unwrap_or(0);
-		cmd.env(
-			"TMUX",
-			format!("/wind/teammate.sock,0,{pane_slot}"),
-		);
-		cmd.env("TMUX_PANE", format!("%{pane_slot}"));
+		cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
+		// Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
+		cmd.env("TMUX_PANE", format!("{pane_slot}"));
 		let log_path = std::env::var("WIND_TMUX_LOG")
 			.ok()
 			.filter(|s| !s.trim().is_empty())

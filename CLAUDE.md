@@ -89,3 +89,26 @@ Frontend ↔ Backend via Tauri IPC:
 - The `wind-tmux` binary is a shim that allows using Wind as a tmux replacement
 - Frontend uses CSS custom properties (e.g., `var(--wf-bg)`, `var(--wf-fg)`) for theming
 - The app runs in SPA mode with adapter-static fallback to index.html
+
+## Claude Code Agent Teams (TmuxBackend / wind-tmux)
+
+Claude Code’s **TmuxBackend** shells out to `tmux` (use the Wind shim as `tmux` on `PATH`) and expects **tmux-like** output, e.g. default `list-panes` lines (`0: [colsxrows] %0 (active)`) and `display-message -p '#{…}'`.
+
+**Environment (required for the shim):** Wind injects into PTY shells:
+
+- `WIND_TEAMMATE_URL`, `WIND_TEAMMATE_TOKEN` — the shim POSTs/GETs the local teammate HTTP API
+- `TMUX`, `TMUX_PANE` — so Claude treats the session as multiplexer-backed
+
+Run Claude Code **from a terminal pane inside Wind** so the agent inherits these variables. If the shim exits with “missing WIND_TEAMMATE_URL/TOKEN”, the child process did not inherit Wind’s PTY env.
+
+**Config:** `teammateMode` for Agent Teams is often read from **`~/.claude.json`** (global), not only project `settings.json`—confirm the effective mode is `tmux` or `auto` where intended.
+
+**Windows / PATH / sandbox:** If you see “Could not determine current tmux pane/window” or `tmux` not found: ensure `tmux` resolves to `wind-tmux` (e.g. after `pnpm run build:teammate-shim`, put `dist/teammate-shim` on `PATH`). Some Claude Code builds resolve `tmux` without relying on your shell `PATH`; set an explicit tmux binary path in Claude settings if available. Avoid launching Claude from directories or sandboxes that block the resolved `tmux.exe` path (see anthropics/claude-code issues on Windows cwd vs WinGet paths).
+
+**Git Bash / MSYS:** Quoting can mangle `#{window_panes}` before it reaches the shim—prefer **PowerShell** or **cmd** / Windows Terminal for Claude Code when using the tmux backend.
+
+**`list-sessions`:** The shim prints one line like real tmux: session index `0:` (matching the middle segment of `TMUX=/wind/teammate.sock,0,{pane}`), dimensions `[120x80]`, and `(attached)` so tools that parse current session state do not treat the session as detached.
+
+**Smoke checks:** With teammate running and env set, run [`scripts/teammate-tmux-smoke.ps1`](scripts/teammate-tmux-smoke.ps1) (Windows) or [`scripts/teammate-tmux-smoke.sh`](scripts/teammate-tmux-smoke.sh) (Unix).
+
+**Agent subprocess env:** If the error happens only when spawning a teammate and `wind-tmux.log` shows no new lines, Claude Code may be resolving `tmux` or running pane detection **before** the shim runs, or the child process may not inherit `TMUX` / `TMUX_PANE`. That path is controlled by Claude Code; ensure teammates are started from a context that inherits the same environment as the leader (see upstream issues on Windows TTY / in-process mode).
