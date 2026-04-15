@@ -2,6 +2,7 @@
 
 use crate::format::{pane_index_from_env, render_tmux_format_ex, TmuxFormatContext};
 use crate::http::{fetch_list_windows_plain, fetch_pane_layout};
+use crate::shim_log;
 
 pub(crate) fn cmd_list_windows(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut format: Option<String> = None;
@@ -35,16 +36,13 @@ pub(crate) fn cmd_list_windows(rest: &[String], url: &str, token: &str) -> Resul
                 TmuxFormatContext::default(),
             ),
         };
-        println!(
-            "{}",
-            render_tmux_format_ex(&fmt, 0, active_idx, pc, &ctx)
-        );
+        shim_log::out_line(&render_tmux_format_ex(&fmt, 0, active_idx, pc, &ctx));
         return Ok(());
     }
 
     match fetch_list_windows_plain(url, token) {
-        Ok(line) => println!("{line}"),
-        Err(()) => println!("0: wind* (1 panes) [80x24] @0 (active)"),
+        Ok(line) => shim_log::out_line(&line),
+        Err(()) => shim_log::out_line("0: wind* (1 panes) [80x24] @0 (active)"),
     }
     Ok(())
 }
@@ -69,7 +67,10 @@ pub(crate) fn cmd_list_clients(rest: &[String]) -> Result<(), ()> {
     if let Some(fmt) = format {
         // Format: #{client_tty}, #{client_session_name}, etc.
         // For now, just return nothing - no clients attached
-        println!("{}", fmt.replace("#{client_tty}", "").replace("#{client_session_name}", "wind"));
+        shim_log::out_line(
+            &fmt.replace("#{client_tty}", "")
+                .replace("#{client_session_name}", "wind"),
+        );
         return Ok(());
     }
 
@@ -84,8 +85,8 @@ pub(crate) fn cmd_list_keys(_rest: &[String]) -> Result<(), ()> {
 
 pub(crate) fn cmd_list_commands(_rest: &[String]) -> Result<(), ()> {
     // List all tmux commands
-    println!("\
-split-window (splitw)\n\
+    shim_log::out_lines_body(
+        "split-window (splitw)\n\
 select-pane (selectp)\n\
 kill-pane (killp)\n\
 resize-pane (resizep)\n\
@@ -94,7 +95,8 @@ capture-pane (capturep)\n\
 list-panes (lsp)\n\
 list-windows (lsw)\n\
 new-window (neww)\n\
-list-sessions (ls)");
+list-sessions (ls)",
+    );
     Ok(())
 }
 

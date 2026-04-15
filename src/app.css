@@ -72,6 +72,19 @@ body {
   app-region: no-drag;
 }
 
+/*
+ * 终端区域：与全局 body 的 font-feature-settings / optimizeLegibility 隔离，
+ * 避免连字或 UI 数字体特性在等宽栅格里看起来像“字符合并”；字距归零与 xterm letterSpacing: 0 一致。
+ */
+.wf-terminal-surface,
+.wf-terminal-surface .xterm {
+  letter-spacing: 0;
+  font-feature-settings: normal;
+  font-variant-ligatures: none;
+  font-kerning: none;
+  text-rendering: auto;
+}
+
 /* xterm 滚动区域：仅用 webkit 伪元素（勿加 scrollbar-width: thin — Windows WebView2 会退回系统细条并带两端箭头） */
 .xterm-viewport::-webkit-scrollbar {
   width: 9px;

@@ -2,6 +2,8 @@
 //! 使用：将本二进制放到 PATH 且命名为 `tmux`，或在 Claude 配置中指向本程序。
 //! list-panes -F / display-message 等与 tmux 对齐：多窗格时逐行展开，`#{pane_active}` 与 teammate 当前窗格一致（见 teammate `list-panes?json=1`）。
 //!
+//! 诊断与错误写入文件（`WIND_TMUX_LOG` 或默认本机应用数据目录下 `wind/wind-tmux-shim.log`），不写 stderr，避免 Claude 误解析 PTY。
+//!
 //! 模块划分见同目录下各 `*.rs` 文件。
 
 mod http;
@@ -11,6 +13,7 @@ mod list_buffer;
 mod pane;
 mod ps_convert;
 mod session;
+mod shim_log;
 mod stubs;
 mod window;
 
@@ -19,27 +22,39 @@ use std::process;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    shim_log::init();
+    shim_log::cmd_argv(&args);
 
     for a in args.iter().skip(1) {
         if a == "-V" || a == "--version" {
-            println!("tmux 3.4");
+            shim_log::out_line("tmux 3.4");
+            shim_log::exit_status(true);
             process::exit(0);
         }
         if a == "--help" {
-            eprintln!("wind-tmux shim: supports all tmux commands (needs WIND_TEAMMATE_*)");
+            shim_log::help(
+                "wind-tmux shim: Claude Code teammateMode tmux compatibility.\n\
+                 Requires WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects in PTY).\n\
+                 Logs: set WIND_TMUX_LOG or default local data dir .../wind/wind-tmux-shim.log",
+            );
+            shim_log::exit_status(true);
             process::exit(0);
         }
     }
 
     if args.len() < 2 {
-        eprintln!("wind-tmux: missing subcommand");
+        shim_log::err("missing subcommand (argv too short)");
+        shim_log::exit_status(false);
         process::exit(1);
     }
 
     let url = env::var("WIND_TEAMMATE_URL").unwrap_or_default();
     let token = env::var("WIND_TEAMMATE_TOKEN").unwrap_or_default();
     if url.is_empty() || token.is_empty() {
-        eprintln!("wind-tmux: set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in PTY)");
+        shim_log::err(
+            "WIND_TEAMMATE_URL and/or WIND_TEAMMATE_TOKEN empty; Wind normally injects these in PTY",
+        );
+        shim_log::exit_status(false);
         process::exit(1);
     }
 
@@ -128,10 +143,12 @@ fn main() {
         "find-window" | "findw" => stubs::cmd_find_window(rest),
 
         _ => {
-            eprintln!("wind-tmux: unsupported subcommand {sub}");
+            shim_log::warn(&format!("unsupported subcommand: {sub}"));
             Ok(())
         }
     };
 
-    process::exit(if r.is_ok() { 0 } else { 1 });
+    let ok = r.is_ok();
+    shim_log::exit_status(ok);
+    process::exit(if ok { 0 } else { 1 });
 }

@@ -6,6 +6,7 @@ use crate::format::{
 };
 use crate::http::{auth_headers, client, fetch_pane_layout};
 use crate::ps_convert::convert_unix_to_powershell;
+use crate::shim_log;
 
 /// 将 `display-message -pt` 等粘连短选项拆成 `-p` `-t`，与 tmux / Claude Code 调用方式一致（不含 `-c`，避免误拆 client 名）。
 fn expand_display_message_argv(rest: &[String]) -> Vec<String> {
@@ -76,10 +77,16 @@ pub(crate) fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Re
     };
 
     let describe = target_from_flag.unwrap_or(active_idx);
-    println!(
-        "{}",
-        render_tmux_format_ex(&format, describe, active_idx, pane_count, &fmt_ctx)
-    );
+    let rendered = render_tmux_format_ex(&format, describe, active_idx, pane_count, &fmt_ctx);
+    shim_log::claude_code_recv(&format!(
+        "display-message pane_describe={} active_index={} pane_count={} format={:?} out_len={}",
+        describe,
+        active_idx,
+        pane_count,
+        shim_log::sanitize_preview(&format, 120),
+        rendered.len()
+    ));
+    shim_log::out_line(&rendered);
     Ok(())
 }
 
@@ -227,10 +234,17 @@ pub(crate) fn post_new_window(
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|_| ())?;
+        .map_err(|e| {
+            shim_log::err(&format!("new-window request: {e}"));
+            ()
+        })?;
     let status = res.status();
-    let text = res.text().map_err(|_| ())?;
+    let _ = res.text().map_err(|e| {
+        shim_log::err(&format!("new-window body: {e}"));
+        ()
+    })?;
     if !status.is_success() {
+        shim_log::http_fail("new-window", status);
         return Err(());
     }
     Ok(())
@@ -247,6 +261,7 @@ pub(crate) fn post_split(
     window_name: Option<String>,
 ) -> Result<(), ()> {
     let mut body = serde_json::json!({ "horizontal": horizontal });
+    let cmd_char_count = command.as_ref().map(|s| s.chars().count()).unwrap_or(0);
     if let Some(p) = pane_index {
         body["pane_index"] = serde_json::json!(p);
     }
@@ -254,10 +269,10 @@ pub(crate) fn post_split(
         let converted = convert_unix_to_powershell(&c);
         body["command"] = serde_json::json!(converted);
     }
-    if let Some(c) = cwd.filter(|s| !s.is_empty()) {
+    if let Some(c) = cwd.as_deref().filter(|s| !s.is_empty()) {
         body["cwd"] = serde_json::json!(c);
     }
-    if let Some(n) = window_name.filter(|s| !s.trim().is_empty()) {
+    if let Some(n) = window_name.as_deref().filter(|s| !s.trim().is_empty()) {
         body["window_name"] = serde_json::json!(n);
     }
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
@@ -266,10 +281,17 @@ pub(crate) fn post_split(
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|_| ())?;
+        .map_err(|e| {
+            shim_log::err(&format!("split-window request: {e}"));
+            ()
+        })?;
     let status = res.status();
-    let text = res.text().map_err(|_| ())?;
+    let text = res.text().map_err(|e| {
+        shim_log::err(&format!("split-window body: {e}"));
+        ()
+    })?;
     if !status.is_success() {
+        shim_log::http_fail("split-window", status);
         return Err(());
     }
     let new_idx: usize = serde_json::from_str::<serde_json::Value>(&text)
@@ -277,12 +299,24 @@ pub(crate) fn post_split(
         .and_then(|v| v.get("new_pane_index")?.as_u64())
         .map(|u| u as usize)
         .unwrap_or(0);
+    shim_log::claude_code_send(&format!(
+        "split-window horizontal={} pane_index={:?} new_pane_index={} cmd_chars={} cwd_set={} window_name_set={}",
+        horizontal,
+        pane_index,
+        new_idx,
+        cmd_char_count,
+        cwd.as_ref().is_some_and(|s| !s.is_empty()),
+        window_name.as_ref().is_some_and(|s| !s.trim().is_empty()),
+    ));
     if let Some(tpl) = print_template {
         let pc = new_idx.saturating_add(1).max(1);
-        println!(
-            "{}",
-            render_tmux_format_ex(tpl, new_idx, new_idx, pc, &TmuxFormatContext::default())
-        );
+        shim_log::out_line(&render_tmux_format_ex(
+            tpl,
+            new_idx,
+            new_idx,
+            pc,
+            &TmuxFormatContext::default(),
+        ));
     }
     Ok(())
 }
@@ -317,13 +351,25 @@ pub(crate) fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(),
         .get(u)
         .headers(auth_headers(token))
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| {
+            shim_log::err(&format!("capture-pane request: {e}"));
+            ()
+        })?;
     if !res.status().is_success() {
-        eprintln!("wind-tmux: capture-pane {}", res.status());
+        shim_log::http_fail("capture-pane", res.status());
         return Err(());
     }
-    let text = res.text().map_err(|e| eprintln!("wind-tmux: {e}"))?;
-    print!("{text}");
+    let text = res.text().map_err(|e| {
+        shim_log::err(&format!("capture-pane body: {e}"));
+        ()
+    })?;
+    shim_log::claude_code_recv(&format!(
+        "capture-pane pane={} lines_req={} body_bytes={}",
+        pane,
+        lines,
+        text.len()
+    ));
+    shim_log::out_raw(&text);
     Ok(())
 }
 
@@ -394,11 +440,24 @@ pub(crate) fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| {
+            shim_log::err(&format!("send-keys request: {e}"));
+            ()
+        })?;
     if !res.status().is_success() {
-        eprintln!("wind-tmux: send-keys {}", res.status());
+        shim_log::http_fail("send-keys", res.status());
         return Err(());
     }
+    let target_desc = match target {
+        SendTarget::TmuxCurrent => "tmux_current".to_string(),
+        SendTarget::Index(p) => format!("pane={p}"),
+    };
+    shim_log::claude_code_send(&format!(
+        "send-keys target={} text_chars={} preview={:?}",
+        target_desc,
+        text.chars().count(),
+        shim_log::sanitize_preview(&text, 160)
+    ));
     Ok(())
 }
 
@@ -433,13 +492,24 @@ pub(crate) fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<
             .get(u)
             .headers(auth_headers(token))
             .send()
-            .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+            .map_err(|e| {
+                shim_log::err(&format!("list-panes request: {e}"));
+                ()
+            })?;
         if !res.status().is_success() {
-            eprintln!("wind-tmux: list-panes {}", res.status());
+            shim_log::http_fail("list-panes", res.status());
             return Err(());
         }
-        let text = res.text().map_err(|e| eprintln!("wind-tmux: {e}"))?;
-        print!("{text}");
+        let text = res.text().map_err(|e| {
+            shim_log::err(&format!("list-panes body: {e}"));
+            ()
+        })?;
+        shim_log::claude_code_recv(&format!(
+            "list-panes mode=plain body_bytes={} line_count={}",
+            text.len(),
+            text.lines().count()
+        ));
+        shim_log::out_raw(&text);
         return Ok(());
     }
 
@@ -448,10 +518,20 @@ pub(crate) fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<
         Ok(l) => l,
         Err(()) => {
             let active = pane_index_from_env().unwrap_or(0);
-            println!(
-                "{}",
-                render_tmux_format_ex(&fmt, active, active, 1, &TmuxFormatContext::default())
+            let line = render_tmux_format_ex(
+                &fmt,
+                active,
+                active,
+                1,
+                &TmuxFormatContext::default(),
             );
+            shim_log::claude_code_recv(&format!(
+                "list-panes mode=-F fallback=env active_index={} format={:?} line_len={}",
+                active,
+                shim_log::sanitize_preview(&fmt, 100),
+                line.len()
+            ));
+            shim_log::out_line(&line);
             return Ok(());
         }
     };
@@ -460,20 +540,38 @@ pub(crate) fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<
     let pc = layout.pane_count.max(1);
 
     if layout.panes.is_empty() {
-        println!(
-            "{}",
-            render_tmux_format_ex(&fmt, 0, active_idx, 1, &TmuxFormatContext::default())
+        let line = render_tmux_format_ex(
+            &fmt,
+            0,
+            active_idx,
+            1,
+            &TmuxFormatContext::default(),
         );
+        shim_log::claude_code_recv(&format!(
+            "list-panes mode=-F pane_rows=0 active_index={} format={:?} line_len={}",
+            active_idx,
+            shim_log::sanitize_preview(&fmt, 100),
+            line.len()
+        ));
+        shim_log::out_line(&line);
         return Ok(());
     }
 
     let base_ctx = TmuxFormatContext::from_list_panes(&layout);
+    let mut total_out = 0usize;
     for p in &layout.panes {
         let row_ctx = base_ctx.for_pane_row(p);
-        println!(
-            "{}",
-            render_tmux_format_ex(&fmt, p.index, active_idx, pc, &row_ctx)
-        );
+        let line = render_tmux_format_ex(&fmt, p.index, active_idx, pc, &row_ctx);
+        total_out += line.len() + 1;
+        shim_log::out_line(&line);
     }
+    shim_log::claude_code_recv(&format!(
+        "list-panes mode=-F pane_rows={} active_index={} pane_count={} format={:?} stdout_bytes~{}",
+        layout.panes.len(),
+        active_idx,
+        pc,
+        shim_log::sanitize_preview(&fmt, 100),
+        total_out
+    ));
     Ok(())
 }

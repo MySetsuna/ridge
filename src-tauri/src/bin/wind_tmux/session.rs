@@ -5,6 +5,7 @@ use chrono::Local;
 use crate::format::{render_tmux_format_ex, TmuxFormatContext};
 use crate::http::fetch_pane_layout;
 use crate::io::post_split;
+use crate::shim_log;
 
 pub(crate) fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut session_name: Option<String> = None;
@@ -92,12 +93,14 @@ pub(crate) fn cmd_list_sessions(rest: &[String], url: &str, token: &str) -> Resu
             ),
             Err(()) => (0, 1, TmuxFormatContext::default()),
         };
-        println!("{}", render_tmux_format_ex(&fmt, 0, active_idx, pc, &ctx));
+        shim_log::out_line(&render_tmux_format_ex(&fmt, 0, active_idx, pc, &ctx));
         return Ok(());
     }
 
     let created = Local::now().format("%a %b %d %H:%M:%S %Y");
-    println!("0: 1 windows (created {created}) [120x80] (attached)");
+    shim_log::out_line(&format!(
+        "0: 1 windows (created {created}) [120x80] (attached)"
+    ));
     Ok(())
 }
 

@@ -2,6 +2,7 @@
 
 use crate::format::parse_pane_target;
 use crate::http::{auth_headers, client};
+use crate::shim_log;
 
 pub(crate) fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut pane_index: Option<usize> = None;
@@ -59,7 +60,10 @@ pub(crate) fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| {
+            shim_log::err(&format!("select-pane request: {e}"));
+            ()
+        })?;
     if !res.status().is_success() {
         // Don't fail - just acknowledge for compatibility
     }

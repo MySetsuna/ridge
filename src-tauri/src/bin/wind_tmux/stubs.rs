@@ -1,4 +1,6 @@
-﻿//! 其余 tmux 子命令占位实现（无 teammate 映射时返回成功）。
+//! 其余 tmux 子命令占位实现（无 teammate 映射时返回成功）。
+
+use crate::shim_log;
 pub(crate) fn cmd_display_menu(rest: &[String]) -> Result<(), ()> {
     let mut i = 0;
     while i < rest.len() {
@@ -132,7 +134,7 @@ pub(crate) fn cmd_show_options(rest: &[String]) -> Result<(), ()> {
     }
 
     if let Some(fmt) = format {
-        println!("{}", fmt);
+        shim_log::out_line(&fmt);
         return Ok(());
     }
     Ok(())

@@ -9,6 +9,56 @@ use crate::state::AppState;
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
 
+const PTY_READ_UTF8_PENDING_MAX: usize = 64 * 1024;
+
+/// Extend `pending` with `chunk`, then drain leading complete UTF-8 into `String`.
+/// Incomplete trailing bytes remain in `pending` for the next read.
+fn take_decoded_utf8(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
+    if !chunk.is_empty() {
+        pending.extend_from_slice(chunk);
+    }
+    if pending.len() > PTY_READ_UTF8_PENDING_MAX {
+        let bytes = std::mem::replace(pending, Vec::new());
+        return String::from_utf8_lossy(&bytes).into_owned();
+    }
+    let mut out = String::new();
+    loop {
+        if pending.is_empty() {
+            break;
+        }
+        match std::str::from_utf8(pending) {
+            Ok(s) => {
+                out.push_str(s);
+                pending.clear();
+                break;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    out.push_str(unsafe { std::str::from_utf8_unchecked(&pending[..valid]) });
+                    pending.drain(..valid);
+                    continue;
+                }
+                if let Some(elen) = e.error_len() {
+                    out.push_str(&String::from_utf8_lossy(&pending[..elen]));
+                    pending.drain(..elen);
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn flush_pending_eof(pending: &mut Vec<u8>) -> String {
+    if pending.is_empty() {
+        return String::new();
+    }
+    let bytes = std::mem::replace(pending, Vec::new());
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 pub struct PtyHandle {
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -46,15 +96,33 @@ pub fn spawn_pty_reader(
                 return;
             };
             let mut buf = [0u8; 8192];
+            let mut utf8_pending: Vec<u8> = Vec::new();
             let read_result = catch_unwind(AssertUnwindSafe(|| {
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => {
+                            let tail = flush_pending_eof(&mut utf8_pending);
+                            if !tail.is_empty() {
+                                state.append_pty_scrollback(workspace_id, pane_id, &tail);
+                                let _ = rt.block_on(async {
+                                    state
+                                        .event_tx
+                                        .send(GlobalEvent::PtyOutput {
+                                            workspace_id,
+                                            pane_id,
+                                            data: tail,
+                                        })
+                                        .await
+                                });
+                            }
                             pty_log::reader_eof(workspace_id, pane_id);
                             break;
                         }
                         Ok(n) => {
-                            let data = String::from_utf8_lossy(&buf[0..n]).into_owned();
+                            let data = take_decoded_utf8(&mut utf8_pending, &buf[..n]);
+                            if data.is_empty() {
+                                continue;
+                            }
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
                             let _ = rt.block_on(async {
                                 state
@@ -68,6 +136,20 @@ pub fn spawn_pty_reader(
                             });
                         }
                         Err(e) => {
+                            let tail = flush_pending_eof(&mut utf8_pending);
+                            if !tail.is_empty() {
+                                state.append_pty_scrollback(workspace_id, pane_id, &tail);
+                                let _ = rt.block_on(async {
+                                    state
+                                        .event_tx
+                                        .send(GlobalEvent::PtyOutput {
+                                            workspace_id,
+                                            pane_id,
+                                            data: tail,
+                                        })
+                                        .await
+                                });
+                            }
                             pty_log::reader_io_err(workspace_id, pane_id, &e);
                             break;
                         }

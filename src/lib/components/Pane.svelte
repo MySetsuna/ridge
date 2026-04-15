@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
-import { Terminal } from 'xterm';
+import { Terminal, type IDisposable } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -61,18 +61,48 @@ let ptyUnlisten: (() => void) | undefined;
 let fitAddon: FitAddon | null = null;
 let removeFocusHandlers: (() => void) | undefined;
 let resizeObserver: ResizeObserver | undefined;
-let resizeDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+/** ResizeObserver 触发的 fit+PTY：每帧合并一次，避免 debounce 造成拖动时 PTY 与 xterm 尺寸脱节 */
+let resizeRaf: number | undefined;
 let ptyClosedUnlisten: (() => void) | undefined;
 let recoveringPty = false;
 
 /** 组件已销毁后为 false，避免工作区切换后仍执行 rAF/invoke 碰已 dispose 的 xterm（Windows 上可致 WebView 进程异常退出 0xc0000142）。 */
 let alive = true;
 let layoutRaf: number | undefined;
+/** PTY 输出后或视口滚动后合并一帧 refresh，减轻 WebView2 不重绘兄弟区域的问题 */
+let termRedrawRaf: number | undefined;
+let disposeXtermScrollFix: (() => void) | undefined;
 
 function cancelLayoutRaf() {
 	if (layoutRaf !== undefined) {
 		cancelAnimationFrame(layoutRaf);
 		layoutRaf = undefined;
+	}
+}
+
+function cancelTermRedrawRaf() {
+	if (termRedrawRaf !== undefined) {
+		cancelAnimationFrame(termRedrawRaf);
+		termRedrawRaf = undefined;
+	}
+}
+
+function scheduleTermRedraw() {
+	if (!alive || !term) return;
+	if (termRedrawRaf !== undefined) return;
+	termRedrawRaf = requestAnimationFrame(() => {
+		termRedrawRaf = undefined;
+		if (!alive || !term) return;
+		term.refresh(0, term.rows - 1);
+		// 轻触布局，促使 WebView2 对窗格外区域做 invalidation（滚到 scrollback 顶后 diff 栏等停更的缓解）
+		void container?.getBoundingClientRect();
+	});
+}
+
+function cancelResizeRaf() {
+	if (resizeRaf !== undefined) {
+		cancelAnimationFrame(resizeRaf);
+		resizeRaf = undefined;
 	}
 }
 
@@ -103,20 +133,24 @@ function attachTerminalFocusHandlers() {
 		requestAnimationFrame(() => {
 			if (!alive || !term || !fitAddon) return;
 			term.focus();
-			fitAddon.fit();
+			void fitAndSyncPty();
 		});
 	};
 	viewInner.addEventListener('pointerdown', focusTerm);
 	return () => viewInner.removeEventListener('pointerdown', focusTerm);
 }
 
-function fitAndSyncPty() {
+async function fitAndSyncPty() {
 	if (!alive || !term || !fitAddon) return;
 	fitAddon.fit();
 	if (isTauri() && term) {
 		const rows = Math.max(1, term.rows);
 		const cols = Math.max(1, term.cols);
-		void invoke('resize_pane', { paneId, rows, cols }).catch(() => {});
+		try {
+			await invoke('resize_pane', { paneId, rows, cols });
+		} catch {
+			/* ignore */
+		}
 	}
 }
 
@@ -137,10 +171,10 @@ async function recoverPtySession() {
 async function renderView() {
 	if (!alive) return;
 	cancelLayoutRaf();
-	if (resizeDebounceTimer !== undefined) {
-		clearTimeout(resizeDebounceTimer);
-		resizeDebounceTimer = undefined;
-	}
+	cancelResizeRaf();
+	cancelTermRedrawRaf();
+	disposeXtermScrollFix?.();
+	disposeXtermScrollFix = undefined;
 	resizeObserver?.disconnect();
 	resizeObserver = undefined;
 	ptyUnlisten?.();
@@ -157,7 +191,7 @@ async function renderView() {
 	if (mode === 'terminal') {
 		term = new Terminal({
 			fontSize: 15,
-			lineHeight: 0,
+			lineHeight: 1,
 			letterSpacing: 0,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
 			cursorBlink: true,
@@ -191,14 +225,41 @@ async function renderView() {
 		term.loadAddon(fitAddon);
 		term.open(viewInner);
 		fitAddon.fit();
+		await fitAndSyncPty();
+
+		if (typeof document !== 'undefined' && document.fonts?.ready) {
+			try {
+				await document.fonts.ready;
+			} catch {
+				/* ignore */
+			}
+			if (alive && term && fitAddon) {
+				await fitAndSyncPty();
+			}
+		}
 
 		removeFocusHandlers = attachTerminalFocusHandlers();
+
+		const openedTerm = term;
+		requestAnimationFrame(() => {
+			if (!alive || term !== openedTerm || !openedTerm.element) return;
+			const viewport = openedTerm.element.querySelector('.xterm-viewport');
+			if (!viewport) return;
+			const onScrollOrBuffer = () => scheduleTermRedraw();
+			viewport.addEventListener('scroll', onScrollOrBuffer, { passive: true });
+			const scrollDisposable: IDisposable = openedTerm.onScroll(onScrollOrBuffer);
+			disposeXtermScrollFix = () => {
+				viewport.removeEventListener('scroll', onScrollOrBuffer);
+				scrollDisposable.dispose();
+			};
+		});
 
 		if (isTauri() && workspaceId) {
 			const outCh = `pty-output-${workspaceId}-${paneId}`;
 			ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
 				if (!alive) return;
 				term?.write(e.payload.data);
+				scheduleTermRedraw();
 			});
 			if (!alive) {
 				ptyUnlisten();
@@ -219,25 +280,27 @@ async function renderView() {
 
 		resizeObserver = new ResizeObserver(() => {
 			if (!alive) return;
-			if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
-			resizeDebounceTimer = setTimeout(() => {
-				resizeDebounceTimer = undefined;
+			if (resizeRaf !== undefined) return;
+			resizeRaf = requestAnimationFrame(() => {
+				resizeRaf = undefined;
 				if (!alive) return;
-				cancelLayoutRaf();
-				layoutRaf = requestAnimationFrame(() => {
-					layoutRaf = undefined;
-					fitAndSyncPty();
-				});
-			}, 48);
+				void fitAndSyncPty();
+			});
 		});
 		resizeObserver.observe(viewInner);
 
 		cancelLayoutRaf();
 		layoutRaf = requestAnimationFrame(() => {
 			layoutRaf = undefined;
-			if (!alive) return;
-			fitAndSyncPty();
-			term?.focus();
+			void (async () => {
+				if (!alive) return;
+				await fitAndSyncPty();
+				term?.focus();
+				requestAnimationFrame(() => {
+					if (!alive) return;
+					void fitAndSyncPty();
+				});
+			})();
 		});
 	} else {
 		editor = monaco.editor.create(viewInner, {
@@ -297,7 +360,10 @@ onMount(() => {
 onDestroy(() => {
 	alive = false;
 	cancelLayoutRaf();
-	if (resizeDebounceTimer !== undefined) clearTimeout(resizeDebounceTimer);
+	cancelResizeRaf();
+	cancelTermRedrawRaf();
+	disposeXtermScrollFix?.();
+	disposeXtermScrollFix = undefined;
 	ptyClosedUnlisten?.();
 	resizeObserver?.disconnect();
 	ptyUnlisten?.();
