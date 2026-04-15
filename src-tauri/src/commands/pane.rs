@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
 use crate::commands::terminal;
-use crate::engine::pane_tree::{PaneNode as EnginePaneNode, SplitDirection};
+use crate::engine::pane_tree::{DockRegion, PaneNode as EnginePaneNode, SplitDirection};
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
 use crate::utils::error::AppError;
@@ -83,6 +83,74 @@ pub async fn split_pane(
     direction: String,
 ) -> Result<Uuid, String> {
     split_pane_inner(state, pane_id, direction).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_split_ratios_at_path(
+    state: State<'_, AppState>,
+    path: Vec<usize>,
+    ratios: Vec<f32>,
+) -> Result<(), String> {
+    let wid = state.active_workspace_id();
+    let mut map = state.workspaces.write();
+    let ws = map
+        .get_mut(&wid)
+        .ok_or_else(|| "无活动工作区".to_string())?;
+    ws.pane_tree
+        .set_split_ratios_at_path(&path, ratios)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SplitRatioUpdate {
+    pub path: Vec<usize>,
+    pub ratios: Vec<f32>,
+}
+
+#[tauri::command]
+pub async fn set_split_ratios_batch(
+    state: State<'_, AppState>,
+    updates: Vec<SplitRatioUpdate>,
+) -> Result<(), String> {
+    let wid = state.active_workspace_id();
+    let mut map = state.workspaces.write();
+    let ws = map
+        .get_mut(&wid)
+        .ok_or_else(|| "无活动工作区".to_string())?;
+    let pairs: Vec<(Vec<usize>, Vec<f32>)> = updates
+        .into_iter()
+        .map(|u| (u.path, u.ratios))
+        .collect();
+    ws.pane_tree
+        .set_split_ratios_batch(&pairs)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn dock_pane(
+    state: State<'_, AppState>,
+    source_pane_id: String,
+    target_pane_id: String,
+    region: String,
+) -> Result<(), String> {
+    let region = match region.to_lowercase().as_str() {
+        "left" => DockRegion::Left,
+        "right" => DockRegion::Right,
+        "top" => DockRegion::Top,
+        "bottom" => DockRegion::Bottom,
+        "center" => DockRegion::Center,
+        _ => return Err(format!("invalid dock region: {region}")),
+    };
+    let source = parse_pane_id(&source_pane_id).map_err(|e| e.to_string())?;
+    let target = parse_pane_id(&target_pane_id).map_err(|e| e.to_string())?;
+    let wid = state.active_workspace_id();
+    let mut map = state.workspaces.write();
+    let ws = map
+        .get_mut(&wid)
+        .ok_or_else(|| "无活动工作区".to_string())?;
+    ws.pane_tree
+        .dock_pane(source, target, region)
+        .map_err(|e| e.to_string())
 }
 
 fn split_pane_inner(

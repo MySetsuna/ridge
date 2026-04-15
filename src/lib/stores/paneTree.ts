@@ -4,6 +4,28 @@ import { get, writable } from 'svelte/store';
 import type { PaneNode } from '$lib/types';
 import { reportDevIssue } from '$lib/devIssue';
 
+function normalizeSplitRatios(sizes: number[]): number[] {
+  const s = sizes.reduce((a, b) => a + b, 0);
+  if (s <= 1e-9) return sizes.map(() => 100 / Math.max(sizes.length, 1));
+  return sizes.map((x) => (x / s) * 100);
+}
+
+/** 仅更新 `path` 所指 `Split` 的 `ratios`（path 为空表示根为 Split）。 */
+function applyRatiosAtPath(root: PaneNode, path: number[], sizes: number[]): PaneNode {
+  if (path.length === 0) {
+    if (root.type !== 'split' || root.children.length !== sizes.length) return root;
+    return { ...root, ratios: normalizeSplitRatios(sizes) };
+  }
+  if (root.type !== 'split') return root;
+  const [head, ...tail] = path;
+  if (head < 0 || head >= root.children.length) return root;
+  return {
+    ...root,
+    children: root.children.map((child, i) =>
+      i === head ? applyRatiosAtPath(child, tail, sizes) : child
+    )
+  };
+}
 /** 占位；首屏 hydrate 前不挂载终端。根 pane 的 id 由后端按工作区生成唯一 UUID。 */
 export const paneTreeStore = writable<PaneNode>({
   type: 'leaf',
@@ -13,12 +35,251 @@ export const paneTreeStore = writable<PaneNode>({
 /** 最近一次点击/聚焦的终端窗格；分屏针对此 id（与 layout 中 leaf id 一致）。 */
 export const activePaneId = writable<string>('');
 
+/** 正在拖拽重组的源窗格 id（标题栏 dragstart 设置，dragend 清空）。 */
+export const paneDragSourceId = writable<string | null>(null);
+
+export type DockRegion = 'left' | 'right' | 'top' | 'bottom' | 'center';
+export type SplitterAxis = 'x' | 'y';
+
+export interface SplitterRef {
+  splitPath: number[];
+  splitterIndex: number;
+  axis: SplitterAxis;
+  basisPx: number;
+}
+
+interface SplitterSnapshot {
+  ref: SplitterRef;
+  ratios: number[];
+  isPrimary: boolean;
+}
+
+export type SplitResizeUiState =
+  | { phase: 'idle' }
+  | {
+      phase: 'pending' | 'junction';
+      primary: SplitterRef;
+      orthogonals: SplitterRef[];
+      pointer: { x: number; y: number };
+    }
+  | {
+      phase: 'drag';
+      pointer: { x: number; y: number };
+      dragStart: { x: number; y: number };
+      snapshots: SplitterSnapshot[];
+      pendingUpdates: SplitRatioUpdate[];
+    };
+
+export interface SplitRatioUpdate {
+  path: number[];
+  ratios: number[];
+}
+
+const HOVER_DEBOUNCE_MS = 90;
+const MIN_PANE_RATIO = 6;
+let splitHoverTimer: ReturnType<typeof setTimeout> | undefined;
+export const splitResizeUiState = writable<SplitResizeUiState>({ phase: 'idle' });
+
 export const activeWorkspaceId = writable<string>('');
 
 export const workspacesList = writable<{ id: string; index: number; name?: string }[]>([]);
 
 // 工作区名称映射（用于UI显示）
 export const workspaceNames = writable<Record<string, string>>({});
+
+function pathKey(path: number[]): string {
+  return path.join('/');
+}
+
+function clearSplitHoverTimer() {
+  if (splitHoverTimer !== undefined) {
+    clearTimeout(splitHoverTimer);
+    splitHoverTimer = undefined;
+  }
+}
+
+function normalizeWithin100(values: number[]): number[] {
+  const sum = values.reduce((a, b) => a + b, 0);
+  if (sum <= 1e-9) return values.map(() => 100 / Math.max(values.length, 1));
+  return values.map((v) => (v / sum) * 100);
+}
+
+function getSplitNodeByPath(root: PaneNode, path: number[]): Extract<PaneNode, { type: 'split' }> | null {
+  let cur: PaneNode = root;
+  for (const idx of path) {
+    if (cur.type !== 'split') return null;
+    cur = cur.children[idx];
+    if (!cur) return null;
+  }
+  return cur.type === 'split' ? cur : null;
+}
+
+function adjustRatiosBySplitterDelta(
+  baseRatios: number[],
+  splitterIndex: number,
+  deltaPercent: number
+): number[] {
+  const n = baseRatios.length;
+  if (n <= 1) return baseRatios;
+  if (splitterIndex < 0 || splitterIndex >= n - 1) return baseRatios;
+
+  const before = baseRatios.slice(0, splitterIndex + 1);
+  const after = baseRatios.slice(splitterIndex + 1);
+  const beforeSum = before.reduce((a, b) => a + b, 0);
+  const afterSum = after.reduce((a, b) => a + b, 0);
+  if (beforeSum <= 1e-9 || afterSum <= 1e-9) return baseRatios;
+
+  const minBefore = before.length * MIN_PANE_RATIO;
+  const maxBefore = 100 - after.length * MIN_PANE_RATIO;
+  const targetBefore = Math.min(maxBefore, Math.max(minBefore, beforeSum + deltaPercent));
+  const targetAfter = 100 - targetBefore;
+  const beforeScale = targetBefore / beforeSum;
+  const afterScale = targetAfter / afterSum;
+
+  const next = baseRatios.map((ratio, idx) =>
+    idx <= splitterIndex ? ratio * beforeScale : ratio * afterScale
+  );
+  return normalizeWithin100(next);
+}
+
+function dedupeRefs(refs: SplitterRef[]): SplitterRef[] {
+  const seen = new Set<string>();
+  const out: SplitterRef[] = [];
+  for (const ref of refs) {
+    const key = `${pathKey(ref.splitPath)}:${ref.splitterIndex}:${ref.axis}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ref);
+  }
+  return out;
+}
+
+function updatesFromSnapshots(
+  snapshots: SplitterSnapshot[],
+  dragStart: { x: number; y: number },
+  pointer: { x: number; y: number }
+): SplitRatioUpdate[] {
+  const grouped = new Map<string, SplitterSnapshot[]>();
+  for (const snap of snapshots) {
+    const key = pathKey(snap.ref.splitPath);
+    const list = grouped.get(key);
+    if (list) list.push(snap);
+    else grouped.set(key, [snap]);
+  }
+  const updates: SplitRatioUpdate[] = [];
+  for (const [, refs] of grouped) {
+    let merged = refs[0].ratios.slice();
+    for (const { ref, isPrimary } of refs) {
+      if (ref.basisPx <= 1) continue;
+      const rawDeltaPx = ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
+      // 正交联动轴更容易受手部微抖影响，给更大的 deadzone，减少“乱飘”。
+      const deadzone = isPrimary ? 0.8 : 2.8;
+      const deltaPx = Math.abs(rawDeltaPx) <= deadzone ? 0 : rawDeltaPx;
+      const deltaPercent = (deltaPx / ref.basisPx) * 100;
+      merged = adjustRatiosBySplitterDelta(merged, ref.splitterIndex, deltaPercent);
+    }
+    updates.push({ path: refs[0].ref.splitPath, ratios: merged });
+  }
+  return updates;
+}
+
+function applyRatioUpdates(root: PaneNode, updates: SplitRatioUpdate[]): PaneNode {
+  let next = root;
+  for (const update of updates) {
+    next = applyRatiosAtPath(next, update.path, update.ratios);
+  }
+  return next;
+}
+
+function setGlobalSplitResizeCursor(enabled: boolean) {
+  if (typeof document === 'undefined') return;
+  document.body.classList.toggle('wf-resize-junction-cursor', enabled);
+}
+
+export function queueSplitResizeJunction(
+  primary: SplitterRef,
+  orthogonals: SplitterRef[],
+  pointer: { x: number; y: number }
+) {
+  clearSplitHoverTimer();
+  const refs = dedupeRefs([primary, ...orthogonals]);
+  const [first, ...rest] = refs;
+  if (!first) return;
+  splitResizeUiState.set({
+    phase: 'pending',
+    primary: first,
+    orthogonals: rest,
+    pointer
+  });
+  splitHoverTimer = setTimeout(() => {
+    splitResizeUiState.set({
+      phase: 'junction',
+      primary: first,
+      orthogonals: rest,
+      pointer
+    });
+    setGlobalSplitResizeCursor(true);
+  }, HOVER_DEBOUNCE_MS);
+}
+
+export function clearSplitResizeUi() {
+  clearSplitHoverTimer();
+  setGlobalSplitResizeCursor(false);
+  splitResizeUiState.set({ phase: 'idle' });
+}
+
+export function startSplitResizeDrag(pointer: { x: number; y: number }) {
+  const ui = get(splitResizeUiState);
+  if (ui.phase !== 'junction') return;
+  const root = get(paneTreeStore);
+  const refs = dedupeRefs([ui.primary, ...ui.orthogonals]);
+  const snapshots: SplitterSnapshot[] = [];
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i];
+    const split = getSplitNodeByPath(root, ref.splitPath);
+    if (!split) continue;
+    let basisPx = ref.basisPx;
+    if (typeof document !== 'undefined') {
+      const splitRoot = document.querySelector<HTMLElement>(
+        `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
+      );
+      if (splitRoot) {
+        basisPx = Math.max(1, ref.axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight);
+      }
+    }
+    snapshots.push({ ref: { ...ref, basisPx }, ratios: split.ratios.slice(), isPrimary: i === 0 });
+  }
+  if (!snapshots.length) return;
+  splitResizeUiState.set({
+    phase: 'drag',
+    pointer,
+    dragStart: pointer,
+    snapshots,
+    pendingUpdates: []
+  });
+  setGlobalSplitResizeCursor(true);
+}
+
+export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
+  const ui = get(splitResizeUiState);
+  if (ui.phase !== 'drag') return;
+  const updates = updatesFromSnapshots(ui.snapshots, ui.dragStart, pointer);
+  paneTreeStore.update((root) => applyRatioUpdates(root, updates));
+  splitResizeUiState.set({
+    ...ui,
+    pointer,
+    pendingUpdates: updates
+  });
+}
+
+export function finishSplitResizeDrag(): SplitRatioUpdate[] {
+  const ui = get(splitResizeUiState);
+  clearSplitHoverTimer();
+  setGlobalSplitResizeCursor(false);
+  splitResizeUiState.set({ phase: 'idle' });
+  if (ui.phase !== 'drag') return [];
+  return ui.pendingUpdates;
+}
 
 export function getAllPaneIds(node: PaneNode): string[] {
   const ids: string[] = [];
@@ -123,6 +384,48 @@ export async function splitPane(paneId: string, direction: 'horizontal' | 'verti
   });
   await syncPaneLayoutFromBackend();
   return newId;
+}
+
+/** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置。 */
+export async function dockPane(
+  sourcePaneId: string,
+  targetPaneId: string,
+  region: DockRegion
+) {
+  if (!isTauri()) return;
+  await invoke('dock_pane', {
+    sourcePaneId,
+    targetPaneId,
+    region
+  });
+  await syncPaneLayoutFromBackend();
+  activePaneId.set(sourcePaneId);
+}
+
+/** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一条 path）。 */
+export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
+  const norm = normalizeSplitRatios(sizes);
+  paneTreeStore.update((root) => applyRatiosAtPath(root, splitPath, norm));
+  if (!isTauri()) return;
+  try {
+    await invoke('set_split_ratios_at_path', { path: splitPath, ratios: norm });
+  } catch (e) {
+    console.error('persistSplitRatios', e);
+    await syncPaneLayoutFromBackend();
+  }
+}
+
+/** 一次性持久化多个 split 的 ratios（用于横纵联动拖拽松手提交）。 */
+export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
+  if (!updates.length) return;
+  paneTreeStore.update((root) => applyRatioUpdates(root, updates));
+  if (!isTauri()) return;
+  try {
+    await invoke('set_split_ratios_batch', { updates });
+  } catch (e) {
+    console.error('persistSplitRatiosBatch', e);
+    await syncPaneLayoutFromBackend();
+  }
 }
 
 /** 对当前焦点窗格分屏（若无有效 id 则回退第一个 leaf）。 */

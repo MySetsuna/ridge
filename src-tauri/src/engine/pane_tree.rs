@@ -11,6 +11,16 @@ pub enum SplitDirection {
     Vertical,
 }
 
+/// 拖拽停靠：左右为水平分栏，上下为垂直分栏；中心为两窗格互换位置（PTY 随 id 不变）。
+#[derive(Clone, Debug)]
+pub enum DockRegion {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PaneNode {
     Leaf(Uuid),
@@ -150,47 +160,290 @@ impl PaneTree {
         }
     }
 
-    /// Close（删除 Leaf，并把兄弟节点提升或调整 ratio）
-    pub fn close(&mut self, pane_id: Uuid) -> Result<(), AppError> {
-        fn recurse(node: &mut PaneNode, pane_id: Uuid) -> bool {
-            if let PaneNode::Split { children, ratios, .. } = node {
-                let mut i = 0;
-                while i < children.len() {
-                    let hit = matches!(
-                        &children[i],
-                        PaneNode::Leaf(id) if *id == pane_id
-                    );
-                    if hit {
-                        children.remove(i);
-                        ratios.remove(i);
-                        if children.len() == 1 {
-                            let only_child = children.remove(0);
-                            *node = only_child;
-                        } else if !ratios.is_empty() {
-                            let sum: f32 = ratios.iter().sum();
-                            if sum > 0.0 {
-                                for r in ratios.iter_mut() {
-                                    *r = (*r / sum) * 100.0;
-                                }
-                            }
-                        }
-                        return true;
-                    }
-                    if matches!(children[i], PaneNode::Split { .. }) && recurse(&mut children[i], pane_id)
-                    {
-                        return true;
-                    }
-                    i += 1;
+    /// 从根起依次取 `Split` 的第 `path[i]` 个子节点，定位到目标 `Split`，写入子占比（与前端 `splitPath` 一致）。
+    pub fn set_split_ratios_at_path(
+        &mut self,
+        path: &[usize],
+        ratios: Vec<f32>,
+    ) -> Result<(), AppError> {
+        let next = self.validate_and_normalize_ratio_update(path, &ratios)?;
+        let node = Self::mut_split_at_path(&mut self.root, path)?;
+        let PaneNode::Split { ratios: rs, .. } = node else {
+            return Err(AppError::PtyError("target is not a split".into()));
+        };
+        *rs = next;
+        Ok(())
+    }
+
+    /// 原子批量更新多个 split 的 ratios：先全量校验，后统一写入，避免部分成功。
+    pub fn set_split_ratios_batch(
+        &mut self,
+        updates: &[(Vec<usize>, Vec<f32>)],
+    ) -> Result<(), AppError> {
+        let mut normalized_updates: Vec<(Vec<usize>, Vec<f32>)> = Vec::with_capacity(updates.len());
+        for (path, ratios) in updates {
+            let normalized = self.validate_and_normalize_ratio_update(path, ratios)?;
+            normalized_updates.push((path.clone(), normalized));
+        }
+        for (path, ratios) in normalized_updates {
+            let node = Self::mut_split_at_path(&mut self.root, &path)?;
+            let PaneNode::Split { ratios: rs, .. } = node else {
+                return Err(AppError::PtyError("target is not a split".into()));
+            };
+            *rs = ratios;
+        }
+        Ok(())
+    }
+
+    fn validate_and_normalize_ratio_update(
+        &self,
+        path: &[usize],
+        ratios: &[f32],
+    ) -> Result<Vec<f32>, AppError> {
+        let node = Self::split_at_path(&self.root, path)?;
+        let PaneNode::Split { children, .. } = node else {
+            return Err(AppError::PtyError("target is not a split".into()));
+        };
+        if children.len() != ratios.len() {
+            return Err(AppError::PtyError(format!(
+                "ratios len {} != children {}",
+                ratios.len(),
+                children.len()
+            )));
+        }
+        let sum: f32 = ratios.iter().sum();
+        if sum <= 1e-6 {
+            return Err(AppError::PtyError("ratios sum is zero".into()));
+        }
+        Ok(ratios.iter().map(|r| (*r / sum) * 100.0).collect())
+    }
+
+    fn split_at_path<'a>(node: &'a PaneNode, path: &[usize]) -> Result<&'a PaneNode, AppError> {
+        let mut cur = node;
+        for &idx in path {
+            match cur {
+                PaneNode::Split { children, .. } => {
+                    cur = children.get(idx).ok_or_else(|| {
+                        AppError::PtyError(format!("split path out of range at child index {idx}"))
+                    })?;
+                }
+                _ => {
+                    return Err(AppError::PtyError(
+                        "split path crosses a non-split node".into(),
+                    ));
                 }
             }
-            false
         }
+        match cur {
+            PaneNode::Split { .. } => Ok(cur),
+            _ => Err(AppError::PtyError(
+                "split path does not end on a split".into(),
+            )),
+        }
+    }
 
-        if recurse(&mut self.root, pane_id) {
+    fn mut_split_at_path<'a>(
+        node: &'a mut PaneNode,
+        path: &[usize],
+    ) -> Result<&'a mut PaneNode, AppError> {
+        let mut cur = node;
+        for &idx in path {
+            match cur {
+                PaneNode::Split { children, .. } => {
+                    cur = children.get_mut(idx).ok_or_else(|| {
+                        AppError::PtyError(format!("split path out of range at child index {idx}"))
+                    })?;
+                }
+                _ => {
+                    return Err(AppError::PtyError(
+                        "split path crosses a non-split node".into(),
+                    ));
+                }
+            }
+        }
+        match cur {
+            PaneNode::Split { .. } => Ok(cur),
+            _ => Err(AppError::PtyError(
+                "split path does not end on a split".into(),
+            )),
+        }
+    }
+
+    /// 从树中摘掉指定 Leaf（不删 `panes` 元数据、不关 PTY）。
+    fn remove_leaf_from_structure(node: &mut PaneNode, pane_id: Uuid) -> bool {
+        if let PaneNode::Split { children, ratios, .. } = node {
+            let mut i = 0;
+            while i < children.len() {
+                let hit = matches!(
+                    &children[i],
+                    PaneNode::Leaf(id) if *id == pane_id
+                );
+                if hit {
+                    children.remove(i);
+                    ratios.remove(i);
+                    if children.len() == 1 {
+                        let only_child = children.remove(0);
+                        *node = only_child;
+                    } else if !ratios.is_empty() {
+                        let sum: f32 = ratios.iter().sum();
+                        if sum > 0.0 {
+                            for r in ratios.iter_mut() {
+                                *r = (*r / sum) * 100.0;
+                            }
+                        }
+                    }
+                    return true;
+                }
+                if matches!(children[i], PaneNode::Split { .. })
+                    && Self::remove_leaf_from_structure(&mut children[i], pane_id)
+                {
+                    return true;
+                }
+                i += 1;
+            }
+        }
+        false
+    }
+
+    /// Close（删除 Leaf，并把兄弟节点提升或调整 ratio）
+    pub fn close(&mut self, pane_id: Uuid) -> Result<(), AppError> {
+        if Self::remove_leaf_from_structure(&mut self.root, pane_id) {
             self.panes.remove(&pane_id);
             Ok(())
         } else {
             Err(AppError::PaneNotFound(pane_id))
+        }
+    }
+
+    /// 仅从布局树移除窗格 id，保留 `panes` 与 PTY（用于拖拽重组）。
+    pub fn detach_leaf(&mut self, pane_id: Uuid) -> Result<(), AppError> {
+        let leaves = self.get_all_leaves();
+        if leaves.len() <= 1 {
+            return Err(AppError::PtyError("Cannot detach the only pane".into()));
+        }
+        if !leaves.contains(&pane_id) {
+            return Err(AppError::PaneNotFound(pane_id));
+        }
+        if Self::remove_leaf_from_structure(&mut self.root, pane_id) {
+            Ok(())
+        } else {
+            Err(AppError::PaneNotFound(pane_id))
+        }
+    }
+
+    fn replace_leaf_with_subtree(
+        node: &mut PaneNode,
+        leaf_id: Uuid,
+        replacement: PaneNode,
+    ) -> bool {
+        match node {
+            PaneNode::Leaf(id) if *id == leaf_id => {
+                *node = replacement;
+                true
+            }
+            PaneNode::Split { children, .. } => {
+                for child in children.iter_mut() {
+                    if Self::replace_leaf_with_subtree(child, leaf_id, replacement.clone()) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn swap_two_leaf_ids_in_tree(node: &mut PaneNode, a: Uuid, b: Uuid) {
+        match node {
+            PaneNode::Leaf(id) => {
+                if *id == a {
+                    *id = b;
+                } else if *id == b {
+                    *id = a;
+                }
+            }
+            PaneNode::Split { children, .. } => {
+                for child in children.iter_mut() {
+                    Self::swap_two_leaf_ids_in_tree(child, a, b);
+                }
+            }
+        }
+    }
+
+    /// 互换两窗格在树中的位置（仅交换 id，PTY 绑定不变）。
+    pub fn swap_leaves(&mut self, a: Uuid, b: Uuid) -> Result<(), AppError> {
+        if a == b {
+            return Ok(());
+        }
+        let leaves = self.get_all_leaves();
+        if !leaves.contains(&a) {
+            return Err(AppError::PaneNotFound(a));
+        }
+        if !leaves.contains(&b) {
+            return Err(AppError::PaneNotFound(b));
+        }
+        Self::swap_two_leaf_ids_in_tree(&mut self.root, a, b);
+        Ok(())
+    }
+
+    /// VS Code 式停靠：边为分栏，中心为两格互换。
+    pub fn dock_pane(
+        &mut self,
+        source: Uuid,
+        target: Uuid,
+        region: DockRegion,
+    ) -> Result<(), AppError> {
+        if source == target {
+            return Ok(());
+        }
+        self.panes
+            .get(&source)
+            .ok_or(AppError::PaneNotFound(source))?;
+        self.panes
+            .get(&target)
+            .ok_or(AppError::PaneNotFound(target))?;
+
+        match region {
+            DockRegion::Center => self.swap_leaves(source, target),
+            DockRegion::Left | DockRegion::Right | DockRegion::Top | DockRegion::Bottom => {
+                let leaves = self.get_all_leaves();
+                if !leaves.contains(&source) {
+                    return Err(AppError::PaneNotFound(source));
+                }
+                if !leaves.contains(&target) {
+                    return Err(AppError::PaneNotFound(target));
+                }
+                self.detach_leaf(source)?;
+                let new_subtree = match region {
+                    DockRegion::Left => PaneNode::Split {
+                        direction: SplitDirection::Horizontal,
+                        children: vec![PaneNode::Leaf(source), PaneNode::Leaf(target)],
+                        ratios: vec![50.0, 50.0],
+                    },
+                    DockRegion::Right => PaneNode::Split {
+                        direction: SplitDirection::Horizontal,
+                        children: vec![PaneNode::Leaf(target), PaneNode::Leaf(source)],
+                        ratios: vec![50.0, 50.0],
+                    },
+                    DockRegion::Top => PaneNode::Split {
+                        direction: SplitDirection::Vertical,
+                        children: vec![PaneNode::Leaf(source), PaneNode::Leaf(target)],
+                        ratios: vec![50.0, 50.0],
+                    },
+                    DockRegion::Bottom => PaneNode::Split {
+                        direction: SplitDirection::Vertical,
+                        children: vec![PaneNode::Leaf(target), PaneNode::Leaf(source)],
+                        ratios: vec![50.0, 50.0],
+                    },
+                    DockRegion::Center => unreachable!(),
+                };
+                if !Self::replace_leaf_with_subtree(&mut self.root, target, new_subtree) {
+                    return Err(AppError::PtyError(
+                        "dock attach failed: target leaf missing after detach".into(),
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 
