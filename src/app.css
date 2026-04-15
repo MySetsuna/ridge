@@ -46,6 +46,11 @@ body {
   width: 8px;
   height: 8px;
 }
+.wf-scroll::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
+}
 .wf-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
@@ -67,13 +72,14 @@ body {
   app-region: no-drag;
 }
 
-/* xterm 滚动区域：圆角轨道 + 细拇指（避免默认粗灰条） */
-.xterm-viewport {
-  scrollbar-width: thin !important;
-  scrollbar-color: var(--wf-scrollbar) transparent !important;
-}
+/* xterm 滚动区域：仅用 webkit 伪元素（勿加 scrollbar-width: thin — Windows WebView2 会退回系统细条并带两端箭头） */
 .xterm-viewport::-webkit-scrollbar {
   width: 9px;
+}
+.xterm-viewport::-webkit-scrollbar-button {
+  display: none !important;
+  height: 0 !important;
+  width: 0 !important;
 }
 .xterm-viewport::-webkit-scrollbar-track {
   background: transparent;

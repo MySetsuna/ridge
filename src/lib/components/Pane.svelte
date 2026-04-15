@@ -29,7 +29,10 @@ interface Props {
 
 let { paneId, workspaceId }: Props = $props();
 
+/** 外层：圆角与终端背景 */
 let container: HTMLElement;
+/** 内层：内边距内的实际挂载点（xterm / Monaco） */
+let viewInner: HTMLElement;
 
 // Git diff 状态
 let diffStatus: GitDiffStatus | null = $state(null);
@@ -93,7 +96,7 @@ $effect(() => {
 });
 
 function attachTerminalFocusHandlers() {
-	if (!term || !container) return;
+	if (!term || !viewInner) return;
 	const focusTerm = () => {
 		if (!alive) return;
 		activePaneId.set(paneId);
@@ -103,8 +106,8 @@ function attachTerminalFocusHandlers() {
 			fitAddon.fit();
 		});
 	};
-	container.addEventListener('pointerdown', focusTerm);
-	return () => container.removeEventListener('pointerdown', focusTerm);
+	viewInner.addEventListener('pointerdown', focusTerm);
+	return () => viewInner.removeEventListener('pointerdown', focusTerm);
 }
 
 function fitAndSyncPty() {
@@ -149,10 +152,13 @@ async function renderView() {
 	term = null;
 	fitAddon = null;
 
+	if (!viewInner) return;
+
 	if (mode === 'terminal') {
 		term = new Terminal({
 			fontSize: 15,
-			lineHeight: 0.6,
+			lineHeight: 0,
+			letterSpacing: 0,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
 			cursorBlink: true,
 			scrollback: 8000,
@@ -183,7 +189,7 @@ async function renderView() {
 		});
 		fitAddon = new FitAddon();
 		term.loadAddon(fitAddon);
-		term.open(container);
+		term.open(viewInner);
 		fitAddon.fit();
 
 		removeFocusHandlers = attachTerminalFocusHandlers();
@@ -224,7 +230,7 @@ async function renderView() {
 				});
 			}, 48);
 		});
-		resizeObserver.observe(container);
+		resizeObserver.observe(viewInner);
 
 		cancelLayoutRaf();
 		layoutRaf = requestAnimationFrame(() => {
@@ -234,14 +240,14 @@ async function renderView() {
 			term?.focus();
 		});
 	} else {
-		editor = monaco.editor.create(container, {
+		editor = monaco.editor.create(viewInner, {
 			value: '// Welcome to WarpForge Editor',
 			language: 'rust',
 			theme: 'vs-dark',
 			automaticLayout: true,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
 			fontSize: 13,
-			padding: { top: 12, bottom: 12 }
+			padding: { top: 0, bottom: 0 }
 		});
 	}
 }
@@ -327,11 +333,16 @@ onDestroy(() => {
 		</div>
 	{/if}
 
-	<div class="flex-1 min-h-0 min-w-0 p-1">
+	<div class="flex-1 min-h-0 min-w-0">
 		<div
 			bind:this={container}
-			class="wf-terminal-surface h-full w-full rounded-lg outline-none bg-[var(--wf-term-bg)]"
+			class="wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)]"
 			tabindex="-1"
-		></div>
+		>
+			<div
+				bind:this={viewInner}
+				class="min-h-0 min-w-0 flex-1 py-2 pl-3 pr-0"
+			></div>
+		</div>
 	</div>
 </div>
