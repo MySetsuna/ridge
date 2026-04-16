@@ -1,6 +1,6 @@
 // src/lib/types.ts
 export type PaneNode =
-  | { type: 'leaf'; id: string }
+  | { type: 'leaf'; id: string; title?: string }
   | {
       type: 'split';
       id: string;

@@ -4,7 +4,7 @@
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,9 +16,8 @@ fn now_ts() -> String {
     }
 }
 
-fn log_stderr(msg: &str) {
+fn log_to_file(msg: &str) {
     let line = format!("[wind-tmux][{}] {msg}", now_ts());
-    eprintln!("{line}");
     log_file_append(&line);
 }
 
@@ -26,12 +25,15 @@ fn log_file_path() -> Option<PathBuf> {
     if let Ok(p) = env::var("WIND_TMUX_LOG") {
         let t = p.trim();
         if !t.is_empty() {
-            return Some(PathBuf::from(t));
+            let pb = PathBuf::from(t);
+            // 允许把 `WIND_TMUX_LOG` 设成「目录」：此前会把目录当文件 open 失败并静默落到 %TEMP%。
+            if pb.is_dir() {
+                return Some(pb.join("wind-tmux.log"));
+            }
+            return Some(pb);
         }
     }
-    if let Ok(p) = env::current_dir() {
-        return Some(p.join("wind-tmux.log"));
-    }
+    // 默认落到系统临时目录，避免开发模式下写入源码目录触发 Tauri watcher 重启。
     Some(env::temp_dir().join("wind-tmux.log"))
 }
 
@@ -55,7 +57,16 @@ fn log_file_append(line: &str) {
     };
     static LOG_PATH_ONCE: OnceLock<()> = OnceLock::new();
     let _ = LOG_PATH_ONCE.get_or_init(|| {
-        eprintln!("[wind-tmux][{}] file-log={}", now_ts(), actual_path.display());
+        // 必须直接写文件：若这里再调用 `log_file_append`，会重入同一个 `OnceLock` 并死锁，
+        // 导致 `tmux -V` 等首条日志路径上永远到不了版本分支。
+        let msg = format!("[wind-tmux][{}] file-log={}", now_ts(), actual_path.display());
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&actual_path)
+        {
+            let _ = writeln!(f, "{msg}");
+        }
     });
 }
 
@@ -73,32 +84,31 @@ fn main() {
     let token_set = env::var("WIND_TEAMMATE_TOKEN")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
-    log_stderr(&format!(
+    log_to_file(&format!(
         "invoke args=[{joined_args}] tmux_env={tmux_env:?} teammate_url_set={url_set} teammate_token_set={token_set}"
     ));
-
     // Claude Code 等会先跑 `tmux -V` 判断是否存在 tmux；此前落到 unsupported 会导致永远不启用 split。
     for a in args.iter().skip(1) {
         if a == "-V" || a == "--version" {
-            log_stderr("probe version -> tmux 3.4");
+            log_to_file("probe version -> tmux 3.4");
             println!("tmux 3.4");
             process::exit(0);
         }
         if a == "--help" {
-            log_stderr("probe help");
+            log_to_file("probe help");
             eprintln!("wind-tmux shim: supports all tmux commands (needs WIND_TEAMMATE_*)");
             process::exit(0);
         }
     }
     if args.len() < 2 {
-        log_stderr("missing subcommand");
+        log_to_file("missing subcommand");
         eprintln!("wind-tmux: missing subcommand");
         process::exit(1);
     }
     let url = env::var("WIND_TEAMMATE_URL").unwrap_or_default();
     let token = env::var("WIND_TEAMMATE_TOKEN").unwrap_or_default();
     if url.is_empty() || token.is_empty() {
-        log_stderr("missing WIND_TEAMMATE_URL/TOKEN");
+        log_to_file("missing WIND_TEAMMATE_URL/TOKEN");
         eprintln!("wind-tmux: set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in PTY)");
         process::exit(1);
     }
@@ -134,7 +144,7 @@ fn main() {
         // ========== Session Management ==========
         "new-session" | "new" => cmd_new_session(rest, &url, &token),
         "has-session" | "has" => cmd_has_session(rest),
-        "list-sessions" | "ls" => cmd_list_sessions(),
+        "list-sessions" | "ls" => cmd_list_sessions(rest, &url, &token),
         "attach-session" | "attach" => cmd_attach_session(rest),
         "detach-client" | "detach" => cmd_detach_client(rest),
         "kill-session" => cmd_kill_session(rest),
@@ -188,12 +198,12 @@ fn main() {
 
         // Fallback for any unhandled commands
         _ => {
-            log_stderr(&format!("unsupported subcommand={sub}"));
+            log_to_file(&format!("unsupported subcommand={sub}"));
             // Still return success for unknown commands to avoid breaking tools
             Ok(())
         }
     };
-    log_stderr(&format!(
+    log_to_file(&format!(
         "exit subcommand={sub} status={}",
         if r.is_ok() { "ok" } else { "err" }
     ));
@@ -219,6 +229,26 @@ fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
 fn parse_pane_target(s: &str) -> usize {
     let s = s.strip_prefix('%').unwrap_or(s);
     s.parse().unwrap_or(0)
+}
+
+/// 与 Wind PTY 注入的 `TMUX_PANE` / `TMUX` 对齐，供未带 `-t` 的 probe（如 `display-message -p`）推断当前窗格。
+fn current_pane_index_from_env() -> usize {
+    if let Ok(pane) = env::var("TMUX_PANE") {
+        let t = pane.trim();
+        if !t.is_empty() {
+            return parse_pane_target(t);
+        }
+    }
+    if let Ok(tmux) = env::var("TMUX") {
+        // `terminal.rs`: `/wind/teammate.sock,0,<pane_slot>`
+        if let Some(third) = tmux.split(',').nth(2) {
+            let t = third.trim();
+            if !t.is_empty() {
+                return parse_pane_target(t);
+            }
+        }
+    }
+    0
 }
 
 fn tmux_replacements(pane_index: usize) -> Vec<(&'static str, String)> {
@@ -254,7 +284,7 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
 }
 
 fn cmd_display_message(rest: &[String]) -> Result<(), ()> {
-    let mut pane_index = 0usize;
+    let mut pane_index = current_pane_index_from_env();
     let mut format = "#{pane_id}".to_string();
     let mut i = 0usize;
     while i < rest.len() {
@@ -368,7 +398,7 @@ fn post_split(
     cwd: Option<String>,
     print_template: Option<&str>,
 ) -> Result<(), ()> {
-    log_stderr(&format!(
+    log_to_file(&format!(
         "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}",
         horizontal,
         pane_index,
@@ -387,7 +417,7 @@ fn post_split(
         body["cwd"] = serde_json::json!(c);
     }
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
-    log_stderr(&format!("post_split: posting to {}", u));
+    log_to_file(&format!("post_split: posting to {}", u));
     let res = match client()
         .post(&u)
         .headers(auth_headers(token))
@@ -396,21 +426,21 @@ fn post_split(
     {
         Ok(r) => r,
         Err(e) => {
-            log_stderr(&format!("wind-tmux: HTTP error: {e}"));
+            log_to_file(&format!("wind-tmux: HTTP error: {e}"));
             return Err(());
         }
     };
-    log_stderr(&format!("post_split: response status={}", res.status()));
+    log_to_file(&format!("post_split: response status={}", res.status()));
     let status = res.status();
     let text = match res.text() {
         Ok(t) => t,
         Err(e) => {
-            log_stderr(&format!("wind-tmux: split-window read body: {e}"));
+            log_to_file(&format!("wind-tmux: split-window read body: {e}"));
             return Err(());
         }
     };
     if !status.is_success() {
-        log_stderr(&format!("wind-tmux: split-window error: {}", text));
+        log_to_file(&format!("wind-tmux: split-window error: {}", text));
         return Err(());
     }
     let new_idx: usize = serde_json::from_str::<serde_json::Value>(&text)
@@ -418,7 +448,7 @@ fn post_split(
         .and_then(|v| v.get("new_pane_index")?.as_u64())
         .map(|u| u as usize)
         .unwrap_or(0);
-    log_stderr(&format!("post_split: success new_pane_index={new_idx}"));
+    log_to_file(&format!("post_split: success new_pane_index={new_idx}"));
     if let Some(tpl) = print_template {
         println!("{}", render_tmux_format(tpl, new_idx));
     }
@@ -482,13 +512,198 @@ fn tmux_key_to_bytes(word: &str) -> Vec<u8> {
     }
 }
 
-fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
-    /// `-t ""` 或未出现 `-t` 时与 tmux 一致：发往当前窗格（由 teammate HTTP 侧 `teammate_tmux_pane_cursor` 记录）。
-    #[derive(Clone, Copy)]
-    enum SendTarget {
-        TmuxCurrent,
-        Index(usize),
+#[derive(Debug)]
+struct StructuredLaunch {
+    cwd: Option<String>,
+    program: String,
+    args: Vec<String>,
+    env: std::collections::HashMap<String, String>,
+}
+
+#[derive(Clone, Copy)]
+enum SendTarget {
+    TmuxCurrent,
+    Index(usize),
+}
+
+fn split_shell_words(input: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => cur.push(ch),
+            None => match ch {
+                '\'' | '"' => quote = Some(ch),
+                ' ' | '\t' => {
+                    if !cur.is_empty() {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                }
+                _ => cur.push(ch),
+            },
+        }
     }
+    if quote.is_some() {
+        return None;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    Some(out)
+}
+
+fn parse_structured_launch(line: &str) -> Option<StructuredLaunch> {
+    let tokens = split_shell_words(line.trim())?;
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut i = 0usize;
+    let mut cwd: Option<String> = None;
+    if tokens.get(i).is_some_and(|t| t == "cd") {
+        cwd = tokens.get(i + 1).cloned();
+        i += 2;
+        if tokens.get(i).is_some_and(|t| t == "&&") {
+            i += 1;
+        }
+    }
+    if tokens.get(i).is_none_or(|t| t != "env") {
+        return None;
+    }
+    i += 1;
+    let mut envs = std::collections::HashMap::<String, String>::new();
+    while let Some(tok) = tokens.get(i) {
+        if let Some((k, v)) = tok.split_once('=') {
+            if !k.is_empty() {
+                envs.insert(k.to_string(), v.to_string());
+                i += 1;
+                continue;
+            }
+        }
+        break;
+    }
+    if envs.is_empty() {
+        return None;
+    }
+    let program = expand_dynamic_tokens(tokens.get(i)?);
+    let args = tokens
+        .get(i + 1..)
+        .unwrap_or(&[])
+        .iter()
+        .map(|s| expand_dynamic_tokens(s))
+        .collect::<Vec<_>>();
+    for v in envs.values_mut() {
+        *v = expand_dynamic_tokens(v);
+    }
+    Some(normalize_structured_launch(StructuredLaunch {
+        cwd,
+        program,
+        args,
+        env: envs,
+    }))
+}
+
+fn expand_dynamic_tokens(s: &str) -> String {
+    let mut out = s.to_string();
+    // Claude 常见模板：`$(date +%s)`，结构化模式下手动替换为 epoch 秒。
+    if out.contains("$(date +%s)") {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        out = out.replace("$(date +%s)", &ts.to_string());
+    }
+    // Claude 常见模板：`$((RANDOM % 9000 + 1000))`，替换为 1000..9999。
+    if out.contains("$((RANDOM % 9000 + 1000))") {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let n = 1000 + (nanos % 9000);
+        out = out.replace("$((RANDOM % 9000 + 1000))", &n.to_string());
+    }
+    out
+}
+
+fn normalize_structured_launch(mut launch: StructuredLaunch) -> StructuredLaunch {
+    #[cfg(windows)]
+    {
+        let p = launch.program.trim();
+        if p.to_ascii_lowercase().ends_with(".js") {
+            let script = p.to_string();
+            let mut new_args = Vec::with_capacity(launch.args.len() + 1);
+            new_args.push(script.clone());
+            new_args.extend(launch.args);
+            launch.args = new_args;
+
+            // Prefer node.exe adjacent to nvm4w/node_modules root if present.
+            let candidate = Path::new(&script)
+                .ancestors()
+                .find_map(|a| {
+                    let name = a.file_name()?.to_string_lossy().to_ascii_lowercase();
+                    if name == "node_modules" {
+                        a.parent().map(|parent| parent.join("node.exe"))
+                    } else {
+                        None
+                    }
+                })
+                .filter(|p| p.is_file());
+            launch.program = candidate
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "node".to_string());
+        }
+    }
+    launch
+}
+
+fn post_spawn_process(
+    url: &str,
+    token: &str,
+    target: &SendTarget,
+    launch: &StructuredLaunch,
+) -> Result<(), ()> {
+    let mut body = serde_json::json!({
+        "cwd": &launch.cwd,
+        "program": &launch.program,
+        "args": &launch.args,
+        "env": &launch.env,
+    });
+    match target {
+        SendTarget::TmuxCurrent => body["use_tmux_current_pane"] = serde_json::json!(true),
+        SendTarget::Index(p) => {
+            body["pane"] = serde_json::json!(p);
+            body["use_tmux_current_pane"] = serde_json::json!(false);
+        }
+    }
+    let u = format!("{}/api/v1/spawn-process", url.trim_end_matches('/'));
+    log_to_file(&format!("spawn-process: posting to {}", u));
+    let res = client()
+        .post(u)
+        .headers(auth_headers(token))
+        .json(&body)
+        .send()
+        .map_err(|e| {
+            log_to_file(&format!("spawn-process: HTTP error: {e}"));
+            eprintln!("wind-tmux: {e}");
+        })?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().unwrap_or_default();
+        log_to_file(&format!(
+            "spawn-process: non-success status={} body={}",
+            status, text
+        ));
+        eprintln!("wind-tmux: spawn-process {}", status);
+        return Err(());
+    }
+    log_to_file("spawn-process: success");
+    Ok(())
+}
+
+fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    // `-t ""` 或未出现 `-t` 时与 tmux 一致：发往当前窗格（由 teammate HTTP 侧 `teammate_tmux_pane_cursor` 记录）。
     let mut target = SendTarget::TmuxCurrent;
     let mut i = 0;
     while i < rest.len() {
@@ -513,6 +728,16 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         buf.extend(tmux_key_to_bytes(w));
     }
     let text = String::from_utf8_lossy(&buf).into_owned();
+    let candidate = text.trim_end_matches(['\r', '\n']).trim();
+    if text.ends_with('\r') || text.ends_with('\n') {
+        if let Some(launch) = parse_structured_launch(candidate) {
+            if post_spawn_process(url, token, &target, &launch).is_ok() {
+                return Ok(());
+            }
+            // Spawn-process 失败时回退原始 send-keys，避免中断流程。
+            log_to_file("spawn-process failed, falling back to send-keys");
+        }
+    }
     let body = match target {
         SendTarget::TmuxCurrent => serde_json::json!({
             "use_tmux_current_pane": true,
@@ -540,7 +765,7 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 
 fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     // Claude Code 常用 tmux `list-panes -F ...` 推断 pane/window；优先返回兼容格式。
-    let mut pane_index = 0usize;
+    let mut pane_index = current_pane_index_from_env();
     let mut format: Option<String> = None;
     let mut all_panes = false;
     let mut i = 0usize;
@@ -669,7 +894,7 @@ fn cmd_kill_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
 
     // Just acknowledge - the actual kill will happen via the PTY exit
     // In Wind, when a pane's PTY exits, the pane is automatically cleaned up
-    log_stderr(&format!("kill-pane: pane={:?}, kill_all={}", pane_index, kill_all));
+    log_to_file(&format!("kill-pane: pane={:?}, kill_all={}", pane_index, kill_all));
     Ok(())
 }
 
@@ -711,7 +936,7 @@ fn cmd_resize_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> 
         i += 1;
     }
 
-    log_stderr(&format!(
+    log_to_file(&format!(
         "resize-pane: pane={:?}, direction={:?}, adjustment={}, width={:?}, height={:?}",
         pane_index, direction, adjustment, target_width, target_height
     ));
@@ -761,7 +986,7 @@ fn cmd_swap_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("swap-pane: source={:?}, dest={:?}", source_pane, dest_pane));
+    log_to_file(&format!("swap-pane: source={:?}, dest={:?}", source_pane, dest_pane));
     Ok(())
 }
 
@@ -805,7 +1030,7 @@ fn cmd_join_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("join-pane: source={:?}, target={:?}", source_pane, target_window));
+    log_to_file(&format!("join-pane: source={:?}, target={:?}", source_pane, target_window));
     Ok(())
 }
 
@@ -828,7 +1053,7 @@ fn cmd_respawn_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()>
         }
         i += 1;
     }
-    log_stderr(&format!("respawn-pane: pane={:?}, command={:?}", pane_index, command));
+    log_to_file(&format!("respawn-pane: pane={:?}, command={:?}", pane_index, command));
     Ok(())
 }
 
@@ -919,7 +1144,7 @@ fn cmd_select_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()
         }
         i += 1;
     }
-    log_stderr(&format!("select-window: index={:?}", window_index));
+    log_to_file(&format!("select-window: index={:?}", window_index));
     Ok(())
 }
 
@@ -938,7 +1163,7 @@ fn cmd_kill_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> 
         }
         i += 1;
     }
-    log_stderr(&format!("kill-window: index={:?}", window_index));
+    log_to_file(&format!("kill-window: index={:?}", window_index));
     Ok(())
 }
 
@@ -960,7 +1185,7 @@ fn cmd_rename_window(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("rename-window: index={:?}, name={:?}", window_index, new_name));
+    log_to_file(&format!("rename-window: index={:?}, name={:?}", window_index, new_name));
     Ok(())
 }
 
@@ -983,7 +1208,7 @@ fn cmd_move_window(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("move-window: source={:?}, dest={:?}", source_index, dest_index));
+    log_to_file(&format!("move-window: source={:?}, dest={:?}", source_index, dest_index));
     Ok(())
 }
 
@@ -1020,7 +1245,7 @@ fn cmd_select_layout(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("select-layout: window={:?}, layout={:?}", window_index, layout));
+    log_to_file(&format!("select-layout: window={:?}, layout={:?}", window_index, layout));
     Ok(())
 }
 
@@ -1110,7 +1335,7 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("new-session: name={:?}, detached={}", session_name, detached));
+    log_to_file(&format!("new-session: name={:?}, detached={}", session_name, detached));
 
     // tmux new-session creates window 0 with one pane by default.
     // We need to create at least one pane to match tmux semantics.
@@ -1128,13 +1353,29 @@ fn cmd_has_session(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_stderr(&format!("has-session: {}", session_name));
+    log_to_file(&format!("has-session: {}", session_name));
     // Just return success - we always have a session
     Ok(())
 }
 
-fn cmd_list_sessions() -> Result<(), ()> {
-    println!("wind: 1 windows (created Mon Jan 1 00:00:00 2020) [80x24]");
+fn cmd_list_sessions(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    if url.is_empty() || token.is_empty() {
+        eprintln!("wind-tmux: list-sessions needs WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN");
+        return Err(());
+    }
+    let _ = rest;
+    let u = format!("{}/api/v1/list-sessions", url.trim_end_matches('/'));
+    let res = client()
+        .get(u)
+        .headers(auth_headers(token))
+        .send()
+        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+    if !res.status().is_success() {
+        eprintln!("wind-tmux: list-sessions {}", res.status());
+        return Err(());
+    }
+    let text = res.text().map_err(|e| eprintln!("wind-tmux: {e}"))?;
+    print!("{text}");
     Ok(())
 }
 
@@ -1184,7 +1425,7 @@ fn cmd_kill_session(rest: &[String]) -> Result<(), ()> {
 }
 
 fn cmd_kill_server() -> Result<(), ()> {
-    log_stderr("kill-server requested");
+    log_to_file("kill-server requested");
     Ok(())
 }
 
@@ -1254,7 +1495,10 @@ fn cmd_list_windows(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     if let Some(fmt) = format {
-        println!("{}", render_tmux_format(&fmt, 0));
+        println!(
+            "{}",
+            render_tmux_format(&fmt, current_pane_index_from_env())
+        );
         return Ok(());
     }
 

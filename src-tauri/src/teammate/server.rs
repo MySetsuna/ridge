@@ -7,11 +7,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Local, Utc};
 use serde::Deserialize;
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 use crate::commands::{pane, terminal};
-use crate::state::AppState;
+use crate::state::{AppState, Workspace};
 use tauri::Emitter;
 
 #[derive(Clone)]
@@ -107,6 +109,7 @@ async fn run_server(
         .route("/api/v1/split-window", post(route_split))
         .route("/api/v1/capture-pane", get(route_capture))
         .route("/api/v1/send-keys", post(route_send_keys))
+        .route("/api/v1/spawn-process", post(route_spawn_process))
         .route("/api/v1/list-panes", get(route_list_panes))
     // Pane management
     .route("/api/v1/select-pane", post(route_select_pane))
@@ -114,8 +117,9 @@ async fn run_server(
     .route("/api/v1/resize-pane", post(route_resize_pane))
     // Window management
     .route("/api/v1/new-window", post(route_new_window))
-    .route("/api/v1/list-windows", get(route_list_windows))
-    .route("/api/v1/list-clients", get(route_list_clients))
+        .route("/api/v1/list-windows", get(route_list_windows))
+        .route("/api/v1/list-sessions", get(route_list_sessions))
+        .route("/api/v1/list-clients", get(route_list_clients))
         .with_state(ctx);
 
     if let Err(e) = axum::serve(listener, app).await {
@@ -179,6 +183,7 @@ async fn route_split(
                 None,
                 cwd.as_deref(),
                 cmd,
+                None,
                 Some(new_idx),
             ) {
                 {
@@ -280,6 +285,161 @@ async fn route_send_keys(
         Ok(()) => (StatusCode::OK, "ok").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct SpawnProcessBody {
+    #[serde(default)]
+    pane: Option<usize>,
+    #[serde(default)]
+    use_tmux_current_pane: bool,
+    #[serde(default)]
+    cwd: Option<String>,
+    program: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: std::collections::HashMap<String, String>,
+}
+
+async fn route_spawn_process(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<SpawnProcessBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = ctx.state.active_workspace_id();
+    let pane_idx = if body.use_tmux_current_pane {
+        ctx.state
+            .workspaces
+            .read()
+            .get(&wid)
+            .map(|ws| ws.teammate_tmux_pane_cursor)
+            .unwrap_or(0)
+    } else {
+        body.pane.unwrap_or(0)
+    };
+    let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane_idx) {
+        Ok(u) => u,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    let cwd = body
+        .cwd
+        .as_ref()
+        .map(|s| std::path::PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty());
+    let command = terminal::StructuredPtyCommand {
+        program: body.program,
+        args: body.args,
+        env: body.env,
+    };
+    #[cfg(windows)]
+    {
+        let line = build_powershell_launch_line(cwd.as_deref(), &command);
+        if let Err(e) =
+            terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, line.as_bytes())
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("structured spawn failed: {e}"),
+            )
+                .into_response();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Err(e) = terminal::ensure_pane_pty_workspace(
+            &ctx.state,
+            wid,
+            pid,
+            None,
+            cwd.as_deref(),
+            None,
+            Some(command),
+            Some(pane_idx),
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("structured spawn failed: {e}"),
+            )
+                .into_response();
+        }
+    }
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_tmux_pane_cursor = pane_idx;
+        }
+    }
+    let _ = ctx
+        .handle
+        .emit("teammate-active-pane-changed", pid.to_string());
+    (StatusCode::OK, "ok").into_response()
+}
+
+#[cfg(windows)]
+fn ps_single_quote(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+#[cfg(windows)]
+fn build_powershell_launch_line(
+    cwd: Option<&std::path::Path>,
+    command: &terminal::StructuredPtyCommand,
+) -> String {
+    let command = normalize_windows_command(command);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(dir) = cwd {
+        let d = ps_single_quote(&dir.to_string_lossy());
+        parts.push(format!("Set-Location -LiteralPath '{d}'"));
+    }
+    for (k, v) in &command.env {
+        let key = ps_single_quote(k);
+        let val = ps_single_quote(v);
+        parts.push(format!("$env:{key}='{val}'"));
+    }
+    let mut exec = format!("& '{}'", ps_single_quote(&command.program));
+    for a in &command.args {
+        exec.push(' ');
+        exec.push('\'');
+        exec.push_str(&ps_single_quote(a));
+        exec.push('\'');
+    }
+    parts.push(exec);
+    // 强制单行分号分隔，避免 PTY 分块/换行导致的 `>>` continuation 语法漂移。
+    format!("{}\r", parts.join("; "))
+}
+
+#[cfg(windows)]
+fn normalize_windows_command(
+    command: &terminal::StructuredPtyCommand,
+) -> terminal::StructuredPtyCommand {
+    let mut out = command.clone();
+    if out.program.to_ascii_lowercase().ends_with(".js") {
+        let script = out.program.clone();
+        let mut args = Vec::with_capacity(out.args.len() + 1);
+        args.push(script.clone());
+        args.extend(out.args);
+        out.args = args;
+
+        let candidate = std::path::Path::new(&script)
+            .ancestors()
+            .find_map(|a| {
+                let name = a.file_name()?.to_string_lossy().to_ascii_lowercase();
+                if name == "node_modules" {
+                    a.parent().map(|parent| parent.join("node.exe"))
+                } else {
+                    None
+                }
+            })
+            .filter(|p| p.is_file());
+        out.program = candidate
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "node".to_string());
+    }
+    out
 }
 
 async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
@@ -440,6 +600,7 @@ async fn route_new_window(
                 None,
                 None,
                 None,
+                None,
             ) {
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("PTY init failed: {e}")).into_response();
             }
@@ -455,6 +616,65 @@ async fn route_list_windows(State(ctx): State<TeammateCtx>, headers: HeaderMap) 
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     (StatusCode::OK, "0: wind* (1 panes) [80x24] @0 (active)").into_response()
+}
+
+fn workspace_first_pty_size(ws: &Workspace) -> (u16, u16) {
+    for h in ws.terminals.values() {
+        if let Ok(s) = h.master.lock().get_size() {
+            return (s.cols.max(1), s.rows.max(1));
+        }
+    }
+    (120, 80)
+}
+
+/// tmux 默认 `list-sessions` 行首为 `name:`，会话名不能含冒号（否则解析歧义）。
+fn tmux_list_sessions_label(id: Uuid, user_name: Option<&str>) -> String {
+    let from_user = user_name.map(str::trim).filter(|s| !s.is_empty()).map(|s| {
+        s.chars()
+            .map(|c| match c {
+                ':' | '\n' | '\r' => '_',
+                _ => c,
+            })
+            .collect::<String>()
+    });
+    let cleaned = from_user.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(s) = cleaned {
+        return s.to_string();
+    }
+    let compact: String = id.to_string().replace('-', "");
+    let n = compact.len().min(8);
+    format!("ws{}", &compact[..n])
+}
+
+async fn route_list_sessions(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let active = ctx.state.active_workspace_id();
+    let order = ctx.state.workspace_order.read().clone();
+    let names = ctx.state.workspace_names.read().clone();
+    let map = ctx.state.workspaces.read();
+
+    let mut lines: Vec<String> = Vec::with_capacity(order.len());
+    for wid in order.iter() {
+        let Some(ws) = map.get(wid) else {
+            continue;
+        };
+        let label = tmux_list_sessions_label(*wid, names.get(wid).map(String::as_str));
+        let (cols, rows) = workspace_first_pty_size(ws);
+        let created_local: DateTime<Local> = DateTime::<Utc>::from(ws.created_at).with_timezone(&Local);
+        let date_str = created_local.format("%a %b %d %H:%M:%S %Y").to_string();
+        // Wind 每个工作区对应 tmux 的一个 session、一个 window（多 pane 为分屏）。
+        let mut line = format!(
+            "{label}: 1 windows (created {date_str}) [{cols}x{rows}]"
+        );
+        if *wid == active {
+            line.push_str(" (attached)");
+        }
+        lines.push(line);
+    }
+
+    (StatusCode::OK, lines.join("\n")).into_response()
 }
 
 async fn route_list_clients(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {

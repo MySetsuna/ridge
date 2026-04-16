@@ -58,6 +58,7 @@ pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
                 pane_tree: PaneTree::new(),
                 terminals: std::collections::HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
+                created_at: std::time::SystemTime::now(),
             },
         );
     }
@@ -236,6 +237,7 @@ pub fn restore_workspace(
                 pane_tree,
                 terminals: std::collections::HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
+                created_at: std::time::SystemTime::now(),
             },
         );
     }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
@@ -24,6 +25,8 @@ pub struct Workspace {
     pub terminals: HashMap<Uuid, PtyHandle>,
     /// Claude `send-keys -t ""` / 无 `-t` 时 tmux「当前窗格」：在 Wind 里对应 `split-window` / `select-pane` 最后指向的 pane 索引。
     pub teammate_tmux_pane_cursor: usize,
+    /// 工作区创建时间（`list-sessions` 等 tmux 兼容输出用）。
+    pub created_at: SystemTime,
 }
 
 #[derive(Clone)]
@@ -53,6 +56,7 @@ impl AppState {
                 pane_tree: PaneTree::new(),
                 terminals: HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
+                created_at: SystemTime::now(),
             },
         );
         Self {
