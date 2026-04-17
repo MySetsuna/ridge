@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,7 @@ fn create_pane_inner(
 		None,
 		None,
 		None,
+		None,
 	)?;
 
 	// 设置 pane 的工作目录用于 git diff 跟踪
@@ -52,67 +54,11 @@ fn create_pane_inner(
 	Ok(())
 }
 
-/// Claude agent-teams 常见一行：`cd ... && env ...`（类 sh）；Windows 上由 PowerShell 包一层再交给 `cmd /c`。
-fn looks_like_unix_one_liner(cmd: &str) -> bool {
-	let t = cmd.trim();
-	t.contains(" env ")
-		|| t.starts_with("env ")
-		|| (t.contains("&&") && (t.contains("CLAUDE") || t.contains("ANTHROPIC")))
-}
-
-fn base64_standard(data: &[u8]) -> String {
-	const CHARS: &[u8; 64] =
-		b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
-	let mut i = 0;
-	while i + 3 <= data.len() {
-		let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
-		out.push(CHARS[((n >> 18) & 63) as usize] as char);
-		out.push(CHARS[((n >> 12) & 63) as usize] as char);
-		out.push(CHARS[((n >> 6) & 63) as usize] as char);
-		out.push(CHARS[(n & 63) as usize] as char);
-		i += 3;
-	}
-	let rem = data.len() - i;
-	if rem == 1 {
-		let n = (data[i] as u32) << 16;
-		out.push(CHARS[((n >> 18) & 63) as usize] as char);
-		out.push(CHARS[((n >> 12) & 63) as usize] as char);
-		out.push('=');
-		out.push('=');
-	} else if rem == 2 {
-		let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
-		out.push(CHARS[((n >> 18) & 63) as usize] as char);
-		out.push(CHARS[((n >> 12) & 63) as usize] as char);
-		out.push(CHARS[((n >> 6) & 63) as usize] as char);
-		out.push('=');
-	}
-	out
-}
-
-/// `powershell.exe -EncodedCommand` 要求：UTF-16LE 字节再 Base64。
-fn powershell_encoded_command_utf16le(script: &str) -> String {
-	let utf16: Vec<u16> = script.encode_utf16().collect();
-	let mut bytes = Vec::with_capacity(utf16.len() * 2);
-	for u in utf16 {
-		bytes.extend_from_slice(&u.to_le_bytes());
-	}
-	base64_standard(&bytes)
-}
-
-/// Windows：用内置 PowerShell 解码 UTF-8 命令后 `cmd /c` 执行，避免把类 Unix 一行直接塞进交互式 PS。
-fn windows_powershell_cmd_c_for_line(line: &str) -> CommandBuilder {
-	let inner_b64 = base64_standard(line.as_bytes());
-	let ps = format!(
-		r#"$b=[System.Convert]::FromBase64String('{inner_b64}');$s=[System.Text.Encoding]::UTF8.GetString($b);$x=[System.IO.Path]::Combine($env:windir,'System32','cmd.exe');$a='/c '+$s;$p=Start-Process -FilePath $x -ArgumentList $a -NoNewWindow -PassThru -Wait;exit $p.ExitCode"#,
-	);
-	let enc = powershell_encoded_command_utf16le(&ps);
-	let mut c = CommandBuilder::new("powershell.exe");
-	c.arg("-NoLogo");
-	c.arg("-NoProfile");
-	c.arg("-EncodedCommand");
-	c.arg(enc);
-	c
+#[derive(Clone, Debug)]
+pub struct StructuredPtyCommand {
+	pub program: String,
+	pub args: Vec<String>,
+	pub env: HashMap<String, String>,
 }
 
 /// Claude Code shells out to `tmux`, while Cargo places `wind-tmux(.exe)` beside the main binary.
@@ -202,9 +148,18 @@ pub fn ensure_pane_pty_workspace(
 	shell: Option<String>,
 	cwd: Option<&Path>,
 	initial_command: Option<&str>,
+	structured_command: Option<StructuredPtyCommand>,
 	tmux_pane_index: Option<usize>,
 ) -> Result<(), AppError> {
 	let ic = initial_command.map(str::trim).filter(|s| !s.is_empty());
+	let sc = structured_command
+		.map(|s| StructuredPtyCommand {
+			program: s.program.trim().to_string(),
+			args: s.args,
+			env: s.env,
+		})
+		.filter(|s| !s.program.is_empty());
+	let has_explicit_launch = ic.is_some() || sc.is_some();
 
 	{
 		let map = state.workspaces.read();
@@ -212,7 +167,7 @@ pub fn ensure_pane_pty_workspace(
 			.get(&workspace_id)
 			.ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
 		if ws.terminals.contains_key(&pane_id) {
-			if ic.is_some() {
+			if has_explicit_launch {
 				drop(map);
 				teardown_pane_pty_if_present(state, workspace_id, pane_id);
 			} else {
@@ -225,17 +180,21 @@ pub fn ensure_pane_pty_workspace(
 	let pty_system = native_pty_system();
 	let mut cmd = if let Some(s) = shell {
 		CommandBuilder::new(s)
+	} else if let Some(spec) = sc.as_ref() {
+		let mut c = CommandBuilder::new(&spec.program);
+		for a in &spec.args {
+			c.arg(a);
+		}
+		c
 	} else if let Some(line) = ic {
 		#[cfg(windows)]
 		{
-			if looks_like_unix_one_liner(line) {
-				windows_powershell_cmd_c_for_line(line)
-			} else {
-				let mut c = CommandBuilder::new("cmd.exe");
-				c.arg("/c");
-				c.arg(line);
-				c
-			}
+			let mut c = CommandBuilder::new("cmd.exe");
+			c.arg("/d");
+			c.arg("/s");
+			c.arg("/c");
+			c.arg(line);
+			c
 		}
 		#[cfg(not(windows))]
 		{
@@ -273,24 +232,14 @@ pub fn ensure_pane_pty_workspace(
 		cmd.env("TMUX_PANE", format!("{pane_slot}"));
 		let log_path = std::env::var("WIND_TMUX_LOG")
 			.ok()
-			.filter(|s| !s.trim().is_empty())
-			.or_else(|| {
-				#[cfg(windows)]
-				{
-					let novel = std::path::Path::new(r"D:\novel");
-					if novel.exists() || std::fs::create_dir_all(novel).is_ok() {
-						Some(r"D:\novel\wind-tmux.log".to_string())
-					} else {
-						None
-					}
-				}
-				#[cfg(not(windows))]
-				{
-					None
-				}
-			});
-		if let Some(ref path) = log_path {
+			.filter(|s| !s.trim().is_empty());
+		{
 			cmd.env("WIND_TMUX_LOG", path.as_str());
+		}
+	}
+	if let Some(spec) = sc.as_ref() {
+		for (k, v) in &spec.env {
+			cmd.env(k, v);
 		}
 	}
 	if let Some(dir) = cwd {

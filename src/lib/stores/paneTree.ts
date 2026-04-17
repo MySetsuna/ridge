@@ -11,9 +11,14 @@ function normalizeSplitRatios(sizes: number[]): number[] {
 }
 
 /** 仅更新 `path` 所指 `Split` 的 `ratios`（path 为空表示根为 Split）。 */
-function applyRatiosAtPath(root: PaneNode, path: number[], sizes: number[]): PaneNode {
+function applyRatiosAtPath(
+  root: PaneNode,
+  path: number[],
+  sizes: number[]
+): PaneNode {
   if (path.length === 0) {
-    if (root.type !== 'split' || root.children.length !== sizes.length) return root;
+    if (root.type !== 'split' || root.children.length !== sizes.length)
+      return root;
     return { ...root, ratios: normalizeSplitRatios(sizes) };
   }
   if (root.type !== 'split') return root;
@@ -23,13 +28,13 @@ function applyRatiosAtPath(root: PaneNode, path: number[], sizes: number[]): Pan
     ...root,
     children: root.children.map((child, i) =>
       i === head ? applyRatiosAtPath(child, tail, sizes) : child
-    )
+    ),
   };
 }
 /** 占位；首屏 hydrate 前不挂载终端。根 pane 的 id 由后端按工作区生成唯一 UUID。 */
 export const paneTreeStore = writable<PaneNode>({
   type: 'leaf',
-  id: ''
+  id: '',
 });
 
 /** 最近一次点击/聚焦的终端窗格；分屏针对此 id（与 layout 中 leaf id 一致）。 */
@@ -60,9 +65,9 @@ export type SplitResizeUiState =
       phase: 'pending' | 'junction';
       primary: SplitterRef;
       orthogonals: SplitterRef[];
-  sameAxisCandidates: SplitterRef[];
+      sameAxisCandidates: SplitterRef[];
       pointer: { x: number; y: number };
-  snapState: JunctionSnapState | null;
+      snapState: JunctionSnapState | null;
     }
   | {
       phase: 'drag';
@@ -70,7 +75,7 @@ export type SplitResizeUiState =
       dragStart: { x: number; y: number };
       snapshots: SplitterSnapshot[];
       pendingUpdates: SplitRatioUpdate[];
-  snapState: JunctionSnapState | null;
+      snapState: JunctionSnapState | null;
     };
 
 export interface SplitRatioUpdate {
@@ -103,11 +108,15 @@ export const SNAP_THRESHOLD_PX = 10;
 const HOVER_DEBOUNCE_MS = 90;
 const MIN_PANE_RATIO = 6;
 let splitHoverTimer: ReturnType<typeof setTimeout> | undefined;
-export const splitResizeUiState = writable<SplitResizeUiState>({ phase: 'idle' });
+export const splitResizeUiState = writable<SplitResizeUiState>({
+  phase: 'idle',
+});
 
 export const activeWorkspaceId = writable<string>('');
 
-export const workspacesList = writable<{ id: string; index: number; name?: string }[]>([]);
+export const workspacesList = writable<
+  { id: string; index: number; name?: string }[]
+>([]);
 
 // 工作区名称映射（用于UI显示）
 export const workspaceNames = writable<Record<string, string>>({});
@@ -132,9 +141,11 @@ export function clearJunctionRegistry() {
 }
 
 export function registerJunction(junction: JunctionRef) {
-  const key = `${junction.axis}-${Math.round(junction.positionPx[junction.axis])}`;
+  const key = `${junction.axis}-${Math.round(
+    junction.positionPx[junction.axis]
+  )}`;
   const existing = junctionRegistry.get(key) || [];
-  if (!existing.find(j => j.id === junction.id)) {
+  if (!existing.find((j) => j.id === junction.id)) {
     existing.push(junction);
     junctionRegistry.set(key, existing);
   }
@@ -162,14 +173,16 @@ export function findJunctionsNearPosition(
   return candidates;
 }
 
-
 function normalizeWithin100(values: number[]): number[] {
   const sum = values.reduce((a, b) => a + b, 0);
   if (sum <= 1e-9) return values.map(() => 100 / Math.max(values.length, 1));
   return values.map((v) => (v / sum) * 100);
 }
 
-function getSplitNodeByPath(root: PaneNode, path: number[]): Extract<PaneNode, { type: 'split' }> | null {
+function getSplitNodeByPath(
+  root: PaneNode,
+  path: number[]
+): Extract<PaneNode, { type: 'split' }> | null {
   let cur: PaneNode = root;
   for (const idx of path) {
     if (cur.type !== 'split') return null;
@@ -196,7 +209,10 @@ function adjustRatiosBySplitterDelta(
 
   const minBefore = before.length * MIN_PANE_RATIO;
   const maxBefore = 100 - after.length * MIN_PANE_RATIO;
-  const targetBefore = Math.min(maxBefore, Math.max(minBefore, beforeSum + deltaPercent));
+  const targetBefore = Math.min(
+    maxBefore,
+    Math.max(minBefore, beforeSum + deltaPercent)
+  );
   const targetAfter = 100 - targetBefore;
   const beforeScale = targetBefore / beforeSum;
   const afterScale = targetAfter / afterSum;
@@ -236,19 +252,27 @@ function updatesFromSnapshots(
     let merged = refs[0].ratios.slice();
     for (const { ref, isPrimary } of refs) {
       if (ref.basisPx <= 1) continue;
-      const rawDeltaPx = ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
+      const rawDeltaPx =
+        ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
       // 正交联动轴更容易受手部微抖影响，给更大的 deadzone，减少“乱飘”。
       const deadzone = isPrimary ? 0.8 : 2.8;
       const deltaPx = Math.abs(rawDeltaPx) <= deadzone ? 0 : rawDeltaPx;
       const deltaPercent = (deltaPx / ref.basisPx) * 100;
-      merged = adjustRatiosBySplitterDelta(merged, ref.splitterIndex, deltaPercent);
+      merged = adjustRatiosBySplitterDelta(
+        merged,
+        ref.splitterIndex,
+        deltaPercent
+      );
     }
     updates.push({ path: refs[0].ref.splitPath, ratios: merged });
   }
   return updates;
 }
 
-function applyRatioUpdates(root: PaneNode, updates: SplitRatioUpdate[]): PaneNode {
+function applyRatioUpdates(
+  root: PaneNode,
+  updates: SplitRatioUpdate[]
+): PaneNode {
   let next = root;
   for (const update of updates) {
     next = applyRatiosAtPath(next, update.path, update.ratios);
@@ -278,7 +302,7 @@ export function queueSplitResizeJunction(
     orthogonals: rest,
     sameAxisCandidates,
     pointer,
-    snapState
+    snapState,
   });
   splitHoverTimer = setTimeout(() => {
     splitResizeUiState.set({
@@ -287,7 +311,7 @@ export function queueSplitResizeJunction(
       orthogonals: rest,
       sameAxisCandidates,
       pointer,
-      snapState
+      snapState,
     });
     setGlobalSplitResizeCursor(true);
   }, HOVER_DEBOUNCE_MS);
@@ -308,7 +332,8 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   const root = get(paneTreeStore);
 
   // Check if 4-way junction snap (3+ coupled splitters at same junction)
-  const is4WaySnap = ui.snapState !== null && ui.snapState.coupledSplitters.length >= 3;
+  const is4WaySnap =
+    ui.snapState !== null && ui.snapState.coupledSplitters.length >= 3;
 
   // Include all coupled splitters from snap state for 4-way resize
   let refs = dedupeRefs([ui.primary, ...ui.orthogonals]);
@@ -324,13 +349,22 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     let basisPx = ref.basisPx;
     if (typeof document !== 'undefined') {
       const splitRoot = document.querySelector(
-        `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
+        `.wf-split[data-split-path="${pathKey(
+          ref.splitPath
+        )}"][data-split-axis="${ref.axis}"]`
       ) as HTMLElement;
       if (splitRoot) {
-        basisPx = Math.max(1, ref.axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight);
+        basisPx = Math.max(
+          1,
+          ref.axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight
+        );
       }
     }
-    snapshots.push({ ref: { ...ref, basisPx }, ratios: split.ratios.slice(), isPrimary: i === 0 });
+    snapshots.push({
+      ref: { ...ref, basisPx },
+      ratios: split.ratios.slice(),
+      isPrimary: i === 0,
+    });
   }
   if (!snapshots.length) return;
   splitResizeUiState.set({
@@ -339,7 +373,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     dragStart: pointer,
     snapshots,
     pendingUpdates: [],
-    snapState: ui.snapState
+    snapState: ui.snapState,
   });
   setGlobalSplitResizeCursor(true);
   if (is4WaySnap && typeof document !== 'undefined') {
@@ -355,7 +389,7 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
   splitResizeUiState.set({
     ...ui,
     pointer,
-    pendingUpdates: updates
+    pendingUpdates: updates,
   });
 }
 
@@ -403,7 +437,7 @@ export async function syncPaneLayoutFromBackend() {
     reportDevIssue({
       title: 'Layout sync failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
@@ -413,7 +447,9 @@ export async function syncPaneLayoutFromBackend() {
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   try {
-    const list = await invoke<{ id: string; index: number }[]>('list_workspaces');
+    const list = await invoke<{ id: string; index: number }[]>(
+      'list_workspaces'
+    );
     const active = await invoke<string>('get_active_workspace_id');
     const layout = await invoke<PaneNode>('get_pane_layout');
     workspacesList.set(list);
@@ -425,7 +461,7 @@ export async function refreshWorkspaces() {
     reportDevIssue({
       title: 'Workspace refresh failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
@@ -441,7 +477,7 @@ export async function createWorkspace() {
     reportDevIssue({
       title: 'Workspace create failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
@@ -460,17 +496,20 @@ export async function switchWorkspace(workspaceId: string) {
     reportDevIssue({
       title: 'Workspace switch failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
 }
 
-export async function splitPane(paneId: string, direction: 'horizontal' | 'vertical') {
+export async function splitPane(
+  paneId: string,
+  direction: 'horizontal' | 'vertical'
+) {
   if (!isTauri()) return '';
   const newId = await invoke<string>('split_pane', {
     paneId,
-    direction
+    direction,
   });
   await syncPaneLayoutFromBackend();
   return newId;
@@ -486,7 +525,7 @@ export async function dockPane(
   await invoke('dock_pane', {
     sourcePaneId,
     targetPaneId,
-    region
+    region,
   });
   await syncPaneLayoutFromBackend();
   activePaneId.set(sourcePaneId);
@@ -539,8 +578,8 @@ export async function toggleEditor(paneId: string, filePath?: string) {
   await invoke('toggle_mode', {
     paneId,
     mode: {
-      Editor: { file_path: filePath || null, language: 'rust' }
-    }
+      Editor: { file_path: filePath || null, language: 'rust' },
+    },
   });
 }
 
@@ -555,7 +594,7 @@ export async function closeWorkspace(workspaceId: string) {
     reportDevIssue({
       title: 'Workspace close failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
@@ -572,7 +611,7 @@ export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
     reportDevIssue({
       title: 'Workspace reorder failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
@@ -584,14 +623,14 @@ export async function renameWorkspace(workspaceId: string, name: string) {
   try {
     await invoke('rename_workspace', { workspaceId, name });
     // 更新本地名称映射
-    workspaceNames.update(names => ({ ...names, [workspaceId]: name }));
+    workspaceNames.update((names) => ({ ...names, [workspaceId]: name }));
     await refreshWorkspaces();
   } catch (e) {
     console.error('renameWorkspace', e);
     reportDevIssue({
       title: 'Workspace rename failed',
       message: String(e),
-      stack: e instanceof Error ? e.stack : undefined
+      stack: e instanceof Error ? e.stack : undefined,
     });
     throw e;
   }
@@ -600,56 +639,55 @@ export async function renameWorkspace(workspaceId: string, name: string) {
 // ============ 已保存工作区相关 ============
 
 export interface SavedWorkspace {
- id: string;
- name: string;
- paneTree: PaneNode;
- paneCwds: Record<string, string>;
- savedAt: string;
+  id: string;
+  name: string;
+  paneTree: PaneNode;
+  paneCwds: Record<string, string>;
+  savedAt: string;
 }
 
 export const savedWorkspacesList = writable<SavedWorkspace[]>([]);
 
 /** 获取已保存的工作区列表 */
 export async function loadSavedWorkspaces() {
- if (!isTauri()) return;
- try {
- const list = await invoke<SavedWorkspace[]>('list_saved_workspaces');
- savedWorkspacesList.set(list);
- } catch (e) {
- console.error('loadSavedWorkspaces', e);
- }
+  if (!isTauri()) return;
+  try {
+    const list = await invoke<SavedWorkspace[]>('list_saved_workspaces');
+    savedWorkspacesList.set(list);
+  } catch (e) {
+    console.error('loadSavedWorkspaces', e);
+  }
 }
 
 /** 保存当前工作区 */
 export async function saveCurrentWorkspace() {
- if (!isTauri()) return;
- try {
- await invoke('save_workspace');
- await loadSavedWorkspaces();
- } catch (e) {
- console.error('saveCurrentWorkspace', e);
- }
+  if (!isTauri()) return;
+  try {
+    await invoke('save_workspace');
+    await loadSavedWorkspaces();
+  } catch (e) {
+    console.error('saveCurrentWorkspace', e);
+  }
 }
 
 /** 删除已保存的工作区 */
 export async function deleteSavedWorkspace(id: string) {
- if (!isTauri()) return;
- try {
- await invoke('delete_saved_workspace', { id });
- await loadSavedWorkspaces();
- } catch (e) {
- console.error('deleteSavedWorkspace', e);
- }
+  if (!isTauri()) return;
+  try {
+    await invoke('delete_saved_workspace', { id });
+    await loadSavedWorkspaces();
+  } catch (e) {
+    console.error('deleteSavedWorkspace', e);
+  }
 }
 
 /** 重命名已保存的工作区 */
 export async function renameSavedWorkspace(id: string, name: string) {
- if (!isTauri()) return;
- try {
- await invoke('rename_saved_workspace', { id, name });
- await loadSavedWorkspaces();
- } catch (e) {
- console.error('renameSavedWorkspace', e);
- }
+  if (!isTauri()) return;
+  try {
+    await invoke('rename_saved_workspace', { id, name });
+    await loadSavedWorkspaces();
+  } catch (e) {
+    console.error('renameSavedWorkspace', e);
+  }
 }
-

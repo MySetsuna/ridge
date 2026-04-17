@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
@@ -30,6 +31,8 @@ pub struct Workspace {
     pub pane_sizes: HashMap<Uuid, (u16, u16)>,
     /// Previous pane index for tmux `last-pane` swap functionality.
     pub last_pane_index: Option<usize>,
+    /// 工作区创建时间（`list-sessions` 等 tmux 兼容输出用）。
+    pub created_at: SystemTime,
 }
 
 #[derive(Clone)]
@@ -62,6 +65,7 @@ impl AppState {
                 teammate_pane_titles: HashMap::new(),
                 pane_sizes: HashMap::new(),
                 last_pane_index: None,
+                created_at: SystemTime::now(),
             },
         );
         Self {

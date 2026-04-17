@@ -9,9 +9,9 @@
     DockRegion,
     SplitResizeUiState,
     SplitterRef,
-  JunctionRef,
-  JunctionSnapState
-} from '$lib/stores/paneTree';
+    JunctionRef,
+    JunctionSnapState,
+  } from '$lib/stores/paneTree';
   import {
     paneTreeStore,
     getAllPaneIds,
@@ -27,11 +27,11 @@
     startSplitResizeDrag,
     updateSplitResizeDrag,
     finishSplitResizeDrag,
-  SNAP_THRESHOLD_PX,
-  findJunctionsNearPosition,
-  registerJunction,
-  clearJunctionRegistry
-} from '$lib/stores/paneTree';
+    SNAP_THRESHOLD_PX,
+    findJunctionsNearPosition,
+    registerJunction,
+    clearJunctionRegistry,
+  } from '$lib/stores/paneTree';
 
   interface Props {
     node: PaneNode;
@@ -72,7 +72,11 @@
     }
   }
 
-  function regionAtPoint(clientX: number, clientY: number, el: HTMLElement): DockRegion {
+  function regionAtPoint(
+    clientX: number,
+    clientY: number,
+    el: HTMLElement
+  ): DockRegion {
     const r = el.getBoundingClientRect();
     const x = (clientX - r.left) / Math.max(r.width, 1);
     const y = (clientY - r.top) / Math.max(r.height, 1);
@@ -93,7 +97,12 @@
     return 'ring-2 ring-[var(--wf-accent)] ring-inset';
   }
 
-  type SplitPaneSizeEvent = { min: number; max: number; size: number; snap: number };
+  type SplitPaneSizeEvent = {
+    min: number;
+    max: number;
+    size: number;
+    snap: number;
+  };
 
   function onSplitResized(e: CustomEvent<SplitPaneSizeEvent[]>) {
     if (node.type !== 'split') return;
@@ -122,10 +131,16 @@
   }
 
   function refEqual(a: SplitterRef, b: SplitterRef): boolean {
-    return a.axis === b.axis && a.splitterIndex === b.splitterIndex && pathEqual(a.splitPath, b.splitPath);
+    return (
+      a.axis === b.axis &&
+      a.splitterIndex === b.splitterIndex &&
+      pathEqual(a.splitPath, b.splitPath)
+    );
   }
 
-  function isSplitterTargetInHost(target: EventTarget | null): target is HTMLElement {
+  function isSplitterTargetInHost(
+    target: EventTarget | null
+  ): target is HTMLElement {
     if (!(target instanceof HTMLElement) || !splitHost) return false;
     const splitter = target.closest('.splitpanes__splitter');
     return !!splitter && splitHost.contains(splitter);
@@ -136,9 +151,23 @@
     return splitHost.querySelector<HTMLElement>(':scope > .wf-split');
   }
 
-  function pointToRectDistance(clientX: number, clientY: number, rect: DOMRect): number {
-    const dx = clientX < rect.left ? rect.left - clientX : clientX > rect.right ? clientX - rect.right : 0;
-    const dy = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+  function pointToRectDistance(
+    clientX: number,
+    clientY: number,
+    rect: DOMRect
+  ): number {
+    const dx =
+      clientX < rect.left
+        ? rect.left - clientX
+        : clientX > rect.right
+          ? clientX - rect.right
+          : 0;
+    const dy =
+      clientY < rect.top
+        ? rect.top - clientY
+        : clientY > rect.bottom
+          ? clientY - rect.bottom
+          : 0;
     return Math.sqrt(dx * dx + dy * dy);
   }
 
@@ -154,19 +183,27 @@
     const splitterIndex = splitters.indexOf(splitter);
     if (splitterIndex < 0) return null;
     const axis = node.direction === 'horizontal' ? 'x' : 'y';
-    const basisPx = Math.max(1, axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight);
+    const basisPx = Math.max(
+      1,
+      axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight
+    );
     return {
       splitPath: splitPath.slice(),
       splitterIndex,
       axis,
-      basisPx
+      basisPx,
     };
   }
 
-  function findOrthogonalRefs(pointer: { x: number; y: number }, primary: SplitterRef): SplitterRef[] {
+  function findOrthogonalRefs(
+    pointer: { x: number; y: number },
+    primary: SplitterRef
+  ): SplitterRef[] {
     if (typeof document === 'undefined') return [];
     const allSplitters = Array.from(
-      document.querySelectorAll<HTMLElement>('.wf-split > .splitpanes__splitter')
+      document.querySelectorAll<HTMLElement>(
+        '.wf-split > .splitpanes__splitter'
+      )
     );
     const candidates: { ref: SplitterRef; distance: number }[] = [];
     for (const splitter of allSplitters) {
@@ -177,14 +214,28 @@
       if (axisAttr === primary.axis) continue;
       const path = parsePathKey(splitRoot.dataset.splitPath);
       const splitters = Array.from(
-        splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
+        splitRoot.querySelectorAll<HTMLElement>(
+          ':scope > .splitpanes__splitter'
+        )
       );
       const splitterIndex = splitters.indexOf(splitter);
       if (splitterIndex < 0) continue;
-      const basisPx = Math.max(1, axisAttr === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight);
-      const ref: SplitterRef = { splitPath: path, splitterIndex, axis: axisAttr, basisPx };
+      const basisPx = Math.max(
+        1,
+        axisAttr === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight
+      );
+      const ref: SplitterRef = {
+        splitPath: path,
+        splitterIndex,
+        axis: axisAttr,
+        basisPx,
+      };
       if (refEqual(ref, primary)) continue;
-      const distance = pointToRectDistance(pointer.x, pointer.y, splitter.getBoundingClientRect());
+      const distance = pointToRectDistance(
+        pointer.x,
+        pointer.y,
+        splitter.getBoundingClientRect()
+      );
       if (distance <= ORTHOGONAL_TRIGGER_PX) candidates.push({ ref, distance });
     }
     candidates.sort((a, b) => a.distance - b.distance);
@@ -243,7 +294,10 @@
     if (node.type !== 'split') return;
     if ($splitResizeUiState.phase === 'drag') return;
     if (!isSplitterTargetInHost(e.target)) {
-      if ($splitResizeUiState.phase !== 'idle' && splitEngaged(splitPath, $splitResizeUiState)) {
+      if (
+        $splitResizeUiState.phase !== 'idle' &&
+        splitEngaged(splitPath, $splitResizeUiState)
+      ) {
         clearSplitResizeUi();
       }
       return;
@@ -252,17 +306,26 @@
     const localSplitRoot = getLocalSplitRoot();
     if (!localSplitRoot) return;
     const localSplitter = target.closest('.splitpanes__splitter');
-    if (!(localSplitter instanceof HTMLElement) || localSplitter.parentElement !== localSplitRoot) {
+    if (
+      !(localSplitter instanceof HTMLElement) ||
+      localSplitter.parentElement !== localSplitRoot
+    ) {
       return;
     }
     const primary = splitRefsFromHost(target);
     if (!primary) return;
-    const orthogonals = findOrthogonalRefs({ x: e.clientX, y: e.clientY }, primary);
+    const orthogonals = findOrthogonalRefs(
+      { x: e.clientX, y: e.clientY },
+      primary
+    );
     if (!orthogonals.length) {
       if (splitEngaged(splitPath, $splitResizeUiState)) clearSplitResizeUi();
       return;
     }
-    queueSplitResizeJunction(primary, orthogonals, { x: e.clientX, y: e.clientY });
+    queueSplitResizeJunction(primary, orthogonals, {
+      x: e.clientX,
+      y: e.clientY,
+    });
   }
 
   function onSplitMouseLeave(e: MouseEvent) {
@@ -294,7 +357,8 @@
 
   $effect(() => {
     if (!splitHost || node.type !== 'split') return;
-    const splitRoot = splitHost.querySelector<HTMLElement>(':scope > .wf-split');
+    const splitRoot =
+      splitHost.querySelector<HTMLElement>(':scope > .wf-split');
     if (!splitRoot) return;
     splitRoot.dataset.splitPath = splitPathKey;
     splitRoot.dataset.splitAxis = splitAxis;
@@ -308,7 +372,8 @@
     if (!splitHost) return;
     const handler = (e: MouseEvent) => onSplitMouseDown(e);
     splitHost.addEventListener('mousedown', handler, { capture: true });
-    return () => splitHost?.removeEventListener('mousedown', handler, { capture: true });
+    return () =>
+      splitHost?.removeEventListener('mousedown', handler, { capture: true });
   });
 
   async function onDockDrop(e: DragEvent, targetId: string) {
@@ -337,92 +402,113 @@
 >
   <Splitpanes
     theme=""
-    horizontal={node.type === 'split' ? splitpanesHorizontal(node.direction) : false}
-    class="wf-split h-full w-full min-h-0 min-w-0 bg-[var(--wf-bg)] {splitHighlighted(splitPath, $splitResizeUiState) ? 'wf-split--junction' : ''} {splitDragging(splitPath, $splitResizeUiState) ? 'wf-split--junction-dragging' : ''}"
+    horizontal={node.type === 'split'
+      ? splitpanesHorizontal(node.direction)
+      : false}
+    class="wf-split h-full w-full min-h-0 min-w-0 bg-[var(--wf-bg)] {splitHighlighted(
+      splitPath,
+      $splitResizeUiState
+    )
+      ? 'wf-split--junction'
+      : ''} {splitDragging(splitPath, $splitResizeUiState)
+      ? 'wf-split--junction-dragging'
+      : ''}"
     on:resized={onSplitResized}
   >
-  {#if node.type === 'leaf'}
-    <SPane>
-      <div
-        class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden bg-[var(--wf-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
-      >
-        {#if $paneDragSourceId && $paneDragSourceId !== node.id}
-          <div
-            class="absolute inset-0 z-30 rounded-lg bg-black/25 transition-shadow {dockHintClass(
-              dockHover
-            )}"
-            role="region"
-            aria-label="将窗格停靠到此处"
-            ondragover={(e) => {
-              e.preventDefault();
-              if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-              const t = e.currentTarget;
-              if (t instanceof HTMLElement) {
-                dockHover = regionAtPoint(e.clientX, e.clientY, t);
-              }
-            }}
-            ondragleave={(e) => {
-              const rel = e.relatedTarget;
-              const cur = e.currentTarget;
-              if (cur instanceof HTMLElement && rel instanceof Node && !cur.contains(rel)) {
-                dockHover = null;
-              }
-            }}
-            ondrop={(e) => onDockDrop(e, node.id)}
-          ></div>
-        {/if}
-        <header
-          class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md z-10"
+    {#if node.type === 'leaf'}
+      <SPane>
+        <div
+          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden bg-[var(--wf-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
         >
-          <div
-            class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 -my-1 select-none"
-            draggable="true"
-            title="拖拽到其它窗格：靠边分屏，靠中间与目标互换"
-            onclick={() => activePaneId.set(node.id)}
-            onkeydown={(e) => e.key === 'Enter' && activePaneId.set(node.id)}
-            role="presentation"
-            ondragstart={(e) => {
-              e.dataTransfer?.setData('text/plain', node.id);
-              if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-              paneDragSourceId.set(node.id);
-            }}
-            ondragend={() => {
-              paneDragSourceId.set(null);
-              dockHover = null;
-            }}
+          {#if $paneDragSourceId && $paneDragSourceId !== node.id}
+            <div
+              class="absolute inset-0 z-30 rounded-lg bg-black/25 transition-shadow {dockHintClass(
+                dockHover
+              )}"
+              role="region"
+              aria-label="将窗格停靠到此处"
+              ondragover={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                const t = e.currentTarget;
+                if (t instanceof HTMLElement) {
+                  dockHover = regionAtPoint(e.clientX, e.clientY, t);
+                }
+              }}
+              ondragleave={(e) => {
+                const rel = e.relatedTarget;
+                const cur = e.currentTarget;
+                if (
+                  cur instanceof HTMLElement &&
+                  rel instanceof Node &&
+                  !cur.contains(rel)
+                ) {
+                  dockHover = null;
+                }
+              }}
+              ondrop={(e) => onDockDrop(e, node.id)}
+            ></div>
+          {/if}
+          <header
+            class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md z-10"
           >
-            <span class="text-[11px] font-medium text-[var(--wf-fg-muted)] truncate tracking-wide">
-              {#if node.title}
-                <span class="text-[var(--wf-fg)]">{node.title}</span>
-              {:else}
-                终端
-              {/if}
-              <span class="text-[var(--wf-border-bright)] font-normal"> · </span>
-              <span class="font-mono text-[10px] opacity-80">{node.id}</span>
-            </span>
+            <div
+              class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 -my-1 select-none"
+              draggable="true"
+              title="拖拽到其它窗格：靠边分屏，靠中间与目标互换"
+              onclick={() => activePaneId.set(node.id)}
+              onkeydown={(e) => e.key === 'Enter' && activePaneId.set(node.id)}
+              role="presentation"
+              ondragstart={(e) => {
+                e.dataTransfer?.setData('text/plain', node.id);
+                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+                paneDragSourceId.set(node.id);
+              }}
+              ondragend={() => {
+                paneDragSourceId.set(null);
+                dockHover = null;
+              }}
+            >
+              <span
+                class="text-[11px] font-medium text-[var(--wf-fg-muted)] truncate tracking-wide"
+              >
+                {#if node.title}
+                  <span class="text-[var(--wf-fg)]">{node.title}</span>
+                {:else}
+                  终端
+                {/if}
+                <span class="text-[var(--wf-border-bright)] font-normal">
+                  ·
+                </span>
+                <span class="font-mono text-[10px] opacity-80">{node.id}</span>
+              </span>
+            </div>
+            <button
+              type="button"
+              title={leafCount <= 1 ? '至少保留一个窗格' : '关闭此窗格'}
+              disabled={leafCount <= 1}
+              class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--wf-fg)] disabled:opacity-25 disabled:pointer-events-none"
+              onclick={() => onClosePane(node.id)}
+            >
+              ×
+            </button>
+          </header>
+          <div class="flex-1 min-h-0 min-w-0">
+            <Pane paneId={node.id} {workspaceId} />
           </div>
-          <button
-            type="button"
-            title={leafCount <= 1 ? '至少保留一个窗格' : '关闭此窗格'}
-            disabled={leafCount <= 1}
-            class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--wf-fg)] disabled:opacity-25 disabled:pointer-events-none"
-            onclick={() => onClosePane(node.id)}
-          >
-            ×
-          </button>
-        </header>
-        <div class="flex-1 min-h-0 min-w-0">
-          <Pane paneId={node.id} {workspaceId} />
         </div>
-      </div>
-    </SPane>
-  {:else}
-    {#each node.children as child, i (child.id)}
-      <SPane size={node.ratios?.[i] ?? 100 / node.children.length}>
-        <SplitLayout node={child} {workspaceId} splitPath={[...splitPath, i]} />
       </SPane>
-    {/each}
-  {/if}
+    {:else}
+      {#each node.children as child, i (child.id)}
+        <SPane size={node.ratios?.[i] ?? 100 / node.children.length}>
+          <SplitLayout
+            node={child}
+            {workspaceId}
+            splitPath={[...splitPath, i]}
+          />
+        </SPane>
+      {/each}
+    {/if}
   </Splitpanes>
 </div>
 
@@ -445,10 +531,12 @@
     flex-shrink: 0;
     overflow: visible;
   }
-  :global(.wf-split.splitpanes--vertical) > :global(.splitpanes__splitter::after) {
+  :global(.wf-split.splitpanes--vertical)
+    > :global(.splitpanes__splitter::after) {
     content: none;
   }
-  :global(.wf-split.splitpanes--vertical) > :global(.splitpanes__splitter::before) {
+  :global(.wf-split.splitpanes--vertical)
+    > :global(.splitpanes__splitter::before) {
     content: '';
     position: absolute;
     top: 0;
@@ -459,12 +547,17 @@
     transform-origin: center;
     background: var(--wf-border);
     border-radius: 1px;
-    transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+    transition:
+      transform 0.12s ease,
+      background 0.12s ease,
+      box-shadow 0.12s ease;
     pointer-events: none;
     box-shadow: none;
   }
-  :global(.wf-split.splitpanes--vertical) > :global(.splitpanes__splitter:hover::before),
-  :global(.wf-split.splitpanes--vertical.splitpanes--dragging) > :global(.splitpanes__splitter::before) {
+  :global(.wf-split.splitpanes--vertical)
+    > :global(.splitpanes__splitter:hover::before),
+  :global(.wf-split.splitpanes--vertical.splitpanes--dragging)
+    > :global(.splitpanes__splitter::before) {
     transform: translateX(-50%) scaleX(4);
     background: color-mix(in srgb, var(--wf-accent) 72%, transparent);
     box-shadow: 0 0 12px var(--wf-accent-glow);
@@ -484,10 +577,12 @@
     flex-shrink: 0;
     overflow: visible;
   }
-  :global(.wf-split.splitpanes--horizontal) > :global(.splitpanes__splitter::after) {
+  :global(.wf-split.splitpanes--horizontal)
+    > :global(.splitpanes__splitter::after) {
     content: none;
   }
-  :global(.wf-split.splitpanes--horizontal) > :global(.splitpanes__splitter::before) {
+  :global(.wf-split.splitpanes--horizontal)
+    > :global(.splitpanes__splitter::before) {
     content: '';
     position: absolute;
     left: 0;
@@ -498,23 +593,30 @@
     transform-origin: center;
     background: var(--wf-border);
     border-radius: 1px;
-    transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+    transition:
+      transform 0.12s ease,
+      background 0.12s ease,
+      box-shadow 0.12s ease;
     pointer-events: none;
     box-shadow: none;
   }
-  :global(.wf-split.splitpanes--horizontal) > :global(.splitpanes__splitter:hover::before),
-  :global(.wf-split.splitpanes--horizontal.splitpanes--dragging) > :global(.splitpanes__splitter::before) {
+  :global(.wf-split.splitpanes--horizontal)
+    > :global(.splitpanes__splitter:hover::before),
+  :global(.wf-split.splitpanes--horizontal.splitpanes--dragging)
+    > :global(.splitpanes__splitter::before) {
     transform: translateY(-50%) scaleY(4);
     background: color-mix(in srgb, var(--wf-accent) 72%, transparent);
     box-shadow: 0 0 12px var(--wf-accent-glow);
   }
 
-  :global(.wf-split.wf-split--junction) > :global(.splitpanes__splitter::before) {
+  :global(.wf-split.wf-split--junction)
+    > :global(.splitpanes__splitter::before) {
     background: color-mix(in srgb, var(--wf-accent) 75%, transparent);
     box-shadow: 0 0 10px var(--wf-accent-glow);
   }
 
-  :global(.wf-split.wf-split--junction-dragging) > :global(.splitpanes__splitter::before) {
+  :global(.wf-split.wf-split--junction-dragging)
+    > :global(.splitpanes__splitter::before) {
     background: color-mix(in srgb, var(--wf-accent) 86%, transparent);
     box-shadow: 0 0 14px var(--wf-accent-glow);
   }
@@ -524,5 +626,4 @@
   :global(body.wf-resize-junction-cursor .splitpanes__splitter *) {
     cursor: move !important;
   }
-
 </style>
