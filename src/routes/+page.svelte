@@ -39,6 +39,33 @@ let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 type SidebarTab = 'terminal' | 'git' | 'files' | 'history';
 let sidebarTab = $state<SidebarTab>('terminal');
 
+// 侧边栏宽度状态（用于可拖拽调整大小）
+let sidebarWidth = $state(288); // 默认 w-72 = 288px
+const MIN_SIDEBAR_WIDTH = 200;
+const MAX_SIDEBAR_WIDTH = 600;
+let isResizingSidebar = $state(false);
+
+function onSidebarResizerMouseDown(e: MouseEvent) {
+ e.preventDefault();
+ isResizingSidebar = true;
+ const startX = e.clientX;
+ const startWidth = sidebarWidth;
+
+ function onMouseMove(ev: MouseEvent) {
+   const delta = ev.clientX - startX;
+   sidebarWidth = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, startWidth + delta));
+ }
+
+ function onMouseUp() {
+   isResizingSidebar = false;
+   window.removeEventListener('mousemove', onMouseMove);
+   window.removeEventListener('mouseup', onMouseUp);
+ }
+
+ window.addEventListener('mousemove', onMouseMove);
+ window.addEventListener('mouseup', onMouseUp);
+}
+
 // 切换侧边栏tab时加载历史工作区
 $effect(() => {
   if (sidebarTab === 'history') {
@@ -185,9 +212,19 @@ const winCtrlBtn =
     </button>
   </aside>
 
-  <!-- 侧边栏内容区 -->
+  <!-- 侧边栏大小调整手柄 -->
+<div
+ class="group relative w-1 shrink-0 cursor-col-resize select-none hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30 transition-colors {isResizingSidebar ? 'bg-[var(--wf-accent)]/40' : ''}"
+ role="separator"
+ aria-orientation="vertical"
+ aria-label="拖动调整侧边栏宽度"
+ onmousedown={onSidebarResizerMouseDown}
+></div>
+
+<!-- 侧边栏内容区 -->
   <aside
-    class="w-72 shrink-0 border-r border-[var(--wf-border)] bg-[var(--wf-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 wf-scroll overflow-y-auto"
+    class="shrink-0 border-r border-[var(--wf-border)] bg-[var(--wf-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 wf-scroll overflow-y-auto"
+ style="width: {sidebarWidth}px"
   >
     {#if sidebarTab === 'git'}
       <div
@@ -238,10 +275,13 @@ const winCtrlBtn =
   <div class="flex-1 flex flex-col min-w-0 min-h-0">
     <!-- 顶部标题栏 -->
     <header
-      class="h-11 shrink-0 flex items-center gap-2 px-2 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md min-w-0"
+      class="h-11 shrink-0 flex justify-between items-center gap-2 px-2 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md min-w-0"
       data-tauri-drag-region
     >
-      <!-- 工作区标签区 -->
+      <!-- 左侧元素组 -->
+<div class="flex items-center gap-2">
+
+<!-- 工作区标签区 -->
       <WorkspaceTabs
         workspaces={$workspacesList}
         activeWorkspaceId={$activeWorkspaceId}
@@ -303,7 +343,8 @@ const winCtrlBtn =
       </div>
 
       <!-- 窗口控制按钮（右侧）：wf-no-drag 避免与标题栏拖动区域冲突 -->
-      <div class="wf-no-drag flex items-center gap-1 shrink-0">
+      </div>
+<div class="wf-no-drag flex items-center gap-1 shrink-0">
         <button
           type="button"
           class={winCtrlBtn}
