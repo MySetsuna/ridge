@@ -5,7 +5,7 @@ import { FitAddon } from 'xterm-addon-fit';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { activePaneId } from '$lib/stores/paneTree';
+import { activePaneId, saveCurrentWorkspace } from '$lib/stores/paneTree';
 import 'xterm/css/xterm.css';
 
 interface DiffFile {
@@ -72,6 +72,8 @@ let layoutRaf: number | undefined;
 /** PTY 输出后或视口滚动后合并一帧 refresh，减轻 WebView2 不重绘兄弟区域的问题 */
 let termRedrawRaf: number | undefined;
 let disposeXtermScrollFix: (() => void) | undefined;
+/** 防抖保存定时器 */
+let saveDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 function cancelLayoutRaf() {
 	if (layoutRaf !== undefined) {
@@ -275,6 +277,11 @@ async function renderView() {
 						void recoverPtySession();
 					}
 				});
+				// 防抖保存工作区（2秒无操作后保存）
+				if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+				saveDebounceTimer = setTimeout(() => {
+					void saveCurrentWorkspace();
+				}, 2000);
 			});
 		}
 

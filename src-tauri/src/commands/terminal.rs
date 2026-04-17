@@ -339,6 +339,7 @@ pub fn ensure_pane_pty_workspace(
 			return Ok(());
 		}
 		ws.terminals.insert(pane_id, handle);
+            ws.pane_sizes.insert(pane_id, (80, 120));
 	}
 
 	pty_log::create_spawned(workspace_id, pane_id);
@@ -389,44 +390,50 @@ pub async fn resize_pane(
 	resize_pane_inner(state, pane_id, rows, cols).map_err(|e| e.to_string())
 }
 
-fn resize_pane_inner(
-	state: State<'_, AppState>,
-	pane_id: String,
-	rows: u16,
-	cols: u16,
-) -> Result<(), AppError> {
-	let pane_id = parse_pane_id(&pane_id)?;
-	// ConPTY / portable-pty: zero or absurd dimensions can break the session.
-	let rows = rows.max(1);
-	let cols = cols.max(1);
-	let wid = state.active_workspace_id();
-	let map = state.workspaces.read();
-	let ws = map
-		.get(&wid)
-		.ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
-	if let Some(handle) = ws.terminals.get(&pane_id) {
-		let master = handle.master.lock();
-		let r = master.resize(PtySize {
-			rows,
-			cols,
-			pixel_width: 0,
-			pixel_height: 0,
-		});
-		match r {
-			Ok(()) => {
-				pty_log::resize_ok(wid, pane_id, rows, cols);
-				Ok(())
-			}
-			Err(e) => {
-				let msg = e.to_string();
-				pty_log::resize_err(wid, pane_id, rows, cols, &msg);
-				Err(AppError::PtyError(msg))
-			}
-		}
-	} else {
-		pty_log::pane_not_found("resize", wid, pane_id);
-		Err(AppError::PaneNotFound(pane_id))
-	}
+fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, cols: u16,) -> Result<(), AppError> {
+    let pane_id = parse_pane_id(&pane_id)?;
+    // ConPTY / portable-pty: zero or absurd dimensions can break the session.
+    let rows = rows.max(1);
+    let cols = cols.max(1);
+    let wid = state.active_workspace_id();
+
+    // Perform the resize within a limited scope so we can drop the read lock
+    let resize_result: Result<(), AppError> = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&wid)
+            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+        if let Some(handle) = ws.terminals.get(&pane_id) {
+            let master = handle.master.lock();
+            master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            }).map_err(|e| {
+                let msg = e.to_string();
+                pty_log::resize_err(wid, pane_id, rows, cols, &msg);
+                AppError::PtyError(msg)
+            })
+        } else {
+            pty_log::pane_not_found("resize", wid, pane_id);
+            Err(AppError::PaneNotFound(pane_id))
+        }
+    };
+
+    match resize_result {
+        Ok(()) => {
+            pty_log::resize_ok(wid, pane_id, rows, cols);
+            // Now we can safely acquire a write lock to update pane_sizes
+            let mut map = state.workspaces.write();
+            if let Some(ws) = map.get_mut(&wid) {
+                ws.pane_sizes.insert(pane_id, (rows, cols));
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+
 }
 
 /// 在指定工作区内移除并结束 PTY（若存在）。

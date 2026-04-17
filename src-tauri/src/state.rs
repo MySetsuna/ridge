@@ -26,6 +26,10 @@ pub struct Workspace {
     pub teammate_tmux_pane_cursor: usize,
     /// `new-window -n` / `split-window -n` 等经 teammate 写入的窗格展示名（按 pane id）。
     pub teammate_pane_titles: HashMap<Uuid, String>,
+    /// Per-pane dimensions (rows, cols) for split target selection algorithm.
+    pub pane_sizes: HashMap<Uuid, (u16, u16)>,
+    /// Previous pane index for tmux `last-pane` swap functionality.
+    pub last_pane_index: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -56,6 +60,8 @@ impl AppState {
                 terminals: HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
                 teammate_pane_titles: HashMap::new(),
+                pane_sizes: HashMap::new(),
+                last_pane_index: None,
             },
         );
         Self {

@@ -33,6 +33,16 @@
     }
   });
 
+// 当 workspaces 列表变化时重置拖拽状态
+$effect(() => {
+ const _ = workspaces.length;
+ if (draggingIndex !== null || dragOverIndex !== null) {
+ draggingIndex = null;
+ dragOverIndex = null;
+ }
+});
+
+
   function handleDragStart(e: DragEvent, index: number) {
     draggingIndex = index;
     if (e.dataTransfer) {

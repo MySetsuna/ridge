@@ -8,8 +8,10 @@
   import type {
     DockRegion,
     SplitResizeUiState,
-    SplitterRef
-  } from '$lib/stores/paneTree';
+    SplitterRef,
+  JunctionRef,
+  JunctionSnapState
+} from '$lib/stores/paneTree';
   import {
     paneTreeStore,
     getAllPaneIds,
@@ -24,8 +26,12 @@
     clearSplitResizeUi,
     startSplitResizeDrag,
     updateSplitResizeDrag,
-    finishSplitResizeDrag
-  } from '$lib/stores/paneTree';
+    finishSplitResizeDrag,
+  SNAP_THRESHOLD_PX,
+  findJunctionsNearPosition,
+  registerJunction,
+  clearJunctionRegistry
+} from '$lib/stores/paneTree';
 
   interface Props {
     node: PaneNode;

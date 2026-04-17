@@ -60,7 +60,9 @@ export type SplitResizeUiState =
       phase: 'pending' | 'junction';
       primary: SplitterRef;
       orthogonals: SplitterRef[];
+  sameAxisCandidates: SplitterRef[];
       pointer: { x: number; y: number };
+  snapState: JunctionSnapState | null;
     }
   | {
       phase: 'drag';
@@ -68,12 +70,35 @@ export type SplitResizeUiState =
       dragStart: { x: number; y: number };
       snapshots: SplitterSnapshot[];
       pendingUpdates: SplitRatioUpdate[];
+  snapState: JunctionSnapState | null;
     };
 
 export interface SplitRatioUpdate {
   path: number[];
   ratios: number[];
 }
+
+export interface JunctionSplitterRef {
+  splitPath: number[];
+  splitterIndex: number;
+  axis: SplitterAxis;
+  basisPx: number;
+  side: 'before' | 'after';
+}
+
+export interface JunctionRef {
+  id: string;
+  positionPx: { x: number; y: number };
+  axis: SplitterAxis;
+  splitters: JunctionSplitterRef[];
+}
+
+export interface JunctionSnapState {
+  junction: JunctionRef;
+  coupledSplitters: SplitterRef[];
+}
+
+export const SNAP_THRESHOLD_PX = 10;
 
 const HOVER_DEBOUNCE_MS = 90;
 const MIN_PANE_RATIO = 6;
@@ -97,6 +122,46 @@ function clearSplitHoverTimer() {
     splitHoverTimer = undefined;
   }
 }
+
+// Junction registry for O(1) snap-to-junction lookup
+// Key: "${axis}-${Math.round(positionPx)}" e.g., "x-450"
+const junctionRegistry = new Map<string, JunctionRef[]>();
+
+export function clearJunctionRegistry() {
+  junctionRegistry.clear();
+}
+
+export function registerJunction(junction: JunctionRef) {
+  const key = `${junction.axis}-${Math.round(junction.positionPx[junction.axis])}`;
+  const existing = junctionRegistry.get(key) || [];
+  if (!existing.find(j => j.id === junction.id)) {
+    existing.push(junction);
+    junctionRegistry.set(key, existing);
+  }
+}
+
+export function findJunctionsNearPosition(
+  axis: SplitterAxis,
+  positionPx: number,
+  threshold: number = SNAP_THRESHOLD_PX
+): JunctionRef[] {
+  const candidates: JunctionRef[] = [];
+  const minKey = Math.round(positionPx - threshold);
+  const maxKey = Math.round(positionPx + threshold);
+  for (let k = minKey; k <= maxKey; k++) {
+    const junctions = junctionRegistry.get(`${axis}-${k}`);
+    if (junctions) {
+      for (const j of junctions) {
+        const distance = Math.abs(j.positionPx[axis] - positionPx);
+        if (distance <= threshold) {
+          candidates.push(j);
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
 
 function normalizeWithin100(values: number[]): number[] {
   const sum = values.reduce((a, b) => a + b, 0);
@@ -199,24 +264,30 @@ function setGlobalSplitResizeCursor(enabled: boolean) {
 export function queueSplitResizeJunction(
   primary: SplitterRef,
   orthogonals: SplitterRef[],
+  sameAxisCandidates: SplitterRef[],
+  snapState: JunctionSnapState | null,
   pointer: { x: number; y: number }
 ) {
   clearSplitHoverTimer();
-  const refs = dedupeRefs([primary, ...orthogonals]);
-  const [first, ...rest] = refs;
+  const allRefs = dedupeRefs([primary, ...orthogonals, ...sameAxisCandidates]);
+  const [first, ...rest] = allRefs;
   if (!first) return;
   splitResizeUiState.set({
     phase: 'pending',
     primary: first,
     orthogonals: rest,
-    pointer
+    sameAxisCandidates,
+    pointer,
+    snapState
   });
   splitHoverTimer = setTimeout(() => {
     splitResizeUiState.set({
       phase: 'junction',
       primary: first,
       orthogonals: rest,
-      pointer
+      sameAxisCandidates,
+      pointer,
+      snapState
     });
     setGlobalSplitResizeCursor(true);
   }, HOVER_DEBOUNCE_MS);
@@ -225,6 +296,9 @@ export function queueSplitResizeJunction(
 export function clearSplitResizeUi() {
   clearSplitHoverTimer();
   setGlobalSplitResizeCursor(false);
+  if (typeof document !== 'undefined') {
+    document.body.classList.remove('wf-resize-4way');
+  }
   splitResizeUiState.set({ phase: 'idle' });
 }
 
@@ -232,7 +306,16 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   const ui = get(splitResizeUiState);
   if (ui.phase !== 'junction') return;
   const root = get(paneTreeStore);
-  const refs = dedupeRefs([ui.primary, ...ui.orthogonals]);
+
+  // Check if 4-way junction snap (3+ coupled splitters at same junction)
+  const is4WaySnap = ui.snapState !== null && ui.snapState.coupledSplitters.length >= 3;
+
+  // Include all coupled splitters from snap state for 4-way resize
+  let refs = dedupeRefs([ui.primary, ...ui.orthogonals]);
+  if (ui.snapState) {
+    refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
+  }
+
   const snapshots: SplitterSnapshot[] = [];
   for (let i = 0; i < refs.length; i += 1) {
     const ref = refs[i];
@@ -240,9 +323,9 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     if (!split) continue;
     let basisPx = ref.basisPx;
     if (typeof document !== 'undefined') {
-      const splitRoot = document.querySelector<HTMLElement>(
+      const splitRoot = document.querySelector(
         `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
-      );
+      ) as HTMLElement;
       if (splitRoot) {
         basisPx = Math.max(1, ref.axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight);
       }
@@ -255,9 +338,13 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     pointer,
     dragStart: pointer,
     snapshots,
-    pendingUpdates: []
+    pendingUpdates: [],
+    snapState: ui.snapState
   });
   setGlobalSplitResizeCursor(true);
+  if (is4WaySnap && typeof document !== 'undefined') {
+    document.body.classList.add('wf-resize-4way');
+  }
 }
 
 export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
@@ -276,6 +363,9 @@ export function finishSplitResizeDrag(): SplitRatioUpdate[] {
   const ui = get(splitResizeUiState);
   clearSplitHoverTimer();
   setGlobalSplitResizeCursor(false);
+  if (typeof document !== 'undefined') {
+    document.body.classList.remove('wf-resize-4way');
+  }
   splitResizeUiState.set({ phase: 'idle' });
   if (ui.phase !== 'drag') return [];
   return ui.pendingUpdates;
@@ -507,85 +597,59 @@ export async function renameWorkspace(workspaceId: string, name: string) {
   }
 }
 
-// ============ 历史工作区相关 ============
+// ============ 已保存工作区相关 ============
 
-export interface WorkspaceHistoryItem {
-  id: string;
-  name: string;
-  savedAt: string;
-  paneCount: number;
-  isPinned: boolean;
+export interface SavedWorkspace {
+ id: string;
+ name: string;
+ paneTree: PaneNode;
+ paneCwds: Record<string, string>;
+ savedAt: string;
 }
 
-export const workspaceHistoryList = writable<WorkspaceHistoryItem[]>([]);
+export const savedWorkspacesList = writable<SavedWorkspace[]>([]);
 
-/** 获取历史工作区列表 */
-export async function loadWorkspaceHistory() {
-  if (!isTauri()) return;
-  try {
-    const history = await invoke<WorkspaceHistoryItem[]>('list_workspace_history');
-    workspaceHistoryList.set(history);
-  } catch (e) {
-    console.error('loadWorkspaceHistory', e);
-  }
+/** 获取已保存的工作区列表 */
+export async function loadSavedWorkspaces() {
+ if (!isTauri()) return;
+ try {
+ const list = await invoke<SavedWorkspace[]>('list_saved_workspaces');
+ savedWorkspacesList.set(list);
+ } catch (e) {
+ console.error('loadSavedWorkspaces', e);
+ }
 }
 
-/** 保存当前工作区到历史 */
-export async function saveWorkspaceToHistory(name?: string) {
-  if (!isTauri()) return;
-  try {
-    await invoke('save_workspace', { name: name || `工作区 ${Date.now()}` });
-    await loadWorkspaceHistory();
-  } catch (e) {
-    console.error('saveWorkspaceToHistory', e);
-    throw e;
-  }
+/** 保存当前工作区 */
+export async function saveCurrentWorkspace() {
+ if (!isTauri()) return;
+ try {
+ await invoke('save_workspace');
+ await loadSavedWorkspaces();
+ } catch (e) {
+ console.error('saveCurrentWorkspace', e);
+ }
 }
 
-/** 从历史恢复工作区 */
-export async function restoreWorkspaceFromHistory(historyId: string) {
-  if (!isTauri()) return;
-  try {
-    await invoke('restore_workspace', { historyId });
-    await refreshWorkspaces();
-  } catch (e) {
-    console.error('restoreWorkspaceFromHistory', e);
-    throw e;
-  }
+/** 删除已保存的工作区 */
+export async function deleteSavedWorkspace(id: string) {
+ if (!isTauri()) return;
+ try {
+ await invoke('delete_saved_workspace', { id });
+ await loadSavedWorkspaces();
+ } catch (e) {
+ console.error('deleteSavedWorkspace', e);
+ }
 }
 
-/** 删除历史工作区 */
-export async function deleteWorkspaceHistory(historyId: string) {
-  if (!isTauri()) return;
-  try {
-    await invoke('delete_workspace_history', { historyId });
-    await loadWorkspaceHistory();
-  } catch (e) {
-    console.error('deleteWorkspaceHistory', e);
-    throw e;
-  }
+/** 重命名已保存的工作区 */
+export async function renameSavedWorkspace(id: string, name: string) {
+ if (!isTauri()) return;
+ try {
+ await invoke('rename_saved_workspace', { id, name });
+ await loadSavedWorkspaces();
+ } catch (e) {
+ console.error('renameSavedWorkspace', e);
+ }
 }
 
-/** 固定/取消固定历史工作区 */
-export async function togglePinWorkspaceHistory(historyId: string) {
-  if (!isTauri()) return;
-  try {
-    await invoke('toggle_pin_workspace_history', { historyId });
-    await loadWorkspaceHistory();
-  } catch (e) {
-    console.error('togglePinWorkspaceHistory', e);
-    throw e;
-  }
-}
-
-/** 重命名历史工作区 */
-export async function renameWorkspaceHistory(historyId: string, name: string) {
-  if (!isTauri()) return;
-  try {
-    await invoke('rename_workspace_history', { historyId, name });
-    await loadWorkspaceHistory();
-  } catch (e) {
-    console.error('renameWorkspaceHistory', e);
-    throw e;
-  }
-}

@@ -135,11 +135,15 @@ pub(crate) fn cmd_resize_pane(rest: &[String], _url: &str, _token: &str) -> Resu
 }
 
 pub(crate) fn cmd_last_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let mut target_pane: Option<usize> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
             "-t" if i + 1 < rest.len() => {
-                // Get target window, but we want the last pane
+                let raw = rest[i + 1].trim();
+                if !raw.is_empty() {
+                    target_pane = Some(parse_pane_target(raw));
+                }
                 i += 1;
             }
             "-e" | "-d" => {} // enable/disable
@@ -148,13 +152,23 @@ pub(crate) fn cmd_last_pane(rest: &[String], url: &str, token: &str) -> Result<(
         }
         i += 1;
     }
-    // Select the last active pane (index 0 for now)
+
+    // If -t flag provided, send explicit pane_index. Otherwise send last:true for swap.
     let u = format!("{}/api/v1/select-pane", url.trim_end_matches('/'));
+    let body = if let Some(idx) = target_pane {
+        serde_json::json!({ "pane_index": idx })
+    } else {
+        serde_json::json!({ "last": true })
+    };
+
     let _ = client()
         .post(u)
         .headers(auth_headers(token))
-        .json(&serde_json::json!({ "pane_index": 0, "last": true }))
+        .json(&body)
         .send();
+
+    // If server responded with pane info, extract it for TMUX_PANE update
+    // (This helps keep TMUX_PANE in sync after a last-pane swap)
     Ok(())
 }
 

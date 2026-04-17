@@ -59,6 +59,8 @@ pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
                 terminals: std::collections::HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
                 teammate_pane_titles: std::collections::HashMap::new(),
+                pane_sizes: std::collections::HashMap::new(),
+                last_pane_index: None,
             },
         );
     }
@@ -238,6 +240,8 @@ pub fn restore_workspace(
                 terminals: std::collections::HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
                 teammate_pane_titles: std::collections::HashMap::new(),
+                pane_sizes: std::collections::HashMap::new(),
+                last_pane_index: None,
             },
         );
     }

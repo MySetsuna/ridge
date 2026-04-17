@@ -3,7 +3,8 @@
 import SplitContainer from '$lib/components/SplitContainer.svelte';
 import GitGraph from '$lib/components/GitGraph.svelte';
 import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
-import WorkspaceHistory from '$lib/components/WorkspaceHistory.svelte';
+import WorkspaceSidebar from '$lib/components/WorkspaceSidebar.svelte';
+import { Terminal, FolderOpen, GitBranch, Layout } from 'lucide-svelte';
 import {
   paneTreeStore,
   activePaneId,
@@ -18,13 +19,7 @@ import {
   closeWorkspace,
   reorderWorkspaces,
   renameWorkspace,
-  workspaceHistoryList,
-  loadWorkspaceHistory,
-  restoreWorkspaceFromHistory,
-  deleteWorkspaceHistory,
-  togglePinWorkspaceHistory,
-  renameWorkspaceHistory
-} from '$lib/stores/paneTree';
+ saveCurrentWorkspace} from '$lib/stores/paneTree';
 import { reportDevIssue } from '$lib/devIssue';
 import { dev } from '$app/environment';
 import { get } from 'svelte/store';
@@ -36,15 +31,10 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 let rootNode = $derived($paneTreeStore);
 let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
-type SidebarTab = 'terminal' | 'git' | 'files' | 'history';
+type SidebarTab = 'terminal' | 'git' | 'files';
 let sidebarTab = $state<SidebarTab>('terminal');
 
-// 切换侧边栏tab时加载历史工作区
-$effect(() => {
-  if (sidebarTab === 'history') {
-    void loadWorkspaceHistory();
-  }
-});
+
 
 // 窗口控制
 let isMaximized = $state(false);
@@ -154,18 +144,18 @@ const winCtrlBtn =
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'terminal' ? actBtnOn : ''}"
-      title="终端工作区"
+      title="工作区"
       onclick={() => (sidebarTab = 'terminal')}
     >
-      ⚡
+      <Layout class="h-5 w-5" />
     </button>
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'files' ? actBtnOn : ''}"
-      title="文件（占位）"
+      title="文件"
       onclick={() => (sidebarTab = 'files')}
     >
-      📁
+      <FolderOpen class="h-5 w-5" />
     </button>
     <button
       type="button"
@@ -173,17 +163,9 @@ const winCtrlBtn =
       title="Git Graph"
       onclick={() => (sidebarTab = 'git')}
     >
-      📊
+      <GitBranch class="h-5 w-5" />
     </button>
-    <button
-      type="button"
-      class="{actBtn}{sidebarTab === 'history' ? actBtnOn : ''}"
-      title="历史工作区"
-      onclick={() => (sidebarTab = 'history')}
-    >
-      🕐
-    </button>
-  </aside>
+    </aside>
 
   <!-- 侧边栏内容区 -->
   <aside
@@ -207,31 +189,18 @@ const winCtrlBtn =
       <div class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]">
         文件树尚未接入（架构文档中为待办）。
       </div>
-    {:else if sidebarTab === 'history'}
-      <div
-        class="px-4 py-3 shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
-      >
-        历史工作区
-      </div>
-<div class="flex-1 min-h-0 overflow-auto wf-scroll">
-  <WorkspaceHistory
-    history={$workspaceHistoryList}
-    onDelete={deleteWorkspaceHistory}
-    onPin={togglePinWorkspaceHistory}
-    onRename={renameWorkspaceHistory}
-    onRestore={restoreWorkspaceFromHistory}
-  />
-</div>
-    {:else}
-      <div
-        class="px-4 py-3 shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
-      >
-        终端
-      </div>
-      <div class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]">
-        点击某个窗格标题或终端即可选中；主区域右上角图标可对<strong>当前选中窗格</strong>分屏。新建根工作区会打开独立会话（各自 PTY）。
-      </div>
-    {/if}
+{:else}
+<WorkspaceSidebar
+ workspaces={$workspacesList}
+ activeWorkspaceId={$activeWorkspaceId}
+ onSelect={switchWorkspace}
+ onRename={renameWorkspace}
+ onDelete={closeWorkspace}
+ onReorder={reorderWorkspaces}
+ onSave={saveCurrentWorkspace}
+ onCreate={createWorkspace}
+/>
+{/if}
   </aside>
 
   <!-- 主内容区 -->

@@ -149,19 +149,81 @@ async fn route_split(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let wid = ctx.state.active_workspace_id();
-    let idx = body.pane_index.unwrap_or(0);
-    let dir = if body.horizontal {
+
+    // Smart split target selection:
+    // 1. If explicit pane_index from -t flag → use it
+    // 2. Else use teammate_tmux_pane_cursor (main session)
+    // 3. If main session pane is SMALLER than any sub-agent pane → use the largest
+    let (idx, inferred_direction) = {
+        let map = ctx.state.workspaces.read();
+        let Some(ws) = map.get(&wid) else {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
+        };
+        let leaves = ws.pane_tree.get_all_leaves();
+        let pane_count = leaves.len();
+
+        // If explicit index provided, use it directly
+        if let Some(explicit_idx) = body.pane_index {
+            if explicit_idx < pane_count {
+                (explicit_idx, false)
+            } else {
+                return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
+            }
+        } else {
+            // No explicit index - use smart selection
+            let main_cursor = ws.teammate_tmux_pane_cursor;
+            let main_size = ws.pane_sizes.get(&leaves.get(main_cursor).copied().unwrap_or_default()).copied().unwrap_or((80, 120));
+            let main_area = main_size.0 as u32 * main_size.1 as u32;
+
+            // Find the best target: prefer main cursor, but use largest pane if it's bigger
+            let mut target_idx = main_cursor;
+            for (i, leaf_id) in leaves.iter().enumerate() {
+                if i == main_cursor {
+                    continue;
+                }
+                if let Some(&(rows, cols)) = ws.pane_sizes.get(leaf_id) {
+                    let area = rows as u32 * cols as u32;
+                    if area > main_area {
+                        target_idx = i;
+                        break; // Use first (smallest index) larger pane
+                    }
+                }
+            }
+
+            // Shape-based direction inference
+            let target_size = ws.pane_sizes.get(&leaves.get(target_idx).copied().unwrap_or_default()).copied().unwrap_or((80, 120));
+            let inferred = target_size.1 > target_size.0; // cols > rows -> horizontal
+
+            (target_idx, inferred)
+        }
+    };
+
+    // Direction: explicit takes precedence, otherwise use inferred
+    let direction = if body.horizontal {
         "horizontal"
     } else {
-        "vertical"
+        if inferred_direction {
+            "horizontal"
+        } else {
+            "vertical"
+        }
     };
+
     let cwd = body
         .cwd
         .as_ref()
         .map(|s| std::path::PathBuf::from(s.trim()))
         .filter(|p| !p.as_os_str().is_empty());
 
-    match pane::teammate_split_pane(&ctx.state, wid, idx, dir) {
+    // Track last pane before updating cursor
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.last_pane_index = Some(ws.teammate_tmux_pane_cursor);
+        }
+    }
+
+    match pane::teammate_split_pane(&ctx.state, wid, idx, direction) {
         Ok(new_id) => {
             let new_idx = {
                 let map = ctx.state.workspaces.read();
@@ -200,6 +262,8 @@ async fn route_split(
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
+                    // Initialize pane size for the new pane (default, will be updated on resize)
+                    ws.pane_sizes.insert(new_id, (80, 120));
                     if let Some(name) = body
                         .window_name
                         .as_ref()
@@ -221,6 +285,8 @@ async fn route_split(
                     "ok": true,
                     "new_pane_id": new_id.to_string(),
                     "new_pane_index": new_idx,
+                    "source_pane_index": idx,
+                    "direction_inferred": inferred_direction,
                 })),
             )
                 .into_response()
@@ -402,9 +468,37 @@ async fn route_select_pane(
     }
     let wid = ctx.state.active_workspace_id();
 
-    // For now, just acknowledge the request
     log_stderr_server(&format!("select-pane: index={:?}, last={:?}", body.pane_index, body.last));
 
+    // Handle last-pane: swap with previous pane
+    if body.last == Some(true) && body.pane_index.is_none() {
+        let (new_cursor, new_pane_id) = {
+            let mut map = ctx.state.workspaces.write();
+            let Some(ws) = map.get_mut(&wid) else {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
+            };
+            let old_cursor = ws.teammate_tmux_pane_cursor;
+            let new_cursor = ws.last_pane_index.unwrap_or(0);
+            let leaves = ws.pane_tree.get_all_leaves();
+            let new_pane_id = leaves.get(new_cursor).copied();
+
+            ws.last_pane_index = Some(old_cursor);
+            ws.teammate_tmux_pane_cursor = new_cursor;
+
+            (new_cursor, new_pane_id)
+        };
+
+        if let Some(pid) = new_pane_id {
+            let _ = ctx.handle.emit("teammate-active-pane-changed", pid.to_string());
+        }
+
+        return (StatusCode::OK, Json(serde_json::json!({
+            "ok": true,
+            "pane_index": new_cursor
+        }))).into_response();
+    }
+
+    // Standard select-pane with explicit index
     if let Some(idx) = body.pane_index {
         let leaf_id = {
             let map = ctx.state.workspaces.read();
@@ -417,20 +511,28 @@ async fn route_select_pane(
             }
             Some(leaves[idx])
         };
+
         {
             let mut map = ctx.state.workspaces.write();
             if let Some(ws) = map.get_mut(&wid) {
+                ws.last_pane_index = Some(ws.teammate_tmux_pane_cursor);
                 ws.teammate_tmux_pane_cursor = idx;
             }
         }
+
         if let Some(pid) = leaf_id {
             let _ = ctx
                 .handle
                 .emit("teammate-active-pane-changed", pid.to_string());
         }
-    }
 
-    (StatusCode::OK, "ok").into_response()
+        (StatusCode::OK, Json(serde_json::json!({
+            "ok": true,
+            "pane_index": idx
+        }))).into_response()
+    } else {
+        (StatusCode::BAD_REQUEST, "pane_index or last required").into_response()
+    }
 }
 
 async fn route_kill_pane(
@@ -452,6 +554,7 @@ async fn route_kill_pane(
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
                         ws.teammate_pane_titles.remove(&pid);
+                    ws.pane_sizes.remove(&pid);
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
@@ -556,6 +659,7 @@ async fn route_new_window(
             {
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
+                ws.last_pane_index = Some(ws.teammate_tmux_pane_cursor);
                     ws.teammate_tmux_pane_cursor = new_idx;
                     if let Some(name) = body
                         .window_name
