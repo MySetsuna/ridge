@@ -19,6 +19,8 @@ pub enum LayoutNode {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     Split {
         id: String,
@@ -32,11 +34,13 @@ fn engine_node_to_layout(
     node: &EnginePaneNode,
     split_counter: &mut u64,
     titles: &HashMap<Uuid, String>,
+    panes: &std::collections::HashMap<Uuid, crate::engine::pane_tree::Pane>,
 ) -> LayoutNode {
     match node {
         EnginePaneNode::Leaf(id) => LayoutNode::Leaf {
             id: id.to_string(),
             title: titles.get(id).cloned(),
+            cwd: panes.get(id).and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
         },
         EnginePaneNode::Split {
             direction,
@@ -53,7 +57,7 @@ fn engine_node_to_layout(
                 .to_string(),
                 children: children
                     .iter()
-                    .map(|c| engine_node_to_layout(c, split_counter, titles))
+                    .map(|c| engine_node_to_layout(c, split_counter, titles, panes))
                     .collect(),
                 ratios: ratios.clone(),
             }
@@ -73,6 +77,7 @@ pub fn get_pane_layout(state: State<'_, AppState>) -> Result<LayoutNode, String>
         &ws.pane_tree.root,
         &mut c,
         &ws.teammate_pane_titles,
+        &ws.pane_tree.panes,
     ))
 }
 

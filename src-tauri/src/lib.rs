@@ -88,6 +88,17 @@ pub fn run() {
                                 serde_json::json!({ "mode": mode_str }),
                             );
                         }
+                        GlobalEvent::PaneCwdChanged {
+                            workspace_id,
+                            pane_id,
+                            cwd,
+                        } => {
+                            let label = pane_id.to_string();
+                            let _ = handle.emit(
+                                &format!("pane-cwd-changed-{workspace_id}-{label}"),
+                                serde_json::json!({ "cwd": cwd }),
+                            );
+                        }
                     }
                 }
             });
@@ -95,9 +106,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             git::get_git_graph,
-    git::get_git_diff,
-    git::set_pane_workdir,
-    git::is_git_repo,
+            git::get_git_diff,
+            git::set_pane_workdir,
+            git::is_git_repo,
             pane::close_pane,
             pane::dock_pane,
             pane::get_pane_layout,
@@ -113,27 +124,31 @@ pub fn run() {
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
             workspace::switch_workspace,
-    workspace::close_workspace,
-    workspace::reorder_workspaces,
-    workspace::rename_workspace,
-    // Workspace history commands
-    workspace::list_workspace_history,
-    workspace::save_workspace,
-    workspace::delete_workspace_history,
-    workspace::restore_workspace,
-    workspace::toggle_pin_workspace_history,
-    workspace::rename_workspace_history,
-    // Project management commands
-    project::open_project,
-    project::get_recent_projects,
-    project::remove_project,
-    project::get_file_tree,
-    project::get_directory_children,
-    project::text_search,
-    project::filename_search,
-    project::replace_in_files,
-    project::read_file,
-    project::get_current_project,
+            workspace::close_workspace,
+            workspace::reorder_workspaces,
+            workspace::rename_workspace,
+            // Workspace history commands
+            workspace::list_workspace_history,
+            workspace::save_workspace,
+            workspace::delete_workspace_history,
+            workspace::restore_workspace,
+            workspace::toggle_pin_workspace_history,
+            workspace::rename_workspace_history,
+            // Frontend-compatible aliases
+            workspace::list_saved_workspaces,
+            workspace::delete_saved_workspace,
+            workspace::rename_saved_workspace,
+            // Project management commands
+            project::open_project,
+            project::get_recent_projects,
+            project::remove_project,
+            project::get_file_tree,
+            project::get_directory_children,
+            project::text_search,
+            project::filename_search,
+            project::replace_in_files,
+            project::read_file,
+            project::get_current_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

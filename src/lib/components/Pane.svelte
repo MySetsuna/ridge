@@ -366,6 +366,7 @@ onMount(() => {
 
 onDestroy(() => {
 	alive = false;
+	if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
 	cancelLayoutRaf();
 	cancelResizeRaf();
 	cancelTermRedrawRaf();

@@ -125,9 +125,9 @@ $effect(() => {
     <div
       class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move
         {ws.id === activeWorkspaceId
-          ? 'bg-violet-500/15 text-violet-100 border-violet-400/35'
+          ? 'bg-[var(--wf-accent)]/15 text-[var(--wf-fg)] border-[var(--wf-accent)]/35'
           : 'text-(--wf-fg-muted) border-transparent hover:bg-white/5 hover:text-(--wf-fg)'}
-        {dragOverIndex === i ? 'ring-2 ring-violet-400/50' : ''}"
+        {dragOverIndex === i ? 'ring-2 ring-[var(--wf-accent)]/50' : ''}"
       draggable="true"
       ondragstart={(e) => handleDragStart(e, i)}
       ondragover={(e) => handleDragOver(e, i)}
@@ -143,7 +143,7 @@ $effect(() => {
           type="text"
           bind:this={renameInput}
           bind:value={editingName}
-          class="w-20 bg-transparent border-b border-violet-400 outline-none text-violet-100 text-[12px]"
+          class="w-20 bg-transparent border-b border-[var(--wf-accent)] outline-none text-[var(--wf-fg)] text-[12px]"
           onblur={() => handleRenameSubmit(ws.id)}
           onkeydown={(e) => handleRenameKeydown(e, ws.id)}
         />

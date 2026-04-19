@@ -1,0 +1,592 @@
+/**
+ * paneTree.test.ts — Tests for paneCwdStore and cwd-related functionality.
+ * Following TDD: tests written FIRST before implementation.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { get } from 'svelte/store';
+
+// ─── Mock @tauri-apps/api/core ───────────────────────────────────────────────
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+  isTauri: vi.fn(() => true),
+}));
+
+// ─── Mock @tauri-apps/api/event ───────────────────────────────────────────────
+type UnlistenFn = () => void;
+
+interface ListenCall {
+  channel: string;
+  handler: (event: { payload: unknown }) => void;
+}
+
+const globalEventListeners = new Map<string, ListenCall[]>();
+
+function createMockListen() {
+  return async function listen<T>(
+    channel: string,
+    handler: (event: { payload: T }) => void
+  ): Promise<UnlistenFn> {
+    const calls = globalEventListeners.get(channel) ?? [];
+    calls.push({ channel, handler: handler as ListenCall['handler'] });
+    globalEventListeners.set(channel, calls);
+    return () => {
+      const existing = globalEventListeners.get(channel) ?? [];
+      globalEventListeners.set(
+        channel,
+        existing.filter((h) => h.handler !== (handler as ListenCall['handler']))
+      );
+    };
+  };
+}
+
+/** Helper used by tests to simulate backend emitting a Tauri event. */
+export function emitBackendEvent<T>(channel: string, payload: T) {
+  const calls = globalEventListeners.get(channel) ?? [];
+  for (const call of calls) {
+    call.handler({ payload } as never);
+  }
+}
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: createMockListen(),
+}));
+
+// ─── Import SUT after mocks ───────────────────────────────────────────────────
+const paneTreeModule = await import('./paneTree');
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: paneCwdStore (setPaneCwd / getPaneCwd)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('paneCwdStore', () => {
+  beforeEach(() => {
+    paneTreeModule.paneCwdStore.set({});
+    globalEventListeners.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // ── setPaneCwd ──────────────────────────────────────────────────────────────
+
+  it('stores cwd under the correct composite key "workspaceId:paneId"', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/home/user');
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store).toHaveProperty('ws1:pane-a');
+    expect(store['ws1:pane-a']).toBe('/home/user');
+  });
+
+  it('is immutable — setPaneCwd creates a new store object', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/home/user');
+    const before = get(paneTreeModule.paneCwdStore);
+    paneTreeModule.setPaneCwd('ws1', 'pane-b', '/tmp');
+    const after = get(paneTreeModule.paneCwdStore);
+    expect(before).not.toBe(after); // new reference = immutable
+    expect(after).toHaveProperty('ws1:pane-a'); // existing key preserved
+  });
+
+  it('overwrites the cwd for an existing workspace:pane pair', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/home/user');
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/opt/project');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('/opt/project');
+  });
+
+  it('handles special characters and Unicode in cwd paths', () => {
+    paneTreeModule.setPaneCwd('ws-测试', 'pane-👍', '/home/用户/桌面/项目 (1)');
+    expect(get(paneTreeModule.paneCwdStore)['ws-测试:pane-👍']).toBe(
+      '/home/用户/桌面/项目 (1)'
+    );
+  });
+
+  it('handles empty string cwd (valid — shell may send empty cwd)', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-x', '');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-x']).toBe('');
+  });
+
+  it('handles deep nested paths', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-deep', '/a/b/c/d/e/f/g');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-deep']).toBe('/a/b/c/d/e/f/g');
+  });
+
+  // ── getPaneCwd ──────────────────────────────────────────────────────────────
+
+  it('returns the stored cwd for a known workspace:pane pair', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/home/user');
+    expect(paneTreeModule.getPaneCwd('ws1', 'pane-a')).toBe('/home/user');
+  });
+
+  it('returns undefined when the workspace:pane pair has not been set', () => {
+    expect(paneTreeModule.getPaneCwd('ws-unknown', 'pane-unknown')).toBeUndefined();
+  });
+
+  it('returns undefined when only the workspace matches but not the pane', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/home/user');
+    expect(paneTreeModule.getPaneCwd('ws1', 'pane-b')).toBeUndefined();
+  });
+
+  it('returns undefined when only the pane matches but not the workspace', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/home/user');
+    expect(paneTreeModule.getPaneCwd('ws2', 'pane-a')).toBeUndefined();
+  });
+
+  it('tracks multiple independent workspaces correctly', () => {
+    paneTreeModule.setPaneCwd('ws-a', 'pane-1', '/home/alice');
+    paneTreeModule.setPaneCwd('ws-a', 'pane-2', '/home/bob');
+    paneTreeModule.setPaneCwd('ws-b', 'pane-1', '/home/charlie');
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws-a:pane-1']).toBe('/home/alice');
+    expect(store['ws-a:pane-2']).toBe('/home/bob');
+    expect(store['ws-b:pane-1']).toBe('/home/charlie');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: extractCwdsFromLayout
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('extractCwdsFromLayout', () => {
+  beforeEach(() => {
+    paneTreeModule.paneCwdStore.set({});
+    globalEventListeners.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns an empty object for a flat layout with no cwds', () => {
+    const layout = { type: 'leaf' as const, id: 'pane-a' };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'ws1');
+    expect(result).toEqual({});
+  });
+
+  it('extracts cwd from a single leaf node', () => {
+    const layout = { type: 'leaf' as const, id: 'pane-a', cwd: '/project' };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'ws1');
+    expect(result).toEqual({ 'ws1:pane-a': '/project' });
+  });
+
+  it('extracts cwds from all leaf nodes in a nested split tree', () => {
+    const layout = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf' as const, id: 'pane-left', cwd: '/left' },
+        {
+          type: 'split' as const,
+          id: 'right-split',
+          direction: 'vertical',
+          ratios: [50, 50],
+          children: [
+            { type: 'leaf' as const, id: 'pane-right-top', cwd: '/right-top' },
+            { type: 'leaf' as const, id: 'pane-right-bottom', cwd: '/right-bottom' },
+          ],
+        },
+      ],
+    };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'ws-x');
+    expect(result).toEqual({
+      'ws-x:pane-left': '/left',
+      'ws-x:pane-right-top': '/right-top',
+      'ws-x:pane-right-bottom': '/right-bottom',
+    });
+  });
+
+  it('skips leaf nodes without a cwd (undefined)', () => {
+    const layout = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf' as const, id: 'pane-with', cwd: '/has-cwd' },
+        { type: 'leaf' as const, id: 'pane-without' }, // no cwd
+      ],
+    };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'ws1');
+    expect(result).toEqual({ 'ws1:pane-with': '/has-cwd' });
+  });
+
+  it('uses the workspaceId prefix for all keys', () => {
+    const layout = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'vertical',
+      ratios: [100],
+      children: [{ type: 'leaf' as const, id: 'pane-1', cwd: '/a' }],
+    };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'workspace-abc');
+    expect(Object.keys(result)).toContain('workspace-abc:pane-1');
+  });
+
+  it('handles a deeply nested split tree (5 levels)', () => {
+    const layout: import('./paneTree').PaneNode = {
+      type: 'split',
+      id: 'L1',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf', id: 'lvl1', cwd: '/lvl1' },
+        {
+          type: 'split',
+          id: 'L2',
+          direction: 'vertical',
+          ratios: [50, 50],
+          children: [
+            { type: 'leaf', id: 'lvl2', cwd: '/lvl2' },
+            {
+              type: 'split',
+              id: 'L3',
+              direction: 'horizontal',
+              ratios: [50, 50],
+              children: [
+                { type: 'leaf', id: 'lvl3', cwd: '/lvl3' },
+                { type: 'leaf', id: 'lvl3b', cwd: '/lvl3b' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'ws-deep');
+    expect(result).toEqual({
+      'ws-deep:lvl1': '/lvl1',
+      'ws-deep:lvl2': '/lvl2',
+      'ws-deep:lvl3': '/lvl3',
+      'ws-deep:lvl3b': '/lvl3b',
+    });
+  });
+
+  it('empty string cwd is included in the result', () => {
+    const layout = { type: 'leaf' as const, id: 'pane-empty', cwd: '' };
+    const result = paneTreeModule.extractCwdsFromLayout(layout, 'ws1');
+    expect(result['ws1:pane-empty']).toBe('');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: pane-cwd-changed event listener integration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('pane-cwd-changed event integration', () => {
+  beforeEach(() => {
+    paneTreeModule.paneCwdStore.set({});
+    globalEventListeners.clear();
+    // Seed paneTreeStore so getAllPaneIds (used by setupPaneCwdListeners)
+    // returns the expected IDs used by these tests.
+    paneTreeModule.paneTreeStore.set({
+      type: 'split',
+      id: 'root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf', id: 'paneA' },
+        { type: 'leaf', id: 'paneB' },
+        { type: 'leaf', id: 'paneC' },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('paneCwdStore starts empty', () => {
+    expect(get(paneTreeModule.paneCwdStore)).toEqual({});
+  });
+
+  it('emitting pane-cwd-changed updates paneCwdStore via the listener', async () => {
+    // setupPaneCwdListeners reads pane IDs from paneTreeStore, so paneA must be present
+    await paneTreeModule.setupPaneCwdListeners('ws1');
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '/changed/path' });
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws1:paneA']).toBe('/changed/path');
+  });
+
+  it('subsequent events for the same paneId overwrite the previous cwd', async () => {
+    await paneTreeModule.setupPaneCwdListeners('ws1');
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '/first' });
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '/second' });
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws1:paneA']).toBe('/second');
+    expect(Object.keys(store)).toHaveLength(1); // no duplicate keys
+  });
+
+  it('concurrent events from multiple panes update independently', async () => {
+    await paneTreeModule.setupPaneCwdListeners('ws1');
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '/path-a' });
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneB', { cwd: '/path-b' });
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneC', { cwd: '/path-c' });
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws1:paneA']).toBe('/path-a');
+    expect(store['ws1:paneB']).toBe('/path-b');
+    expect(store['ws1:paneC']).toBe('/path-c');
+  });
+
+  it('events from different workspaces are isolated', async () => {
+    // Note: both ws1 and ws2 listen to the same pane IDs (paneA etc.)
+    // since they share the same paneTreeStore state in this test
+    await paneTreeModule.setupPaneCwdListeners('ws1');
+    await paneTreeModule.setupPaneCwdListeners('ws2');
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '/ws1-paneA' });
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws2-paneA', { cwd: '/ws2-paneA' });
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws1:paneA']).toBe('/ws1-paneA');
+    expect(store['ws2:paneA']).toBe('/ws2-paneA');
+  });
+
+  it('getPaneCwd returns the value set via event', async () => {
+    await paneTreeModule.setupPaneCwdListeners('ws1');
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '/via-event' });
+    expect(paneTreeModule.getPaneCwd('ws1', 'paneA')).toBe('/via-event');
+  });
+
+  it('empty string cwd via event is stored correctly', async () => {
+    await paneTreeModule.setupPaneCwdListeners('ws1');
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws1-paneA', { cwd: '' });
+    expect(paneTreeModule.getPaneCwd('ws1', 'paneA')).toBe('');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:paneA']).toBe('');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: Issue #1 — PaneNode type includes cwd?: string on leaf variant
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('PaneNode cwd field (Issue #1)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    paneTreeModule.paneCwdStore.set({});
+  });
+
+  it('leaf node without cwd is valid', () => {
+    // Regression: cwd field must not be required — existing leaves without cwd
+    // must still pass TypeScript type-checking
+    const leaf: import('./paneTree').PaneNode = { type: 'leaf', id: 'pane-no-cwd' };
+    expect(leaf.type).toBe('leaf');
+    expect(leaf.id).toBe('pane-no-cwd');
+    // @ts-expect-error — cwd is intentionally absent; we just verify the field
+    // is optional, not that it must be present
+    void leaf;
+  });
+
+  it('leaf node with cwd string is valid', () => {
+    const leaf: import('./paneTree').PaneNode = { type: 'leaf', id: 'pane-cwd', cwd: '/project' };
+    expect(leaf.cwd).toBe('/project');
+    // Compile-time contract: cwd must be string | undefined
+    const leaf2: import('./paneTree').PaneNode = { type: 'leaf', id: 'pane-cwd-2' };
+    // @ts-expect-error — intentionally verify cwd is optional (not required)
+    void leaf2;
+  });
+
+  it('split node does not have cwd field (cwd only lives on leaf)', () => {
+    const split: import('./paneTree').PaneNode = {
+      type: 'split',
+      id: 'split-root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [{ type: 'leaf', id: 'p1' }],
+    };
+    expect(split.type).toBe('split');
+    // @ts-expect-error — cwd is only on leaf; split should NOT have it
+    void split.cwd;
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: Issue #3 — loadSavedWorkspaces re-throws errors
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('loadSavedWorkspaces error handling (Issue #3)', () => {
+  beforeEach(() => {
+    paneTreeModule.paneCwdStore.set({});
+    globalEventListeners.clear();
+    paneTreeModule.savedWorkspacesList.set([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalEventListeners.clear();
+  });
+
+  it('re-throws when invoke throws — consistent with syncPaneLayoutFromBackend', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockRejectedValueOnce(new Error('Backend unavailable'));
+
+    // Expect the error to propagate (not just swallowed with console.error)
+    await expect(paneTreeModule.loadSavedWorkspaces()).rejects.toThrow(
+      'Backend unavailable'
+    );
+  });
+
+  it('re-throws with the original Error object (not a plain string)', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    const originalError = new Error('list_saved_workspaces failed');
+    invokeMock.mockRejectedValueOnce(originalError);
+
+    try {
+      await paneTreeModule.loadSavedWorkspaces();
+      expect.fail('Expected loadSavedWorkspaces to throw');
+    } catch (e) {
+      // The re-thrown error should be the original error instance
+      expect(e).toBe(originalError);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: Issue #2 — cwd listeners refreshed after pane tree mutations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
+  beforeEach(() => {
+    paneTreeModule.paneCwdStore.set({});
+    globalEventListeners.clear();
+    // Seed a minimal pane tree so getAllPaneIds returns known pane IDs
+    paneTreeModule.paneTreeStore.set({
+      type: 'leaf',
+      id: 'pane-1',
+    });
+    paneTreeModule.activeWorkspaceId.set('ws-mutation');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalEventListeners.clear();
+    paneTreeModule.paneCwdStore.set({});
+  });
+
+  it('syncPaneLayoutFromBackend refreshes cwd listeners after layout sync', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+
+    // Simulate the new layout returned after a split/close
+    const newLayout: import('./paneTree').PaneNode = {
+      type: 'split',
+      id: 'root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf', id: 'pane-new-1' },
+        { type: 'leaf', id: 'pane-new-2' },
+      ],
+    };
+
+    invokeMock
+      .mockResolvedValueOnce(newLayout) // get_pane_layout
+      .mockResolvedValueOnce('ws-mutation'); // get_active_workspace_id (if needed)
+
+    await paneTreeModule.syncPaneLayoutFromBackend();
+
+    // After syncPaneLayoutFromBackend, the new pane IDs should be registered
+    // in the paneCwdStore when cwd-change events arrive
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws-mutation-pane-new-1', {
+      cwd: '/new/path-1',
+    });
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws-mutation-pane-new-2', {
+      cwd: '/new/path-2',
+    });
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws-mutation:pane-new-1']).toBe('/new/path-1');
+    expect(store['ws-mutation:pane-new-2']).toBe('/new/path-2');
+  });
+
+  it('after switchWorkspace, cwd listeners are re-attached for new pane IDs', async () => {
+    // This test verifies the existing switchWorkspace behavior that already calls
+    // setupPaneCwdListeners (baseline), ensuring mutation operations below follow the same pattern
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+
+    // New workspace ws2 with different pane IDs
+    const ws2Layout: import('./paneTree').PaneNode = {
+      type: 'split',
+      id: 'root2',
+      direction: 'vertical',
+      ratios: [100],
+      children: [{ type: 'leaf', id: 'pane-ws2-1' }],
+    };
+
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_layout') return ws2Layout;
+      return undefined;
+    }); // Make get_pane_layout return the new layout (switch_workspace doesn't need to return anything)
+
+    await paneTreeModule.switchWorkspace('ws2');
+
+    // Verify listeners work for ws2 pane IDs
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws2-pane-ws2-1', {
+      cwd: '/ws2/cwd',
+    });
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws2:pane-ws2-1']).toBe('/ws2/cwd');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: SavedWorkspace.paneCwds integration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('SavedWorkspace.paneCwds integration', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalEventListeners.clear();
+    paneTreeModule.paneCwdStore.set({});
+  });
+
+  it('extractCwdsFromLayout output satisfies SavedWorkspace.paneCwds shape', () => {
+    // Verify all values are strings and keys follow the workspaceId:paneId pattern
+    const layout: import('./paneTree').PaneNode = {
+      type: 'split',
+      id: 'root',
+      direction: 'vertical',
+      ratios: [33.33, 33.33, 33.34],
+      children: [
+        { type: 'leaf', id: 'term-1', cwd: '/home/user' },
+        { type: 'leaf', id: 'term-2' }, // no cwd
+        { type: 'leaf', id: 'editor-1', cwd: '/project/src' },
+      ],
+    };
+
+    const wsId = 'saved-ws-001';
+    const cwds = paneTreeModule.extractCwdsFromLayout(layout, wsId);
+
+    // Verify Record<string, string> shape
+    const allValuesAreStrings = Object.values(cwds).every((v) => typeof v === 'string');
+    expect(allValuesAreStrings).toBe(true);
+
+    const allKeysMatchPattern = Object.keys(cwds).every(
+      (k) => k.includes(':') && k.startsWith(`${wsId}:`)
+    );
+    expect(allKeysMatchPattern).toBe(true);
+
+    // Assign to SavedWorkspace shape — compile-time contract
+    const savedWorkspace: import('./paneTree').SavedWorkspace = {
+      id: 'some-id',
+      name: 'My Workspace',
+      paneTree: layout,
+      paneCwds: cwds,
+      savedAt: new Date().toISOString(),
+    };
+
+    expect(savedWorkspace.paneCwds['saved-ws-001:term-1']).toBe('/home/user');
+    expect(savedWorkspace.paneCwds['saved-ws-001:editor-1']).toBe('/project/src');
+    expect(savedWorkspace.paneCwds['saved-ws-001:term-2']).toBeUndefined();
+  });
+});

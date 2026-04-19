@@ -1,7 +1,8 @@
 // src-tauri/src/engine/pane_tree.rs
 use std::collections::HashMap;
+use std::path::PathBuf;
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use crate::types::PaneMode;
 use crate::utils::error::AppError;
 
@@ -35,7 +36,9 @@ pub enum PaneNode {
 pub struct Pane {
     pub id: Uuid,
     pub mode: PaneMode,
-    // 可扩展：pty_handle、editor_state 等
+    /// Working directory reported via OSC 7 by the PTY shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,7 +52,7 @@ impl PaneTree {
     pub fn new() -> Self {
         let root_id = Uuid::new_v4();
         let mut panes = HashMap::new();
-        panes.insert(root_id, Pane { id: root_id, mode: PaneMode::Terminal });
+        panes.insert(root_id, Pane { id: root_id, mode: PaneMode::Terminal, cwd: None });
 
         Self {
             root: PaneNode::Leaf(root_id),
@@ -118,6 +121,7 @@ impl PaneTree {
             self.panes.insert(new_pane_id, Pane {
                 id: new_pane_id,
                 mode: PaneMode::Terminal,
+                cwd: None,
             });
             Ok(new_pane_id)
         } else {
@@ -494,4 +498,79 @@ impl PaneTree {
         recurse(&self.root, &mut leaves);
         leaves
     }
+}
+#[cfg(test)]
+mod tests {
+use super::*;
+
+#[test]
+fn pane_serde_roundtrip_without_cwd() {
+    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None };
+    let json = serde_json::to_string(&pane).unwrap();
+    let deserialized: Pane = serde_json::from_str(&json).unwrap();
+    assert!(deserialized.cwd.is_none());
+    assert_eq!(deserialized.id, pane.id);
 }
+
+#[test]
+fn pane_serde_roundtrip_with_unix_cwd() {
+    let pane = Pane {
+        id: Uuid::new_v4(),
+        mode: PaneMode::Terminal,
+        cwd: Some(PathBuf::from("/home/user/projects")),
+    };
+    let json = serde_json::to_string(&pane).unwrap();
+    assert!(json.contains("/home/user/projects"));
+    let deserialized: Pane = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.cwd.as_ref().unwrap().to_str(), Some("/home/user/projects"));
+}
+
+#[test]
+fn pane_serde_roundtrip_with_windows_cwd() {
+    let pane = Pane {
+        id: Uuid::new_v4(),
+        mode: PaneMode::Terminal,
+        cwd: Some(PathBuf::from("C:/Users/Alice/code")),
+    };
+    let json = serde_json::to_string(&pane).unwrap();
+    let deserialized: Pane = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.cwd.as_ref().unwrap().to_str(), Some("C:/Users/Alice/code"));
+}
+
+#[test]
+fn pane_deserializes_cwd_field_explicitly() {
+    let json = r#"{"id":"00000000-0000-0000-0000-000000000001","mode":"Terminal","cwd":"/tmp/test"}"#;
+    let deserialized: Pane = serde_json::from_str(json).unwrap();
+    assert_eq!(deserialized.cwd.as_ref().unwrap().to_str(), Some("/tmp/test"));
+}
+
+#[test]
+fn pane_deserializes_missing_cwd_as_none() {
+    let json = r#"{"id":"00000000-0000-0000-0000-000000000001","mode":"Terminal"}"#;
+    let deserialized: Pane = serde_json::from_str(json).unwrap();
+    assert!(deserialized.cwd.is_none());
+}
+
+#[test]
+fn pane_serializes_cwd_none_omitted_by_skip_serializing() {
+    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None };
+    let json = serde_json::to_string(&pane).unwrap();
+    assert!(!json.contains("cwd"));
+}
+
+#[test]
+fn pane_tree_new_has_no_cwd() {
+    let tree = PaneTree::new();
+    for pane in tree.panes.values() {
+        assert!(pane.cwd.is_none());
+    }
+}
+
+#[test]
+fn pane_tree_split_preserves_cwd_none_on_new_pane() {
+    let mut tree = PaneTree::new();
+    let root_id = tree.get_all_leaves()[0];
+    let new_id = tree.split(root_id, SplitDirection::Horizontal).unwrap();
+    assert!(tree.panes.get(&new_id).unwrap().cwd.is_none());
+}
+}

@@ -24,4 +24,9 @@ pub enum GlobalEvent {
         pane_id: Uuid,
         mode: PaneMode,
     },
+    PaneCwdChanged {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        cwd: String,
+    },
 }

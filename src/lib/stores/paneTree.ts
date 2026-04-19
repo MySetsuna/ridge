@@ -1,5 +1,6 @@
 // src/lib/stores/paneTree.ts
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { get, writable } from 'svelte/store';
 import type { PaneNode } from '$lib/types';
 import { reportDevIssue } from '$lib/devIssue';
@@ -441,9 +442,15 @@ export async function syncPaneLayoutFromBackend() {
     });
     throw e;
   }
+  // Refresh cwd listeners so new panes from split/close/dock are wired up.
+  // activeWorkspaceId is already set by the time this is called from
+  // splitPane / closePane / dockPane / etc.
+  const active = get(activeWorkspaceId);
+  if (active) {
+    await setupPaneCwdListeners(active);
+  }
 }
 
-/** 列表 + 活动区 id + 分屏树一次拉齐，再连续 set，避免 {#key activeWorkspaceId} 已变而 paneTree 仍是上一工作区的竞态。 */
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   try {
@@ -491,6 +498,8 @@ export async function switchWorkspace(workspaceId: string) {
     paneTreeStore.set(layout);
     activeWorkspaceId.set(workspaceId);
     reconcileActivePaneId(layout);
+    // Re-attach cwd listeners for the new workspace
+    await setupPaneCwdListeners(workspaceId);
   } catch (e) {
     console.error('switchWorkspace', workspaceId, e);
     reportDevIssue({
@@ -638,12 +647,87 @@ export async function renameWorkspace(workspaceId: string, name: string) {
 
 // ============ 已保存工作区相关 ============
 
+// TODO: paneCwds is not persisted — backend WorkspaceHistoryItem lacks this field.
+// Restored workspaces will not preserve terminal working directories.
+
 export interface SavedWorkspace {
   id: string;
   name: string;
   paneTree: PaneNode;
-  paneCwds: Record<string, string>;
+  paneCwds: Record<string, string>; // Not yet populated by backend
   savedAt: string;
+}
+
+/** Keyed by "${workspaceId}:${paneId}" → cwd string. */
+export const paneCwdStore = writable<Record<string, string>>({});
+
+/** Update the cwd for a specific pane. */
+export function setPaneCwd(workspaceId: string, paneId: string, cwd: string) {
+  paneCwdStore.update((store) => ({ ...store, [`${workspaceId}:${paneId}`]: cwd }));
+}
+
+/** Retrieve the cwd for a specific pane, if known. */
+export function getPaneCwd(workspaceId: string, paneId: string): string | undefined {
+  return get(paneCwdStore)[`${workspaceId}:${paneId}`];
+}
+
+/**
+ * Recursively extracts all pane CWDs from a PaneNode tree.
+ * Produces a map keyed as `"${workspaceId}:${paneId}" -> cwd_string`.
+ * Only leaf nodes with a non-null cwd are included.
+ */
+export function extractCwdsFromLayout(
+  node: PaneNode,
+  workspaceId: string
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  function traverse(n: PaneNode): void {
+    if (n.type === 'leaf') {
+      if (n.cwd !== undefined && n.cwd !== null) {
+        result[`${workspaceId}:${n.id}`] = n.cwd;
+      }
+    } else {
+      n.children?.forEach(traverse);
+    }
+  }
+  traverse(node);
+  return result;
+}
+
+/**
+ * Sets up Tauri event listeners for pane-cwd-changed-{workspaceId}-{paneId} events
+ * for ALL panes in the given workspace's current pane tree.
+ * Listeners are tracked so they can be torn down on workspace switch.
+ */
+const activeCwdListeners = new Map<string, () => void>();
+
+export async function setupPaneCwdListeners(workspaceId: string): Promise<void> {
+  if (!isTauri()) return;
+
+  // Tear down any existing listeners for this workspace
+  const existing = activeCwdListeners.get(workspaceId);
+  if (existing) {
+    existing();
+    activeCwdListeners.delete(workspaceId);
+  }
+
+  // Collect all pane IDs in the current tree
+  const tree = get(paneTreeStore);
+  const paneIds = getAllPaneIds(tree);
+
+  const unlisteners: Array<() => void> = [];
+  for (const paneId of paneIds) {
+    if (!paneId) continue; // skip empty IDs (e.g., pre-hydration default leaf)
+    const ch = `pane-cwd-changed-${workspaceId}-${paneId}`;
+    const unlisten = await listen<{ cwd: string }>(ch, (e) => {
+      setPaneCwd(workspaceId, paneId, e.payload.cwd);
+    });
+    unlisteners.push(unlisten);
+  }
+
+  activeCwdListeners.set(workspaceId, () => {
+    unlisteners.forEach((u) => u());
+  });
 }
 
 export const savedWorkspacesList = writable<SavedWorkspace[]>([]);
@@ -654,8 +738,27 @@ export async function loadSavedWorkspaces() {
   try {
     const list = await invoke<SavedWorkspace[]>('list_saved_workspaces');
     savedWorkspacesList.set(list);
+
+    // Populate paneCwdStore from the persisted paneTree layouts.
+    // The layout's LayoutNode::Leaf carries cwd from the backend.
+    for (const sw of list) {
+      const cwds = extractCwdsFromLayout(sw.paneTree, sw.id);
+      paneCwdStore.update((store) => ({ ...store, ...cwds }));
+    }
+
+    // Set up cwd change listeners for the currently active workspace
+    const active = get(activeWorkspaceId);
+    if (active) {
+      await setupPaneCwdListeners(active);
+    }
   } catch (e) {
     console.error('loadSavedWorkspaces', e);
+ reportDevIssue({
+ title: 'Load saved workspaces failed',
+ message: String(e),
+ stack: e instanceof Error ? e.stack : undefined,
+ });
+ throw e;
   }
 }
 

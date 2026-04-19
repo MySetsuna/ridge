@@ -161,7 +161,10 @@ fn load_history_store(app_handle: &tauri::AppHandle) -> WorkspaceHistoryStore {
 fn save_history_store(app_handle: &tauri::AppHandle, store: &WorkspaceHistoryStore) -> Result<(), String> {
     let path = get_workspace_history_path(app_handle);
     let content = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    // Atomic write: write to temp file first, then rename
+    let temp_path = path.with_extension("tmp");
+    fs::write(&temp_path, content).map_err(|e| e.to_string())?;
+    std::fs::rename(&temp_path, &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -174,26 +177,33 @@ pub fn list_workspace_history(app_handle: tauri::AppHandle) -> Result<Vec<Worksp
 pub fn save_workspace(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
-    name: String,
+    name: Option<String>,
 ) -> Result<String, String> {
     let history_id = Uuid::new_v4().to_string();
 
     // Get current workspace pane tree
     let active_id = state.active_workspace_id();
-    let (pane_tree_json, pane_count) = {
+    let (pane_tree_json, pane_count, workspace_name) = {
         let map = state.workspaces.read();
+        let names = state.workspace_names.read();
         map.get(&active_id)
             .map(|ws| {
                 let pane_count = ws.pane_tree.get_all_leaves().len();
                 let pane_tree_json = serde_json::to_string(&ws.pane_tree).unwrap_or_default();
-                (pane_tree_json, pane_count)
+                // Use provided name, or fall back to saved workspace name, or auto-generate
+                let workspace_name = name.unwrap_or_else(|| {
+                    names.get(&active_id).cloned().unwrap_or_else(|| {
+                        format!("Saved Workspace {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"))
+                    })
+                });
+                (pane_tree_json, pane_count, workspace_name)
             })
-            .unwrap_or((String::new(), 0))
+            .unwrap_or((String::new(), 0, "Unnamed Workspace".to_string()))
     };
 
     let item = WorkspaceHistoryItem {
         id: history_id.clone(),
-        name,
+        name: workspace_name,
         saved_at: chrono::Utc::now().to_rfc3339(),
         pane_count,
         is_pinned: false,
@@ -270,4 +280,23 @@ pub fn rename_workspace_history(app_handle: tauri::AppHandle, history_id: String
         item.name = name;
     }
     save_history_store(&app_handle, &store)
+}
+
+// ============ Frontend-compatible command aliases ============
+// These forward to the existing "workspace_history" commands so the frontend
+// can use the more intuitive "saved_workspaces" naming.
+
+#[tauri::command]
+pub fn list_saved_workspaces(app_handle: tauri::AppHandle) -> Result<Vec<WorkspaceHistoryItem>, String> {
+    list_workspace_history(app_handle)
+}
+
+#[tauri::command]
+pub fn delete_saved_workspace(app_handle: tauri::AppHandle, history_id: String) -> Result<(), String> {
+    delete_workspace_history(app_handle, history_id)
+}
+
+#[tauri::command]
+pub fn rename_saved_workspace(app_handle: tauri::AppHandle, history_id: String, name: String) -> Result<(), String> {
+    rename_workspace_history(app_handle, history_id, name)
 }

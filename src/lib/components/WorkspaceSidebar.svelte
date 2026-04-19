@@ -140,9 +140,9 @@
  <div
  class="group relative flex items-center gap-2 rounded-lg px-2 py-2 cursor-pointer transition-all mb-1
  {ws.id === activeWorkspaceId
- ? 'bg-violet-500/15 text-violet-100'
+ ? 'bg-[var(--wf-accent)]/15 text-[var(--wf-fg)]'
  : 'hover:bg-white/[0.04] text-[var(--wf-fg-muted)]'}
- {dragOverIndex === i ? 'ring-2 ring-violet-400/50' : ''}"
+ {dragOverIndex === i ? 'ring-2 ring-[var(--wf-accent)]/50' : ''}"
  draggable="true"
  ondragstart={(e) => handleDragStart(e, i)}
  ondragover={(e) => handleDragOver(e, i)}
@@ -167,7 +167,7 @@
  type="text"
  bind:this={renameInput}
  bind:value={editingName}
- class="flex-1 bg-transparent border-b border-violet-400 outline-none text-[13px] text-[var(--wf-fg)] min-w-0"
+ class="flex-1 bg-transparent border-b border-[var(--wf-accent)] outline-none text-[13px] text-[var(--wf-fg)] min-w-0"
  onblur={() => handleRenameSubmit(ws.id)}
  onkeydown={(e) => handleRenameKeydown(e, ws.id)}
  onclick={(e) => e.stopPropagation()}

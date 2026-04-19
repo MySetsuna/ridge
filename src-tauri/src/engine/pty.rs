@@ -5,6 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::engine::cwd;
 use crate::state::AppState;
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
@@ -103,6 +104,7 @@ pub fn spawn_pty_reader(
                         Ok(0) => {
                             let tail = flush_pending_eof(&mut utf8_pending);
                             if !tail.is_empty() {
+                                let tail_for_cwd = tail.clone();
                                 state.append_pty_scrollback(workspace_id, pane_id, &tail);
                                 let _ = rt.block_on(async {
                                     state
@@ -114,6 +116,29 @@ pub fn spawn_pty_reader(
                                         })
                                         .await
                                 });
+                                if let Some(cwd) = cwd::parse_cwd_from_output(&tail_for_cwd) {
+                                    {
+                                        let mut map = state.workspaces.write();
+                                        if let Some(ws) = map.get_mut(&workspace_id) {
+                                            if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+                                                pane.cwd = Some(cwd.clone());
+                                            }
+                                        }
+                                    }
+                                    let event_tx = state.event_tx.clone();
+                                    let workspace_id = workspace_id.clone();
+                                    let pane_id = pane_id.clone();
+                                    let cwd_clone = cwd.clone();
+                                    let _ = rt.block_on(async move {
+                                        let _ = event_tx
+                                            .send(GlobalEvent::PaneCwdChanged {
+                                                workspace_id,
+                                                pane_id,
+                                                cwd: cwd_clone.to_string_lossy().to_string(),
+                                            })
+                                            .await;
+                                    });
+                                }
                             }
                             pty_log::reader_eof(workspace_id, pane_id);
                             break;
@@ -123,6 +148,7 @@ pub fn spawn_pty_reader(
                             if data.is_empty() {
                                 continue;
                             }
+                            let data_for_cwd = data.clone();
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
                             let _ = rt.block_on(async {
                                 state
@@ -134,10 +160,34 @@ pub fn spawn_pty_reader(
                                     })
                                     .await
                             });
+                            if let Some(cwd) = cwd::parse_cwd_from_output(&data_for_cwd) {
+                                {
+                                    let mut map = state.workspaces.write();
+                                    if let Some(ws) = map.get_mut(&workspace_id) {
+                                        if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+                                            pane.cwd = Some(cwd.clone());
+                                        }
+                                    }
+                                }
+                                let event_tx = state.event_tx.clone();
+                                let workspace_id = workspace_id.clone();
+                                let pane_id = pane_id.clone();
+                                let cwd_clone = cwd.clone();
+                                let _ = rt.block_on(async move {
+                                    let _ = event_tx
+                                        .send(GlobalEvent::PaneCwdChanged {
+                                            workspace_id,
+                                            pane_id,
+                                            cwd: cwd_clone.to_string_lossy().to_string(),
+                                        })
+                                        .await;
+                                });
+                            }
                         }
                         Err(e) => {
                             let tail = flush_pending_eof(&mut utf8_pending);
                             if !tail.is_empty() {
+                                let tail_for_cwd = tail.clone();
                                 state.append_pty_scrollback(workspace_id, pane_id, &tail);
                                 let _ = rt.block_on(async {
                                     state
@@ -149,6 +199,29 @@ pub fn spawn_pty_reader(
                                         })
                                         .await
                                 });
+                                if let Some(cwd) = cwd::parse_cwd_from_output(&tail_for_cwd) {
+                                    {
+                                        let mut map = state.workspaces.write();
+                                        if let Some(ws) = map.get_mut(&workspace_id) {
+                                            if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+                                                pane.cwd = Some(cwd.clone());
+                                            }
+                                        }
+                                    }
+                                    let event_tx = state.event_tx.clone();
+                                    let workspace_id = workspace_id.clone();
+                                    let pane_id = pane_id.clone();
+                                    let cwd_clone = cwd.clone();
+                                    let _ = rt.block_on(async move {
+                                        let _ = event_tx
+                                            .send(GlobalEvent::PaneCwdChanged {
+                                                workspace_id,
+                                                pane_id,
+                                                cwd: cwd_clone.to_string_lossy().to_string(),
+                                            })
+                                            .await;
+                                    });
+                                }
                             }
                             pty_log::reader_io_err(workspace_id, pane_id, &e);
                             break;

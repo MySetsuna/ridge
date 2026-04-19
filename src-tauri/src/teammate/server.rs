@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use chrono::{DateTime, Local, Utc};
 use uuid::Uuid;
 
 use crate::commands::{pane, terminal};
@@ -519,7 +520,7 @@ fn normalize_windows_command(
     out
 }
 
-async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
+async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Query(q): Query<std::collections::HashMap<String, String>>) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
@@ -827,6 +828,22 @@ async fn route_new_window(
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
+}
+
+#[derive(Serialize)]
+struct ListPanesJsonBody {
+    active_index: usize,
+    pane_count: usize,
+    panes: Vec<PaneRowJson>,
+}
+
+#[derive(Serialize)]
+struct PaneRowJson {
+    index: usize,
+    pane_id: String,
+    uuid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 #[derive(Serialize)]

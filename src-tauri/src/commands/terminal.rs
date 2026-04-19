@@ -32,24 +32,24 @@ fn create_pane_inner(
 	let workspace_id = state.active_workspace_id();
 
 	// 获取工作目录（优先使用环境变量 HOME 或当前目录）
-	let cwd = std::env::var("HOME")
-		.or_else(|_| std::env::current_dir().map(|p| p.to_string_lossy().to_string()))
-		.unwrap_or_else(|_| ".".to_string());
+	let cwd: PathBuf = std::env::var("HOME")
+		.map(PathBuf::from)
+		.or_else(|_| std::env::current_dir())
+		.unwrap_or_else(|_| PathBuf::from("."));
 
-	// 创建 pane 后自动设置工作目录
 	ensure_pane_pty_workspace(
 		&*state,
 		workspace_id,
 		pane_id,
 		shell,
-		None,
+		Some(&cwd),
 		None,
 		None,
 		None,
 	)?;
 
 	// 设置 pane 的工作目录用于 git diff 跟踪
-	crate::commands::git::set_pane_workdir(pane_id.to_string(), cwd).map_err(AppError::PtyError)?;
+	crate::commands::git::set_pane_workdir(pane_id.to_string(), cwd.to_string_lossy().to_string()).map_err(AppError::PtyError)?;
 
 	Ok(())
 }
@@ -234,7 +234,9 @@ pub fn ensure_pane_pty_workspace(
 			.ok()
 			.filter(|s| !s.trim().is_empty());
 		{
-			cmd.env("WIND_TMUX_LOG", path.as_str());
+			if let Some(ref log) = log_path {
+				cmd.env("WIND_TMUX_LOG", log.as_str());
+			}
 		}
 	}
 	if let Some(spec) = sc.as_ref() {
