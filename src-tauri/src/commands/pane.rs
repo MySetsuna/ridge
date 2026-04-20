@@ -11,6 +11,14 @@ use crate::types::{GlobalEvent, PaneMode};
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
 
+/// Returned by `split_pane` so the frontend can immediately seed `paneCwdStore`
+/// without waiting for the first `pane-cwd-changed` event from shell integration.
+#[derive(Debug, Serialize)]
+pub struct SplitPaneResult {
+    pub pane_id: String,
+    pub initial_cwd: Option<String>,
+}
+
 /// 与前端 `PaneNode`（Svelte）对齐，便于 `invoke('get_pane_layout')` 直接驱动 SplitContainer。
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -86,7 +94,7 @@ pub async fn split_pane(
     state: State<'_, AppState>,
     pane_id: String,
     direction: String,
-) -> Result<Uuid, String> {
+) -> Result<SplitPaneResult, String> {
     split_pane_inner(state, pane_id, direction).map_err(|e| e.to_string())
 }
 
@@ -162,7 +170,7 @@ fn split_pane_inner(
     state: State<'_, AppState>,
     pane_id: String,
     direction: String,
-) -> Result<Uuid, AppError> {
+) -> Result<SplitPaneResult, AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     let dir = if direction == "horizontal" {
         SplitDirection::Horizontal
@@ -174,7 +182,24 @@ fn split_pane_inner(
     let ws = map
         .get_mut(&wid)
         .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
-    ws.pane_tree.split(pane_id, dir)
+    // Read the parent pane's cwd before splitting so the new pane can inherit it.
+    let parent_cwd = ws
+        .pane_tree
+        .panes
+        .get(&pane_id)
+        .and_then(|p| p.cwd.as_ref())
+        .map(|c| c.to_string_lossy().into_owned());
+    let new_pane_id = ws.pane_tree.split(pane_id, dir)?;
+    // Seed the new pane's cwd from the parent so the Explorer column appears immediately.
+    if let Some(ref cwd_str) = parent_cwd {
+        if let Some(new_pane) = ws.pane_tree.panes.get_mut(&new_pane_id) {
+            new_pane.cwd = Some(std::path::PathBuf::from(cwd_str));
+        }
+    }
+    Ok(SplitPaneResult {
+        pane_id: new_pane_id.to_string(),
+        initial_cwd: parent_cwd,
+    })
 }
 
 pub(crate) fn teammate_pane_uuid_at_index(

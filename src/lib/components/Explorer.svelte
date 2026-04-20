@@ -93,7 +93,7 @@
 	}
 </script>
 
-<div class="explorer flex h-full flex-col">
+<div class="explorer flex h-full flex-col" data-testid="file-tree">
 	{#if $explorerColumns.length === 0}
 		<div class="flex-1 flex items-center justify-center">
 			<div class="text-center">

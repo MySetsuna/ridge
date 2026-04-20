@@ -154,10 +154,11 @@ async fn route_split(
     }
     let wid = ctx.state.active_workspace_id();
 
-    // Smart split target selection:
+    // Split target selection:
     // 1. If explicit pane_index from -t flag → use it
-    // 2. Else use teammate_tmux_pane_cursor (main session)
-    // 3. If main session pane is SMALLER than any sub-agent pane → use the largest
+    // 2. Else pick the pane with the LARGEST character area across all leaves.
+    //    `pane_sizes` is populated by the frontend's `resize_pane` command; newly
+    //    created panes fall back to the default (80, 120) until the first resize event.
     let (idx, inferred_direction) = {
         let map = ctx.state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
@@ -166,7 +167,6 @@ async fn route_split(
         let leaves = ws.pane_tree.get_all_leaves();
         let pane_count = leaves.len();
 
-        // If explicit index provided, use it directly
         if let Some(explicit_idx) = body.pane_index {
             if explicit_idx < pane_count {
                 (explicit_idx, false)
@@ -174,29 +174,28 @@ async fn route_split(
                 return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
             }
         } else {
-            // No explicit index - use smart selection
-            let main_cursor = ws.teammate_tmux_pane_cursor;
-            let main_size = ws.pane_sizes.get(&leaves.get(main_cursor).copied().unwrap_or_default()).copied().unwrap_or((80, 120));
-            let main_area = main_size.0 as u32 * main_size.1 as u32;
-
-            // Find the best target: prefer main cursor, but use largest pane if it's bigger
-            let mut target_idx = main_cursor;
+            let mut target_idx = ws.teammate_tmux_pane_cursor.min(pane_count.saturating_sub(1));
+            let mut target_area: u32 = 0;
             for (i, leaf_id) in leaves.iter().enumerate() {
-                if i == main_cursor {
-                    continue;
-                }
-                if let Some(&(rows, cols)) = ws.pane_sizes.get(leaf_id) {
-                    let area = rows as u32 * cols as u32;
-                    if area > main_area {
-                        target_idx = i;
-                        break; // Use first (smallest index) larger pane
-                    }
+                let (rows, cols) = ws
+                    .pane_sizes
+                    .get(leaf_id)
+                    .copied()
+                    .unwrap_or((80, 120));
+                let area = rows as u32 * cols as u32;
+                if area > target_area {
+                    target_idx = i;
+                    target_area = area;
                 }
             }
 
-            // Shape-based direction inference
-            let target_size = ws.pane_sizes.get(&leaves.get(target_idx).copied().unwrap_or_default()).copied().unwrap_or((80, 120));
-            let inferred = target_size.1 > target_size.0; // cols > rows -> horizontal
+            // Shape-based direction inference: split along the longer dimension
+            // so the two resulting panes are as square as possible.
+            let (rows, cols) = leaves
+                .get(target_idx)
+                .and_then(|pid| ws.pane_sizes.get(pid).copied())
+                .unwrap_or((80, 120));
+            let inferred = cols > rows; // wider than tall → horizontal (left/right) split
 
             (target_idx, inferred)
         }
@@ -213,11 +212,23 @@ async fn route_split(
         }
     };
 
+    // CWD resolution: explicit `-c` wins, otherwise inherit the source pane's cwd
+    // so the new terminal opens in the same directory as the pane it was split from.
     let cwd = body
         .cwd
         .as_ref()
         .map(|s| std::path::PathBuf::from(s.trim()))
-        .filter(|p| !p.as_os_str().is_empty());
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            let map = ctx.state.workspaces.read();
+            map.get(&wid).and_then(|ws| {
+                let leaves = ws.pane_tree.get_all_leaves();
+                leaves
+                    .get(idx)
+                    .and_then(|pid| ws.pane_tree.panes.get(pid))
+                    .and_then(|p| p.cwd.clone())
+            })
+        });
 
     // Track last pane before updating cursor
     {
@@ -229,6 +240,16 @@ async fn route_split(
 
     match pane::teammate_split_pane(&ctx.state, wid, idx, direction) {
         Ok(new_id) => {
+            // Seed the new pane's tree-level cwd so subsequent splits off of it
+            // inherit the same directory without needing shell-integration updates.
+            if let Some(ref dir) = cwd {
+                let mut map = ctx.state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    if let Some(new_pane) = ws.pane_tree.panes.get_mut(&new_id) {
+                        new_pane.cwd = Some(dir.clone());
+                    }
+                }
+            }
             let new_idx = {
                 let map = ctx.state.workspaces.read();
                 let Some(ws) = map.get(&wid) else {
@@ -408,42 +429,31 @@ async fn route_spawn_process(
         .as_ref()
         .map(|s| std::path::PathBuf::from(s.trim()))
         .filter(|p| !p.as_os_str().is_empty());
-    let command = terminal::StructuredPtyCommand {
+    let mut command = terminal::StructuredPtyCommand {
         program: body.program,
         args: body.args,
         env: body.env,
     };
+    // On Windows, .js files must be run via node.exe — normalize before spawning.
     #[cfg(windows)]
     {
-        let line = build_powershell_launch_line(cwd.as_deref(), &command);
-        if let Err(e) =
-            terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, line.as_bytes())
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("structured spawn failed: {e}"),
-            )
-                .into_response();
-        }
+        command = normalize_windows_command(&command);
     }
-    #[cfg(not(windows))]
-    {
-        if let Err(e) = terminal::ensure_pane_pty_workspace(
-            &ctx.state,
-            wid,
-            pid,
-            None,
-            cwd.as_deref(),
-            None,
-            Some(command),
-            Some(pane_idx),
-        ) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("structured spawn failed: {e}"),
-            )
-                .into_response();
-        }
+    if let Err(e) = terminal::ensure_pane_pty_workspace(
+        &ctx.state,
+        wid,
+        pid,
+        None,
+        cwd.as_deref(),
+        None,
+        Some(command),
+        Some(pane_idx),
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("structured spawn failed: {e}"),
+        )
+            .into_response();
     }
     {
         let mut map = ctx.state.workspaces.write();
@@ -457,38 +467,6 @@ async fn route_spawn_process(
     (StatusCode::OK, "ok").into_response()
 }
 
-#[cfg(windows)]
-fn ps_single_quote(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-#[cfg(windows)]
-fn build_powershell_launch_line(
-    cwd: Option<&std::path::Path>,
-    command: &terminal::StructuredPtyCommand,
-) -> String {
-    let command = normalize_windows_command(command);
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(dir) = cwd {
-        let d = ps_single_quote(&dir.to_string_lossy());
-        parts.push(format!("Set-Location -LiteralPath '{d}'"));
-    }
-    for (k, v) in &command.env {
-        let key = ps_single_quote(k);
-        let val = ps_single_quote(v);
-        parts.push(format!("$env:{key}='{val}'"));
-    }
-    let mut exec = format!("& '{}'", ps_single_quote(&command.program));
-    for a in &command.args {
-        exec.push(' ');
-        exec.push('\'');
-        exec.push_str(&ps_single_quote(a));
-        exec.push('\'');
-    }
-    parts.push(exec);
-    // 强制单行分号分隔，避免 PTY 分块/换行导致的 `>>` continuation 语法漂移。
-    format!("{}\r", parts.join("; "))
-}
 
 #[cfg(windows)]
 fn normalize_windows_command(
@@ -670,7 +648,8 @@ async fn route_select_pane(
             "pane_index": idx
         }))).into_response()
     } else {
-        (StatusCode::BAD_REQUEST, "pane_index or last required").into_response()
+        // No index or direction — acknowledge silently (handles -e/-d/-Z modifier-only calls)
+        (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
     }
 }
 

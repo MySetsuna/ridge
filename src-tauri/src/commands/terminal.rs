@@ -62,37 +62,51 @@ pub struct StructuredPtyCommand {
 }
 
 /// Claude Code shells out to `tmux`, while Cargo places `wind-tmux(.exe)` beside the main binary.
-fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) {
-	let Ok(exe) = std::env::current_exe() else {
-		return;
+/// Returns the shim directory so callers can re-enforce it after applying extra env vars that
+/// might otherwise overwrite PATH (e.g. structured-launch env from Claude Code).
+fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf> {
+	let tmux_name = if cfg!(windows) { "tmux.exe" } else { "tmux" };
+
+	// Dev builds: use the pre-built shim in dist/teammate-shim/ under the workspace root.
+	// current_exe() = …/src-tauri/target/debug/wind.exe → go up 4 levels to workspace root.
+	#[cfg(debug_assertions)]
+	let shim_dir = {
+		let exe = std::env::current_exe().ok()?;
+		let workspace = exe
+			.parent()
+			.and_then(|p| p.parent())
+			.and_then(|p| p.parent())
+			.and_then(|p| p.parent())?;
+		workspace.join("dist").join("teammate-shim")
 	};
-	let Some(dir) = exe.parent() else {
-		return;
-	};
-	let wind_tmux = dir.join(if cfg!(windows) {
-		"wind-tmux.exe"
-	} else {
-		"wind-tmux"
-	});
-	let tmux = dir.join(if cfg!(windows) { "tmux.exe" } else { "tmux" });
-	if !wind_tmux.is_file() {
-		return;
-	}
-	if !tmux.is_file() {
-		if std::fs::hard_link(&wind_tmux, &tmux).is_err() {
-			#[cfg(unix)]
-			{
+
+	// Release builds: create a hard link of wind-tmux beside the installed Wind binary.
+	#[cfg(not(debug_assertions))]
+	let shim_dir = {
+		let exe = std::env::current_exe().ok()?;
+		let dir = exe.parent()?;
+		let wind_tmux = dir.join(if cfg!(windows) { "wind-tmux.exe" } else { "wind-tmux" });
+		if !wind_tmux.is_file() {
+			return None;
+		}
+		let tmux = dir.join(tmux_name);
+		if !tmux.is_file() {
+			if std::fs::hard_link(&wind_tmux, &tmux).is_err() {
+				#[cfg(unix)]
 				let _ = std::os::unix::fs::symlink(&wind_tmux, &tmux);
 			}
 		}
-	}
-	if !tmux.is_file() {
-		return;
+		dir.to_path_buf()
+	};
+
+	if !shim_dir.join(tmux_name).is_file() {
+		eprintln!("[wind] wind-tmux shim not found at {}", shim_dir.display());
+		return None;
 	}
 	let sep = if cfg!(windows) { ';' } else { ':' };
 	let path = std::env::var("PATH").unwrap_or_default();
-	let new_path = format!("{}{}{}", dir.display(), sep, path);
-	cmd.env("PATH", new_path);
+	cmd.env("PATH", format!("{}{sep}{path}", shim_dir.display()));
+	Some(shim_dir)
 }
 
 /// tmux `TMUX` is `socket_path,session_index,pane_index`. Wind uses a sentinel path (no real socket).
@@ -220,8 +234,8 @@ pub fn ensure_pane_pty_workspace(
 		}
 	};
 	cmd.env("TERM", "xterm-256color");
-	if let Some(ref bind) = *state.teammate_binding.read() {
-		prepend_path_with_wind_tmux_shim(&mut cmd);
+	let shim_dir = if let Some(ref bind) = *state.teammate_binding.read() {
+		let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
 		cmd.env("WIND_TEAMMATE_URL", bind.base_url.as_str());
 		cmd.env("WIND_TEAMMATE_TOKEN", bind.token.as_str());
 		cmd.env("WIND_TERMINAL", "1");
@@ -233,14 +247,24 @@ pub fn ensure_pane_pty_workspace(
 		let log_path = std::env::var("WIND_TMUX_LOG")
 			.ok()
 			.filter(|s| !s.trim().is_empty());
-		{
-			if let Some(ref log) = log_path {
-				cmd.env("WIND_TMUX_LOG", log.as_str());
-			}
+		if let Some(ref log) = log_path {
+			cmd.env("WIND_TMUX_LOG", log.as_str());
 		}
-	}
+		shim_dir
+	} else {
+		None
+	};
 	if let Some(spec) = sc.as_ref() {
 		for (k, v) in &spec.env {
+			// Re-enforce shim PATH if spec overwrites it — prevents `tmux` from being lost
+			// in the sub-agent's shell when Claude Code passes its own PATH in the env.
+			if k.eq_ignore_ascii_case("PATH") {
+				if let Some(ref dir) = shim_dir {
+					let sep = if cfg!(windows) { ';' } else { ':' };
+					cmd.env("PATH", format!("{}{sep}{v}", dir.display()));
+					continue;
+				}
+			}
 			cmd.env(k, v);
 		}
 	}

@@ -33,7 +33,7 @@ let rootNode = $derived($paneTreeStore);
 let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
 type SidebarTab = 'terminal' | 'git' | 'files';
-let sidebarTab = $state<SidebarTab>('terminal');
+let sidebarTab = $state<SidebarTab>('files');
 
 
 
@@ -258,6 +258,7 @@ const winCtrlBtn =
           type="button"
           class={toolBtn}
           title="左右分屏（当前选中窗格）"
+          data-testid="add-pane-btn"
           onclick={() => void splitActivePane('horizontal')}
         >
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">

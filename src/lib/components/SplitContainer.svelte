@@ -31,6 +31,7 @@
     findJunctionsNearPosition,
     registerJunction,
     clearJunctionRegistry,
+    findSameAxisRefs,
   } from '$lib/stores/paneTree';
 
   interface Props {
@@ -244,12 +245,10 @@
   }
 
   function splitHighlighted(path: number[], ui: SplitResizeUiState): boolean {
+    if (ui.phase === 'drag') return false;
     if (ui.phase === 'junction') {
       if (pathEqual(path, ui.primary.splitPath)) return true;
       return ui.orthogonals.some((r) => pathEqual(path, r.splitPath));
-    }
-    if (ui.phase === 'drag') {
-      return ui.snapshots.some((s) => pathEqual(path, s.ref.splitPath));
     }
     return false;
   }
@@ -267,19 +266,52 @@
     return ui.snapshots.some((s) => pathEqual(path, s.ref.splitPath));
   }
 
+  function splitAligned(path: number[], ui: SplitResizeUiState): boolean {
+    if (ui.phase !== 'pending' && ui.phase !== 'junction') return false;
+    if (ui.sameAxisCandidates.length === 0) return false;
+    if (pathEqual(path, ui.primary.splitPath)) return true;
+    return ui.sameAxisCandidates.some((r) => pathEqual(path, r.splitPath));
+  }
+
   function bindDragListeners() {
     if (dragMoveUnlisten || dragUpUnlisten) return;
+    let latestPointer: { x: number; y: number } | null = null;
+    let rafId: number | null = null;
+
     const onMove = (ev: MouseEvent) => {
-      updateSplitResizeDrag({ x: ev.clientX, y: ev.clientY });
+      latestPointer = { x: ev.clientX, y: ev.clientY };
+      if (rafId == null) {
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          if (latestPointer) {
+            updateSplitResizeDrag(latestPointer);
+          }
+        });
+      }
     };
-    const onUp = async (_ev: MouseEvent) => {
+    const onUp = async (ev: MouseEvent) => {
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      if (latestPointer) {
+        // Flush final position using real mouseup coords for drop accuracy.
+        updateSplitResizeDrag({ x: ev.clientX, y: ev.clientY });
+      }
+      latestPointer = null;
       const updates = finishSplitResizeDrag();
       unbindDragListeners();
       if (updates.length) await persistSplitRatiosBatch(updates);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp, { once: true });
-    dragMoveUnlisten = () => window.removeEventListener('mousemove', onMove);
+    dragMoveUnlisten = () => {
+      window.removeEventListener('mousemove', onMove);
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
     dragUpUnlisten = () => window.removeEventListener('mouseup', onUp);
   }
 
@@ -318,14 +350,20 @@
       { x: e.clientX, y: e.clientY },
       primary
     );
-    if (!orthogonals.length) {
+    const sameAxisCandidates = findSameAxisRefs(
+      primary,
+      SNAP_THRESHOLD_PX
+    ).map((c) => c.ref);
+    if (!orthogonals.length && !sameAxisCandidates.length) {
       if (splitEngaged(splitPath, $splitResizeUiState)) clearSplitResizeUi();
       return;
     }
-    queueSplitResizeJunction(primary, orthogonals, {
-      x: e.clientX,
-      y: e.clientY,
-    });
+    queueSplitResizeJunction(
+      primary,
+      orthogonals,
+      { x: e.clientX, y: e.clientY },
+      sameAxisCandidates
+    );
   }
 
   function onSplitMouseLeave(e: MouseEvent) {
@@ -412,6 +450,8 @@
       ? 'wf-split--junction'
       : ''} {splitDragging(splitPath, $splitResizeUiState)
       ? 'wf-split--junction-dragging'
+      : ''} {splitAligned(splitPath, $splitResizeUiState)
+      ? 'wf-split--aligned'
       : ''}"
     on:resized={onSplitResized}
   >
@@ -619,6 +659,13 @@
     > :global(.splitpanes__splitter::before) {
     background: color-mix(in srgb, var(--wf-accent) 86%, transparent);
     box-shadow: 0 0 14px var(--wf-accent-glow);
+  }
+
+  /* 同向吸附对齐：高亮加亮、阴影更厚，区别于普通 4-way junction。 */
+  :global(.wf-split.wf-split--aligned)
+    > :global(.splitpanes__splitter::before) {
+    background: color-mix(in srgb, var(--wf-accent) 95%, transparent);
+    box-shadow: 0 0 16px var(--wf-accent-glow);
   }
 
   :global(body.wf-resize-junction-cursor),

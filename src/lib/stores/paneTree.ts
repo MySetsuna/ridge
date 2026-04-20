@@ -58,6 +58,7 @@ interface SplitterSnapshot {
   ref: SplitterRef;
   ratios: number[];
   isPrimary: boolean;
+  dragStart: { x: number; y: number };
 }
 
 export type SplitResizeUiState =
@@ -105,6 +106,13 @@ export interface JunctionSnapState {
 }
 
 export const SNAP_THRESHOLD_PX = 10;
+
+/**
+ * Issue 3: how far the primary must travel along its own axis before same-axis
+ * coupled partners are dropped from the active snapshot set, so they stop
+ * following and only the primary continues moving.
+ */
+const UNSNAP_THRESHOLD_PX = 24;
 
 const HOVER_DEBOUNCE_MS = 90;
 const MIN_PANE_RATIO = 6;
@@ -236,9 +244,93 @@ function dedupeRefs(refs: SplitterRef[]): SplitterRef[] {
   return out;
 }
 
+export interface SameAxisCandidate {
+  ref: SplitterRef;
+  center: number;
+  distance: number;
+}
+
+/** 通过 DOM 查询获取分割条在屏幕上的中线坐标（无 DOM 时返回 null）。 */
+export function getSplitterScreenCenter(ref: SplitterRef): number | null {
+  if (typeof document === 'undefined') return null;
+  const splitRoot = document.querySelector<HTMLElement>(
+    `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
+  );
+  if (!splitRoot) return null;
+  const splitters = Array.from(
+    splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
+  );
+  const splitter = splitters[ref.splitterIndex];
+  if (!splitter) return null;
+  const rect = splitter.getBoundingClientRect();
+  return ref.axis === 'x'
+    ? rect.left + rect.width / 2
+    : rect.top + rect.height / 2;
+}
+
+/**
+ * 在主分割条同方向上、屏幕坐标距离 ≤ threshold 像素的兄弟分割条。
+ * 用于：(1) 悬停时识别已对齐的同向分割条；(2) 拖拽中发现新进入吸附区的分割条。
+ */
+export function findSameAxisRefs(
+  primary: SplitterRef,
+  threshold: number = SNAP_THRESHOLD_PX
+): SameAxisCandidate[] {
+  if (typeof document === 'undefined') return [];
+  const primaryCenter = getSplitterScreenCenter(primary);
+  if (primaryCenter == null) return [];
+  const allSplitters = Array.from(
+    document.querySelectorAll<HTMLElement>('.wf-split > .splitpanes__splitter')
+  );
+  const candidates: SameAxisCandidate[] = [];
+  for (const splitter of allSplitters) {
+    const splitRoot = splitter.parentElement;
+    if (!(splitRoot instanceof HTMLElement)) continue;
+    const axisAttr = splitRoot.dataset.splitAxis;
+    if (axisAttr !== primary.axis) continue;
+    const pathRaw = splitRoot.dataset.splitPath;
+    const path =
+      pathRaw === undefined || pathRaw === ''
+        ? []
+        : pathRaw
+            .split('/')
+            .map((s) => Number(s))
+            .filter((n) => Number.isFinite(n));
+    const splitters = Array.from(
+      splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
+    );
+    const splitterIndex = splitters.indexOf(splitter);
+    if (splitterIndex < 0) continue;
+    if (
+      splitterIndex === primary.splitterIndex &&
+      path.length === primary.splitPath.length &&
+      path.every((p, i) => p === primary.splitPath[i])
+    ) {
+      continue;
+    }
+    const basisPx = Math.max(
+      1,
+      axisAttr === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight
+    );
+    const rect = splitter.getBoundingClientRect();
+    const center =
+      axisAttr === 'x'
+        ? rect.left + rect.width / 2
+        : rect.top + rect.height / 2;
+    const distance = Math.abs(center - primaryCenter);
+    if (distance <= threshold) {
+      candidates.push({
+        ref: { splitPath: path, splitterIndex, axis: axisAttr, basisPx },
+        center,
+        distance,
+      });
+    }
+  }
+  return candidates.sort((a, b) => a.distance - b.distance);
+}
+
 function updatesFromSnapshots(
   snapshots: SplitterSnapshot[],
-  dragStart: { x: number; y: number },
   pointer: { x: number; y: number }
 ): SplitRatioUpdate[] {
   const grouped = new Map<string, SplitterSnapshot[]>();
@@ -251,7 +343,8 @@ function updatesFromSnapshots(
   const updates: SplitRatioUpdate[] = [];
   for (const [, refs] of grouped) {
     let merged = refs[0].ratios.slice();
-    for (const { ref, isPrimary } of refs) {
+    for (const snap of refs) {
+      const { ref, isPrimary, dragStart } = snap;
       if (ref.basisPx <= 1) continue;
       const rawDeltaPx =
         ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
@@ -342,6 +435,24 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
+  // Gate same-axis coupling on intersection proximity: only include same-axis
+  // candidates when the drag start pointer is within SNAP_THRESHOLD_PX of an
+  // orthogonal splitter's position along the perpendicular axis. This ensures
+  // coupling only fires at a true 3-way/4-way crossing, not when the user
+  // grabs the primary splitter far from any intersection.
+  const pointerPerp =
+    ui.primary.axis === 'x' ? pointer.y : pointer.x;
+  const isNearIntersection = ui.orthogonals.some((ortho) => {
+    const orthoCenter = getSplitterScreenCenter(ortho);
+    return (
+      orthoCenter != null &&
+      Math.abs(orthoCenter - pointerPerp) <= SNAP_THRESHOLD_PX
+    );
+  });
+  if (isNearIntersection && ui.sameAxisCandidates.length > 0) {
+    refs = dedupeRefs([...refs, ...ui.sameAxisCandidates]);
+  }
+
   const snapshots: SplitterSnapshot[] = [];
   for (let i = 0; i < refs.length; i += 1) {
     const ref = refs[i];
@@ -365,6 +476,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
       ref: { ...ref, basisPx },
       ratios: split.ratios.slice(),
       isPrimary: i === 0,
+      dragStart: pointer,
     });
   }
   if (!snapshots.length) return;
@@ -385,12 +497,39 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
 export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
   const ui = get(splitResizeUiState);
   if (ui.phase !== 'drag') return;
-  const updates = updatesFromSnapshots(ui.snapshots, ui.dragStart, pointer);
+
+  // The coupled snapshot set is frozen at mousedown (startSplitResizeDrag).
+  // Do not add new same-axis candidates mid-drag: coupling is gated on
+  // intersection proximity at drag start, and dynamic additions during drag
+  // caused non-intersection splitters to be incorrectly coupled.
+  //
+  // Issue 3: if the primary has moved far enough along its drag axis, drop
+  // same-axis non-primary entries so only the primary continues to move.
+  // Orthogonal entries are intentionally kept: they move on the perpendicular
+  // axis (their delta is pointer.perp - dragStart.perp), so the along-axis
+  // drag distance of the primary is irrelevant to whether they should track.
+  const primary = ui.snapshots.find((s) => s.isPrimary);
+  let workingSnapshots = ui.snapshots;
+  if (primary) {
+    const dragDistance =
+      primary.ref.axis === 'x'
+        ? Math.abs(pointer.x - primary.dragStart.x)
+        : Math.abs(pointer.y - primary.dragStart.y);
+    if (dragDistance > UNSNAP_THRESHOLD_PX) {
+      workingSnapshots = ui.snapshots.filter(
+        (s) => s.isPrimary || s.ref.axis !== primary.ref.axis
+      );
+    }
+  }
+
+  const updates = updatesFromSnapshots(workingSnapshots, pointer);
   paneTreeStore.update((root) => applyRatioUpdates(root, updates));
+
   splitResizeUiState.set({
     ...ui,
     pointer,
     pendingUpdates: updates,
+    snapshots: workingSnapshots,
   });
 }
 
@@ -517,12 +656,20 @@ export async function splitPane(
   direction: 'horizontal' | 'vertical'
 ) {
   if (!isTauri()) return '';
-  const newId = await invoke<string>('split_pane', {
+  const result = await invoke<{ pane_id: string; initial_cwd: string | null }>('split_pane', {
     paneId,
     direction,
   });
+  // Seed paneCwdStore synchronously so Explorer shows the new column immediately,
+  // without waiting for the first pane-cwd-changed event from shell integration.
+  if (result.initial_cwd) {
+    const wsId = get(activeWorkspaceId);
+    if (wsId) {
+      setPaneCwd(wsId, result.pane_id, result.initial_cwd);
+    }
+  }
   await syncPaneLayoutFromBackend();
-  return newId;
+  return result.pane_id;
 }
 
 /** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置。 */

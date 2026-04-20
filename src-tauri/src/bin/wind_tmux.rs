@@ -227,7 +227,19 @@ fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
 }
 
 fn parse_pane_target(s: &str) -> usize {
-    let s = s.strip_prefix('%').unwrap_or(s);
+    let s = s.trim();
+    // %N → pane index N (tmux pane ID format)
+    if let Some(n) = s.strip_prefix('%') {
+        return n.parse().unwrap_or(0);
+    }
+    // session:window.pane or window.pane — take part after last '.'
+    if let Some(dot) = s.rfind('.') {
+        let pane_part = &s[dot + 1..];
+        if let Ok(n) = pane_part.parse::<usize>() {
+            return n;
+        }
+    }
+    // bare number
     s.parse().unwrap_or(0)
 }
 
@@ -729,12 +741,16 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
     let text = String::from_utf8_lossy(&buf).into_owned();
     let candidate = text.trim_end_matches(['\r', '\n']).trim();
-    if text.ends_with('\r') || text.ends_with('\n') {
+    // Structured launch: trigger regardless of trailing Enter. Claude Code often sends
+    // the command and Enter in separate `send-keys` calls; waiting for the Enter would
+    // mean the command text gets typed into the default shell (which can't execute
+    // Unix `env K=V` syntax on Windows). A follow-up Enter is harmless — it just
+    // sends a newline to the spawned process's stdin.
+    if !candidate.is_empty() {
         if let Some(launch) = parse_structured_launch(candidate) {
             if post_spawn_process(url, token, &target, &launch).is_ok() {
                 return Ok(());
             }
-            // Spawn-process 失败时回退原始 send-keys，避免中断流程。
             log_to_file("spawn-process failed, falling back to send-keys");
         }
     }
@@ -852,10 +868,18 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         i += 1;
     }
 
-    // If direction is specified (like -L, -R, -U, -D), we need special handling
+    // Direction flags: -l (last) is the only one Claude Code uses for pane management.
+    // Spatial directions (-L/-R/-U/-D) are no-ops since Wind's layout is tracked server-side.
     if let Some(dir) = direction {
-        // For left/right/up/down, we need to calculate the target pane
-        // For now, just acknowledge the command
+        if dir == "last" {
+            let u = format!("{}/api/v1/select-pane", url.trim_end_matches('/'));
+            let body = serde_json::json!({ "last": true });
+            let _ = client()
+                .post(&u)
+                .headers(auth_headers(token))
+                .json(&body)
+                .send();
+        }
         return Ok(());
     }
 
