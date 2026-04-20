@@ -117,7 +117,7 @@
 
 <div class="flex flex-col h-full">
  <!-- 头部 -->
- <div class="px-4 py-3 shrink-0 border-b border-[var(--wf-border)] flex items-center justify-between">
+ <div class="h-11 px-3 shrink-0 border-b border-[var(--wf-border)] flex items-center justify-between">
  <span class="text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">工作区</span>
  <div class="flex items-center gap-1">
  <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title="保存工作区" onclick={onSave}>
