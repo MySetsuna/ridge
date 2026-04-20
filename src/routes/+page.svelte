@@ -4,6 +4,7 @@ import SplitContainer from '$lib/components/SplitContainer.svelte';
 import GitGraph from '$lib/components/GitGraph.svelte';
 import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
 import WorkspaceSidebar from '$lib/components/WorkspaceSidebar.svelte';
+import Explorer from '$lib/components/Explorer.svelte';
 import { Terminal, FolderOpen, GitBranch, Layout } from 'lucide-svelte';
 import {
   paneTreeStore,
@@ -186,9 +187,15 @@ const winCtrlBtn =
       >
         资源管理器
       </div>
-      <div class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]">
-        文件树尚未接入（架构文档中为待办）。
-      </div>
+<div class="flex-1 min-h-0 overflow-hidden">
+					{#if $activeWorkspaceId}
+						<Explorer workspaceId={$activeWorkspaceId} />
+					{:else}
+						<div class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]">
+							请先选择一个工作区
+						</div>
+					{/if}
+				</div>
 {:else}
 <WorkspaceSidebar
  workspaces={$workspacesList}

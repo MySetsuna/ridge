@@ -289,12 +289,12 @@ function setGlobalSplitResizeCursor(enabled: boolean) {
 export function queueSplitResizeJunction(
   primary: SplitterRef,
   orthogonals: SplitterRef[],
-  sameAxisCandidates: SplitterRef[],
-  snapState: JunctionSnapState | null,
-  pointer: { x: number; y: number }
+  pointer: { x: number; y: number },
+  sameAxisCandidates: SplitterRef[] = [],
+  snapState: JunctionSnapState | null = null
 ) {
   clearSplitHoverTimer();
-  const allRefs = dedupeRefs([primary, ...orthogonals, ...sameAxisCandidates]);
+  const allRefs = dedupeRefs([primary, ...orthogonals, ...(sameAxisCandidates ?? [])]);
   const [first, ...rest] = allRefs;
   if (!first) return;
   splitResizeUiState.set({
@@ -408,7 +408,8 @@ export function finishSplitResizeDrag(): SplitRatioUpdate[] {
 
 export function getAllPaneIds(node: PaneNode): string[] {
   const ids: string[] = [];
-  function traverse(n: PaneNode) {
+  function traverse(n: PaneNode | undefined | null) {
+    if (!n) return;
     if (n.type === 'leaf') {
       if (n.id) ids.push(n.id);
     } else {
@@ -681,7 +682,8 @@ export function extractCwdsFromLayout(
   workspaceId: string
 ): Record<string, string> {
   const result: Record<string, string> = {};
-  function traverse(n: PaneNode): void {
+  function traverse(n: PaneNode | undefined | null): void {
+    if (!n) return;
     if (n.type === 'leaf') {
       if (n.cwd !== undefined && n.cwd !== null) {
         result[`${workspaceId}:${n.id}`] = n.cwd;

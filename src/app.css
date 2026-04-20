@@ -86,8 +86,13 @@ body {
 }
 
 /* xterm 滚动区域：仅用 webkit 伪元素（勿加 scrollbar-width: thin — Windows WebView2 会退回系统细条并带两端箭头） */
+.xterm-viewport {
+	overflow-y: scroll !important;
+	overflow-x: hidden;
+}
+
 .xterm-viewport::-webkit-scrollbar {
-  width: 9px;
+  width: 12px;
 }
 .xterm-viewport::-webkit-scrollbar-button {
   display: none !important;
@@ -96,7 +101,6 @@ body {
 }
 .xterm-viewport::-webkit-scrollbar-track {
   background: transparent;
-  margin: 6px 0;
 }
 .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--wf-scrollbar);

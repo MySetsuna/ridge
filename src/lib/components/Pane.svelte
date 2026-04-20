@@ -415,7 +415,7 @@ onDestroy(() => {
 		>
 			<div
 				bind:this={viewInner}
-				class="min-h-0 min-w-0 flex-1 py-2 pl-3 pr-0"
+				class="min-h-0 min-w-0 flex-1 py-2 pl-3 pr-1"
 			></div>
 		</div>
 	</div>
