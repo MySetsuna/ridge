@@ -99,9 +99,18 @@ body {
  * 该 textarea 只用于接收键盘事件与 IME 合成，视觉光标由 xterm 自行绘制。
  * 若不关闭 caret-color，某些 WebView 会忽略 opacity:0 仍绘制系统 caret，
  * 形成 "xterm 主题色光标 + 白色 caret" 的双光标现象。
+ *
+ * IME 优化：防止输入法候选框定位时触发布局偏移。
  */
 .wf-terminal-surface .xterm-helper-textarea {
   caret-color: transparent !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* xterm 滚动区域：仅用 webkit 伪元素（勿加 scrollbar-width: thin — Windows WebView2 会退回系统细条并带两端箭头） */

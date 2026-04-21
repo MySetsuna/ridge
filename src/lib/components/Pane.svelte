@@ -2,6 +2,7 @@
 import { onMount, onDestroy } from 'svelte';
 import { Terminal, type IDisposable } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import { Unicode11Addon } from 'xterm-addon-unicode11';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -87,6 +88,9 @@ let resizeRaf: number | undefined;
 let ptyClosedUnlisten: (() => void) | undefined;
 let recoveringPty = false;
 
+/** IME 合成状态：用于在输入法候选框弹出期间屏蔽 ResizeObserver */
+let isComposing = false;
+
 /** 组件已销毁后为 false，避免工作区切换后仍执行 rAF/invoke 碰已 dispose 的 xterm（Windows 上可致 WebView 进程异常退出 0xc0000142）。 */
 let alive = true;
 let layoutRaf: number | undefined;
@@ -135,7 +139,7 @@ $effect(() => {
 	let cancelled = false;
 	let unlistenMode: (() => void) | undefined;
 	void listen<{ mode: string }>(ch, (e) => {
-		if (!alive) return;
+		if (!alive || isComposing) return;
 		mode = e.payload.mode === 'Editor' ? 'editor' : 'terminal';
 		void renderView();
 	}).then((u) => {
@@ -151,7 +155,7 @@ $effect(() => {
 function attachTerminalFocusHandlers() {
 	if (!term || !viewInner) return;
 	const focusTerm = () => {
-		if (!alive) return;
+		if (!alive || isComposing) return;
 		activePaneId.set(paneId);
 		requestAnimationFrame(() => {
 			if (!alive || !term || !fitAddon) return;
@@ -163,16 +167,21 @@ function attachTerminalFocusHandlers() {
 	return () => viewInner.removeEventListener('pointerdown', focusTerm);
 }
 
+/** 尺寸安全边界：防止极端尺寸导致 PTY session 中断 */
+const MAX_TERM_ROWS = 500;
+const MAX_TERM_COLS = 500;
+
 async function fitAndSyncPty() {
 	if (!alive || !term || !fitAddon) return;
 	fitAddon.fit();
 	if (isTauri() && term) {
-		const rows = Math.max(1, term.rows);
-		const cols = Math.max(1, term.cols);
+		// 限制尺寸在合理范围内，防止极端尺寸导致 session 中断
+		const rows = Math.max(1, Math.min(MAX_TERM_ROWS, term.rows));
+		const cols = Math.max(1, Math.min(MAX_TERM_COLS, term.cols));
 		try {
 			await invoke('resize_pane', { paneId, rows, cols });
 		} catch {
-			/* ignore */
+			/* ignore — resize 失败静默处理，避免错误传播导致 session 中断 */
 		}
 	}
 }
@@ -182,7 +191,7 @@ async function recoverPtySession() {
 	recoveringPty = true;
 	try {
 		await invoke('create_pane', { paneId });
-		if (!alive) return;
+		if (!alive || isComposing) return;
 		await renderView();
 	} catch (e) {
 		console.error('recoverPtySession', paneId, e);
@@ -192,7 +201,7 @@ async function recoverPtySession() {
 }
 
 async function renderView() {
-	if (!alive) return;
+	if (!alive || isComposing) return;
 	cancelLayoutRaf();
 	cancelResizeRaf();
 	cancelTermRedrawRaf();
@@ -215,12 +224,15 @@ async function renderView() {
 
 	if (mode === 'terminal') {
 		term = new Terminal({
+			allowProposedApi: true,
+			rescaleOverlappingEmoji: true,
 			fontSize: 15,
 			lineHeight: 1,
 			letterSpacing: 0,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
 			cursorBlink: true,
 			cursorStyle: 'block',
+		screenReaderMode: false,
 			// 仅在终端获得焦点时展示光标；失焦后隐藏，避免在输出区域"乱闪"
 			cursorInactiveStyle: 'none',
 			scrollback: 8000,
@@ -251,6 +263,9 @@ async function renderView() {
 		});
 		fitAddon = new FitAddon();
 		term.loadAddon(fitAddon);
+	const unicodeAddon = new Unicode11Addon();
+	term.loadAddon(unicodeAddon);
+	term.unicode.activeVersion = '11';
 		term.open(viewInner);
 
 		// 快捷键：Ctrl+C 复制（有选区时）/ 透传 SIGINT（无选区）；Ctrl+V 粘贴；
@@ -303,10 +318,13 @@ async function renderView() {
 			const onCompStart = () => {
 				if (!alive || !term) return;
 				term.options.cursorBlink = false;
+			isComposing = true;
 			};
 			const onCompEnd = () => {
 				if (!alive || !term) return;
 				term.options.cursorBlink = true;
+			isComposing = false;
+			void fitAndSyncPty();
 			};
 			helperTextarea.addEventListener('compositionstart', onCompStart);
 			helperTextarea.addEventListener('compositionend', onCompEnd);
@@ -353,7 +371,7 @@ async function renderView() {
 		if (isTauri() && workspaceId) {
 			const outCh = `pty-output-${workspaceId}-${paneId}`;
 			ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				term?.write(e.payload.data);
 				scheduleTermRedraw();
 			});
@@ -363,7 +381,7 @@ async function renderView() {
 				return;
 			}
 			term.onData((d) => {
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				void invoke('write_to_pty', { paneId, data: d }).catch((err) => {
 					const msg = String(err);
 					console.error('write_to_pty', paneId, err);
@@ -380,11 +398,11 @@ async function renderView() {
 		}
 
 		resizeObserver = new ResizeObserver(() => {
-			if (!alive) return;
+			if (!alive || isComposing) return;
 			if (resizeRaf !== undefined) return;
 			resizeRaf = requestAnimationFrame(() => {
 				resizeRaf = undefined;
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				void fitAndSyncPty();
 			});
 		});
@@ -394,11 +412,11 @@ async function renderView() {
 		layoutRaf = requestAnimationFrame(() => {
 			layoutRaf = undefined;
 			void (async () => {
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				await fitAndSyncPty();
 				term?.focus();
 				requestAnimationFrame(() => {
-					if (!alive) return;
+					if (!alive || isComposing) return;
 					void fitAndSyncPty();
 				});
 			})();
@@ -420,7 +438,7 @@ onMount(() => {
 	if (isTauri()) {
 		void (async () => {
 			void listen<{ workspaceId: string; paneId: string }>('pane-pty-closed', (e) => {
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				if (e.payload.workspaceId !== workspaceId || e.payload.paneId !== paneId) return;
 				void recoverPtySession();
 			}).then((u) => {
@@ -430,13 +448,13 @@ onMount(() => {
 				await invoke('create_pane', { paneId });
 			} catch (e) {
 				console.error('create_pane failed', paneId, e);
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				await renderView();
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				term?.writeln(`\r\n\x1b[31m[PTY] 启动失败: ${String(e)}\x1b[0m\r\n`);
 				return;
 			}
-			if (!alive) return;
+			if (!alive || isComposing) return;
 			await renderView();
 
 			// 加载 git diff 状态
@@ -446,9 +464,9 @@ onMount(() => {
 			const cmdCh = `pty-output-${workspaceId}-${paneId}`;
 			diffUnlisten = await listen<{ data: string }>(cmdCh, (e) => {
 				// 检测命令执行完成（简单策略：命令输出后延迟刷新）
-				if (!alive) return;
+				if (!alive || isComposing) return;
 				setTimeout(() => {
-					if (!alive) return;
+					if (!alive || isComposing) return;
 					void loadDiffStatus();
 				}, 500);
 			});
@@ -502,10 +520,10 @@ onDestroy(() => {
 		</div>
 	{/if}
 
-	<div class="flex-1 min-h-0 min-w-0 relative">
+	<div class="flex-1 min-h-0 min-w-0 relative overflow-hidden">
 		<div
 			bind:this={container}
-			class="wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)]"
+			class="wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)] overflow-hidden"
 			tabindex="-1"
 		>
 			<div

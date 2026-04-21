@@ -109,6 +109,7 @@ pub fn run() {
             git::get_git_diff,
             git::set_pane_workdir,
             git::is_git_repo,
+        git::get_git_info_with_cwd,
             pane::close_pane,
             pane::dock_pane,
             pane::get_pane_layout,

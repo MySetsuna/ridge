@@ -368,8 +368,11 @@ pub async fn resize_pane(
 fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, cols: u16,) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     // ConPTY / portable-pty: zero or absurd dimensions can break the session.
-    let rows = rows.max(1);
-    let cols = cols.max(1);
+// 限制尺寸在合理范围内，防止极端尺寸导致 session 中断
+	const MAX_SAFE_ROWS: u16 = 500;
+	const MAX_SAFE_COLS: u16 = 500;
+    let rows = rows.max(1).min(MAX_SAFE_ROWS);
+    let cols = cols.max(1).min(MAX_SAFE_COLS);
     let wid = state.active_workspace_id();
 
     // Perform the resize within a limited scope so we can drop the read lock
@@ -406,7 +409,11 @@ fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, col
             }
             Ok(())
         }
-        Err(e) => Err(e),
+        Err(e) => {
+			// 记录错误但返回成功，避免错误传播导致 session 中断
+			pty_log::resize_err(wid, pane_id, rows, cols, &e.to_string());
+			Ok(())
+		}
     }
 
 }

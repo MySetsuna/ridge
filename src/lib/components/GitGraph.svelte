@@ -1,206 +1,186 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { invoke, isTauri } from '@tauri-apps/api/core';
-  import {
-    contextMenu,
-    showContextMenu,
-    hideContextMenu,
-  } from '$lib/stores/contextMenu';
-  import { createGitgraph, templateExtend, TemplateName } from '@gitgraph/js';
+import { onMount } from 'svelte';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { get } from 'svelte/store';
+import { activeWorkspaceId, paneCwdStore, activePaneId } from '$lib/stores/paneTree';
 
-  interface CommitNode {
-    hash: string;
-    subject: string;
-    author: string;
-    date: string;
-    parents: string[];
-    branch?: string;
+interface CommitNode {
+  hash: string;
+  subject: string;
+  author: string;
+  date: string;
+  parents: string[];
+  branch?: string;
+}
+
+interface DiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  status: string;
+}
+
+interface GitRepoInfo {
+  is_git_repo: boolean;
+  commits: CommitNode[];
+  branches: string[];
+  current_branch: string | null;
+  diff: {
+    files: DiffFile[];
+    total_additions: number;
+    total_deletions: number;
+    is_git_repo: boolean;
+  };
+}
+
+let gitInfo: GitRepoInfo | null = $state(null);
+let loading = $state(true);
+let error = $state<string | null>(null);
+let selectedCommit: CommitNode | null = $state(null);
+let cwd: string | undefined = $state(undefined);
+
+// 从 store 获取当前的 cwd
+function getCurrentCwd(): string | undefined {
+  const wsId = get(activeWorkspaceId);
+  const pId = get(activePaneId);
+  if (wsId && pId) {
+    return get(paneCwdStore)[`${wsId}:${pId}`];
   }
+  return undefined;
+}
 
-  let gitgraphContainer: HTMLDivElement;
-  let commits: CommitNode[] = $state([]);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
-  let selectedCommit: CommitNode | null = $state(null);
+// 尝试加载 git 信息的函数
+function tryLoadGitInfo() {
+  cwd = getCurrentCwd();
+  if (cwd) {
+    void loadGitInfo();
+  }
+}
 
-  // GitHub 配置
-  let githubToken = $state('');
-  let repoOwner = $state('');
-  let repoName = $state('');
-  let showSettings = $state(false);
+onMount(() => {
+  // 初始加载
+  tryLoadGitInfo();
 
-  onMount(() => {
-    initGitGraph();
-    void loadGraph();
+  // 订阅变化 - activePaneId, paneCwdStore, activeWorkspaceId
+  const unsub1 = activePaneId.subscribe(() => {
+    tryLoadGitInfo();
+  });
+  const unsub2 = paneCwdStore.subscribe(() => {
+    tryLoadGitInfo();
+  });
+  const unsub3 = activeWorkspaceId.subscribe(() => {
+    // 工作区切换时也尝试重新加载
+    tryLoadGitInfo();
   });
 
-  function initGitGraph() {
-    if (!gitgraphContainer) return;
+  return () => {
+    unsub1();
+    unsub2();
+    unsub3();
+  };
+});
 
-    // 清除之前的内容
-    gitgraphContainer.innerHTML = '';
-
-    const gitgraph = createGitgraph(gitgraphContainer, {
-      template: templateExtend(TemplateName.Metro, {
-        colors: [
-          '#0fbcf9', // cyan
-          '#4ade80', // green
-          '#f472b6', // pink
-          '#fbbf24', // amber
-          '#a78bfa', // violet
-          '#2dd4bf', // teal
-        ],
-        branch: {
-          lineWidth: 2,
-          spacing: 40,
-          label: {
-            font: '12px JetBrains Mono, monospace',
-            color: '#e6e4ef',
-            bgColor: '#1a1628',
-            borderRadius: 4,
-          },
-        },
-        commit: {
-          message: {
-            font: '11px JetBrains Mono, monospace',
-            color: '#9ca3af',
-            displayAuthor: false,
-          },
-        },
-      }),
-      author: 'WarpForge User <user@warpforge.local>',
-      branchLabelOnEveryCommit: false,
-    });
-
-    // 添加示例分支
-    const main = gitgraph.branch('main');
-    main.commit({ subject: 'Initial commit', hash: 'abc1234' });
-    main.commit({ subject: 'Add project structure', hash: 'def5678' });
-
-    const feature = gitgraph.branch('feat/new-feature');
-    feature.commit({ subject: 'Implement feature', hash: 'ghi9012' });
-    feature.commit({ subject: 'Fix bug in feature', hash: 'jkl3456' });
-
-    main.commit({ subject: 'Merge feature branch', hash: 'mno7890' });
+async function loadGitInfo() {
+  if (!cwd || !isTauri()) {
+    loading = false;
+    return;
   }
 
-  async function loadGraph() {
-    loading = true;
-    error = null;
-    try {
-      if (isTauri()) {
-        commits = await invoke<CommitNode[]>('get_git_graph', {
-          repoPath: '.',
-        });
+  loading = true;
+  error = null;
+  try {
+    gitInfo = await invoke<GitRepoInfo>('get_git_info_with_cwd', { cwd });
+  } catch (e) {
+    error = String(e);
+  } finally {
+    loading = false;
+  }
+}
+
+function handleCommitClick(commit: CommitNode) {
+  selectedCommit = commit;
+}
+
+// 构建树形文件结构
+function buildFileTree(files: DiffFile[]): { name: string; path: string; type: 'file' | 'dir'; children?: any[] }[] {
+  const root: any = {};
+
+  for (const file of files) {
+    const parts = file.path.split('/');
+    let current = root;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+
+      if (isLast) {
+        current[part] = { ...file, type: 'file' as const };
+      } else {
+        if (!current[part]) {
+          current[part] = { name: part, type: 'dir' as const, children: {} };
+        }
+        current = current[part].children;
       }
-      // 演示数据
-      if (commits.length === 0) {
-        commits = [
-          {
-            hash: 'abc1234',
-            subject: 'Initial commit',
-            author: 'User',
-            date: '2024-01-01',
-            parents: [],
-          },
-          {
-            hash: 'def5678',
-            subject: 'Add project structure',
-            author: 'User',
-            date: '2024-01-02',
-            parents: ['abc1234'],
-          },
-          {
-            hash: 'ghi9012',
-            subject: 'Implement feature',
-            author: 'User',
-            date: '2024-01-03',
-            parents: ['def5678'],
-            branch: 'feat/new-feature',
-          },
-        ];
-      }
-    } catch (e) {
-      error = String(e);
-    } finally {
-      loading = false;
     }
   }
 
-  function handleContextMenu(event: MouseEvent, commit: CommitNode) {
-    event.preventDefault();
-    selectedCommit = commit;
-    contextMenu.show(event.clientX, event.clientY, [
-      {
-        id: 'copy-hash',
-        label: '复制 Commit Hash',
-        shortcut: 'Ctrl+C',
-        action: () => {
-          navigator.clipboard.writeText(commit.hash);
-          contextMenu.hide();
-        },
-      },
-      {
-        id: 'copy-full-hash',
-        label: '复制完整 Hash',
-        action: () => {
-          navigator.clipboard.writeText(commit.hash);
-          contextMenu.hide();
-        },
-      },
-      { id: 'divider1', label: '', divider: true, action: () => {} },
-      {
-        id: 'github-open',
-        label: '在 GitHub 上打开',
-        action: () => {
-          if (repoOwner && repoName) {
-            const url = `https://github.com/${repoOwner}/${repoName}/commit/${commit.hash}`;
-            window.open(url, '_blank');
-          } else {
-            alert('请先在设置中配置 GitHub 仓库信息');
-            showSettings = true;
-          }
-          contextMenu.hide();
-        },
-      },
-      {
-        id: 'github-branch',
-        label: '查看所在分支',
-        action: () => {
-          if (repoOwner && repoName && commit.branch) {
-            const url = `https://github.com/${repoOwner}/${repoName}/tree/${commit.branch}`;
-            window.open(url, '_blank');
-          }
-          contextMenu.hide();
-        },
-      },
-      { id: 'divider2', label: '', divider: true, action: () => {} },
-      {
-        id: 'view-details',
-        label: '查看详情',
-        action: () => {
-          alert(
-            `Commit: ${commit.hash}\nAuthor: ${commit.author}\nDate: ${commit.date}\nMessage: ${commit.subject}`,
-          );
-          contextMenu.hide();
-        },
-      },
-    ]);
+  // 转换为数组
+  function toArray(obj: any, path: string = ''): any[] {
+    return Object.entries(obj).map(([name, value]: [string, any]) => {
+      const fullPath = path ? `${path}/${name}` : name;
+      if (value.type === 'dir') {
+        return {
+          name,
+          path: fullPath,
+          type: 'dir',
+          children: toArray(value.children || {}, fullPath)
+        };
+      }
+      return {
+        name,
+        path: fullPath,
+        type: 'file',
+        status: value.status,
+        additions: value.additions,
+        deletions: value.deletions
+      };
+    });
   }
 
-  function saveGithubSettings() {
-    localStorage.setItem('wind-github-token', githubToken);
-    localStorage.setItem('wind-github-owner', repoOwner);
-    localStorage.setItem('wind-github-repo', repoName);
-    showSettings = false;
-    alert('GitHub 设置已保存');
-  }
+  return toArray(root);
+}
 
-  function loadGithubSettings() {
-    githubToken = localStorage.getItem('wind-github-token') || '';
-    repoOwner = localStorage.getItem('wind-github-owner') || '';
-    repoName = localStorage.getItem('wind-github-repo') || '';
+function getStatusColor(status: string): string {
+  switch (status) {
+    case 'M': return 'text-yellow-400';
+    case 'A': return 'text-green-400';
+    case 'D': return 'text-red-400';
+    case 'R': return 'text-purple-400';
+    case 'C': return 'text-blue-400';
+    default: return 'text-gray-400';
   }
+}
+
+function formatDate(timestamp: string): string {
+  const date = new Date(parseInt(timestamp) * 1000);
+  return date.toLocaleDateString('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function getStatusLabel(status: string): string {
+  switch (status) {
+    case 'M': return '修改';
+    case 'A': return '新增';
+    case 'D': return '删除';
+    case 'R': return '重命名';
+    case 'C': return '复制';
+    default: return status;
+  }
+}
 </script>
 
 <div class="gitgraph-wrapper">
@@ -209,151 +189,118 @@
     <button
       type="button"
       class="flex-1 rounded-lg px-3 py-1.5 text-[12px] font-medium bg-[var(--wf-surface)] border border-[var(--wf-border)] hover:border-violet-400/25 hover:bg-violet-500/[0.06] transition-colors"
-      onclick={() => loadGraph()}
+      onclick={() => loadGitInfo()}
     >
       刷新
     </button>
-    <button
-      type="button"
-      class="rounded-lg px-3 py-1.5 text-[12px] font-medium bg-[var(--wf-surface)] border border-[var(--wf-border)] hover:border-violet-400/25 hover:bg-violet-500/[0.06] transition-colors"
-      onclick={() => {
-        loadGithubSettings();
-        showSettings = !showSettings;
-      }}
-    >
-      GitHub 设置
-    </button>
+    {#if gitInfo?.current_branch}
+      <span class="text-[11px] px-2 py-1 rounded bg-green-500/20 text-green-400">
+        {gitInfo.current_branch}
+      </span>
+    {/if}
   </div>
 
-  <!-- GitHub 设置面板 -->
-  {#if showSettings}
-    <div
-      class="mb-3 p-3 rounded-lg bg-[var(--wf-surface)] border border-[var(--wf-border)]"
-    >
-      <h4 class="text-[13px] font-medium text-[var(--wf-fg)] mb-2">
-        GitHub 配置
-      </h4>
-      <div class="space-y-2">
-        <div>
-          <label class="block text-[11px] text-[var(--wf-fg-muted)] mb-1"
-            >仓库所有者 (Owner)</label
-          >
-          <input
-            type="text"
-            bind:value={repoOwner}
-            placeholder="e.g. username"
-            class="w-full px-2 py-1 text-[12px] rounded bg-[var(--wf-term-bg)] border border-[var(--wf-border)] text-[var(--wf-fg)] focus:border-violet-400/50 outline-none"
-          />
-        </div>
-        <div>
-          <label class="block text-[11px] text-[var(--wf-fg-muted)] mb-1"
-            >仓库名称 (Repo)</label
-          >
-          <input
-            type="text"
-            bind:value={repoName}
-            placeholder="e.g. my-project"
-            class="w-full px-2 py-1 text-[12px] rounded bg-[var(--wf-term-bg)] border border-[var(--wf-border)] text-[var(--wf-fg)] focus:border-violet-400/50 outline-none"
-          />
-        </div>
-        <div>
-          <label class="block text-[11px] text-[var(--wf-fg-muted)] mb-1"
-            >Personal Access Token (可选)</label
-          >
-          <input
-            type="password"
-            bind:value={githubToken}
-            placeholder="ghp_xxxx..."
-            class="w-full px-2 py-1 text-[12px] rounded bg-[var(--wf-term-bg)] border border-[var(--wf-border)] text-[var(--wf-fg)] focus:border-violet-400/50 outline-none"
-          />
-        </div>
-        <button
-          type="button"
-          class="w-full mt-2 rounded-lg px-3 py-1.5 text-[12px] font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
-          onclick={saveGithubSettings}
-        >
-          保存设置
-        </button>
-      </div>
+  <!-- Git 仓库信息头部 -->
+  {#if gitInfo && gitInfo.is_git_repo}
+    <div class="mb-3 p-2 rounded-lg bg-[var(--wf-surface)] border border-[var(--wf-border)] flex items-center justify-between">
+      <span class="text-[12px] text-[var(--wf-fg)]">
+        📁 {cwd}
+      </span>
+      <span class="text-[11px] text-[var(--wf-fg-muted)]">
+        {gitInfo.branches.length} 个分支
+      </span>
     </div>
   {/if}
-
-  <!-- GitGraph 画布 -->
-  <div
-    bind:this={gitgraphContainer}
-    class="gitgraph-canvas rounded-lg overflow-hidden"
-    style="background: var(--wf-term-bg); min-height: 300px;"
-  ></div>
-
-  <!-- Commit 列表 (备用显示) -->
-  <div class="mt-3 space-y-1">
-    <h4 class="text-[12px] font-medium text-[var(--wf-fg-muted)] mb-2">
-      提交历史
-    </h4>
-    {#each commits as commit}
-      <button
-        type="button"
-        class="w-full text-left px-3 py-2 rounded-lg hover:bg-[var(--wf-surface)] transition-colors"
-        onclick={(e) => handleContextMenu(e as MouseEvent, commit)}
-        oncontextmenu={(e) => handleContextMenu(e, commit)}
-      >
-        <div class="flex items-center gap-2">
-          <span class="text-[10px] font-mono text-violet-400"
-            >{commit.hash.slice(0, 7)}</span
-          >
-          {#if commit.branch}
-            <span
-              class="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400"
-            >
-              {commit.branch}
-            </span>
-          {/if}
-        </div>
-        <div class="text-[12px] text-[var(--wf-fg)] mt-0.5 truncate">
-          {commit.subject}
-        </div>
-        <div class="text-[10px] text-[var(--wf-fg-muted)] mt-0.5">
-          {commit.author} · {commit.date}
-        </div>
-      </button>
-    {/each}
-  </div>
 
   {#if loading}
     <div class="mt-4 text-center text-[12px] text-[var(--wf-fg-muted)]">
       加载中...
     </div>
-  {/if}
-
-  {#if error}
+  {:else if error}
     <div class="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
       <p class="text-[12px] text-red-400">错误: {error}</p>
     </div>
-  {/if}
+  {:else if !gitInfo?.is_git_repo}
+    <div class="mt-4 p-4 rounded-lg bg-[var(--wf-surface)] border border-[var(--wf-border)] text-center">
+      <p class="text-[13px] text-[var(--wf-fg-muted)]">
+        当前目录不是 Git 仓库
+      </p>
+      <p class="text-[11px] text-[var(--wf-fg-muted)] mt-1">
+        切换到 Git 仓库目录以查看 Git 信息
+      </p>
+    </div>
+  {:else}
+    <!-- Git Graph 和 Changes 分栏显示 -->
+    <div class="flex gap-3">
+      <!-- 左侧：提交历史 -->
+      <div class="flex-1">
+        <h4 class="text-[12px] font-medium text-[var(--wf-fg-muted)] mb-2">
+          提交历史 ({gitInfo?.commits.length || 0})
+        </h4>
+        <div class="space-y-1 max-h-[300px] overflow-y-auto">
+          {#each gitInfo?.commits || [] as commit}
+            <button
+              type="button"
+              class="w-full text-left px-3 py-2 rounded-lg hover:bg-[var(--wf-surface)] transition-colors"
+              onclick={() => handleCommitClick(commit)}
+            >
+              <div class="flex items-center gap-2">
+                <span class="text-[10px] font-mono text-violet-400">
+                  {commit.hash.slice(0, 7)}
+                </span>
+                {#if commit.branch}
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">
+                    {commit.branch}
+                  </span>
+                {/if}
+              </div>
+              <div class="text-[12px] text-[var(--wf-fg)] mt-0.5 truncate">
+                {commit.subject}
+              </div>
+              <div class="text-[10px] text-[var(--wf-fg-muted)] mt-0.5">
+                {commit.author} · {formatDate(commit.date)}
+              </div>
+            </button>
+          {/each}
+        </div>
+      </div>
 
-  {#if commits.length === 0 && !loading}
-    <p class="mt-3 text-[11px] leading-relaxed text-[var(--wf-fg-muted)]">
-      后端尚未返回提交数据（当前为本地演示数据）。配置 GitHub
-      后可获取真实仓库数据。
-    </p>
+      <!-- 右侧：文件改动 -->
+      <div class="flex-1">
+        <h4 class="text-[12px] font-medium text-[var(--wf-fg-muted)] mb-2">
+          文件改动 ({gitInfo?.diff.files.length || 0})
+          <span class="text-[10px] text-green-400 ml-1">
+            +{gitInfo?.diff.total_additions || 0}
+          </span>
+          <span class="text-[10px] text-red-400 ml-1">
+            -{gitInfo?.diff.total_deletions || 0}
+          </span>
+        </h4>
+        <div class="space-y-1 max-h-[300px] overflow-y-auto">
+          {#each gitInfo?.diff.files || [] as file}
+            <div class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--wf-surface)] transition-colors text-[11px]">
+              <span class={getStatusColor(file.status)}>
+                {getStatusLabel(file.status)}
+              </span>
+              <span class="text-[var(--wf-fg)] truncate flex-1">
+                {file.path}
+              </span>
+              <span class="text-green-400 text-[10px]">
+                +{file.additions}
+              </span>
+              <span class="text-red-400 text-[10px]">
+                -{file.deletions}
+              </span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 
 <style>
-  .gitgraph-wrapper {
-    padding: 0.5rem;
-  }
-
-  .gitgraph-canvas :global(svg) {
-    max-width: 100%;
-    height: auto;
-  }
-
-  .gitgraph-canvas :global(.gitgraph) {
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  .gitgraph-canvas :global(.gitgraph .branch-label) {
-    font-size: 11px;
-  }
+.gitgraph-wrapper {
+  padding: 0.5rem;
+}
 </style>

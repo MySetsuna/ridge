@@ -5,7 +5,7 @@
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
   import WorkspaceSidebar from '$lib/components/WorkspaceSidebar.svelte';
   import Explorer from '$lib/components/Explorer.svelte';
-  import { Terminal, FolderOpen, GitBranch, Layout } from 'lucide-svelte';
+  import { Terminal, FolderOpen, GitBranch, Layout, ChevronLeft, ChevronRight } from 'lucide-svelte';
   import {
     paneTreeStore,
     activePaneId,
@@ -37,39 +37,107 @@
   type SidebarTab = 'terminal' | 'git' | 'files';
   let sidebarTab = $state<SidebarTab>('files');
 
+  // localStorage 键名
+  const SIDEBAR_WIDTH_KEY = 'wind-sidebar-width';
+  const SIDEBAR_COLLAPSED_KEY = 'wind-sidebar-collapsed';
+
   // 侧边栏宽度状态（用于可拖拽调整大小）
   let sidebarWidth = $state(288); // 默认 w-72 = 288px
-  const MIN_SIDEBAR_WIDTH = 200;
-  const MAX_SIDEBAR_WIDTH = 600;
+  // 侧边栏是否折叠
+  let sidebarCollapsed = $state(false);
   let isResizingSidebar = $state(false);
+
+  // 计算窗口宽度的40%
+  let windowWidth40 = $derived(typeof window !== 'undefined' ? window.innerWidth * 0.4 : 400);
+
+  // 从 localStorage 加载侧边栏设置
+  function loadSidebarSettings() {
+    if (typeof localStorage === 'undefined') return;
+    const savedWidth = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const savedCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    if (savedWidth) {
+      const parsed = parseInt(savedWidth, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        sidebarWidth = Math.min(parsed, windowWidth40);
+      }
+    }
+    if (savedCollapsed === 'true') {
+      sidebarCollapsed = true;
+    }
+  }
+
+  // 保存侧边栏设置到 localStorage
+  function saveSidebarSettings() {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed));
+  }
+
+  // 切换侧边栏折叠状态
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    saveSidebarSettings();
+  }
+
+  // 侧边栏折叠/展开时的宽度
+  const COLLAPSED_WIDTH = 0;
 
   function onSidebarResizerMouseDown(e: MouseEvent) {
     e.preventDefault();
+    e.stopPropagation();
     isResizingSidebar = true;
     const startX = e.clientX;
     const startWidth = sidebarWidth;
 
     function onMouseMove(ev: MouseEvent) {
       const delta = ev.clientX - startX;
-      sidebarWidth = Math.min(
-        MAX_SIDEBAR_WIDTH,
-        Math.max(MIN_SIDEBAR_WIDTH, startWidth + delta)
-      );
+      const maxWidth = windowWidth40;
+      const newWidth = startWidth + delta;
+      // 允许拖动到0关闭侧边栏
+      sidebarWidth = Math.max(0, Math.min(maxWidth, newWidth));
+      // 如果宽度小于20px，自动折叠
+      if (sidebarWidth < 20) {
+        sidebarCollapsed = true;
+        sidebarWidth = 0;
+      }
     }
 
     function onMouseUp() {
       isResizingSidebar = false;
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      // 保存设置
+      saveSidebarSettings();
     }
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   }
 
+  // 键盘快捷键处理
+  function handleGlobalKeydown(e: KeyboardEvent) {
+    // Ctrl+B: 切换侧边栏
+    if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
+      e.preventDefault();
+      toggleSidebar();
+      return;
+    }
+    // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
+    if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        // 让浏览器默认行为处理全选
+        return;
+      }
+      // 如果不是文本输入元素，阻止默认行为（避免误触）
+      e.preventDefault();
+    }
+  }
+
   // 切换侧边栏tab时加载历史工作区
   $effect(() => {
-    void loadSavedWorkspaces();
+    void sidebarTab; // 订阅 sidebarTab 变化
+  void loadSavedWorkspaces();
   });
 
   // 窗口控制
@@ -103,6 +171,22 @@
   }
 
   onMount(() => {
+    // 预请求剪贴板读取权限，让粘贴操作无需额外确认
+    async function requestClipboardPermission() {
+        if (!navigator.clipboard || !navigator.clipboard.readText) return;
+        try {
+            const result = await navigator.permissions.query({ name: 'clipboard-read' });
+            if (result.state === 'prompt') {
+                await navigator.clipboard.readText();
+            }
+        } catch {
+            try {
+                await navigator.clipboard.readText();
+            } catch {}
+        }
+    }
+    void requestClipboardPermission();
+
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
