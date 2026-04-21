@@ -6,25 +6,24 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [
     sveltekit(),
-    tailwindcss(),           // 如果你使用了 Tailwind
+    tailwindcss(), // 如果你使用了 Tailwind
   ],
 
   // 路径别名在 svelte.config.js 的 kit.alias 中配置（与 SvelteKit / TS 一致）
 
-  // Tauri：使用 1420，避免与常见 Vite 默认端口 5173 冲突导致 beforeDevCommand 失败
-  // Windows 上仅监听 ::1 时，WebView 通过 127.0.0.1 访问会连不上，需显式绑定 IPv4
+  // Tauri dev 端口配置
   server: {
-    host: '127.0.0.1',
-    port: 1420,
-    strictPort: true,
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: false,
     hmr: {
       protocol: 'ws',
-      host: '127.0.0.1',
-      port: 1420,
+      host: '0.0.0.0',
+      port: 5173,
     },
     // 允许 Tauri 的 WebView 访问
     fs: {
-      allow: ['..'],   // 允许访问 src-tauri 等上级目录
+      allow: ['..'], // 允许访问 src-tauri 等上级目录
     },
   },
 

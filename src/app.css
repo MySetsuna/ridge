@@ -89,6 +89,9 @@ body {
 .xterm-viewport {
 	overflow-y: scroll !important;
 	overflow-x: hidden;
+  z-index: 1;
+  left: unset !important;
+  width: 13px;
 }
 
 .xterm-viewport::-webkit-scrollbar {

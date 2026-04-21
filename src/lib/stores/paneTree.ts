@@ -107,12 +107,16 @@ export interface JunctionSnapState {
 
 export const SNAP_THRESHOLD_PX = 10;
 
+/** 端点联动触发距离：鼠标距离端点5px内才会联动拖动 */
+const INTERSECTION_PROXIMITY_PX = 5;
+
 /**
  * Issue 3: how far the primary must travel along its own axis before same-axis
  * coupled partners are dropped from the active snapshot set, so they stop
  * following and only the primary continues moving.
+ * 设置为极大值，使高亮线段在拖动过程中不会掉落
  */
-const UNSNAP_THRESHOLD_PX = 24;
+const UNSNAP_THRESHOLD_PX = 9999;
 
 const HOVER_DEBOUNCE_MS = 90;
 const MIN_PANE_RATIO = 6;
@@ -446,7 +450,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     const orthoCenter = getSplitterScreenCenter(ortho);
     return (
       orthoCenter != null &&
-      Math.abs(orthoCenter - pointerPerp) <= SNAP_THRESHOLD_PX
+      Math.abs(orthoCenter - pointerPerp) <= INTERSECTION_PROXIMITY_PX
     );
   });
   if (isNearIntersection && ui.sameAxisCandidates.length > 0) {

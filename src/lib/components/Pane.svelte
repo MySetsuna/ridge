@@ -39,6 +39,26 @@ let diffStatus: GitDiffStatus | null = $state(null);
 let diffLoading = $state(false);
 let diffUnlisten: (() => void) | undefined;
 
+/** 是否显示滚动到底部按钮 */
+let showScrollBottom = $state(false);
+/** xterm viewport 元素引用 */
+let xtermViewport: HTMLElement | null = null;
+
+/** 检查并更新滚动到底部按钮的显示状态 */
+function checkScrollBottom() {
+	if (!xtermViewport) return;
+	const { scrollTop, scrollHeight, clientHeight } = xtermViewport;
+	const atBottom = scrollHeight - scrollTop - clientHeight <= 10;
+	showScrollBottom = !atBottom;
+	scheduleTermRedraw();
+}
+
+/** 滚动到终端底部 */
+function scrollToBottom() {
+	if (!xtermViewport) return;
+	xtermViewport.scrollTop = xtermViewport.scrollHeight;
+}
+
 async function loadDiffStatus() {
 	if (!isTauri() || !workspaceId || !paneId) return;
 	diffLoading = true;
@@ -245,15 +265,19 @@ async function renderView() {
 		const openedTerm = term;
 		requestAnimationFrame(() => {
 			if (!alive || term !== openedTerm || !openedTerm.element) return;
-			const viewport = openedTerm.element.querySelector('.xterm-viewport');
+			const viewport = openedTerm.element.querySelector('.xterm-viewport') as HTMLElement;
 			if (!viewport) return;
-			const onScrollOrBuffer = () => scheduleTermRedraw();
+			xtermViewport = viewport;
+			const onScrollOrBuffer = () => checkScrollBottom();
 			viewport.addEventListener('scroll', onScrollOrBuffer, { passive: true });
 			const scrollDisposable: IDisposable = openedTerm.onScroll(onScrollOrBuffer);
 			disposeXtermScrollFix = () => {
 				viewport.removeEventListener('scroll', onScrollOrBuffer);
 				scrollDisposable.dispose();
+				xtermViewport = null;
 			};
+			// 初始检查
+			checkScrollBottom();
 		});
 
 		if (isTauri() && workspaceId) {
@@ -407,7 +431,7 @@ onDestroy(() => {
 		</div>
 	{/if}
 
-	<div class="flex-1 min-h-0 min-w-0">
+	<div class="flex-1 min-h-0 min-w-0 relative">
 		<div
 			bind:this={container}
 			class="wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)]"
@@ -417,6 +441,19 @@ onDestroy(() => {
 				bind:this={viewInner}
 				class="min-h-0 min-w-0 flex-1 py-2 pl-3 pr-1"
 			></div>
+			<!-- 滚动到底部按钮 -->
+			{#if showScrollBottom && mode === 'terminal'}
+				<button
+					type="button"
+					class="absolute z-100 bottom-2 right-3 flex items-center justify-center w-7 h-7 rounded bg-[var(--wf-surface)] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors shadow-md"
+					onclick={() => scrollToBottom()}
+					title="滚动到底部"
+				>
+					<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+					</svg>
+				</button>
+			{/if}
 		</div>
 	</div>
 </div>

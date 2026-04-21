@@ -121,7 +121,7 @@
     display: flex;
     justify-content: center;
     padding-top: 100px;
-    z-index: 1000;
+    /* z-index: 1000; */
   }
 
   .quick-open {

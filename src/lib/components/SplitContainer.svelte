@@ -599,7 +599,7 @@
   :global(.wf-split.splitpanes--vertical.splitpanes--dragging)
     > :global(.splitpanes__splitter::before) {
     transform: translateX(-50%) scaleX(4);
-    background: color-mix(in srgb, var(--wf-accent) 72%, transparent);
+    background: var(--wf-accent);
     box-shadow: 0 0 12px var(--wf-accent-glow);
   }
 
@@ -645,26 +645,26 @@
   :global(.wf-split.splitpanes--horizontal.splitpanes--dragging)
     > :global(.splitpanes__splitter::before) {
     transform: translateY(-50%) scaleY(4);
-    background: color-mix(in srgb, var(--wf-accent) 72%, transparent);
+    background: var(--wf-accent);
     box-shadow: 0 0 12px var(--wf-accent-glow);
   }
 
   :global(.wf-split.wf-split--junction)
     > :global(.splitpanes__splitter::before) {
-    background: color-mix(in srgb, var(--wf-accent) 75%, transparent);
+    background: var(--wf-accent);
     box-shadow: 0 0 10px var(--wf-accent-glow);
   }
 
   :global(.wf-split.wf-split--junction-dragging)
     > :global(.splitpanes__splitter::before) {
-    background: color-mix(in srgb, var(--wf-accent) 86%, transparent);
+    background: var(--wf-accent);
     box-shadow: 0 0 14px var(--wf-accent-glow);
   }
 
   /* 同向吸附对齐：高亮加亮、阴影更厚，区别于普通 4-way junction。 */
   :global(.wf-split.wf-split--aligned)
     > :global(.splitpanes__splitter::before) {
-    background: color-mix(in srgb, var(--wf-accent) 95%, transparent);
+    background: var(--wf-accent);
     box-shadow: 0 0 16px var(--wf-accent-glow);
   }
 

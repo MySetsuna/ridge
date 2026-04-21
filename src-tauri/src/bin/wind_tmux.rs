@@ -295,6 +295,17 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
     out
 }
 
+/// Find an idle pane that can be reused.
+/// Returns the pane index if an idle pane is found, None otherwise.
+/// Currently returns None - idle pane detection can be implemented later
+/// by querying the Wind API for pane state.
+fn find_idle_pane(_url: &str, _token: &str) -> Option<usize> {
+    // TODO: Implement idle pane detection via Wind API
+    // This would query the API to find a pane that is not currently
+    // executing a process and can be reused.
+    None
+}
+
 fn cmd_display_message(rest: &[String]) -> Result<(), ()> {
     let mut pane_index = current_pane_index_from_env();
     let mut format = "#{pane_id}".to_string();
@@ -390,11 +401,21 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         None
     };
 
+ // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
+ let idle_pane_index = if pane_index.is_none() {
+ find_idle_pane(url, token)
+ } else {
+ None
+ };
+
+ // 如果找到空闲 pane，使用它而不是创建新的
+ let target_pane_index = idle_pane_index.or(pane_index);
+
     post_split(
         url,
         token,
         horizontal,
-        pane_index,
+        target_pane_index,
         command,
         cwd,
         print_template.as_deref(),
@@ -1122,6 +1143,7 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut command: Option<String> = None;
     let mut window_name: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut pane_index: Option<usize> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1136,7 +1158,8 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             "-d" => {} // don't make it the active window
             "-a" => {} // after index
             "-t" if i + 1 < rest.len() => {
-                // Target window index
+                // Target pane index
+                pane_index = Some(parse_pane_target(&rest[i + 1]));
                 i += 1;
             }
             _ => {
@@ -1149,7 +1172,17 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     // Create new pane in a new window - just use split for now
-    post_split(url, token, false, None, command, cwd, None)
+ // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
+ let idle_pane_index = if pane_index.is_none() {
+ find_idle_pane(url, token)
+ } else {
+ None
+ };
+
+ // 如果找到空闲 pane，使用它而不是创建新的
+ let target_pane_index = idle_pane_index.or(pane_index);
+
+    post_split(url, token, false, target_pane_index, command, cwd, None)
 }
 
 fn cmd_select_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
@@ -1335,6 +1368,7 @@ fn cmd_last_window(rest: &[String]) -> Result<(), ()> {
 fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut session_name: Option<String> = None;
     let mut detached = false;
+    let mut pane_index: Option<usize> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1350,6 +1384,8 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
                 i += 1;
             }
             "-t" | "-T" if i + 1 < rest.len() => {
+                // Target pane index
+                pane_index = Some(parse_pane_target(&rest[i + 1]));
                 i += 1;
             }
             _ => {
@@ -1365,7 +1401,17 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     // We need to create at least one pane to match tmux semantics.
     // The split creates a new pane (pane 1) and returns success.
     // Claude Code will use this as the working pane for the team session.
-    post_split(url, token, false, None, None, None, None)
+ // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
+ let idle_pane_index = if pane_index.is_none() {
+ find_idle_pane(url, token)
+ } else {
+ None
+ };
+
+ // 如果找到空闲 pane，使用它而不是创建新的
+ let target_pane_index = idle_pane_index.or(pane_index);
+
+    post_split(url, token, false, target_pane_index, None, None, None)
 }
 
 fn cmd_has_session(rest: &[String]) -> Result<(), ()> {

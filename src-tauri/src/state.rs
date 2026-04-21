@@ -19,6 +19,23 @@ pub struct TeammateBinding {
     pub token: String,
 }
 
+/// 终端 pane 状态：跟踪 agent 是否在运行
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaneState {
+    /// 空闲 pane，可复用
+    Idle,
+    /// 有 agent 运行中
+    Busy,
+    /// Pane 正在启动中
+    Starting,
+}
+
+impl Default for PaneState {
+    fn default() -> Self {
+        PaneState::Idle
+    }
+}
+
 /// 单个根会话：独立分屏树 + 终端句柄（多工作区互不共享 pane id 命名空间下的 PTY 表）。
 pub struct Workspace {
     pub pane_tree: PaneTree,
@@ -33,6 +50,10 @@ pub struct Workspace {
     pub last_pane_index: Option<usize>,
     /// 工作区创建时间（`list-sessions` 等 tmux 兼容输出用）。
     pub created_at: SystemTime,
+    /// Pane 状态跟踪：空闲/忙碌，用于 agent 记忆和复用
+    pub teammate_pane_states: HashMap<Uuid, PaneState>,
+    /// Agent 到 pane 的映射：记录哪个 agent（通过唯一 ID）在哪个 pane
+    pub teammate_agent_pane_map: HashMap<String, Uuid>,
 }
 
 #[derive(Clone)]
@@ -66,12 +87,14 @@ impl AppState {
                 pane_sizes: HashMap::new(),
                 last_pane_index: None,
                 created_at: SystemTime::now(),
+                teammate_pane_states: HashMap::new(),
+                teammate_agent_pane_map: HashMap::new(),
             },
         );
         Self {
             workspaces: Arc::new(RwLock::new(map)),
             workspace_order: Arc::new(RwLock::new(vec![id])),
-        workspace_names: Arc::new(RwLock::new(HashMap::new())),
+            workspace_names: Arc::new(RwLock::new(HashMap::new())),
             active_workspace: Arc::new(RwLock::new(id)),
             event_tx,
             pty_scrollback: Arc::new(RwLock::new(HashMap::new())),
@@ -90,16 +113,16 @@ impl AppState {
         let mut map = self.pty_scrollback.write();
         let buf = map.entry((ws, pane)).or_insert_with(String::new);
         buf.push_str(chunk);
-    if buf.len() > MAX {
-        // Drain requires character boundaries, not byte offsets.
-        // Find the nearest valid character boundary before the cut point.
-        let cut_point = buf.len() - MAX;
-        let mut valid_boundary = cut_point;
-        while !buf.is_char_boundary(valid_boundary) {
-            valid_boundary += 1;
+        if buf.len() > MAX {
+            // Drain requires character boundaries, not byte offsets.
+            // Find the nearest valid character boundary before the cut point.
+            let cut_point = buf.len() - MAX;
+            let mut valid_boundary = cut_point;
+            while !buf.is_char_boundary(valid_boundary) {
+                valid_boundary += 1;
+            }
+            buf.drain(..valid_boundary);
         }
-        buf.drain(..valid_boundary);
-    }
     }
 
     pub fn clear_pty_scrollback(&self, ws: Uuid, pane: Uuid) {

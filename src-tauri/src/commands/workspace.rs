@@ -62,6 +62,8 @@ pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
                 pane_sizes: std::collections::HashMap::new(),
                 last_pane_index: None,
                 created_at: std::time::SystemTime::now(),
+            teammate_pane_states: std::collections::HashMap::new(),
+            teammate_agent_pane_map: std::collections::HashMap::new(),
             },
         );
     }
@@ -254,6 +256,8 @@ pub fn restore_workspace(
                 pane_sizes: std::collections::HashMap::new(),
                 last_pane_index: None,
                 created_at: std::time::SystemTime::now(),
+            teammate_pane_states: std::collections::HashMap::new(),
+            teammate_agent_pane_map: std::collections::HashMap::new(),
             },
         );
     }

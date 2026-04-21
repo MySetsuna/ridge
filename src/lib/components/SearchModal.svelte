@@ -241,7 +241,7 @@
     display: flex;
     justify-content: center;
     padding-top: 60px;
-    z-index: 1000;
+    /* z-index: 1000; */
   }
 
   .search-modal {

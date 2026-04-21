@@ -13,7 +13,7 @@ use chrono::{DateTime, Local, Utc};
 use uuid::Uuid;
 
 use crate::commands::{pane, terminal};
-use crate::state::{AppState, Workspace};
+use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
 #[derive(Clone)]
@@ -120,10 +120,179 @@ async fn run_server(
         .route("/api/v1/list-windows", get(route_list_windows))
         .route("/api/v1/list-sessions", get(route_list_sessions))
         .route("/api/v1/list-clients", get(route_list_clients))
+        // Agent-pane management
+        .route("/api/v1/register-agent", post(route_register_agent))
+        .route("/api/v1/release-pane", post(route_release_pane))
+        .route("/api/v1/find-idle-pane", get(route_find_idle_pane))
         .with_state(ctx);
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("[wind] teammate server stopped: {e}");
+    }
+}
+
+// ========== Agent-Pane Management Helpers ==========
+
+/// 查找空闲 pane（返回 pane index）
+fn find_idle_pane_index(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
+    let map = state.workspaces.read();
+    let Some(ws) = map.get(&wid) else {
+        return None;
+    };
+    let leaves = ws.pane_tree.get_all_leaves();
+    for (idx, pane_id) in leaves.iter().enumerate() {
+        if let Some(pane_state) = ws.teammate_pane_states.get(pane_id) {
+            if *pane_state == crate::state::PaneState::Idle {
+                return Some(idx);
+            }
+        }
+    }
+    None
+}
+
+/// 查找空闲 pane 的 UUID
+fn find_idle_pane_uuid(state: &AppState, wid: uuid::Uuid) -> Option<uuid::Uuid> {
+    let map = state.workspaces.read();
+    let Some(ws) = map.get(&wid) else {
+        return None;
+    };
+    let leaves = ws.pane_tree.get_all_leaves();
+    for pane_id in leaves.iter() {
+        if let Some(pane_state) = ws.teammate_pane_states.get(pane_id) {
+            if *pane_state == crate::state::PaneState::Idle {
+                return Some(*pane_id);
+            }
+        }
+    }
+    None
+}
+
+/// 注册 agent 到 pane
+fn register_agent_to_pane(state: &AppState, wid: uuid::Uuid, agent_id: &str, pane_id: uuid::Uuid) {
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&wid) {
+        ws.teammate_agent_pane_map.insert(agent_id.to_string(), pane_id);
+        ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+    }
+}
+
+/// 释放 pane（标记为空闲）
+fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) {
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&wid) {
+        ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Idle);
+        // 清理 agent 映射
+        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+    }
+}
+
+/// 通过 agent_id 查找 pane
+fn find_pane_by_agent(state: &AppState, wid: uuid::Uuid, agent_id: &str) -> Option<uuid::Uuid> {
+    let map = state.workspaces.read();
+    let Some(ws) = map.get(&wid) else {
+        return None;
+    };
+    ws.teammate_agent_pane_map.get(agent_id).copied()
+}
+
+// ========== Agent-Pane Management Routes ==========
+
+#[derive(Deserialize)]
+struct RegisterAgentBody {
+    agent_id: String,
+    pane_index: Option<usize>,
+}
+
+async fn route_register_agent(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterAgentBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = ctx.state.active_workspace_id();
+
+    // 找到对应的 pane_id
+    let pane_id = if let Some(idx) = body.pane_index {
+        match crate::commands::pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
+            Ok(u) => u,
+            Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        }
+    } else {
+        // 如果没有指定 pane_index，使用当前 cursor
+        let map = ctx.state.workspaces.read();
+        let ws = map.get(&wid);
+        let cursor = ws.map(|w| w.teammate_tmux_pane_cursor).unwrap_or(0);
+        drop(map);
+        match crate::commands::pane::teammate_pane_uuid_at_index(&ctx.state, wid, cursor) {
+            Ok(u) => u,
+            Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        }
+    };
+
+    register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })))
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct ReleasePaneBody {
+    pane_index: Option<usize>,
+    pane_id: Option<String>,
+}
+
+async fn route_release_pane(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<ReleasePaneBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = ctx.state.active_workspace_id();
+
+    let pane_id = if let Some(ref pid_str) = body.pane_id {
+        match uuid::Uuid::parse_str(pid_str) {
+            Ok(u) => u,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "invalid pane_id").into_response();
+            }
+        }
+    } else if let Some(idx) = body.pane_index {
+        match crate::commands::pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
+            Ok(u) => u,
+            Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        }
+    } else {
+        return (StatusCode::BAD_REQUEST, "need pane_index or pane_id").into_response();
+    };
+
+    release_pane(&ctx.state, wid, pane_id);
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+}
+
+async fn route_find_idle_pane(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = ctx.state.active_workspace_id();
+
+    if let Some(idx) = find_idle_pane_index(&ctx.state, wid) {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "pane_index": idx })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "pane_index": serde_json::Value::Null })),
+        )
+            .into_response()
     }
 }
 
@@ -142,6 +311,13 @@ struct SplitBody {
     /// `tmux split-window -n` / `new-window -n` 经客户端转发时的窗格名。
     #[serde(default)]
     window_name: Option<String>,
+    /// 是否允许复用空闲 pane（默认 true）
+    #[serde(default = "default_true")]
+    allow_idle_reuse: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 async fn route_split(
@@ -153,6 +329,36 @@ async fn route_split(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let wid = ctx.state.active_workspace_id();
+
+    // 检查是否有空闲 pane 可以复用（如果没有显式指定 pane_index）
+    if body.allow_idle_reuse && body.pane_index.is_none() {
+        if let Some(idle_idx) = find_idle_pane_index(&ctx.state, wid) {
+            // 找到空闲 pane，标记为 Busy 并返回
+            let idle_pane_id = {
+                let map = ctx.state.workspaces.read();
+                let ws = map.get(&wid).unwrap();
+                ws.pane_tree.get_all_leaves().get(idle_idx).copied()
+            };
+            if let Some(pane_id) = idle_pane_id {
+                let mut map = ctx.state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+                    ws.teammate_tmux_pane_cursor = idle_idx;
+                }
+            }
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "reused_pane_index": idle_idx,
+                    "new_pane_index": idle_idx,
+                    "source_pane_index": idle_idx,
+                    "reused": true,
+                })),
+            )
+                .into_response();
+        }
+    }
 
     // Split target selection:
     // 1. If explicit pane_index from -t flag → use it
@@ -288,8 +494,12 @@ async fn route_split(
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
+                // Mark new pane as Busy
+                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     // Initialize pane size for the new pane (default, will be updated on resize)
                     ws.pane_sizes.insert(new_id, (80, 120));
+                // Mark new pane as Busy (has an agent running)
+                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     if let Some(name) = body
                         .window_name
                         .as_ref()
@@ -780,6 +990,8 @@ async fn route_new_window(
                 if let Some(ws) = map.get_mut(&wid) {
                 ws.last_pane_index = Some(ws.teammate_tmux_pane_cursor);
                     ws.teammate_tmux_pane_cursor = new_idx;
+                // Mark new pane as Busy
+                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     if let Some(name) = body
                         .window_name
                         .as_ref()
