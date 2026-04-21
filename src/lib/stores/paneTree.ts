@@ -122,6 +122,13 @@ export const SAME_AXIS_ATTRACT_PX = 15;
 const INTERSECTION_PROXIMITY_PX = 10;
 
 /**
+ * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"端点完全对齐"，
+ * 才可能触发联动。仅用于联动 gating，不影响 15px 的视觉吸附范围。
+ * 取 1px 以容忍 getBoundingClientRect 的亚像素误差。
+ */
+const SAME_AXIS_ALIGN_EPSILON_PX = 1;
+
+/**
  * Issue 3: how far the primary must travel along its own axis before same-axis
  * coupled partners are dropped from the active snapshot set, so they stop
  * following and only the primary continues moving.
@@ -476,27 +483,32 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
-  // Gate same-axis coupling on endpoint proximity: for each parallel sibling B,
-  // compute B's two endpoints along its own length axis (i.e. perpendicular to
-  // the drag axis). If the pointer along that axis is within
-  // INTERSECTION_PROXIMITY_PX of either endpoint, B joins the coupled drag set.
-  // Siblings whose endpoints are farther away are kept as "attractors" — they
-  // visually attract the primary in-drag but do not move with it.
+  // Gate same-axis coupling on TWO conditions:
+  //   (a) 端点完全对齐：候选兄弟 B 与主线 A 的屏幕中线差 ≤ SAME_AXIS_ALIGN_EPSILON_PX
+  //       （B 的端点恰好落在 A 的延长线上，即所谓"端点完全对齐"）；
+  //   (b) 鼠标在另一方向（沿线方向，垂直于拖动轴）距离 B 的端点 ≤ INTERSECTION_PROXIMITY_PX。
+  // 两者同时满足，B 才被纳入联动；否则保留为 attractor（仅视觉吸附，不联动）。
   const pointerAlongLine =
     ui.primary.axis === 'x' ? pointer.y : pointer.x;
+  const primaryCenter = getSplitterScreenCenter(ui.primary);
   const coupledSameAxis: SplitterRef[] = [];
   const attractOnlySameAxis: SplitterRef[] = [];
   for (const sibling of ui.sameAxisCandidates) {
     const endpoints = getSplitterLineEndpoints(sibling);
-    if (!endpoints) {
+    const siblingCenter = getSplitterScreenCenter(sibling);
+    if (!endpoints || siblingCenter == null || primaryCenter == null) {
       attractOnlySameAxis.push(sibling);
       continue;
     }
+    const perpDistance = Math.abs(siblingCenter - primaryCenter);
     const distToEndpoint = Math.min(
       Math.abs(endpoints.start - pointerAlongLine),
       Math.abs(endpoints.end - pointerAlongLine)
     );
-    if (distToEndpoint <= INTERSECTION_PROXIMITY_PX) {
+    if (
+      perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
+      distToEndpoint <= INTERSECTION_PROXIMITY_PX
+    ) {
       coupledSameAxis.push(sibling);
     } else {
       attractOnlySameAxis.push(sibling);
@@ -576,22 +588,29 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
     }
   }
 
-  // 视觉吸附：若存在未联动的同向 attractor，且指针在拖动轴方向上距其中线 ≤
-  // SAME_AXIS_ATTRACT_PX，则把传入 updatesFromSnapshots 的 pointer 沿拖动轴
-  // 替换为 attractor 的中线坐标。保留原始 pointer 写入 state，确保下一帧能
-  // 正确判断是否已移出吸附范围。
+  // 视觉吸附：拖动过程中，若指针在"另一方向"（沿线方向，与拖动轴垂直）上
+  // 距离某个 attractor 的端点（与正交线交接处）≤ SAME_AXIS_ATTRACT_PX，则把
+  // 传入 updatesFromSnapshots 的 pointer 沿拖动轴替换为 attractor 的中线坐标，
+  // 从而让当前拖动的线段视觉上自动吸附到该端点所在的延长线位置。
+  // 保留原始 pointer 写入 state，确保下一帧能正确判断是否已移出吸附范围。
   let effectivePointer = pointer;
   if (primary && ui.sameAxisAttractors.length > 0) {
     const axis = primary.ref.axis;
-    const targetAxisCoord = axis === 'x' ? pointer.x : pointer.y;
+    const pointerAlongLine = axis === 'x' ? pointer.y : pointer.x;
     let bestCenter: number | null = null;
     let bestDist = SAME_AXIS_ATTRACT_PX + 1;
     for (const attractor of ui.sameAxisAttractors) {
+      const endpoints = getSplitterLineEndpoints(attractor);
+      if (!endpoints) continue;
+      const distToEndpoint = Math.min(
+        Math.abs(endpoints.start - pointerAlongLine),
+        Math.abs(endpoints.end - pointerAlongLine)
+      );
+      if (distToEndpoint > SAME_AXIS_ATTRACT_PX) continue;
       const bCenter = getSplitterScreenCenter(attractor);
       if (bCenter == null) continue;
-      const dist = Math.abs(bCenter - targetAxisCoord);
-      if (dist <= SAME_AXIS_ATTRACT_PX && dist < bestDist) {
-        bestDist = dist;
+      if (distToEndpoint < bestDist) {
+        bestDist = distToEndpoint;
         bestCenter = bCenter;
       }
     }
