@@ -85,6 +85,25 @@ body {
   text-rendering: auto;
 }
 
+/*
+ * 为 xterm 容器在右侧预留 13px 作为滚动条区域。
+ * FitAddon 会读取 .xterm 的 padding-right 来计算可用宽度，
+ * 保证终端字符网格不会渲染到滚动条下方（即消除内容-滚动条重叠）。
+ */
+.wf-terminal-surface .xterm {
+  padding-right: 13px;
+}
+
+/*
+ * 消除 xterm 辅助 textarea 的原生 caret（白色竖线光标）。
+ * 该 textarea 只用于接收键盘事件与 IME 合成，视觉光标由 xterm 自行绘制。
+ * 若不关闭 caret-color，某些 WebView 会忽略 opacity:0 仍绘制系统 caret，
+ * 形成 "xterm 主题色光标 + 白色 caret" 的双光标现象。
+ */
+.wf-terminal-surface .xterm-helper-textarea {
+  caret-color: transparent !important;
+}
+
 /* xterm 滚动区域：仅用 webkit 伪元素（勿加 scrollbar-width: thin — Windows WebView2 会退回系统细条并带两端箭头） */
 .xterm-viewport {
 	overflow-y: scroll !important;

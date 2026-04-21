@@ -78,6 +78,8 @@ export type SplitResizeUiState =
       snapshots: SplitterSnapshot[];
       pendingUpdates: SplitRatioUpdate[];
       snapState: JunctionSnapState | null;
+      /** 未命中联动 gating、但位于吸附阈值内的同向兄弟，用于拖动中视觉吸附 */
+      sameAxisAttractors: SplitterRef[];
     };
 
 export interface SplitRatioUpdate {
@@ -107,8 +109,17 @@ export interface JunctionSnapState {
 
 export const SNAP_THRESHOLD_PX = 10;
 
-/** 端点联动触发距离：鼠标距离端点5px内才会联动拖动 */
-const INTERSECTION_PROXIMITY_PX = 5;
+/**
+ * 同向兄弟分隔线的垂直距离吸附阈值。
+ * 当拖动中的分隔线 A 距离另一条平行分隔线 B 的垂直距离 ≤ 此值时：
+ *   - 视觉上 A 自动吸附到 B 的中线位置；
+ *   - 且若指针沿线方向距离 B 的端点（与正交线交接处）≤ `INTERSECTION_PROXIMITY_PX`，
+ *     则触发 A、B 联动拖动。
+ */
+export const SAME_AXIS_ATTRACT_PX = 15;
+
+/** 端点联动触发距离：鼠标沿线方向距离端点 ≤ 此值时，同向兄弟被纳入联动 */
+const INTERSECTION_PROXIMITY_PX = 10;
 
 /**
  * Issue 3: how far the primary must travel along its own axis before same-axis
@@ -270,6 +281,32 @@ export function getSplitterScreenCenter(ref: SplitterRef): number | null {
   return ref.axis === 'x'
     ? rect.left + rect.width / 2
     : rect.top + rect.height / 2;
+}
+
+/**
+ * 返回分隔线沿其"长度方向"的两个端点屏幕坐标。
+ * - 水平方向分隔线（axis='x'，拖动轴为 x）：其长度方向沿 y；返回 top/bottom。
+ * - 垂直方向分隔线（axis='y'，拖动轴为 y）：其长度方向沿 x；返回 left/right。
+ *
+ * 注：此处的"端点"即 split 容器沿线方向两端，通常与正交分隔线或容器边界重合。
+ */
+export function getSplitterLineEndpoints(
+  ref: SplitterRef
+): { start: number; end: number } | null {
+  if (typeof document === 'undefined') return null;
+  const splitRoot = document.querySelector<HTMLElement>(
+    `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
+  );
+  if (!splitRoot) return null;
+  const splitters = Array.from(
+    splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
+  );
+  const splitter = splitters[ref.splitterIndex];
+  if (!splitter) return null;
+  const rect = splitter.getBoundingClientRect();
+  return ref.axis === 'x'
+    ? { start: rect.top, end: rect.bottom }
+    : { start: rect.left, end: rect.right };
 }
 
 /**
@@ -439,22 +476,34 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
-  // Gate same-axis coupling on intersection proximity: only include same-axis
-  // candidates when the drag start pointer is within SNAP_THRESHOLD_PX of an
-  // orthogonal splitter's position along the perpendicular axis. This ensures
-  // coupling only fires at a true 3-way/4-way crossing, not when the user
-  // grabs the primary splitter far from any intersection.
-  const pointerPerp =
+  // Gate same-axis coupling on endpoint proximity: for each parallel sibling B,
+  // compute B's two endpoints along its own length axis (i.e. perpendicular to
+  // the drag axis). If the pointer along that axis is within
+  // INTERSECTION_PROXIMITY_PX of either endpoint, B joins the coupled drag set.
+  // Siblings whose endpoints are farther away are kept as "attractors" — they
+  // visually attract the primary in-drag but do not move with it.
+  const pointerAlongLine =
     ui.primary.axis === 'x' ? pointer.y : pointer.x;
-  const isNearIntersection = ui.orthogonals.some((ortho) => {
-    const orthoCenter = getSplitterScreenCenter(ortho);
-    return (
-      orthoCenter != null &&
-      Math.abs(orthoCenter - pointerPerp) <= INTERSECTION_PROXIMITY_PX
+  const coupledSameAxis: SplitterRef[] = [];
+  const attractOnlySameAxis: SplitterRef[] = [];
+  for (const sibling of ui.sameAxisCandidates) {
+    const endpoints = getSplitterLineEndpoints(sibling);
+    if (!endpoints) {
+      attractOnlySameAxis.push(sibling);
+      continue;
+    }
+    const distToEndpoint = Math.min(
+      Math.abs(endpoints.start - pointerAlongLine),
+      Math.abs(endpoints.end - pointerAlongLine)
     );
-  });
-  if (isNearIntersection && ui.sameAxisCandidates.length > 0) {
-    refs = dedupeRefs([...refs, ...ui.sameAxisCandidates]);
+    if (distToEndpoint <= INTERSECTION_PROXIMITY_PX) {
+      coupledSameAxis.push(sibling);
+    } else {
+      attractOnlySameAxis.push(sibling);
+    }
+  }
+  if (coupledSameAxis.length > 0) {
+    refs = dedupeRefs([...refs, ...coupledSameAxis]);
   }
 
   const snapshots: SplitterSnapshot[] = [];
@@ -491,6 +540,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     snapshots,
     pendingUpdates: [],
     snapState: ui.snapState,
+    sameAxisAttractors: attractOnlySameAxis,
   });
   setGlobalSplitResizeCursor(true);
   if (is4WaySnap && typeof document !== 'undefined') {
@@ -504,7 +554,7 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
 
   // The coupled snapshot set is frozen at mousedown (startSplitResizeDrag).
   // Do not add new same-axis candidates mid-drag: coupling is gated on
-  // intersection proximity at drag start, and dynamic additions during drag
+  // endpoint proximity at drag start, and dynamic additions during drag
   // caused non-intersection splitters to be incorrectly coupled.
   //
   // Issue 3: if the primary has moved far enough along its drag axis, drop
@@ -526,7 +576,34 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
     }
   }
 
-  const updates = updatesFromSnapshots(workingSnapshots, pointer);
+  // 视觉吸附：若存在未联动的同向 attractor，且指针在拖动轴方向上距其中线 ≤
+  // SAME_AXIS_ATTRACT_PX，则把传入 updatesFromSnapshots 的 pointer 沿拖动轴
+  // 替换为 attractor 的中线坐标。保留原始 pointer 写入 state，确保下一帧能
+  // 正确判断是否已移出吸附范围。
+  let effectivePointer = pointer;
+  if (primary && ui.sameAxisAttractors.length > 0) {
+    const axis = primary.ref.axis;
+    const targetAxisCoord = axis === 'x' ? pointer.x : pointer.y;
+    let bestCenter: number | null = null;
+    let bestDist = SAME_AXIS_ATTRACT_PX + 1;
+    for (const attractor of ui.sameAxisAttractors) {
+      const bCenter = getSplitterScreenCenter(attractor);
+      if (bCenter == null) continue;
+      const dist = Math.abs(bCenter - targetAxisCoord);
+      if (dist <= SAME_AXIS_ATTRACT_PX && dist < bestDist) {
+        bestDist = dist;
+        bestCenter = bCenter;
+      }
+    }
+    if (bestCenter != null) {
+      effectivePointer =
+        axis === 'x'
+          ? { x: bestCenter, y: pointer.y }
+          : { x: pointer.x, y: bestCenter };
+    }
+  }
+
+  const updates = updatesFromSnapshots(workingSnapshots, effectivePointer);
   paneTreeStore.update((root) => applyRatioUpdates(root, updates));
 
   splitResizeUiState.set({

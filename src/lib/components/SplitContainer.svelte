@@ -27,7 +27,7 @@
     startSplitResizeDrag,
     updateSplitResizeDrag,
     finishSplitResizeDrag,
-    SNAP_THRESHOLD_PX,
+    SAME_AXIS_ATTRACT_PX,
     findJunctionsNearPosition,
     registerJunction,
     clearJunctionRegistry,
@@ -352,7 +352,7 @@
     );
     const sameAxisCandidates = findSameAxisRefs(
       primary,
-      SNAP_THRESHOLD_PX
+      SAME_AXIS_ATTRACT_PX
     ).map((c) => c.ref);
     if (!orthogonals.length && !sameAxisCandidates.length) {
       if (splitEngaged(splitPath, $splitResizeUiState)) clearSplitResizeUi();

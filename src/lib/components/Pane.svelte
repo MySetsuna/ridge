@@ -80,6 +80,7 @@ let ptyUnlisten: (() => void) | undefined;
 
 let fitAddon: FitAddon | null = null;
 let removeFocusHandlers: (() => void) | undefined;
+let removeCompositionHandlers: (() => void) | undefined;
 let resizeObserver: ResizeObserver | undefined;
 /** ResizeObserver 触发的 fit+PTY：每帧合并一次，避免 debounce 造成拖动时 PTY 与 xterm 尺寸脱节 */
 let resizeRaf: number | undefined;
@@ -203,6 +204,8 @@ async function renderView() {
 	ptyUnlisten = undefined;
 	removeFocusHandlers?.();
 	removeFocusHandlers = undefined;
+	removeCompositionHandlers?.();
+	removeCompositionHandlers = undefined;
 	if (term) term.dispose();
 	if (editor) editor.dispose();
 	term = null;
@@ -217,6 +220,9 @@ async function renderView() {
 			letterSpacing: 0,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
 			cursorBlink: true,
+			cursorStyle: 'block',
+			// 仅在终端获得焦点时展示光标；失焦后隐藏，避免在输出区域"乱闪"
+			cursorInactiveStyle: 'none',
 			scrollback: 8000,
 			theme: {
 				background: '#0c0b12',
@@ -246,6 +252,70 @@ async function renderView() {
 		fitAddon = new FitAddon();
 		term.loadAddon(fitAddon);
 		term.open(viewInner);
+
+		// 快捷键：Ctrl+C 复制（有选区时）/ 透传 SIGINT（无选区）；Ctrl+V 粘贴；
+		// Shift+Enter 插入换行但不提交（发送 Alt+Enter 转义序列 ESC+CR）。
+		term.attachCustomKeyEventHandler((ev) => {
+			if (ev.type !== 'keydown') return true;
+			const mod = ev.ctrlKey || ev.metaKey;
+			// Ctrl/Cmd + C
+			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
+				const selection = term?.getSelection();
+				if (selection && selection.length > 0) {
+					void navigator.clipboard.writeText(selection).catch((err) => {
+						console.error('clipboard write failed', err);
+					});
+					ev.preventDefault();
+					return false;
+				}
+				// 无选区：透传给 xterm 默认处理，送 SIGINT (\x03) 到 PTY
+				return true;
+			}
+			// Ctrl/Cmd + V
+			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'v' || ev.key === 'V')) {
+				void navigator.clipboard.readText().then((text) => {
+					if (text && term) term.paste(text);
+				}).catch((err) => {
+					console.error('clipboard read failed', err);
+				});
+				ev.preventDefault();
+				return false;
+			}
+			// Shift + Enter：发送 ESC+CR，用于 Claude Code 等支持 Alt+Enter 的 REPL
+			// 插入换行而不提交
+			if (ev.shiftKey && !mod && !ev.altKey && ev.key === 'Enter') {
+				if (isTauri()) {
+					void invoke('write_to_pty', { paneId, data: '\x1b\r' }).catch((err) => {
+						console.error('write_to_pty shift+enter', err);
+					});
+				}
+				ev.preventDefault();
+				return false;
+			}
+			return true;
+		});
+
+		// IME 合成事件：在合成期间暂停光标闪烁，避免光标与输入法候选窗口冲突。
+		const helperTextarea = viewInner.querySelector<HTMLTextAreaElement>(
+			'.xterm-helper-textarea'
+		);
+		if (helperTextarea) {
+			const onCompStart = () => {
+				if (!alive || !term) return;
+				term.options.cursorBlink = false;
+			};
+			const onCompEnd = () => {
+				if (!alive || !term) return;
+				term.options.cursorBlink = true;
+			};
+			helperTextarea.addEventListener('compositionstart', onCompStart);
+			helperTextarea.addEventListener('compositionend', onCompEnd);
+			removeCompositionHandlers = () => {
+				helperTextarea.removeEventListener('compositionstart', onCompStart);
+				helperTextarea.removeEventListener('compositionend', onCompEnd);
+			};
+		}
+
 		fitAddon.fit();
 		await fitAndSyncPty();
 
@@ -400,6 +470,7 @@ onDestroy(() => {
 	resizeObserver?.disconnect();
 	ptyUnlisten?.();
 	removeFocusHandlers?.();
+	removeCompositionHandlers?.();
 	diffUnlisten?.();
 	if (term) term.dispose();
 	if (editor) editor.dispose();
@@ -439,7 +510,7 @@ onDestroy(() => {
 		>
 			<div
 				bind:this={viewInner}
-				class="min-h-0 min-w-0 flex-1 py-2 pl-3 pr-1"
+				class="min-h-0 min-w-0 flex-1 p-3"
 			></div>
 			<!-- 滚动到底部按钮 -->
 			{#if showScrollBottom && mode === 'terminal'}
