@@ -6,6 +6,7 @@ import { Unicode11Addon } from 'xterm-addon-unicode11';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, saveCurrentWorkspace } from '$lib/stores/paneTree';
 import 'xterm/css/xterm.css';
 
@@ -277,7 +278,7 @@ async function renderView() {
 			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
 				const selection = term?.getSelection();
 				if (selection && selection.length > 0) {
-					void navigator.clipboard.writeText(selection).catch((err) => {
+					void writeText(selection).catch((err) => {
 						console.error('clipboard write failed', err);
 					});
 					ev.preventDefault();
@@ -288,7 +289,7 @@ async function renderView() {
 			}
 			// Ctrl/Cmd + V
 			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'v' || ev.key === 'V')) {
-				void navigator.clipboard.readText().then((text) => {
+				void readText().then((text) => {
 					if (text && term) term.paste(text);
 				}).catch((err) => {
 					console.error('clipboard read failed', err);

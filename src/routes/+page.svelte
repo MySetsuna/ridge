@@ -171,22 +171,6 @@
   }
 
   onMount(() => {
-    // 预请求剪贴板读取权限，让粘贴操作无需额外确认
-    async function requestClipboardPermission() {
-        if (!navigator.clipboard || !navigator.clipboard.readText) return;
-        try {
-            const result = await navigator.permissions.query({ name: 'clipboard-read' });
-            if (result.state === 'prompt') {
-                await navigator.clipboard.readText();
-            }
-        } catch {
-            try {
-                await navigator.clipboard.readText();
-            } catch {}
-        }
-    }
-    void requestClipboardPermission();
-
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
