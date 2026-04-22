@@ -276,77 +276,81 @@
     </button>
   </aside>
 
-  <!-- 侧边栏内容区 -->
-{#if !sidebarCollapsed}
-  <aside
-    class="relative shrink-0 border-r border-[var(--wf-border)] bg-[var(--wf-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 wf-scroll overflow-y-auto"
-    style="width: {sidebarWidth}px"
+  <!-- 侧边栏区域：wrapper 始终渲染，toggle 按钮始终可见 -->
+  <div
+    class="relative shrink-0"
+    style="width: {sidebarCollapsed ? 0 : sidebarWidth}px; overflow: visible"
   >
-    {#if sidebarTab === 'git'}
-      <div
-        class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
+    {#if !sidebarCollapsed}
+      <aside
+        class="h-full border-r border-[var(--wf-border)] bg-[var(--wf-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 wf-scroll overflow-y-auto"
       >
-        Git Graph
-      </div>
-      <div class="flex-1 min-h-0 overflow-auto p-3 wf-scroll">
-        <GitGraph />
-      </div>
-    {:else if sidebarTab === 'files'}
-      <div
-        class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
-      >
-        资源管理器
-      </div>
-      <div class="flex-1 min-h-0 overflow-hidden">
-        {#if $activeWorkspaceId}
-          <Explorer workspaceId={$activeWorkspaceId} />
-        {:else}
+        {#if sidebarTab === 'git'}
           <div
-            class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]"
+            class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
           >
-            请先选择一个工作区
+            Git Graph
           </div>
+          <div class="flex-1 min-h-0 overflow-auto p-3 wf-scroll">
+            <GitGraph />
+          </div>
+        {:else if sidebarTab === 'files'}
+          <div
+            class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
+          >
+            资源管理器
+          </div>
+          <div class="flex-1 min-h-0 overflow-hidden">
+            {#if $activeWorkspaceId}
+              <Explorer workspaceId={$activeWorkspaceId} />
+            {:else}
+              <div
+                class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]"
+              >
+                请先选择一个工作区
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <WorkspaceSidebar
+            workspaces={$workspacesList}
+            activeWorkspaceId={$activeWorkspaceId}
+            onSelect={switchWorkspace}
+            onRename={renameWorkspace}
+            onDelete={closeWorkspace}
+            onReorder={reorderWorkspaces}
+            onSave={saveCurrentWorkspace}
+            onCreate={createWorkspace}
+          />
         {/if}
-      </div>
-    {:else}
-      <WorkspaceSidebar
-        workspaces={$workspacesList}
-        activeWorkspaceId={$activeWorkspaceId}
-        onSelect={switchWorkspace}
-        onRename={renameWorkspace}
-        onDelete={closeWorkspace}
-        onReorder={reorderWorkspaces}
-        onSave={saveCurrentWorkspace}
-        onCreate={createWorkspace}
-      />
+
+        <!-- 侧边栏大小调整手柄 -->
+        <div
+          class="group absolute h-full right-0 w-1 shrink-0 cursor-col-resize select-none hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30 transition-colors {isResizingSidebar
+            ? 'bg-[var(--wf-accent)]/40'
+            : ''}"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整侧边栏宽度"
+          onmousedown={onSidebarResizerMouseDown}
+        ></div>
+      </aside>
     {/if}
 
-    <!-- 侧边栏大小调整手柄 -->
-    <div
-      class="group absolute h-full right-0 w-1 shrink-0 cursor-col-resize select-none hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30 transition-colors {isResizingSidebar
-        ? 'bg-[var(--wf-accent)]/40'
-        : ''}"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="拖动调整侧边栏宽度"
-      onmousedown={onSidebarResizerMouseDown}
-    ></div>
-<!-- 悬浮toggle按钮 -->
-<button
-  type="button"
-  class="absolute top-1/2 -translate-y-1/2 -left-3 flex items-center justify-center w-5 h-10 rounded-l-md bg-[var(--wf-surface)]/80 border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors z-10 opacity-60 hover:opacity-100"
-  style="left: -{20}px"
-  title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
-  onclick={toggleSidebar}
->
-  {#if sidebarCollapsed}
-    <ChevronRight class="w-3 h-3" />
-  {:else}
-    <ChevronLeft class="w-3 h-3" />
-  {/if}
-</button>
-  </aside>
-{/if}
+    <!-- 折叠/展开 toggle 按钮：始终渲染，位于 wrapper 右边缘 -->
+    <button
+      type="button"
+      class="absolute top-1/2 -translate-y-1/2 left-full z-20 flex items-center justify-center w-4 h-10 rounded-r bg-[var(--wf-surface)]/80 border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors opacity-60 hover:opacity-100"
+      title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+      onclick={toggleSidebar}
+    >
+      {#if sidebarCollapsed}
+        <ChevronRight class="w-3 h-3" />
+      {:else}
+        <ChevronLeft class="w-3 h-3" />
+      {/if}
+    </button>
+  </div>
 
   <!-- 主内容区 -->
   <div class="flex-1 flex flex-col min-w-0 min-h-0">

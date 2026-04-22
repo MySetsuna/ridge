@@ -122,6 +122,7 @@ pub fn run() {
             terminal::write_to_pty,
             terminal::resize_pane,
             terminal::kill_pane,
+            terminal::get_pane_scrollback,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,

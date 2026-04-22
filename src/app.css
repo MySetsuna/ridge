@@ -86,12 +86,13 @@ body {
 }
 
 /*
- * 为 xterm 容器在右侧预留 13px 作为滚动条区域。
- * FitAddon 会读取 .xterm 的 padding-right 来计算可用宽度，
- * 保证终端字符网格不会渲染到滚动条下方（即消除内容-滚动条重叠）。
+ * 为 xterm 容器在右侧预留 6px 作为滚动条区域（与 webkit 滚动条宽度一致）。
+ * FitAddon 从 parentElement.width - padding - scrollBarWidth 计算可用宽度；
+ * scrollBarWidth = viewport.offsetWidth - scrollArea.offsetWidth = 6，
+ * 因此 padding-right 也设为 6px，避免双重扣减导致终端列数偏少。
  */
 .wf-terminal-surface .xterm {
-  padding-right: 13px;
+  padding-right: 6px;
 }
 
 /*
@@ -113,17 +114,24 @@ body {
   pointer-events: none !important;
 }
 
-/* xterm 滚动区域：仅用 webkit 伪元素（勿加 scrollbar-width: thin — Windows WebView2 会退回系统细条并带两端箭头） */
+/*
+ * xterm 滚动条：仅用 webkit 伪元素定制外观（勿加 scrollbar-width: thin —
+ * Windows WebView2 会退回系统细条并带两端箭头）。
+ * viewport 保持 xterm 默认的全宽绝对定位，不收窄宽度，以免 FitAddon 的
+ * scrollBarWidth 计算异常（6px viewport 使 scrollArea.offsetWidth=0，
+ * 导致 FitAddon 将 padding-right 与 scrollBarWidth 双重扣减，浪费列数）。
+ * canvas 因 DOM 顺序在 viewport 之后，天然覆盖在 viewport 之上，
+ * 仅在右侧 6px 的 padding-right 留白处透出滚动条。
+ */
 .xterm-viewport {
-	overflow-y: scroll !important;
-	overflow-x: hidden;
-  z-index: 1;
-  left: unset !important;
-  width: 13px;
+  overflow-y: scroll !important;
+  overflow-x: hidden;
+  /* 覆盖 xterm 通过 inline style 注入的背景色，避免遮挡终端内容 */
+  background-color: transparent !important;
 }
 
 .xterm-viewport::-webkit-scrollbar {
-  width: 12px;
+  width: 6px;
 }
 .xterm-viewport::-webkit-scrollbar-button {
   display: none !important;
@@ -136,11 +144,8 @@ body {
 .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--wf-scrollbar);
   border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: content-box;
   min-height: 48px;
 }
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--wf-scrollbar-hover);
-  background-clip: content-box;
 }

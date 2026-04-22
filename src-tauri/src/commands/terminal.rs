@@ -31,11 +31,17 @@ fn create_pane_inner(
 	let pane_id = parse_pane_id(&pane_id)?;
 	let workspace_id = state.active_workspace_id();
 
-	// 获取工作目录（优先使用环境变量 HOME 或当前目录）
-	let cwd: PathBuf = std::env::var("HOME")
-		.map(PathBuf::from)
-		.or_else(|_| std::env::current_dir())
-		.unwrap_or_else(|_| PathBuf::from("."));
+	// 优先使用 pane tree 中已记录的 CWD（分屏时由 split_pane 从父 pane 继承），
+	// 否则 fallback 到 HOME 或当前目录。
+	let cwd: PathBuf = {
+		let map = state.workspaces.read();
+		map.get(&workspace_id)
+			.and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+			.and_then(|p| p.cwd.clone())
+	}
+	.or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
+	.or_else(|| std::env::current_dir().ok())
+	.unwrap_or_else(|| PathBuf::from("."));
 
 	ensure_pane_pty_workspace(
 		&*state,
@@ -50,6 +56,13 @@ fn create_pane_inner(
 
 	// 设置 pane 的工作目录用于 git diff 跟踪
 	crate::commands::git::set_pane_workdir(pane_id.to_string(), cwd.to_string_lossy().to_string()).map_err(AppError::PtyError)?;
+
+	// 立即通知前端初始 CWD，无需等待 shell 发出 OSC 7
+	let _ = state.event_tx.try_send(crate::types::GlobalEvent::PaneCwdChanged {
+		workspace_id,
+		pane_id,
+		cwd: cwd.to_string_lossy().to_string(),
+	});
 
 	Ok(())
 }
@@ -479,4 +492,15 @@ async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<
 	}
 	kill_pty_if_present(&*state, wid, pane_id).await;
 	Ok(())
+}
+
+#[tauri::command]
+pub fn get_pane_scrollback(
+	state: State<'_, AppState>,
+	pane_id: String,
+) -> Result<String, String> {
+	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+	let workspace_id = state.active_workspace_id();
+	let map = state.pty_scrollback.read();
+	Ok(map.get(&(workspace_id, pane_id)).cloned().unwrap_or_default())
 }

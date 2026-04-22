@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { GripVertical, X, FolderOpen, Plus, RefreshCw } from 'lucide-svelte';
-	import { onMount } from 'svelte';
+	import { ChevronRight, X, RefreshCw, FolderOpen } from 'lucide-svelte';
 	import { fileExplorerStore, initFileExplorer, explorerColumns } from '$lib/stores/fileExplorer';
 	import { activeWorkspaceId, paneCwdStore } from '$lib/stores/paneTree';
 	import FileTree from './FileTree.svelte';
@@ -11,17 +10,14 @@
 
 	let { workspaceId }: Props = $props();
 
-	let draggingIndex: number | null = $state(null);
-	let dragOverIndex: number | null = $state(null);
+	let collapsedColumns = $state(new Set<string>());
 
-	// Initialize when workspace changes or component mounts
 	$effect(() => {
 		if (workspaceId) {
 			initFileExplorer(workspaceId);
 		}
 	});
 
-	// React to paneCwdStore changes
 	$effect(() => {
 		const cwds = $paneCwdStore;
 		const workspaceCwds: Record<string, string> = {};
@@ -34,7 +30,6 @@
 		fileExplorerStore.syncWithPaneCwds(workspaceId, workspaceCwds);
 	});
 
-	// Load trees when columns change
 	$effect(() => {
 		const columns = $explorerColumns;
 		for (const col of columns) {
@@ -44,35 +39,14 @@
 		}
 	});
 
-	function handleDragStart(e: DragEvent, index: number) {
-		draggingIndex = index;
-		if (e.dataTransfer) {
-			e.dataTransfer.effectAllowed = 'move';
-			e.dataTransfer.setData('text/plain', index.toString());
+	function toggleCollapse(columnId: string) {
+		const next = new Set(collapsedColumns);
+		if (next.has(columnId)) {
+			next.delete(columnId);
+		} else {
+			next.add(columnId);
 		}
-	}
-
-	function handleDragOver(e: DragEvent, index: number) {
-		e.preventDefault();
-		dragOverIndex = index;
-	}
-
-	function handleDragLeave() {
-		dragOverIndex = null;
-	}
-
-	function handleDrop(e: DragEvent, index: number) {
-		e.preventDefault();
-		if (draggingIndex !== null && draggingIndex !== index) {
-			fileExplorerStore.reorderColumns(draggingIndex, index);
-		}
-		draggingIndex = null;
-		dragOverIndex = null;
-	}
-
-	function handleDragEnd() {
-		draggingIndex = null;
-		dragOverIndex = null;
+		collapsedColumns = next;
 	}
 
 	function handleCloseColumn(columnId: string) {
@@ -85,7 +59,10 @@
 
 	function handleFileSelect(path: string, columnId: string) {
 		console.log('Selected:', path, 'in column:', columnId);
-		// Could emit an event or open the file
+	}
+
+	function cwdBasename(cwd: string): string {
+		return cwd.split(/[/\\]/).filter(Boolean).pop() || cwd;
 	}
 
 	function getPaneTitle(paneId: string): string {
@@ -93,7 +70,7 @@
 	}
 </script>
 
-<div class="explorer flex h-full flex-col" data-testid="file-tree">
+<div class="explorer flex h-full flex-col overflow-y-auto" data-testid="file-tree">
 	{#if $explorerColumns.length === 0}
 		<div class="flex-1 flex items-center justify-center">
 			<div class="text-center">
@@ -105,94 +82,94 @@
 			</div>
 		</div>
 	{:else}
-		<!-- Column headers with drag handles -->
-		<div class="explorer-headers flex shrink-0 border-b border-[var(--wf-border)] overflow-x-auto">
-			{#each $explorerColumns as col, i (col.id)}
+		{#each $explorerColumns as col (col.id)}
+			<div class="explorer-section border-b border-[var(--wf-border)] last:border-b-0">
+				<!-- Compact section header -->
 				<div
-					class="explorer-header group relative flex items-center gap-2 border-r border-[var(--wf-border)] px-3 py-2 min-w-[180px] max-w-[280px] cursor-grab active:cursor-grabbing {dragOverIndex ===
-					i
-						? 'bg-[var(--wf-accent)]/20 ring-2 ring-[var(--wf-accent)]/50'
-						: ''}"
-					draggable="true"
-					ondragstart={(e) => handleDragStart(e, i)}
-					ondragover={(e) => handleDragOver(e, i)}
-					ondragleave={handleDragLeave}
-					ondrop={(e) => handleDrop(e, i)}
-					ondragend={handleDragEnd}
+					class="group flex items-center h-7 px-2 gap-1 cursor-pointer select-none hover:bg-[var(--wf-surface)]/60 transition-colors"
 					role="button"
 					tabindex="0"
+					onclick={() => toggleCollapse(col.id)}
+					onkeydown={(e) => e.key === 'Enter' && toggleCollapse(col.id)}
 				>
-					<!-- Drag handle -->
-					<GripVertical
-						class="h-4 w-4 shrink-0 text-[var(--wf-fg-muted)] opacity-40 group-hover:opacity-70"
+					<!-- Collapse arrow -->
+					<ChevronRight
+						class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)] transition-transform duration-150 {collapsedColumns.has(col.id) ? '' : 'rotate-90'}"
 					/>
 
-					<!-- Column title -->
-					<div class="flex-1 min-w-0">
-						<div
-							class="text-[12px] font-medium text-[var(--wf-fg)] truncate"
-							title={col.cwd}
-						>
-							{getPaneTitle(col.paneId)}
-						</div>
-						<div class="text-[10px] text-[var(--wf-fg-muted)] truncate" title={col.cwd}>
-							{col.cwd}
-						</div>
-					</div>
+					<!-- Terminal title -->
+					<span class="text-[11px] font-medium text-[var(--wf-fg)] truncate flex-1 min-w-0">
+						{getPaneTitle(col.paneId)}
+					</span>
 
-					<!-- Loading indicator -->
+					<!-- CWD basename -->
+					<span
+						class="text-[10px] text-[var(--wf-fg-muted)] truncate max-w-[100px] shrink-0"
+						title={col.cwd}
+					>
+						{cwdBasename(col.cwd)}
+					</span>
+
+					<!-- Loading spinner or refresh button -->
 					{#if col.loading}
-						<RefreshCw class="h-3.5 w-3.5 animate-spin text-[var(--wf-accent)]" />
+						<RefreshCw class="h-3 w-3 shrink-0 animate-spin text-[var(--wf-accent)]" />
+					{:else}
+						<button
+							type="button"
+							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
+							onclick={(e) => {
+								e.stopPropagation();
+								handleRefresh(col.id);
+							}}
+							title="刷新"
+						>
+							<RefreshCw class="h-3 w-3" />
+						</button>
 					{/if}
 
 					<!-- Close button -->
 					<button
 						type="button"
-						class="h-5 w-5 flex items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover:opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
+						class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 transition-all"
 						onclick={(e) => {
 							e.stopPropagation();
 							handleCloseColumn(col.id);
 						}}
 						title="关闭"
 					>
-						<X class="h-3.5 w-3.5" />
+						<X class="h-3 w-3" />
 					</button>
 				</div>
-			{/each}
-		</div>
 
-		<!-- Column bodies -->
-		<div class="explorer-bodies flex-1 flex overflow-hidden">
-			{#each $explorerColumns as col (col.id)}
-				<div
-					class="explorer-body flex-1 min-w-0 overflow-auto border-r border-[var(--wf-border)] last:border-r-0 p-1"
-				>
-					{#if col.tree}
-						<FileTree
-							columnId={col.id}
-							node={col.tree}
-							depth={0}
-							expandedPaths={col.expandedPaths}
-							selectedPath={col.selectedPath}
-							onSelect={(path) => handleFileSelect(path, col.id)}
-						/>
-					{:else if col.loading}
-						<div class="p-2 text-[12px] text-[var(--wf-fg-muted)]">加载中...</div>
-					{:else}
-						<div class="p-2 text-[12px] text-[var(--wf-fg-muted)]">
-							点击刷新按钮加载文件树
-						</div>
-					{/if}
-				</div>
-			{/each}
-		</div>
+				<!-- Collapsible file tree body -->
+				{#if !collapsedColumns.has(col.id)}
+					<div class="explorer-body py-0.5">
+						{#if col.tree}
+							<FileTree
+								columnId={col.id}
+								node={col.tree}
+								depth={0}
+								expandedPaths={col.expandedPaths}
+								selectedPath={col.selectedPath}
+								onSelect={(path) => handleFileSelect(path, col.id)}
+							/>
+						{:else if col.loading}
+							<div class="px-4 py-2 text-[11px] text-[var(--wf-fg-muted)]">加载中...</div>
+						{:else}
+							<div class="px-4 py-2 text-[11px] text-[var(--wf-fg-muted)]">
+								空目录
+							</div>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/each}
 	{/if}
 </div>
 
 <style>
 	.explorer::-webkit-scrollbar {
-		height: 6px;
-		width: 6px;
+		width: 4px;
 	}
 
 	.explorer::-webkit-scrollbar-track {
@@ -201,7 +178,7 @@
 
 	.explorer::-webkit-scrollbar-thumb {
 		background: var(--wf-border);
-		border-radius: 3px;
+		border-radius: 2px;
 	}
 
 	.explorer::-webkit-scrollbar-thumb:hover {

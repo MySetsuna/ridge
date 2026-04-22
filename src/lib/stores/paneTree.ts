@@ -703,6 +703,9 @@ export async function refreshWorkspaces() {
     paneTreeStore.set(layout);
     activeWorkspaceId.set(active);
     reconcileActivePaneId(layout);
+    const cwds = extractCwdsFromLayout(layout, active);
+    paneCwdStore.update((store) => ({ ...store, ...cwds }));
+    await setupPaneCwdListeners(active);
   } catch (e) {
     console.error('refreshWorkspaces', e);
     reportDevIssue({
@@ -738,7 +741,8 @@ export async function switchWorkspace(workspaceId: string) {
     paneTreeStore.set(layout);
     activeWorkspaceId.set(workspaceId);
     reconcileActivePaneId(layout);
-    // Re-attach cwd listeners for the new workspace
+    const cwds = extractCwdsFromLayout(layout, workspaceId);
+    paneCwdStore.update((store) => ({ ...store, ...cwds }));
     await setupPaneCwdListeners(workspaceId);
   } catch (e) {
     console.error('switchWorkspace', workspaceId, e);

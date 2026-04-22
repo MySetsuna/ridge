@@ -273,6 +273,7 @@ async function renderView() {
 		// Shift+Enter 插入换行但不提交（发送 Alt+Enter 转义序列 ESC+CR）。
 		term.attachCustomKeyEventHandler((ev) => {
 			if (ev.type !== 'keydown') return true;
+			if (isComposing) return false;
 			const mod = ev.ctrlKey || ev.metaKey;
 			// Ctrl/Cmd + C
 			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
@@ -319,19 +320,31 @@ async function renderView() {
 			const onCompStart = () => {
 				if (!alive || !term) return;
 				term.options.cursorBlink = false;
-			isComposing = true;
+				isComposing = true;
+				// 清空上次遗留内容，确保 xterm 的 compositionstart 记录 start=0，
+				// 避免多次合成时 _finalizeComposition 读到旧文字（"memo words" bug）
+				helperTextarea.value = '';
 			};
 			const onCompEnd = () => {
 				if (!alive || !term) return;
+				// capture phase 先于 xterm bubble-phase handler 执行，
+				// 使 isComposing=false 后 xterm 的 setTimeout→triggerDataEvent 能通过 onData 守卫
+				isComposing = false;
 				term.options.cursorBlink = true;
-			isComposing = false;
-			void fitAndSyncPty();
+				// 不在此处调用 fitAndSyncPty：输完汉字不应触发 PTY resize，
+				// ResizeObserver 会在实际布局变化时（且 !isComposing）自动处理。
+				// 在 xterm 的 bubble-phase compositionend 处理完后清空 textarea，
+				// 防止下一次合成的 _start 计算到旧文字（某些 Windows IME 下触发"替换"bug）
+				setTimeout(() => {
+					if (helperTextarea) helperTextarea.value = '';
+				}, 0);
 			};
-			helperTextarea.addEventListener('compositionstart', onCompStart);
-			helperTextarea.addEventListener('compositionend', onCompEnd);
+			// capture phase：在 xterm 的 bubble-phase handler 之前执行
+			helperTextarea.addEventListener('compositionstart', onCompStart, true);
+			helperTextarea.addEventListener('compositionend', onCompEnd, true);
 			removeCompositionHandlers = () => {
-				helperTextarea.removeEventListener('compositionstart', onCompStart);
-				helperTextarea.removeEventListener('compositionend', onCompEnd);
+				helperTextarea.removeEventListener('compositionstart', onCompStart, true);
+				helperTextarea.removeEventListener('compositionend', onCompEnd, true);
 			};
 		}
 
@@ -371,16 +384,40 @@ async function renderView() {
 
 		if (isTauri() && workspaceId) {
 			const outCh = `pty-output-${workspaceId}-${paneId}`;
+			// Buffer incoming events until scrollback is replayed, preserving order
+			const pendingQueue: string[] = [];
+			let scrollbackFlushed = false;
 			ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
-				if (!alive || isComposing) return;
-				term?.write(e.payload.data);
-				scheduleTermRedraw();
+				if (!alive) return;
+				if (scrollbackFlushed) {
+					term?.write(e.payload.data);
+					scheduleTermRedraw();
+				} else {
+					pendingQueue.push(e.payload.data);
+				}
 			});
 			if (!alive) {
 				ptyUnlisten();
 				ptyUnlisten = undefined;
 				return;
 			}
+			// Replay scrollback before any new output so history is preserved
+			try {
+				const scrollback = await invoke<string>('get_pane_scrollback', { paneId });
+				if (alive && term && scrollback) {
+					term.write(scrollback);
+				}
+			} catch {
+				// scrollback unavailable, continue without it
+			}
+			// Flush buffered events in order
+			scrollbackFlushed = true;
+			for (const data of pendingQueue) {
+				if (!alive || !term) break;
+				term.write(data);
+			}
+			if (alive && pendingQueue.length > 0) scheduleTermRedraw();
+			pendingQueue.length = 0;
 			term.onData((d) => {
 				if (!alive || isComposing) return;
 				void invoke('write_to_pty', { paneId, data: d }).catch((err) => {
@@ -535,7 +572,7 @@ onDestroy(() => {
 			{#if showScrollBottom && mode === 'terminal'}
 				<button
 					type="button"
-					class="absolute z-100 bottom-2 right-3 flex items-center justify-center w-7 h-7 rounded bg-[var(--wf-surface)] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors shadow-md"
+					class="absolute z-[100] bottom-2 right-3 flex items-center justify-center w-7 h-7 rounded bg-[var(--wf-surface)] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors shadow-md"
 					onclick={() => scrollToBottom()}
 					title="滚动到底部"
 				>

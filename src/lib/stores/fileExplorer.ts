@@ -49,7 +49,7 @@ function createFileExplorerStore() {
 					if (col.workspaceId === workspaceId && paneCwds[col.paneId] !== undefined) {
 						// Update cwd if changed
 						if (col.cwd !== paneCwds[col.paneId]) {
-							newColumns.push({ ...col, cwd: paneCwds[col.paneId], rootPath: paneCwds[col.paneId] });
+							newColumns.push({ ...col, cwd: paneCwds[col.paneId], rootPath: paneCwds[col.paneId], tree: null, loading: false });
 						} else {
 							newColumns.push(col);
 						}
@@ -69,7 +69,7 @@ function createFileExplorerStore() {
 							expandedPaths: new Set<string>(),
 							selectedPath: null,
 							tree: null,
-							loading: true,
+							loading: false,
 						});
 					}
 				}
@@ -91,7 +91,7 @@ function createFileExplorerStore() {
 		async loadTree(columnId: string, depth = 3): Promise<void> {
 			const state = get({ subscribe });
 			const column = state.columns.find((c) => c.id === columnId);
-			if (!column) return;
+			if (!column || column.loading) return;
 
 			update((s) => ({
 				...s,
