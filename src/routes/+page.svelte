@@ -5,7 +5,31 @@
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
   import WorkspaceSidebar from '$lib/components/WorkspaceSidebar.svelte';
   import Explorer from '$lib/components/Explorer.svelte';
-  import { Terminal, FolderOpen, GitBranch, Layout, ChevronLeft, ChevronRight } from 'lucide-svelte';
+  import ContextMenu from '$lib/components/ContextMenu.svelte';
+  import {
+    Terminal,
+    FolderOpen,
+    GitBranch,
+    Layout,
+    ChevronLeft,
+    ChevronRight,
+    Split,
+    X,
+    Maximize2,
+    Minimize2,
+    Copy,
+    Trash2,
+    Plus,
+    Minus,
+    MoreHorizontal,
+    Columns,
+    Rows,
+    Download,
+    ArrowDown,
+    ArrowUp,
+    Settings,
+    FileCode,
+  } from 'lucide-svelte';
   import {
     paneTreeStore,
     activePaneId,
@@ -23,6 +47,14 @@
     saveCurrentWorkspace,
     loadSavedWorkspaces,
   } from '$lib/stores/paneTree';
+  import {
+    hideContextMenu,
+    showContextMenu,
+    isResizeInProgress,
+    type ContextMenuTarget,
+    type ContextMenuItem,
+  } from '$lib/stores/contextMenu';
+  import type { PaneNode } from '$lib/stores/paneTree';
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
   import { get } from 'svelte/store';
@@ -48,7 +80,9 @@
   let isResizingSidebar = $state(false);
 
   // 计算窗口宽度的40%
-  let windowWidth40 = $derived(typeof window !== 'undefined' ? window.innerWidth * 0.4 : 400);
+  let windowWidth40 = $derived(
+    typeof window !== 'undefined' ? window.innerWidth * 0.4 : 400
+  );
 
   // 从 localStorage 加载侧边栏设置
   function loadSidebarSettings() {
@@ -125,7 +159,12 @@
     // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
     if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
         // 让浏览器默认行为处理全选
         return;
       }
@@ -137,7 +176,7 @@
   // 切换侧边栏tab时加载历史工作区
   $effect(() => {
     void sidebarTab; // 订阅 sidebarTab 变化
-  void loadSavedWorkspaces();
+    void loadSavedWorkspaces();
   });
 
   // 窗口控制
@@ -170,9 +209,281 @@
     });
   }
 
+  // 根据点击元素判断右键菜单目标类型
+  function getContextMenuTarget(e: MouseEvent): {
+    target: ContextMenuTarget;
+    paneId?: string;
+  } {
+    const target = e.target as HTMLElement;
+
+    // 检查是否点击在侧边栏区域
+    if (target.closest('.wf-sidebar')) {
+      return { target: 'sidebar' };
+    }
+
+    // 检查是否点击在工作区标签区域
+    if (target.closest('.wf-workspace-tabs')) {
+      return { target: 'workspace-tabs' };
+    }
+
+    // 检查是否点击在 Git 图谱区域
+    if (target.closest('.wf-git-graph')) {
+      return { target: 'git-graph' };
+    }
+
+    // 检查是否点击在分割条上
+    if (target.closest('.splitpanes__splitter')) {
+      return { target: 'splitter' };
+    }
+
+    // 检查是否点击在窗格标题栏
+    if (target.closest('.wf-pane-header')) {
+      return { target: 'pane-header' };
+    }
+
+    // 检查是否点击在终端或编辑器内容区域
+    const paneEl =
+      target.closest('.wf-pane-root') || target.closest('[data-pane-id]');
+    if (paneEl) {
+      const paneId =
+        paneEl.getAttribute('data-pane-id') ||
+        (paneEl as HTMLElement).dataset?.paneId;
+      // 判断是终端还是编辑器（通过 class 判断）
+      const isTerminal =
+        target.closest('.xterm') || target.closest('.wf-terminal');
+      const isEditor =
+        target.closest('.wf-editor') || target.closest('.monaco-editor');
+      if (isTerminal) {
+        return { target: 'terminal', paneId };
+      }
+      if (isEditor) {
+        return { target: 'editor', paneId };
+      }
+      return { target: 'pane-content', paneId };
+    }
+
+    return { target: 'unknown' };
+  }
+
+  // 获取指定 pane 的模式（终端或编辑器）
+  function getPaneMode(
+    paneId: string | undefined
+  ): 'terminal' | 'editor' | null {
+    if (!paneId) return null;
+    const findPaneMode = (node: PaneNode): 'terminal' | 'editor' | null => {
+      if (node.type === 'leaf' && node.id === paneId) {
+        return (node as any).mode || 'terminal';
+      }
+      if (node.type === 'split') {
+        for (const child of node.children) {
+          const result = findPaneMode(child);
+          if (result) return result;
+        }
+      }
+      return null;
+    };
+    return findPaneMode(rootNode);
+  }
+
+  // 生成右键菜单项
+  function getContextMenuItems(
+    target: ContextMenuTarget,
+    paneId?: string
+  ): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [];
+
+    switch (target) {
+      case 'terminal':
+      case 'editor':
+      case 'pane-content':
+        items.push(
+          {
+            id: 'split-h',
+            label: '水平分割',
+            icon: Columns,
+            shortcut: 'Ctrl+Shift+H',
+            action: () => splitActivePane('horizontal'),
+          },
+          {
+            id: 'split-v',
+            label: '垂直分割',
+            icon: Rows,
+            shortcut: 'Ctrl+Shift+V',
+            action: () => splitActivePane('vertical'),
+          },
+          { divider: true, id: 'divider-1' },
+          {
+            id: 'close',
+            label: '关闭当前窗格',
+            icon: X,
+            shortcut: 'Ctrl+W',
+            action: () => {},
+          },
+          {
+            id: 'close-others',
+            label: '关闭其他窗格',
+            icon: Trash2,
+            action: () => {},
+          },
+          { divider: true, id: 'divider-2' },
+          {
+            id: 'focus',
+            label: '聚焦当前窗格',
+            icon: Maximize2,
+            action: () => activePaneId.set(paneId || ''),
+          }
+        );
+        break;
+
+      case 'splitter':
+        items.push(
+          {
+            id: 'split-h',
+            label: '水平分割',
+            icon: Columns,
+            action: () => splitActivePane('horizontal'),
+          },
+          {
+            id: 'split-v',
+            label: '垂直分割',
+            icon: Rows,
+            action: () => splitActivePane('vertical'),
+          },
+          { divider: true, id: 'divider-1' },
+          { id: 'equal', label: '均分窗格', icon: Layout, action: () => {} }
+        );
+        break;
+
+      case 'sidebar':
+        items.push(
+          {
+            id: 'collapse',
+            label: sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏',
+            icon: sidebarCollapsed ? ChevronRight : ChevronLeft,
+            shortcut: 'Ctrl+B',
+            action: () => {
+              sidebarCollapsed = !sidebarCollapsed;
+              saveSidebarSettings();
+            },
+          },
+          { divider: true, id: 'divider-1' },
+          {
+            id: 'files',
+            label: '文件浏览器',
+            icon: FolderOpen,
+            action: () => {
+              sidebarTab = 'files';
+              sidebarCollapsed = false;
+              saveSidebarSettings();
+            },
+          },
+          {
+            id: 'terminal',
+            label: '终端',
+            icon: Terminal,
+            action: () => {
+              sidebarTab = 'terminal';
+              sidebarCollapsed = false;
+              saveSidebarSettings();
+            },
+          },
+          {
+            id: 'git',
+            label: 'Git',
+            icon: GitBranch,
+            action: () => {
+              sidebarTab = 'git';
+              sidebarCollapsed = false;
+              saveSidebarSettings();
+            },
+          }
+        );
+        break;
+
+      case 'workspace-tabs':
+        items.push(
+          {
+            id: 'new-ws',
+            label: '新建工作区',
+            icon: Plus,
+            action: () => createWorkspace(),
+          },
+          {
+            id: 'close-ws',
+            label: '关闭当前工作区',
+            icon: X,
+            action: () => closeWorkspace(activeWorkspaceId),
+          },
+          { divider: true, id: 'divider-1' },
+          {
+            id: 'rename',
+            label: '重命名工作区',
+            icon: MoreHorizontal,
+            action: () => {},
+          }
+        );
+        break;
+
+      case 'git-graph':
+        items.push(
+          { id: 'refresh', label: '刷新', icon: GitBranch, action: () => {} },
+          { divider: true, id: 'divider-1' },
+          { id: 'fetch', label: 'Fetch', icon: Download, action: () => {} },
+          { id: 'pull', label: 'Pull', icon: ArrowDown, action: () => {} },
+          { id: 'push', label: 'Push', icon: ArrowUp, action: () => {} }
+        );
+        break;
+
+      case 'pane-header':
+        const mode = getPaneMode(paneId);
+        items.push(
+          {
+            id: 'mode',
+            label: mode === 'editor' ? '切换为终端' : '切换为编辑器',
+            icon: mode === 'editor' ? Terminal : FileCode,
+            action: () => {},
+          },
+          { divider: true, id: 'divider-1' },
+          { id: 'close', label: '关闭', icon: X, action: () => {} }
+        );
+        break;
+
+      default:
+        items.push(
+          {
+            id: 'new-ws',
+            label: '新建工作区',
+            icon: Plus,
+            action: () => createWorkspace(),
+          },
+          { id: 'settings', label: '设置', icon: Settings, action: () => {} }
+        );
+    }
+
+    return items;
+  }
+
+  // 处理右键菜单事件
+  function handleContextMenu(e: MouseEvent) {
+    // resize 过程中不显示右键菜单
+    if (isResizeInProgress()) {
+      e.preventDefault();
+      return;
+    }
+
+    const { target, paneId } = getContextMenuTarget(e);
+    const items = getContextMenuItems(target, paneId);
+
+    // 显示自定义右键菜单
+    showContextMenu(e.clientX, e.clientY, items, target, paneId);
+  }
+
   onMount(() => {
+    // 全局屏蔽默认右键菜单，显示自定义菜单
+    document.addEventListener('contextmenu', handleContextMenu);
+
+    loadSidebarSettings();
     if (!isTauri()) return;
-  loadSidebarSettings();
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
     void (async () => {
@@ -519,6 +830,7 @@
         >
           正在加载工作区…
         </div>
+        <!-- 全局右键菜单 -->
       {/if}
     </div>
   </div>

@@ -183,7 +183,7 @@ function getStatusLabel(status: string): string {
 }
 </script>
 
-<div class="gitgraph-wrapper">
+<div class="gitgraph-wrapper wf-git-graph">
   <!-- 工具栏 -->
   <div class="flex items-center gap-2 mb-3">
     <button

@@ -119,7 +119,7 @@ $effect(() => {
 </script>
 
 <div
-  class="wf-no-drag flex items-center gap-1 overflow-x-auto min-w-0 py-1 wf-scroll mr-auto"
+  class="wf-no-drag flex items-center gap-1 overflow-x-auto min-w-0 py-1 wf-scroll mr-auto wf-workspace-tabs"
 >
   {#each workspaces as ws, i (ws.id)}
     <div

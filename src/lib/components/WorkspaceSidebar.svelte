@@ -115,7 +115,7 @@
  }
 </script>
 
-<div class="flex flex-col h-full">
+<div class="flex flex-col h-full wf-sidebar">
  <!-- 头部 -->
  <div class="h-11 px-3 shrink-0 border-b border-[var(--wf-border)] flex items-center justify-between">
  <span class="text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">工作区</span>
