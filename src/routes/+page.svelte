@@ -172,6 +172,7 @@
 
   onMount(() => {
     if (!isTauri()) return;
+  loadSidebarSettings();
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
     void (async () => {
@@ -240,6 +241,7 @@
     'flex h-8 w-8 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] hover:bg-white/[0.06] hover:text-[var(--wf-fg)] transition-colors';
 </script>
 
+<svelte:window onkeydown={handleGlobalKeydown} />
 <div
   class="flex h-screen w-screen overflow-hidden bg-[var(--wf-bg)] text-[var(--wf-fg)] selection:bg-violet-500/25"
   data-tauri-drag-region
@@ -275,6 +277,7 @@
   </aside>
 
   <!-- 侧边栏内容区 -->
+{#if !sidebarCollapsed}
   <aside
     class="relative shrink-0 border-r border-[var(--wf-border)] bg-[var(--wf-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 wf-scroll overflow-y-auto"
     style="width: {sidebarWidth}px"
@@ -328,7 +331,22 @@
       aria-label="拖动调整侧边栏宽度"
       onmousedown={onSidebarResizerMouseDown}
     ></div>
+<!-- 悬浮toggle按钮 -->
+<button
+  type="button"
+  class="absolute top-1/2 -translate-y-1/2 -left-3 flex items-center justify-center w-5 h-10 rounded-l-md bg-[var(--wf-surface)]/80 border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors z-10 opacity-60 hover:opacity-100"
+  style="left: -{20}px"
+  title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+  onclick={toggleSidebar}
+>
+  {#if sidebarCollapsed}
+    <ChevronRight class="w-3 h-3" />
+  {:else}
+    <ChevronLeft class="w-3 h-3" />
+  {/if}
+</button>
   </aside>
+{/if}
 
   <!-- 主内容区 -->
   <div class="flex-1 flex flex-col min-w-0 min-h-0">
