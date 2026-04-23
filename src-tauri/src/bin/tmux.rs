@@ -17,7 +17,7 @@ fn now_ts() -> String {
 }
 
 fn log_to_file(msg: &str) {
-    let line = format!("[wind-tmux][{}] {msg}", now_ts());
+    let line = format!("[tmux-shim][{}] {msg}", now_ts());
     log_file_append(&line);
 }
 
@@ -28,13 +28,13 @@ fn log_file_path() -> Option<PathBuf> {
             let pb = PathBuf::from(t);
             // 允许把 `WIND_TMUX_LOG` 设成「目录」：此前会把目录当文件 open 失败并静默落到 %TEMP%。
             if pb.is_dir() {
-                return Some(pb.join("wind-tmux.log"));
+                return Some(pb.join("tmux-shim.log"));
             }
             return Some(pb);
         }
     }
     // 默认落到系统临时目录，避免开发模式下写入源码目录触发 Tauri watcher 重启。
-    Some(env::temp_dir().join("wind-tmux.log"))
+    Some(env::temp_dir().join("tmux-shim.log"))
 }
 
 fn log_file_append(line: &str) {
@@ -47,7 +47,7 @@ fn log_file_append(line: &str) {
             path
         }
         Err(_) => {
-            let fallback = env::temp_dir().join("wind-tmux.log");
+            let fallback = env::temp_dir().join("tmux-shim.log");
             let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&fallback) else {
                 return;
             };
@@ -59,7 +59,7 @@ fn log_file_append(line: &str) {
     let _ = LOG_PATH_ONCE.get_or_init(|| {
         // 必须直接写文件：若这里再调用 `log_file_append`，会重入同一个 `OnceLock` 并死锁，
         // 导致 `tmux -V` 等首条日志路径上永远到不了版本分支。
-        let msg = format!("[wind-tmux][{}] file-log={}", now_ts(), actual_path.display());
+        let msg = format!("[tmux-shim][{}] file-log={}", now_ts(), actual_path.display());
         if let Ok(mut f) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -96,20 +96,20 @@ fn main() {
         }
         if a == "--help" {
             log_to_file("probe help");
-            eprintln!("wind-tmux shim: supports all tmux commands (needs WIND_TEAMMATE_*)");
+            eprintln!("tmux shim: supports all tmux commands (needs WIND_TEAMMATE_*)");
             process::exit(0);
         }
     }
     if args.len() < 2 {
         log_to_file("missing subcommand");
-        eprintln!("wind-tmux: missing subcommand");
+        eprintln!("tmux: missing subcommand");
         process::exit(1);
     }
     let url = env::var("WIND_TEAMMATE_URL").unwrap_or_default();
     let token = env::var("WIND_TEAMMATE_TOKEN").unwrap_or_default();
     if url.is_empty() || token.is_empty() {
         log_to_file("missing WIND_TEAMMATE_URL/TOKEN");
-        eprintln!("wind-tmux: set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in PTY)");
+        eprintln!("tmux: set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in PTY)");
         process::exit(1);
     }
     let sub = args[1].as_str();
@@ -459,7 +459,7 @@ fn post_split(
     {
         Ok(r) => r,
         Err(e) => {
-            log_to_file(&format!("wind-tmux: HTTP error: {e}"));
+            log_to_file(&format!("tmux: HTTP error: {e}"));
             return Err(());
         }
     };
@@ -468,12 +468,12 @@ fn post_split(
     let text = match res.text() {
         Ok(t) => t,
         Err(e) => {
-            log_to_file(&format!("wind-tmux: split-window read body: {e}"));
+            log_to_file(&format!("tmux: split-window read body: {e}"));
             return Err(());
         }
     };
     if !status.is_success() {
-        log_to_file(&format!("wind-tmux: split-window error: {}", text));
+        log_to_file(&format!("tmux: split-window error: {}", text));
         return Err(());
     }
     let new_idx: usize = serde_json::from_str::<serde_json::Value>(&text)
@@ -518,12 +518,12 @@ fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         .get(u)
         .headers(auth_headers(token))
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
-        eprintln!("wind-tmux: capture-pane {}", res.status());
+        eprintln!("tmux: capture-pane {}", res.status());
         return Err(());
     }
-    let text = res.text().map_err(|e| eprintln!("wind-tmux: {e}"))?;
+    let text = res.text().map_err(|e| eprintln!("tmux: {e}"))?;
     print!("{text}");
     Ok(())
 }
@@ -719,7 +719,7 @@ fn post_spawn_process(
         .send()
         .map_err(|e| {
             log_to_file(&format!("spawn-process: HTTP error: {e}"));
-            eprintln!("wind-tmux: {e}");
+            eprintln!("tmux: {e}");
         })?;
     if !res.status().is_success() {
         let status = res.status();
@@ -728,7 +728,7 @@ fn post_spawn_process(
             "spawn-process: non-success status={} body={}",
             status, text
         ));
-        eprintln!("wind-tmux: spawn-process {}", status);
+        eprintln!("tmux: spawn-process {}", status);
         return Err(());
     }
     log_to_file("spawn-process: success");
@@ -792,9 +792,9 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
-        eprintln!("wind-tmux: send-keys {}", res.status());
+        eprintln!("tmux: send-keys {}", res.status());
         return Err(());
     }
     Ok(())
@@ -838,12 +838,12 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         .get(u)
         .headers(auth_headers(token))
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
-        eprintln!("wind-tmux: list-panes {}", res.status());
+        eprintln!("tmux: list-panes {}", res.status());
         return Err(());
     }
-    let text = res.text().map_err(|e| eprintln!("wind-tmux: {e}"))?;
+    let text = res.text().map_err(|e| eprintln!("tmux: {e}"))?;
     print!("{text}");
     Ok(())
 }
@@ -914,7 +914,7 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         .headers(auth_headers(token))
         .json(&body)
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         // Don't fail - just acknowledge for compatibility
     }
@@ -1430,7 +1430,7 @@ fn cmd_has_session(rest: &[String]) -> Result<(), ()> {
 
 fn cmd_list_sessions(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     if url.is_empty() || token.is_empty() {
-        eprintln!("wind-tmux: list-sessions needs WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN");
+        eprintln!("tmux: list-sessions needs WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN");
         return Err(());
     }
     let _ = rest;
@@ -1439,12 +1439,12 @@ fn cmd_list_sessions(rest: &[String], url: &str, token: &str) -> Result<(), ()> 
         .get(u)
         .headers(auth_headers(token))
         .send()
-        .map_err(|e| eprintln!("wind-tmux: {e}"))?;
+        .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
-        eprintln!("wind-tmux: list-sessions {}", res.status());
+        eprintln!("tmux: list-sessions {}", res.status());
         return Err(());
     }
-    let text = res.text().map_err(|e| eprintln!("wind-tmux: {e}"))?;
+    let text = res.text().map_err(|e| eprintln!("tmux: {e}"))?;
     print!("{text}");
     Ok(())
 }

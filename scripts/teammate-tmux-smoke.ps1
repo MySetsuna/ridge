@@ -1,10 +1,10 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Quick checks that wind-tmux matches what Claude Code TmuxBackend expects.
+  Quick checks that the tmux shim matches what Claude Code TmuxBackend expects.
 
   Prerequisites: WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in app PTYs).
-  Put wind-tmux on PATH as `tmux` (see pnpm run build:teammate-shim).
+  Put the tmux shim on PATH as `tmux` (see pnpm run build:teammate-shim).
 #>
 $ErrorActionPreference = "Stop"
 if (-not $env:WIND_TEAMMATE_URL -or -not $env:WIND_TEAMMATE_TOKEN) {

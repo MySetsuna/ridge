@@ -1,14 +1,14 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Point wind-tmux file logging at a fixed path (e.g. C:\temp\wind-tmux-full.log) before starting Claude Code.
+  Point tmux shim file logging at a fixed path (e.g. C:\temp\tmux-shim-full.log) before starting Claude Code.
 
   Wind injects WIND_TMUX_LOG into PTYs; for a manual shell you must set it yourself.
-  After running Claude, open the log and search for "[wind-claude-code][send]" / "[wind-claude-code][recv]"
+  After running Claude, open the log and search for "[tmux-shim][send]" / "[tmux-shim][recv]"
   (send-keys vs capture-pane / list-panes / display-message), or "split-window" / "[CMD]".
 #>
 $ErrorActionPreference = "Stop"
-$LogPath = if ($args.Count -ge 1 -and $args[0].Trim()) { $args[0].Trim() } else { "C:\temp\wind-tmux-full.log" }
+$LogPath = if ($args.Count -ge 1 -and $args[0].Trim()) { $args[0].Trim() } else { "C:\temp\tmux-shim-full.log" }
 
 $env:WIND_TMUX_LOG = $LogPath
 Remove-Item $LogPath -ErrorAction SilentlyContinue

@@ -86,13 +86,15 @@ Frontend ↔ Backend via Tauri IPC:
 
 - Workspaces are independent - each has its own PTY processes and pane ID namespace
 - The `teammate` module provides an HTTP server for Claude Code integration
-- The `wind-tmux` binary is a shim that allows using Wind as a tmux replacement
+- The `tmux` binary (built from `src-tauri/src/bin/tmux.rs`) is a shim that allows using Wind as a tmux replacement
 - Frontend uses CSS custom properties (e.g., `var(--wf-bg)`, `var(--wf-fg)`) for theming
 - The app runs in SPA mode with adapter-static fallback to index.html
 
-## Claude Code Agent Teams (TmuxBackend / wind-tmux)
+## Claude Code Agent Teams (TmuxBackend)
 
-Claude Code’s **TmuxBackend** shells out to `tmux` (use the Wind shim as `tmux` on `PATH`) and expects **tmux-like** output, e.g. default `list-panes` lines (`0: [colsxrows] %0 (active)`) and `display-message -p '#{…}'`.
+Claude Code’s **TmuxBackend** shells out to `tmux` (the Wind shim binary, built as `tmux`/`tmux.exe`) and expects **tmux-like** output, e.g. default `list-panes` lines (`0: [colsxrows] %0 (active)`) and `display-message -p ‘#{…}’`.
+
+**Build the shim:** `pnpm run build:teammate-shim` — outputs `dist/teammate-shim/tmux` (or `tmux.exe` on Windows).
 
 **Environment (required for the shim):** Wind injects into PTY shells:
 
@@ -103,7 +105,7 @@ Run Claude Code **from a terminal pane inside Wind** so the agent inherits these
 
 **Config:** `teammateMode` for Agent Teams is often read from **`~/.claude.json`** (global), not only project `settings.json`—confirm the effective mode is `tmux` or `auto` where intended.
 
-**Windows / PATH / sandbox:** If you see “Could not determine current tmux pane/window” or `tmux` not found: ensure `tmux` resolves to `wind-tmux` (e.g. after `pnpm run build:teammate-shim`, put `dist/teammate-shim` on `PATH`). Some Claude Code builds resolve `tmux` without relying on your shell `PATH`; set an explicit tmux binary path in Claude settings if available. Avoid launching Claude from directories or sandboxes that block the resolved `tmux.exe` path (see anthropics/claude-code issues on Windows cwd vs WinGet paths).
+**Windows / PATH / sandbox:** If you see “Could not determine current tmux pane/window” or `tmux` not found: ensure `tmux` resolves to the Wind shim (e.g. after `pnpm run build:teammate-shim`, put `dist/teammate-shim` on `PATH`). Some Claude Code builds resolve `tmux` without relying on your shell `PATH`; set an explicit tmux binary path in Claude settings if available. Avoid launching Claude from directories or sandboxes that block the resolved `tmux.exe` path (see anthropics/claude-code issues on Windows cwd vs WinGet paths).
 
 **Git Bash / MSYS:** Quoting can mangle `#{window_panes}` before it reaches the shim—prefer **PowerShell** or **cmd** / Windows Terminal for Claude Code when using the tmux backend.
 
@@ -111,4 +113,4 @@ Run Claude Code **from a terminal pane inside Wind** so the agent inherits these
 
 **Smoke checks:** With teammate running and env set, run [`scripts/teammate-tmux-smoke.ps1`](scripts/teammate-tmux-smoke.ps1) (Windows) or [`scripts/teammate-tmux-smoke.sh`](scripts/teammate-tmux-smoke.sh) (Unix).
 
-**Agent subprocess env:** If the error happens only when spawning a teammate and `wind-tmux.log` shows no new lines, Claude Code may be resolving `tmux` or running pane detection **before** the shim runs, or the child process may not inherit `TMUX` / `TMUX_PANE`. That path is controlled by Claude Code; ensure teammates are started from a context that inherits the same environment as the leader (see upstream issues on Windows TTY / in-process mode).
+**Agent subprocess env:** If the error happens only when spawning a teammate and `tmux-shim.log` shows no new lines, Claude Code may be resolving `tmux` or running pane detection **before** the shim runs, or the child process may not inherit `TMUX` / `TMUX_PANE`. That path is controlled by Claude Code; ensure teammates are started from a context that inherits the same environment as the leader (see upstream issues on Windows TTY / in-process mode).

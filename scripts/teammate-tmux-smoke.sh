@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Quick checks that wind-tmux matches what Claude Code TmuxBackend expects.
-# Prerequisites: WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN; tmux on PATH = wind-tmux.
+# Quick checks that the tmux shim matches what Claude Code TmuxBackend expects.
+# Prerequisites: WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN; tmux shim on PATH.
 set -euo pipefail
 : "${WIND_TEAMMATE_URL:?set WIND_TEAMMATE_URL}"
 : "${WIND_TEAMMATE_TOKEN:?set WIND_TEAMMATE_TOKEN}"

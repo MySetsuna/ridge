@@ -12,7 +12,7 @@ use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::types::GlobalEvent;
 
-/// Claude Code `wind-tmux` 连接本地控制面所需（注入到子 shell）。
+/// Claude Code tmux shim 连接本地控制面所需（注入到子 shell）。
 #[derive(Clone, Debug)]
 pub struct TeammateBinding {
     pub base_url: String,

@@ -205,7 +205,7 @@
     reportDevIssue({
       title: 'Wind Dev',
       message:
-        '排障入口：切换工作区报错请先看运行 wind / cargo tauri dev 的终端日志（搜索 [wind][pty]）。Claude split 需在 Wind 内建终端中运行，并确保 tmux 指向 wind-tmux shim。若出现 0xc0000142 这类进程级崩溃，需同时查看 Windows 事件查看器（应用程序日志）。',
+        '排障入口：切换工作区报错请先看运行 wind / cargo tauri dev 的终端日志（搜索 [wind][pty]）。Claude split 需在 Wind 内建终端中运行，并确保 tmux shim 在 PATH 上。若出现 0xc0000142 这类进程级崩溃，需同时查看 Windows 事件查看器（应用程序日志）。',
     });
   }
 

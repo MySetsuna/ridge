@@ -74,7 +74,7 @@ pub struct StructuredPtyCommand {
 	pub env: HashMap<String, String>,
 }
 
-/// Claude Code shells out to `tmux`, while Cargo places `wind-tmux(.exe)` beside the main binary.
+/// Claude Code shells out to `tmux`, while Cargo places `tmux(.exe)` beside the main binary.
 /// Returns the shim directory so callers can re-enforce it after applying extra env vars that
 /// might otherwise overwrite PATH (e.g. structured-launch env from Claude Code).
 fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf> {
@@ -93,27 +93,20 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
 		workspace.join("dist").join("teammate-shim")
 	};
 
-	// Release builds: create a hard link of wind-tmux beside the installed Wind binary.
+	// Release builds: look for tmux(.exe) beside the installed Wind binary.
 	#[cfg(not(debug_assertions))]
 	let shim_dir = {
 		let exe = std::env::current_exe().ok()?;
 		let dir = exe.parent()?;
-		let wind_tmux = dir.join(if cfg!(windows) { "wind-tmux.exe" } else { "wind-tmux" });
-		if !wind_tmux.is_file() {
-			return None;
-		}
 		let tmux = dir.join(tmux_name);
 		if !tmux.is_file() {
-			if std::fs::hard_link(&wind_tmux, &tmux).is_err() {
-				#[cfg(unix)]
-				let _ = std::os::unix::fs::symlink(&wind_tmux, &tmux);
-			}
+			return None;
 		}
 		dir.to_path_buf()
 	};
 
 	if !shim_dir.join(tmux_name).is_file() {
-		eprintln!("[wind] wind-tmux shim not found at {}", shim_dir.display());
+		eprintln!("[wind] tmux shim not found at {}", shim_dir.display());
 		return None;
 	}
 	let sep = if cfg!(windows) { ';' } else { ':' };
