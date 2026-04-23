@@ -32,6 +32,8 @@
     registerJunction,
     clearJunctionRegistry,
     findSameAxisRefs,
+    terminalTitles,
+    paneCwdStore,
   } from '$lib/stores/paneTree';
 
   interface Props {
@@ -512,15 +514,14 @@
               <span
                 class="text-[11px] font-medium text-[var(--wf-fg-muted)] truncate tracking-wide"
               >
-                {#if node.title}
+                {#if $paneCwdStore[`${workspaceId}:${node.id}`]}
+                  {@const cwd = $paneCwdStore[`${workspaceId}:${node.id}`]}
+                  <span class="text-[var(--wf-fg)]">{cwd.split(/[/\\]/).filter(Boolean).pop() || cwd}</span>
+                {:else if node.title}
                   <span class="text-[var(--wf-fg)]">{node.title}</span>
                 {:else}
                   终端
                 {/if}
-                <span class="text-[var(--wf-border-bright)] font-normal">
-                  ·
-                </span>
-                <span class="font-mono text-[10px] opacity-80">{node.id}</span>
               </span>
             </div>
             <button

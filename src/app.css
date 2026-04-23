@@ -22,6 +22,10 @@
   --wf-scrollbar-hover: rgba(167, 139, 250, 0.5);
   --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  /* Pane title bar: process name and cwd colors */
+  --wf-title-proc: #a78bfa;
+  --wf-title-sep: #4b4b5a;
+  --wf-title-cwd: #94a3b8;
 }
 
 html,
@@ -101,15 +105,18 @@ body {
  * 若不关闭 caret-color，某些 WebView 会忽略 opacity:0 仍绘制系统 caret，
  * 形成 "xterm 主题色光标 + 白色 caret" 的双光标现象。
  *
- * IME 优化：防止输入法候选框定位时触发布局偏移。
+ * IME 修复：不使用 position:fixed（WebView2 中 fixed 定位会破坏输入法候选框的触发），
+ * 保留 xterm 默认的 position:absolute，只将 left 从 -9999em 覆盖为 0 以使
+ * 候选框出现在可见区域（左上角）而非屏幕外。width/height 须为非零值，
+ * 否则 Windows IME 认为元素无效不弹出候选框。
  */
 .wf-terminal-surface .xterm-helper-textarea {
   caret-color: transparent !important;
-  position: fixed !important;
+  /* position: absolute is inherited from xterm's own CSS — do NOT override to fixed */
   top: 0 !important;
   left: 0 !important;
-  width: 0 !important;
-  height: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }
@@ -120,14 +127,28 @@ body {
  * viewport 保持 xterm 默认的全宽绝对定位，不收窄宽度，以免 FitAddon 的
  * scrollBarWidth 计算异常（6px viewport 使 scrollArea.offsetWidth=0，
  * 导致 FitAddon 将 padding-right 与 scrollBarWidth 双重扣减，浪费列数）。
- * canvas 因 DOM 顺序在 viewport 之后，天然覆盖在 viewport 之上，
- * 仅在右侧 6px 的 padding-right 留白处透出滚动条。
+ *
+ * 滚动条可拖拽修复：
+ * .xterm-screen 是覆盖在 viewport 上的绝对定位容器，其宽度延伸至终端全宽（含滚动条
+ * 所在的 6px 区域）。虽然内部 canvas 已按 clientWidth 精确裁剪，但 .xterm-screen
+ * div 本身仍会在右侧 6px 区域拦截鼠标事件，导致 scrollbar-thumb 无法被点击/拖拽。
+ * 解决方案：对 .xterm-screen 设 pointer-events:none，令该区域的事件穿透到 viewport，
+ * 同时对其所有直接子元素（canvas、selection-layer 等）恢复 auto，保证文字选取正常。
  */
 .xterm-viewport {
   overflow-y: scroll !important;
   overflow-x: hidden;
   /* 覆盖 xterm 通过 inline style 注入的背景色，避免遮挡终端内容 */
   background-color: transparent !important;
+  pointer-events: auto !important;
+}
+
+.xterm-screen {
+  pointer-events: none !important;
+}
+
+.xterm-screen > * {
+  pointer-events: auto !important;
 }
 
 .xterm-viewport::-webkit-scrollbar {

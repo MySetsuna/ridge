@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tauri::Emitter;
 use tokio::sync::mpsc;
-use crate::commands::{git, pane, project, terminal, workspace};
+use crate::commands::{git, pane, process, project, terminal, workspace};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
@@ -152,6 +152,7 @@ pub fn run() {
             project::replace_in_files,
             project::read_file,
             project::get_current_project,
+            process::get_pane_foreground_process,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

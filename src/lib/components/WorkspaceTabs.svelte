@@ -105,6 +105,7 @@ $effect(() => {
   }
 
   function handleRenameKeydown(e: KeyboardEvent, wsId: string) {
+    if (e.isComposing) return;
     if (e.key === 'Enter') {
       handleRenameSubmit(wsId);
     } else if (e.key === 'Escape') {

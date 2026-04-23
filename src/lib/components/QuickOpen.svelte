@@ -27,6 +27,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    if (event.isComposing) return;
     if (event.key === 'Escape') {
       dispatch('close');
     } else if (event.key === 'ArrowDown') {

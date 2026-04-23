@@ -60,6 +60,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    if (event.isComposing) return;
     if (event.key === 'Escape') {
       close();
     } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {

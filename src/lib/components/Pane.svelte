@@ -7,7 +7,11 @@ import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { activePaneId, saveCurrentWorkspace } from '$lib/stores/paneTree';
+import { activePaneId, saveCurrentWorkspace, terminalTitles, paneCwdStore } from '$lib/stores/paneTree';
+import { writable } from 'svelte/store';
+
+/** Store: paneId -> foreground process name (polled every 1.5s). */
+const paneForegroundProcessStore = writable<Record<string, string>>({});
 import 'xterm/css/xterm.css';
 
 interface DiffFile {
@@ -100,6 +104,35 @@ let termRedrawRaf: number | undefined;
 let disposeXtermScrollFix: (() => void) | undefined;
 /** 防抖保存定时器 */
 let saveDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Foreground process polling interval handle. */
+let foregroundPollInterval: ReturnType<typeof setInterval> | undefined;
+
+/** Collapse home directory prefix to ~ in a cwd path. */
+function collapseCwd(cwd: string): string {
+	try {
+		// Attempt to detect home dir via a simple heuristic across platforms
+		const home =
+			(typeof window !== 'undefined' && ((window as unknown) as Record<string, unknown>).__WIND_HOME__ as string) ||
+			undefined;
+		if (home && cwd.startsWith(home)) {
+			return '~' + cwd.slice(home.length);
+		}
+	} catch {
+		/* ignore */
+	}
+	// Show last 2 path segments with leading ~ replacement for /home/* or C:\Users\*
+	const parts = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
+	if (parts.length <= 2) return cwd;
+	// Collapse home dirs
+	if (parts[0] === 'home' || parts[0] === 'Users' || parts[0] === 'c:' || parts[0] === 'C:') {
+		// ~/segments
+		const tail = parts.slice(2);
+		if (tail.length === 0) return '~';
+		return '~/' + tail.join('/');
+	}
+	return cwd;
+}
 
 function cancelLayoutRaf() {
 	if (layoutRaf !== undefined) {
@@ -273,7 +306,7 @@ async function renderView() {
 		// Shift+Enter 插入换行但不提交（发送 Alt+Enter 转义序列 ESC+CR）。
 		term.attachCustomKeyEventHandler((ev) => {
 			if (ev.type !== 'keydown') return true;
-			if (isComposing) return false;
+			if (isComposing || ev.isComposing) return false;
 			const mod = ev.ctrlKey || ev.metaKey;
 			// Ctrl/Cmd + C
 			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
@@ -309,6 +342,22 @@ async function renderView() {
 				ev.preventDefault();
 				return false;
 			}
+			// Ctrl/Cmd + A：全选终端文本
+			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'a' || ev.key === 'A')) {
+				term?.selectAll();
+				ev.preventDefault();
+				return false;
+			}
+			// Ctrl + Backspace：向后删除一个单词（readline ^W）
+			if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.key === 'Backspace') {
+				if (isTauri()) {
+					void invoke('write_to_pty', { paneId, data: '\x17' }).catch((err) => {
+						console.error('write_to_pty ctrl+backspace', err);
+					});
+				}
+				ev.preventDefault();
+				return false;
+			}
 			return true;
 		});
 
@@ -321,32 +370,54 @@ async function renderView() {
 				if (!alive || !term) return;
 				term.options.cursorBlink = false;
 				isComposing = true;
-				// 清空上次遗留内容，确保 xterm 的 compositionstart 记录 start=0，
-				// 避免多次合成时 _finalizeComposition 读到旧文字（"memo words" bug）
+				// 清空上一次合成遗留的文字，确保 xterm bubble-phase 的 compositionstart()
+				// 将 _compositionPosition.start 记录为 0。
+				// 若不清空，某些 Windows IME（替换型）会覆盖 textarea 旧文字而非追加，
+				// 导致 _finalizeComposition 的 substring(start) 读到空串（"memo words" bug）。
+				// 此处在 capture phase 清空是安全的：xterm 的 bubble-phase compositionstart
+				// 在之后运行，能正确看到空串并将 start 设为 0。
 				helperTextarea.value = '';
 			};
 			const onCompEnd = () => {
 				if (!alive || !term) return;
-				// capture phase 先于 xterm bubble-phase handler 执行，
-				// 使 isComposing=false 后 xterm 的 setTimeout→triggerDataEvent 能通过 onData 守卫
+				// capture phase 先于 xterm bubble-phase handler 执行：
+				// isComposing 设为 false 后，xterm 在其 setTimeout(0) 内调用
+				// triggerDataEvent → onData，此时守卫已解除，汉字可正常写入 PTY。
 				isComposing = false;
 				term.options.cursorBlink = true;
-				// 不在此处调用 fitAndSyncPty：输完汉字不应触发 PTY resize，
-				// ResizeObserver 会在实际布局变化时（且 !isComposing）自动处理。
-				// 在 xterm 的 bubble-phase compositionend 处理完后清空 textarea，
-				// 防止下一次合成的 _start 计算到旧文字（某些 Windows IME 下触发"替换"bug）
+			};
+			// bubble phase：在 xterm 的 bubble-phase compositionend 之后执行。
+			// 修复 "输入中文后再输入中文标点删除最后一字符" bug：
+			//
+			// xterm 的 _handleAnyTextareaChanges 在 IME keydown(keyCode=229) 时
+			// 快照 e = textarea.value，setTimeout(0) 时比较新值 t。若 t.length<e.length
+			// 会向 PTY 发送 DEL(0x7f) 删除上一个字符。
+			// 若合成间 textarea 残留上一次的汉字（如 "文"），下一次 onCompStart 清空后
+			// 若 IME 对标点只触发空合成（compositionstart/end 无 update）或新字比旧字短，
+			// 就会命中 t.length<e.length 分支误删。
+			//
+			// 修复：每次合成结束后把 textarea 清空，使下一次 keydown 快照 e.length===0。
+			// 必须用 bubble phase + setTimeout(0) 排队在 xterm 的 T1（读 textarea）之后，
+			// 否则 xterm 会读到空串导致汉字丢失。
+			const onCompEndClearTextarea = () => {
+				if (!alive) return;
 				setTimeout(() => {
-					if (helperTextarea) helperTextarea.value = '';
+					if (!alive || !helperTextarea) return;
+					helperTextarea.value = '';
 				}, 0);
 			};
-			// capture phase：在 xterm 的 bubble-phase handler 之前执行
 			helperTextarea.addEventListener('compositionstart', onCompStart, true);
 			helperTextarea.addEventListener('compositionend', onCompEnd, true);
+			helperTextarea.addEventListener('compositionend', onCompEndClearTextarea, false);
 			removeCompositionHandlers = () => {
 				helperTextarea.removeEventListener('compositionstart', onCompStart, true);
 				helperTextarea.removeEventListener('compositionend', onCompEnd, true);
+				helperTextarea.removeEventListener('compositionend', onCompEndClearTextarea, false);
 			};
 		}
+
+		// Foreground process name is tracked via polling (started in onMount),
+		// not OSC 0/2 title events (which shells rarely emit without explicit prompt setup).
 
 		fitAddon.fit();
 		await fitAndSyncPty();
@@ -498,6 +569,32 @@ onMount(() => {
 			// 加载 git diff 状态
 			await loadDiffStatus();
 
+			// Start polling for foreground process name (every 1.5s)
+			async function pollForegroundProcess() {
+				if (!alive || !isTauri() || !workspaceId) return;
+				try {
+					const proc = await invoke<string | null>('get_pane_foreground_process', {
+						workspaceId,
+						paneId,
+					});
+					if (!alive) return;
+					if (proc) {
+						paneForegroundProcessStore.update((s) => ({ ...s, [paneId]: proc }));
+						terminalTitles.update((t) => ({ ...t, [paneId]: proc }));
+					} else {
+						paneForegroundProcessStore.update((s) => {
+							const copy = { ...s };
+							delete copy[paneId];
+							return copy;
+						});
+					}
+				} catch {
+					/* best-effort — ignore errors */
+				}
+			}
+			void pollForegroundProcess();
+			foregroundPollInterval = setInterval(() => void pollForegroundProcess(), 1500);
+
 			// 监听命令执行后刷新 diff
 			const cmdCh = `pty-output-${workspaceId}-${paneId}`;
 			diffUnlisten = await listen<{ data: string }>(cmdCh, (e) => {
@@ -516,6 +613,12 @@ onMount(() => {
 
 onDestroy(() => {
 	alive = false;
+	terminalTitles.update((t) => { const copy = { ...t }; delete copy[paneId]; return copy; });
+	paneForegroundProcessStore.update((s) => { const copy = { ...s }; delete copy[paneId]; return copy; });
+	if (foregroundPollInterval !== undefined) {
+		clearInterval(foregroundPollInterval);
+		foregroundPollInterval = undefined;
+	}
 	if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
 	cancelLayoutRaf();
 	cancelResizeRaf();
@@ -558,15 +661,35 @@ onDestroy(() => {
 		</div>
 	{/if}
 
+	<!-- Live composite title: foreground process · current cwd -->
+	{#if mode === 'terminal'}
+		{@const proc = $paneForegroundProcessStore[paneId]}
+		{@const rawCwd = $paneCwdStore[`${workspaceId}:${paneId}`]}
+		{@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
+		{#if proc || displayCwd}
+			<div class="wf-pane-title flex items-center gap-1.5 px-3 py-0.5 text-[11px] font-mono shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]">
+				{#if proc}
+					<span class="text-[var(--wf-title-proc)] font-semibold truncate">{proc}</span>
+				{/if}
+				{#if proc && displayCwd}
+					<span class="text-[var(--wf-title-sep)] select-none">·</span>
+				{/if}
+				{#if displayCwd}
+					<span class="text-[var(--wf-title-cwd)] truncate">{displayCwd}</span>
+				{/if}
+			</div>
+		{/if}
+	{/if}
+
 	<div class="flex-1 min-h-0 min-w-0 relative overflow-hidden">
 		<div
 			bind:this={container}
-			class="wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)] overflow-hidden"
+			class=" p-3 wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)] overflow-hidden"
 			tabindex="-1"
 		>
 			<div
 				bind:this={viewInner}
-				class="min-h-0 min-w-0 flex-1 p-3"
+				class="min-h-0 min-w-0 flex-1"
 			></div>
 			<!-- 滚动到底部按钮 -->
 			{#if showScrollBottom && mode === 'terminal'}
