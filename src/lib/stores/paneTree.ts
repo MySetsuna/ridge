@@ -913,6 +913,9 @@ export interface SavedWorkspace {
 /** Keyed by "${workspaceId}:${paneId}" → cwd string. */
 export const paneCwdStore = writable<Record<string, string>>({});
 
+/** Keyed by paneId → OSC title string reported by the shell/process via \x1b]0;...\x07. */
+export const terminalTitles = writable<Record<string, string>>({});
+
 /** Update the cwd for a specific pane. */
 export function setPaneCwd(workspaceId: string, paneId: string, cwd: string) {
   paneCwdStore.update((store) => ({ ...store, [`${workspaceId}:${paneId}`]: cwd }));

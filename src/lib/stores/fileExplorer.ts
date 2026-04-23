@@ -1,20 +1,37 @@
 // src/lib/stores/fileExplorer.ts
-import { writable, get, derived, type Writable } from 'svelte/store';
+import { writable, get, derived } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { getDirectoryChildren, refreshFileTree, type FileNode } from './project';
-import { paneCwdStore, activeWorkspaceId } from './paneTree';
+import type { FileNode } from './project';
+import { paneCwdStore } from './paneTree';
 import { reportDevIssue } from '$lib/devIssue';
 
 export interface ExplorerColumn {
-	id: string; // "${workspaceId}:${paneId}"
+	id: string; // "${workspaceId}:${cwd}" — CWD-based key so panes sharing CWD share a column
 	workspaceId: string;
-	paneId: string;
+	paneIds: string[]; // all panes currently at this CWD
+	/** Display titles for each pane in paneIds, keyed by paneId. */
+	paneTitles: Record<string, string>;
 	cwd: string;
 	rootPath: string;
 	expandedPaths: Set<string>;
 	selectedPath: string | null;
 	tree: FileNode | null;
 	loading: boolean;
+}
+
+/** Workspace descriptor used for multi-workspace sync. */
+export interface WorkspaceDescriptor {
+	id: string;
+	name?: string;
+	index: number;
+}
+
+/** Grouped view: one entry per workspace, with cwd-groups inside. */
+export interface ExplorerWorkspaceGroup {
+	workspaceId: string;
+	workspaceName: string;
+	columns: ExplorerColumn[];
+	collapsed: boolean;
 }
 
 export interface FileExplorerState {
@@ -29,6 +46,10 @@ const initialState: FileExplorerState = {
 	activeColumnId: null,
 };
 
+function cwdColumnId(workspaceId: string, cwd: string): string {
+	return `${workspaceId}:${cwd}`;
+}
+
 function createFileExplorerStore() {
 	const { subscribe, set, update } = writable<FileExplorerState>(initialState);
 
@@ -36,34 +57,57 @@ function createFileExplorerStore() {
 		subscribe,
 
 		/**
-		 * Sync columns with pane CWDs for the active workspace.
-		 * Adds new columns for new CWDs and removes columns for deleted panes.
+		 * Sync columns with pane CWDs for a workspace.
+		 * Terminals sharing the same CWD share a single column (file tree).
+		 * When a pane's CWD changes, it moves to the matching column (or creates one).
+		 * Columns with no remaining panes are removed.
+		 * Columns belonging to OTHER workspaces are left completely untouched.
+		 *
+		 * @param paneCwds   Map of paneId → cwd for this workspace.
+		 * @param paneTitles Optional map of paneId → display title (kept across syncs).
 		 */
-		syncWithPaneCwds(workspaceId: string, paneCwds: Record<string, string>): void {
+		syncWithPaneCwds(
+			workspaceId: string,
+			paneCwds: Record<string, string>,
+			paneTitles: Record<string, string> = {}
+		): void {
 			update((state) => {
-				const existingIds = new Set(state.columns.map((c) => c.id));
-				const newColumns: ExplorerColumn[] = [];
-
-				// Keep existing columns
-				for (const col of state.columns) {
-					if (col.workspaceId === workspaceId && paneCwds[col.paneId] !== undefined) {
-						// Update cwd if changed
-						if (col.cwd !== paneCwds[col.paneId]) {
-							newColumns.push({ ...col, cwd: paneCwds[col.paneId], rootPath: paneCwds[col.paneId], tree: null, loading: false });
-						} else {
-							newColumns.push(col);
-						}
-					}
+				// Build a map: cwd → list of paneIds
+				const cwdToPanes = new Map<string, string[]>();
+				for (const [paneId, cwd] of Object.entries(paneCwds)) {
+					if (!cwdToPanes.has(cwd)) cwdToPanes.set(cwd, []);
+					cwdToPanes.get(cwd)!.push(paneId);
 				}
 
-				// Add new columns for new pane CWDs
-				for (const [paneId, cwd] of Object.entries(paneCwds)) {
-					const colId = `${workspaceId}:${paneId}`;
-					if (!existingIds.has(colId)) {
+				const existingById = new Map(
+					state.columns.filter((c) => c.workspaceId === workspaceId).map((c) => [c.id, c])
+				);
+
+				const newColumns: ExplorerColumn[] = [];
+
+				// Keep columns from other workspaces unchanged
+				for (const col of state.columns) {
+					if (col.workspaceId !== workspaceId) newColumns.push(col);
+				}
+
+				for (const [cwd, paneIds] of cwdToPanes) {
+					const colId = cwdColumnId(workspaceId, cwd);
+					const existing = existingById.get(colId);
+					// Merge incoming titles with any previously stored titles
+					const mergedTitles: Record<string, string> = {
+						...(existing?.paneTitles ?? {}),
+						...paneTitles,
+					};
+					if (existing) {
+						// Update pane list & titles; tree stays
+						newColumns.push({ ...existing, paneIds, paneTitles: mergedTitles });
+					} else {
+						// New CWD: create column, tree: null triggers load
 						newColumns.push({
 							id: colId,
 							workspaceId,
-							paneId,
+							paneIds,
+							paneTitles: mergedTitles,
 							cwd,
 							rootPath: cwd,
 							expandedPaths: new Set<string>(),
@@ -74,7 +118,6 @@ function createFileExplorerStore() {
 					}
 				}
 
-				// Update columnOrder to match columns order
 				const columnOrder = newColumns.map((c) => c.id);
 
 				return {
@@ -83,6 +126,36 @@ function createFileExplorerStore() {
 					activeColumnId: state.activeColumnId,
 				};
 			});
+		},
+
+		/**
+		 * Sync all workspaces at once, preserving state for every workspace.
+		 * This is the keep-alive fix: even inactive workspaces get their columns
+		 * updated, so switching back never loses pane→cwd associations.
+		 *
+		 * @param workspaces     All known workspaces.
+		 * @param allPaneCwds    The full paneCwdStore snapshot (keys: "${wsId}:${paneId}").
+		 * @param allPaneTitles  Optional full terminalTitles snapshot (keys: paneId).
+		 */
+		syncAllWorkspaces(
+			workspaces: WorkspaceDescriptor[],
+			allPaneCwds: Record<string, string>,
+			allPaneTitles: Record<string, string> = {}
+		): void {
+			for (const ws of workspaces) {
+				const paneCwds: Record<string, string> = {};
+				const paneTitles: Record<string, string> = {};
+				for (const [key, cwd] of Object.entries(allPaneCwds)) {
+					if (key.startsWith(`${ws.id}:`)) {
+						const paneId = key.slice(ws.id.length + 1);
+						paneCwds[paneId] = cwd;
+						if (allPaneTitles[paneId]) {
+							paneTitles[paneId] = allPaneTitles[paneId];
+						}
+					}
+				}
+				this.syncWithPaneCwds(ws.id, paneCwds, paneTitles);
+			}
 		},
 
 		/**
@@ -100,7 +173,6 @@ function createFileExplorerStore() {
 
 			try {
 				if (!isTauri()) {
-					// Mock data for non-Tauri environment
 					const mockTree: FileNode = {
 						name: column.cwd.split(/[/\\]/).pop() || 'root',
 						path: column.cwd,
@@ -140,7 +212,6 @@ function createFileExplorerStore() {
 		async loadChildren(columnId: string, dirPath: string): Promise<FileNode[]> {
 			try {
 				if (!isTauri()) {
-					// Mock data for non-Tauri
 					return [
 						{ name: 'file1.ts', path: `${dirPath}/file1.ts`, is_dir: false },
 						{ name: 'file2.ts', path: `${dirPath}/file2.ts`, is_dir: false },
@@ -254,26 +325,81 @@ export const activeExplorerColumn = derived(fileExplorerStore, ($s) =>
 	$s.columns.find((c) => c.id === $s.activeColumnId) || null
 );
 
-/**
- * Initialize file explorer for the active workspace.
- * Should be called when switching to the files tab or when workspace changes.
- */
-export function initFileExplorer(workspaceId: string): void {
-	const cwds = get(paneCwdStore);
-	const workspaceCwds: Record<string, string> = {};
+// ---- Internal workspace name registry (kept in sync by initFileExplorer / syncAllWorkspaces) ----
+const _workspaceNames = writable<Record<string, string>>({});
 
-	for (const [key, cwd] of Object.entries(cwds)) {
-		if (key.startsWith(`${workspaceId}:`)) {
-			const paneId = key.slice(workspaceId.length + 1);
-			workspaceCwds[paneId] = cwd;
-		}
+/** Update the workspace name registry used by the grouped derived store. */
+export function updateWorkspaceNames(workspaces: WorkspaceDescriptor[]): void {
+	const map: Record<string, string> = {};
+	for (const ws of workspaces) {
+		map[ws.id] = ws.name || `工作区 ${ws.index + 1}`;
 	}
+	_workspaceNames.set(map);
+}
 
-	fileExplorerStore.syncWithPaneCwds(workspaceId, workspaceCwds);
+// ---- Collapsed state for workspace groups (persists across renders) ----
+const _collapsedWorkspaces = writable<Set<string>>(new Set());
 
-	// Load trees for all columns
+export function toggleWorkspaceCollapsed(workspaceId: string): void {
+	_collapsedWorkspaces.update((s) => {
+		const next = new Set(s);
+		if (next.has(workspaceId)) next.delete(workspaceId);
+		else next.add(workspaceId);
+		return next;
+	});
+}
+
+/**
+ * Grouped derived store: emits an array of ExplorerWorkspaceGroup sorted by
+ * the order workspaces appear in the workspace list.
+ */
+export const explorerWorkspaceGroups = derived(
+	[fileExplorerStore, _workspaceNames, _collapsedWorkspaces],
+	([$s, $names, $collapsed]) => {
+		// Collect unique workspace ids in the order they appear in columns
+		const seenOrder: string[] = [];
+		const seenSet = new Set<string>();
+		for (const col of $s.columns) {
+			if (!seenSet.has(col.workspaceId)) {
+				seenOrder.push(col.workspaceId);
+				seenSet.add(col.workspaceId);
+			}
+		}
+
+		const groups: ExplorerWorkspaceGroup[] = seenOrder.map((wsId) => ({
+			workspaceId: wsId,
+			workspaceName: $names[wsId] || wsId,
+			columns: $s.columns.filter((c) => c.workspaceId === wsId),
+			collapsed: $collapsed.has(wsId),
+		}));
+
+		return groups;
+	}
+);
+
+/**
+ * Initialize file explorer for all known workspaces (keep-alive fix).
+ * Should be called when switching to the files tab or when workspaces change.
+ * Previously only synced the active workspace, causing inactive workspace
+ * state to be forgotten on switch.
+ */
+export function initFileExplorer(
+	workspaces: WorkspaceDescriptor[],
+	allPaneTitles: Record<string, string> = {}
+): void {
+	const cwds = get(paneCwdStore);
+
+	// Update the name registry so the grouped derived store has correct names
+	updateWorkspaceNames(workspaces);
+
+	// Sync every workspace (not just the active one)
+	fileExplorerStore.syncAllWorkspaces(workspaces, cwds, allPaneTitles);
+
+	// Load trees for columns that don't have data yet
 	const state = get(fileExplorerStore);
 	for (const col of state.columns) {
-		fileExplorerStore.loadTree(col.id);
+		if (!col.tree && !col.loading) {
+			void fileExplorerStore.loadTree(col.id);
+		}
 	}
 }
