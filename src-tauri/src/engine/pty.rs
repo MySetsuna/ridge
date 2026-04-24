@@ -12,6 +12,19 @@ use crate::utils::pty_log;
 
 const PTY_READ_UTF8_PENDING_MAX: usize = 64 * 1024;
 
+/// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠），与 `process::normalize_cwd` 对齐，
+/// 避免 `paneCwdStore` 上出现 `C:\code\wind` 与 `C:/code/wind` 两个键并存的别名。
+fn normalize_cwd_str(raw: &str) -> String {
+    #[cfg(windows)]
+    {
+        raw.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        raw.to_string()
+    }
+}
+
 /// Extend `pending` with `chunk`, then drain leading complete UTF-8 into `String`.
 /// Incomplete trailing bytes remain in `pending` for the next read.
 fn take_decoded_utf8(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
@@ -121,10 +134,11 @@ pub fn spawn_pty_reader(
                                         let mut map = state.workspaces.write();
                                         if let Some(ws) = map.get_mut(&workspace_id) {
                                             if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
-                                                pane.cwd = Some(cwd.clone());
+                                                pane.cwd = Some(std::path::PathBuf::from(normalize_cwd_str(&cwd.to_string_lossy())));
                                             }
                                         }
                                     }
+                                    crate::commands::wind_file::schedule_auto_save(&state, workspace_id);
                                     let event_tx = state.event_tx.clone();
                                     let workspace_id = workspace_id.clone();
                                     let pane_id = pane_id.clone();
@@ -134,7 +148,7 @@ pub fn spawn_pty_reader(
                                             .send(GlobalEvent::PaneCwdChanged {
                                                 workspace_id,
                                                 pane_id,
-                                                cwd: cwd_clone.to_string_lossy().to_string(),
+                                                cwd: normalize_cwd_str(&cwd_clone.to_string_lossy()),
                                             })
                                             .await;
                                     });
@@ -204,10 +218,11 @@ pub fn spawn_pty_reader(
                                         let mut map = state.workspaces.write();
                                         if let Some(ws) = map.get_mut(&workspace_id) {
                                             if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
-                                                pane.cwd = Some(cwd.clone());
+                                                pane.cwd = Some(std::path::PathBuf::from(normalize_cwd_str(&cwd.to_string_lossy())));
                                             }
                                         }
                                     }
+                                    crate::commands::wind_file::schedule_auto_save(&state, workspace_id);
                                     let event_tx = state.event_tx.clone();
                                     let workspace_id = workspace_id.clone();
                                     let pane_id = pane_id.clone();
@@ -217,7 +232,7 @@ pub fn spawn_pty_reader(
                                             .send(GlobalEvent::PaneCwdChanged {
                                                 workspace_id,
                                                 pane_id,
-                                                cwd: cwd_clone.to_string_lossy().to_string(),
+                                                cwd: normalize_cwd_str(&cwd_clone.to_string_lossy()),
                                             })
                                             .await;
                                     });

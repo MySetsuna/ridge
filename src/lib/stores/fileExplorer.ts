@@ -99,8 +99,17 @@ function createFileExplorerStore() {
 						...paneTitles,
 					};
 					if (existing) {
-						// Update pane list & titles; tree stays
-						newColumns.push({ ...existing, paneIds, paneTitles: mergedTitles });
+						// 检测是否有新 pane 加入到这个既有列（说明可能是重进/切回到老目录）。
+						// 重进老目录时，缓存的 tree 多半是过时的（此期间用户可能在终端里 `touch`、`rm`），
+						// 置 tree=null 让 Explorer effect 自动触发一次重载，避免"切回来看到旧文件"。
+						const prevSet = new Set(existing.paneIds);
+						const hasNewJoiner = paneIds.some((id) => !prevSet.has(id));
+						newColumns.push({
+							...existing,
+							paneIds,
+							paneTitles: mergedTitles,
+							tree: hasNewJoiner ? null : existing.tree,
+						});
 					} else {
 						// New CWD: create column, tree: null triggers load
 						newColumns.push({

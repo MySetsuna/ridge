@@ -34,6 +34,8 @@
     findSameAxisRefs,
     terminalTitles,
     paneCwdStore,
+    paneForegroundProcessStore,
+    collapseCwd,
   } from '$lib/stores/paneTree';
 
   interface Props {
@@ -511,18 +513,30 @@
                 dockHover = null;
               }}
             >
-              <span
-                class="text-[11px] font-medium text-[var(--wf-fg-muted)] truncate tracking-wide"
-              >
-                {#if $paneCwdStore[`${workspaceId}:${node.id}`]}
-                  {@const cwd = $paneCwdStore[`${workspaceId}:${node.id}`]}
-                  <span class="text-[var(--wf-fg)]">{cwd.split(/[/\\]/).filter(Boolean).pop() || cwd}</span>
-                {:else if node.title}
-                  <span class="text-[var(--wf-fg)]">{node.title}</span>
-                {:else}
-                  终端
-                {/if}
-              </span>
+              {#if node.id !== undefined}
+                {@const proc = $paneForegroundProcessStore[node.id]}
+                {@const rawCwd = $paneCwdStore[`${workspaceId}:${node.id}`]}
+                {@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
+                <span
+                  class="flex items-center gap-1.5 text-[11px] font-mono tracking-wide truncate"
+                >
+                  {#if proc}
+                    <span class="text-[var(--wf-title-proc)] font-semibold truncate">{proc}</span>
+                  {/if}
+                  {#if proc && displayCwd}
+                    <span class="text-[var(--wf-title-sep)] select-none">·</span>
+                  {/if}
+                  {#if displayCwd}
+                    <span class="text-[var(--wf-title-cwd)] truncate">{displayCwd}</span>
+                  {:else if !proc}
+                    {#if node.title}
+                      <span class="text-[var(--wf-fg)] truncate">{node.title}</span>
+                    {:else}
+                      <span class="text-[var(--wf-fg-muted)]">终端</span>
+                    {/if}
+                  {/if}
+                </span>
+              {/if}
             </div>
             <button
               type="button"

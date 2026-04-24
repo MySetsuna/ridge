@@ -7,11 +7,7 @@ import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { activePaneId, saveCurrentWorkspace, terminalTitles, paneCwdStore } from '$lib/stores/paneTree';
-import { writable } from 'svelte/store';
-
-/** Store: paneId -> foreground process name (polled every 1.5s). */
-const paneForegroundProcessStore = writable<Record<string, string>>({});
+import { activePaneId, saveCurrentWorkspace, terminalTitles, paneForegroundProcessStore, setPaneCwd, getPaneCwd } from '$lib/stores/paneTree';
 import 'xterm/css/xterm.css';
 
 interface DiffFile {
@@ -108,31 +104,19 @@ let saveDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 /** Foreground process polling interval handle. */
 let foregroundPollInterval: ReturnType<typeof setInterval> | undefined;
 
-/** Collapse home directory prefix to ~ in a cwd path. */
-function collapseCwd(cwd: string): string {
-	try {
-		// Attempt to detect home dir via a simple heuristic across platforms
-		const home =
-			(typeof window !== 'undefined' && ((window as unknown) as Record<string, unknown>).__WIND_HOME__ as string) ||
-			undefined;
-		if (home && cwd.startsWith(home)) {
-			return '~' + cwd.slice(home.length);
-		}
-	} catch {
-		/* ignore */
+/** Saved helper-textarea inline style (left/top) for IME pinning. */
+let pinnedImeTextareaStyle: { left: string; top: string; transform: string } | undefined;
+
+// Keep xterm's focus state in sync with activePaneId so non-active panes actually
+// unfocus — this lets `cursorInactiveStyle: 'none'` hide the cursor and prevents
+// the "purple cursor flashes wherever output lands" effect in inactive panes.
+$effect(() => {
+	const active = $activePaneId;
+	if (!term) return;
+	if (active !== paneId) {
+		try { term.blur(); } catch { /* noop */ }
 	}
-	// Show last 2 path segments with leading ~ replacement for /home/* or C:\Users\*
-	const parts = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
-	if (parts.length <= 2) return cwd;
-	// Collapse home dirs
-	if (parts[0] === 'home' || parts[0] === 'Users' || parts[0] === 'c:' || parts[0] === 'C:') {
-		// ~/segments
-		const tail = parts.slice(2);
-		if (tail.length === 0) return '~';
-		return '~/' + tail.join('/');
-	}
-	return cwd;
-}
+});
 
 function cancelLayoutRaf() {
 	if (layoutRaf !== undefined) {
@@ -377,6 +361,21 @@ async function renderView() {
 				// 此处在 capture phase 清空是安全的：xterm 的 bubble-phase compositionstart
 				// 在之后运行，能正确看到空串并将 start 设为 0。
 				helperTextarea.value = '';
+				// Pin the helper textarea at its current position so the IME candidate window
+				// stays put while shell output scrolls. xterm repositions the textarea on
+				// every cursor move, which made the IME box chase the "character refresh area".
+				// We snapshot the current position and force it via !important until compositionend.
+				const s = helperTextarea.style;
+				pinnedImeTextareaStyle = {
+					left: s.left,
+					top: s.top,
+					transform: s.transform,
+				};
+				s.setProperty('left', s.left || '0px', 'important');
+				s.setProperty('top', s.top || '0px', 'important');
+				if (s.transform) {
+					s.setProperty('transform', s.transform, 'important');
+				}
 			};
 			const onCompEnd = () => {
 				if (!alive || !term) return;
@@ -385,6 +384,16 @@ async function renderView() {
 				// triggerDataEvent → onData，此时守卫已解除，汉字可正常写入 PTY。
 				isComposing = false;
 				term.options.cursorBlink = true;
+				// Release the IME pin so normal xterm positioning resumes for the next composition.
+				if (pinnedImeTextareaStyle) {
+					helperTextarea.style.removeProperty('left');
+					helperTextarea.style.removeProperty('top');
+					helperTextarea.style.removeProperty('transform');
+					helperTextarea.style.left = pinnedImeTextareaStyle.left;
+					helperTextarea.style.top = pinnedImeTextareaStyle.top;
+					helperTextarea.style.transform = pinnedImeTextareaStyle.transform;
+					pinnedImeTextareaStyle = undefined;
+				}
 			};
 			// bubble phase：在 xterm 的 bubble-phase compositionend 之后执行。
 			// 修复 "输入中文后再输入中文标点删除最后一字符" bug：
@@ -569,31 +578,49 @@ onMount(() => {
 			// 加载 git diff 状态
 			await loadDiffStatus();
 
-			// Start polling for foreground process name (every 1.5s)
-			async function pollForegroundProcess() {
+			// Start polling for foreground process name + cwd (every 1.5s).
+			// OSC 7 covers shells that advertise cwd, but PowerShell/cmd/bash-without-integration
+			// don't emit it. Polling the OS-level cwd of the shell process makes the explorer
+			// reliably track `cd` regardless of shell integration.
+			// 记忆上一次的快照，避免把相同值重复写回 store 触发下游 effect/监听反应。
+			let lastPolledProc: string | null = null;
+			async function pollPaneInfo() {
 				if (!alive || !isTauri() || !workspaceId) return;
 				try {
-					const proc = await invoke<string | null>('get_pane_foreground_process', {
-						workspaceId,
-						paneId,
-					});
+					const [proc, cwd] = await Promise.all([
+						invoke<string | null>('get_pane_foreground_process', { workspaceId, paneId }),
+						invoke<string | null>('get_pane_cwd', { workspaceId, paneId }),
+					]);
 					if (!alive) return;
-					if (proc) {
-						paneForegroundProcessStore.update((s) => ({ ...s, [paneId]: proc }));
-						terminalTitles.update((t) => ({ ...t, [paneId]: proc }));
-					} else {
-						paneForegroundProcessStore.update((s) => {
-							const copy = { ...s };
-							delete copy[paneId];
-							return copy;
-						});
+					if (proc !== lastPolledProc) {
+						lastPolledProc = proc;
+						if (proc) {
+							paneForegroundProcessStore.update((s) => ({ ...s, [paneId]: proc }));
+							terminalTitles.update((t) => ({ ...t, [paneId]: proc }));
+						} else {
+							paneForegroundProcessStore.update((s) => {
+								const copy = { ...s };
+								delete copy[paneId];
+								return copy;
+							});
+						}
+					}
+					if (cwd && workspaceId) {
+						const prev = getPaneCwd(workspaceId, paneId);
+						if (prev !== cwd) {
+							setPaneCwd(workspaceId, paneId, cwd);
+						}
 					}
 				} catch {
 					/* best-effort — ignore errors */
 				}
 			}
-			void pollForegroundProcess();
-			foregroundPollInterval = setInterval(() => void pollForegroundProcess(), 1500);
+			// 固定 1500ms 轮询：让 cd 的 UI 反馈保持在秒级；
+			// 由于 pollPaneInfo 内部已做签名比对（proc/cwd 未变则零 store 写），
+			// 静默期间开销主要是两次 Tauri IPC，其余为 no-op。
+			// 注：shell emit OSC 7 时后端会直接 push pane-cwd-changed，路径比轮询更快。
+			void pollPaneInfo();
+			foregroundPollInterval = setInterval(() => void pollPaneInfo(), 1500);
 
 			// 监听命令执行后刷新 diff
 			const cmdCh = `pty-output-${workspaceId}-${paneId}`;
@@ -659,26 +686,6 @@ onDestroy(() => {
 				</svg>
 			</button>
 		</div>
-	{/if}
-
-	<!-- Live composite title: foreground process · current cwd -->
-	{#if mode === 'terminal'}
-		{@const proc = $paneForegroundProcessStore[paneId]}
-		{@const rawCwd = $paneCwdStore[`${workspaceId}:${paneId}`]}
-		{@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
-		{#if proc || displayCwd}
-			<div class="wf-pane-title flex items-center gap-1.5 px-3 py-0.5 text-[11px] font-mono shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]">
-				{#if proc}
-					<span class="text-[var(--wf-title-proc)] font-semibold truncate">{proc}</span>
-				{/if}
-				{#if proc && displayCwd}
-					<span class="text-[var(--wf-title-sep)] select-none">·</span>
-				{/if}
-				{#if displayCwd}
-					<span class="text-[var(--wf-title-cwd)] truncate">{displayCwd}</span>
-				{/if}
-			</div>
-		{/if}
 	{/if}
 
 	<div class="flex-1 min-h-0 min-w-0 relative overflow-hidden">

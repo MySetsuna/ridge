@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ChevronRight, X, RefreshCw, FolderOpen } from 'lucide-svelte';
+	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, FolderInput } from 'lucide-svelte';
 	import {
 		fileExplorerStore,
 		initFileExplorer,
@@ -7,9 +7,21 @@
 		toggleWorkspaceCollapsed,
 		updateWorkspaceNames,
 	} from '$lib/stores/fileExplorer';
-	import { paneCwdStore, terminalTitles, workspacesList, activeWorkspaceId } from '$lib/stores/paneTree';
+	import {
+		paneCwdStore,
+		terminalTitles,
+		workspacesList,
+		activeWorkspaceId,
+		workspaceSaveInfoStore,
+		refreshWorkspaceSaveInfo,
+		saveWorkspaceToFile,
+		deleteWorkspaceFile,
+		openWorkspaceFromFile,
+	} from '$lib/stores/paneTree';
+	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import { get } from 'svelte/store';
 	import FileTree from './FileTree.svelte';
+	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 
 	interface Props {
 		workspaceId: string;
@@ -73,20 +85,13 @@
 		collapsedColumns = next;
 	}
 
-	function handleCloseColumn(columnId: string) {
-		fileExplorerStore.removeColumn(columnId);
-	}
-
 	function handleRefresh(columnId: string) {
 		void fileExplorerStore.loadTree(columnId);
 	}
 
-	function handleFileSelect(path: string, columnId: string) {
-		console.log('Selected:', path, 'in column:', columnId);
-	}
-
-	function cwdBasename(cwd: string): string {
-		return cwd.split(/[/\\]/).filter(Boolean).pop() || cwd;
+	function handleFileSelect(path: string, _columnId: string, isDir: boolean) {
+		if (isDir) return;
+		void fileEditorStore.openFile(path);
 	}
 
 	function getPaneLabel(paneId: string, paneTitles: Record<string, string>): string {
@@ -94,9 +99,102 @@
 	}
 
 	const totalColumns = $derived($explorerWorkspaceGroups.reduce((n, g) => n + g.columns.length, 0));
+
+	// ─── 保存 / 删除 / 打开 .wind 工作区文件 ───────────────────────────────────
+	$effect(() => {
+		// Keep save-info badges in sync when the workspaces list changes (create/close/rename).
+		if ($workspacesList.length > 0) {
+			void refreshWorkspaceSaveInfo();
+		}
+	});
+
+	let saveDialogOpen = $state(false);
+	let saveTargetWorkspaceId = $state<string>('');
+	let saveDefaultName = $state('');
+
+	function openSaveDialog(wsId: string, currentName: string | undefined) {
+		saveTargetWorkspaceId = wsId;
+		saveDefaultName = currentName?.trim() || '';
+		saveDialogOpen = true;
+	}
+
+	async function handleSaveConfirm(name: string, path: string | null) {
+		const target = saveTargetWorkspaceId;
+		if (!target) return;
+		await saveWorkspaceToFile(target, name, path ?? undefined);
+	}
+
+	async function handleDelete(wsId: string, filePath: string | null | undefined) {
+		const confirmed = confirm(
+			`从磁盘删除已保存的工作区文件？\n\n${filePath || '(未知路径)'}\n\n此操作只删除 .wind 文件，不会关闭当前工作区。`
+		);
+		if (!confirmed) return;
+		try {
+			await deleteWorkspaceFile(wsId);
+		} catch (e) {
+			alert(`删除失败: ${e}`);
+		}
+	}
+
+	// 通过 input[type=file] 选 .wind 文件内容，读出路径后交给后端打开。
+	// 浏览器端 File 对象不提供真实绝对路径；Tauri 2 会注入 `file.path` 扩展属性。
+	let fileInput: HTMLInputElement | undefined = $state();
+	function triggerOpen() {
+		fileInput?.click();
+	}
+	async function handleFileSelected(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		// Tauri 2 webview attaches absolute path to File; fall back to text prompt otherwise.
+		const p = (file as File & { path?: string }).path;
+		let chosen = p;
+		if (!chosen) {
+			chosen = prompt('输入 .wind 文件绝对路径') ?? '';
+		}
+		input.value = ''; // allow re-selecting the same file later
+		if (!chosen) return;
+		try {
+			await openWorkspaceFromFile(chosen);
+		} catch (err) {
+			alert(`打开失败: ${err}`);
+		}
+	}
 </script>
 
+<!-- 隐藏的文件选择器：仅用于触发 .wind 打开流程。 -->
+<input
+	bind:this={fileInput}
+	type="file"
+	accept=".wind,application/json"
+	class="hidden"
+	onchange={handleFileSelected}
+/>
+
+<SaveWorkspaceDialog
+	bind:open={saveDialogOpen}
+	defaultName={saveDefaultName}
+	onConfirm={handleSaveConfirm}
+	onCancel={() => (saveDialogOpen = false)}
+/>
+
 <div class="explorer flex h-full flex-col overflow-y-auto" data-testid="file-tree">
+	<!-- 顶部工具栏：打开已保存工作区入口。 -->
+	<div
+		class="shrink-0 flex items-center justify-between h-8 px-2 gap-1 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/40"
+	>
+		<span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
+			资源管理器
+		</span>
+		<button
+			type="button"
+			class="flex items-center gap-1 px-1.5 h-6 rounded text-[10px] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+			title="从 .wind 文件打开已保存的工作区"
+			onclick={triggerOpen}
+		>
+			<FolderInput class="h-3 w-3" /> 打开工作区
+		</button>
+	</div>
 	{#if totalColumns === 0}
 		<div class="flex-1 flex items-center justify-center">
 			<div class="text-center">
@@ -109,6 +207,7 @@
 		</div>
 	{:else}
 		{#each $explorerWorkspaceGroups as group (group.workspaceId)}
+			{@const info = $workspaceSaveInfoStore[group.workspaceId]}
 			<!-- ══ Workspace header row ══ -->
 			<div
 				class="explorer-workspace border-b border-[var(--wf-border)] last:border-b-0"
@@ -142,6 +241,33 @@
 					<span class="text-[10px] text-[var(--wf-fg-muted)] shrink-0">
 						{group.columns.length}
 					</span>
+
+					<!-- Save (unsaved only) / Delete (saved only) action -->
+					{#if !info?.file_path}
+						<button
+							type="button"
+							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-[var(--wf-accent)] hover:bg-[var(--wf-surface)] transition-all"
+							title="保存工作区为 .wind 文件"
+							onclick={(e) => {
+								e.stopPropagation();
+								openSaveDialog(group.workspaceId, group.workspaceName);
+							}}
+						>
+							<Save class="h-3 w-3" />
+						</button>
+					{:else}
+						<button
+							type="button"
+							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-red-400 hover:bg-[var(--wf-surface)] transition-all"
+							title={`删除已保存的 .wind 文件\n${info.file_path}`}
+							onclick={(e) => {
+								e.stopPropagation();
+								void handleDelete(group.workspaceId, info.file_path);
+							}}
+						>
+							<Trash2 class="h-3 w-3" />
+						</button>
+					{/if}
 				</div>
 
 				<!-- ══ CWD groups under this workspace ══ -->
@@ -150,11 +276,12 @@
 						<div class="explorer-section border-t border-[var(--wf-border)]/50">
 							<!-- Compact CWD section header -->
 							<div
-								class="group flex items-center h-7 pl-5 pr-2 gap-1 cursor-pointer select-none hover:bg-[var(--wf-surface)]/60 transition-colors"
+								class="group flex items-center h-7 px-2 gap-1 cursor-pointer select-none hover:bg-[var(--wf-surface)]/60 transition-colors"
 								role="button"
 								tabindex="0"
 								onclick={() => toggleColumnCollapse(col.id)}
 								onkeydown={(e) => e.key === 'Enter' && toggleColumnCollapse(col.id)}
+								title={col.cwd}
 							>
 								<!-- Collapse arrow -->
 								<ChevronRight
@@ -173,14 +300,6 @@
 									{/each}
 								</div>
 
-								<!-- CWD basename -->
-								<span
-									class="text-[10px] text-[var(--wf-fg-muted)] truncate max-w-[100px] shrink-0"
-									title={col.cwd}
-								>
-									{cwdBasename(col.cwd)}
-								</span>
-
 								<!-- Loading spinner or refresh button -->
 								{#if col.loading}
 									<RefreshCw class="h-3 w-3 shrink-0 animate-spin text-[var(--wf-accent)]" />
@@ -198,18 +317,6 @@
 									</button>
 								{/if}
 
-								<!-- Close button -->
-								<button
-									type="button"
-									class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 transition-all"
-									onclick={(e) => {
-										e.stopPropagation();
-										handleCloseColumn(col.id);
-									}}
-									title="关闭"
-								>
-									<X class="h-3 w-3" />
-								</button>
 							</div>
 
 							<!-- Collapsible file tree body -->
@@ -222,7 +329,7 @@
 											depth={0}
 											expandedPaths={col.expandedPaths}
 											selectedPath={col.selectedPath}
-											onSelect={(path) => handleFileSelect(path, col.id)}
+											onSelect={(path, isDir) => handleFileSelect(path, col.id, isDir)}
 										/>
 									{:else if col.loading}
 										<div class="px-4 py-2 text-[11px] text-[var(--wf-fg-muted)]">加载中...</div>

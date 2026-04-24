@@ -28,12 +28,18 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "resources": {
-      "target/release/tmux.exe": "./tmux.exe"
-    },
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["wix/path-env.wxs"],
+        "componentRefs": ["WindPathEnvVar"]
+      }
+    }
   }
 }

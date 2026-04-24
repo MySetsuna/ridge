@@ -54,6 +54,9 @@ pub struct Workspace {
     pub teammate_pane_states: HashMap<Uuid, PaneState>,
     /// Agent 到 pane 的映射：记录哪个 agent（通过唯一 ID）在哪个 pane
     pub teammate_agent_pane_map: HashMap<String, Uuid>,
+    /// 关联的 .wind 文件绝对路径。`Some` 表示该工作区已保存到磁盘；
+    /// 后续任何 cwd/布局/git 变化都会触发防抖自动回写。
+    pub associated_file_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -89,6 +92,7 @@ impl AppState {
                 created_at: SystemTime::now(),
                 teammate_pane_states: HashMap::new(),
                 teammate_agent_pane_map: HashMap::new(),
+                associated_file_path: None,
             },
         );
         Self {
@@ -134,10 +138,26 @@ impl AppState {
         let Some(s) = map.get(&(ws, pane)) else {
             return String::new();
         };
-        let lines: Vec<&str> = s.split('\n').collect();
-        if lines.len() <= max_lines {
+        if max_lines == 0 || s.is_empty() {
+            return String::new();
+        }
+        // 从尾向头扫第 max_lines 个 '\n'，避免 `split` 对整个 buffer 做 O(n) 分配。
+        let bytes = s.as_bytes();
+        let mut nl_seen = 0usize;
+        let mut cut = 0usize;
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] == b'\n' {
+                nl_seen += 1;
+                if nl_seen == max_lines {
+                    cut = i + 1;
+                    break;
+                }
+            }
+        }
+        if nl_seen < max_lines {
             return s.clone();
         }
-        lines[lines.len() - max_lines..].join("\n")
+        // cut 一定落在 '\n' 之后，天然是 UTF-8 字符边界。
+        s[cut..].to_string()
     }
 }

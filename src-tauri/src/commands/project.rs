@@ -188,6 +188,61 @@ pub fn read_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+#[derive(serde::Serialize)]
+pub struct ReadFileForEditorResult {
+    pub content: String,
+    pub is_binary: bool,
+    pub size: u64,
+}
+
+/// Read a file for the editor: detects binary files (via NULL-byte heuristic) and
+/// enforces a 5 MB ceiling to keep the UI responsive. Returns content as UTF-8 lossy
+/// so editors never crash on malformed bytes — the save path enforces valid UTF-8.
+#[tauri::command]
+pub fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResult, String> {
+    let file_path = PathBuf::from(&path);
+    if !file_path.exists() { return Err("File does not exist".to_string()); }
+    if !file_path.is_file() { return Err("Path is not a file".to_string()); }
+
+    let metadata = std::fs::metadata(&file_path).map_err(|e| e.to_string())?;
+    let size = metadata.len();
+    const MAX: u64 = 5 * 1024 * 1024;
+    if size > MAX {
+        return Err(format!("文件过大 ({:.2} MB)，编辑器上限 5 MB", size as f64 / 1024.0 / 1024.0));
+    }
+
+    let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
+    // Binary heuristic: NULL byte in first 8 KB, or a very high ratio of non-printable bytes
+    let probe = &bytes[..bytes.len().min(8192)];
+    let has_null = probe.iter().any(|&b| b == 0);
+    let non_text = probe
+        .iter()
+        .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
+        .count();
+    let ratio = if probe.is_empty() { 0.0 } else { non_text as f64 / probe.len() as f64 };
+    let is_binary = has_null || ratio > 0.30;
+
+    if is_binary {
+        return Ok(ReadFileForEditorResult { content: String::new(), is_binary: true, size });
+    }
+
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(ReadFileForEditorResult { content, is_binary: false, size })
+}
+
+/// Write content to a file (UTF-8). Creates parent dirs if missing.
+#[tauri::command]
+pub fn write_file(path: String, content: String) -> Result<(), String> {
+    let file_path = PathBuf::from(&path);
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+        }
+    }
+    std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let project = state.current_project.read();

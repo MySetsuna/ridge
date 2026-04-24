@@ -40,30 +40,65 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
 
 /// 后台线程跑 Axum，避免阻塞 Tauri 主循环。
 /// `ready` 在 HTTP 已绑定且 `teammate_binding` 写入后发送一次，供 setup 等待首个 PTY 注入环境变量。
+///
+/// 进程保护：
+/// - 线程体包在 `catch_unwind` 里，路由 handler panic 不会连带把 Wind 主进程带走；
+/// - panic 捕获后，延时 1s 自动重启 server 线程（尝试最多 5 次）；
+/// - tokio runtime 构建失败不触发重启（多半是 FD 耗尽等系统性原因）。
 pub fn spawn_teammate_server(
     handle: tauri::AppHandle,
     state: AppState,
     ready: Option<std::sync::mpsc::Sender<()>>,
 ) {
-    std::thread::Builder::new()
+    spawn_teammate_inner(handle, state, ready, 0);
+}
+
+const TEAMMATE_RESTART_MAX: u32 = 5;
+
+fn spawn_teammate_inner(
+    handle: tauri::AppHandle,
+    state: AppState,
+    ready: Option<std::sync::mpsc::Sender<()>>,
+    attempt: u32,
+) {
+    let handle_for_retry = handle.clone();
+    let state_for_retry = state.clone();
+    let _ = std::thread::Builder::new()
         .name("wind-teammate-http".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("[wind] teammate runtime: {e}");
-                    if let Some(tx) = ready {
-                        let _ = tx.send(());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!(target: "wind::teammate", error = %e, "runtime build failed");
+                        if let Some(tx) = ready {
+                            let _ = tx.send(());
+                        }
+                        return;
                     }
-                    return;
+                };
+                rt.block_on(run_server(handle, state, ready));
+            }));
+            if result.is_err() {
+                tracing::error!(
+                    target: "wind::teammate",
+                    attempt = attempt,
+                    "teammate HTTP thread panicked (isolated); scheduling restart"
+                );
+                if attempt + 1 < TEAMMATE_RESTART_MAX {
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    spawn_teammate_inner(handle_for_retry, state_for_retry, None, attempt + 1);
+                } else {
+                    tracing::error!(
+                        target: "wind::teammate",
+                        "teammate HTTP restart budget exhausted; giving up"
+                    );
                 }
-            };
-            rt.block_on(run_server(handle, state, ready));
-        })
-        .ok();
+            }
+        });
 }
 
 async fn run_server(

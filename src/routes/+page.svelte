@@ -1,10 +1,10 @@
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
   import SplitContainer from '$lib/components/SplitContainer.svelte';
-  import GitGraph from '$lib/components/GitGraph.svelte';
+  import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
-  import WorkspaceSidebar from '$lib/components/WorkspaceSidebar.svelte';
   import Explorer from '$lib/components/Explorer.svelte';
+  import FileEditor from '$lib/components/FileEditor.svelte';
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import {
     Terminal,
@@ -46,6 +46,9 @@
     renameWorkspace,
     saveCurrentWorkspace,
     loadSavedWorkspaces,
+    getLastOpenedWorkspacePath,
+    openWorkspaceFromFile,
+    refreshWorkspaceSaveInfo,
   } from '$lib/stores/paneTree';
   import {
     hideContextMenu,
@@ -66,7 +69,7 @@
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
-  type SidebarTab = 'terminal' | 'git' | 'files';
+  type SidebarTab = 'git' | 'files';
   let sidebarTab = $state<SidebarTab>('files');
 
   // localStorage 键名
@@ -378,16 +381,6 @@
             },
           },
           {
-            id: 'terminal',
-            label: '终端',
-            icon: Terminal,
-            action: () => {
-              sidebarTab = 'terminal';
-              sidebarCollapsed = false;
-              saveSidebarSettings();
-            },
-          },
-          {
             id: 'git',
             label: 'Git',
             icon: GitBranch,
@@ -488,6 +481,17 @@
     let unlistenResized: (() => void) | undefined;
     void (async () => {
       await refreshWorkspaces();
+      // 自动打开上次关闭的 .wind 工作区（若指针仍然指向存在的文件）。
+      // 在 refreshWorkspaces 之后、window 初始化之前执行，避免闪烁一个空工作区。
+      try {
+        const lastPath = await getLastOpenedWorkspacePath();
+        if (lastPath) {
+          await openWorkspaceFromFile(lastPath);
+        }
+      } catch (err) {
+        console.warn('auto-open last workspace failed', err);
+      }
+      await refreshWorkspaceSaveInfo();
       // 检查初始最大化状态
       const win = getCurrentWindow();
       isMaximized = await win.isMaximized();
@@ -563,14 +567,6 @@
   >
     <button
       type="button"
-      class="{actBtn}{sidebarTab === 'terminal' ? actBtnOn : ''}"
-      title="工作区"
-      onclick={() => (sidebarTab = 'terminal')}
-    >
-      <Layout class="h-5 w-5" />
-    </button>
-    <button
-      type="button"
       class="{actBtn}{sidebarTab === 'files' ? actBtnOn : ''}"
       title="文件"
       onclick={() => (sidebarTab = 'files')}
@@ -600,12 +596,12 @@
           <div
             class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
           >
-            Git Graph
+            源代码管理
           </div>
-          <div class="flex-1 min-h-0 overflow-auto p-3 wf-scroll">
-            <GitGraph />
+          <div class="flex-1 min-h-0 overflow-hidden">
+            <SourceControl />
           </div>
-        {:else if sidebarTab === 'files'}
+        {:else}
           <div
             class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
           >
@@ -622,17 +618,6 @@
               </div>
             {/if}
           </div>
-        {:else}
-          <WorkspaceSidebar
-            workspaces={$workspacesList}
-            activeWorkspaceId={$activeWorkspaceId}
-            onSelect={switchWorkspace}
-            onRename={renameWorkspace}
-            onDelete={closeWorkspace}
-            onReorder={reorderWorkspaces}
-            onSave={saveCurrentWorkspace}
-            onCreate={createWorkspace}
-          />
         {/if}
 
         <!-- 侧边栏大小调整手柄 -->
@@ -834,4 +819,7 @@
       {/if}
     </div>
   </div>
+
+  <!-- 全局文件编辑器（抽屉 / 悬浮 pin） -->
+  <FileEditor />
 </div>

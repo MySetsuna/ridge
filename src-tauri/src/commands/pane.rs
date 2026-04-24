@@ -111,7 +111,10 @@ pub async fn set_split_ratios_at_path(
         .ok_or_else(|| "无活动工作区".to_string())?;
     ws.pane_tree
         .set_split_ratios_at_path(&path, ratios)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    drop(map);
+    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,7 +139,10 @@ pub async fn set_split_ratios_batch(
         .collect();
     ws.pane_tree
         .set_split_ratios_batch(&pairs)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    drop(map);
+    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    Ok(())
 }
 
 #[tauri::command]
@@ -163,7 +169,10 @@ pub async fn dock_pane(
         .ok_or_else(|| "无活动工作区".to_string())?;
     ws.pane_tree
         .dock_pane(source, target, region)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    drop(map);
+    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    Ok(())
 }
 
 fn split_pane_inner(
@@ -178,24 +187,38 @@ fn split_pane_inner(
         SplitDirection::Vertical
     };
     let wid = state.active_workspace_id();
+
+    // 取父 pane 的 cwd：优先从 pane_tree 读（已被 OSC 7 或定时轮询同步过）；
+    // 若 tree 尚未记录（例如 PowerShell/cmd 无 OSC 7 且刚 spawn 还未被轮询），
+    // 就现场查 shell 进程 OS 层 cwd，保证"分屏一定继承当前目录"。
+    let parent_cwd: Option<String> = {
+        let map = state.workspaces.read();
+        map.get(&wid)
+            .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+            .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()))
+    }
+    .or_else(|| crate::commands::process::current_pane_cwd_live(&*state, wid, pane_id));
+
     let mut map = state.workspaces.write();
     let ws = map
         .get_mut(&wid)
         .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
-    // Read the parent pane's cwd before splitting so the new pane can inherit it.
-    let parent_cwd = ws
-        .pane_tree
-        .panes
-        .get(&pane_id)
-        .and_then(|p| p.cwd.as_ref())
-        .map(|c| c.to_string_lossy().into_owned());
+    // 如果现场探到了新的 cwd，顺手回填父 pane，使其后续 split 也能走 tree 快路径。
+    if let Some(ref cwd_str) = parent_cwd {
+        if let Some(parent) = ws.pane_tree.panes.get_mut(&pane_id) {
+            if parent.cwd.is_none() {
+                parent.cwd = Some(std::path::PathBuf::from(cwd_str));
+            }
+        }
+    }
     let new_pane_id = ws.pane_tree.split(pane_id, dir)?;
-    // Seed the new pane's cwd from the parent so the Explorer column appears immediately.
     if let Some(ref cwd_str) = parent_cwd {
         if let Some(new_pane) = ws.pane_tree.panes.get_mut(&new_pane_id) {
             new_pane.cwd = Some(std::path::PathBuf::from(cwd_str));
         }
     }
+    drop(map);
+    crate::commands::wind_file::schedule_auto_save(&*state, wid);
     Ok(SplitPaneResult {
         pane_id: new_pane_id.to_string(),
         initial_cwd: parent_cwd,
@@ -271,6 +294,7 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         ws.teammate_pane_titles.remove(&pane_id);
         ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
     }
+    crate::commands::wind_file::schedule_auto_save(&*state, wid);
     Ok(())
 }
 

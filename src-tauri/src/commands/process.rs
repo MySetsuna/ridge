@@ -154,3 +154,169 @@ fn get_foreground_process_name(shell_pid: u32) -> Option<String> {
 fn get_foreground_process_name(_shell_pid: u32) -> Option<String> {
     None
 }
+
+/// Returns the current working directory of the shell running in the given pane,
+/// by reading the OS-level cwd of the shell process. This is the reliable
+/// cross-platform path — it does NOT rely on the shell emitting OSC 7, so
+/// plain PowerShell / cmd on Windows also update correctly after `cd`.
+///
+/// 副作用：发现新的 cwd 时，顺手把它写回 `pane_tree.panes[pane].cwd` —— 这是后端
+/// 唯一权威的 cwd 来源，后续 split 会从这里继承；同时触发 .wind 自动保存。
+#[tauri::command]
+pub async fn get_pane_cwd(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<Option<String>, String> {
+    let workspace_id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+
+    let shell_pid = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .and_then(|handle| handle._child.process_id())
+    };
+    let Some(shell_pid) = shell_pid else { return Ok(None) };
+
+    let cwd_opt = get_process_cwd(shell_pid).map(normalize_cwd);
+
+    if let Some(ref cwd) = cwd_opt {
+        let path = std::path::PathBuf::from(cwd);
+        let mut changed = false;
+        {
+            let mut map = state.workspaces.write();
+            if let Some(ws) = map.get_mut(&workspace_id) {
+                if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+                    if pane.cwd.as_deref() != Some(path.as_path()) {
+                        pane.cwd = Some(path);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            // 除了写回 tree，还发一次 PaneCwdChanged：下游（Explorer/SCM）的监听器
+            // 不再需要等 2.5s 的轮询返回值才知道 cwd 变了 —— 事件路径立刻到达。
+            let _ = state.event_tx.try_send(crate::types::GlobalEvent::PaneCwdChanged {
+                workspace_id,
+                pane_id,
+                cwd: cwd.clone(),
+            });
+            crate::commands::wind_file::schedule_auto_save(&*state, workspace_id);
+        }
+    }
+
+    Ok(cwd_opt)
+}
+
+/// Windows 下 `sysinfo` 返回反斜杠、OSC 7 和用户输入常是正斜杠。
+/// 统一为正斜杠写回 store，避免 `paneCwdStore` 出现"看起来一样其实不相等"的键冲突。
+fn normalize_cwd(raw: String) -> String {
+    #[cfg(windows)]
+    {
+        raw.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        raw
+    }
+}
+
+/// 供命令层在需要当前 cwd 但 tree 尚未记录时使用（例如刚创建还未被轮询过的窗格）。
+/// 仅做 OS 层查询，不改写 state。
+pub(crate) fn current_pane_cwd_live(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+) -> Option<String> {
+    let shell_pid = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .and_then(|handle| handle._child.process_id())
+    }?;
+    get_process_cwd(shell_pid)
+}
+
+#[cfg(unix)]
+fn get_process_cwd(shell_pid: u32) -> Option<String> {
+    // Read /proc/<shell_pid>/cwd symlink. If the shell has a foreground child (e.g.
+    // `vim` open in a subdir), we prefer the child's cwd so the explorer tracks it.
+    let pick = |pid: u32| -> Option<String> {
+        let link = std::path::Path::new("/proc").join(pid.to_string()).join("cwd");
+        std::fs::read_link(&link).ok()?.to_str().map(|s| s.to_string())
+    };
+
+    // Prefer the most-recently-spawned direct child's cwd, fallback to shell's own.
+    use std::io::Read;
+    let proc_dir = std::path::Path::new("/proc");
+    if proc_dir.exists() {
+        let shell_pid_str = shell_pid.to_string();
+        let mut best_child: Option<u32> = None;
+        if let Ok(read_dir) = std::fs::read_dir(proc_dir) {
+            for entry in read_dir.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                let pid: u32 = match name_str.parse() {
+                    Ok(p) if p != shell_pid => p,
+                    _ => continue,
+                };
+                let status_path = entry.path().join("status");
+                let Ok(mut f) = std::fs::File::open(&status_path) else { continue };
+                let mut content = String::new();
+                if f.read_to_string(&mut content).is_err() { continue }
+                let Some(ppid_line) = content.lines().find(|l| l.starts_with("PPid:")) else { continue };
+                let Some(ppid_str) = ppid_line.split_whitespace().nth(1) else { continue };
+                if ppid_str == shell_pid_str {
+                    best_child = match best_child {
+                        Some(prev) if prev > pid => Some(prev),
+                        _ => Some(pid),
+                    };
+                }
+            }
+        }
+        if let Some(child_pid) = best_child {
+            if let Some(cwd) = pick(child_pid) { return Some(cwd); }
+        }
+    }
+    pick(shell_pid)
+}
+
+#[cfg(windows)]
+fn get_process_cwd(shell_pid: u32) -> Option<String> {
+    use sysinfo::{ProcessesToUpdate, System};
+
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All);
+
+    let shell_pid_sysinfo = sysinfo::Pid::from_u32(shell_pid);
+
+    // Prefer foreground non-shell child's cwd (so running `cargo` in subdir is tracked).
+    let shell_names = ["powershell", "pwsh", "cmd", "bash", "zsh", "sh", "fish"];
+    let mut children: Vec<(sysinfo::Pid, u64, Option<String>)> = Vec::new();
+    for (pid, process) in sys.processes() {
+        if process.parent() == Some(shell_pid_sysinfo) && *pid != shell_pid_sysinfo {
+            let name = process.name().to_string_lossy().to_string();
+            let lower = name.to_lowercase();
+            let base = lower.trim_end_matches(".exe").trim_end_matches(".com");
+            if shell_names.contains(&base) { continue }
+            let cwd = process.cwd().map(|p| p.to_string_lossy().to_string());
+            children.push((*pid, process.start_time(), cwd));
+        }
+    }
+    if let Some((_, _, Some(cwd))) = children.into_iter().max_by_key(|(_, t, _)| *t) {
+        if !cwd.is_empty() { return Some(cwd); }
+    }
+
+    // Fallback: shell's own cwd
+    sys.process(shell_pid_sysinfo)
+        .and_then(|p| p.cwd())
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn get_process_cwd(_shell_pid: u32) -> Option<String> {
+    None
+}

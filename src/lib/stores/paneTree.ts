@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { get, writable } from 'svelte/store';
 import type { PaneNode } from '$lib/types';
 import { reportDevIssue } from '$lib/devIssue';
+import { fileExplorerStore } from '$lib/stores/fileExplorer';
 
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
@@ -706,6 +707,8 @@ export async function refreshWorkspaces() {
     const cwds = extractCwdsFromLayout(layout, active);
     paneCwdStore.update((store) => ({ ...store, ...cwds }));
     await setupPaneCwdListeners(active);
+    // Save info changes on workspace add/remove/rename; keep UI badges accurate.
+    await refreshWorkspaceSaveInfo();
   } catch (e) {
     console.error('refreshWorkspaces', e);
     reportDevIssue({
@@ -849,6 +852,30 @@ export async function closeWorkspace(workspaceId: string) {
   if (!isTauri()) return;
   try {
     await invoke('close_workspace', { workspaceId });
+    // 在拉取新的工作区快照之前就清理本地资源，避免残留：
+    // 1) 拆除该工作区的 pane-cwd 监听；
+    // 2) 从 paneCwdStore 删除所有 `${workspaceId}:*` 键；
+    // 3) 清空 fileExplorerStore 在该工作区下的所有列（即资源管理器的文件树列）；
+    //    — SourceControl 的仓库列表由 paneCwdStore 衍生，随之自然收敛。
+    const unlisten = activeCwdListeners.get(workspaceId);
+    if (unlisten) {
+      unlisten();
+      activeCwdListeners.delete(workspaceId);
+    }
+    paneCwdStore.update((store) => {
+      const prefix = `${workspaceId}:`;
+      let mutated = false;
+      const next: Record<string, string> = {};
+      for (const [k, v] of Object.entries(store)) {
+        if (k.startsWith(prefix)) {
+          mutated = true;
+          continue;
+        }
+        next[k] = v;
+      }
+      return mutated ? next : store;
+    });
+    fileExplorerStore.clearWorkspace(workspaceId);
     await refreshWorkspaces();
   } catch (e) {
     console.error('closeWorkspace', e);
@@ -915,6 +942,94 @@ export const paneCwdStore = writable<Record<string, string>>({});
 
 /** Keyed by paneId → OSC title string reported by the shell/process via \x1b]0;...\x07. */
 export const terminalTitles = writable<Record<string, string>>({});
+
+/** Keyed by paneId → foreground process name (polled every 1.5s from backend). */
+export const paneForegroundProcessStore = writable<Record<string, string>>({});
+
+/** Per-workspace save info: `{ workspaceId → { file_path, name } }`. Populated by
+ *  `get_workspace_save_info` / `list_workspace_save_info`. Empty `file_path` means
+ *  the workspace has never been saved (UI shows "Save" button); present `file_path`
+ *  means it's associated with a .wind file (UI shows "Delete" button). */
+export interface WorkspaceSaveInfo {
+  workspace_id: string;
+  file_path?: string | null;
+  name?: string | null;
+}
+export const workspaceSaveInfoStore = writable<Record<string, WorkspaceSaveInfo>>({});
+
+export async function refreshWorkspaceSaveInfo(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const list = await invoke<WorkspaceSaveInfo[]>('list_workspace_save_info');
+    const map: Record<string, WorkspaceSaveInfo> = {};
+    for (const info of list) map[info.workspace_id] = info;
+    workspaceSaveInfoStore.set(map);
+  } catch (e) {
+    console.error('refreshWorkspaceSaveInfo', e);
+  }
+}
+
+export async function saveWorkspaceToFile(
+  workspaceId: string,
+  name: string,
+  path?: string
+): Promise<string> {
+  const out = await invoke<string>('save_workspace_to_file', {
+    workspaceId,
+    name,
+    path: path ?? null,
+  });
+  await refreshWorkspaceSaveInfo();
+  return out;
+}
+
+export async function openWorkspaceFromFile(path: string): Promise<string> {
+  const id = await invoke<string>('open_workspace_from_file', { path });
+  await refreshWorkspaces();
+  await refreshWorkspaceSaveInfo();
+  return id;
+}
+
+export async function deleteWorkspaceFile(workspaceId: string): Promise<void> {
+  await invoke('delete_workspace_file', { workspaceId });
+  await refreshWorkspaceSaveInfo();
+}
+
+export async function getDefaultWorkspaceSaveDir(): Promise<string> {
+  return await invoke<string>('get_default_workspace_save_dir');
+}
+
+export async function getLastOpenedWorkspacePath(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<string | null>('get_last_opened_workspace_path');
+  } catch {
+    return null;
+  }
+}
+
+/** Collapse home directory prefix to ~ in a cwd path. */
+export function collapseCwd(cwd: string): string {
+  if (!cwd) return '';
+  try {
+    const home =
+      (typeof window !== 'undefined' && ((window as unknown) as Record<string, unknown>).__WIND_HOME__ as string) ||
+      undefined;
+    if (home && cwd.startsWith(home)) {
+      return '~' + cwd.slice(home.length);
+    }
+  } catch {
+    /* ignore */
+  }
+  const parts = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length <= 2) return cwd;
+  if (parts[0] === 'home' || parts[0] === 'Users' || parts[0] === 'c:' || parts[0] === 'C:') {
+    const tail = parts.slice(2);
+    if (tail.length === 0) return '~';
+    return '~/' + tail.join('/');
+  }
+  return cwd;
+}
 
 /** Update the cwd for a specific pane. */
 export function setPaneCwd(workspaceId: string, paneId: string, cwd: string) {

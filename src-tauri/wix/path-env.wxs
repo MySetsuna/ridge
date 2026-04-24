@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Appends [INSTALLDIR] to the current user's PATH so `tmux` (the Wind shim)
+  is resolvable from any shell, not only Wind's own PTY panes.
+
+  System="no" targets HKCU (matches the NSIS installer hook).
+  Part="last" Action="set" = append (non-destructive) and Permanent="no" = remove on uninstall.
+
+  KeyPath is a RegistryValue so the component has a real uninstall anchor.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="WindPathEnvVar" Guid="f3a7b2c8-9d4e-4a1b-b5c6-d7e8f9a0b1c2">
+                <RegistryValue Root="HKCU"
+                               Key="Software\tauri-app\wind"
+                               Name="WindPathEnv"
+                               Type="integer"
+                               Value="1"
+                               KeyPath="yes" />
+                <Environment Id="WindPathEnv"
+                             Name="PATH"
+                             Value="[INSTALLDIR]"
+                             Permanent="no"
+                             Part="last"
+                             Action="set"
+                             System="no" />
+            </Component>
+        </DirectoryRef>
+    </Fragment>
+</Wix>

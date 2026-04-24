@@ -32,22 +32,38 @@ fn create_pane_inner(
 	let workspace_id = state.active_workspace_id();
 
 	// 优先使用 pane tree 中已记录的 CWD（分屏时由 split_pane 从父 pane 继承），
-	// 否则 fallback 到 HOME 或当前目录。
-	let cwd: PathBuf = {
+	// 若已保存过 shell_kind（来自 .wind 文件恢复）也一并取出。
+	let (cwd, persisted_shell): (PathBuf, Option<String>) = {
 		let map = state.workspaces.read();
-		map.get(&workspace_id)
-			.and_then(|ws| ws.pane_tree.panes.get(&pane_id))
-			.and_then(|p| p.cwd.clone())
+		let entry = map.get(&workspace_id).and_then(|ws| ws.pane_tree.panes.get(&pane_id));
+		let cwd = entry.and_then(|p| p.cwd.clone());
+		let sk = entry.and_then(|p| p.shell_kind.clone());
+		(
+			cwd.or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
+				.or_else(|| std::env::current_dir().ok())
+				.unwrap_or_else(|| PathBuf::from(".")),
+			sk,
+		)
+	};
+
+	// 调用方传 shell 时以调用方为准；否则使用 pane 上持久化的 shell_kind（.wind 恢复路径）。
+	let effective_shell = shell.clone().or(persisted_shell);
+
+	// 持久化本次实际使用的 shell 信息，便于后续 .wind 保存。
+	if let Some(ref sk) = effective_shell {
+		let mut map = state.workspaces.write();
+		if let Some(ws) = map.get_mut(&workspace_id) {
+			if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+				pane.shell_kind = Some(sk.clone());
+			}
+		}
 	}
-	.or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
-	.or_else(|| std::env::current_dir().ok())
-	.unwrap_or_else(|| PathBuf::from("."));
 
 	ensure_pane_pty_workspace(
 		&*state,
 		workspace_id,
 		pane_id,
-		shell,
+		effective_shell,
 		Some(&cwd),
 		None,
 		None,
@@ -57,11 +73,23 @@ fn create_pane_inner(
 	// 设置 pane 的工作目录用于 git diff 跟踪
 	crate::commands::git::set_pane_workdir(pane_id.to_string(), cwd.to_string_lossy().to_string()).map_err(AppError::PtyError)?;
 
-	// 立即通知前端初始 CWD，无需等待 shell 发出 OSC 7
+	// 立即通知前端初始 CWD，无需等待 shell 发出 OSC 7。统一路径分隔符，
+	// 与 OSC 7 / 轮询路径的规范化保持一致。
+	let cwd_canon = {
+		let s = cwd.to_string_lossy().to_string();
+		#[cfg(windows)]
+		{
+			s.replace('\\', "/")
+		}
+		#[cfg(not(windows))]
+		{
+			s
+		}
+	};
 	let _ = state.event_tx.try_send(crate::types::GlobalEvent::PaneCwdChanged {
 		workspace_id,
 		pane_id,
-		cwd: cwd.to_string_lossy().to_string(),
+		cwd: cwd_canon,
 	});
 
 	Ok(())

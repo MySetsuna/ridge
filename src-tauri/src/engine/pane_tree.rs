@@ -39,6 +39,11 @@ pub struct Pane {
     /// Working directory reported via OSC 7 by the PTY shell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// 用于持久化的终端类型（pwsh/cmd/bash/git-bash/wsl/zsh 等），
+    /// 由 `create_pane` 在首次 spawn 时写入；重建 .wind 工作区时按此重启同类 shell。
+    /// 未显式指定时保留 None，表示使用平台默认（Windows=powershell, Unix=zsh）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,7 +57,7 @@ impl PaneTree {
     pub fn new() -> Self {
         let root_id = Uuid::new_v4();
         let mut panes = HashMap::new();
-        panes.insert(root_id, Pane { id: root_id, mode: PaneMode::Terminal, cwd: None });
+        panes.insert(root_id, Pane { id: root_id, mode: PaneMode::Terminal, cwd: None, shell_kind: None });
 
         Self {
             root: PaneNode::Leaf(root_id),
@@ -122,6 +127,7 @@ impl PaneTree {
                 id: new_pane_id,
                 mode: PaneMode::Terminal,
                 cwd: None,
+                shell_kind: None,
             });
             Ok(new_pane_id)
         } else {
@@ -498,14 +504,14 @@ impl PaneTree {
         recurse(&self.root, &mut leaves);
         leaves
     }
-}
+}
 #[cfg(test)]
 mod tests {
 use super::*;
 
 #[test]
 fn pane_serde_roundtrip_without_cwd() {
-    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None };
+    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None, shell_kind: None };
     let json = serde_json::to_string(&pane).unwrap();
     let deserialized: Pane = serde_json::from_str(&json).unwrap();
     assert!(deserialized.cwd.is_none());
@@ -518,6 +524,7 @@ fn pane_serde_roundtrip_with_unix_cwd() {
         id: Uuid::new_v4(),
         mode: PaneMode::Terminal,
         cwd: Some(PathBuf::from("/home/user/projects")),
+        shell_kind: None,
     };
     let json = serde_json::to_string(&pane).unwrap();
     assert!(json.contains("/home/user/projects"));
@@ -531,6 +538,7 @@ fn pane_serde_roundtrip_with_windows_cwd() {
         id: Uuid::new_v4(),
         mode: PaneMode::Terminal,
         cwd: Some(PathBuf::from("C:/Users/Alice/code")),
+        shell_kind: None,
     };
     let json = serde_json::to_string(&pane).unwrap();
     let deserialized: Pane = serde_json::from_str(&json).unwrap();
@@ -553,7 +561,7 @@ fn pane_deserializes_missing_cwd_as_none() {
 
 #[test]
 fn pane_serializes_cwd_none_omitted_by_skip_serializing() {
-    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None };
+    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None, shell_kind: None };
     let json = serde_json::to_string(&pane).unwrap();
     assert!(!json.contains("cwd"));
 }
@@ -573,4 +581,4 @@ fn pane_tree_split_preserves_cwd_none_on_new_pane() {
     let new_id = tree.split(root_id, SplitDirection::Horizontal).unwrap();
     assert!(tree.panes.get(&new_id).unwrap().cwd.is_none());
 }
-}
+}

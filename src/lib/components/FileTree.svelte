@@ -20,7 +20,7 @@
 		depth?: number;
 		expandedPaths?: Set<string>;
 		selectedPath?: string | null;
-		onSelect?: (path: string) => void;
+		onSelect?: (path: string, isDir: boolean) => void;
 	}
 
 	let { columnId, node, depth = 0, expandedPaths = new Set(), selectedPath = null, onSelect }: Props =
@@ -58,7 +58,7 @@
 			fileExplorerStore.toggleExpanded(columnId, node.path);
 		}
 		if (onSelect) {
-			onSelect(node.path);
+			onSelect(node.path, node.is_dir);
 		}
 		fileExplorerStore.setSelectedPath(columnId, node.path);
 	}

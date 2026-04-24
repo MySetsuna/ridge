@@ -183,6 +183,197 @@ pub fn is_git_repo(path: String) -> bool {
     Path::new(&path).join(".git").exists()
 }
 
+/// 向上查找 path 所在的 git 仓库根目录（包含 .git 的目录）。
+/// 返回绝对路径字符串；若 path 及其所有祖先都不在 git 仓库中，返回 None。
+#[tauri::command]
+pub fn find_git_repo_root(path: String) -> Option<String> {
+    let mut cur = Path::new(&path).to_path_buf();
+    // 规范化：若不存在直接按字面层级向上找
+    loop {
+        if cur.join(".git").exists() {
+            return Some(cur.to_string_lossy().to_string());
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+/// VSCode-风格的 Source Control 文件条目：既能表示已暂存，也能表示未暂存/未跟踪。
+#[derive(Clone, Debug, Serialize)]
+pub struct ScmFile {
+    /// 工作区相对路径
+    pub path: String,
+    /// 单字母状态：M=modified, A=added(staged new), D=deleted, R=renamed, C=copied,
+    /// U=unmerged, ?=untracked
+    pub status: String,
+    /// staged / unstaged(工作区) / untracked
+    pub group: String,
+}
+
+/// VSCode-风格的 repo 级状态摘要
+#[derive(Clone, Debug, Serialize)]
+pub struct ScmRepoStatus {
+    pub repo_root: String,
+    pub current_branch: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub staged: Vec<ScmFile>,
+    pub changes: Vec<ScmFile>,
+    pub untracked: Vec<ScmFile>,
+}
+
+/// 解析 `git status --porcelain=v1 -b` 的输出。
+fn parse_porcelain_v1(stdout: &str) -> (Option<String>, u32, u32, Vec<ScmFile>, Vec<ScmFile>, Vec<ScmFile>) {
+    let mut branch: Option<String> = None;
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    let mut staged = Vec::<ScmFile>::new();
+    let mut changes = Vec::<ScmFile>::new();
+    let mut untracked = Vec::<ScmFile>::new();
+
+    for line in stdout.lines() {
+        if line.starts_with("##") {
+            // e.g. "## main...origin/main [ahead 1, behind 2]"
+            let rest = line.trim_start_matches("##").trim();
+            let (head, tail) = rest.split_once(' ').unwrap_or((rest, ""));
+            let head_branch = head.split("...").next().unwrap_or(head);
+            if !head_branch.is_empty() && head_branch != "HEAD (no branch)" {
+                branch = Some(head_branch.to_string());
+            }
+            if let Some(bracket) = tail.find('[') {
+                let inner = &tail[bracket + 1..tail.rfind(']').unwrap_or(tail.len())];
+                for seg in inner.split(',') {
+                    let seg = seg.trim();
+                    if let Some(n) = seg.strip_prefix("ahead ") {
+                        ahead = n.parse().unwrap_or(0);
+                    } else if let Some(n) = seg.strip_prefix("behind ") {
+                        behind = n.parse().unwrap_or(0);
+                    }
+                }
+            }
+            continue;
+        }
+        if line.len() < 3 { continue; }
+        let x = line.as_bytes()[0] as char;
+        let y = line.as_bytes()[1] as char;
+        let path_part = &line[3..];
+        // rename: "R  old -> new" 只保留 new
+        let display_path = if let Some(idx) = path_part.find(" -> ") {
+            path_part[idx + 4..].to_string()
+        } else {
+            path_part.to_string()
+        };
+
+        if x == '?' && y == '?' {
+            untracked.push(ScmFile { path: display_path, status: "?".to_string(), group: "untracked".to_string() });
+            continue;
+        }
+        // Staged index column
+        if x != ' ' && x != '?' {
+            staged.push(ScmFile { path: display_path.clone(), status: x.to_string(), group: "staged".to_string() });
+        }
+        // Working-tree column
+        if y != ' ' && y != '?' {
+            changes.push(ScmFile { path: display_path, status: y.to_string(), group: "changes".to_string() });
+        }
+    }
+
+    (branch, ahead, behind, staged, changes, untracked)
+}
+
+/// 获取仓库的 VSCode 源代码管理视图（staged / changes / untracked 分组）。
+#[tauri::command]
+pub fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
+    let path = Path::new(&repo_root);
+    if !path.join(".git").exists() {
+        return Err(format!("Not a git repo: {}", repo_root));
+    }
+    let output = Command::new("git")
+        .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (branch_from_status, ahead, behind, staged, changes, untracked) = parse_porcelain_v1(&stdout);
+    let branch = branch_from_status.or_else(|| get_current_branch(path));
+    Ok(ScmRepoStatus {
+        repo_root,
+        current_branch: branch,
+        ahead,
+        behind,
+        staged,
+        changes,
+        untracked,
+    })
+}
+
+/// 暂存指定文件（相对于 repo_root 的路径列表，空=全部）
+#[tauri::command]
+pub fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let mut cmd = Command::new("git");
+    cmd.arg("add");
+    if paths.is_empty() { cmd.arg("--all"); } else { for p in &paths { cmd.arg(p); } }
+    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+    Ok(())
+}
+
+/// 撤销暂存（reset HEAD -- <paths>，空=全部）
+#[tauri::command]
+pub fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let mut cmd = Command::new("git");
+    cmd.args(["reset", "HEAD", "--"]);
+    if paths.is_empty() {
+        // reset HEAD 不带路径只会重置索引到 HEAD——先拿到 diff --cached 的文件列表
+        let cached = Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(path).output().map_err(|e| e.to_string())?;
+        if !cached.status.success() { return Err(String::from_utf8_lossy(&cached.stderr).to_string()); }
+        for l in String::from_utf8_lossy(&cached.stdout).lines() {
+            if !l.trim().is_empty() { cmd.arg(l); }
+        }
+    } else {
+        for p in &paths { cmd.arg(p); }
+    }
+    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+    Ok(())
+}
+
+/// 丢弃工作区修改（checkout -- <paths>）——危险操作，前端应再次确认
+#[tauri::command]
+pub fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    if paths.is_empty() { return Err("Refusing to discard all — specify paths".to_string()); }
+    let path = Path::new(&repo_root);
+    let out = Command::new("git")
+        .args(["checkout", "--"])
+        .args(&paths)
+        .current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+    Ok(())
+}
+
+/// 创建 commit（使用 -m message）。未 stage 的更改不会被提交。
+#[tauri::command]
+pub fn git_commit(repo_root: String, message: String) -> Result<(), String> {
+    if message.trim().is_empty() { return Err("Commit message is empty".to_string()); }
+    let path = Path::new(&repo_root);
+    let out = Command::new("git")
+        .args(["commit", "-m", &message])
+        .current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let s = String::from_utf8_lossy(&out.stderr).to_string();
+        return Err(if s.is_empty() { String::from_utf8_lossy(&out.stdout).to_string() } else { s });
+    }
+    Ok(())
+}
+
 /// 从 pane 的 cwd 获取 git 仓库信息
 #[tauri::command]
 pub fn get_git_graph(workspace_id: String, pane_id: String) -> Result<GitRepoInfo, String> {
