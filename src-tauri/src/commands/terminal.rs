@@ -14,6 +14,19 @@ use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
 use crate::utils::pty_log;
 
+/// 把 PowerShell 脚本编码成 `-EncodedCommand` 要求的 base64(UTF-16LE) 字符串。
+/// 用 EncodedCommand 传参是 Windows 上最可靠的方式：命令行只剩纯 ASCII base64，
+/// 不会被 `CreateProcess` / portable-pty 的引号/转义层破坏 `$` `&` `{` `;` 这些字符。
+#[allow(dead_code)]
+fn encode_powershell_utf16le_base64(script: &str) -> String {
+    use base64::Engine;
+    let bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 #[tauri::command]
 pub async fn create_pane(
 	state: State<'_, AppState>,
@@ -226,9 +239,30 @@ pub fn ensure_pane_pty_workspace(
 	}
 
 	let pty_system = native_pty_system();
+	// 记录 shell 类型，后续决定是否注入 OSC 7 shell integration。
+	// 为什么：PowerShell 的 `cd` cmdlet 只改引擎内部 $PWD，不会调用 SetCurrentDirectory，
+	// PEB.CurrentDirectory 停留在 spawn 时的 cwd。sysinfo 读到的永远是旧值，
+	// 导致 Explorer/SCM 完全看不到交互式 `cd`。唯一可靠的办法是让 shell 自己在每次
+	// 显示 prompt 时吐一条 OSC 7，后端 OSC 7 解析器就会实时捕获 cwd 变化。
+	#[derive(Clone, Copy, Debug)]
+	enum ShellKind { PowerShell, Bash, Zsh, Cmd, Other }
+	fn classify_shell(program: &str) -> ShellKind {
+		let s = program.to_lowercase();
+		let name = std::path::Path::new(&s).file_stem().and_then(|s| s.to_str()).unwrap_or(&s);
+		match name {
+			"powershell" | "pwsh" => ShellKind::PowerShell,
+			"bash" => ShellKind::Bash,
+			"zsh" => ShellKind::Zsh,
+			"cmd" => ShellKind::Cmd,
+			_ => ShellKind::Other,
+		}
+	}
+	let mut shell_kind = ShellKind::Other;
 	let mut cmd = if let Some(s) = shell {
+		shell_kind = classify_shell(&s);
 		CommandBuilder::new(s)
 	} else if let Some(spec) = sc.as_ref() {
+		shell_kind = classify_shell(&spec.program);
 		let mut c = CommandBuilder::new(&spec.program);
 		for a in &spec.args {
 			c.arg(a);
@@ -237,6 +271,7 @@ pub fn ensure_pane_pty_workspace(
 	} else if let Some(line) = ic {
 		#[cfg(windows)]
 		{
+			shell_kind = ShellKind::Cmd;
 			let mut c = CommandBuilder::new("cmd.exe");
 			c.arg("/d");
 			c.arg("/s");
@@ -247,8 +282,10 @@ pub fn ensure_pane_pty_workspace(
 		#[cfg(not(windows))]
 		{
 			let mut c = if Path::new("/bin/bash").is_file() {
+				shell_kind = ShellKind::Bash;
 				CommandBuilder::new("/bin/bash")
 			} else {
+				shell_kind = ShellKind::Other;
 				CommandBuilder::new("/bin/sh")
 			};
 			c.arg("-c");
@@ -258,16 +295,69 @@ pub fn ensure_pane_pty_workspace(
 	} else {
 		#[cfg(target_os = "windows")]
 		{
+			shell_kind = ShellKind::PowerShell;
 			let mut c = CommandBuilder::new("powershell.exe");
 			c.arg("-NoLogo");
 			c
 		}
 		#[cfg(not(target_os = "windows"))]
 		{
+			shell_kind = ShellKind::Zsh;
 			CommandBuilder::new("zsh")
 		}
 	};
 	cmd.env("TERM", "xterm-256color");
+
+	// Shell integration: 对交互式 launch（无 initial_command 也无 structured）注入 OSC 7
+	// 发射逻辑，让 cwd 变化可被后端实时捕获。
+	//
+	// - PowerShell: 加 `-NoExit -Command <prompt-wrap>`。脚本先 snapshot 用户原 prompt，
+	//   然后用全局新 prompt 包装它并在每次调用后 emit OSC 7。Profile 仍然会在 `-Command`
+	//   脚本之前被 PS 执行完，所以用户自定义 prompt 不会丢失。
+	// - Bash: 设置 `PROMPT_COMMAND` 环境变量，bash 启动时自动读取；每次渲染 prompt 前执行。
+	//   如果用户已有 PROMPT_COMMAND，我们叠加在前（; 分号分隔），不会覆盖。
+	// - Zsh: 设置 `WIND_SHELL_INTEGRATION=1` 作为标记（TODO: 完整 precmd hook 需 stdin
+	//   注入或 ZDOTDIR 技术，下一轮补），此处先让 bash/powershell 的主流场景工作。
+	// - Cmd.exe: 无可靠 hook 机制，保持原行为（polling + 用户执行外部命令时才更新 PEB）。
+	if !has_explicit_launch {
+		match shell_kind {
+			ShellKind::PowerShell => {
+				// PowerShell shell integration：在每次 prompt 渲染后打一条 OSC 7，让后端
+				// 实时拿到 cwd 变化（PowerShell 的 `cd` 不更新 PEB，`sysinfo` 那条路走不通）。
+				//
+				// 用 `-EncodedCommand`（base64 UTF-16LE）传递脚本，彻底绕开
+				// portable-pty / CreateProcess 对 `$`、`&`、`{` 这类字符的引号处理 ——
+				// 之前用 `-Command "..."` 时在某些环境里脚本根本没被执行。
+				const PS_INIT: &str = "\
+					$Global:__wind_origPrompt = (Get-Item function:prompt).ScriptBlock; \
+					function global:prompt { \
+					  $r = & $Global:__wind_origPrompt; \
+					  try { $c = $PWD.ProviderPath } catch { $c = (Get-Location).Path }; \
+					  try { [Console]::Write(([string][char]27) + ']7;file:///' + $c + ([string][char]7)) } catch {}; \
+					  $r \
+					}";
+				let encoded = encode_powershell_utf16le_base64(PS_INIT);
+				cmd.arg("-NoExit");
+				cmd.arg("-EncodedCommand");
+				cmd.arg(encoded);
+			}
+			ShellKind::Bash => {
+				// Bash 在交互模式下每次显示 $PS1 前执行 PROMPT_COMMAND，所以 OSC 7 会跟上 cd。
+				// 用 printf 直接写 stdout，不改 IFS / set -e 行为。
+				let existing = std::env::var("PROMPT_COMMAND").unwrap_or_default();
+				let pc = if existing.trim().is_empty() {
+					r#"printf '\033]7;file://%s\a' "$PWD""#.to_string()
+				} else {
+					format!(r#"{existing}; printf '\033]7;file://%s\a' "$PWD""#)
+				};
+				cmd.env("PROMPT_COMMAND", pc);
+			}
+			ShellKind::Zsh | ShellKind::Cmd | ShellKind::Other => {
+				// zsh/cmd/其它：留给 sysinfo PEB 轮询兜底；zsh 用户大多已有 oh-my-zsh/starship
+				// 等会在 prompt 中触发 cwd 更新。完整 zsh 集成下一轮处理。
+			}
+		}
+	}
 	let shim_dir = if let Some(ref bind) = *state.teammate_binding.read() {
 		let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
 		cmd.env("WIND_TEAMMATE_URL", bind.base_url.as_str());

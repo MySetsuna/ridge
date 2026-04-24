@@ -173,6 +173,19 @@ pub fn parse_cwd_from_output(output: &str) -> Option<PathBuf> {
 
     // If stripped starts with '/' it is a clean absolute path
     if !stripped.is_empty() && stripped[0] == b'/' {
+        // Windows drive-letter edge case: PowerShell / bash-on-Windows emit
+        // `file:///C:/...` or `file:///C:\...`. After stripping `file://` we
+        // get `/C:/...`, and `PathBuf::from("/C:/code")` becomes `\C:\code`
+        // — not a valid absolute path. Drop the leading `/` when the next
+        // segment is a drive letter so the result is a real Windows path.
+        if stripped.len() >= 3
+            && stripped[1].is_ascii_alphabetic()
+            && stripped[2] == b':'
+        {
+            return Some(PathBuf::from(
+                String::from_utf8_lossy(&stripped[1..]).into_owned(),
+            ));
+        }
         return Some(PathBuf::from(String::from_utf8_lossy(stripped).into_owned()));
     }
 
@@ -240,6 +253,27 @@ mod tests {
         assert_eq!(
             result.map(|p| p.to_string_lossy().into_owned()),
             Some("C:\\Users\\Alice\\code".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_windows_path_with_empty_host_and_forward_slashes() {
+        // PowerShell shell-integration emits `file:///C:\code` (empty host, 3 slashes).
+        // Before fix: returned `/C:\code`, which Windows normalizes to `\C:\code`.
+        let result = parse_cwd_from_output("\x1b]7;file:///C:\\code\x07");
+        assert_eq!(
+            result.map(|p| p.to_string_lossy().into_owned()),
+            Some("C:\\code".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_windows_path_with_empty_host_and_forward_separators() {
+        // bash / some shells emit drive-letter paths with forward slashes: `file:///C:/code`.
+        let result = parse_cwd_from_output("\x1b]7;file:///C:/code\x07");
+        assert_eq!(
+            result.map(|p| p.to_string_lossy().into_owned()),
+            Some("C:/code".to_string())
         );
     }
 

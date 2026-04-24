@@ -979,7 +979,9 @@ export async function saveWorkspaceToFile(
     name,
     path: path ?? null,
   });
-  await refreshWorkspaceSaveInfo();
+  // 刷新 workspacesList 以便标签页/Explorer 头部能立刻显示新名字；
+  // refreshWorkspaces 内部已串行调用 refreshWorkspaceSaveInfo()。
+  await refreshWorkspaces();
   return out;
 }
 
@@ -1005,6 +1007,39 @@ export async function getLastOpenedWorkspacePath(): Promise<string | null> {
     return await invoke<string | null>('get_last_opened_workspace_path');
   } catch {
     return null;
+  }
+}
+
+export interface StartupContext {
+  cwd: string;
+  wind_file_in_cwd: string | null;
+}
+
+/** 启动上下文：进程 cwd + cwd 顶层第一个 .wind 文件（若存在）。 */
+export async function getStartupContext(): Promise<StartupContext | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<StartupContext>('get_startup_context');
+  } catch {
+    return null;
+  }
+}
+
+export async function listRecentWorkspaces(): Promise<string[]> {
+  if (!isTauri()) return [];
+  try {
+    return await invoke<string[]>('list_recent_workspaces');
+  } catch {
+    return [];
+  }
+}
+
+export async function clearRecentWorkspaces(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invoke('clear_recent_workspaces');
+  } catch {
+    /* ignore */
   }
 }
 

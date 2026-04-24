@@ -207,10 +207,27 @@ function createFileExplorerStore() {
 					columns: s.columns.map((c) => (c.id === columnId ? { ...c, tree, loading: false } : c)),
 				}));
 			} catch (e) {
-				reportDevIssue({ message: `Failed to load file tree: ${e}` });
+				const msg = String(e);
+				// 路径不存在可能是 .wind 恢复到新机器上的合法场景；其他错误仍可能是 bug。
+				// 只 console.warn，不再给标题追加"· 目录不存在"文案 —— 避免用户在目录实际存在但
+				// 路径传递有误（如正反斜杠 Windows 混用）的情况下被误导。
+				const isMissing = /not exist|No such file|path is not a directory/i.test(msg);
+				if (!isMissing) {
+					reportDevIssue({ message: `Failed to load file tree: ${e}` });
+				} else {
+					console.warn('Explorer loadTree: missing path', column.cwd, msg);
+				}
+				const placeholder: FileNode = {
+					name: column.cwd.split(/[/\\]/).pop() || 'root',
+					path: column.cwd,
+					is_dir: true,
+					children: [],
+				};
 				update((s) => ({
 					...s,
-					columns: s.columns.map((c) => (c.id === columnId ? { ...c, loading: false } : c)),
+					columns: s.columns.map((c) =>
+						c.id === columnId ? { ...c, tree: placeholder, loading: false } : c
+					),
 				}));
 			}
 		},

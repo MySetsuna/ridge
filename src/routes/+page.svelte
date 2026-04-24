@@ -13,6 +13,7 @@
     Layout,
     ChevronLeft,
     ChevronRight,
+    ChevronDown,
     Split,
     X,
     Maximize2,
@@ -29,6 +30,7 @@
     ArrowUp,
     Settings,
     FileCode,
+    FolderInput,
   } from 'lucide-svelte';
   import {
     paneTreeStore,
@@ -46,10 +48,57 @@
     renameWorkspace,
     saveCurrentWorkspace,
     loadSavedWorkspaces,
-    getLastOpenedWorkspacePath,
+    getStartupContext,
     openWorkspaceFromFile,
     refreshWorkspaceSaveInfo,
+    listRecentWorkspaces,
+    clearRecentWorkspaces,
   } from '$lib/stores/paneTree';
+
+  // ─── 打开 .wind 入口 + 最近打开下拉（使用 tauri-plugin-dialog 的 OS 原生文件选择器）───
+  let recentOpen = $state(false);
+  let recentList = $state<string[]>([]);
+  async function loadRecentAndToggle() {
+    recentList = await listRecentWorkspaces();
+    recentOpen = !recentOpen;
+  }
+  function basenameOf(p: string): string {
+    return p.split(/[/\\]/).filter(Boolean).pop() || p;
+  }
+  function dirnameOf(p: string): string {
+    const parts = p.split(/[/\\]/).filter(Boolean);
+    if (parts.length <= 1) return '';
+    return parts.slice(0, -1).join('/');
+  }
+  async function openRecent(path: string) {
+    recentOpen = false;
+    try {
+      await openWorkspaceFromFile(path);
+    } catch (err) {
+      alert(`打开失败: ${err}`);
+    }
+  }
+  async function handleClearRecent() {
+    await clearRecentWorkspaces();
+    recentList = [];
+    recentOpen = false;
+  }
+  async function pickAndOpenWorkspace() {
+    recentOpen = false;
+    try {
+      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+      const picked = await openDialog({
+        multiple: false,
+        filters: [{ name: 'Wind Workspace', extensions: ['wind'] }],
+        title: '打开 .wind 工作区',
+      });
+      if (typeof picked === 'string' && picked) {
+        await openWorkspaceFromFile(picked);
+      }
+    } catch (err) {
+      alert(`打开失败: ${err}`);
+    }
+  }
   import {
     hideContextMenu,
     showContextMenu,
@@ -481,15 +530,26 @@
     let unlistenResized: (() => void) | undefined;
     void (async () => {
       await refreshWorkspaces();
-      // 自动打开上次关闭的 .wind 工作区（若指针仍然指向存在的文件）。
-      // 在 refreshWorkspaces 之后、window 初始化之前执行，避免闪烁一个空工作区。
+      // 启动策略：从命令行 / 资源管理器启动时，以进程 cwd 为决策依据。
+      // - cwd 顶层有 .wind 文件：打开该工作区，并关掉默认空工作区（用户没交互过）；
+      // - cwd 无 .wind：默认工作区的根 pane 已在后端 `AppState::new` 中把 cwd 种为启动 cwd，
+      //   这里不需要再做任何事，默认终端会自然落在启动目录。
       try {
-        const lastPath = await getLastOpenedWorkspacePath();
-        if (lastPath) {
-          await openWorkspaceFromFile(lastPath);
+        const ctx = await getStartupContext();
+        if (ctx && ctx.wind_file_in_cwd) {
+          const priorDefaultId = get(activeWorkspaceId);
+          await openWorkspaceFromFile(ctx.wind_file_in_cwd);
+          const nowActive = get(activeWorkspaceId);
+          if (priorDefaultId && priorDefaultId !== nowActive) {
+            try {
+              await closeWorkspace(priorDefaultId);
+            } catch (e) {
+              console.warn('close default workspace after auto-open failed', e);
+            }
+          }
         }
       } catch (err) {
-        console.warn('auto-open last workspace failed', err);
+        console.warn('startup workspace resolution failed', err);
       }
       await refreshWorkspaceSaveInfo();
       // 检查初始最大化状态
@@ -603,9 +663,66 @@
           </div>
         {:else}
           <div
-            class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
+            class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] relative"
           >
-            资源管理器
+            <span>资源管理器</span>
+            <!-- 打开 .wind 已保存工作区入口（主按钮走 OS 文件选择器；chevron 展开最近列表）-->
+            <div class="flex items-center gap-0.5">
+              <button
+                type="button"
+                class="flex items-center gap-1 h-7 pl-2 pr-1 rounded-l text-[10px] font-medium normal-case tracking-normal text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+                title="从 .wind 文件打开已保存的工作区"
+                onclick={() => void pickAndOpenWorkspace()}
+              >
+                <FolderInput class="h-3.5 w-3.5" /> 打开
+              </button>
+              <button
+                type="button"
+                class="flex items-center justify-center h-7 w-5 rounded-r text-[10px] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+                title="最近打开的工作区"
+                onclick={() => void loadRecentAndToggle()}
+              >
+                <ChevronDown class="h-3 w-3" />
+              </button>
+            </div>
+
+            {#if recentOpen}
+              <!-- 下拉：最近打开的 .wind。点击外部关闭；当前先靠 onblur 的 focus-within 语义。 -->
+              <div
+                class="absolute right-3 top-full mt-1 z-50 w-[300px] max-w-[90vw] rounded border border-[var(--wf-border)] bg-[var(--wf-bg)] shadow-xl overflow-hidden"
+                role="menu"
+              >
+                <div class="flex items-center justify-between h-7 px-3 bg-[var(--wf-surface)]/60 border-b border-[var(--wf-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
+                  <span>最近的工作区</span>
+                  {#if recentList.length > 0}
+                    <button
+                      type="button"
+                      class="text-[10px] normal-case tracking-normal hover:text-[var(--wf-fg)]"
+                      onclick={handleClearRecent}
+                    >
+                      清空
+                    </button>
+                  {/if}
+                </div>
+                <div class="max-h-[260px] overflow-y-auto">
+                  {#if recentList.length === 0}
+                    <div class="px-3 py-2 text-[11px] text-[var(--wf-fg-muted)]">无历史记录</div>
+                  {:else}
+                    {#each recentList as p (p)}
+                      <button
+                        type="button"
+                        class="group flex flex-col items-start w-full px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors normal-case tracking-normal"
+                        onclick={() => void openRecent(p)}
+                        title={p}
+                      >
+                        <span class="text-[12px] text-[var(--wf-fg)] truncate max-w-full">{basenameOf(p)}</span>
+                        <span class="text-[10px] text-[var(--wf-fg-muted)] truncate max-w-full font-mono">{dirnameOf(p)}</span>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              </div>
+            {/if}
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeWorkspaceId}

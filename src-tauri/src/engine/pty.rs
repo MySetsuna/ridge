@@ -135,6 +135,7 @@ pub fn spawn_pty_reader(
                                         if let Some(ws) = map.get_mut(&workspace_id) {
                                             if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
                                                 pane.cwd = Some(std::path::PathBuf::from(normalize_cwd_str(&cwd.to_string_lossy())));
+                                                tracing::debug!(target: "wind::cwd", workspace = %workspace_id, pane = %pane_id, cwd = %cwd.display(), "OSC 7 cwd applied");
                                             }
                                         }
                                     }
@@ -219,6 +220,7 @@ pub fn spawn_pty_reader(
                                         if let Some(ws) = map.get_mut(&workspace_id) {
                                             if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
                                                 pane.cwd = Some(std::path::PathBuf::from(normalize_cwd_str(&cwd.to_string_lossy())));
+                                                tracing::debug!(target: "wind::cwd", workspace = %workspace_id, pane = %pane_id, cwd = %cwd.display(), "OSC 7 cwd applied");
                                             }
                                         }
                                     }

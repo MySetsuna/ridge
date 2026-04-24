@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, FolderInput } from 'lucide-svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2 } from 'lucide-svelte';
 	import {
 		fileExplorerStore,
 		initFileExplorer,
@@ -16,12 +17,12 @@
 		refreshWorkspaceSaveInfo,
 		saveWorkspaceToFile,
 		deleteWorkspaceFile,
-		openWorkspaceFromFile,
 	} from '$lib/stores/paneTree';
 	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import { get } from 'svelte/store';
 	import FileTree from './FileTree.svelte';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
+	import { scrollOverlay } from '$lib/actions/scrollOverlay';
 
 	interface Props {
 		workspaceId: string;
@@ -42,15 +43,18 @@
 	});
 
 	// --- Reactive sync: re-run whenever any pane cwd changes ---
+	//
+	// 两条并行路径，用户强调"一定一定要确保 cwd 切换时文件树刷新"：
+	//   1) $effect 走 Svelte 5 runes 自动订阅 —— 负责基础的 columns/paneIds 同步；
+	//   2) 独立 paneCwdStore.subscribe —— 对每个真正发生变化的 key 强制目标列重载
+	//      文件树（即使之前缓存过），彻底解决"切回老目录看不到新文件"的场景。
 	$effect(() => {
 		const cwds = $paneCwdStore;
 		const titles = $terminalTitles;
 		const wsList = $workspacesList;
 
-		// Update workspace names (handles renames)
 		updateWorkspaceNames(wsList);
 
-		// Sync every workspace to keep inactive ones alive
 		for (const ws of wsList) {
 			const workspaceCwds: Record<string, string> = {};
 			const workspaceTitles: Record<string, string> = {};
@@ -66,13 +70,43 @@
 			fileExplorerStore.syncWithPaneCwds(ws.id, workspaceCwds, workspaceTitles);
 		}
 
-		// Trigger tree loads for any new columns
 		const cols = get(fileExplorerStore).columns;
 		for (const col of cols) {
 			if (!col.tree && !col.loading) {
 				void fileExplorerStore.loadTree(col.id);
 			}
 		}
+	});
+
+	// 兜底：直接订阅 paneCwdStore，逐键比对上一次值，凡是「某 pane 的 cwd 发生变化」
+	// 就把目标列强制 loadTree —— 这样不依赖 syncWithPaneCwds 的 "new joiner" 判定，
+	// 任何 shell 的 cd 都一定触发文件树重拉。
+	let prevCwdSnapshot: Record<string, string> = {};
+	let unsubPaneCwd: (() => void) | undefined;
+	onMount(() => {
+		unsubPaneCwd = paneCwdStore.subscribe((cwds) => {
+			const changedCwds = new Set<string>();
+			for (const [key, cwd] of Object.entries(cwds)) {
+				if (prevCwdSnapshot[key] !== cwd) changedCwds.add(cwd);
+			}
+			for (const key of Object.keys(prevCwdSnapshot)) {
+				if (!(key in cwds)) changedCwds.add(prevCwdSnapshot[key]);
+			}
+			prevCwdSnapshot = { ...cwds };
+			if (changedCwds.size === 0) return;
+			// 延迟一个微任务，让 syncWithPaneCwds 先跑（它可能已经创建了新 column）。
+			queueMicrotask(() => {
+				const state = get(fileExplorerStore);
+				for (const col of state.columns) {
+					if (changedCwds.has(col.cwd)) {
+						void fileExplorerStore.loadTree(col.id);
+					}
+				}
+			});
+		});
+	});
+	onDestroy(() => {
+		unsubPaneCwd?.();
 	});
 
 	function toggleColumnCollapse(columnId: string) {
@@ -136,40 +170,7 @@
 		}
 	}
 
-	// 通过 input[type=file] 选 .wind 文件内容，读出路径后交给后端打开。
-	// 浏览器端 File 对象不提供真实绝对路径；Tauri 2 会注入 `file.path` 扩展属性。
-	let fileInput: HTMLInputElement | undefined = $state();
-	function triggerOpen() {
-		fileInput?.click();
-	}
-	async function handleFileSelected(e: Event) {
-		const input = e.currentTarget as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) return;
-		// Tauri 2 webview attaches absolute path to File; fall back to text prompt otherwise.
-		const p = (file as File & { path?: string }).path;
-		let chosen = p;
-		if (!chosen) {
-			chosen = prompt('输入 .wind 文件绝对路径') ?? '';
-		}
-		input.value = ''; // allow re-selecting the same file later
-		if (!chosen) return;
-		try {
-			await openWorkspaceFromFile(chosen);
-		} catch (err) {
-			alert(`打开失败: ${err}`);
-		}
-	}
 </script>
-
-<!-- 隐藏的文件选择器：仅用于触发 .wind 打开流程。 -->
-<input
-	bind:this={fileInput}
-	type="file"
-	accept=".wind,application/json"
-	class="hidden"
-	onchange={handleFileSelected}
-/>
 
 <SaveWorkspaceDialog
 	bind:open={saveDialogOpen}
@@ -178,23 +179,7 @@
 	onCancel={() => (saveDialogOpen = false)}
 />
 
-<div class="explorer flex h-full flex-col overflow-y-auto" data-testid="file-tree">
-	<!-- 顶部工具栏：打开已保存工作区入口。 -->
-	<div
-		class="shrink-0 flex items-center justify-between h-8 px-2 gap-1 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/40"
-	>
-		<span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
-			资源管理器
-		</span>
-		<button
-			type="button"
-			class="flex items-center gap-1 px-1.5 h-6 rounded text-[10px] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
-			title="从 .wind 文件打开已保存的工作区"
-			onclick={triggerOpen}
-		>
-			<FolderInput class="h-3 w-3" /> 打开工作区
-		</button>
-	</div>
+<div class="explorer wf-scroll-overlay flex h-full flex-col overflow-y-auto" data-testid="file-tree" use:scrollOverlay>
 	{#if totalColumns === 0}
 		<div class="flex-1 flex items-center justify-center">
 			<div class="text-center">
@@ -213,10 +198,10 @@
 				class="explorer-workspace border-b border-[var(--wf-border)] last:border-b-0"
 			>
 				<div
-					class="group/ws flex items-center h-8 px-2 gap-1.5 cursor-pointer select-none
+					class="group/ws sticky top-0 z-20 flex items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
 						{group.workspaceId === $activeWorkspaceId
-							? 'bg-[var(--wf-accent)]/10 text-[var(--wf-fg)]'
-							: 'text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/40'}"
+							? 'bg-[var(--wf-accent)]/20 text-[var(--wf-fg)]'
+							: 'bg-[var(--wf-surface-2)]/92 text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]'}"
 					role="button"
 					tabindex="0"
 					onclick={() => toggleWorkspaceCollapsed(group.workspaceId)}
@@ -276,7 +261,7 @@
 						<div class="explorer-section border-t border-[var(--wf-border)]/50">
 							<!-- Compact CWD section header -->
 							<div
-								class="group flex items-center h-7 px-2 gap-1 cursor-pointer select-none hover:bg-[var(--wf-surface)]/60 transition-colors"
+								class="group sticky top-8 z-10 flex items-center h-7 px-2 gap-1 cursor-pointer select-none bg-[var(--wf-surface-2)]/88 backdrop-blur-md hover:bg-[var(--wf-surface)] transition-colors"
 								role="button"
 								tabindex="0"
 								onclick={() => toggleColumnCollapse(col.id)}
@@ -319,7 +304,12 @@
 
 							</div>
 
-							<!-- Collapsible file tree body -->
+							<!-- Collapsible file tree body.
+							     文件树不再自己开滚动域：内容按自然高度铺开，由外层 .explorer
+							     的唯一滚动条统一承载。sticky 工作区/终端头就始终是"浮在真正
+							     被滚动的那一层内容上"，不会出现"文件树自己滚而外层 sticky 盖
+							     住它顶部"的错位感（以前 `max-height` + `overflow-y-auto`
+							     会产生这种双重滚动）。 -->
 							{#if !collapsedColumns.has(col.id)}
 								<div class="explorer-body py-0.5">
 									{#if col.tree}
@@ -349,20 +339,5 @@
 </div>
 
 <style>
-	.explorer::-webkit-scrollbar {
-		width: 4px;
-	}
-
-	.explorer::-webkit-scrollbar-track {
-		background: transparent;
-	}
-
-	.explorer::-webkit-scrollbar-thumb {
-		background: var(--wf-border);
-		border-radius: 2px;
-	}
-
-	.explorer::-webkit-scrollbar-thumb:hover {
-		background: var(--wf-fg-muted);
-	}
+	/* 滚动条样式由全局 `.wf-scroll-overlay` 提供，不在本组件本地覆盖。 */
 </style>

@@ -10,6 +10,8 @@
     Search,
     RotateCcw,
     XCircle,
+    Eye,
+    Code2,
   } from 'lucide-svelte';
   import {
     fileEditorStore,
@@ -19,6 +21,8 @@
     type EditorDisplayMode,
     type FloatingRect,
   } from '$lib/stores/fileEditor';
+  import MarkdownPreview from './MarkdownPreview.svelte';
+  import { isMarkdownPath } from '$lib/utils/markdown';
 
   let mountPoint: HTMLDivElement | undefined;
   let editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -28,8 +32,15 @@
   let isDraggingFloating = $state(false);
   let isResizingFloating = $state(false);
 
+  // Tab drag-and-drop reorder state
+  let draggingTabIndex = $state<number | null>(null);
+  let dragOverTabIndex = $state<number | null>(null);
+
   let editorState = $derived($fileEditorStore);
   let current = $derived($activeFile);
+  // markdown 文件在 preview 模式下不挂 Monaco；切回 source 才实例化/恢复 model。
+  let isMarkdownFile = $derived(!!current && isMarkdownPath(current.path));
+  let inPreviewMode = $derived(!!current && isMarkdownFile && current.viewMode === 'preview');
 
   // ─── Monaco lifecycle ──────────────────────────────────────────────────────
   // Monaco is intentionally used without web workers here (same as Pane.svelte's
@@ -78,30 +89,50 @@
   });
 
   // Swap editor model when active tab changes.
+  //
+  // ✱ 关键：必须**先读 `current`** 再检查 `editor`。Svelte 5 $effect 只对**实际执行到**
+  //   的 reactive reads 建立订阅。如果第一次运行时 editor 尚为 null 直接 return，就会
+  //   错过对 `current` 的订阅，导致后续切 Tab / 打开新文件时 effect 不再重跑 ——
+  //   表现为：第二个及以后打开的文件 Monaco 完全没反应（也就无法编辑/保存，
+  //   因为 onDidChangeModelContent 依然绑在第一个 model 上）。
   $effect(() => {
+    const c = current; // 先订阅当前活动文件
     if (!editor) return;
-    if (!current) {
-      // No file — empty buffer
-      const m = monaco.editor.createModel('', 'plaintext');
-      const prev = editor.getModel();
-      editor.setModel(m);
-      if (prev) prev.dispose();
-      currentModelPath = null;
-      return;
-    }
-    if (current.path === currentModelPath) {
-      // Same tab — but content may have been reverted externally; sync if differs
-      if (editor.getValue() !== current.content) {
-        editor.setValue(current.content);
+    // 所有 Monaco 调用统一包 try/catch：createModel 会懒触发 language contribution 的
+    // 异步加载，失败时可能抛 Event 样式的对象，直接冒到 window 就是 “Uncaught [object Event]”。
+    // 这里把异常吞在 effect 内，同时尽量把 editor 恢复到可用状态（降级 plaintext）。
+    try {
+      if (!c) {
+        const m = monaco.editor.createModel('', 'plaintext');
+        const prev = editor.getModel();
+        // 先更新 path，再 setModel，避免 Monaco 在 setModel 时立刻回调 onDidChangeModelContent
+        // 用着旧的 currentModelPath 把新内容错写进旧文件的记录里。
+        currentModelPath = null;
+        editor.setModel(m);
+        if (prev) prev.dispose();
+        return;
       }
-      return;
+      if (c.path === currentModelPath) {
+        if (editor.getValue() !== c.content) {
+          editor.setValue(c.content);
+        }
+        return;
+      }
+      let model: monaco.editor.ITextModel;
+      try {
+        model = monaco.editor.createModel(c.content, c.language);
+      } catch (err) {
+        console.warn('[FileEditor] createModel with language failed, falling back to plaintext', c.language, err);
+        model = monaco.editor.createModel(c.content, 'plaintext');
+      }
+      const prev = editor.getModel();
+      currentModelPath = c.path;
+      editor.setModel(model);
+      if (prev) prev.dispose();
+      editor.focus();
+    } catch (err) {
+      console.error('[FileEditor] model swap failed', err);
     }
-    const model = monaco.editor.createModel(current.content, current.language);
-    const prev = editor.getModel();
-    editor.setModel(model);
-    if (prev) prev.dispose();
-    currentModelPath = current.path;
-    editor.focus();
   });
 
   // ─── Tab actions ───────────────────────────────────────────────────────────
@@ -111,6 +142,34 @@
   async function closeTab(e: MouseEvent, path: string) {
     e.stopPropagation();
     await fileEditorStore.closeFile(path);
+  }
+
+  // ─── Tab drag-reorder (HTML5 DnD, same pattern as WorkspaceTabs) ──────────
+  function onTabDragStart(e: DragEvent, index: number) {
+    draggingTabIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(index));
+    }
+  }
+  function onTabDragOver(e: DragEvent, index: number) {
+    e.preventDefault();
+    dragOverTabIndex = index;
+  }
+  function onTabDragLeave() {
+    dragOverTabIndex = null;
+  }
+  function onTabDrop(e: DragEvent, toIndex: number) {
+    e.preventDefault();
+    if (draggingTabIndex !== null && draggingTabIndex !== toIndex) {
+      fileEditorStore.reorder(draggingTabIndex, toIndex);
+    }
+    draggingTabIndex = null;
+    dragOverTabIndex = null;
+  }
+  function onTabDragEnd() {
+    draggingTabIndex = null;
+    dragOverTabIndex = null;
   }
   function setMode(mode: EditorDisplayMode) {
     fileEditorStore.setDisplayMode(mode);
@@ -216,9 +275,22 @@
     if (editorState.displayMode !== 'floating') return;
     fileEditorStore.setFloatingRect(clampRectToViewport(editorState.floatingRect));
   }
+  // Monaco / AMD loader 偶发把异步加载失败以 Event 对象形式扔到 unhandledrejection，
+  // 表现成 "Uncaught [object Event]"。这里接住并降级为 warn，不影响编辑器主流程。
+  function onUnhandledRejection(e: PromiseRejectionEvent) {
+    const reason = e.reason;
+    if (reason instanceof Event || (reason && typeof reason === 'object' && 'type' in reason && 'target' in reason)) {
+      console.warn('[FileEditor] swallowed Event-shaped rejection', reason);
+      e.preventDefault();
+    }
+  }
   onMount(() => {
     window.addEventListener('resize', onWindowResize);
-    return () => window.removeEventListener('resize', onWindowResize);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
   });
 
   // Close settings dropdown on outside click
@@ -239,8 +311,10 @@
       const r = editorState.floatingRect;
       return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 60;`;
     }
-    // drawer: anchored to the right, full-height
-    return `position: fixed; top: 0; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 40;`;
+    // drawer: anchored to the right, **below the 44px header bar** so the
+    // titlebar + workspace tabs remain visible/interactive (用户反馈：抽屉不能遮挡顶部 header)。
+    const TOP_OFFSET = 44;
+    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 40;`;
   });
 </script>
 
@@ -256,14 +330,22 @@
     >
       <!-- Tabs -->
       <div class="flex items-center min-w-0 flex-1 overflow-x-auto wf-tab-scroll">
-        {#each editorState.openFiles as f (f.path)}
+        {#each editorState.openFiles as f, i (f.path)}
           <button
             type="button"
-            class="group flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-[12px] shrink-0 border-r border-[var(--wf-border)] transition-colors {editorState.activePath === f.path
+            class="group flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-[12px] shrink-0 border-r border-[var(--wf-border)] transition-colors cursor-grab active:cursor-grabbing {editorState.activePath === f.path
               ? 'bg-[var(--wf-bg-raised)] text-[var(--wf-fg)]'
-              : 'text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/60 hover:text-[var(--wf-fg)]'}"
+              : 'text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/60 hover:text-[var(--wf-fg)]'}
+              {draggingTabIndex === i ? 'opacity-50' : ''}
+              {dragOverTabIndex === i && draggingTabIndex !== null && draggingTabIndex !== i ? 'ring-1 ring-[var(--wf-accent)]/60 ring-inset' : ''}"
             onclick={() => activateTab(f.path)}
             title={f.path}
+            draggable="true"
+            ondragstart={(e) => onTabDragStart(e, i)}
+            ondragover={(e) => onTabDragOver(e, i)}
+            ondragleave={onTabDragLeave}
+            ondrop={(e) => onTabDrop(e, i)}
+            ondragend={onTabDragEnd}
           >
             <span class="truncate max-w-[160px]">{f.name}</span>
             {#if f.isDirty}
@@ -369,9 +451,51 @@
       </div>
     </div>
 
-    <!-- ═══ Monaco host ═══ -->
+    <!-- ═══ Monaco host ═══
+         Monaco 始终挂载；markdown 预览模式下用一块绝对定位的预览盖在上面。
+         这样切 source ↔ preview 不需要销毁重建 Monaco，编辑历史 / undo 栈都保留。 -->
     <div class="flex-1 min-h-0 relative">
-      <div bind:this={mountPoint} class="absolute inset-0"></div>
+      <div
+        bind:this={mountPoint}
+        class="absolute inset-0"
+        style={inPreviewMode ? 'visibility: hidden;' : ''}
+      ></div>
+
+      {#if current && isMarkdownFile && inPreviewMode}
+        <div class="absolute inset-0 overflow-y-auto wf-scroll-overlay bg-[var(--wf-bg-raised)]">
+          <MarkdownPreview
+            content={current.content}
+            onChange={(next) => fileEditorStore.updateContent(current!.path, next)}
+            onRequestEdit={() => fileEditorStore.setViewMode(current!.path, 'source')}
+          />
+        </div>
+      {/if}
+
+      <!-- Preview ↔ Source 切换按钮：右上角浮动 pill，半透明玻璃态。
+           仅对 markdown 文件渲染；悬停收到正式 accent，保证不抢主内容视觉重量。 -->
+      {#if current && isMarkdownFile}
+        <button
+          type="button"
+          class="absolute top-2.5 right-3 z-10 flex items-center gap-1.5 h-7 pl-2 pr-2.5 rounded-full text-[11px] font-medium
+                 bg-[var(--wf-surface)]/60 backdrop-blur-md border border-[var(--wf-border)]
+                 text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]/85 hover:border-[var(--wf-accent)]/40
+                 transition-colors shadow-lg shadow-black/20"
+          title={inPreviewMode ? '切换到源码编辑 (Markdown)' : '切换到预览 (Markdown)'}
+          onclick={() =>
+            fileEditorStore.setViewMode(
+              current!.path,
+              inPreviewMode ? 'source' : 'preview'
+            )}
+        >
+          {#if inPreviewMode}
+            <Code2 class="h-3.5 w-3.5" />
+            <span>源码</span>
+          {:else}
+            <Eye class="h-3.5 w-3.5" />
+            <span>预览</span>
+          {/if}
+        </button>
+      {/if}
     </div>
 
     <!-- ═══ Status bar ═══ -->

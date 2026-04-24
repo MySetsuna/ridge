@@ -43,6 +43,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
+    .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -208,11 +209,19 @@ pub fn run() {
             git::is_git_repo,
         git::get_git_info_with_cwd,
             git::find_git_repo_root,
+            git::find_git_repos_below,
             git::get_scm_status,
             git::git_stage,
             git::git_unstage,
             git::git_discard,
             git::git_commit,
+            git::git_list_branches,
+            git::git_checkout,
+            git::git_fetch,
+            git::git_pull,
+            git::git_push,
+            git::git_sync,
+            git::git_diff_file,
             pane::close_pane,
             pane::dock_pane,
             pane::get_pane_layout,
@@ -265,8 +274,12 @@ pub fn run() {
             wind_file::get_workspace_save_info,
             wind_file::list_workspace_save_info,
             wind_file::get_last_opened_workspace_path,
+            wind_file::get_startup_context,
             wind_file::clear_last_opened_workspace_path,
             wind_file::get_default_workspace_save_dir,
+            wind_file::browse_directory,
+            wind_file::list_recent_workspaces,
+            wind_file::clear_recent_workspaces,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

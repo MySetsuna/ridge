@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// 与前端 GitGraph 约定一致
@@ -199,6 +199,74 @@ pub fn find_git_repo_root(path: String) -> Option<String> {
     }
 }
 
+/// 向下（从 `path` 起的子目录里）扫描所有 git 仓库根。
+/// 规则：
+///   - 广度优先，`max_depth` 限制递归深度（默认 4 层，避免 node_modules 级爆炸）；
+///   - 命中 `.git` 后不再进入其子目录，避免 submodule/嵌套仓库的假阳性；
+///   - 跳过典型的大型非源码目录（node_modules / target / dist / .venv 等），大幅加速；
+///   - `path` 本身若带 `.git` 也会算作结果（即 path 就是仓库根）。
+///
+/// 前端 SourceControl 会对每个活动 pane 的 cwd 调用一次；结果再去重后即得到
+/// 当前工作区视野中的全部仓库。返回的路径均为 Windows 下正斜杠形式，和
+/// `paneCwdStore` 的键空间保持一致。
+#[tauri::command]
+pub fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec<String> {
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules", "target", "dist", "build", ".venv", "venv", "__pycache__",
+        ".cache", ".next", ".nuxt", ".svelte-kit", ".parcel-cache", ".turbo", ".yarn",
+    ];
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let limit = max_depth.unwrap_or(4);
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root, 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if dir.join(".git").exists() {
+            out.push(canonicalize_cwd(&dir));
+            continue; // 不进入仓库内部
+        }
+        if depth >= limit {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') && name_str.as_ref() != ".git" {
+                // 跳过 .github / .vscode 等配置目录；`.git` 本身已在上方单独处理。
+                continue;
+            }
+            if SKIP_DIRS.contains(&name_str.as_ref()) {
+                continue;
+            }
+            stack.push((entry.path(), depth + 1));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn canonicalize_cwd(p: &Path) -> String {
+    let s = p.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        s.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        s
+    }
+}
+
 /// VSCode-风格的 Source Control 文件条目：既能表示已暂存，也能表示未暂存/未跟踪。
 #[derive(Clone, Debug, Serialize)]
 pub struct ScmFile {
@@ -360,18 +428,179 @@ pub fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> 
 }
 
 /// 创建 commit（使用 -m message）。未 stage 的更改不会被提交。
+/// amend=true 时等价 `git commit --amend -m`，用于修改最近一次提交。
 #[tauri::command]
-pub fn git_commit(repo_root: String, message: String) -> Result<(), String> {
+pub fn git_commit(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
     if message.trim().is_empty() { return Err("Commit message is empty".to_string()); }
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
-        .args(["commit", "-m", &message])
-        .current_dir(path).output().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("git");
+    cmd.args(["commit", "-m", &message]);
+    if amend.unwrap_or(false) { cmd.arg("--amend"); }
+    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
         return Err(if s.is_empty() { String::from_utf8_lossy(&out.stdout).to_string() } else { s });
     }
     Ok(())
+}
+
+// ─── VSCode-parity: 分支 / 远端同步 / 文件 diff ────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+    pub is_remote: bool,
+    /// upstream tracking ref, e.g. "origin/main"; None for detached / unset.
+    pub upstream: Option<String>,
+}
+
+/// 列出本地 + 远端分支（去掉 HEAD 指针行），标记当前分支。
+#[tauri::command]
+pub fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, String> {
+    let path = Path::new(&repo_root);
+    let out = Command::new("git")
+        .args([
+            "branch",
+            "--all",
+            "--format=%(refname:short)%09%(HEAD)%09%(upstream:short)",
+        ])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut result: Vec<BranchInfo> = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim_end();
+        if line.is_empty() { continue; }
+        // 跳过 remotes/origin/HEAD -> origin/main 这种 symbolic ref
+        if line.contains(" -> ") { continue; }
+        let mut parts = line.splitn(3, '\t');
+        let name = parts.next().unwrap_or("").to_string();
+        let head_mark = parts.next().unwrap_or("");
+        let upstream = parts.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        if name.is_empty() { continue; }
+        let is_current = head_mark == "*";
+        let is_remote = name.starts_with("origin/") || name.starts_with("remotes/");
+        result.push(BranchInfo { name, is_current, is_remote, upstream });
+    }
+    Ok(result)
+}
+
+/// 切换到指定分支。`create=true` 时基于当前 HEAD 创建新分支并切换（git checkout -b）。
+#[tauri::command]
+pub fn git_checkout(repo_root: String, branch: String, create: Option<bool>) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let mut cmd = Command::new("git");
+    if create.unwrap_or(false) {
+        cmd.args(["checkout", "-b", &branch]);
+    } else {
+        // 远端分支（origin/foo）checkout 时自动创建本地 tracking 分支
+        let local = branch.strip_prefix("origin/").unwrap_or(&branch);
+        if local != branch {
+            cmd.args(["checkout", "--track", &branch]);
+        } else {
+            cmd.args(["checkout", &branch]);
+        }
+    }
+    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let s = String::from_utf8_lossy(&out.stderr).to_string();
+        return Err(if s.is_empty() { String::from_utf8_lossy(&out.stdout).to_string() } else { s });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn git_fetch(repo_root: String) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let out = Command::new("git")
+        .args(["fetch", "--all", "--prune"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn git_pull(repo_root: String) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let out = Command::new("git")
+        .args(["pull", "--ff-only"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let mut cmd = Command::new("git");
+    if set_upstream.unwrap_or(false) {
+        // 首次 push 需要 --set-upstream；前端在发现 upstream=None 时传 true。
+        cmd.args(["push", "--set-upstream", "origin", "HEAD"]);
+    } else {
+        cmd.arg("push");
+    }
+    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
+/// 同步当前分支：fetch + pull + push（失败任一步即中止并返回错误）。
+/// 对应 VSCode SCM 的 "Sync Changes" 按钮语义。
+#[tauri::command]
+pub fn git_sync(repo_root: String) -> Result<(), String> {
+    let path = Path::new(&repo_root);
+    let steps: &[&[&str]] = &[
+        &["fetch", "--all", "--prune"],
+        &["pull", "--ff-only"],
+        &["push"],
+    ];
+    for args in steps {
+        let out = Command::new("git")
+            .args(*args)
+            .current_dir(path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            // pull/push 无远端跟踪时给更友好的提示
+            if err.contains("no upstream") {
+                return Err("当前分支没有设置上游远端；请先执行 Push with Upstream。".into());
+            }
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// 文件 diff。`cached=true` 返回已暂存 diff (HEAD vs index)；false 返回工作区 diff (index vs working tree)。
+#[tauri::command]
+pub fn git_diff_file(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
+    let repo = Path::new(&repo_root);
+    let mut cmd = Command::new("git");
+    cmd.args(["--no-pager", "diff", "--no-color", "--unified=3"]);
+    if cached.unwrap_or(false) { cmd.arg("--cached"); }
+    cmd.arg("--");
+    cmd.arg(&path);
+    let out = cmd.current_dir(repo).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// 从 pane 的 cwd 获取 git 仓库信息

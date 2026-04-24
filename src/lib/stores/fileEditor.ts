@@ -8,6 +8,7 @@
 
 import { writable, get, derived } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isMarkdownPath } from '$lib/utils/markdown';
 
 export type EditorDisplayMode = 'drawer' | 'floating';
 
@@ -26,6 +27,11 @@ export interface OpenFile {
   isDirty: boolean;
   /** Order added; used to restore order when switching tabs. */
   openedAt: number;
+  /**
+   * View mode. Relevant for languages with a dedicated preview renderer (markdown).
+   * Markdown files default to 'preview'; everything else is 'source'.
+   */
+  viewMode: 'source' | 'preview';
 }
 
 export interface FloatingRect {
@@ -213,6 +219,8 @@ function createStore() {
         language: langFromPath(path),
         isDirty: false,
         openedAt: Date.now(),
+        // markdown 默认进 preview；其他语言没有 preview 概念，统一 source。
+        viewMode: isMarkdownPath(path) ? 'preview' : 'source',
       };
       update((s) => ({
         ...s,
@@ -227,6 +235,33 @@ function createStore() {
       update((s) => {
         if (!s.openFiles.some((f) => f.path === path)) return s;
         return { ...s, activePath: path };
+      });
+    },
+
+    /** Set the view mode (source/preview) for the given tab. */
+    setViewMode(path: string, mode: 'source' | 'preview'): void {
+      update((s) => ({
+        ...s,
+        openFiles: s.openFiles.map((f) => (f.path === path ? { ...f, viewMode: mode } : f)),
+      }));
+    },
+
+    /** Reorder open tabs (drag-and-drop). No-op if indices equal or OOB. */
+    reorder(fromIndex: number, toIndex: number): void {
+      update((s) => {
+        if (
+          fromIndex === toIndex ||
+          fromIndex < 0 ||
+          toIndex < 0 ||
+          fromIndex >= s.openFiles.length ||
+          toIndex >= s.openFiles.length
+        ) {
+          return s;
+        }
+        const next = [...s.openFiles];
+        const [moved] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, moved);
+        return { ...s, openFiles: next };
       });
     },
 

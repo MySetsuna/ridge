@@ -118,8 +118,13 @@ pub fn reorder_workspaces(state: State<'_, AppState>, from_index: usize, to_inde
 #[tauri::command]
 pub fn rename_workspace(state: State<'_, AppState>, workspace_id: String, name: String) -> Result<(), String> {
     let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
-    let mut names = state.workspace_names.write();
-    names.insert(id, name);
+    {
+        let mut names = state.workspace_names.write();
+        names.insert(id, name);
+    }
+    // 重命名需要立刻反映到 .wind 文件的 `name` 字段，让磁盘侧与 UI 保持一致；
+    // `schedule_auto_save` 仅在工作区已关联文件时才实际落盘，未保存工作区为 no-op。
+    crate::commands::wind_file::schedule_auto_save(&*state, id);
     Ok(())
 }
 

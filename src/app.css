@@ -70,6 +70,63 @@ body {
   background-clip: padding-box;
 }
 
+/*
+ * Overlay 风格滚动条：平时完全透明隐藏，滚动或鼠标悬停容器/滑块时才显形。
+ *
+ * 尺寸稳定性：视觉细条做到 4px，hover 时变到 8px —— 但 webkit 滚动条占用的
+ * gutter 宽度始终是 10px（通过 `padding-box + 透明 border` 改变可见宽度，
+ * 不改 scrollbar 自身 width）。这样内容区不会随 hover 抖动。
+ *
+ * 滚动可见：JS 侧 `scrollOverlay` action 给正在滚动的容器加 `.wf-scrolling`，
+ * ~800ms 无动作后自动移除；CSS 把 thumb 颜色绑在 `.wf-scrolling` 或 :hover 上。
+ *
+ * 箭头按钮：`-webkit-scrollbar-button { display: none }` —— Windows WebView2
+ * 默认会画上下箭头，必须显式去掉。
+ */
+.wf-scroll-overlay {
+  scrollbar-width: none; /* Firefox: 默认隐藏；hover / scroll 态靠 JS 切 class 接管 */
+  /*
+   * 始终保留 scrollbar gutter 空间 —— 否则内容由「刚好塞下」过渡到「溢出」的那一瞬间，
+   * 滚动条出现会把可用宽度切走 ~10px，带来整体布局重排。stable 让 gutter 永远在位，
+   * 不论 thumb 是否可见；配合下面的 webkit 伪元素，thumb 透明时也不会抢视觉权重。
+   */
+  scrollbar-gutter: stable;
+}
+.wf-scroll-overlay.wf-scrolling {
+  scrollbar-width: thin;
+  scrollbar-color: var(--wf-scrollbar) transparent;
+}
+.wf-scroll-overlay::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.wf-scroll-overlay::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
+}
+.wf-scroll-overlay::-webkit-scrollbar-corner,
+.wf-scroll-overlay::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wf-scroll-overlay::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  /* 细条视觉宽 4px = 10 - 2*3 */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 160ms ease, border-width 160ms ease;
+}
+.wf-scroll-overlay.wf-scrolling::-webkit-scrollbar-thumb,
+.wf-scroll-overlay:hover::-webkit-scrollbar-thumb {
+  background-color: var(--wf-scrollbar);
+}
+.wf-scroll-overlay::-webkit-scrollbar-thumb:hover {
+  /* 粗条视觉宽 8px = 10 - 2*1 */
+  border-width: 1px;
+  background-color: var(--wf-scrollbar-hover);
+}
+
 /* 无边框窗口：与 data-tauri-drag-region 并存时，避免按钮触发系统拖动 */
 .wf-no-drag {
   -webkit-app-region: no-drag;

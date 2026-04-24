@@ -110,8 +110,47 @@ fn last_opened_pointer_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("last_workspace.txt")
 }
 
+fn recent_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("recent_workspaces.json")
+}
+
+const RECENT_MAX: usize = 10;
+
+fn load_recent(app: &tauri::AppHandle) -> Vec<String> {
+    let p = recent_workspaces_path(app);
+    if !p.is_file() {
+        return Vec::new();
+    }
+    match std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()) {
+        Some(v) => v,
+        None => Vec::new(),
+    }
+}
+
+fn save_recent(app: &tauri::AppHandle, list: &[String]) {
+    if let Ok(s) = serde_json::to_string_pretty(list) {
+        let _ = std::fs::write(recent_workspaces_path(app), s);
+    }
+}
+
+/// 推入最近打开列表顶部并去重；截断到 `RECENT_MAX`。
+fn push_recent(app: &tauri::AppHandle, path: &Path) {
+    let canonical = path.to_string_lossy().to_string();
+    let mut list = load_recent(app);
+    list.retain(|p| p != &canonical);
+    list.insert(0, canonical);
+    list.truncate(RECENT_MAX);
+    save_recent(app, &list);
+}
+
 fn set_last_opened(app: &tauri::AppHandle, path: &Path) {
     let _ = std::fs::write(last_opened_pointer_path(app), path.to_string_lossy().as_bytes());
+    push_recent(app, path);
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -325,6 +364,48 @@ pub fn open_workspace_from_file(
     Ok(new_id.to_string())
 }
 
+/// 启动上下文：当前进程 cwd + cwd 顶层第一个 `.wind` 文件（若存在）。
+///
+/// 前端在 `onMount` 里读它来决定启动行为：
+/// - `wind_file_in_cwd` 非空：打开该 .wind 工作区（取代 last-opened 自动恢复）；
+/// - 为空：默认工作区第一颗 pane 的 cwd 已在 `AppState::new` 中种为此 `cwd`，
+///   直接沿用即可，前端无需额外动作。
+#[derive(Debug, Serialize)]
+pub struct StartupContext {
+    pub cwd: String,
+    pub wind_file_in_cwd: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_startup_context() -> Result<StartupContext, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    // 只扫一层：避免在用户主目录 / 大型项目根下做深度遍历，也匹配用户预期
+    // “cwd 内是否直接放着 .wind”。
+    let mut wind_files: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cwd) {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("wind") {
+                wind_files.push(path);
+            }
+        }
+    }
+    // 字典序取首个，结果稳定可预测；多数场景用户只会放 0 或 1 个 .wind。
+    wind_files.sort();
+    let wind_file_in_cwd = wind_files
+        .into_iter()
+        .next()
+        .map(|p| p.to_string_lossy().to_string());
+    Ok(StartupContext {
+        cwd: cwd.to_string_lossy().to_string(),
+        wind_file_in_cwd,
+    })
+}
+
 #[tauri::command]
 pub fn get_last_opened_workspace_path(app_handle: tauri::AppHandle) -> Result<Option<String>, String> {
     let ptr = last_opened_pointer_path(&app_handle);
@@ -340,6 +421,30 @@ pub fn get_last_opened_workspace_path(app_handle: tauri::AppHandle) -> Result<Op
     }
 }
 
+/// 列出最近打开的 .wind 路径，顺序新在前；只保留仍存在的文件，过滤掉已失效项。
+#[tauri::command]
+pub fn list_recent_workspaces(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let raw = load_recent(&app_handle);
+    let alive: Vec<String> = raw
+        .into_iter()
+        .filter(|p| PathBuf::from(p).is_file())
+        .collect();
+    // 若有过滤掉的，同步写回清理后的状态
+    if alive.len() != load_recent(&app_handle).len() {
+        save_recent(&app_handle, &alive);
+    }
+    Ok(alive)
+}
+
+#[tauri::command]
+pub fn clear_recent_workspaces(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let p = recent_workspaces_path(&app_handle);
+    if p.is_file() {
+        std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn clear_last_opened_workspace_path(app_handle: tauri::AppHandle) -> Result<(), String> {
     let ptr = last_opened_pointer_path(&app_handle);
@@ -352,6 +457,57 @@ pub fn clear_last_opened_workspace_path(app_handle: tauri::AppHandle) -> Result<
 #[tauri::command]
 pub fn get_default_workspace_save_dir() -> Result<String, String> {
     Ok(default_save_dir().to_string_lossy().to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct DirListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub subdirs: Vec<String>,
+}
+
+/// 目录浏览：返回给定路径下的直接子目录列表 + 可返回的父目录。
+/// 用于保存工作区对话框里的目录选择器：不存在的路径会被规范化到最近的已存在祖先。
+#[tauri::command]
+pub fn browse_directory(path: Option<String>) -> Result<DirListing, String> {
+    let start = match path {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
+    };
+    // 规范化：如果输入不存在，退回到最近的存在祖先。
+    let mut cur = start.clone();
+    while !cur.is_dir() {
+        match cur.parent() {
+            Some(p) => cur = p.to_path_buf(),
+            None => {
+                cur = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                break;
+            }
+        }
+    }
+    let parent = cur.parent().map(|p| p.to_string_lossy().to_string());
+    let mut subdirs: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cur) {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy().to_string();
+            // 过滤掉隐藏目录（Unix 约定 `.` 前缀）
+            if name_str.starts_with('.') {
+                continue;
+            }
+            subdirs.push(name_str);
+        }
+    }
+    subdirs.sort_by_key(|s| s.to_lowercase());
+    Ok(DirListing {
+        path: cur.to_string_lossy().to_string(),
+        parent,
+        subdirs,
+    })
 }
 
 // ─── Auto-save scheduler ───────────────────────────────────────────────────

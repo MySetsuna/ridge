@@ -84,14 +84,44 @@ pub fn remove_project(project_id: i64, state: State<'_, AppState>) -> Result<(),
     Ok(())
 }
 
+/// 把前端传来的路径统一成系统原生形式，修复 Windows 下 `C:/a/b\c` 这类正/反斜杠混用
+/// 时 `PathBuf::exists()` 偶发返回 false 的问题，也顺手去掉尾部分隔符、trim 空白。
+fn normalize_path_input(input: &str) -> PathBuf {
+    let trimmed = input.trim().trim_end_matches(|c: char| c == '/' || c == '\\');
+    #[cfg(windows)]
+    {
+        // 统一为反斜杠；Windows API 接受两者，但混用时 Rust stdlib 某些内部路径比较会失败。
+        let mut s = trimmed.replace('/', "\\");
+        // 驱动器根（`C:/` / `C:\`）在上面被把尾分隔符削掉后会退化成 `C:`，
+        // 而 Windows 里裸的 `C:` 不是"C 盘根"，是"进程最近一次在 C 盘的 cwd"，
+        // `read_dir` 会读到 Wind 自己的运行目录。补回分隔符还原真正的根。
+        if s.len() == 2
+            && s.as_bytes()[0].is_ascii_alphabetic()
+            && s.as_bytes()[1] == b':'
+        {
+            s.push('\\');
+        }
+        PathBuf::from(s)
+    }
+    #[cfg(not(windows))]
+    {
+        // 对 POSIX 根 `/` 做同样的守卫：trim_end_matches 会把它削成空串。
+        if trimmed.is_empty() && input.contains('/') {
+            PathBuf::from("/")
+        } else {
+            PathBuf::from(trimmed)
+        }
+    }
+}
+
 #[tauri::command]
 pub fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, String> {
-    let root = PathBuf::from(&path);
+    let root = normalize_path_input(&path);
     if !root.exists() {
-        return Err("Path does not exist".to_string());
+        return Err(format!("Path does not exist: {}", root.display()));
     }
     if !root.is_dir() {
-        return Err("Path is not a directory".to_string());
+        return Err(format!("Path is not a directory: {}", root.display()));
     }
 
     let max_depth = depth.unwrap_or(5);
@@ -101,12 +131,12 @@ pub fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, Str
 
 #[tauri::command]
 pub fn get_directory_children(path: String) -> Result<Vec<FileNode>, String> {
-    let dir = PathBuf::from(&path);
+    let dir = normalize_path_input(&path);
     if !dir.exists() {
-        return Err("Path does not exist".to_string());
+        return Err(format!("Path does not exist: {}", dir.display()));
     }
     if !dir.is_dir() {
-        return Err("Path is not a directory".to_string());
+        return Err(format!("Path is not a directory: {}", dir.display()));
     }
 
     FileTree::get_children(&dir)

@@ -7,11 +7,18 @@
     ChevronDown,
     GitBranch,
     GitCommit,
+    GitPullRequestArrow,
     RefreshCw,
     Plus,
     Minus,
     Undo2,
     FileText,
+    RotateCw,
+    ArrowDown,
+    ArrowUp,
+    X,
+    MoreHorizontal,
+    Check,
   } from 'lucide-svelte';
   import { Splitpanes, Pane as SPane } from 'svelte-splitpanes';
   import {
@@ -104,16 +111,20 @@
 
     discoveryLoading = true;
     try {
+      // 按用户要求：只向下扫描当前 cwd 的子目录找 .git，不再向上找。
+      // 这意味着当前 cwd 就是仓库根 / 或它的父目录集 —— 子仓库都会被发现；
+      // 若用户身处 `repo/src` 这样的深子目录，则不会再把 `repo` 识别成仓库
+      // （这是用户明确要求的语义：`git仓库检索不需要向上层文件夹查找，只需要向下`）。
       const found = new Map<string, number>();
       await Promise.all(
         uniqueCwds.map(async (cwd) => {
           try {
-            const root = await invoke<string | null>('find_git_repo_root', { path: cwd });
-            if (root) {
-              found.set(root, (found.get(root) ?? 0) + 1);
+            const roots = await invoke<string[]>('find_git_repos_below', { path: cwd, maxDepth: 4 });
+            for (const r of roots) {
+              found.set(r, (found.get(r) ?? 0) + 1);
             }
           } catch {
-            /* ignore — not a repo */
+            /* ignore */
           }
         })
       );
@@ -203,7 +214,7 @@
       alert(`Discard failed: ${e}`);
     }
   }
-  async function commit(root: string): Promise<void> {
+  async function commit(root: string, amend = false): Promise<void> {
     const msg = (commitMessage[root] ?? '').trim();
     if (!msg) {
       alert('请输入提交信息');
@@ -211,7 +222,7 @@
     }
     committing = true;
     try {
-      await invoke('git_commit', { repoRoot: root, message: msg });
+      await invoke('git_commit', { repoRoot: root, message: msg, amend });
       commitMessage = { ...commitMessage, [root]: '' };
       await refreshStatus(root);
       if (root === selectedRepo) await loadGraph(root);
@@ -220,6 +231,120 @@
     } finally {
       committing = false;
     }
+  }
+
+  // ─── 远端操作 + 分支切换（VSCode 风格）──────────────────────────────────
+  interface BranchInfo {
+    name: string;
+    is_current: boolean;
+    is_remote: boolean;
+    upstream: string | null;
+  }
+  let branchLists: Record<string, BranchInfo[]> = $state({});
+  let branchPickerOpen = $state<string>(''); // root whose picker is open
+  let syncing = $state<string>(''); // root currently running a sync op
+
+  async function loadBranches(root: string): Promise<void> {
+    try {
+      branchLists = {
+        ...branchLists,
+        [root]: await invoke<BranchInfo[]>('git_list_branches', { repoRoot: root }),
+      };
+    } catch (e) {
+      console.error('list branches', e);
+    }
+  }
+  async function openBranchPicker(root: string): Promise<void> {
+    if (branchPickerOpen === root) {
+      branchPickerOpen = '';
+      return;
+    }
+    branchPickerOpen = root;
+    await loadBranches(root);
+  }
+  async function switchBranch(root: string, branch: string): Promise<void> {
+    branchPickerOpen = '';
+    try {
+      await invoke('git_checkout', { repoRoot: root, branch, create: false });
+      await refreshStatus(root);
+      await loadBranches(root);
+      if (root === selectedRepo) await loadGraph(root);
+    } catch (e) {
+      alert(`切换分支失败: ${e}`);
+    }
+  }
+  async function createBranch(root: string): Promise<void> {
+    const name = prompt('新分支名称');
+    if (!name || !name.trim()) return;
+    branchPickerOpen = '';
+    try {
+      await invoke('git_checkout', { repoRoot: root, branch: name.trim(), create: true });
+      await refreshStatus(root);
+      await loadBranches(root);
+    } catch (e) {
+      alert(`创建分支失败: ${e}`);
+    }
+  }
+  async function runSync(root: string, op: 'fetch' | 'pull' | 'push' | 'sync'): Promise<void> {
+    if (syncing) return;
+    syncing = root;
+    try {
+      const status = statuses[root];
+      if (op === 'push' && status?.current_branch && !hasUpstream(root, status.current_branch)) {
+        await invoke('git_push', { repoRoot: root, setUpstream: true });
+      } else if (op === 'sync') {
+        await invoke('git_sync', { repoRoot: root });
+      } else {
+        await invoke(`git_${op}`, { repoRoot: root });
+      }
+      await refreshStatus(root);
+      await loadBranches(root);
+      if (root === selectedRepo) await loadGraph(root);
+    } catch (e) {
+      alert(`${op} 失败: ${e}`);
+    } finally {
+      syncing = '';
+    }
+  }
+  function hasUpstream(root: string, branchName: string): boolean {
+    const list = branchLists[root] ?? [];
+    const b = list.find((x) => x.name === branchName);
+    return !!b?.upstream;
+  }
+
+  // ─── 差异预览（VSCode 风格：点击文件行打开 diff 弹窗）────────────────
+  let diffOpen = $state(false);
+  let diffTitle = $state('');
+  let diffContent = $state('');
+  let diffLoading = $state(false);
+  async function showDiff(root: string, path: string, cached: boolean): Promise<void> {
+    diffOpen = true;
+    diffTitle = `${cached ? '[已暂存] ' : ''}${path}`;
+    diffContent = '';
+    diffLoading = true;
+    try {
+      diffContent = await invoke<string>('git_diff_file', { repoRoot: root, path, cached });
+      if (!diffContent.trim()) diffContent = '(无差异或为新增文件；内容未进入 git 索引)';
+    } catch (e) {
+      diffContent = String(e);
+    } finally {
+      diffLoading = false;
+    }
+  }
+
+  // 每次扫描完成后，同步加载各仓库的分支信息（供 header 显示 upstream 状态）。
+  $effect(() => {
+    for (const root of repoRoots) {
+      if (!branchLists[root]) void loadBranches(root);
+    }
+  });
+
+  function diffLineClass(line: string): string {
+    if (line.startsWith('+++') || line.startsWith('---')) return 'text-[var(--wf-fg-muted)]';
+    if (line.startsWith('+')) return 'text-green-400 bg-green-500/10';
+    if (line.startsWith('-')) return 'text-red-400 bg-red-500/10';
+    if (line.startsWith('@@')) return 'text-blue-400 bg-blue-500/10';
+    return 'text-[var(--wf-fg)]';
   }
 
   // ─── Status label / color ──────────────────────────────────────────────────
@@ -346,24 +471,99 @@
           {:else}
             {#each repoRoots as root (root)}
               {@const s = statuses[root]}
-              <div class="scm-repo border-b border-[var(--wf-border)]/60 last:border-b-0">
-                <!-- Repo header -->
-                <div class="px-3 py-1.5 bg-[var(--wf-surface)]/60 flex items-center gap-2 select-none">
-                  <GitBranch class="h-3 w-3 shrink-0 text-[var(--wf-accent)]" />
-                  <span class="text-[11px] font-semibold truncate flex-1" title={root}>
+              <div class="scm-repo border-b border-[var(--wf-border)]/60 last:border-b-0 relative">
+                <!-- Repo header（VSCode 风格）：仓库名 + 分支 picker + 同步/拉取/推送 -->
+                <div class="px-3 py-1.5 bg-[var(--wf-surface)]/60 flex items-center gap-1.5 select-none">
+                  <span class="text-[11px] font-semibold truncate flex-1 min-w-0" title={root}>
                     {repoName(root)}
                   </span>
-                  {#if s?.current_branch}
-                    <span class="text-[10px] px-1.5 py-0 rounded bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] truncate max-w-[110px]">
-                      {s.current_branch}
-                    </span>
-                  {/if}
+
+                  <!-- 分支 picker 入口 -->
+                  <button
+                    type="button"
+                    class="flex items-center gap-1 h-6 px-1.5 rounded text-[10px] bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] hover:bg-[var(--wf-accent)]/25 transition-colors max-w-[140px]"
+                    onclick={() => void openBranchPicker(root)}
+                    title={s?.current_branch ? `当前分支：${s.current_branch}（点击切换）` : '切换分支'}
+                  >
+                    <GitBranch class="h-3 w-3 shrink-0" />
+                    <span class="truncate">{s?.current_branch ?? '(detached)'}</span>
+                  </button>
+
+                  <!-- 上/下箭头显示 ahead/behind；点击触发 sync -->
                   {#if s && (s.ahead > 0 || s.behind > 0)}
-                    <span class="text-[10px] text-[var(--wf-fg-muted)]">
-                      {#if s.ahead > 0}↑{s.ahead}{/if}{#if s.behind > 0}↓{s.behind}{/if}
-                    </span>
+                    <button
+                      type="button"
+                      class="flex items-center gap-0.5 h-6 px-1.5 rounded text-[10px] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+                      onclick={() => void runSync(root, 'sync')}
+                      disabled={syncing === root}
+                      title="同步（fetch + pull + push）"
+                    >
+                      {#if s.behind > 0}<ArrowDown class="h-3 w-3" /><span>{s.behind}</span>{/if}
+                      {#if s.ahead > 0}<ArrowUp class="h-3 w-3" /><span>{s.ahead}</span>{/if}
+                    </button>
                   {/if}
+
+                  <!-- 单独 Fetch / Pull / Push 按钮（VSCode overflow 菜单里的快捷替代）-->
+                  <button
+                    type="button"
+                    class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]"
+                    onclick={() => void runSync(root, 'fetch')}
+                    disabled={syncing === root}
+                    title="Fetch（git fetch --all --prune）"
+                  >
+                    <RotateCw class="h-3 w-3 {syncing === root ? 'animate-spin' : ''}" />
+                  </button>
+                  <button
+                    type="button"
+                    class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]"
+                    onclick={() => void runSync(root, 'pull')}
+                    disabled={syncing === root}
+                    title="Pull（git pull --ff-only）"
+                  >
+                    <ArrowDown class="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]"
+                    onclick={() => void runSync(root, 'push')}
+                    disabled={syncing === root}
+                    title="Push（无 upstream 时自动 -u origin HEAD）"
+                  >
+                    <ArrowUp class="h-3 w-3" />
+                  </button>
                 </div>
+
+                <!-- 分支 picker 下拉（绝对定位，覆盖头部下方；ESC/点击外部自行关闭留待下一轮）-->
+                {#if branchPickerOpen === root}
+                  {@const blist = branchLists[root] ?? []}
+                  <div class="absolute left-3 right-3 top-[34px] z-40 bg-[var(--wf-bg)] border border-[var(--wf-border)] rounded shadow-lg max-h-[260px] overflow-y-auto">
+                    <button
+                      type="button"
+                      class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--wf-accent)] hover:bg-[var(--wf-surface)] border-b border-[var(--wf-border)]/60 transition-colors"
+                      onclick={() => void createBranch(root)}
+                    >
+                      <Plus class="h-3 w-3" /> 创建新分支…
+                    </button>
+                    {#each blist as b (b.name)}
+                      <button
+                        type="button"
+                        class="group w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+                        onclick={() => void switchBranch(root, b.name)}
+                      >
+                        {#if b.is_current}
+                          <Check class="h-3 w-3 text-[var(--wf-accent)]" />
+                        {:else}
+                          <span class="w-3"></span>
+                        {/if}
+                        <GitBranch class="h-3 w-3 shrink-0 {b.is_remote ? 'text-blue-400/70' : 'text-[var(--wf-fg-muted)]'}" />
+                        <span class="truncate flex-1 text-left">{b.name}</span>
+                        {#if b.upstream}
+                          <span class="text-[9px] text-[var(--wf-fg-muted)]/70 truncate">→ {b.upstream}</span>
+                        {/if}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
 
                 {#if s}
                   {@const totalChanges = s.staged.length + s.changes.length + s.untracked.length}
@@ -381,11 +581,20 @@
                         <button
                           type="button"
                           class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] border border-[var(--wf-accent)]/30 hover:bg-[var(--wf-accent)]/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          onclick={() => commit(root)}
+                          onclick={() => commit(root, false)}
                           disabled={committing || s.staged.length === 0}
                           title={s.staged.length === 0 ? '请先暂存文件' : '提交已暂存的更改'}
                         >
                           <GitCommit class="h-3 w-3" /> 提交 {s.staged.length}
+                        </button>
+                        <button
+                          type="button"
+                          class="px-2 py-1 rounded text-[10px] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] disabled:opacity-40"
+                          onclick={() => commit(root, true)}
+                          disabled={committing || s.staged.length === 0}
+                          title="修改最近一次提交（git commit --amend）"
+                        >
+                          Amend
                         </button>
                         {#if s.changes.length + s.untracked.length > 0}
                           <button
@@ -407,25 +616,35 @@
 
                   <!-- Staged group -->
                   {#if s.staged.length > 0}
-                    <div class="scm-group">
-                      <button
-                        type="button"
-                        class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors"
-                        onclick={() => toggleGroup(root, 'staged')}
-                      >
-                        {#if isCollapsed(root, 'staged')}
-                          <ChevronRight class="h-3 w-3" />
-                        {:else}
-                          <ChevronDown class="h-3 w-3" />
-                        {/if}
-                        <span class="flex-1 text-left">已暂存</span>
+                    <div class="group/grp scm-group">
+                      <div class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors">
+                        <button type="button" class="flex items-center gap-1 flex-1 text-left" onclick={() => toggleGroup(root, 'staged')}>
+                          {#if isCollapsed(root, 'staged')}
+                            <ChevronRight class="h-3 w-3" />
+                          {:else}
+                            <ChevronDown class="h-3 w-3" />
+                          {/if}
+                          <span class="flex-1">已暂存</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-all"
+                          title="撤销暂存全部"
+                          onclick={() => unstage(root, s.staged.map((f) => f.path))}
+                        >
+                          <Minus class="h-3 w-3" />
+                        </button>
                         <span class="text-[var(--wf-fg)]">{s.staged.length}</span>
-                      </button>
+                      </div>
                       {#if !isCollapsed(root, 'staged')}
                         {#each s.staged as f (f.path)}
                           <div
-                            class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors"
-                            title={f.path}
+                            class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors cursor-pointer"
+                            title="{f.path}（点击查看差异）"
+                            role="button"
+                            tabindex="0"
+                            onclick={() => void showDiff(root, f.path, true)}
+                            onkeydown={(e) => e.key === 'Enter' && showDiff(root, f.path, true)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)]" />
                             <span class="truncate text-[var(--wf-fg)]">{basename(f.path)}</span>
@@ -439,7 +658,7 @@
                                 type="button"
                                 class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
                                 title="撤销暂存"
-                                onclick={() => unstage(root, [f.path])}
+                                onclick={(e) => { e.stopPropagation(); void unstage(root, [f.path]); }}
                               >
                                 <Minus class="h-3 w-3" />
                               </button>
@@ -455,25 +674,43 @@
 
                   <!-- Changes group -->
                   {#if s.changes.length > 0}
-                    <div class="scm-group">
-                      <button
-                        type="button"
-                        class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors"
-                        onclick={() => toggleGroup(root, 'changes')}
-                      >
-                        {#if isCollapsed(root, 'changes')}
-                          <ChevronRight class="h-3 w-3" />
-                        {:else}
-                          <ChevronDown class="h-3 w-3" />
-                        {/if}
-                        <span class="flex-1 text-left">更改</span>
+                    <div class="group/grp scm-group">
+                      <div class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors">
+                        <button type="button" class="flex items-center gap-1 flex-1 text-left" onclick={() => toggleGroup(root, 'changes')}>
+                          {#if isCollapsed(root, 'changes')}
+                            <ChevronRight class="h-3 w-3" />
+                          {:else}
+                            <ChevronDown class="h-3 w-3" />
+                          {/if}
+                          <span class="flex-1">更改</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--wf-surface)] hover:text-red-400 transition-all"
+                          title="丢弃全部未暂存更改"
+                          onclick={() => discard(root, s.changes.map((f) => f.path))}
+                        >
+                          <Undo2 class="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-all"
+                          title="暂存全部"
+                          onclick={() => stage(root, s.changes.map((f) => f.path))}
+                        >
+                          <Plus class="h-3 w-3" />
+                        </button>
                         <span class="text-[var(--wf-fg)]">{s.changes.length}</span>
-                      </button>
+                      </div>
                       {#if !isCollapsed(root, 'changes')}
                         {#each s.changes as f (f.path)}
                           <div
-                            class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors"
-                            title={f.path}
+                            class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors cursor-pointer"
+                            title="{f.path}（点击查看差异）"
+                            role="button"
+                            tabindex="0"
+                            onclick={() => void showDiff(root, f.path, false)}
+                            onkeydown={(e) => e.key === 'Enter' && showDiff(root, f.path, false)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)]" />
                             <span class="truncate text-[var(--wf-fg)]">{basename(f.path)}</span>
@@ -487,7 +724,7 @@
                                 type="button"
                                 class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
                                 title="丢弃更改"
-                                onclick={() => discard(root, [f.path])}
+                                onclick={(e) => { e.stopPropagation(); void discard(root, [f.path]); }}
                               >
                                 <Undo2 class="h-3 w-3" />
                               </button>
@@ -495,7 +732,7 @@
                                 type="button"
                                 class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
                                 title="暂存更改"
-                                onclick={() => stage(root, [f.path])}
+                                onclick={(e) => { e.stopPropagation(); void stage(root, [f.path]); }}
                               >
                                 <Plus class="h-3 w-3" />
                               </button>
@@ -638,6 +875,44 @@
     </SPane>
   </Splitpanes>
 </div>
+
+<!-- ═══ Diff modal（VSCode SCM 点击文件查看差异）═══ -->
+{#if diffOpen}
+  <div
+    role="presentation"
+    class="fixed inset-0 z-[9998] bg-black/60 flex items-center justify-center"
+    onclick={() => (diffOpen = false)}
+  >
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="文件差异"
+      class="w-[min(960px,92vw)] h-[min(720px,80vh)] flex flex-col bg-[var(--wf-bg)] border border-[var(--wf-border)] rounded-lg shadow-xl overflow-hidden"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-center gap-2 h-9 px-3 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/60">
+        <FileText class="h-3.5 w-3.5 text-[var(--wf-accent)]" />
+        <span class="text-[12px] font-mono truncate flex-1" title={diffTitle}>{diffTitle}</span>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+          title="关闭"
+          onclick={() => (diffOpen = false)}
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div class="flex-1 min-h-0 overflow-auto wf-scroll bg-[var(--wf-bg)]">
+        {#if diffLoading}
+          <div class="p-4 text-[12px] text-[var(--wf-fg-muted)]">加载中…</div>
+        {:else}
+          <pre class="p-3 text-[11px] font-mono leading-5 whitespace-pre">{#each diffContent.split('\n') as line, idx (idx)}<span class={diffLineClass(line)}>{line}
+</span>{/each}</pre>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .scm-root :global(.splitpanes__splitter) {

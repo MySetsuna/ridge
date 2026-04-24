@@ -80,10 +80,21 @@ impl AppState {
     pub fn new(event_tx: mpsc::Sender<GlobalEvent>) -> Self {
         let id = Uuid::new_v4();
         let mut map = HashMap::new();
+        let mut pane_tree = PaneTree::new();
+        // 将启动 cwd 种入默认 pane：从命令行 / 资源管理器启动时，用户期望默认终端
+        // 落在他们当前所在的目录，而不是 HOME 兜底。若无 .wind 工作区覆盖这颗默认树，
+        // 这个 cwd 将直接被 create_pane 采用。
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(&root_id) = pane_tree.panes.keys().next() {
+                if let Some(pane) = pane_tree.panes.get_mut(&root_id) {
+                    pane.cwd = Some(cwd);
+                }
+            }
+        }
         map.insert(
             id,
             Workspace {
-                pane_tree: PaneTree::new(),
+                pane_tree,
                 terminals: HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
                 teammate_pane_titles: HashMap::new(),
