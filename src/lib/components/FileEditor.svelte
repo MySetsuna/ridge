@@ -7,6 +7,7 @@
     Settings,
     Pin,
     PanelRightOpen,
+    PanelRightClose,
     Search,
     RotateCcw,
     XCircle,
@@ -23,6 +24,7 @@
   } from '$lib/stores/fileEditor';
   import MarkdownPreview from './MarkdownPreview.svelte';
   import { isMarkdownPath } from '$lib/utils/markdown';
+  import { overlayScroll } from '$lib/actions/overlayScroll';
 
   let mountPoint: HTMLDivElement | undefined;
   let editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -31,6 +33,13 @@
   let isResizingDrawer = $state(false);
   let isDraggingFloating = $state(false);
   let isResizingFloating = $state(false);
+  /**
+   * Monaco's current cursor line (1-based). Drives markdown preview auto-scroll
+   * (VS Code "Markdown: Preview Auto-Scroll"). Updated via
+   * `onDidChangeCursorPosition`; reset to null when a non-markdown tab is
+   * active so the preview ignores stale positions.
+   */
+  let editorCursorLine = $state<number | null>(null);
 
   // Tab drag-and-drop reorder state
   let draggingTabIndex = $state<number | null>(null);
@@ -40,7 +49,9 @@
   let current = $derived($activeFile);
   // markdown 文件在 preview 模式下不挂 Monaco；切回 source 才实例化/恢复 model。
   let isMarkdownFile = $derived(!!current && isMarkdownPath(current.path));
-  let inPreviewMode = $derived(!!current && isMarkdownFile && current.viewMode === 'preview');
+  let inPreviewMode = $derived(
+    !!current && isMarkdownFile && current.viewMode === 'preview'
+  );
 
   // ─── Monaco lifecycle ──────────────────────────────────────────────────────
   // Monaco is intentionally used without web workers here (same as Pane.svelte's
@@ -68,7 +79,8 @@
       language: initialLang,
       theme: 'vs-dark',
       automaticLayout: true,
-      fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
+      fontFamily:
+        '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
       fontSize: 13,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
@@ -81,6 +93,10 @@
       if (!editor || !currentModelPath) return;
       const value = editor.getValue();
       fileEditorStore.updateContent(currentModelPath, value);
+    });
+    // Track cursor line so the markdown preview can follow in preview mode.
+    editor.onDidChangeCursorPosition((ev) => {
+      editorCursorLine = ev.position.lineNumber;
     });
     // Ctrl+S / Cmd+S → save
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -122,16 +138,46 @@
       try {
         model = monaco.editor.createModel(c.content, c.language);
       } catch (err) {
-        console.warn('[FileEditor] createModel with language failed, falling back to plaintext', c.language, err);
+        console.warn(
+          '[FileEditor] createModel with language failed, falling back to plaintext',
+          c.language,
+          err
+        );
         model = monaco.editor.createModel(c.content, 'plaintext');
       }
       const prev = editor.getModel();
       currentModelPath = c.path;
       editor.setModel(model);
+      // Reset cursor line state on model swap; the next cursor-position event
+      // on the new model will repopulate it. Without this reset the preview
+      // would briefly keep scrolling using the old file's line numbers.
+      editorCursorLine = editor.getPosition()?.lineNumber ?? 1;
       if (prev) prev.dispose();
       editor.focus();
     } catch (err) {
       console.error('[FileEditor] model swap failed', err);
+    }
+  });
+
+  // One-shot reveal: when a caller opened this file with a `line/column`
+  // (e.g. a search result), drive Monaco to that position AFTER the model
+  // swap effect above has run. We run in a separate $effect so this doesn't
+  // interlock with the model-swap try/catch; if Monaco is still setting up
+  // its language contributions, `reveal*` is safe to call anyway.
+  $effect(() => {
+    const c = current;
+    if (!editor || !c) return;
+    // Only consume when the active model matches; otherwise model swap will
+    // fire this effect a second time when currentModelPath catches up.
+    if (currentModelPath !== c.path) return;
+    const r = fileEditorStore.consumePendingReveal(c.path);
+    if (!r) return;
+    try {
+      editor.revealLineInCenter(r.line);
+      editor.setPosition({ lineNumber: r.line, column: Math.max(1, r.column) });
+      editor.focus();
+    } catch (err) {
+      console.warn('[FileEditor] reveal failed', err);
     }
   });
 
@@ -273,13 +319,60 @@
   // Reclamp floating rect on viewport resize so the panel doesn't end up off-screen.
   function onWindowResize() {
     if (editorState.displayMode !== 'floating') return;
-    fileEditorStore.setFloatingRect(clampRectToViewport(editorState.floatingRect));
+    fileEditorStore.setFloatingRect(
+      clampRectToViewport(editorState.floatingRect)
+    );
+  }
+
+  /**
+   * Keyboard-driven resize for the floating window. Arrow keys nudge the
+   * corresponding edge by 16 px (64 px with Shift). Mirrors the mouse-drag
+   * `onFloatingResizeStart` contract for a single step — no drag loop.
+   * Called from each resize handle's `onkeydown` so Svelte's a11y linter is
+   * happy (keyboard handler paired with mouse handler).
+   */
+  function onFloatingResizeKey(e: KeyboardEvent, dir: HandleDir) {
+    if (editorState.displayMode !== 'floating') return;
+    if (
+      e.key !== 'ArrowUp' &&
+      e.key !== 'ArrowDown' &&
+      e.key !== 'ArrowLeft' &&
+      e.key !== 'ArrowRight'
+    )
+      return;
+    const step = e.shiftKey ? 64 : 16;
+    const rect = { ...editorState.floatingRect };
+    let dx = 0;
+    let dy = 0;
+    if (e.key === 'ArrowUp') dy = -step;
+    if (e.key === 'ArrowDown') dy = step;
+    if (e.key === 'ArrowLeft') dx = -step;
+    if (e.key === 'ArrowRight') dx = step;
+    let { x, y, w, h } = rect;
+    if (dir.includes('e')) w = rect.w + dx;
+    if (dir.includes('s')) h = rect.h + dy;
+    if (dir.includes('w')) {
+      x = rect.x + dx;
+      w = rect.w - dx;
+    }
+    if (dir.includes('n')) {
+      y = rect.y + dy;
+      h = rect.h - dy;
+    }
+    e.preventDefault();
+    fileEditorStore.setFloatingRect({ x, y, w, h });
   }
   // Monaco / AMD loader 偶发把异步加载失败以 Event 对象形式扔到 unhandledrejection，
   // 表现成 "Uncaught [object Event]"。这里接住并降级为 warn，不影响编辑器主流程。
   function onUnhandledRejection(e: PromiseRejectionEvent) {
     const reason = e.reason;
-    if (reason instanceof Event || (reason && typeof reason === 'object' && 'type' in reason && 'target' in reason)) {
+    if (
+      reason instanceof Event ||
+      (reason &&
+        typeof reason === 'object' &&
+        'type' in reason &&
+        'target' in reason)
+    ) {
       console.warn('[FileEditor] swallowed Event-shaped rejection', reason);
       e.preventDefault();
     }
@@ -306,7 +399,8 @@
 
   // ─── Style computations ────────────────────────────────────────────────────
   const containerStyle = $derived.by(() => {
-    if (!editorState.isVisible || editorState.openFiles.length === 0) return 'display: none;';
+    if (!editorState.isVisible || editorState.openFiles.length === 0)
+      return 'display: none;';
     if (editorState.displayMode === 'floating') {
       const r = editorState.floatingRect;
       return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 60;`;
@@ -319,243 +413,457 @@
 </script>
 
 <div
-  class="wf-file-editor flex flex-col bg-[var(--wf-surface-2)]/98 backdrop-blur-xl border border-[var(--wf-border)] shadow-2xl {editorState.displayMode === 'floating' ? 'rounded-lg overflow-hidden' : 'rounded-l-lg'}"
+  class="wf-file-editor flex flex-col bg-[var(--wf-surface-2)]/98 backdrop-blur-xl border border-[var(--wf-border)] shadow-2xl {editorState.displayMode ===
+  'floating'
+    ? 'rounded-lg overflow-hidden'
+    : 'rounded-l-lg'}"
   style={containerStyle}
 >
-    <!-- ═══ Header (tabs + actions) ═══ -->
-    <div
-      class="flex items-center shrink-0 h-9 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/90 {editorState.displayMode === 'floating' ? 'cursor-grab active:cursor-grabbing' : ''}"
-      role="toolbar"
-      onmousedown={editorState.displayMode === 'floating' ? onFloatingDragStart : undefined}
-    >
-      <!-- Tabs -->
-      <div class="flex items-center min-w-0 flex-1 overflow-x-auto wf-tab-scroll">
-        {#each editorState.openFiles as f, i (f.path)}
-          <button
-            type="button"
-            class="group flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-[12px] shrink-0 border-r border-[var(--wf-border)] transition-colors cursor-grab active:cursor-grabbing {editorState.activePath === f.path
-              ? 'bg-[var(--wf-bg-raised)] text-[var(--wf-fg)]'
-              : 'text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/60 hover:text-[var(--wf-fg)]'}
+  <!-- ═══ Header (tabs + actions) ═══ -->
+  <!-- toolbar 角色要求 tabindex 以便键盘用户 Tab 进入后用内部 Tab 遍历按钮。 -->
+  <div
+    class="flex items-center shrink-0 h-9 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/90 {editorState.displayMode ===
+    'floating'
+      ? 'cursor-grab active:cursor-grabbing'
+      : ''}"
+    role="toolbar"
+    tabindex="-1"
+    aria-label="编辑器工具栏"
+    onmousedown={editorState.displayMode === 'floating'
+      ? onFloatingDragStart
+      : undefined}
+  >
+    {#if editorState.displayMode === 'drawer'}
+      <button
+        type="button"
+        class="wf-no-drag flex h-9 w-8 shrink-0 items-center justify-center text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors border-r border-[var(--wf-border)]"
+        title="收起编辑器面板"
+        onmousedown={(e) => e.stopPropagation()}
+        onclick={hidePanel}
+      >
+        <PanelRightClose class="h-3.5 w-3.5" />
+      </button>
+    {/if}
+    <!-- Tabs: overlayscrollbars overlay scrollbar, no gutter reservation.
+         layout:false keeps existing flex/items-center classes; tabs use
+         border-right separators rather than gap spacing. -->
+    <div class="flex items-center min-w-0 flex-1" use:overlayScroll={{ preset: 'horizontal-tabs', layout: false }}>
+      {#each editorState.openFiles as f, i (f.path)}
+        <button
+          type="button"
+          class="group flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-[12px] shrink-0 border-r border-[var(--wf-border)] transition-colors cursor-grab active:cursor-grabbing {editorState.activePath ===
+          f.path
+            ? 'bg-[var(--wf-bg-raised)] text-[var(--wf-fg)]'
+            : 'text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/60 hover:text-[var(--wf-fg)]'}
               {draggingTabIndex === i ? 'opacity-50' : ''}
-              {dragOverTabIndex === i && draggingTabIndex !== null && draggingTabIndex !== i ? 'ring-1 ring-[var(--wf-accent)]/60 ring-inset' : ''}"
-            onclick={() => activateTab(f.path)}
-            title={f.path}
-            draggable="true"
-            ondragstart={(e) => onTabDragStart(e, i)}
-            ondragover={(e) => onTabDragOver(e, i)}
-            ondragleave={onTabDragLeave}
-            ondrop={(e) => onTabDrop(e, i)}
-            ondragend={onTabDragEnd}
-          >
-            <span class="truncate max-w-[160px]">{f.name}</span>
-            {#if f.isDirty}
-              <span
-                class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--wf-accent)]"
-                title="未保存"
-              ></span>
-            {/if}
+              {dragOverTabIndex === i &&
+          draggingTabIndex !== null &&
+          draggingTabIndex !== i
+            ? 'ring-1 ring-[var(--wf-accent)]/60 ring-inset'
+            : ''}"
+          onclick={() => activateTab(f.path)}
+          title={f.path}
+          draggable="true"
+          ondragstart={(e) => onTabDragStart(e, i)}
+          ondragover={(e) => onTabDragOver(e, i)}
+          ondragleave={onTabDragLeave}
+          ondrop={(e) => onTabDrop(e, i)}
+          ondragend={onTabDragEnd}
+        >
+          <span class="truncate max-w-[160px]">{f.name}</span>
+          {#if f.isDirty}
             <span
-              role="button"
-              tabindex="0"
-              class="flex h-4 w-4 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-bg)]/50 hover:text-[var(--wf-fg)] {f.isDirty ? '' : 'opacity-0 group-hover:opacity-100'} transition-opacity"
-              onclick={(e) => closeTab(e, f.path)}
-              onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && closeTab(e as unknown as MouseEvent, f.path)}
-              title="关闭"
-            >
-              <X class="h-3 w-3" />
-            </span>
-          </button>
-        {/each}
-      </div>
-
-      <!-- Right-side actions -->
-      <div class="flex items-center gap-0.5 px-1 shrink-0 border-l border-[var(--wf-border)]">
-        <button
-          type="button"
-          class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          title="查找 (Ctrl+F)"
-          disabled={!current}
-          onclick={triggerFind}
-        >
-          <Search class="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          title="保存 (Ctrl+S)"
-          disabled={!current?.isDirty}
-          onclick={() => fileEditorStore.saveActive()}
-        >
-          <Save class="h-3.5 w-3.5" />
-        </button>
-
-        <div class="wf-editor-settings relative">
-          <button
-            type="button"
-            class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors {settingsOpen ? 'bg-[var(--wf-surface)] text-[var(--wf-fg)]' : ''}"
-            title="设置"
-            onclick={() => (settingsOpen = !settingsOpen)}
-          >
-            <Settings class="h-3.5 w-3.5" />
-          </button>
-          {#if settingsOpen}
-            <div
-              class="absolute right-0 top-9 w-56 rounded-lg bg-[var(--wf-surface-2)] border border-[var(--wf-border)] shadow-xl z-10 py-1 text-[12px]"
-            >
-              <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--wf-fg-muted)]">
-                显示模式
-              </div>
-              <button
-                type="button"
-                class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors {editorState.displayMode === 'drawer' ? 'text-[var(--wf-accent)]' : 'text-[var(--wf-fg)]'}"
-                onclick={() => setMode('drawer')}
-              >
-                <PanelRightOpen class="h-3.5 w-3.5" /> 抽屉模式
-                {#if editorState.displayMode === 'drawer'}<span class="ml-auto text-[10px]">✓</span>{/if}
-              </button>
-              <button
-                type="button"
-                class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors {editorState.displayMode === 'floating' ? 'text-[var(--wf-accent)]' : 'text-[var(--wf-fg)]'}"
-                onclick={() => setMode('floating')}
-              >
-                <Pin class="h-3.5 w-3.5" /> 悬浮 Pin 模式
-                {#if editorState.displayMode === 'floating'}<span class="ml-auto text-[10px]">✓</span>{/if}
-              </button>
-
-              <div class="my-1 border-t border-[var(--wf-border)]"></div>
-              <button
-                type="button"
-                class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors text-[var(--wf-fg)] disabled:opacity-30 disabled:cursor-not-allowed"
-                disabled={!current?.isDirty}
-                onclick={() => { revertActive(); }}
-              >
-                <RotateCcw class="h-3.5 w-3.5" /> 放弃修改（重新从磁盘加载）
-              </button>
-              <button
-                type="button"
-                class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors text-[var(--wf-fg)]"
-                onclick={() => closeAll()}
-              >
-                <XCircle class="h-3.5 w-3.5" /> 关闭全部标签
-              </button>
-              <button
-                type="button"
-                class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors text-[var(--wf-fg-muted)]"
-                onclick={() => { settingsOpen = false; hidePanel(); }}
-              >
-                隐藏编辑器面板
-              </button>
-            </div>
+              class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--wf-accent)]"
+              title="未保存"
+            ></span>
           {/if}
-        </div>
-      </div>
+          <span
+            role="button"
+            tabindex="0"
+            class="flex h-4 w-4 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-bg)]/50 hover:text-[var(--wf-fg)] {f.isDirty
+              ? ''
+              : 'opacity-0 group-hover:opacity-100'} transition-opacity"
+            onclick={(e) => closeTab(e, f.path)}
+            onkeydown={(e) =>
+              (e.key === 'Enter' || e.key === ' ') &&
+              closeTab(e as unknown as MouseEvent, f.path)}
+            title="关闭"
+          >
+            <X class="h-3 w-3" />
+          </span>
+        </button>
+      {/each}
     </div>
 
-    <!-- ═══ Monaco host ═══
-         Monaco 始终挂载；markdown 预览模式下用一块绝对定位的预览盖在上面。
-         这样切 source ↔ preview 不需要销毁重建 Monaco，编辑历史 / undo 栈都保留。 -->
-    <div class="flex-1 min-h-0 relative">
-      <div
-        bind:this={mountPoint}
-        class="absolute inset-0"
-        style={inPreviewMode ? 'visibility: hidden;' : ''}
-      ></div>
+    <!-- Right-side actions -->
+    <div
+      class="flex items-center gap-0.5 px-1 shrink-0 border-l border-[var(--wf-border)]"
+    >
+      <button
+        type="button"
+        class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        title="查找 (Ctrl+F)"
+        disabled={!current}
+        onclick={triggerFind}
+      >
+        <Search class="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        title="保存 (Ctrl+S)"
+        disabled={!current?.isDirty}
+        onclick={() => fileEditorStore.saveActive()}
+      >
+        <Save class="h-3.5 w-3.5" />
+      </button>
 
-      {#if current && isMarkdownFile && inPreviewMode}
-        <div class="absolute inset-0 overflow-y-auto wf-scroll-overlay bg-[var(--wf-bg-raised)]">
-          <MarkdownPreview
-            content={current.content}
-            onChange={(next) => fileEditorStore.updateContent(current!.path, next)}
-            onRequestEdit={() => fileEditorStore.setViewMode(current!.path, 'source')}
-          />
-        </div>
-      {/if}
-
-      <!-- Preview ↔ Source 切换按钮：右上角浮动 pill，半透明玻璃态。
-           仅对 markdown 文件渲染；悬停收到正式 accent，保证不抢主内容视觉重量。 -->
-      {#if current && isMarkdownFile}
+      <div class="wf-editor-settings relative">
         <button
           type="button"
-          class="absolute top-2.5 right-3 z-10 flex items-center gap-1.5 h-7 pl-2 pr-2.5 rounded-full text-[11px] font-medium
+          class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors {settingsOpen
+            ? 'bg-[var(--wf-surface)] text-[var(--wf-fg)]'
+            : ''}"
+          title="设置"
+          onclick={() => (settingsOpen = !settingsOpen)}
+        >
+          <Settings class="h-3.5 w-3.5" />
+        </button>
+        {#if settingsOpen}
+          <div
+            class="absolute right-0 top-9 w-56 rounded-lg bg-[var(--wf-surface-2)] border border-[var(--wf-border)] shadow-xl z-10 py-1 text-[12px]"
+          >
+            <div
+              class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--wf-fg-muted)]"
+            >
+              显示模式
+            </div>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors {editorState.displayMode ===
+              'drawer'
+                ? 'text-[var(--wf-accent)]'
+                : 'text-[var(--wf-fg)]'}"
+              onclick={() => setMode('drawer')}
+            >
+              <PanelRightOpen class="h-3.5 w-3.5" /> 抽屉模式
+              {#if editorState.displayMode === 'drawer'}<span
+                  class="ml-auto text-[10px]">✓</span
+                >{/if}
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors {editorState.displayMode ===
+              'floating'
+                ? 'text-[var(--wf-accent)]'
+                : 'text-[var(--wf-fg)]'}"
+              onclick={() => setMode('floating')}
+            >
+              <Pin class="h-3.5 w-3.5" /> 悬浮 Pin 模式
+              {#if editorState.displayMode === 'floating'}<span
+                  class="ml-auto text-[10px]">✓</span
+                >{/if}
+            </button>
+
+            <div class="my-1 border-t border-[var(--wf-border)]"></div>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors text-[var(--wf-fg)] disabled:opacity-30 disabled:cursor-not-allowed"
+              disabled={!current?.isDirty}
+              onclick={() => {
+                revertActive();
+              }}
+            >
+              <RotateCcw class="h-3.5 w-3.5" /> 放弃修改（重新从磁盘加载）
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors text-[var(--wf-fg)]"
+              onclick={() => closeAll()}
+            >
+              <XCircle class="h-3.5 w-3.5" /> 关闭全部标签
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors text-[var(--wf-fg-muted)]"
+              onclick={() => {
+                settingsOpen = false;
+                hidePanel();
+              }}
+            >
+              隐藏编辑器面板
+            </button>
+          </div>
+        {/if}
+      </div>
+      {#if editorState.displayMode === 'floating'}
+        <!-- pin 模式专属关闭按钮：drawer 模式下左侧已经有收起按钮，这里
+               重复一次反而冗余；只有 floating 时为了贴合标准窗口的"关闭在
+               右上角"心智模型才显示。功能与左侧收起一致——隐藏面板，
+               不销毁打开的文件。 -->
+        <button
+          type="button"
+          class="wf-no-drag flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-red-500/10 hover:text-red-300 transition-colors"
+          title="关闭浮动窗口（保留打开的文件）"
+          onmousedown={(e) => e.stopPropagation()}
+          onclick={hidePanel}
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      {/if}
+    </div>
+  </div>
+
+  <!-- ═══ Monaco host ═══
+         Monaco 始终挂载；markdown 预览模式下用一块绝对定位的预览盖在上面。
+         这样切 source ↔ preview 不需要销毁重建 Monaco，编辑历史 / undo 栈都保留。 -->
+  <div class="flex-1 min-h-0 relative">
+    <div
+      bind:this={mountPoint}
+      class="absolute inset-0"
+      style={inPreviewMode ? 'visibility: hidden;' : ''}
+    ></div>
+
+    {#if current && isMarkdownFile && inPreviewMode}
+      <!-- The previous `use:overlayScroll` host was `absolute inset-0`,
+             which broke wheel scrolling under overlayscrollbars: the
+             synthetic viewport injected by the lib didn't get a stable
+             height with absolute positioning. Switch to native
+             `overflow-y-auto` + `wf-scroll` styling so the native
+             scroller drives wheel events deterministically. The user
+             sees a thin transparent bar matching the rest of the app
+             (defined in app.css) without the overlayscrollbars layer. -->
+      <div
+        class="absolute inset-0 bg-[var(--wf-bg-raised)] overflow-y-auto overflow-x-hidden wf-scroll"
+      >
+        <MarkdownPreview
+          content={current.content}
+          basePath={current.path.replace(/[\\/][^\\/]+$/, '')}
+          cursorLine={editorCursorLine}
+          onChange={(next) =>
+            fileEditorStore.updateContent(current!.path, next)}
+          onRequestEdit={() =>
+            fileEditorStore.setViewMode(current!.path, 'source')}
+          onRevealSource={(line) => {
+            // Alt-click on preview block: scroll Monaco to the source line
+            // without leaving preview mode. Switch to source only if user
+            // also wants editing (they can click again or use the toggle).
+            if (!editor) return;
+            const targetLine = Math.max(1, line + 1); // data-wf-md-src-line is 0-based
+            editor.revealLineInCenter(targetLine);
+            editor.setPosition({ lineNumber: targetLine, column: 1 });
+          }}
+        />
+      </div>
+    {/if}
+
+    <!-- Preview ↔ Source 切换按钮：右上角浮动 pill，半透明玻璃态。
+           仅对 markdown 文件渲染；悬停收到正式 accent，保证不抢主内容视觉重量。 -->
+    {#if current && isMarkdownFile}
+      <button
+        type="button"
+        class="absolute top-2.5 right-3 z-10 flex items-center gap-1.5 h-7 pl-2 pr-2.5 rounded-full text-[11px] font-medium
                  bg-[var(--wf-surface)]/60 backdrop-blur-md border border-[var(--wf-border)]
                  text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]/85 hover:border-[var(--wf-accent)]/40
                  transition-colors shadow-lg shadow-black/20"
-          title={inPreviewMode ? '切换到源码编辑 (Markdown)' : '切换到预览 (Markdown)'}
-          onclick={() =>
-            fileEditorStore.setViewMode(
-              current!.path,
-              inPreviewMode ? 'source' : 'preview'
-            )}
-        >
-          {#if inPreviewMode}
-            <Code2 class="h-3.5 w-3.5" />
-            <span>源码</span>
-          {:else}
-            <Eye class="h-3.5 w-3.5" />
-            <span>预览</span>
-          {/if}
-        </button>
+        title={inPreviewMode
+          ? '切换到源码编辑 (Markdown)'
+          : '切换到预览 (Markdown)'}
+        onclick={() =>
+          fileEditorStore.setViewMode(
+            current!.path,
+            inPreviewMode ? 'source' : 'preview'
+          )}
+      >
+        {#if inPreviewMode}
+          <Code2 class="h-3.5 w-3.5" />
+          <span>源码</span>
+        {:else}
+          <Eye class="h-3.5 w-3.5" />
+          <span>预览</span>
+        {/if}
+      </button>
+    {/if}
+  </div>
+
+  <!-- ═══ Status bar ═══ -->
+  {#if current}
+    <div
+      class="shrink-0 h-6 flex items-center gap-2 px-3 text-[10px] text-[var(--wf-fg-muted)] border-t border-[var(--wf-border)] bg-[var(--wf-surface)]/70 font-mono"
+    >
+      <span class="truncate flex-1" title={current.path}>{current.path}</span>
+      <span>{current.language}</span>
+      {#if current.isDirty}
+        <span class="text-[var(--wf-accent)]">● 未保存</span>
+      {:else}
+        <span>已保存</span>
       {/if}
     </div>
+  {/if}
 
-    <!-- ═══ Status bar ═══ -->
-    {#if current}
-      <div
-        class="shrink-0 h-6 flex items-center gap-2 px-3 text-[10px] text-[var(--wf-fg-muted)] border-t border-[var(--wf-border)] bg-[var(--wf-surface)]/70 font-mono"
-      >
-        <span class="truncate flex-1" title={current.path}>{current.path}</span>
-        <span>{current.language}</span>
-        {#if current.isDirty}
-          <span class="text-[var(--wf-accent)]">● 未保存</span>
-        {:else}
-          <span>已保存</span>
-        {/if}
-      </div>
-    {/if}
+  <!-- ═══ Drawer left-edge resizer ═══ -->
+  {#if editorState.displayMode === 'drawer'}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[var(--wf-accent)]/40 transition-colors {isResizingDrawer
+        ? 'bg-[var(--wf-accent)]/60'
+        : ''}"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整编辑器宽度"
+      onmousedown={onDrawerResizeStart}
+    ></div>
+  {/if}
 
-    <!-- ═══ Drawer left-edge resizer ═══ -->
-    {#if editorState.displayMode === 'drawer'}
-      <div
-        class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[var(--wf-accent)]/40 transition-colors {isResizingDrawer ? 'bg-[var(--wf-accent)]/60' : ''}"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整编辑器宽度"
-        onmousedown={onDrawerResizeStart}
-      ></div>
-    {/if}
-
-    <!-- ═══ Floating resize handles ═══ -->
-    {#if editorState.displayMode === 'floating'}
-      <div class="wf-float-handle wf-h-n" onmousedown={(e) => onFloatingResizeStart(e, 'n')} role="separator" aria-label="从上边调整"></div>
-      <div class="wf-float-handle wf-h-s" onmousedown={(e) => onFloatingResizeStart(e, 's')} role="separator" aria-label="从下边调整"></div>
-      <div class="wf-float-handle wf-h-e" onmousedown={(e) => onFloatingResizeStart(e, 'e')} role="separator" aria-label="从右边调整"></div>
-      <div class="wf-float-handle wf-h-w" onmousedown={(e) => onFloatingResizeStart(e, 'w')} role="separator" aria-label="从左边调整"></div>
-      <div class="wf-float-handle wf-h-ne" onmousedown={(e) => onFloatingResizeStart(e, 'ne')} role="separator" aria-label="右上"></div>
-      <div class="wf-float-handle wf-h-nw" onmousedown={(e) => onFloatingResizeStart(e, 'nw')} role="separator" aria-label="左上"></div>
-      <div class="wf-float-handle wf-h-se" onmousedown={(e) => onFloatingResizeStart(e, 'se')} role="separator" aria-label="右下"></div>
-      <div class="wf-float-handle wf-h-sw" onmousedown={(e) => onFloatingResizeStart(e, 'sw')} role="separator" aria-label="左下"></div>
-    {/if}
+  <!-- ═══ Floating resize handles ═══
+         tabindex=0 + onkeydown 让键盘用户也能通过 Arrow 键调整大小（Shift 加速）。
+         Svelte 的 `a11y_no_noninteractive_*` 规则不认识 role=separator + 互补
+         keydown 这个合法的 "window splitter" 模式，所以为每个 handle 显式抑制。
+         参考 WAI-ARIA authoring practices: separator 可聚焦并响应 Arrow 键。 -->
+  {#if editorState.displayMode === 'floating'}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-n"
+      role="separator"
+      aria-label="从上边调整"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'n')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'n')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-s"
+      role="separator"
+      aria-label="从下边调整"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 's')}
+      onkeydown={(e) => onFloatingResizeKey(e, 's')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-e"
+      role="separator"
+      aria-label="从右边调整"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'e')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'e')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-w"
+      role="separator"
+      aria-label="从左边调整"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'w')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'w')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-ne"
+      role="separator"
+      aria-label="右上"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'ne')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'ne')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-nw"
+      role="separator"
+      aria-label="左上"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'nw')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'nw')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-se"
+      role="separator"
+      aria-label="右下"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'se')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'se')}
+    ></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="wf-float-handle wf-h-sw"
+      role="separator"
+      aria-label="左下"
+      tabindex="0"
+      onmousedown={(e) => onFloatingResizeStart(e, 'sw')}
+      onkeydown={(e) => onFloatingResizeKey(e, 'sw')}
+    ></div>
+  {/if}
 </div>
 
 <style>
-  .wf-tab-scroll::-webkit-scrollbar {
-    height: 3px;
-  }
-  .wf-tab-scroll::-webkit-scrollbar-thumb {
-    background: var(--wf-border);
-  }
-
   /* Floating resize handles — small grab zones extending slightly outside the box */
   .wf-float-handle {
     position: absolute;
     z-index: 2;
   }
-  .wf-h-n { top: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
-  .wf-h-s { bottom: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
-  .wf-h-w { top: 8px; bottom: 8px; left: -3px; width: 6px; cursor: ew-resize; }
-  .wf-h-e { top: 8px; bottom: 8px; right: -3px; width: 6px; cursor: ew-resize; }
-  .wf-h-nw { top: -3px; left: -3px; width: 10px; height: 10px; cursor: nwse-resize; }
-  .wf-h-ne { top: -3px; right: -3px; width: 10px; height: 10px; cursor: nesw-resize; }
-  .wf-h-sw { bottom: -3px; left: -3px; width: 10px; height: 10px; cursor: nesw-resize; }
-  .wf-h-se { bottom: -3px; right: -3px; width: 10px; height: 10px; cursor: nwse-resize; }
+  .wf-h-n {
+    top: -3px;
+    left: 8px;
+    right: 8px;
+    height: 6px;
+    cursor: ns-resize;
+  }
+  .wf-h-s {
+    bottom: -3px;
+    left: 8px;
+    right: 8px;
+    height: 6px;
+    cursor: ns-resize;
+  }
+  .wf-h-w {
+    top: 8px;
+    bottom: 8px;
+    left: -3px;
+    width: 6px;
+    cursor: ew-resize;
+  }
+  .wf-h-e {
+    top: 8px;
+    bottom: 8px;
+    right: -3px;
+    width: 6px;
+    cursor: ew-resize;
+  }
+  .wf-h-nw {
+    top: -3px;
+    left: -3px;
+    width: 10px;
+    height: 10px;
+    cursor: nwse-resize;
+  }
+  .wf-h-ne {
+    top: -3px;
+    right: -3px;
+    width: 10px;
+    height: 10px;
+    cursor: nesw-resize;
+  }
+  .wf-h-sw {
+    bottom: -3px;
+    left: -3px;
+    width: 10px;
+    height: 10px;
+    cursor: nesw-resize;
+  }
+  .wf-h-se {
+    bottom: -3px;
+    right: -3px;
+    width: 10px;
+    height: 10px;
+    cursor: nwse-resize;
+  }
 </style>

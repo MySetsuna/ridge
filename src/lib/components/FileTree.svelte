@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick, onDestroy } from 'svelte';
 	import {
 		Folder,
 		FolderOpen,
@@ -9,8 +10,15 @@
 		FileText,
 		Image,
 	} from 'lucide-svelte';
+	import { invoke, isTauri } from '@tauri-apps/api/core';
 	import { showContextMenu } from '$lib/stores/contextMenu';
-	import { fileExplorerStore, type ExplorerColumn } from '$lib/stores/fileExplorer';
+	import { alertDialog, confirmDialog } from './WindDialog.svelte';
+	import {
+		fileExplorerStore,
+		uniqueChildName,
+		refreshColumnsCovering,
+	} from '$lib/stores/fileExplorer';
+	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import type { FileNode } from '$lib/stores/project';
 	import FileTree from './FileTree.svelte';
 
@@ -19,19 +27,70 @@
 		node: FileNode;
 		depth?: number;
 		expandedPaths?: Set<string>;
+		/** Primary (cursor) selected path. Gets a stronger outline ring. */
 		selectedPath?: string | null;
-		onSelect?: (path: string, isDir: boolean) => void;
+		/** Full multi-selection set. Any member gets the highlight tint. */
+		selectedPaths?: Set<string>;
+		/** Cut clipboard paths — receive a dimmed opacity until paste consumes. */
+		cutPaths?: Set<string>;
+		onSelect?: (
+			path: string,
+			isDir: boolean,
+			modifiers?: { shift: boolean; ctrl: boolean; meta: boolean }
+		) => void;
 	}
 
-	let { columnId, node, depth = 0, expandedPaths = new Set(), selectedPath = null, onSelect }: Props =
-		$props();
+	let {
+		columnId,
+		node,
+		depth = 0,
+		expandedPaths = new Set(),
+		selectedPath = null,
+		selectedPaths = new Set(),
+		cutPaths,
+		onSelect,
+	}: Props = $props();
 
+	// 用户要求"打开文件夹时不要有加载提示以及避免闪烁"：
+	// loadTree 已经按 depth=3 预取了三层结构，节点本身的 node.children
+	// 通常已经在手。展开目录时直接拿 prefetched 的 children 渲染，避免
+	// 在 IPC 回程那几十毫秒里 children 数组先空一帧、再被 loadChildren
+	// 替换的"闪一下"现象。仅当 node.children 完全缺失（深度边界、刷新
+	// 后第一次展开等）才走异步 loadChildren 兜底。
+	// 初始值留空，由下方 $effect 在挂载/prop 变化时同步——避免 svelte 5
+	// 的 "state referenced locally" 警告（只捕获初始 node 引用）。
 	let children = $state<FileNode[]>([]);
-	let loading = $state(false);
 	let hasLoaded = $state(false);
 
 	let isExpanded = $derived(expandedPaths.has(node.path));
-	let isSelected = $derived(selectedPath === node.path);
+	/** Primary (cursor) node — single, keyboard-focused. */
+	let isPrimary = $derived(selectedPath === node.path);
+	/** Any selected — multi-select highlights all members. */
+	let isSelected = $derived(selectedPaths.has(node.path) || isPrimary);
+	/** Cut state — VSCode dims the row until paste (or Esc) consumes. */
+	let isCut = $derived(!!cutPaths && cutPaths.has(node.path));
+
+	/**
+	 * Inline edit state. VS Code-style: the node's name swaps to an <input>
+	 * when renaming; directory's expanded children get a transient input row
+	 * when creating. Enter commits, Escape/Blur cancels.
+	 */
+	type EditKind = 'rename' | 'create-file' | 'create-folder';
+	let editing = $state<EditKind | null>(null);
+	let editValue = $state('');
+	let editInput: HTMLInputElement | undefined = $state();
+	let pendingEditCommit = $state(false);
+
+	// 当父级 loadTree 返回新树后（比如 needsRefresh / 用户点击刷新），
+	// node.children 会被替换为最新数据。把它原子同步进本地 children
+	// 状态，避免渲染滞留旧值；同时把 hasLoaded 修正回去，防止下一次
+	// expand 误触发 loadChildren。
+	$effect(() => {
+		if (node.children) {
+			children = node.children;
+			hasLoaded = true;
+		}
+	});
 
 	// Load children when expanding
 	$effect(() => {
@@ -42,25 +101,200 @@
 
 	async function loadChildren() {
 		if (!node.is_dir) return;
-		loading = true;
 		try {
 			children = await fileExplorerStore.loadChildren(columnId, node.path);
 			hasLoaded = true;
 		} catch (e) {
 			console.error('Failed to load children:', e);
-		} finally {
-			loading = false;
 		}
 	}
 
-	function handleClick() {
-		if (node.is_dir) {
+	// ─── Drag & drop (move by default, Ctrl = copy) ────────────────────────
+	// MIME used for the dragged payload: newline-separated absolute paths.
+	// Keeps the protocol browser-native so drops into external apps still
+	// convey something useful (many shells accept text lists of paths).
+	const DND_TYPE = 'application/x-wind-explorer-paths';
+	/**
+	 * Hover-to-expand latency: matches VS Code / macOS Finder "spring-loaded
+	 * folders" behaviour — pause over a collapsed dir during drag ~800ms to
+	 * automatically open it and drill in.
+	 */
+	const HOVER_EXPAND_MS = 800;
+	let isDragTarget = $state(false);
+	let hoverExpandTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function clearHoverExpandTimer(): void {
+		if (hoverExpandTimer !== null) {
+			clearTimeout(hoverExpandTimer);
+			hoverExpandTimer = null;
+		}
+	}
+	onDestroy(clearHoverExpandTimer);
+
+	function onNodeDragStart(e: DragEvent): void {
+		if (editing) return;
+		// If the current node is part of a multi-selection, drag the whole set.
+		// Otherwise drag only this one path.
+		const payloadPaths =
+			selectedPaths.has(node.path) && selectedPaths.size > 1
+				? Array.from(selectedPaths)
+				: [node.path];
+		if (!e.dataTransfer) return;
+		e.dataTransfer.effectAllowed = 'copyMove';
+		e.dataTransfer.setData(DND_TYPE, payloadPaths.join('\n'));
+		// Fallback: plain text of the paths so drops into terminals / editors
+		// still get something human-readable.
+		e.dataTransfer.setData('text/plain', payloadPaths.join('\n'));
+	}
+
+	function onNodeDragOver(e: DragEvent): void {
+		if (!node.is_dir) return;
+		const types = e.dataTransfer?.types;
+		if (!types || !Array.from(types).includes(DND_TYPE)) return;
+		// Only accept drops that would actually move/copy across paths. Prevent
+		// default to signal "yes, this is a valid drop zone".
+		e.preventDefault();
+		if (e.dataTransfer) {
+			e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
+		}
+		if (!isDragTarget) {
+			isDragTarget = true;
+			// Only arm the auto-expand timer once per hover, when entering the
+			// row. dragover fires repeatedly; we don't want to reset the clock
+			// on every pixel of movement.
+			if (node.is_dir && !isExpanded) {
+				clearHoverExpandTimer();
+				hoverExpandTimer = setTimeout(() => {
+					// Sanity check: still being hovered with drag active.
+					if (isDragTarget) {
+						fileExplorerStore.toggleExpanded(columnId, node.path);
+					}
+					hoverExpandTimer = null;
+				}, HOVER_EXPAND_MS);
+			}
+		}
+	}
+
+	function onNodeDragLeave(): void {
+		isDragTarget = false;
+		clearHoverExpandTimer();
+	}
+
+	async function onNodeDrop(e: DragEvent): Promise<void> {
+		isDragTarget = false;
+		clearHoverExpandTimer();
+		if (!node.is_dir) return;
+		const raw = e.dataTransfer?.getData(DND_TYPE);
+		if (!raw) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const paths = raw.split('\n').filter(Boolean);
+		if (paths.length === 0) return;
+		// Refuse self-drop / drop of an ancestor onto a descendant.
+		for (const p of paths) {
+			if (p === node.path || node.path.startsWith(p + '/') || node.path.startsWith(p + '\\')) {
+				await alertDialog({ title: '拖放失败', message: '不能把路径拖到它自己或其子目录中', danger: true });
+
+				return;
+			}
+		}
+		if (!isTauri()) return;
+		const copy = e.ctrlKey || e.metaKey;
+		const cmd = copy ? 'copy_path' : 'move_path';
+		// Names already in the target dir — auto-rename on conflict so we
+		// never silently clobber. Shared helper with paste path.
+		const existing = new Set<string>((node.children ?? []).map((c) => c.path));
+		const sep = node.path.includes('\\') && !node.path.includes('/') ? '\\' : '/';
+		const cleanTarget = node.path.replace(/[\\/]+$/, '');
+		const errors: string[] = [];
+		for (const from of paths) {
+			const leaf = from.split(/[\\/]/).pop() || 'untitled';
+			const unique = uniqueChildName(node.path, leaf, existing);
+			const to = `${cleanTarget}${sep}${unique}`;
+			existing.add(to);
+			try {
+				await invoke(cmd, { from, to });
+			} catch (err) {
+				errors.push(`${from}: ${err}`);
+			}
+		}
+		// Reload target + any column caching the target dir (covers "two
+		// workspaces at same cwd" scenarios). For moves, also refresh the
+		// source parents so the row disappears there.
+		hasLoaded = false;
+		await refreshColumnsCovering(node.path);
+		if (!copy) {
+			const sourceDirs = new Set<string>(
+				paths.map((p) => p.replace(/[\\/][^\\/]+[\\/]*$/, '') || p)
+			);
+			for (const d of sourceDirs) await refreshColumnsCovering(d);
+		}
+		if (errors.length > 0) {
+			await alertDialog({ title: '拖放失败', message: `${errors.length} 项拖放失败:\n${errors.join('\n')}`, danger: true });
+		}
+	}
+
+	function activateNode(modifiers: { shift: boolean; ctrl: boolean; meta: boolean }) {
+		if (editing) return;
+		// Dir toggle only on plain click (no modifier) so Shift/Ctrl selections
+		// don't accidentally collapse/expand dirs while the user builds a range.
+		if (node.is_dir && !modifiers.shift && !modifiers.ctrl && !modifiers.meta) {
 			fileExplorerStore.toggleExpanded(columnId, node.path);
 		}
 		if (onSelect) {
-			onSelect(node.path, node.is_dir);
+			onSelect(node.path, node.is_dir, modifiers);
 		}
-		fileExplorerStore.setSelectedPath(columnId, node.path);
+		// Explorer.handleFileSelect now owns setSelection (Shift/Ctrl aware).
+		// If no handler is plugged we fall back to single-select.
+		if (!onSelect) {
+			fileExplorerStore.setSelectedPath(columnId, node.path);
+		}
+	}
+
+	function handleClick(e: MouseEvent) {
+		activateNode({ shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey });
+	}
+
+	/**
+	 * Keyboard contract (subset of VS Code tree list):
+	 *   Enter / Space → activate (open file / toggle dir)
+	 *   ArrowRight    → expand directory
+	 *   ArrowLeft     → collapse directory
+	 *   F2            → rename
+	 *   Delete        → delete
+	 */
+	function handleKeydown(e: KeyboardEvent) {
+		if (editing || e.isComposing) return;
+		switch (e.key) {
+			case 'Enter':
+			case ' ':
+				e.preventDefault();
+				// Keyboard activate forwards modifier state from the keydown event
+				// so Shift+Enter / Ctrl+Enter can mirror Shift-click / Ctrl-click
+				// on the currently-focused row.
+				activateNode({ shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey });
+				return;
+			case 'ArrowRight':
+				if (node.is_dir && !isExpanded) {
+					e.preventDefault();
+					fileExplorerStore.toggleExpanded(columnId, node.path);
+				}
+				return;
+			case 'ArrowLeft':
+				if (node.is_dir && isExpanded) {
+					e.preventDefault();
+					fileExplorerStore.toggleExpanded(columnId, node.path);
+				}
+				return;
+			case 'F2':
+				e.preventDefault();
+				beginRename();
+				return;
+			case 'Delete':
+				e.preventDefault();
+				void deleteItem();
+				return;
+		}
 	}
 
 	function handleContextMenu(e: MouseEvent) {
@@ -69,52 +303,194 @@
 
 		const items = node.is_dir
 			? [
-					{ id: 'new-file', label: '新建文件', action: () => createFile() },
-					{ id: 'new-folder', label: '新建文件夹', action: () => createFolder() },
+					{ id: 'new-file', label: '新建文件', action: () => beginCreate('file') },
+					{ id: 'new-folder', label: '新建文件夹', action: () => beginCreate('folder') },
 					{ id: 'divider1', divider: true },
-					{ id: 'open', label: '在终端中打开', action: () => openInTerminal() },
-					{ id: 'reveal', label: '在文件管理器中显示', action: () => revealInExplorer() },
+					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
 					{ id: 'divider2', divider: true },
-					{ id: 'rename', label: '重命名', action: () => rename() },
-					{ id: 'delete', label: '删除', action: () => deleteItem() },
+					{ id: 'rename', label: '重命名', action: () => beginRename() },
+					{ id: 'delete', label: '删除', action: () => void deleteItem() },
 				]
 			: [
-					{ id: 'open', label: '打开', action: () => openFile() },
-					{ id: 'reveal', label: '在文件管理器中显示', action: () => revealInExplorer() },
+					{ id: 'open', label: '打开', action: () => void openFile() },
+					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
 					{ id: 'divider', divider: true },
-					{ id: 'rename', label: '重命名', action: () => rename() },
-					{ id: 'delete', label: '删除', action: () => deleteItem() },
+					{ id: 'rename', label: '重命名', action: () => beginRename() },
+					{ id: 'delete', label: '删除', action: () => void deleteItem() },
 				];
 
 		showContextMenu(e.clientX, e.clientY, items);
 	}
 
-	function createFile() {
-		console.log('Create file in', node.path);
+	/**
+	 * Normalise a base directory + a new leaf name into an absolute path using
+	 * the base's own separator style. Matches the logic in MarkdownPreview so
+	 * Windows `C:\` paths stay consistent through the create pipeline.
+	 */
+	function joinChild(baseDir: string, child: string): string {
+		const sep = baseDir.includes('\\') && !baseDir.includes('/') ? '\\' : '/';
+		const cleanBase = baseDir.replace(/[\\/]+$/, '');
+		return `${cleanBase}${sep}${child}`;
 	}
 
-	function createFolder() {
-		console.log('Create folder in', node.path);
+	function parentDir(path: string): string {
+		return path.replace(/[\\/][^\\/]+[\\/]*$/, '') || path;
 	}
 
-	function openInTerminal() {
-		console.log('Open in terminal', node.path);
+	async function refreshColumnTree(): Promise<void> {
+		await fileExplorerStore.loadTree(columnId);
 	}
 
-	function revealInExplorer() {
-		console.log('Reveal in explorer', node.path);
+	async function focusAndSelectEditInput(kind: EditKind): Promise<void> {
+		await tick();
+		editInput?.focus();
+		if (kind === 'rename') {
+			// Select everything, or the basename portion for files with extensions.
+			const dotIdx = node.name.lastIndexOf('.');
+			if (!node.is_dir && dotIdx > 0) {
+				editInput?.setSelectionRange(0, dotIdx);
+			} else {
+				editInput?.select();
+			}
+		}
 	}
 
-	function openFile() {
-		console.log('Open file', node.path);
+	function beginRename(): void {
+		editing = 'rename';
+		editValue = node.name;
+		void focusAndSelectEditInput('rename');
 	}
 
-	function rename() {
-		console.log('Rename', node.path);
+	function beginCreate(kind: 'file' | 'folder'): void {
+		if (!node.is_dir) return;
+		if (!isExpanded) fileExplorerStore.toggleExpanded(columnId, node.path);
+		editing = kind === 'file' ? 'create-file' : 'create-folder';
+		editValue = '';
+		void focusAndSelectEditInput(editing);
 	}
 
-	function deleteItem() {
-		console.log('Delete', node.path);
+	function cancelEdit(): void {
+		editing = null;
+		editValue = '';
+	}
+
+	async function commitEdit(): Promise<void> {
+		if (!editing || pendingEditCommit) return;
+		const val = editValue.trim();
+		const currentEditing = editing;
+		if (!val) {
+			cancelEdit();
+			return;
+		}
+		pendingEditCommit = true;
+		try {
+			if (currentEditing === 'rename') {
+				if (val === node.name) {
+					cancelEdit();
+					return;
+				}
+				const target = joinChild(parentDir(node.path), val);
+				if (!isTauri()) {
+					cancelEdit();
+					return;
+				}
+				try {
+					await invoke('rename_path', { from: node.path, to: target });
+					await refreshColumnTree();
+				} catch (e) {
+					await alertDialog({ title: '重命名失败', message: String(e), danger: true });
+					return;
+				}
+			} else if (currentEditing === 'create-file' || currentEditing === 'create-folder') {
+				const isFile = currentEditing === 'create-file';
+				const target = joinChild(node.path, val);
+				if (!isTauri()) {
+					cancelEdit();
+					return;
+				}
+				try {
+					await invoke(isFile ? 'create_file' : 'create_directory', { path: target });
+					hasLoaded = false;
+					await refreshColumnTree();
+					if (isFile) await fileEditorStore.openFile(target);
+				} catch (e) {
+					await alertDialog({ title: '创建失败', message: `${isFile ? '创建文件' : '创建目录'}失败: ${e}`, danger: true });
+					return;
+				}
+			}
+			cancelEdit();
+		} finally {
+			pendingEditCommit = false;
+		}
+	}
+
+	function onEditKeydown(e: KeyboardEvent): void {
+		if (e.isComposing) return;
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			void commitEdit();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			cancelEdit();
+		}
+	}
+
+	function onEditBlur(): void {
+		// Blur triggers commit unless the user just hit Escape (in which case
+		// `editing` is already null and commitEdit is a no-op).
+		if (editing && !pendingEditCommit) void commitEdit();
+	}
+
+	async function revealInExplorer(): Promise<void> {
+		if (!isTauri()) return;
+		try {
+			await invoke('reveal_in_file_manager', { path: node.path });
+		} catch (e) {
+			await alertDialog({ title: '操作失败', message: `打开文件管理器失败: ${e}`, danger: true });
+		}
+	}
+
+	async function openFile(): Promise<void> {
+		if (node.is_dir) return;
+		await fileEditorStore.openFile(node.path);
+	}
+
+	async function deleteItem(): Promise<void> {
+		if (!isTauri()) return;
+		// If this node is part of a multi-selection, act on the whole set.
+		// Otherwise fall back to single-node delete (legacy behaviour).
+		const multi = selectedPaths.has(node.path) && selectedPaths.size > 1;
+		const targets = multi ? Array.from(selectedPaths) : [node.path];
+		const label =
+			targets.length > 1
+				? `${targets.length} 项（含 "${node.name}"）`
+				: `"${node.name}"`;
+		const confirmed = await confirmDialog({
+			title: '删除文件',
+			message: `确认删除 ${label}？此操作不可撤销。`,
+			okLabel: '删除',
+			danger: true,
+		});
+		if (!confirmed) return;
+		// Delete sequentially; continue on individual failures so one "already
+		// gone" target doesn't abort the rest. Collect errors and report a
+		// summary at the end.
+		const errors: string[] = [];
+		for (const p of targets) {
+			try {
+				await invoke('delete_path', { path: p });
+			} catch (e) {
+				errors.push(`${p}: ${e}`);
+			}
+		}
+		await refreshColumnTree();
+		if (errors.length > 0) {
+			await alertDialog({
+				title: '部分删除失败',
+				message: `${errors.length} 项删除失败:\n${errors.join('\n')}`,
+				danger: true,
+			});
+		}
 	}
 
 	function getFileIcon(name: string) {
@@ -130,6 +506,10 @@
 		}
 		return File;
 	}
+
+	const FileIcon = $derived(getFileIcon(node.name));
+
+	const PendingCreateIcon = $derived(editing === 'create-file' ? File : Folder);
 </script>
 
 <div class="file-tree-node" style="padding-left: {depth * 16}px">
@@ -137,8 +517,18 @@
 		type="button"
 		class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[13px] transition-colors hover:bg-[var(--wf-accent)]/10 {isSelected
 			? 'bg-[var(--wf-accent)]/20 text-[var(--wf-accent)]'
-			: 'text-[var(--wf-fg)]'}"
+			: 'text-[var(--wf-fg)]'} {isPrimary ? 'ring-1 ring-inset ring-[var(--wf-accent)]/60' : ''} {isCut
+			? 'opacity-50'
+			: ''} {isDragTarget ? 'bg-[var(--wf-accent)]/30 ring-2 ring-inset ring-[var(--wf-accent)]' : ''}"
+		data-wf-tree-path={node.path}
+		data-wf-tree-column={columnId}
+		draggable="true"
+		ondragstart={onNodeDragStart}
+		ondragover={onNodeDragOver}
+		ondragleave={onNodeDragLeave}
+		ondrop={(e) => void onNodeDrop(e)}
 		onclick={handleClick}
+		onkeydown={handleKeydown}
 		oncontextmenu={handleContextMenu}
 	>
 		{#if node.is_dir}
@@ -159,19 +549,51 @@
 		{:else}
 			<span class="w-4 h-4"></span>
 			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--wf-fg-muted)]">
-				<svelte:component this={getFileIcon(node.name)} size={16} />
+				<FileIcon size={16} />
 			</span>
 		{/if}
 
-		<span class="truncate">{node.name}</span>
-
-		{#if loading}
-			<span class="ml-auto text-[var(--wf-fg-muted)] text-xs">加载中...</span>
+		{#if editing === 'rename'}
+			<!-- 内联重命名 input：阻止 button 的 click/contextmenu/keydown，避免触发选中/展开。 -->
+			<input
+				type="text"
+				bind:this={editInput}
+				bind:value={editValue}
+				class="flex-1 min-w-0 bg-[var(--wf-bg)] border border-[var(--wf-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--wf-fg)]"
+				onkeydown={onEditKeydown}
+				onblur={onEditBlur}
+				onclick={(e) => e.stopPropagation()}
+				oncontextmenu={(e) => e.stopPropagation()}
+			/>
+		{:else}
+			<span class="truncate">{node.name}</span>
 		{/if}
 	</button>
 
 	{#if node.is_dir && isExpanded}
 		<div class="file-tree-children">
+			{#if editing === 'create-file' || editing === 'create-folder'}
+				<!-- 新建条目占位行：深度 = depth + 1；图标按 kind 切换。 -->
+				<div class="file-tree-node" style="padding-left: {(depth + 1) * 16}px">
+					<div
+						class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--wf-accent)]/10"
+					>
+						<span class="w-4 h-4"></span>
+						<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--wf-accent)]">
+							<PendingCreateIcon size={16} />
+						</span>
+						<input
+							type="text"
+							bind:this={editInput}
+							bind:value={editValue}
+							placeholder={editing === 'create-file' ? '新文件名' : '新文件夹名'}
+							class="flex-1 min-w-0 bg-[var(--wf-bg)] border border-[var(--wf-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--wf-fg)]"
+							onkeydown={onEditKeydown}
+							onblur={onEditBlur}
+						/>
+					</div>
+				</div>
+			{/if}
 			{#if hasLoaded && children.length > 0}
 				{#each children as child (child.path)}
 					<FileTree
@@ -180,24 +602,20 @@
 						depth={depth + 1}
 						{expandedPaths}
 						{selectedPath}
+						{selectedPaths}
+						{cutPaths}
 						{onSelect}
 					/>
 				{/each}
-			{:else if hasLoaded && children.length === 0}
+			{:else if hasLoaded && children.length === 0 && !editing}
 				<div
 					class="px-2 py-1 text-[12px] text-[var(--wf-fg-muted)]"
 					style="padding-left: {(depth + 1) * 16}px"
 				>
 					空目录
 				</div>
-			{:else if !hasLoaded}
-				<div
-					class="px-2 py-1 text-[12px] text-[var(--wf-fg-muted)]"
-					style="padding-left: {(depth + 1) * 16}px"
-				>
-					点击展开
-				</div>
 			{/if}
+			<!-- 展开过程中不再显示"点击展开"/"加载中"文本，避免子列表在几 ms 内抖动出现。 -->
 		</div>
 	{/if}
 </div>

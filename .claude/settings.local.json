@@ -6,7 +6,8 @@
       "Bash(sed -i '126,129 s/^/    /' lib.rs)",
       "Bash(sed -i '130 s/^/    /' lib.rs)",
       "Bash(cargo check *)",
-      "Bash(pnpm check *)"
+      "Bash(pnpm check *)",
+      "Bash(xxd)"
     ]
   }
 }

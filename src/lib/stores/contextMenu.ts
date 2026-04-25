@@ -1,6 +1,17 @@
 import { writable, get } from 'svelte/store';
-import type { Component } from 'svelte';
+import type { Component, ComponentType, SvelteComponent } from 'svelte';
 import { splitResizeUiState } from './paneTree';
+
+/**
+ * Accept both Svelte 5 `Component` and legacy `ComponentType<SvelteComponent>`
+ * so callers can pass icon components from `lucide-svelte@1.x` (which still
+ * uses the class-component typing) without casting at every call site.
+ * `unknown` lets the template simply render `<item.icon {size} {...}/>` —
+ * Svelte's tagged-component syntax accepts both shapes at runtime.
+ */
+export type IconComponent =
+  | Component<any, any, any>
+  | ComponentType<SvelteComponent<any>>;
 
 export type ContextMenuTarget =
   | 'terminal'
@@ -16,7 +27,7 @@ export type ContextMenuTarget =
 export interface ContextMenuItem {
   id: string;
   label?: string;
-  icon?: Component;
+  icon?: IconComponent;
   shortcut?: string;
   action?: () => void;
   disabled?: boolean;

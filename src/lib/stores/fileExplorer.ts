@@ -14,9 +14,32 @@ export interface ExplorerColumn {
 	cwd: string;
 	rootPath: string;
 	expandedPaths: Set<string>;
+	/**
+	 * Primary selected path — the "cursor" row. Keyboard focus lives here,
+	 * ArrowUp/Down moves from here, Delete/F2 target this path.
+	 * For backward compatibility this stays a single string; multi-select
+	 * lives in `selectedPaths` as a superset.
+	 */
 	selectedPath: string | null;
+	/**
+	 * Full selection set. Always contains `selectedPath` when non-null.
+	 * Single click replaces; Ctrl-click toggles; Shift-click ranges.
+	 * Not persisted to localStorage (matches VS Code: multi-select resets
+	 * on reload, only the primary selection survives).
+	 */
+	selectedPaths: Set<string>;
+	/**
+	 * Shift-range anchor. Set to `selectedPath` on every plain or Ctrl click;
+	 * a subsequent Shift-click extends from this anchor to the target.
+	 */
+	anchorPath: string | null;
 	tree: FileNode | null;
 	loading: boolean;
+	/**
+	 * True iff the cached tree is suspected stale (e.g. a new pane joined this
+	 * CWD). Explorer triggers a background loadTree and drops the flag.
+	 */
+	needsRefresh?: boolean;
 }
 
 /** Workspace descriptor used for multi-workspace sync. */
@@ -48,6 +71,48 @@ const initialState: FileExplorerState = {
 
 function cwdColumnId(workspaceId: string, cwd: string): string {
 	return `${workspaceId}:${cwd}`;
+}
+
+// ─── Per-column persistence (expandedPaths + selectedPath) ───────────────────
+// Stored under one localStorage key per column so reading a single workspace
+// doesn't deserialise every other workspace's state. Hard-capped at 500 paths
+// per column to keep the payload small on giant mono-repos (LRU-like — we
+// drop the oldest when serialising if over the cap).
+const LS_PREFIX = 'wind-explorer-column:';
+const MAX_EXPANDED = 500;
+
+interface PersistedColumnState {
+	expanded: string[];
+	selected: string | null;
+}
+
+function lsKeyFor(columnId: string): string {
+	return `${LS_PREFIX}${columnId}`;
+}
+
+function loadPersistedColumn(columnId: string): PersistedColumnState | null {
+	if (typeof localStorage === 'undefined') return null;
+	try {
+		const raw = localStorage.getItem(lsKeyFor(columnId));
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as Partial<PersistedColumnState>;
+		const expanded = Array.isArray(parsed.expanded) ? parsed.expanded.filter((p) => typeof p === 'string') : [];
+		const selected = typeof parsed.selected === 'string' ? parsed.selected : null;
+		return { expanded, selected };
+	} catch {
+		return null;
+	}
+}
+
+function savePersistedColumn(col: ExplorerColumn): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		const expanded = Array.from(col.expandedPaths).slice(-MAX_EXPANDED);
+		const payload: PersistedColumnState = { expanded, selected: col.selectedPath };
+		localStorage.setItem(lsKeyFor(col.id), JSON.stringify(payload));
+	} catch {
+		/* ignore quota / privacy errors — persistence is best-effort */
+	}
 }
 
 function createFileExplorerStore() {
@@ -100,18 +165,24 @@ function createFileExplorerStore() {
 					};
 					if (existing) {
 						// 检测是否有新 pane 加入到这个既有列（说明可能是重进/切回到老目录）。
-						// 重进老目录时，缓存的 tree 多半是过时的（此期间用户可能在终端里 `touch`、`rm`），
-						// 置 tree=null 让 Explorer effect 自动触发一次重载，避免"切回来看到旧文件"。
+						// 重进老目录时，缓存的 tree 多半已过时 —— 但直接 `tree = null` 会导致
+						// 视图先空屏再填充，形成"打开文件夹时的闪烁"。改为：保留旧树原地显示，
+						// 在 Explorer 层异步调用 loadTree 做后台刷新，数据就绪后再原子替换。
 						const prevSet = new Set(existing.paneIds);
 						const hasNewJoiner = paneIds.some((id) => !prevSet.has(id));
 						newColumns.push({
 							...existing,
 							paneIds,
 							paneTitles: mergedTitles,
-							tree: hasNewJoiner ? null : existing.tree,
+							tree: existing.tree,
+							needsRefresh: hasNewJoiner || existing.needsRefresh,
 						});
 					} else {
-						// New CWD: create column, tree: null triggers load
+						// New CWD: create column, tree: null triggers load.
+						// Rehydrate expanded + selected state from localStorage so
+						// re-opening the app returns to the last-seen shape.
+						const persisted = loadPersistedColumn(colId);
+						const primary = persisted?.selected ?? null;
 						newColumns.push({
 							id: colId,
 							workspaceId,
@@ -119,8 +190,10 @@ function createFileExplorerStore() {
 							paneTitles: mergedTitles,
 							cwd,
 							rootPath: cwd,
-							expandedPaths: new Set<string>(),
-							selectedPath: null,
+							expandedPaths: new Set<string>(persisted?.expanded ?? []),
+							selectedPath: primary,
+							selectedPaths: primary ? new Set<string>([primary]) : new Set<string>(),
+							anchorPath: primary,
 							tree: null,
 							loading: false,
 						});
@@ -169,15 +242,27 @@ function createFileExplorerStore() {
 
 		/**
 		 * Load file tree for a specific column.
+		 *
+		 * When `column.tree` is already populated we treat this as a silent
+		 * background refresh: no `loading` flag is set so the Explorer body
+		 * keeps rendering the cached tree and atomic-swaps when fresh data
+		 * arrives. First-time loads (no cached tree) still set `loading`
+		 * exactly once so the caller can show a subtle indicator if desired,
+		 * but the body render path avoids a "加载中..." placeholder.
 		 */
 		async loadTree(columnId: string, depth = 3): Promise<void> {
 			const state = get({ subscribe });
 			const column = state.columns.find((c) => c.id === columnId);
 			if (!column || column.loading) return;
 
+			const isFirstLoad = !column.tree;
 			update((s) => ({
 				...s,
-				columns: s.columns.map((c) => (c.id === columnId ? { ...c, loading: true } : c)),
+				columns: s.columns.map((c) =>
+					c.id === columnId
+						? { ...c, loading: isFirstLoad, needsRefresh: false }
+						: c
+				),
 			}));
 
 			try {
@@ -202,9 +287,26 @@ function createFileExplorerStore() {
 				}
 
 				const tree = await invoke<FileNode>('get_file_tree', { path: column.cwd, depth });
+				// Filter out ghost expanded paths (e.g. dirs deleted while we
+				// weren't looking). Walk the fresh tree once, intersect with
+				// persisted expanded set, and write the pruned set back so
+				// localStorage doesn't keep growing with stale paths.
+				const seen = new Set<string>();
+				const walk = (n: FileNode) => {
+					seen.add(n.path);
+					if (n.children) for (const c of n.children) walk(c);
+				};
+				walk(tree);
 				update((s) => ({
 					...s,
-					columns: s.columns.map((c) => (c.id === columnId ? { ...c, tree, loading: false } : c)),
+					columns: s.columns.map((c) => {
+						if (c.id !== columnId) return c;
+						const pruned = new Set<string>();
+						for (const p of c.expandedPaths) if (seen.has(p)) pruned.add(p);
+						const nextCol = { ...c, tree, loading: false, expandedPaths: pruned };
+						if (pruned.size !== c.expandedPaths.size) savePersistedColumn(nextCol);
+						return nextCol;
+					}),
 				}));
 			} catch (e) {
 				const msg = String(e);
@@ -251,7 +353,36 @@ function createFileExplorerStore() {
 		},
 
 		/**
-		 * Toggle expanded state for a path in a column.
+		 * Expand multiple paths at once — a single store update + (implicitly)
+		 * one localStorage write. Used by `Explorer.revealInTree` which needs
+		 * to open a deep chain of ancestors without triggering N separate
+		 * reactive updates (each of which would re-render the whole tree).
+		 */
+		expandMany(columnId: string, paths: string[]): void {
+			if (paths.length === 0) return;
+			update((state) => ({
+				...state,
+				columns: state.columns.map((c) => {
+					if (c.id !== columnId) return c;
+					const next = new Set(c.expandedPaths);
+					let changed = false;
+					for (const p of paths) {
+						if (!next.has(p)) {
+							next.add(p);
+							changed = true;
+						}
+					}
+					if (!changed) return c;
+					const updated = { ...c, expandedPaths: next };
+					savePersistedColumn(updated);
+					return updated;
+				}),
+			}));
+		},
+
+		/**
+		 * Toggle expanded state for a path in a column. Persists the column's
+		 * new expandedPaths to localStorage so the tree shape survives a reload.
 		 */
 		toggleExpanded(columnId: string, path: string): void {
 			update((state) => ({
@@ -264,20 +395,66 @@ function createFileExplorerStore() {
 					} else {
 						newExpanded.add(path);
 					}
-					return { ...c, expandedPaths: newExpanded };
+					const next = { ...c, expandedPaths: newExpanded };
+					savePersistedColumn(next);
+					return next;
 				}),
 			}));
 		},
 
 		/**
-		 * Set selected path for a column.
+		 * Set selected path for a column — single-selection shortcut.
+		 * Replaces `selectedPaths` with `{path}`, resets anchor to `path`.
+		 * Persisted (primary + expanded only; multi-select is session-scoped).
 		 */
 		setSelectedPath(columnId: string, path: string | null): void {
 			update((state) => ({
 				...state,
-				columns: state.columns.map((c) =>
-					c.id === columnId ? { ...c, selectedPath: path } : c
-				),
+				columns: state.columns.map((c) => {
+					if (c.id !== columnId) return c;
+					const next: ExplorerColumn = {
+						...c,
+						selectedPath: path,
+						selectedPaths: path ? new Set<string>([path]) : new Set<string>(),
+						anchorPath: path,
+					};
+					savePersistedColumn(next);
+					return next;
+				}),
+			}));
+		},
+
+		/**
+		 * Full selection setter for multi-select paths (Shift/Ctrl interactions
+		 * and Shift-Arrow keyboard extension). `primary` becomes `selectedPath`
+		 * (the keyboard cursor); `anchor` defaults to `primary` and is only
+		 * updated when a non-shift click happens (callers pass undefined on
+		 * shift-range so the anchor stays pinned).
+		 */
+		setSelection(
+			columnId: string,
+			selection: {
+				paths: Iterable<string>;
+				primary: string | null;
+				anchor?: string | null;
+			}
+		): void {
+			update((state) => ({
+				...state,
+				columns: state.columns.map((c) => {
+					if (c.id !== columnId) return c;
+					const paths = new Set<string>(selection.paths);
+					if (selection.primary) paths.add(selection.primary);
+					const next: ExplorerColumn = {
+						...c,
+						selectedPath: selection.primary,
+						selectedPaths: paths,
+						anchorPath:
+							selection.anchor === undefined ? c.anchorPath : selection.anchor,
+					};
+					savePersistedColumn(next);
+					return next;
+				}),
 			}));
 		},
 
@@ -402,6 +579,90 @@ export const explorerWorkspaceGroups = derived(
 		return groups;
 	}
 );
+
+// ─── Clipboard state (cut/copy/paste between Explorer rows) ────────────────
+// Session-scoped — not persisted. Matches VS Code's Explorer clipboard which
+// drops on window close. `mode === 'cut'` gives us a dimmed visual on the
+// source rows until paste consumes it or the user cancels with Escape.
+export interface ExplorerClipboard {
+	paths: string[];
+	mode: 'copy' | 'cut';
+}
+
+const _clipboard = writable<ExplorerClipboard | null>(null);
+export const explorerClipboard = { subscribe: _clipboard.subscribe };
+
+export function setExplorerClipboard(clip: ExplorerClipboard | null): void {
+	_clipboard.set(clip);
+}
+
+/**
+ * Derive a non-colliding child name inside `dirPath` by appending "(N)" before
+ * the extension. Used by the paste + drag-drop code paths so both surfaces
+ * share identical conflict-avoidance semantics — VS Code's rename style.
+ *
+ * `existingAbsolute` is a set of *absolute* paths already present in the
+ * directory; we join `dirPath + desired` using the dir's own separator style
+ * and test membership.
+ */
+export function uniqueChildName(
+	dirPath: string,
+	desired: string,
+	existingAbsolute: Set<string>
+): string {
+	const sep = dirPath.includes('\\') && !dirPath.includes('/') ? '\\' : '/';
+	const clean = dirPath.replace(/[\\/]+$/, '');
+	const dotIdx = desired.lastIndexOf('.');
+	const base = dotIdx > 0 ? desired.slice(0, dotIdx) : desired;
+	const ext = dotIdx > 0 ? desired.slice(dotIdx) : '';
+	if (!existingAbsolute.has(`${clean}${sep}${desired}`)) return desired;
+	for (let i = 1; i < 999; i += 1) {
+		const candidate = `${base} (${i})${ext}`;
+		if (!existingAbsolute.has(`${clean}${sep}${candidate}`)) return candidate;
+	}
+	return `${base} (${Date.now()})${ext}`;
+}
+
+/**
+ * Walk all known columns' cached trees; reload the tree of any column whose
+ * cached set contains `dirPath`. Called after a mutation (paste, drop, delete)
+ * so every view of a directory that might be affected refreshes — e.g. two
+ * workspaces both at the same cwd, or a parent column whose tree cached the
+ * mutated subdirectory.
+ */
+export async function refreshColumnsCovering(dirPath: string): Promise<void> {
+	const state = get(fileExplorerStore);
+	const contains = (node: FileNode | null): boolean => {
+		if (!node) return false;
+		if (node.path === dirPath) return true;
+		if (!node.children) return false;
+		for (const c of node.children) if (contains(c)) return true;
+		return false;
+	};
+	await Promise.all(
+		state.columns
+			.filter((c) => contains(c.tree))
+			.map((c) => fileExplorerStore.loadTree(c.id))
+	);
+}
+
+/**
+ * Flatten an ExplorerColumn's tree to the list of currently-visible node
+ * paths (root first, then expanded children in order). Used by the Explorer's
+ * root-level ArrowUp/Down handler to compute prev/next selection targets.
+ */
+export function flattenVisiblePaths(column: ExplorerColumn): string[] {
+	if (!column.tree) return [];
+	const result: string[] = [];
+	const walk = (node: FileNode) => {
+		result.push(node.path);
+		if (node.is_dir && column.expandedPaths.has(node.path) && node.children) {
+			for (const child of node.children) walk(child);
+		}
+	};
+	walk(column.tree);
+	return result;
+}
 
 /**
  * Initialize file explorer for all known workspaces (keep-alive fix).

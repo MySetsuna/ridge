@@ -1,6 +1,9 @@
 // vite.config.js
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+// @ts-ignore — @tailwindcss/vite v4 ships ESM-only with package `exports`
+// that tsconfig `moduleResolution: "Node"` cannot resolve; resolved fine at
+// runtime by vite's bundler-style resolver.
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({

@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
@@ -26,7 +27,8 @@ pub enum PaneState {
     Idle,
     /// 有 agent 运行中
     Busy,
-    /// Pane 正在启动中
+    /// Pane 正在启动中（agent register 已发但 PTY 还没收到首条 prompt 输出时使用）
+    #[allow(dead_code)]
     Starting,
 }
 
@@ -59,6 +61,97 @@ pub struct Workspace {
     pub associated_file_path: Option<PathBuf>,
 }
 
+/// Block-based PTY scrollback store. See `docs/TERMINAL_SCROLLBACK.md` for the
+/// design context. Byte content is stored as immutable blocks + a mutable
+/// `current` partial block; each block records its starting `seq` so callers
+/// can paginate with "give me bytes before seq X".
+///
+/// Eviction drops from the front (oldest block) when `total_bytes` exceeds
+/// `MAX_BYTES`. Blocks are raw PTY bytes — we never re-parse; we guarantee
+/// every slice we return starts and ends at a UTF-8 char boundary so the
+/// frontend can blindly `decode_utf8` without worrying about mid-codepoint cuts.
+#[derive(Clone, Debug)]
+pub struct PaneScrollback {
+    /// Completed blocks, oldest at front.
+    pub blocks: std::collections::VecDeque<Arc<Vec<u8>>>,
+    /// Starting seq (monotonic byte counter) of each block in `blocks`, same order.
+    pub block_start_seqs: std::collections::VecDeque<u64>,
+    /// Active partial block; flushes to `blocks` on reaching `BLOCK_SIZE`.
+    pub current: Vec<u8>,
+    /// Starting seq of the `current` block.
+    pub current_start_seq: u64,
+    /// Sum of bytes in `blocks` + `current.len()`. Used for cap eviction.
+    pub total_bytes: usize,
+}
+
+/// One page of scrollback bytes returned by `get_pane_scrollback_tail` /
+/// `_before`. Always UTF-8-safe at both ends.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScrollbackChunk {
+    /// UTF-8 string. Clone of the underlying bytes; block data is cached
+    /// behind `Arc` so the clone is cheap per block.
+    pub bytes: String,
+    /// Starting seq of `bytes`. For `get_pane_scrollback_before` callers use
+    /// this as the next `before_seq` to page further up.
+    pub start_seq: u64,
+    /// True when this response includes the very first retained byte — no
+    /// older data is available from the store (may still exist in xterm's
+    /// own buffer if it's still mounted).
+    pub at_oldest: bool,
+}
+
+/// Block size for completed scrollback pages (bytes). Chosen so a single
+/// tail read pulls ~128 KiB (2 blocks) without getting too chunky on the
+/// wire to the renderer.
+pub const SCROLLBACK_BLOCK_SIZE: usize = 64 * 1024;
+/// Hard retention cap per pane. 4 MiB covers ~30k lines of 120-char output,
+/// which comfortably outlives a typical `cat log.txt`.
+pub const SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+impl PaneScrollback {
+    pub fn new() -> Self {
+        Self {
+            blocks: std::collections::VecDeque::new(),
+            block_start_seqs: std::collections::VecDeque::new(),
+            current: Vec::with_capacity(SCROLLBACK_BLOCK_SIZE),
+            current_start_seq: 0,
+            total_bytes: 0,
+        }
+    }
+
+    /// Global seq just past the end of what we've stored — equals the seq
+    /// the next appended byte will carry.
+    #[allow(dead_code)] // used by phase-3 scroll-to-tail logic; expose now to keep API stable
+    pub fn head_seq(&self) -> u64 {
+        self.current_start_seq + self.current.len() as u64
+    }
+
+    /// Seq of the first byte still available to callers.
+    pub fn oldest_seq(&self) -> u64 {
+        if let Some(&s) = self.block_start_seqs.front() {
+            s
+        } else {
+            self.current_start_seq
+        }
+    }
+
+    /// Return the seq-sorted flat view of every retained byte. Used by the
+    /// paging helpers. `total` matches `self.total_bytes` at the top of the
+    /// call; we snapshot into a Vec<Arc<Vec<u8>>> so the caller can read
+    /// without holding the outer RwLock longer than needed.
+    pub fn snapshot_blocks(&self) -> Vec<(u64, Arc<Vec<u8>>)> {
+        let mut out: Vec<(u64, Arc<Vec<u8>>)> =
+            Vec::with_capacity(self.blocks.len() + 1);
+        for (i, b) in self.blocks.iter().enumerate() {
+            out.push((self.block_start_seqs[i], Arc::clone(b)));
+        }
+        if !self.current.is_empty() {
+            out.push((self.current_start_seq, Arc::new(self.current.clone())));
+        }
+        out
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
@@ -67,13 +160,18 @@ pub struct AppState {
     pub active_workspace: Arc<RwLock<Uuid>>,
     pub event_tx: mpsc::Sender<GlobalEvent>,
     /// 供 `capture-pane` 读取的最近输出（与 UI 展示同源 PTY 流）。
-    pub pty_scrollback: Arc<RwLock<HashMap<(Uuid, Uuid), String>>>,
+    /// Block-based store — see `PaneScrollback` and
+    /// `docs/TERMINAL_SCROLLBACK.md`.
+    pub pty_scrollback: Arc<RwLock<HashMap<(Uuid, Uuid), PaneScrollback>>>,
     /// 本进程 teammate HTTP 绑定信息；存在时新 PTY 会注入 WIND_TEAMMATE_*。
     pub teammate_binding: Arc<RwLock<Option<TeammateBinding>>>,
     /// Project store for managing projects
     pub project_store: Option<Arc<ProjectStore>>,
     /// Current active project path
     pub current_project: Arc<RwLock<Option<PathBuf>>>,
+    /// Git filesystem watcher — keeps notify debouncers alive for each watched repo.
+    /// Wrapped in Arc so that cloning AppState shares the same watcher instance.
+    pub git_watcher: Arc<GitWatcher>,
 }
 
 impl AppState {
@@ -116,6 +214,7 @@ impl AppState {
             teammate_binding: Arc::new(RwLock::new(None)),
             project_store: None,
             current_project: Arc::new(RwLock::new(None)),
+            git_watcher: Arc::new(GitWatcher::new()),
         }
     }
 
@@ -124,19 +223,44 @@ impl AppState {
     }
 
     pub fn append_pty_scrollback(&self, ws: Uuid, pane: Uuid, chunk: &str) {
-        const MAX: usize = 384 * 1024;
+        if chunk.is_empty() {
+            return;
+        }
+        let chunk_bytes = chunk.as_bytes();
         let mut map = self.pty_scrollback.write();
-        let buf = map.entry((ws, pane)).or_insert_with(String::new);
-        buf.push_str(chunk);
-        if buf.len() > MAX {
-            // Drain requires character boundaries, not byte offsets.
-            // Find the nearest valid character boundary before the cut point.
-            let cut_point = buf.len() - MAX;
-            let mut valid_boundary = cut_point;
-            while !buf.is_char_boundary(valid_boundary) {
-                valid_boundary += 1;
+        let entry = map.entry((ws, pane)).or_insert_with(PaneScrollback::new);
+
+        // Fast path: append into `current`; when it crosses BLOCK_SIZE, freeze.
+        entry.current.extend_from_slice(chunk_bytes);
+        entry.total_bytes += chunk_bytes.len();
+
+        while entry.current.len() >= SCROLLBACK_BLOCK_SIZE {
+            // Freeze one block. We walk back from BLOCK_SIZE to the nearest
+            // UTF-8 char boundary so the frozen slice never ends mid-codepoint.
+            // Max 3 bytes of rewind since UTF-8 sequences are ≤ 4 bytes.
+            let mut boundary = SCROLLBACK_BLOCK_SIZE;
+            while boundary > 0 && !is_utf8_char_boundary(&entry.current, boundary) {
+                boundary -= 1;
             }
-            buf.drain(..valid_boundary);
+            if boundary == 0 {
+                // `current` starts with a continuation byte — shouldn't happen
+                // because the previous freeze stopped at a boundary, but guard
+                // anyway by punting: let it grow to the next boundary match.
+                break;
+            }
+            let frozen = entry.current.drain(..boundary).collect::<Vec<u8>>();
+            let frozen_start_seq = entry.current_start_seq;
+            entry.blocks.push_back(Arc::new(frozen));
+            entry.block_start_seqs.push_back(frozen_start_seq);
+            entry.current_start_seq = frozen_start_seq + boundary as u64;
+
+            // Cap eviction: drop oldest blocks until we're back under MAX_BYTES.
+            while entry.total_bytes > SCROLLBACK_MAX_BYTES && entry.blocks.len() > 1 {
+                if let Some(evicted) = entry.blocks.pop_front() {
+                    entry.block_start_seqs.pop_front();
+                    entry.total_bytes -= evicted.len();
+                }
+            }
         }
     }
 
@@ -144,31 +268,299 @@ impl AppState {
         self.pty_scrollback.write().remove(&(ws, pane));
     }
 
-    pub fn get_pty_scrollback_tail(&self, ws: Uuid, pane: Uuid, max_lines: usize) -> String {
+    /// Return the tail of up-to `max_bytes` bytes, starting on a UTF-8 char
+    /// boundary and ending at the latest byte. Walks blocks newest-first so
+    /// we allocate only what the caller asked for.
+    pub fn get_pty_scrollback_tail(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        max_bytes: usize,
+    ) -> ScrollbackChunk {
         let map = self.pty_scrollback.read();
-        let Some(s) = map.get(&(ws, pane)) else {
-            return String::new();
+        let Some(entry) = map.get(&(ws, pane)) else {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: 0,
+                at_oldest: true,
+            };
         };
-        if max_lines == 0 || s.is_empty() {
-            return String::new();
+        let snapshot = entry.snapshot_blocks();
+        let oldest_seq = entry.oldest_seq();
+        drop(map);
+
+        if snapshot.is_empty() || max_bytes == 0 {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: oldest_seq,
+                at_oldest: true,
+            };
         }
-        // 从尾向头扫第 max_lines 个 '\n'，避免 `split` 对整个 buffer 做 O(n) 分配。
-        let bytes = s.as_bytes();
-        let mut nl_seen = 0usize;
-        let mut cut = 0usize;
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] == b'\n' {
-                nl_seen += 1;
-                if nl_seen == max_lines {
-                    cut = i + 1;
-                    break;
+
+        // Walk blocks from the end, collecting up to max_bytes. `need` tracks
+        // remaining capacity.
+        let mut rev_pieces: Vec<&[u8]> = Vec::new();
+        let mut start_seq = 0u64;
+        let mut need = max_bytes;
+        let mut at_oldest = true;
+        for (seq, block) in snapshot.iter().rev() {
+            if need == 0 {
+                at_oldest = false;
+                break;
+            }
+            if block.len() <= need {
+                rev_pieces.push(&block[..]);
+                need -= block.len();
+                start_seq = *seq;
+            } else {
+                // Partial: take the tail of this block. Align to UTF-8 boundary.
+                let take = block.len() - need;
+                let mut aligned = take;
+                while aligned < block.len() && !is_utf8_char_boundary(block, aligned) {
+                    aligned += 1;
                 }
+                if aligned < block.len() {
+                    rev_pieces.push(&block[aligned..]);
+                    start_seq = *seq + aligned as u64;
+                    need = 0;
+                }
+                at_oldest = false;
+                break;
             }
         }
-        if nl_seen < max_lines {
-            return s.clone();
+
+        let mut out: Vec<u8> = Vec::with_capacity(max_bytes - need);
+        for piece in rev_pieces.iter().rev() {
+            out.extend_from_slice(piece);
         }
-        // cut 一定落在 '\n' 之后，天然是 UTF-8 字符边界。
-        s[cut..].to_string()
+        let bytes = String::from_utf8_lossy(&out).into_owned();
+        ScrollbackChunk {
+            bytes,
+            start_seq,
+            at_oldest: at_oldest && start_seq == oldest_seq,
+        }
+    }
+
+    /// Return up-to `max_bytes` ending at (exclusive) `before_seq`. Use for
+    /// paginating backwards: pass `chunk.start_seq` as the next `before_seq`.
+    pub fn get_pty_scrollback_before(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        before_seq: u64,
+        max_bytes: usize,
+    ) -> ScrollbackChunk {
+        let map = self.pty_scrollback.read();
+        let Some(entry) = map.get(&(ws, pane)) else {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: 0,
+                at_oldest: true,
+            };
+        };
+        let snapshot = entry.snapshot_blocks();
+        let oldest_seq = entry.oldest_seq();
+        drop(map);
+
+        if snapshot.is_empty() || max_bytes == 0 {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: before_seq,
+                at_oldest: before_seq <= oldest_seq,
+            };
+        }
+
+        // Collect bytes with `seq < before_seq`, newest-first, up to max_bytes.
+        let mut rev_pieces: Vec<Vec<u8>> = Vec::new();
+        let mut start_seq = before_seq;
+        let mut need = max_bytes;
+        for (block_seq, block) in snapshot.iter().rev() {
+            if need == 0 {
+                break;
+            }
+            let block_end = *block_seq + block.len() as u64;
+            if *block_seq >= before_seq {
+                // Entire block is too new.
+                continue;
+            }
+            // Take the portion with seq < before_seq.
+            let end_within_block = (before_seq - *block_seq).min(block.len() as u64) as usize;
+            let portion_start = if end_within_block <= need {
+                0usize
+            } else {
+                end_within_block - need
+            };
+            // Align portion_start to UTF-8 char boundary (forward).
+            let mut aligned = portion_start;
+            while aligned < end_within_block && !is_utf8_char_boundary(block, aligned) {
+                aligned += 1;
+            }
+            if aligned < end_within_block {
+                rev_pieces.push(block[aligned..end_within_block].to_vec());
+                let taken = end_within_block - aligned;
+                need -= taken;
+                start_seq = *block_seq + aligned as u64;
+            }
+            // Continue scanning older blocks if we still have capacity.
+            let _ = block_end;
+        }
+
+        let mut out: Vec<u8> = Vec::with_capacity(max_bytes - need);
+        for piece in rev_pieces.iter().rev() {
+            out.extend_from_slice(piece);
+        }
+        let bytes = String::from_utf8_lossy(&out).into_owned();
+        ScrollbackChunk {
+            bytes,
+            start_seq,
+            at_oldest: start_seq <= oldest_seq,
+        }
+    }
+}
+
+/// Same semantics as `str::is_char_boundary` but on a raw `&[u8]`. Returns
+/// true at index `0`, `len`, and any position where the next byte is NOT
+/// a UTF-8 continuation byte (`10xxxxxx`).
+fn is_utf8_char_boundary(bytes: &[u8], index: usize) -> bool {
+    if index == 0 || index == bytes.len() {
+        return true;
+    }
+    if index > bytes.len() {
+        return false;
+    }
+    // A boundary is any byte that is NOT a continuation byte.
+    (bytes[index] & 0b1100_0000) != 0b1000_0000
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    /// Build an isolated AppState for tests. `AppState::new` seeds a default
+    /// workspace + PaneTree — fine for scrollback tests since we key by
+    /// `(Uuid, Uuid)` directly.
+    fn make_state() -> (AppState, Uuid, Uuid) {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let ws = state.active_workspace_id();
+        let pane = Uuid::new_v4();
+        (state, ws, pane)
+    }
+
+    #[test]
+    fn append_tail_round_trip_small() {
+        let (state, ws, pane) = make_state();
+        state.append_pty_scrollback(ws, pane, "hello\n");
+        state.append_pty_scrollback(ws, pane, "world\n");
+        let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
+        assert_eq!(chunk.bytes, "hello\nworld\n");
+        assert!(chunk.at_oldest);
+        assert_eq!(chunk.start_seq, 0);
+    }
+
+    #[test]
+    fn tail_respects_max_bytes_from_end() {
+        let (state, ws, pane) = make_state();
+        // Push 4 full blocks worth (256 KiB total).
+        let chunk = "x".repeat(SCROLLBACK_BLOCK_SIZE);
+        for _ in 0..4 {
+            state.append_pty_scrollback(ws, pane, &chunk);
+        }
+        // Ask for just 1024 bytes — must come from the latest block.
+        let got = state.get_pty_scrollback_tail(ws, pane, 1024);
+        assert_eq!(got.bytes.len(), 1024);
+        assert!(!got.at_oldest);
+        // Start seq equals total - 1024.
+        assert_eq!(got.start_seq, (4 * SCROLLBACK_BLOCK_SIZE - 1024) as u64);
+    }
+
+    #[test]
+    fn before_pages_backwards_until_oldest() {
+        let (state, ws, pane) = make_state();
+        // 3 × 64 KiB + a short trailing partial.
+        let full = "A".repeat(SCROLLBACK_BLOCK_SIZE);
+        state.append_pty_scrollback(ws, pane, &full);
+        let full_b = "B".repeat(SCROLLBACK_BLOCK_SIZE);
+        state.append_pty_scrollback(ws, pane, &full_b);
+        let full_c = "C".repeat(SCROLLBACK_BLOCK_SIZE);
+        state.append_pty_scrollback(ws, pane, &full_c);
+        state.append_pty_scrollback(ws, pane, "tail");
+
+        // Start from tail.
+        let tail = state.get_pty_scrollback_tail(ws, pane, 10);
+        assert_eq!(tail.bytes.len(), 10);
+
+        let before = state.get_pty_scrollback_before(ws, pane, tail.start_seq, 1024);
+        assert_eq!(before.bytes.len(), 1024);
+        assert_eq!(before.start_seq, tail.start_seq - 1024);
+
+        // Page all the way back.
+        let mut cursor = tail.start_seq;
+        let mut total_read: u64 = 0;
+        loop {
+            let page = state.get_pty_scrollback_before(ws, pane, cursor, 32 * 1024);
+            total_read += page.bytes.len() as u64;
+            if page.at_oldest || page.bytes.is_empty() {
+                break;
+            }
+            cursor = page.start_seq;
+        }
+        let tail_len = tail.bytes.len() as u64;
+        assert_eq!(total_read + tail_len, 3 * SCROLLBACK_BLOCK_SIZE as u64 + 4);
+    }
+
+    #[test]
+    fn eviction_when_over_cap() {
+        let (state, ws, pane) = make_state();
+        // Push 5 MiB → should evict oldest blocks until ≤ SCROLLBACK_MAX_BYTES.
+        let chunk = "x".repeat(SCROLLBACK_BLOCK_SIZE);
+        for _ in 0..80 {
+            // 80 * 64 KiB = 5 MiB
+            state.append_pty_scrollback(ws, pane, &chunk);
+        }
+        let map = state.pty_scrollback.read();
+        let entry = map.get(&(ws, pane)).expect("entry");
+        assert!(
+            entry.total_bytes <= SCROLLBACK_MAX_BYTES,
+            "post-cap total_bytes = {}",
+            entry.total_bytes
+        );
+    }
+
+    #[test]
+    fn utf8_multibyte_never_split_on_block_boundary() {
+        let (state, ws, pane) = make_state();
+        // Fill up to 1 byte short of a block then push a 3-byte CJK char.
+        let padding = "a".repeat(SCROLLBACK_BLOCK_SIZE - 1);
+        state.append_pty_scrollback(ws, pane, &padding);
+        state.append_pty_scrollback(ws, pane, "中文"); // 2 × 3-byte each
+
+        // The frozen block should end on a UTF-8 boundary, not mid-codepoint.
+        let map = state.pty_scrollback.read();
+        let entry = map.get(&(ws, pane)).expect("entry");
+        assert!(!entry.blocks.is_empty(), "block should have frozen");
+        let front = entry.blocks.front().unwrap();
+        // Decoding must succeed — if we split mid-codepoint it would fail.
+        assert!(std::str::from_utf8(front).is_ok());
+    }
+
+    #[test]
+    fn tail_empty_when_pane_unknown() {
+        let (state, ws, _pane) = make_state();
+        let unknown_pane = Uuid::new_v4();
+        let chunk = state.get_pty_scrollback_tail(ws, unknown_pane, 1024);
+        assert!(chunk.bytes.is_empty());
+        assert!(chunk.at_oldest);
+    }
+
+    #[test]
+    fn clear_removes_pane_entry() {
+        let (state, ws, pane) = make_state();
+        state.append_pty_scrollback(ws, pane, "hi");
+        state.clear_pty_scrollback(ws, pane);
+        let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
+        assert!(chunk.bytes.is_empty());
     }
 }

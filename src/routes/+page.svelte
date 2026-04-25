@@ -6,6 +6,19 @@
   import Explorer from '$lib/components/Explorer.svelte';
   import FileEditor from '$lib/components/FileEditor.svelte';
   import ContextMenu from '$lib/components/ContextMenu.svelte';
+  import ClaudeAgentLauncher from '$lib/components/ClaudeAgentLauncher.svelte';
+  import ScrollbackHistoryModal from '$lib/components/ScrollbackHistoryModal.svelte';
+  import DiffEditorModal from '$lib/components/DiffEditorModal.svelte';
+  import WindDialog from '$lib/components/WindDialog.svelte';
+  import WindToast from '$lib/components/WindToast.svelte';
+  import ClaudeCodePanel from '$lib/components/ClaudeCodePanel.svelte';
+  import { settingsStore, setClaudeExtensionEnabled } from '$lib/stores/settings';
+  import { Bot } from 'lucide-svelte';
+  import SearchSidebar from '$lib/components/SearchSidebar.svelte';
+  import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
+  // Side-effect import: each built-in plugin auto-registers via its module
+  // script. Must land once, at app chrome level.
+  import '$lib/plugins';
   import {
     Terminal,
     FolderOpen,
@@ -31,6 +44,9 @@
     Settings,
     FileCode,
     FolderInput,
+    Search,
+    PanelRightOpen,
+    RefreshCw,
   } from 'lucide-svelte';
   import {
     paneTreeStore,
@@ -53,7 +69,16 @@
     refreshWorkspaceSaveInfo,
     listRecentWorkspaces,
     clearRecentWorkspaces,
+    closePane,
+    paneCwdStore,
   } from '$lib/stores/paneTree';
+  import { fileEditorStore } from '$lib/stores/fileEditor';
+  import { getScmSelectedRepo } from '$lib/stores/scmCache';
+  import {
+    alertDialog,
+    confirmDialog,
+    promptDialog,
+  } from '$lib/components/WindDialog.svelte';
 
   // ─── 打开 .wind 入口 + 最近打开下拉（使用 tauri-plugin-dialog 的 OS 原生文件选择器）───
   let recentOpen = $state(false);
@@ -111,15 +136,24 @@
   import { dev } from '$app/environment';
   import { get } from 'svelte/store';
   import { onMount } from 'svelte';
-  import { isTauri } from '@tauri-apps/api/core';
+  import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
-  type SidebarTab = 'git' | 'files';
+  type SidebarTab = 'git' | 'files' | 'search' | 'claude';
   let sidebarTab = $state<SidebarTab>('files');
+
+  // If the Claude extension toggle flips to false while we're on the
+  // Claude tab, fall back to Files. Without this guard the user would
+  // see an empty sidebar (rail button gone, but tab still active).
+  $effect(() => {
+    if (!$settingsStore.claudeExtensionEnabled && sidebarTab === 'claude') {
+      sidebarTab = 'files';
+    }
+  });
 
   // localStorage 键名
   const SIDEBAR_WIDTH_KEY = 'wind-sidebar-width';
@@ -131,10 +165,15 @@
   let sidebarCollapsed = $state(false);
   let isResizingSidebar = $state(false);
 
-  // 计算窗口宽度的40%
-  let windowWidth40 = $derived(
-    typeof window !== 'undefined' ? window.innerWidth * 0.4 : 400
+  // Sidebar resize cap. Tracked as $state (not just $derived) so a
+  // window-level `resize` listener can push updates — `window.innerWidth`
+  // isn't reactive on its own. Cap was 40% (sidebarMaxPx) until
+  // round-39 user feedback bumped it to 80% to give SCM/diff users
+  // genuinely wide working space without bumping a hard wall.
+  let viewportInnerWidth = $state(
+    typeof window !== 'undefined' ? window.innerWidth : 1000
   );
+  let sidebarMaxPx = $derived(viewportInnerWidth * 0.8);
 
   // 从 localStorage 加载侧边栏设置
   function loadSidebarSettings() {
@@ -144,7 +183,7 @@
     if (savedWidth) {
       const parsed = parseInt(savedWidth, 10);
       if (!isNaN(parsed) && parsed > 0) {
-        sidebarWidth = Math.min(parsed, windowWidth40);
+        sidebarWidth = Math.min(parsed, sidebarMaxPx);
       }
     }
     if (savedCollapsed === 'true') {
@@ -177,7 +216,7 @@
 
     function onMouseMove(ev: MouseEvent) {
       const delta = ev.clientX - startX;
-      const maxWidth = windowWidth40;
+      const maxWidth = sidebarMaxPx;
       const newWidth = startWidth + delta;
       // 允许拖动到0关闭侧边栏
       sidebarWidth = Math.max(0, Math.min(maxWidth, newWidth));
@@ -206,6 +245,16 @@
     if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
       e.preventDefault();
       toggleSidebar();
+      return;
+    }
+    // Ctrl+Shift+F: 打开搜索侧栏（VS Code 对齐）。展开侧栏（若折叠）+ 切 tab。
+    if (e.ctrlKey && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+      e.preventDefault();
+      sidebarTab = 'search';
+      if (sidebarCollapsed) {
+        sidebarCollapsed = false;
+        saveSidebarSettings();
+      }
       return;
     }
     // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
@@ -300,11 +349,14 @@
       const paneId =
         paneEl.getAttribute('data-pane-id') ||
         (paneEl as HTMLElement).dataset?.paneId;
-      // 判断是终端还是编辑器（通过 class 判断）
+      // 判断是终端还是编辑器（通过 class 判断）。
+      // 历史 typo 修：`.wf-terminal` 实际类名是 `.wf-terminal-surface`
+      // （Pane.svelte），`.wf-editor` 不存在（用 `.monaco-editor` 兜底）。
+      // 不修这两条 contextmenu target 就只能落到 `pane-content`，菜单
+      // 项也对应不上终端/编辑器特化项。
       const isTerminal =
-        target.closest('.xterm') || target.closest('.wf-terminal');
-      const isEditor =
-        target.closest('.wf-editor') || target.closest('.monaco-editor');
+        target.closest('.xterm') || target.closest('.wf-terminal-surface');
+      const isEditor = target.closest('.monaco-editor');
       if (isTerminal) {
         return { target: 'terminal', paneId };
       }
@@ -335,6 +387,126 @@
       return null;
     };
     return findPaneMode(rootNode);
+  }
+
+  /**
+   * Real handler shared across menu items + the Ctrl+W shortcut.
+   * Centralises the "close *this* pane" semantic so the menu fires the
+   * same code path as the keyboard shortcut.
+   */
+  async function closeCurrentPane(targetPaneId?: string): Promise<void> {
+    const pid = targetPaneId || get(activePaneId);
+    if (!pid) return;
+    try {
+      await closePane(pid);
+    } catch (e) {
+      await alertDialog({ title: '关闭失败', message: String(e), danger: true });
+    }
+  }
+
+  /** Close every leaf pane in the active workspace EXCEPT the given one. */
+  async function closeOtherPanes(keepPaneId?: string): Promise<void> {
+    const keep = keepPaneId || get(activePaneId);
+    if (!keep) return;
+    const ids = getAllPaneIds(rootNode).filter((id) => id !== keep);
+    if (ids.length === 0) return;
+    const ok = await confirmDialog({
+      title: '关闭其它窗格',
+      message: `将关闭 ${ids.length} 个窗格，仅保留当前窗格。继续？`,
+      okLabel: '关闭',
+      danger: true,
+    });
+    if (!ok) return;
+    for (const id of ids) {
+      try {
+        await closePane(id);
+      } catch {
+        /* best-effort — keep going */
+      }
+    }
+  }
+
+  async function renameActiveWorkspace(): Promise<void> {
+    const wid = get(activeWorkspaceId);
+    if (!wid) return;
+    const ws = get(workspacesList).find((w) => w.id === wid);
+    const newName = await promptDialog({
+      title: '重命名工作区',
+      message: '输入新的工作区名称：',
+      defaultValue: ws?.name ?? '',
+      placeholder: '工作区名称',
+    });
+    if (!newName?.trim()) return;
+    try {
+      await renameWorkspace(wid, newName.trim());
+    } catch (e) {
+      await alertDialog({ title: '重命名失败', message: String(e), danger: true });
+    }
+  }
+
+  /** Run a git command against the SCM-selected repo (or any one repo
+   *  if SCM hasn't been opened yet). Surface errors in a themed alert. */
+  async function runGitOnSelectedRepo(cmd: string, label: string): Promise<void> {
+    if (!isTauri()) return;
+    // Prefer the repo the SCM panel currently has selected (persisted in
+    // scmCacheStore so it survives tab switches). Fall back to discovery
+    // from paneCwdStore when SCM hasn't been opened yet.
+    let repoRoot: string | null = getScmSelectedRepo() || null;
+    if (!repoRoot) {
+      const cwds = Array.from(new Set(Object.values(get(paneCwdStore))));
+      for (const cwd of cwds) {
+        try {
+          const r = await invoke<string | null>('find_git_repo_root', { path: cwd });
+          if (r) {
+            repoRoot = r;
+            break;
+          }
+        } catch {
+          /* try next */
+        }
+      }
+    }
+    if (!repoRoot) {
+      await alertDialog({
+        title: `${label} 失败`,
+        message: '当前工作区中没有任何 pane 处于 git 仓库内。',
+        danger: true,
+      });
+      return;
+    }
+    try {
+      await invoke(cmd, { repoRoot });
+      // Tell the SCM panel + pane pills to refresh.
+      window.dispatchEvent(
+        new CustomEvent('wind:scm-focus-repo', { detail: repoRoot })
+      );
+    } catch (e) {
+      await alertDialog({ title: `${label} 失败`, message: String(e), danger: true });
+    }
+  }
+
+  function copyPaneCwd(targetPaneId?: string): void {
+    const pid = targetPaneId || get(activePaneId);
+    if (!pid) return;
+    const wid = get(activeWorkspaceId);
+    const cwd = get(paneCwdStore)[`${wid}:${pid}`] ?? '';
+    if (!cwd) {
+      void alertDialog({ title: '复制路径', message: '该 pane 还未上报 cwd。' });
+      return;
+    }
+    navigator.clipboard?.writeText(cwd).catch(() => {
+      /* swallow — alert would fire too late after store unmount */
+    });
+  }
+
+  function revealPaneCwd(targetPaneId?: string): void {
+    if (!isTauri()) return;
+    const pid = targetPaneId || get(activePaneId);
+    if (!pid) return;
+    const wid = get(activeWorkspaceId);
+    const cwd = get(paneCwdStore)[`${wid}:${pid}`] ?? '';
+    if (!cwd) return;
+    void invoke('reveal_in_file_manager', { path: cwd });
   }
 
   // 生成右键菜单项
@@ -369,13 +541,13 @@
             label: '关闭当前窗格',
             icon: X,
             shortcut: 'Ctrl+W',
-            action: () => {},
+            action: () => void closeCurrentPane(paneId),
           },
           {
             id: 'close-others',
             label: '关闭其他窗格',
             icon: Trash2,
-            action: () => {},
+            action: () => void closeOtherPanes(paneId),
           },
           { divider: true, id: 'divider-2' },
           {
@@ -383,6 +555,19 @@
             label: '聚焦当前窗格',
             icon: Maximize2,
             action: () => activePaneId.set(paneId || ''),
+          },
+          { divider: true, id: 'divider-3' },
+          {
+            id: 'copy-cwd',
+            label: '复制 cwd 路径',
+            icon: Copy,
+            action: () => copyPaneCwd(paneId),
+          },
+          {
+            id: 'reveal',
+            label: '在文件管理器中显示 cwd',
+            icon: FolderOpen,
+            action: () => revealPaneCwd(paneId),
           }
         );
         break;
@@ -400,9 +585,8 @@
             label: '垂直分割',
             icon: Rows,
             action: () => splitActivePane('vertical'),
-          },
-          { divider: true, id: 'divider-1' },
-          { id: 'equal', label: '均分窗格', icon: Layout, action: () => {} }
+          }
+          // NB: "均分窗格" 待后端 split_pane reset-ratios 命令支持后再启用。
         );
         break;
 
@@ -430,8 +614,18 @@
             },
           },
           {
+            id: 'search',
+            label: '搜索',
+            icon: Search,
+            action: () => {
+              sidebarTab = 'search';
+              sidebarCollapsed = false;
+              saveSidebarSettings();
+            },
+          },
+          {
             id: 'git',
-            label: 'Git',
+            label: '源代码管理',
             icon: GitBranch,
             action: () => {
               sidebarTab = 'git';
@@ -451,42 +645,97 @@
             action: () => createWorkspace(),
           },
           {
-            id: 'close-ws',
-            label: '关闭当前工作区',
-            icon: X,
-            action: () => closeWorkspace(activeWorkspaceId),
-          },
-          { divider: true, id: 'divider-1' },
-          {
             id: 'rename',
             label: '重命名工作区',
             icon: MoreHorizontal,
-            action: () => {},
+            action: () => void renameActiveWorkspace(),
+          },
+          { divider: true, id: 'divider-1' },
+          // 保存工作区入口在 Explorer 头部已有，菜单里不重复（避免双入口）。
+          {
+            id: 'close-ws',
+            label: '关闭当前工作区',
+            icon: X,
+            // activeWorkspaceId is a store; read the current id at invocation time.
+            action: () => closeWorkspace(get(activeWorkspaceId)),
           }
         );
         break;
 
       case 'git-graph':
         items.push(
-          { id: 'refresh', label: '刷新', icon: GitBranch, action: () => {} },
+          {
+            id: 'open-scm',
+            label: '打开源代码管理',
+            icon: GitBranch,
+            action: () => {
+              sidebarTab = 'git';
+              sidebarCollapsed = false;
+              saveSidebarSettings();
+            },
+          },
           { divider: true, id: 'divider-1' },
-          { id: 'fetch', label: 'Fetch', icon: Download, action: () => {} },
-          { id: 'pull', label: 'Pull', icon: ArrowDown, action: () => {} },
-          { id: 'push', label: 'Push', icon: ArrowUp, action: () => {} }
+          {
+            id: 'fetch',
+            label: 'Fetch',
+            icon: Download,
+            action: () => void runGitOnSelectedRepo('git_fetch', 'Fetch'),
+          },
+          {
+            id: 'pull',
+            label: 'Pull',
+            icon: ArrowDown,
+            action: () => void runGitOnSelectedRepo('git_pull', 'Pull'),
+          },
+          {
+            id: 'push',
+            label: 'Push',
+            icon: ArrowUp,
+            action: () => void runGitOnSelectedRepo('git_push', 'Push'),
+          },
+          {
+            id: 'sync',
+            label: 'Sync',
+            icon: RefreshCw,
+            action: () => void runGitOnSelectedRepo('git_sync', 'Sync'),
+          }
         );
         break;
 
       case 'pane-header':
-        const mode = getPaneMode(paneId);
         items.push(
           {
-            id: 'mode',
-            label: mode === 'editor' ? '切换为终端' : '切换为编辑器',
-            icon: mode === 'editor' ? Terminal : FileCode,
-            action: () => {},
+            id: 'split-h',
+            label: '水平分割',
+            icon: Columns,
+            action: () => splitActivePane('horizontal'),
+          },
+          {
+            id: 'split-v',
+            label: '垂直分割',
+            icon: Rows,
+            action: () => splitActivePane('vertical'),
           },
           { divider: true, id: 'divider-1' },
-          { id: 'close', label: '关闭', icon: X, action: () => {} }
+          {
+            id: 'copy-cwd',
+            label: '复制 cwd 路径',
+            icon: Copy,
+            action: () => copyPaneCwd(paneId),
+          },
+          {
+            id: 'reveal',
+            label: '在文件管理器中显示',
+            icon: FolderOpen,
+            action: () => revealPaneCwd(paneId),
+          },
+          { divider: true, id: 'divider-2' },
+          {
+            id: 'close',
+            label: '关闭窗格',
+            icon: X,
+            action: () => void closeCurrentPane(paneId),
+          }
         );
         break;
 
@@ -497,8 +746,7 @@
             label: '新建工作区',
             icon: Plus,
             action: () => createWorkspace(),
-          },
-          { id: 'settings', label: '设置', icon: Settings, action: () => {} }
+          }
         );
     }
 
@@ -514,15 +762,56 @@
     }
 
     const { target, paneId } = getContextMenuTarget(e);
+
+    // Let Monaco render its own contextmenu (Go to Definition, Rename Symbol,
+    // Format Document, Find All References, etc.). Monaco's listener on the
+    // editor container fires before this document-level handler, so returning
+    // early here simply stops Wind from overlaying its own sparse menu on top.
+    if (target === 'editor') return;
+
     const items = getContextMenuItems(target, paneId);
 
     // 显示自定义右键菜单
     showContextMenu(e.clientX, e.clientY, items, target, paneId);
   }
 
+  // 侧栏切换 public event：任何组件（例如 pane 标题栏的 git pill）通过
+  // `window.dispatchEvent(new CustomEvent('wind:open-sidebar-tab', {detail:'git'}))`
+  // 请求切 tab。把事件集中在 +page 这一层能避开跨组件 store 循环。
+  function handleOpenSidebarTab(e: Event) {
+    const detail = (e as CustomEvent<string>).detail;
+    if (
+      detail === 'files' ||
+      detail === 'search' ||
+      detail === 'git' ||
+      (detail === 'claude' && $settingsStore.claudeExtensionEnabled)
+    ) {
+      sidebarTab = detail;
+      if (sidebarCollapsed) {
+        sidebarCollapsed = false;
+        saveSidebarSettings();
+      }
+    }
+  }
+
   onMount(() => {
     // 全局屏蔽默认右键菜单，显示自定义菜单
     document.addEventListener('contextmenu', handleContextMenu);
+    window.addEventListener('wind:open-sidebar-tab', handleOpenSidebarTab as EventListener);
+
+    // Track viewport width so `sidebarMaxPx` (80% cap) recomputes when
+    // the user resizes the window — otherwise a 2000px-wide sidebar
+    // could outlive a window shrunk to 1000px.
+    const onResize = () => {
+      viewportInnerWidth = window.innerWidth;
+      // Defensive: clamp current sidebar width if it now exceeds the
+      // shrunken cap. Persist so reload doesn't restore the over-cap value.
+      if (sidebarWidth > sidebarMaxPx) {
+        sidebarWidth = Math.max(0, sidebarMaxPx);
+        saveSidebarSettings();
+      }
+    };
+    window.addEventListener('resize', onResize);
 
     loadSidebarSettings();
     if (!isTauri()) return;
@@ -597,6 +886,9 @@
     return () => {
       unlisten?.();
       unlistenResized?.();
+      document.removeEventListener('contextmenu', handleContextMenu);
+      window.removeEventListener('wind:open-sidebar-tab', handleOpenSidebarTab as EventListener);
+      window.removeEventListener('resize', onResize);
     };
   });
 
@@ -617,9 +909,14 @@
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
+<!-- Root must NOT carry `data-tauri-drag-region` — it makes Tauri intercept
+     mousedown across the entire window, eating the gesture HTML5 DnD relies
+     on to start a drag (round-38 bug: WorkspaceTabs reorder, pane drag,
+     FileTree DnD, FileEditor tab reorder all silently broke). The OS-window
+     drag region is correctly scoped to the top `<header>` (line ~1102) only,
+     where there are no draggable children. -->
 <div
   class="flex h-screen w-screen overflow-hidden bg-[var(--wf-bg)] text-[var(--wf-fg)] selection:bg-violet-500/25"
-  data-tauri-drag-region
 >
   <!-- 左侧图标导航栏 -->
   <aside
@@ -635,11 +932,50 @@
     </button>
     <button
       type="button"
+      class="{actBtn}{sidebarTab === 'search' ? actBtnOn : ''}"
+      title="搜索 (Ctrl+Shift+F)"
+      onclick={() => (sidebarTab = 'search')}
+    >
+      <Search class="h-5 w-5" />
+    </button>
+    <button
+      type="button"
       class="{actBtn}{sidebarTab === 'git' ? actBtnOn : ''}"
       title="Git Graph"
       onclick={() => (sidebarTab = 'git')}
     >
       <GitBranch class="h-5 w-5" />
+    </button>
+    {#if $settingsStore.claudeExtensionEnabled}
+      <!-- Claude Code 扩展开关：在 settings.claudeExtensionEnabled = true 时
+           出现；点击切到 Claude 独立 tab。pane 标题栏的 Bot 按钮和原本嵌在
+           Explorer 里的 claudeHistory 插件都跟随这一开关，统一在扩展面板里
+           关闭即可全局禁用。 -->
+      <button
+        type="button"
+        class="{actBtn}{sidebarTab === 'claude' ? actBtnOn : ''}"
+        title="Claude Code"
+        onclick={() => (sidebarTab = 'claude')}
+      >
+        <Bot class="h-5 w-5" />
+      </button>
+    {/if}
+
+    <!-- Bottom-anchored extension manager — uses mt-auto so it stays at the
+         rail's bottom regardless of how many tabs sit above. Click toggles
+         the Claude Code extension. The icon flips between dim/Bot when off
+         and accent/Bot when on, giving a single button that both tells the
+         user the current state and lets them flip it without spelunking
+         through nested settings. -->
+    <button
+      type="button"
+      class="{actBtn} mt-auto {$settingsStore.claudeExtensionEnabled ? '' : 'opacity-50'}"
+      title={$settingsStore.claudeExtensionEnabled
+        ? 'Claude Code 扩展已启用 · 点击禁用'
+        : 'Claude Code 扩展已禁用 · 点击启用'}
+      onclick={() => setClaudeExtensionEnabled(!$settingsStore.claudeExtensionEnabled)}
+    >
+      <Settings class="h-4 w-4" />
     </button>
   </aside>
 
@@ -654,6 +990,7 @@
       >
         {#if sidebarTab === 'git'}
           <div
+            data-tauri-drag-region
             class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
           >
             源代码管理
@@ -661,8 +998,15 @@
           <div class="flex-1 min-h-0 overflow-hidden">
             <SourceControl />
           </div>
+        {:else if sidebarTab === 'search'}
+          <div class="flex-1 min-h-0 overflow-hidden">
+            <SearchSidebar />
+          </div>
+        {:else if sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled}
+          <ClaudeCodePanel />
         {:else}
           <div
+            data-tauri-drag-region
             class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] relative"
           >
             <span>资源管理器</span>
@@ -737,7 +1081,18 @@
           </div>
         {/if}
 
-        <!-- 侧边栏大小调整手柄 -->
+        <!-- Global-scope plugin region — mounted once at the sidebar footer,
+             visible across every tab. Keep it compact; plugins are expected
+             to collapse their own heavy UI. -->
+        <div class="shrink-0 border-t border-[var(--wf-border)]/40">
+          <SidebarPluginRegion scope="global" />
+        </div>
+
+        <!-- 侧边栏大小调整手柄。tabindex=0 + Arrow 键盘步进让键盘用户也能调整宽度
+             （Shift 加速）。Svelte 的 a11y 规则不识别 role=separator 的 splitter 模式，
+             显式抑制 noninteractive-* 两条。 -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
           class="group absolute h-full right-0 w-1 shrink-0 cursor-col-resize select-none hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30 transition-colors {isResizingSidebar
             ? 'bg-[var(--wf-accent)]/40'
@@ -745,7 +1100,21 @@
           role="separator"
           aria-orientation="vertical"
           aria-label="拖动调整侧边栏宽度"
+          tabindex="0"
           onmousedown={onSidebarResizerMouseDown}
+          onkeydown={(e) => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            const step = e.shiftKey ? 64 : 16;
+            const delta = e.key === 'ArrowRight' ? step : -step;
+            const maxWidth = sidebarMaxPx;
+            sidebarWidth = Math.max(0, Math.min(maxWidth, sidebarWidth + delta));
+            if (sidebarWidth < 20) {
+              sidebarCollapsed = true;
+              sidebarWidth = 0;
+            }
+            saveSidebarSettings();
+            e.preventDefault();
+          }}
         ></div>
       </aside>
     {/if}
@@ -807,6 +1176,20 @@
             Dev Issue
           </button>
         {/if}
+
+        <!-- 编辑器抽屉开关：放在分屏按钮左侧，给"打开文件编辑器"一个常驻入口；
+             toggle 行为——已显示时点一下隐藏，已隐藏时再点一下显示，与
+             FileEditor 头部的左侧收起按钮形成开/关对偶。$fileEditorStore
+             的 `isVisible` 用于切换图标突出态，让用户一眼就能看出当前面板
+             状态。 -->
+        <button
+          type="button"
+          class="wf-no-drag {toolBtn} {$fileEditorStore.isVisible ? 'bg-[var(--wf-accent)]/15 text-[var(--wf-accent)]' : ''}"
+          title={$fileEditorStore.isVisible ? '收起文件编辑器' : '展开文件编辑器'}
+          onclick={() => fileEditorStore.toggleVisibility()}
+        >
+          <PanelRightOpen class="h-4 w-4" />
+        </button>
 
         <!-- 分屏操作按钮 -->
         <div
@@ -939,4 +1322,29 @@
 
   <!-- 全局文件编辑器（抽屉 / 悬浮 pin） -->
   <FileEditor />
+
+  <!-- Claude Code 启动 modal：任意 pane 的 Bot 按钮点击后唤起，集中在这里
+       mount 一次，避免 SplitContainer 递归 render 出多份。 -->
+  <ClaudeAgentLauncher />
+
+  <!-- 终端历史记录浏览器：从 pane 标题栏的 History 按钮唤起。同样集中挂载。 -->
+  <ScrollbackHistoryModal />
+
+  <!-- Monaco diff 编辑器 modal：SCM 文件行点击后唤起，同 z-index 9998。
+       全局单实例 — openDiffEditor() 模块函数任何位置可调。 -->
+  <DiffEditorModal />
+
+  <!-- 主题化的 alert/confirm/prompt 替代浏览器原生 dialog。
+       任何位置都可以 await alertDialog/confirmDialog/promptDialog。-->
+  <WindDialog />
+
+  <!-- 轻量 toast 通知（z-10000，位于所有 modal 之上）。
+       任何位置都可以 showToast('消息') 推送。3s 自动消失。-->
+  <WindToast />
+
+  <!-- 全局右键菜单 — store-driven，所有组件通过 showContextMenu()
+       请求展示。**不挂载这个组件**等于 store 永远没有 subscriber，
+       右键事件被截胡却没有 UI 显示，所有 contextmenu 看起来都失效。
+       第 34 轮发现并补回（之前只 import 了组件没 mount）。 -->
+  <ContextMenu />
 </div>

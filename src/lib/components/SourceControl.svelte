@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { get } from 'svelte/store';
   import {
     ChevronRight,
@@ -19,7 +20,12 @@
     X,
     MoreHorizontal,
     Check,
+    Copy,
+    Scissors,
+    GitMerge,
+    Tag,
   } from 'lucide-svelte';
+  import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { Splitpanes, Pane as SPane } from 'svelte-splitpanes';
   import {
     paneCwdStore,
@@ -28,37 +34,53 @@
     activePaneId,
     collapseCwd,
   } from '$lib/stores/paneTree';
+  import { overlayScroll } from '$lib/actions/overlayScroll';
+  import { invalidatePaneGitStatusForRepo } from '$lib/stores/paneGitStatus';
+  import {
+    scmCacheStore,
+    getScmCache,
+    setScmRepoRoots,
+    setScmRepoStatus,
+    shouldRefreshOnMount,
+    setScmGraphInfo,
+    shouldRefreshGraphOnMount,
+    setScmSelectedCommit,
+    getScmSelectedCommit,
+    setScmSelectedRepo,
+    type GitRepoInfo,
+    type CommitNode,
+    type DiffFile,
+  } from '$lib/stores/scmCache';
+  import { openDiffEditor } from './DiffEditorModal.svelte';
+  import { alertDialog, confirmDialog, promptDialog } from './WindDialog.svelte';
+  import GitGraph from './GitGraph.svelte';
+  import { DEFAULT_DY as GRAPH_ROW_HEIGHT } from './gitGraphLayout';
 
-  interface CommitNode {
-    hash: string;
-    subject: string;
-    author: string;
-    date: string;
-    parents: string[];
-    branch?: string;
+  // Maximum ref pills shown inline before an overflow badge collapses the rest.
+  // HEAD + one branch is the natural pair, so the HEAD exception adds +1 when
+  // the first ref is `head:` (see splitRefs below).
+  const MAX_VISIBLE_REFS = 2;
+
+  /**
+   * Split a commit's refs into [visible, hidden] sub-arrays.
+   * If refs[0] === 'head:', the visible window grows by 1 so HEAD and its
+   * branch name always appear together as a natural pair.
+   */
+  function splitRefs(refs: string[] | undefined): { visible: string[]; hidden: string[] } {
+    if (!refs || refs.length === 0) return { visible: [], hidden: [] };
+    const headOffset = refs[0] === 'head:' ? 1 : 0;
+    const maxVisible = MAX_VISIBLE_REFS + headOffset;
+    return { visible: refs.slice(0, maxVisible), hidden: refs.slice(maxVisible) };
   }
-  interface DiffFile {
-    path: string;
-    additions: number;
-    deletions: number;
-    status: string;
-  }
-  interface GitRepoInfo {
-    is_git_repo: boolean;
-    commits: CommitNode[];
-    branches: string[];
-    current_branch: string | null;
-    diff: {
-      files: DiffFile[];
-      total_additions: number;
-      total_deletions: number;
-      is_git_repo: boolean;
-    };
-  }
+
+  // CommitNode / DiffFile / GitRepoInfo are imported from scmCache (round χ).
   interface ScmFile {
     path: string;
     status: string;
     group: string;
+    /** Optional — backend `#[serde(default)]`. */
+    additions?: number;
+    deletions?: number;
   }
   interface ScmRepoStatus {
     repo_root: string;
@@ -68,6 +90,8 @@
     staged: ScmFile[];
     changes: ScmFile[];
     untracked: ScmFile[];
+    /** Backend `#[serde(default)]` — optional so older snapshots stay valid. */
+    has_upstream?: boolean;
   }
 
   // ─── Repo discovery (BFS dedupe of all pane cwds → git repo roots) ─────────
@@ -76,13 +100,24 @@
   //   - 前端 debounce 280 ms：cwd 连续变化（如启动多个终端）时合并为一次扫描；
   //   - 扫描放到空闲态（requestIdleCallback / setTimeout fallback），避免阻塞主线程；
   //   - 仓库根不变时跳过 find_git_repo_root 的整轮往返，只刷新 status。
-  let repoRoots: string[] = $state([]);
-  let statuses: Record<string, ScmRepoStatus> = $state({});
+  // repoRoots + statuses now live in the module-scope `scmCacheStore`
+  // (round 42 — ε). When SourceControl unmounts (user switches off the
+  // git tab) the cached snapshot survives; remounting reads it instantly
+  // instead of waiting for a re-discover round-trip. The component-level
+  // $derived wrappers keep template ergonomics identical.
+  let repoRoots = $derived($scmCacheStore.repoRoots);
+  let statuses = $derived($scmCacheStore.statuses);
   let discoveryLoading = $state(false);
-  let lastCwdSignature = '';
-  let lastRepoSignature = '';
+  // lastCwdSignature / lastRepoSignature are likewise read from / written
+  // to the cache so multiple discover passes during the same session can
+  // skip redundant work even if SourceControl was unmounted in between.
   let debounceHandle: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> | null = null;
+  let unlistenRepoChanged: (() => void) | undefined;
+  /** Per-repo debounce for the filesystem-watcher listener (ε阶段二). A
+   *  single `git commit` writes HEAD + index + refs in quick succession;
+   *  coalescing 250ms ensures one refresh per user operation, not 3–5. */
+  const watcherDebounce = new Map<string, ReturnType<typeof setTimeout>>();
 
   function schedule(run: () => Promise<void>, delayMs = 280): void {
     if (debounceHandle !== undefined) clearTimeout(debounceHandle);
@@ -106,8 +141,8 @@
     const cwds = get(paneCwdStore);
     const uniqueCwds = Array.from(new Set(Object.values(cwds).filter(Boolean))).sort();
     const sig = uniqueCwds.join('|');
-    if (!force && sig === lastCwdSignature && repoRoots.length > 0) return;
-    lastCwdSignature = sig;
+    const cache = getScmCache();
+    if (!force && sig === cache.lastCwdSignature && cache.repoRoots.length > 0) return;
 
     discoveryLoading = true;
     try {
@@ -133,14 +168,16 @@
         .map(([root]) => root);
 
       const nextSig = nextRoots.join('|');
-      const rootsChanged = nextSig !== lastRepoSignature;
-      lastRepoSignature = nextSig;
-      if (rootsChanged) {
-        repoRoots = nextRoots;
-        // Drop stale statuses for repos no longer present
-        const keep: Record<string, ScmRepoStatus> = {};
-        for (const r of nextRoots) if (statuses[r]) keep[r] = statuses[r];
-        statuses = keep;
+      const rootsChanged = nextSig !== cache.lastRepoSignature;
+      // Always update cache (signature timestamps the discovery + drops
+      // stale statuses for removed repos).
+      setScmRepoRoots(nextRoots, sig, nextSig);
+
+      // Register discovered roots with the backend filesystem watcher so
+      // external git changes (pull, commit from terminal, CI) trigger automatic
+      // SCM refreshes without requiring user interaction.
+      if (nextRoots.length > 0 && isTauri()) {
+        void invoke('start_watching_repos', { roots: nextRoots }).catch(() => {});
       }
 
       if (selectedRepo && !nextRoots.includes(selectedRepo)) {
@@ -159,24 +196,250 @@
   async function refreshStatus(root: string): Promise<void> {
     try {
       const s = await invoke<ScmRepoStatus>('get_scm_status', { repoRoot: root });
-      statuses = { ...statuses, [root]: s };
+      setScmRepoStatus(root, s);
+      // Cascade to the pane git pill cache: stage/commit/sync writes should
+      // be reflected on the pane title bar without waiting for a cwd change
+      // tick. invalidate is idempotent and best-effort, so safe to fire on
+      // every status read (including initial discovery).
+      void invalidatePaneGitStatusForRepo(root);
     } catch (e) {
       console.error('get_scm_status failed', root, e);
     }
   }
 
+  // ─── Repo collapse state (changes panel) ──────────────────────────────────
+  let collapsedRepos = $state(new Set<string>());
+
+  function toggleRepoCollapse(root: string): void {
+    const next = new Set(collapsedRepos);
+    if (next.has(root)) {
+      next.delete(root);
+    } else {
+      next.add(root);
+      // Close branch picker when collapsing so its dropdown doesn't float over empty content.
+      if (branchPickerOpen === root) branchPickerOpen = '';
+    }
+    collapsedRepos = next;
+  }
+
   // ─── Selected repo for GitGraph section ────────────────────────────────────
   let selectedRepo = $state('');
-  let graphInfo: GitRepoInfo | null = $state(null);
+  // graphInfo is derived from the module-scope cache (round χ) so it survives
+  // tab unmount/remount without re-fetching.
+  let graphInfo = $derived<GitRepoInfo | null>($scmCacheStore.graphInfos[selectedRepo] ?? null);
   let graphLoading = $state(false);
   let graphError: string | null = $state(null);
+  /**
+   * Currently selected commit hash in the graph view. Derived from the
+   * module-scope cache so the selection also survives tab remounts (round χ).
+   * Writes go through `setScmSelectedCommit`.
+   */
+  let selectedCommitHash = $derived(selectedRepo ? getScmSelectedCommit(selectedRepo) : '');
+  function selectCommit(hash: string): void {
+    if (!selectedRepo) return;
+    setScmSelectedCommit(selectedRepo, selectedCommitHash === hash ? '' : hash);
+  }
 
-  async function loadGraph(root: string): Promise<void> {
+  /** Clipboard write with explicit failure surfacing — Tauri webview
+   *  grants clipboard-write by default, but a rejected promise without a
+   *  catch was previously silent (round-32 review MEDIUM). */
+  async function copyToClipboard(text: string, label: string): Promise<void> {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('clipboard API unavailable');
+      }
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      await alertDialog({ title: '复制失败', message: `复制${label}失败：${e}`, danger: true });
+    }
+  }
+
+  interface GitOpInProgress {
+    cherry_pick: boolean;
+    revert: boolean;
+    merge: boolean;
+    rebase: boolean;
+  }
+
+  /**
+   * Wrap a backend git command + status refresh + error toast. On
+   * failure, ask git whether the repo is now mid-operation
+   * (cherry-pick / revert / merge / rebase paused on conflict) — if so,
+   * surface a follow-up confirm offering the matching abort command.
+   * Without this, a conflict left the user staring at a stderr alert
+   * with no recovery path other than dropping to the terminal.
+   */
+  async function runCommitOp(label: string, op: () => Promise<void>): Promise<void> {
+    if (!selectedRepo) return;
+    try {
+      await op();
+    } catch (e) {
+      let abortCmd: string | null = null;
+      let abortMsg = '';
+      try {
+        const inProgress = await invoke<GitOpInProgress>('git_op_in_progress', {
+          repoRoot: selectedRepo,
+        });
+        if (inProgress.cherry_pick) {
+          abortCmd = 'git_cherry_pick_abort';
+          abortMsg = '\n\n仓库目前处于 cherry-pick 暂停状态。要 abort 并恢复工作树吗？';
+        } else if (inProgress.revert) {
+          abortCmd = 'git_revert_abort';
+          abortMsg = '\n\n仓库目前处于 revert 暂停状态。要 abort 并恢复工作树吗？';
+        }
+      } catch {
+        /* op-status probe failed — fall through to plain error */
+      }
+      if (abortCmd) {
+        const ok = await confirmDialog({
+          title: `${label} 失败`,
+          message: `${e}${abortMsg}`,
+          okLabel: 'Abort',
+          danger: true,
+        });
+        if (ok) {
+          try {
+            await invoke(abortCmd, { repoRoot: selectedRepo });
+          } catch (abortErr) {
+            await alertDialog({ title: 'Abort 失败', message: String(abortErr), danger: true });
+          }
+        }
+      } else {
+        await alertDialog({ title: `${label} 失败`, message: String(e), danger: true });
+      }
+    } finally {
+      // Always refresh — even on partial failure the user wants to see
+      // the new state (e.g. half-applied changes, unmerged files).
+      await loadGraph(selectedRepo);
+      await refreshStatus(selectedRepo);
+      void invalidatePaneGitStatusForRepo(selectedRepo);
+    }
+  }
+
+  function onCommitContextMenu(e: MouseEvent, c: CommitNode): void {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!selectedRepo) return;
+    // Select the row so the user can see what they're acting on.
+    setScmSelectedCommit(selectedRepo, c.hash);
+    const shortHash = c.hash.slice(0, 7);
+    const items: ContextMenuItem[] = [
+      {
+        id: 'copy-short',
+        label: `复制短 hash (${shortHash})`,
+        icon: Copy,
+        action: () => copyToClipboard(shortHash, '短 hash'),
+      },
+      {
+        id: 'copy-full',
+        label: '复制完整 hash',
+        icon: Copy,
+        action: () => copyToClipboard(c.hash, '完整 hash'),
+      },
+      { id: 'd1', divider: true },
+      {
+        id: 'create-branch',
+        label: '从此 commit 创建分支…',
+        icon: GitBranch,
+        action: () => {
+          void (async () => {
+            const name = await promptDialog({
+              title: '创建分支',
+              message: `从 ${shortHash} 创建新分支并切过去：`,
+              placeholder: 'feature/my-branch',
+            });
+            if (!name?.trim()) return;
+            await runCommitOp('创建分支', async () => {
+              await invoke('git_checkout', {
+                repoRoot: selectedRepo,
+                branch: name.trim(),
+                create: true,
+                base: c.hash,
+              });
+            });
+          })();
+        },
+      },
+      {
+        id: 'checkout-detached',
+        label: 'Checkout (detached HEAD)',
+        icon: GitCommit,
+        action: () => {
+          void (async () => {
+            const ok = await confirmDialog({
+              title: 'Checkout to commit',
+              message: `Checkout 到 ${shortHash}？这会进入 detached HEAD 状态——你现在不会在任何分支上。`,
+              okLabel: 'Checkout',
+              danger: true,
+            });
+            if (!ok) return;
+            await runCommitOp('Checkout', async () => {
+              await invoke('git_checkout', {
+                repoRoot: selectedRepo,
+                branch: c.hash,
+                create: false,
+              });
+            });
+          })();
+        },
+      },
+      { id: 'd2', divider: true },
+      {
+        id: 'cherry-pick',
+        label: 'Cherry-pick',
+        icon: Scissors,
+        action: () => {
+          void runCommitOp('Cherry-pick', async () => {
+            await invoke('git_cherry_pick', {
+              repoRoot: selectedRepo,
+              hash: c.hash,
+            });
+          });
+        },
+      },
+      {
+        id: 'revert',
+        label: 'Revert',
+        icon: Undo2,
+        action: () => {
+          void (async () => {
+            const ok = await confirmDialog({
+              title: 'Revert commit',
+              message: `Revert ${shortHash}？将创建一个反向 commit 撤销其改动。`,
+              okLabel: 'Revert',
+              danger: true,
+            });
+            if (!ok) return;
+            await runCommitOp('Revert', async () => {
+              await invoke('git_revert', {
+                repoRoot: selectedRepo,
+                hash: c.hash,
+              });
+            });
+          })();
+        },
+      },
+    ];
+    showContextMenu(e.clientX, e.clientY, items, 'git-graph');
+  }
+  $effect(() => {
+    if (selectedRepo) {
+      setScmSelectedCommit(selectedRepo, '');
+      setScmSelectedRepo(selectedRepo);
+    }
+  });
+
+  async function loadGraph(root: string, { resetSelection = true } = {}): Promise<void> {
     if (!isTauri() || !root) return;
     graphLoading = true;
     graphError = null;
+    // Clear selection when explicitly requested (user-triggered refresh /
+    // post-commit reload). Silent background refreshes leave the selection
+    // intact so the user doesn't lose their place.
+    if (resetSelection) setScmSelectedCommit(root, '');
     try {
-      graphInfo = await invoke<GitRepoInfo>('get_git_info_with_cwd', { cwd: root });
+      const info = await invoke<GitRepoInfo>('get_git_info_with_cwd', { cwd: root });
+      setScmGraphInfo(root, info);
     } catch (e) {
       graphError = String(e);
     } finally {
@@ -193,7 +456,7 @@
       await invoke('git_stage', { repoRoot: root, paths });
       await refreshStatus(root);
     } catch (e) {
-      alert(`Stage failed: ${e}`);
+      await alertDialog({ title: '暂存失败', message: String(e), danger: true });
     }
   }
   async function unstage(root: string, paths: string[]): Promise<void> {
@@ -201,23 +464,30 @@
       await invoke('git_unstage', { repoRoot: root, paths });
       await refreshStatus(root);
     } catch (e) {
-      alert(`Unstage failed: ${e}`);
+      await alertDialog({ title: '撤销暂存失败', message: String(e), danger: true });
     }
   }
   async function discard(root: string, paths: string[]): Promise<void> {
     if (paths.length === 0) return;
-    if (!confirm(`丢弃 ${paths.length} 个文件的更改？此操作不可撤销。`)) return;
+    const ok = await confirmDialog({
+      title: '确认丢弃',
+      message: `丢弃 ${paths.length} 个文件的更改？此操作不可撤销。`,
+      okLabel: '丢弃',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await invoke('git_discard', { repoRoot: root, paths });
       await refreshStatus(root);
     } catch (e) {
-      alert(`Discard failed: ${e}`);
+      await alertDialog({ title: '丢弃失败', message: String(e), danger: true });
     }
   }
   async function commit(root: string, amend = false): Promise<void> {
     const msg = (commitMessage[root] ?? '').trim();
     if (!msg) {
-      alert('请输入提交信息');
+      await alertDialog({ title: '请输入提交信息', message: '提交信息不能为空' });
+
       return;
     }
     committing = true;
@@ -227,7 +497,7 @@
       await refreshStatus(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      alert(`Commit failed: ${e}`);
+      await alertDialog({ title: '提交失败', message: String(e), danger: true });
     } finally {
       committing = false;
     }
@@ -270,7 +540,7 @@
       await loadBranches(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      alert(`切换分支失败: ${e}`);
+      await alertDialog({ title: '切换分支失败', message: String(e), danger: true });
     }
   }
   async function createBranch(root: string): Promise<void> {
@@ -282,7 +552,7 @@
       await refreshStatus(root);
       await loadBranches(root);
     } catch (e) {
-      alert(`创建分支失败: ${e}`);
+      await alertDialog({ title: '创建分支失败', message: String(e), danger: true });
     }
   }
   async function runSync(root: string, op: 'fetch' | 'pull' | 'push' | 'sync'): Promise<void> {
@@ -301,7 +571,7 @@
       await loadBranches(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      alert(`${op} 失败: ${e}`);
+      await alertDialog({ title: '操作失败', message: `${op} 失败: ${e}`, danger: true });
     } finally {
       syncing = '';
     }
@@ -312,24 +582,11 @@
     return !!b?.upstream;
   }
 
-  // ─── 差异预览（VSCode 风格：点击文件行打开 diff 弹窗）────────────────
-  let diffOpen = $state(false);
-  let diffTitle = $state('');
-  let diffContent = $state('');
-  let diffLoading = $state(false);
-  async function showDiff(root: string, path: string, cached: boolean): Promise<void> {
-    diffOpen = true;
-    diffTitle = `${cached ? '[已暂存] ' : ''}${path}`;
-    diffContent = '';
-    diffLoading = true;
-    try {
-      diffContent = await invoke<string>('git_diff_file', { repoRoot: root, path, cached });
-      if (!diffContent.trim()) diffContent = '(无差异或为新增文件；内容未进入 git 索引)';
-    } catch (e) {
-      diffContent = String(e);
-    } finally {
-      diffLoading = false;
-    }
+  // ─── 差异预览：委托给 Monaco DiffEditorModal（VSCode 风格 side-by-side）
+  // 旧的 `<pre>` 渲染路径在第 26 轮被替换；保留一个薄壳 `showDiff` 让点击
+  // 处理代码无需变更——单一调用点改名为副作用更清晰，便于后续埋点。
+  function showDiff(root: string, path: string, cached: boolean): void {
+    openDiffEditor({ repoRoot: root, path, cached });
   }
 
   // 每次扫描完成后，同步加载各仓库的分支信息（供 header 显示 upstream 状态）。
@@ -338,14 +595,6 @@
       if (!branchLists[root]) void loadBranches(root);
     }
   });
-
-  function diffLineClass(line: string): string {
-    if (line.startsWith('+++') || line.startsWith('---')) return 'text-[var(--wf-fg-muted)]';
-    if (line.startsWith('+')) return 'text-green-400 bg-green-500/10';
-    if (line.startsWith('-')) return 'text-red-400 bg-red-500/10';
-    if (line.startsWith('@@')) return 'text-blue-400 bg-blue-500/10';
-    return 'text-[var(--wf-fg)]';
-  }
 
   // ─── Status label / color ──────────────────────────────────────────────────
   function statusColor(s: string): string {
@@ -412,18 +661,132 @@
   //   - activeWorkspaceId 切换 → 立即重扫描（可能切到不同 cwd 集合）；
   //   - 手动刷新按钮 → 强制重扫 + 刷新所有仓库的 status；
   //   - 写操作（stage/unstage/discard/commit）已原地调用 refreshStatus，无需轮询兜底。
+  // 分支 picker 关闭策略（VSCode 风格）：
+  //   - Escape 键关闭（任何焦点位置都响应）
+  //   - 鼠标按下若落在非 picker 元素上则关闭；判定方式是往上找
+  //     `data-wf-branch-picker="<root>"`，相同 root 保留，其它一律关闭。
+  //   在 mousedown 阶段判断而非 click —— 避免用户在外部按下、拖到 picker 内再松手
+  //   被误判；也与 VSCode 的 command palette / Quick Input 的关闭时机一致。
+  function onGlobalMousedown(e: MouseEvent): void {
+    if (!branchPickerOpen) return;
+    const t = e.target as HTMLElement | null;
+    const inside = t?.closest<HTMLElement>(
+      `[data-wf-branch-picker="${branchPickerOpen}"]`
+    );
+    if (!inside) branchPickerOpen = '';
+  }
+  function onGlobalKeydown(e: KeyboardEvent): void {
+    if (!branchPickerOpen) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      branchPickerOpen = '';
+    }
+  }
+
+  // ─── External focus-repo event ─────────────────────────────────────────
+  // The pane diff pill (PaneDiffPill) dispatches `wind:scm-focus-repo` with
+  // the repoRoot it wants to inspect. We:
+  //   1. Make sure all the repo's groups are expanded (un-collapse them in
+  //      `collapsedGroup`) so the user lands on actual file rows, not
+  //      collapsed headers.
+  //   2. scrollIntoView the `[data-wf-scm-repo="<root>"]` block.
+  //   3. Add a transient `wf-scm-flash` class for ~1.5s as visual confirm.
+  //
+  // Repos may not be in the rendered list yet (race: SCM tab just opened,
+  // discovery still pending). We retry with a short backoff up to 2s before
+  // giving up silently.
+  let flashRepo = $state<string>('');
+  function focusRepo(root: string, attempt = 0): void {
+    const el = document.querySelector<HTMLElement>(
+      `[data-wf-scm-repo="${CSS.escape(root)}"]`
+    );
+    if (!el) {
+      if (attempt < 8) setTimeout(() => focusRepo(root, attempt + 1), 250);
+      return;
+    }
+    // Expand any collapsed groups so the file list is visible immediately.
+    const next = new Set(collapsedGroup);
+    next.delete(`${root}:staged`);
+    next.delete(`${root}:changes`);
+    next.delete(`${root}:untracked`);
+    collapsedGroup = next;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    flashRepo = root;
+    setTimeout(() => {
+      if (flashRepo === root) flashRepo = '';
+    }, 1500);
+  }
+
+  function onScmFocusRepo(e: Event): void {
+    const detail = (e as CustomEvent<string>).detail;
+    if (typeof detail !== 'string' || !detail) return;
+    focusRepo(detail);
+  }
+
   onMount(() => {
-    schedule(() => discoverRepos(), 0);
+    // ε / round 42 — defer the initial discover when the persistent
+    // cache is fresh. Tab toggles between sidebar tabs are now instant
+    // because the snapshot survives unmount; only when the cache is
+    // empty or stale (>30s) do we scrub-and-refresh in background.
+    // round 64: removed the fresh-cache 1s background refresh to avoid
+    // unsolicited proactive polling. The filesystem watcher + cwd change
+    // subscriber are the two active refresh paths; mount only runs
+    // discover when the cache is genuinely stale.
+    if (shouldRefreshOnMount()) {
+      schedule(() => discoverRepos(), 0);
+    }
+    // Seed the selected-repo dropdown from cache when remounting.
+    if (!selectedRepo && getScmCache().repoRoots.length > 0) {
+      selectedRepo = getScmCache().repoRoots[0];
+      if (shouldRefreshGraphOnMount(selectedRepo)) {
+        void loadGraph(selectedRepo, { resetSelection: true });
+      }
+    }
+    // Trigger rediscovery when any pane's cwd changes (e.g. `cd`, new terminal).
+    // Debounced 280ms so rapid OSC-7 bursts from multiple pane starts collapse.
     const unsub1 = paneCwdStore.subscribe(() => schedule(() => discoverRepos()));
-    const unsub2 = activeWorkspaceId.subscribe(() => schedule(() => discoverRepos(true), 0));
+    // Note: removed the activeWorkspaceId subscriber that previously caused an
+    // immediate (0ms) forced discover on every workspace switch. Workspace
+    // changes are already captured by the cwd subscriber once panes emit OSC-7,
+    // and the scmCacheStore survives unmount so repeated mounts stay fast.
+    document.addEventListener('mousedown', onGlobalMousedown, true);
+    document.addEventListener('keydown', onGlobalKeydown);
+    window.addEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
+
+    // Subscribe to backend filesystem-watcher events so external git changes
+    // (e.g. `git pull` from terminal, CI sync) auto-refresh the SCM panel.
+    if (isTauri()) {
+      void listen<string>('scm-repo-changed', (e) => {
+        const changedRoot = e.payload;
+        // Debounce per repo: a single `git commit` fires HEAD + index + refs
+        // events in quick succession; coalesce into one refresh.
+        const existing = watcherDebounce.get(changedRoot);
+        if (existing !== undefined) clearTimeout(existing);
+        watcherDebounce.set(changedRoot, setTimeout(async () => {
+          watcherDebounce.delete(changedRoot);
+          await refreshStatus(changedRoot);
+          if (changedRoot === selectedRepo) {
+            await loadGraph(changedRoot, { resetSelection: false });
+          }
+        }, 250));
+      }).then((unlisten) => {
+        unlistenRepoChanged = unlisten;
+      });
+    }
+
     return () => {
       unsub1();
-      unsub2();
+      document.removeEventListener('mousedown', onGlobalMousedown, true);
+      document.removeEventListener('keydown', onGlobalKeydown);
+      window.removeEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
     };
   });
 
   onDestroy(() => {
     if (debounceHandle !== undefined) clearTimeout(debounceHandle);
+    for (const t of watcherDebounce.values()) clearTimeout(t);
+    watcherDebounce.clear();
+    unlistenRepoChanged?.();
   });
 
   async function manualRefresh(): Promise<void> {
@@ -433,9 +796,17 @@
     if (selectedRepo) await loadGraph(selectedRepo);
   }
 
-  // When selectedRepo changes, reload graph
+  // When selectedRepo changes, load graph (using cache when fresh).
   $effect(() => {
-    if (selectedRepo) void loadGraph(selectedRepo);
+    if (!selectedRepo) return;
+    if (shouldRefreshGraphOnMount(selectedRepo)) {
+      void loadGraph(selectedRepo, { resetSelection: true });
+    } else {
+      // Cache is fresh for this repo — show it; schedule background refresh.
+      setTimeout(() => {
+        void loadGraph(selectedRepo, { resetSelection: false });
+      }, 1000);
+    }
   });
 </script>
 
@@ -463,7 +834,7 @@
           </div>
         </div>
 
-        <div class="flex-1 min-h-0 overflow-y-auto wf-scroll">
+        <div class="flex-1 min-h-0" use:overlayScroll>
           {#if repoRoots.length === 0}
             <div class="p-4 text-[12px] text-[var(--wf-fg-muted)] text-center">
               {discoveryLoading ? '扫描中…' : '未在任意终端的 cwd 中检测到 Git 仓库。'}
@@ -471,17 +842,36 @@
           {:else}
             {#each repoRoots as root (root)}
               {@const s = statuses[root]}
-              <div class="scm-repo border-b border-[var(--wf-border)]/60 last:border-b-0 relative">
-                <!-- Repo header（VSCode 风格）：仓库名 + 分支 picker + 同步/拉取/推送 -->
-                <div class="px-3 py-1.5 bg-[var(--wf-surface)]/60 flex items-center gap-1.5 select-none">
+              <div
+                class="scm-repo border-b border-[var(--wf-border)]/60 last:border-b-0 relative {flashRepo === root ? 'wf-scm-flash' : ''}"
+                data-wf-scm-repo={root}
+              >
+                <!-- Repo header（VSCode 风格）：仓库名 + 分支 picker + 同步/拉取/推送
+                     `sticky top-0` 让滚动正文时仓库头始终钉在可视区顶部；
+                     `z-30` 高于内部 group 头（z-20），与 Explorer 的两层
+                     sticky 同样的层级思路。backdrop-blur 让重叠时仍能看见
+                     下方文字的轮廓而不刺眼。 -->
+                <div class="sticky top-0 z-30 px-3 py-1.5 bg-[var(--wf-surface-2)]/95 backdrop-blur-md border-b border-[var(--wf-border)]/40 flex items-center gap-1.5 select-none">
+                  <!-- Collapse chevron — click to fold/unfold this repo's body -->
+                  <button
+                    type="button"
+                    class="flex items-center justify-center h-4 w-4 shrink-0 text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors"
+                    onclick={() => toggleRepoCollapse(root)}
+                    title={collapsedRepos.has(root) ? '展开' : '折叠'}
+                  >
+                    <ChevronRight class="h-3 w-3 transition-transform duration-150 {collapsedRepos.has(root) ? '' : 'rotate-90'}" />
+                  </button>
                   <span class="text-[11px] font-semibold truncate flex-1 min-w-0" title={root}>
                     {repoName(root)}
                   </span>
 
-                  <!-- 分支 picker 入口 -->
+                  <!-- 分支 picker 入口。data-wf-branch-picker 让全局 mousedown
+                       监听识别"点击在 picker 内部"，避免点击 trigger 后立刻被自己的
+                       outside-click 判定关掉。 -->
                   <button
                     type="button"
                     class="flex items-center gap-1 h-6 px-1.5 rounded text-[10px] bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] hover:bg-[var(--wf-accent)]/25 transition-colors max-w-[140px]"
+                    data-wf-branch-picker={root}
                     onclick={() => void openBranchPicker(root)}
                     title={s?.current_branch ? `当前分支：${s.current_branch}（点击切换）` : '切换分支'}
                   >
@@ -533,10 +923,16 @@
                   </button>
                 </div>
 
-                <!-- 分支 picker 下拉（绝对定位，覆盖头部下方；ESC/点击外部自行关闭留待下一轮）-->
+                <!-- 分支 picker 下拉（绝对定位，覆盖头部下方）。
+                     ESC / 点击外部关闭逻辑见 `onGlobalMousedown` / `onGlobalKeydown`。
+                     data-wf-branch-picker 标记让全局 mousedown 判定"这是 picker 内部"。 -->
                 {#if branchPickerOpen === root}
                   {@const blist = branchLists[root] ?? []}
-                  <div class="absolute left-3 right-3 top-[34px] z-40 bg-[var(--wf-bg)] border border-[var(--wf-border)] rounded shadow-lg max-h-[260px] overflow-y-auto">
+                  <div
+                    class="absolute left-3 right-3 top-[34px] z-40 bg-[var(--wf-bg)] border border-[var(--wf-border)] rounded shadow-lg max-h-[260px]"
+                    data-wf-branch-picker={root}
+                    use:overlayScroll
+                  >
                     <button
                       type="button"
                       class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--wf-accent)] hover:bg-[var(--wf-surface)] border-b border-[var(--wf-border)]/60 transition-colors"
@@ -565,6 +961,7 @@
                   </div>
                 {/if}
 
+                {#if !collapsedRepos.has(root)}
                 {#if s}
                   {@const totalChanges = s.staged.length + s.changes.length + s.untracked.length}
 
@@ -617,7 +1014,12 @@
                   <!-- Staged group -->
                   {#if s.staged.length > 0}
                     <div class="group/grp scm-group">
-                      <div class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors">
+                      <!-- group header sticky 在 repo header 之下，z-20<30
+                           保证滚动时被 repo header 盖住而不是反过来。
+                           top 值与 repo header 高度（py-1.5 = 6+12+6 ≈ 24px）
+                           对齐；用 wf-scm-group-sticky 类给一个具体 var 让
+                           调整时不用全局 grep。 -->
+                      <div class="wf-scm-group-sticky w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] bg-[var(--wf-surface-2)]/92 backdrop-blur-md hover:bg-[var(--wf-surface)]/50 transition-colors">
                         <button type="button" class="flex items-center gap-1 flex-1 text-left" onclick={() => toggleGroup(root, 'staged')}>
                           {#if isCollapsed(root, 'staged')}
                             <ChevronRight class="h-3 w-3" />
@@ -644,7 +1046,7 @@
                             role="button"
                             tabindex="0"
                             onclick={() => void showDiff(root, f.path, true)}
-                            onkeydown={(e) => e.key === 'Enter' && showDiff(root, f.path, true)}
+                            onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && showDiff(root, f.path, true)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)]" />
                             <span class="truncate text-[var(--wf-fg)]">{basename(f.path)}</span>
@@ -653,15 +1055,27 @@
                                 {dirname(f.path)}
                               </span>
                             {/if}
-                            <span class="ml-auto flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
-                                title="撤销暂存"
-                                onclick={(e) => { e.stopPropagation(); void unstage(root, [f.path]); }}
-                              >
-                                <Minus class="h-3 w-3" />
-                              </button>
+                            <!-- Right-side cluster: +N -N visible by default,
+                                 actions revealed on hover. They share a
+                                 single grid cell so the row width stays
+                                 stable (no jumpy re-flow on hover). -->
+                            <span class="ml-auto relative shrink-0 flex items-center min-h-[20px] min-w-[40px] justify-end">
+                              {#if (f.additions ?? 0) > 0 || (f.deletions ?? 0) > 0}
+                                <span class="flex items-center gap-0.5 font-mono text-[9px] leading-none group-hover:opacity-0 transition-opacity">
+                                  {#if (f.additions ?? 0) > 0}<span class="text-emerald-400/85">+{f.additions}</span>{/if}
+                                  {#if (f.deletions ?? 0) > 0}<span class="text-rose-400/85">-{f.deletions}</span>{/if}
+                                </span>
+                              {/if}
+                              <span class="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  type="button"
+                                  class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
+                                  title="撤销暂存"
+                                  onclick={(e) => { e.stopPropagation(); void unstage(root, [f.path]); }}
+                                >
+                                  <Minus class="h-3 w-3" />
+                                </button>
+                              </span>
                             </span>
                             <span class="shrink-0 font-mono text-[10px] w-3 text-right {statusColor(f.status)}">
                               {statusLabel(f.status)}
@@ -675,7 +1089,7 @@
                   <!-- Changes group -->
                   {#if s.changes.length > 0}
                     <div class="group/grp scm-group">
-                      <div class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors">
+                      <div class="wf-scm-group-sticky w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] bg-[var(--wf-surface-2)]/92 backdrop-blur-md hover:bg-[var(--wf-surface)]/50 transition-colors">
                         <button type="button" class="flex items-center gap-1 flex-1 text-left" onclick={() => toggleGroup(root, 'changes')}>
                           {#if isCollapsed(root, 'changes')}
                             <ChevronRight class="h-3 w-3" />
@@ -710,7 +1124,7 @@
                             role="button"
                             tabindex="0"
                             onclick={() => void showDiff(root, f.path, false)}
-                            onkeydown={(e) => e.key === 'Enter' && showDiff(root, f.path, false)}
+                            onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && showDiff(root, f.path, false)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)]" />
                             <span class="truncate text-[var(--wf-fg)]">{basename(f.path)}</span>
@@ -719,23 +1133,31 @@
                                 {dirname(f.path)}
                               </span>
                             {/if}
-                            <span class="ml-auto flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
-                                title="丢弃更改"
-                                onclick={(e) => { e.stopPropagation(); void discard(root, [f.path]); }}
-                              >
-                                <Undo2 class="h-3 w-3" />
-                              </button>
-                              <button
-                                type="button"
-                                class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
-                                title="暂存更改"
-                                onclick={(e) => { e.stopPropagation(); void stage(root, [f.path]); }}
-                              >
-                                <Plus class="h-3 w-3" />
-                              </button>
+                            <span class="ml-auto relative shrink-0 flex items-center min-h-[20px] min-w-[52px] justify-end">
+                              {#if (f.additions ?? 0) > 0 || (f.deletions ?? 0) > 0}
+                                <span class="flex items-center gap-0.5 font-mono text-[9px] leading-none group-hover:opacity-0 transition-opacity">
+                                  {#if (f.additions ?? 0) > 0}<span class="text-emerald-400/85">+{f.additions}</span>{/if}
+                                  {#if (f.deletions ?? 0) > 0}<span class="text-rose-400/85">-{f.deletions}</span>{/if}
+                                </span>
+                              {/if}
+                              <span class="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  type="button"
+                                  class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
+                                  title="丢弃更改"
+                                  onclick={(e) => { e.stopPropagation(); void discard(root, [f.path]); }}
+                                >
+                                  <Undo2 class="h-3 w-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
+                                  title="暂存更改"
+                                  onclick={(e) => { e.stopPropagation(); void stage(root, [f.path]); }}
+                                >
+                                  <Plus class="h-3 w-3" />
+                                </button>
+                              </span>
                             </span>
                             <span class="shrink-0 font-mono text-[10px] w-3 text-right {statusColor(f.status)}">
                               {statusLabel(f.status)}
@@ -748,25 +1170,46 @@
 
                   <!-- Untracked group -->
                   {#if s.untracked.length > 0}
-                    <div class="scm-group">
-                      <button
-                        type="button"
-                        class="w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]/50 transition-colors"
-                        onclick={() => toggleGroup(root, 'untracked')}
-                      >
-                        {#if isCollapsed(root, 'untracked')}
-                          <ChevronRight class="h-3 w-3" />
-                        {:else}
-                          <ChevronDown class="h-3 w-3" />
-                        {/if}
-                        <span class="flex-1 text-left">未跟踪</span>
+                    <div class="group/grp scm-group">
+                      <!-- Header restructured to match staged/changes:
+                           toggle (chevron + label) is its own inner button,
+                           "暂存全部" hover-only batch action sits next to
+                           the count. Without this, untracked files had
+                           to be staged one-by-one — friction at exactly
+                           the moment users want "yes, take everything". -->
+                      <div class="wf-scm-group-sticky w-full flex items-center gap-1 h-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] bg-[var(--wf-surface-2)]/92 backdrop-blur-md hover:bg-[var(--wf-surface)]/50 transition-colors">
+                        <button type="button" class="flex items-center gap-1 flex-1 text-left" onclick={() => toggleGroup(root, 'untracked')}>
+                          {#if isCollapsed(root, 'untracked')}
+                            <ChevronRight class="h-3 w-3" />
+                          {:else}
+                            <ChevronDown class="h-3 w-3" />
+                          {/if}
+                          <span class="flex-1">未跟踪</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-all"
+                          title="暂存全部未跟踪文件"
+                          onclick={() => stage(root, s.untracked.map((f) => f.path))}
+                        >
+                          <Plus class="h-3 w-3" />
+                        </button>
                         <span class="text-[var(--wf-fg)]">{s.untracked.length}</span>
-                      </button>
+                      </div>
                       {#if !isCollapsed(root, 'untracked')}
                         {#each s.untracked as f (f.path)}
+                          <!-- Untracked rows are now click-to-diff like staged
+                               and changes — `git_get_file_versions` with
+                               cached=false treats a missing index blob as
+                               empty original, rendering the entire file as
+                               additions (matches VS Code's "U" file diff). -->
                           <div
-                            class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors"
-                            title={f.path}
+                            class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors cursor-pointer"
+                            title="{f.path}（点击查看新文件 diff）"
+                            role="button"
+                            tabindex="0"
+                            onclick={() => showDiff(root, f.path, false)}
+                            onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && showDiff(root, f.path, false)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)]" />
                             <span class="truncate text-[var(--wf-fg)]">{basename(f.path)}</span>
@@ -780,7 +1223,7 @@
                                 type="button"
                                 class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
                                 title="暂存"
-                                onclick={() => stage(root, [f.path])}
+                                onclick={(e) => { e.stopPropagation(); void stage(root, [f.path]); }}
                               >
                                 <Plus class="h-3 w-3" />
                               </button>
@@ -802,6 +1245,7 @@
                 {:else}
                   <div class="px-3 py-2 text-[11px] text-[var(--wf-fg-muted)]">加载中…</div>
                 {/if}
+                {/if}<!-- /collapsedRepos -->
               </div>
             {/each}
           {/if}
@@ -815,7 +1259,7 @@
         <div
           class="px-3 h-9 shrink-0 flex items-center justify-between gap-2 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/40"
         >
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] shrink-0">
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] shrink-0" title="带分支线 + merge 曲线的提交图谱">
             图谱
           </span>
           {#if repoRoots.length > 0}
@@ -839,7 +1283,7 @@
           {/if}
         </div>
 
-        <div class="flex-1 min-h-0 overflow-y-auto wf-scroll">
+        <div class="flex-1 min-h-0" use:overlayScroll>
           {#if !selectedRepo}
             <div class="p-4 text-[12px] text-[var(--wf-fg-muted)] text-center">
               无 Git 仓库可显示
@@ -851,24 +1295,116 @@
               {graphError}
             </div>
           {:else if graphInfo && graphInfo.is_git_repo}
-            {#each graphInfo.commits as c (c.hash)}
-              <div class="px-3 py-1.5 border-b border-[var(--wf-border)]/30 hover:bg-[var(--wf-surface)]/40 transition-colors">
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] font-mono text-[var(--wf-accent)] shrink-0">
-                    {c.hash.slice(0, 7)}
-                  </span>
-                  {#if c.branch}
-                    <span class="text-[10px] px-1 py-0 rounded bg-green-500/15 text-green-400 shrink-0">
-                      {c.branch}
+            <!-- Graph + rows in one flex container so the SVG aligns
+                 strictly to the per-commit row baseline. Row height
+                 derives from GitGraph's exported DEFAULT_DY constant —
+                 single source of truth so the dots can never desync
+                 from their text rows when one side is later tweaked. -->
+            <div class="flex items-start min-w-max">
+              <GitGraph commits={graphInfo.commits} />
+              <div class="flex-1 min-w-0">
+                {#each graphInfo.commits as c (c.hash)}
+                  <div
+                    class="flex items-center gap-1.5 pr-3 cursor-pointer transition-colors {selectedCommitHash === c.hash
+                      ? 'bg-[var(--wf-accent)]/15'
+                      : 'hover:bg-[var(--wf-surface)]/40'}"
+                    style="height: {GRAPH_ROW_HEIGHT}px"
+                    title={`${c.hash}\n${c.author} · ${formatDate(c.date)}\n右键查看操作`}
+                    role="button"
+                    tabindex="0"
+                    onclick={() => selectCommit(c.hash)}
+                    onkeydown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter') { selectCommit(c.hash); return; }
+                      if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+                        e.preventDefault();
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        onCommitContextMenu(
+                          new MouseEvent('contextmenu', { clientX: rect.left + 8, clientY: rect.bottom }),
+                          c
+                        );
+                      }
+                    }}
+                    oncontextmenu={(e) => onCommitContextMenu(e, c)}
+                  >
+                    <!-- Ref decorations from git's `%D`: HEAD pointer +
+                         local/remote branches + tags. Rendered before the
+                         subject so they read like VS Code Git Graph's
+                         left-aligned label cluster. Each shape gets its own
+                         color treatment so HEAD vs branch vs tag is
+                         distinguishable at a glance.
+                         splitRefs() limits pills to MAX_VISIBLE_REFS (+ 1 when
+                         HEAD is first) and returns the overflow as `hidden`. -->
+                    {#each [splitRefs(c.refs)] as { visible: visibleRefs, hidden: hiddenRefs }}
+                    {#each visibleRefs as ref (ref)}
+                      {#if ref === 'head:'}
+                        <span class="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 shrink-0 font-mono uppercase tracking-wider">
+                          HEAD
+                        </span>
+                      {:else if ref.startsWith('branch:')}
+                        {@const name = ref.slice(7)}
+                        {@const isRemote = name.includes('/')}
+                        <span class="text-[10px] px-1 py-0.5 rounded shrink-0 font-mono {isRemote
+                          ? 'bg-blue-500/15 text-blue-300'
+                          : 'bg-emerald-500/15 text-emerald-300'}">
+                          {name}
+                        </span>
+                      {:else if ref.startsWith('tag:')}
+                        <span class="text-[10px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300 shrink-0 font-mono">
+                          ⛳ {ref.slice(4)}
+                        </span>
+                      {:else}
+                        <!-- Future-proof fallback for ref shapes the
+                             backend doesn't yet bucket (round-31 review LOW
+                             — backend's parse_decorations preserves raw
+                             strings, the UI now actually renders them). -->
+                        <span class="text-[10px] px-1 py-0.5 rounded bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] shrink-0 font-mono" title={ref}>
+                          {ref}
+                        </span>
+                      {/if}
+                    {/each}
+                    {#if hiddenRefs.length > 0}
+                      <span
+                        class="bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] text-[10px] px-1 py-0.5 rounded font-mono shrink-0"
+                        title={hiddenRefs.join('\n')}
+                      >+{hiddenRefs.length}</span>
+                    {/if}
+                    {/each}
+                    <!-- Commit message: long subject lines used to truncate
+                         silently. Now shift+wheel pans horizontally so the
+                         user can read the tail without leaving the row.
+                         `whitespace-nowrap + overflow-x-auto` keeps the
+                         single-line layout; the inline-scroll listener
+                         below converts vertical wheel deltas into
+                         horizontal scroll only when Shift is held —
+                         otherwise wheel falls through to the parent
+                         vertical scroller as usual. -->
+                    <span
+                      class="text-[12px] text-[var(--wf-fg)] flex-1 min-w-0 text-ellipsis w-0 whitespace-nowrap overflow-x-auto wf-msg-scroll"
+                      onwheel={(e) => {
+                        if (!e.shiftKey) return;
+                        const t = e.currentTarget as HTMLElement;
+                        // Shift+wheel: convert deltaY (or deltaX if user
+                        // already has a horizontal-capable wheel) into
+                        // scrollLeft. preventDefault stops the page from
+                        // scrolling vertically too.
+                        const dx = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+                        t.scrollLeft += dx;
+                        e.preventDefault();
+                      }}
+                    >
+                      {c.subject}
                     </span>
-                  {/if}
-                </div>
-                <div class="text-[12px] text-[var(--wf-fg)] mt-0.5 truncate">{c.subject}</div>
-                <div class="text-[10px] text-[var(--wf-fg-muted)] mt-0.5 truncate">
-                  {c.author} · {formatDate(c.date)}
-                </div>
+                    <span class="text-[10px] font-mono text-[var(--wf-accent)]/80 shrink-0">
+                      {c.hash.slice(0, 7)}
+                    </span>
+                    <span class="text-[10px] text-[var(--wf-fg-muted)] shrink-0 truncate max-w-[80px]">
+                      {c.author}
+                    </span>
+                  </div>
+                {/each}
               </div>
-            {/each}
+            </div>
           {/if}
         </div>
       </div>
@@ -876,50 +1412,16 @@
   </Splitpanes>
 </div>
 
-<!-- ═══ Diff modal（VSCode SCM 点击文件查看差异）═══ -->
-{#if diffOpen}
-  <div
-    role="presentation"
-    class="fixed inset-0 z-[9998] bg-black/60 flex items-center justify-center"
-    onclick={() => (diffOpen = false)}
-  >
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="文件差异"
-      class="w-[min(960px,92vw)] h-[min(720px,80vh)] flex flex-col bg-[var(--wf-bg)] border border-[var(--wf-border)] rounded-lg shadow-xl overflow-hidden"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <div class="flex items-center gap-2 h-9 px-3 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/60">
-        <FileText class="h-3.5 w-3.5 text-[var(--wf-accent)]" />
-        <span class="text-[12px] font-mono truncate flex-1" title={diffTitle}>{diffTitle}</span>
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
-          title="关闭"
-          onclick={() => (diffOpen = false)}
-        >
-          <X class="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <div class="flex-1 min-h-0 overflow-auto wf-scroll bg-[var(--wf-bg)]">
-        {#if diffLoading}
-          <div class="p-4 text-[12px] text-[var(--wf-fg-muted)]">加载中…</div>
-        {:else}
-          <pre class="p-3 text-[11px] font-mono leading-5 whitespace-pre">{#each diffContent.split('\n') as line, idx (idx)}<span class={diffLineClass(line)}>{line}
-</span>{/each}</pre>
-        {/if}
-      </div>
-    </div>
-  </div>
-{/if}
+<!-- Diff is now handled by Monaco-backed DiffEditorModal (mounted globally
+     in +page.svelte). SourceControl just calls openDiffEditor() — no
+     local modal state to manage. Z-index slot 9998 unchanged. -->
 
 <style>
   .scm-root :global(.splitpanes__splitter) {
-    background: var(--wf-border);
     min-height: 1px;
     height: 1px;
     position: relative;
+    transition: background-color 150ms ease;
   }
   .scm-root :global(.splitpanes__splitter::before) {
     content: '';
@@ -930,6 +1432,44 @@
     bottom: -3px;
   }
   .scm-root :global(.splitpanes__splitter:hover) {
-    background: var(--wf-accent);
+    background: color-mix(in oklab, var(--wf-accent) 20%, transparent);
+  }
+  /* svelte-splitpanes adds `splitpanes__splitter__active` to the splitter
+     while it's being dragged (see node_modules/svelte-splitpanes/dist/Pane.svelte:89).
+     `:active` is included as a fallback for the brief mousedown frame before
+     the library's class lands. */
+  .scm-root :global(.splitpanes__splitter:active),
+  .scm-root :global(.splitpanes__splitter__active) {
+    background: color-mix(in oklab, var(--wf-accent) 30%, transparent);
+  }
+  /* PaneDiffPill 跳转过来时给目标仓库一个短暂的高亮，让用户视觉锚定。
+     1.5s 内淡出，不挡住 hover 状态。 */
+  .scm-root :global(.scm-repo.wf-scm-flash) {
+    animation: wf-scm-flash 1.5s ease-out;
+  }
+  @keyframes wf-scm-flash {
+    0%, 25% { background: color-mix(in oklab, var(--wf-accent) 25%, transparent); }
+    100%    { background: transparent; }
+  }
+
+  /* Sticky group sub-header — pinned right under the sticky repo header
+     when the user scrolls within "更改" 面板。`top` 与 repo header 高度
+     对齐（py-1.5 + h-6 内容 ≈ 29px）。`position: sticky` 不能用纯
+     Tailwind 因为内联类还要拼运行时 hover/transition；这里集中给一个
+     class 处理位置 + 层级，模板里用 `wf-scm-group-sticky` 引用。 */
+  .scm-root :global(.wf-scm-group-sticky) {
+    position: sticky;
+    top: 29px;
+    z-index: 20;
+  }
+  /* Per-row commit message: hide the native horizontal scrollbar that
+     `overflow-x-auto` would render — overlayscrollbars per row would be
+     overkill (one instance per visible commit). The Shift+wheel handler
+     is the discoverable scroll affordance. */
+  .scm-root :global(.wf-msg-scroll)::-webkit-scrollbar {
+    display: none;
+  }
+  .scm-root :global(.wf-msg-scroll) {
+    scrollbar-width: none;
   }
 </style>

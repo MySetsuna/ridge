@@ -71,60 +71,48 @@ body {
 }
 
 /*
- * Overlay 风格滚动条：平时完全透明隐藏，滚动或鼠标悬停容器/滑块时才显形。
- *
- * 尺寸稳定性：视觉细条做到 4px，hover 时变到 8px —— 但 webkit 滚动条占用的
- * gutter 宽度始终是 10px（通过 `padding-box + 透明 border` 改变可见宽度，
- * 不改 scrollbar 自身 width）。这样内容区不会随 hover 抖动。
- *
- * 滚动可见：JS 侧 `scrollOverlay` action 给正在滚动的容器加 `.wf-scrolling`，
- * ~800ms 无动作后自动移除；CSS 把 thumb 颜色绑在 `.wf-scrolling` 或 :hover 上。
- *
- * 箭头按钮：`-webkit-scrollbar-button { display: none }` —— Windows WebView2
- * 默认会画上下箭头，必须显式去掉。
+ * `.wf-scroll-overlay` 原本做 webkit 的"透明 4px → hover 8px、gutter 常驻 10px"
+ * 方案，但第 6/9 轮已把所有用它的组件（Explorer / SourceControl / FileEditor
+ * markdown wrapper）迁到 overlayscrollbars action；此处的 CSS 块不再有 class
+ * 消费者，保留只是造成阅读噪音，本轮清理。若未来需要"纯 CSS overlay"降级路径
+ * 再从 git history 捞回。
  */
-.wf-scroll-overlay {
-  scrollbar-width: none; /* Firefox: 默认隐藏；hover / scroll 态靠 JS 切 class 接管 */
-  /*
-   * 始终保留 scrollbar gutter 空间 —— 否则内容由「刚好塞下」过渡到「溢出」的那一瞬间，
-   * 滚动条出现会把可用宽度切走 ~10px，带来整体布局重排。stable 让 gutter 永远在位，
-   * 不论 thumb 是否可见；配合下面的 webkit 伪元素，thumb 透明时也不会抢视觉权重。
-   */
-  scrollbar-gutter: stable;
+
+/*
+ * overlayscrollbars 主题（wf-os-theme）：用 VS Code 风格的细条，idle 时完全透明，
+ * 滚动/hover 时再显形。overlayscrollbars 的 viewport 用 flex/absolute 填满父容器，
+ * scrollbar 挂在 host 上作为绝对定位的 overlay —— 真正"显示/隐藏滚动条不再改变
+ * 容器宽度"，与 `scrollbar-gutter: stable` 的"永远留 10 px"恰好相反。
+ *
+ * 关键点：
+ *  - 禁用 track 背景，让 thumb 浮在内容之上
+ *  - 细条宽度 8 px，hover 时到 10 px；两种状态宽度差只发生在 scrollbar 自身
+ *    （scrollbar 是 overlay，不占内容宽度）
+ *  - Windows WebView2 上 overlayscrollbars 的 handle 颜色以 CSS var 注入，
+ *    方便切换深/浅主题
+ */
+.os-theme-wf-os-theme,
+.os-theme-wf-os-theme.os-scrollbar {
+  --os-size: 10px;
+  --os-padding-perpendicular: 2px;
+  --os-padding-axis: 2px;
+  --os-track-border-radius: 999px;
+  --os-track-bg: transparent;
+  --os-track-bg-hover: transparent;
+  --os-track-bg-active: transparent;
+  --os-handle-bg: rgba(255, 255, 255, 0.18);
+  --os-handle-bg-hover: rgba(167, 139, 250, 0.55);
+  --os-handle-bg-active: rgba(167, 139, 250, 0.75);
+  --os-handle-border-radius: 999px;
+  --os-handle-min-size: 36px;
 }
-.wf-scroll-overlay.wf-scrolling {
-  scrollbar-width: thin;
-  scrollbar-color: var(--wf-scrollbar) transparent;
-}
-.wf-scroll-overlay::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-.wf-scroll-overlay::-webkit-scrollbar-button {
-  display: none;
-  height: 0;
-  width: 0;
-}
-.wf-scroll-overlay::-webkit-scrollbar-corner,
-.wf-scroll-overlay::-webkit-scrollbar-track {
-  background: transparent;
-}
-.wf-scroll-overlay::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 999px;
-  /* 细条视觉宽 4px = 10 - 2*3 */
-  border: 3px solid transparent;
-  background-clip: padding-box;
-  transition: background-color 160ms ease, border-width 160ms ease;
-}
-.wf-scroll-overlay.wf-scrolling::-webkit-scrollbar-thumb,
-.wf-scroll-overlay:hover::-webkit-scrollbar-thumb {
-  background-color: var(--wf-scrollbar);
-}
-.wf-scroll-overlay::-webkit-scrollbar-thumb:hover {
-  /* 粗条视觉宽 8px = 10 - 2*1 */
-  border-width: 1px;
-  background-color: var(--wf-scrollbar-hover);
+
+/* 确保 overlayscrollbars 的 host 元素不会因初始化强制 overflow:hidden 把子元素裁掉。
+ * 我们在 Explorer 根节点、SCM 更改区用 flex 布局，host 自身必须继续允许 flex child 撑开。 */
+.os-host-flexbox {
+  width: 100%;
+  min-height: 0;
+  height: 100%;
 }
 
 /* 无边框窗口：与 data-tauri-drag-region 并存时，避免按钮触发系统拖动 */
@@ -226,4 +214,16 @@ body {
 }
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--wf-scrollbar-hover);
+}
+
+/* Search sidebar: defer paint for individual result rows that are off-screen.
+ * Applied per-row (not per file-group) to avoid breaking sticky file headers —
+ * content-visibility on a containing box creates layout containment which
+ * would constrain position:sticky to that box instead of the scroll container.
+ * 22px = one result row height (py-1 + 11px text ≈ 22px).
+ * Effective when `showAll = true` with 500+ results in the sidebar.
+ * Supported in WebView2 (Edge/Chromium 85+). */
+.wf-search-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 22px;
 }

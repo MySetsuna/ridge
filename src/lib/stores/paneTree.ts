@@ -3,6 +3,10 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { get, writable } from 'svelte/store';
 import type { PaneNode } from '$lib/types';
+// Re-export so downstream consumers (+page.svelte, paneTree.test.ts) can
+// `import type { PaneNode } from '$lib/stores/paneTree'` without reaching into
+// the types barrel. Matches the pattern used for other store-owned types.
+export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
 
@@ -670,8 +674,9 @@ function reconcileActivePaneId(layout: PaneNode) {
 
 export async function syncPaneLayoutFromBackend() {
   if (!isTauri()) return;
+  let layout: PaneNode;
   try {
-    const layout = await invoke<PaneNode>('get_pane_layout');
+    layout = await invoke<PaneNode>('get_pane_layout');
     paneTreeStore.set(layout);
     reconcileActivePaneId(layout);
   } catch (e) {
@@ -688,6 +693,37 @@ export async function syncPaneLayoutFromBackend() {
   // splitPane / closePane / dockPane / etc.
   const active = get(activeWorkspaceId);
   if (active) {
+    // Atomically prune stale pane entries AND seed new ones from the layout.
+    //
+    // Two cases this handles:
+    //   1. DELETED pane: its cwd key lingers in paneCwdStore after closePane,
+    //      causing Explorer to keep rendering the column. → prune it.
+    //   2. NEW pane (e.g., split): backend inherits cwd from parent pane so
+    //      no `pane-cwd-changed` event fires, meaning the new pane's cwd never
+    //      gets seeded into paneCwdStore. Explorer never sees it → never merges
+    //      it into the shared column. → seed it from the layout.
+    const livePaneIds = new Set(getAllPaneIds(layout));
+    const prefix = `${active}:`;
+    const layoutCwds = extractCwdsFromLayout(layout, active);
+    paneCwdStore.update((store) => {
+      const next: Record<string, string> = {};
+      // Pass 1: keep live panes, drop dead ones.
+      for (const [k, v] of Object.entries(store)) {
+        if (k.startsWith(prefix)) {
+          const paneId = k.slice(prefix.length);
+          if (livePaneIds.has(paneId)) next[k] = v;
+          // else: deleted pane — drop
+        } else {
+          next[k] = v; // other workspaces: untouched
+        }
+      }
+      // Pass 2: seed cwds for panes present in layout but not yet in store
+      // (new split panes, or panes restored from saved workspace).
+      for (const [k, v] of Object.entries(layoutCwds)) {
+        if (!(k in next)) next[k] = v;
+      }
+      return next;
+    });
     await setupPaneCwdListeners(active);
   }
 }
@@ -926,14 +962,18 @@ export async function renameWorkspace(workspaceId: string, name: string) {
 
 // ============ 已保存工作区相关 ============
 
-// TODO: paneCwds is not persisted — backend WorkspaceHistoryItem lacks this field.
-// Restored workspaces will not preserve terminal working directories.
+// Pane cwds ARE preserved in the .wind format: the backend PaneTree struct
+// serialises Pane.cwd (Option<PathBuf>) into JSON, so openWorkspaceFromFile
+// → refreshWorkspaces → get_pane_layout → extractCwdsFromLayout restores them.
+// `SavedWorkspace.paneCwds` below is kept for future use but is currently
+// not populated by list_saved_workspaces (workspace-history path), which is
+// fine because that path is not yet exposed in the frontend restore UI.
 
 export interface SavedWorkspace {
   id: string;
   name: string;
   paneTree: PaneNode;
-  paneCwds: Record<string, string>; // Not yet populated by backend
+  paneCwds: Record<string, string>;
   savedAt: string;
 }
 
@@ -1067,8 +1107,17 @@ export function collapseCwd(cwd: string): string {
 }
 
 /** Update the cwd for a specific pane. */
+/** Normalize Windows backslashes to forward slashes so paneCwdStore always
+ *  holds a single canonical form regardless of which shell or code path set it.
+ *  Without this, Git Bash emits "C:/code" and PowerShell emits "C:\code" for
+ *  the same directory — making syncWithPaneCwds treat them as two different cwds
+ *  and preventing the Explorer file-tree column merge. */
+function normalizeCwd(cwd: string): string {
+  return cwd.replace(/\\/g, '/');
+}
+
 export function setPaneCwd(workspaceId: string, paneId: string, cwd: string) {
-  paneCwdStore.update((store) => ({ ...store, [`${workspaceId}:${paneId}`]: cwd }));
+  paneCwdStore.update((store) => ({ ...store, [`${workspaceId}:${paneId}`]: normalizeCwd(cwd) }));
 }
 
 /** Retrieve the cwd for a specific pane, if known. */
@@ -1090,7 +1139,7 @@ export function extractCwdsFromLayout(
     if (!n) return;
     if (n.type === 'leaf') {
       if (n.cwd !== undefined && n.cwd !== null) {
-        result[`${workspaceId}:${n.id}`] = n.cwd;
+        result[`${workspaceId}:${n.id}`] = normalizeCwd(n.cwd);
       }
     } else {
       n.children?.forEach(traverse);

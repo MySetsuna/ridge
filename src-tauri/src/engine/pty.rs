@@ -176,24 +176,31 @@ pub fn spawn_pty_reader(
                                     .await
                             });
                             if let Some(cwd) = cwd::parse_cwd_from_output(&data_for_cwd) {
+                                // Normalize path separators on Windows so every code path
+                                // (main-loop OSC 7, EOF flush, process-poll) stores and
+                                // emits the SAME string for the same directory.
+                                // Without this, Git Bash emits "C:/code" while PowerShell
+                                // shell-integration emits "C:\code", and paneCwdStore ends
+                                // up with two different keys for the same directory —
+                                // preventing the Explorer file-tree column merge.
+                                let normalized = normalize_cwd_str(&cwd.to_string_lossy());
                                 {
                                     let mut map = state.workspaces.write();
                                     if let Some(ws) = map.get_mut(&workspace_id) {
                                         if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
-                                            pane.cwd = Some(cwd.clone());
+                                            pane.cwd = Some(std::path::PathBuf::from(&normalized));
                                         }
                                     }
                                 }
                                 let event_tx = state.event_tx.clone();
                                 let workspace_id = workspace_id.clone();
                                 let pane_id = pane_id.clone();
-                                let cwd_clone = cwd.clone();
                                 let _ = rt.block_on(async move {
                                     let _ = event_tx
                                         .send(GlobalEvent::PaneCwdChanged {
                                             workspace_id,
                                             pane_id,
-                                            cwd: cwd_clone.to_string_lossy().to_string(),
+                                            cwd: normalized,
                                         })
                                         .await;
                                 });

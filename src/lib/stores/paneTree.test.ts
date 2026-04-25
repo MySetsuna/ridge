@@ -171,14 +171,14 @@ describe('extractCwdsFromLayout', () => {
     const layout = {
       type: 'split' as const,
       id: 'root',
-      direction: 'horizontal',
+      direction: 'horizontal' as const,
       ratios: [50, 50],
       children: [
         { type: 'leaf' as const, id: 'pane-left', cwd: '/left' },
         {
           type: 'split' as const,
           id: 'right-split',
-          direction: 'vertical',
+          direction: 'vertical' as const,
           ratios: [50, 50],
           children: [
             { type: 'leaf' as const, id: 'pane-right-top', cwd: '/right-top' },
@@ -199,7 +199,7 @@ describe('extractCwdsFromLayout', () => {
     const layout = {
       type: 'split' as const,
       id: 'root',
-      direction: 'horizontal',
+      direction: 'horizontal' as const,
       ratios: [50, 50],
       children: [
         { type: 'leaf' as const, id: 'pane-with', cwd: '/has-cwd' },
@@ -214,7 +214,7 @@ describe('extractCwdsFromLayout', () => {
     const layout = {
       type: 'split' as const,
       id: 'root',
-      direction: 'vertical',
+      direction: 'vertical' as const,
       ratios: [100],
       children: [{ type: 'leaf' as const, id: 'pane-1', cwd: '/a' }],
     };
@@ -226,14 +226,14 @@ describe('extractCwdsFromLayout', () => {
     const layout: import('./paneTree').PaneNode = {
       type: 'split',
       id: 'L1',
-      direction: 'horizontal',
+      direction: 'horizontal' as const,
       ratios: [50, 50],
       children: [
         { type: 'leaf', id: 'lvl1', cwd: '/lvl1' },
         {
           type: 'split',
           id: 'L2',
-          direction: 'vertical',
+          direction: 'vertical' as const,
           ratios: [50, 50],
           children: [
             { type: 'leaf', id: 'lvl2', cwd: '/lvl2' },
@@ -280,7 +280,7 @@ describe('pane-cwd-changed event integration', () => {
     paneTreeModule.paneTreeStore.set({
       type: 'split',
       id: 'root',
-      direction: 'horizontal',
+      direction: 'horizontal' as const,
       ratios: [50, 50],
       children: [
         { type: 'leaf', id: 'paneA' },
@@ -378,8 +378,8 @@ describe('PaneNode cwd field (Issue #1)', () => {
     const leaf: import('./paneTree').PaneNode = { type: 'leaf', id: 'pane-no-cwd' };
     expect(leaf.type).toBe('leaf');
     expect(leaf.id).toBe('pane-no-cwd');
-    // @ts-expect-error — cwd is intentionally absent; we just verify the field
-    // is optional, not that it must be present
+    // cwd is intentionally absent; annotating `PaneNode` already proves the
+    // field is optional (no @ts-expect-error needed).
     void leaf;
   });
 
@@ -388,7 +388,6 @@ describe('PaneNode cwd field (Issue #1)', () => {
     expect(leaf.cwd).toBe('/project');
     // Compile-time contract: cwd must be string | undefined
     const leaf2: import('./paneTree').PaneNode = { type: 'leaf', id: 'pane-cwd-2' };
-    // @ts-expect-error — intentionally verify cwd is optional (not required)
     void leaf2;
   });
 
@@ -396,7 +395,7 @@ describe('PaneNode cwd field (Issue #1)', () => {
     const split: import('./paneTree').PaneNode = {
       type: 'split',
       id: 'split-root',
-      direction: 'horizontal',
+      direction: 'horizontal' as const,
       ratios: [50, 50],
       children: [{ type: 'leaf', id: 'p1' }],
     };
@@ -479,7 +478,7 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
     const newLayout: import('./paneTree').PaneNode = {
       type: 'split',
       id: 'root',
-      direction: 'horizontal',
+      direction: 'horizontal' as const,
       ratios: [50, 50],
       children: [
         { type: 'leaf', id: 'pane-new-1' },
@@ -517,7 +516,7 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
     const ws2Layout: import('./paneTree').PaneNode = {
       type: 'split',
       id: 'root2',
-      direction: 'vertical',
+      direction: 'vertical' as const,
       ratios: [100],
       children: [{ type: 'leaf', id: 'pane-ws2-1' }],
     };
@@ -555,7 +554,7 @@ describe('SavedWorkspace.paneCwds integration', () => {
     const layout: import('./paneTree').PaneNode = {
       type: 'split',
       id: 'root',
-      direction: 'vertical',
+      direction: 'vertical' as const,
       ratios: [33.33, 33.33, 33.34],
       children: [
         { type: 'leaf', id: 'term-1', cwd: '/home/user' },
@@ -588,5 +587,110 @@ describe('SavedWorkspace.paneCwds integration', () => {
     expect(savedWorkspace.paneCwds['saved-ws-001:term-1']).toBe('/home/user');
     expect(savedWorkspace.paneCwds['saved-ws-001:editor-1']).toBe('/project/src');
     expect(savedWorkspace.paneCwds['saved-ws-001:term-2']).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: syncPaneLayoutFromBackend — zombie pruning & split-pane seeding
+//
+// Regression locks for two historic Explorer bugs (fixed in rounds 47c/48):
+//   Bug A — Zombie terminals: closing a pane leaves a stale key in paneCwdStore
+//            → Explorer column never disappears.
+//   Bug B — New split pane never merges into its sibling's column because
+//            the backend inherits the parent cwd without emitting pane-cwd-changed.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('syncPaneLayoutFromBackend — zombie pruning & split-pane seeding', () => {
+  let invokeMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    paneTreeModule.paneCwdStore.set({});
+    paneTreeModule.activeWorkspaceId.set('ws1');
+    globalEventListeners.clear();
+    const { invoke } = await import('@tauri-apps/api/core');
+    invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalEventListeners.clear();
+    paneTreeModule.paneCwdStore.set({});
+  });
+
+  // T1 — Pass 1 Prune: closing a pane removes its stale key from paneCwdStore.
+  it('T1: removes dead pane keys from paneCwdStore when a pane is closed', async () => {
+    paneTreeModule.paneCwdStore.set({
+      'ws1:pane-a': '/code',
+      'ws1:pane-b': '/home', // pane-b will be "closed"
+    });
+    // Backend returns layout with only pane-a remaining
+    invokeMock.mockResolvedValue({ type: 'leaf', id: 'pane-a' });
+
+    await paneTreeModule.syncPaneLayoutFromBackend();
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store).toHaveProperty('ws1:pane-a');
+    expect(store).not.toHaveProperty('ws1:pane-b'); // zombie key must be gone
+  });
+
+  // T2 — Prune must not touch other workspaces' keys.
+  it('T2: does not remove keys from other workspaces when pruning active workspace', async () => {
+    paneTreeModule.paneCwdStore.set({
+      'ws1:pane-a': '/code',
+      'ws2:pane-x': '/home', // different workspace — must survive
+    });
+    invokeMock.mockResolvedValue({ type: 'leaf', id: 'pane-a' });
+
+    await paneTreeModule.syncPaneLayoutFromBackend();
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store).toHaveProperty('ws1:pane-a');
+    expect(store).toHaveProperty('ws2:pane-x'); // untouched
+  });
+
+  // T3 — Pass 2 Seed: new split pane's cwd is seeded into paneCwdStore even
+  //      when the backend never fires pane-cwd-changed (it inherits parent cwd).
+  it('T3: seeds inherited cwd for new split panes that never emitted pane-cwd-changed', async () => {
+    // Only the parent pane is in the store before the split
+    paneTreeModule.paneCwdStore.set({ 'ws1:pane-a': '/code' });
+
+    // After split, layout has both pane-a and new pane-b, both with /code
+    invokeMock.mockResolvedValue({
+      type: 'split',
+      id: 'root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf', id: 'pane-a', cwd: '/code' },
+        { type: 'leaf', id: 'pane-b', cwd: '/code' }, // new split pane
+      ],
+    });
+
+    await paneTreeModule.syncPaneLayoutFromBackend();
+
+    const store = get(paneTreeModule.paneCwdStore);
+    expect(store['ws1:pane-a']).toBe('/code');
+    expect(store['ws1:pane-b']).toBe('/code'); // must be seeded
+  });
+
+  // T4 — Seed (Pass 2) must NOT overwrite a live cwd that pane-cwd-changed
+  //      already updated (the event-sourced value is always more authoritative
+  //      than the layout snapshot).
+  it('T4: does not overwrite a live pane cwd that was already updated via pane-cwd-changed', async () => {
+    // pane-a already cd-ed to /new via the event stream
+    paneTreeModule.paneCwdStore.set({ 'ws1:pane-a': '/new' });
+
+    // Layout still reports the old /old value (snapshot lag)
+    invokeMock.mockResolvedValue({
+      type: 'leaf',
+      id: 'pane-a',
+      cwd: '/old',
+    });
+
+    await paneTreeModule.syncPaneLayoutFromBackend();
+
+    // Pass 2 only seeds keys absent from the store — it must not clobber /new
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('/new');
   });
 });

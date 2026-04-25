@@ -132,7 +132,7 @@ fn main() {
         "new-window" | "neww" => cmd_new_window(rest, &url, &token),
         "select-window" | "selectw" => cmd_select_window(rest, &url, &token),
         "kill-window" | "killw" => cmd_kill_window(rest, &url, &token),
-        "rename-window" => cmd_rename_window(rest),
+        "rename-window" => cmd_rename_window(rest, &url, &token),
         "move-window" | "movew" => cmd_move_window(rest),
         "rotate-window" | "rotw" => cmd_rotate_window(rest),
         "select-layout" | "selel" => cmd_select_layout(rest),
@@ -174,7 +174,7 @@ fn main() {
         "show-buffer" | "showb" => cmd_show_buffer(rest),
 
         // ========== Other Commands ==========
-        "display-message" | "display" => cmd_display_message(rest),
+        "display-message" | "display" => cmd_display_message(rest, &url, &token),
         "display-menu" => cmd_display_menu(rest),
         "confirm-before" | "confirm" => cmd_confirm_before(rest),
         "command-prompt" | "prompt" => cmd_command_prompt(rest),
@@ -266,17 +266,40 @@ fn current_pane_index_from_env() -> usize {
 fn tmux_replacements(pane_index: usize) -> Vec<(&'static str, String)> {
     let pane_id = format!("%{pane_index}");
     vec![
+        // ── Pane identity ──
         ("#{pane_id}", pane_id.clone()),
-        ("#{window_id}", "@0".to_string()),
-        ("#{window_index}", "0".to_string()),
         ("#{pane_index}", pane_index.to_string()),
         ("#{pane_active}", "1".to_string()),
+        ("#{pane_tty}", "/dev/pts/0".to_string()),
+        ("#{pane_pid}", "1".to_string()),
+        ("#{pane_title}", "wind".to_string()),
+        ("#{pane_current_command}", "shell".to_string()),
+        // Dimensions – real size not known at shim level; use conservative defaults
+        ("#{pane_width}", "120".to_string()),
+        ("#{pane_height}", "80".to_string()),
+        ("#{pane_left}", "0".to_string()),
+        ("#{pane_top}", "0".to_string()),
+        ("#{pane_right}", "119".to_string()),
+        ("#{pane_bottom}", "79".to_string()),
+        // ── Window ──
+        ("#{window_id}", "@0".to_string()),
+        ("#{window_index}", "0".to_string()),
         ("#{window_active}", "1".to_string()),
+        ("#{window_name}", "wind".to_string()),
+        ("#{window_layout}", "tiled".to_string()),
+        ("#{window_width}", "120".to_string()),
+        ("#{window_height}", "80".to_string()),
+        // window_panes is dynamic and filled by render_tmux_format_dynamic
+        // ── Session ──
         ("#{session_id}", "$0".to_string()),
         ("#{session_name}", "wind".to_string()),
-        ("#{window_name}", "wind".to_string()),
-        ("#{pane_tty}", "/dev/pts/0".to_string()),
-        // tmux 短格式
+        ("#{session_windows}", "1".to_string()),
+        ("#{client_session}", "wind".to_string()),
+        // ── Client ──
+        ("#{client_width}", "120".to_string()),
+        ("#{client_height}", "80".to_string()),
+        ("#{client_tty}", "/dev/pts/0".to_string()),
+        // ── Short aliases ──
         ("#D", pane_id),
         ("#I", "0".to_string()),
         ("#P", pane_index.to_string()),
@@ -301,12 +324,62 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
 /// by querying the Wind API for pane state.
 fn find_idle_pane(_url: &str, _token: &str) -> Option<usize> {
     // TODO: Implement idle pane detection via Wind API
-    // This would query the API to find a pane that is not currently
-    // executing a process and can be reused.
     None
 }
 
-fn cmd_display_message(rest: &[String]) -> Result<(), ()> {
+/// Minimal JSON shape returned by `/api/v1/list-panes?json=1`.
+/// Only the fields we need for dynamic template substitution.
+#[derive(serde::Deserialize)]
+struct ListPanesJson {
+    pane_count: usize,
+    panes: Vec<PaneInfoJson>,
+}
+#[derive(serde::Deserialize)]
+struct PaneInfoJson {
+    index: usize,
+    #[allow(dead_code)]
+    pane_id: String,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+/// Extends `render_tmux_format` with dynamic variables that require a backend
+/// round-trip: `#{window_panes}` and `#{pane_current_path}`.
+/// Falls back to static rendering if the backend is unreachable.
+fn render_tmux_format_dynamic(fmt: &str, pane_index: usize, url: &str, token: &str) -> String {
+    let mut out = render_tmux_format(fmt, pane_index);
+
+    // Only query backend if the result still contains dynamic placeholders.
+    let needs_pane_count = out.contains("#{window_panes}");
+    let needs_cwd = out.contains("#{pane_current_path}");
+    if !needs_pane_count && !needs_cwd {
+        return out;
+    }
+
+    let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
+    let resp = client()
+        .get(&u)
+        .headers(auth_headers(token))
+        .send()
+        .ok()
+        .and_then(|r| if r.status().is_success() { r.json::<ListPanesJson>().ok() } else { None });
+
+    if let Some(data) = resp {
+        if needs_pane_count {
+            out = out.replace("#{window_panes}", &data.pane_count.to_string());
+        }
+        if needs_cwd {
+            let cwd = data.panes.iter()
+                .find(|p| p.index == pane_index)
+                .and_then(|p| p.cwd.clone())
+                .unwrap_or_default();
+            out = out.replace("#{pane_current_path}", &cwd);
+        }
+    }
+    out
+}
+
+fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut pane_index = current_pane_index_from_env();
     let mut format = "#{pane_id}".to_string();
     let mut i = 0usize;
@@ -324,7 +397,7 @@ fn cmd_display_message(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    println!("{}", render_tmux_format(&format, pane_index));
+    println!("{}", render_tmux_format_dynamic(&format, pane_index, url, token));
     Ok(())
 }
 
@@ -825,10 +898,9 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
     if let Some(fmt) = format {
         if all_panes {
-            // For -a, we would need to fetch all panes
-            println!("{}", render_tmux_format(&fmt, 0));
+            println!("{}", render_tmux_format_dynamic(&fmt, 0, url, token));
         } else {
-            println!("{}", render_tmux_format(&fmt, pane_index));
+            println!("{}", render_tmux_format_dynamic(&fmt, pane_index, url, token));
         }
         return Ok(());
     }
@@ -921,7 +993,7 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     Ok(())
 }
 
-fn cmd_kill_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
+fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut pane_index: Option<usize> = None;
     let mut kill_all = false;
     let mut i = 0;
@@ -937,9 +1009,33 @@ fn cmd_kill_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
         i += 1;
     }
 
-    // Just acknowledge - the actual kill will happen via the PTY exit
-    // In Wind, when a pane's PTY exits, the pane is automatically cleaned up
     log_to_file(&format!("kill-pane: pane={:?}, kill_all={}", pane_index, kill_all));
+
+    // -a (kill all panes) is intentionally a no-op in Wind: there is no
+    // "kill all" concept that maps cleanly, and Claude Code rarely issues it.
+    if kill_all {
+        return Ok(());
+    }
+
+    // Route the kill through the teammate HTTP API so Wind removes the pane
+    // from its layout, tears down the PTY, and emits teammate-layout-changed.
+    // Without this the pane lingers as a zombie after the agent exits.
+    let u = format!("{}/api/v1/kill-pane", url.trim_end_matches('/'));
+    let body = match pane_index {
+        Some(idx) => serde_json::json!({ "pane_index": idx }),
+        None => serde_json::json!({}),
+    };
+    let res = client()
+        .post(&u)
+        .headers(auth_headers(token))
+        .json(&body)
+        .send()
+        .map_err(|e| {
+            log_to_file(&format!("kill-pane HTTP error: {e}"));
+        })?;
+    if !res.status().is_success() {
+        log_to_file(&format!("kill-pane HTTP {} from server", res.status()));
+    }
     Ok(())
 }
 
@@ -1054,6 +1150,9 @@ fn cmd_break_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
 fn cmd_join_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
     let mut source_pane: Option<usize> = None;
     let mut target_window: Option<&str> = None;
+    // `horizontal` is parsed from `-h` so future wiring can ask the backend
+    // for the right split direction. It's unused today; include it in the
+    // debug log so the compiler doesn't flag the assignment as dead.
     let mut horizontal = false;
     let mut i = 0;
     while i < rest.len() {
@@ -1075,7 +1174,10 @@ fn cmd_join_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_to_file(&format!("join-pane: source={:?}, target={:?}", source_pane, target_window));
+    log_to_file(&format!(
+        "join-pane: source={:?}, target={:?}, horizontal={}",
+        source_pane, target_window, horizontal
+    ));
     Ok(())
 }
 
@@ -1171,16 +1273,23 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         i += 1;
     }
 
-    // Create new pane in a new window - just use split for now
- // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
- let idle_pane_index = if pane_index.is_none() {
- find_idle_pane(url, token)
- } else {
- None
- };
+    // Create new pane in a new window - just use split for now.
+    // `window_name` (from `-n`) is captured for diagnostics; forwarding it as
+    // a teammate pane title requires a separate post_split path that we haven't
+    // wired yet — logging keeps the assignment intentional and observable.
+    log_to_file(&format!(
+        "new-window: name={:?}, cwd={:?}, pane_index={:?}, command={:?}",
+        window_name, cwd, pane_index, command
+    ));
+    // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
+    let idle_pane_index = if pane_index.is_none() {
+        find_idle_pane(url, token)
+    } else {
+        None
+    };
 
- // 如果找到空闲 pane，使用它而不是创建新的
- let target_pane_index = idle_pane_index.or(pane_index);
+    // 如果找到空闲 pane，使用它而不是创建新的
+    let target_pane_index = idle_pane_index.or(pane_index);
 
     post_split(url, token, false, target_pane_index, command, cwd, None)
 }
@@ -1224,25 +1333,37 @@ fn cmd_kill_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> 
     Ok(())
 }
 
-fn cmd_rename_window(rest: &[String]) -> Result<(), ()> {
-    let mut window_index: Option<&str> = None;
+fn cmd_rename_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let mut pane_index: Option<usize> = None;
     let mut new_name: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
             "-t" if i + 1 < rest.len() => {
-                window_index = Some(&rest[i + 1]);
+                pane_index = Some(parse_pane_target(&rest[i + 1]));
                 i += 1;
             }
             _ => {
-                // New name
                 new_name = Some(rest[i..].join(" "));
                 break;
             }
         }
         i += 1;
     }
-    log_to_file(&format!("rename-window: index={:?}, name={:?}", window_index, new_name));
+    log_to_file(&format!("rename-window: pane={:?}, name={:?}", pane_index, new_name));
+
+    let name = new_name.unwrap_or_default();
+    let u = format!("{}/api/v1/rename-pane", url.trim_end_matches('/'));
+    let body = match pane_index {
+        Some(idx) => serde_json::json!({ "pane_index": idx, "name": name }),
+        None => serde_json::json!({ "name": name }),
+    };
+    let _ = client()
+        .post(&u)
+        .headers(auth_headers(token))
+        .json(&body)
+        .send()
+        .map_err(|e| log_to_file(&format!("rename-window HTTP error: {e}")));
     Ok(())
 }
 
@@ -1545,7 +1666,7 @@ fn cmd_start_server() -> Result<(), ()> {
 
 // ========== List Commands ==========
 
-fn cmd_list_windows(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+fn cmd_list_windows(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
     let mut format: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
@@ -1606,7 +1727,10 @@ fn cmd_list_clients(rest: &[String]) -> Result<(), ()> {
 }
 
 fn cmd_list_keys(rest: &[String]) -> Result<(), ()> {
-    let mut format: Option<String> = None;
+    // `format` / `-T` / `-N` are accepted but not consumed — this is a no-op
+    // compatibility stub for `tmux list-keys`. Wind has no key-binding map to
+    // report; real tmux callers just need the command to exit 0.
+    let _format: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1623,7 +1747,7 @@ fn cmd_list_keys(rest: &[String]) -> Result<(), ()> {
     Ok(())
 }
 
-fn cmd_list_commands(rest: &[String]) -> Result<(), ()> {
+fn cmd_list_commands(_rest: &[String]) -> Result<(), ()> {
     // List all tmux commands
     println!("\
 split-window (splitw)\n\

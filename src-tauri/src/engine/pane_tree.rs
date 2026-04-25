@@ -136,6 +136,7 @@ impl PaneTree {
     }
 
     /// Resize（递归找到包含该 pane 的 Split，调整 ratios）
+    #[allow(dead_code)] // public API; callers do ratio updates via set_split_ratios_at_path
     pub fn resize(&mut self, pane_id: Uuid, new_ratio: f32) -> Result<(), AppError> {
         fn recurse(node: &mut PaneNode, pane_id: Uuid, new_ratio: f32) -> bool {
             if let PaneNode::Split { children, ratios, .. } = node {
@@ -458,11 +459,13 @@ impl PaneTree {
     }
 
     /// 获取当前布局（供前端递归渲染 SplitContainer 使用）
+    #[allow(dead_code)] // exposed API; today the layout flows through commands/pane.rs::get_pane_layout instead
     pub fn get_layout(&self) -> PaneNode {
         self.root.clone()
     }
 
     /// 查找某个 Pane 的完整路径（Fiber return 指针模拟，用于调试/快捷键）
+    #[allow(dead_code)] // path-style helpers planned for future keyboard-driven pane jumps
     pub fn find_path(&self, pane_id: Uuid) -> Option<Vec<Uuid>> {
         fn recurse(node: &PaneNode, pane_id: Uuid, path: &mut Vec<Uuid>) -> bool {
             match node {

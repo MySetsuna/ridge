@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { alertDialog } from './WindDialog.svelte';
   import {
     projectStore,
     searchResults,
@@ -46,7 +47,7 @@
       useRegex,
     });
 
-    alert(`Replaced in ${stats.files_modified} files (${stats.replacements} replacements)`);
+    await alertDialog({ title: '替换完成', message: `已在 ${stats.files_modified} 个文件中完成 ${stats.replacements} 处替换` });
 
     if (stats.files_modified > 0) {
       // Refresh search results

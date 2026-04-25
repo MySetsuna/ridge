@@ -45,6 +45,12 @@ pub struct WindFile {
     pub git_repos: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_path: Option<String>,
+    /// Per-pane teammate display names keyed by pane UUID string. Written by
+    /// Claude Code's `new-window -n` / `split-window -n` and surfaced in the
+    /// Wind pane header. Runtime state (busy / idle, agent_id) is deliberately
+    /// NOT persisted — it's session-scoped and would lie across restarts.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pane_titles: HashMap<String, String>,
 }
 
 /// 默认保存目录：`<home>/wind-workspaces/`（不存在时创建）。
@@ -175,6 +181,11 @@ fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Resul
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    let pane_titles: HashMap<String, String> = ws
+        .teammate_pane_titles
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
     Ok(WindFile {
         version: WIND_FILE_VERSION,
         name: name.to_string(),
@@ -182,6 +193,7 @@ fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Resul
         pane_tree: tree_json,
         git_repos,
         index_path: None,
+        pane_titles,
     })
 }
 
@@ -339,6 +351,22 @@ pub fn open_workspace_from_file(
     }
 
     let new_id = Uuid::new_v4();
+    // Rehydrate teammate_pane_titles from the persisted map, skipping entries
+    // whose UUID no longer exists in the restored tree (stale ids from edits
+    // made after the last save). Runtime state (busy / idle) stays empty —
+    // sessions always start clean, see WindFile docstring.
+    let restored_titles: HashMap<Uuid, String> = {
+        let known: std::collections::HashSet<Uuid> = tree.panes.keys().copied().collect();
+        wf.pane_titles
+            .iter()
+            .filter_map(|(k, v)| {
+                Uuid::parse_str(k)
+                    .ok()
+                    .filter(|id| known.contains(id))
+                    .map(|id| (id, v.clone()))
+            })
+            .collect()
+    };
     {
         let mut map = state.workspaces.write();
         map.insert(
@@ -347,7 +375,7 @@ pub fn open_workspace_from_file(
                 pane_tree: tree,
                 terminals: HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
-                teammate_pane_titles: HashMap::new(),
+                teammate_pane_titles: restored_titles,
                 pane_sizes: HashMap::new(),
                 last_pane_index: None,
                 created_at: std::time::SystemTime::now(),

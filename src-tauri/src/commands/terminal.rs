@@ -257,6 +257,11 @@ pub fn ensure_pane_pty_workspace(
 			_ => ShellKind::Other,
 		}
 	}
+	// Each `cmd = if/else` branch below reassigns `shell_kind` before
+	// the first read at line 322 — the `Other` initialiser is technically
+	// dead. Allow that single warning rather than restructure into a tuple
+	// binding (which would force every branch to surface the kind).
+	#[allow(unused_assignments)]
 	let mut shell_kind = ShellKind::Other;
 	let mut cmd = if let Some(s) = shell {
 		shell_kind = classify_shell(&s);
@@ -605,6 +610,10 @@ async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<
 	Ok(())
 }
 
+/// Deprecated shim — returns the full retained scrollback as a single string.
+/// Kept only so pre-existing frontend callers (xterm mount replay) don't break
+/// during the Phase 1 → Phase 2 rollout. New callers should use
+/// `get_pane_scrollback_tail` + `get_pane_scrollback_before` for paged reads.
 #[tauri::command]
 pub fn get_pane_scrollback(
 	state: State<'_, AppState>,
@@ -612,6 +621,38 @@ pub fn get_pane_scrollback(
 ) -> Result<String, String> {
 	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
 	let workspace_id = state.active_workspace_id();
-	let map = state.pty_scrollback.read();
-	Ok(map.get(&(workspace_id, pane_id)).cloned().unwrap_or_default())
+	let chunk = state.get_pty_scrollback_tail(workspace_id, pane_id, usize::MAX);
+	Ok(chunk.bytes)
+}
+
+/// Return the latest (tail) bytes of a pane's scrollback, up to `max_bytes`.
+/// The returned `start_seq` identifies where in the monotonic byte stream
+/// this chunk begins — pass it back as `before_seq` to
+/// `get_pane_scrollback_before` to page further up.
+///
+/// See `docs/TERMINAL_SCROLLBACK.md` for the overall design.
+#[tauri::command]
+pub fn get_pane_scrollback_tail(
+	state: State<'_, AppState>,
+	pane_id: String,
+	max_bytes: usize,
+) -> Result<crate::state::ScrollbackChunk, String> {
+	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+	let workspace_id = state.active_workspace_id();
+	Ok(state.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes))
+}
+
+/// Return up-to `max_bytes` preceding (exclusive) `before_seq`. Use for
+/// "scroll up to load older" paging. `start_seq` of the returned chunk is
+/// the next `before_seq` to feed back in; when `at_oldest=true`, stop.
+#[tauri::command]
+pub fn get_pane_scrollback_before(
+	state: State<'_, AppState>,
+	pane_id: String,
+	before_seq: u64,
+	max_bytes: usize,
+) -> Result<crate::state::ScrollbackChunk, String> {
+	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+	let workspace_id = state.active_workspace_id();
+	Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
 }

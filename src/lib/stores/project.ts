@@ -1,6 +1,12 @@
 // src/lib/stores/project.ts
+//
+// Project-scoped search / content services. The original "project open / file
+// tree" entry point lived here alongside `openProject` and a recent-projects
+// list; that UI was superseded by the CWD-driven Explorer (`Explorer.svelte`).
+// We kept only the services still consumed by QuickOpen, SearchModal, and
+// FileTree types — see docs/NEXT_LOOP_PLAN.md §P0-2 for the cleanup context.
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { writable, derived, get } from 'svelte/store';
+import { derived, writable, get } from 'svelte/store';
 
 export interface FileNode {
   name: string;
@@ -8,14 +14,6 @@ export interface FileNode {
   is_dir: boolean;
   children?: FileNode[];
   expanded?: boolean;
-}
-
-export interface ProjectInfo {
-  id: number;
-  path: string;
-  name: string;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface SearchResult {
@@ -35,10 +33,6 @@ export interface ReplaceStats {
 
 interface ProjectState {
   currentPath: string | null;
-  fileTree: FileNode | null;
-  recentProjects: ProjectInfo[];
-  isLoading: boolean;
-  error: string | null;
   searchResults: SearchResult[];
   searchQuery: string;
   isSearching: boolean;
@@ -46,10 +40,6 @@ interface ProjectState {
 
 const initialState: ProjectState = {
   currentPath: null,
-  fileTree: null,
-  recentProjects: [],
-  isLoading: false,
-  error: null,
   searchResults: [],
   searchQuery: '',
   isSearching: false,
@@ -57,89 +47,8 @@ const initialState: ProjectState = {
 
 export const projectStore = writable<ProjectState>(initialState);
 
-// Derived stores
-export const currentProject = derived(projectStore, $s => $s.currentPath);
-export const fileTree = derived(projectStore, $s => $s.fileTree);
-export const recentProjects = derived(projectStore, $s => $s.recentProjects);
-export const isLoading = derived(projectStore, $s => $s.isLoading);
-export const error = derived(projectStore, $s => $s.error);
-export const searchResults = derived(projectStore, $s => $s.searchResults);
-export const isSearching = derived(projectStore, $s => $s.isSearching);
-
-// Actions
-export async function openProject(path: string): Promise<void> {
-  if (!isTauri()) return;
-
-  projectStore.update(s => ({ ...s, isLoading: true, error: null }));
-
-  try {
-    const project = await invoke<ProjectInfo>('open_project', { path });
-    const tree = await invoke<FileNode>('get_file_tree', { path, depth: 3 });
-
-    projectStore.update(s => ({
-      ...s,
-      currentPath: project.path,
-      fileTree: tree,
-      isLoading: false,
-    }));
-
-    // Refresh recent projects
-    await refreshRecentProjects();
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    projectStore.update(s => ({ ...s, isLoading: false, error }));
-    throw e;
-  }
-}
-
-export async function closeProject(): Promise<void> {
-  projectStore.set(initialState);
-}
-
-export async function refreshFileTree(path: string, depth = 3): Promise<void> {
-  if (!isTauri()) return;
-
-  try {
-    const tree = await invoke<FileNode>('get_file_tree', { path, depth });
-    projectStore.update(s => ({ ...s, fileTree: tree }));
-  } catch (e) {
-    console.error('Failed to refresh file tree:', e);
-  }
-}
-
-export async function getDirectoryChildren(path: string): Promise<FileNode[]> {
-  if (!isTauri()) return [];
-
-  try {
-    return await invoke<FileNode[]>('get_directory_children', { path });
-  } catch (e) {
-    console.error('Failed to get directory children:', e);
-    return [];
-  }
-}
-
-export async function refreshRecentProjects(): Promise<void> {
-  if (!isTauri()) return;
-
-  try {
-    const projects = await invoke<ProjectInfo[]>('get_recent_projects');
-    projectStore.update(s => ({ ...s, recentProjects: projects }));
-  } catch (e) {
-    console.error('Failed to get recent projects:', e);
-  }
-}
-
-export async function removeProject(projectId: number): Promise<void> {
-  if (!isTauri()) return;
-
-  try {
-    await invoke('remove_project', { projectId });
-    await refreshRecentProjects();
-  } catch (e) {
-    console.error('Failed to remove project:', e);
-    throw e;
-  }
-}
+export const searchResults = derived(projectStore, (s) => s.searchResults);
+export const isSearching = derived(projectStore, (s) => s.isSearching);
 
 export async function textSearch(
   query: string,
@@ -153,7 +62,7 @@ export async function textSearch(
   const state = get(projectStore);
   if (!state.currentPath || !query.trim()) return [];
 
-  projectStore.update(s => ({ ...s, isSearching: true, searchQuery: query }));
+  projectStore.update((s) => ({ ...s, isSearching: true, searchQuery: query }));
 
   try {
     const results = await invoke<SearchResult[]>('text_search', {
@@ -165,7 +74,7 @@ export async function textSearch(
       maxResults: options.maxResults ?? 1000,
     });
 
-    projectStore.update(s => ({
+    projectStore.update((s) => ({
       ...s,
       searchResults: results,
       isSearching: false,
@@ -173,7 +82,7 @@ export async function textSearch(
 
     return results;
   } catch (e) {
-    projectStore.update(s => ({ ...s, isSearching: false }));
+    projectStore.update((s) => ({ ...s, isSearching: false }));
     console.error('Search failed:', e);
     return [];
   }
@@ -239,40 +148,10 @@ export async function readFile(path: string): Promise<string> {
   }
 }
 
-export async function getCurrentProject(): Promise<string | null> {
-  if (!isTauri()) return null;
-
-  try {
-    return await invoke<string | null>('get_current_project');
-  } catch (e) {
-    console.error('Failed to get current project:', e);
-    return null;
-  }
-}
-
 export function clearSearch(): void {
-  projectStore.update(s => ({
+  projectStore.update((s) => ({
     ...s,
     searchResults: [],
     searchQuery: '',
   }));
-}
-
-export async function initializeProjectStore(): Promise<void> {
-  await refreshRecentProjects();
-
-  // Check if there's an existing current project
-  const currentPath = await getCurrentProject();
-  if (currentPath) {
-    try {
-      const tree = await invoke<FileNode>('get_file_tree', { path: currentPath, depth: 3 });
-      projectStore.update(s => ({
-        ...s,
-        currentPath,
-        fileTree: tree,
-      }));
-    } catch (e) {
-      console.error('Failed to restore project:', e);
-    }
-  }
 }

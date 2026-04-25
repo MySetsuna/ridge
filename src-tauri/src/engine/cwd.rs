@@ -11,8 +11,11 @@ use std::path::PathBuf;
 
 const OSC7_PREFIX: &[u8] = b"\x1b]7;";
 
-/// Searches for `needle` (a byte slice) inside `haystack` using a simple linear scan.
-/// Returns the byte offset of the first match, or `None` if not found.
+// Byte-level search helpers. `find_subsequence` / `find_byte` /
+// `find_byte_either_with_value` are kept around for future OSC parsers that
+// don't fit the existing `find_last_*` patterns. Marked dead_code to match
+// reality without deleting still-tested ergonomic wrappers.
+#[allow(dead_code)]
 fn find_subsequence(needle: &[u8], haystack: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
@@ -25,18 +28,17 @@ fn find_subsequence(needle: &[u8], haystack: &[u8]) -> Option<usize> {
     None
 }
 
-/// Returns the byte offset of the first occurrence of `byte` in `haystack`, or `None`.
+#[allow(dead_code)]
 fn find_byte(byte: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().position(|&b| b == byte)
 }
 
 /// Searches for the first occurrence of either `a` or `b` in `haystack`.
-/// Returns the relative offset, or `None` if neither byte is found.
 fn find_byte_either(a: u8, b: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().position(|&c| c == a || c == b)
 }
 
-/// Returns both the position and which byte was found.
+#[allow(dead_code)]
 fn find_byte_either_with_value(a: u8, b: u8, haystack: &[u8]) -> Option<(usize, u8)> {
     haystack.iter().position(|&c| c == a || c == b).map(|i| (i, haystack[i]))
 }
@@ -67,22 +69,6 @@ fn find_last_subsequence(needle: &[u8], haystack: &[u8]) -> Option<usize> {
 /// Finds the last occurrence of `byte` in `haystack` scanning from the end.
 fn find_last_byte(byte: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().rposition(|&b| b == byte)
-}
-
-/// Finds the last occurrence of `target` scanning backward, skipping any occurrence
-/// that is immediately preceded by the ESC byte (0x1B). This is used to find the
-/// last `\x1b\\` terminator in 7-bit-safe OSC 7 without matching a `\` that is
-/// part of the escape sequence itself.
-fn find_last_non_escaped_byte(target: u8, haystack: &[u8]) -> Option<usize> {
-    for i in (0..haystack.len()).rev() {
-        if haystack[i] == target {
-            // The first byte of haystack can never be preceded by ESC.
-            if i == 0 || haystack[i - 1] != 0x1B {
-                return Some(i);
-            }
-        }
-    }
-    None
 }
 
 /// Finds the position of the OSC 7 terminator in `after_prefix` (bytes after `\x1b]7;`).
@@ -129,8 +115,10 @@ fn find_last_osc7_terminator(after_prefix: &[u8]) -> Option<usize> {
 /// * `output` - A UTF-8 string chunk from the PTY (may contain partial escape sequences)
 ///
 /// # Examples
-/// ```
-/// use wind::engine::cwd::parse_cwd_from_output;
+/// ```ignore
+/// // `engine` is a crate-private module; doctest marked `ignore` and behaviour
+/// // is exercised by the unit-test module at the bottom of this file.
+/// use wind_lib::engine::cwd::parse_cwd_from_output;
 /// assert_eq!(
 ///     parse_cwd_from_output("\x1b]7;file://host/home/alice/projects\x07"),
 ///     Some(std::path::PathBuf::from("/home/alice/projects"))
@@ -145,17 +133,13 @@ pub fn parse_cwd_from_output(output: &str) -> Option<PathBuf> {
     // Everything after the prefix
     let after_prefix = &bytes[last_start + OSC7_PREFIX.len()..];
 
-    // Find the last terminator scanning from the END.
-    // For the 7-bit safe variant (\x1b\\) the ESC (0x1B) appears BEFORE the backslash (0x5C).
-    // Searching from the end ensures we hit the actual terminator backslash first.
-    // If BEL (0x07) exists, it is always the sole terminator for the 8-bit variant.
-    // We must skip any `\` that is preceded by ESC (i.e., part of `\x1b\\` sequence).
-    let term_pos = if let Some(pos) = find_last_byte(0x07, after_prefix) {
-        pos
-    } else {
-        // Scan backwards for the first `\` that is NOT preceded by ESC
-        find_last_non_escaped_byte(b'\\', after_prefix)?
-    };
+    // Find the last terminator. `find_last_osc7_terminator` handles both the
+    // 8-bit BEL variant (returns the BEL position) and the 7-bit `\x1b\\`
+    // variant (returns the ESC position — the byte just after the path).
+    // Previously this called `find_last_non_escaped_byte(b'\\', …)` which
+    // looks for a `\` NOT preceded by ESC — exactly wrong for the 7-bit
+    // terminator where the `\` IS preceded by ESC, causing None returns.
+    let term_pos = find_last_osc7_terminator(after_prefix)?;
 
     // Path bytes: everything between prefix and terminator.
     // For ESC \ terminator the ESC itself is NOT part of the path (we stop at \).

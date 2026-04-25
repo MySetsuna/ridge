@@ -3,11 +3,15 @@ import { onMount, onDestroy } from 'svelte';
 import { Terminal, type IDisposable } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { Unicode11Addon } from 'xterm-addon-unicode11';
+import { WebLinksAddon } from 'xterm-addon-web-links';
+import { SearchAddon } from 'xterm-addon-search';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, saveCurrentWorkspace, terminalTitles, paneForegroundProcessStore, setPaneCwd, getPaneCwd } from '$lib/stores/paneTree';
+import { showContextMenu } from '$lib/stores/contextMenu';
+import { termFontSize } from '$lib/stores/termSettings';
 import 'xterm/css/xterm.css';
 
 interface DiffFile {
@@ -106,6 +110,28 @@ let foregroundPollInterval: ReturnType<typeof setInterval> | undefined;
 
 /** Saved helper-textarea inline style (left/top) for IME pinning. */
 let pinnedImeTextareaStyle: { left: string; top: string; transform: string } | undefined;
+
+// ── Terminal in-pane search (Ctrl+F) ────────────────────────────────────────
+let searchAddon: SearchAddon | null = null;
+/** Whether the terminal search bar is currently shown. */
+let termSearchOpen = $state(false);
+let termSearchQuery = $state('');
+let termSearchCase = $state(false);
+/** Bound to the search <input> so we can focus it when opening. */
+let searchInputEl: HTMLInputElement | undefined = $state(undefined);
+
+/** Re-run search whenever the query or case-sensitivity changes. */
+$effect(() => {
+  if (!searchAddon || !termSearchOpen) return;
+  searchAddon.findNext(termSearchQuery, { caseSensitive: termSearchCase, incremental: true });
+});
+/** Auto-focus the search input when the bar opens. */
+$effect(() => {
+  if (termSearchOpen && searchInputEl) {
+    // tick not available in this scope; a microtask delay is enough.
+    void Promise.resolve().then(() => searchInputEl?.focus());
+  }
+});
 
 // Keep xterm's focus state in sync with activePaneId so non-active panes actually
 // unfocus — this lets `cursorInactiveStyle: 'none'` hide the cursor and prevents
@@ -241,10 +267,14 @@ async function renderView() {
 	if (!viewInner) return;
 
 	if (mode === 'terminal') {
+		// Read the persisted font size from the shared store's current value.
+		let currentFontSize = 15;
+		const unsub = termFontSize.subscribe((s) => { currentFontSize = s; });
+		unsub(); // single read; reactivity wired below via $effect
+
 		term = new Terminal({
 			allowProposedApi: true,
-			rescaleOverlappingEmoji: true,
-			fontSize: 15,
+			fontSize: currentFontSize,
 			lineHeight: 1,
 			letterSpacing: 0,
 			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
@@ -284,7 +314,26 @@ async function renderView() {
 	const unicodeAddon = new Unicode11Addon();
 	term.loadAddon(unicodeAddon);
 	term.unicode.activeVersion = '11';
+		// Clickable web links: Ctrl+click opens the URL in the system browser.
+		const webLinksAddon = new WebLinksAddon(async (_event, uri) => {
+			if (!isTauri()) { window.open(uri, '_blank', 'noopener,noreferrer'); return; }
+			const { openUrl } = await import('@tauri-apps/plugin-opener');
+			await openUrl(uri).catch((err: unknown) => console.warn('[term] openUrl failed', uri, err));
+		});
+		term.loadAddon(webLinksAddon);
+		// In-pane search: Ctrl+F opens the search bar, highlights matches.
+		searchAddon = new SearchAddon();
+		term.loadAddon(searchAddon);
 		term.open(viewInner);
+
+		// Keep font size in sync with the global termFontSize store across all pane instances.
+		const unsubFontSize = termFontSize.subscribe((size) => {
+			if (!term) return;
+			term.options.fontSize = size;
+			fitAddon?.fit();
+		});
+		// Tear down the subscription when this pane is destroyed.
+		onDestroy(() => unsubFontSize());
 
 		// 快捷键：Ctrl+C 复制（有选区时）/ 透传 SIGINT（无选区）；Ctrl+V 粘贴；
 		// Shift+Enter 插入换行但不提交（发送 Alt+Enter 转义序列 ESC+CR）。
@@ -339,6 +388,30 @@ async function renderView() {
 						console.error('write_to_pty ctrl+backspace', err);
 					});
 				}
+				ev.preventDefault();
+				return false;
+			}
+			// Ctrl+F — open in-pane search bar
+			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'f' || ev.key === 'F')) {
+				termSearchOpen = true;
+				ev.preventDefault();
+				return false;
+			}
+			// Ctrl+= / Ctrl+Shift+= (Ctrl++) — increase terminal font size
+			if (mod && !ev.altKey && (ev.key === '=' || ev.key === '+')) {
+				termFontSize.increase();
+				ev.preventDefault();
+				return false;
+			}
+			// Ctrl+- — decrease terminal font size
+			if (mod && !ev.shiftKey && !ev.altKey && ev.key === '-') {
+				termFontSize.decrease();
+				ev.preventDefault();
+				return false;
+			}
+			// Ctrl+0 — reset terminal font size
+			if (mod && !ev.shiftKey && !ev.altKey && ev.key === '0') {
+				termFontSize.reset();
 				ev.preventDefault();
 				return false;
 			}
@@ -467,6 +540,16 @@ async function renderView() {
 			// Buffer incoming events until scrollback is replayed, preserving order
 			const pendingQueue: string[] = [];
 			let scrollbackFlushed = false;
+			// Phase-2 scrollback replay bookkeeping. `start_seq` is the byte
+			// offset of the first replayed byte (so calling `_before(start_seq, …)`
+			// pages further into history). `at_oldest` means we already pulled
+			// the very oldest retained bytes — no point in paging further.
+			let scrollbackStartSeq = 0;
+			let scrollbackAtOldest = false;
+			// Referenced only so the compiler tracks them — phase-3 scroll
+			// handler will consume these fields. See docs/TERMINAL_SCROLLBACK.md.
+			void scrollbackStartSeq;
+			void scrollbackAtOldest;
 			ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
 				if (!alive) return;
 				if (scrollbackFlushed) {
@@ -481,14 +564,32 @@ async function renderView() {
 				ptyUnlisten = undefined;
 				return;
 			}
-			// Replay scrollback before any new output so history is preserved
+			// Replay scrollback before any new output so history is preserved.
+			// Phase 2 of the block-scrollback migration (docs/TERMINAL_SCROLLBACK.md):
+			// use the paged tail API with a 256 KiB budget instead of the deprecated
+			// `get_pane_scrollback` shim that returned the full 4 MiB retention cap.
+			// The saved `start_seq` is the handle future code (phase 3) will pass to
+			// `get_pane_scrollback_before` when the user scrolls past xterm's own
+			// in-memory buffer.
 			try {
-				const scrollback = await invoke<string>('get_pane_scrollback', { paneId });
-				if (alive && term && scrollback) {
-					term.write(scrollback);
+				const chunk = await invoke<{
+					bytes: string;
+					start_seq: number;
+					at_oldest: boolean;
+				}>('get_pane_scrollback_tail', { paneId, maxBytes: 256 * 1024 });
+				if (alive && term && chunk.bytes) {
+					term.write(chunk.bytes);
+					scrollbackStartSeq = chunk.start_seq;
+					scrollbackAtOldest = chunk.at_oldest;
 				}
 			} catch {
-				// scrollback unavailable, continue without it
+				// Older backend / not in Tauri: fall back to the legacy shim.
+				try {
+					const scrollback = await invoke<string>('get_pane_scrollback', { paneId });
+					if (alive && term && scrollback) term.write(scrollback);
+				} catch {
+					/* scrollback unavailable, continue without it */
+				}
 			}
 			// Flush buffered events in order
 			scrollbackFlushed = true;
@@ -638,6 +739,27 @@ onMount(() => {
 	}
 });
 
+/** Right-click context menu for the terminal surface. */
+function onTerminalContextMenu(e: MouseEvent): void {
+	if (mode !== 'terminal' || !term) return;
+	e.preventDefault();
+	const selection = term.getSelection();
+	showContextMenu(e.clientX, e.clientY, [
+		...(selection
+			? [{ id: 'term-copy', label: '复制', action: () => { void writeText(selection); } }]
+			: []),
+		{ id: 'term-paste', label: '粘贴', action: () => {
+			void readText().then((text) => { if (text && term) term.paste(text); });
+		}},
+		{ id: 'term-sep1', divider: true },
+		{ id: 'term-select-all', label: '全选', action: () => { term?.selectAll(); } },
+		{ id: 'term-clear', label: '清空', action: () => {
+			term?.clear();
+			if (isTauri()) void invoke('write_to_pty', { paneId, data: '\x0c' }).catch(() => {});
+		}},
+	], 'terminal', paneId, workspaceId);
+}
+
 onDestroy(() => {
 	alive = false;
 	terminalTitles.update((t) => { const copy = { ...t }; delete copy[paneId]; return copy; });
@@ -691,13 +813,57 @@ onDestroy(() => {
 	<div class="flex-1 min-h-0 min-w-0 relative overflow-hidden">
 		<div
 			bind:this={container}
+			role="application"
+			aria-label="终端"
 			class=" p-3 wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)] overflow-hidden"
 			tabindex="-1"
+			oncontextmenu={onTerminalContextMenu}
 		>
 			<div
 				bind:this={viewInner}
 				class="min-h-0 min-w-0 flex-1"
 			></div>
+			<!-- In-pane search bar (Ctrl+F) -->
+			{#if termSearchOpen && mode === 'terminal'}
+				<div class="absolute top-1 right-2 z-[150] flex items-center gap-1 bg-[var(--wf-surface-2)] border border-[var(--wf-border)] rounded-lg shadow-xl px-2 py-1">
+					<input
+						bind:this={searchInputEl}
+						type="text"
+						bind:value={termSearchQuery}
+						onkeydown={(e) => {
+							if (e.key === 'Escape') { termSearchOpen = false; termSearchQuery = ''; term?.focus(); }
+							else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); searchAddon?.findNext(termSearchQuery, { caseSensitive: termSearchCase }); }
+							else if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); searchAddon?.findPrevious(termSearchQuery, { caseSensitive: termSearchCase }); }
+						}}
+						placeholder="在终端中搜索"
+						class="w-44 bg-transparent border-none outline-none text-[11px] text-[var(--wf-fg)] placeholder:text-[var(--wf-fg-muted)]"
+					/>
+					<button
+						type="button"
+						title="大小写敏感"
+						class="px-1 rounded text-[10px] font-mono transition-colors {termSearchCase ? 'text-[var(--wf-accent)] bg-[var(--wf-accent)]/10' : 'text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]'}"
+						onclick={() => { termSearchCase = !termSearchCase; }}
+					>Aa</button>
+					<button
+						type="button"
+						title="上一个 (Shift+Enter)"
+						class="px-1 text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors text-[11px]"
+						onclick={() => searchAddon?.findPrevious(termSearchQuery, { caseSensitive: termSearchCase })}
+					>↑</button>
+					<button
+						type="button"
+						title="下一个 (Enter)"
+						class="px-1 text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors text-[11px]"
+						onclick={() => searchAddon?.findNext(termSearchQuery, { caseSensitive: termSearchCase })}
+					>↓</button>
+					<button
+						type="button"
+						title="关闭 (Esc)"
+						class="px-1 text-[var(--wf-fg-muted)] hover:text-red-400 transition-colors text-[11px]"
+						onclick={() => { termSearchOpen = false; termSearchQuery = ''; term?.focus(); }}
+					>×</button>
+				</div>
+			{/if}
 			<!-- 滚动到底部按钮 -->
 			{#if showScrollBottom && mode === 'terminal'}
 				<button

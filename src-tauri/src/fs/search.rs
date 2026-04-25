@@ -1,9 +1,10 @@
+use glob::Pattern;
+use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::path::Path;
 
 use super::tree::FileTree;
 
@@ -17,6 +18,22 @@ pub struct SearchResult {
     pub match_text: Option<String>,
 }
 
+/// Carries one bad glob pattern back to the frontend. When `text_search`
+/// returns these alongside the regular results the UI can decorate the
+/// offending input field (red ring + tooltip) the way VS Code does for
+/// invalid `files.exclude` entries — instead of the previous silent-drop
+/// behaviour where a `[unclosed` typo just made the whole filter pretend
+/// nothing matched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvalidGlob {
+    /// The raw pattern the user typed.
+    pub pattern: String,
+    /// Best-effort error message from `glob::Pattern::new`.
+    pub error: String,
+    /// `"include"` or `"exclude"` — lets the UI surface the right field.
+    pub field: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchOptions {
     pub case_sensitive: bool,
@@ -24,6 +41,15 @@ pub struct SearchOptions {
     pub whole_word: bool,
     pub include_hidden: bool,
     pub max_results: usize,
+    /// Optional include globs (e.g. `**/*.ts`). When non-empty, only files
+    /// whose absolute path matches at least one pattern are searched. Empty
+    /// means "no include filter" (matches everything).
+    #[serde(default)]
+    pub include_globs: Vec<String>,
+    /// Optional exclude globs (e.g. `**/dist/**`). Files matching any pattern
+    /// are skipped before any IO is performed. Applied after `include_globs`.
+    #[serde(default)]
+    pub exclude_globs: Vec<String>,
 }
 
 impl Default for SearchOptions {
@@ -34,6 +60,8 @@ impl Default for SearchOptions {
             whole_word: false,
             include_hidden: false,
             max_results: 1000,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
         }
     }
 }
@@ -41,32 +69,98 @@ impl Default for SearchOptions {
 pub struct SearchEngine;
 
 impl SearchEngine {
-    /// Search for text in all files under a root directory
+    /// Search for text in all files under a root directory.
+    ///
+    /// Bad include / exclude globs no longer get silently dropped — they're
+    /// collected and returned via the new `search_text_with_globs` variant.
+    /// The legacy entry point keeps "drop bad globs, return only matches"
+    /// behaviour for backwards compat.
     pub fn search_text(root: &Path, query: &str, options: &SearchOptions) -> Vec<SearchResult> {
-        let mut results = Vec::new();
-        let pattern = Self::build_pattern(query, options);
+        let (results, _bad) = Self::search_text_with_globs(root, query, options);
+        results
+    }
 
-        if pattern.is_err() {
-            return results;
+    /// Variant that also reports invalid include / exclude globs so the
+    /// frontend can decorate the input. Bad globs are still dropped from
+    /// the active filter (a typo shouldn't error out the whole search and
+    /// strand the user with no results), but their existence is signalled.
+    pub fn search_text_with_globs(
+        root: &Path,
+        query: &str,
+        options: &SearchOptions,
+    ) -> (Vec<SearchResult>, Vec<InvalidGlob>) {
+        let mut results = Vec::new();
+        let mut bad_globs: Vec<InvalidGlob> = Vec::new();
+        let pattern = match Self::build_pattern(query, options) {
+            Ok(p) => p,
+            Err(_) => return (results, bad_globs),
+        };
+
+        // Compile include / exclude globs once. Bad patterns get dropped
+        // from the active filter (so a typo doesn't strand the user with
+        // zero results) but are collected for caller surfacing.
+        let mut includes: Vec<Pattern> = Vec::with_capacity(options.include_globs.len());
+        for s in &options.include_globs {
+            match Pattern::new(s) {
+                Ok(p) => includes.push(p),
+                Err(e) => bad_globs.push(InvalidGlob {
+                    pattern: s.clone(),
+                    error: e.to_string(),
+                    field: "include".to_string(),
+                }),
+            }
+        }
+        let mut excludes: Vec<Pattern> = Vec::with_capacity(options.exclude_globs.len());
+        for s in &options.exclude_globs {
+            match Pattern::new(s) {
+                Ok(p) => excludes.push(p),
+                Err(e) => bad_globs.push(InvalidGlob {
+                    pattern: s.clone(),
+                    error: e.to_string(),
+                    field: "exclude".to_string(),
+                }),
+            }
         }
 
-        let pattern = pattern.unwrap();
-
-        // Walk directory
-        for entry in WalkDir::new(root)
+        // Walk directory — respects .gitignore, .git/info/exclude, and .ignore files
+        // via the `ignore` crate (same engine as ripgrep). FileTree::should_ignore
+        // is kept as a belt-and-suspenders fallback for the static SKIP_DIRS list.
+        for entry in WalkBuilder::new(root)
             .follow_links(false)
-            .into_iter()
+            .hidden(!options.include_hidden) // hidden(true) = skip dot-files
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .ignore(true)
+            .require_git(false)
+            .build()
             .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
         {
             let path = entry.path();
 
-            // Skip directories
-            if path.is_dir() {
+            // Belt-and-suspenders: static SKIP_DIRS list (node_modules, target, etc.)
+            if FileTree::should_ignore(path) {
                 continue;
             }
 
-            // Skip ignored files
-            if FileTree::should_ignore(path) {
+            // Apply include/exclude globs against the absolute path string.
+            // matches_path uses the OS separator on Windows; we also match
+            // against a forward-slash-normalised version so users can write
+            // `src/**/*.ts` cross-platform.
+            let path_str = path.to_string_lossy();
+            let path_fwd = path_str.replace('\\', "/");
+            if !includes.is_empty()
+                && !includes
+                    .iter()
+                    .any(|g| g.matches(&path_str) || g.matches(&path_fwd))
+            {
+                continue;
+            }
+            if excludes
+                .iter()
+                .any(|g| g.matches(&path_str) || g.matches(&path_fwd))
+            {
                 continue;
             }
 
@@ -88,14 +182,14 @@ impl SearchEngine {
                         });
 
                         if results.len() >= options.max_results {
-                            return results;
+                            return (results, bad_globs);
                         }
                     }
                 }
             }
         }
 
-        results
+        (results, bad_globs)
     }
 
     /// Search for filenames matching a pattern
@@ -103,10 +197,16 @@ impl SearchEngine {
         let mut matches = Vec::new();
         let pattern_lower = pattern.to_lowercase();
 
-        for entry in WalkDir::new(root)
+        for entry in WalkBuilder::new(root)
             .follow_links(false)
-            .max_depth(10) // Limit depth for performance
-            .into_iter()
+            .hidden(true) // skip dot-files/dirs
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .ignore(true)
+            .require_git(false)
+            .max_depth(Some(10)) // Limit depth for performance
+            .build()
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
@@ -152,7 +252,7 @@ impl SearchEngine {
 
     /// Replace text in files
     pub fn replace_in_files(
-        root: &Path,
+        _root: &Path,
         search: &str,
         replace: &str,
         files: &[String],

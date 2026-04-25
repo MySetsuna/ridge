@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rusqlite::{Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -12,6 +12,8 @@ pub struct Project {
     pub updated_at: String,
 }
 
+// Schema row companion to `RecentFileInfo` — see project.rs for context.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentFile {
     pub id: i64,
@@ -122,6 +124,7 @@ impl ProjectStore {
         Ok(())
     }
 
+    #[allow(dead_code)] // legacy ProjectSidebar persistence; kept for schema compatibility
     pub fn add_recent_file(&self, project_id: i64, path: &str) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -149,6 +152,7 @@ impl ProjectStore {
         Ok(())
     }
 
+    #[allow(dead_code)] // legacy ProjectSidebar persistence; kept for schema compatibility
     pub fn get_recent_files(&self, project_id: i64, limit: usize) -> SqliteResult<Vec<RecentFile>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

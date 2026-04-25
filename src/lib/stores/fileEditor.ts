@@ -41,6 +41,19 @@ export interface FloatingRect {
   h: number;
 }
 
+/**
+ * Jump target for the Monaco editor. Set by callers (e.g. the Search sidebar
+ * clicking a match) and consumed by FileEditor.svelte after it mounts the
+ * matching model. Keyed by path — one pending jump per file, latest wins.
+ */
+export interface PendingReveal {
+  path: string;
+  /** 1-based Monaco line number. */
+  line: number;
+  /** 1-based column. Defaults to 1 when the caller doesn't care. */
+  column: number;
+}
+
 export interface FileEditorState {
   openFiles: OpenFile[];
   activePath: string | null;
@@ -50,6 +63,13 @@ export interface FileEditorState {
   drawerWidth: number;
   /** Floating window rect. Persisted. */
   floatingRect: FloatingRect;
+  /**
+   * Single-shot reveal request. `FileEditor.svelte` reads this after a model
+   * swap / selection change and nulls it out via `consumePendingReveal`.
+   * Always one-shot: preservation across tab switches would compete with the
+   * user's manual cursor movement.
+   */
+  pendingReveal: PendingReveal | null;
 }
 
 const LS_KEY = 'wind-file-editor-prefs';
@@ -106,9 +126,10 @@ const initial: FileEditorState = {
   isVisible: false,
   drawerWidth: typeof prefs.drawerWidth === 'number' ? prefs.drawerWidth : 520,
   floatingRect: (prefs.floatingRect as FloatingRect) ?? defaultFloatingRect(),
+  pendingReveal: null,
 };
 
-function langFromPath(path: string): string {
+export function langFromPath(path: string): string {
   const lower = path.toLowerCase();
   const ext = lower.split(/[.\\/]/).pop() || '';
   const map: Record<string, string> = {
@@ -179,12 +200,30 @@ function createStore() {
   return {
     subscribe,
 
-    /** Open a file (or activate its existing tab). Auto-shows the editor. */
-    async openFile(path: string): Promise<void> {
+    /**
+     * Open a file (or activate its existing tab). Auto-shows the editor.
+     *
+     * `opts.line` / `opts.column` (both 1-based) stash a one-shot reveal
+     * request which `FileEditor.svelte` consumes after the Monaco model is
+     * swapped in. Subsequent manual cursor moves stay where the user put them.
+     */
+    async openFile(
+      path: string,
+      opts?: { line?: number; column?: number }
+    ): Promise<void> {
+      const reveal: PendingReveal | null =
+        opts?.line && opts.line > 0
+          ? { path, line: opts.line, column: Math.max(1, opts.column ?? 1) }
+          : null;
       const state = get({ subscribe });
       const existing = state.openFiles.find((f) => f.path === path);
       if (existing) {
-        update((s) => ({ ...s, activePath: path, isVisible: true }));
+        update((s) => ({
+          ...s,
+          activePath: path,
+          isVisible: true,
+          pendingReveal: reveal ?? s.pendingReveal,
+        }));
         return;
       }
 
@@ -227,7 +266,21 @@ function createStore() {
         openFiles: [...s.openFiles, file],
         activePath: path,
         isVisible: true,
+        pendingReveal: reveal ?? s.pendingReveal,
       }));
+    },
+
+    /**
+     * Read + clear the one-shot reveal target for `path`. Returns null if no
+     * reveal is queued or if it's for a different path (callers should only
+     * consume after they've finished mounting the matching Monaco model).
+     */
+    consumePendingReveal(path: string): PendingReveal | null {
+      const state = get({ subscribe });
+      const r = state.pendingReveal;
+      if (!r || r.path !== path) return null;
+      update((s) => ({ ...s, pendingReveal: null }));
+      return r;
     },
 
     /** Switch to a tab. No-op if unknown. */

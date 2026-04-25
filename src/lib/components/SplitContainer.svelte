@@ -4,6 +4,16 @@
   import Pane from './Pane.svelte';
   import SplitLayout from './SplitContainer.svelte';
   import { Splitpanes, Pane as SPane } from 'svelte-splitpanes';
+  import { isTauri } from '@tauri-apps/api/core';
+  import { Bot, History } from 'lucide-svelte';
+  import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
+  import { alertDialog } from './WindDialog.svelte';
+  import { openScrollbackHistory } from './ScrollbackHistoryModal.svelte';
+  import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
+  import PaneGitPill from './PaneGitPill.svelte';
+  import PaneDiffPill from './PaneDiffPill.svelte';
+  import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
+  import { settingsStore } from '$lib/stores/settings';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -45,6 +55,15 @@
     splitPath?: number[];
   }
   let { node, workspaceId, splitPath = [] }: Props = $props();
+
+  // Feed per-pane git status tracking on every cwd change. Runs only when
+  // this SplitContainer frame holds a leaf; for `split` frames the children
+  // recursion handles their own leaves.
+  $effect(() => {
+    if (node.type !== 'leaf') return;
+    const cwd = $paneCwdStore[`${workspaceId}:${node.id}`] ?? '';
+    trackPaneGitStatus(node.id, cwd || null);
+  });
   let splitHost: HTMLElement | undefined;
   let dragMoveUnlisten: (() => void) | undefined;
   let dragUpUnlisten: (() => void) | undefined;
@@ -73,7 +92,7 @@
       await closePaneApi(id);
     } catch (e) {
       console.error(e);
-      alert(e instanceof Error ? e.message : String(e));
+      await alertDialog({ title: '操作失败', message: e instanceof Error ? e.message : String(e), danger: true });
     }
   }
 
@@ -430,7 +449,7 @@
       await dockPane(src, targetId, region);
     } catch (err) {
       console.error(err);
-      alert(err instanceof Error ? err.message : String(err));
+      await alertDialog({ title: '操作失败', message: err instanceof Error ? err.message : String(err), danger: true });
     }
   }
 </script>
@@ -494,7 +513,7 @@
             ></div>
           {/if}
           <header
-            class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md z-10"
+            class="wf-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md z-10"
           >
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 -my-1 select-none"
@@ -517,9 +536,36 @@
                 {@const proc = $paneForegroundProcessStore[node.id]}
                 {@const rawCwd = $paneCwdStore[`${workspaceId}:${node.id}`]}
                 {@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
+                {@const agentState = node.type === 'leaf' ? node.agent_state : undefined}
+                {@const agentId = node.type === 'leaf' ? node.agent_id : undefined}
                 <span
                   class="flex items-center gap-1.5 text-[11px] font-mono tracking-wide truncate"
                 >
+                  {#if agentState === 'busy'}
+                    <!-- Running teammate agent — green dot + label + agent_id.
+                         Always the first glyph so orchestrators see it at a glance. -->
+                    <span
+                      class="flex items-center gap-1 shrink-0 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/40 px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider"
+                      title={agentId ? `Claude Code agent 运行中：${agentId}` : 'teammate agent 运行中'}
+                    >
+                      <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      AGENT
+                    </span>
+                    {#if agentId}
+                      <span class="text-emerald-300/80 truncate max-w-[120px]" title={agentId}>
+                        {agentId}
+                      </span>
+                      <span class="text-[var(--wf-title-sep)] select-none">·</span>
+                    {/if}
+                  {:else if agentState === 'starting'}
+                    <span
+                      class="flex items-center gap-1 shrink-0 rounded-full bg-amber-500/15 text-amber-300 border border-amber-400/40 px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider"
+                      title="teammate pane 启动中"
+                    >
+                      <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                      STARTING
+                    </span>
+                  {/if}
                   {#if proc}
                     <span class="text-[var(--wf-title-proc)] font-semibold truncate">{proc}</span>
                   {/if}
@@ -538,6 +584,56 @@
                 </span>
               {/if}
             </div>
+            {#if node.type === 'leaf'}
+              {@const leafAgentState = node.agent_state}
+              <!-- Repo switcher (renders only when cwd hosts >1 git repo);
+                   then Branch pill (picker + ahead/behind + upstream warn);
+                   then Diff pill (working-tree changed-file count + +N -N).
+                   Splitting branch + diff mirrors VS Code's status bar; the
+                   switcher in front lets the user pick which repo's data
+                   the pair reflects when the cwd hosts multiple repos
+                   (round-40 cwd-down semantics). -->
+              <PaneRepoSwitcher paneId={node.id} />
+              <PaneGitPill paneId={node.id} />
+              <PaneDiffPill paneId={node.id} />
+              <!-- "Run Claude Code here" button — seeds a teammate agent on this
+                   pane and kicks `claude` in the PTY. Busy panes hide the button
+                   so users don't stack agents; click again releases + relaunches
+                   only via the backend release_teammate_agent path.
+                   Hidden entirely when the Claude Code extension is disabled —
+                   the user gets a clean header without the Bot affordance. -->
+              {#if $settingsStore.claudeExtensionEnabled}
+              <button
+                type="button"
+                title={leafAgentState === 'busy'
+                  ? '此窗格已有 agent 运行'
+                  : '在此窗格启动 Claude Code agent（Shift-Click 直接启动）'}
+                disabled={leafAgentState === 'busy' || !isTauri()}
+                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 disabled:opacity-25 disabled:pointer-events-none"
+                onclick={(e) => {
+                  if (!isTauri()) return;
+                  // Shift / Alt-Click skips the prompt modal and launches bare
+                  // `claude` directly — matches the round-10 behaviour for
+                  // users who've already memorised the shortcut.
+                  openClaudeAgentLauncher(node.id, e.shiftKey || e.altKey);
+                }}
+              >
+                <Bot class="h-3.5 w-3.5" />
+              </button>
+              {/if}
+              <!-- History browser — read-only viewer for bytes that scrolled past
+                   xterm's own 8000-line buffer. Lives in a modal because the
+                   pane header is already busy with branch / agent affordances. -->
+              <button
+                type="button"
+                title="查看终端历史记录（包含已滚出 xterm 视窗的早期输出）"
+                disabled={!isTauri()}
+                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] transition-colors hover:bg-[var(--wf-accent)]/10 hover:text-[var(--wf-accent)] disabled:opacity-25 disabled:pointer-events-none"
+                onclick={() => openScrollbackHistory(node.id)}
+              >
+                <History class="h-3.5 w-3.5" />
+              </button>
+            {/if}
             <button
               type="button"
               title={leafCount <= 1 ? '至少保留一个窗格' : '关闭此窗格'}

@@ -1,4 +1,3 @@
-use crate::db::ProjectStore;
 use crate::fs::{FileTree, FileNode, SearchEngine, SearchResult, ReplaceStats, SearchOptions};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -14,6 +13,10 @@ pub struct ProjectInfo {
     pub updated_at: String,
 }
 
+// Legacy type for "recent files within a project". The UI was removed in
+// round 9 alongside ProjectSidebar; the type is kept for the persistence
+// schema in `db/projects.rs` so existing user databases continue to round-trip.
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RecentFileInfo {
     pub path: String,
@@ -151,6 +154,8 @@ pub fn text_search(
     use_regex: Option<bool>,
     whole_word: Option<bool>,
     max_results: Option<usize>,
+    include_globs: Option<Vec<String>>,
+    exclude_globs: Option<Vec<String>>,
 ) -> Result<Vec<SearchResult>, String> {
     let root_path = PathBuf::from(&root);
     if !root_path.exists() {
@@ -163,9 +168,45 @@ pub fn text_search(
         whole_word: whole_word.unwrap_or(false),
         include_hidden: false,
         max_results: max_results.unwrap_or(1000),
+        include_globs: include_globs.unwrap_or_default(),
+        exclude_globs: exclude_globs.unwrap_or_default(),
     };
 
     Ok(SearchEngine::search_text(&root_path, &query, &options))
+}
+
+/// Companion command returning ONLY the bad globs from the same options.
+/// Frontend calls this once per search to decorate the include/exclude
+/// inputs without re-running the whole walk: parse-only is microsecond-
+/// cheap. Kept separate from `text_search` so the existing IPC contract
+/// (Vec<SearchResult>) stays stable for any third-party caller.
+#[tauri::command]
+pub fn text_search_diagnostics(
+    include_globs: Option<Vec<String>>,
+    exclude_globs: Option<Vec<String>>,
+) -> Vec<crate::fs::search::InvalidGlob> {
+    use crate::fs::search::InvalidGlob;
+    use glob::Pattern;
+    let mut bad: Vec<InvalidGlob> = Vec::new();
+    for s in include_globs.unwrap_or_default() {
+        if let Err(e) = Pattern::new(&s) {
+            bad.push(InvalidGlob {
+                pattern: s,
+                error: e.to_string(),
+                field: "include".to_string(),
+            });
+        }
+    }
+    for s in exclude_globs.unwrap_or_default() {
+        if let Err(e) = Pattern::new(&s) {
+            bad.push(InvalidGlob {
+                pattern: s,
+                error: e.to_string(),
+                field: "exclude".to_string(),
+            });
+        }
+    }
+    bad
 }
 
 #[tauri::command]
@@ -198,6 +239,8 @@ pub fn replace_in_files(
         whole_word: false,
         include_hidden: false,
         max_results: usize::MAX,
+        include_globs: Vec::new(),
+        exclude_globs: Vec::new(),
     };
 
     SearchEngine::replace_in_files(&root_path, &search, &replace, &files, &options)
@@ -277,4 +320,394 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
 pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let project = state.current_project.read();
     Ok(project.as_ref().map(|p| p.to_string_lossy().to_string()))
+}
+
+// ─── Filesystem mutation commands (used by Explorer right-click actions) ─────
+//
+// Small wrappers over `std::fs`; kept deliberately narrow so the frontend
+// doesn't need the `fs` Tauri plugin (which would require capability review).
+// Each returns a plain `String` error so the JS side can `alert()` on failure.
+// All operations refuse to touch paths that do not already exist (create_*
+// commands instead refuse when the target *already* exists, to avoid silent
+// overwrite).
+
+/// Rename / move a file or directory. `to` may be in a different directory.
+#[tauri::command]
+pub fn rename_path(from: String, to: String) -> Result<(), String> {
+    let from_path = PathBuf::from(&from);
+    let to_path = PathBuf::from(&to);
+    if !from_path.exists() {
+        return Err(format!("路径不存在: {}", from));
+    }
+    if to_path.exists() {
+        return Err(format!("目标已存在: {}", to));
+    }
+    std::fs::rename(&from_path, &to_path).map_err(|e| format!("重命名失败: {}", e))?;
+    Ok(())
+}
+
+/// Delete a file or directory (recursively for directories).
+#[tauri::command]
+pub fn delete_path(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("路径不存在: {}", path));
+    }
+    let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| format!("删除目录失败: {}", e))?;
+    } else {
+        std::fs::remove_file(&target).map_err(|e| format!("删除文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Create an empty file at `path`. Fails if the file already exists.
+/// Creates missing parent directories.
+#[tauri::command]
+pub fn create_file(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if target.exists() {
+        return Err(format!("文件已存在: {}", path));
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    std::fs::write(&target, []).map_err(|e| format!("创建文件失败: {}", e))?;
+    Ok(())
+}
+
+/// Create a directory at `path`. Fails if it already exists.
+#[tauri::command]
+pub fn create_directory(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if target.exists() {
+        return Err(format!("目录已存在: {}", path));
+    }
+    std::fs::create_dir_all(&target).map_err(|e| format!("创建目录失败: {}", e))?;
+    Ok(())
+}
+
+/// Copy `from` → `to`. Supports files and directories; directories copy recursively.
+/// Refuses to overwrite unless `overwrite=true`. Preserves relative structure.
+#[tauri::command]
+pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
+    let from_path = PathBuf::from(&from);
+    let to_path = PathBuf::from(&to);
+    if !from_path.exists() {
+        return Err(format!("源路径不存在: {}", from));
+    }
+    let overwrite = overwrite.unwrap_or(false);
+    if to_path.exists() && !overwrite {
+        return Err(format!("目标已存在: {}", to));
+    }
+    if let Some(parent) = to_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    if meta.is_dir() {
+        // Recursive copy via walkdir. Mirror the tree relative to `from_path`.
+        std::fs::create_dir_all(&to_path).map_err(|e| format!("创建目标目录失败: {}", e))?;
+        for entry in walkdir::WalkDir::new(&from_path).min_depth(1) {
+            let entry = entry.map_err(|e| format!("遍历源目录失败: {}", e))?;
+            let rel = entry
+                .path()
+                .strip_prefix(&from_path)
+                .map_err(|e| format!("strip_prefix: {}", e))?;
+            let target = to_path.join(rel);
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target)
+                    .map_err(|e| format!("创建子目录失败 ({}): {}", target.display(), e))?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    if !parent.exists() {
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            format!("创建目标父目录失败 ({}): {}", parent.display(), e)
+                        })?;
+                    }
+                }
+                std::fs::copy(entry.path(), &target)
+                    .map_err(|e| format!("复制文件失败 ({}): {}", target.display(), e))?;
+            }
+        }
+    } else {
+        std::fs::copy(&from_path, &to_path).map_err(|e| format!("复制失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Move `from` → `to`. Falls back to copy + delete if `rename` fails across
+/// filesystems (common on Windows when spanning drive letters).
+#[tauri::command]
+pub fn move_path(from: String, to: String) -> Result<(), String> {
+    let from_path = PathBuf::from(&from);
+    let to_path = PathBuf::from(&to);
+    if !from_path.exists() {
+        return Err(format!("源路径不存在: {}", from));
+    }
+    if to_path.exists() {
+        return Err(format!("目标已存在: {}", to));
+    }
+    if let Some(parent) = to_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    if std::fs::rename(&from_path, &to_path).is_ok() {
+        return Ok(());
+    }
+    // Cross-device fallback.
+    copy_path(from.clone(), to.clone(), Some(false))?;
+    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
+    } else {
+        std::fs::remove_file(&from_path).map_err(|e| format!("删除源文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Open the OS file manager selecting `path` (Windows: `explorer /select,...`,
+/// macOS: `open -R`, Linux: fall back to opening the parent directory).
+#[tauri::command]
+pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("路径不存在: {}", path));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", target.display()))
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("打开 Finder 失败: {}", e))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = target.parent().unwrap_or(&target);
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("打开文件管理器失败: {}", e))?;
+    }
+    Ok(())
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Tests for the pure-filesystem commands. We avoid Tauri `#[tauri::command]`
+// surface by calling the underlying fn directly — their signatures are plain
+// `fn(String, ...) -> Result<(), String>` so this works.
+//
+// A lightweight TempDir RAII guard (no `tempfile` crate dep) creates a
+// per-test directory under `std::env::temp_dir()` and removes it on drop.
+// ═════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+            let pid = std::process::id();
+            let mut path = std::env::temp_dir();
+            path.push(format!("wind-test-{}-{}-{}", tag, pid, n));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            TempDir { path }
+        }
+        fn join(&self, rel: &str) -> PathBuf {
+            self.path.join(rel)
+        }
+        fn path_string(&self, rel: &str) -> String {
+            self.join(rel).to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    // ── create_file / create_directory ──────────────────────────────────────
+    #[test]
+    fn create_file_creates_parent_then_empty_file() {
+        let td = TempDir::new("mkf");
+        let target = td.path_string("a/b/c.txt");
+        create_file(target.clone()).expect("create_file");
+        let content = std::fs::read(&target).expect("read new file");
+        assert_eq!(content, b"");
+    }
+
+    #[test]
+    fn create_file_refuses_overwrite() {
+        let td = TempDir::new("mkf2");
+        let target = td.path_string("x.txt");
+        create_file(target.clone()).unwrap();
+        let err = create_file(target).unwrap_err();
+        assert!(err.contains("已存在"), "expected Chinese 已存在, got {err}");
+    }
+
+    #[test]
+    fn create_directory_refuses_overwrite() {
+        let td = TempDir::new("mkd");
+        let target = td.path_string("subdir");
+        create_directory(target.clone()).unwrap();
+        let err = create_directory(target).unwrap_err();
+        assert!(err.contains("目录已存在"));
+    }
+
+    // ── rename_path ─────────────────────────────────────────────────────────
+    #[test]
+    fn rename_path_moves_file() {
+        let td = TempDir::new("mv");
+        let from = td.path_string("a.txt");
+        let to = td.path_string("b.txt");
+        create_file(from.clone()).unwrap();
+        rename_path(from.clone(), to.clone()).unwrap();
+        assert!(!std::path::Path::new(&from).exists());
+        assert!(std::path::Path::new(&to).exists());
+    }
+
+    #[test]
+    fn rename_path_refuses_when_target_exists() {
+        let td = TempDir::new("mv-clash");
+        let a = td.path_string("a.txt");
+        let b = td.path_string("b.txt");
+        create_file(a.clone()).unwrap();
+        create_file(b.clone()).unwrap();
+        let err = rename_path(a, b).unwrap_err();
+        assert!(err.contains("目标已存在"));
+    }
+
+    #[test]
+    fn rename_path_reports_missing_source() {
+        let td = TempDir::new("mv-miss");
+        let from = td.path_string("nope.txt");
+        let to = td.path_string("y.txt");
+        let err = rename_path(from, to).unwrap_err();
+        assert!(err.contains("路径不存在"));
+    }
+
+    // ── delete_path ─────────────────────────────────────────────────────────
+    #[test]
+    fn delete_path_removes_file() {
+        let td = TempDir::new("rm-file");
+        let target = td.path_string("a.txt");
+        create_file(target.clone()).unwrap();
+        delete_path(target.clone()).unwrap();
+        assert!(!std::path::Path::new(&target).exists());
+    }
+
+    #[test]
+    fn delete_path_removes_directory_recursively() {
+        let td = TempDir::new("rm-dir");
+        let dir = td.path_string("dir");
+        create_directory(dir.clone()).unwrap();
+        create_file(td.path_string("dir/x.txt")).unwrap();
+        create_file(td.path_string("dir/sub/y.txt")).unwrap();
+        delete_path(dir.clone()).unwrap();
+        assert!(!std::path::Path::new(&dir).exists());
+    }
+
+    #[test]
+    fn delete_path_reports_missing() {
+        let td = TempDir::new("rm-miss");
+        let err = delete_path(td.path_string("nothing")).unwrap_err();
+        assert!(err.contains("路径不存在"));
+    }
+
+    // ── copy_path ───────────────────────────────────────────────────────────
+    #[test]
+    fn copy_path_copies_single_file() {
+        let td = TempDir::new("cp-f");
+        let from = td.path_string("a.txt");
+        let to = td.path_string("b.txt");
+        std::fs::write(&from, b"hello").unwrap();
+        copy_path(from.clone(), to.clone(), None).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"hello");
+        assert!(std::path::Path::new(&from).exists(), "copy preserves source");
+    }
+
+    #[test]
+    fn copy_path_refuses_overwrite_by_default() {
+        let td = TempDir::new("cp-clash");
+        let from = td.path_string("a.txt");
+        let to = td.path_string("b.txt");
+        create_file(from.clone()).unwrap();
+        create_file(to.clone()).unwrap();
+        let err = copy_path(from, to, None).unwrap_err();
+        assert!(err.contains("目标已存在"));
+    }
+
+    #[test]
+    fn copy_path_recursive_for_directory() {
+        let td = TempDir::new("cp-d");
+        let src = td.path_string("src");
+        let dst = td.path_string("dst");
+        create_directory(src.clone()).unwrap();
+        std::fs::write(td.join("src/a.txt"), b"A").unwrap();
+        std::fs::create_dir_all(td.join("src/sub")).unwrap();
+        std::fs::write(td.join("src/sub/b.txt"), b"B").unwrap();
+
+        copy_path(src.clone(), dst.clone(), None).unwrap();
+
+        assert_eq!(std::fs::read(td.join("dst/a.txt")).unwrap(), b"A");
+        assert_eq!(std::fs::read(td.join("dst/sub/b.txt")).unwrap(), b"B");
+        // Source still intact.
+        assert!(td.join("src/a.txt").exists());
+    }
+
+    // ── move_path ───────────────────────────────────────────────────────────
+    #[test]
+    fn move_path_moves_file_and_clears_source() {
+        let td = TempDir::new("mov-f");
+        let from = td.path_string("a.txt");
+        let to = td.path_string("b.txt");
+        std::fs::write(&from, b"X").unwrap();
+        move_path(from.clone(), to.clone()).unwrap();
+        assert!(!std::path::Path::new(&from).exists());
+        assert_eq!(std::fs::read(&to).unwrap(), b"X");
+    }
+
+    #[test]
+    fn move_path_moves_directory_recursively() {
+        let td = TempDir::new("mov-d");
+        let src = td.path_string("src");
+        let dst = td.path_string("dst");
+        create_directory(src.clone()).unwrap();
+        std::fs::write(td.join("src/x.txt"), b"x").unwrap();
+        move_path(src.clone(), dst.clone()).unwrap();
+        assert!(!std::path::Path::new(&src).exists());
+        assert_eq!(std::fs::read(td.join("dst/x.txt")).unwrap(), b"x");
+    }
+
+    #[test]
+    fn move_path_refuses_when_target_exists() {
+        let td = TempDir::new("mov-clash");
+        let a = td.path_string("a.txt");
+        let b = td.path_string("b.txt");
+        create_file(a.clone()).unwrap();
+        create_file(b.clone()).unwrap();
+        let err = move_path(a, b).unwrap_err();
+        assert!(err.contains("目标已存在"));
+    }
 }

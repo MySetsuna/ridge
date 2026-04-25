@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, type Snippet } from 'svelte';
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
+  import { overlayScroll } from '$lib/actions/overlayScroll';
 
   interface WorkspaceInfo {
     id: string;
@@ -119,8 +120,24 @@ $effect(() => {
   }
 </script>
 
+<!-- Visual parity with Explorer / SCM via overlayscrollbars.
+     The `horizontal-tabs` preset handles {x:'scroll', y:'hidden'} +
+     autoHide=leave + flex-row layout injection (display/flex-direction/
+     align-items/gap stamped as inline style by the action), so we no
+     longer repeat flex utility classes here.
+     min-w-0: lets the flex parent compute true overflow so the scroller
+     actually triggers. py-1/mr-auto: spacing/alignment in the header.
+     shift+wheel: horizontal pan for users without a horizontal wheel. -->
 <div
-  class="wf-no-drag flex items-center gap-1 overflow-x-auto min-w-0 py-1 wf-scroll mr-auto wf-workspace-tabs"
+  class="wf-no-drag min-w-0 py-1 mr-auto wf-workspace-tabs"
+  use:overlayScroll={{ preset: 'horizontal-tabs' }}
+  onwheel={(e) => {
+    if (!e.shiftKey) return;
+    const t = e.currentTarget as HTMLElement;
+    const dx = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+    t.scrollLeft += dx;
+    e.preventDefault();
+  }}
 >
   {#each workspaces as ws, i (ws.id)}
     <div

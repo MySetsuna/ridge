@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tauri::Emitter;
 use tokio::sync::mpsc;
-use crate::commands::{git, pane, process, project, terminal, wind_file, workspace};
+use crate::commands::{git, pane, process, project, terminal, watch, wind_file, workspace};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
@@ -222,6 +222,13 @@ pub fn run() {
             git::git_push,
             git::git_sync,
             git::git_diff_file,
+            git::git_diff_summary,
+            git::git_get_file_versions,
+            git::git_cherry_pick,
+            git::git_revert,
+            git::git_op_in_progress,
+            git::git_cherry_pick_abort,
+            git::git_revert_abort,
             pane::close_pane,
             pane::dock_pane,
             pane::get_pane_layout,
@@ -229,11 +236,15 @@ pub fn run() {
             pane::set_split_ratios_batch,
             pane::split_pane,
             pane::toggle_mode,
+            pane::register_teammate_agent,
+            pane::release_teammate_agent,
             terminal::create_pane,
             terminal::write_to_pty,
             terminal::resize_pane,
             terminal::kill_pane,
             terminal::get_pane_scrollback,
+            terminal::get_pane_scrollback_tail,
+            terminal::get_pane_scrollback_before,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
@@ -259,12 +270,20 @@ pub fn run() {
             project::get_file_tree,
             project::get_directory_children,
             project::text_search,
+            project::text_search_diagnostics,
             project::filename_search,
             project::replace_in_files,
             project::read_file,
             project::read_file_for_editor,
             project::write_file,
             project::get_current_project,
+            project::rename_path,
+            project::delete_path,
+            project::create_file,
+            project::create_directory,
+            project::reveal_in_file_manager,
+            project::copy_path,
+            project::move_path,
             process::get_pane_foreground_process,
             process::get_pane_cwd,
             // .wind file commands
@@ -280,6 +299,7 @@ pub fn run() {
             wind_file::browse_directory,
             wind_file::list_recent_workspaces,
             wind_file::clear_recent_workspaces,
+            watch::start_watching_repos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

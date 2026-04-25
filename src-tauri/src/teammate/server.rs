@@ -152,6 +152,7 @@ async fn run_server(
     .route("/api/v1/resize-pane", post(route_resize_pane))
     // Window management
     .route("/api/v1/new-window", post(route_new_window))
+        .route("/api/v1/rename-pane", post(route_rename_pane))
         .route("/api/v1/list-windows", get(route_list_windows))
         .route("/api/v1/list-sessions", get(route_list_sessions))
         .route("/api/v1/list-clients", get(route_list_clients))
@@ -186,6 +187,7 @@ fn find_idle_pane_index(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
 }
 
 /// 查找空闲 pane 的 UUID
+#[allow(dead_code)] // internal helper kept for upcoming auto-assign-pane logic
 fn find_idle_pane_uuid(state: &AppState, wid: uuid::Uuid) -> Option<uuid::Uuid> {
     let map = state.workspaces.read();
     let Some(ws) = map.get(&wid) else {
@@ -222,6 +224,7 @@ fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) {
 }
 
 /// 通过 agent_id 查找 pane
+#[allow(dead_code)] // reverse lookup retained for upcoming /focus-pane HTTP route
 fn find_pane_by_agent(state: &AppState, wid: uuid::Uuid, agent_id: &str) -> Option<uuid::Uuid> {
     let map = state.workspaces.read();
     let Some(ws) = map.get(&wid) else {
@@ -267,6 +270,9 @@ async fn route_register_agent(
     };
 
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
+    // Emit so the frontend re-fetches layout and renders the "busy" indicator
+    // on the newly-claimed pane.
+    let _ = ctx.handle.emit("teammate-layout-changed", ());
     (StatusCode::OK, Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })))
         .into_response()
 }
@@ -304,6 +310,8 @@ async fn route_release_pane(
     };
 
     release_pane(&ctx.state, wid, pane_id);
+    // Emit layout-changed so the frontend drops the "busy" indicator.
+    let _ = ctx.handle.emit("teammate-layout-changed", ());
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
@@ -587,7 +595,32 @@ async fn route_capture(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let text = ctx.state.get_pty_scrollback_tail(wid, pid, lines);
+    // `get_pty_scrollback_tail` now takes byte budget; pull generously and
+    // trim to the requested line count here to preserve the old HTTP shape.
+    let chunk = ctx.state.get_pty_scrollback_tail(wid, pid, 512 * 1024);
+    let text = if lines == 0 {
+        String::new()
+    } else {
+        // Walk from the end finding the Nth '\n'; return the tail after it.
+        let bytes = chunk.bytes.as_bytes();
+        let mut nl_seen = 0usize;
+        let mut cut = 0usize;
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] == b'\n' {
+                nl_seen += 1;
+                if nl_seen == lines {
+                    cut = i + 1;
+                    break;
+                }
+            }
+        }
+        if nl_seen < lines {
+            chunk.bytes
+        } else {
+            // `cut` lands on a UTF-8 boundary (immediately after '\n').
+            chunk.bytes[cut..].to_string()
+        }
+    };
     (StatusCode::OK, text).into_response()
 }
 
@@ -798,6 +831,9 @@ async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Qu
                     pane_id: format!("%{i}"),
                     uuid: u.to_string(),
                     title: ws.teammate_pane_titles.get(u).cloned(),
+                    cwd: ws.pane_tree.panes.get(u)
+                        .and_then(|p| p.cwd.as_ref())
+                        .map(|c| c.to_string_lossy().replace('\\', "/")),
                 })
                 .collect(),
         };
@@ -916,8 +952,12 @@ async fn route_kill_pane(
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
+                        // Mirror the cleanup done by close_pane so a teammate-
+                        // initiated kill doesn't leave an orphaned agent_state.
                         ws.teammate_pane_titles.remove(&pid);
-                    ws.pane_sizes.remove(&pid);
+                        ws.teammate_pane_states.remove(&pid);
+                        ws.teammate_agent_pane_map.retain(|_, v| *v != pid);
+                        ws.pane_sizes.remove(&pid);
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
@@ -1070,6 +1110,9 @@ struct PaneRowJson {
     uuid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    /// Current working directory reported via OSC 7; None until shell integration fires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1079,6 +1122,54 @@ struct ListWindowsRowJson {
     pane_count: usize,
     active_pane_index: usize,
     active: bool,
+}
+
+// ─── rename-pane ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RenamePaneBody {
+    #[serde(default)]
+    pane_index: Option<usize>,
+    name: String,
+}
+
+/// Set or clear the display title for a Wind pane so `rename-window <name>`
+/// from Claude Code's tmux backend is surfaced in the pane header.
+async fn route_rename_pane(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<RenamePaneBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = ctx.state.active_workspace_id();
+    let name = body.name.trim().to_string();
+
+    let target_idx = body.pane_index.unwrap_or_else(|| {
+        ctx.state.workspaces.read()
+            .get(&wid)
+            .map(|ws| ws.teammate_tmux_pane_cursor)
+            .unwrap_or(0)
+    });
+
+    match pane::teammate_pane_uuid_at_index(&ctx.state, wid, target_idx) {
+        Ok(pid) => {
+            {
+                let mut map = ctx.state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    if name.is_empty() {
+                        ws.teammate_pane_titles.remove(&pid);
+                    } else {
+                        ws.teammate_pane_titles.insert(pid, name);
+                    }
+                }
+            }
+            let _ = ctx.handle.emit("teammate-layout-changed", ());
+            (StatusCode::OK, "ok").into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
 }
 
 #[derive(Serialize)]

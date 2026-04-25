@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
@@ -195,7 +194,7 @@ impl FileTree {
                 .unwrap_or_default();
 
             let is_dir = entry_path.is_dir();
-            let has_children = if is_dir {
+            let _has_children = if is_dir {
                 fs::read_dir(&entry_path).map(|mut e| e.next().is_some()).unwrap_or(false)
             } else {
                 false

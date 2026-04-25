@@ -20,6 +20,9 @@ pub struct SplitPaneResult {
 }
 
 /// 与前端 `PaneNode`（Svelte）对齐，便于 `invoke('get_pane_layout')` 直接驱动 SplitContainer。
+/// `agent_state` 与 `agent_id` 在 Claude Code teammate 通过
+/// `/api/v1/register-agent` 记下某个 pane 为 Busy 时出现；前端据此在标题栏
+/// 画一个"运行中"指示，让 orchestrator 能一眼看出哪些 pane 有 sub-agent。
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum LayoutNode {
@@ -29,6 +32,12 @@ pub enum LayoutNode {
         title: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// "idle" | "busy" | "starting"；`None` 表示从未被 teammate 接触过。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_state: Option<String>,
+        /// 若 pane 当前有注册的 agent，回传其 `agent_id`。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
     },
     Split {
         id: String,
@@ -43,13 +52,27 @@ fn engine_node_to_layout(
     split_counter: &mut u64,
     titles: &HashMap<Uuid, String>,
     panes: &std::collections::HashMap<Uuid, crate::engine::pane_tree::Pane>,
+    pane_states: &HashMap<Uuid, crate::state::PaneState>,
+    agent_by_pane: &HashMap<Uuid, String>,
 ) -> LayoutNode {
     match node {
-        EnginePaneNode::Leaf(id) => LayoutNode::Leaf {
-            id: id.to_string(),
-            title: titles.get(id).cloned(),
-            cwd: panes.get(id).and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
-        },
+        EnginePaneNode::Leaf(id) => {
+            let agent_state = pane_states.get(id).map(|s| match s {
+                crate::state::PaneState::Idle => "idle",
+                crate::state::PaneState::Busy => "busy",
+                crate::state::PaneState::Starting => "starting",
+            }
+            .to_string());
+            LayoutNode::Leaf {
+                id: id.to_string(),
+                title: titles.get(id).cloned(),
+                cwd: panes
+                    .get(id)
+                    .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
+                agent_state,
+                agent_id: agent_by_pane.get(id).cloned(),
+            }
+        }
         EnginePaneNode::Split {
             direction,
             children,
@@ -65,7 +88,9 @@ fn engine_node_to_layout(
                 .to_string(),
                 children: children
                     .iter()
-                    .map(|c| engine_node_to_layout(c, split_counter, titles, panes))
+                    .map(|c| {
+                        engine_node_to_layout(c, split_counter, titles, panes, pane_states, agent_by_pane)
+                    })
                     .collect(),
                 ratios: ratios.clone(),
             }
@@ -81,11 +106,20 @@ pub fn get_pane_layout(state: State<'_, AppState>) -> Result<LayoutNode, String>
         .get(&wid)
         .ok_or_else(|| "无活动工作区".to_string())?;
     let mut c = 0u64;
+    // Reverse lookup: agent_id → pane_id map is stored as pane_id → agent_id
+    // in the other direction (`teammate_agent_pane_map: agent_id → pane_id`);
+    // flip it once so layout serialisation is O(panes).
+    let mut agent_by_pane: HashMap<Uuid, String> = HashMap::new();
+    for (agent_id, pane_id) in &ws.teammate_agent_pane_map {
+        agent_by_pane.insert(*pane_id, agent_id.clone());
+    }
     Ok(engine_node_to_layout(
         &ws.pane_tree.root,
         &mut c,
         &ws.teammate_pane_titles,
         &ws.pane_tree.panes,
+        &ws.teammate_pane_states,
+        &agent_by_pane,
     ))
 }
 
@@ -241,6 +275,63 @@ pub(crate) fn teammate_pane_uuid_at_index(
         .ok_or_else(|| AppError::InvalidPaneId(format!("pane index {pane_index}")))
 }
 
+/// Frontend-accessible registration of a running teammate agent against a
+/// pane. Mirrors the internal `register_agent_to_pane` in the HTTP server so
+/// a UI "Run Claude Code agent here" button can mark a pane busy without
+/// waiting for the HTTP round-trip. Idempotent.
+///
+/// Emits `teammate-layout-changed` so the SplitContainer re-renders with the
+/// busy indicator.
+#[tauri::command]
+pub async fn register_teammate_agent(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    pane_id: String,
+    agent_id: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let pane_uuid = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let wid = state.active_workspace_id();
+    {
+        let mut map = state.workspaces.write();
+        let ws = map
+            .get_mut(&wid)
+            .ok_or_else(|| "无活动工作区".to_string())?;
+        if !ws.pane_tree.panes.contains_key(&pane_uuid) {
+            return Err(format!("pane {pane_id} not in active workspace"));
+        }
+        ws.teammate_agent_pane_map.insert(agent_id, pane_uuid);
+        ws.teammate_pane_states
+            .insert(pane_uuid, crate::state::PaneState::Busy);
+    }
+    let _ = app.emit("teammate-layout-changed", ());
+    Ok(())
+}
+
+/// Mark a teammate agent as no longer running against its pane. Removes the
+/// agent → pane mapping and flips the pane state back to Idle.
+#[tauri::command]
+pub async fn release_teammate_agent(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    pane_id: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let pane_uuid = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let wid = state.active_workspace_id();
+    {
+        let mut map = state.workspaces.write();
+        let ws = map
+            .get_mut(&wid)
+            .ok_or_else(|| "无活动工作区".to_string())?;
+        ws.teammate_pane_states
+            .insert(pane_uuid, crate::state::PaneState::Idle);
+        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
+    }
+    let _ = app.emit("teammate-layout-changed", ());
+    Ok(())
+}
+
 /// Claude Code `tmux split-window`：`-h` → `horizontal`，`-v` → `vertical`（与 Wind UI / `split_pane` 一致）。
 pub(crate) fn teammate_split_pane(
     app: &AppState,
@@ -291,7 +382,12 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
     {
         let mut map = state.workspaces.write();
         let ws = map.get_mut(&wid).ok_or_else(|| "无活动工作区".to_string())?;
+        // Drop every teammate map entry tied to this pane so rebuilt layouts
+        // don't leak a dead `agent_state=busy` marker or a stale title.
         ws.teammate_pane_titles.remove(&pane_id);
+        ws.teammate_pane_states.remove(&pane_id);
+        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+        ws.pane_sizes.remove(&pane_id);
         ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
     }
     crate::commands::wind_file::schedule_auto_save(&*state, wid);
