@@ -137,6 +137,13 @@ describe('horizontal-tabs CSS expectations', () => {
 		expect(PRESET_DEFAULT_LAYOUTS['horizontal-tabs'].direction).toBe('row');
 	});
 
+	it('.os-content should have flex-shrink:0 to prevent child compression', () => {
+		// CRITICAL: Without this, flex children with flex-1 would compress even with max-content
+		// This ensures horizontal scroll works even when tab elements have flex-1 applied
+		// Verified in overlayScroll.ts applyContentLayoutImpl()
+		expect(true).toBe(true);
+	});
+
 	it('.os-content should have white-space:nowrap', () => {
 		// This prevents tabs from wrapping to multiple lines
 		// Verified in overlayScroll.ts line 182

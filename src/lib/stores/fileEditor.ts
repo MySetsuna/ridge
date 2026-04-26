@@ -8,7 +8,11 @@
 
 import { writable, get, derived } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { isMarkdownPath } from '$lib/utils/markdown';
+
+/** 图片文件扩展名 */
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'];
 
 export type EditorDisplayMode = 'drawer' | 'floating';
 
@@ -32,6 +36,10 @@ export interface OpenFile {
    * Markdown files default to 'preview'; everything else is 'source'.
    */
   viewMode: 'source' | 'preview';
+  /** True for image files */
+  isImage: boolean;
+  /** Image URL (for image files) */
+  imageUrl?: string;
 }
 
 export interface FloatingRect {
@@ -190,6 +198,12 @@ function basename(p: string): string {
   return p.split(/[/\\]/).filter(Boolean).pop() || p;
 }
 
+function isImagePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const ext = lower.split(/[.\\/]/).pop() || '';
+  return IMAGE_EXTS.includes(ext);
+}
+
 function createStore() {
   const { subscribe, update, set } = writable<FileEditorState>(initial);
 
@@ -211,10 +225,9 @@ function createStore() {
       path: string,
       opts?: { line?: number; column?: number }
     ): Promise<void> {
-      const reveal: PendingReveal | null =
-        opts?.line && opts.line > 0
-          ? { path, line: opts.line, column: Math.max(1, opts.column ?? 1) }
-          : null;
+      const reveal: PendingReveal | null = opts?.line && opts.line > 0
+        ? { path, line: opts.line, column: Math.max(1, opts.column ?? 1) }
+        : null;
       const state = get({ subscribe });
       const existing = state.openFiles.find((f) => f.path === path);
       if (existing) {
@@ -227,9 +240,25 @@ function createStore() {
         return;
       }
 
+      // 图片文件特殊处理：不需要读取内容，直接用 convertFileSrc 生成 URL
+      const isImage = isImagePath(path);
+      let imageUrl: string | undefined;
+
       let content = '';
       let isBinary = false;
-      if (isTauri()) {
+      if (isImage) {
+        // 图片文件：使用 Tauri 的 convertFileSrc 生成 asset URL
+        if (isTauri()) {
+          imageUrl = convertFileSrc(path);
+        } else {
+          // 非 Tauri 环境（开发模式）使用 file:// 协议
+          imageUrl = path.replace(/\\/g, '/');
+          if (!imageUrl.startsWith('/')) {
+            imageUrl = '/' + imageUrl;
+          }
+          imageUrl = 'file://' + imageUrl;
+        }
+      } else if (isTauri()) {
         try {
           const result = await invoke<{ content: string; is_binary: boolean; size: number }>(
             'read_file_for_editor',
@@ -245,7 +274,7 @@ function createStore() {
           return;
         }
       }
-      if (isBinary) {
+      if (isBinary && !isImage) {
         alert('二进制文件暂不支持在编辑器中打开。');
         return;
       }
@@ -255,11 +284,13 @@ function createStore() {
         name: basename(path),
         content,
         originalContent: content,
-        language: langFromPath(path),
+        language: isImage ? 'image' : langFromPath(path),
         isDirty: false,
         openedAt: Date.now(),
         // markdown 默认进 preview；其他语言没有 preview 概念，统一 source。
         viewMode: isMarkdownPath(path) ? 'preview' : 'source',
+        isImage,
+        imageUrl,
       };
       update((s) => ({
         ...s,
@@ -473,7 +504,7 @@ function createStore() {
  * - min 320 × 240
  * - left edge ≥ SIDEBAR_TAB_W (don't cover the left icon strip)
  * - at least 64 px of width/height always remains inside the viewport
- *   (so the user can grab it back)
+ * (so the user can grab it back)
  */
 export function clampRectToViewport(rect: FloatingRect): FloatingRect {
   if (typeof window === 'undefined') return rect;

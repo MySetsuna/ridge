@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tick, onDestroy } from 'svelte';
+import { get } from 'svelte/store';
 	import {
 		Folder,
 		FolderOpen,
@@ -11,6 +12,7 @@
 		Image,
 	} from 'lucide-svelte';
 	import { invoke, isTauri } from '@tauri-apps/api/core';
+import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	import { showContextMenu } from '$lib/stores/contextMenu';
 	import { alertDialog, confirmDialog } from './WindDialog.svelte';
 	import {
@@ -188,6 +190,24 @@
 		if (!raw) return;
 		e.preventDefault();
 		e.stopPropagation();
+
+	// Get column cwd for relative path
+	const storeState = get(fileExplorerStore);
+	const column = storeState.columns.find((c) => c.id === columnId);
+	const cwd = column?.cwd || '';
+
+	const getRelativePath = (absPath: string): string => {
+		const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+		const normalizedPath = absPath.replace(/\\/g, '/');
+		if (normalizedPath.startsWith(normalizedCwd + '/')) {
+			return normalizedPath.slice(normalizedCwd.length + 1);
+		}
+		return normalizedPath;
+	};
+
+	const copyToClipboard = async (text: string) => {
+		try { await writeText(text); } catch (err) { console.error('Copy failed:', err); }
+	};
 		const paths = raw.split('\n').filter(Boolean);
 		if (paths.length === 0) return;
 		// Refuse self-drop / drop of an ancestor onto a descendant.
@@ -301,11 +321,30 @@
 		e.preventDefault();
 		e.stopPropagation();
 
+	// Get column cwd for relative path
+	const storeState = get(fileExplorerStore);
+	const column = storeState.columns.find((c) => c.id === columnId);
+	const cwd = column?.cwd || '';
+
+	const getRelativePath = (absPath: string): string => {
+		const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+		const normalizedPath = absPath.replace(/\\/g, '/');
+		if (normalizedPath.startsWith(normalizedCwd + '/')) {
+			return normalizedPath.slice(normalizedCwd.length + 1);
+		}
+		return normalizedPath;
+	};
+
+	const copyToClipboard = async (text: string) => {
+		try { await writeText(text); } catch (err) { console.error('Copy failed:', err); }
+	};
+
 		const items = node.is_dir
 			? [
 					{ id: 'new-file', label: '新建文件', action: () => beginCreate('file') },
 					{ id: 'new-folder', label: '新建文件夹', action: () => beginCreate('folder') },
 					{ id: 'divider1', divider: true },
+			{ id: 'copy', label: '复制', action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: '复制相对路径', action: () => copyToClipboard(getRelativePath(node.path)) },
 					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
 					{ id: 'divider2', divider: true },
 					{ id: 'rename', label: '重命名', action: () => beginRename() },
@@ -313,6 +352,7 @@
 				]
 			: [
 					{ id: 'open', label: '打开', action: () => void openFile() },
+			{ id: 'copy', label: '复制', action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: '复制相对路径', action: () => copyToClipboard(getRelativePath(node.path)) },
 					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
 					{ id: 'divider', divider: true },
 					{ id: 'rename', label: '重命名', action: () => beginRename() },

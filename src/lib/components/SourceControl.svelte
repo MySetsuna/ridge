@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -723,64 +723,27 @@
     focusRepo(detail);
   }
 
-  onMount(() => {
-    // ε / round 42 — defer the initial discover when the persistent
-    // cache is fresh. Tab toggles between sidebar tabs are now instant
-    // because the snapshot survives unmount; only when the cache is
-    // empty or stale (>30s) do we scrub-and-refresh in background.
-    // round 64: removed the fresh-cache 1s background refresh to avoid
-    // unsolicited proactive polling. The filesystem watcher + cwd change
-    // subscriber are the two active refresh paths; mount only runs
-    // discover when the cache is genuinely stale.
-    if (shouldRefreshOnMount()) {
-      schedule(() => discoverRepos(), 0);
+onMount(() => {
+  // round 65: 完全禁用自动刷新，只保留手动点击刷新按钮触发刷新。
+  // 不再监听 paneCwdStore 变化、scm-repo-changed 事件，也不做缓存过期检查。
+  // 只在首次进入 Git tab 时从缓存加载数据（如果有）。
+  if (!selectedRepo && getScmCache().repoRoots.length > 0) {
+    selectedRepo = getScmCache().repoRoots[0];
+    // 只加载缓存的图谱数据，不触发刷新
+    if (shouldRefreshGraphOnMount(selectedRepo)) {
+      void loadGraph(selectedRepo, { resetSelection: true });
     }
-    // Seed the selected-repo dropdown from cache when remounting.
-    if (!selectedRepo && getScmCache().repoRoots.length > 0) {
-      selectedRepo = getScmCache().repoRoots[0];
-      if (shouldRefreshGraphOnMount(selectedRepo)) {
-        void loadGraph(selectedRepo, { resetSelection: true });
-      }
-    }
-    // Trigger rediscovery when any pane's cwd changes (e.g. `cd`, new terminal).
-    // Debounced 280ms so rapid OSC-7 bursts from multiple pane starts collapse.
-    const unsub1 = paneCwdStore.subscribe(() => schedule(() => discoverRepos()));
-    // Note: removed the activeWorkspaceId subscriber that previously caused an
-    // immediate (0ms) forced discover on every workspace switch. Workspace
-    // changes are already captured by the cwd subscriber once panes emit OSC-7,
-    // and the scmCacheStore survives unmount so repeated mounts stay fast.
-    document.addEventListener('mousedown', onGlobalMousedown, true);
-    document.addEventListener('keydown', onGlobalKeydown);
-    window.addEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
+  }
+  document.addEventListener('mousedown', onGlobalMousedown, true);
+  document.addEventListener('keydown', onGlobalKeydown);
+  window.addEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
 
-    // Subscribe to backend filesystem-watcher events so external git changes
-    // (e.g. `git pull` from terminal, CI sync) auto-refresh the SCM panel.
-    if (isTauri()) {
-      void listen<string>('scm-repo-changed', (e) => {
-        const changedRoot = e.payload;
-        // Debounce per repo: a single `git commit` fires HEAD + index + refs
-        // events in quick succession; coalesce into one refresh.
-        const existing = watcherDebounce.get(changedRoot);
-        if (existing !== undefined) clearTimeout(existing);
-        watcherDebounce.set(changedRoot, setTimeout(async () => {
-          watcherDebounce.delete(changedRoot);
-          await refreshStatus(changedRoot);
-          if (changedRoot === selectedRepo) {
-            await loadGraph(changedRoot, { resetSelection: false });
-          }
-        }, 250));
-      }).then((unlisten) => {
-        unlistenRepoChanged = unlisten;
-      });
-    }
-
-    return () => {
-      unsub1();
-      document.removeEventListener('mousedown', onGlobalMousedown, true);
-      document.removeEventListener('keydown', onGlobalKeydown);
-      window.removeEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
-    };
-  });
+  return () => {
+    document.removeEventListener('mousedown', onGlobalMousedown, true);
+    document.removeEventListener('keydown', onGlobalKeydown);
+    window.removeEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
+  };
+});
 
   onDestroy(() => {
     if (debounceHandle !== undefined) clearTimeout(debounceHandle);

@@ -1,5 +1,30 @@
-<!-- src/routes/+page.svelte -->
+﻿<!-- src/routes/+page.svelte -->
 <script lang="ts">
+
+// Monaco Editor Worker 配置 - 必须在使用 monaco 之前配置
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
+import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
+import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+
+self.MonacoEnvironment = {
+  getWorker(_: unknown, label: string) {
+    if (label === 'json') {
+      return new jsonWorker();
+    }
+    if (label === 'css' || label === 'scss' || label === 'less') {
+      return new cssWorker();
+    }
+    if (label === 'html' || label === 'handlebars' || label === 'razor') {
+      return new htmlWorker();
+    }
+    if (label === 'typescript' || label === 'javascript') {
+      return new tsWorker();
+    }
+    return new editorWorker();
+  }
+};
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -199,10 +224,25 @@
   }
 
   // 切换侧边栏折叠状态
-  function toggleSidebar() {
-    sidebarCollapsed = !sidebarCollapsed;
+function toggleSidebar() {
+  if (sidebarCollapsed) {
+    // 展开到默认宽度
+    sidebarCollapsed = false;
+    sidebarWidth = 288; // 默认 w-72
+  } else {
+    sidebarCollapsed = true;
+  }
+  saveSidebarSettings();
+}
+
+// 展开侧边栏（不切换折叠状态，用于 tab 切换时）
+function expandSidebar() {
+  if (sidebarCollapsed) {
+    sidebarCollapsed = false;
+    sidebarWidth = 288;
     saveSidebarSettings();
   }
+}
 
   // 侧边栏折叠/展开时的宽度
   const COLLAPSED_WIDTH = 0;
@@ -926,7 +966,7 @@
       type="button"
       class="{actBtn}{sidebarTab === 'files' ? actBtnOn : ''}"
       title="文件"
-      onclick={() => (sidebarTab = 'files')}
+      onclick={() => { sidebarTab = 'files'; expandSidebar(); }}
     >
       <FolderOpen class="h-5 w-5" />
     </button>
@@ -934,7 +974,7 @@
       type="button"
       class="{actBtn}{sidebarTab === 'search' ? actBtnOn : ''}"
       title="搜索 (Ctrl+Shift+F)"
-      onclick={() => (sidebarTab = 'search')}
+      onclick={() => { sidebarTab = 'search'; expandSidebar(); }}
     >
       <Search class="h-5 w-5" />
     </button>
@@ -942,7 +982,7 @@
       type="button"
       class="{actBtn}{sidebarTab === 'git' ? actBtnOn : ''}"
       title="Git Graph"
-      onclick={() => (sidebarTab = 'git')}
+      onclick={() => { sidebarTab = 'git'; expandSidebar(); }}
     >
       <GitBranch class="h-5 w-5" />
     </button>
@@ -955,7 +995,7 @@
         type="button"
         class="{actBtn}{sidebarTab === 'claude' ? actBtnOn : ''}"
         title="Claude Code"
-        onclick={() => (sidebarTab = 'claude')}
+        onclick={() => { sidebarTab = 'claude'; expandSidebar(); }}
       >
         <Bot class="h-5 w-5" />
       </button>
@@ -1088,35 +1128,47 @@
           <SidebarPluginRegion scope="global" />
         </div>
 
-        <!-- 侧边栏大小调整手柄。tabindex=0 + Arrow 键盘步进让键盘用户也能调整宽度
-             （Shift 加速）。Svelte 的 a11y 规则不识别 role=separator 的 splitter 模式，
-             显式抑制 noninteractive-* 两条。 -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          class="group absolute h-full right-0 w-1 shrink-0 cursor-col-resize select-none hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30 transition-colors {isResizingSidebar
-            ? 'bg-[var(--wf-accent)]/40'
-            : ''}"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="拖动调整侧边栏宽度"
-          tabindex="0"
-          onmousedown={onSidebarResizerMouseDown}
-          onkeydown={(e) => {
-            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-            const step = e.shiftKey ? 64 : 16;
-            const delta = e.key === 'ArrowRight' ? step : -step;
-            const maxWidth = sidebarMaxPx;
-            sidebarWidth = Math.max(0, Math.min(maxWidth, sidebarWidth + delta));
-            if (sidebarWidth < 20) {
-              sidebarCollapsed = true;
-              sidebarWidth = 0;
-            }
-            saveSidebarSettings();
-            e.preventDefault();
-          }}
-        ></div>
       </aside>
+<!-- 侧边栏拖动条：始终渲染，collapsed 时显示为虚线提示可拖动展开 -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div
+  class="absolute h-full right-0 w-1 shrink-0 cursor-col-resize select-none {sidebarCollapsed ? 'border-l border-dashed border-[var(--wf-border)] hover:border-[var(--wf-accent)] hover:bg-[var(--wf-accent)]/10' : 'hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30'} {isResizingSidebar ? 'bg-[var(--wf-accent)]/40' : ''}"
+  role="separator"
+  aria-orientation="vertical"
+  aria-label={sidebarCollapsed ? '拖动展开侧边栏' : '拖动调整侧边栏宽度'}
+  tabindex="0"
+  onmousedown={(e) => {
+    if (sidebarCollapsed) {
+      expandSidebar();
+    } else {
+      onSidebarResizerMouseDown(e);
+    }
+  }}
+  onkeydown={(e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (sidebarCollapsed) {
+        expandSidebar();
+      } else {
+        toggleSidebar();
+      }
+      e.preventDefault();
+      return;
+    }
+    if (sidebarCollapsed) return;
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const step = e.shiftKey ? 64 : 16;
+    const delta = e.key === 'ArrowRight' ? step : -step;
+    const maxWidth = sidebarMaxPx;
+    sidebarWidth = Math.max(0, Math.min(maxWidth, sidebarWidth + delta));
+    if (sidebarWidth < 20) {
+      sidebarCollapsed = true;
+      sidebarWidth = 0;
+    }
+    saveSidebarSettings();
+    e.preventDefault();
+  }}
+></div>
     {/if}
 
     <!-- 折叠/展开 toggle 按钮：始终渲染，位于 wrapper 右边缘 -->

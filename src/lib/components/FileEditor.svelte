@@ -52,6 +52,8 @@
   let inPreviewMode = $derived(
     !!current && isMarkdownFile && current.viewMode === 'preview'
   );
+// 图片文件
+let isImageFile = $derived(!!current && current.isImage);
 
   // ─── Monaco lifecycle ──────────────────────────────────────────────────────
   // Monaco is intentionally used without web workers here (same as Pane.svelte's
@@ -447,7 +449,7 @@
     <!-- Tabs: overlayscrollbars overlay scrollbar, no gutter reservation.
          layout:false keeps existing flex/items-center classes; tabs use
          border-right separators rather than gap spacing. -->
-    <div class="flex items-center min-w-0 flex-1" use:overlayScroll={{ preset: 'horizontal-tabs', layout: false }}>
+    <div class="flex flex-nowrap items-center min-w-0" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
       {#each editorState.openFiles as f, i (f.path)}
         <button
           type="button"
@@ -497,7 +499,7 @@
 
     <!-- Right-side actions -->
     <div
-      class="flex items-center gap-0.5 px-1 shrink-0 border-l border-[var(--wf-border)]"
+      class="flex ml-auto items-center gap-0.5 px-1 shrink-0 border-l border-[var(--wf-border)]"
     >
       <button
         type="button"
@@ -656,6 +658,17 @@
         />
       </div>
     {/if}
+
+<!-- 图片预览 -->
+{#if current && isImageFile && current.imageUrl}
+<div class="absolute inset-0 flex items-center justify-center bg-[var(--wf-bg-raised)] overflow-auto p-4">
+  <img
+    src={current.imageUrl}
+    alt={current.name}
+    class="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+  />
+</div>
+{/if}
 
     <!-- Preview ↔ Source 切换按钮：右上角浮动 pill，半透明玻璃态。
            仅对 markdown 文件渲染；悬停收到正式 accent，保证不抢主内容视觉重量。 -->

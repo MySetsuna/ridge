@@ -210,7 +210,7 @@
             type="button"
             data-wf-ctx-index={i}
             role="menuitem"
-            class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-[var(--wf-fg)] transition-all duration-100 hover:bg-[var(--wf-accent)]/15 hover:pl-4 focus:bg-[var(--wf-accent)]/15 focus:pl-4 focus:outline-none disabled:opacity-40 disabled:pointer-events-none"
+            class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-[var(--wf-fg)] transition-colors duration-100 hover:bg-[var(--wf-accent)]/15 focus:bg-[var(--wf-accent)]/15 focus:outline-none disabled:opacity-40 disabled:pointer-events-none"
             disabled={item.disabled}
             onclick={(e) => handleClick(item, e)}
             onmouseenter={() => {
@@ -246,7 +246,7 @@
                   <button
                     type="button"
                     role="menuitem"
-                    class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-[var(--wf-fg)] transition-all duration-100 hover:bg-[var(--wf-accent)]/15 hover:pl-4 focus:bg-[var(--wf-accent)]/15 focus:pl-4 focus:outline-none disabled:opacity-40 disabled:pointer-events-none"
+                    class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-[var(--wf-fg)] transition-colors duration-100 hover:bg-[var(--wf-accent)]/15 focus:bg-[var(--wf-accent)]/15 focus:outline-none disabled:opacity-40 disabled:pointer-events-none"
                     disabled={child.disabled}
                     onclick={(e) => handleClick(child, e)}
                   >

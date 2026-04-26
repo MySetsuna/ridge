@@ -110,6 +110,8 @@ let foregroundPollInterval: ReturnType<typeof setInterval> | undefined;
 
 /** Saved helper-textarea inline style (left/top) for IME pinning. */
 let pinnedImeTextareaStyle: { left: string; top: string; transform: string } | undefined;
+/** Font size subscription - cleanup on component destroy */
+let unsubFontSize: (() => void) | undefined;
 
 // ── Terminal in-pane search (Ctrl+F) ────────────────────────────────────────
 let searchAddon: SearchAddon | null = null;
@@ -327,13 +329,12 @@ async function renderView() {
 		term.open(viewInner);
 
 		// Keep font size in sync with the global termFontSize store across all pane instances.
-		const unsubFontSize = termFontSize.subscribe((size) => {
+		unsubFontSize = termFontSize.subscribe((size) => {
 			if (!term) return;
 			term.options.fontSize = size;
 			fitAddon?.fit();
 		});
 		// Tear down the subscription when this pane is destroyed.
-		onDestroy(() => unsubFontSize());
 
 		// 快捷键：Ctrl+C 复制（有选区时）/ 透传 SIGINT（无选区）；Ctrl+V 粘贴；
 		// Shift+Enter 插入换行但不提交（发送 Alt+Enter 转义序列 ESC+CR）。
@@ -737,6 +738,33 @@ onMount(() => {
 	} else {
 		void renderView();
 	}
+
+	// 组件卸载时的清理
+	onDestroy(() => {
+		alive = false;
+		terminalTitles.update((t) => { const copy = { ...t }; delete copy[paneId]; return copy; });
+		paneForegroundProcessStore.update((s) => { const copy = { ...s }; delete copy[paneId]; return copy; });
+		if (foregroundPollInterval !== undefined) {
+			clearInterval(foregroundPollInterval);
+			foregroundPollInterval = undefined;
+		}
+		if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+		cancelLayoutRaf();
+		cancelResizeRaf();
+		cancelTermRedrawRaf();
+		disposeXtermScrollFix?.();
+		disposeXtermScrollFix = undefined;
+		unsubFontSize?.();
+		unsubFontSize = undefined;
+		ptyClosedUnlisten?.();
+		resizeObserver?.disconnect();
+		ptyUnlisten?.();
+		removeFocusHandlers?.();
+		removeCompositionHandlers?.();
+		diffUnlisten?.();
+		if (term) term.dispose();
+		if (editor) editor.dispose();
+	});
 });
 
 /** Right-click context menu for the terminal surface. */
@@ -759,30 +787,6 @@ function onTerminalContextMenu(e: MouseEvent): void {
 		}},
 	], 'terminal', paneId, workspaceId);
 }
-
-onDestroy(() => {
-	alive = false;
-	terminalTitles.update((t) => { const copy = { ...t }; delete copy[paneId]; return copy; });
-	paneForegroundProcessStore.update((s) => { const copy = { ...s }; delete copy[paneId]; return copy; });
-	if (foregroundPollInterval !== undefined) {
-		clearInterval(foregroundPollInterval);
-		foregroundPollInterval = undefined;
-	}
-	if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
-	cancelLayoutRaf();
-	cancelResizeRaf();
-	cancelTermRedrawRaf();
-	disposeXtermScrollFix?.();
-	disposeXtermScrollFix = undefined;
-	ptyClosedUnlisten?.();
-	resizeObserver?.disconnect();
-	ptyUnlisten?.();
-	removeFocusHandlers?.();
-	removeCompositionHandlers?.();
-	diffUnlisten?.();
-	if (term) term.dispose();
-	if (editor) editor.dispose();
-});
 </script>
 
 <div class="wf-pane-root h-full w-full min-h-0 min-w-0 flex flex-col">
