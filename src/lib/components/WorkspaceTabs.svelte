@@ -129,19 +129,18 @@
   }
 </script>
 
-<!-- Visual parity with Explorer / SCM via overlayscrollbars.
-     The `horizontal-tabs` preset handles {x:'scroll', y:'hidden'} +
-     autoHide=leave + flex-row layout injection (display/flex-direction/
-     align-items/gap stamped as inline style by the action), so we no
-     longer repeat flex utility classes here.
-     min-w-0: lets the flex parent compute true overflow so the scroller
-     actually triggers. py-1/mr-auto: spacing/alignment in the header.
-     shift+wheel: horizontal pan for users without a horizontal wheel. -->
-<div
-  class="min-w-0 flex-1"
-  use:overlayScroll={{ preset: 'horizontal-tabs' }}
->
-  <div class="wf-no-drag py-1 mr-auto wf-workspace-tabs" style="display: flex; flex-direction: row; flex-wrap: nowrap; min-width: max-content; gap: 4px;">
+<!-- Outer wrapper: plain flex row, bounded by flex-1/min-w-0 from parent.
+     Inner scroll container holds only the tab items so they can overflow
+     and scroll horizontally. Actions ("+" button) sit outside the scroll
+     container and remain visible regardless of scroll position.
+     wheel → horizontal pan (no Shift needed) is handled by overlayScroll. -->
+<div class="min-w-0 flex-1 flex items-center">
+  <!-- Scrollable tab strip: tab items are direct flex children so shrink-0
+       causes them to overflow the container width, enabling scroll. -->
+  <div
+    class="wf-no-drag min-w-0 flex-1 py-1 gap-1"
+    use:overlayScroll={{ preset: 'horizontal-tabs' }}
+  >
     {#each workspaces as ws, i (ws.id)}
       <div
         class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move
@@ -203,5 +202,11 @@
       </div>
     {/each}
   </div>
-  {@render actions?.()}
+  <!-- Actions slot (e.g. "+" new-workspace button): always visible on the
+       right, never scrolls with the tab strip. -->
+  {#if actions}
+    <div class="shrink-0 wf-no-drag">
+      {@render actions()}
+    </div>
+  {/if}
 </div>

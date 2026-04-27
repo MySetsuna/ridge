@@ -14,7 +14,7 @@ import { isMarkdownPath } from '$lib/utils/markdown';
 /** 图片文件扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'];
 
-export type EditorDisplayMode = 'drawer' | 'floating';
+export type EditorDisplayMode = 'drawer' | 'floating' | 'embedded';
 
 export interface OpenFile {
   /** Absolute path on disk — also the tab's stable identity. */

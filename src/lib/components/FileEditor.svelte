@@ -17,6 +17,7 @@
     AlignLeft,
     RotateCw,
     GitCompare,
+    PanelRight,
   } from 'lucide-svelte';
   import {
     fileEditorStore,
@@ -242,9 +243,20 @@
   });
 
   // Apply renderSideBySide toggle without a full IPC reload.
+  // layout() is required: updateOptions alone doesn't trigger Monaco re-render.
   $effect(() => {
     if (diffEditor) {
       diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+      diffEditor.layout();
+    }
+  });
+
+  // When switching back to a diff tab, visibility changes from hidden→visible.
+  // Because visibility:hidden doesn't affect element size, automaticLayout
+  // doesn't detect the change. Force layout after the DOM settles.
+  $effect(() => {
+    if (isDiffTab && diffEditor) {
+      void tick().then(() => diffEditor?.layout());
     }
   });
 
@@ -494,6 +506,11 @@
       const r = editorState.floatingRect;
       return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 60;`;
     }
+    if (editorState.displayMode === 'embedded') {
+      // Embedded: part of the normal flex layout — no position:fixed.
+      // Width driven by drawerWidth (shared with drawer mode / resizable).
+      return `width: ${editorState.drawerWidth}px; flex-shrink: 0;`;
+    }
     // drawer: anchored to the right, **below the 44px header bar** so the
     // titlebar + workspace tabs remain visible/interactive (用户反馈：抽屉不能遮挡顶部 header)。
     const TOP_OFFSET = 44;
@@ -502,10 +519,11 @@
 </script>
 
 <div
-  class="wf-file-editor flex flex-col bg-[var(--wf-surface-2)]/98 backdrop-blur-xl border border-[var(--wf-border)] shadow-2xl {editorState.displayMode ===
-  'floating'
+  class="wf-file-editor flex flex-col bg-[var(--wf-surface-2)]/98 backdrop-blur-xl border border-[var(--wf-border)] shadow-2xl {editorState.displayMode === 'floating'
     ? 'rounded-lg overflow-hidden'
-    : 'rounded-l-lg'}"
+    : editorState.displayMode === 'drawer'
+      ? 'rounded-l-lg'
+      : ''}"
   style={containerStyle}
 >
   <!-- ═══ Header (tabs + actions) ═══ -->
@@ -522,7 +540,7 @@
       ? onFloatingDragStart
       : undefined}
   >
-    {#if editorState.displayMode === 'drawer'}
+    {#if editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded'}
       <button
         type="button"
         class="wf-no-drag flex h-9 w-8 shrink-0 items-center justify-center text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors border-r border-[var(--wf-border)]"
@@ -658,6 +676,19 @@
             >
               显示模式
             </div>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors {editorState.displayMode ===
+              'embedded'
+                ? 'text-[var(--wf-accent)]'
+                : 'text-[var(--wf-fg)]'}"
+              onclick={() => setMode('embedded')}
+            >
+              <PanelRight class="h-3.5 w-3.5" /> 嵌入模式
+              {#if editorState.displayMode === 'embedded'}<span
+                  class="ml-auto text-[10px]">✓</span
+                >{/if}
+            </button>
             <button
               type="button"
               class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors {editorState.displayMode ===
@@ -852,8 +883,8 @@
     </div>
   {/if}
 
-  <!-- ═══ Drawer left-edge resizer ═══ -->
-  {#if editorState.displayMode === 'drawer'}
+  <!-- ═══ Drawer / Embedded left-edge resizer ═══ -->
+  {#if editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded'}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[var(--wf-accent)]/40 transition-colors {isResizingDrawer

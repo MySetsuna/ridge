@@ -672,39 +672,25 @@
 				<!-- ══ CWD groups under this workspace ══ -->
 				{#if !group.collapsed}
 					{#each group.columns as col (col.id)}
-						<div class="explorer-section border-t border-[var(--wf-border)]/50">
-							<!-- Minimal section indicator: pane badges + refresh, no folder name/collapse -->
-							<div class="group/col flex items-center gap-1 px-2 py-0.5" title={col.cwd}>
-								<!-- Pane name badges (terminals sharing this CWD) -->
-								<div class="flex items-center gap-1 min-w-0 flex-1">
-									{#each col.paneIds as pid (pid)}
-										<span
-											class="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-medium bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] border border-[var(--wf-border)]/60 truncate max-w-[80px]"
-											title={getPaneLabel(pid, col.paneTitles)}
-										>
-											{getPaneLabel(pid, col.paneTitles)}
-										</span>
-									{/each}
-								</div>
-
-								<!-- Refresh button (hover-visible) -->
-								<button
-									type="button"
-									class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/col:opacity-60 hover:!opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
-									onclick={() => handleRefresh(col.id)}
-									title="刷新"
-								>
-									<RefreshCw class="h-3 w-3" />
-								</button>
-							</div>
-
+						<!-- group/col on the section so the hover-reveal refresh button works -->
+						<div class="explorer-section group/col border-t border-[var(--wf-border)]/50" title={col.cwd}>
 							<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
 							{#if slowLoading.has(col.id)}
 								<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label="加载中"></div>
 							{/if}
 
-							<!-- File tree body: cwd contents shown directly -->
-							<div class="explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto wf-scroll" : ""}">
+							<!-- File tree body: cwd contents shown directly, no root-folder header row.
+							     Refresh button floats at top-right on hover. -->
+							<div class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto wf-scroll" : ""}">
+								<button
+									type="button"
+									class="absolute top-0.5 right-1 z-10 flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/col:opacity-60 hover:!opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
+									onclick={() => handleRefresh(col.id)}
+									title="刷新 {col.cwd}"
+								>
+									<RefreshCw class="h-3 w-3" />
+								</button>
+
 								{#if col.tree}
 									{#if (col.tree.children ?? []).length > 0}
 										{#each col.tree.children ?? [] as child (child.path)}

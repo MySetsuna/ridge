@@ -1355,27 +1355,28 @@ function expandSidebar() {
       </div>
     </header>
 
-    <!-- 工作区内容 -->
+    <!-- 工作区内容：flex-row 让嵌入模式的 FileEditor 作为右侧列，
+         drawer/floating 模式的 FileEditor 通过 position:fixed 脱离普通流，不占用此空间。 -->
     <div
-      class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col bg-[var(--wf-bg-raised)]"
+      class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--wf-bg-raised)]"
     >
-      {#if $activeWorkspaceId && hasPaneLayout}
-        {#key $activeWorkspaceId}
-          <SplitContainer workspaceId={$activeWorkspaceId} node={rootNode} />
-        {/key}
-      {:else}
-        <div
-          class="flex flex-1 items-center justify-center text-[13px] text-[var(--wf-fg-muted)]"
-        >
-          正在加载工作区…
-        </div>
-        <!-- 全局右键菜单 -->
-      {/if}
+      <div class="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+        {#if $activeWorkspaceId && hasPaneLayout}
+          {#key $activeWorkspaceId}
+            <SplitContainer workspaceId={$activeWorkspaceId} node={rootNode} />
+          {/key}
+        {:else}
+          <div
+            class="flex flex-1 items-center justify-center text-[13px] text-[var(--wf-fg-muted)]"
+          >
+            正在加载工作区…
+          </div>
+        {/if}
+      </div>
+      <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流 -->
+      <FileEditor />
     </div>
   </div>
-
-  <!-- 全局文件编辑器（抽屉 / 悬浮 pin） -->
-  <FileEditor />
 
   <!-- Claude Code 启动 modal：任意 pane 的 Bot 按钮点击后唤起，集中在这里
        mount 一次，避免 SplitContainer 递归 render 出多份。 -->
