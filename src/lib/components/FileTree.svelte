@@ -22,6 +22,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	} from '$lib/stores/fileExplorer';
 	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import type { FileNode } from '$lib/stores/project';
+	import { searchInFolder } from '$lib/stores/searchState';
 	import FileTree from './FileTree.svelte';
 
 	interface Props {
@@ -346,6 +347,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					{ id: 'divider1', divider: true },
 			{ id: 'copy', label: '复制', action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: '复制相对路径', action: () => copyToClipboard(getRelativePath(node.path)) },
 					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
+					{ id: 'search-in-folder', label: '在文件夹中搜索', action: () => searchInFolder(node.path) },
 					{ id: 'divider2', divider: true },
 					{ id: 'rename', label: '重命名', action: () => beginRename() },
 					{ id: 'delete', label: '删除', action: () => void deleteItem() },
@@ -552,7 +554,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	const PendingCreateIcon = $derived(editing === 'create-file' ? File : Folder);
 </script>
 
-<div class="file-tree-node" style="padding-left: {depth * 16}px">
+<div class="file-tree-node" style="padding-left: {depth * 8}px">
 	<button
 		type="button"
 		class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[13px] transition-colors hover:bg-[var(--wf-accent)]/10 {isSelected
@@ -614,7 +616,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		<div class="file-tree-children">
 			{#if editing === 'create-file' || editing === 'create-folder'}
 				<!-- 新建条目占位行：深度 = depth + 1；图标按 kind 切换。 -->
-				<div class="file-tree-node" style="padding-left: {(depth + 1) * 16}px">
+				<div class="file-tree-node" style="padding-left: {(depth + 1) * 8}px">
 					<div
 						class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--wf-accent)]/10"
 					>
@@ -650,7 +652,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			{:else if hasLoaded && children.length === 0 && !editing}
 				<div
 					class="px-2 py-1 text-[12px] text-[var(--wf-fg-muted)]"
-					style="padding-left: {(depth + 1) * 16}px"
+					style="padding-left: {(depth + 1) * 8}px"
 				>
 					空目录
 				</div>

@@ -284,6 +284,7 @@ pub fn run() {
             project::reveal_in_file_manager,
             project::copy_path,
             project::move_path,
+            project::read_claude_history,
             process::get_pane_foreground_process,
             process::get_pane_cwd,
             // .wind file commands

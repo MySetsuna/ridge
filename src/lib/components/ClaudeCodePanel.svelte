@@ -1,22 +1,7 @@
 <script lang="ts">
   // src/lib/components/ClaudeCodePanel.svelte
-  //
-  // Standalone sidebar tab for the Claude Code extension. Replaces the
-  // earlier per-pane plugin panel that lived inside Explorer — having a
-  // dedicated tab lets users keep file navigation and Claude history
-  // visually separated, matching the user's spec ("不要糅合进资源管理器中").
-  //
-  // Lists every pane in every workspace with:
-  //   • workspace + pane name + cwd preview
-  //   • current agent_state (idle / busy)
-  //   • per-pane Claude history (last 5 prompts inline; full list expands)
-  //   • "在此 pane 启动 Claude" button → reuses ClaudeAgentLauncher modal
-  //
-  // The panel only renders when the extension toggle is on; the rail
-  // button itself also gates on the same flag. Disabling the extension
-  // hides every Claude affordance system-wide.
 
-  import { ChevronRight, ChevronDown, Bot, Trash2, Play, Settings } from 'lucide-svelte';
+  import { ChevronRight, ChevronDown, Bot, Trash2, Play, Settings, FolderOpen, GitBranch, FileText, FileDiff } from 'lucide-svelte';
   import {
     workspacesList,
     activeWorkspaceId,
@@ -32,9 +17,119 @@
   import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
   import { settingsStore, setClaudeExtensionEnabled } from '$lib/stores/settings';
   import { overlayScroll } from '$lib/actions/overlayScroll';
-  import { isTauri } from '@tauri-apps/api/core';
+  import { openDiffEditor } from './DiffEditorModal.svelte';
+  import { isTauri, invoke } from '@tauri-apps/api/core';
+  import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
 
-  // Per-pane collapsed state (UI-local; not worth persisting).
+  interface ClaudeHistoryEntry {
+    display: string;
+    timestamp: number;
+    project: string;
+    session_id?: string;
+  }
+
+  interface ScmFile {
+    path: string;
+    status: string;
+    group: string;
+  }
+
+  interface ScmStatus {
+    staged: ScmFile[];
+    changes: ScmFile[];
+    untracked: ScmFile[];
+  }
+
+  interface EntryChanges {
+    loading: boolean;
+    files: Array<{ path: string; status: string; cached: boolean }>;
+    error: boolean;
+  }
+
+  // File-based history from ~/.claude/history.jsonl
+  let fileHistory = $state<ClaudeHistoryEntry[]>([]);
+  let fileHistoryLoading = $state(false);
+  let fileHistoryCollapsed = $state(false);
+  let fileHistoryView = $state<'flat' | 'byProject'>('flat');
+
+  // Expanded entry (click to show git changes)
+  let expandedHistoryKey = $state<string | null>(null);
+  let entryChanges = $state(new Map<string, EntryChanges>());
+
+  function historyKey(e: ClaudeHistoryEntry): string {
+    return `${e.timestamp}:${e.session_id ?? e.project}`;
+  }
+
+  async function toggleHistoryEntry(entry: ClaudeHistoryEntry): Promise<void> {
+    const key = historyKey(entry);
+    if (expandedHistoryKey === key) {
+      expandedHistoryKey = null;
+      return;
+    }
+    expandedHistoryKey = key;
+    if (entryChanges.has(key)) return;
+    const next = new Map(entryChanges);
+    next.set(key, { loading: true, files: [], error: false });
+    entryChanges = next;
+    try {
+      const status = await invoke<ScmStatus>('get_scm_status', { repoRoot: entry.project });
+      const files = [
+        ...status.staged.map((f) => ({ path: f.path, status: f.status, cached: true })),
+        ...status.changes.map((f) => ({ path: f.path, status: f.status, cached: false })),
+      ];
+      const done = new Map(entryChanges);
+      done.set(key, { loading: false, files, error: false });
+      entryChanges = done;
+    } catch {
+      const err = new Map(entryChanges);
+      err.set(key, { loading: false, files: [], error: true });
+      entryChanges = err;
+    }
+  }
+
+  // Grouped view
+  const fileHistoryByProject = $derived.by(() => {
+    const map = new Map<string, { label: string; entries: ClaudeHistoryEntry[] }>();
+    for (const entry of fileHistory) {
+      const proj = entry.project.replace(/\\/g, '/');
+      const label = proj.split('/').pop() ?? proj;
+      if (!map.has(proj)) map.set(proj, { label, entries: [] });
+      map.get(proj)!.entries.push(entry);
+    }
+    return Array.from(map.entries()).map(([proj, v]) => ({ proj, ...v }));
+  });
+
+  async function loadFileHistory(): Promise<void> {
+    if (!isTauri()) return;
+    fileHistoryLoading = true;
+    try {
+      // Pass empty array — no filtering, show all history across all projects
+      fileHistory = await invoke<ClaudeHistoryEntry[]>('read_claude_history', {
+        projectPaths: [],
+        limit: 100,
+      });
+    } catch {
+      // Silently ignore: ~/.claude/history.jsonl may not exist
+    } finally {
+      fileHistoryLoading = false;
+    }
+  }
+
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  onMount(() => {
+    void loadFileHistory();
+    refreshTimer = setInterval(() => { void loadFileHistory(); }, 30_000);
+  });
+  onDestroy(() => {
+    if (refreshTimer !== undefined) clearInterval(refreshTimer);
+  });
+
+  $effect(() => {
+    const _cwds = $paneCwdStore;
+    void loadFileHistory();
+  });
+
   let collapsedPanes = $state(new Set<string>());
   function togglePane(paneId: string): void {
     const next = new Set(collapsedPanes);
@@ -46,11 +141,6 @@
   let settingsOpen = $state(false);
   let settingsAnchor: HTMLElement | undefined = $state();
 
-  // Outside-click + Esc dismissal for the settings popover. Mirrors the
-  // pattern in PaneGitPill / SourceControl branch picker — capture-phase
-  // mousedown so press-then-drag-into-popover doesn't get treated as
-  // outside. Listener is attached unconditionally; cheap and avoids a
-  // mount/unmount churn each toggle.
   $effect(() => {
     function onMouseDown(ev: MouseEvent) {
       if (!settingsOpen) return;
@@ -72,7 +162,6 @@
     };
   });
 
-  /** Walk the recursive pane tree to a flat array of leaves with metadata. */
   interface LeafEntry {
     paneId: string;
     agentState: 'idle' | 'busy' | 'launching' | undefined;
@@ -90,18 +179,16 @@
     return out;
   }
 
-  // `paneTreeStore` only holds the ACTIVE workspace's tree (other workspaces
-  // are kept server-side and swap in on activation). So the panes we can
-  // see are exactly that workspace's panes. The header strip lists all
-  // workspaces so the user can switch via WorkspaceTabs in the top bar
-  // without leaving this panel — but we don't pretend to know the others'
-  // pane lists, which would require a backend roundtrip per workspace.
   const flattened = $derived(flattenLeaves($paneTreeStore));
   const activeWs = $derived($workspacesList.find((w) => w.id === $activeWorkspaceId));
 
   function timestamp(at: number): string {
     const d = new Date(at);
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function dateLabel(at: number): string {
+    return new Date(at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
   function preview(text: string, max = 60): string {
@@ -117,8 +204,19 @@
     return '…/' + parts.slice(-2).join('/');
   }
 
-  // Lazy-prime each pane's history on first render so subsequent reads hit
-  // the cached array. Cheap: localStorage read per pane on mount only.
+  function statusLabel(s: string): string {
+    const map: Record<string, string> = { M: '改', A: '增', D: '删', R: '移', C: '复', U: '冲' };
+    return map[s[0]?.toUpperCase() ?? ''] ?? s[0] ?? '?';
+  }
+
+  function statusColor(s: string): string {
+    const c = s[0]?.toUpperCase() ?? '';
+    if (c === 'M' || c === 'U') return 'text-amber-400';
+    if (c === 'A') return 'text-emerald-400';
+    if (c === 'D') return 'text-red-400';
+    return 'text-[var(--wf-fg-muted)]';
+  }
+
   $effect(() => {
     for (const leaf of flattened) {
       getHistoryForPane(leaf.paneId);
@@ -128,12 +226,10 @@
   function disableExtension(): void {
     settingsOpen = false;
     setClaudeExtensionEnabled(false);
-    // After disable the rail button + this tab vanish; +page.svelte's
-    // sidebarTab effect falls back to 'files'.
   }
 </script>
 
-<!-- Header (sticky 11 高，与其它 tab 头部一致) -->
+<!-- Header -->
 <div
   data-tauri-drag-region
   class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] relative"
@@ -152,9 +248,6 @@
       <Settings class="h-3.5 w-3.5" />
     </button>
   {#if settingsOpen}
-    <!-- Anchor + popover share `settingsAnchor` so the global mousedown
-         handler can use `.contains(target)` to detect inside-vs-outside.
-         Esc dismissal is wired in the same effect. -->
     <div
       class="absolute right-2 top-9 z-30 min-w-[220px] rounded-lg border border-[var(--wf-border)] bg-[var(--wf-bg-raised)] shadow-xl py-1 text-[12px]"
     >
@@ -174,21 +267,13 @@
   </div>
 </div>
 
-<!-- Body: per-pane list with history -->
-<div class="flex-1 min-h-0" use:overlayScroll>
+<!-- Body -->
+<div class="flex-1 min-h-0 flex flex-col" use:overlayScroll>
   {#if flattened.length === 0}
     <div class="p-4 text-[12px] text-[var(--wf-fg-muted)] text-center">
       当前工作区无 pane —— 打开终端后将在此显示。
     </div>
   {:else if activeWs}
-    <!-- Single workspace block — the active one. Other workspaces show in
-         the WorkspaceTabs strip in the top bar; switching there will
-         instantly re-derive `flattened` and re-render this body. Listing
-         every workspace here would either need a backend RPC per ws (for
-         their pane trees) or duplicate the same `flattened` list under
-         each header (the round-27 review caught the duplicate-rendering
-         bug). Single-active is the honest representation of available
-         data. -->
     <div class="border-b border-[var(--wf-border)]/40 last:border-b-0">
       <div class="sticky top-0 z-10 px-3 h-7 flex items-center gap-1.5 bg-[var(--wf-surface-2)]/92 backdrop-blur-md text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
         <span class="flex-1 truncate">{activeWs.name ?? `工作区 ${activeWs.index + 1}`}</span>
@@ -277,4 +362,164 @@
         {/each}
       </div>
     {/if}
+
+  <!-- ── 命令行历史：来自 ~/.claude/history.jsonl ── -->
+  {#if fileHistory.length > 0 || fileHistoryLoading}
+    <div class="border-t border-[var(--wf-border)] mt-auto">
+      <!-- Section header -->
+      <div
+        class="sticky top-0 z-10 w-full px-3 h-7 flex items-center gap-1.5 bg-[var(--wf-surface-2)]/92 backdrop-blur-md text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] cursor-pointer select-none hover:bg-[var(--wf-surface)] transition-colors"
+        role="button"
+        tabindex="0"
+        onclick={() => { fileHistoryCollapsed = !fileHistoryCollapsed; }}
+        onkeydown={(e) => e.key === 'Enter' && (fileHistoryCollapsed = !fileHistoryCollapsed)}
+        title="来自 ~/.claude/history.jsonl 的历史记录"
+      >
+        <ChevronRight class="h-3 w-3 transition-transform duration-150 {fileHistoryCollapsed ? '' : 'rotate-90'}" />
+        <span class="flex-1">命令行历史</span>
+        {#if fileHistoryLoading}
+          <span class="text-[9px] opacity-50">…</span>
+        {:else if fileHistoryView === 'byProject'}
+          <span class="text-[var(--wf-fg)]">{fileHistoryByProject.length} 个项目</span>
+        {:else}
+          <span class="text-[var(--wf-fg)]">{fileHistory.length}</span>
+        {/if}
+
+        <!-- View toggle: flat / by-project -->
+        {#if !fileHistoryCollapsed && fileHistory.length > 0}
+          <button
+            type="button"
+            class="flex items-center gap-0.5 h-5 px-1.5 rounded text-[10px] border transition-colors
+              {fileHistoryView === 'byProject'
+                ? 'bg-[var(--wf-accent)]/20 border-[var(--wf-accent)]/40 text-[var(--wf-accent)]'
+                : 'border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]'}"
+            title={fileHistoryView === 'byProject' ? '切换为按时间排列' : '切换为按项目分组'}
+            onclick={(e) => {
+              e.stopPropagation();
+              fileHistoryView = fileHistoryView === 'flat' ? 'byProject' : 'flat';
+            }}
+          >
+            <FolderOpen class="h-2.5 w-2.5" />
+          </button>
+        {/if}
+
+        <button
+          type="button"
+          class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-colors"
+          title="刷新历史"
+          onclick={(e) => { e.stopPropagation(); void loadFileHistory(); }}
+        >
+          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </button>
+      </div>
+
+      {#if !fileHistoryCollapsed}
+        {#if fileHistoryView === 'flat'}
+          <!-- Flat view: all entries sorted by time -->
+          {#each fileHistory as entry (historyKey(entry))}
+            {@const key = historyKey(entry)}
+            {@const isExpanded = expandedHistoryKey === key}
+            {@const changes = entryChanges.get(key)}
+            <div class="border-t border-[var(--wf-border)]/20">
+              <button
+                type="button"
+                class="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)]/40 transition-colors group {isExpanded ? 'bg-[var(--wf-surface)]/30' : ''}"
+                onclick={() => void toggleHistoryEntry(entry)}
+              >
+                <ChevronRight class="h-3 w-3 shrink-0 mt-0.5 text-[var(--wf-fg-muted)] transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}" />
+                <Bot class="h-3 w-3 shrink-0 mt-0.5 text-[var(--wf-fg-muted)]" />
+                <div class="flex-1 min-w-0">
+                  <div class="truncate text-[11px] text-[var(--wf-fg)]">{preview(entry.display)}</div>
+                  <div class="text-[9px] text-[var(--wf-fg-muted)] flex items-center gap-1.5 mt-0.5">
+                    <span class="font-mono">{dateLabel(entry.timestamp)}</span>
+                    <span class="truncate opacity-70">{entry.project.replace(/\\/g,'/').split('/').pop()}</span>
+                  </div>
+                </div>
+              </button>
+              {#if isExpanded}
+                <div class="pl-8 pr-3 pb-1.5">
+                  {#if changes?.loading}
+                    <div class="text-[10px] text-[var(--wf-fg-muted)] py-1">加载变更中…</div>
+                  {:else if changes?.error}
+                    <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无法读取 git 状态</div>
+                  {:else if changes && changes.files.length === 0}
+                    <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无未提交变更</div>
+                  {:else if changes}
+                    {#each changes.files as f (f.path)}
+                      <button
+                        type="button"
+                        class="w-full flex items-center gap-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--wf-accent)]/10 rounded px-1 transition-colors"
+                        title="点击查看 diff：{f.path}"
+                        onclick={() => openDiffEditor({ repoRoot: entry.project, path: f.path, cached: f.cached })}
+                      >
+                        <span class="shrink-0 text-[10px] font-mono w-4 text-center {statusColor(f.status)}">{statusLabel(f.status)}</span>
+                        <span class="truncate text-[var(--wf-fg-muted)]">{f.path}</span>
+                        <FileDiff class="h-2.5 w-2.5 shrink-0 text-[var(--wf-fg-muted)]/40 ml-auto" />
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        {:else}
+          <!-- By-project view: grouped by project directory -->
+          {#each fileHistoryByProject as group (group.proj)}
+            <div class="border-t border-[var(--wf-border)]/40">
+              <div class="px-3 py-1 flex items-center gap-1.5 bg-[var(--wf-surface)]/30 text-[10px] text-[var(--wf-fg-muted)] font-semibold uppercase tracking-wider">
+                <FolderOpen class="h-3 w-3 shrink-0 text-[var(--wf-accent)]" />
+                <span class="truncate" title={group.proj}>{group.label}</span>
+                <span class="ml-auto text-[var(--wf-fg)]">{group.entries.length}</span>
+              </div>
+              {#each group.entries as entry (historyKey(entry))}
+                {@const key = historyKey(entry)}
+                {@const isExpanded = expandedHistoryKey === key}
+                {@const changes = entryChanges.get(key)}
+                <div class="border-t border-[var(--wf-border)]/10">
+                  <button
+                    type="button"
+                    class="w-full flex items-start gap-2 pl-6 pr-3 py-1.5 text-left hover:bg-[var(--wf-surface)]/40 transition-colors {isExpanded ? 'bg-[var(--wf-surface)]/30' : ''}"
+                    onclick={() => void toggleHistoryEntry(entry)}
+                  >
+                    <ChevronRight class="h-3 w-3 shrink-0 mt-0.5 text-[var(--wf-fg-muted)] transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}" />
+                    <div class="flex-1 min-w-0">
+                      <div class="truncate text-[11px] text-[var(--wf-fg)]">{preview(entry.display)}</div>
+                      <span class="font-mono text-[9px] text-[var(--wf-fg-muted)]">{dateLabel(entry.timestamp)}</span>
+                    </div>
+                  </button>
+                  {#if isExpanded}
+                    <div class="pl-10 pr-3 pb-1.5">
+                      {#if changes?.loading}
+                        <div class="text-[10px] text-[var(--wf-fg-muted)] py-1">加载变更中…</div>
+                      {:else if changes?.error}
+                        <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无法读取 git 状态</div>
+                      {:else if changes && changes.files.length === 0}
+                        <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无未提交变更</div>
+                      {:else if changes}
+                        {#each changes.files as f (f.path)}
+                          <button
+                            type="button"
+                            class="w-full flex items-center gap-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--wf-accent)]/10 rounded px-1 transition-colors"
+                            title="点击查看 diff：{f.path}"
+                            onclick={() => openDiffEditor({ repoRoot: entry.project, path: f.path, cached: f.cached })}
+                          >
+                            <span class="shrink-0 text-[10px] font-mono w-4 text-center {statusColor(f.status)}">{statusLabel(f.status)}</span>
+                            <span class="truncate text-[var(--wf-fg-muted)]">{f.path}</span>
+                            <FileDiff class="h-2.5 w-2.5 shrink-0 text-[var(--wf-fg-muted)]/40 ml-auto" />
+                          </button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/each}
+        {/if}
+      {/if}
+    </div>
+  {/if}
   </div>

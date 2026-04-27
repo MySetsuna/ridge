@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import * as monaco from 'monaco-editor';
   import {
     X,
@@ -13,15 +13,21 @@
     XCircle,
     Eye,
     Code2,
+    Columns,
+    AlignLeft,
+    RotateCw,
+    GitCompare,
   } from 'lucide-svelte';
   import {
     fileEditorStore,
     activeFile,
     clampRectToViewport,
     SIDEBAR_TAB_W,
+    langFromPath,
     type EditorDisplayMode,
     type FloatingRect,
   } from '$lib/stores/fileEditor';
+  import { invoke, isTauri } from '@tauri-apps/api/core';
   import MarkdownPreview from './MarkdownPreview.svelte';
   import { isMarkdownPath } from '$lib/utils/markdown';
   import { overlayScroll } from '$lib/actions/overlayScroll';
@@ -33,6 +39,17 @@
   let isResizingDrawer = $state(false);
   let isDraggingFloating = $state(false);
   let isResizingFloating = $state(false);
+
+  // ─── Diff editor state ─────────────────────────────────────────────────────
+  let diffMountPoint: HTMLDivElement | undefined;
+  let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+  let diffOriginalModel: monaco.editor.ITextModel | null = null;
+  let diffModifiedModel: monaco.editor.ITextModel | null = null;
+  let diffLoadedTabPath: string | null = null;
+  let diffLoading = $state(false);
+  let diffError = $state('');
+  let diffRenderSideBySide = $state(typeof window !== 'undefined' ? window.innerWidth >= 900 : true);
+  let diffReqId = 0; // generation counter to cancel stale async loads
   /**
    * Monaco's current cursor line (1-based). Drives markdown preview auto-scroll
    * (VS Code "Markdown: Preview Auto-Scroll"). Updated via
@@ -47,19 +64,68 @@
 
   let editorState = $derived($fileEditorStore);
   let current = $derived($activeFile);
-  // markdown 文件在 preview 模式下不挂 Monaco；切回 source 才实例化/恢复 model。
   let isMarkdownFile = $derived(!!current && isMarkdownPath(current.path));
-  let inPreviewMode = $derived(
-    !!current && isMarkdownFile && current.viewMode === 'preview'
-  );
-// 图片文件
-let isImageFile = $derived(!!current && current.isImage);
+  let inPreviewMode = $derived(!!current && isMarkdownFile && current.viewMode === 'preview');
+  let isImageFile = $derived(!!current && current.isImage);
+  let isDiffTab = $derived(!!current?.diffArgs);
 
   // ─── Monaco lifecycle ──────────────────────────────────────────────────────
   // Monaco is intentionally used without web workers here (same as Pane.svelte's
   // existing editor mode). Syntax highlighting works in the main thread; language
   // server features (linting, go-to-definition) are disabled, which is fine for a
   // light-weight in-place editor.
+
+  function disposeDiffEditor(): void {
+    diffEditor?.dispose();
+    diffEditor = null;
+    diffOriginalModel?.dispose();
+    diffModifiedModel?.dispose();
+    diffOriginalModel = null;
+    diffModifiedModel = null;
+    diffLoadedTabPath = null;
+  }
+
+  async function loadDiff(args: { repoRoot: string; path: string; cached: boolean }, tabPath: string): Promise<void> {
+    const myId = ++diffReqId;
+    diffLoading = true;
+    diffError = '';
+    disposeDiffEditor();
+    try {
+      if (!isTauri()) throw new Error('需要 Tauri 环境');
+      const v = await invoke<{ original: string; modified: string }>('git_get_file_versions', {
+        repoRoot: args.repoRoot,
+        path: args.path,
+        cached: args.cached,
+      });
+      if (myId !== diffReqId) return;
+      if (!diffMountPoint) return;
+      await tick();
+      if (myId !== diffReqId) return;
+      const lang = langFromPath(args.path);
+      diffOriginalModel = monaco.editor.createModel(v.original, lang);
+      diffModifiedModel = monaco.editor.createModel(v.modified, lang);
+      diffEditor = monaco.editor.createDiffEditor(diffMountPoint, {
+        theme: 'vs-dark',
+        automaticLayout: true,
+        readOnly: true,
+        renderOverviewRuler: false,
+        minimap: { enabled: false },
+        fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
+        fontSize: 13,
+        renderWhitespace: 'boundary',
+        scrollBeyondLastLine: false,
+      });
+      diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+      diffEditor.setModel({ original: diffOriginalModel, modified: diffModifiedModel });
+      diffLoadedTabPath = tabPath;
+    } catch (e) {
+      if (myId !== diffReqId) return;
+      diffError = e instanceof Error ? e.message : String(e);
+      disposeDiffEditor();
+    } finally {
+      if (myId === diffReqId) diffLoading = false;
+    }
+  }
 
   onDestroy(() => {
     if (editor) {
@@ -68,12 +134,15 @@ let isImageFile = $derived(!!current && current.isImage);
       if (model) model.dispose();
       editor = null;
     }
+    disposeDiffEditor();
   });
 
   // Mount editor once the DOM node is available AND the panel is visible.
+  // Skip for image files and diff tabs — they use their own display layer.
   $effect(() => {
     if (!mountPoint || !editorState.isVisible) return;
     if (editor) return;
+    if (current?.isImage || current?.diffArgs) return;
     const initialValue = current?.content ?? '';
     const initialLang = current?.language ?? 'plaintext';
     editor = monaco.editor.create(mountPoint, {
@@ -107,15 +176,11 @@ let isImageFile = $derived(!!current && current.isImage);
   });
 
   // Swap editor model when active tab changes.
-  //
-  // ✱ 关键：必须**先读 `current`** 再检查 `editor`。Svelte 5 $effect 只对**实际执行到**
-  //   的 reactive reads 建立订阅。如果第一次运行时 editor 尚为 null 直接 return，就会
-  //   错过对 `current` 的订阅，导致后续切 Tab / 打开新文件时 effect 不再重跑 ——
-  //   表现为：第二个及以后打开的文件 Monaco 完全没反应（也就无法编辑/保存，
-  //   因为 onDidChangeModelContent 依然绑在第一个 model 上）。
   $effect(() => {
-    const c = current; // 先订阅当前活动文件
+    const c = current; // 先读 current 建立响应式订阅
     if (!editor) return;
+    // Image and diff tabs don't use the regular Monaco editor.
+    if (c?.isImage || c?.diffArgs) return;
     // 所有 Monaco 调用统一包 try/catch：createModel 会懒触发 language contribution 的
     // 异步加载，失败时可能抛 Event 样式的对象，直接冒到 window 就是 “Uncaught [object Event]”。
     // 这里把异常吞在 effect 内，同时尽量把 editor 恢复到可用状态（降级 plaintext）。
@@ -158,6 +223,28 @@ let isImageFile = $derived(!!current && current.isImage);
       editor.focus();
     } catch (err) {
       console.error('[FileEditor] model swap failed', err);
+    }
+  });
+
+  // ─── Diff editor lifecycle ────────────────────────────────────────────────
+  // Load or reload when the active tab is (or changes to) a diff tab.
+  // Uses diffReqId to discard stale async results on rapid switching.
+  $effect(() => {
+    const c = current;
+    if (!c?.diffArgs) {
+      // Switched away from diff tab — dispose
+      if (diffLoadedTabPath !== null) disposeDiffEditor();
+      return;
+    }
+    if (!diffMountPoint) return;
+    if (c.path === diffLoadedTabPath) return; // same diff already shown
+    void loadDiff(c.diffArgs, c.path);
+  });
+
+  // Apply renderSideBySide toggle without a full IPC reload.
+  $effect(() => {
+    if (diffEditor) {
+      diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
     }
   });
 
@@ -446,10 +533,8 @@ let isImageFile = $derived(!!current && current.isImage);
         <PanelRightClose class="h-3.5 w-3.5" />
       </button>
     {/if}
-    <!-- Tabs: overlayscrollbars overlay scrollbar, no gutter reservation.
-         layout:false keeps existing flex/items-center classes; tabs use
-         border-right separators rather than gap spacing. -->
-    <div class="flex flex-nowrap items-center min-w-0" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
+    <!-- Tabs: pure CSS horizontal scroll, no gutter, wheel handler in action -->
+    <div class="flex-1 min-w-0" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
       {#each editorState.openFiles as f, i (f.path)}
         <button
           type="button"
@@ -472,6 +557,9 @@ let isImageFile = $derived(!!current && current.isImage);
           ondrop={(e) => onTabDrop(e, i)}
           ondragend={onTabDragEnd}
         >
+          {#if f.diffArgs}
+            <GitCompare class="h-3 w-3 shrink-0 text-[var(--wf-accent)]/70" />
+          {/if}
           <span class="truncate max-w-[160px]">{f.name}</span>
           {#if f.isDirty}
             <span
@@ -501,24 +589,54 @@ let isImageFile = $derived(!!current && current.isImage);
     <div
       class="flex ml-auto items-center gap-0.5 px-1 shrink-0 border-l border-[var(--wf-border)]"
     >
-      <button
-        type="button"
-        class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        title="查找 (Ctrl+F)"
-        disabled={!current}
-        onclick={triggerFind}
-      >
-        <Search class="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        title="保存 (Ctrl+S)"
-        disabled={!current?.isDirty}
-        onclick={() => fileEditorStore.saveActive()}
-      >
-        <Save class="h-3.5 w-3.5" />
-      </button>
+      {#if isDiffTab}
+        <!-- Diff-specific controls: render mode toggle + reload -->
+        <div class="flex items-center border border-[var(--wf-border)] rounded mr-0.5">
+          <button
+            type="button"
+            class="flex h-6 w-7 items-center justify-center text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors {diffRenderSideBySide ? 'bg-[var(--wf-accent)]/20 text-[var(--wf-accent)]' : ''}"
+            title="并排 diff"
+            onclick={() => (diffRenderSideBySide = true)}
+          >
+            <Columns class="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            class="flex h-6 w-7 items-center justify-center text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors {!diffRenderSideBySide ? 'bg-[var(--wf-accent)]/20 text-[var(--wf-accent)]' : ''}"
+            title="内联 diff"
+            onclick={() => (diffRenderSideBySide = false)}
+          >
+            <AlignLeft class="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <button
+          type="button"
+          class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors"
+          title="重新加载 diff"
+          onclick={() => { if (current?.diffArgs) void loadDiff(current.diffArgs, current.path); }}
+        >
+          <RotateCw class="h-3.5 w-3.5 {diffLoading ? 'animate-spin' : ''}" />
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          title="查找 (Ctrl+F)"
+          disabled={!current}
+          onclick={triggerFind}
+        >
+          <Search class="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          title="保存 (Ctrl+S)"
+          disabled={!current?.isDirty}
+          onclick={() => fileEditorStore.saveActive()}
+        >
+          <Save class="h-3.5 w-3.5" />
+        </button>
+      {/if}
 
       <div class="wf-editor-settings relative">
         <button
@@ -616,15 +734,35 @@ let isImageFile = $derived(!!current && current.isImage);
     </div>
   </div>
 
-  <!-- ═══ Monaco host ═══
-         Monaco 始终挂载；markdown 预览模式下用一块绝对定位的预览盖在上面。
-         这样切 source ↔ preview 不需要销毁重建 Monaco，编辑历史 / undo 栈都保留。 -->
+  <!-- ═══ Monaco host ═══ -->
   <div class="flex-1 min-h-0 relative">
+    <!-- Regular editor — hidden when showing diff or markdown preview -->
     <div
       bind:this={mountPoint}
       class="absolute inset-0"
-      style={inPreviewMode ? 'visibility: hidden;' : ''}
+      style={inPreviewMode || isDiffTab ? 'visibility: hidden;' : ''}
     ></div>
+
+    <!-- Diff editor mount point — always in DOM so bind:this is stable -->
+    <div
+      bind:this={diffMountPoint}
+      class="absolute inset-0"
+      style={!isDiffTab || !!diffError ? 'visibility: hidden;' : ''}
+    ></div>
+
+    <!-- Diff loading / error overlays -->
+    {#if isDiffTab && diffLoading}
+      <div class="absolute top-2 right-3 text-[10px] text-[var(--wf-fg-muted)] bg-[var(--wf-surface)]/80 px-2 py-0.5 rounded pointer-events-none">
+        加载中…
+      </div>
+    {/if}
+    {#if isDiffTab && diffError}
+      <div class="absolute inset-0 flex items-center justify-center p-6">
+        <div class="max-w-[420px] text-center text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3 font-mono whitespace-pre-wrap">
+          {diffError}
+        </div>
+      </div>
+    {/if}
 
     {#if current && isMarkdownFile && inPreviewMode}
       <!-- The previous `use:overlayScroll` host was `absolute inset-0`,

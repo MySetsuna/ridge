@@ -2,6 +2,19 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Returns a `Command::new("git")` with CREATE_NO_WINDOW on Windows so
+/// git subprocesses never flash a console window in the Tauri GUI app.
+fn git_cmd() -> Command {
+    let mut cmd = Command::new("git");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// 与前端 GitGraph 约定一致
 #[derive(Clone, Debug, Serialize)]
 pub struct CommitNode {
@@ -50,7 +63,7 @@ pub struct GitRepoInfo {
 
 /// 从 git 仓库获取分支列表
 fn get_git_branches(repo_path: &Path) -> Vec<String> {
-    let output = Command::new("git")
+    let output = git_cmd()
         .args(["branch", "-a", "--format=%(refname:short)"])
         .current_dir(repo_path)
         .output();
@@ -69,7 +82,7 @@ fn get_git_branches(repo_path: &Path) -> Vec<String> {
 
 /// 获取当前分支
 fn get_current_branch(repo_path: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = git_cmd()
         .args(["branch", "--show-current"])
         .current_dir(repo_path)
         .output();
@@ -79,7 +92,7 @@ fn get_current_branch(repo_path: &Path) -> Option<String> {
             let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if branch.is_empty() {
                 // 可能是 detached HEAD，尝试获取 refname
-                let output = Command::new("git")
+                let output = git_cmd()
                     .args(["rev-parse", "--short", "HEAD"])
                     .current_dir(repo_path)
                     .output();
@@ -231,7 +244,7 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
         "--pretty=format:%H{0}%P{0}%an{0}%at{0}%D{0}%s{1}",
         FIELD_SEP, RECORD_SEP
     );
-    let output = Command::new("git")
+    let output = git_cmd()
         .args([
             "log",
             "--decorate=full",
@@ -249,7 +262,7 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
             // 获取当前分支以标记属于当前分支的提交
             if let Some(branch) = get_current_branch(repo_path) {
                 // 获取当前分支的最新提交 hash
-                let head_output = Command::new("git")
+                let head_output = git_cmd()
                     .args(["rev-parse", &format!("{}^{{commit}}", branch)])
                     .current_dir(repo_path)
                     .output();
@@ -303,7 +316,13 @@ pub fn find_git_repo_root(path: String) -> Option<String> {
 /// 当前工作区视野中的全部仓库。返回的路径均为 Windows 下正斜杠形式，和
 /// `paneCwdStore` 的键空间保持一致。
 #[tauri::command]
-pub fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec<String> {
+pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec<String> {
+    tokio::task::spawn_blocking(move || find_git_repos_below_sync(path, max_depth))
+        .await
+        .unwrap_or_default()
+}
+
+fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
     // Directories we never descend into. Grouped roughly by ecosystem so future
     // additions land in the right bucket. Keep this list tight — each entry
     // short-circuits a potentially huge subtree scan. If a project does
@@ -539,12 +558,18 @@ fn parse_numstat(stdout: &str) -> std::collections::HashMap<String, (u32, u32)> 
 
 /// 获取仓库的 VSCode 源代码管理视图（staged / changes / untracked 分组）。
 #[tauri::command]
-pub fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
+pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
+    tokio::task::spawn_blocking(move || get_scm_status_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let path = Path::new(&repo_root);
     if !path.join(".git").exists() {
         return Err(format!("Not a git repo: {}", repo_root));
     }
-    let output = Command::new("git")
+    let output = git_cmd()
         .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
         .current_dir(path)
         .output()
@@ -563,7 +588,7 @@ pub fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
     // a base — staging a partial change should still let the staged column
     // show its own +N/-N. Each is one process spawn; an order of magnitude
     // cheaper than the per-file path the modal used to take.
-    let unstaged_counts = Command::new("git")
+    let unstaged_counts = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "--"])
         .current_dir(path)
         .output()
@@ -571,7 +596,7 @@ pub fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
         .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
         .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
         .unwrap_or_default();
-    let staged_counts = Command::new("git")
+    let staged_counts = git_cmd()
         .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
         .current_dir(path)
         .output()
@@ -606,9 +631,15 @@ pub fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
 
 /// 暂存指定文件（相对于 repo_root 的路径列表，空=全部）
 #[tauri::command]
-pub fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+pub async fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_stage_sync(repo_root, paths))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_cmd();
     cmd.arg("add");
     if paths.is_empty() { cmd.arg("--all"); } else { for p in &paths { cmd.arg(p); } }
     let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
@@ -618,13 +649,19 @@ pub fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
 
 /// 撤销暂存（reset HEAD -- <paths>，空=全部）
 #[tauri::command]
-pub fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+pub async fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_unstage_sync(repo_root, paths))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_cmd();
     cmd.args(["reset", "HEAD", "--"]);
     if paths.is_empty() {
         // reset HEAD 不带路径只会重置索引到 HEAD——先拿到 diff --cached 的文件列表
-        let cached = Command::new("git")
+        let cached = git_cmd()
             .args(["diff", "--cached", "--name-only"])
             .current_dir(path).output().map_err(|e| e.to_string())?;
         if !cached.status.success() { return Err(String::from_utf8_lossy(&cached.stderr).to_string()); }
@@ -641,10 +678,16 @@ pub fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), String> 
 
 /// 丢弃工作区修改（checkout -- <paths>）——危险操作，前端应再次确认
 #[tauri::command]
-pub fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+pub async fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_discard_sync(repo_root, paths))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() { return Err("Refusing to discard all — specify paths".to_string()); }
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["checkout", "--"])
         .args(&paths)
         .current_dir(path).output().map_err(|e| e.to_string())?;
@@ -655,10 +698,16 @@ pub fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> 
 /// 创建 commit（使用 -m message）。未 stage 的更改不会被提交。
 /// amend=true 时等价 `git commit --amend -m`，用于修改最近一次提交。
 #[tauri::command]
-pub fn git_commit(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
+pub async fn git_commit(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_commit_sync(repo_root, message, amend))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
     if message.trim().is_empty() { return Err("Commit message is empty".to_string()); }
     let path = Path::new(&repo_root);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_cmd();
     cmd.args(["commit", "-m", &message]);
     if amend.unwrap_or(false) { cmd.arg("--amend"); }
     let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
@@ -682,9 +731,15 @@ pub struct BranchInfo {
 
 /// 列出本地 + 远端分支（去掉 HEAD 指针行），标记当前分支。
 #[tauri::command]
-pub fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, String> {
+pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, String> {
+    tokio::task::spawn_blocking(move || git_list_branches_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args([
             "branch",
             "--all",
@@ -719,14 +774,25 @@ pub fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, String> {
 /// `git checkout -b <branch> [<base>]`。`base` 可以是 `main`、`origin/main` 等
 /// 任意 ref；空或省略表示从当前 HEAD 切。
 #[tauri::command]
-pub fn git_checkout(
+pub async fn git_checkout(
+    repo_root: String,
+    branch: String,
+    create: Option<bool>,
+    base: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_checkout_sync(repo_root, branch, create, base))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_checkout_sync(
     repo_root: String,
     branch: String,
     create: Option<bool>,
     base: Option<String>,
 ) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_cmd();
     if create.unwrap_or(false) {
         cmd.args(["checkout", "-b", &branch]);
         // Trim and ignore empty / pure-whitespace base — common when the
@@ -752,9 +818,15 @@ pub fn git_checkout(
 }
 
 #[tauri::command]
-pub fn git_fetch(repo_root: String) -> Result<(), String> {
+pub async fn git_fetch(repo_root: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_fetch_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_fetch_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["fetch", "--all", "--prune"])
         .current_dir(path)
         .output()
@@ -766,9 +838,15 @@ pub fn git_fetch(repo_root: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_pull(repo_root: String) -> Result<(), String> {
+pub async fn git_pull(repo_root: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_pull_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_pull_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["pull", "--ff-only"])
         .current_dir(path)
         .output()
@@ -780,9 +858,15 @@ pub fn git_pull(repo_root: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
+pub async fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_push_sync(repo_root, set_upstream))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_push_sync(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_cmd();
     if set_upstream.unwrap_or(false) {
         // 首次 push 需要 --set-upstream；前端在发现 upstream=None 时传 true。
         cmd.args(["push", "--set-upstream", "origin", "HEAD"]);
@@ -807,13 +891,19 @@ pub fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(), Str
 /// pre-flight gives a deterministic friendly message and avoids spawning
 /// the failing subcommands at all.
 #[tauri::command]
-pub fn git_sync(repo_root: String) -> Result<(), String> {
+pub async fn git_sync(repo_root: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_sync_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_sync_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
 
     // Quick upstream probe — same parser used by get_scm_status, so the
     // detection logic is one-source-of-truth instead of "porcelain parser
     // says X, sync subcommand sniffs stderr for Y".
-    let probe = Command::new("git")
+    let probe = git_cmd()
         .args(["status", "--porcelain=v1", "-b", "--untracked-files=no"])
         .current_dir(path)
         .output()
@@ -834,7 +924,7 @@ pub fn git_sync(repo_root: String) -> Result<(), String> {
         &["push"],
     ];
     for args in steps {
-        let out = Command::new("git")
+        let out = git_cmd()
             .args(*args)
             .current_dir(path)
             .output()
@@ -875,9 +965,15 @@ pub fn git_op_in_progress(repo_root: String) -> GitOpInProgress {
 /// Abort a cherry-pick that's paused on conflict — `git cherry-pick
 /// --abort`. Restores the working tree to its pre-cherry-pick state.
 #[tauri::command]
-pub fn git_cherry_pick_abort(repo_root: String) -> Result<(), String> {
+pub async fn git_cherry_pick_abort(repo_root: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_cherry_pick_abort_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_cherry_pick_abort_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["cherry-pick", "--abort"])
         .current_dir(path)
         .output()
@@ -890,9 +986,15 @@ pub fn git_cherry_pick_abort(repo_root: String) -> Result<(), String> {
 
 /// Abort a revert that's paused on conflict — `git revert --abort`.
 #[tauri::command]
-pub fn git_revert_abort(repo_root: String) -> Result<(), String> {
+pub async fn git_revert_abort(repo_root: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_revert_abort_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_revert_abort_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["revert", "--abort"])
         .current_dir(path)
         .output()
@@ -912,12 +1014,18 @@ pub fn git_revert_abort(repo_root: String) -> Result<(), String> {
 /// different branch and replays it here. Same flow as VS Code's "Git:
 /// Cherry-Pick Commit" command.
 #[tauri::command]
-pub fn git_cherry_pick(repo_root: String, hash: String) -> Result<(), String> {
+pub async fn git_cherry_pick(repo_root: String, hash: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_cherry_pick_sync(repo_root, hash))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_cherry_pick_sync(repo_root: String, hash: String) -> Result<(), String> {
     if hash.trim().is_empty() {
         return Err("commit hash 不能为空".into());
     }
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["cherry-pick", hash.trim()])
         .current_dir(path)
         .output()
@@ -937,12 +1045,18 @@ pub fn git_cherry_pick(repo_root: String, hash: String) -> Result<(), String> {
 /// commit's changes. `--no-edit` skips the editor — frontend already
 /// surfaces the auto-generated message in the next status refresh.
 #[tauri::command]
-pub fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
+pub async fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_revert_sync(repo_root, hash))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_revert_sync(repo_root: String, hash: String) -> Result<(), String> {
     if hash.trim().is_empty() {
         return Err("commit hash 不能为空".into());
     }
     let path = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["revert", "--no-edit", hash.trim()])
         .current_dir(path)
         .output()
@@ -971,9 +1085,15 @@ pub struct GitDiffSummary {
 }
 
 #[tauri::command]
-pub fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, String> {
+pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, String> {
+    tokio::task::spawn_blocking(move || git_diff_summary_sync(repo_root))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
     let repo = Path::new(&repo_root);
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "HEAD", "--"])
         .current_dir(repo)
         .output()
@@ -1018,7 +1138,17 @@ pub struct GitFileVersions {
 }
 
 #[tauri::command]
-pub fn git_get_file_versions(
+pub async fn git_get_file_versions(
+    repo_root: String,
+    path: String,
+    cached: Option<bool>,
+) -> Result<GitFileVersions, String> {
+    tokio::task::spawn_blocking(move || git_get_file_versions_sync(repo_root, path, cached))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_get_file_versions_sync(
     repo_root: String,
     path: String,
     cached: Option<bool>,
@@ -1030,7 +1160,7 @@ pub fn git_get_file_versions(
     // bytes; passing through smudge filters could rewrite line endings and
     // make the diff look noisier than reality.
     let show = |spec: &str| -> Option<String> {
-        let out = Command::new("git")
+        let out = git_cmd()
             .args(["--no-pager", "show", spec])
             .current_dir(repo)
             .output()
@@ -1088,9 +1218,15 @@ pub fn git_get_file_versions(
 
 /// 文件 diff。`cached=true` 返回已暂存 diff (HEAD vs index)；false 返回工作区 diff (index vs working tree)。
 #[tauri::command]
-pub fn git_diff_file(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
+pub async fn git_diff_file(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || git_diff_file_sync(repo_root, path, cached))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_diff_file_sync(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
     let repo = Path::new(&repo_root);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_cmd();
     cmd.args(["--no-pager", "diff", "--no-color", "--unified=3"]);
     if cached.unwrap_or(false) { cmd.arg("--cached"); }
     cmd.arg("--");
@@ -1113,7 +1249,13 @@ pub fn get_git_graph(_workspace_id: String, _pane_id: String) -> Result<GitRepoI
 
 /// 根据 cwd 获取 git 仓库信息（前端调用此命令）
 #[tauri::command]
-pub fn get_git_info_with_cwd(cwd: String) -> Result<GitRepoInfo, String> {
+pub async fn get_git_info_with_cwd(cwd: String) -> Result<GitRepoInfo, String> {
+    tokio::task::spawn_blocking(move || get_git_info_with_cwd_sync(cwd))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
     let repo_path = Path::new(&cwd);
 
     // 检查是否是 git 仓库
@@ -1157,7 +1299,7 @@ pub fn get_git_info_with_cwd(cwd: String) -> Result<GitRepoInfo, String> {
 /// 内部函数：根据路径获取 git diff
 fn get_git_diff_internal(repo_path: &Path) -> GitDiffStatus {
     // 获取 diff 输出
-    let output = Command::new("git")
+    let output = git_cmd()
         .args(["diff", "--numstat", "--porcelain"])
         .current_dir(repo_path)
         .output();

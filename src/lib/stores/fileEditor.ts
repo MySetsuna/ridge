@@ -40,6 +40,11 @@ export interface OpenFile {
   isImage: boolean;
   /** Image URL (for image files) */
   imageUrl?: string;
+  /**
+   * If set, this tab is a read-only Monaco diff view (staged or working-tree).
+   * Tab path is `__diff__:<kind>:<repoRoot>:<filePath>`.
+   */
+  diffArgs?: { repoRoot: string; path: string; cached: boolean };
 }
 
 export interface FloatingRect {
@@ -495,6 +500,39 @@ function createStore() {
 
     hide(): void {
       update((s) => ({ ...s, isVisible: false }));
+    },
+
+    /**
+     * Open a diff tab (or activate the existing one).
+     * Tab path: `__diff__:<staged|working>:<repoRoot>:<filePath>`
+     * The file editor shows Monaco DiffEditor in place of the normal editor.
+     */
+    openDiffTab(args: { repoRoot: string; path: string; cached: boolean }): void {
+      const kind = args.cached ? 'staged' : 'working';
+      const tabPath = `__diff__:${kind}:${args.repoRoot.replace(/\\/g, '/')}:${args.path}`;
+      const filePart = args.path.split('/').pop() ?? args.path;
+      const label = args.cached ? '已暂存' : '工作区';
+      const name = `${filePart} (${label})`;
+
+      update((s) => {
+        const existing = s.openFiles.findIndex((f) => f.path === tabPath);
+        if (existing >= 0) {
+          return { ...s, activePath: tabPath, isVisible: true };
+        }
+        const newFile: OpenFile = {
+          path: tabPath,
+          name,
+          content: '',
+          originalContent: '',
+          language: langFromPath(args.path),
+          isDirty: false,
+          openedAt: Date.now(),
+          viewMode: 'source',
+          isImage: false,
+          diffArgs: args,
+        };
+        return { ...s, openFiles: [...s.openFiles, newFile], activePath: tabPath, isVisible: true };
+      });
     },
   };
 }

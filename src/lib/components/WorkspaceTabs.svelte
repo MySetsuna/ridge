@@ -138,17 +138,10 @@
      actually triggers. py-1/mr-auto: spacing/alignment in the header.
      shift+wheel: horizontal pan for users without a horizontal wheel. -->
 <div
-  class="flex flex-row flex-nowrap w-max max-w-[100%]"
+  class="min-w-0 flex-1"
   use:overlayScroll={{ preset: 'horizontal-tabs' }}
-  onwheel={(e) => {
-    if (!e.shiftKey) return;
-    const t = e.currentTarget as HTMLElement;
-    const dx = e.deltaX !== 0 ? e.deltaX : e.deltaY;
-    t.scrollLeft += dx;
-    e.preventDefault();
-  }}
 >
-  <div class="wf-no-drag py-1 mr-auto wf-workspace-tabs" style="display: flex; flex-direction: row; flex-wrap: nowrap; min-width: max-content;">
+  <div class="wf-no-drag py-1 mr-auto wf-workspace-tabs" style="display: flex; flex-direction: row; flex-wrap: nowrap; min-width: max-content; gap: 4px;">
     {#each workspaces as ws, i (ws.id)}
       <div
         class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move

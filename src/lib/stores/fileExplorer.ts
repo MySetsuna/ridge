@@ -170,12 +170,16 @@ function createFileExplorerStore() {
 						// 在 Explorer 层异步调用 loadTree 做后台刷新，数据就绪后再原子替换。
 						const prevSet = new Set(existing.paneIds);
 						const hasNewJoiner = paneIds.some((id) => !prevSet.has(id));
+						// Only request a refresh when the tree hasn't loaded yet.
+						// If a cached tree already exists, a new pane sharing this cwd
+						// reuses it without re-scanning (the user can always hit the
+						// refresh button to force an update).
 						newColumns.push({
 							...existing,
 							paneIds,
 							paneTitles: mergedTitles,
 							tree: existing.tree,
-							needsRefresh: hasNewJoiner || existing.needsRefresh,
+							needsRefresh: existing.needsRefresh || (hasNewJoiner && existing.tree === null),
 						});
 					} else {
 						// New CWD: create column, tree: null triggers load.
@@ -660,7 +664,8 @@ export function flattenVisiblePaths(column: ExplorerColumn): string[] {
 			for (const child of node.children) walk(child);
 		}
 	};
-	walk(column.tree);
+	// Skip root — Explorer renders col.tree.children directly (top-level folder layer removed)
+	for (const child of column.tree.children ?? []) walk(child);
 	return result;
 }
 

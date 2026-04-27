@@ -39,9 +39,6 @@
 
 	let { workspaceId }: Props = $props();
 
-	/** Per-column collapse state (separate from workspace-level collapse). */
-	let collapsedColumns = $state(new Set<string>());
-
 	// 慢加载（VS Code 风格）：col.loading 转 true 起 500ms 计时；到点仍未完成才挂进度条，
 	// 数据到立刻撤掉。仅在没有缓存 tree 时启用——后台刷新保持静默。
 	const SLOW_LOAD_THRESHOLD_MS = 500;
@@ -206,19 +203,23 @@
 		unsubActiveFile?.();
 	});
 
-	// 兜底：直接订阅 paneCwdStore，逐键比对上一次值，凡是「某 pane 的 cwd 发生变化」
-	// 就把目标列强制 loadTree —— 这样不依赖 syncWithPaneCwds 的 "new joiner" 判定，
-	// 任何 shell 的 cd 都一定触发文件树重拉。
+	// 兜底：直接订阅 paneCwdStore，逐键比对上一次值，仅当「既有 pane 的 cwd 发生变化」
+	// （即用户在 shell 里执行了 cd）才强制 loadTree。
+	// 新 pane 加入（key 不在 prevCwdSnapshot）的情况由 syncWithPaneCwds + needsRefresh
+	// 负责，这里不处理，避免已有缓存 tree 被重复扫描。
 	let prevCwdSnapshot: Record<string, string> = {};
 	let unsubPaneCwd: (() => void) | undefined;
 	onMount(() => {
 		unsubPaneCwd = paneCwdStore.subscribe((cwds) => {
 			const changedCwds = new Set<string>();
 			for (const [key, cwd] of Object.entries(cwds)) {
-				if (prevCwdSnapshot[key] !== cwd) changedCwds.add(cwd);
-			}
-			for (const key of Object.keys(prevCwdSnapshot)) {
-				if (!(key in cwds)) changedCwds.add(prevCwdSnapshot[key]);
+				// Only count as a change if the pane already existed AND its cwd changed.
+				// New pane additions (key absent in prevCwdSnapshot) are handled by
+				// syncWithPaneCwds / needsRefresh; triggering loadTree here would bypass
+				// the cache and re-scan an already-loaded directory.
+				if (key in prevCwdSnapshot && prevCwdSnapshot[key] !== cwd) {
+					changedCwds.add(cwd);
+				}
 			}
 			prevCwdSnapshot = { ...cwds };
 			if (changedCwds.size === 0) return;
@@ -226,7 +227,11 @@
 			queueMicrotask(() => {
 				const state = get(fileExplorerStore);
 				for (const col of state.columns) {
-					if (changedCwds.has(col.cwd)) {
+					// Only reload when this cwd changed AND the column has no cached
+					// tree yet. If another pane already has a loaded tree for this
+					// cwd, reuse it — the user explicitly asked not to re-scan
+					// directories that already have cached resources.
+					if (changedCwds.has(col.cwd) && !col.tree) {
 						void fileExplorerStore.loadTree(col.id);
 					}
 				}
@@ -238,16 +243,6 @@
 		for (const h of slowTimers.values()) clearTimeout(h);
 		slowTimers.clear(); slowPrevLoading.clear();
 	});
-
-	function toggleColumnCollapse(columnId: string) {
-		const next = new Set(collapsedColumns);
-		if (next.has(columnId)) {
-			next.delete(columnId);
-		} else {
-			next.add(columnId);
-		}
-		collapsedColumns = next;
-	}
 
 	function handleRefresh(columnId: string) {
 		void fileExplorerStore.loadTree(columnId);
@@ -678,25 +673,13 @@
 				{#if !group.collapsed}
 					{#each group.columns as col (col.id)}
 						<div class="explorer-section border-t border-[var(--wf-border)]/50">
-							<!-- Compact CWD section header -->
-							<div
-								class="group sticky top-8 z-10 flex items-center h-7 px-2 gap-1 cursor-pointer select-none bg-[var(--wf-surface-2)]/88 backdrop-blur-md hover:bg-[var(--wf-surface)] transition-colors"
-								role="button"
-								tabindex="0"
-								onclick={() => toggleColumnCollapse(col.id)}
-								onkeydown={(e) => e.key === 'Enter' && toggleColumnCollapse(col.id)}
-								title={col.cwd}
-							>
-								<!-- Collapse arrow -->
-								<ChevronRight
-									class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)] transition-transform duration-150 {collapsedColumns.has(col.id) ? '' : 'rotate-90'}"
-								/>
-
+							<!-- Minimal section indicator: pane badges + refresh, no folder name/collapse -->
+							<div class="group/col flex items-center gap-1 px-2 py-0.5" title={col.cwd}>
 								<!-- Pane name badges (terminals sharing this CWD) -->
 								<div class="flex items-center gap-1 min-w-0 flex-1">
 									{#each col.paneIds as pid (pid)}
 										<span
-											class="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-medium bg-[var(--wf-surface)] text-[var(--wf-fg)] border border-[var(--wf-border)] truncate max-w-[80px]"
+											class="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-medium bg-[var(--wf-surface)] text-[var(--wf-fg-muted)] border border-[var(--wf-border)]/60 truncate max-w-[80px]"
 											title={getPaneLabel(pid, col.paneTitles)}
 										>
 											{getPaneLabel(pid, col.paneTitles)}
@@ -704,21 +687,15 @@
 									{/each}
 								</div>
 
-								<!-- Refresh button. 用户要求"打开文件夹时不要有加载提示"：
-								     首次加载也不再显示 spinner —— 渲染保持静默，等树到了原子替换。
-								     刷新按钮始终在 hover 时浮现，是用户主动触发刷新的入口。 -->
+								<!-- Refresh button (hover-visible) -->
 								<button
 									type="button"
-									class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
-									onclick={(e) => {
-										e.stopPropagation();
-										handleRefresh(col.id);
-									}}
+									class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/col:opacity-60 hover:!opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
+									onclick={() => handleRefresh(col.id)}
 									title="刷新"
 								>
 									<RefreshCw class="h-3 w-3" />
 								</button>
-
 							</div>
 
 							<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
@@ -726,33 +703,35 @@
 								<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label="加载中"></div>
 							{/if}
 
-							<!-- Collapsible file tree body: content flows at natural height,
-							     scrolled by the single outer .explorer scrollbar. -->
-							{#if !collapsedColumns.has(col.id)}
-								<div class="explorer-body py-0.5">
-									{#if col.tree}
-										<FileTree
-											columnId={col.id}
-											node={col.tree}
-											depth={0}
-											expandedPaths={col.expandedPaths}
-											selectedPath={col.selectedPath}
-											selectedPaths={col.selectedPaths}
-											cutPaths={$explorerClipboard?.mode === 'cut'
-												? new Set($explorerClipboard.paths)
-												: undefined}
-											onSelect={(path, isDir, mods) =>
-												handleFileSelect(path, col.id, isDir, mods)}
-										/>
+							<!-- File tree body: cwd contents shown directly -->
+							<div class="explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto wf-scroll" : ""}">
+								{#if col.tree}
+									{#if (col.tree.children ?? []).length > 0}
+										{#each col.tree.children ?? [] as child (child.path)}
+											<FileTree
+												columnId={col.id}
+												node={child}
+												depth={0}
+												expandedPaths={col.expandedPaths}
+												selectedPath={col.selectedPath}
+												selectedPaths={col.selectedPaths}
+												cutPaths={$explorerClipboard?.mode === 'cut'
+													? new Set($explorerClipboard.paths)
+													: undefined}
+												onSelect={(path, isDir, mods) =>
+													handleFileSelect(path, col.id, isDir, mods)}
+											/>
+										{/each}
+									{:else}
+										<div class="px-4 py-2 text-[12px] text-[var(--wf-fg-muted)]">空目录</div>
 									{/if}
-								</div>
-							{/if}
+								{/if}
+							</div>
+
 							<!-- Plugin region: one instance per paneId for correct state scoping. -->
-							{#if !collapsedColumns.has(col.id)}
-								{#each col.paneIds as pid (pid)}
-									<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
-								{/each}
-							{/if}
+							{#each col.paneIds as pid (pid)}
+								<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
+							{/each}
 						</div>
 					{/each}
 				{/if}

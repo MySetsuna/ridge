@@ -108,12 +108,10 @@
   let repoRoots = $derived($scmCacheStore.repoRoots);
   let statuses = $derived($scmCacheStore.statuses);
   let discoveryLoading = $state(false);
-  // lastCwdSignature / lastRepoSignature are likewise read from / written
-  // to the cache so multiple discover passes during the same session can
-  // skip redundant work even if SourceControl was unmounted in between.
   let debounceHandle: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> | null = null;
   let unlistenRepoChanged: (() => void) | undefined;
+  let unsubCwdWatch: (() => void) | undefined;
   /** Per-repo debounce for the filesystem-watcher listener (ε阶段二). A
    *  single `git commit` writes HEAD + index + refs in quick succession;
    *  coalescing 250ms ensures one refresh per user operation, not 3–5. */
@@ -724,16 +722,25 @@
   }
 
 onMount(() => {
-  // round 65: 完全禁用自动刷新，只保留手动点击刷新按钮触发刷新。
-  // 不再监听 paneCwdStore 变化、scm-repo-changed 事件，也不做缓存过期检查。
-  // 只在首次进入 Git tab 时从缓存加载数据（如果有）。
-  if (!selectedRepo && getScmCache().repoRoots.length > 0) {
-    selectedRepo = getScmCache().repoRoots[0];
-    // 只加载缓存的图谱数据，不触发刷新
-    if (shouldRefreshGraphOnMount(selectedRepo)) {
+  const cache = getScmCache();
+  if (cache.repoRoots.length === 0) {
+    void discoverRepos();
+  } else {
+    if (!selectedRepo) selectedRepo = cache.repoRoots[0];
+    if (selectedRepo && shouldRefreshGraphOnMount(selectedRepo)) {
       void loadGraph(selectedRepo, { resetSelection: true });
     }
   }
+
+  // 监听 paneCwdStore：出现新的不重复 cwd 时触发 discoverRepos
+  let knownCwds = new Set(Object.values(get(paneCwdStore)).filter(Boolean));
+  unsubCwdWatch = paneCwdStore.subscribe((cwds) => {
+    const current = Object.values(cwds).filter(Boolean);
+    const hasNew = current.some((cwd) => !knownCwds.has(cwd));
+    knownCwds = new Set(current);
+    if (hasNew) schedule(() => discoverRepos());
+  });
+
   document.addEventListener('mousedown', onGlobalMousedown, true);
   document.addEventListener('keydown', onGlobalKeydown);
   window.addEventListener('wind:scm-focus-repo', onScmFocusRepo as EventListener);
@@ -750,6 +757,7 @@ onMount(() => {
     for (const t of watcherDebounce.values()) clearTimeout(t);
     watcherDebounce.clear();
     unlistenRepoChanged?.();
+    unsubCwdWatch?.();
   });
 
   async function manualRefresh(): Promise<void> {

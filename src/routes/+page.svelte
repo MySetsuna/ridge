@@ -33,7 +33,7 @@ self.MonacoEnvironment = {
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import ClaudeAgentLauncher from '$lib/components/ClaudeAgentLauncher.svelte';
   import ScrollbackHistoryModal from '$lib/components/ScrollbackHistoryModal.svelte';
-  import DiffEditorModal from '$lib/components/DiffEditorModal.svelte';
+  // DiffEditorModal removed — diff view integrated into FileEditor tabs
   import WindDialog from '$lib/components/WindDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
   import ClaudeCodePanel from '$lib/components/ClaudeCodePanel.svelte';
@@ -1021,7 +1021,7 @@ function expandSidebar() {
 
   <!-- 侧边栏区域：wrapper 始终渲染，toggle 按钮始终可见 -->
   <div
-    class="relative shrink-0"
+    class="relative shrink-0 z-10"
     style="width: {sidebarCollapsed ? 0 : sidebarWidth}px; overflow: visible"
   >
     {#if !sidebarCollapsed}
@@ -1129,11 +1129,14 @@ function expandSidebar() {
         </div>
 
       </aside>
-<!-- 侧边栏拖动条：始终渲染，collapsed 时显示为虚线提示可拖动展开 -->
+    {/if}
+<!-- 侧边栏拖动条：始终渲染 — collapsed 时在 left-0（wrapper 宽度为0，左边界即导航栏右边缘）
+     显示虚线；expanded 时在 right-0（侧边栏右边缘）作为透明可拖区域。
+     wrapper 有 z-10 + overflow:visible，保证此元素即使在 collapsed 状态下也能响应点击。 -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
-  class="absolute h-full right-0 w-1 shrink-0 cursor-col-resize select-none {sidebarCollapsed ? 'border-l border-dashed border-[var(--wf-border)] hover:border-[var(--wf-accent)] hover:bg-[var(--wf-accent)]/10' : 'hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30'} {isResizingSidebar ? 'bg-[var(--wf-accent)]/40' : ''}"
+  class="absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0 hover:bg-[var(--wf-accent)]/15 active:bg-[var(--wf-accent)]/25' : 'right-0 hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30'} {isResizingSidebar ? 'bg-[var(--wf-accent)]/40' : ''}"
   role="separator"
   aria-orientation="vertical"
   aria-label={sidebarCollapsed ? '拖动展开侧边栏' : '拖动调整侧边栏宽度'}
@@ -1169,7 +1172,6 @@ function expandSidebar() {
     e.preventDefault();
   }}
 ></div>
-    {/if}
 
     <!-- 折叠/展开 toggle 按钮：始终渲染，位于 wrapper 右边缘 -->
     <button
@@ -1382,9 +1384,6 @@ function expandSidebar() {
   <!-- 终端历史记录浏览器：从 pane 标题栏的 History 按钮唤起。同样集中挂载。 -->
   <ScrollbackHistoryModal />
 
-  <!-- Monaco diff 编辑器 modal：SCM 文件行点击后唤起，同 z-index 9998。
-       全局单实例 — openDiffEditor() 模块函数任何位置可调。 -->
-  <DiffEditorModal />
 
   <!-- 主题化的 alert/confirm/prompt 替代浏览器原生 dialog。
        任何位置都可以 await alertDialog/confirmDialog/promptDialog。-->

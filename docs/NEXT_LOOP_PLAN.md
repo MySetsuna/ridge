@@ -1,13 +1,68 @@
 # Wind — Next Loop 计划
 
-最后更新：2026-04-25（第 68 轮） · 由 /loop 自动生成
+最后更新：2026-04-27（第 69 轮） · 由 /loop 自动生成
 
 > 本文档由 /loop 循环结束时写入，下一轮 `/loop` 会优先读取本文档。
 > 对标：VS Code、JetBrains Fleet、Warp、Zed。
 
 ---
 
+## 🔜 下一轮候选
+
+- **工作区底部粘性（Explorer）**：当有多工作区时，非活跃工作区 header 使用 IntersectionObserver 实现底部固定，彻底解决多工作区被挤出视野的问题（当前轮临时方案：max-h-[32vh]）。
+- **FileTree 对齐细化**：depth=0 根节点无缩进，考虑 8px 左起始统一。
+- **Rust 线程池监控**：为 spawn_blocking 任务加 tracing span 方便排查慢操作。
+
+---
+
 ## ✅ 历史轮次已完成
+
+### 第 69 轮（2026-04-27）— 性能/线程池 + 侧边栏 resize + 文件树 UI
+
+#### Rust 后台线程池（spawn_blocking）
+
+将 5 个高耗时 Tauri 命令改为 async + spawn_blocking，释放 IPC 线程池给其他命令：
+- `find_git_repos_below` — BFS 文件系统扫描，最慢可达数秒
+- `get_scm_status` — git status，每次 cwd 变化触发
+- `git_list_branches` — git branch --all，分支 picker 打开时触发
+- `git_diff_summary` — git diff --numstat，pane git pill 触发
+- `get_git_info_with_cwd` — git log + branch + diff 三合一，图谱加载触发
+- `get_file_tree` / `get_directory_children` — 文件树扫描（spawn_blocking）
+
+实现方式：提取 `*_sync` 内部函数，外层 async command 用 `spawn_blocking` 包装。
+Tokio `rt-multi-thread` 已有，无需新增 crate。
+`cargo check` **0 errors 0 warnings**。
+
+#### 产品逻辑优化：新 pane 共用已有 cwd 的 tree
+
+**`src/lib/stores/fileExplorer.ts`**
+
+修改 `syncWithPaneCwds` 中 `needsRefresh` 逻辑：
+只有当新 pane 加入且 `existing.tree === null`（首次加载）才触发 refresh；
+已有 tree 时新 pane 直接复用，不再重新扫描文件夹。
+
+#### 侧边栏 resize 拖动线修复
+
+**`src/routes/+page.svelte`**
+
+- 将 resize handle div 从 `{#if !sidebarCollapsed}` block 内移出，使其始终渲染。
+- Collapsed 状态：`left-0`（wrapper 宽度 0，位于导航栏右边缘）+ 虚线 `border-r-2 border-dashed`，提示可拖动展开。
+- Expanded 状态：`right-0`（侧边栏右边缘），透明可拖区。
+- wrapper 加 `z-10`，handle 加 `z-30`，确保 collapsed 时 handle 在主内容区之上可点击。
+
+#### 文件树 UI 改进
+
+**`src/lib/components/FileTree.svelte`**
+- 缩进从 `depth * 16px` 降为 `depth * 12px`，减少深层嵌套时的横向空间占用。
+
+**`src/lib/components/Explorer.svelte`**
+- CWD section header（`sticky top-8`）加入根目录文件夹名称（basename of cwd）作为粘性面包屑，滚动深层时不再丢失上下文。
+- 非活跃工作区的文件树 body 加 `max-h-[32vh] overflow-y-auto`，防止单个工作区将其他工作区完全挤出视野。
+
+**回归**：`pnpm check` 0/0/0 · `cargo check` 0 warnings
+
+---
+
 
 1–21 轮：三大主诉求 + Explorer 完整体验 + SCM + 搜索 sidebar + pane git
 pill 含 picker / 内联创建分支 + 插件三 scope + Claude teammate 闭环 +

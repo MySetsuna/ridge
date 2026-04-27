@@ -32,6 +32,7 @@
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { alertDialog, confirmDialog } from './WindDialog.svelte';
+  import { searchFolderStore, clearSearchFolder } from '$lib/stores/searchState';
 
   interface SearchResult {
     file: string;
@@ -96,8 +97,10 @@
    */
   let selectedFiles = $state(new Set<string>());
 
-  /** Distinct workspace-backing CWDs discovered from pane states. */
+  /** Distinct workspace-backing CWDs — restricted to folderRoot when set. */
   const roots = $derived.by(() => {
+    const folder = $searchFolderStore;
+    if (folder) return [folder];
     const set = new Set<string>();
     for (const cwd of Object.values($paneCwdStore)) {
       if (cwd) set.add(cwd);
@@ -482,13 +485,23 @@
     data-tauri-drag-region
     class="px-3 h-11 shrink-0 flex items-center justify-between border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/40"
   >
-    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
+    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] flex items-center gap-1.5">
       搜索
+      {#if $searchFolderStore}
+        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] border border-[var(--wf-accent)]/30 max-w-[140px]">
+          <span class="truncate" title={$searchFolderStore}>{$searchFolderStore.replace(/\\/g, '/').split('/').pop()}</span>
+          <button type="button" onclick={clearSearchFolder} class="shrink-0 hover:text-[var(--wf-fg)] transition-colors" title="清除文件夹限制">
+            <X class="h-2.5 w-2.5" />
+          </button>
+        </span>
+      {/if}
     </span>
     <div class="flex items-center gap-1">
-      <span class="text-[10px] text-[var(--wf-fg-muted)]" title="当前会话的工作目录数量">
-        {roots.length} 根
-      </span>
+      {#if !$searchFolderStore}
+        <span class="text-[10px] text-[var(--wf-fg-muted)]" title="当前会话的工作目录数量">
+          {roots.length} 根
+        </span>
+      {/if}
       <button
         type="button"
         class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] disabled:opacity-40"

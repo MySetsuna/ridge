@@ -255,7 +255,7 @@
            narrow header. max-h caps scroll; overlayScroll would be overkill
            for ≤ a couple dozen branches. -->
       <div
-        class="absolute right-0 top-[26px] z-50 min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto rounded-lg border border-[var(--wf-border)] bg-[var(--wf-bg-raised)] shadow-xl"
+        class="absolute right-0 top-[26px] z-50 min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto wf-scroll rounded-lg border border-[var(--wf-border)] bg-[var(--wf-bg-raised)] shadow-xl"
         role="menu"
       >
         <!-- Create-branch entry pinned at the top — toggles to inline input

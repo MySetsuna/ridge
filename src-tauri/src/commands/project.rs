@@ -118,7 +118,7 @@ fn normalize_path_input(input: &str) -> PathBuf {
 }
 
 #[tauri::command]
-pub fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, String> {
+pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, String> {
     let root = normalize_path_input(&path);
     if !root.exists() {
         return Err(format!("Path does not exist: {}", root.display()));
@@ -128,12 +128,16 @@ pub fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, Str
     }
 
     let max_depth = depth.unwrap_or(5);
-    FileTree::build(&root, max_depth)
-        .map_err(|e| format!("Failed to build file tree: {}", e))
+    tokio::task::spawn_blocking(move || {
+        FileTree::build(&root, max_depth)
+            .map_err(|e| format!("Failed to build file tree: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
-pub fn get_directory_children(path: String) -> Result<Vec<FileNode>, String> {
+pub async fn get_directory_children(path: String) -> Result<Vec<FileNode>, String> {
     let dir = normalize_path_input(&path);
     if !dir.exists() {
         return Err(format!("Path does not exist: {}", dir.display()));
@@ -142,12 +146,16 @@ pub fn get_directory_children(path: String) -> Result<Vec<FileNode>, String> {
         return Err(format!("Path is not a directory: {}", dir.display()));
     }
 
-    FileTree::get_children(&dir)
-        .map_err(|e| format!("Failed to get directory contents: {}", e))
+    tokio::task::spawn_blocking(move || {
+        FileTree::get_children(&dir)
+            .map_err(|e| format!("Failed to get directory contents: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
-pub fn text_search(
+pub async fn text_search(
     root: String,
     query: String,
     case_sensitive: Option<bool>,
@@ -172,7 +180,9 @@ pub fn text_search(
         exclude_globs: exclude_globs.unwrap_or_default(),
     };
 
-    Ok(SearchEngine::search_text(&root_path, &query, &options))
+    tokio::task::spawn_blocking(move || Ok(SearchEngine::search_text(&root_path, &query, &options)))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Companion command returning ONLY the bad globs from the same options.
@@ -210,17 +220,19 @@ pub fn text_search_diagnostics(
 }
 
 #[tauri::command]
-pub fn filename_search(root: String, pattern: String) -> Result<Vec<String>, String> {
+pub async fn filename_search(root: String, pattern: String) -> Result<Vec<String>, String> {
     let root_path = PathBuf::from(&root);
     if !root_path.exists() {
         return Err("Root path does not exist".to_string());
     }
 
-    Ok(SearchEngine::search_files(&root_path, &pattern))
+    tokio::task::spawn_blocking(move || Ok(SearchEngine::search_files(&root_path, &pattern)))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
-pub fn replace_in_files(
+pub async fn replace_in_files(
     root: String,
     search: String,
     replace: String,
@@ -243,8 +255,12 @@ pub fn replace_in_files(
         exclude_globs: Vec::new(),
     };
 
-    SearchEngine::replace_in_files(&root_path, &search, &replace, &files, &options)
-        .map_err(|e| format!("Replace failed: {}", e))
+    tokio::task::spawn_blocking(move || {
+        SearchEngine::replace_in_files(&root_path, &search, &replace, &files, &options)
+            .map_err(|e| format!("Replace failed: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
@@ -272,48 +288,56 @@ pub struct ReadFileForEditorResult {
 /// enforces a 5 MB ceiling to keep the UI responsive. Returns content as UTF-8 lossy
 /// so editors never crash on malformed bytes — the save path enforces valid UTF-8.
 #[tauri::command]
-pub fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResult, String> {
-    let file_path = PathBuf::from(&path);
-    if !file_path.exists() { return Err("File does not exist".to_string()); }
-    if !file_path.is_file() { return Err("Path is not a file".to_string()); }
+pub async fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let file_path = PathBuf::from(&path);
+        if !file_path.exists() { return Err("File does not exist".to_string()); }
+        if !file_path.is_file() { return Err("Path is not a file".to_string()); }
 
-    let metadata = std::fs::metadata(&file_path).map_err(|e| e.to_string())?;
-    let size = metadata.len();
-    const MAX: u64 = 5 * 1024 * 1024;
-    if size > MAX {
-        return Err(format!("文件过大 ({:.2} MB)，编辑器上限 5 MB", size as f64 / 1024.0 / 1024.0));
-    }
+        let metadata = std::fs::metadata(&file_path).map_err(|e| e.to_string())?;
+        let size = metadata.len();
+        const MAX: u64 = 5 * 1024 * 1024;
+        if size > MAX {
+            return Err(format!("文件过大 ({:.2} MB)，编辑器上限 5 MB", size as f64 / 1024.0 / 1024.0));
+        }
 
-    let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-    // Binary heuristic: NULL byte in first 8 KB, or a very high ratio of non-printable bytes
-    let probe = &bytes[..bytes.len().min(8192)];
-    let has_null = probe.iter().any(|&b| b == 0);
-    let non_text = probe
-        .iter()
-        .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
-        .count();
-    let ratio = if probe.is_empty() { 0.0 } else { non_text as f64 / probe.len() as f64 };
-    let is_binary = has_null || ratio > 0.30;
+        let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
+        let probe = &bytes[..bytes.len().min(8192)];
+        let has_null = probe.iter().any(|&b| b == 0);
+        let non_text = probe
+            .iter()
+            .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
+            .count();
+        let ratio = if probe.is_empty() { 0.0 } else { non_text as f64 / probe.len() as f64 };
+        let is_binary = has_null || ratio > 0.30;
 
-    if is_binary {
-        return Ok(ReadFileForEditorResult { content: String::new(), is_binary: true, size });
-    }
+        if is_binary {
+            return Ok(ReadFileForEditorResult { content: String::new(), is_binary: true, size });
+        }
 
-    let content = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(ReadFileForEditorResult { content, is_binary: false, size })
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        Ok(ReadFileForEditorResult { content, is_binary: false, size })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Write content to a file (UTF-8). Creates parent dirs if missing.
+/// Made async so auto-save calls don't block the IPC thread.
 #[tauri::command]
-pub fn write_file(path: String, content: String) -> Result<(), String> {
-    let file_path = PathBuf::from(&path);
-    if let Some(parent) = file_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+pub async fn write_file(path: String, content: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let file_path = PathBuf::from(&path);
+        if let Some(parent) = file_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+            }
         }
-    }
-    std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
-    Ok(())
+        std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
@@ -348,18 +372,22 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
 
 /// Delete a file or directory (recursively for directories).
 #[tauri::command]
-pub fn delete_path(path: String) -> Result<(), String> {
-    let target = PathBuf::from(&path);
-    if !target.exists() {
-        return Err(format!("路径不存在: {}", path));
-    }
-    let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(&target).map_err(|e| format!("删除目录失败: {}", e))?;
-    } else {
-        std::fs::remove_file(&target).map_err(|e| format!("删除文件失败: {}", e))?;
-    }
-    Ok(())
+pub async fn delete_path(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let target = PathBuf::from(&path);
+        if !target.exists() {
+            return Err(format!("路径不存在: {}", path));
+        }
+        let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&target).map_err(|e| format!("删除目录失败: {}", e))?;
+        } else {
+            std::fs::remove_file(&target).map_err(|e| format!("删除文件失败: {}", e))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Create an empty file at `path`. Fails if the file already exists.
@@ -393,7 +421,13 @@ pub fn create_directory(path: String) -> Result<(), String> {
 /// Copy `from` → `to`. Supports files and directories; directories copy recursively.
 /// Refuses to overwrite unless `overwrite=true`. Preserves relative structure.
 #[tauri::command]
-pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
+pub async fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || copy_path_sync(from, to, overwrite))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn copy_path_sync(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
     let from_path = PathBuf::from(&from);
     let to_path = PathBuf::from(&to);
     if !from_path.exists() {
@@ -443,7 +477,13 @@ pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<()
 /// Move `from` → `to`. Falls back to copy + delete if `rename` fails across
 /// filesystems (common on Windows when spanning drive letters).
 #[tauri::command]
-pub fn move_path(from: String, to: String) -> Result<(), String> {
+pub async fn move_path(from: String, to: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || move_path_sync(from, to))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn move_path_sync(from: String, to: String) -> Result<(), String> {
     let from_path = PathBuf::from(&from);
     let to_path = PathBuf::from(&to);
     if !from_path.exists() {
@@ -460,8 +500,8 @@ pub fn move_path(from: String, to: String) -> Result<(), String> {
     if std::fs::rename(&from_path, &to_path).is_ok() {
         return Ok(());
     }
-    // Cross-device fallback.
-    copy_path(from.clone(), to.clone(), Some(false))?;
+    // Cross-device fallback: copy then delete source.
+    copy_path_sync(from.clone(), to.clone(), Some(false))?;
     let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
     if meta.is_dir() {
         std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
@@ -481,8 +521,11 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         std::process::Command::new("explorer.exe")
             .arg(format!("/select,{}", target.display()))
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("打开资源管理器失败: {}", e))?;
     }
@@ -503,6 +546,77 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
             .map_err(|e| format!("打开文件管理器失败: {}", e))?;
     }
     Ok(())
+}
+
+// ─── Claude Code history ─────────────────────────────────────────────────────
+
+/// Single entry from `~/.claude/history.jsonl`.
+#[derive(Debug, Serialize, Clone)]
+pub struct ClaudeHistoryEntry {
+    pub display: String,
+    pub timestamp: u64,
+    pub project: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// Read `~/.claude/history.jsonl` and return entries newest-first.
+/// `project_paths`: forward-slash-normalised cwd list — only entries whose
+/// `project` field (after normalisation) matches one of them are returned.
+/// Pass an empty Vec to get the full unfiltered history.
+#[tauri::command]
+pub async fn read_claude_history(
+    project_paths: Vec<String>,
+    limit: Option<usize>,
+) -> Vec<ClaudeHistoryEntry> {
+    tokio::task::spawn_blocking(move || read_claude_history_sync(project_paths, limit))
+        .await
+        .unwrap_or_default()
+}
+
+fn read_claude_history_sync(project_paths: Vec<String>, limit: Option<usize>) -> Vec<ClaudeHistoryEntry> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let history_path = home.join(".claude").join("history.jsonl");
+    let content = match std::fs::read_to_string(&history_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    // Normalise filter paths once (forward slash, lowercase for case-insensitive FS).
+    let filters: Vec<String> = project_paths
+        .iter()
+        .map(|p| p.replace('\\', "/").to_lowercase())
+        .collect();
+
+    let mut entries: Vec<ClaudeHistoryEntry> = content
+        .lines()
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            // Skip non-history lines (they lack a `display` field).
+            let display = v.get("display")?.as_str()?.to_string();
+            let timestamp = v.get("timestamp")?.as_u64()?;
+            let project = v.get("project")?.as_str()?.to_string();
+            let session_id = v.get("sessionId")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            Some(ClaudeHistoryEntry { display, timestamp, project, session_id })
+        })
+        .filter(|e| {
+            if filters.is_empty() {
+                return true;
+            }
+            let norm = e.project.replace('\\', "/").to_lowercase();
+            filters.iter().any(|f| norm == *f)
+        })
+        .collect();
+
+    // Newest first.
+    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.truncate(limit.unwrap_or(100));
+    entries
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

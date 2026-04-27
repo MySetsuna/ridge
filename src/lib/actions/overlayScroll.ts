@@ -5,10 +5,11 @@
 //
 // Usage:
 // <div use:overlayScroll>...</div> // 'sidebar' preset (default, uses OverlayScrollbars)
-// <div use:overlayScroll={{ preset: 'horizontal-tabs' }}> // horizontal scroll (CSS native, no OverlayScrollbars)
+// <div use:overlayScroll={{ preset: 'horizontal-tabs' }}> // horizontal scroll (CSS native)
 //
-// For 'horizontal-tabs': uses pure CSS horizontal scrolling to avoid OverlayScrollbars
-// viewport manipulation issues that prevent horizontal tabs from working correctly.
+// For 'horizontal-tabs': pure CSS overflow-x:auto with the host bounded by its parent.
+// Wheel events are intercepted so vertical scroll → horizontal pan (no Shift needed).
+// Scrollbar is hidden via .wf-htabs CSS class (app.css).
 
 import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
 import 'overlayscrollbars/overlayscrollbars.css';
@@ -45,7 +46,6 @@ const PRESETS: Record<OverlayScrollPreset, PartialOptions> = {
 		},
 	},
 	'horizontal-tabs': {
-		// Empty - will use pure CSS native scrolling
 		scrollbars: {
 			theme: 'wf-os-theme',
 			autoHide: 'leave',
@@ -87,26 +87,27 @@ function resolveOptions(params: OverlayScrollOptions | undefined): PartialOption
 
 const LAYOUT_PROPS = ['display', 'flexDirection', 'flexWrap', 'alignItems', 'gap', 'width', 'minWidth', 'overflowX', 'overflowY'] as const;
 
+function applyHTabsLayout(node: HTMLElement): void {
+	// Only set scroll/overflow properties — do NOT set width/minWidth.
+	// The host is bounded by its flex parent; children overflow it horizontally.
+	node.style.display = 'flex';
+	node.style.flexDirection = 'row';
+	node.style.flexWrap = 'nowrap';
+	node.style.alignItems = 'center';
+	node.style.overflowX = 'auto';
+	node.style.overflowY = 'hidden';
+}
+
 function applyLayout(node: HTMLElement, params: OverlayScrollOptions | undefined): void {
 	for (const k of LAYOUT_PROPS) node.style[k] = '';
 
 	const preset = params?.preset ?? 'sidebar';
 
-	// For horizontal-tabs, apply pure CSS horizontal scrolling
 	if (preset === 'horizontal-tabs') {
-		node.style.display = 'flex';
-		node.style.flexDirection = 'row';
-		node.style.flexWrap = 'nowrap';
-		node.style.alignItems = 'center';
-		node.style.gap = '4px';
-		node.style.overflowX = 'auto';
-		node.style.overflowY = 'hidden';
-		node.style.width = 'max-content';
-		node.style.minWidth = 'max-content';
+		applyHTabsLayout(node);
 		return;
 	}
 
-	// For sidebar, apply layout from preset
 	const layout: OverlayScrollLayout | false | undefined =
 		params?.layout !== undefined
 			? params.layout
@@ -133,14 +134,26 @@ export function overlayScroll(
 
 	// For horizontal-tabs: use pure CSS, no OverlayScrollbars
 	if (preset === 'horizontal-tabs') {
-		applyLayout(node, params);
+		applyHTabsLayout(node);
+		node.classList.add('wf-htabs');
+
+		// Intercept wheel events: vertical scroll → horizontal pan (no Shift needed).
+		// passive:false required so preventDefault() actually stops native page scroll.
+		const onWheel = (e: WheelEvent) => {
+			e.preventDefault();
+			// Prefer native horizontal delta (trackpad); fall back to vertical.
+			node.scrollLeft += e.deltaX !== 0 ? e.deltaX : e.deltaY;
+		};
+		node.addEventListener('wheel', onWheel, { passive: false });
 
 		return {
 			update(next: OverlayScrollOptions | undefined) {
-				applyLayout(node, next);
+				applyHTabsLayout(node);
 			},
 			destroy() {
 				for (const k of LAYOUT_PROPS) node.style[k] = '';
+				node.classList.remove('wf-htabs');
+				node.removeEventListener('wheel', onWheel);
 			},
 		};
 	}
