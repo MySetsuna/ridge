@@ -127,17 +127,17 @@ export const SNAP_THRESHOLD_PX = 10;
 export const SAME_AXIS_ATTRACT_PX = 20;
 
 /** 联动 mousedown 触发距离：鼠标距 BC/ABC 交点欧几里得距离 ≤ 此值时，同向兄弟被纳入联动（圆形热区） */
-export const INTERSECTION_PROXIMITY_PX = 15;
+export const INTERSECTION_PROXIMITY_PX = 30;
 
 /**
  * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"AB 中线对齐"，
- * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致（15），让"联动范围 = 以 BC 端点
- * 为圆心、半径 15px 的圆"成立 —— 不再因 perpDistance > 5 提前 reject 圆内的 mousedown。
+ * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致（30），让"联动范围 = 以 BC 端点
+ * 为圆心、半径 30px 的圆"成立 —— 不再因 perpDistance > 5 提前 reject 圆内的 mousedown。
  */
-export const SAME_AXIS_ALIGN_EPSILON_PX = 15;
+export const SAME_AXIS_ALIGN_EPSILON_PX = 30;
 
 /**
- * 判定鼠标是否落在某个同向兄弟 B 的"BC 交点 15px 圆形热区"内。
+ * 判定鼠标是否落在某个同向兄弟 B 的"BC 交点 30px 圆形热区"内。
  * 触发条件 (用于 mousedown 联动 gating + hover 高亮)：
  *   - perpDistance(primary, sibling) ≤ SAME_AXIS_ALIGN_EPSILON_PX (中线对齐)
  *   - 鼠标到 B 离鼠标更近端点的欧几里得距离 ≤ INTERSECTION_PROXIMITY_PX
@@ -1011,6 +1011,9 @@ export async function closePane(paneId: string) {
   if (!isTauri()) return;
   await invoke('close_pane', { paneId });
   await syncPaneLayoutFromBackend();
+  // Dispose the parked terminal now that the pane is truly gone.
+  // Dynamic import avoids a circular dep between paneTree ↔ terminalRegistry.
+  void import('$lib/stores/terminalRegistry').then(({ disposeTerminal }) => disposeTerminal(paneId));
 }
 
 export async function toggleEditor(paneId: string, filePath?: string) {

@@ -11,6 +11,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, saveCurrentWorkspace, terminalTitles, paneForegroundProcessStore, paneOscTitleStore, setPaneCwd, getPaneCwd } from '$lib/stores/paneTree';
+import { getRegisteredTerminal, registerTerminal, parkTerminal, restoreTerminal } from '$lib/stores/terminalRegistry';
 import { get } from 'svelte/store';
 import { settingsStore, type ThemeId } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
@@ -74,6 +75,42 @@ function hexToRgba(hex: string, alpha: number): string {
 	const g = parseInt(v.slice(2, 4), 16);
 	const b = parseInt(v.slice(4, 6), 16);
 	return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+/** Strip xterm soft-wrap newlines. Lines exactly `cols` wide get a
+ *  continuation \n (not a real EOL) — removing those gives clean paste. */
+function stripSoftWraps(text: string, cols: number): string {
+	if (!text || cols <= 0) return text;
+	return text.replace(new RegExp(`([^\n]{${cols}})\n(?=[^\n])`, 'g'), '$1');
+}
+/** Character-width provider replacing Unicode11Addon as active version.
+ *  Returns 0 for controls/combining, 2 for CJK/emoji, 1 otherwise.
+ *  Emoji ranges are explicitly forced to 2 so color-emoji fonts (Segoe UI
+ *  Emoji, Apple Color Emoji) don't overflow adjacent cells. */
+function termWcwidth(cp: number): 0 | 1 | 2 {
+	if (cp < 0x20) return 0;
+	if (cp < 0x7f) return 1;
+	if (cp < 0xa0) return 0;
+	if (cp < 0x300) return 1;
+	if ((cp >= 0x300 && cp <= 0x36f) || (cp >= 0x483 && cp <= 0x489) ||
+		(cp >= 0x591 && cp <= 0x5bd) || (cp >= 0x610 && cp <= 0x61a) ||
+		cp === 0x61c || (cp >= 0x64b && cp <= 0x65f) || cp === 0x670 ||
+		(cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
+		(cp >= 0x2060 && cp <= 0x2064) || (cp >= 0x206a && cp <= 0x206f) ||
+		(cp >= 0xfe00 && cp <= 0xfe0f) || cp === 0xfeff ||
+		(cp >= 0xfff9 && cp <= 0xfffb) || (cp >= 0xe0100 && cp <= 0xe01ef)) return 0;
+	if (cp < 0x1100) return 1;
+	if (cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
+		(cp >= 0x2e80 && cp <= 0x303e) || (cp >= 0x3041 && cp <= 0x33ff) ||
+		(cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0xa4cf) ||
+		(cp >= 0xa960 && cp <= 0xa97f) || (cp >= 0xac00 && cp <= 0xd7af) ||
+		(cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe10 && cp <= 0xfe19) ||
+		(cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60) ||
+		(cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1b000 && cp <= 0x1b1ff) ||
+		cp === 0x1f004 || cp === 0x1f0cf ||
+		(cp >= 0x1f200 && cp <= 0x1f251) || (cp >= 0x1f300 && cp <= 0x1fbff) ||
+		(cp >= 0x2600 && cp <= 0x27bf) ||
+		(cp >= 0x20000 && cp <= 0x2fffd) || (cp >= 0x30000 && cp <= 0x3fffd)) return 2;
+	return 1;
 }
 function xtermThemeFor(theme: ThemeId) {
 	const isLight = theme === 'sand' || theme === 'grass';
@@ -186,8 +223,10 @@ let saveDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 /** Foreground process polling interval handle. */
 let foregroundPollInterval: ReturnType<typeof setInterval> | undefined;
 
-/** Saved helper-textarea inline style (left/top) for IME pinning. */
-let pinnedImeTextareaStyle: { left: string; top: string; transform: string } | undefined;
+/** MutationObserver that pins the IME helper-textarea to a stable position. */
+let disposeImePinObserver: (() => void) | undefined;
+/** Timer that re-enables cursor blink after a burst of PTY output stops. */
+let outputBlinkTimer: ReturnType<typeof setTimeout> | undefined;
 /** Font size subscription - cleanup on component destroy */
 let unsubFontSize: (() => void) | undefined;
 /** Theme subscription so the live xterm reskins when the user switches themes. */
@@ -369,6 +408,9 @@ async function renderView() {
 	cancelTermRedrawRaf();
 	disposeXtermScrollFix?.();
 	disposeXtermScrollFix = undefined;
+	disposeImePinObserver?.();
+	disposeImePinObserver = undefined;
+	if (outputBlinkTimer) { clearTimeout(outputBlinkTimer); outputBlinkTimer = undefined; }
 	resizeObserver?.disconnect();
 	resizeObserver = undefined;
 	ptyUnlisten?.();
@@ -391,64 +433,88 @@ async function renderView() {
 	if (!viewInner) return;
 
 	if (mode === 'terminal') {
-		// Read the persisted font size from the shared store's current value.
-		let currentFontSize = 15;
-		const unsub = termFontSize.subscribe((s) => { currentFontSize = s; });
-		unsub(); // single read; reactivity wired below via $effect
-
-		term = new Terminal({
-			allowProposedApi: true,
-			fontSize: currentFontSize,
-			lineHeight: 1,
-			letterSpacing: 0,
-			// fontFamily 末尾追加系统 color-emoji 字体（Segoe UI Emoji / Apple
-			// Color Emoji / Noto Color Emoji），让 WebView2 在主等宽字体没有
-			// emoji glyph 的码位上 fallback 到彩色 emoji 字体。canvas2D fillText
-			// 渲染 sbix/CBDT bitmap 层时 fillStyle 不会染色 —— 这样 🟢🚀 等
-			// emoji 保留原色，不再随 ANSI 前景色染色。
-			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
-			cursorBlink: true,
-			cursorStyle: 'block',
-		screenReaderMode: false,
-			// 仅在终端获得焦点时展示光标；失焦后隐藏，避免在输出区域"乱闪"
-			cursorInactiveStyle: 'none',
-			scrollback: 8000,
-			theme: xtermThemeFor(get(settingsStore).theme)
-		});
-		fitAddon = new FitAddon();
-		term.loadAddon(fitAddon);
-	const unicodeAddon = new Unicode11Addon();
-	term.loadAddon(unicodeAddon);
-	term.unicode.activeVersion = '11';
-		// Clickable web links: Ctrl+click opens the URL in the system browser.
-		const webLinksAddon = new WebLinksAddon(async (_event, uri) => {
-			if (!isTauri()) { window.open(uri, '_blank', 'noopener,noreferrer'); return; }
-			const { openUrl } = await import('@tauri-apps/plugin-opener');
-			await openUrl(uri).catch((err: unknown) => console.warn('[term] openUrl failed', uri, err));
-		});
-		term.loadAddon(webLinksAddon);
-		// In-pane search: Ctrl+F opens the search bar, highlights matches.
-		searchAddon = new SearchAddon();
-		term.loadAddon(searchAddon);
-		term.open(viewInner);
-		// 加载 WebGL renderer：xterm 5 默认 DOM renderer 不支持 customGlyphs，
-		// box-drawing / block-element 字符（│ ─ ┘ ░ █）依赖字体 glyph，cell 之间
-		// 出现 sub-pixel gap 让字符画断裂。WebGL renderer 默认开启 customGlyphs，
-		// 由 GPU 自绘 box-drawing 线段，cell 完美贴合。
-		// fallback: 若 WebGL context 创建失败（极少数 WebView2 软件渲染场景），
-		// addon 会触发 contextLoss 事件；此处 try/catch 兜底退回到 DOM renderer。
-		try {
-			const addon = new WebglAddon();
-			addon.onContextLoss(() => {
-				addon.dispose();
-				webglAddon = null;
-			});
-			term.loadAddon(addon);
-			webglAddon = addon;
-		} catch (err) {
-			console.warn('[term] WebGL renderer unavailable, falling back to DOM:', err);
-			webglAddon = null;
+		// ── Restore terminal from parking lot (pane split) ──────────────────────
+		// On a pane split, the previous Pane component parks the terminal instead
+		// of disposing it, keeping the WebGL context alive. The new component
+		// restores it here, skipping re-initialisation entirely.
+		const _parked = getRegisteredTerminal(paneId);
+		if (_parked && restoreTerminal(paneId, viewInner)) {
+			term = _parked.term;
+			fitAddon = _parked.fitAddon;
+			webglAddon = _parked.webglAddon;
+			// Apply settings that may have changed while the terminal was parked.
+			term.options.fontSize = get(termFontSize);
+			term.options.theme = xtermThemeFor(get(settingsStore).theme);
+			webglAddon?.clearTextureAtlas();
+			term.refresh(0, term.rows - 1);
 		}
+
+		if (!term) {
+			// ── Create new terminal ──────────────────────────────────────────────
+			// Read the persisted font size from the shared store's current value.
+			let currentFontSize = 15;
+			const unsub = termFontSize.subscribe((s) => { currentFontSize = s; });
+			unsub(); // single read; reactivity wired below via $effect
+
+			term = new Terminal({
+				allowProposedApi: true,
+				fontSize: currentFontSize,
+				lineHeight: 1,
+				letterSpacing: 0,
+				// fontFamily 末尾追加系统 color-emoji 字体（Segoe UI Emoji / Apple
+				// Color Emoji / Noto Color Emoji），让 WebView2 在主等宽字体没有
+				// emoji glyph 的码位上 fallback 到彩色 emoji 字体。canvas2D fillText
+				// 渲染 sbix/CBDT bitmap 层时 fillStyle 不会染色 —— 这样 🟢🚀 等
+				// emoji 保留原色，不再随 ANSI 前景色染色。
+				fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
+				cursorBlink: true,
+				cursorStyle: 'block',
+				screenReaderMode: false,
+				// 仅在终端获得焦点时展示光标；失焦后隐藏，避免在输出区域"乱闪"
+				cursorInactiveStyle: 'none',
+				scrollback: 8000,
+				theme: xtermThemeFor(get(settingsStore).theme)
+			});
+			fitAddon = new FitAddon();
+			term.loadAddon(fitAddon);
+			// Load Unicode11Addon to register the '11' version, then override with
+			// 'emoji-wide' which forces all emoji ranges to width=2.
+			const unicodeAddon = new Unicode11Addon();
+			term.loadAddon(unicodeAddon);
+			term.unicode.register({ version: 'emoji-wide' as const, wcwidth: termWcwidth });
+			term.unicode.activeVersion = 'emoji-wide';
+			// Clickable web links: Ctrl+click opens the URL in the system browser.
+			const webLinksAddon = new WebLinksAddon(async (_event, uri) => {
+				if (!isTauri()) { window.open(uri, '_blank', 'noopener,noreferrer'); return; }
+				const { openUrl } = await import('@tauri-apps/plugin-opener');
+				await openUrl(uri).catch((err: unknown) => console.warn('[term] openUrl failed', uri, err));
+			});
+			term.loadAddon(webLinksAddon);
+			// In-pane search: Ctrl+F opens the search bar, highlights matches.
+			searchAddon = new SearchAddon();
+			term.loadAddon(searchAddon);
+			term.open(viewInner);
+			// 加载 WebGL renderer：xterm 5 默认 DOM renderer 不支持 customGlyphs，
+			// box-drawing / block-element 字符（│ ─ ┘ ░ █）依赖字体 glyph，cell 之间
+			// 出现 sub-pixel gap 让字符画断裂。WebGL renderer 默认开启 customGlyphs，
+			// 由 GPU 自绘 box-drawing 线段，cell 完美贴合。
+			// fallback: 若 WebGL context 创建失败（极少数 WebView2 软件渲染场景），
+			// addon 会触发 contextLoss 事件；此处 try/catch 兜底退回到 DOM renderer。
+			try {
+				const addon = new WebglAddon();
+				addon.onContextLoss(() => {
+					addon.dispose();
+					webglAddon = null;
+				});
+				term.loadAddon(addon);
+				webglAddon = addon;
+			} catch (err) {
+				console.warn('[term] WebGL renderer unavailable, falling back to DOM:', err);
+				webglAddon = null;
+			}
+			// Register so the terminal survives future pane splits.
+			registerTerminal(paneId, { term, fitAddon, webglAddon });
+		} // end if (!term)
 
 		// Keep font size in sync with the global termFontSize store across all pane instances.
 		unsubFontSize = termFontSize.subscribe((size) => {
@@ -479,8 +545,9 @@ async function renderView() {
 			const mod = ev.ctrlKey || ev.metaKey;
 			// Ctrl/Cmd + C
 			if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
-				const selection = term?.getSelection();
-				if (selection && selection.length > 0) {
+				const raw = term?.getSelection() ?? '';
+				const selection = (term && raw) ? stripSoftWraps(raw, term.cols) : raw;
+				if (selection.length > 0) {
 					void writeText(selection).catch((err) => {
 						console.error('clipboard write failed', err);
 					});
@@ -559,32 +626,37 @@ async function renderView() {
 			'.xterm-helper-textarea'
 		);
 		if (helperTextarea) {
+			// Always pin the helper-textarea to the bottom of the terminal so the
+			// IME candidate window never chases the cursor during output bursts.
+			// xterm repositions the textarea on every cursor move; the MutationObserver
+			// intercepts those repositions and immediately restores the fixed position,
+			// keeping the IME box anchored regardless of what the shell is outputting.
+			// Disconnect before applying to avoid triggering itself in a loop.
+			let imePinObs: MutationObserver | undefined;
+			const applyImePin = () => {
+				imePinObs?.disconnect();
+				const h = (viewInner as HTMLElement).clientHeight;
+				helperTextarea.style.setProperty('left', '1px', 'important');
+				helperTextarea.style.setProperty('top', `${Math.max(0, h - 16)}px`, 'important');
+				helperTextarea.style.setProperty('transform', 'none', 'important');
+				imePinObs?.observe(helperTextarea, { attributes: true, attributeFilter: ['style'] });
+			};
+			imePinObs = new MutationObserver(applyImePin);
+			applyImePin();
+			disposeImePinObserver = () => {
+				imePinObs?.disconnect();
+				imePinObs = undefined;
+			};
+
 			const onCompStart = () => {
 				if (!alive || !term) return;
+				// Disable cursor blink during composition so the blinking block doesn't
+				// flicker in the output area while the user picks characters.
 				term.options.cursorBlink = false;
 				isComposing = true;
 				// 清空上一次合成遗留的文字，确保 xterm bubble-phase 的 compositionstart()
 				// 将 _compositionPosition.start 记录为 0。
-				// 若不清空，某些 Windows IME（替换型）会覆盖 textarea 旧文字而非追加，
-				// 导致 _finalizeComposition 的 substring(start) 读到空串（"memo words" bug）。
-				// 此处在 capture phase 清空是安全的：xterm 的 bubble-phase compositionstart
-				// 在之后运行，能正确看到空串并将 start 设为 0。
 				helperTextarea.value = '';
-				// Pin the helper textarea at its current position so the IME candidate window
-				// stays put while shell output scrolls. xterm repositions the textarea on
-				// every cursor move, which made the IME box chase the "character refresh area".
-				// We snapshot the current position and force it via !important until compositionend.
-				const s = helperTextarea.style;
-				pinnedImeTextareaStyle = {
-					left: s.left,
-					top: s.top,
-					transform: s.transform,
-				};
-				s.setProperty('left', s.left || '0px', 'important');
-				s.setProperty('top', s.top || '0px', 'important');
-				if (s.transform) {
-					s.setProperty('transform', s.transform, 'important');
-				}
 			};
 			const onCompEnd = () => {
 				if (!alive || !term) return;
@@ -593,16 +665,6 @@ async function renderView() {
 				// triggerDataEvent → onData，此时守卫已解除，汉字可正常写入 PTY。
 				isComposing = false;
 				term.options.cursorBlink = true;
-				// Release the IME pin so normal xterm positioning resumes for the next composition.
-				if (pinnedImeTextareaStyle) {
-					helperTextarea.style.removeProperty('left');
-					helperTextarea.style.removeProperty('top');
-					helperTextarea.style.removeProperty('transform');
-					helperTextarea.style.left = pinnedImeTextareaStyle.left;
-					helperTextarea.style.top = pinnedImeTextareaStyle.top;
-					helperTextarea.style.transform = pinnedImeTextareaStyle.transform;
-					pinnedImeTextareaStyle = undefined;
-				}
 			};
 			// bubble phase：在 xterm 的 bubble-phase compositionend 之后执行。
 			// 修复 "输入中文后再输入中文标点删除最后一字符" bug：
@@ -610,13 +672,8 @@ async function renderView() {
 			// xterm 的 _handleAnyTextareaChanges 在 IME keydown(keyCode=229) 时
 			// 快照 e = textarea.value，setTimeout(0) 时比较新值 t。若 t.length<e.length
 			// 会向 PTY 发送 DEL(0x7f) 删除上一个字符。
-			// 若合成间 textarea 残留上一次的汉字（如 "文"），下一次 onCompStart 清空后
-			// 若 IME 对标点只触发空合成（compositionstart/end 无 update）或新字比旧字短，
-			// 就会命中 t.length<e.length 分支误删。
-			//
 			// 修复：每次合成结束后把 textarea 清空，使下一次 keydown 快照 e.length===0。
-			// 必须用 bubble phase + setTimeout(0) 排队在 xterm 的 T1（读 textarea）之后，
-			// 否则 xterm 会读到空串导致汉字丢失。
+			// 必须用 bubble phase + setTimeout(0) 排队在 xterm 的 T1（读 textarea）之后。
 			const onCompEndClearTextarea = () => {
 				if (!alive) return;
 				setTimeout(() => {
@@ -637,7 +694,7 @@ async function renderView() {
 		// Foreground process name is tracked via polling (started in onMount),
 		// not OSC 0/2 title events (which shells rarely emit without explicit prompt setup).
 
-		fitAddon.fit();
+		fitAddon?.fit();
 		await fitAndSyncPty();
 
 		if (typeof document !== 'undefined' && document.fonts?.ready) {
@@ -690,6 +747,16 @@ async function renderView() {
 				if (!alive) return;
 				if (scrollbackFlushed) {
 					term?.write(e.payload.data);
+					// Suppress cursor blink during active output bursts so the cursor
+					// doesn't flicker in the output area. Re-enable after 150 ms of silence.
+					if (!isComposing && term?.options.cursorBlink) {
+						term.options.cursorBlink = false;
+					}
+					if (outputBlinkTimer) clearTimeout(outputBlinkTimer);
+					outputBlinkTimer = setTimeout(() => {
+						outputBlinkTimer = undefined;
+						if (alive && !isComposing && term) term.options.cursorBlink = true;
+					}, 150);
 					scheduleTermRedraw();
 				} else {
 					pendingQueue.push(e.payload.data);
@@ -896,6 +963,9 @@ onMount(() => {
 		cancelTermRedrawRaf();
 		disposeXtermScrollFix?.();
 		disposeXtermScrollFix = undefined;
+		disposeImePinObserver?.();
+		disposeImePinObserver = undefined;
+		if (outputBlinkTimer) { clearTimeout(outputBlinkTimer); outputBlinkTimer = undefined; }
 		unsubFontSize?.();
 		unsubFontSize = undefined;
 		unsubXtermTheme?.();
@@ -906,8 +976,19 @@ onMount(() => {
 		removeFocusHandlers?.();
 		removeCompositionHandlers?.();
 		diffUnlisten?.();
-		if (term) term.dispose();
+		// Park the terminal instead of disposing it — preserves the WebGL context
+		// across pane splits. True disposal happens via disposeTerminal() in paneTree.ts
+		// when the pane is explicitly closed.
+		if (mode === 'terminal' && term) {
+			parkTerminal(paneId);
+		} else {
+			if (term) term.dispose();
+		}
+		term = null;
+		fitAddon = null;
+		webglAddon = null;
 		if (editor) editor.dispose();
+		editor = null;
 	});
 });
 
@@ -915,7 +996,8 @@ onMount(() => {
 function onTerminalContextMenu(e: MouseEvent): void {
 	if (mode !== 'terminal' || !term) return;
 	e.preventDefault();
-	const selection = term.getSelection();
+	const rawSel = term.getSelection();
+	const selection = rawSel ? stripSoftWraps(rawSel, term.cols) : '';
 	showContextMenu(e.clientX, e.clientY, [
 		...(selection
 			? [{ id: 'term-copy', label: '复制', action: () => { void writeText(selection); } }]

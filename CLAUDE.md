@@ -186,15 +186,18 @@ See `docs/TERMINAL_SCROLLBACK.md` for the full design. In-tree:
 
 To avoid stacking conflicts, modals follow this fixed table:
 
-| Modal | z-index |
-|--|--|
-| `ContextMenu` | 9999 |
-| `ClaudeAgentLauncher` | 9997 |
-| `ScrollbackHistoryModal` | 9996 |
-| Diff modal (`SourceControl.svelte`) | 9998 |
-| `WindToast` | 10000 (above all modals — toasts must never be occluded) |
+| Layer | z-index | Notes |
+|--|--|--|
+| `.rg-popup` dropdown menus | 9990 | `PaneGitPill`, `PaneRepoSwitcher`, recent workspaces; `position:fixed` with JS coords |
+| `RidgeDialog` (alert/confirm/prompt) | 9998 | `position:fixed inset-0` |
+| `ClaudeAgentLauncher` | 9997 | `position:fixed inset-0` |
+| `ScrollbackHistoryModal` | 9996 | `position:fixed inset-0` |
+| `ContextMenu` | 9999 | `position:fixed`, viewport-aware coords |
+| `WindToast` | 10000 | Always above all modals |
 
-When adding a new modal, claim a free slot below 9999 and document it here.
+All modals/overlays are mounted **outside** the root layout `<div>` in `+page.svelte` (as siblings), so `position:fixed` is always viewport-relative with no parent stacking-context interference.
+
+When adding a new modal, claim a free slot and document it here.
 
 ## SCM git watcher
 

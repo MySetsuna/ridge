@@ -41,7 +41,7 @@
   aria-hidden="true"
 >
   <!-- Lines first so dots paint on top — z-order is paint order in SVG. -->
-  {#each layout.lines as line, i (i)}
+  {#each layout.lines as line (line.d)}
     <path d={line.d} stroke={line.color} stroke-width="1.5" fill="none" stroke-linecap="round" />
   {/each}
   {#each layout.dots as dot (dot.hash)}

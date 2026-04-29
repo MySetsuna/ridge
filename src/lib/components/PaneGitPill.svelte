@@ -92,17 +92,25 @@
 
   /** Root element; used by the outside-click handler to gate dismissals. */
   let root: HTMLDivElement | undefined = $state();
+  /** Trigger button ref — used to compute fixed popup coordinates. */
+  let triggerBtn: HTMLButtonElement | undefined = $state();
+  /** Inline style for the fixed popup (top + right from viewport edge). */
+  let popupStyle = $state('');
 
   async function togglePicker(): Promise<void> {
     if (!isTauri() || !info) return;
-    open = !open;
-    if (!open) { branchFilter = ''; return; }
+    if (open) { open = false; branchFilter = ''; return; }
+    // Calculate viewport-relative coords so the popup escapes any
+    // overflow:hidden or stacking-context boundary in the pane header.
+    if (triggerBtn) {
+      const r = triggerBtn.getBoundingClientRect();
+      popupStyle = `top:${r.bottom + 4}px;right:${Math.max(8, window.innerWidth - r.right)}px`;
+    }
+    open = true;
     branchFilter = '';
-    // Load when first opened OR when the cached list belongs to a different repo.
     if (loadedRepoRoot !== info.repoRoot && !loading) {
       await loadBranches();
     }
-    // Focus the filter input after list loads so user can type immediately.
     requestAnimationFrame(() => filterInput?.focus());
   }
 
@@ -234,6 +242,7 @@
 {#if info && info.branch}
   <div class="relative" bind:this={root}>
     <button
+      bind:this={triggerBtn}
       type="button"
       title={`${info.repoRoot}\n分支：${info.branch}${
         info.ahead || info.behind ? `\n↑${info.ahead} ↓${info.behind}` : ''
@@ -275,11 +284,11 @@
     </button>
 
     {#if open}
-      <!-- Anchored dropdown; right-aligned so it doesn't overflow the pane's
-           narrow header. max-h caps scroll; overlayScroll would be overkill
-           for ≤ a couple dozen branches. -->
+      <!-- Fixed-position popup: escapes pane header overflow:hidden and any
+           backdrop-blur stacking context. Coords set by togglePicker(). -->
       <div
-        class="absolute right-0 top-[26px] z-50 min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto rg-scroll rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl"
+        style={popupStyle}
+        class="rg-popup min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto rg-scroll"
         role="menu"
       >
         <!-- Create-branch entry pinned at the top — toggles to inline input

@@ -243,7 +243,7 @@
 {#if $contextMenu.visible}
   <div
     bind:this={menuRef}
-    class="fixed z-[9999] min-w-[180px] max-w-[280px] overflow-hidden rounded-xl border border-[var(--rg-border)] bg-[var(--rg-surface)]/98 backdrop-blur-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+    class="rg-popup z-[9999] min-w-[180px] max-w-[280px] overflow-hidden"
     style="left: {menuPos.x}px; top: {menuPos.y}px;"
     role="menu"
   >

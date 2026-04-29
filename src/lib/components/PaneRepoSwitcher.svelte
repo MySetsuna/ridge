@@ -27,6 +27,8 @@
 
   let open = $state(false);
   let root: HTMLDivElement | undefined = $state();
+  let triggerBtn: HTMLButtonElement | undefined = $state();
+  let popupStyle = $state('');
 
   function basename(path: string): string {
     const parts = path.split(/[\\/]/).filter(Boolean);
@@ -70,7 +72,15 @@
       class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--rg-surface)]/60 text-[var(--rg-fg-muted)] border border-[var(--rg-border)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors max-w-[140px]
         {open ? 'bg-[var(--rg-surface)] text-[var(--rg-fg)]' : ''}"
       title={`此 pane cwd 中检测到 ${repos.length} 个 git 仓库\n当前：${info.repoRoot}`}
-      onclick={() => (open = !open)}
+      bind:this={triggerBtn}
+      onclick={() => {
+        if (open) { open = false; return; }
+        if (triggerBtn) {
+          const r = triggerBtn.getBoundingClientRect();
+          popupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
+        }
+        open = true;
+      }}
     >
       <Folder class="h-3 w-3 shrink-0" />
       <span class="truncate">{basename(info.repoRoot)}</span>
@@ -79,7 +89,8 @@
 
     {#if open}
       <div
-        class="absolute left-0 top-[26px] z-50 min-w-[180px] max-w-[320px] rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl overflow-hidden"
+        style={popupStyle}
+        class="rg-popup min-w-[180px] max-w-[320px] overflow-hidden"
         role="menu"
       >
         {#each repos as repo (repo)}

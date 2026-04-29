@@ -235,7 +235,10 @@
    * module-scope cache so the selection also survives tab remounts (round χ).
    * Writes go through `setScmSelectedCommit`.
    */
-  let selectedCommitHash = $derived(selectedRepo ? getScmSelectedCommit(selectedRepo) : '');
+  // Derive from the reactive store so Svelte tracks the dependency and
+  // re-evaluates when selectCommit() writes to it. getScmSelectedCommit()
+  // uses get() (one-shot) and would NOT re-run on store changes.
+  let selectedCommitHash = $derived(selectedRepo ? ($scmCacheStore.selectedCommitHashByRepo[selectedRepo] ?? '') : '');
   function selectCommit(hash: string): void {
     if (!selectedRepo) return;
     setScmSelectedCommit(selectedRepo, selectedCommitHash === hash ? '' : hash);
@@ -618,7 +621,7 @@
           if (entry.isIntersecting) cb();
         }
       },
-      { rootMargin: '200px 0px 200px 0px', threshold: 0 }
+      { rootMargin: '0px 0px 100px 0px', threshold: 0 }
     );
     io.observe(node);
     return {
@@ -790,6 +793,7 @@
       await invoke('git_checkout', { repoRoot: root, branch: name.trim(), create: true });
       await refreshStatus(root);
       await loadBranches(root);
+      if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
       await alertDialog({ title: '创建分支失败', message: String(e), danger: true });
     }
@@ -1035,9 +1039,10 @@ onMount(() => {
             setTimeout(() => {
               watcherDebounce.delete(root);
               void refreshStatus(root);
-              if (selectedRepo === root) {
-                void loadGraph(root, { resetSelection: false });
-              }
+              // Graph NOT refreshed here — external git changes (e.g. terminal
+              // commit) would cause rapid auto-reloads. Graph updates only on:
+              // manual refresh button or SCM-panel git operations (commit,
+              // branch switch, sync). Initial discovery handles rootsChanged.
             }, 250)
           );
         });

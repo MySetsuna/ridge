@@ -110,8 +110,14 @@ self.MonacoEnvironment = {
   // ─── 打开 .ridge 入口 + 最近打开下拉（使用 tauri-plugin-dialog 的 OS 原生文件选择器）───
   let recentOpen = $state(false);
   let recentList = $state<string[]>([]);
+  let recentBtn: HTMLButtonElement | undefined = $state();
+  let recentPopupStyle = $state('');
   async function loadRecentAndToggle() {
     recentList = await listRecentWorkspaces();
+    if (!recentOpen && recentBtn) {
+      const r = recentBtn.getBoundingClientRect();
+      recentPopupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
+    }
     recentOpen = !recentOpen;
   }
   function basenameOf(p: string): string {
@@ -287,6 +293,11 @@ function expandSidebar() {
 
   // 键盘快捷键处理
   function handleGlobalKeydown(e: KeyboardEvent) {
+    // 全局禁止页面刷新（F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R）
+    if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {
+      e.preventDefault();
+      return;
+    }
     // Ctrl+B: 切换侧边栏
     if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
       e.preventDefault();
@@ -1062,6 +1073,7 @@ function expandSidebar() {
                 <FolderInput class="h-3.5 w-3.5" /> 打开
               </button>
               <button
+                bind:this={recentBtn}
                 type="button"
                 class="flex items-center justify-center h-7 w-5 rounded-r text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
                 title="最近打开的工作区"
@@ -1072,9 +1084,9 @@ function expandSidebar() {
             </div>
 
             {#if recentOpen}
-              <!-- 下拉：最近打开的 .ridge。点击外部关闭；当前先靠 onblur 的 focus-within 语义。 -->
               <div
-                class="absolute right-3 top-full mt-1 z-50 w-[300px] max-w-[90vw] rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] shadow-xl overflow-hidden"
+                style={recentPopupStyle}
+                class="rg-popup w-[300px] max-w-[90vw]"
                 role="menu"
               >
                 <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
@@ -1371,25 +1383,20 @@ function expandSidebar() {
     </div>
   </div>
 
-  <!-- Claude Code 启动 modal：任意 pane 的 Bot 按钮点击后唤起，集中在这里
-       mount 一次，避免 SplitContainer 递归 render 出多份。 -->
-  <ClaudeAgentLauncher />
-
-  <!-- 终端历史记录浏览器：从 pane 标题栏的 History 按钮唤起。同样集中挂载。 -->
-  <ScrollbackHistoryModal />
-
-
-  <!-- 主题化的 alert/confirm/prompt 替代浏览器原生 dialog。
-       任何位置都可以 await alertDialog/confirmDialog/promptDialog。-->
-  <WindDialog />
-
-  <!-- 轻量 toast 通知（z-10000，位于所有 modal 之上）。
-       任何位置都可以 showToast('消息') 推送。3s 自动消失。-->
-  <WindToast />
-
-  <!-- 全局右键菜单 — store-driven，所有组件通过 showContextMenu()
-       请求展示。**不挂载这个组件**等于 store 永远没有 subscriber，
-       右键事件被截胡却没有 UI 显示，所有 contextmenu 看起来都失效。
-       第 34 轮发现并补回（之前只 import 了组件没 mount）。 -->
-  <ContextMenu />
 </div>
+
+<!-- ── 顶层浮层区 ─────────────────────────────────────────────────────────
+     以下组件使用 position:fixed，必须作为根 <div> 的兄弟节点而非其子节点，
+     确保它们不受根容器任何 CSS transform / backdrop-filter / overflow 限制，
+     始终以整个应用窗口为参照系居中或定位。 -->
+
+<!-- alert / confirm / prompt 替代浏览器原生 dialog -->
+<WindDialog />
+<!-- 轻量 toast 通知 (z-10000，位于所有 modal 之上) -->
+<WindToast />
+<!-- 全局右键菜单 -->
+<ContextMenu />
+<!-- Claude Code 启动 modal -->
+<ClaudeAgentLauncher />
+<!-- 终端滚动历史浏览器 -->
+<ScrollbackHistoryModal />

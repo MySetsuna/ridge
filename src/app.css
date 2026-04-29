@@ -126,6 +126,24 @@ body {
   font-family: var(--font-mono-term);
 }
 
+/* ── 统一下拉气泡容器 ─────────────────────────────────────────────────────
+   所有气泡菜单（分支选择器、repo切换器、上下文菜单、最近工作区等）共享此类。
+   position:fixed 坐标由 JS 计算后写入 inline style，确保不被任何
+   overflow:hidden 父容器裁剪，也不受 backdrop-blur 堆叠上下文影响。 */
+.rg-popup {
+  position: fixed;
+  z-index: 9990;
+  border: 1px solid var(--rg-border-bright);
+  background-color: color-mix(in oklch, var(--rg-bg-raised) 96%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 0.75rem;
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.04),
+    0 2px 8px rgba(0, 0, 0, 0.28),
+    0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
 /* 侧栏、主区等通用细滚动条 — 对齐终端（xterm-viewport）滚动条样式 */
 .rg-scroll {
   scrollbar-width: thin;

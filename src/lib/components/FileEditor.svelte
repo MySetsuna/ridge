@@ -281,15 +281,17 @@
   });
 
   // Apply renderSideBySide toggle without a full IPC reload.
-  // Monaco 在 inline ↔ sideBySide 切换时，仅 updateOptions + layout() 不会
-  // 真正重建右侧 widget —— 表面上选项已改但视觉仍是旧模式，必须手动点
-  // "重新加载 diff" 才生效（用户报告的 bug）。重新 setModel 同一对象指针
-  // 强制 Monaco 重置 viewState 与 sub-editor 实例，立即按新模式渲染。
+  // Monaco 在 inline ↔ sideBySide 切换时，仅 updateOptions 不会重建右侧 diff
+  // widget（表面上选项已改但视觉仍是旧模式）。setModel(null) → setModel(real)
+  // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
   $effect(() => {
     if (!diffEditor) return;
     diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
-    if (diffOriginalModel && diffModifiedModel) {
-      diffEditor.setModel({ original: diffOriginalModel, modified: diffModifiedModel });
+    const orig = diffOriginalModel;
+    const mod = diffModifiedModel;
+    if (orig && mod) {
+      diffEditor.setModel(null);
+      diffEditor.setModel({ original: orig, modified: mod });
     }
     diffEditor.layout();
   });

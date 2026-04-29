@@ -148,8 +148,8 @@ export function applyTheme(theme: ThemeId): void {
 }
 
 export function setTheme(theme: ThemeId): void {
-  setSetting('theme', theme);
   applyTheme(theme);
+  setSetting('theme', theme);
 }
 
 /** 启动初始化：从 store 读出当前主题并写到 root，使 SSR 后首帧不闪 default。 */
