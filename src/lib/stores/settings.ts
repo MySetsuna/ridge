@@ -7,18 +7,20 @@
 
 import { writable, get } from 'svelte/store';
 
-/** Theme id. Each id maps to a `[data-rg-theme="<id>"]` block in `app.css`. */
-export type ThemeId = 'dark' | 'sand' | 'grass' | 'soil';
+/** Theme id. Each id maps to a `[data-rg-theme="<id>"]` block in `app.css`.
+ *  'dark' uses the :root defaults (森林深色). */
+export type ThemeId = 'dark' | 'sand' | 'grass' | 'soil' | 'wheat' | 'starsky';
 
-export const THEME_IDS: ThemeId[] = ['dark', 'sand', 'grass', 'soil'];
+export const THEME_IDS: ThemeId[] = ['dark', 'sand', 'grass', 'soil', 'wheat', 'starsky'];
 
-/** Display label for the theme switcher. Kept in this module so the panel
- *  doesn't need to duplicate the list. */
+/** Display label for the theme switcher. */
 export const THEME_LABELS: Record<ThemeId, string> = {
-  dark: '默认深色',
-  sand: '沙土浅色',
-  grass: '草地浅色',
-  soil: '土壤深色',
+  dark:    '森林深色',
+  sand:    '沙土浅色',
+  grass:   '草地浅色',
+  soil:    '土壤深色',
+  wheat:   '麦田浅色',
+  starsky: '星空深色',
 };
 
 export interface UserSettings {

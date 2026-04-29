@@ -66,12 +66,14 @@
     }
   }
 
-  /** 主题选择器小卡片：实时预览的色块。 */
+  /** 主题选择器小卡片：实时预览的色块。与 app.css 色值同步。 */
   const THEME_PREVIEW: Record<ThemeId, { bg: string; surface: string; accent: string; fg: string }> = {
-    dark:  { bg: '#09090b', surface: '#16161d', accent: '#a78bfa', fg: '#ececf1' },
-    sand:  { bg: '#faf6ef', surface: '#ede5d2', accent: '#c69a4f', fg: '#4a3c2a' },
-    grass: { bg: '#f3f8ee', surface: '#d9e9c9', accent: '#6c9a3d', fg: '#2c3a25' },
-    soil:  { bg: '#1c1410', surface: '#2d201a', accent: '#d97757', fg: '#e8d9c4' },
+    dark:    { bg: '#071009', surface: '#111e14', accent: '#36c26e', fg: '#c8e8d4' },
+    sand:    { bg: '#faf6ef', surface: '#ede5d2', accent: '#c69a4f', fg: '#4a3c2a' },
+    grass:   { bg: '#f3f8ee', surface: '#d9e9c9', accent: '#6c9a3d', fg: '#2c3a25' },
+    soil:    { bg: '#1c1410', surface: '#2d201a', accent: '#d97757', fg: '#e8d9c4' },
+    wheat:   { bg: '#fdf8e8', surface: '#f0e0b0', accent: '#c8860c', fg: '#3a2204' },
+    starsky: { bg: '#040810', surface: '#0c1428', accent: '#4899ff', fg: '#c4d8f8' },
   };
 
   const SECTIONS: { id: SectionId; label: string; icon: typeof Palette }[] = [
@@ -213,15 +215,25 @@
 
             <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-family">编辑器字体</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">CSS font-family 列表，逗号分隔。留空使用默认（JetBrains Mono → Cascadia → Consolas）。</div>
-              <input
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图使用的等宽字体。修改后立即生效。</div>
+              <select
                 id="set-editor-family"
-                type="text"
                 value={$settingsStore.editorFontFamily}
-                oninput={(e) => setSetting('editorFontFamily', (e.currentTarget as HTMLInputElement).value)}
-                placeholder="Fira Code, JetBrains Mono, monospace"
-                class="w-full px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)]"
-              />
+                onchange={(e) => setSetting('editorFontFamily', (e.currentTarget as HTMLSelectElement).value)}
+                class="w-full px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)] cursor-pointer"
+              >
+                <option value="">默认（JetBrains Mono → Cascadia Code → Consolas）</option>
+                <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
+                <option value="'Cascadia Code', monospace">Cascadia Code</option>
+                <option value="'Cascadia Mono', monospace">Cascadia Mono</option>
+                <option value="'Fira Code', monospace">Fira Code</option>
+                <option value="'Source Code Pro', monospace">Source Code Pro</option>
+                <option value="'Consolas', monospace">Consolas</option>
+                <option value="'Courier New', monospace">Courier New</option>
+                <option value="'SF Mono', monospace">SF Mono</option>
+                <option value="'Menlo', monospace">Menlo</option>
+                <option value="'Monaco', monospace">Monaco</option>
+              </select>
             </div>
 
           {:else if activeSection === 'terminal'}

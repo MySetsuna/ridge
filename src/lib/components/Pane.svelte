@@ -113,11 +113,12 @@ function termWcwidth(cp: number): 0 | 1 | 2 {
 	return 1;
 }
 function xtermThemeFor(theme: ThemeId) {
-	const isLight = theme === 'sand' || theme === 'grass';
+	// wheat joins sand/grass as a light theme; forest (dark) and starsky use dark ANSI
+	const isLight = theme === 'sand' || theme === 'grass' || theme === 'wheat';
 	const ansi = isLight ? XTERM_ANSI_LIGHT : XTERM_ANSI_DARK;
-	const bg = cssVar('--rg-term-bg') || (isLight ? '#faf6ef' : '#0c0b12');
-	const fg = cssVar('--rg-fg') || (isLight ? '#1f1b15' : '#e6e4ef');
-	const accent = cssVar('--rg-accent') || (isLight ? '#a06320' : '#a78bfa');
+	const bg = cssVar('--rg-term-bg') || (isLight ? '#faf6ef' : '#071009');
+	const fg = cssVar('--rg-fg') || (isLight ? '#3a2204' : '#c8e8d4');
+	const accent = cssVar('--rg-accent') || (isLight ? '#c69a4f' : '#36c26e');
 	return {
 		background: bg,
 		foreground: fg,
