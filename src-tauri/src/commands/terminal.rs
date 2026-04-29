@@ -36,6 +36,104 @@ pub async fn create_pane(
 	create_pane_inner(state, pane_id, shell).map_err(|e| e.to_string())
 }
 
+/// T14：检索系统可用 shell。返回 `(id, label, program)` 三元组列表。
+/// id 是 settings 持久化用的稳定标识；program 是实际可执行路径。Windows 扫描
+/// pwsh / powershell / cmd / bash（Git Bash） / wsl；Unix 扫描 zsh / bash / fish / sh。
+#[derive(serde::Serialize)]
+pub struct ShellInfo {
+	pub id: String,
+	pub label: String,
+	pub program: String,
+}
+
+/// 在 PATH 中查找命令；同时支持绝对路径直接判断存在性。
+/// 没有引入额外 crate（避免 `which` 依赖），用 std::env::var("PATH") + 手动迭代。
+fn lookup_program(name: &str) -> Option<std::path::PathBuf> {
+	let path = std::path::PathBuf::from(name);
+	if path.is_absolute() && path.is_file() {
+		return Some(path);
+	}
+	let path_var = std::env::var_os("PATH")?;
+	#[cfg(target_os = "windows")]
+	let exts: Vec<String> = std::env::var("PATHEXT")
+		.unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+		.split(';')
+		.map(|s| s.to_string())
+		.collect();
+	#[cfg(not(target_os = "windows"))]
+	let exts: Vec<String> = vec![String::new()];
+
+	for dir in std::env::split_paths(&path_var) {
+		let base = dir.join(name);
+		if base.is_file() {
+			return Some(base);
+		}
+		// Windows 上 PATHEXT 列出的扩展名都试一下。
+		for ext in &exts {
+			if ext.is_empty() {
+				continue;
+			}
+			let with_ext = dir.join(format!("{name}{ext}"));
+			if with_ext.is_file() {
+				return Some(with_ext);
+			}
+		}
+	}
+	None
+}
+
+#[tauri::command]
+pub fn detect_available_shells() -> Vec<ShellInfo> {
+	let mut found: Vec<ShellInfo> = Vec::new();
+	let try_add = |list: &mut Vec<ShellInfo>, id: &str, label: &str, candidates: &[&str]| {
+		for c in candidates {
+			if let Some(p) = lookup_program(c) {
+				let prog = p.to_string_lossy().to_string();
+				if list.iter().any(|s| s.program == prog) {
+					return;
+				}
+				list.push(ShellInfo {
+					id: id.to_string(),
+					label: label.to_string(),
+					program: prog,
+				});
+				return;
+			}
+		}
+	};
+
+	#[cfg(target_os = "windows")]
+	{
+		try_add(&mut found, "pwsh", "PowerShell 7", &["pwsh.exe", "pwsh"]);
+		try_add(
+			&mut found,
+			"powershell",
+			"Windows PowerShell",
+			&["powershell.exe", "powershell"],
+		);
+		try_add(&mut found, "cmd", "命令提示符", &["cmd.exe", "cmd"]);
+		try_add(
+			&mut found,
+			"git-bash",
+			"Git Bash",
+			&[
+				"bash.exe",
+				"C:\\Program Files\\Git\\bin\\bash.exe",
+				"C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+			],
+		);
+		try_add(&mut found, "wsl", "WSL", &["wsl.exe", "wsl"]);
+	}
+	#[cfg(not(target_os = "windows"))]
+	{
+		try_add(&mut found, "zsh", "Zsh", &["zsh", "/bin/zsh", "/usr/bin/zsh"]);
+		try_add(&mut found, "bash", "Bash", &["bash", "/bin/bash", "/usr/bin/bash"]);
+		try_add(&mut found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
+		try_add(&mut found, "sh", "sh", &["sh", "/bin/sh"]);
+	}
+	found
+}
+
 fn create_pane_inner(
 	state: State<'_, AppState>,
 	pane_id: String,
@@ -45,7 +143,7 @@ fn create_pane_inner(
 	let workspace_id = state.active_workspace_id();
 
 	// 优先使用 pane tree 中已记录的 CWD（分屏时由 split_pane 从父 pane 继承），
-	// 若已保存过 shell_kind（来自 .wind 文件恢复）也一并取出。
+	// 若已保存过 shell_kind（来自 .ridge 文件恢复）也一并取出。
 	let (cwd, persisted_shell): (PathBuf, Option<String>) = {
 		let map = state.workspaces.read();
 		let entry = map.get(&workspace_id).and_then(|ws| ws.pane_tree.panes.get(&pane_id));
@@ -59,10 +157,10 @@ fn create_pane_inner(
 		)
 	};
 
-	// 调用方传 shell 时以调用方为准；否则使用 pane 上持久化的 shell_kind（.wind 恢复路径）。
+	// 调用方传 shell 时以调用方为准；否则使用 pane 上持久化的 shell_kind（.ridge 恢复路径）。
 	let effective_shell = shell.clone().or(persisted_shell);
 
-	// 持久化本次实际使用的 shell 信息，便于后续 .wind 保存。
+	// 持久化本次实际使用的 shell 信息，便于后续 .ridge 保存。
 	if let Some(ref sk) = effective_shell {
 		let mut map = state.workspaces.write();
 		if let Some(ws) = map.get_mut(&workspace_id) {
@@ -122,7 +220,7 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
 	let tmux_name = if cfg!(windows) { "tmux.exe" } else { "tmux" };
 
 	// Dev builds: use the pre-built shim in dist/teammate-shim/ under the workspace root.
-	// current_exe() = …/src-tauri/target/debug/wind.exe → go up 4 levels to workspace root.
+	// current_exe() = …/src-tauri/target/debug/ridge.exe → go up 4 levels to workspace root.
 	#[cfg(debug_assertions)]
 	let shim_dir = {
 		let exe = std::env::current_exe().ok()?;
@@ -134,7 +232,7 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
 		workspace.join("dist").join("teammate-shim")
 	};
 
-	// Release builds: look for tmux(.exe) beside the installed Wind binary.
+	// Release builds: look for tmux(.exe) beside the installed Ridge binary.
 	#[cfg(not(debug_assertions))]
 	let shim_dir = {
 		let exe = std::env::current_exe().ok()?;
@@ -147,7 +245,7 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
 	};
 
 	if !shim_dir.join(tmux_name).is_file() {
-		eprintln!("[wind] tmux shim not found at {}", shim_dir.display());
+		eprintln!("[ridge] tmux shim not found at {}", shim_dir.display());
 		return None;
 	}
 	let sep = if cfg!(windows) { ';' } else { ':' };
@@ -156,9 +254,9 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
 	Some(shim_dir)
 }
 
-/// tmux `TMUX` is `socket_path,session_index,pane_index`. Wind uses a sentinel path (no real socket).
-/// Claude Code's TmuxBackend on Windows may validate the first segment as a Windows path; `/wind/...`
-/// fails that check — use `{cwd|project|pwd|~/wind}/teammate.sock` with `/` separators.
+/// tmux `TMUX` is `socket_path,session_index,pane_index`. Ridge uses a sentinel path (no real socket).
+/// Claude Code's TmuxBackend on Windows may validate the first segment as a Windows path; `/ridge/...`
+/// fails that check — use `{cwd|project|pwd|~/ridge}/teammate.sock` with `/` separators.
 fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> String {
 	#[cfg(windows)]
 	{
@@ -166,8 +264,8 @@ fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> Str
 			.map(Path::to_path_buf)
 			.or_else(|| state.current_project.read().clone())
 			.or_else(|| std::env::current_dir().ok())
-			.or_else(|| dirs::home_dir().map(|h| h.join("wind")))
-			.unwrap_or_else(|| PathBuf::from(r"C:\wind"));
+			.or_else(|| dirs::home_dir().map(|h| h.join("ridge")))
+			.unwrap_or_else(|| PathBuf::from(r"C:\ridge"));
 		let sock = base.join("teammate.sock");
 		let prefix = sock.to_string_lossy().replace('\\', "/");
 		format!("{prefix},0,{pane_slot}")
@@ -175,7 +273,7 @@ fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> Str
 	#[cfg(not(windows))]
 	{
 		let _ = (cwd, state);
-		format!("/wind/teammate.sock,0,{pane_slot}")
+		format!("/ridge/teammate.sock,0,{pane_slot}")
 	}
 }
 
@@ -365,8 +463,8 @@ pub fn ensure_pane_pty_workspace(
 	}
 	let shim_dir = if let Some(ref bind) = *state.teammate_binding.read() {
 		let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
-		cmd.env("WIND_TEAMMATE_URL", bind.base_url.as_str());
-		cmd.env("WIND_TEAMMATE_TOKEN", bind.token.as_str());
+		cmd.env("RIDGE_TEAMMATE_URL", bind.base_url.as_str());
+		cmd.env("RIDGE_TEAMMATE_TOKEN", bind.token.as_str());
 		cmd.env("WIND_TERMINAL", "1");
 		// Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
 		let pane_slot = tmux_pane_index.unwrap_or(0);

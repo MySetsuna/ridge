@@ -161,7 +161,7 @@ fn get_foreground_process_name(_shell_pid: u32) -> Option<String> {
 /// plain PowerShell / cmd on Windows also update correctly after `cd`.
 ///
 /// 副作用：发现新的 cwd 时，顺手把它写回 `pane_tree.panes[pane].cwd` —— 这是后端
-/// 唯一权威的 cwd 来源，后续 split 会从这里继承；同时触发 .wind 自动保存。
+/// 唯一权威的 cwd 来源，后续 split 会从这里继承；同时触发 .ridge 自动保存。
 #[tauri::command]
 pub async fn get_pane_cwd(
     state: State<'_, AppState>,
@@ -203,7 +203,7 @@ pub async fn get_pane_cwd(
                 pane_id,
                 cwd: cwd.clone(),
             });
-            crate::commands::wind_file::schedule_auto_save(&*state, workspace_id);
+            crate::commands::ridge_file::schedule_auto_save(&*state, workspace_id);
         }
     }
 

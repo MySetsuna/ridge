@@ -1,5 +1,5 @@
-**WarpForge 架构文档 v2.0**  
-**项目名称**：WarpForge —— 现代 Warp-like + tmux-like 终端（Rust + Tauri）  
+**Ridge 架构文档 v2.0**  
+**项目名称**：Ridge —— 现代 Warp-like + tmux-like 终端（Rust + Tauri）  
 **版本**：v2.0（基于当前全部讨论总结）  
 **目标**：打造一款**以终端为核心**、支持任意层级 split、轻量内置编辑器、Git Graph 可视化的高稳定终端工具。**不直接集成 AI**，保持纯粹终端特性。
 
@@ -65,7 +65,7 @@
 ### 4. 项目目录结构（推荐）
 
 ```bash
-warpforge/
+ridge/
 ├── src/                          # Svelte 前端
 │   ├── lib/
 │   │   ├── components/

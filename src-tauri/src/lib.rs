@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tauri::Emitter;
 use tokio::sync::mpsc;
-use crate::commands::{git, pane, process, project, terminal, watch, wind_file, workspace};
+use crate::commands::{fs_watch, git, pane, process, project, terminal, watch, ridge_file, workspace};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
@@ -20,10 +20,10 @@ use crate::types::{GlobalEvent, PaneMode};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 日志 + panic hook 尽早装好，后续任何线程 panic 都会落盘到
-    // `<LOCALAPPDATA>\wind\logs\crash-YYYY-MM-DD.log`，便于事故溯源。
+    // `<LOCALAPPDATA>\ridge\logs\crash-YYYY-MM-DD.log`，便于事故溯源。
     let app_data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("wind");
+        .join("ridge");
     std::fs::create_dir_all(&app_data_dir).ok();
     utils::logging::init_once(&app_data_dir);
 
@@ -33,7 +33,7 @@ pub fn run() {
 
     let db_path = app_data_dir.join("projects.db");
     let project_store = ProjectStore::new(&db_path)
-        .map_err(|e| tracing::error!(target: "wind::init", error = %e, "project store init failed"))
+        .map_err(|e| tracing::error!(target: "ridge::init", error = %e, "project store init failed"))
         .ok();
 
     let mut app_state = AppState::new(event_tx);
@@ -183,6 +183,17 @@ pub fn run() {
                                 serde_json::json!({ "cwd": cwd }),
                             );
                         }
+                        Some(GlobalEvent::PaneTitleChanged {
+                            workspace_id,
+                            pane_id,
+                            title,
+                        }) => {
+                            let label = pane_id.to_string();
+                            let _ = handle.emit(
+                                &format!("pane-title-changed-{workspace_id}-{label}"),
+                                serde_json::json!({ "title": title }),
+                            );
+                        }
                         None => {
                             // timeout — flush all pending per-pane buffers.
                             if !pending_output.is_empty() {
@@ -208,12 +219,14 @@ pub fn run() {
             git::set_pane_workdir,
             git::is_git_repo,
         git::get_git_info_with_cwd,
+            git::get_git_commits_paginated,
             git::find_git_repo_root,
             git::find_git_repos_below,
             git::get_scm_status,
             git::git_stage,
             git::git_unstage,
             git::git_discard,
+            git::git_clean_untracked,
             git::git_commit,
             git::git_list_branches,
             git::git_checkout,
@@ -224,6 +237,10 @@ pub fn run() {
             git::git_diff_file,
             git::git_diff_summary,
             git::git_get_file_versions,
+            git::git_get_commit_files,
+            git::git_get_file_versions_at_commit,
+            git::git_create_tag,
+            git::git_reset,
             git::git_cherry_pick,
             git::git_revert,
             git::git_op_in_progress,
@@ -239,6 +256,7 @@ pub fn run() {
             pane::register_teammate_agent,
             pane::release_teammate_agent,
             terminal::create_pane,
+            terminal::detect_available_shells,
             terminal::write_to_pty,
             terminal::resize_pane,
             terminal::kill_pane,
@@ -287,20 +305,21 @@ pub fn run() {
             project::read_claude_history,
             process::get_pane_foreground_process,
             process::get_pane_cwd,
-            // .wind file commands
-            wind_file::save_workspace_to_file,
-            wind_file::open_workspace_from_file,
-            wind_file::delete_workspace_file,
-            wind_file::get_workspace_save_info,
-            wind_file::list_workspace_save_info,
-            wind_file::get_last_opened_workspace_path,
-            wind_file::get_startup_context,
-            wind_file::clear_last_opened_workspace_path,
-            wind_file::get_default_workspace_save_dir,
-            wind_file::browse_directory,
-            wind_file::list_recent_workspaces,
-            wind_file::clear_recent_workspaces,
+            // .ridge file commands
+            ridge_file::save_workspace_to_file,
+            ridge_file::open_workspace_from_file,
+            ridge_file::delete_workspace_file,
+            ridge_file::get_workspace_save_info,
+            ridge_file::list_workspace_save_info,
+            ridge_file::get_last_opened_workspace_path,
+            ridge_file::get_startup_context,
+            ridge_file::clear_last_opened_workspace_path,
+            ridge_file::get_default_workspace_save_dir,
+            ridge_file::browse_directory,
+            ridge_file::list_recent_workspaces,
+            ridge_file::clear_recent_workspaces,
             watch::start_watching_repos,
+            fs_watch::start_watching_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,4 @@
-//! `.wind` 工作区文件：一个工作区的完整可移植快照。
+//! `.ridge` 工作区文件：一个工作区的完整可移植快照。
 //!
 //! 文件结构（JSON，`version` 作为前向兼容锚点）：
 //! ```json
@@ -7,7 +7,7 @@
 //!   "name": "My Workspace",
 //!   "saved_at": "2026-04-24T10:00:00Z",
 //!   "pane_tree": { ... 工作区 PaneTree JSON ... },
-//!   "git_repos": ["C:/code/wind"],
+//!   "git_repos": ["C:/code/ridge"],
 //!   "index_path": null
 //! }
 //! ```
@@ -16,7 +16,7 @@
 //! - 后端持有防抖调度器 `AutoSaveScheduler`，命令层在 pane_tree / cwd / git
 //!   状态发生变化后调用 `schedule(workspace_id)`；
 //! - 调度器合并 `AUTO_SAVE_DEBOUNCE_MS` 内的触发，到期后后台线程读快照并
-//!   原子写入 `.wind` 文件，主线程零阻塞。
+//!   原子写入 `.ridge` 文件，主线程零阻塞。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,11 +32,11 @@ use uuid::Uuid;
 use crate::engine::pane_tree::PaneTree;
 use crate::state::AppState;
 
-const WIND_FILE_VERSION: u32 = 1;
+const RIDGE_FILE_VERSION: u32 = 1;
 const AUTO_SAVE_DEBOUNCE_MS: u64 = 400;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindFile {
+pub struct RidgeFile {
     pub version: u32,
     pub name: String,
     pub saved_at: String,
@@ -47,16 +47,16 @@ pub struct WindFile {
     pub index_path: Option<String>,
     /// Per-pane teammate display names keyed by pane UUID string. Written by
     /// Claude Code's `new-window -n` / `split-window -n` and surfaced in the
-    /// Wind pane header. Runtime state (busy / idle, agent_id) is deliberately
+    /// Ridge pane header. Runtime state (busy / idle, agent_id) is deliberately
     /// NOT persisted — it's session-scoped and would lie across restarts.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub pane_titles: HashMap<String, String>,
 }
 
-/// 默认保存目录：`<home>/wind-workspaces/`（不存在时创建）。
+/// 默认保存目录：`<home>/ridge-workspaces/`（不存在时创建）。
 fn default_save_dir() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let dir = base.join("wind-workspaces");
+    let dir = base.join("ridge-workspaces");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -83,18 +83,18 @@ fn sanitize_filename(name: &str) -> String {
 fn resolve_target_path(name: &str, explicit: Option<String>) -> PathBuf {
     if let Some(p) = explicit {
         let pb = PathBuf::from(&p);
-        if pb.extension().and_then(|s| s.to_str()) == Some("wind") {
+        if pb.extension().and_then(|s| s.to_str()) == Some("ridge") {
             pb
         } else if pb.is_dir() || p.ends_with(std::path::MAIN_SEPARATOR) {
-            pb.join(format!("{}.wind", sanitize_filename(name)))
+            pb.join(format!("{}.ridge", sanitize_filename(name)))
         } else {
-            // 用户传的是 "<dir>/<stem>" 之类，补 `.wind` 扩展。
+            // 用户传的是 "<dir>/<stem>" 之类，补 `.ridge` 扩展。
             let mut with_ext = pb.clone();
-            with_ext.set_extension("wind");
+            with_ext.set_extension("ridge");
             with_ext
         }
     } else {
-        default_save_dir().join(format!("{}.wind", sanitize_filename(name)))
+        default_save_dir().join(format!("{}.ridge", sanitize_filename(name)))
     }
 }
 
@@ -102,7 +102,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("wind.tmp");
+    let tmp = path.with_extension("ridge.tmp");
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)
 }
@@ -166,8 +166,8 @@ pub struct WorkspaceSaveInfo {
     pub name: Option<String>,
 }
 
-/// 构造当前工作区的 WindFile 快照。
-fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Result<WindFile, String> {
+/// 构造当前工作区的 RidgeFile 快照。
+fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Result<RidgeFile, String> {
     let map = state.workspaces.read();
     let ws = map.get(&workspace_id).ok_or_else(|| "工作区不存在".to_string())?;
     let tree_json = serde_json::to_value(&ws.pane_tree).map_err(|e| e.to_string())?;
@@ -186,8 +186,8 @@ fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Resul
         .iter()
         .map(|(k, v)| (k.to_string(), v.clone()))
         .collect();
-    Ok(WindFile {
-        version: WIND_FILE_VERSION,
+    Ok(RidgeFile {
+        version: RIDGE_FILE_VERSION,
         name: name.to_string(),
         saved_at: Utc::now().to_rfc3339(),
         pane_tree: tree_json,
@@ -320,14 +320,24 @@ pub fn open_workspace_from_file(
 ) -> Result<String, String> {
     let file_path = PathBuf::from(&path);
     if !file_path.is_file() {
-        return Err(format!(".wind 文件不存在：{path}"));
+        return Err(format!(".ridge 文件不存在：{path}"));
+    }
+    // 严格校验扩展名：只接受 .ridge —— 旧的 .wind 工作区文件已不再被支持，
+    // 用户需要手动重命名 / 用旧版重新导出后再打开。
+    let ext_ok = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("ridge"))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err(format!("不再支持非 .ridge 工作区文件：{path}"));
     }
     let raw = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-    let wf: WindFile = serde_json::from_slice(&raw).map_err(|e| format!(".wind 格式非法: {e}"))?;
-    if wf.version != WIND_FILE_VERSION {
+    let wf: RidgeFile = serde_json::from_slice(&raw).map_err(|e| format!(".ridge 格式非法: {e}"))?;
+    if wf.version != RIDGE_FILE_VERSION {
         return Err(format!(
-            ".wind 版本 {} 与当前 ({}) 不匹配",
-            wf.version, WIND_FILE_VERSION
+            ".ridge 版本 {} 与当前 ({}) 不匹配",
+            wf.version, RIDGE_FILE_VERSION
         ));
     }
     // 反序列化 pane_tree（用于重建布局；真实 PTY 由前端 Pane onMount 重起）。
@@ -354,7 +364,7 @@ pub fn open_workspace_from_file(
     // Rehydrate teammate_pane_titles from the persisted map, skipping entries
     // whose UUID no longer exists in the restored tree (stale ids from edits
     // made after the last save). Runtime state (busy / idle) stays empty —
-    // sessions always start clean, see WindFile docstring.
+    // sessions always start clean, see RidgeFile docstring.
     let restored_titles: HashMap<Uuid, String> = {
         let known: std::collections::HashSet<Uuid> = tree.panes.keys().copied().collect();
         wf.pane_titles
@@ -392,10 +402,10 @@ pub fn open_workspace_from_file(
     Ok(new_id.to_string())
 }
 
-/// 启动上下文：当前进程 cwd + cwd 顶层第一个 `.wind` 文件（若存在）。
+/// 启动上下文：当前进程 cwd + cwd 顶层第一个 `.ridge` 文件（若存在）。
 ///
 /// 前端在 `onMount` 里读它来决定启动行为：
-/// - `wind_file_in_cwd` 非空：打开该 .wind 工作区（取代 last-opened 自动恢复）；
+/// - `wind_file_in_cwd` 非空：打开该 .ridge 工作区（取代 last-opened 自动恢复）；
 /// - 为空：默认工作区第一颗 pane 的 cwd 已在 `AppState::new` 中种为此 `cwd`，
 ///   直接沿用即可，前端无需额外动作。
 #[derive(Debug, Serialize)]
@@ -408,7 +418,7 @@ pub struct StartupContext {
 pub fn get_startup_context() -> Result<StartupContext, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     // 只扫一层：避免在用户主目录 / 大型项目根下做深度遍历，也匹配用户预期
-    // “cwd 内是否直接放着 .wind”。
+    // “cwd 内是否直接放着 .ridge”。
     let mut wind_files: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&cwd) {
         for entry in entries.flatten() {
@@ -417,12 +427,12 @@ pub fn get_startup_context() -> Result<StartupContext, String> {
                 continue;
             }
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("wind") {
+            if path.extension().and_then(|s| s.to_str()) == Some("ridge") {
                 wind_files.push(path);
             }
         }
     }
-    // 字典序取首个，结果稳定可预测；多数场景用户只会放 0 或 1 个 .wind。
+    // 字典序取首个，结果稳定可预测；多数场景用户只会放 0 或 1 个 .ridge。
     wind_files.sort();
     let wind_file_in_cwd = wind_files
         .into_iter()
@@ -449,7 +459,7 @@ pub fn get_last_opened_workspace_path(app_handle: tauri::AppHandle) -> Result<Op
     }
 }
 
-/// 列出最近打开的 .wind 路径，顺序新在前；只保留仍存在的文件，过滤掉已失效项。
+/// 列出最近打开的 .ridge 路径，顺序新在前；只保留仍存在的文件，过滤掉已失效项。
 #[tauri::command]
 pub fn list_recent_workspaces(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
     let raw = load_recent(&app_handle);
@@ -553,7 +563,7 @@ static AUTO_SAVE: Lazy<Arc<Mutex<AutoSaveState>>> = Lazy::new(|| {
     }))
 });
 
-/// 命令层在 cwd / 布局 / git 变化后调用。仅当工作区已关联 .wind 文件时实际落盘，
+/// 命令层在 cwd / 布局 / git 变化后调用。仅当工作区已关联 .ridge 文件时实际落盘，
 /// 否则函数退化为无副作用的记录调用。
 pub fn schedule_auto_save(state: &AppState, workspace_id: Uuid) {
     // Cheap gate: only panicked paths bother with this entry if there's an
@@ -571,7 +581,7 @@ pub fn schedule_auto_save(state: &AppState, workspace_id: Uuid) {
     let mut guard = match AUTO_SAVE.lock() {
         Ok(g) => g,
         Err(e) => {
-            tracing::error!(target: "wind::autosave", error = %e, "mutex poisoned");
+            tracing::error!(target: "ridge::autosave", error = %e, "mutex poisoned");
             return;
         }
     };
@@ -583,7 +593,7 @@ pub fn schedule_auto_save(state: &AppState, workspace_id: Uuid) {
     drop(guard);
 
     std::thread::Builder::new()
-        .name("wind-autosave".into())
+        .name("ridge-autosave".into())
         .spawn(move || auto_save_worker(state_clone))
         .ok();
 }
@@ -614,7 +624,7 @@ fn auto_save_worker(state: AppState) {
         for id in due {
             if let Err(e) = write_workspace_snapshot(&state, id) {
                 tracing::warn!(
-                    target: "wind::autosave",
+                    target: "ridge::autosave",
                     workspace = %id,
                     error = %e,
                     "auto-save failed"

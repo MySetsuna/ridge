@@ -14,7 +14,7 @@ import { get } from 'svelte/store';
 	import { invoke, isTauri } from '@tauri-apps/api/core';
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	import { showContextMenu } from '$lib/stores/contextMenu';
-	import { alertDialog, confirmDialog } from './WindDialog.svelte';
+	import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
 	import {
 		fileExplorerStore,
 		uniqueChildName,
@@ -116,7 +116,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	// MIME used for the dragged payload: newline-separated absolute paths.
 	// Keeps the protocol browser-native so drops into external apps still
 	// convey something useful (many shells accept text lists of paths).
-	const DND_TYPE = 'application/x-wind-explorer-paths';
+	const DND_TYPE = 'application/x-ridge-explorer-paths';
 	/**
 	 * Hover-to-expand latency: matches VS Code / macOS Finder "spring-loaded
 	 * folders" behaviour — pause over a collapsed dir during drag ~800ms to
@@ -557,13 +557,13 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 <div class="file-tree-node" style="padding-left: {depth * 8}px">
 	<button
 		type="button"
-		class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[13px] transition-colors hover:bg-[var(--wf-accent)]/10 {isSelected
-			? 'bg-[var(--wf-accent)]/20 text-[var(--wf-accent)]'
-			: 'text-[var(--wf-fg)]'} {isPrimary ? 'ring-1 ring-inset ring-[var(--wf-accent)]/60' : ''} {isCut
+		class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[13px] transition-colors hover:bg-[var(--rg-accent)]/10 {isSelected
+			? 'bg-[var(--rg-accent)]/20 text-[var(--rg-accent)]'
+			: 'text-[var(--rg-fg)]'} {isPrimary ? 'ring-1 ring-inset ring-[var(--rg-accent)]/60' : ''} {isCut
 			? 'opacity-50'
-			: ''} {isDragTarget ? 'bg-[var(--wf-accent)]/30 ring-2 ring-inset ring-[var(--wf-accent)]' : ''}"
-		data-wf-tree-path={node.path}
-		data-wf-tree-column={columnId}
+			: ''} {isDragTarget ? 'bg-[var(--rg-accent)]/30 ring-2 ring-inset ring-[var(--rg-accent)]' : ''}"
+		data-rg-tree-path={node.path}
+		data-rg-tree-column={columnId}
 		draggable="true"
 		ondragstart={onNodeDragStart}
 		ondragover={onNodeDragOver}
@@ -574,14 +574,14 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		oncontextmenu={handleContextMenu}
 	>
 		{#if node.is_dir}
-			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--wf-fg-muted)]">
+			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-fg-muted)]">
 				{#if isExpanded}
 					<ChevronDown size={14} />
 				{:else}
 					<ChevronRight size={14} />
 				{/if}
 			</span>
-			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--wf-accent)]">
+			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-accent)]">
 				{#if isExpanded}
 					<FolderOpen size={16} />
 				{:else}
@@ -590,7 +590,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			</span>
 		{:else}
 			<span class="w-4 h-4"></span>
-			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--wf-fg-muted)]">
+			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-fg-muted)]">
 				<FileIcon size={16} />
 			</span>
 		{/if}
@@ -601,7 +601,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				type="text"
 				bind:this={editInput}
 				bind:value={editValue}
-				class="flex-1 min-w-0 bg-[var(--wf-bg)] border border-[var(--wf-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--wf-fg)]"
+				class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--rg-fg)]"
 				onkeydown={onEditKeydown}
 				onblur={onEditBlur}
 				onclick={(e) => e.stopPropagation()}
@@ -618,10 +618,10 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				<!-- 新建条目占位行：深度 = depth + 1；图标按 kind 切换。 -->
 				<div class="file-tree-node" style="padding-left: {(depth + 1) * 8}px">
 					<div
-						class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--wf-accent)]/10"
+						class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--rg-accent)]/10"
 					>
 						<span class="w-4 h-4"></span>
-						<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--wf-accent)]">
+						<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-accent)]">
 							<PendingCreateIcon size={16} />
 						</span>
 						<input
@@ -629,7 +629,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 							bind:this={editInput}
 							bind:value={editValue}
 							placeholder={editing === 'create-file' ? '新文件名' : '新文件夹名'}
-							class="flex-1 min-w-0 bg-[var(--wf-bg)] border border-[var(--wf-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--wf-fg)]"
+							class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--rg-fg)]"
 							onkeydown={onEditKeydown}
 							onblur={onEditBlur}
 						/>
@@ -651,7 +651,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				{/each}
 			{:else if hasLoaded && children.length === 0 && !editing}
 				<div
-					class="px-2 py-1 text-[12px] text-[var(--wf-fg-muted)]"
+					class="px-2 py-1 text-[12px] text-[var(--rg-fg-muted)]"
 					style="padding-left: {(depth + 1) * 8}px"
 				>
 					空目录
@@ -668,7 +668,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	}
 
 	.file-tree-node button:focus-visible {
-		outline: 1px solid var(--wf-accent);
+		outline: 1px solid var(--rg-accent);
 		outline-offset: -1px;
 	}
 </style>

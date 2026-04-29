@@ -11,7 +11,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { GitBranch, ArrowUp, ArrowDown, Check, ExternalLink, Plus } from 'lucide-svelte';
-  import { alertDialog } from './WindDialog.svelte';
+  import { alertDialog } from './RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
   import {
     paneGitStatusStore,
@@ -37,10 +37,49 @@
   let open = $state(false);
   let loading = $state(false);
   let branches = $state<BranchInfo[]>([]);
+  /** Repo root that the current `branches` list belongs to. When `info.repoRoot`
+      diverges from this value we know the cached list is stale and must be
+      cleared so users don't see leftover branches from the previous cwd. */
+  let loadedRepoRoot = $state<string | null>(null);
   let switching = $state<string>(''); // branch name being checked out
   /** Filter query for the branch list — cleared on open. */
   let branchFilter = $state('');
   let filterInput: HTMLInputElement | undefined = $state();
+
+  // Drop the cached branch list whenever the pane's repo changes (cwd jumped to
+  // a different git root, or the pane left a repo entirely). With the cache
+  // gone, the picker shows `loading` instead of stale branches; if the picker
+  // is open at the time we kick off a fresh load immediately.
+  $effect(() => {
+    const currentRepo = info?.repoRoot ?? null;
+    if (currentRepo !== loadedRepoRoot) {
+      branches = [];
+      loadedRepoRoot = null;
+      if (open && currentRepo) {
+        void loadBranches();
+      }
+    }
+  });
+
+  async function loadBranches(): Promise<void> {
+    if (!info || loading) return;
+    const root = info.repoRoot;
+    loading = true;
+    try {
+      const result = await invoke<BranchInfo[]>('git_list_branches', {
+        repoRoot: root,
+      });
+      // Guard against late-resolving stale loads after another cwd switch.
+      if (info?.repoRoot === root) {
+        branches = result;
+        loadedRepoRoot = root;
+      }
+    } catch (err) {
+      console.warn('[git-pill] list branches', err);
+    } finally {
+      loading = false;
+    }
+  }
 
   /** Filtered branch list — shown when user types in the filter box. */
   const filteredBranches = $derived(
@@ -59,18 +98,9 @@
     open = !open;
     if (!open) { branchFilter = ''; return; }
     branchFilter = '';
-    // Lazy-load branch list on first open.
-    if (branches.length === 0 && !loading) {
-      loading = true;
-      try {
-        branches = await invoke<BranchInfo[]>('git_list_branches', {
-          repoRoot: info.repoRoot,
-        });
-      } catch (err) {
-        console.warn('[git-pill] list branches', err);
-      } finally {
-        loading = false;
-      }
+    // Load when first opened OR when the cached list belongs to a different repo.
+    if (loadedRepoRoot !== info.repoRoot && !loading) {
+      await loadBranches();
     }
     // Focus the filter input after list loads so user can type immediately.
     requestAnimationFrame(() => filterInput?.focus());
@@ -142,16 +172,10 @@
       });
       // Pull a fresh branch list so the new one shows up with Check.
       branches = [];
+      loadedRepoRoot = null;
       await invalidatePaneGitStatusForRepo(info.repoRoot);
       showToast(`已创建并切换到 ${trimmed}`);
-      loading = true;
-      try {
-        branches = await invoke<BranchInfo[]>('git_list_branches', {
-          repoRoot: info.repoRoot,
-        });
-      } finally {
-        loading = false;
-      }
+      await loadBranches();
     } catch (err) {
       await alertDialog({ title: '创建分支失败', message: String(err), danger: true });
     } finally {
@@ -175,7 +199,7 @@
     open = false;
     try {
       window.dispatchEvent(
-        new CustomEvent('wind:open-sidebar-tab', { detail: 'git' })
+        new CustomEvent('ridge:open-sidebar-tab', { detail: 'git' })
       );
     } catch {
       /* ignore */
@@ -218,8 +242,8 @@
           ? '\n⚠ 当前分支没有 upstream — push 时会需要 -u origin <branch>'
           : ''
       }\n点击切换分支（Ctrl-Click 打开 SCM 侧栏）`}
-      class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--wf-accent)]/12 text-[var(--wf-accent)]/90 border border-[var(--wf-accent)]/25 hover:bg-[var(--wf-accent)]/22 transition-colors max-w-[220px]
-        {open ? 'bg-[var(--wf-accent)]/25 border-[var(--wf-accent)]/60' : ''}"
+      class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--rg-accent)]/12 text-[var(--rg-accent)]/90 border border-[var(--rg-accent)]/25 hover:bg-[var(--rg-accent)]/22 transition-colors max-w-[220px]
+        {open ? 'bg-[var(--rg-accent)]/25 border-[var(--rg-accent)]/60' : ''}"
       onclick={(e) => {
         if (e.ctrlKey || e.metaKey) {
           openFullSCM();
@@ -255,7 +279,7 @@
            narrow header. max-h caps scroll; overlayScroll would be overkill
            for ≤ a couple dozen branches. -->
       <div
-        class="absolute right-0 top-[26px] z-50 min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto wf-scroll rounded-lg border border-[var(--wf-border)] bg-[var(--wf-bg-raised)] shadow-xl"
+        class="absolute right-0 top-[26px] z-50 min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto rg-scroll rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl"
         role="menu"
       >
         <!-- Create-branch entry pinned at the top — toggles to inline input
@@ -266,19 +290,19 @@
                the base ref. We don't bind onblur — selecting the <select>
                would cancel — and instead rely on Esc / Enter / outside-click
                (handled by the picker's global mousedown listener). -->
-          <div class="px-3 py-1.5 border-b border-[var(--wf-border)]/60 bg-[var(--wf-accent)]/8 flex flex-col gap-1">
+          <div class="px-3 py-1.5 border-b border-[var(--rg-border)]/60 bg-[var(--rg-accent)]/8 flex flex-col gap-1">
             <div class="flex items-center gap-1.5">
-              <Plus class="h-3 w-3 shrink-0 text-[var(--wf-accent)]" />
+              <Plus class="h-3 w-3 shrink-0 text-[var(--rg-accent)]" />
               <input
                 type="text"
                 bind:this={createInput}
                 bind:value={createName}
                 onkeydown={onCreateKeydown}
                 placeholder="新分支名"
-                class="flex-1 min-w-0 bg-[var(--wf-bg)] border border-[var(--wf-accent)]/60 outline-none rounded px-1 py-0.5 text-[11px] text-[var(--wf-fg)]"
+                class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 py-0.5 text-[11px] text-[var(--rg-fg)]"
               />
             </div>
-            <label class="flex items-center gap-1.5 text-[10px] text-[var(--wf-fg-muted)]">
+            <label class="flex items-center gap-1.5 text-[10px] text-[var(--rg-fg-muted)]">
               <span class="shrink-0">基于：</span>
               <!-- datalist combobox: user can type any ref (branch / tag / hash).
                    Suggestions come from the already-loaded branches list.
@@ -288,12 +312,12 @@
                 bind:value={createBase}
                 onkeydown={onCreateKeydown}
                 placeholder="HEAD（当前）"
-                list="wf-git-base-list"
+                list="rg-git-base-list"
                 autocomplete="off"
-                class="flex-1 min-w-0 bg-[var(--wf-bg)] border border-[var(--wf-border)] outline-none rounded px-1 py-0.5 text-[10px] text-[var(--wf-fg)] focus:border-[var(--wf-accent)]/60"
+                class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-border)] outline-none rounded px-1 py-0.5 text-[10px] text-[var(--rg-fg)] focus:border-[var(--rg-accent)]/60"
                 title="新分支从此 ref 拉出（留空 = 当前 HEAD）"
               />
-              <datalist id="wf-git-base-list">
+              <datalist id="rg-git-base-list">
                 {#each branches as b (b.name)}
                   <option value={b.name}></option>
                 {/each}
@@ -305,7 +329,7 @@
           <button
             type="button"
             role="menuitem"
-            class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left text-[var(--wf-accent)] hover:bg-[var(--wf-surface)] border-b border-[var(--wf-border)]/60 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] border-b border-[var(--rg-border)]/60 transition-colors disabled:opacity-40 disabled:pointer-events-none"
             disabled={!!switching}
             onclick={startCreate}
             title="创建新分支并切过去（git checkout -b）"
@@ -315,19 +339,19 @@
           </button>
         {/if}
         {#if loading}
-          <div class="px-3 py-2 text-[11px] text-[var(--wf-fg-muted)]">加载分支中…</div>
+          <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">加载分支中…</div>
         {:else if branches.length === 0}
-          <div class="px-3 py-2 text-[11px] text-[var(--wf-fg-muted)]">无分支信息</div>
+          <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无分支信息</div>
         {:else}
           <!-- Filter input — always visible so keyboard-first users can jump straight in.
                Backspace on empty input closes; Enter on single match switches. -->
-          <div class="px-2 py-1.5 border-b border-[var(--wf-border)]/60">
+          <div class="px-2 py-1.5 border-b border-[var(--rg-border)]/60">
             <input
               bind:this={filterInput}
               bind:value={branchFilter}
               type="text"
               placeholder="过滤分支…"
-              class="w-full bg-[var(--wf-bg)] border border-[var(--wf-border)] rounded px-2 py-0.5 text-[11px] text-[var(--wf-fg)] placeholder:text-[var(--wf-fg-muted)]/60 outline-none focus:border-[var(--wf-accent)]/60"
+              class="w-full bg-[var(--rg-bg)] border border-[var(--rg-border)] rounded px-2 py-0.5 text-[11px] text-[var(--rg-fg)] placeholder:text-[var(--rg-fg-muted)]/60 outline-none focus:border-[var(--rg-accent)]/60"
               onkeydown={(e) => {
                 if (e.key === 'Escape') { open = false; branchFilter = ''; }
                 if (e.key === 'Enter' && filteredBranches.length === 1 && !filteredBranches[0].is_current) {
@@ -337,31 +361,31 @@
             />
           </div>
           {#if filteredBranches.length === 0}
-            <div class="px-3 py-2 text-[11px] text-[var(--wf-fg-muted)]">无匹配分支</div>
+            <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无匹配分支</div>
           {:else}
           {#each filteredBranches as b (b.name)}
             <button
               type="button"
               role="menuitem"
-              class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left hover:bg-[var(--wf-surface)] transition-colors disabled:opacity-40 disabled:pointer-events-none"
+              class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left hover:bg-[var(--rg-surface)] transition-colors disabled:opacity-40 disabled:pointer-events-none"
               disabled={!!switching || b.is_current}
               onclick={() => void switchTo(b.name)}
             >
               {#if b.is_current}
-                <Check class="h-3 w-3 text-[var(--wf-accent)] shrink-0" />
+                <Check class="h-3 w-3 text-[var(--rg-accent)] shrink-0" />
               {:else}
                 <span class="w-3 shrink-0"></span>
               {/if}
               <GitBranch
                 class="h-3 w-3 shrink-0 {b.is_remote
                   ? 'text-blue-400/70'
-                  : 'text-[var(--wf-fg-muted)]'}"
+                  : 'text-[var(--rg-fg-muted)]'}"
               />
-              <span class="truncate flex-1 {b.is_current ? 'text-[var(--wf-accent)]' : 'text-[var(--wf-fg)]'}">
+              <span class="truncate flex-1 {b.is_current ? 'text-[var(--rg-accent)]' : 'text-[var(--rg-fg)]'}">
                 {b.name}
               </span>
               {#if b.upstream}
-                <span class="text-[9px] text-[var(--wf-fg-muted)]/70 truncate max-w-[80px]">
+                <span class="text-[9px] text-[var(--rg-fg-muted)]/70 truncate max-w-[80px]">
                   → {b.upstream}
                 </span>
               {/if}
@@ -369,10 +393,10 @@
           {/each}
           {/if}
         {/if}
-        <div class="border-t border-[var(--wf-border)] mt-0.5">
+        <div class="border-t border-[var(--rg-border)] mt-0.5">
           <button
             type="button"
-            class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+            class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             onclick={openFullSCM}
             title="打开 Source Control 侧栏，查看完整变更 / fetch / push"
           >

@@ -10,6 +10,8 @@ import { writable, get, derived } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isMarkdownPath } from '$lib/utils/markdown';
+import { isRecentlyWritten, markRecentlyWritten } from './fsEvents';
+import { alertDialog, choiceDialog, confirmDialog } from '$lib/components/RidgeDialog.svelte';
 
 /** 图片文件扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'];
@@ -41,10 +43,19 @@ export interface OpenFile {
   /** Image URL (for image files) */
   imageUrl?: string;
   /**
-   * If set, this tab is a read-only Monaco diff view (staged or working-tree).
-   * Tab path is `__diff__:<kind>:<repoRoot>:<filePath>`.
+   * If set, this tab is a read-only Monaco diff view.
+   *  - `commit` 设置时显示 `<commit>^` vs `<commit>` 的 diff（GitGraph 的"查看 commit diff"）；
+   *  - 否则按 `cached` 走 staged (HEAD vs index) 或 working (index vs disk)。
+   * Tab path: `__diff__:<staged|working|commit>:<repoRoot>:<filePath>` 或加上 commit hash。
    */
-  diffArgs?: { repoRoot: string; path: string; cached: boolean };
+  diffArgs?: { repoRoot: string; path: string; cached: boolean; commit?: string };
+  /**
+   * External-state marker. `'deleted'` means a filesystem watcher reported
+   * the file was removed off-disk; the tab stays open so the user can salvage
+   * unsaved edits or save (which recreates the file). Cleared on a successful
+   * save or external re-creation.
+   */
+  external?: 'deleted';
 }
 
 export interface FloatingRect {
@@ -85,7 +96,7 @@ export interface FileEditorState {
   pendingReveal: PendingReveal | null;
 }
 
-const LS_KEY = 'wind-file-editor-prefs';
+const LS_KEY = 'ridge-file-editor-prefs';
 const MIN_W = 320;
 const MIN_H = 240;
 /**
@@ -275,12 +286,12 @@ function createStore() {
           content = result.content;
         } catch (e) {
           console.error('read_file_for_editor failed', path, e);
-          alert(`打开文件失败: ${e}`);
+          await alertDialog({ title: '打开文件失败', message: String(e), danger: true });
           return;
         }
       }
       if (isBinary && !isImage) {
-        alert('二进制文件暂不支持在编辑器中打开。');
+        await alertDialog({ title: '无法打开', message: '二进制文件暂不支持在编辑器中打开。' });
         return;
       }
 
@@ -370,7 +381,12 @@ function createStore() {
       const file = state.openFiles.find((f) => f.path === path);
       if (!file) return true;
       if (file.isDirty && confirmDirty) {
-        const ok = confirm(`"${file.name}" 有未保存的修改，确认关闭？`);
+        const ok = await confirmDialog({
+          title: '关闭未保存的标签页',
+          message: `"${file.name}" 有未保存的修改，确认关闭？`,
+          okLabel: '关闭',
+          danger: true,
+        });
         if (!ok) return false;
       }
       update((s) => {
@@ -395,10 +411,91 @@ function createStore() {
       const state = get({ subscribe });
       const anyDirty = state.openFiles.some((f) => f.isDirty);
       if (anyDirty) {
-        const ok = confirm('存在未保存的修改，全部关闭？');
+        const ok = await confirmDialog({
+          title: '关闭全部',
+          message: '存在未保存的修改，全部关闭？',
+          okLabel: '全部关闭',
+          danger: true,
+        });
         if (!ok) return;
       }
       update((s) => ({ ...s, openFiles: [], activePath: null, isVisible: false }));
+    },
+
+    /** 关闭除指定 path 外的所有 tab。脏 tab 集合非空时统一弹一次确认。 */
+    async closeOthers(keepPath: string): Promise<void> {
+      const state = get({ subscribe });
+      const others = state.openFiles.filter((f) => f.path !== keepPath);
+      if (others.length === 0) return;
+      const dirtyOthers = others.filter((f) => f.isDirty);
+      if (dirtyOthers.length > 0) {
+        const ok = await confirmDialog({
+          title: '关闭其他标签页',
+          message: `${dirtyOthers.length} 个未保存的标签页将被关闭，确认？`,
+          okLabel: '关闭',
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      update((s) => {
+        const remaining = s.openFiles.filter((f) => f.path === keepPath);
+        return {
+          ...s,
+          openFiles: remaining,
+          activePath: keepPath,
+          isVisible: remaining.length > 0 ? s.isVisible : false,
+        };
+      });
+    },
+
+    /** 关闭指定 path 右侧的所有 tab（不含自身）。 */
+    async closeToRight(anchorPath: string): Promise<void> {
+      const state = get({ subscribe });
+      const idx = state.openFiles.findIndex((f) => f.path === anchorPath);
+      if (idx === -1) return;
+      const toClose = state.openFiles.slice(idx + 1);
+      if (toClose.length === 0) return;
+      const dirty = toClose.filter((f) => f.isDirty);
+      if (dirty.length > 0) {
+        const ok = await confirmDialog({
+          title: '关闭右侧标签页',
+          message: `右侧有 ${dirty.length} 个未保存的标签页将被关闭，确认？`,
+          okLabel: '关闭',
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      update((s) => {
+        const closeSet = new Set(toClose.map((f) => f.path));
+        const remaining = s.openFiles.filter((f) => !closeSet.has(f.path));
+        let next: string | null = s.activePath;
+        if (s.activePath != null && closeSet.has(s.activePath)) {
+          next = anchorPath;
+        }
+        return {
+          ...s,
+          openFiles: remaining,
+          activePath: next,
+          isVisible: remaining.length > 0 ? s.isVisible : false,
+        };
+      });
+    },
+
+    /** 关闭所有未脏（已保存或从未编辑过）的 tab。脏 tab 全部保留，无确认。 */
+    closeSaved(): void {
+      update((s) => {
+        const remaining = s.openFiles.filter((f) => f.isDirty);
+        let next: string | null = s.activePath;
+        if (s.activePath != null && !remaining.some((f) => f.path === s.activePath)) {
+          next = remaining[0]?.path ?? null;
+        }
+        return {
+          ...s,
+          openFiles: remaining,
+          activePath: next,
+          isVisible: remaining.length > 0 ? s.isVisible : false,
+        };
+      });
     },
 
     /** Save the active tab to disk. */
@@ -425,14 +522,116 @@ function createStore() {
       }
       try {
         await invoke('write_file', { path, content: file.content });
+        // Suppress the round-trip fs-changed event for ~800ms so the editor
+        // doesn't prompt "this file changed externally" right after our own save.
+        markRecentlyWritten(path);
         update((s) => ({
           ...s,
           openFiles: s.openFiles.map((f) =>
-            f.path === path ? { ...f, originalContent: f.content, isDirty: false } : f
+            f.path === path
+              ? { ...f, originalContent: f.content, isDirty: false, external: undefined }
+              : f
           ),
         }));
       } catch (e) {
-        alert(`保存失败: ${e}`);
+        await alertDialog({ title: '保存失败', message: String(e), danger: true });
+      }
+    },
+
+    /**
+     * Reconcile an open file with an external on-disk change reported by the
+     * filesystem watcher. Behaviour:
+     *
+     * - `isRecentlyWritten(path)` → silent (Ridge's own save round-tripping back).
+     * - File can no longer be read → mark `external: 'deleted'`; user keeps
+     *   the tab and can re-save to recreate.
+     * - File is image / diff tab → ignored (no editable content path).
+     * - Clean (non-dirty) → silently sync new content into Monaco.
+     * - Dirty → ask via `choiceDialog`: reload-discard / keep-editing.
+     */
+    async handleExternalChange(path: string): Promise<void> {
+      const state = get({ subscribe });
+      const file = state.openFiles.find((f) => f.path === path);
+      if (!file) return;
+      if (file.diffArgs) return;
+      if (file.isImage) return;
+      if (isRecentlyWritten(path)) return;
+      if (!isTauri()) return;
+
+      let result: { content: string; is_binary: boolean };
+      try {
+        result = await invoke<{ content: string; is_binary: boolean; size: number }>(
+          'read_file_for_editor',
+          { path }
+        );
+      } catch {
+        // Read failed — assume the file was deleted/moved.
+        update((s) => ({
+          ...s,
+          openFiles: s.openFiles.map((f) =>
+            f.path === path ? { ...f, external: 'deleted' } : f
+          ),
+        }));
+        return;
+      }
+      if (result.is_binary) return;
+
+      // File came back: clear any prior 'deleted' marker.
+      const fresh = result.content;
+      if (fresh === file.content && fresh === file.originalContent && !file.external) {
+        // Truly no-op (e.g. mtime touch with identical bytes).
+        return;
+      }
+
+      if (!file.isDirty) {
+        update((s) => ({
+          ...s,
+          openFiles: s.openFiles.map((f) =>
+            f.path === path
+              ? { ...f, content: fresh, originalContent: fresh, isDirty: false, external: undefined }
+              : f
+          ),
+        }));
+        return;
+      }
+
+      // Dirty: ask the user. The dialog is non-blocking for the rest of the
+      // app, but we await for this code path so concurrent fs events on the
+      // same path queue up serially.
+      const choice = await choiceDialog({
+        title: '文件已在外部被修改',
+        message: `"${file.name}" 已在 Ridge 之外被修改，但你有未保存的改动。`,
+        okLabel: '重载并丢弃修改',
+        secondaryLabel: '保留当前编辑',
+        cancelLabel: '取消',
+        danger: true,
+      });
+      if (choice === 'primary') {
+        update((s) => ({
+          ...s,
+          openFiles: s.openFiles.map((f) =>
+            f.path === path
+              ? { ...f, content: fresh, originalContent: fresh, isDirty: false, external: undefined }
+              : f
+          ),
+        }));
+      } else {
+        // Keep-current: rebase originalContent on the new disk version so the
+        // dirty flag reflects "differs from disk now", and a subsequent save
+        // doesn't get short-circuited as "no change".
+        update((s) => ({
+          ...s,
+          openFiles: s.openFiles.map((f) =>
+            f.path === path
+              ? {
+                  ...f,
+                  originalContent: fresh,
+                  isDirty: f.content !== fresh,
+                  external: undefined,
+                }
+              : f
+          ),
+        }));
       }
     },
 
@@ -442,7 +641,12 @@ function createStore() {
       const file = state.openFiles.find((f) => f.path === state.activePath);
       if (!file) return;
       if (file.isDirty) {
-        const ok = confirm('放弃所有未保存的修改？');
+        const ok = await confirmDialog({
+          title: '放弃修改',
+          message: '放弃所有未保存的修改？',
+          okLabel: '放弃',
+          danger: true,
+        });
         if (!ok) return;
       }
       if (!isTauri()) {
@@ -469,7 +673,7 @@ function createStore() {
           ),
         }));
       } catch (e) {
-        alert(`重载失败: ${e}`);
+        await alertDialog({ title: '重载失败', message: String(e), danger: true });
       }
     },
 
@@ -504,14 +708,22 @@ function createStore() {
 
     /**
      * Open a diff tab (or activate the existing one).
-     * Tab path: `__diff__:<staged|working>:<repoRoot>:<filePath>`
-     * The file editor shows Monaco DiffEditor in place of the normal editor.
+     * Tab path:
+     *   - commit 模式：`__diff__:commit:<shortHash>:<repoRoot>:<filePath>`
+     *   - staged：    `__diff__:staged:<repoRoot>:<filePath>`
+     *   - working：   `__diff__:working:<repoRoot>:<filePath>`
      */
-    openDiffTab(args: { repoRoot: string; path: string; cached: boolean }): void {
-      const kind = args.cached ? 'staged' : 'working';
-      const tabPath = `__diff__:${kind}:${args.repoRoot.replace(/\\/g, '/')}:${args.path}`;
+    openDiffTab(args: { repoRoot: string; path: string; cached: boolean; commit?: string }): void {
+      const repoNorm = args.repoRoot.replace(/\\/g, '/');
+      const tabPath = args.commit
+        ? `__diff__:commit:${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`
+        : `__diff__:${args.cached ? 'staged' : 'working'}:${repoNorm}:${args.path}`;
       const filePart = args.path.split('/').pop() ?? args.path;
-      const label = args.cached ? '已暂存' : '工作区';
+      const label = args.commit
+        ? `@${args.commit.slice(0, 7)}`
+        : args.cached
+          ? '已暂存'
+          : '工作区';
       const name = `${filePart} (${label})`;
 
       update((s) => {

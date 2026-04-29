@@ -147,7 +147,7 @@ pub async fn set_split_ratios_at_path(
         .set_split_ratios_at_path(&path, ratios)
         .map_err(|e| e.to_string())?;
     drop(map);
-    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     Ok(())
 }
 
@@ -175,7 +175,7 @@ pub async fn set_split_ratios_batch(
         .set_split_ratios_batch(&pairs)
         .map_err(|e| e.to_string())?;
     drop(map);
-    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     Ok(())
 }
 
@@ -205,7 +205,7 @@ pub async fn dock_pane(
         .dock_pane(source, target, region)
         .map_err(|e| e.to_string())?;
     drop(map);
-    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     Ok(())
 }
 
@@ -252,7 +252,7 @@ fn split_pane_inner(
         }
     }
     drop(map);
-    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     Ok(SplitPaneResult {
         pane_id: new_pane_id.to_string(),
         initial_cwd: parent_cwd,
@@ -332,7 +332,7 @@ pub async fn release_teammate_agent(
     Ok(())
 }
 
-/// Claude Code `tmux split-window`：`-h` → `horizontal`，`-v` → `vertical`（与 Wind UI / `split_pane` 一致）。
+/// Claude Code `tmux split-window`：`-h` → `horizontal`，`-v` → `vertical`（与 Ridge UI / `split_pane` 一致）。
 pub(crate) fn teammate_split_pane(
     app: &AppState,
     workspace_id: Uuid,
@@ -390,7 +390,7 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         ws.pane_sizes.remove(&pane_id);
         ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
     }
-    crate::commands::wind_file::schedule_auto_save(&*state, wid);
+    crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     Ok(())
 }
 

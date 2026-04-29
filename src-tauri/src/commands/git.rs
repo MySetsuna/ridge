@@ -326,7 +326,7 @@ fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<Stri
     // Directories we never descend into. Grouped roughly by ecosystem so future
     // additions land in the right bucket. Keep this list tight — each entry
     // short-circuits a potentially huge subtree scan. If a project does
-    // actually keep a repo root inside (say) `vendor/`, users can point Wind
+    // actually keep a repo root inside (say) `vendor/`, users can point Ridge
     // at that path directly; we prefer the monorepo-happy-path default.
     const SKIP_DIRS: &[&str] = &[
         // JS / TS
@@ -692,6 +692,33 @@ fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
         .args(&paths)
         .current_dir(path).output().map_err(|e| e.to_string())?;
     if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+    Ok(())
+}
+
+/// 删除工作区里的指定 untracked 文件/目录。`git checkout --` 不会处理 untracked
+/// （它们在索引里没有快照），需要 `git clean -fd -- <paths>`。
+/// 路径必须由调用方明确给出 —— 拒绝空集合，避免 `git clean -fd` 全仓库清理。
+#[tauri::command]
+pub async fn git_clean_untracked(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_clean_untracked_sync(repo_root, paths))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_clean_untracked_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("Refusing to clean — specify paths".to_string());
+    }
+    let path = Path::new(&repo_root);
+    let out = git_cmd()
+        .args(["clean", "-fd", "--"])
+        .args(&paths)
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
     Ok(())
 }
 
@@ -1148,6 +1175,176 @@ pub async fn git_get_file_versions(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
+/// 给定 commit hash，返回该 commit 涉及的文件清单（status: A/M/D/R...）。
+/// 用于 GitGraph 单击 commit 时的 inline 详情面板。
+#[derive(Debug, Serialize)]
+pub struct CommitFileEntry {
+    pub path: String,
+    pub status: String,
+}
+
+#[tauri::command]
+pub async fn git_get_commit_files(
+    repo_root: String,
+    hash: String,
+) -> Result<Vec<CommitFileEntry>, String> {
+    tokio::task::spawn_blocking(move || git_get_commit_files_sync(repo_root, hash))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_get_commit_files_sync(repo_root: String, hash: String) -> Result<Vec<CommitFileEntry>, String> {
+    if hash.is_empty() {
+        return Err("missing commit hash".to_string());
+    }
+    let path = Path::new(&repo_root);
+    // `--name-status -m`：处理 merge commit 的合并视图；`-r` 递归不要折叠成目录。
+    // `--pretty=format:` 抑制头部输出，只保留文件状态行。
+    let out = git_cmd()
+        .args(["show", "--name-status", "-m", "-r", "--pretty=format:", &hash])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut files = Vec::<CommitFileEntry>::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // 行格式："M\tpath" 或 "R100\told\tnew"——R/C 后跟分数，路径在最后一列。
+        let mut parts = line.split('\t');
+        let status_raw = parts.next().unwrap_or("");
+        // 取首字母作为简化状态（M/A/D/R/C/T/U）。
+        let status = status_raw.chars().next().map(|c| c.to_string()).unwrap_or_default();
+        let p = parts.last().unwrap_or("").to_string();
+        if p.is_empty() || status.is_empty() {
+            continue;
+        }
+        if seen.insert(p.clone()) {
+            files.push(CommitFileEntry { path: p, status });
+        }
+    }
+    Ok(files)
+}
+
+/// 取 commit 时刻该文件的 before/after 内容（hash^ vs hash）。
+/// 复用 `git show` 拉取 blob，不存在的一侧返回空字符串（首次新增 / 已删除）。
+#[tauri::command]
+pub async fn git_get_file_versions_at_commit(
+    repo_root: String,
+    path: String,
+    hash: String,
+) -> Result<GitFileVersions, String> {
+    tokio::task::spawn_blocking(move || git_get_file_versions_at_commit_sync(repo_root, path, hash))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_get_file_versions_at_commit_sync(
+    repo_root: String,
+    path: String,
+    hash: String,
+) -> Result<GitFileVersions, String> {
+    if hash.is_empty() {
+        return Err("missing commit hash".to_string());
+    }
+    let repo = Path::new(&repo_root);
+    let show = |spec: &str| -> Option<String> {
+        let out = git_cmd()
+            .args(["--no-pager", "show", spec])
+            .current_dir(repo)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            // Missing object（首次提交无父，或文件在该 commit 才创建）→ 空。
+            return Some(String::new());
+        }
+        Some(String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    let original = show(&format!("{}^:{}", hash, path)).unwrap_or_default();
+    let modified = show(&format!("{}:{}", hash, path)).unwrap_or_default();
+    Ok(GitFileVersions { original, modified })
+}
+
+/// 创建 tag。message 为空时是 lightweight tag，非空则 annotated。
+#[tauri::command]
+pub async fn git_create_tag(
+    repo_root: String,
+    name: String,
+    hash: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_create_tag_sync(repo_root, name, hash, message))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_create_tag_sync(
+    repo_root: String,
+    name: String,
+    hash: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("tag name is empty".to_string());
+    }
+    let path = Path::new(&repo_root);
+    let mut cmd = git_cmd();
+    cmd.arg("tag");
+    if let Some(msg) = message.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        cmd.args(["-a", &name, "-m", msg]);
+    } else {
+        cmd.arg(&name);
+    }
+    if let Some(h) = hash.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        cmd.arg(h);
+    }
+    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
+/// `git reset` 三种模式：soft / mixed / hard。`hard` 是不可逆操作，前端必须二次确认。
+#[tauri::command]
+pub async fn git_reset(
+    repo_root: String,
+    hash: String,
+    mode: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || git_reset_sync(repo_root, hash, mode))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_reset_sync(repo_root: String, hash: String, mode: String) -> Result<(), String> {
+    if hash.is_empty() {
+        return Err("missing target hash".to_string());
+    }
+    let mode_flag = match mode.as_str() {
+        "soft" => "--soft",
+        "mixed" | "" => "--mixed",
+        "hard" => "--hard",
+        other => return Err(format!("unsupported reset mode: {}", other)),
+    };
+    let path = Path::new(&repo_root);
+    let out = git_cmd()
+        .args(["reset", mode_flag, &hash])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
 fn git_get_file_versions_sync(
     repo_root: String,
     path: String,
@@ -1253,6 +1450,47 @@ pub async fn get_git_info_with_cwd(cwd: String) -> Result<GitRepoInfo, String> {
     tokio::task::spawn_blocking(move || get_git_info_with_cwd_sync(cwd))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// T10：分页拉取更早的 commits。前端 GitGraph 滚动到底部时调用。
+/// 返回空数组表示已到达 git log 末尾，不再有更早记录。
+#[tauri::command]
+pub async fn get_git_commits_paginated(
+    repo_root: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<CommitNode>, String> {
+    tokio::task::spawn_blocking(move || {
+        let path = Path::new(&repo_root);
+        Ok(get_git_log_with_skip(path, offset as usize, limit as usize))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// `get_git_log` 的分页变种 —— 多一个 `--skip` 参数。其它格式 / 解析与原函数完全一致。
+fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<CommitNode> {
+    let pretty = format!(
+        "--pretty=format:%H{0}%P{0}%an{0}%at{0}%D{0}%s{1}",
+        FIELD_SEP, RECORD_SEP
+    );
+    let output = git_cmd()
+        .args([
+            "log",
+            "--decorate=full",
+            &format!("--skip={}", offset),
+            &format!("-{}", limit),
+            &pretty,
+        ])
+        .current_dir(repo_path)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            parse_git_log(&stdout)
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
@@ -1544,7 +1782,7 @@ mod scan_tests {
             let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
             let pid = std::process::id();
             let mut path = std::env::temp_dir();
-            path.push(format!("wind-scan-{tag}-{pid}-{n}"));
+            path.push(format!("ridge-scan-{tag}-{pid}-{n}"));
             std::fs::create_dir_all(&path).unwrap();
             TempDir { path }
         }

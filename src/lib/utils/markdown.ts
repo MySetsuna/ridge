@@ -3,7 +3,7 @@
 // Markdown rendering pipeline for the FileEditor preview.
 //
 // - `marked` with GFM gives us tables, strikethrough, autolinks, and task lists.
-// - Task-list items are marked with `data-wf-md-task="<line-index>"` so clicks
+// - Task-list items are marked with `data-rg-md-task="<line-index>"` so clicks
 //   in the preview can round-trip back to the source. Line indices refer to
 //   the `raw` markdown lines (0-based) of the line containing the `- [ ]`
 //   / `- [x]` marker — the caller does the source mutation.
@@ -33,7 +33,7 @@ function escapeHtml(s: string): string {
  * Synchronous markdown → HTML pass. Uses a custom renderer so we can:
  *  1) tag task-list items with their source line index,
  *  2) tag fenced code blocks with a sentinel the async highlighter targets,
- *  3) stamp block-level elements with `data-wf-md-src-line` so the preview
+ *  3) stamp block-level elements with `data-rg-md-src-line` so the preview
  *     can follow the Monaco cursor ("sync scroll" à la VS Code).
  */
 function buildRenderer(source: string): Renderer {
@@ -100,10 +100,10 @@ function buildRenderer(source: string): Renderer {
       // marked emits item.text with the leading checkbox stripped already.
       const inner = this.parser.parseInline(item.tokens);
       // Intentionally inline checkbox — not a real <input> click handler here;
-      // we use event delegation in MarkdownPreview.svelte via data-wf-md-task.
+      // we use event delegation in MarkdownPreview.svelte via data-rg-md-task.
       return (
-        `<li class="wf-md-task" data-wf-md-task="${lineIdx}">` +
-        `<input type="checkbox" ${checked} class="wf-md-checkbox" ${lineIdx < 0 ? 'disabled' : ''} />` +
+        `<li class="rg-md-task" data-rg-md-task="${lineIdx}">` +
+        `<input type="checkbox" ${checked} class="rg-md-checkbox" ${lineIdx < 0 ? 'disabled' : ''} />` +
         `<span>${inner}</span>` +
         `</li>`
       );
@@ -136,7 +136,7 @@ function buildRenderer(source: string): Renderer {
       .join('');
     const id = slugify(rawInlineText || text.replace(/<[^>]*>/g, ''));
     const line = popSrcLine(raw);
-    return `<h${depth} id="${escapeHtml(id)}" data-wf-md-src-line="${line}">${text}</h${depth}>`;
+    return `<h${depth} id="${escapeHtml(id)}" data-rg-md-src-line="${line}">${text}</h${depth}>`;
   };
 
   // Paragraph / blockquote / list also stamp a source-line data attribute so
@@ -146,14 +146,14 @@ function buildRenderer(source: string): Renderer {
     const { tokens, raw } = token;
     const inner = this.parser.parseInline(tokens);
     const line = popSrcLine(raw);
-    return `<p data-wf-md-src-line="${line}">${inner}</p>`;
+    return `<p data-rg-md-src-line="${line}">${inner}</p>`;
   };
 
   renderer.blockquote = function blockquote(token: Tokens.Blockquote): string {
     const { tokens, raw } = token;
     const inner = this.parser.parse(tokens);
     const line = popSrcLine(raw);
-    return `<blockquote data-wf-md-src-line="${line}">${inner}</blockquote>`;
+    return `<blockquote data-rg-md-src-line="${line}">${inner}</blockquote>`;
   };
 
   renderer.list = function list(token: Tokens.List): string {
@@ -162,7 +162,7 @@ function buildRenderer(source: string): Renderer {
     const startAttr = ordered && start !== 1 ? ` start="${start}"` : '';
     const body = items.map((item) => this.listitem(item)).join('');
     const line = popSrcLine(raw);
-    return `<${tag}${startAttr} data-wf-md-src-line="${line}">${body}</${tag}>`;
+    return `<${tag}${startAttr} data-rg-md-src-line="${line}">${body}</${tag}>`;
   };
 
   // Lazy-loaded images: defer offscreen network/disk fetch and async-decode so
@@ -193,15 +193,26 @@ function buildRenderer(source: string): Renderer {
   };
 
   // Defer highlighting to Monaco; emit a sentinel the async pass replaces.
+  // Mermaid 代码块走独立占位符 → MarkdownPreview 的异步增强函数动态加载
+  // mermaid 模块并替换为 SVG。降级：渲染失败时按普通代码块显示原文。
   renderer.code = function code(token: Tokens.Code): string {
     const { text, lang, raw } = token;
     const language = (lang || '').trim().split(/\s+/)[0] || '';
-    // Store the raw text base64-encoded in a data attribute so the async
-    // highlighter can recover it without parsing the pre text back out.
     const encoded = btoa(unescape(encodeURIComponent(text)));
     const line = popSrcLine(raw);
+    if (language === 'mermaid') {
+      // 占位 div：异步渲染器扫到这个 marker 后 import mermaid 并替换 innerHTML。
+      // 保留原始源码在 data 属性里，渲染失败时回退到普通 <pre>。
+      return (
+        `<div class="rg-md-mermaid" data-rg-md-mermaid="${encoded}" data-rg-md-src-line="${line}">` +
+        `<pre class="rg-md-pre rg-md-mermaid-fallback"><code>${escapeHtml(text)}</code></pre>` +
+        `</div>`
+      );
+    }
+    // Store the raw text base64-encoded in a data attribute so the async
+    // highlighter can recover it without parsing the pre text back out.
     return (
-      `<pre class="wf-md-pre" data-wf-md-code="${encoded}" data-wf-md-lang="${escapeHtml(language)}" data-wf-md-src-line="${line}">` +
+      `<pre class="rg-md-pre" data-rg-md-code="${encoded}" data-rg-md-lang="${escapeHtml(language)}" data-rg-md-src-line="${line}">` +
       `<code class="language-${escapeHtml(language)}">${escapeHtml(text)}</code>` +
       `</pre>`
     );
@@ -263,7 +274,7 @@ function normaliseWindowsPathLinks(source: string): string {
  *   - a matching closing fence (same character) appears on its own line later.
  *
  * The block is replaced in place with empty lines so downstream
- * `data-wf-md-src-line` annotations still match the user's editor line
+ * `data-rg-md-src-line` annotations still match the user's editor line
  * numbering. (If we shifted lines, the source-sync would jump.)
  *
  * If no valid front-matter block is found, the source is returned unchanged.
@@ -321,7 +332,7 @@ export function renderMarkdown(source: string): string {
 }
 
 /**
- * Asynchronously upgrade any `<pre data-wf-md-code=...>` blocks emitted by
+ * Asynchronously upgrade any `<pre data-rg-md-code=...>` blocks emitted by
  * `renderMarkdown` with Monaco-themed syntax highlighting.
  *
  * Runs *inside* `container` (typically the MarkdownPreview's rendered div) so
@@ -329,12 +340,12 @@ export function renderMarkdown(source: string): string {
  * unsupported language doesn't blow up the whole document.
  */
 export async function highlightCodeBlocks(container: HTMLElement): Promise<void> {
-  const blocks = container.querySelectorAll<HTMLElement>('pre.wf-md-pre[data-wf-md-code]');
+  const blocks = container.querySelectorAll<HTMLElement>('pre.rg-md-pre[data-rg-md-code]');
   if (blocks.length === 0) return;
   await Promise.all(
     Array.from(blocks).map(async (pre) => {
-      const encoded = pre.dataset.wfMdCode;
-      const lang = pre.dataset.wfMdLang || '';
+      const encoded = pre.dataset.rgMdCode;
+      const lang = pre.dataset.rgMdLang || '';
       if (!encoded) return;
       const text = decodeURIComponent(escape(atob(encoded)));
       try {
@@ -345,6 +356,85 @@ export async function highlightCodeBlocks(container: HTMLElement): Promise<void>
       } catch (err) {
         // Leave the plain escaped text already rendered. Just log and move on.
         console.warn('[markdown] monaco colorize failed', lang, err);
+      }
+    })
+  );
+}
+
+// ─── Mermaid ────────────────────────────────────────────────────────────────
+
+let mermaidLoadPromise: Promise<typeof import('mermaid').default> | null = null;
+
+/** 懒加载 mermaid 模块，避免冷启动开销；首次遇到 mermaid 块时再 import。 */
+async function loadMermaid(): Promise<typeof import('mermaid').default> {
+  if (!mermaidLoadPromise) {
+    mermaidLoadPromise = (async () => {
+      const mod = await import('mermaid');
+      const m = mod.default;
+      // 主题对齐 Ridge 暗色基调；themeVariables 取实时计算样式，所以即使后续
+      // 切换主题色（设置中心阶段），新渲染的图也会用最新颜色。
+      const root = typeof document !== 'undefined' ? document.documentElement : null;
+      const cssVar = (name: string, fallback: string): string => {
+        if (!root) return fallback;
+        const v = getComputedStyle(root).getPropertyValue(name).trim();
+        return v || fallback;
+      };
+      m.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'dark',
+        themeVariables: {
+          background: cssVar('--rg-bg', '#09090b'),
+          primaryColor: cssVar('--rg-surface', '#18181b'),
+          primaryTextColor: cssVar('--rg-fg', '#ececf1'),
+          primaryBorderColor: cssVar('--rg-border', '#27272a'),
+          secondaryColor: cssVar('--rg-surface-2', '#1f1f23'),
+          tertiaryColor: cssVar('--rg-surface', '#18181b'),
+          lineColor: cssVar('--rg-fg-muted', '#8b8b9a'),
+          textColor: cssVar('--rg-fg', '#ececf1'),
+          mainBkg: cssVar('--rg-surface', '#18181b'),
+        },
+      });
+      return m;
+    })();
+  }
+  return mermaidLoadPromise;
+}
+
+/** 把容器内所有 `<div data-rg-md-mermaid="...">` 占位符渲染为 SVG。
+ *  失败时保持 fallback `<pre>` 不动 —— 用户看到原始代码，不会丢内容。 */
+export async function renderMermaidBlocks(container: HTMLElement): Promise<void> {
+  const blocks = container.querySelectorAll<HTMLElement>(
+    'div.rg-md-mermaid[data-rg-md-mermaid]'
+  );
+  if (blocks.length === 0) return;
+  let mermaid: typeof import('mermaid').default;
+  try {
+    mermaid = await loadMermaid();
+  } catch (err) {
+    console.warn('[markdown] mermaid import failed', err);
+    return;
+  }
+  await Promise.all(
+    Array.from(blocks).map(async (div, idx) => {
+      const encoded = div.dataset.rgMdMermaid;
+      if (!encoded) return;
+      const source = decodeURIComponent(escape(atob(encoded)));
+      // 唯一 id 避免 mermaid 内部 svg id 冲突；前缀 + 时间戳 + 索引足够。
+      const id = `rg-md-mermaid-${Date.now().toString(36)}-${idx}`;
+      try {
+        const { svg } = await mermaid.render(id, source);
+        div.innerHTML = svg;
+        div.classList.add('rg-md-mermaid-rendered');
+      } catch (err) {
+        // 解析/渲染失败：保留 fallback <pre>（renderer 已经渲染过），
+        // 只在 div 上加一个错误提示行，方便用户诊断语法错误。
+        console.warn('[markdown] mermaid render failed', err);
+        const msg = err instanceof Error ? err.message : String(err);
+        const banner = document.createElement('div');
+        banner.className = 'rg-md-mermaid-error';
+        banner.textContent = `mermaid 渲染失败：${msg}`;
+        div.prepend(banner);
       }
     })
   );

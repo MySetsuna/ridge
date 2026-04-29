@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Wind** (codenamed WarpForge) is a modern terminal emulator with split-pane functionality, embedded code editor, and Git visualization. It's built with Tauri v2 (Rust backend) + Svelte 5 (TypeScript frontend).
+**Ridge** (codenamed Ridge) is a modern terminal emulator with split-pane functionality, embedded code editor, and Git visualization. It's built with Tauri v2 (Rust backend) + Svelte 5 (TypeScript frontend).
 
 Key features:
 - Terminal emulation via xterm.js with PTY support (portable-pty)
@@ -86,13 +86,13 @@ Frontend ↔ Backend via Tauri IPC:
 
 - Workspaces are independent - each has its own PTY processes and pane ID namespace
 - The `teammate` module provides an HTTP server for Claude Code integration
-- The `tmux` binary (built from `src-tauri/src/bin/tmux.rs`) is a shim that allows using Wind as a tmux replacement
-- Frontend uses CSS custom properties (e.g., `var(--wf-bg)`, `var(--wf-fg)`) for theming
+- The `tmux` binary (built from `src-tauri/src/bin/tmux.rs`) is a shim that allows using Ridge as a tmux replacement
+- Frontend uses CSS custom properties (e.g., `var(--rg-bg)`, `var(--rg-fg)`) for theming
 - The app runs in SPA mode with adapter-static fallback to index.html
 
 ## CWD path normalization (Windows)
 
-All cwd strings stored in `paneCwdStore` must use **forward slashes** (`C:/code/wind`, not `C:\code\wind`). This ensures `syncWithPaneCwds` treats the same physical directory as one key regardless of which shell reported it.
+All cwd strings stored in `paneCwdStore` must use **forward slashes** (`C:/code/ridge`, not `C:\code\ridge`). This ensures `syncWithPaneCwds` treats the same physical directory as one key regardless of which shell reported it.
 
 - **Backend** (`pty.rs`): `normalize_cwd_str(&cwd.to_string_lossy())` is applied in all three `PaneCwdChanged` emit paths (main read loop, EOF flush, create_pane). `process.rs` has its own equivalent `normalize_cwd()`.
 - **Frontend** (`paneTree.ts`): `normalizeCwd(s)` (`s.replace(/\\/g, '/')`) is called in `setPaneCwd` and `extractCwdsFromLayout`. All cwd writes go through one of these two entry points.
@@ -115,13 +115,13 @@ Never use `window.alert`, `window.confirm`, or `window.prompt` — they render w
 
 These patterns are used across `Explorer.svelte`, `FileTree.svelte`, `SourceControl.svelte`. Follow them when touching the sidebar:
 
-- **Scrolling** — Complex tree regions (Explorer, SCM changes, Git graph) use `overlayscrollbars` via the `use:overlayScroll` Svelte action (`src/lib/actions/overlayScroll.ts`). The bar floats as an overlay, does not reserve gutter, and styles come from the `wf-os-theme` tokens in `app.css`. Do NOT layer `overflow-y-auto` + `wf-scroll-overlay` on top.
+- **Scrolling** — Complex tree regions (Explorer, SCM changes, Git graph) use `overlayscrollbars` via the `use:overlayScroll` Svelte action (`src/lib/actions/overlayScroll.ts`). The bar floats as an overlay, does not reserve gutter, and styles come from the `rg-os-theme` tokens in `app.css`. Do NOT layer `overflow-y-auto` + `rg-scroll-overlay` on top.
 - **Horizontal tab scrolling** — `WorkspaceTabs` and `FileEditor` tab bar use `preset: 'horizontal-tabs'`. overlayscrollbars wraps children in `.os-viewport > .os-content`; any flex layout on the HOST is irrelevant. The `overlayScroll` action calls `applyContentLayout()` after init to inject `display:flex; flex-direction:row; white-space:nowrap; min-width:max-content` directly on `.os-content`. If tabs stack vertically it means `applyContentLayout` didn't run — check that `OverlayScrollbars()` created `.os-content` before the querySelector runs.
-- **File tree navigation** — Each file-tree row stamps `data-wf-tree-path` and `data-wf-tree-column`. `Explorer.svelte` handles ArrowUp / ArrowDown / Home / End at the root `<div role="tree">` via `flattenVisiblePaths(column)` (see `fileExplorer.ts`), then `focus()`es the button and `scrollIntoView`es. Per-node keys (Enter / Arrow Left/Right / F2 / Delete) live in `FileTree.svelte`'s button.
+- **File tree navigation** — Each file-tree row stamps `data-rg-tree-path` and `data-rg-tree-column`. `Explorer.svelte` handles ArrowUp / ArrowDown / Home / End at the root `<div role="tree">` via `flattenVisiblePaths(column)` (see `fileExplorer.ts`), then `focus()`es the button and `scrollIntoView`es. Per-node keys (Enter / Arrow Left/Right / F2 / Delete) live in `FileTree.svelte`'s button.
 - **Inline rename / create** — `FileTree.svelte` uses a local `editing: 'rename' | 'create-file' | 'create-folder' | null` state machine instead of browser `prompt()`. The name span swaps to an `<input>` for rename; a transient input row appears at the top of the directory's children for create. Enter commits, Esc / Blur cancels, `pendingEditCommit` guards against double-submit.
-- **Expanded state persistence** — `fileExplorer.ts` serialises `expandedPaths` + `selectedPath` per `${workspaceId}:${cwd}` key to `localStorage['wind-explorer-column:*']`. Capped at 500 paths per column.
-- **Branch picker (SCM) dismissal** — `SourceControl.svelte` marks the picker trigger and dropdown with `data-wf-branch-picker="<root>"`. Global `mousedown` (capture phase) closes when click lands outside; Escape closes via global `keydown`. Only one picker open at a time.
-- **Context menu keyboard** — `ContextMenu.svelte` supports Up/Down/Home/End navigation, Enter to activate, Esc to close, Right to open submenu, Left to close submenu. Menu items are tagged with `data-wf-ctx-index` for focus routing.
+- **Expanded state persistence** — `fileExplorer.ts` serialises `expandedPaths` + `selectedPath` per `${workspaceId}:${cwd}` key to `localStorage['ridge-explorer-column:*']`. Capped at 500 paths per column.
+- **Branch picker (SCM) dismissal** — `SourceControl.svelte` marks the picker trigger and dropdown with `data-rg-branch-picker="<root>"`. Global `mousedown` (capture phase) closes when click lands outside; Escape closes via global `keydown`. Only one picker open at a time.
+- **Context menu keyboard** — `ContextMenu.svelte` supports Up/Down/Home/End navigation, Enter to activate, Esc to close, Right to open submenu, Left to close submenu. Menu items are tagged with `data-rg-ctx-index` for focus routing.
 
 ## Filesystem commands (Explorer right-click + inline edits)
 
@@ -217,28 +217,28 @@ When adding a new modal, claim a free slot below 9999 and document it here.
 
 ## Claude Code Agent Teams (TmuxBackend)
 
-Claude Code’s **TmuxBackend** shells out to `tmux` (the Wind shim binary, built as `tmux`/`tmux.exe`) and expects **tmux-like** output, e.g. default `list-panes` lines (`0: [colsxrows] %0 (active)`) and `display-message -p ‘#{…}’`.
+Claude Code’s **TmuxBackend** shells out to `tmux` (the Ridge shim binary, built as `tmux`/`tmux.exe`) and expects **tmux-like** output, e.g. default `list-panes` lines (`0: [colsxrows] %0 (active)`) and `display-message -p ‘#{…}’`.
 
 **Build the shim:** `pnpm run build:teammate-shim` — outputs `dist/teammate-shim/tmux` (or `tmux.exe` on Windows).
 
-**Environment (required for the shim):** Wind injects into PTY shells:
+**Environment (required for the shim):** Ridge injects into PTY shells:
 
-- `WIND_TEAMMATE_URL`, `WIND_TEAMMATE_TOKEN` — the shim POSTs/GETs the local teammate HTTP API
+- `RIDGE_TEAMMATE_URL`, `RIDGE_TEAMMATE_TOKEN` — the shim POSTs/GETs the local teammate HTTP API
 - `TMUX`, `TMUX_PANE` — so Claude treats the session as multiplexer-backed
 
-Run Claude Code **from a terminal pane inside Wind** so the agent inherits these variables. If the shim exits with “missing WIND_TEAMMATE_URL/TOKEN”, the child process did not inherit Wind’s PTY env.
+Run Claude Code **from a terminal pane inside Ridge** so the agent inherits these variables. If the shim exits with “missing RIDGE_TEAMMATE_URL/TOKEN”, the child process did not inherit Ridge’s PTY env.
 
 **Config:** `teammateMode` for Agent Teams is often read from **`~/.claude.json`** (global), not only project `settings.json`—confirm the effective mode is `tmux` or `auto` where intended.
 
-**Windows / PATH / sandbox:** If you see “Could not determine current tmux pane/window” or `tmux` not found: ensure `tmux` resolves to the Wind shim (e.g. after `pnpm run build:teammate-shim`, put `dist/teammate-shim` on `PATH`). Some Claude Code builds resolve `tmux` without relying on your shell `PATH`; set an explicit tmux binary path in Claude settings if available. Avoid launching Claude from directories or sandboxes that block the resolved `tmux.exe` path (see anthropics/claude-code issues on Windows cwd vs WinGet paths).
+**Windows / PATH / sandbox:** If you see “Could not determine current tmux pane/window” or `tmux` not found: ensure `tmux` resolves to the Ridge shim (e.g. after `pnpm run build:teammate-shim`, put `dist/teammate-shim` on `PATH`). Some Claude Code builds resolve `tmux` without relying on your shell `PATH`; set an explicit tmux binary path in Claude settings if available. Avoid launching Claude from directories or sandboxes that block the resolved `tmux.exe` path (see anthropics/claude-code issues on Windows cwd vs WinGet paths).
 
 **Git Bash / MSYS:** Quoting can mangle `#{window_panes}` before it reaches the shim—prefer **PowerShell** or **cmd** / Windows Terminal for Claude Code when using the tmux backend.
 
-**`list-sessions`:** The shim prints one line like real tmux: session index `0:` (matching the middle segment of `TMUX=/wind/teammate.sock,0,{pane}`), dimensions `[120x80]`, and `(attached)` so tools that parse current session state do not treat the session as detached.
+**`list-sessions`:** The shim prints one line like real tmux: session index `0:` (matching the middle segment of `TMUX=/ridge/teammate.sock,0,{pane}`), dimensions `[120x80]`, and `(attached)` so tools that parse current session state do not treat the session as detached.
 
-**`kill-pane`:** The shim POSTs `{ pane_index }` to `POST /api/v1/kill-pane`. Wind removes the pane from its layout, tears down the PTY, and emits `teammate-layout-changed`. `-a` (kill-all) is a no-op to preserve at least one pane.
+**`kill-pane`:** The shim POSTs `{ pane_index }` to `POST /api/v1/kill-pane`. Ridge removes the pane from its layout, tears down the PTY, and emits `teammate-layout-changed`. `-a` (kill-all) is a no-op to preserve at least one pane.
 
-**`rename-window`:** The shim POSTs `{ pane_index, name }` to `POST /api/v1/rename-pane`. Wind writes the name to `teammate_pane_titles` and emits `teammate-layout-changed` so the pane header updates immediately. This lets Claude Code label its panes (e.g. `tmux rename-window -t 1 "backend"`).
+**`rename-window`:** The shim POSTs `{ pane_index, name }` to `POST /api/v1/rename-pane`. Ridge writes the name to `teammate_pane_titles` and emits `teammate-layout-changed` so the pane header updates immediately. This lets Claude Code label its panes (e.g. `tmux rename-window -t 1 "backend"`).
 
 **`display-message` template variables:** Supported static vars include `#{pane_id}`, `#{pane_index}`, `#{pane_width}`, `#{pane_height}`, `#{pane_tty}`, `#{pane_pid}`, `#{pane_current_command}`, `#{window_id}`, `#{window_index}`, `#{window_panes}`, `#{window_name}`, `#{session_id}`, `#{session_name}`, `#{client_width}`, `#{client_height}`. Dynamic vars `#{pane_current_path}` and `#{window_panes}` query `GET /api/v1/list-panes?json=1` (which now returns `cwd` per pane).
 

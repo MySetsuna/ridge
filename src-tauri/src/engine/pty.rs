@@ -6,6 +6,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::engine::cwd;
+use crate::engine::title;
 use crate::state::AppState;
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
@@ -13,7 +14,7 @@ use crate::utils::pty_log;
 const PTY_READ_UTF8_PENDING_MAX: usize = 64 * 1024;
 
 /// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠），与 `process::normalize_cwd` 对齐，
-/// 避免 `paneCwdStore` 上出现 `C:\code\wind` 与 `C:/code/wind` 两个键并存的别名。
+/// 避免 `paneCwdStore` 上出现 `C:\code\ridge` 与 `C:/code/ridge` 两个键并存的别名。
 fn normalize_cwd_str(raw: &str) -> String {
     #[cfg(windows)]
     {
@@ -135,11 +136,11 @@ pub fn spawn_pty_reader(
                                         if let Some(ws) = map.get_mut(&workspace_id) {
                                             if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
                                                 pane.cwd = Some(std::path::PathBuf::from(normalize_cwd_str(&cwd.to_string_lossy())));
-                                                tracing::debug!(target: "wind::cwd", workspace = %workspace_id, pane = %pane_id, cwd = %cwd.display(), "OSC 7 cwd applied");
+                                                tracing::debug!(target: "ridge::cwd", workspace = %workspace_id, pane = %pane_id, cwd = %cwd.display(), "OSC 7 cwd applied");
                                             }
                                         }
                                     }
-                                    crate::commands::wind_file::schedule_auto_save(&state, workspace_id);
+                                    crate::commands::ridge_file::schedule_auto_save(&state, workspace_id);
                                     let event_tx = state.event_tx.clone();
                                     let workspace_id = workspace_id.clone();
                                     let pane_id = pane_id.clone();
@@ -164,6 +165,7 @@ pub fn spawn_pty_reader(
                                 continue;
                             }
                             let data_for_cwd = data.clone();
+                            let bytes_for_title = data.as_bytes().to_vec();
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
                             let _ = rt.block_on(async {
                                 state
@@ -175,6 +177,23 @@ pub fn spawn_pty_reader(
                                     })
                                     .await
                             });
+                            // T1：扫描 OSC 0/1/2 标题序列。shell 提示符、Claude Code、
+                            // ssh 等都用这条机制设置窗口标题，emit 后前端按 teammate >
+                            // OSC > 进程名 优先级合并展示。
+                            if let Some(title_text) =
+                                title::parse_title_from_output(&bytes_for_title)
+                            {
+                                let event_tx = state.event_tx.clone();
+                                let _ = rt.block_on(async move {
+                                    let _ = event_tx
+                                        .send(GlobalEvent::PaneTitleChanged {
+                                            workspace_id,
+                                            pane_id,
+                                            title: title_text,
+                                        })
+                                        .await;
+                                });
+                            }
                             if let Some(cwd) = cwd::parse_cwd_from_output(&data_for_cwd) {
                                 // Normalize path separators on Windows so every code path
                                 // (main-loop OSC 7, EOF flush, process-poll) stores and
@@ -227,11 +246,11 @@ pub fn spawn_pty_reader(
                                         if let Some(ws) = map.get_mut(&workspace_id) {
                                             if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
                                                 pane.cwd = Some(std::path::PathBuf::from(normalize_cwd_str(&cwd.to_string_lossy())));
-                                                tracing::debug!(target: "wind::cwd", workspace = %workspace_id, pane = %pane_id, cwd = %cwd.display(), "OSC 7 cwd applied");
+                                                tracing::debug!(target: "ridge::cwd", workspace = %workspace_id, pane = %pane_id, cwd = %cwd.display(), "OSC 7 cwd applied");
                                             }
                                         }
                                     }
-                                    crate::commands::wind_file::schedule_auto_save(&state, workspace_id);
+                                    crate::commands::ridge_file::schedule_auto_save(&state, workspace_id);
                                     let event_tx = state.event_tx.clone();
                                     let workspace_id = workspace_id.clone();
                                     let pane_id = pane_id.clone();
@@ -256,7 +275,7 @@ pub fn spawn_pty_reader(
 
             if read_result.is_err() {
                 eprintln!(
-                    "[wind] PTY reader panicked (isolated to this thread) workspace={workspace_id} pane={pane_id}"
+                    "[ridge] PTY reader panicked (isolated to this thread) workspace={workspace_id} pane={pane_id}"
                 );
             }
 

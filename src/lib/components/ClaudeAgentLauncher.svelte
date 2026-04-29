@@ -38,7 +38,7 @@
   import { tick, onMount, onDestroy } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { Bot, X } from 'lucide-svelte';
-  import { alertDialog } from './WindDialog.svelte';
+  import { alertDialog } from './RidgeDialog.svelte';
   import { paneTreeStore, paneForegroundProcessStore } from '$lib/stores/paneTree';
   import type { PaneNode } from '$lib/types';
 
@@ -53,7 +53,7 @@
   // Last N successful submissions persisted to localStorage. Re-using a prompt
   // from history promotes it to the head, so frequently-used prompts bubble up.
   // De-dupe on exact string so resubmit doesn't bloat the list.
-  const RECENT_KEY = 'wind-claude-recent-prompts';
+  const RECENT_KEY = 'ridge-claude-recent-prompts';
   const MAX_RECENT = 5;
 
   function loadRecentPrompts(): string[] {
@@ -292,7 +292,7 @@
       aria-modal="true"
       aria-label="启动 Claude Code agent"
       tabindex="-1"
-      class="w-[min(560px,92vw)] flex flex-col gap-3 p-4 bg-[var(--wf-bg-raised)] border border-[var(--wf-border)] rounded-xl shadow-2xl"
+      class="w-[min(560px,92vw)] flex flex-col gap-3 p-4 bg-[var(--rg-bg-raised)] border border-[var(--rg-border)] rounded-xl shadow-2xl"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => {
         if (e.key === 'Escape') {
@@ -306,16 +306,16 @@
           <Bot class="h-4 w-4" />
         </span>
         <div class="flex-1 min-w-0">
-          <div class="text-[13px] font-semibold text-[var(--wf-fg)]">
+          <div class="text-[13px] font-semibold text-[var(--rg-fg)]">
             在此窗格启动 Claude Code
           </div>
-          <div class="text-[11px] text-[var(--wf-fg-muted)]">
+          <div class="text-[11px] text-[var(--rg-fg-muted)]">
             可留空直接进入交互式 REPL，或填入任务描述直接带进第一轮。
           </div>
         </div>
         <button
           type="button"
-          class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-white/[0.06]"
+          class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-white/[0.06]"
           title="取消 (Esc)"
           onclick={dismiss}
         >
@@ -329,7 +329,7 @@
         onkeydown={onKeydown}
         rows="4"
         placeholder="例：帮我把 src/lib/components/Explorer.svelte 的 ArrowUp 改成跨列跳转（留空则直接进入 REPL）"
-        class="w-full resize-y rounded-lg bg-[var(--wf-bg)] border border-[var(--wf-border)] px-3 py-2 text-[13px] text-[var(--wf-fg)] placeholder:text-[var(--wf-fg-muted)]/70 focus:outline-none focus:border-[var(--wf-accent)]/60"
+        class="w-full resize-y rounded-lg bg-[var(--rg-bg)] border border-[var(--rg-border)] px-3 py-2 text-[13px] text-[var(--rg-fg)] placeholder:text-[var(--rg-fg-muted)]/70 focus:outline-none focus:border-[var(--rg-accent)]/60"
       ></textarea>
 
       {#if recentPrompts.length > 0}
@@ -337,13 +337,13 @@
              users can then tweak & submit. Not stored per-workspace — the
              list is user-global, consistent with Warp's "recent commands". -->
         <div class="flex flex-wrap gap-1.5">
-          <span class="text-[10px] uppercase tracking-wider text-[var(--wf-fg-muted)] self-center mr-1">
+          <span class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)] self-center mr-1">
             最近
           </span>
           {#each recentPrompts as p (p)}
             <button
               type="button"
-              class="max-w-[260px] truncate px-2 py-1 rounded-md text-[11px] bg-white/[0.04] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:bg-[var(--wf-accent)]/10 hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)]/40 transition-colors"
+              class="max-w-[260px] truncate px-2 py-1 rounded-md text-[11px] bg-white/[0.04] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:bg-[var(--rg-accent)]/10 hover:text-[var(--rg-fg)] hover:border-[var(--rg-accent)]/40 transition-colors"
               title={p}
               onclick={async () => {
                 promptText = p;
@@ -359,18 +359,18 @@
         </div>
       {/if}
 
-      <div class="flex items-center gap-2 text-[11px] text-[var(--wf-fg-muted)]">
-        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--wf-border)] font-mono">Esc</kbd>
+      <div class="flex items-center gap-2 text-[11px] text-[var(--rg-fg-muted)]">
+        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Esc</kbd>
         取消
         <span class="select-none">·</span>
-        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--wf-border)] font-mono">Ctrl</kbd>+<kbd
-          class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--wf-border)] font-mono">Enter</kbd
+        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Ctrl</kbd>+<kbd
+          class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Enter</kbd
         >
         提交
         <span class="flex-1"></span>
         <button
           type="button"
-          class="px-3 py-1.5 rounded-lg text-[12px] text-[var(--wf-fg)] hover:bg-white/[0.06]"
+          class="px-3 py-1.5 rounded-lg text-[12px] text-[var(--rg-fg)] hover:bg-white/[0.06]"
           onclick={dismiss}
           disabled={inFlight}
         >

@@ -8,7 +8,7 @@
 // via `find_git_repo_root`, which is git's standard "you're in a repo if
 // any ancestor has .git" rule. The user explicitly wanted "cwd is the
 // container" — only repos discovered at cwd or directly under it count.
-// Net effect: if the user opens Wind in `~/Downloads` (non-git, no .git
+// Net effect: if the user opens Ridge in `~/Downloads` (non-git, no .git
 // children), no pill renders even if `~/.git` happens to exist somewhere
 // far above. If they open it in `~/code` and `~/code/{a,b,c}` are each
 // repos, all three are surfaced and a switcher renders next to the pill.
@@ -249,6 +249,6 @@ async function refreshAllCachedRepos(): Promise<void> {
 
 // Background 5-minute heartbeat — keeps branch/diff counts accurate after
 // external `git pull`, CI merges, or teammate operations the user didn't
-// trigger from inside Wind. Low cost: no-ops when no panes are tracked.
+// trigger from inside Ridge. Low cost: no-ops when no panes are tracked.
 const PERIODIC_REFRESH_MS = 5 * 60 * 1000;
 setInterval(() => { void refreshAllCachedRepos(); }, PERIODIC_REFRESH_MS);

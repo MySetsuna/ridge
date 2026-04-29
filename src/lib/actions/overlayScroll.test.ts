@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 const PRESETS = {
 	sidebar: {
 		scrollbars: {
-			theme: 'wf-os-theme',
+			theme: 'rg-os-theme',
 			autoHide: 'leave',
 			autoHideDelay: 600,
 			dragScroll: true,
@@ -22,7 +22,7 @@ const PRESETS = {
 	},
 	'horizontal-tabs': {
 		scrollbars: {
-			theme: 'wf-os-theme',
+			theme: 'rg-os-theme',
 			autoHide: 'leave',
 			autoHideDelay: 800,
 			dragScroll: true,
@@ -41,7 +41,7 @@ const PRESET_DEFAULT_LAYOUTS = {
 
 describe('overlayScroll preset: sidebar', () => {
 	it('has correct scrollbars theme', () => {
-		expect(PRESETS.sidebar.scrollbars.theme).toBe('wf-os-theme');
+		expect(PRESETS.sidebar.scrollbars.theme).toBe('rg-os-theme');
 	});
 
 	it('has correct autoHide behavior', () => {
@@ -61,7 +61,7 @@ describe('overlayScroll preset: sidebar', () => {
 
 describe('overlayScroll preset: horizontal-tabs', () => {
 	it('has correct scrollbars theme', () => {
-		expect(PRESETS['horizontal-tabs'].scrollbars.theme).toBe('wf-os-theme');
+		expect(PRESETS['horizontal-tabs'].scrollbars.theme).toBe('rg-os-theme');
 	});
 
 	it('has correct autoHide behavior', () => {

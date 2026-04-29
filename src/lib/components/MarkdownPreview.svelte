@@ -18,6 +18,7 @@
   import {
     renderMarkdown,
     highlightCodeBlocks,
+    renderMermaidBlocks,
     toggleTaskAtLine,
   } from '$lib/utils/markdown';
   import { fileEditorStore } from '$lib/stores/fileEditor';
@@ -27,7 +28,7 @@
     isTrustedUrl,
     trustHostFromUrl,
   } from '$lib/utils/linkTrust';
-  import { choiceDialog } from './WindDialog.svelte';
+  import { choiceDialog } from './RidgeDialog.svelte';
 
   interface Props {
     content: string;
@@ -39,7 +40,7 @@
     basePath?: string;
     /**
      * When set, parent (FileEditor) forwards the Monaco cursor's 1-based line
-     * number here. The preview scrolls to the nearest `[data-wf-md-src-line]`
+     * number here. The preview scrolls to the nearest `[data-rg-md-src-line]`
      * block at or above that line. `null` → no sync. Values outside the source
      * range are clamped.
      */
@@ -75,12 +76,18 @@
     void html; // subscribe
     void (async () => {
       await tick();
-      if (container) await highlightCodeBlocks(container);
+      if (!container) return;
+      // Mermaid 与代码高亮独立运行；mermaid 走 `rg-md-mermaid` 占位 div，
+      // 高亮走 `pre.rg-md-pre`，不重叠。两者并发即可。
+      await Promise.all([
+        highlightCodeBlocks(container),
+        renderMermaidBlocks(container),
+      ]);
     })();
   });
 
   /**
-   * Scroll to the preview block whose `data-wf-md-src-line` is the largest
+   * Scroll to the preview block whose `data-rg-md-src-line` is the largest
    * value ≤ the given source line (1-based). VS Code calls this "Markdown:
    * Preview Auto-Scroll". Smoothed by rAF — rapid cursor movement won't
    * queue a backlog because we always use the latest `cursorLine` on frame.
@@ -91,13 +98,13 @@
     syncRaf = requestAnimationFrame(() => {
       syncRaf = null;
       if (!container || target == null) return;
-      const blocks = container.querySelectorAll<HTMLElement>('[data-wf-md-src-line]');
+      const blocks = container.querySelectorAll<HTMLElement>('[data-rg-md-src-line]');
       if (blocks.length === 0) return;
-      // cursorLine is 1-based from Monaco; `data-wf-md-src-line` is 0-based.
+      // cursorLine is 1-based from Monaco; `data-rg-md-src-line` is 0-based.
       const src0 = target - 1;
       let best: HTMLElement | null = null;
       for (const el of blocks) {
-        const n = Number(el.dataset.wfMdSrcLine ?? '-1');
+        const n = Number(el.dataset.rgMdSrcLine ?? '-1');
         if (!Number.isFinite(n) || n < 0) continue;
         if (n <= src0) best = el;
         else break; // blocks are emitted in source order
@@ -199,7 +206,7 @@
   async function openExternal(href: string): Promise<void> {
     if (!isTrustedUrl(href, basePath)) {
       const host = hostKeyFromUrl(href) ?? href;
-      // Use the themed WindDialog so the prompt sits inside Wind's
+      // Use the themed WindDialog so the prompt sits inside Ridge's
       // visual stack instead of bursting out as OS chrome (round-32
       // review HIGH — also covered the SCM cherry-pick / revert
       // confirms in the same round).
@@ -360,11 +367,11 @@
     if (!target) return;
 
     // Task-list checkbox intercept — toggle source; do NOT request edit.
-    if (target instanceof HTMLInputElement && target.classList.contains('wf-md-checkbox')) {
+    if (target instanceof HTMLInputElement && target.classList.contains('rg-md-checkbox')) {
       e.preventDefault(); // let us own the checked state via state, not DOM
-      const li = target.closest<HTMLElement>('[data-wf-md-task]');
+      const li = target.closest<HTMLElement>('[data-rg-md-task]');
       if (!li) return;
-      const idx = Number(li.dataset.wfMdTask ?? '-1');
+      const idx = Number(li.dataset.rgMdTask ?? '-1');
       if (!Number.isFinite(idx) || idx < 0) return;
       const next = toggleTaskAtLine(content, idx);
       if (next !== content) onChange(next);
@@ -385,9 +392,9 @@
     // the rendered view (VS Code uses a gutter icon in the preview for this;
     // we repurpose the Alt modifier since preview is click-through for edit).
     if (e.altKey) {
-      const block = target.closest<HTMLElement>('[data-wf-md-src-line]');
+      const block = target.closest<HTMLElement>('[data-rg-md-src-line]');
       if (block) {
-        const line = Number(block.dataset.wfMdSrcLine ?? '-1');
+        const line = Number(block.dataset.rgMdSrcLine ?? '-1');
         if (Number.isFinite(line) && line >= 0) {
           e.preventDefault();
           e.stopPropagation();
@@ -409,7 +416,7 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
   bind:this={container}
-  class="wf-md-preview"
+  class="rg-md-preview"
   role="document"
   tabindex="0"
   onclick={onClickBody}
@@ -422,8 +429,8 @@
 
 <style>
   /* ─── GitHub-ish markdown preview styling ──────────────────────────────── */
-  .wf-md-preview {
-    color: var(--wf-fg);
+  .rg-md-preview {
+    color: var(--rg-fg);
     font-size: 14px;
     line-height: 1.65;
     padding: 20px 28px;
@@ -432,88 +439,88 @@
     word-wrap: break-word;
   }
 
-  .wf-md-preview :global(h1),
-  .wf-md-preview :global(h2),
-  .wf-md-preview :global(h3),
-  .wf-md-preview :global(h4),
-  .wf-md-preview :global(h5),
-  .wf-md-preview :global(h6) {
+  .rg-md-preview :global(h1),
+  .rg-md-preview :global(h2),
+  .rg-md-preview :global(h3),
+  .rg-md-preview :global(h4),
+  .rg-md-preview :global(h5),
+  .rg-md-preview :global(h6) {
     font-weight: 600;
     line-height: 1.25;
     margin-top: 1.5em;
     margin-bottom: 0.5em;
-    color: var(--wf-fg);
+    color: var(--rg-fg);
   }
-  .wf-md-preview :global(h1) {
+  .rg-md-preview :global(h1) {
     font-size: 1.75em;
     padding-bottom: 0.3em;
-    border-bottom: 1px solid var(--wf-border);
+    border-bottom: 1px solid var(--rg-border);
   }
-  .wf-md-preview :global(h2) {
+  .rg-md-preview :global(h2) {
     font-size: 1.4em;
     padding-bottom: 0.3em;
-    border-bottom: 1px solid var(--wf-border);
+    border-bottom: 1px solid var(--rg-border);
   }
-  .wf-md-preview :global(h3) { font-size: 1.2em; }
-  .wf-md-preview :global(h4) { font-size: 1.05em; }
-  .wf-md-preview :global(h5) { font-size: 0.95em; }
-  .wf-md-preview :global(h6) {
+  .rg-md-preview :global(h3) { font-size: 1.2em; }
+  .rg-md-preview :global(h4) { font-size: 1.05em; }
+  .rg-md-preview :global(h5) { font-size: 0.95em; }
+  .rg-md-preview :global(h6) {
     font-size: 0.9em;
-    color: var(--wf-fg-muted);
+    color: var(--rg-fg-muted);
   }
 
-  .wf-md-preview :global(p),
-  .wf-md-preview :global(blockquote),
-  .wf-md-preview :global(ul),
-  .wf-md-preview :global(ol),
-  .wf-md-preview :global(dl),
-  .wf-md-preview :global(table),
-  .wf-md-preview :global(pre) {
+  .rg-md-preview :global(p),
+  .rg-md-preview :global(blockquote),
+  .rg-md-preview :global(ul),
+  .rg-md-preview :global(ol),
+  .rg-md-preview :global(dl),
+  .rg-md-preview :global(table),
+  .rg-md-preview :global(pre) {
     margin-top: 0;
     margin-bottom: 14px;
   }
 
-  .wf-md-preview :global(a) {
-    color: var(--wf-accent);
+  .rg-md-preview :global(a) {
+    color: var(--rg-accent);
     text-decoration: none;
   }
-  .wf-md-preview :global(a:hover) { text-decoration: underline; }
+  .rg-md-preview :global(a:hover) { text-decoration: underline; }
 
-  .wf-md-preview :global(strong) { font-weight: 600; }
-  .wf-md-preview :global(em) { font-style: italic; }
+  .rg-md-preview :global(strong) { font-weight: 600; }
+  .rg-md-preview :global(em) { font-style: italic; }
 
-  .wf-md-preview :global(blockquote) {
+  .rg-md-preview :global(blockquote) {
     padding: 0 1em;
-    color: var(--wf-fg-muted);
-    border-left: 3px solid var(--wf-border);
+    color: var(--rg-fg-muted);
+    border-left: 3px solid var(--rg-border);
   }
 
-  .wf-md-preview :global(ul),
-  .wf-md-preview :global(ol) {
+  .rg-md-preview :global(ul),
+  .rg-md-preview :global(ol) {
     padding-left: 1.8em;
   }
-  .wf-md-preview :global(li + li) { margin-top: 0.25em; }
+  .rg-md-preview :global(li + li) { margin-top: 0.25em; }
 
   /* Task list items: flex layout so checkbox aligns with first-line text. */
-  .wf-md-preview :global(li.wf-md-task) {
+  .rg-md-preview :global(li.rg-md-task) {
     list-style: none;
     margin-left: -1.5em;
     display: flex;
     align-items: flex-start;
     gap: 0.5em;
   }
-  .wf-md-preview :global(input.wf-md-checkbox) {
+  .rg-md-preview :global(input.rg-md-checkbox) {
     margin-top: 0.35em;
     cursor: pointer;
-    accent-color: var(--wf-accent);
+    accent-color: var(--rg-accent);
   }
-  .wf-md-preview :global(input.wf-md-checkbox:disabled) {
+  .rg-md-preview :global(input.rg-md-checkbox:disabled) {
     cursor: not-allowed;
     opacity: 0.5;
   }
 
   /* Inline code */
-  .wf-md-preview :global(code) {
+  .rg-md-preview :global(code) {
     font-family: var(--font-mono-term);
     font-size: 0.88em;
     padding: 0.15em 0.4em;
@@ -522,17 +529,17 @@
   }
 
   /* Fenced blocks: Monaco-themed colorize injects <span> runs inside <code>. */
-  .wf-md-preview :global(pre) {
+  .rg-md-preview :global(pre) {
     font-family: var(--font-mono-term);
     font-size: 12.5px;
     line-height: 1.55;
     padding: 14px 16px;
-    background: var(--wf-surface);
-    border: 1px solid var(--wf-border);
+    background: var(--rg-surface);
+    border: 1px solid var(--rg-border);
     border-radius: 8px;
     overflow-x: auto;
   }
-  .wf-md-preview :global(pre code) {
+  .rg-md-preview :global(pre code) {
     padding: 0;
     background: transparent;
     font-size: inherit;
@@ -540,34 +547,63 @@
     white-space: pre;
   }
 
+  /* Mermaid：占位 div 渲染前显示 fallback <pre>，渲染成功后整个 div 替换为
+     SVG 并加 `rg-md-mermaid-rendered` —— 把 fallback <pre> 隐藏，居中 SVG。 */
+  .rg-md-preview :global(div.rg-md-mermaid) {
+    margin: 0 0 14px;
+    padding: 12px;
+    background: var(--rg-surface);
+    border: 1px solid var(--rg-border);
+    border-radius: 8px;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .rg-md-preview :global(div.rg-md-mermaid-rendered svg) {
+    max-width: 100%;
+    height: auto;
+  }
+  .rg-md-preview :global(div.rg-md-mermaid-rendered .rg-md-mermaid-fallback) {
+    display: none;
+  }
+  .rg-md-preview :global(.rg-md-mermaid-error) {
+    margin-bottom: 8px;
+    padding: 6px 10px;
+    background: rgba(244, 63, 94, 0.12);
+    color: rgb(252, 165, 165);
+    border: 1px solid rgba(244, 63, 94, 0.4);
+    border-radius: 4px;
+    font-size: 11.5px;
+    text-align: left;
+  }
+
   /* Tables */
-  .wf-md-preview :global(table) {
+  .rg-md-preview :global(table) {
     border-collapse: collapse;
     display: block;
     overflow-x: auto;
   }
-  .wf-md-preview :global(th),
-  .wf-md-preview :global(td) {
-    border: 1px solid var(--wf-border);
+  .rg-md-preview :global(th),
+  .rg-md-preview :global(td) {
+    border: 1px solid var(--rg-border);
     padding: 6px 12px;
   }
-  .wf-md-preview :global(th) {
-    background: var(--wf-surface);
+  .rg-md-preview :global(th) {
+    background: var(--rg-surface);
     font-weight: 600;
   }
-  .wf-md-preview :global(tr:nth-child(even) td) {
+  .rg-md-preview :global(tr:nth-child(even) td) {
     background: rgba(255, 255, 255, 0.02);
   }
 
   /* Horizontal rules */
-  .wf-md-preview :global(hr) {
+  .rg-md-preview :global(hr) {
     border: none;
-    border-top: 1px solid var(--wf-border);
+    border-top: 1px solid var(--rg-border);
     margin: 24px 0;
   }
 
   /* Images */
-  .wf-md-preview :global(img) {
+  .rg-md-preview :global(img) {
     max-width: 100%;
     border-radius: 6px;
   }

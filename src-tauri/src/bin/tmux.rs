@@ -1,4 +1,4 @@
-//! Claude Code `teammateMode: tmux` 兼容：把 `tmux` 子命令翻译成 Wind 本地 HTTP（见 `WIND_TEAMMATE_URL` / `WIND_TEAMMATE_TOKEN`）。
+//! Claude Code `teammateMode: tmux` 兼容：把 `tmux` 子命令翻译成 Ridge 本地 HTTP（见 `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN`）。
 //! 使用：将本二进制放到 PATH 且命名为 `tmux`，或在 Claude 配置中指向本程序。
 
 use std::env;
@@ -78,10 +78,10 @@ fn main() {
         .collect::<Vec<_>>()
         .join(" ");
     let tmux_env = env::var("TMUX").unwrap_or_default();
-    let url_set = env::var("WIND_TEAMMATE_URL")
+    let url_set = env::var("RIDGE_TEAMMATE_URL")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
-    let token_set = env::var("WIND_TEAMMATE_TOKEN")
+    let token_set = env::var("RIDGE_TEAMMATE_TOKEN")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
     log_to_file(&format!(
@@ -105,11 +105,11 @@ fn main() {
         eprintln!("tmux: missing subcommand");
         process::exit(1);
     }
-    let url = env::var("WIND_TEAMMATE_URL").unwrap_or_default();
-    let token = env::var("WIND_TEAMMATE_TOKEN").unwrap_or_default();
+    let url = env::var("RIDGE_TEAMMATE_URL").unwrap_or_default();
+    let token = env::var("RIDGE_TEAMMATE_TOKEN").unwrap_or_default();
     if url.is_empty() || token.is_empty() {
-        log_to_file("missing WIND_TEAMMATE_URL/TOKEN");
-        eprintln!("tmux: set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in PTY)");
+        log_to_file("missing RIDGE_TEAMMATE_URL/TOKEN");
+        eprintln!("tmux: set RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN (Ridge injects these in PTY)");
         process::exit(1);
     }
     let sub = args[1].as_str();
@@ -220,7 +220,7 @@ fn client() -> reqwest::blocking::Client {
 fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
     let mut m = reqwest::header::HeaderMap::new();
     m.insert(
-        "X-Wind-Token",
+        "X-Ridge-Token",
         reqwest::header::HeaderValue::from_str(token).expect("token header"),
     );
     m
@@ -243,7 +243,7 @@ fn parse_pane_target(s: &str) -> usize {
     s.parse().unwrap_or(0)
 }
 
-/// 与 Wind PTY 注入的 `TMUX_PANE` / `TMUX` 对齐，供未带 `-t` 的 probe（如 `display-message -p`）推断当前窗格。
+/// 与 Ridge PTY 注入的 `TMUX_PANE` / `TMUX` 对齐，供未带 `-t` 的 probe（如 `display-message -p`）推断当前窗格。
 fn current_pane_index_from_env() -> usize {
     if let Ok(pane) = env::var("TMUX_PANE") {
         let t = pane.trim();
@@ -252,7 +252,7 @@ fn current_pane_index_from_env() -> usize {
         }
     }
     if let Ok(tmux) = env::var("TMUX") {
-        // `terminal.rs`: `/wind/teammate.sock,0,<pane_slot>`
+        // `terminal.rs`: `/ridge/teammate.sock,0,<pane_slot>`
         if let Some(third) = tmux.split(',').nth(2) {
             let t = third.trim();
             if !t.is_empty() {
@@ -272,7 +272,7 @@ fn tmux_replacements(pane_index: usize) -> Vec<(&'static str, String)> {
         ("#{pane_active}", "1".to_string()),
         ("#{pane_tty}", "/dev/pts/0".to_string()),
         ("#{pane_pid}", "1".to_string()),
-        ("#{pane_title}", "wind".to_string()),
+        ("#{pane_title}", "ridge".to_string()),
         ("#{pane_current_command}", "shell".to_string()),
         // Dimensions – real size not known at shim level; use conservative defaults
         ("#{pane_width}", "120".to_string()),
@@ -285,16 +285,16 @@ fn tmux_replacements(pane_index: usize) -> Vec<(&'static str, String)> {
         ("#{window_id}", "@0".to_string()),
         ("#{window_index}", "0".to_string()),
         ("#{window_active}", "1".to_string()),
-        ("#{window_name}", "wind".to_string()),
+        ("#{window_name}", "ridge".to_string()),
         ("#{window_layout}", "tiled".to_string()),
         ("#{window_width}", "120".to_string()),
         ("#{window_height}", "80".to_string()),
         // window_panes is dynamic and filled by render_tmux_format_dynamic
         // ── Session ──
         ("#{session_id}", "$0".to_string()),
-        ("#{session_name}", "wind".to_string()),
+        ("#{session_name}", "ridge".to_string()),
         ("#{session_windows}", "1".to_string()),
-        ("#{client_session}", "wind".to_string()),
+        ("#{client_session}", "ridge".to_string()),
         // ── Client ──
         ("#{client_width}", "120".to_string()),
         ("#{client_height}", "80".to_string()),
@@ -303,9 +303,9 @@ fn tmux_replacements(pane_index: usize) -> Vec<(&'static str, String)> {
         ("#D", pane_id),
         ("#I", "0".to_string()),
         ("#P", pane_index.to_string()),
-        ("#S", "wind".to_string()),
-        ("#W", "wind".to_string()),
-        ("#T", "wind".to_string()),
+        ("#S", "ridge".to_string()),
+        ("#W", "ridge".to_string()),
+        ("#T", "ridge".to_string()),
     ]
 }
 
@@ -321,9 +321,9 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
 /// Find an idle pane that can be reused.
 /// Returns the pane index if an idle pane is found, None otherwise.
 /// Currently returns None - idle pane detection can be implemented later
-/// by querying the Wind API for pane state.
+/// by querying the Ridge API for pane state.
 fn find_idle_pane(_url: &str, _token: &str) -> Option<usize> {
-    // TODO: Implement idle pane detection via Wind API
+    // TODO: Implement idle pane detection via Ridge API
     None
 }
 
@@ -962,7 +962,7 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     // Direction flags: -l (last) is the only one Claude Code uses for pane management.
-    // Spatial directions (-L/-R/-U/-D) are no-ops since Wind's layout is tracked server-side.
+    // Spatial directions (-L/-R/-U/-D) are no-ops since Ridge's layout is tracked server-side.
     if let Some(dir) = direction {
         if dir == "last" {
             let u = format!("{}/api/v1/select-pane", url.trim_end_matches('/'));
@@ -1011,13 +1011,13 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 
     log_to_file(&format!("kill-pane: pane={:?}, kill_all={}", pane_index, kill_all));
 
-    // -a (kill all panes) is intentionally a no-op in Wind: there is no
+    // -a (kill all panes) is intentionally a no-op in Ridge: there is no
     // "kill all" concept that maps cleanly, and Claude Code rarely issues it.
     if kill_all {
         return Ok(());
     }
 
-    // Route the kill through the teammate HTTP API so Wind removes the pane
+    // Route the kill through the teammate HTTP API so Ridge removes the pane
     // from its layout, tears down the PTY, and emits teammate-layout-changed.
     // Without this the pane lingers as a zombie after the agent exits.
     let u = format!("{}/api/v1/kill-pane", url.trim_end_matches('/'));
@@ -1218,7 +1218,7 @@ fn cmd_pipe_pane(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    // Pipe pane output - not supported in Wind
+    // Pipe pane output - not supported in Ridge
     Ok(())
 }
 
@@ -1536,7 +1536,7 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 }
 
 fn cmd_has_session(rest: &[String]) -> Result<(), ()> {
-    let mut session_name = "wind";
+    let mut session_name = "ridge";
     let mut i = 0;
     while i < rest.len() {
         if !rest[i].starts_with('-') {
@@ -1551,7 +1551,7 @@ fn cmd_has_session(rest: &[String]) -> Result<(), ()> {
 
 fn cmd_list_sessions(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     if url.is_empty() || token.is_empty() {
-        eprintln!("tmux: list-sessions needs WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN");
+        eprintln!("tmux: list-sessions needs RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN");
         return Err(());
     }
     let _ = rest;
@@ -1694,7 +1694,7 @@ fn cmd_list_windows(rest: &[String], _url: &str, _token: &str) -> Result<(), ()>
     }
 
     // Return default format
-    println!("0: wind* (1 panes) [80x24] @0 (active)");
+    println!("0: ridge* (1 panes) [80x24] @0 (active)");
     Ok(())
 }
 
@@ -1718,7 +1718,7 @@ fn cmd_list_clients(rest: &[String]) -> Result<(), ()> {
     if let Some(fmt) = format {
         // Format: #{client_tty}, #{client_session_name}, etc.
         // For now, just return nothing - no clients attached
-        println!("{}", fmt.replace("#{client_tty}", "").replace("#{client_session_name}", "wind"));
+        println!("{}", fmt.replace("#{client_tty}", "").replace("#{client_session_name}", "ridge"));
         return Ok(());
     }
 
@@ -1728,7 +1728,7 @@ fn cmd_list_clients(rest: &[String]) -> Result<(), ()> {
 
 fn cmd_list_keys(rest: &[String]) -> Result<(), ()> {
     // `format` / `-T` / `-N` are accepted but not consumed — this is a no-op
-    // compatibility stub for `tmux list-keys`. Wind has no key-binding map to
+    // compatibility stub for `tmux list-keys`. Ridge has no key-binding map to
     // report; real tmux callers just need the command to exit 0.
     let _format: Option<String> = None;
     let mut i = 0;

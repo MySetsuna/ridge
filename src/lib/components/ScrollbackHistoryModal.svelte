@@ -25,7 +25,7 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
-  import { alertDialog } from './WindDialog.svelte';
+  import { alertDialog } from './RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
   import {
     History,
@@ -214,7 +214,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `wind-scrollback-${shortPane}-${stamp}.log`;
+    a.download = `ridge-scrollback-${shortPane}-${stamp}.log`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -378,24 +378,24 @@
       aria-modal="true"
       aria-label="终端历史记录"
       tabindex="-1"
-      class="w-[min(960px,92vw)] h-[min(720px,85vh)] flex flex-col bg-[var(--wf-bg-raised)] border border-[var(--wf-border)] rounded-xl shadow-2xl overflow-hidden"
+      class="w-[min(960px,92vw)] h-[min(720px,85vh)] flex flex-col bg-[var(--rg-bg-raised)] border border-[var(--rg-border)] rounded-xl shadow-2xl overflow-hidden"
       onclick={(e) => e.stopPropagation()}
     >
-      <header class="flex flex-col shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/60">
+      <header class="flex flex-col shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/60">
         <!-- Top row: title + page controls -->
         <div class="flex items-center gap-2 h-9 px-3">
-          <span class="flex h-6 w-6 items-center justify-center rounded-md bg-[var(--wf-accent)]/15 text-[var(--wf-accent)]">
+          <span class="flex h-6 w-6 items-center justify-center rounded-md bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]">
             <History class="h-3.5 w-3.5" />
           </span>
           <div class="flex-1 min-w-0">
-            <div class="text-[12px] font-semibold text-[var(--wf-fg)]">终端历史记录</div>
-            <div class="text-[10px] text-[var(--wf-fg-muted)] font-mono truncate">
+            <div class="text-[12px] font-semibold text-[var(--rg-fg)]">终端历史记录</div>
+            <div class="text-[10px] text-[var(--rg-fg-muted)] font-mono truncate">
               {atOldest ? '已到最早' : `seq ≥ ${startSeq.toLocaleString()}`} · {bytes.length.toLocaleString()} 字节
             </div>
           </div>
           <button
             type="button"
-            class="flex items-center gap-1 h-7 px-2 rounded text-[11px] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] disabled:opacity-40 disabled:pointer-events-none"
+            class="flex items-center gap-1 h-7 px-2 rounded text-[11px] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-40 disabled:pointer-events-none"
             onclick={() => void loadOlder()}
             disabled={atOldest || loading}
             title={atOldest ? '已经是最早记录' : '向前加载更早的输出'}
@@ -409,7 +409,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors disabled:opacity-30 disabled:pointer-events-none"
+            class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors disabled:opacity-30 disabled:pointer-events-none"
             title={copiedFlash ? '已复制到剪贴板' : '复制全部到剪贴板'}
             disabled={cleaned.length === 0}
             onclick={() => void copyAll()}
@@ -422,7 +422,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors disabled:opacity-30 disabled:pointer-events-none"
+            class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors disabled:opacity-30 disabled:pointer-events-none"
             title="另存为 .log 文件"
             disabled={cleaned.length === 0}
             onclick={downloadAsLog}
@@ -431,7 +431,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+            class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             title="关闭 (Esc)"
             onclick={dismiss}
           >
@@ -439,29 +439,29 @@
           </button>
         </div>
         <!-- Bottom row: in-text search bar (Enter / Shift+Enter to navigate) -->
-        <div class="flex items-center gap-1.5 h-8 px-3 border-t border-[var(--wf-border)]/40">
-          <Search class="h-3 w-3 text-[var(--wf-fg-muted)] shrink-0" />
+        <div class="flex items-center gap-1.5 h-8 px-3 border-t border-[var(--rg-border)]/40">
+          <Search class="h-3 w-3 text-[var(--rg-fg-muted)] shrink-0" />
           <input
             type="text"
             bind:this={searchInput}
             bind:value={searchText}
             onkeydown={onSearchKeydown}
             placeholder="在历史记录中查找…"
-            class="flex-1 min-w-0 px-2 py-0.5 text-[12px] bg-transparent border-0 focus:outline-none text-[var(--wf-fg)] placeholder:text-[var(--wf-fg-muted)]/70 font-mono"
+            class="flex-1 min-w-0 px-2 py-0.5 text-[12px] bg-transparent border-0 focus:outline-none text-[var(--rg-fg)] placeholder:text-[var(--rg-fg-muted)]/70 font-mono"
           />
           <button
             type="button"
-            class="flex h-6 w-6 items-center justify-center rounded border text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors
+            class="flex h-6 w-6 items-center justify-center rounded border text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors
               {searchCaseSensitive
-              ? 'border-[var(--wf-accent)]/60 bg-[var(--wf-accent)]/15 !text-[var(--wf-accent)]'
-              : 'border-[var(--wf-border)] hover:bg-[var(--wf-surface)]'}"
+              ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
+              : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
             title="区分大小写"
             aria-pressed={searchCaseSensitive}
             onclick={() => (searchCaseSensitive = !searchCaseSensitive)}
           >
             <CaseSensitive class="h-3 w-3" />
           </button>
-          <span class="text-[10px] font-mono text-[var(--wf-fg-muted)] tabular-nums w-16 text-right">
+          <span class="text-[10px] font-mono text-[var(--rg-fg-muted)] tabular-nums w-16 text-right">
             {#if searchText.length === 0}
               &nbsp;
             {:else if matchCount === 0}
@@ -472,7 +472,7 @@
           </span>
           <button
             type="button"
-            class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] disabled:opacity-30 disabled:pointer-events-none"
+            class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-30 disabled:pointer-events-none"
             disabled={matchCount === 0}
             title="上一处 (Shift+Enter)"
             onclick={prevMatch}
@@ -481,7 +481,7 @@
           </button>
           <button
             type="button"
-            class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] disabled:opacity-30 disabled:pointer-events-none"
+            class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-30 disabled:pointer-events-none"
             disabled={matchCount === 0}
             title="下一处 (Enter)"
             onclick={nextMatch}
@@ -499,26 +499,26 @@
            buffer on every Enter. -->
       <div
         bind:this={scroller}
-        class="flex-1 min-h-0 bg-[var(--wf-bg)]"
+        class="flex-1 min-h-0 bg-[var(--rg-bg)]"
         use:overlayScroll
         onscroll={onScrollerScroll}
       >
         <pre
-          class="m-0 p-3 text-[12px] leading-[1.5] font-mono text-[var(--wf-fg)] whitespace-pre-wrap break-words selection:bg-[var(--wf-accent)]/30"
+          class="m-0 p-3 text-[12px] leading-[1.5] font-mono text-[var(--rg-fg)] whitespace-pre-wrap break-words selection:bg-[var(--rg-accent)]/30"
         >{#each segments as seg, i (i)}{#if seg.kind === 'plain'}{seg.text}{:else}<mark
               data-match-idx={seg.idx}
               class="rounded-sm px-0 py-0 transition-colors {seg.active
                 ? 'bg-amber-400 text-black'
-                : 'bg-amber-500/30 text-[var(--wf-fg)]'}"
+                : 'bg-amber-500/30 text-[var(--rg-fg)]'}"
             >{seg.text}</mark>{/if}{/each}</pre>
       </div>
 
-      <footer class="flex items-center gap-2 h-7 px-3 border-t border-[var(--wf-border)] bg-[var(--wf-surface)]/60 shrink-0 text-[10px] text-[var(--wf-fg-muted)]">
-        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--wf-border)] font-mono">Esc</kbd>
+      <footer class="flex items-center gap-2 h-7 px-3 border-t border-[var(--rg-border)] bg-[var(--rg-surface)]/60 shrink-0 text-[10px] text-[var(--rg-fg-muted)]">
+        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Esc</kbd>
         关闭
         <span class="select-none opacity-50">·</span>
-        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--wf-border)] font-mono">Ctrl</kbd>+<kbd
-          class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--wf-border)] font-mono">F</kbd
+        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Ctrl</kbd>+<kbd
+          class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">F</kbd
         >
         浏览器内查找
         <span class="ml-auto select-none opacity-60">

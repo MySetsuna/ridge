@@ -1940,7 +1940,7 @@ function <span class="fstat-no" title="function not covered" >applyRatioUpdates(
 &nbsp;
 function <span class="fstat-no" title="function not covered" >setGlobalSplitResizeCursor(e</span>nabled: boolean) {
 <span class="cstat-no" title="statement not covered" >  if (typeof document === 'undefined') <span class="cstat-no" title="statement not covered" >return;</span></span>
-<span class="cstat-no" title="statement not covered" >  document.body.classList.toggle('wf-resize-junction-cursor', enabled);</span>
+<span class="cstat-no" title="statement not covered" >  document.body.classList.toggle('rg-resize-junction-cursor', enabled);</span>
 }
 &nbsp;
 export function <span class="fstat-no" title="function not covered" >queueSplitResizeJunction(</span>
@@ -1979,7 +1979,7 @@ export function <span class="fstat-no" title="function not covered" >clearSplitR
 <span class="cstat-no" title="statement not covered" >  clearSplitHoverTimer();</span>
 <span class="cstat-no" title="statement not covered" >  setGlobalSplitResizeCursor(false);</span>
 <span class="cstat-no" title="statement not covered" >  if (typeof document !== 'undefined') {</span>
-<span class="cstat-no" title="statement not covered" >    document.body.classList.remove('wf-resize-4way');</span>
+<span class="cstat-no" title="statement not covered" >    document.body.classList.remove('rg-resize-4way');</span>
   }
 <span class="cstat-no" title="statement not covered" >  splitResizeUiState.set({ phase: 'idle' });</span>
 }
@@ -2007,7 +2007,7 @@ export function <span class="fstat-no" title="function not covered" >startSplitR
     let basisPx = <span class="cstat-no" title="statement not covered" >ref.basisPx;</span>
 <span class="cstat-no" title="statement not covered" >    if (typeof document !== 'undefined') {</span>
       const splitRoot = <span class="cstat-no" title="statement not covered" >document.querySelector(</span>
-        `.wf-split[data-split-path="${pathKey(
+        `.rg-split[data-split-path="${pathKey(
           ref.splitPath
         )}"][data-split-axis="${ref.axis}"]`
       ) as HTMLElement;
@@ -2035,7 +2035,7 @@ export function <span class="fstat-no" title="function not covered" >startSplitR
   });
 <span class="cstat-no" title="statement not covered" >  setGlobalSplitResizeCursor(true);</span>
 <span class="cstat-no" title="statement not covered" >  if (is4WaySnap &amp;&amp; typeof document !== 'undefined') {</span>
-<span class="cstat-no" title="statement not covered" >    document.body.classList.add('wf-resize-4way');</span>
+<span class="cstat-no" title="statement not covered" >    document.body.classList.add('rg-resize-4way');</span>
   }
 }
 &nbsp;
@@ -2056,7 +2056,7 @@ export function <span class="fstat-no" title="function not covered" >finishSplit
 <span class="cstat-no" title="statement not covered" >  clearSplitHoverTimer();</span>
 <span class="cstat-no" title="statement not covered" >  setGlobalSplitResizeCursor(false);</span>
 <span class="cstat-no" title="statement not covered" >  if (typeof document !== 'undefined') {</span>
-<span class="cstat-no" title="statement not covered" >    document.body.classList.remove('wf-resize-4way');</span>
+<span class="cstat-no" title="statement not covered" >    document.body.classList.remove('rg-resize-4way');</span>
   }
 <span class="cstat-no" title="statement not covered" >  splitResizeUiState.set({ phase: 'idle' });</span>
 <span class="cstat-no" title="statement not covered" >  if (ui.phase !== 'drag') <span class="cstat-no" title="statement not covered" >return [];</span></span>

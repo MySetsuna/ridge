@@ -40,7 +40,7 @@ pub struct Pane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     /// 用于持久化的终端类型（pwsh/cmd/bash/git-bash/wsl/zsh 等），
-    /// 由 `create_pane` 在首次 spawn 时写入；重建 .wind 工作区时按此重启同类 shell。
+    /// 由 `create_pane` 在首次 spawn 时写入；重建 .ridge 工作区时按此重启同类 shell。
     /// 未显式指定时保留 None，表示使用平台默认（Windows=powershell, Unix=zsh）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_kind: Option<String>,

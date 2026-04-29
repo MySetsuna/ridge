@@ -29,4 +29,11 @@ pub enum GlobalEvent {
         pane_id: Uuid,
         cwd: String,
     },
+    /// PTY 解析到 OSC 0/1/2 标题序列时 emit。前端按 teammate > OSC > 进程名
+    /// 优先级合并展示，让 shell / 长跑程序（如 Claude Code）设置的标题能反映出来。
+    PaneTitleChanged {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        title: String,
+    },
 }

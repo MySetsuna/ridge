@@ -16,7 +16,7 @@ export interface ClaudeHistoryEntry {
   agentId: string;
 }
 
-const PREFIX = 'wind-claude-history:';
+const PREFIX = 'ridge-claude-history:';
 const MAX_PER_PANE = 50;
 
 function lsKey(paneId: string): string {

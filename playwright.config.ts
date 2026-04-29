@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Playwright harness for Wind's frontend smoke tests.
+ * Playwright harness for Ridge's frontend smoke tests.
  *
  * Scope is deliberately narrow: we run the SvelteKit dev server (not a Tauri
  * build), visit `/`, and verify the SPA chrome + critical UI contracts that

@@ -25,7 +25,7 @@ struct TeammateCtx {
 
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     if headers
-        .get("x-wind-token")
+        .get("x-ridge-token")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v == token)
     {
@@ -42,7 +42,7 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
 /// `ready` 在 HTTP 已绑定且 `teammate_binding` 写入后发送一次，供 setup 等待首个 PTY 注入环境变量。
 ///
 /// 进程保护：
-/// - 线程体包在 `catch_unwind` 里，路由 handler panic 不会连带把 Wind 主进程带走；
+/// - 线程体包在 `catch_unwind` 里，路由 handler panic 不会连带把 Ridge 主进程带走；
 /// - panic 捕获后，延时 1s 自动重启 server 线程（尝试最多 5 次）；
 /// - tokio runtime 构建失败不触发重启（多半是 FD 耗尽等系统性原因）。
 pub fn spawn_teammate_server(
@@ -64,7 +64,7 @@ fn spawn_teammate_inner(
     let handle_for_retry = handle.clone();
     let state_for_retry = state.clone();
     let _ = std::thread::Builder::new()
-        .name("wind-teammate-http".into())
+        .name("ridge-teammate-http".into())
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                 let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -73,7 +73,7 @@ fn spawn_teammate_inner(
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        tracing::error!(target: "wind::teammate", error = %e, "runtime build failed");
+                        tracing::error!(target: "ridge::teammate", error = %e, "runtime build failed");
                         if let Some(tx) = ready {
                             let _ = tx.send(());
                         }
@@ -84,7 +84,7 @@ fn spawn_teammate_inner(
             }));
             if result.is_err() {
                 tracing::error!(
-                    target: "wind::teammate",
+                    target: "ridge::teammate",
                     attempt = attempt,
                     "teammate HTTP thread panicked (isolated); scheduling restart"
                 );
@@ -93,7 +93,7 @@ fn spawn_teammate_inner(
                     spawn_teammate_inner(handle_for_retry, state_for_retry, None, attempt + 1);
                 } else {
                     tracing::error!(
-                        target: "wind::teammate",
+                        target: "ridge::teammate",
                         "teammate HTTP restart budget exhausted; giving up"
                     );
                 }
@@ -110,7 +110,7 @@ async fn run_server(
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[wind] teammate bind failed: {e}");
+            eprintln!("[ridge] teammate bind failed: {e}");
             if let Some(tx) = ready {
                 let _ = tx.send(());
             }
@@ -130,7 +130,7 @@ async fn run_server(
         let _ = tx.send(());
     }
     eprintln!(
-        "[wind] teammate HTTP {base_url} (inject WIND_TEAMMATE_* into PTY; use tmux shim on PATH)"
+        "[ridge] teammate HTTP {base_url} (inject WIND_TEAMMATE_* into PTY; use tmux shim on PATH)"
     );
 
     let ctx = TeammateCtx {
@@ -163,7 +163,7 @@ async fn run_server(
         .with_state(ctx);
 
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("[wind] teammate server stopped: {e}");
+        eprintln!("[ridge] teammate server stopped: {e}");
     }
 }
 
@@ -1133,7 +1133,7 @@ struct RenamePaneBody {
     name: String,
 }
 
-/// Set or clear the display title for a Wind pane so `rename-window <name>`
+/// Set or clear the display title for a Ridge pane so `rename-window <name>`
 /// from Claude Code's tmux backend is surfaced in the pane header.
 async fn route_rename_pane(
     State(ctx): State<TeammateCtx>,
@@ -1205,7 +1205,7 @@ async fn route_list_windows(
             .and_then(|u| ws.teammate_pane_titles.get(u))
             .cloned()
             .or_else(|| leaves.iter().find_map(|u| ws.teammate_pane_titles.get(u).cloned()))
-            .unwrap_or_else(|| "wind".to_string());
+            .unwrap_or_else(|| "ridge".to_string());
         let line = format!(
             "0: {}* ({} panes) [80x24] @0 (active)",
             primary_name, pane_count
@@ -1274,7 +1274,7 @@ async fn route_list_sessions(State(ctx): State<TeammateCtx>, headers: HeaderMap)
         let (cols, rows) = workspace_first_pty_size(ws);
         let created_local: DateTime<Local> = DateTime::<Utc>::from(ws.created_at).with_timezone(&Local);
         let date_str = created_local.format("%a %b %d %H:%M:%S %Y").to_string();
-        // Wind 每个工作区对应 tmux 的一个 session、一个 window（多 pane 为分屏）。
+        // Ridge 每个工作区对应 tmux 的一个 session、一个 window（多 pane 为分屏）。
         let mut line = format!(
             "{label}: 1 windows (created {date_str}) [{cols}x{rows}]"
         );
@@ -1295,5 +1295,5 @@ async fn route_list_clients(State(ctx): State<TeammateCtx>, headers: HeaderMap) 
 }
 
 fn log_stderr_server(msg: &str) {
-    eprintln!("[wind-teammate] {}", msg);
+    eprintln!("[ridge-teammate] {}", msg);
 }

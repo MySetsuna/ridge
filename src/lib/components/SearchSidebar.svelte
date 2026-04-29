@@ -1,7 +1,7 @@
 <script lang="ts">
   // src/lib/components/SearchSidebar.svelte
   //
-  // Global file search / replace UI for the Wind sidebar. Mirrors VS Code's
+  // Global file search / replace UI for the Ridge sidebar. Mirrors VS Code's
   // "Search" view: query box, optional replace box, include/exclude globs,
   // case/regex/word toggles, results grouped by file with line previews.
   //
@@ -31,8 +31,10 @@
   import { paneCwdStore } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { overlayScroll } from '$lib/actions/overlayScroll';
-  import { alertDialog, confirmDialog } from './WindDialog.svelte';
+  import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
   import { searchFolderStore, clearSearchFolder } from '$lib/stores/searchState';
+  import { settingsStore } from '$lib/stores/settings';
+  import { get } from 'svelte/store';
 
   interface SearchResult {
     file: string;
@@ -70,8 +72,26 @@
    * take a pattern list yet. When both inputs are empty we skip the filter
    * entirely so perf is unchanged from the previous implementation.
    */
-  let includeGlobs = $state('');
-  let excludeGlobs = $state('');
+  // 默认 globs 来自全局 settings —— 用户在设置中心配置后，第一次打开搜索框
+  // 就预填上次保存的值。仅在初始化时取一次快照，避免用户在搜索框临时改值
+  // 时被 settings 写入覆盖。
+  let includeGlobs = $state(get(settingsStore).searchIncludeGlobs);
+  let excludeGlobs = $state(get(settingsStore).searchExcludeGlobs);
+
+  // T3：文件树右键 → "在此文件夹中搜索"。`searchFolderStore` 一旦置为非空路径，
+  // 就把 `includeGlobs` 显式写为该文件夹的 glob —— 让用户在搜索框里直接看见
+  // 当前正在限定的范围，并可以手动调整 / 删除。仅在 store 从空 → 非空时
+  // 写入，避免用户编辑过 includeGlobs 后被反复覆盖。
+  let lastSeenFolder: string | null = null;
+  $effect(() => {
+    const folder = $searchFolderStore;
+    if (folder === lastSeenFolder) return;
+    lastSeenFolder = folder;
+    if (folder) {
+      const norm = folder.replace(/\\/g, '/').replace(/\/+$/, '');
+      includeGlobs = `${norm}/**`;
+    }
+  });
 
   // ─── Results state ───────────────────────────────────────────────────────
   let results = $state<SearchResult[]>([]);
@@ -479,18 +499,18 @@
   });
 </script>
 
-<div class="flex h-full flex-col text-[var(--wf-fg)]">
+<div class="flex h-full flex-col text-[var(--rg-fg)]">
   <!-- Header bar: Search label + refresh last query -->
   <div
     data-tauri-drag-region
-    class="px-3 h-11 shrink-0 flex items-center justify-between border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/40"
+    class="px-3 h-11 shrink-0 flex items-center justify-between border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/40"
   >
-    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] flex items-center gap-1.5">
+    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] flex items-center gap-1.5">
       搜索
       {#if $searchFolderStore}
-        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] border border-[var(--wf-accent)]/30 max-w-[140px]">
+        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] border border-[var(--rg-accent)]/30 max-w-[140px]">
           <span class="truncate" title={$searchFolderStore}>{$searchFolderStore.replace(/\\/g, '/').split('/').pop()}</span>
-          <button type="button" onclick={clearSearchFolder} class="shrink-0 hover:text-[var(--wf-fg)] transition-colors" title="清除文件夹限制">
+          <button type="button" onclick={clearSearchFolder} class="shrink-0 hover:text-[var(--rg-fg)] transition-colors" title="清除文件夹限制">
             <X class="h-2.5 w-2.5" />
           </button>
         </span>
@@ -498,13 +518,13 @@
     </span>
     <div class="flex items-center gap-1">
       {#if !$searchFolderStore}
-        <span class="text-[10px] text-[var(--wf-fg-muted)]" title="当前会话的工作目录数量">
+        <span class="text-[10px] text-[var(--rg-fg-muted)]" title="当前会话的工作目录数量">
           {roots.length} 根
         </span>
       {/if}
       <button
         type="button"
-        class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] disabled:opacity-40"
+        class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-40"
         title="重新运行上一次搜索"
         disabled={!lastRunQuery || searching}
         onclick={() => void runSearch()}
@@ -515,12 +535,12 @@
   </div>
 
   <!-- Query + replace inputs + toggles -->
-  <div class="p-2 shrink-0 flex flex-col gap-1.5 border-b border-[var(--wf-border)]/60">
+  <div class="p-2 shrink-0 flex flex-col gap-1.5 border-b border-[var(--rg-border)]/60">
     <div class="relative flex items-center">
       <!-- Replace-row toggle, sits flush to the left (VS Code chevron pattern). -->
       <button
         type="button"
-        class="flex h-6 w-5 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]"
+        class="flex h-6 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]"
         title={showReplace ? '收起替换' : '展开替换'}
         onclick={() => (showReplace = !showReplace)}
       >
@@ -535,7 +555,7 @@
         bind:value={query}
         onkeydown={onQueryKeydown}
         placeholder="搜索…"
-        class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--wf-bg)] border border-[var(--wf-border)] focus:outline-none focus:border-[var(--wf-accent)]/60 placeholder:text-[var(--wf-fg-muted)]/70"
+        class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] focus:outline-none focus:border-[var(--rg-accent)]/60 placeholder:text-[var(--rg-fg-muted)]/70"
       />
     </div>
     {#if showReplace}
@@ -544,11 +564,11 @@
           type="text"
           bind:value={replaceText}
           placeholder="替换为…"
-          class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--wf-bg)] border border-[var(--wf-border)] focus:outline-none focus:border-[var(--wf-accent)]/60 placeholder:text-[var(--wf-fg-muted)]/70"
+          class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] focus:outline-none focus:border-[var(--rg-accent)]/60 placeholder:text-[var(--rg-fg-muted)]/70"
         />
         <button
           type="button"
-          class="ml-1 flex items-center gap-1 h-6 px-2 rounded text-[11px] bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] border border-[var(--wf-accent)]/30 hover:bg-[var(--wf-accent)]/25 disabled:opacity-40"
+          class="ml-1 flex items-center gap-1 h-6 px-2 rounded text-[11px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] border border-[var(--rg-accent)]/30 hover:bg-[var(--rg-accent)]/25 disabled:opacity-40"
           disabled={replacing || results.length === 0 || !query.trim()}
           onclick={() => void runReplace()}
           title="全部替换"
@@ -571,10 +591,10 @@
         type="text"
         bind:value={includeGlobs}
         placeholder="包含：*.ts, src/**"
-        class="flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-[var(--wf-bg)] border focus:outline-none placeholder:text-[var(--wf-fg-muted)]/70 font-mono
+        class="flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-[var(--rg-bg)] border focus:outline-none placeholder:text-[var(--rg-fg-muted)]/70 font-mono
           {includeGlobErrors.length > 0
             ? 'border-rose-500/60 focus:border-rose-500/80 ring-1 ring-rose-500/30'
-            : 'border-[var(--wf-border)] focus:border-[var(--wf-accent)]/60'}"
+            : 'border-[var(--rg-border)] focus:border-[var(--rg-accent)]/60'}"
         title={includeGlobErrors.length > 0
           ? `非法 glob：\n${includeGlobErrors.map((g) => `  ${g.pattern} — ${g.error}`).join('\n')}`
           : '只在匹配这些 glob 的文件里搜索。逗号分隔；* 不跨路径分隔符，** 跨任意层级。'}
@@ -585,10 +605,10 @@
         type="text"
         bind:value={excludeGlobs}
         placeholder="排除：**/dist/**, **/*.lock"
-        class="flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-[var(--wf-bg)] border focus:outline-none placeholder:text-[var(--wf-fg-muted)]/70 font-mono
+        class="flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-[var(--rg-bg)] border focus:outline-none placeholder:text-[var(--rg-fg-muted)]/70 font-mono
           {excludeGlobErrors.length > 0
             ? 'border-rose-500/60 focus:border-rose-500/80 ring-1 ring-rose-500/30'
-            : 'border-[var(--wf-border)] focus:border-[var(--wf-accent)]/60'}"
+            : 'border-[var(--rg-border)] focus:border-[var(--rg-accent)]/60'}"
         title={excludeGlobErrors.length > 0
           ? `非法 glob：\n${excludeGlobErrors.map((g) => `  ${g.pattern} — ${g.error}`).join('\n')}`
           : '匹配这些 glob 的文件不进入结果。'}
@@ -599,10 +619,10 @@
     <div class="flex items-center gap-1 pl-5">
       <button
         type="button"
-        class="flex h-6 w-6 items-center justify-center rounded border text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors
+        class="flex h-6 w-6 items-center justify-center rounded border text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors
           {caseSensitive
-          ? 'border-[var(--wf-accent)]/60 bg-[var(--wf-accent)]/15 !text-[var(--wf-accent)]'
-          : 'border-[var(--wf-border)] hover:bg-[var(--wf-surface)]'}"
+          ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
+          : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
         title="区分大小写 (Aa)"
         aria-pressed={caseSensitive}
         onclick={() => (caseSensitive = !caseSensitive)}
@@ -611,10 +631,10 @@
       </button>
       <button
         type="button"
-        class="flex h-6 w-6 items-center justify-center rounded border text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors
+        class="flex h-6 w-6 items-center justify-center rounded border text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors
           {wholeWord
-          ? 'border-[var(--wf-accent)]/60 bg-[var(--wf-accent)]/15 !text-[var(--wf-accent)]'
-          : 'border-[var(--wf-border)] hover:bg-[var(--wf-surface)]'}"
+          ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
+          : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
         title="匹配完整单词 (\\b)"
         aria-pressed={wholeWord}
         onclick={() => (wholeWord = !wholeWord)}
@@ -623,17 +643,17 @@
       </button>
       <button
         type="button"
-        class="flex h-6 w-6 items-center justify-center rounded border text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors
+        class="flex h-6 w-6 items-center justify-center rounded border text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors
           {useRegex
-          ? 'border-[var(--wf-accent)]/60 bg-[var(--wf-accent)]/15 !text-[var(--wf-accent)]'
-          : 'border-[var(--wf-border)] hover:bg-[var(--wf-surface)]'}"
+          ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
+          : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
         title="正则表达式 (.*)"
         aria-pressed={useRegex}
         onclick={() => (useRegex = !useRegex)}
       >
         <Regex class="h-3 w-3" />
       </button>
-      <span class="ml-auto text-[10px] text-[var(--wf-fg-muted)]">
+      <span class="ml-auto text-[10px] text-[var(--rg-fg-muted)]">
         {#if searching}搜索中…
         {:else if lastRunQuery && results.length === 0}无结果
         {:else if results.length > 0}{results.length} 处 / {groupedResults.length} 文件
@@ -646,26 +666,26 @@
   <!-- Results list — grouped by file, click line to open. -->
   <div class="flex-1 min-h-0" use:overlayScroll>
     {#if roots.length === 0}
-      <div class="p-4 text-[11px] text-[var(--wf-fg-muted)] text-center">
-        当前会话无任何工作目录，打开一个终端或 .wind 工作区后再试。
+      <div class="p-4 text-[11px] text-[var(--rg-fg-muted)] text-center">
+        当前会话无任何工作目录，打开一个终端或 .ridge 工作区后再试。
       </div>
     {:else if results.length === 0 && lastRunQuery}
-      <div class="p-4 text-[11px] text-[var(--wf-fg-muted)] text-center">
+      <div class="p-4 text-[11px] text-[var(--rg-fg-muted)] text-center">
         未匹配 "{lastRunQuery}"
       </div>
     {:else if results.length === 0}
-      <div class="p-4 text-[11px] text-[var(--wf-fg-muted)] text-center">
+      <div class="p-4 text-[11px] text-[var(--rg-fg-muted)] text-center">
         输入关键字后回车执行搜索。
       </div>
     {:else}
       {#each visibleGroups as group (group.file)}
         <div class="group search-file">
-          <div class="sticky top-0 z-10 flex items-center gap-1 h-7 px-2 text-[11px] bg-[var(--wf-surface-2)]/92 backdrop-blur-md">
+          <div class="sticky top-0 z-10 flex items-center gap-1 h-7 px-2 text-[11px] bg-[var(--rg-surface-2)]/92 backdrop-blur-md">
             <!-- Replace-inclusion checkbox — only meaningful when replace UI is visible. -->
             {#if showReplace}
               <input
                 type="checkbox"
-                class="h-3 w-3 accent-[var(--wf-accent)]"
+                class="h-3 w-3 accent-[var(--rg-accent)]"
                 checked={selectedFiles.has(group.file)}
                 onchange={() => toggleFileSelected(group.file)}
                 title="是否包含在替换里"
@@ -681,28 +701,28 @@
               {:else}
                 <ChevronDown class="h-3 w-3 shrink-0" />
               {/if}
-              <span class="truncate font-medium text-[var(--wf-fg)]">{basename(group.file)}</span>
+              <span class="truncate font-medium text-[var(--rg-fg)]">{basename(group.file)}</span>
               {#if dirname(group.file)}
-                <span class="truncate text-[10px] text-[var(--wf-fg-muted)]">{dirname(group.file)}</span>
+                <span class="truncate text-[10px] text-[var(--rg-fg-muted)]">{dirname(group.file)}</span>
               {/if}
             </button>
-            <span class="shrink-0 text-[10px] text-[var(--wf-fg-muted)]">{group.rows.length}</span>
+            <span class="shrink-0 text-[10px] text-[var(--rg-fg-muted)]">{group.rows.length}</span>
           </div>
           {#if !collapsedFiles.has(group.file)}
             {#each group.rows as r (r.line + ':' + r.column)}
               {@const parts = splitHighlightAt(r.content, r.match_text ?? query, r.column)}
               <button
                 type="button"
-                class="wf-search-row group/row flex w-full items-start gap-2 pl-7 pr-3 py-1 text-left text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors"
+                class="rg-search-row group/row flex w-full items-start gap-2 pl-7 pr-3 py-1 text-left text-[11px] hover:bg-[var(--rg-surface)]/50 transition-colors"
                 onclick={() => openAt(r.file, r.line, r.column)}
                 title={`${group.file}:${r.line}:${r.column}`}
               >
-                <span class="shrink-0 font-mono text-[10px] text-[var(--wf-fg-muted)] w-8 text-right">
+                <span class="shrink-0 font-mono text-[10px] text-[var(--rg-fg-muted)] w-8 text-right">
                   {r.line}
                 </span>
-                <span class="truncate font-mono text-[var(--wf-fg)]">
+                <span class="truncate font-mono text-[var(--rg-fg)]">
                   <span>{parts.before}</span>
-                  <span class="bg-[var(--wf-accent)]/30 text-[var(--wf-fg)] rounded px-0.5">
+                  <span class="bg-[var(--rg-accent)]/30 text-[var(--rg-fg)] rounded px-0.5">
                     {parts.hit || query}
                   </span>
                   <span>{parts.after}</span>
@@ -715,7 +735,7 @@
       {#if !showAll && results.length > DISPLAY_LIMIT}
         <button
           type="button"
-          class="w-full px-4 py-2 text-[11px] text-[var(--wf-accent)] hover:bg-[var(--wf-surface)] transition-colors text-center"
+          class="w-full px-4 py-2 text-[11px] text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] transition-colors text-center"
           onclick={() => { showAll = true; }}
         >
           显示全部 {results.length} 条结果（当前显示 {DISPLAY_LIMIT}）

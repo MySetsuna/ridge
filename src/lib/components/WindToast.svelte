@@ -18,16 +18,16 @@
           {toast.type === 'error'
             ? 'bg-red-950/95 border-red-700/60 text-red-200'
             : toast.type === 'info'
-              ? 'bg-[var(--wf-surface-2)]/95 border-[var(--wf-border)] text-[var(--wf-fg)]'
-              : 'bg-[var(--wf-surface-2)]/95 border-[var(--wf-accent)]/40 text-[var(--wf-fg)]'}"
+              ? 'bg-[var(--rg-surface-2)]/95 border-[var(--rg-border)] text-[var(--rg-fg)]'
+              : 'bg-[var(--rg-surface-2)]/95 border-[var(--rg-accent)]/40 text-[var(--rg-fg)]'}"
         role="status"
       >
         {#if toast.type === 'error'}
           <XCircle class="h-3.5 w-3.5 shrink-0 text-red-400" />
         {:else if toast.type === 'info'}
-          <Info class="h-3.5 w-3.5 shrink-0 text-[var(--wf-fg-muted)]" />
+          <Info class="h-3.5 w-3.5 shrink-0 text-[var(--rg-fg-muted)]" />
         {:else}
-          <CheckCircle class="h-3.5 w-3.5 shrink-0 text-[var(--wf-accent)]" />
+          <CheckCircle class="h-3.5 w-3.5 shrink-0 text-[var(--rg-accent)]" />
         {/if}
         <span>{toast.message}</span>
       </div>

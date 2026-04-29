@@ -21,10 +21,10 @@ const { renderMarkdown, toggleTaskAtLine, isMarkdownPath, stripFrontMatter } = a
 );
 
 describe('renderMarkdown — source-line stamping', () => {
-  it('stamps data-wf-md-src-line on paragraphs in source order', () => {
+  it('stamps data-rg-md-src-line on paragraphs in source order', () => {
     const src = 'first\n\nsecond\n\nthird';
     const html = renderMarkdown(src);
-    const matches = [...html.matchAll(/<p data-wf-md-src-line="(\d+)">(.+?)<\/p>/g)];
+    const matches = [...html.matchAll(/<p data-rg-md-src-line="(\d+)">(.+?)<\/p>/g)];
     expect(matches).toHaveLength(3);
     const lines = matches.map((m) => Number(m[1]));
     // Each paragraph starts at a distinct line index; monotonically non-decreasing.
@@ -35,8 +35,8 @@ describe('renderMarkdown — source-line stamping', () => {
   it('stamps headings with id (slug) and src line', () => {
     const src = '# Hello World\n\n## Sub Heading';
     const html = renderMarkdown(src);
-    expect(html).toMatch(/<h1 id="hello-world" data-wf-md-src-line="0">/);
-    expect(html).toMatch(/<h2 id="sub-heading" data-wf-md-src-line="2">/);
+    expect(html).toMatch(/<h1 id="hello-world" data-rg-md-src-line="0">/);
+    expect(html).toMatch(/<h2 id="sub-heading" data-rg-md-src-line="2">/);
   });
 
   it('disambiguates duplicate heading slugs with counter suffix', () => {
@@ -49,14 +49,14 @@ describe('renderMarkdown — source-line stamping', () => {
   it('stamps fenced code blocks', () => {
     const src = '```js\nconsole.log(1);\n```';
     const html = renderMarkdown(src);
-    expect(html).toMatch(/<pre[^>]*data-wf-md-src-line="0"/);
+    expect(html).toMatch(/<pre[^>]*data-rg-md-src-line="0"/);
   });
 
   it('stamps blockquotes and lists', () => {
     const src = '> quote\n\n- item a\n- item b';
     const html = renderMarkdown(src);
-    expect(html).toMatch(/<blockquote data-wf-md-src-line="\d+">/);
-    expect(html).toMatch(/<ul data-wf-md-src-line="\d+">/);
+    expect(html).toMatch(/<blockquote data-rg-md-src-line="\d+">/);
+    expect(html).toMatch(/<ul data-rg-md-src-line="\d+">/);
   });
 
   it('handles duplicate paragraph text without mismapping lines', () => {
@@ -64,7 +64,7 @@ describe('renderMarkdown — source-line stamping', () => {
     // the consumed-line FIFO counter makes this deterministic.
     const src = 'hi\n\nhi\n\nhi';
     const html = renderMarkdown(src);
-    const lines = [...html.matchAll(/<p data-wf-md-src-line="(\d+)">/g)].map((m) =>
+    const lines = [...html.matchAll(/<p data-rg-md-src-line="(\d+)">/g)].map((m) =>
       Number(m[1])
     );
     // Three separate lines, strictly increasing.
@@ -176,10 +176,10 @@ describe('stripFrontMatter', () => {
   it('keeps source line numbers stable downstream (replaces with blank lines)', () => {
     // Front-matter occupies lines 0..3 (4 lines incl. closing ---).
     // Lines 4 (blank) and 5 (paragraph "hello") follow.
-    // The paragraph's data-wf-md-src-line should still be 5, not 1.
+    // The paragraph's data-rg-md-src-line should still be 5, not 1.
     const src = '---\ntitle: Foo\nx: 1\n---\n\nhello';
     const html = renderMarkdown(src);
-    const m = html.match(/<p data-wf-md-src-line="(\d+)">hello<\/p>/);
+    const m = html.match(/<p data-rg-md-src-line="(\d+)">hello<\/p>/);
     expect(m).not.toBeNull();
     expect(Number(m?.[1])).toBe(5);
   });

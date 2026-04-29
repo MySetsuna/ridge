@@ -9,7 +9,7 @@
 //
 // For 'horizontal-tabs': pure CSS overflow-x:auto with the host bounded by its parent.
 // Wheel events are intercepted so vertical scroll → horizontal pan (no Shift needed).
-// Scrollbar is hidden via .wf-htabs CSS class (app.css).
+// Scrollbar is hidden via .rg-htabs CSS class (app.css).
 
 import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
 import 'overlayscrollbars/overlayscrollbars.css';
@@ -34,7 +34,7 @@ export interface OverlayScrollOptions {
 const PRESETS: Record<OverlayScrollPreset, PartialOptions> = {
 	sidebar: {
 		scrollbars: {
-			theme: 'wf-os-theme',
+			theme: 'rg-os-theme',
 			autoHide: 'leave',
 			autoHideDelay: 600,
 			dragScroll: true,
@@ -47,7 +47,7 @@ const PRESETS: Record<OverlayScrollPreset, PartialOptions> = {
 	},
 	'horizontal-tabs': {
 		scrollbars: {
-			theme: 'wf-os-theme',
+			theme: 'rg-os-theme',
 			autoHide: 'leave',
 			autoHideDelay: 800,
 			dragScroll: true,
@@ -135,7 +135,7 @@ export function overlayScroll(
 	// For horizontal-tabs: use pure CSS, no OverlayScrollbars
 	if (preset === 'horizontal-tabs') {
 		applyHTabsLayout(node);
-		node.classList.add('wf-htabs');
+		node.classList.add('rg-htabs');
 
 		// Intercept wheel events: vertical scroll → horizontal pan (no Shift needed).
 		// passive:false required so preventDefault() actually stops native page scroll.
@@ -152,7 +152,7 @@ export function overlayScroll(
 			},
 			destroy() {
 				for (const k of LAYOUT_PROPS) node.style[k] = '';
-				node.classList.remove('wf-htabs');
+				node.classList.remove('rg-htabs');
 				node.removeEventListener('wheel', onWheel);
 			},
 		};

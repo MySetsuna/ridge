@@ -5,7 +5,7 @@
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
 </script>
 
-<div class="min-h-screen min-h-[100dvh] bg-[var(--wf-bg)] text-[var(--wf-fg)] antialiased">
+<div class="min-h-screen min-h-[100dvh] bg-[var(--rg-bg)] text-[var(--rg-fg)] antialiased">
   <slot />
 </div>
 

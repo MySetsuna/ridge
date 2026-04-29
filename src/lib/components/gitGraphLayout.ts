@@ -70,6 +70,16 @@ export function colorForHash(hash: string): string {
 }
 
 /**
+ * 颜色按 lane 索引（绘图列）分配 —— 同一 lane 上的 commit / 垂直线共享一种颜色。
+ * 视觉上等同于"一条分支一种颜色"：lane 0 是 HEAD 主线，新建 lane 的颜色随 PALETTE
+ * 循环。Lane GC 后再分配复用 index 时会撞色，这是 lane-based 着色的内在限制；
+ * 与 VS Code GitGraph 插件的视觉表现一致，可接受。
+ */
+export function colorForLane(laneIndex: number): string {
+  return PALETTE[laneIndex % PALETTE.length];
+}
+
+/**
  * Compute the lane layout for `commits` (newest-first). Returns SVG
  * primitives the caller can drop into a `<g>` element. Pure function for
  * easy testing — no DOM, no $state, no IO.
@@ -82,12 +92,22 @@ export function colorForHash(hash: string): string {
  */
 export function layoutGraph(
   commits: GraphCommit[],
-  options: { dx?: number; dy?: number; padX?: number; padY?: number } = {}
+  options: {
+    dx?: number;
+    dy?: number;
+    padX?: number;
+    padY?: number;
+    /** 当某 commit 被展开（GitGraph inline 详情）时，在该 commit 下方多腾出的高度。 */
+    expandedHash?: string;
+    expandedExtra?: number;
+  } = {}
 ): LayoutOutput {
   const dx = options.dx ?? DEFAULT_DX;
   const dy = options.dy ?? DEFAULT_DY;
   const padX = options.padX ?? DEFAULT_PAD_X;
   const padY = options.padY ?? DEFAULT_PAD_Y;
+  const expandedHash = options.expandedHash;
+  const expandedExtra = Math.max(0, options.expandedExtra ?? 0);
 
   // `lanes[i]` = hash currently occupying lane i (or null = free slot).
   const lanes: (string | null)[] = [];
@@ -111,11 +131,15 @@ export function layoutGraph(
     return padX + i * dx;
   }
 
+  // 累积 cy：每行高度 = dy（+ 该 commit 是 expandedHash 时再加 expandedExtra）。
+  // 这样 inline 详情面板撑高的 row 把后续 dot 自然下推，dot 与 commit-meta 永远对齐。
+  let cy = padY;
+  let lastDotCy = padY;
   for (let row = 0; row < commits.length; row++) {
     const c = commits[row];
-    const cy = padY + row * dy;
+    const thisRowHeight = dy + (c.hash === expandedHash ? expandedExtra : 0);
     const myLane = laneIndexFor(c.hash);
-    const myColor = colorForHash(c.hash);
+    const myColor = colorForLane(myLane);
     maxLane = Math.max(maxLane, myLane);
 
     // Verticals for OTHER lanes that survive unchanged into the next row
@@ -125,12 +149,13 @@ export function layoutGraph(
       if (lanes[i] === null) continue;
       const x = laneX(i);
       lines.push({
-        d: `M ${x} ${cy} L ${x} ${cy + dy}`,
-        color: colorForHash(lanes[i] as string),
+        d: `M ${x} ${cy} L ${x} ${cy + thisRowHeight}`,
+        color: colorForLane(i),
       });
     }
 
     dots.push({ hash: c.hash, cx: laneX(myLane), cy, color: myColor });
+    lastDotCy = cy;
 
     // Continuation: replace my lane with first parent.
     const [primary, ...others] = c.parents;
@@ -139,7 +164,7 @@ export function layoutGraph(
     if (primary) {
       const x = laneX(myLane);
       lines.push({
-        d: `M ${x} ${cy} L ${x} ${cy + dy}`,
+        d: `M ${x} ${cy} L ${x} ${cy + thisRowHeight}`,
         color: myColor,
       });
     }
@@ -152,10 +177,10 @@ export function layoutGraph(
       if (pLane === myLane) continue;
       const x0 = laneX(myLane);
       const x1 = laneX(pLane);
-      const yMid = cy + dy / 2;
+      const yMid = cy + thisRowHeight / 2;
       lines.push({
-        d: `M ${x0} ${cy} C ${x0} ${yMid}, ${x1} ${yMid}, ${x1} ${cy + dy}`,
-        color: colorForHash(p),
+        d: `M ${x0} ${cy} C ${x0} ${yMid}, ${x1} ${yMid}, ${x1} ${cy + thisRowHeight}`,
+        color: colorForLane(pLane),
       });
       maxLane = Math.max(maxLane, pLane);
     }
@@ -165,13 +190,12 @@ export function layoutGraph(
     while (lanes.length > 0 && lanes[lanes.length - 1] === null) {
       lanes.pop();
     }
+
+    cy += thisRowHeight;
   }
 
   const width = padX * 2 + (maxLane + 1) * dx;
-  // Bottom edge needs to clear `padY + (n-1)*dy + dotRadius`. Adding
-  // padY again gives symmetric top/bottom padding around the dot column,
-  // which keeps SVG layout robust even if `padY` is later pushed past
-  // `dy/2`.
-  const totalHeight = commits.length === 0 ? 0 : padY * 2 + (commits.length - 1) * dy;
+  // 对称 padding：底边离最后一颗 dot 仍然 padY，避免被裁切。
+  const totalHeight = commits.length === 0 ? 0 : lastDotCy + padY;
   return { dots, lines, width, rowHeight: dy, totalHeight };
 }

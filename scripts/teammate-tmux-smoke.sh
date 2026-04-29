@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Quick checks that the tmux shim matches what Claude Code TmuxBackend expects.
-# Prerequisites: WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN; tmux shim on PATH.
+# Prerequisites: RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN; tmux shim on PATH.
 set -euo pipefail
-: "${WIND_TEAMMATE_URL:?set WIND_TEAMMATE_URL}"
-: "${WIND_TEAMMATE_TOKEN:?set WIND_TEAMMATE_TOKEN}"
+: "${RIDGE_TEAMMATE_URL:?set RIDGE_TEAMMATE_URL}"
+: "${RIDGE_TEAMMATE_TOKEN:?set RIDGE_TEAMMATE_TOKEN}"
 echo "== tmux -V =="
 tmux -V
 echo ""

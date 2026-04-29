@@ -64,6 +64,9 @@ interface SplitterSnapshot {
   ratios: number[];
   isPrimary: boolean;
   dragStart: { x: number; y: number };
+  /** mousedown 时 dragStart 沿轴坐标 - splitter 视觉中心沿轴坐标。
+      用于吸附时的 effectivePointer 偏移补偿，避免 A 被吸附到偏离 B 中线的位置。 */
+  mousedownOffsetAxis: number;
 }
 
 export type SplitResizeUiState =
@@ -116,22 +119,51 @@ export const SNAP_THRESHOLD_PX = 10;
 
 /**
  * 同向兄弟分隔线的垂直距离吸附阈值。
- * 当拖动中的分隔线 A 距离另一条平行分隔线 B 的垂直距离 ≤ 此值时：
- *   - 视觉上 A 自动吸附到 B 的中线位置；
- *   - 且若指针沿线方向距离 B 的端点（与正交线交接处）≤ `INTERSECTION_PROXIMITY_PX`，
+ * 当拖动中的分隔线 A 与另一条同向分隔线 B 的中线（沿 A 的拖动轴方向）距离 ≤ 此值时：
+ *   - 视觉上 A 自动吸附到 B 的中线位置（真实改动 ratio，松手后定格）；
+ *   - 且若鼠标距离 BC 交点的两条 axis 距离都 ≤ `INTERSECTION_PROXIMITY_PX`，
  *     则触发 A、B 联动拖动。
  */
-export const SAME_AXIS_ATTRACT_PX = 15;
+export const SAME_AXIS_ATTRACT_PX = 20;
 
-/** 端点联动触发距离：鼠标沿线方向距离端点 ≤ 此值时，同向兄弟被纳入联动 */
-const INTERSECTION_PROXIMITY_PX = 10;
+/** 联动 mousedown 触发距离：鼠标距 BC/ABC 交点欧几里得距离 ≤ 此值时，同向兄弟被纳入联动（圆形热区） */
+export const INTERSECTION_PROXIMITY_PX = 15;
 
 /**
- * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"端点完全对齐"，
- * 才可能触发联动。仅用于联动 gating，不影响 15px 的视觉吸附范围。
- * 取 1px 以容忍 getBoundingClientRect 的亚像素误差。
+ * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"AB 中线对齐"，
+ * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致（15），让"联动范围 = 以 BC 端点
+ * 为圆心、半径 15px 的圆"成立 —— 不再因 perpDistance > 5 提前 reject 圆内的 mousedown。
  */
-const SAME_AXIS_ALIGN_EPSILON_PX = 1;
+export const SAME_AXIS_ALIGN_EPSILON_PX = 15;
+
+/**
+ * 判定鼠标是否落在某个同向兄弟 B 的"BC 交点 15px 圆形热区"内。
+ * 触发条件 (用于 mousedown 联动 gating + hover 高亮)：
+ *   - perpDistance(primary, sibling) ≤ SAME_AXIS_ALIGN_EPSILON_PX (中线对齐)
+ *   - 鼠标到 B 离鼠标更近端点的欧几里得距离 ≤ INTERSECTION_PROXIMITY_PX
+ */
+export function pointerInCoupleZone(
+  primary: SplitterRef,
+  sibling: SplitterRef,
+  pointer: { x: number; y: number }
+): boolean {
+  const primaryCenter = getSplitterScreenCenter(primary);
+  const siblingCenter = getSplitterScreenCenter(sibling);
+  const endpoints = getSplitterLineEndpoints(sibling);
+  if (primaryCenter == null || siblingCenter == null || !endpoints) return false;
+  const perpDistance = Math.abs(siblingCenter - primaryCenter);
+  if (perpDistance > SAME_AXIS_ALIGN_EPSILON_PX) return false;
+  const onAxis = primary.axis === 'x' ? pointer.x : pointer.y;
+  const alongLine = primary.axis === 'x' ? pointer.y : pointer.x;
+  const dxOnAxis = siblingCenter - onAxis;
+  const nearestEndpoint =
+    Math.abs(endpoints.start - alongLine) < Math.abs(endpoints.end - alongLine)
+      ? endpoints.start
+      : endpoints.end;
+  const dyAlongLine = nearestEndpoint - alongLine;
+  return Math.sqrt(dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine) <=
+    INTERSECTION_PROXIMITY_PX;
+}
 
 /**
  * Issue 3: how far the primary must travel along its own axis before same-axis
@@ -281,7 +313,7 @@ export interface SameAxisCandidate {
 export function getSplitterScreenCenter(ref: SplitterRef): number | null {
   if (typeof document === 'undefined') return null;
   const splitRoot = document.querySelector<HTMLElement>(
-    `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
+    `.rg-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
   );
   if (!splitRoot) return null;
   const splitters = Array.from(
@@ -307,7 +339,7 @@ export function getSplitterLineEndpoints(
 ): { start: number; end: number } | null {
   if (typeof document === 'undefined') return null;
   const splitRoot = document.querySelector<HTMLElement>(
-    `.wf-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
+    `.rg-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
   );
   if (!splitRoot) return null;
   const splitters = Array.from(
@@ -333,7 +365,7 @@ export function findSameAxisRefs(
   const primaryCenter = getSplitterScreenCenter(primary);
   if (primaryCenter == null) return [];
   const allSplitters = Array.from(
-    document.querySelectorAll<HTMLElement>('.wf-split > .splitpanes__splitter')
+    document.querySelectorAll<HTMLElement>('.rg-split > .splitpanes__splitter')
   );
   const candidates: SameAxisCandidate[] = [];
   for (const splitter of allSplitters) {
@@ -427,9 +459,19 @@ function applyRatioUpdates(
   return next;
 }
 
-function setGlobalSplitResizeCursor(enabled: boolean) {
+/** 拖动 / hover-junction 期间锁定 body cursor，使其不随子元素 hover 变化。
+ *   - 'move'：全方向（4-way / orthogonal 联动）
+ *   - 'col' / 'row'：双方向（仅沿主轴的 same-axis 联动或单独 resize）
+ *   - null：释放，恢复正常 hover 行为
+ *
+ * 三个模式互斥：toggle 一个为 true 时其他两个会被关掉。
+ */
+type SplitResizeCursorMode = 'move' | 'col' | 'row' | null;
+function setGlobalSplitResizeCursor(mode: SplitResizeCursorMode) {
   if (typeof document === 'undefined') return;
-  document.body.classList.toggle('wf-resize-junction-cursor', enabled);
+  document.body.classList.toggle('rg-resize-junction-cursor', mode === 'move');
+  document.body.classList.toggle('rg-resize-col-cursor', mode === 'col');
+  document.body.classList.toggle('rg-resize-row-cursor', mode === 'row');
 }
 
 export function queueSplitResizeJunction(
@@ -440,35 +482,47 @@ export function queueSplitResizeJunction(
   snapState: JunctionSnapState | null = null
 ) {
   clearSplitHoverTimer();
-  const allRefs = dedupeRefs([primary, ...orthogonals, ...(sameAxisCandidates ?? [])]);
-  const [first, ...rest] = allRefs;
-  if (!first) return;
+  // 去重但保持类型分离：先前实现 dedupeRefs([primary, ...orthos, ...sameAxis])
+  // 然后 [first, ...rest] 把 sameAxis 也塞进 ui.orthogonals，导致
+  // startSplitResizeDrag 中 refs = [primary, ...ui.orthogonals] 把同向兄弟
+  // 无条件加入联动，绕过圆形 gating。这里只去掉 primary 的重复引用。
+  const refKey = (r: SplitterRef) =>
+    `${pathKey(r.splitPath)}:${r.splitterIndex}:${r.axis}`;
+  const primaryKey = refKey(primary);
+  const orthos = dedupeRefs(orthogonals).filter(
+    (r) => refKey(r) !== primaryKey
+  );
+  const sameAxis = dedupeRefs(sameAxisCandidates).filter(
+    (r) => refKey(r) !== primaryKey && !orthos.some((o) => refKey(o) === refKey(r))
+  );
   splitResizeUiState.set({
     phase: 'pending',
-    primary: first,
-    orthogonals: rest,
-    sameAxisCandidates,
+    primary,
+    orthogonals: orthos,
+    sameAxisCandidates: sameAxis,
     pointer,
     snapState,
   });
   splitHoverTimer = setTimeout(() => {
     splitResizeUiState.set({
       phase: 'junction',
-      primary: first,
-      orthogonals: rest,
-      sameAxisCandidates,
+      primary,
+      orthogonals: orthos,
+      sameAxisCandidates: sameAxis,
       pointer,
       snapState,
     });
-    setGlobalSplitResizeCursor(true);
+    // 仅在存在 orthogonal（4 方向联动）时切到 move cursor。
+    // sameAxis-only 联动仍是沿主轴双向，保持 splitter 默认 col/row-resize。
+    if (orthos.length > 0) setGlobalSplitResizeCursor('move');
   }, HOVER_DEBOUNCE_MS);
 }
 
 export function clearSplitResizeUi() {
   clearSplitHoverTimer();
-  setGlobalSplitResizeCursor(false);
+  setGlobalSplitResizeCursor(null);
   if (typeof document !== 'undefined') {
-    document.body.classList.remove('wf-resize-4way');
+    document.body.classList.remove('rg-resize-4way');
   }
   splitResizeUiState.set({ phase: 'idle' });
 }
@@ -488,13 +542,15 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
-  // Gate same-axis coupling on TWO conditions:
-  //   (a) 端点完全对齐：候选兄弟 B 与主线 A 的屏幕中线差 ≤ SAME_AXIS_ALIGN_EPSILON_PX
-  //       （B 的端点恰好落在 A 的延长线上，即所谓"端点完全对齐"）；
-  //   (b) 鼠标在另一方向（沿线方向，垂直于拖动轴）距离 B 的端点 ≤ INTERSECTION_PROXIMITY_PX。
+  // 同向兄弟联动 gating（圆形 15px 区域）：
+  //   (a) 端点完全对齐：B 与 A 的屏幕中线差 ≤ SAME_AXIS_ALIGN_EPSILON_PX
+  //       （B 的端点恰好落在 A 的延长线上）；
+  //   (b) 鼠标到 BC 交点的欧几里得距离 ≤ INTERSECTION_PROXIMITY_PX
+  //       （以 BC 交点为圆心、半径 15px 的圆形热区，不分横纵）。
   // 两者同时满足，B 才被纳入联动；否则保留为 attractor（仅视觉吸附，不联动）。
   const pointerAlongLine =
     ui.primary.axis === 'x' ? pointer.y : pointer.x;
+  const pointerOnAxis = ui.primary.axis === 'x' ? pointer.x : pointer.y;
   const primaryCenter = getSplitterScreenCenter(ui.primary);
   const coupledSameAxis: SplitterRef[] = [];
   const attractOnlySameAxis: SplitterRef[] = [];
@@ -506,13 +562,18 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
       continue;
     }
     const perpDistance = Math.abs(siblingCenter - primaryCenter);
-    const distToEndpoint = Math.min(
-      Math.abs(endpoints.start - pointerAlongLine),
+    // BC 交点 = (B 沿轴方向中线坐标, B 离鼠标更近的端点沿线方向坐标)
+    const dxOnAxis = siblingCenter - pointerOnAxis;
+    const nearestEndpoint =
+      Math.abs(endpoints.start - pointerAlongLine) <
       Math.abs(endpoints.end - pointerAlongLine)
-    );
+        ? endpoints.start
+        : endpoints.end;
+    const dyAlongLine = nearestEndpoint - pointerAlongLine;
+    const distToBC = Math.sqrt(dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine);
     if (
       perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
-      distToEndpoint <= INTERSECTION_PROXIMITY_PX
+      distToBC <= INTERSECTION_PROXIMITY_PX
     ) {
       coupledSameAxis.push(sibling);
     } else {
@@ -523,6 +584,45 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...coupledSameAxis]);
   }
 
+  // 4-way junction 全方向跟随：每条 orthogonal C 也可能有自己的同向兄弟 D。
+  // 当 D 与 C 中线对齐 (≤1px) 且鼠标到 CD 端点（即 ABCD 交汇点）的欧几里得
+  // 距离 ≤ INTERSECTION_PROXIMITY_PX 时，D 同样加入联动。
+  const coupledOrthoSiblings: SplitterRef[] = [];
+  for (const ortho of ui.orthogonals) {
+    const orthoCenter = getSplitterScreenCenter(ortho);
+    if (orthoCenter == null) continue;
+    // ortho.axis ⊥ primary.axis，所以"沿 ortho 拖动轴" = "沿 primary 沿线方向"
+    const orthoPointerOnAxis = ortho.axis === 'x' ? pointer.x : pointer.y;
+    const orthoPointerAlongLine = ortho.axis === 'x' ? pointer.y : pointer.x;
+    const siblings = findSameAxisRefs(ortho, SAME_AXIS_ATTRACT_PX);
+    for (const candidate of siblings) {
+      const sibling = candidate.ref;
+      const endpoints = getSplitterLineEndpoints(sibling);
+      const siblingCenter = getSplitterScreenCenter(sibling);
+      if (!endpoints || siblingCenter == null) continue;
+      const perpDistance = Math.abs(siblingCenter - orthoCenter);
+      const dxOnAxis = siblingCenter - orthoPointerOnAxis;
+      const nearestEndpoint =
+        Math.abs(endpoints.start - orthoPointerAlongLine) <
+        Math.abs(endpoints.end - orthoPointerAlongLine)
+          ? endpoints.start
+          : endpoints.end;
+      const dyAlongLine = nearestEndpoint - orthoPointerAlongLine;
+      const distToCD = Math.sqrt(
+        dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine
+      );
+      if (
+        perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
+        distToCD <= INTERSECTION_PROXIMITY_PX
+      ) {
+        coupledOrthoSiblings.push(sibling);
+      }
+    }
+  }
+  if (coupledOrthoSiblings.length > 0) {
+    refs = dedupeRefs([...refs, ...coupledOrthoSiblings]);
+  }
+
   const snapshots: SplitterSnapshot[] = [];
   for (let i = 0; i < refs.length; i += 1) {
     const ref = refs[i];
@@ -531,7 +631,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     let basisPx = ref.basisPx;
     if (typeof document !== 'undefined') {
       const splitRoot = document.querySelector(
-        `.wf-split[data-split-path="${pathKey(
+        `.rg-split[data-split-path="${pathKey(
           ref.splitPath
         )}"][data-split-axis="${ref.axis}"]`
       ) as HTMLElement;
@@ -542,11 +642,18 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
         );
       }
     }
+    // 计算 mousedown 时 pointer 相对 splitter 视觉中心的偏移（沿轴方向）。
+    // hit area 11px 但 visual line 仅 1px，鼠标可能偏 ±5px。
+    const splitterCenter = getSplitterScreenCenter(ref);
+    const dragStartAxis = ref.axis === 'x' ? pointer.x : pointer.y;
+    const mousedownOffsetAxis =
+      splitterCenter != null ? dragStartAxis - splitterCenter : 0;
     snapshots.push({
       ref: { ...ref, basisPx },
       ratios: split.ratios.slice(),
       isPrimary: i === 0,
       dragStart: pointer,
+      mousedownOffsetAxis,
     });
   }
   if (!snapshots.length) return;
@@ -559,9 +666,22 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     snapState: ui.snapState,
     sameAxisAttractors: attractOnlySameAxis,
   });
-  setGlobalSplitResizeCursor(true);
+  // 拖动期间强制锁定 cursor，使其不随鼠标移出 splitter / 经过其他元素而变化：
+  //   - 含正交联动 → move 全方向
+  //   - 仅同主轴联动或单独 resize → col-resize / row-resize 双方向
+  // 这一帧立即生效，由 finishSplitResizeDrag 在松手时清除。
+  const hasOrthogonalCoupled = snapshots.some(
+    (s) => s.ref.axis !== ui.primary.axis
+  );
+  setGlobalSplitResizeCursor(
+    hasOrthogonalCoupled
+      ? 'move'
+      : ui.primary.axis === 'x'
+        ? 'col'
+        : 'row'
+  );
   if (is4WaySnap && typeof document !== 'undefined') {
-    document.body.classList.add('wf-resize-4way');
+    document.body.classList.add('rg-resize-4way');
   }
 }
 
@@ -593,37 +713,43 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
     }
   }
 
-  // 视觉吸附：拖动过程中，若指针在"另一方向"（沿线方向，与拖动轴垂直）上
-  // 距离某个 attractor 的端点（与正交线交接处）≤ SAME_AXIS_ATTRACT_PX，则把
-  // 传入 updatesFromSnapshots 的 pointer 沿拖动轴替换为 attractor 的中线坐标，
-  // 从而让当前拖动的线段视觉上自动吸附到该端点所在的延长线位置。
-  // 保留原始 pointer 写入 state，确保下一帧能正确判断是否已移出吸附范围。
+  // 视觉吸附：用户语义"沿 C 方向距 BC 交点 ≤ SAME_AXIS_ATTRACT_PX 时 A 吸附"——
+  // "沿 C 方向" 即沿 A 的拖动轴 (perp to A's line)，所以触发条件是 A 拖动后中线
+  // (= pointer 沿轴位置) 距 B 中线 ≤ SAME_AXIS_ATTRACT_PX，与沿线方向无关。
+  //
+  // 偏移补偿：updatesFromSnapshots 计算 deltaPx = effectivePointer.axis - dragStart.axis，
+  // 而 dragStart.axis 是 mousedown 时的 pointer 坐标，可能偏离 splitter 视觉中心
+  // 多达 ±5px (RgSplitter hit area 11px / 视觉线 1px)。若直接用 B.center 替换，
+  // A 最终位置 = A.start_center + (B.center - dragStart.axis) = B.center - offset，
+  // 导致吸附后 A 偏离 B 中线 offset 像素 (用户报告"基本向上和向左偏")。
+  // 修复：effectivePointer.axis = B.center + offset，让 deltaPx = perpDistance，
+  // A 中线精确落在 B 中线上。
   let effectivePointer = pointer;
   if (primary && ui.sameAxisAttractors.length > 0) {
     const axis = primary.ref.axis;
-    const pointerAlongLine = axis === 'x' ? pointer.y : pointer.x;
+    const pointerOnAxis = axis === 'x' ? pointer.x : pointer.y;
     let bestCenter: number | null = null;
     let bestDist = SAME_AXIS_ATTRACT_PX + 1;
     for (const attractor of ui.sameAxisAttractors) {
-      const endpoints = getSplitterLineEndpoints(attractor);
-      if (!endpoints) continue;
-      const distToEndpoint = Math.min(
-        Math.abs(endpoints.start - pointerAlongLine),
-        Math.abs(endpoints.end - pointerAlongLine)
-      );
-      if (distToEndpoint > SAME_AXIS_ATTRACT_PX) continue;
       const bCenter = getSplitterScreenCenter(attractor);
       if (bCenter == null) continue;
-      if (distToEndpoint < bestDist) {
-        bestDist = distToEndpoint;
+      const dxOnAxis = Math.abs(bCenter - pointerOnAxis);
+      if (dxOnAxis > SAME_AXIS_ATTRACT_PX) continue;
+      if (dxOnAxis < bestDist) {
+        bestDist = dxOnAxis;
         bestCenter = bCenter;
       }
     }
     if (bestCenter != null) {
+      // 用 mousedown 时记录的偏移补偿 effectivePointer，使 deltaPx 严格等于
+      // perpDistance(A, B)。snapshot 在 startSplitResizeDrag 时保存的
+      // mousedownOffsetAxis 就是 dragStart.axis - A.center_at_mousedown，
+      // 此时 A 还未拖动，是真正的起始中心。
+      const effectiveAxisCoord = bestCenter + primary.mousedownOffsetAxis;
       effectivePointer =
         axis === 'x'
-          ? { x: bestCenter, y: pointer.y }
-          : { x: pointer.x, y: bestCenter };
+          ? { x: effectiveAxisCoord, y: pointer.y }
+          : { x: pointer.x, y: effectiveAxisCoord };
     }
   }
 
@@ -641,9 +767,9 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
 export function finishSplitResizeDrag(): SplitRatioUpdate[] {
   const ui = get(splitResizeUiState);
   clearSplitHoverTimer();
-  setGlobalSplitResizeCursor(false);
+  setGlobalSplitResizeCursor(null);
   if (typeof document !== 'undefined') {
-    document.body.classList.remove('wf-resize-4way');
+    document.body.classList.remove('rg-resize-4way');
   }
   splitResizeUiState.set({ phase: 'idle' });
   if (ui.phase !== 'drag') return [];
@@ -672,12 +798,26 @@ function reconcileActivePaneId(layout: PaneNode) {
   if (!cur || !ids.includes(cur)) activePaneId.set(ids[0]);
 }
 
+/**
+ * 比较两棵 pane 树是否结构等价 —— 用于跳过"layout 变化但实际无差异"的 store
+ * 触发。split / dock / resize 等操作回填时如果布局未变（例如：split 操作被取消
+ * 后回拉一次最新状态），不应让 paneTreeStore 改 reference，否则所有订阅者
+ * （SplitContainer / Pane / Explorer）都被迫重算 + xterm fit + Monaco reflow。
+ * 用 JSON 串作为指纹是足够的：树深度有限，序列化 cost 远小于无谓的 DOM 重排。
+ */
+function paneLayoutsEquivalent(a: PaneNode, b: PaneNode): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export async function syncPaneLayoutFromBackend() {
   if (!isTauri()) return;
   let layout: PaneNode;
   try {
     layout = await invoke<PaneNode>('get_pane_layout');
-    paneTreeStore.set(layout);
+    const current = get(paneTreeStore);
+    if (!paneLayoutsEquivalent(current, layout)) {
+      paneTreeStore.set(layout);
+    }
     reconcileActivePaneId(layout);
   } catch (e) {
     console.error('syncPaneLayoutFromBackend', e);
@@ -962,7 +1102,7 @@ export async function renameWorkspace(workspaceId: string, name: string) {
 
 // ============ 已保存工作区相关 ============
 
-// Pane cwds ARE preserved in the .wind format: the backend PaneTree struct
+// Pane cwds ARE preserved in the .ridge format: the backend PaneTree struct
 // serialises Pane.cwd (Option<PathBuf>) into JSON, so openWorkspaceFromFile
 // → refreshWorkspaces → get_pane_layout → extractCwdsFromLayout restores them.
 // `SavedWorkspace.paneCwds` below is kept for future use but is currently
@@ -980,8 +1120,13 @@ export interface SavedWorkspace {
 /** Keyed by "${workspaceId}:${paneId}" → cwd string. */
 export const paneCwdStore = writable<Record<string, string>>({});
 
-/** Keyed by paneId → OSC title string reported by the shell/process via \x1b]0;...\x07. */
+/** Keyed by paneId → 当前展示标题（合并后）。优先级：teammate > OSC > 进程名。 */
 export const terminalTitles = writable<Record<string, string>>({});
+
+/** Keyed by paneId → 由 OSC 0/1/2 序列报告的标题（shell PS1 / Claude Code 等）。
+ *  Pane.svelte 订阅 `pane-title-changed-...` 事件后写入。值非空时覆盖 polling
+ *  得到的进程名。 */
+export const paneOscTitleStore = writable<Record<string, string>>({});
 
 /** Keyed by paneId → foreground process name (polled every 1.5s from backend). */
 export const paneForegroundProcessStore = writable<Record<string, string>>({});
@@ -989,7 +1134,7 @@ export const paneForegroundProcessStore = writable<Record<string, string>>({});
 /** Per-workspace save info: `{ workspaceId → { file_path, name } }`. Populated by
  *  `get_workspace_save_info` / `list_workspace_save_info`. Empty `file_path` means
  *  the workspace has never been saved (UI shows "Save" button); present `file_path`
- *  means it's associated with a .wind file (UI shows "Delete" button). */
+ *  means it's associated with a .ridge file (UI shows "Delete" button). */
 export interface WorkspaceSaveInfo {
   workspace_id: string;
   file_path?: string | null;
@@ -1055,7 +1200,7 @@ export interface StartupContext {
   wind_file_in_cwd: string | null;
 }
 
-/** 启动上下文：进程 cwd + cwd 顶层第一个 .wind 文件（若存在）。 */
+/** 启动上下文：进程 cwd + cwd 顶层第一个 .ridge 文件（若存在）。 */
 export async function getStartupContext(): Promise<StartupContext | null> {
   if (!isTauri()) return null;
   try {
@@ -1217,11 +1362,16 @@ export async function loadSavedWorkspaces() {
   }
 }
 
-/** 保存当前工作区 */
+/** 保存当前工作区。优先使用工作区已命名的名字作为 history 条目名 / .ridge 文件名；
+ *  仅当工作区未命名时由后端 fallback 到时间戳。这样 cwd / 布局变更触发的自动 checkpoint
+ *  会按用户给的工作区名归档，而不是堆出一串时间戳。 */
 export async function saveCurrentWorkspace() {
   if (!isTauri()) return;
   try {
-    await invoke('save_workspace');
+    const activeId = get(activeWorkspaceId);
+    const names = get(workspaceNames);
+    const name = activeId ? names[activeId]?.trim() : '';
+    await invoke('save_workspace', name ? { name } : {});
     await loadSavedWorkspaces();
   } catch (e) {
     console.error('saveCurrentWorkspace', e);

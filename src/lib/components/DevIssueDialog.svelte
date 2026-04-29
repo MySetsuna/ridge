@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * 仅开发模式：捕获 window error / unhandledrejection，Next.js 风格浮层。
-   * Rust PTY 日志见运行 wind 的终端中 [wind][pty] 前缀；Windows 崩溃可对照事件查看器。
+   * Rust PTY 日志见运行 ridge 的终端中 [ridge][pty] 前缀；Windows 崩溃可对照事件查看器。
    */
   import { devIssue, clearDevIssue } from '$lib/devIssue';
   import { onMount } from 'svelte';
@@ -102,7 +102,7 @@
           >
             Development
           </span>
-          <span class="text-[13px] text-zinc-500 truncate">Wind · issue overlay</span>
+          <span class="text-[13px] text-zinc-500 truncate">Ridge · issue overlay</span>
         </div>
         <button
           type="button"
@@ -140,9 +140,9 @@
           <div class="rounded-lg bg-zinc-900/80 ring-1 ring-white/[0.06] p-4 space-y-2">
             <p class="text-[12px] text-zinc-400 leading-relaxed">
               <span class="text-zinc-300 font-medium">PTY / 后端：</span>
-              查看运行 <code class="text-violet-300/90">wind</code> 或
+              查看运行 <code class="text-violet-300/90">ridge</code> 或
               <code class="text-violet-300/90">cargo tauri dev</code> 的终端输出，搜索前缀
-              <code class="text-zinc-200">[wind][pty]</code>（如
+              <code class="text-zinc-200">[ridge][pty]</code>（如
               <code class="text-zinc-200">resize_fail</code>、
               <code class="text-zinc-200">reader_eof</code>）。
             </p>
@@ -159,12 +159,12 @@
               >
                 <li>
                   打开「事件查看器」→ Windows 日志 → 应用程序，查找与崩溃时间接近的错误；来源或「故障模块」可能为
-                  <code class="text-zinc-400">wind.exe</code>、
+                  <code class="text-zinc-400">ridge.exe</code>、
                   <code class="text-zinc-400">msedgewebview2.exe</code> 或相关 DLL。
                 </li>
                 <li>
                   代码 <code class="text-zinc-400">0xc0000142</code> 常表示进程内模块初始化失败；可结合本弹窗堆栈与
-                  <code class="text-zinc-400">[wind][pty]</code> 日志判断是前端脚本错误还是原生/WebView2/PTY 路径。
+                  <code class="text-zinc-400">[ridge][pty]</code> 日志判断是前端脚本错误还是原生/WebView2/PTY 路径。
                 </li>
               </ul>
             {/if}

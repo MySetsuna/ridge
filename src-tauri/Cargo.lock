@@ -3838,6 +3838,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "ridge"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "backtrace",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "git2",
+ "glob",
+ "ignore",
+ "notify",
+ "notify-debouncer-mini",
+ "once_cell",
+ "parking_lot",
+ "portable-pty",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5881,43 +5918,6 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
-
-[[package]]
-name = "wind"
-version = "0.1.0"
-dependencies = [
- "axum",
- "backtrace",
- "base64 0.22.1",
- "chrono",
- "dirs 5.0.1",
- "git2",
- "glob",
- "ignore",
- "notify",
- "notify-debouncer-mini",
- "once_cell",
- "parking_lot",
- "portable-pty",
- "regex",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
- "walkdir",
-]
 
 [[package]]
 name = "window-vibrancy"

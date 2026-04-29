@@ -6,34 +6,108 @@
  * 紫系强调 + 深底 + Inter / JetBrains Mono
  */
 :root {
-  --wf-bg: #09090b;
-  --wf-bg-raised: #0c0c0f;
-  --wf-surface: #101014;
-  --wf-surface-2: #16161d;
-  --wf-glass: rgba(22, 22, 30, 0.65);
-  --wf-border: rgba(255, 255, 255, 0.055);
-  --wf-border-bright: rgba(255, 255, 255, 0.1);
-  --wf-fg: #ececf1;
-  --wf-fg-muted: #8b8b9a;
-  --wf-accent: #a78bfa;
-  --wf-accent-glow: rgba(167, 139, 250, 0.35);
-  --wf-term-bg: #0c0b12;
-  --wf-scrollbar: rgba(255, 255, 255, 0.1);
-  --wf-scrollbar-hover: rgba(167, 139, 250, 0.5);
-  --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  --rg-bg: #09090b;
+  --rg-bg-raised: #0c0c0f;
+  --rg-surface: #101014;
+  --rg-surface-2: #16161d;
+  --rg-glass: rgba(22, 22, 30, 0.65);
+  --rg-border: rgba(255, 255, 255, 0.055);
+  --rg-border-bright: rgba(255, 255, 255, 0.1);
+  --rg-fg: #ececf1;
+  --rg-fg-muted: #8b8b9a;
+  --rg-accent: #a78bfa;
+  --rg-accent-glow: rgba(167, 139, 250, 0.35);
+  --rg-term-bg: #0c0b12;
+  --rg-scrollbar: rgba(255, 255, 255, 0.1);
+  --rg-scrollbar-hover: rgba(167, 139, 250, 0.5);
+  /* Both stacks end with system color-emoji families so HTML/canvas can fall
+     back to color-emoji glyphs when the primary fonts have no glyph for an
+     emoji codepoint. Without this, Tailwind's `font-mono` class (and our own
+     mono stack) bottom out at a monochrome emoji font, then CSS `color`
+     tints the glyph along with the rest of the text — that's why pane title
+     emoji used to render in the foreground color. */
+  --font-ui: "Inter", ui-sans-serif, system-ui, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, ui-monospace, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace;
   /* Pane title bar: process name and cwd colors */
-  --wf-title-proc: #a78bfa;
-  --wf-title-sep: #4b4b5a;
-  --wf-title-cwd: #94a3b8;
+  --rg-title-proc: #a78bfa;
+  --rg-title-sep: #4b4b5a;
+  --rg-title-cwd: #94a3b8;
+}
+
+/*
+ * 主题切换：`html[data-rg-theme="<id>"]` 覆盖 :root 默认。沙土 / 草地为浅色，
+ * 土壤为暖深色。每套都覆盖完整变量表（不靠继承）以确保任何环境下颜色一致。
+ */
+
+/* ── 沙土浅色 (sand) — 暖米黄 + 沙金强调 ─────────────────────────────── */
+html[data-rg-theme="sand"] {
+  --rg-bg: #faf6ef;
+  --rg-bg-raised: #f5f0e3;
+  --rg-surface: #ede5d2;
+  --rg-surface-2: #e3d8c1;
+  --rg-glass: rgba(237, 229, 210, 0.78);
+  --rg-border: rgba(74, 60, 42, 0.12);
+  --rg-border-bright: rgba(74, 60, 42, 0.22);
+  --rg-fg: #4a3c2a;
+  --rg-fg-muted: #876b46;
+  --rg-accent: #c69a4f;
+  --rg-accent-glow: rgba(198, 154, 79, 0.32);
+  --rg-term-bg: #faf6ef;
+  --rg-scrollbar: rgba(74, 60, 42, 0.18);
+  --rg-scrollbar-hover: rgba(198, 154, 79, 0.55);
+  --rg-title-proc: #b8862c;
+  --rg-title-sep: #b39d75;
+  --rg-title-cwd: #6d563a;
+}
+
+/* ── 草地浅色 (grass) — 浅青绿 + 草绿强调 ───────────────────────────── */
+html[data-rg-theme="grass"] {
+  --rg-bg: #f3f8ee;
+  --rg-bg-raised: #e8f1de;
+  --rg-surface: #d9e9c9;
+  --rg-surface-2: #c8debc;
+  --rg-glass: rgba(217, 233, 201, 0.78);
+  --rg-border: rgba(44, 58, 37, 0.12);
+  --rg-border-bright: rgba(44, 58, 37, 0.22);
+  --rg-fg: #2c3a25;
+  --rg-fg-muted: #5d6b56;
+  --rg-accent: #6c9a3d;
+  --rg-accent-glow: rgba(108, 154, 61, 0.32);
+  --rg-term-bg: #f3f8ee;
+  --rg-scrollbar: rgba(44, 58, 37, 0.18);
+  --rg-scrollbar-hover: rgba(108, 154, 61, 0.55);
+  --rg-title-proc: #4f7a26;
+  --rg-title-sep: #97b486;
+  --rg-title-cwd: #54624c;
+}
+
+/* ── 土壤深色 (soil) — 深棕 + 锈橙强调 ────────────────────────────── */
+html[data-rg-theme="soil"] {
+  --rg-bg: #1c1410;
+  --rg-bg-raised: #241914;
+  --rg-surface: #2d201a;
+  --rg-surface-2: #382821;
+  --rg-glass: rgba(45, 32, 26, 0.7);
+  --rg-border: rgba(232, 217, 196, 0.08);
+  --rg-border-bright: rgba(232, 217, 196, 0.16);
+  --rg-fg: #e8d9c4;
+  --rg-fg-muted: #a08770;
+  --rg-accent: #d97757;
+  --rg-accent-glow: rgba(217, 119, 87, 0.35);
+  --rg-term-bg: #1c1410;
+  --rg-scrollbar: rgba(232, 217, 196, 0.12);
+  --rg-scrollbar-hover: rgba(217, 119, 87, 0.5);
+  --rg-title-proc: #d97757;
+  --rg-title-sep: #5e483b;
+  --rg-title-cwd: #a08770;
 }
 
 html,
 body {
   height: 100%;
   margin: 0;
-  background: var(--wf-bg);
-  color: var(--wf-fg);
+  background: var(--rg-bg);
+  color: var(--rg-fg);
   font-family: var(--font-ui);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
@@ -41,34 +115,45 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* 侧栏、主区等通用细滚动条 — 对齐终端（xterm-viewport）滚动条样式 */
-.wf-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--wf-scrollbar) transparent;
+/* Override Tailwind's default `font-mono` utility so it routes through ridge's
+   monospace stack — which now ends with system color-emoji fonts. Tailwind's
+   default stack (`ui-monospace, SFMono-Regular, ...`) has no emoji, so emoji
+   inside `class="font-mono"` (e.g. pane title bars) used to fall back to a
+   monochrome font and get tinted by `color`. With var(--font-mono-term) the
+   browser picks up Segoe UI Emoji / Apple Color Emoji / Noto Color Emoji, and
+   color-bitmap glyphs are rendered untouched by `color`. */
+.font-mono {
+  font-family: var(--font-mono-term);
 }
-.wf-scroll::-webkit-scrollbar {
+
+/* 侧栏、主区等通用细滚动条 — 对齐终端（xterm-viewport）滚动条样式 */
+.rg-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rg-scrollbar) transparent;
+}
+.rg-scroll::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-.wf-scroll::-webkit-scrollbar-button {
+.rg-scroll::-webkit-scrollbar-button {
   display: none;
   height: 0;
   width: 0;
 }
-.wf-scroll::-webkit-scrollbar-track {
+.rg-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-.wf-scroll::-webkit-scrollbar-thumb {
-  background: var(--wf-scrollbar);
+.rg-scroll::-webkit-scrollbar-thumb {
+  background: var(--rg-scrollbar);
   border-radius: 999px;
   min-height: 36px;
 }
-.wf-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--wf-scrollbar-hover);
+.rg-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--rg-scrollbar-hover);
 }
 
 /*
- * `.wf-scroll-overlay` 原本做 webkit 的"透明 4px → hover 8px、gutter 常驻 10px"
+ * `.rg-scroll-overlay` 原本做 webkit 的"透明 4px → hover 8px、gutter 常驻 10px"
  * 方案，但第 6/9 轮已把所有用它的组件（Explorer / SourceControl / FileEditor
  * markdown wrapper）迁到 overlayscrollbars action；此处的 CSS 块不再有 class
  * 消费者，保留只是造成阅读噪音，本轮清理。若未来需要"纯 CSS overlay"降级路径
@@ -76,7 +161,7 @@ body {
  */
 
 /*
- * overlayscrollbars 主题（wf-os-theme）：用 VS Code 风格的细条，idle 时完全透明，
+ * overlayscrollbars 主题（rg-os-theme）：用 VS Code 风格的细条，idle 时完全透明，
  * 滚动/hover 时再显形。overlayscrollbars 的 viewport 用 flex/absolute 填满父容器，
  * scrollbar 挂在 host 上作为绝对定位的 overlay —— 真正"显示/隐藏滚动条不再改变
  * 容器宽度"，与 `scrollbar-gutter: stable` 的"永远留 10 px"恰好相反。
@@ -88,8 +173,8 @@ body {
  *  - Windows WebView2 上 overlayscrollbars 的 handle 颜色以 CSS var 注入，
  *    方便切换深/浅主题
  */
-.os-theme-wf-os-theme,
-.os-theme-wf-os-theme.os-scrollbar {
+.os-theme-rg-os-theme,
+.os-theme-rg-os-theme.os-scrollbar {
   --os-size: 10px;
   --os-padding-perpendicular: 2px;
   --os-padding-axis: 2px;
@@ -113,7 +198,7 @@ body {
 }
 
 /* 无边框窗口：与 data-tauri-drag-region 并存时，避免按钮触发系统拖动 */
-.wf-no-drag {
+.rg-no-drag {
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
@@ -122,8 +207,8 @@ body {
  * 终端区域：与全局 body 的 font-feature-settings / optimizeLegibility 隔离，
  * 避免连字或 UI 数字体特性在等宽栅格里看起来像“字符合并”；字距归零与 xterm letterSpacing: 0 一致。
  */
-.wf-terminal-surface,
-.wf-terminal-surface .xterm {
+.rg-terminal-surface,
+.rg-terminal-surface .xterm {
   letter-spacing: 0;
   font-feature-settings: normal;
   font-variant-ligatures: none;
@@ -137,7 +222,7 @@ body {
  * scrollBarWidth = viewport.offsetWidth - scrollArea.offsetWidth = 6，
  * 因此 padding-right 也设为 6px，避免双重扣减导致终端列数偏少。
  */
-.wf-terminal-surface .xterm {
+.rg-terminal-surface .xterm {
   padding-right: 6px;
 }
 
@@ -152,7 +237,7 @@ body {
  * 候选框出现在可见区域（左上角）而非屏幕外。width/height 须为非零值，
  * 否则 Windows IME 认为元素无效不弹出候选框。
  */
-.wf-terminal-surface .xterm-helper-textarea {
+.rg-terminal-surface .xterm-helper-textarea {
   caret-color: transparent !important;
   /* position: absolute is inherited from xterm's own CSS — do NOT override to fixed */
   top: 0 !important;
@@ -161,6 +246,50 @@ body {
   height: 1px !important;
   opacity: 0 !important;
   pointer-events: none !important;
+}
+
+/* T16：侧边栏 resize handle，与 SplitContainer 终端 splitter 视觉对齐。
+   常态：1px 中线 var(--rg-border)；hover / dragging：scaleX(4) + accent + glow。
+   外层 `.rg-sidebar-resize` 是 8px 透明命中区，::before 画中线。 */
+.rg-sidebar-resize {
+  position: absolute;
+  left: 99%;
+}
+.rg-sidebar-resize::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 30%;
+  width: 1px;
+  transform: translateX(-50%) scaleX(1);
+  transform-origin: center;
+  /* background: var(--rg-border); */
+  border-radius: 1px;
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+  pointer-events: none;
+  box-shadow: none;
+}
+.rg-sidebar-resize:hover::before,
+.rg-sidebar-resize.rg-sidebar-resize-active::before {
+  transform: translateX(-50%) scaleX(4);
+  background: var(--rg-accent);
+  box-shadow: 0 0 12px var(--rg-accent-glow);
+}
+
+/* T13：双光标兜底。
+ * 1. 非活跃 pane 强行隐藏 xterm cursor 层 —— xterm 的 cursorInactiveStyle:'none'
+ *    在某些 WebView2 路径下不生效（focus 状态滞后），CSS 直接抹掉光标层最稳。
+ * 2. 输入法 composition 期间 textarea caret-color 兜底，防止 IME 把系统 caret 重新点亮。 */
+.rg-terminal-surface[data-rg-pane-active="false"] .xterm-cursor-layer,
+.rg-terminal-surface[data-rg-pane-active="false"] .xterm-cursor {
+  display: none !important;
+}
+.rg-terminal-surface .xterm-helper-textarea:focus {
+  caret-color: transparent !important;
 }
 
 /*
@@ -205,19 +334,19 @@ body {
   background: transparent;
 }
 .xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--wf-scrollbar);
+  background: var(--rg-scrollbar);
   border-radius: 999px;
   min-height: 48px;
 }
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--wf-scrollbar-hover);
+  background: var(--rg-scrollbar-hover);
 }
 
 /* 水平 tab 栏（工作区 tabs、文件编辑器 tabs）— 隐藏滚动条，仍可用滚轮/触控板横向滑动 */
-.wf-htabs {
+.rg-htabs {
   scrollbar-width: none;
 }
-.wf-htabs::-webkit-scrollbar {
+.rg-htabs::-webkit-scrollbar {
   display: none;
 }
 
@@ -228,7 +357,7 @@ body {
  * 22px = one result row height (py-1 + 11px text ≈ 22px).
  * Effective when `showAll = true` with 500+ results in the sidebar.
  * Supported in WebView2 (Edge/Chromium 85+). */
-.wf-search-row {
+.rg-search-row {
   content-visibility: auto;
   contain-intrinsic-size: 0 22px;
 }

@@ -47,7 +47,7 @@ branch 名只命中输入框 placeholder 文案，不命中数据。
 ## 用户验证 3 步
 
 1. **打开一个肯定不在任何 git 仓库下的目录**：例如 Windows 下
-   `C:\Users\<you>\Music`（或 macOS `/tmp/non-git-test`）。在 Wind
+   `C:\Users\<you>\Music`（或 macOS `/tmp/non-git-test`）。在 Ridge
    开个新 pane 切到这个目录：`cd C:\Users\you\Music`。
 2. **看 pane 标题栏**：右侧 `GitBranch` 图标 pill 和 `FileText` 数字
    pill 都应该 **不存在**。

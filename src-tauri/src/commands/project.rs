@@ -97,7 +97,7 @@ fn normalize_path_input(input: &str) -> PathBuf {
         let mut s = trimmed.replace('/', "\\");
         // 驱动器根（`C:/` / `C:\`）在上面被把尾分隔符削掉后会退化成 `C:`，
         // 而 Windows 里裸的 `C:` 不是"C 盘根"，是"进程最近一次在 C 盘的 cwd"，
-        // `read_dir` 会读到 Wind 自己的运行目录。补回分隔符还原真正的根。
+        // `read_dir` 会读到 Ridge 自己的运行目录。补回分隔符还原真正的根。
         if s.len() == 2
             && s.as_bytes()[0].is_ascii_alphabetic()
             && s.as_bytes()[1] == b':'
@@ -643,7 +643,7 @@ mod tests {
             let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
             let pid = std::process::id();
             let mut path = std::env::temp_dir();
-            path.push(format!("wind-test-{}-{}-{}", tag, pid, n));
+            path.push(format!("ridge-test-{}-{}-{}", tag, pid, n));
             std::fs::create_dir_all(&path).expect("create temp dir");
             TempDir { path }
         }

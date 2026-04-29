@@ -208,20 +208,20 @@
       aria-modal="true"
       aria-label={dialog.opts.title ?? '对话框'}
       tabindex="-1"
-      class="w-[min(420px,92vw)] flex flex-col bg-[var(--wf-bg-raised)] border border-[var(--wf-border)] rounded-lg shadow-2xl overflow-hidden"
+      class="w-[min(420px,92vw)] flex flex-col bg-[var(--rg-bg-raised)] border border-[var(--rg-border)] rounded-lg shadow-2xl overflow-hidden"
       onclick={(e) => e.stopPropagation()}
       onkeydown={onKeydown}
     >
       <!-- Header — title + close (skipped for plain alert without title). -->
       {#if dialog.opts.title || dialog.kind !== 'alert'}
-        <div class="flex items-center gap-2 px-3 h-9 border-b border-[var(--wf-border)] bg-[var(--wf-surface)]/60 shrink-0">
+        <div class="flex items-center gap-2 px-3 h-9 border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/60 shrink-0">
           {#if dialog.opts.danger}
             <AlertTriangle class="h-3.5 w-3.5 text-amber-400 shrink-0" />
           {/if}
           <span class="text-[12px] font-semibold flex-1 truncate">{dialog.opts.title ?? '提示'}</span>
           <button
             type="button"
-            class="flex h-6 w-6 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+            class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             title="关闭 (Esc)"
             onclick={onCancel}
           >
@@ -233,7 +233,7 @@
       <!-- Body — message + (for prompt) input. whitespace-pre-line so
            callers can use \n for hard breaks. -->
       <div class="px-4 py-3 flex flex-col gap-2">
-        <div class="text-[12px] text-[var(--wf-fg)] whitespace-pre-line leading-relaxed">
+        <div class="text-[12px] text-[var(--rg-fg)] whitespace-pre-line leading-relaxed">
           {dialog.opts.message}
         </div>
         {#if dialog.kind === 'prompt'}
@@ -242,18 +242,18 @@
             bind:value={inputValue}
             type="text"
             placeholder={dialog.opts.placeholder ?? ''}
-            class="w-full px-2 py-1 text-[12px] rounded bg-[var(--wf-bg)] border border-[var(--wf-border)] text-[var(--wf-fg)] focus:outline-none focus:border-[var(--wf-accent)]/60"
+            class="w-full px-2 py-1 text-[12px] rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]/60"
           />
         {/if}
       </div>
 
       <!-- Footer — Cancel (left) + optional secondary + OK (right). For
            alert there is no cancel; the close button + Esc still dismiss. -->
-      <div class="flex items-center justify-end gap-1.5 px-3 py-2 border-t border-[var(--wf-border)] bg-[var(--wf-surface)]/40">
+      <div class="flex items-center justify-end gap-1.5 px-3 py-2 border-t border-[var(--rg-border)] bg-[var(--rg-surface)]/40">
         {#if dialog.kind !== 'alert'}
           <button
             type="button"
-            class="px-2.5 py-1 rounded text-[11px] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+            class="px-2.5 py-1 rounded text-[11px] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             onclick={onCancel}
           >
             {dialog.opts.cancelLabel ?? '取消'}
@@ -262,7 +262,7 @@
         {#if dialog.kind === 'choice' && dialog.opts.secondaryLabel}
           <button
             type="button"
-            class="px-2.5 py-1 rounded text-[11px] border border-[var(--wf-border)] text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+            class="px-2.5 py-1 rounded text-[11px] border border-[var(--rg-border)] text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             onclick={onSecondary}
           >
             {dialog.opts.secondaryLabel}
@@ -273,7 +273,7 @@
           type="button"
           class="px-2.5 py-1 rounded text-[11px] border transition-colors {dialog.opts.danger
             ? 'border-rose-500/60 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25'
-            : 'border-[var(--wf-accent)]/60 bg-[var(--wf-accent)]/15 text-[var(--wf-accent)] hover:bg-[var(--wf-accent)]/25'}"
+            : 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/25'}"
           onclick={onOk}
         >
           {okLabel()}

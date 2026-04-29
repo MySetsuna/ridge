@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::commands::fs_watch::FsWatcher;
 use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
@@ -42,7 +43,7 @@ impl Default for PaneState {
 pub struct Workspace {
     pub pane_tree: PaneTree,
     pub terminals: HashMap<Uuid, PtyHandle>,
-    /// Claude `send-keys -t ""` / 无 `-t` 时 tmux「当前窗格」：在 Wind 里对应 `split-window` / `select-pane` 最后指向的 pane 索引。
+    /// Claude `send-keys -t ""` / 无 `-t` 时 tmux「当前窗格」：在 Ridge 里对应 `split-window` / `select-pane` 最后指向的 pane 索引。
     pub teammate_tmux_pane_cursor: usize,
     /// `new-window -n` / `split-window -n` 等经 teammate 写入的窗格展示名（按 pane id）。
     pub teammate_pane_titles: HashMap<Uuid, String>,
@@ -56,7 +57,7 @@ pub struct Workspace {
     pub teammate_pane_states: HashMap<Uuid, PaneState>,
     /// Agent 到 pane 的映射：记录哪个 agent（通过唯一 ID）在哪个 pane
     pub teammate_agent_pane_map: HashMap<String, Uuid>,
-    /// 关联的 .wind 文件绝对路径。`Some` 表示该工作区已保存到磁盘；
+    /// 关联的 .ridge 文件绝对路径。`Some` 表示该工作区已保存到磁盘；
     /// 后续任何 cwd/布局/git 变化都会触发防抖自动回写。
     pub associated_file_path: Option<PathBuf>,
 }
@@ -172,6 +173,9 @@ pub struct AppState {
     /// Git filesystem watcher — keeps notify debouncers alive for each watched repo.
     /// Wrapped in Arc so that cloning AppState shares the same watcher instance.
     pub git_watcher: Arc<GitWatcher>,
+    /// 通用文件系统 watcher：覆盖 Explorer 列出的 cwd 和编辑器打开的外部文件，
+    /// emit `fs-changed` 事件供前端文件树/编辑器订阅。
+    pub fs_watcher: Arc<FsWatcher>,
 }
 
 impl AppState {
@@ -180,7 +184,7 @@ impl AppState {
         let mut map = HashMap::new();
         let mut pane_tree = PaneTree::new();
         // 将启动 cwd 种入默认 pane：从命令行 / 资源管理器启动时，用户期望默认终端
-        // 落在他们当前所在的目录，而不是 HOME 兜底。若无 .wind 工作区覆盖这颗默认树，
+        // 落在他们当前所在的目录，而不是 HOME 兜底。若无 .ridge 工作区覆盖这颗默认树，
         // 这个 cwd 将直接被 create_pane 采用。
         if let Ok(cwd) = std::env::current_dir() {
             if let Some(&root_id) = pane_tree.panes.keys().next() {
@@ -215,6 +219,7 @@ impl AppState {
             project_store: None,
             current_project: Arc::new(RwLock::new(None)),
             git_watcher: Arc::new(GitWatcher::new()),
+            fs_watcher: Arc::new(FsWatcher::new()),
         }
     }
 

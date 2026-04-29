@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2 } from 'lucide-svelte';
-	import { alertDialog, confirmDialog } from './WindDialog.svelte';
+	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, Terminal } from 'lucide-svelte';
+	import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
 	import {
 		fileExplorerStore,
 		initFileExplorer,
 		explorerWorkspaceGroups,
 		toggleWorkspaceCollapsed,
+		collapsedColumns,
+		toggleColumnCollapsed,
 		updateWorkspaceNames,
 		flattenVisiblePaths,
 		explorerClipboard,
@@ -20,6 +22,7 @@
 		terminalTitles,
 		workspacesList,
 		activeWorkspaceId,
+		activePaneId,
 		workspaceSaveInfoStore,
 		refreshWorkspaceSaveInfo,
 		saveWorkspaceToFile,
@@ -177,7 +180,7 @@
 		// one more frame for dynamic children to mount.
 		await new Promise((r) => requestAnimationFrame(() => r(null)));
 		const btn = document.querySelector<HTMLButtonElement>(
-			`button[data-wf-tree-column="${CSS.escape(col.id)}"][data-wf-tree-path="${CSS.escape(path)}"]`
+			`button[data-rg-tree-column="${CSS.escape(col.id)}"][data-rg-tree-path="${CSS.escape(path)}"]`
 		);
 		btn?.scrollIntoView({ block: 'nearest' });
 	}
@@ -509,7 +512,7 @@
 		// the new position (and the outline-focus ring draws there).
 		queueMicrotask(() => {
 			const btn = document.querySelector<HTMLButtonElement>(
-				`button[data-wf-tree-column="${CSS.escape(col.id)}"][data-wf-tree-path="${CSS.escape(targetPath)}"]`
+				`button[data-rg-tree-column="${CSS.escape(col.id)}"][data-rg-tree-path="${CSS.escape(targetPath)}"]`
 			);
 			btn?.focus();
 			btn?.scrollIntoView({ block: 'nearest' });
@@ -523,7 +526,7 @@
 	const totalColumns = $derived($explorerWorkspaceGroups.reduce((n, g) => n + g.columns.length, 0));
 
 
-	// ─── 保存 / 删除 / 打开 .wind 工作区文件 ───────────────────────────────────
+	// ─── 保存 / 删除 / 打开 .ridge 工作区文件 ───────────────────────────────────
 	$effect(() => {
 		// Keep save-info badges in sync when the workspaces list changes (create/close/rename).
 		if ($workspacesList.length > 0) {
@@ -550,7 +553,7 @@
 	async function handleDelete(wsId: string, filePath: string | null | undefined) {
 		const confirmed = await confirmDialog({
 			title: '删除工作区文件',
-			message: `从磁盘删除已保存的工作区文件？\n\n${filePath || '(未知路径)'}\n\n此操作只删除 .wind 文件，不会关闭当前工作区。`,
+			message: `从磁盘删除已保存的工作区文件？\n\n${filePath || '(未知路径)'}\n\n此操作只删除 .ridge 文件，不会关闭当前工作区。`,
 			okLabel: '删除',
 			danger: true,
 		});
@@ -573,7 +576,7 @@
 
 <!--
   overlay 滚动条：host 不做 overflow，交给 overlayscrollbars；content 自然堆叠。
-  之前 `wf-scroll-overlay` + `overflow-y-auto` 会借助 `scrollbar-gutter: stable`
+  之前 `rg-scroll-overlay` + `overflow-y-auto` 会借助 `scrollbar-gutter: stable`
   常驻 10px gutter —— 改用 overlayscrollbars 后滚动条绝对定位浮在上方，
   "显示 / 隐藏" 不再改变内容宽度；hover/滚动时显形，空闲时淡出。
 -->
@@ -590,9 +593,9 @@
 	{#if totalColumns === 0}
 		<div class="flex-1 flex items-center justify-center">
 			<div class="text-center">
-				<FolderOpen class="mx-auto h-12 w-12 text-[var(--wf-fg-muted)] mb-4" />
-				<p class="text-[13px] text-[var(--wf-fg-muted)]">无活动终端</p>
-				<p class="text-[12px] text-[var(--wf-fg-muted)] mt-1">
+				<FolderOpen class="mx-auto h-12 w-12 text-[var(--rg-fg-muted)] mb-4" />
+				<p class="text-[13px] text-[var(--rg-fg-muted)]">无活动终端</p>
+				<p class="text-[12px] text-[var(--rg-fg-muted)] mt-1">
 					打开终端后将在此显示文件树
 				</p>
 			</div>
@@ -602,13 +605,13 @@
 			{@const info = $workspaceSaveInfoStore[group.workspaceId]}
 			<!-- ══ Workspace header row ══ -->
 			<div
-				class="explorer-workspace border-b border-[var(--wf-border)] last:border-b-0"
+				class="explorer-workspace border-b border-[var(--rg-border)] last:border-b-0"
 			>
 				<div
 					class="group/ws sticky top-0 z-20 flex items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
 						{group.workspaceId === $activeWorkspaceId
-							? 'bg-[var(--wf-accent)]/20 text-[var(--wf-fg)]'
-							: 'bg-[var(--wf-surface-2)]/92 text-[var(--wf-fg-muted)] hover:bg-[var(--wf-surface)]'}"
+							? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)]'
+							: 'bg-[var(--rg-surface-2)]/92 text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)]'}"
 					role="button"
 					tabindex="0"
 					onclick={() => toggleWorkspaceCollapsed(group.workspaceId)}
@@ -618,19 +621,19 @@
 					<ChevronRight
 						class="h-3.5 w-3.5 shrink-0 transition-transform duration-150
 							{group.collapsed ? '' : 'rotate-90'}
-							{group.workspaceId === $activeWorkspaceId ? 'text-[var(--wf-accent)]' : 'text-[var(--wf-fg-muted)]'}"
+							{group.workspaceId === $activeWorkspaceId ? 'text-[var(--rg-accent)]' : 'text-[var(--rg-fg-muted)]'}"
 					/>
 
 					<!-- Workspace name -->
 					<span
 						class="flex-1 text-[11px] font-semibold uppercase tracking-wider truncate
-							{group.workspaceId === $activeWorkspaceId ? 'text-[var(--wf-accent)]' : 'text-[var(--wf-fg-muted)]'}"
+							{group.workspaceId === $activeWorkspaceId ? 'text-[var(--rg-accent)]' : 'text-[var(--rg-fg-muted)]'}"
 					>
 						{group.workspaceName}
 					</span>
 
 					<!-- Column count badge -->
-					<span class="text-[10px] text-[var(--wf-fg-muted)] shrink-0">
+					<span class="text-[10px] text-[var(--rg-fg-muted)] shrink-0">
 						{group.columns.length}
 					</span>
 
@@ -638,8 +641,8 @@
 					{#if !info?.file_path}
 						<button
 							type="button"
-							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-[var(--wf-accent)] hover:bg-[var(--wf-surface)] transition-all"
-							title="保存工作区为 .wind 文件"
+							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] transition-all"
+							title="保存工作区为 .ridge 文件"
 							onclick={(e) => {
 								e.stopPropagation();
 								openSaveDialog(group.workspaceId, group.workspaceName);
@@ -650,8 +653,8 @@
 					{:else}
 						<button
 							type="button"
-							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-red-400 hover:bg-[var(--wf-surface)] transition-all"
-							title={`删除已保存的 .wind 文件\n${info.file_path}`}
+							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-red-400 hover:bg-[var(--rg-surface)] transition-all"
+							title={`删除已保存的 .ridge 文件\n${info.file_path}`}
 							onclick={(e) => {
 								e.stopPropagation();
 								void handleDelete(group.workspaceId, info.file_path);
@@ -672,52 +675,105 @@
 				<!-- ══ CWD groups under this workspace ══ -->
 				{#if !group.collapsed}
 					{#each group.columns as col (col.id)}
-						<!-- group/col on the section so the hover-reveal refresh button works -->
-						<div class="explorer-section group/col border-t border-[var(--wf-border)]/50" title={col.cwd}>
-							<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
-							{#if slowLoading.has(col.id)}
-								<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label="加载中"></div>
-							{/if}
-
-							<!-- File tree body: cwd contents shown directly, no root-folder header row.
-							     Refresh button floats at top-right on hover. -->
-							<div class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto wf-scroll" : ""}">
+						{@const isColCollapsed = $collapsedColumns.has(col.id)}
+						{@const cwdSegments = col.cwd.replace(/\\/g, '/').split('/').filter(Boolean)}
+						{@const cwdLeaf = cwdSegments[cwdSegments.length - 1] ?? col.cwd}
+						{@const cwdParent = cwdSegments.slice(0, -1).join('/')}
+						<!-- T18：终端节点（cwd 卡片）— 工作区下的中间层，可折叠隐藏文件树 -->
+						<div class="explorer-section group/col border-t border-[var(--rg-border)]/50">
+							<!-- ── CWD 头：chevron + 路径 + pane 数 + 刷新 ── -->
+							<div
+								class="flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
+									? 'bg-[var(--rg-surface-2)]/60 hover:bg-[var(--rg-surface-2)]/80'
+									: 'bg-[var(--rg-surface)]/40 hover:bg-[var(--rg-surface)]/70'}"
+								role="button"
+								tabindex="0"
+								title={col.cwd}
+								onclick={() => toggleColumnCollapsed(col.id)}
+								onkeydown={(e) => e.key === 'Enter' && toggleColumnCollapsed(col.id)}
+							>
+								<ChevronRight
+									class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)] transition-transform duration-150 {isColCollapsed ? '' : 'rotate-90'}"
+								/>
+								<Terminal class="h-3 w-3 shrink-0 text-[var(--rg-accent)]" />
+								<span class="flex-1 min-w-0 truncate text-[11px]">
+									{#if cwdParent}
+										<span class="text-[var(--rg-fg-muted)]/60">{cwdParent}/</span>
+									{/if}
+									<span class="text-[var(--rg-fg)] font-medium">{cwdLeaf}</span>
+								</span>
+								<span class="text-[9px] text-[var(--rg-fg-muted)] shrink-0 font-mono">
+									{col.paneIds.length}
+								</span>
 								<button
 									type="button"
-									class="absolute top-0.5 right-1 z-10 flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--wf-fg-muted)] opacity-0 group-hover/col:opacity-60 hover:!opacity-100 hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-all"
-									onclick={() => handleRefresh(col.id)}
-									title="刷新 {col.cwd}"
+									class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/col:opacity-60 hover:!opacity-100 hover:bg-[var(--rg-accent)]/20 hover:text-[var(--rg-fg)] transition-all"
+									onclick={(e) => {
+										e.stopPropagation();
+										handleRefresh(col.id);
+									}}
+									title={`刷新 ${col.cwd}`}
 								>
-									<RefreshCw class="h-3 w-3" />
+									<RefreshCw class="h-2.5 w-2.5" />
 								</button>
-
-								{#if col.tree}
-									{#if (col.tree.children ?? []).length > 0}
-										{#each col.tree.children ?? [] as child (child.path)}
-											<FileTree
-												columnId={col.id}
-												node={child}
-												depth={0}
-												expandedPaths={col.expandedPaths}
-												selectedPath={col.selectedPath}
-												selectedPaths={col.selectedPaths}
-												cutPaths={$explorerClipboard?.mode === 'cut'
-													? new Set($explorerClipboard.paths)
-													: undefined}
-												onSelect={(path, isDir, mods) =>
-													handleFileSelect(path, col.id, isDir, mods)}
-											/>
-										{/each}
-									{:else}
-										<div class="px-4 py-2 text-[12px] text-[var(--wf-fg-muted)]">空目录</div>
-									{/if}
-								{/if}
 							</div>
 
-							<!-- Plugin region: one instance per paneId for correct state scoping. -->
-							{#each col.paneIds as pid (pid)}
-								<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
-							{/each}
+							<!-- ── pane 标签条：折叠时也显示，点击切 active pane ── -->
+							{#if col.paneIds.length > 0}
+								<div class="flex flex-wrap items-center gap-1 px-2 py-1 bg-[var(--rg-surface)]/20 border-t border-[var(--rg-border)]/30">
+									{#each col.paneIds as pid (pid)}
+										{@const isActive = $activePaneId === pid}
+										<button
+											type="button"
+											class="flex items-center gap-1 h-4 px-1.5 rounded text-[10px] transition-colors {isActive
+												? 'bg-[var(--rg-accent)]/25 text-[var(--rg-accent)] border border-[var(--rg-accent)]/40'
+												: 'bg-[var(--rg-surface-2)]/60 text-[var(--rg-fg-muted)] border border-[var(--rg-border)] hover:text-[var(--rg-fg)] hover:border-[var(--rg-border-bright)]'}"
+											title={col.paneTitles[pid] || pid}
+											onclick={() => activePaneId.set(pid)}
+										>
+											<Terminal class="h-2.5 w-2.5 shrink-0" />
+											<span class="truncate max-w-[110px]">{col.paneTitles[pid] || pid.slice(0, 6)}</span>
+										</button>
+									{/each}
+								</div>
+							{/if}
+
+							{#if !isColCollapsed}
+								<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
+								{#if slowLoading.has(col.id)}
+									<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label="加载中"></div>
+								{/if}
+
+								<!-- File tree body: cwd 下文件平铺。 -->
+								<div class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto rg-scroll" : ""}">
+									{#if col.tree}
+										{#if (col.tree.children ?? []).length > 0}
+											{#each col.tree.children ?? [] as child (child.path)}
+												<FileTree
+													columnId={col.id}
+													node={child}
+													depth={0}
+													expandedPaths={col.expandedPaths}
+													selectedPath={col.selectedPath}
+													selectedPaths={col.selectedPaths}
+													cutPaths={$explorerClipboard?.mode === 'cut'
+														? new Set($explorerClipboard.paths)
+														: undefined}
+													onSelect={(path, isDir, mods) =>
+														handleFileSelect(path, col.id, isDir, mods)}
+												/>
+											{/each}
+										{:else}
+											<div class="px-4 py-2 text-[12px] text-[var(--rg-fg-muted)]">空目录</div>
+										{/if}
+									{/if}
+								</div>
+
+								<!-- Plugin region: one instance per paneId for correct state scoping. -->
+								{#each col.paneIds as pid (pid)}
+									<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
+								{/each}
+							{/if}
 						</div>
 					{/each}
 				{/if}
@@ -728,16 +784,16 @@
 
 <style>
 	/* 滚动条样式由 `use:overlayScroll` action（`src/lib/actions/overlayScroll.ts`）
-	   提供，不在本组件本地覆盖。wf-os-theme 主题见 `app.css`。 */
+	   提供，不在本组件本地覆盖。rg-os-theme 主题见 `app.css`。 */
 
 	/* 慢加载不定式进度条：2px、accent 半透明轨 + 30% 宽 transform 滑块，纯 compositor。 */
 	.explorer-progress {
 		position: relative; height: 2px; width: 100%; overflow: hidden;
-		background: color-mix(in oklab, var(--wf-accent) 25%, transparent);
+		background: color-mix(in oklab, var(--rg-accent) 25%, transparent);
 	}
 	.explorer-progress::before {
 		content: ''; position: absolute; top: 0; left: 0; height: 100%; width: 30%;
-		background: var(--wf-accent); will-change: transform;
+		background: var(--rg-accent); will-change: transform;
 		animation: explorer-progress-slide 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 	}
 	@keyframes explorer-progress-slide {

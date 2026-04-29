@@ -30,10 +30,10 @@
 </script>
 
 <div
-  class="px-3 py-1.5 flex items-center gap-2 text-[10px] text-[var(--wf-fg-muted)]"
+  class="px-3 py-1.5 flex items-center gap-2 text-[10px] text-[var(--rg-fg-muted)]"
   title={`${wsLabel} · ${leafCount} 个 pane`}
 >
-  <Layout class="h-3 w-3 text-[var(--wf-accent)]/70" />
+  <Layout class="h-3 w-3 text-[var(--rg-accent)]/70" />
   <span class="truncate flex-1">{wsLabel}</span>
   <span class="flex items-center gap-1 shrink-0">
     <Activity class="h-3 w-3" />

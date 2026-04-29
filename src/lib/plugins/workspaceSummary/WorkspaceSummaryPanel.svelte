@@ -27,7 +27,7 @@
   const localLeaves = $derived(flattenLeaves($paneTreeStore));
 </script>
 
-<div class="px-3 py-1 flex items-center gap-2 text-[10px] text-[var(--wf-fg-muted)] border-b border-[var(--wf-border)]/40 bg-[var(--wf-surface-2)]/20">
+<div class="px-3 py-1 flex items-center gap-2 text-[10px] text-[var(--rg-fg-muted)] border-b border-[var(--rg-border)]/40 bg-[var(--rg-surface-2)]/20">
   <span class="flex items-center gap-1 ml-auto" title="当前工作区 pane 数">
     <Activity class="h-3 w-3" />
     <span class="font-mono">{localLeaves.length}</span>

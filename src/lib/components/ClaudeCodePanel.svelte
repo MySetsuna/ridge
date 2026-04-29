@@ -51,11 +51,60 @@
   let fileHistory = $state<ClaudeHistoryEntry[]>([]);
   let fileHistoryLoading = $state(false);
   let fileHistoryCollapsed = $state(false);
-  let fileHistoryView = $state<'flat' | 'byProject'>('flat');
+  // T6：默认按项目分组。读取 localStorage 让用户上次的选择得以保留。
+  const FILE_HISTORY_VIEW_KEY = 'ridge-claude-history-view';
+  function loadHistoryView(): 'flat' | 'byProject' {
+    if (typeof localStorage === 'undefined') return 'byProject';
+    const raw = localStorage.getItem(FILE_HISTORY_VIEW_KEY);
+    return raw === 'flat' ? 'flat' : 'byProject';
+  }
+  let fileHistoryView = $state<'flat' | 'byProject'>(loadHistoryView());
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(FILE_HISTORY_VIEW_KEY, fileHistoryView);
+    } catch {
+      /* ignore */
+    }
+  });
 
   // Expanded entry (click to show git changes)
   let expandedHistoryKey = $state<string | null>(null);
   let entryChanges = $state(new Map<string, EntryChanges>());
+
+  // Per-project collapse state in by-project view. Persisted so the user's
+  // "show only my current project" shape survives across sessions.
+  const COLLAPSED_PROJECTS_KEY = 'ridge-claude-history-collapsed-projects';
+  let collapsedProjects = $state(loadCollapsedProjects());
+
+  function loadCollapsedProjects(): Set<string> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(COLLAPSED_PROJECTS_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? new Set(arr.filter((s) => typeof s === 'string')) : new Set();
+    } catch {
+      return new Set();
+    }
+  }
+
+  function persistCollapsedProjects(s: Set<string>): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(COLLAPSED_PROJECTS_KEY, JSON.stringify(Array.from(s)));
+    } catch {
+      /* ignore quota / privacy errors */
+    }
+  }
+
+  function toggleProjectCollapsed(proj: string): void {
+    const next = new Set(collapsedProjects);
+    if (next.has(proj)) next.delete(proj);
+    else next.add(proj);
+    collapsedProjects = next;
+    persistCollapsedProjects(next);
+  }
 
   function historyKey(e: ClaudeHistoryEntry): string {
     return `${e.timestamp}:${e.session_id ?? e.project}`;
@@ -214,7 +263,7 @@
     if (c === 'M' || c === 'U') return 'text-amber-400';
     if (c === 'A') return 'text-emerald-400';
     if (c === 'D') return 'text-red-400';
-    return 'text-[var(--wf-fg-muted)]';
+    return 'text-[var(--rg-fg-muted)]';
   }
 
   $effect(() => {
@@ -232,7 +281,7 @@
 <!-- Header -->
 <div
   data-tauri-drag-region
-  class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] relative"
+  class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] relative"
 >
   <span class="flex items-center gap-1.5">
     <Bot class="h-3.5 w-3.5 text-emerald-400" />
@@ -241,7 +290,7 @@
   <div class="flex items-center gap-0.5" bind:this={settingsAnchor}>
     <button
       type="button"
-      class="flex h-7 w-7 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+      class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
       title="扩展设置"
       onclick={() => (settingsOpen = !settingsOpen)}
     >
@@ -249,14 +298,14 @@
     </button>
   {#if settingsOpen}
     <div
-      class="absolute right-2 top-9 z-30 min-w-[220px] rounded-lg border border-[var(--wf-border)] bg-[var(--wf-bg-raised)] shadow-xl py-1 text-[12px]"
+      class="absolute right-2 top-9 z-30 min-w-[220px] rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl py-1 text-[12px]"
     >
-      <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--wf-fg-muted)]">
+      <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">
         扩展
       </div>
       <button
         type="button"
-        class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+        class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
         onclick={disableExtension}
         title="关闭后左侧 rail 的 Bot 按钮、pane 标题的 Bot 按钮都会消失；可在工作区设置重新开启"
       >
@@ -270,25 +319,22 @@
 <!-- Body -->
 <div class="flex-1 min-h-0 flex flex-col" use:overlayScroll>
   {#if flattened.length === 0}
-    <div class="p-4 text-[12px] text-[var(--wf-fg-muted)] text-center">
+    <div class="p-4 text-[12px] text-[var(--rg-fg-muted)] text-center">
       当前工作区无 pane —— 打开终端后将在此显示。
     </div>
   {:else if activeWs}
-    <div class="border-b border-[var(--wf-border)]/40 last:border-b-0">
-      <div class="sticky top-0 z-10 px-3 h-7 flex items-center gap-1.5 bg-[var(--wf-surface-2)]/92 backdrop-blur-md text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
-        <span class="flex-1 truncate">{activeWs.name ?? `工作区 ${activeWs.index + 1}`}</span>
-        <span class="text-[var(--wf-fg)]">{flattened.length}</span>
-      </div>
+    <!-- T6：移除工作区栏 —— 直接渲染 pane 列表，没有"工作区 N · 4 panes"sticky 头。 -->
+    <div class="last:border-b-0">
       {#each flattened as leaf (leaf.paneId)}
         {@const cwd = $paneCwdStore[`${activeWs.id}:${leaf.paneId}`] ?? $paneCwdStore[leaf.paneId]}
           {@const entries = $claudeHistoryStore[leaf.paneId] ?? []}
           {@const collapsed = collapsedPanes.has(leaf.paneId)}
-          <div class="border-t border-[var(--wf-border)]/30">
+          <div class="border-t border-[var(--rg-border)]/30">
             <!-- Pane row -->
-            <div class="px-3 py-1.5 flex items-center gap-1.5 hover:bg-[var(--wf-surface)]/40 transition-colors">
+            <div class="px-3 py-1.5 flex items-center gap-1.5 hover:bg-[var(--rg-surface)]/40 transition-colors">
               <button
                 type="button"
-                class="flex h-5 w-5 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]"
+                class="flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
                 onclick={() => togglePane(leaf.paneId)}
                 title={collapsed ? '展开历史' : '收起历史'}
               >
@@ -304,18 +350,18 @@
                     ? 'text-emerald-400 animate-pulse'
                     : leaf.agentState === 'launching'
                     ? 'text-amber-400'
-                    : 'text-[var(--wf-fg-muted)]'}"
+                    : 'text-[var(--rg-fg-muted)]'}"
                 />
               </span>
-              <span class="flex-1 min-w-0 truncate text-[11px] text-[var(--wf-fg)]" title={cwd}>
-                {leaf.paneId.slice(0, 6)}<span class="text-[var(--wf-fg-muted)] ml-1">{shortCwd(cwd)}</span>
+              <span class="flex-1 min-w-0 truncate text-[11px] text-[var(--rg-fg)]" title={cwd}>
+                {leaf.paneId.slice(0, 6)}<span class="text-[var(--rg-fg-muted)] ml-1">{shortCwd(cwd)}</span>
               </span>
-              <span class="text-[9px] text-[var(--wf-fg-muted)]/70 shrink-0">
+              <span class="text-[9px] text-[var(--rg-fg-muted)]/70 shrink-0">
                 {entries.length}
               </span>
               <button
                 type="button"
-                class="flex h-5 w-5 items-center justify-center rounded text-[var(--wf-fg-muted)] hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                class="flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
                 title={leaf.agentState === 'busy'
                   ? '此 pane 已有 agent 运行'
                   : '在此 pane 启动 Claude（Shift-Click 跳过 prompt 直接启动）'}
@@ -329,27 +375,27 @@
             <!-- History list (when expanded) -->
             {#if !collapsed}
               {#if entries.length === 0}
-                <div class="px-9 pb-1.5 text-[10px] text-[var(--wf-fg-muted)]">
+                <div class="px-9 pb-1.5 text-[10px] text-[var(--rg-fg-muted)]">
                   尚无历史 prompt。
                 </div>
               {:else}
                 {#each entries.slice().reverse() as entry (entry.at + ':' + entry.agentId)}
                   <button
                     type="button"
-                    class="w-full flex items-start gap-2 pl-9 pr-3 py-1 text-left text-[11px] hover:bg-[var(--wf-surface)]/50 transition-colors"
+                    class="w-full flex items-start gap-2 pl-9 pr-3 py-1 text-left text-[11px] hover:bg-[var(--rg-surface)]/50 transition-colors"
                     title={entry.prompt || '(REPL — 无 prompt)'}
                     onclick={() => openClaudeAgentLauncher(leaf.paneId, false)}
                   >
-                    <span class="shrink-0 font-mono text-[9px] text-[var(--wf-fg-muted)] w-8 text-right">
+                    <span class="shrink-0 font-mono text-[9px] text-[var(--rg-fg-muted)] w-8 text-right">
                       {timestamp(entry.at)}
                     </span>
-                    <span class="truncate text-[var(--wf-fg)]">{preview(entry.prompt)}</span>
+                    <span class="truncate text-[var(--rg-fg)]">{preview(entry.prompt)}</span>
                   </button>
                 {/each}
                 <div class="pl-9 pr-3 py-1">
                   <button
                     type="button"
-                    class="flex items-center gap-1 h-5 px-1.5 rounded text-[10px] text-[var(--wf-fg-muted)] hover:text-red-400 hover:bg-[var(--wf-surface)]/50 transition-colors"
+                    class="flex items-center gap-1 h-5 px-1.5 rounded text-[10px] text-[var(--rg-fg-muted)] hover:text-red-400 hover:bg-[var(--rg-surface)]/50 transition-colors"
                     onclick={() => clearHistoryForPane(leaf.paneId)}
                     title="清空此 pane 的 Claude 历史"
                   >
@@ -365,10 +411,10 @@
 
   <!-- ── 命令行历史：来自 ~/.claude/history.jsonl ── -->
   {#if fileHistory.length > 0 || fileHistoryLoading}
-    <div class="border-t border-[var(--wf-border)] mt-auto">
+    <div class="border-t border-[var(--rg-border)] mt-auto">
       <!-- Section header -->
       <div
-        class="sticky top-0 z-10 w-full px-3 h-7 flex items-center gap-1.5 bg-[var(--wf-surface-2)]/92 backdrop-blur-md text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] cursor-pointer select-none hover:bg-[var(--wf-surface)] transition-colors"
+        class="sticky top-0 z-10 w-full px-3 h-7 flex items-center gap-1.5 bg-[var(--rg-surface-2)]/92 backdrop-blur-md text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] cursor-pointer select-none hover:bg-[var(--rg-surface)] transition-colors"
         role="button"
         tabindex="0"
         onclick={() => { fileHistoryCollapsed = !fileHistoryCollapsed; }}
@@ -380,9 +426,9 @@
         {#if fileHistoryLoading}
           <span class="text-[9px] opacity-50">…</span>
         {:else if fileHistoryView === 'byProject'}
-          <span class="text-[var(--wf-fg)]">{fileHistoryByProject.length} 个项目</span>
+          <span class="text-[var(--rg-fg)]">{fileHistoryByProject.length} 个项目</span>
         {:else}
-          <span class="text-[var(--wf-fg)]">{fileHistory.length}</span>
+          <span class="text-[var(--rg-fg)]">{fileHistory.length}</span>
         {/if}
 
         <!-- View toggle: flat / by-project -->
@@ -391,8 +437,8 @@
             type="button"
             class="flex items-center gap-0.5 h-5 px-1.5 rounded text-[10px] border transition-colors
               {fileHistoryView === 'byProject'
-                ? 'bg-[var(--wf-accent)]/20 border-[var(--wf-accent)]/40 text-[var(--wf-accent)]'
-                : 'border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]'}"
+                ? 'bg-[var(--rg-accent)]/20 border-[var(--rg-accent)]/40 text-[var(--rg-accent)]'
+                : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
             title={fileHistoryView === 'byProject' ? '切换为按时间排列' : '切换为按项目分组'}
             onclick={(e) => {
               e.stopPropagation();
@@ -405,7 +451,7 @@
 
         <button
           type="button"
-          class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--wf-accent)]/20 hover:text-[var(--wf-fg)] transition-colors"
+          class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--rg-accent)]/20 hover:text-[var(--rg-fg)] transition-colors"
           title="刷新历史"
           onclick={(e) => { e.stopPropagation(); void loadFileHistory(); }}
         >
@@ -423,17 +469,17 @@
             {@const key = historyKey(entry)}
             {@const isExpanded = expandedHistoryKey === key}
             {@const changes = entryChanges.get(key)}
-            <div class="border-t border-[var(--wf-border)]/20">
+            <div class="border-t border-[var(--rg-border)]/20">
               <button
                 type="button"
-                class="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--wf-surface)]/40 transition-colors group {isExpanded ? 'bg-[var(--wf-surface)]/30' : ''}"
+                class="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--rg-surface)]/40 transition-colors group {isExpanded ? 'bg-[var(--rg-surface)]/30' : ''}"
                 onclick={() => void toggleHistoryEntry(entry)}
               >
-                <ChevronRight class="h-3 w-3 shrink-0 mt-0.5 text-[var(--wf-fg-muted)] transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}" />
-                <Bot class="h-3 w-3 shrink-0 mt-0.5 text-[var(--wf-fg-muted)]" />
+                <ChevronRight class="h-3 w-3 shrink-0 mt-0.5 text-[var(--rg-fg-muted)] transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}" />
+                <Bot class="h-3 w-3 shrink-0 mt-0.5 text-[var(--rg-fg-muted)]" />
                 <div class="flex-1 min-w-0">
-                  <div class="truncate text-[11px] text-[var(--wf-fg)]">{preview(entry.display)}</div>
-                  <div class="text-[9px] text-[var(--wf-fg-muted)] flex items-center gap-1.5 mt-0.5">
+                  <div class="truncate text-[11px] text-[var(--rg-fg)]">{preview(entry.display)}</div>
+                  <div class="text-[9px] text-[var(--rg-fg-muted)] flex items-center gap-1.5 mt-0.5">
                     <span class="font-mono">{dateLabel(entry.timestamp)}</span>
                     <span class="truncate opacity-70">{entry.project.replace(/\\/g,'/').split('/').pop()}</span>
                   </div>
@@ -442,22 +488,22 @@
               {#if isExpanded}
                 <div class="pl-8 pr-3 pb-1.5">
                   {#if changes?.loading}
-                    <div class="text-[10px] text-[var(--wf-fg-muted)] py-1">加载变更中…</div>
+                    <div class="text-[10px] text-[var(--rg-fg-muted)] py-1">加载变更中…</div>
                   {:else if changes?.error}
-                    <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无法读取 git 状态</div>
+                    <div class="text-[10px] text-[var(--rg-fg-muted)]/60 py-1">无法读取 git 状态</div>
                   {:else if changes && changes.files.length === 0}
-                    <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无未提交变更</div>
+                    <div class="text-[10px] text-[var(--rg-fg-muted)]/60 py-1">无未提交变更</div>
                   {:else if changes}
                     {#each changes.files as f (f.path)}
                       <button
                         type="button"
-                        class="w-full flex items-center gap-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--wf-accent)]/10 rounded px-1 transition-colors"
+                        class="w-full flex items-center gap-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--rg-accent)]/10 rounded px-1 transition-colors"
                         title="点击查看 diff：{f.path}"
                         onclick={() => openDiffEditor({ repoRoot: entry.project, path: f.path, cached: f.cached })}
                       >
                         <span class="shrink-0 text-[10px] font-mono w-4 text-center {statusColor(f.status)}">{statusLabel(f.status)}</span>
-                        <span class="truncate text-[var(--wf-fg-muted)]">{f.path}</span>
-                        <FileDiff class="h-2.5 w-2.5 shrink-0 text-[var(--wf-fg-muted)]/40 ml-auto" />
+                        <span class="truncate text-[var(--rg-fg-muted)]">{f.path}</span>
+                        <FileDiff class="h-2.5 w-2.5 shrink-0 text-[var(--rg-fg-muted)]/40 ml-auto" />
                       </button>
                     {/each}
                   {/if}
@@ -468,47 +514,57 @@
         {:else}
           <!-- By-project view: grouped by project directory -->
           {#each fileHistoryByProject as group (group.proj)}
-            <div class="border-t border-[var(--wf-border)]/40">
-              <div class="px-3 py-1 flex items-center gap-1.5 bg-[var(--wf-surface)]/30 text-[10px] text-[var(--wf-fg-muted)] font-semibold uppercase tracking-wider">
-                <FolderOpen class="h-3 w-3 shrink-0 text-[var(--wf-accent)]" />
+            {@const isProjectCollapsed = collapsedProjects.has(group.proj)}
+            <div class="border-t border-[var(--rg-border)]/40">
+              <button
+                type="button"
+                class="w-full px-3 py-1 flex items-center gap-1.5 bg-[var(--rg-surface)]/30 hover:bg-[var(--rg-surface)]/50 text-[10px] text-[var(--rg-fg-muted)] font-semibold uppercase tracking-wider transition-colors text-left"
+                title={isProjectCollapsed ? `展开 ${group.label}` : `折叠 ${group.label}`}
+                onclick={() => toggleProjectCollapsed(group.proj)}
+              >
+                <ChevronRight
+                  class="h-3 w-3 shrink-0 transition-transform duration-150 {isProjectCollapsed ? '' : 'rotate-90'}"
+                />
+                <FolderOpen class="h-3 w-3 shrink-0 text-[var(--rg-accent)]" />
                 <span class="truncate" title={group.proj}>{group.label}</span>
-                <span class="ml-auto text-[var(--wf-fg)]">{group.entries.length}</span>
-              </div>
+                <span class="ml-auto text-[var(--rg-fg)]">{group.entries.length}</span>
+              </button>
+              {#if !isProjectCollapsed}
               {#each group.entries as entry (historyKey(entry))}
                 {@const key = historyKey(entry)}
                 {@const isExpanded = expandedHistoryKey === key}
                 {@const changes = entryChanges.get(key)}
-                <div class="border-t border-[var(--wf-border)]/10">
+                <div class="border-t border-[var(--rg-border)]/10">
                   <button
                     type="button"
-                    class="w-full flex items-start gap-2 pl-6 pr-3 py-1.5 text-left hover:bg-[var(--wf-surface)]/40 transition-colors {isExpanded ? 'bg-[var(--wf-surface)]/30' : ''}"
+                    class="w-full flex items-start gap-2 pl-6 pr-3 py-1.5 text-left hover:bg-[var(--rg-surface)]/40 transition-colors {isExpanded ? 'bg-[var(--rg-surface)]/30' : ''}"
                     onclick={() => void toggleHistoryEntry(entry)}
                   >
-                    <ChevronRight class="h-3 w-3 shrink-0 mt-0.5 text-[var(--wf-fg-muted)] transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}" />
+                    <ChevronRight class="h-3 w-3 shrink-0 mt-0.5 text-[var(--rg-fg-muted)] transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}" />
                     <div class="flex-1 min-w-0">
-                      <div class="truncate text-[11px] text-[var(--wf-fg)]">{preview(entry.display)}</div>
-                      <span class="font-mono text-[9px] text-[var(--wf-fg-muted)]">{dateLabel(entry.timestamp)}</span>
+                      <div class="truncate text-[11px] text-[var(--rg-fg)]">{preview(entry.display)}</div>
+                      <span class="font-mono text-[9px] text-[var(--rg-fg-muted)]">{dateLabel(entry.timestamp)}</span>
                     </div>
                   </button>
                   {#if isExpanded}
                     <div class="pl-10 pr-3 pb-1.5">
                       {#if changes?.loading}
-                        <div class="text-[10px] text-[var(--wf-fg-muted)] py-1">加载变更中…</div>
+                        <div class="text-[10px] text-[var(--rg-fg-muted)] py-1">加载变更中…</div>
                       {:else if changes?.error}
-                        <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无法读取 git 状态</div>
+                        <div class="text-[10px] text-[var(--rg-fg-muted)]/60 py-1">无法读取 git 状态</div>
                       {:else if changes && changes.files.length === 0}
-                        <div class="text-[10px] text-[var(--wf-fg-muted)]/60 py-1">无未提交变更</div>
+                        <div class="text-[10px] text-[var(--rg-fg-muted)]/60 py-1">无未提交变更</div>
                       {:else if changes}
                         {#each changes.files as f (f.path)}
                           <button
                             type="button"
-                            class="w-full flex items-center gap-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--wf-accent)]/10 rounded px-1 transition-colors"
+                            class="w-full flex items-center gap-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--rg-accent)]/10 rounded px-1 transition-colors"
                             title="点击查看 diff：{f.path}"
                             onclick={() => openDiffEditor({ repoRoot: entry.project, path: f.path, cached: f.cached })}
                           >
                             <span class="shrink-0 text-[10px] font-mono w-4 text-center {statusColor(f.status)}">{statusLabel(f.status)}</span>
-                            <span class="truncate text-[var(--wf-fg-muted)]">{f.path}</span>
-                            <FileDiff class="h-2.5 w-2.5 shrink-0 text-[var(--wf-fg-muted)]/40 ml-auto" />
+                            <span class="truncate text-[var(--rg-fg-muted)]">{f.path}</span>
+                            <FileDiff class="h-2.5 w-2.5 shrink-0 text-[var(--rg-fg-muted)]/40 ml-auto" />
                           </button>
                         {/each}
                       {/if}
@@ -516,6 +572,7 @@
                   {/if}
                 </div>
               {/each}
+              {/if}
             </div>
           {/each}
         {/if}

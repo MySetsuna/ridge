@@ -78,7 +78,7 @@ function cwdColumnId(workspaceId: string, cwd: string): string {
 // doesn't deserialise every other workspace's state. Hard-capped at 500 paths
 // per column to keep the payload small on giant mono-repos (LRU-like — we
 // drop the oldest when serialising if over the cap).
-const LS_PREFIX = 'wind-explorer-column:';
+const LS_PREFIX = 'ridge-explorer-column:';
 const MAX_EXPANDED = 500;
 
 interface PersistedColumnState {
@@ -314,7 +314,7 @@ function createFileExplorerStore() {
 				}));
 			} catch (e) {
 				const msg = String(e);
-				// 路径不存在可能是 .wind 恢复到新机器上的合法场景；其他错误仍可能是 bug。
+				// 路径不存在可能是 .ridge 恢复到新机器上的合法场景；其他错误仍可能是 bug。
 				// 只 console.warn，不再给标题追加"· 目录不存在"文案 —— 避免用户在目录实际存在但
 				// 路径传递有误（如正反斜杠 Windows 混用）的情况下被误导。
 				const isMissing = /not exist|No such file|path is not a directory/i.test(msg);
@@ -552,6 +552,48 @@ export function toggleWorkspaceCollapsed(workspaceId: string): void {
 		const next = new Set(s);
 		if (next.has(workspaceId)) next.delete(workspaceId);
 		else next.add(workspaceId);
+		return next;
+	});
+}
+
+// ---- Collapsed state for individual cwd columns (T18：三层节点的中间层) ----
+//
+// 资源管理器三层结构：工作区 → 终端节点（cwd column）→ 文件树。
+// 终端节点（即一个 cwd 下合并若干同 cwd 终端 pane 的卡片）允许独立折叠，
+// 折叠时隐藏文件树仅保留头部（cwd 路径 + pane 标签）。持久化到 localStorage
+// 让用户切回 Ridge 后保留之前的折叠形状。
+const COLLAPSED_COLUMNS_KEY = 'ridge-explorer-collapsed-columns';
+
+function loadCollapsedColumns(): Set<string> {
+	if (typeof localStorage === 'undefined') return new Set();
+	try {
+		const raw = localStorage.getItem(COLLAPSED_COLUMNS_KEY);
+		if (!raw) return new Set();
+		const arr = JSON.parse(raw);
+		return Array.isArray(arr) ? new Set(arr.filter((s: unknown) => typeof s === 'string')) : new Set();
+	} catch {
+		return new Set();
+	}
+}
+
+function persistCollapsedColumns(s: Set<string>): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(COLLAPSED_COLUMNS_KEY, JSON.stringify(Array.from(s)));
+	} catch {
+		/* ignore */
+	}
+}
+
+const _collapsedColumns = writable<Set<string>>(loadCollapsedColumns());
+export const collapsedColumns = { subscribe: _collapsedColumns.subscribe };
+
+export function toggleColumnCollapsed(columnId: string): void {
+	_collapsedColumns.update((s) => {
+		const next = new Set(s);
+		if (next.has(columnId)) next.delete(columnId);
+		else next.add(columnId);
+		persistCollapsedColumns(next);
 		return next;
 	});
 }

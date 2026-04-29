@@ -1,7 +1,7 @@
-; Wind NSIS installer hooks
+; Ridge NSIS installer hooks
 ;
-; Append $INSTDIR to the current-user PATH so `tmux` (the Wind shim) resolves
-; from any shell — not only inside Wind's own PTY panes.
+; Append $INSTDIR to the current-user PATH so `tmux` (the Ridge shim) resolves
+; from any shell — not only inside Ridge's own PTY panes.
 ;
 ; Uses StrFunc ${StrLoc} (declared in the generated installer.nsi) for
 ; idempotent detection, and WordFunc ${WordReplace} (installer.nsi already

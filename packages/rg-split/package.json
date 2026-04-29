@@ -1,0 +1,25 @@
+{
+  "name": "@ridge/split",
+  "version": "0.1.0",
+  "description": "Lightweight split-pane layout for Svelte 5. Pure flex container + percentage-sized panes. Pure rendering layer — drag/snap logic is the consumer's responsibility (or use the optional self-driving wrapper).",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "src/lib"
+  ],
+  "svelte": "./src/lib/index.ts",
+  "types": "./src/lib/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/lib/index.ts",
+      "svelte": "./src/lib/index.ts",
+      "default": "./src/lib/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "wind",
+  "productName": "ridge",
   "version": "0.1.0",
-  "identifier": "com.tauri-app.wind",
+  "identifier": "com.tauri-app.ridge",
   "build": {
     "beforeDevCommand": "node scripts/ensure-teammate-shim.mjs && npm run dev",
     "devUrl": "http://127.0.0.1:5173",
@@ -14,7 +14,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "wind",
+        "title": "ridge",
         "width": 800,
         "height": 600,
         "decorations": false,
@@ -42,7 +42,7 @@
       },
       "wix": {
         "fragmentPaths": ["wix/path-env.wxs"],
-        "componentRefs": ["WindPathEnvVar"]
+        "componentRefs": ["RidgePathEnvVar"]
       }
     }
   }

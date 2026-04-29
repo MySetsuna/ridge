@@ -1,4 +1,4 @@
-# Wind — Next Loop 计划
+# Ridge — Next Loop 计划
 
 最后更新：2026-04-27（第 69 轮） · 由 /loop 自动生成
 
@@ -153,7 +153,7 @@ modal 含搜索栏 / 自动上滚 / 另存 .log / `stripAnsi` 11 个单测）+ c
 **`src/lib/stores/termSettings.ts`**（新文件）
 
 模块级 `termFontSize` store（writable）：
-- 初始值从 `localStorage['wind-term-font-size']` 读取（默认 15）
+- 初始值从 `localStorage['ridge-term-font-size']` 读取（默认 15）
 - 有效范围：8–32 px
 - `increase()` / `decrease()` / `reset()` 每次调用后同步持久化到 localStorage
 
@@ -179,9 +179,9 @@ modal 含搜索栏 / 自动上滚 / 另存 .log / `stripAnsi` 11 个单测）+ c
 
 **`src/app.css`** + **`src/lib/components/SearchSidebar.svelte`**
 
-新增 CSS class `wf-search-row`（应用在每条结果 `<button>` 上）：
+新增 CSS class `rg-search-row`（应用在每条结果 `<button>` 上）：
 ```css
-.wf-search-row { content-visibility: auto; contain-intrinsic-size: 0 22px; }
+.rg-search-row { content-visibility: auto; contain-intrinsic-size: 0 22px; }
 ```
 
 作用：浏览器跳过不在视口内的行的 layout + paint，大幅降低 "显示全部 500+ 条结果"
@@ -209,12 +209,12 @@ modal 含搜索栏 / 自动上滚 / 另存 .log / `stripAnsi` 11 个单测）+ c
 旧行为：创建新分支的"基于："行使用 `<select>` 元素，在 monorepo 的数百条分支下
 下拉列表极长且不能过滤。
 
-新行为：改为 `<input type="text" list="wf-git-base-list">` + `<datalist>` 组合：
+新行为：改为 `<input type="text" list="rg-git-base-list">` + `<datalist>` 组合：
 - 用户可以直接**输入**任意 ref（分支名、tag、commit hash）
 - 已加载的 `branches` 列表作为候选项出现在浏览器原生建议下拉
 - placeholder `HEAD（当前）` 表明空值即用当前 HEAD
 - `autocomplete="off"` 避免浏览器历史干扰
-- 由于同一时间只有一个 picker 打开，共用 `id="wf-git-base-list"` 无冲突
+- 由于同一时间只有一个 picker 打开，共用 `id="rg-git-base-list"` 无冲突
 
 #### CLAUDE.md 同步（三节更新）
 
@@ -286,7 +286,7 @@ modal 含搜索栏 / 自动上滚 / 另存 .log / `stripAnsi` 11 个单测）+ c
 | 变量 | 值 | 说明 |
 |---|---|---|
 | `#{pane_pid}` | `1` | PTY 进程 ID（静态占位） |
-| `#{pane_title}` | `wind` | Pane 标题 |
+| `#{pane_title}` | `ridge` | Pane 标题 |
 | `#{pane_current_command}` | `shell` | 当前运行命令 |
 | `#{pane_width}` | `120` | 宽度（与 list-panes 默认一致） |
 | `#{pane_height}` | `80` | 高度 |
@@ -294,7 +294,7 @@ modal 含搜索栏 / 自动上滚 / 另存 .log / `stripAnsi` 11 个单测）+ c
 | `#{window_layout}` | `tiled` | 布局名 |
 | `#{window_width/height}` | `120/80` | 窗口尺寸 |
 | `#{session_windows}` | `1` | 会话窗口数 |
-| `#{client_session}` | `wind` | 当前 session 名 |
+| `#{client_session}` | `ridge` | 当前 session 名 |
 | `#{client_width/height}` | `120/80` | 客户端尺寸 |
 | `#{client_tty}` | `/dev/pts/0` | 客户端 TTY |
 
@@ -328,10 +328,10 @@ modal 含搜索栏 / 自动上滚 / 另存 .log / `stripAnsi` 11 个单测）+ c
 **`src-tauri/src/bin/tmux.rs`** `cmd_kill_pane`
 
 旧行为：`kill-pane` 解析 `-t` 参数后直接返回 `Ok(())`（no-op）。Claude Code 退出 teammate
-后，对应 pane 继续以 zombie 形式留在 Wind 布局中，用户需手动关闭。
+后，对应 pane 继续以 zombie 形式留在 Ridge 布局中，用户需手动关闭。
 
 新行为：解析 `-t` pane_index 后 POST 到 `/api/v1/kill-pane { pane_index }`，
-Wind 后端移除 pane、tear down PTY、emit `teammate-layout-changed`。
+Ridge 后端移除 pane、tear down PTY、emit `teammate-layout-changed`。
 `-a`（kill all）特判为 no-op（保留至少一个 pane 的安全策略）。
 
 #### `/api/v1/rename-pane` 新路由
@@ -350,10 +350,10 @@ Wind 后端移除 pane、tear down PTY、emit `teammate-layout-changed`。
 **`src-tauri/src/bin/tmux.rs`** `cmd_rename_window`
 
 旧行为：`rename-window` 解析参数后 no-op。Claude Code 调用 `tmux rename-window -t 0 <name>`
-给 teammate pane 起名，但 Wind pane 标题从不更新。
+给 teammate pane 起名，但 Ridge pane 标题从不更新。
 
 新行为：解析 `-t pane_index` 和 `name`，POST 到 `/api/v1/rename-pane { pane_index, name }`。
-Wind 后端写入 `teammate_pane_titles` 并 emit 布局变更事件，pane 标题栏立即显示新名字。
+Ridge 后端写入 `teammate_pane_titles` 并 emit 布局变更事件，pane 标题栏立即显示新名字。
 
 **回归**：`cargo check` 0 warnings · `cargo test` 68/68 · `vitest` 142/142 · `pnpm check` 0/0/0
 
@@ -411,8 +411,8 @@ N 个工作区 root 里每个搜索都要等上一个完成，总延迟线性增
 #### `paneTree.ts` 注释清理
 
 `SavedWorkspace.paneCwds` 的 TODO 注释被修正：cwd 持久化通过 backend
-`PaneTree.panes[id].cwd` → `.wind` JSON → `get_pane_layout` → `extractCwdsFromLayout`
-自然工作，原注释误认为"没有持久化"。history-path (`list_workspace_history`) 与 .wind
+`PaneTree.panes[id].cwd` → `.ridge` JSON → `get_pane_layout` → `extractCwdsFromLayout`
+自然工作，原注释误认为"没有持久化"。history-path (`list_workspace_history`) 与 .ridge
 file-path 是两条独立路径；前者目前不暴露还原 UI，后者工作正常。
 
 **回归**：`pnpm check` 0/0/0 · `vitest` 142/142
@@ -470,7 +470,7 @@ root 情况下用户要等几秒才看到红圈，抵消了并行的初衷。
 
 **`src/routes/+page.svelte`** `handleContextMenu`
 
-旧行为：右击 Monaco 编辑器时，Wind 的全局 `document contextmenu` handler 在 Monaco
+旧行为：右击 Monaco 编辑器时，Ridge 的全局 `document contextmenu` handler 在 Monaco
 自己的 handler 之后触发，叠加显示一个只含"水平/垂直分割 + 关闭窗格"的稀疏菜单，把
 Monaco 原生菜单（Go to Definition / Rename Symbol / Format Document / Find All
 References…）盖住。
@@ -478,7 +478,7 @@ References…）盖住。
 新行为：`target === 'editor'` 时提前 `return`，让 Monaco 独立渲染其原生 contextmenu
 （Monaco 的监听器在 editor container 上，event 到达 document 之前已处理）。
 
-理由：Monaco 内置的编辑器操作比 Wind 稀疏菜单实用得多；分割/关闭等 pane 操作有专属
+理由：Monaco 内置的编辑器操作比 Ridge 稀疏菜单实用得多；分割/关闭等 pane 操作有专属
 快捷键（Ctrl+Shift+H/V / Ctrl+W），不需要菜单入口。
 
 **回归**：`pnpm check` 0/0/0 · `vitest` 142/142
@@ -499,8 +499,8 @@ References…）盖住。
 | Path 1（主读循环 OSC 7）| 几乎所有 cwd 更新 | `pane.cwd = Some(cwd.clone())` ← **无归一化** | `cwd_clone.to_string_lossy()` ← **无归一化** |
 | Path 2（EOF/尾冲刷）| PTY 退出时 | `PathBuf::from(normalize_cwd_str(...))` ✓ | `normalize_cwd_str(...)` ✓ |
 
-结果：Git Bash 经由 Path 1 报告 `C:/code/wind`（`file:///C:/code/wind`），
-PowerShell shell-integration 经由 Path 1 报告 `C:\code\wind`（`file://host/C:\code\wind`）。
+结果：Git Bash 经由 Path 1 报告 `C:/code/ridge`（`file:///C:/code/ridge`），
+PowerShell shell-integration 经由 Path 1 报告 `C:\code\ridge`（`file://host/C:\code\ridge`）。
 两者在 `paneCwdStore` 里是**不同的 key**，`syncWithPaneCwds` 把它们映射为两列，
 无论 Pass 2 Seed 多正确都无法合并——这就是"始终有一个终端没有合并"的真正原因。
 
@@ -828,7 +828,7 @@ cwd 从不加入 `paneCwdStore`。
 - **Bug fix**：`toggleRepoCollapse` 里原来写 `branchPickerOpen = null`（类型 `string`
   不接受 `null`），改为 `''`；同时移除 `<span>` 上多余的 `onclick`（a11y，改为
   只用 `<button>` chevron 响应折叠点击）。
-- 顺带清掉 `FileEditor.svelte` 里 `wf-tab-scroll` 的两条残留 CSS 警告（上轮
+- 顺带清掉 `FileEditor.svelte` 里 `rg-tab-scroll` 的两条残留 CSS 警告（上轮
   切到 overlayScroll 后变 unused）。
 
 #### 回归
@@ -879,7 +879,7 @@ cwd 从不加入 `paneCwdStore`。
   `{#each [splitRefs(c.refs)] as { visible: visibleRefs, hidden: hiddenRefs }}`
   作 let-binding（Svelte 5 的 `{@const}` 在 `<div>` body 可用，此处
   用 single-element each 兜底一致性）。
-- 溢出角标：灰色 `bg-[var(--wf-surface)] text-[var(--wf-fg-muted)]` pill，
+- 溢出角标：灰色 `bg-[var(--rg-surface)] text-[var(--rg-fg-muted)]` pill，
   `title` = 隐藏 ref 名换行拼接。
 - 不加 click-to-expand（hover title 够用，YAGNI）。
 
@@ -893,7 +893,7 @@ cwd 从不加入 `paneCwdStore`。
 #### FileEditor tab bar → overlayScroll
 
 **`src/lib/components/FileEditor.svelte`**
-- 行 448：`overflow-x-auto wf-tab-scroll` 替换为
+- 行 448：`overflow-x-auto rg-tab-scroll` 替换为
   `use:overlayScroll={{ preset: 'horizontal-tabs', layout: false }}`。
 - `layout: false` 保留原有 `flex items-center`（tab 间用 border-right
   分隔，不需要 gap 注入）。
@@ -978,7 +978,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
   - 走纯 line-based 扫描，找闭合 fence 行（同 fence 字符严格相等）。
   - 找不到闭合 → 视作正文，原样返回（避免误吞普通水平线后所有内容）。
   - 找到 → 把 `[0..closeIdx]` 整段替换为空字符串再 join，**保留行数**：
-    下游 `[data-wf-md-src-line]` 注释的行号与用户编辑器一致，preview
+    下游 `[data-rg-md-src-line]` 注释的行号与用户编辑器一致，preview
     ↔ source 同步不破。
   - 严格相等避免误吞 setext heading underline（`title\n---`）和缩进的
     `---`。
@@ -991,9 +991,9 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
 
 **`src/lib/components/SourceControl.svelte`** `<style>` 段
 - 用户 13:10 反馈：changes ↔ graph 之间的拖动条太宽太抢眼。
-- 旧：`background: var(--wf-border)`（常态 1px 实线）+ hover 全段 accent。
+- 旧：`background: var(--rg-border)`（常态 1px 实线）+ hover 全段 accent。
 - 新：默认 `background: transparent` + `transition: background-color
-  150ms ease`；hover `color-mix(in oklab, var(--wf-accent) 20%,
+  150ms ease`；hover `color-mix(in oklab, var(--rg-accent) 20%,
   transparent)`；active `30%`——与 sidebar resize handle（行 1086）的
   `/20` `/30` 透明度梯度完全一致。
 - splitpanes 的 dragging 状态类是 `splitpanes__splitter__active`（双下
@@ -1102,7 +1102,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
 - **MarkdownPreview 不接 overlayScroll**：preview 容器的 wheel 在
   absolute-positioned 父级里和 overlayscrollbars 的 wheel hijack 互
   斥（早期轮次踩过坑）。preview 维持原生 `overflow-y-auto` +
-  `wf-scroll`。
+  `rg-scroll`。
 - **GitGraph 不接 overlayScroll**：纯 SVG，没有内部滚动域；外层
   SCM 容器已经在用 overlayScroll。
 - **同文档 anchor `[here](./README.md#sec)` 微优化**：当前重复
@@ -1244,7 +1244,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
 
 2. **μ — Commit message Shift+wheel 横向滚动**
    - commit row 的 message `<span>` 从 `truncate` 改成
-     `whitespace-nowrap overflow-x-auto`；新 `wf-msg-scroll` 类把
+     `whitespace-nowrap overflow-x-auto`；新 `rg-msg-scroll` 类把
      webkit + firefox 滚动条都隐藏（per-row overlayscrollbars 太重）。
    - `onwheel` handler：仅在 `e.shiftKey` 时把 deltaY/deltaX 转
      scrollLeft + preventDefault，不影响默认竖向滚动 UX。
@@ -1280,7 +1280,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
      加上立刻 fail。
 
 2. **ι — WorkspaceTabs → overlayscrollbars**
-   - 之前用 `wf-scroll`（webkit thin），切到 `use:overlayScroll
+   - 之前用 `rg-scroll`（webkit thin），切到 `use:overlayScroll
      options.overflow={x:'scroll', y:'hidden'}`，与 Explorer/SCM
      视觉一致（浮层 + idle 隐藏）。
    - workspace tab 元素本身是 `flex shrink-0`，不影响 DnD。
@@ -1307,7 +1307,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
    与 rail tooltip 一致。
 
 4. **workspace-tabs** —— `重命名工作区` 接 `promptDialog` →
-   `renameWorkspace`。`保存为 .wind` 入口去掉避免双入口（Explorer
+   `renameWorkspace`。`保存为 .ridge` 入口去掉避免双入口（Explorer
    头部已有）。
 
 5. **git-graph** —— `Fetch` / `Pull` / `Push` / `Sync` 接真实命令：
@@ -1342,7 +1342,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
       联动）。
     - **LOW** 终端右键还缺 `复制选中` / `粘贴` / `清屏` / `选择全部`
       这些原生终端心智项 —— 需要触达 xterm.js 实例（Pane 内部）。
-    - **LOW** Monaco 已有原生 contextmenu；当前 wind 的
+    - **LOW** Monaco 已有原生 contextmenu；当前 ridge 的
       `oncontextmenu` 在 .monaco-editor 上覆盖掉它。可能用户想要
       Monaco 原生菜单（含 Go to Definition 等）—— 需要决策。
 
@@ -1398,21 +1398,21 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
    `teammate-layout-changed` 事件 → SplitContainer 渲染新 pane（绿色
    Bot pulse）。
 
-2. **结论：Wind 已经真支持** teammates 自动分屏。`cmd_split` /
-   `route_split` 端到端连通，每个 teammate 进入独立 Wind pane，cwd
+2. **结论：Ridge 已经真支持** teammates 自动分屏。`cmd_split` /
+   `route_split` 端到端连通，每个 teammate 进入独立 Ridge pane，cwd
    继承，命令 PTY 真起。空闲 pane 复用（`allow_idle_reuse`）已加。
 
 3. **PARTIAL 缺口（不阻塞主流程）**：
    - `new-session` shim 内 stub，不真分会话；
    - `kill-pane` 故意 no-op（避免误关用户 pane）；
-   - `resize-pane` 故意 no-op（Wind 用户用 splitpanes 拖拽控制）；
-   - `new-window` 路由把"新 window"翻译为"新 pane"——Wind 没有
+   - `resize-pane` 故意 no-op（Ridge 用户用 splitpanes 拖拽控制）；
+   - `new-window` 路由把"新 window"翻译为"新 pane"——Ridge 没有
      tmux window 概念；
    - tmux 模板 `#{...}` 渲染靠查表，未涵盖的占位符返回原文；
    - `rename-window` 当前没有路由。
 
 4. **验收 3 步给用户测**：build shim → PATH 配置 → `claude` 启
-   teammate → 期望 Wind 立刻新分 pane 并出现绿色 Bot 标记。
+   teammate → 期望 Ridge 立刻新分 pane 并出现绿色 Bot 标记。
 
 5. **回归**
    - `pnpm check` **0 / 0 / 0** （无代码改）
@@ -1427,14 +1427,14 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
      但没有任何 subscriber → 用户右键看不到任何菜单，"所有右键菜单
      失效"症状本因。
    - 在 modal 块里加 `<ContextMenu />` 单实例。
-   - 新增 e2e 回归测试：右键 `.wf-workspace-tabs` 应渲染
+   - 新增 e2e 回归测试：右键 `.rg-workspace-tabs` 应渲染
      `[role="menu"]`。锁住，下次再被无意中拆掉立刻 fail。
 
 2. **resolver class typo 修**
-   - `getContextMenuTarget` 检查 `.wf-terminal` 但实际类是
-     `.wf-terminal-surface`（Pane.svelte），改名匹配。
-   - `.wf-editor` 不存在，删除该分支只留 `.monaco-editor`。
-   - `SplitContainer.svelte` 的 leaf header 加 `wf-pane-header` 类，
+   - `getContextMenuTarget` 检查 `.rg-terminal` 但实际类是
+     `.rg-terminal-surface`（Pane.svelte），改名匹配。
+   - `.rg-editor` 不存在，删除该分支只留 `.monaco-editor`。
+   - `SplitContainer.svelte` 的 leaf header 加 `rg-pane-header` 类，
      pane header 右键终于能命中正确 target（之前一直退到
      `pane-content`）。
 
@@ -1579,7 +1579,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
    - `FileEditor.svelte` 的 markdown 预览 wrapper 之前用
      `use:overlayScroll` + `absolute inset-0`，overlayscrollbars 注入的
      synthetic viewport 在绝对定位 host 下没有稳定 height，wheel 滚动
-     失效。换成原生 `overflow-y-auto + wf-scroll` —— 与其它 sticky-rail
+     失效。换成原生 `overflow-y-auto + rg-scroll` —— 与其它 sticky-rail
      区域保持一致，scroll 行为确定。
 
 6. **回归全通**
@@ -1721,7 +1721,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
 ### 第 27 轮（2026-04-25 10:44）— Claude Code 扩展独立 tab + 全局开关
 
 1. **`settings.ts` 新通用偏好 store**
-   - `claudeExtensionEnabled` 持久化到 localStorage 的 `wind-settings`
+   - `claudeExtensionEnabled` 持久化到 localStorage 的 `ridge-settings`
      key（单一 JSON blob，原子读写，SSR-safe）。
    - 默认 true 不破坏现状；`setClaudeExtensionEnabled` 便捷写入。
    - 形状预留以容纳后续偏好（字体、主题、telemetry）。
@@ -1847,7 +1847,7 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
    - `FileEditor.svelte` 头部最左加 `PanelRightClose` 收起按钮（drawer
      和 floating 两种模式都常驻）；floating 模式下右侧 search 旁加 `X`
      关闭按钮（drawer 模式不重复，左收起足够）。
-   - 两个按钮都加 `wf-no-drag` + `onmousedown stopPropagation` 防止 floating
+   - 两个按钮都加 `rg-no-drag` + `onmousedown stopPropagation` 防止 floating
      模式下被拖拽 handler 截胡。
 
 3. **验证 pane git 按钮真实数据 + 非 git 仓库不显示**（用户复述确认）
@@ -1868,15 +1868,15 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
 
 1. **PaneGitPill / PaneDiffPill 拆分**（P0-B）
    - 新增 `PaneDiffPill.svelte`：渲染 file count + +N -N（不含 ahead/behind，
-     这俩留在分支 pill）；点击发 `wind:open-sidebar-tab=git` +
-     `wind:scm-focus-repo` 双事件。clean (0/0/0) 状态用降低对比度的灰色，
+     这俩留在分支 pill）；点击发 `ridge:open-sidebar-tab=git` +
+     `ridge:scm-focus-repo` 双事件。clean (0/0/0) 状态用降低对比度的灰色，
      dirty 状态走 accent。
    - `PaneGitPill` 移除 dirty/+N -N 渲染，保留 branch + ahead/behind +
      upstream-warn。tooltip 同步缩短。
    - `SplitContainer` 在 PaneGitPill 后挂 PaneDiffPill。
-   - `SourceControl` 新增 `wind:scm-focus-repo` 监听：用
-     `[data-wf-scm-repo]` 找仓库 → 展开三个 group → scrollIntoView →
-     1.5s `.wf-scm-flash` 高亮（CSS keyframe）。仓库未渲染时用 250ms
+   - `SourceControl` 新增 `ridge:scm-focus-repo` 监听：用
+     `[data-rg-scm-repo]` 找仓库 → 展开三个 group → scrollIntoView →
+     1.5s `.rg-scm-flash` 高亮（CSS keyframe）。仓库未渲染时用 250ms
      退避重试 8 次（≤2s）兜住"刚切到 SCM tab，discoveryRepos 还没回来"
      的 race。
 
@@ -1884,10 +1884,10 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
    - 仓库头加 `sticky top-0 z-30 backdrop-blur-md`：滚动正文时仓库名 +
      分支 picker + sync 按钮始终钉在 viewport 顶部。
    - 三个 group sub-header（已暂存 / 更改 / 未跟踪）加
-     `wf-scm-group-sticky` 类（sticky top-29px z-20）：被仓库头压在下面，
+     `rg-scm-group-sticky` 类（sticky top-29px z-20）：被仓库头压在下面，
      与 Explorer 的两层 sticky 同思路（workspace top-0 z-20 + cwd
      top-8 z-10）。
-   - 所有 sticky 都用 `var(--wf-surface-2)/92 + backdrop-blur-md`，与
+   - 所有 sticky 都用 `var(--rg-surface-2)/92 + backdrop-blur-md`，与
      Explorer 视觉一致。
 
 3. **"图谱" → "提交记录" 诚实标签**（用户 +1 反馈）
@@ -2086,10 +2086,10 @@ review + 写计划。所有 ρ/σ/τ/υ 候选条目本轮全部消化。
      - 横向滚动条在 flex-row 容器里没正确显示；
      - 拖动 tab 时滚动条与 sticky 头部重叠；
      - autoHide 让用户找不到滚动状态；
-     - 默认 theme `wf-os-theme` 是为竖向调的，横向 thumb 太短/太细。
+     - 默认 theme `rg-os-theme` 是为竖向调的，横向 thumb 太短/太细。
    - **action 拓展点**：`overlayScroll.ts` 加一个 preset 形参，比如
      `use:overlayScroll={{ preset: 'horizontal-tabs' }}`，内部展开成
-     `{x:'scroll', y:'hidden', scrollbars: {theme:'wf-os-theme-h',
+     `{x:'scroll', y:'hidden', scrollbars: {theme:'rg-os-theme-h',
      autoHide:'never'}}` 等。当前调用方每个都要拼一坨 options，
      重复且易写错；preset 让常见场景一行搞定。
    - 现有 callsites 检查：Explorer / SourceControl / SearchSidebar /
@@ -2133,7 +2133,7 @@ _（旧设计说明保留：）_
    - 注意不要影响 overlayscrollbars 的 wheel 行为；overlayscrollbars
      一般会让原生 wheel 透出。
 
-ν. **侧边栏最大宽度 = Wind 窗口的 80%**（用户 12:25 反馈）
+ν. **侧边栏最大宽度 = Ridge 窗口的 80%**（用户 12:25 反馈）
    - 当前侧边栏 resize 上限是 `windowWidth40`（40% 宽，硬编码于
      `+page.svelte` line ~145）。用户希望可以拖到 80%。
    - 改：`windowWidth40` 重命名 → `sidebarMaxPx`，公式
@@ -2144,12 +2144,12 @@ _（旧设计说明保留：）_
 ι. **WorkspaceTabs 改用模拟滚动条 (overlayscrollbars)** ✓ 第 38 轮
    已交付。
    _（旧设计说明保留：）_
-   - `WorkspaceTabs.svelte` 当前用 `wf-scroll`（webkit thin scrollbar）
+   - `WorkspaceTabs.svelte` 当前用 `rg-scroll`（webkit thin scrollbar）
      做横向溢出滚动；用户希望和 Explorer/SCM 一样统一为
      overlayscrollbars 浮层。
    - 用现有 `use:overlayScroll` action，pass options
      `{ overflow: { x: 'scroll', y: 'hidden' } }`（横向溢出）。
-   - 注意 wf-no-drag / data-tauri-drag-region 的位置——overlayscrollbars
+   - 注意 rg-no-drag / data-tauri-drag-region 的位置——overlayscrollbars
      注入新元素不能落在拖拽区里。
 
 κ. **项目全局拖拽功能当前都不可用** ✓ 第 38 轮已修复（根因：根 div
@@ -2223,7 +2223,7 @@ _（旧设计说明保留：）_
    分屏展示（每个 teammate 占一个 pane）。
    - 复盘 CLAUDE.md "Claude Code Agent Teams (TmuxBackend)" 段落。
      当前架构走 tmux shim → 后端 register_teammate_agent，每个 agent
-     绑一个 pane；Wind 是 Claude 的 tmux backend。
+     绑一个 pane；Ridge 是 Claude 的 tmux backend。
    - 验证："/agent" 或类似 Claude Code 指令真触发新 pane 时，新 pane
      是否真在 paneTreeStore 出现 + 是否有 split-pane 触发；
      Backend `pane.rs` 的 `split_pane_at_path` 是否被 shim 调用过；
@@ -2253,7 +2253,7 @@ B. **PaneGitPill 拆成两个按钮（分支 + diff）** ✓ 第 24 轮已交付
      胶囊；用户 reading 体验"像 mock"，且改动数据没有可点击钻入。
    - 目标：拆成 `PaneBranchPill`（保留分支选择 / 创建 / picker）和
      `PaneDiffPill`（只渲染 +N -N / 改动文件数）。点 diff pill 触发
-     `wind:open-sidebar-tab=git` + 新事件 `wind:scm-focus-repo` 携带
+     `ridge:open-sidebar-tab=git` + 新事件 `ridge:scm-focus-repo` 携带
      repoRoot，让 SCM 滚到对应仓库且展开。
    - 二者均在 `!info.branch` 时不渲染（已有逻辑保留）。
 
@@ -2317,7 +2317,7 @@ E. **标准要求保持（不可回归）**
 1. **搜索索引 tantivy spike**（用户最久未动批次）
    - 后端启动后台 index 每个 workspace cwd（跳过 SKIP_DIRS）；新命令
      `tantivy_search(root, query)` 毫秒级。
-   - `notify` crate 增量更新 + `~/.wind/cache/<root-hash>.idx` 持久化。
+   - `notify` crate 增量更新 + `~/.ridge/cache/<root-hash>.idx` 持久化。
    - 客户端 SearchSidebar 优先索引；超时 / cold fallback 到当前 ripgrep。
    - **独立一轮**（spike + 选型 + 写入）。
 
@@ -2542,7 +2542,7 @@ _ρ / σ / τ / υ 已在第 44 轮交付（见上）。_
    - 同工作区内多个 pane 共用同一 cwd → `syncWithPaneCwds` 已经在做：
      以 `"${workspaceId}:${cwd}"` 为列 ID，所有 paneIds 合并进同一列，
      Explorer 里只出一个区段（头部展示多个 pane 角标）。**此情形已处理。**
-   - 跨工作区：workspace-A pane-1 和 workspace-B pane-1 同在 `/code/wind`
+   - 跨工作区：workspace-A pane-1 和 workspace-B pane-1 同在 `/code/ridge`
      → 各自的 `syncWithPaneCwds(wsId, ...)` 产生两个不同列（id 不同），
      Explorer 在两个工作区标题下各渲染一棵一样的树。**此情形未处理。**
 
@@ -2586,22 +2586,22 @@ _ρ / σ / τ / υ 已在第 44 轮交付（见上）。_
    **边界**
    - 同工作区内同 cwd 已合并（不受影响）。
    - "主列"优先级：active workspace 的列为主，其他工作区的列为副。
-   - 路径规范化：`/code/wind` vs `/code/wind/` vs `C:\code\wind` 要 normalize
+   - 路径规范化：`/code/ridge` vs `/code/ridge/` vs `C:\code\ridge` 要 normalize
      后再比较（参考现有 Explorer 里的 `normalise(s)` helper）。
    - Expand/select 状态全局共享（同一 tree ref），不分别保存。
 
 φ. **markdown front-matter CRLF 兼容** ✓ 第 45 轮已交付
    - `stripFrontMatter` 已在行 274 加 `source.replace(/\r\n/g, '\n')`；JSON `{...}` front-matter 同步识别。
 
-2. **`.wind` 文件持久化 paneCwds** ✓ 已确认工作（第 63 轮代码分析）
-   - `Pane.cwd` derives `Serialize`，`snapshot_workspace` 已将其序列化到 `.wind`；
+2. **`.ridge` 文件持久化 paneCwds** ✓ 已确认工作（第 63 轮代码分析）
+   - `Pane.cwd` derives `Serialize`，`snapshot_workspace` 已将其序列化到 `.ridge`；
    - `open_workspace_from_file` 反序列化后调用 `refreshWorkspaces`，
      `get_pane_layout` 读 `pane.cwd` → `extractCwdsFromLayout` → `paneCwdStore`。
    - 完整路径已通。
 
 3. **SearchSidebar 结果行渲染优化** — 第 66 轮交付
    - 已改用 CSS `content-visibility: auto; contain-intrinsic-size: 0 22px;`
-     (class `wf-search-row`) 对每条结果行延迟 paint，避免 500+ 条全渲时 GPU
+     (class `rg-search-row`) 对每条结果行延迟 paint，避免 500+ 条全渲时 GPU
      负担。注意：不能对 `.search-file` 容器用此属性，否则 layout containment
      会破坏内部 `position:sticky` 的文件头，必须逐行应用。
    - 如需真正的虚拟滚动（DOM 节点数量也减少），考虑扁平化 groups → flat items 后
@@ -2660,7 +2660,7 @@ _P3 Toast / P3-9 / P3-10 / P1-4 / P3-13 / P2-8 / SearchSidebar 结果限制 / SC
 _终端右键菜单（ζ LOW 收尾项）已在第 54 轮交付。_
 _commit 行 Shift+F10 + runGitOnSelectedRepo SCM 联动已在第 55 轮交付。_
 _δ PARTIAL 缺口（kill-pane / rename-window / tmux `#{...}` 模板扩展）已在第 62–63 轮交付。_
-_P1-2（`.wind` paneCwds 持久化）已在代码分析中确认已工作（`Pane.cwd` derives Serialize → `.wind` → 还原路径 `openWorkspaceFromFile → refreshWorkspaces → extractCwdsFromLayout`）。_
+_P1-2（`.ridge` paneCwds 持久化）已在代码分析中确认已工作（`Pane.cwd` derives Serialize → `.ridge` → 还原路径 `openWorkspaceFromFile → refreshWorkspaces → extractCwdsFromLayout`）。_
 
 _横向 Tab 滚动修复 + SCM 刷新降频 已在第 64 轮交付。_
 _DnD 功能（工作区 tab / 文件编辑器 tab / SplitContainer pane 拖拽）第 64 轮确认均已实现：_

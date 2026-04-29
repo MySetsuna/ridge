@@ -2,9 +2,9 @@
 //!
 //! 目标：
 //! - 将 panic（主线程 / 后台线程 / 子任务）完整落盘到
-//!   `<LOCALAPPDATA>\wind\logs\crash-YYYY-MM-DD.log`；
+//!   `<LOCALAPPDATA>\ridge\logs\crash-YYYY-MM-DD.log`；
 //! - `tracing` 事件通过 rolling-daily 文件 appender 输出到
-//!   `<LOCALAPPDATA>\wind\logs\wind-YYYY-MM-DD.log`，保留 stderr 以便开发。
+//!   `<LOCALAPPDATA>\ridge\logs\ridge-YYYY-MM-DD.log`，保留 stderr 以便开发。
 //!
 //! 只在 `init_once()` 第一次调用时真正安装；多次调用不会重复注册 panic hook。
 
@@ -36,8 +36,8 @@ pub fn init_once(app_data_dir: &PathBuf) {
     let _ = std::fs::create_dir_all(&logs_dir);
     let _ = LOG_DIR.set(logs_dir.clone());
 
-    // 每日滚动文件：wind-YYYY-MM-DD.log
-    let file_appender = tracing_appender::rolling::daily(&logs_dir, "wind.log");
+    // 每日滚动文件：ridge-YYYY-MM-DD.log
+    let file_appender = tracing_appender::rolling::daily(&logs_dir, "ridge.log");
     let (nb, guard) = tracing_appender::non_blocking(file_appender);
     let _ = GUARD.set(guard);
 
@@ -99,7 +99,7 @@ fn install_panic_hook(logs_dir: PathBuf) {
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "<non-string panic>".into());
 
-            let _ = writeln!(f, "\n===== WIND CRASH @ {now} =====");
+            let _ = writeln!(f, "\n===== RIDGE CRASH @ {now} =====");
             let _ = writeln!(f, "location: {location}");
             let _ = writeln!(
                 f,
@@ -112,7 +112,7 @@ fn install_panic_hook(logs_dir: PathBuf) {
         }
         // 再让默认 hook 执行（打印到 stderr），最后 tracing 记录一条 error。
         default_hook(info);
-        tracing::error!(target: "wind::panic", panic = %info, "panic captured by hook");
+        tracing::error!(target: "ridge::panic", panic = %info, "panic captured by hook");
     }));
 }
 
@@ -132,7 +132,7 @@ where
         .spawn(move || {
             let result = std::panic::catch_unwind(body);
             if result.is_err() {
-                tracing::error!(target: "wind::supervise", thread = %name_for_thread, "thread panicked; supervisor running fallback");
+                tracing::error!(target: "ridge::supervise", thread = %name_for_thread, "thread panicked; supervisor running fallback");
                 on_panic();
             }
         });

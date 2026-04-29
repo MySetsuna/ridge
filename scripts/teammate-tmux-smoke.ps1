@@ -3,12 +3,12 @@
 .SYNOPSIS
   Quick checks that the tmux shim matches what Claude Code TmuxBackend expects.
 
-  Prerequisites: WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (Wind injects these in app PTYs).
+  Prerequisites: RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN (Ridge injects these in app PTYs).
   Put the tmux shim on PATH as `tmux` (see pnpm run build:teammate-shim).
 #>
 $ErrorActionPreference = "Stop"
-if (-not $env:WIND_TEAMMATE_URL -or -not $env:WIND_TEAMMATE_TOKEN) {
-    Write-Error "Set WIND_TEAMMATE_URL and WIND_TEAMMATE_TOKEN (run from Wind terminal or export manually)."
+if (-not $env:RIDGE_TEAMMATE_URL -or -not $env:RIDGE_TEAMMATE_TOKEN) {
+    Write-Error "Set RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN (run from Ridge terminal or export manually)."
 }
 Write-Host "== tmux -V =="
 & tmux -V

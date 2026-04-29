@@ -138,16 +138,16 @@
   <!-- Scrollable tab strip: tab items are direct flex children so shrink-0
        causes them to overflow the container width, enabling scroll. -->
   <div
-    class="wf-no-drag min-w-0 flex-1 py-1 gap-1"
+    class="rg-no-drag min-w-0 flex-1 py-1 gap-1"
     use:overlayScroll={{ preset: 'horizontal-tabs' }}
   >
     {#each workspaces as ws, i (ws.id)}
       <div
         class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move
         {ws.id === activeWorkspaceId
-          ? 'bg-[var(--wf-accent)]/15 text-[var(--wf-fg)] border-[var(--wf-accent)]/35'
-          : 'text-(--wf-fg-muted) border-transparent hover:bg-white/5 hover:text-(--wf-fg)'}
-        {dragOverIndex === i ? 'ring-2 ring-[var(--wf-accent)]/50' : ''}"
+          ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
+          : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}
+        {dragOverIndex === i ? 'ring-2 ring-[var(--rg-accent)]/50' : ''}"
         draggable="true"
         ondragstart={(e) => handleDragStart(e, i)}
         ondragover={(e) => handleDragOver(e, i)}
@@ -163,7 +163,7 @@
             type="text"
             bind:this={renameInput}
             bind:value={editingName}
-            class="w-20 bg-transparent border-b border-[var(--wf-accent)] outline-none text-[var(--wf-fg)] text-[12px]"
+            class="w-20 bg-transparent border-b border-[var(--rg-accent)] outline-none text-[var(--rg-fg)] text-[12px]"
             onblur={() => handleRenameSubmit(ws.id)}
             onkeydown={(e) => handleRenameKeydown(e, ws.id)}
           />
@@ -205,7 +205,7 @@
   <!-- Actions slot (e.g. "+" new-workspace button): always visible on the
        right, never scrolls with the tab strip. -->
   {#if actions}
-    <div class="shrink-0 wf-no-drag">
+    <div class="shrink-0 rg-no-drag">
       {@render actions()}
     </div>
   {/if}

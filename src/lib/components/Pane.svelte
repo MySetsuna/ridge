@@ -5,14 +5,92 @@ import { FitAddon } from 'xterm-addon-fit';
 import { Unicode11Addon } from 'xterm-addon-unicode11';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { SearchAddon } from 'xterm-addon-search';
+import { WebglAddon } from 'xterm-addon-webgl';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { activePaneId, saveCurrentWorkspace, terminalTitles, paneForegroundProcessStore, setPaneCwd, getPaneCwd } from '$lib/stores/paneTree';
+import { activePaneId, saveCurrentWorkspace, terminalTitles, paneForegroundProcessStore, paneOscTitleStore, setPaneCwd, getPaneCwd } from '$lib/stores/paneTree';
+import { get } from 'svelte/store';
+import { settingsStore, type ThemeId } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { termFontSize } from '$lib/stores/termSettings';
 import 'xterm/css/xterm.css';
+
+// xterm 调色板：ANSI 16 色按 dark / light 大类分两套（每个 ridge 主题逐一定义
+// 16 个 ANSI 色不现实），但 background / foreground / cursor / selection 直接
+// 从 CSS 变量读，让 4 个主题（dark / sand / grass / soil）的终端壳色与
+// var(--rg-term-bg) 严格一致 —— 之前写死 #0c0b12 / #faf6ef，soil 与 grass
+// 的终端背景就和外壳 bg 不匹配。
+const XTERM_ANSI_DARK = {
+	black: '#1a1628',
+	red: '#f87171',
+	green: '#4ade80',
+	yellow: '#facc15',
+	blue: '#60a5fa',
+	magenta: '#e879f9',
+	cyan: '#2dd4bf',
+	white: '#f5f3ff',
+	brightBlack: '#6b6680',
+	brightRed: '#fca5a5',
+	brightGreen: '#86efac',
+	brightYellow: '#fde047',
+	brightBlue: '#93c5fd',
+	brightMagenta: '#f0abfc',
+	brightCyan: '#5eead4',
+	brightWhite: '#faf5ff',
+};
+const XTERM_ANSI_LIGHT = {
+	black: '#1f1b15',
+	red: '#b00020',
+	green: '#3a7d2c',
+	yellow: '#9a6b00',
+	blue: '#1f4fa7',
+	magenta: '#8b2a8b',
+	cyan: '#0e7a73',
+	white: '#5b554b',
+	brightBlack: '#6b6155',
+	brightRed: '#d4002a',
+	brightGreen: '#4a9a36',
+	brightYellow: '#b88300',
+	brightBlue: '#2a64bd',
+	brightMagenta: '#a833a8',
+	brightCyan: '#199d94',
+	brightWhite: '#1f1b15',
+};
+/** Read a CSS custom property off documentElement at call time. Trim because
+ *  getPropertyValue returns the value with the leading space from `--x: <v>`. */
+function cssVar(name: string): string {
+	if (typeof document === 'undefined') return '';
+	return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+/** Hex (#rrggbb / #rrggbbaa) → rgba(...) at the requested alpha. Used to
+ *  build selection background from the theme's accent color. */
+function hexToRgba(hex: string, alpha: number): string {
+	const m = hex.replace('#', '').match(/^([0-9a-f]{6}|[0-9a-f]{8})$/i);
+	if (!m) return `rgba(127, 127, 127, ${alpha})`;
+	const v = m[1];
+	const r = parseInt(v.slice(0, 2), 16);
+	const g = parseInt(v.slice(2, 4), 16);
+	const b = parseInt(v.slice(4, 6), 16);
+	return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+function xtermThemeFor(theme: ThemeId) {
+	const isLight = theme === 'sand' || theme === 'grass';
+	const ansi = isLight ? XTERM_ANSI_LIGHT : XTERM_ANSI_DARK;
+	const bg = cssVar('--rg-term-bg') || (isLight ? '#faf6ef' : '#0c0b12');
+	const fg = cssVar('--rg-fg') || (isLight ? '#1f1b15' : '#e6e4ef');
+	const accent = cssVar('--rg-accent') || (isLight ? '#a06320' : '#a78bfa');
+	return {
+		background: bg,
+		foreground: fg,
+		cursor: accent,
+		cursorAccent: bg,
+		selectionBackground: hexToRgba(accent, 0.3),
+		selectionForeground: fg,
+		...ansi,
+	};
+}
 
 interface DiffFile {
 	path: string;
@@ -112,6 +190,13 @@ let foregroundPollInterval: ReturnType<typeof setInterval> | undefined;
 let pinnedImeTextareaStyle: { left: string; top: string; transform: string } | undefined;
 /** Font size subscription - cleanup on component destroy */
 let unsubFontSize: (() => void) | undefined;
+/** Theme subscription so the live xterm reskins when the user switches themes. */
+let unsubXtermTheme: (() => void) | undefined;
+
+/** WebGL renderer addon — kept around so theme switches can clear the texture
+ *  atlas and force a redraw (xterm 5.3 + addon-webgl 0.16 sometimes leaves
+ *  glyphs cached against the old background color). */
+let webglAddon: WebglAddon | null = null;
 
 // ── Terminal in-pane search (Ctrl+F) ────────────────────────────────────────
 let searchAddon: SearchAddon | null = null;
@@ -179,6 +264,28 @@ function cancelResizeRaf() {
 	}
 }
 
+// T1：订阅 OSC 0/1/2 标题事件。后端 pty.rs 解析 \x1b]N;...\x07 后 emit
+// `pane-title-changed-${ws}-${pane}`，前端写到 paneOscTitleStore（更高优先级），
+// 同时复刻到 terminalTitles 让 UI 立即可见。OSC 优先级 > 进程名轮询。
+$effect(() => {
+	if (!isTauri() || !workspaceId) return;
+	let cancelled = false;
+	let unlistenTitle: (() => void) | undefined;
+	void listen<{ title: string }>(`pane-title-changed-${workspaceId}-${paneId}`, (e) => {
+		if (!alive || !e?.payload?.title) return;
+		const t = e.payload.title;
+		paneOscTitleStore.update((s) => ({ ...s, [paneId]: t }));
+		terminalTitles.update((m) => ({ ...m, [paneId]: t }));
+	}).then((u) => {
+		if (cancelled) u();
+		else unlistenTitle = u;
+	});
+	return () => {
+		cancelled = true;
+		unlistenTitle?.();
+	};
+});
+
 $effect(() => {
 	if (!isTauri() || !workspaceId) return;
 	const ch = `pane-mode-changed-${workspaceId}-${paneId}`;
@@ -217,6 +324,12 @@ function attachTerminalFocusHandlers() {
 const MAX_TERM_ROWS = 500;
 const MAX_TERM_COLS = 500;
 
+// 缓存上次 sync 给后端的尺寸；split / dock 等操作即便引发 ResizeObserver
+// 触发，但若该 pane 真实尺寸未变（仅 DOM 引用变化），不必再 IPC 通知 PTY
+// 与刷一次 fit。这避免"split A 时 B 也跟着 resize_pane"的无效抖动。
+let lastSyncedRows = -1;
+let lastSyncedCols = -1;
+
 async function fitAndSyncPty() {
 	if (!alive || !term || !fitAddon) return;
 	fitAddon.fit();
@@ -224,6 +337,9 @@ async function fitAndSyncPty() {
 		// 限制尺寸在合理范围内，防止极端尺寸导致 session 中断
 		const rows = Math.max(1, Math.min(MAX_TERM_ROWS, term.rows));
 		const cols = Math.max(1, Math.min(MAX_TERM_COLS, term.cols));
+		if (rows === lastSyncedRows && cols === lastSyncedCols) return;
+		lastSyncedRows = rows;
+		lastSyncedCols = cols;
 		try {
 			await invoke('resize_pane', { paneId, rows, cols });
 		} catch {
@@ -236,7 +352,7 @@ async function recoverPtySession() {
 	if (!isTauri() || recoveringPty || !alive) return;
 	recoveringPty = true;
 	try {
-		await invoke('create_pane', { paneId });
+		await invoke('create_pane', { paneId, shell: get(settingsStore).defaultShell || null });
 		if (!alive || isComposing) return;
 		await renderView();
 	} catch (e) {
@@ -261,10 +377,16 @@ async function renderView() {
 	removeFocusHandlers = undefined;
 	removeCompositionHandlers?.();
 	removeCompositionHandlers = undefined;
+	unsubFontSize?.();
+	unsubFontSize = undefined;
+	unsubXtermTheme?.();
+	unsubXtermTheme = undefined;
 	if (term) term.dispose();
 	if (editor) editor.dispose();
 	term = null;
 	fitAddon = null;
+	// term.dispose disposes loaded addons too; just drop our reference.
+	webglAddon = null;
 
 	if (!viewInner) return;
 
@@ -279,37 +401,19 @@ async function renderView() {
 			fontSize: currentFontSize,
 			lineHeight: 1,
 			letterSpacing: 0,
-			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace',
+			// fontFamily 末尾追加系统 color-emoji 字体（Segoe UI Emoji / Apple
+			// Color Emoji / Noto Color Emoji），让 WebView2 在主等宽字体没有
+			// emoji glyph 的码位上 fallback 到彩色 emoji 字体。canvas2D fillText
+			// 渲染 sbix/CBDT bitmap 层时 fillStyle 不会染色 —— 这样 🟢🚀 等
+			// emoji 保留原色，不再随 ANSI 前景色染色。
+			fontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
 			cursorBlink: true,
 			cursorStyle: 'block',
 		screenReaderMode: false,
 			// 仅在终端获得焦点时展示光标；失焦后隐藏，避免在输出区域"乱闪"
 			cursorInactiveStyle: 'none',
 			scrollback: 8000,
-			theme: {
-				background: '#0c0b12',
-				foreground: '#e6e4ef',
-				cursor: '#a78bfa',
-				cursorAccent: '#0c0b12',
-				selectionBackground: 'rgba(167, 139, 250, 0.28)',
-				selectionForeground: '#f5f3ff',
-				black: '#1a1628',
-				red: '#f87171',
-				green: '#4ade80',
-				yellow: '#facc15',
-				blue: '#60a5fa',
-				magenta: '#e879f9',
-				cyan: '#2dd4bf',
-				white: '#f5f3ff',
-				brightBlack: '#6b6680',
-				brightRed: '#fca5a5',
-				brightGreen: '#86efac',
-				brightYellow: '#fde047',
-				brightBlue: '#93c5fd',
-				brightMagenta: '#f0abfc',
-				brightCyan: '#5eead4',
-				brightWhite: '#faf5ff'
-			}
+			theme: xtermThemeFor(get(settingsStore).theme)
 		});
 		fitAddon = new FitAddon();
 		term.loadAddon(fitAddon);
@@ -327,12 +431,43 @@ async function renderView() {
 		searchAddon = new SearchAddon();
 		term.loadAddon(searchAddon);
 		term.open(viewInner);
+		// 加载 WebGL renderer：xterm 5 默认 DOM renderer 不支持 customGlyphs，
+		// box-drawing / block-element 字符（│ ─ ┘ ░ █）依赖字体 glyph，cell 之间
+		// 出现 sub-pixel gap 让字符画断裂。WebGL renderer 默认开启 customGlyphs，
+		// 由 GPU 自绘 box-drawing 线段，cell 完美贴合。
+		// fallback: 若 WebGL context 创建失败（极少数 WebView2 软件渲染场景），
+		// addon 会触发 contextLoss 事件；此处 try/catch 兜底退回到 DOM renderer。
+		try {
+			const addon = new WebglAddon();
+			addon.onContextLoss(() => {
+				addon.dispose();
+				webglAddon = null;
+			});
+			term.loadAddon(addon);
+			webglAddon = addon;
+		} catch (err) {
+			console.warn('[term] WebGL renderer unavailable, falling back to DOM:', err);
+			webglAddon = null;
+		}
 
 		// Keep font size in sync with the global termFontSize store across all pane instances.
 		unsubFontSize = termFontSize.subscribe((size) => {
 			if (!term) return;
 			term.options.fontSize = size;
 			fitAddon?.fit();
+		});
+		// Live-reskin xterm when the ridge theme changes (sand/grass <-> dark/soil).
+		// Skip the first emission since the constructor already used the current theme.
+		// WebGL renderer caches glyphs against the old background, so after setting
+		// the new theme we clear the texture atlas and refresh every row to force
+		// the GPU to re-rasterise the buffer with the new bg + fg + ANSI palette.
+		let themeSubInit = true;
+		unsubXtermTheme = settingsStore.subscribe((s) => {
+			if (themeSubInit) { themeSubInit = false; return; }
+			if (!term) return;
+			term.options.theme = xtermThemeFor(s.theme);
+			webglAddon?.clearTextureAtlas();
+			term.refresh(0, term.rows - 1);
 		});
 		// Tear down the subscription when this pane is destroyed.
 
@@ -643,7 +778,7 @@ async function renderView() {
 		});
 	} else {
 		editor = monaco.editor.create(viewInner, {
-			value: '// Welcome to WarpForge Editor',
+			value: '// Welcome to Ridge Editor',
 			language: 'rust',
 			theme: 'vs-dark',
 			automaticLayout: true,
@@ -665,7 +800,7 @@ onMount(() => {
 				ptyClosedUnlisten = u;
 			});
 			try {
-				await invoke('create_pane', { paneId });
+				await invoke('create_pane', { paneId, shell: get(settingsStore).defaultShell || null });
 			} catch (e) {
 				console.error('create_pane failed', paneId, e);
 				if (!alive || isComposing) return;
@@ -698,7 +833,13 @@ onMount(() => {
 						lastPolledProc = proc;
 						if (proc) {
 							paneForegroundProcessStore.update((s) => ({ ...s, [paneId]: proc }));
-							terminalTitles.update((t) => ({ ...t, [paneId]: proc }));
+							// T1：OSC 标题优先于进程名。如果 shell 通过 \x1b]0;...\x07
+							// 设置过标题（包括 Claude Code），就保留 OSC 标题；只有 OSC
+							// 没值时才把进程名写到 terminalTitles。
+							const oscTitle = get(paneOscTitleStore)[paneId];
+							if (!oscTitle) {
+								terminalTitles.update((t) => ({ ...t, [paneId]: proc }));
+							}
 						} else {
 							paneForegroundProcessStore.update((s) => {
 								const copy = { ...s };
@@ -743,6 +884,7 @@ onMount(() => {
 	onDestroy(() => {
 		alive = false;
 		terminalTitles.update((t) => { const copy = { ...t }; delete copy[paneId]; return copy; });
+		paneOscTitleStore.update((s) => { const copy = { ...s }; delete copy[paneId]; return copy; });
 		paneForegroundProcessStore.update((s) => { const copy = { ...s }; delete copy[paneId]; return copy; });
 		if (foregroundPollInterval !== undefined) {
 			clearInterval(foregroundPollInterval);
@@ -756,6 +898,8 @@ onMount(() => {
 		disposeXtermScrollFix = undefined;
 		unsubFontSize?.();
 		unsubFontSize = undefined;
+		unsubXtermTheme?.();
+		unsubXtermTheme = undefined;
 		ptyClosedUnlisten?.();
 		resizeObserver?.disconnect();
 		ptyUnlisten?.();
@@ -789,11 +933,11 @@ function onTerminalContextMenu(e: MouseEvent): void {
 }
 </script>
 
-<div class="wf-pane-root h-full w-full min-h-0 min-w-0 flex flex-col">
+<div class="rg-pane-root h-full w-full min-h-0 min-w-0 flex flex-col">
 	<!-- Git diff 状态栏 -->
 	{#if diffStatus && diffStatus.is_git_repo && diffStatus.files.length > 0}
-		<div class="wf-diff-bar flex items-center gap-2 px-2 py-1 text-[11px] bg-[var(--wf-surface)] border-b border-[var(--wf-border)]">
-			<span class="text-[var(--wf-fg-muted)]">Git:</span>
+		<div class="rg-diff-bar flex items-center gap-2 px-2 py-1 text-[11px] bg-[var(--rg-surface)] border-b border-[var(--rg-border)]">
+			<span class="text-[var(--rg-fg-muted)]">Git:</span>
 			<span class="text-amber-400 font-medium">{diffStatus.files.length} 文件</span>
 			{#if diffStatus.total_additions > 0}
 				<span class="text-green-400">+{diffStatus.total_additions}</span>
@@ -803,7 +947,7 @@ function onTerminalContextMenu(e: MouseEvent): void {
 			{/if}
 			<button
 				type="button"
-				class="ml-auto text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors"
+				class="ml-auto text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors"
 				onclick={() => loadDiffStatus()}
 				title="刷新"
 			>
@@ -819,7 +963,8 @@ function onTerminalContextMenu(e: MouseEvent): void {
 			bind:this={container}
 			role="application"
 			aria-label="终端"
-			class=" p-3 wf-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col rounded-lg outline-none bg-[var(--wf-term-bg)] overflow-hidden"
+			class=" p-3 pr-1 rg-terminal-surface flex h-full w-full min-h-0 min-w-0 flex-col outline-none bg-[var(--rg-term-bg)] overflow-hidden"
+			data-rg-pane-active={$activePaneId === paneId}
 			tabindex="-1"
 			oncontextmenu={onTerminalContextMenu}
 		>
@@ -829,7 +974,7 @@ function onTerminalContextMenu(e: MouseEvent): void {
 			></div>
 			<!-- In-pane search bar (Ctrl+F) -->
 			{#if termSearchOpen && mode === 'terminal'}
-				<div class="absolute top-1 right-2 z-[150] flex items-center gap-1 bg-[var(--wf-surface-2)] border border-[var(--wf-border)] rounded-lg shadow-xl px-2 py-1">
+				<div class="absolute top-1 right-2 z-[150] flex items-center gap-1 bg-[var(--rg-surface-2)] border border-[var(--rg-border)] rounded-lg shadow-xl px-2 py-1">
 					<input
 						bind:this={searchInputEl}
 						type="text"
@@ -840,30 +985,30 @@ function onTerminalContextMenu(e: MouseEvent): void {
 							else if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); searchAddon?.findPrevious(termSearchQuery, { caseSensitive: termSearchCase }); }
 						}}
 						placeholder="在终端中搜索"
-						class="w-44 bg-transparent border-none outline-none text-[11px] text-[var(--wf-fg)] placeholder:text-[var(--wf-fg-muted)]"
+						class="w-44 bg-transparent border-none outline-none text-[11px] text-[var(--rg-fg)] placeholder:text-[var(--rg-fg-muted)]"
 					/>
 					<button
 						type="button"
 						title="大小写敏感"
-						class="px-1 rounded text-[10px] font-mono transition-colors {termSearchCase ? 'text-[var(--wf-accent)] bg-[var(--wf-accent)]/10' : 'text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)]'}"
+						class="px-1 rounded text-[10px] font-mono transition-colors {termSearchCase ? 'text-[var(--rg-accent)] bg-[var(--rg-accent)]/10' : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
 						onclick={() => { termSearchCase = !termSearchCase; }}
 					>Aa</button>
 					<button
 						type="button"
 						title="上一个 (Shift+Enter)"
-						class="px-1 text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors text-[11px]"
+						class="px-1 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors text-[11px]"
 						onclick={() => searchAddon?.findPrevious(termSearchQuery, { caseSensitive: termSearchCase })}
 					>↑</button>
 					<button
 						type="button"
 						title="下一个 (Enter)"
-						class="px-1 text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] transition-colors text-[11px]"
+						class="px-1 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors text-[11px]"
 						onclick={() => searchAddon?.findNext(termSearchQuery, { caseSensitive: termSearchCase })}
 					>↓</button>
 					<button
 						type="button"
 						title="关闭 (Esc)"
-						class="px-1 text-[var(--wf-fg-muted)] hover:text-red-400 transition-colors text-[11px]"
+						class="px-1 text-[var(--rg-fg-muted)] hover:text-red-400 transition-colors text-[11px]"
 						onclick={() => { termSearchOpen = false; termSearchQuery = ''; term?.focus(); }}
 					>×</button>
 				</div>
@@ -872,7 +1017,7 @@ function onTerminalContextMenu(e: MouseEvent): void {
 			{#if showScrollBottom && mode === 'terminal'}
 				<button
 					type="button"
-					class="absolute z-[100] bottom-2 right-3 flex items-center justify-center w-7 h-7 rounded bg-[var(--wf-surface)] border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors shadow-md"
+					class="absolute z-[100] bottom-2 right-3 flex items-center justify-center w-7 h-7 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:border-[var(--rg-accent)] transition-colors shadow-md"
 					onclick={() => scrollToBottom()}
 					title="滚动到底部"
 				>

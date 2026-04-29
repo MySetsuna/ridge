@@ -67,8 +67,8 @@
   <div class="relative" bind:this={root}>
     <button
       type="button"
-      class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--wf-surface)]/60 text-[var(--wf-fg-muted)] border border-[var(--wf-border)] hover:bg-[var(--wf-surface)] hover:text-[var(--wf-fg)] transition-colors max-w-[140px]
-        {open ? 'bg-[var(--wf-surface)] text-[var(--wf-fg)]' : ''}"
+      class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--rg-surface)]/60 text-[var(--rg-fg-muted)] border border-[var(--rg-border)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors max-w-[140px]
+        {open ? 'bg-[var(--rg-surface)] text-[var(--rg-fg)]' : ''}"
       title={`此 pane cwd 中检测到 ${repos.length} 个 git 仓库\n当前：${info.repoRoot}`}
       onclick={() => (open = !open)}
     >
@@ -79,7 +79,7 @@
 
     {#if open}
       <div
-        class="absolute left-0 top-[26px] z-50 min-w-[180px] max-w-[320px] rounded-lg border border-[var(--wf-border)] bg-[var(--wf-bg-raised)] shadow-xl overflow-hidden"
+        class="absolute left-0 top-[26px] z-50 min-w-[180px] max-w-[320px] rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl overflow-hidden"
         role="menu"
       >
         {#each repos as repo (repo)}
@@ -87,17 +87,17 @@
           <button
             type="button"
             role="menuitem"
-            class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left hover:bg-[var(--wf-surface)] transition-colors"
+            class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left hover:bg-[var(--rg-surface)] transition-colors"
             title={repo}
             onclick={() => pick(repo)}
           >
             {#if isCurrent}
-              <Check class="h-3 w-3 text-[var(--wf-accent)] shrink-0" />
+              <Check class="h-3 w-3 text-[var(--rg-accent)] shrink-0" />
             {:else}
               <span class="w-3 shrink-0"></span>
             {/if}
-            <Folder class="h-3 w-3 shrink-0 text-[var(--wf-fg-muted)]" />
-            <span class="truncate flex-1 {isCurrent ? 'text-[var(--wf-accent)]' : 'text-[var(--wf-fg)]'}">
+            <Folder class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+            <span class="truncate flex-1 {isCurrent ? 'text-[var(--rg-accent)]' : 'text-[var(--rg-fg)]'}">
               {basename(repo)}
             </span>
           </button>

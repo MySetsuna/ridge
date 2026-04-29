@@ -14,7 +14,7 @@ import { test, expect } from '@playwright/test';
  * markdown renderer) is covered in vitest. This tier is the connective tissue.
  */
 
-test.describe('Wind dev-server chrome', () => {
+test.describe('Ridge dev-server chrome', () => {
   test('boots and mounts the left rail with at least two buttons', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('domcontentloaded');
@@ -81,7 +81,7 @@ test.describe('drag-and-drop regression guard', () => {
   test('workspace tab is draggable (HTML5 dnd attribute present)', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('domcontentloaded');
-    // No need to wait on the .wf-workspace-tabs locator — in dev-server
+    // No need to wait on the .rg-workspace-tabs locator — in dev-server
     // mode without Tauri, workspaces may not auto-create. Just confirm
     // SOMETHING in the document advertises HTML5 draggable, proving the
     // attribute pipeline isn't being stripped wholesale.
@@ -103,7 +103,7 @@ test.describe('right-click context menu', () => {
     await page.waitForLoadState('domcontentloaded');
     // Right-click the workspace tabs strip — a stable target that always
     // resolves to a non-empty `target` in `getContextMenuTarget`.
-    const wsTabs = page.locator('.wf-workspace-tabs').first();
+    const wsTabs = page.locator('.rg-workspace-tabs').first();
     await expect(wsTabs).toBeVisible({ timeout: 10_000 });
     await wsTabs.click({ button: 'right' });
     // The menu should pop up; assert by role + visibility.

@@ -36,10 +36,10 @@
     if (!info) return;
     try {
       window.dispatchEvent(
-        new CustomEvent('wind:open-sidebar-tab', { detail: 'git' })
+        new CustomEvent('ridge:open-sidebar-tab', { detail: 'git' })
       );
       window.dispatchEvent(
-        new CustomEvent('wind:scm-focus-repo', { detail: info.repoRoot })
+        new CustomEvent('ridge:scm-focus-repo', { detail: info.repoRoot })
       );
     } catch {
       /* ignore — non-DOM env (vitest) */
@@ -61,8 +61,8 @@
     title={`改动文件：${info.dirtyFiles}\n+${info.added} -${info.removed}\n点击在源代码管理中查看此仓库`}
     class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] border transition-colors max-w-[200px]
       {isClean
-        ? 'bg-[var(--wf-surface)]/40 border-[var(--wf-border)]/60 text-[var(--wf-fg-muted)]/70 hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)]/80'
-        : 'bg-[var(--wf-accent)]/10 border-[var(--wf-accent)]/25 text-[var(--wf-accent)]/90 hover:bg-[var(--wf-accent)]/22'}"
+        ? 'bg-[var(--rg-surface)]/40 border-[var(--rg-border)]/60 text-[var(--rg-fg-muted)]/70 hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]/80'
+        : 'bg-[var(--rg-accent)]/10 border-[var(--rg-accent)]/25 text-[var(--rg-accent)]/90 hover:bg-[var(--rg-accent)]/22'}"
     onclick={openAndFocus}
   >
     <FileText class="h-3 w-3 shrink-0" />

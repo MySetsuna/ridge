@@ -112,12 +112,12 @@ describe('trackPaneGitStatus null-cwd path', () => {
 
 describe('cwd-down semantics + multi-repo switcher', () => {
   it('exposes single repo via availableRepos when cwd hosts exactly one', async () => {
-    mockBackend({ '/code': ['/code/wind'] });
+    mockBackend({ '/code': ['/code/ridge'] });
     mod.trackPaneGitStatus('p4', '/code');
     await vi.advanceTimersByTimeAsync(260);
     const info = get(mod.paneGitStatusStore).p4;
-    expect(info?.repoRoot).toBe('/code/wind');
-    expect(info?.availableRepos).toEqual(['/code/wind']);
+    expect(info?.repoRoot).toBe('/code/ridge');
+    expect(info?.availableRepos).toEqual(['/code/ridge']);
   });
 
   it('exposes all repos and defaults to the first when cwd hosts multiple', async () => {

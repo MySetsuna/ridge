@@ -13,13 +13,25 @@
     /** Optional layout overrides — defaults sized for the SCM panel. */
     dx?: number;
     dy?: number;
+    /** 单击展开的 commit hash（与 SourceControl 的 selectedCommitHash 同步）。 */
+    expandedHash?: string;
+    /** 该 commit 行额外腾出的高度像素，用于容纳 inline 详情面板。 */
+    expandedExtra?: number;
   }
 
-  let { commits, dx = DEFAULT_DX, dy = DEFAULT_DY }: Props = $props();
+  let {
+    commits,
+    dx = DEFAULT_DX,
+    dy = DEFAULT_DY,
+    expandedHash,
+    expandedExtra = 0,
+  }: Props = $props();
 
   // Re-layout whenever the commit list identity changes. Cheap (~µs per
   // commit); no need to memoise beyond Svelte's $derived.
-  const layout = $derived(layoutGraph(commits, { dx, dy }));
+  const layout = $derived(
+    layoutGraph(commits, { dx, dy, expandedHash, expandedExtra })
+  );
 </script>
 
 <svg
@@ -38,7 +50,7 @@
       cy={dot.cy}
       r="4"
       fill={dot.color}
-      stroke="var(--wf-bg)"
+      stroke="var(--rg-bg)"
       stroke-width="1.5"
     />
   {/each}

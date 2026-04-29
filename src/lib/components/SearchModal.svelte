@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { alertDialog } from './WindDialog.svelte';
+  import { alertDialog } from './RidgeDialog.svelte';
   import {
     projectStore,
     searchResults,

@@ -3,11 +3,16 @@
   import { onDestroy } from 'svelte';
   import Pane from './Pane.svelte';
   import SplitLayout from './SplitContainer.svelte';
-  import { Splitpanes, Pane as SPane } from 'svelte-splitpanes';
+  // T20 重做：弃用 svelte-splitpanes，改用自家 @ridge/split。后者纯渲染，无内部
+  // 状态机，paneTreeStore.ratios 是唯一真相源；Ridge 的 startSplitResizeDrag /
+  // updateSplitResizeDrag 写 ratios 后能立刻经 RgPane 的 size prop 反映到 DOM，
+  // 不再被库内部 sz 状态覆盖。Class 名 `splitpanes__pane`/`splitpanes__splitter`
+  // 通过 class prop forward，沿用 findSameAxisRefs 等查询逻辑。
+  import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
   import { isTauri } from '@tauri-apps/api/core';
   import { Bot, History } from 'lucide-svelte';
   import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
-  import { alertDialog } from './WindDialog.svelte';
+  import { alertDialog } from './RidgeDialog.svelte';
   import { openScrollbackHistory } from './ScrollbackHistoryModal.svelte';
   import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
   import PaneGitPill from './PaneGitPill.svelte';
@@ -38,6 +43,7 @@
     updateSplitResizeDrag,
     finishSplitResizeDrag,
     SAME_AXIS_ATTRACT_PX,
+    pointerInCoupleZone,
     findJunctionsNearPosition,
     registerJunction,
     clearJunctionRegistry,
@@ -83,9 +89,7 @@
    * horizontal=false → flex 横向 → 左右分屏（竖条分割）。
    * 与后端：vertical → 上下；horizontal → 左右。
    */
-  function splitpanesHorizontal(dir: 'horizontal' | 'vertical'): boolean {
-    return dir === 'vertical';
-  }
+  // T20：splitpanesHorizontal 已不再需要（@ridge/split 直接吃 'horizontal' / 'vertical'）。
 
   async function onClosePane(id: string) {
     try {
@@ -114,28 +118,16 @@
 
   function dockHintClass(h: DockRegion | null): string {
     if (!h) return '';
-    if (h === 'left') return 'shadow-[inset_5px_0_0_0_var(--wf-accent)]';
-    if (h === 'right') return 'shadow-[inset_-5px_0_0_0_var(--wf-accent)]';
-    if (h === 'top') return 'shadow-[inset_0_5px_0_0_var(--wf-accent)]';
-    if (h === 'bottom') return 'shadow-[inset_0_-5px_0_0_var(--wf-accent)]';
-    return 'ring-2 ring-[var(--wf-accent)] ring-inset';
+    if (h === 'left') return 'shadow-[inset_5px_0_0_0_var(--rg-accent)]';
+    if (h === 'right') return 'shadow-[inset_-5px_0_0_0_var(--rg-accent)]';
+    if (h === 'top') return 'shadow-[inset_0_5px_0_0_var(--rg-accent)]';
+    if (h === 'bottom') return 'shadow-[inset_0_-5px_0_0_var(--rg-accent)]';
+    return 'ring-2 ring-[var(--rg-accent)] ring-inset';
   }
 
-  type SplitPaneSizeEvent = {
-    min: number;
-    max: number;
-    size: number;
-    snap: number;
-  };
-
-  function onSplitResized(e: CustomEvent<SplitPaneSizeEvent[]>) {
-    if (node.type !== 'split') return;
-    if ($splitResizeUiState.phase === 'drag') return;
-    const panes = e.detail;
-    if (!panes?.length || panes.length !== node.children.length) return;
-    const sizes = panes.map((p) => p.size);
-    void persistSplitRatios(splitPath, sizes);
-  }
+  // T20：原 onSplitResized 监听 svelte-splitpanes 的 'resized' event 落盘。
+  // 现已弃用 svelte-splitpanes，松手后由 bindDragListeners.onUp 直接 await
+  // persistSplitRatiosBatch 持久化，事件桥不再需要。
 
   function parsePathKey(key: string | null | undefined): number[] {
     if (!key) return [];
@@ -172,7 +164,7 @@
 
   function getLocalSplitRoot(): HTMLElement | null {
     if (!splitHost) return null;
-    return splitHost.querySelector<HTMLElement>(':scope > .wf-split');
+    return splitHost.querySelector<HTMLElement>(':scope > .rg-split');
   }
 
   function pointToRectDistance(
@@ -226,7 +218,7 @@
     if (typeof document === 'undefined') return [];
     const allSplitters = Array.from(
       document.querySelectorAll<HTMLElement>(
-        '.wf-split > .splitpanes__splitter'
+        '.rg-split > .splitpanes__splitter'
       )
     );
     const candidates: { ref: SplitterRef; distance: number }[] = [];
@@ -292,6 +284,12 @@
   function splitAligned(path: number[], ui: SplitResizeUiState): boolean {
     if (ui.phase !== 'pending' && ui.phase !== 'junction') return false;
     if (ui.sameAxisCandidates.length === 0) return false;
+    // 仅当鼠标实际落在某个 sibling 的 BC 圆 15px 热区内才高亮：
+    // 否则即使 perpDistance 已对齐，hover 也不应给 B 任何视觉强调。
+    const inZone = ui.sameAxisCandidates.some((sib) =>
+      pointerInCoupleZone(ui.primary, sib, ui.pointer)
+    );
+    if (!inZone) return false;
     if (pathEqual(path, ui.primary.splitPath)) return true;
     return ui.sameAxisCandidates.some((r) => pathEqual(path, r.splitPath));
   }
@@ -393,7 +391,7 @@
     if ($splitResizeUiState.phase === 'drag') return;
     const rel = e.relatedTarget;
     if (rel instanceof Element) {
-      if (rel.closest('.wf-split')) return;
+      if (rel.closest('.rg-split')) return;
     }
     if (splitEngaged(splitPath, $splitResizeUiState)) clearSplitResizeUi();
   }
@@ -401,8 +399,45 @@
   function onSplitMouseDown(e: MouseEvent) {
     if (node.type !== 'split' || e.button !== 0) return;
     if (!isSplitterTargetInHost(e.target)) return;
-    if ($splitResizeUiState.phase !== 'junction') return;
-    if (!splitHighlighted(splitPath, $splitResizeUiState)) return;
+    const target = e.target as HTMLElement;
+    // Nested SplitContainers all attach capture-phase mousedown listeners.
+    // Only the SplitContainer that DIRECTLY owns the splitter (its immediate
+    // .rg-split parent) should run; outer ancestors bail here so capture
+    // continues down to the right one.
+    const localSplitRoot = getLocalSplitRoot();
+    if (!localSplitRoot) return;
+    const localSplitter = target.closest('.splitpanes__splitter');
+    if (
+      !(localSplitter instanceof HTMLElement) ||
+      localSplitter.parentElement !== localSplitRoot
+    ) {
+      return;
+    }
+    const ui = get(splitResizeUiState);
+    // Reuse hover-built junction state when present; otherwise synthesise a
+    // junction state on the spot so basic drag works for splitters that have
+    // no nearby orthogonal / same-axis siblings (the hover flow never trips
+    // queueSplitResizeJunction in that case, leaving phase === 'idle').
+    if (ui.phase !== 'junction' || !splitHighlighted(splitPath, ui)) {
+      const primary = splitRefsFromHost(target);
+      if (!primary) return;
+      const orthogonals = findOrthogonalRefs(
+        { x: e.clientX, y: e.clientY },
+        primary
+      );
+      const sameAxisCandidates = findSameAxisRefs(
+        primary,
+        SAME_AXIS_ATTRACT_PX
+      ).map((c) => c.ref);
+      splitResizeUiState.set({
+        phase: 'junction',
+        primary,
+        orthogonals,
+        sameAxisCandidates,
+        pointer: { x: e.clientX, y: e.clientY },
+        snapState: null,
+      });
+    }
     e.preventDefault();
     e.stopPropagation();
     startSplitResizeDrag({ x: e.clientX, y: e.clientY });
@@ -419,7 +454,7 @@
   $effect(() => {
     if (!splitHost || node.type !== 'split') return;
     const splitRoot =
-      splitHost.querySelector<HTMLElement>(':scope > .wf-split');
+      splitHost.querySelector<HTMLElement>(':scope > .rg-split');
     if (!splitRoot) return;
     splitRoot.dataset.splitPath = splitPathKey;
     splitRoot.dataset.splitAxis = splitAxis;
@@ -461,27 +496,23 @@
   onmousemove={onSplitMouseMove}
   onmouseleave={onSplitMouseLeave}
 >
-  <Splitpanes
-    theme=""
-    horizontal={node.type === 'split'
-      ? splitpanesHorizontal(node.direction)
-      : false}
-    class="wf-split h-full w-full min-h-0 min-w-0 bg-[var(--wf-bg)] {splitHighlighted(
+  <RgSplit
+    direction={node.type === 'split' ? node.direction : 'horizontal'}
+    class="rg-split h-full w-full min-h-0 min-w-0 bg-[var(--rg-bg)] {splitHighlighted(
       splitPath,
       $splitResizeUiState
     )
-      ? 'wf-split--junction'
+      ? 'rg-split--junction'
       : ''} {splitDragging(splitPath, $splitResizeUiState)
-      ? 'wf-split--junction-dragging'
+      ? 'rg-split--junction-dragging'
       : ''} {splitAligned(splitPath, $splitResizeUiState)
-      ? 'wf-split--aligned'
+      ? 'rg-split--aligned'
       : ''}"
-    on:resized={onSplitResized}
   >
     {#if node.type === 'leaf'}
-      <SPane>
+      <RgPane size={100} class="splitpanes__pane">
         <div
-          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden bg-[var(--wf-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
+          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden bg-[var(--rg-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
             <div
@@ -513,7 +544,7 @@
             ></div>
           {/if}
           <header
-            class="wf-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md z-10"
+            class="rg-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
           >
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 -my-1 select-none"
@@ -533,7 +564,14 @@
               }}
             >
               {#if node.id !== undefined}
-                {@const proc = $paneForegroundProcessStore[node.id]}
+                <!-- Title source: same as Explorer's pane tag. terminalTitles is
+                     OSC (\x1b]0;...\x07) when set, else falls back to the polled
+                     foreground process name. Reading the same store keeps the
+                     workspace pane header and the sidebar pane chip in sync —
+                     e.g. Claude Code's OSC title now shows in both places. -->
+                {@const titleStr = $terminalTitles[node.id]}
+                {@const fgProc = $paneForegroundProcessStore[node.id]}
+                {@const proc = titleStr || fgProc}
                 {@const rawCwd = $paneCwdStore[`${workspaceId}:${node.id}`]}
                 {@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
                 {@const agentState = node.type === 'leaf' ? node.agent_state : undefined}
@@ -555,7 +593,7 @@
                       <span class="text-emerald-300/80 truncate max-w-[120px]" title={agentId}>
                         {agentId}
                       </span>
-                      <span class="text-[var(--wf-title-sep)] select-none">·</span>
+                      <span class="text-[var(--rg-title-sep)] select-none">·</span>
                     {/if}
                   {:else if agentState === 'starting'}
                     <span
@@ -567,18 +605,18 @@
                     </span>
                   {/if}
                   {#if proc}
-                    <span class="text-[var(--wf-title-proc)] font-semibold truncate">{proc}</span>
+                    <span class="text-[var(--rg-title-proc)] font-semibold truncate">{proc}</span>
                   {/if}
                   {#if proc && displayCwd}
-                    <span class="text-[var(--wf-title-sep)] select-none">·</span>
+                    <span class="text-[var(--rg-title-sep)] select-none">·</span>
                   {/if}
                   {#if displayCwd}
-                    <span class="text-[var(--wf-title-cwd)] truncate">{displayCwd}</span>
+                    <span class="text-[var(--rg-title-cwd)] truncate">{displayCwd}</span>
                   {:else if !proc}
                     {#if node.title}
-                      <span class="text-[var(--wf-fg)] truncate">{node.title}</span>
+                      <span class="text-[var(--rg-fg)] truncate">{node.title}</span>
                     {:else}
-                      <span class="text-[var(--wf-fg-muted)]">终端</span>
+                      <span class="text-[var(--rg-fg-muted)]">终端</span>
                     {/if}
                   {/if}
                 </span>
@@ -609,7 +647,7 @@
                   ? '此窗格已有 agent 运行'
                   : '在此窗格启动 Claude Code agent（Shift-Click 直接启动）'}
                 disabled={leafAgentState === 'busy' || !isTauri()}
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 disabled:opacity-25 disabled:pointer-events-none"
+                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 disabled:opacity-25 disabled:pointer-events-none"
                 onclick={(e) => {
                   if (!isTauri()) return;
                   // Shift / Alt-Click skips the prompt modal and launches bare
@@ -628,7 +666,7 @@
                 type="button"
                 title="查看终端历史记录（包含已滚出 xterm 视窗的早期输出）"
                 disabled={!isTauri()}
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] transition-colors hover:bg-[var(--wf-accent)]/10 hover:text-[var(--wf-accent)] disabled:opacity-25 disabled:pointer-events-none"
+                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-[var(--rg-accent)]/10 hover:text-[var(--rg-accent)] disabled:opacity-25 disabled:pointer-events-none"
                 onclick={() => openScrollbackHistory(node.id)}
               >
                 <History class="h-3.5 w-3.5" />
@@ -638,7 +676,7 @@
               type="button"
               title={leafCount <= 1 ? '至少保留一个窗格' : '关闭此窗格'}
               disabled={leafCount <= 1}
-              class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--wf-fg)] disabled:opacity-25 disabled:pointer-events-none"
+              class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)] disabled:opacity-25 disabled:pointer-events-none"
               onclick={() => onClosePane(node.id)}
             >
               ×
@@ -648,140 +686,78 @@
             <Pane paneId={node.id} {workspaceId} />
           </div>
         </div>
-      </SPane>
+      </RgPane>
     {:else}
+      {@const dim = node.direction === 'horizontal' ? 'width' : 'height'}
       {#each node.children as child, i (child.id)}
-        <SPane size={node.ratios?.[i] ?? 100 / node.children.length}>
+        {@const ratio = node.ratios?.[i] ?? 100 / node.children.length}
+        <!-- T20：内联 div 替代 RgPane —— 排除 RgPane 子组件 props reactive
+             链路问题。inline style 直接挂 SplitContainer 内联表达式，paneTreeStore
+             更新后 svelte 一定立刻重写 style。 -->
+        <div
+          class="rg-pane splitpanes__pane"
+          style="{dim}: {ratio}%; flex-grow: 0; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden;"
+        >
           <SplitLayout
             node={child}
             {workspaceId}
             splitPath={[...splitPath, i]}
           />
-        </SPane>
+        </div>
+        {#if i < node.children.length - 1}
+          <RgSplitter class="splitpanes__splitter" />
+        {/if}
       {/each}
     {/if}
-  </Splitpanes>
+  </RgSplit>
 </div>
 
 <style>
   /*
-   * 去掉 default-theme 的宽白条；布局上仅占 1px（padding+负 margin 扩大拖拽命中区）。
-   * 常态：主题色细线；悬停 / 拖拽：scale 加粗为拖拽条，不改变分屏比例。
+   * T20 重做：splitter 视觉与拖拽热区已迁移到 @ridge/split 的 RgSplitter；
+   * 这里只覆盖 Ridge 业务态高亮（junction / aligned 状态），通过 ::before 加
+   * 额外阴影叠加在子包的默认 scale-4 + accent 上。
+   *
+   * RgSplitter 默认用 `--rg-splitter-color` 为 idle 色、`--rg-splitter-active-color`
+   * 为 hover/drag 色 —— Ridge 这里用 CSS var 接到主题：让 idle 用 --rg-border、
+   * 激活态用 --rg-accent，与之前视觉一致。
    */
-  :global(.wf-split.splitpanes--vertical) > :global(.splitpanes__splitter) {
-    box-sizing: content-box;
-    width: 1px;
-    min-width: 0;
-    padding: 0 5px;
-    margin: 0 -5px;
-    border: none;
-    background: transparent;
-    cursor: col-resize;
-    position: relative;
-    z-index: 1;
-    flex-shrink: 0;
-    overflow: visible;
+  :global(.rg-split) {
+    --rg-splitter-color: var(--rg-border);
+    --rg-splitter-active-color: var(--rg-accent);
+    --rg-splitter-active-glow: var(--rg-accent-glow);
   }
-  :global(.wf-split.splitpanes--vertical)
-    > :global(.splitpanes__splitter::after) {
-    content: none;
-  }
-  :global(.wf-split.splitpanes--vertical)
-    > :global(.splitpanes__splitter::before) {
-    content: '';
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 50%;
-    width: 1px;
-    transform: translateX(-50%) scaleX(1);
-    transform-origin: center;
-    background: var(--wf-border);
-    border-radius: 1px;
-    transition:
-      transform 0.12s ease,
-      background 0.12s ease,
-      box-shadow 0.12s ease;
-    pointer-events: none;
-    box-shadow: none;
-  }
-  :global(.wf-split.splitpanes--vertical)
-    > :global(.splitpanes__splitter:hover::before),
-  :global(.wf-split.splitpanes--vertical.splitpanes--dragging)
-    > :global(.splitpanes__splitter::before) {
+
+  /* 业务高亮：rg-split--junction (4-way orthogonal hover) 和 rg-split--aligned
+     (sameAxis sibling 在 BC 圆 15px 内) 都让该容器内同方向 splitter 完全高亮 ——
+     与 RgSplitter 自己的 :hover 视觉一致 (scale 4 + accent)，避免出现 B "半高亮"。 */
+  :global(.rg-split.rg-split--junction > .rg-splitter-col::before),
+  :global(.rg-split.rg-split--aligned > .rg-splitter-col::before),
+  :global(.rg-split.rg-split--junction-dragging > .rg-splitter-col::before) {
     transform: translateX(-50%) scaleX(4);
-    background: var(--wf-accent);
-    box-shadow: 0 0 12px var(--wf-accent-glow);
+    background: var(--rg-accent);
+    box-shadow: 0 0 12px var(--rg-accent-glow);
   }
-
-  :global(.wf-split.splitpanes--horizontal) > :global(.splitpanes__splitter) {
-    box-sizing: content-box;
-    height: 1px;
-    min-height: 0;
-    padding: 5px 0;
-    margin: -5px 0;
-    border: none;
-    background: transparent;
-    cursor: row-resize;
-    position: relative;
-    z-index: 1;
-    flex-shrink: 0;
-    overflow: visible;
-  }
-  :global(.wf-split.splitpanes--horizontal)
-    > :global(.splitpanes__splitter::after) {
-    content: none;
-  }
-  :global(.wf-split.splitpanes--horizontal)
-    > :global(.splitpanes__splitter::before) {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 50%;
-    height: 1px;
-    transform: translateY(-50%) scaleY(1);
-    transform-origin: center;
-    background: var(--wf-border);
-    border-radius: 1px;
-    transition:
-      transform 0.12s ease,
-      background 0.12s ease,
-      box-shadow 0.12s ease;
-    pointer-events: none;
-    box-shadow: none;
-  }
-  :global(.wf-split.splitpanes--horizontal)
-    > :global(.splitpanes__splitter:hover::before),
-  :global(.wf-split.splitpanes--horizontal.splitpanes--dragging)
-    > :global(.splitpanes__splitter::before) {
+  :global(.rg-split.rg-split--junction > .rg-splitter-row::before),
+  :global(.rg-split.rg-split--aligned > .rg-splitter-row::before),
+  :global(.rg-split.rg-split--junction-dragging > .rg-splitter-row::before) {
     transform: translateY(-50%) scaleY(4);
-    background: var(--wf-accent);
-    box-shadow: 0 0 12px var(--wf-accent-glow);
+    background: var(--rg-accent);
+    box-shadow: 0 0 12px var(--rg-accent-glow);
   }
 
-  :global(.wf-split.wf-split--junction)
-    > :global(.splitpanes__splitter::before) {
-    background: var(--wf-accent);
-    box-shadow: 0 0 10px var(--wf-accent-glow);
-  }
-
-  :global(.wf-split.wf-split--junction-dragging)
-    > :global(.splitpanes__splitter::before) {
-    background: var(--wf-accent);
-    box-shadow: 0 0 14px var(--wf-accent-glow);
-  }
-
-  /* 同向吸附对齐：高亮加亮、阴影更厚，区别于普通 4-way junction。 */
-  :global(.wf-split.wf-split--aligned)
-    > :global(.splitpanes__splitter::before) {
-    background: var(--wf-accent);
-    box-shadow: 0 0 16px var(--wf-accent-glow);
-  }
-
-  :global(body.wf-resize-junction-cursor),
-  :global(body.wf-resize-junction-cursor .splitpanes__splitter),
-  :global(body.wf-resize-junction-cursor .splitpanes__splitter *) {
+  /* 拖动 / 4-way hover 时锁定 cursor，使其不随鼠标 hover 子元素变化。
+     三种 cursor 对应三种 body 类，互斥；finishSplitResizeDrag 释放。 */
+  :global(body.rg-resize-junction-cursor),
+  :global(body.rg-resize-junction-cursor *) {
     cursor: move !important;
+  }
+  :global(body.rg-resize-col-cursor),
+  :global(body.rg-resize-col-cursor *) {
+    cursor: col-resize !important;
+  }
+  :global(body.rg-resize-row-cursor),
+  :global(body.rg-resize-row-cursor *) {
+    cursor: row-resize !important;
   }
 </style>

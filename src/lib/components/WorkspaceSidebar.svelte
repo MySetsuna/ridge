@@ -116,10 +116,10 @@
  }
 </script>
 
-<div class="flex flex-col h-full wf-sidebar">
+<div class="flex flex-col h-full rg-sidebar">
  <!-- 头部 -->
- <div class="h-11 px-3 shrink-0 border-b border-[var(--wf-border)] flex items-center justify-between">
- <span class="text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">工作区</span>
+ <div class="h-11 px-3 shrink-0 border-b border-[var(--rg-border)] flex items-center justify-between">
+ <span class="text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">工作区</span>
  <div class="flex items-center gap-1">
  <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title="保存工作区" onclick={onSave}>
  <Save class="h-4 w-4" />
@@ -133,7 +133,7 @@
  <!-- 工作区列表 -->
  <div class="flex-1 overflow-auto p-2">
  {#if workspaces.length === 0}
- <div class="text-[13px] leading-relaxed text-[var(--wf-fg-muted)] py-8 text-center">
+ <div class="text-[13px] leading-relaxed text-[var(--rg-fg-muted)] py-8 text-center">
  暂无工作区
  </div>
  {:else}
@@ -141,9 +141,9 @@
  <div
  class="group relative flex items-center gap-2 rounded-lg px-2 py-2 cursor-pointer transition-all mb-1
  {ws.id === activeWorkspaceId
- ? 'bg-[var(--wf-accent)]/15 text-[var(--wf-fg)]'
- : 'hover:bg-white/[0.04] text-[var(--wf-fg-muted)]'}
- {dragOverIndex === i ? 'ring-2 ring-[var(--wf-accent)]/50' : ''}"
+ ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
+ : 'hover:bg-white/[0.04] text-[var(--rg-fg-muted)]'}
+ {dragOverIndex === i ? 'ring-2 ring-[var(--rg-accent)]/50' : ''}"
  draggable="true"
  ondragstart={(e) => handleDragStart(e, i)}
  ondragover={(e) => handleDragOver(e, i)}
@@ -168,7 +168,7 @@
  type="text"
  bind:this={renameInput}
  bind:value={editingName}
- class="flex-1 bg-transparent border-b border-[var(--wf-accent)] outline-none text-[13px] text-[var(--wf-fg)] min-w-0"
+ class="flex-1 bg-transparent border-b border-[var(--rg-accent)] outline-none text-[13px] text-[var(--rg-fg)] min-w-0"
  onblur={() => handleRenameSubmit(ws.id)}
  onkeydown={(e) => handleRenameKeydown(e, ws.id)}
  onclick={(e) => e.stopPropagation()}

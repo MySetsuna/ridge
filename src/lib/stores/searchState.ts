@@ -6,7 +6,7 @@ export const searchFolderStore = writable<string | null>(null);
 
 export function searchInFolder(path: string): void {
 	searchFolderStore.set(path);
-	window.dispatchEvent(new CustomEvent('wind:open-sidebar-tab', { detail: 'search' }));
+	window.dispatchEvent(new CustomEvent('ridge:open-sidebar-tab', { detail: 'search' }));
 }
 
 export function clearSearchFolder(): void {

@@ -122,9 +122,9 @@ pub fn rename_workspace(state: State<'_, AppState>, workspace_id: String, name: 
         let mut names = state.workspace_names.write();
         names.insert(id, name);
     }
-    // 重命名需要立刻反映到 .wind 文件的 `name` 字段，让磁盘侧与 UI 保持一致；
+    // 重命名需要立刻反映到 .ridge 文件的 `name` 字段，让磁盘侧与 UI 保持一致；
     // `schedule_auto_save` 仅在工作区已关联文件时才实际落盘，未保存工作区为 no-op。
-    crate::commands::wind_file::schedule_auto_save(&*state, id);
+    crate::commands::ridge_file::schedule_auto_save(&*state, id);
     Ok(())
 }
 

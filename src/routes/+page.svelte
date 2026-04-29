@@ -34,10 +34,11 @@ self.MonacoEnvironment = {
   import ClaudeAgentLauncher from '$lib/components/ClaudeAgentLauncher.svelte';
   import ScrollbackHistoryModal from '$lib/components/ScrollbackHistoryModal.svelte';
   // DiffEditorModal removed — diff view integrated into FileEditor tabs
-  import WindDialog from '$lib/components/WindDialog.svelte';
+  import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
   import ClaudeCodePanel from '$lib/components/ClaudeCodePanel.svelte';
-  import { settingsStore, setClaudeExtensionEnabled } from '$lib/stores/settings';
+  import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
+  import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import { Bot } from 'lucide-svelte';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
@@ -98,14 +99,15 @@ self.MonacoEnvironment = {
     paneCwdStore,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
+  import { initFileWatcherSync } from '$lib/stores/fileWatcherSync';
   import { getScmSelectedRepo } from '$lib/stores/scmCache';
   import {
     alertDialog,
     confirmDialog,
     promptDialog,
-  } from '$lib/components/WindDialog.svelte';
+  } from '$lib/components/RidgeDialog.svelte';
 
-  // ─── 打开 .wind 入口 + 最近打开下拉（使用 tauri-plugin-dialog 的 OS 原生文件选择器）───
+  // ─── 打开 .ridge 入口 + 最近打开下拉（使用 tauri-plugin-dialog 的 OS 原生文件选择器）───
   let recentOpen = $state(false);
   let recentList = $state<string[]>([]);
   async function loadRecentAndToggle() {
@@ -125,7 +127,7 @@ self.MonacoEnvironment = {
     try {
       await openWorkspaceFromFile(path);
     } catch (err) {
-      alert(`打开失败: ${err}`);
+      await alertDialog({ title: '打开失败', message: String(err), danger: true });
     }
   }
   async function handleClearRecent() {
@@ -139,14 +141,14 @@ self.MonacoEnvironment = {
       const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
       const picked = await openDialog({
         multiple: false,
-        filters: [{ name: 'Wind Workspace', extensions: ['wind'] }],
-        title: '打开 .wind 工作区',
+        filters: [{ name: 'Ridge Workspace', extensions: ['ridge'] }],
+        title: '打开 .ridge 工作区',
       });
       if (typeof picked === 'string' && picked) {
         await openWorkspaceFromFile(picked);
       }
     } catch (err) {
-      alert(`打开失败: ${err}`);
+      await alertDialog({ title: '打开失败', message: String(err), danger: true });
     }
   }
   import {
@@ -181,8 +183,8 @@ self.MonacoEnvironment = {
   });
 
   // localStorage 键名
-  const SIDEBAR_WIDTH_KEY = 'wind-sidebar-width';
-  const SIDEBAR_COLLAPSED_KEY = 'wind-sidebar-collapsed';
+  const SIDEBAR_WIDTH_KEY = 'ridge-sidebar-width';
+  const SIDEBAR_COLLAPSED_KEY = 'ridge-sidebar-collapsed';
 
   // 侧边栏宽度状态（用于可拖拽调整大小）
   let sidebarWidth = $state(288); // 默认 w-72 = 288px
@@ -199,6 +201,10 @@ self.MonacoEnvironment = {
     typeof window !== 'undefined' ? window.innerWidth : 1000
   );
   let sidebarMaxPx = $derived(viewportInnerWidth * 0.8);
+
+  // 设置面板开关。Settings 按钮打开后，所有可配置项（主题、字体、搜索、扩展）
+  // 都集中在 SettingsPanel 内 —— 鼠标无需在多个角落寻找各自的入口。
+  let settingsPanelOpen = $state(false);
 
   // 从 localStorage 加载侧边栏设置
   function loadSidebarSettings() {
@@ -344,9 +350,9 @@ function expandSidebar() {
 
   function openDevIssueHelp() {
     reportDevIssue({
-      title: 'Wind Dev',
+      title: 'Ridge Dev',
       message:
-        '排障入口：切换工作区报错请先看运行 wind / cargo tauri dev 的终端日志（搜索 [wind][pty]）。Claude split 需在 Wind 内建终端中运行，并确保 tmux shim 在 PATH 上。若出现 0xc0000142 这类进程级崩溃，需同时查看 Windows 事件查看器（应用程序日志）。',
+        '排障入口：切换工作区报错请先看运行 ridge / cargo tauri dev 的终端日志（搜索 [ridge][pty]）。Claude split 需在 Ridge 内建终端中运行，并确保 tmux shim 在 PATH 上。若出现 0xc0000142 这类进程级崩溃，需同时查看 Windows 事件查看器（应用程序日志）。',
     });
   }
 
@@ -358,17 +364,17 @@ function expandSidebar() {
     const target = e.target as HTMLElement;
 
     // 检查是否点击在侧边栏区域
-    if (target.closest('.wf-sidebar')) {
+    if (target.closest('.rg-sidebar')) {
       return { target: 'sidebar' };
     }
 
     // 检查是否点击在工作区标签区域
-    if (target.closest('.wf-workspace-tabs')) {
+    if (target.closest('.rg-workspace-tabs')) {
       return { target: 'workspace-tabs' };
     }
 
     // 检查是否点击在 Git 图谱区域
-    if (target.closest('.wf-git-graph')) {
+    if (target.closest('.rg-git-graph')) {
       return { target: 'git-graph' };
     }
 
@@ -378,24 +384,24 @@ function expandSidebar() {
     }
 
     // 检查是否点击在窗格标题栏
-    if (target.closest('.wf-pane-header')) {
+    if (target.closest('.rg-pane-header')) {
       return { target: 'pane-header' };
     }
 
     // 检查是否点击在终端或编辑器内容区域
     const paneEl =
-      target.closest('.wf-pane-root') || target.closest('[data-pane-id]');
+      target.closest('.rg-pane-root') || target.closest('[data-pane-id]');
     if (paneEl) {
       const paneId =
         paneEl.getAttribute('data-pane-id') ||
         (paneEl as HTMLElement).dataset?.paneId;
       // 判断是终端还是编辑器（通过 class 判断）。
-      // 历史 typo 修：`.wf-terminal` 实际类名是 `.wf-terminal-surface`
-      // （Pane.svelte），`.wf-editor` 不存在（用 `.monaco-editor` 兜底）。
+      // 历史 typo 修：`.rg-terminal` 实际类名是 `.rg-terminal-surface`
+      // （Pane.svelte），`.rg-editor` 不存在（用 `.monaco-editor` 兜底）。
       // 不修这两条 contextmenu target 就只能落到 `pane-content`，菜单
       // 项也对应不上终端/编辑器特化项。
       const isTerminal =
-        target.closest('.xterm') || target.closest('.wf-terminal-surface');
+        target.closest('.xterm') || target.closest('.rg-terminal-surface');
       const isEditor = target.closest('.monaco-editor');
       if (isTerminal) {
         return { target: 'terminal', paneId };
@@ -518,7 +524,7 @@ function expandSidebar() {
       await invoke(cmd, { repoRoot });
       // Tell the SCM panel + pane pills to refresh.
       window.dispatchEvent(
-        new CustomEvent('wind:scm-focus-repo', { detail: repoRoot })
+        new CustomEvent('ridge:scm-focus-repo', { detail: repoRoot })
       );
     } catch (e) {
       await alertDialog({ title: `${label} 失败`, message: String(e), danger: true });
@@ -632,17 +638,6 @@ function expandSidebar() {
 
       case 'sidebar':
         items.push(
-          {
-            id: 'collapse',
-            label: sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏',
-            icon: sidebarCollapsed ? ChevronRight : ChevronLeft,
-            shortcut: 'Ctrl+B',
-            action: () => {
-              sidebarCollapsed = !sidebarCollapsed;
-              saveSidebarSettings();
-            },
-          },
-          { divider: true, id: 'divider-1' },
           {
             id: 'files',
             label: '文件浏览器',
@@ -795,28 +790,26 @@ function expandSidebar() {
 
   // 处理右键菜单事件
   function handleContextMenu(e: MouseEvent) {
-    // resize 过程中不显示右键菜单
-    if (isResizeInProgress()) {
-      e.preventDefault();
-      return;
-    }
+    // T9：项目全局禁用系统默认右键菜单 —— 无论 target 是哪个，都先 preventDefault。
+    // Monaco 自己的 contextmenu listener 早于本 document-level handler 跑，并已经
+    // 弹出它自己的菜单（Go to Definition / Rename Symbol 等），prevent 不影响它。
+    // 终端 / 编辑器 / 任何空白区域系统菜单都不会再出现。
+    e.preventDefault();
+
+    // resize 过程中不显示自定义菜单
+    if (isResizeInProgress()) return;
 
     const { target, paneId } = getContextMenuTarget(e);
 
-    // Let Monaco render its own contextmenu (Go to Definition, Rename Symbol,
-    // Format Document, Find All References, etc.). Monaco's listener on the
-    // editor container fires before this document-level handler, so returning
-    // early here simply stops Wind from overlaying its own sparse menu on top.
+    // Monaco 已经显示了它自己的菜单 —— Ridge 不再叠加一层稀疏菜单。
     if (target === 'editor') return;
 
     const items = getContextMenuItems(target, paneId);
-
-    // 显示自定义右键菜单
     showContextMenu(e.clientX, e.clientY, items, target, paneId);
   }
 
   // 侧栏切换 public event：任何组件（例如 pane 标题栏的 git pill）通过
-  // `window.dispatchEvent(new CustomEvent('wind:open-sidebar-tab', {detail:'git'}))`
+  // `window.dispatchEvent(new CustomEvent('ridge:open-sidebar-tab', {detail:'git'}))`
   // 请求切 tab。把事件集中在 +page 这一层能避开跨组件 store 循环。
   function handleOpenSidebarTab(e: Event) {
     const detail = (e as CustomEvent<string>).detail;
@@ -837,7 +830,14 @@ function expandSidebar() {
   onMount(() => {
     // 全局屏蔽默认右键菜单，显示自定义菜单
     document.addEventListener('contextmenu', handleContextMenu);
-    window.addEventListener('wind:open-sidebar-tab', handleOpenSidebarTab as EventListener);
+    window.addEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
+
+    // 启动时把当前主题写到 <html data-rg-theme>，避免首帧短暂闪默认色。
+    initSettingsBoot();
+
+    // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
+    // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
+    initFileWatcherSync();
 
     // Track viewport width so `sidebarMaxPx` (80% cap) recomputes when
     // the user resizes the window — otherwise a 2000px-wide sidebar
@@ -860,8 +860,8 @@ function expandSidebar() {
     void (async () => {
       await refreshWorkspaces();
       // 启动策略：从命令行 / 资源管理器启动时，以进程 cwd 为决策依据。
-      // - cwd 顶层有 .wind 文件：打开该工作区，并关掉默认空工作区（用户没交互过）；
-      // - cwd 无 .wind：默认工作区的根 pane 已在后端 `AppState::new` 中把 cwd 种为启动 cwd，
+      // - cwd 顶层有 .ridge 文件：打开该工作区，并关掉默认空工作区（用户没交互过）；
+      // - cwd 无 .ridge：默认工作区的根 pane 已在后端 `AppState::new` 中把 cwd 种为启动 cwd，
       //   这里不需要再做任何事，默认终端会自然落在启动目录。
       try {
         const ctx = await getStartupContext();
@@ -894,7 +894,7 @@ function expandSidebar() {
           if (!dev) return;
           requestAnimationFrame(() => {
             const storeCount = getAllPaneIds(get(paneTreeStore)).length;
-            const domCount = document.querySelectorAll('.wf-pane-root').length;
+            const domCount = document.querySelectorAll('.rg-pane-root').length;
             if (storeCount > 0 && domCount !== storeCount) {
               reportDevIssue({
                 title: 'Layout sync mismatch',
@@ -927,25 +927,27 @@ function expandSidebar() {
       unlisten?.();
       unlistenResized?.();
       document.removeEventListener('contextmenu', handleContextMenu);
-      window.removeEventListener('wind:open-sidebar-tab', handleOpenSidebarTab as EventListener);
+      window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
     };
   });
 
+  // sidebar 图标按钮：颜色跟随主题 accent。原来写死 violet，浅色 / 棕色 / 绿色
+  // 主题下整个 rail 仍是紫色调，与配色不符。
   const actBtn =
     'relative flex h-10 w-10 items-center justify-center rounded-xl text-lg transition-all duration-200 ' +
-    'text-[var(--wf-fg-muted)] hover:bg-white/[0.06] hover:text-[var(--wf-fg)]';
+    'text-[var(--rg-fg-muted)] hover:bg-[var(--rg-accent)]/8 hover:text-[var(--rg-fg)]';
   const actBtnOn =
-    ' bg-violet-500/[0.12] text-violet-200 ring-1 ring-violet-400/35 shadow-[0_0_20px_-4px_rgba(167,139,250,0.45)]';
+    ' bg-[var(--rg-accent)]/12 text-[var(--rg-accent)] ring-1 ring-[var(--rg-accent)]/35 shadow-[0_0_20px_-4px_var(--rg-accent-glow)]';
 
   const toolBtn =
-    'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--wf-border)] ' +
-    'bg-[var(--wf-surface)]/90 backdrop-blur-md text-[var(--wf-fg-muted)] ' +
-    'hover:border-violet-400/35 hover:text-violet-200 hover:bg-violet-500/[0.08] transition-colors';
+    'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--rg-border)] ' +
+    'bg-[var(--rg-surface)]/90 backdrop-blur-md text-[var(--rg-fg-muted)] ' +
+    'hover:border-[var(--rg-accent)]/35 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors';
 
   // 窗口控制按钮样式（跟随系统：Windows在右侧，macOS在左侧）
   const winCtrlBtn =
-    'flex h-8 w-8 items-center justify-center rounded-lg text-[var(--wf-fg-muted)] hover:bg-white/[0.06] hover:text-[var(--wf-fg)] transition-colors';
+    'flex h-8 w-8 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] hover:bg-[var(--rg-accent)]/8 hover:text-[var(--rg-fg)] transition-colors';
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -956,11 +958,11 @@ function expandSidebar() {
      drag region is correctly scoped to the top `<header>` (line ~1102) only,
      where there are no draggable children. -->
 <div
-  class="flex h-screen w-screen overflow-hidden bg-[var(--wf-bg)] text-[var(--wf-fg)] selection:bg-violet-500/25"
+  class="flex h-screen w-screen overflow-hidden bg-[var(--rg-bg)] text-[var(--rg-fg)] selection:bg-violet-500/25"
 >
   <!-- 左侧图标导航栏 -->
   <aside
-    class="w-[52px] shrink-0 flex flex-col items-center py-3 gap-1.5 border-r border-[var(--wf-border)] bg-[var(--wf-surface)]/35 backdrop-blur-2xl"
+    class="w-[52px] shrink-0 flex flex-col items-center py-3 gap-1.5 border-r border-[var(--rg-border)] bg-[var(--rg-surface)]/35 backdrop-blur-2xl"
   >
     <button
       type="button"
@@ -1009,15 +1011,14 @@ function expandSidebar() {
          through nested settings. -->
     <button
       type="button"
-      class="{actBtn} mt-auto {$settingsStore.claudeExtensionEnabled ? '' : 'opacity-50'}"
-      title={$settingsStore.claudeExtensionEnabled
-        ? 'Claude Code 扩展已启用 · 点击禁用'
-        : 'Claude Code 扩展已禁用 · 点击启用'}
-      onclick={() => setClaudeExtensionEnabled(!$settingsStore.claudeExtensionEnabled)}
+      class="{actBtn} mt-auto"
+      title="设置（外观、字体、搜索、扩展）"
+      onclick={() => (settingsPanelOpen = true)}
     >
       <Settings class="h-4 w-4" />
     </button>
   </aside>
+  <SettingsPanel open={settingsPanelOpen} onClose={() => (settingsPanelOpen = false)} />
 
   <!-- 侧边栏区域：wrapper 始终渲染，toggle 按钮始终可见 -->
   <div
@@ -1026,12 +1027,12 @@ function expandSidebar() {
   >
     {#if !sidebarCollapsed}
       <aside
-        class="h-full border-r border-[var(--wf-border)] bg-[var(--wf-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 wf-scroll overflow-y-auto"
+        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 rg-scroll overflow-y-auto"
       >
         {#if sidebarTab === 'git'}
           <div
             data-tauri-drag-region
-            class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]"
+            class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]"
           >
             源代码管理
           </div>
@@ -1047,22 +1048,22 @@ function expandSidebar() {
         {:else}
           <div
             data-tauri-drag-region
-            class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--wf-border)] text-xs font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)] relative"
+            class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] relative"
           >
             <span>资源管理器</span>
-            <!-- 打开 .wind 已保存工作区入口（主按钮走 OS 文件选择器；chevron 展开最近列表）-->
+            <!-- 打开 .ridge 已保存工作区入口（主按钮走 OS 文件选择器；chevron 展开最近列表）-->
             <div class="flex items-center gap-0.5">
               <button
                 type="button"
-                class="flex items-center gap-1 h-7 pl-2 pr-1 rounded-l text-[10px] font-medium normal-case tracking-normal text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
-                title="从 .wind 文件打开已保存的工作区"
+                class="flex items-center gap-1 h-7 pl-2 pr-1 rounded-l text-[10px] font-medium normal-case tracking-normal text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
+                title="从 .ridge 文件打开已保存的工作区"
                 onclick={() => void pickAndOpenWorkspace()}
               >
                 <FolderInput class="h-3.5 w-3.5" /> 打开
               </button>
               <button
                 type="button"
-                class="flex items-center justify-center h-7 w-5 rounded-r text-[10px] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:bg-[var(--wf-surface)] transition-colors"
+                class="flex items-center justify-center h-7 w-5 rounded-r text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
                 title="最近打开的工作区"
                 onclick={() => void loadRecentAndToggle()}
               >
@@ -1071,17 +1072,17 @@ function expandSidebar() {
             </div>
 
             {#if recentOpen}
-              <!-- 下拉：最近打开的 .wind。点击外部关闭；当前先靠 onblur 的 focus-within 语义。 -->
+              <!-- 下拉：最近打开的 .ridge。点击外部关闭；当前先靠 onblur 的 focus-within 语义。 -->
               <div
-                class="absolute right-3 top-full mt-1 z-50 w-[300px] max-w-[90vw] rounded border border-[var(--wf-border)] bg-[var(--wf-bg)] shadow-xl overflow-hidden"
+                class="absolute right-3 top-full mt-1 z-50 w-[300px] max-w-[90vw] rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] shadow-xl overflow-hidden"
                 role="menu"
               >
-                <div class="flex items-center justify-between h-7 px-3 bg-[var(--wf-surface)]/60 border-b border-[var(--wf-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--wf-fg-muted)]">
+                <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
                   <span>最近的工作区</span>
                   {#if recentList.length > 0}
                     <button
                       type="button"
-                      class="text-[10px] normal-case tracking-normal hover:text-[var(--wf-fg)]"
+                      class="text-[10px] normal-case tracking-normal hover:text-[var(--rg-fg)]"
                       onclick={handleClearRecent}
                     >
                       清空
@@ -1090,17 +1091,17 @@ function expandSidebar() {
                 </div>
                 <div class="max-h-[260px] overflow-y-auto">
                   {#if recentList.length === 0}
-                    <div class="px-3 py-2 text-[11px] text-[var(--wf-fg-muted)]">无历史记录</div>
+                    <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无历史记录</div>
                   {:else}
                     {#each recentList as p (p)}
                       <button
                         type="button"
-                        class="group flex flex-col items-start w-full px-3 py-1.5 text-left hover:bg-[var(--wf-surface)] transition-colors normal-case tracking-normal"
+                        class="group flex flex-col items-start w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal"
                         onclick={() => void openRecent(p)}
                         title={p}
                       >
-                        <span class="text-[12px] text-[var(--wf-fg)] truncate max-w-full">{basenameOf(p)}</span>
-                        <span class="text-[10px] text-[var(--wf-fg-muted)] truncate max-w-full font-mono">{dirnameOf(p)}</span>
+                        <span class="text-[12px] text-[var(--rg-fg)] truncate max-w-full">{basenameOf(p)}</span>
+                        <span class="text-[10px] text-[var(--rg-fg-muted)] truncate max-w-full font-mono">{dirnameOf(p)}</span>
                       </button>
                     {/each}
                   {/if}
@@ -1113,7 +1114,7 @@ function expandSidebar() {
               <Explorer workspaceId={$activeWorkspaceId} />
             {:else}
               <div
-                class="p-4 text-[13px] leading-relaxed text-[var(--wf-fg-muted)]"
+                class="p-4 text-[13px] leading-relaxed text-[var(--rg-fg-muted)]"
               >
                 请先选择一个工作区
               </div>
@@ -1124,7 +1125,7 @@ function expandSidebar() {
         <!-- Global-scope plugin region — mounted once at the sidebar footer,
              visible across every tab. Keep it compact; plugins are expected
              to collapse their own heavy UI. -->
-        <div class="shrink-0 border-t border-[var(--wf-border)]/40">
+        <div class="shrink-0 border-t border-[var(--rg-border)]/40">
           <SidebarPluginRegion scope="global" />
         </div>
 
@@ -1135,8 +1136,11 @@ function expandSidebar() {
      wrapper 有 z-10 + overflow:visible，保证此元素即使在 collapsed 状态下也能响应点击。 -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<!-- T16：与 SplitContainer 终端 splitter 视觉对齐 —— 8px 命中区透明，
+     ::before 画 1px var(--rg-border) 中线；hover/drag 时 scaleX(4) 变粗
+     并切到 var(--rg-accent) + accent-glow 阴影。 -->
 <div
-  class="absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0 hover:bg-[var(--wf-accent)]/15 active:bg-[var(--wf-accent)]/25' : 'right-0 hover:bg-[var(--wf-accent)]/20 active:bg-[var(--wf-accent)]/30'} {isResizingSidebar ? 'bg-[var(--wf-accent)]/40' : ''}"
+  class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : 'right-0'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
   role="separator"
   aria-orientation="vertical"
   aria-label={sidebarCollapsed ? '拖动展开侧边栏' : '拖动调整侧边栏宽度'}
@@ -1173,26 +1177,15 @@ function expandSidebar() {
   }}
 ></div>
 
-    <!-- 折叠/展开 toggle 按钮：始终渲染，位于 wrapper 右边缘 -->
-    <button
-      type="button"
-      class="absolute top-1/2 -translate-y-1/2 left-full z-20 flex items-center justify-center w-4 h-10 rounded-r bg-[var(--wf-surface)]/80 border border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:text-[var(--wf-fg)] hover:border-[var(--wf-accent)] transition-colors opacity-60 hover:opacity-100"
-      title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
-      onclick={toggleSidebar}
-    >
-      {#if sidebarCollapsed}
-        <ChevronRight class="w-3 h-3" />
-      {:else}
-        <ChevronLeft class="w-3 h-3" />
-      {/if}
-    </button>
+    <!-- T16：移除显式折叠按钮 —— 用户仍可通过 Ctrl+B 快捷键 / 拖到极窄宽度
+         自动折叠（onMouseMove < 20 自动 collapse）实现折叠。 -->
   </div>
 
   <!-- 主内容区 -->
   <div class="flex-1 flex flex-col min-w-0 min-h-0">
     <!-- 顶部标题栏 -->
     <header
-      class="h-11 flex items-center gap-2 px-2 border-b border-[var(--wf-border)] bg-[var(--wf-glass)] backdrop-blur-md min-w-0"
+      class="h-11 flex items-center gap-2 px-2 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md min-w-0"
       data-tauri-drag-region
     >
       <!-- 左侧元素组 -->
@@ -1210,7 +1203,7 @@ function expandSidebar() {
           {#snippet actions()}
             <button
               type="button"
-              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--wf-border)] text-[var(--wf-fg-muted)] hover:border-violet-400/40 hover:text-violet-200 hover:bg-violet-500/[0.06] transition-colors"
+              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-violet-400/40 hover:text-violet-200 hover:bg-violet-500/[0.06] transition-colors"
               title="新建根工作区（独立分屏树与终端）"
               onclick={() => createWorkspace()}
             >
@@ -1223,7 +1216,7 @@ function expandSidebar() {
         {#if dev}
           <button
             type="button"
-            class="wf-no-drag shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium border border-red-500/30 text-red-300/90 hover:bg-red-500/10 transition-colors"
+            class="rg-no-drag shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium border border-red-500/30 text-red-300/90 hover:bg-red-500/10 transition-colors"
             title="开发排障入口"
             onclick={openDevIssueHelp}
           >
@@ -1238,7 +1231,7 @@ function expandSidebar() {
              状态。 -->
         <button
           type="button"
-          class="wf-no-drag {toolBtn} {$fileEditorStore.isVisible ? 'bg-[var(--wf-accent)]/15 text-[var(--wf-accent)]' : ''}"
+          class="rg-no-drag {toolBtn} {$fileEditorStore.isVisible ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
           title={$fileEditorStore.isVisible ? '收起文件编辑器' : '展开文件编辑器'}
           onclick={() => fileEditorStore.toggleVisibility()}
         >
@@ -1247,7 +1240,7 @@ function expandSidebar() {
 
         <!-- 分屏操作按钮 -->
         <div
-          class="wf-no-drag flex items-center gap-1 rounded-xl backdrop-blur-md"
+          class="rg-no-drag flex items-center gap-1 rounded-xl backdrop-blur-md"
         >
           <button
             type="button"
@@ -1290,7 +1283,7 @@ function expandSidebar() {
 
         <!-- 窗口控制按钮（右侧）：wf-no-drag 避免与标题栏拖动区域冲突 -->
       </div>
-      <div class="wf-no-drag flex items-center gap-1 shrink-0">
+      <div class="rg-no-drag flex items-center gap-1 shrink-0">
         <button
           type="button"
           class={winCtrlBtn}
@@ -1358,7 +1351,7 @@ function expandSidebar() {
     <!-- 工作区内容：flex-row 让嵌入模式的 FileEditor 作为右侧列，
          drawer/floating 模式的 FileEditor 通过 position:fixed 脱离普通流，不占用此空间。 -->
     <div
-      class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--wf-bg-raised)]"
+      class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--rg-bg-raised)]"
     >
       <div class="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
         {#if $activeWorkspaceId && hasPaneLayout}
@@ -1367,7 +1360,7 @@ function expandSidebar() {
           {/key}
         {:else}
           <div
-            class="flex flex-1 items-center justify-center text-[13px] text-[var(--wf-fg-muted)]"
+            class="flex flex-1 items-center justify-center text-[13px] text-[var(--rg-fg-muted)]"
           >
             正在加载工作区…
           </div>
