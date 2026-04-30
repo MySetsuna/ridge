@@ -33,9 +33,9 @@
   <main class="page">
     <section style="padding-top: 64px; padding-bottom: 32px;">
       <span class="eyebrow">Releases · 发布记录</span>
-      <h1>开荒 → 耕作 → 收成</h1>
+      <h1>发布记录</h1>
       <p class="muted" style="font-size:17px;max-width:640px;margin-top:14px">
-        每一次 release 都是一次播种。最早的版本是开荒——把田埂铺到位；之后每一次只在熟地上添新作物。
+        所有正式发布记录，按版本倒序排列。GitHub Releases 上同时提供安装包与源码归档。
       </p>
       <p style="margin-top:18px">
         <a class="btn" href="https://github.com/MySetsuna/ridge/releases" target="_blank" rel="noopener">
@@ -50,9 +50,7 @@
         <!-- v0.1.0 — first release ─────────────────────────── -->
         <div class="release">
           <div class="release-head">
-            <div class="release-tag"><span class="v">v</span>0.1.0
-              <span style="font-size:14px;color:var(--mist);font-weight:400;margin-left:8px">"开荒 · Breaking Ground"</span>
-            </div>
+            <div class="release-tag"><span class="v">v</span>0.1.0</div>
             <div class="release-meta">
               <span class="pill first">FIRST RELEASE</span>
               <span>2026-04-30</span>
@@ -60,70 +58,48 @@
             </div>
           </div>
 
-          <p>Ridge 的第一犁。把田埂铺到位、把 PTY 跑起来、把 Agent 接上、把零警告闸门拉上。</p>
+          <p>Ridge 的首个公开版本。在这一版里，分屏终端、代码编辑器、Git 提交图与智能体协作首次同时可用。</p>
 
-          <h4>核心 · 终端</h4>
+          <h4>新增 · New</h4>
           <ul>
-            <li>portable-pty + xterm.js (WebGL) 终端实现，Unicode 11、超链接、search 全部接入</li>
-            <li>分块滚回：64 KiB 块、4 MiB 总上限、按 seq 字节计数器分页 (<code>get_pane_scrollback_tail</code> / <code>_before</code>)</li>
-            <li>Pane 标题栏显示前台进程名 + cwd（多色），IME 合成防护</li>
-            <li>OSC 7 cwd 同步；Windows 路径强制 forward-slash 标准化（前后端一致）</li>
+            <li>递归分屏：水平、垂直、可嵌套，无层级限制；分屏可关闭、可拖拽改变大小。</li>
+            <li>多工作区：可同时打开多个项目，每个工作区独立保留命令历史，切换不会中断后台进程。</li>
+            <li>稳定的终端体验：支持 PowerShell / bash / zsh / cmd；Unicode、可点击超链接、长达数 MB 的可滚动命令历史。</li>
+            <li>内嵌代码编辑器：可以把任意分屏切换为编辑器模式，文件、命令与 AI 输出在同一窗口内。</li>
+            <li>文件浏览器：左侧栏文件树支持新建、重命名、删除、拖拽、键盘导航；右键菜单可在系统资源管理器中定位文件。</li>
+            <li>跨工作区搜索：左侧栏搜索面板并行扫描所有打开的目录，支持大小写敏感、整词匹配、正则、glob 过滤、批量替换。</li>
+            <li>Git 提交图：直接渲染分支拓扑，可在分支选择器中切换或新建分支。</li>
+            <li>分屏 Git 状态徽章：每个分屏标题栏显示当前分支、ahead / behind 数量与未提交改动数。</li>
+            <li>SCM 面板：浏览改动、暂存、提交、查看 diff。</li>
+            <li>Claude Code 智能体协作：从 Ridge 内的分屏启动智能体即可以多分屏模式工作；智能体可以列出、命名、新建、关闭分屏，并查询每个分屏当前的工作目录。</li>
+            <li>主题与字体：内置三套配色与可选编辑器字体下拉。</li>
+            <li>历史回放窗口：在每个分屏的标题栏可以打开历史窗口，浏览、搜索此前滚出屏幕的命令输出。</li>
           </ul>
 
-          <h4>核心 · 分屏 / 工作区</h4>
+          <h4>改进 · Improved</h4>
           <ul>
-            <li>递归分屏树（horizontal / vertical / 嵌套），快捷键 + 鼠标拖拽 resize</li>
-            <li>多工作区，独立 PTY 命名空间；非活动工作区保活</li>
-            <li>资源管理器两级树（工作区 → 终端），文件树拖拽 / 重命名 / 键盘导航</li>
-            <li>侧边栏可折叠 + 快捷键</li>
+            <li>仓库状态变化时自动刷新，无需手动重载或周期轮询。</li>
+            <li>自动识别 git worktree 链接，子工作树的状态与主仓库一致。</li>
+            <li>所有确认 / 输入对话框使用与 Ridge 自身风格一致的窗口，避免操作系统弹窗打断专注。</li>
+            <li>Windows 路径在前后端统一为正斜杠，资源管理器的目录列不会出现重复行。</li>
           </ul>
 
-          <h4>核心 · 编辑器</h4>
+          <h4>已知限制 · Known</h4>
           <ul>
-            <li>Monaco 编辑器作为另一种 Pane 模式，与终端共用同一棵 PaneTree</li>
-            <li>编辑器字体下拉框；三套主题</li>
-            <li>侧栏 Search 跨工作区并行扫描所有 cwd（去重 + glob 过滤 + 可选 replace）</li>
-          </ul>
-
-          <h4>核心 · Git / SCM</h4>
-          <ul>
-            <li>Canvas Git Graph 可视化</li>
-            <li>每个 Pane 标题栏的 PaneGitPill：分支 + diff 摘要 + 内嵌分支选择 / 创建</li>
-            <li>SCM 状态由 .git/ 文件监听驱动，无轮询；linked worktree 自动识别</li>
-            <li>round 64 SCM 刷新策略：仅两条触发路径（cwd 变 + watcher 事件），mount 时只在缓存陈旧 (&gt;30s) 时拉取</li>
-          </ul>
-
-          <h4>核心 · Agent 团队</h4>
-          <ul>
-            <li>内置自研 tmux shim 二进制（<code>src-tauri/src/bin/tmux.rs</code>），让 Claude Code 把 Ridge 当成 tmux 会话</li>
-            <li>shim 支持 list-panes (含 cwd) / display-message 模板变量 / kill-pane / rename-window</li>
-            <li>tmux shim 随安装包发布，PATH 注册由 NSIS / WiX 处理</li>
-            <li>RIDGE_TEAMMATE_URL/TOKEN 自动注入到 PTY 子进程</li>
-          </ul>
-
-          <h4>UI / 体验</h4>
-          <ul>
-            <li>WindDialog API：所有 alert / confirm / choice / prompt 走自定义模态，避免 OS chrome 破坏视觉一致性</li>
-            <li>overlayscrollbars 接管复杂滚动区，水平 tab 滚动专用 preset</li>
-            <li>Modal z-index 寄存表，所有浮层挂在根布局之外避免父级 stacking-context</li>
-            <li>滚回历史模态：256 KiB 初拉 + 128 KiB 分页加载更早，ANSI 剥离用于复制 / 搜索</li>
-          </ul>
-
-          <h4>工程闸门</h4>
-          <ul>
-            <li><code>cargo build --lib</code> 零警告，CI 可安全跑 <code>cargo clippy -- -D warnings</code></li>
-            <li>Future-use API 与兼容 stub 用 <code>#[allow(dead_code)]</code> + 一行说明显式标注</li>
+            <li>v0.1.0 只在 Windows 提供官方安装包；macOS / Linux 用户需要从源码构建。</li>
+            <li>智能体协作目前以 Claude Code 为目标客户端，其它兼容多分屏会话协议的工具未做完整测试。</li>
+            <li>站点上的演示截图与录屏正在补录中，部分仍是占位图。</li>
           </ul>
 
           <p style="margin-top:22px;color:var(--mist-soft);font-family:var(--font-mono);font-size:13px">
-            Tag commit: <code style="color:var(--ridge-bright)">4b3d0c0</code> · 全量 Diff 见 <a href="https://github.com/MySetsuna/ridge/commits/v0.1.0" target="_blank" rel="noopener">git log</a>
+            完整 commit 记录见 <a href="https://github.com/MySetsuna/ridge/commits/v0.1.0" target="_blank" rel="noopener">git log</a>
           </p>
         </div>
       </div>
     </section>
 
     <section style="padding-top: 32px;">
-      <div class="ridge-divider">下一犁　Next furrow</div>
+      <div class="ridge-divider">下一版本　Next release</div>
       <p class="muted" style="text-align:center;font-family:var(--font-mono);font-size:13px;margin-top:12px">
         v0.2.0 计划：详情见仓库 <a href="https://github.com/MySetsuna/ridge/blob/main/docs/NEXT_LOOP_PLAN.md"><code>docs/NEXT_LOOP_PLAN.md</code></a>
       </p>
@@ -132,7 +108,10 @@
 
   <footer class="foot">
     <div class="foot-inner">
-      <div><strong style="color:var(--crop)">Ridge</strong> · 在终端里耕耘 · MIT License</div>
+      <div>
+        <strong style="color:var(--crop)">Ridge</strong> · MIT License
+        <div class="muted" style="font-size:12px;font-family:var(--font-mono);margin-top:6px">Built with Tauri 2 · Svelte 5 · Rust · TypeScript</div>
+      </div>
       <div class="links">
         <a href="https://github.com/MySetsuna/ridge" target="_blank" rel="noopener">GitHub</a>
         <a href="./index.html">主页</a>

@@ -11,6 +11,6 @@
   <g font-family="ui-monospace, monospace" fill="#8a9a8d" text-anchor="middle">
     <text x="640" y="332" font-size="20" letter-spacing="6" fill="#d97757">RECORDING SLOT · 录制位</text>
     <text x="640" y="378" font-size="36" font-weight="700" fill="#ece0c4">agent-team.gif</text>
-    <text x="640" y="412" font-size="13">tmux shim + Claude Code 多终端协作</text>
+    <text x="640" y="412" font-size="13">Claude Code 多分屏协作 截图</text>
   </g>
 </svg>

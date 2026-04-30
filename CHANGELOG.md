@@ -7,74 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.0] — 2026-04-30 · 「开荒 / Breaking Ground」
+## [0.1.0] — 2026-04-30
 
-The first public release of Ridge. The plot lines are laid; from here on every
-furrow is cultivation.
+The first public release of Ridge.
 
-### Terminal & PTY
-- portable-pty + xterm.js (WebGL renderer) terminal with Unicode 11, hyperlinks,
-  and addon-search wired up.
-- Block-paged scrollback: 64 KiB blocks, 4 MiB total cap, deterministic seq-byte
-  paging via `get_pane_scrollback_tail` / `get_pane_scrollback_before`.
-- Pane title bar shows foreground process + cwd (multi-coloured), with IME
-  composition guard.
-- OSC 7 cwd sync; Windows paths force-normalised to forward slashes across
-  frontend and backend.
-- `ScrollbackHistoryModal`: 256 KiB initial pull + 128 KiB "load older" paging,
-  ANSI stripped for clean copy/search, in-modal search with n/N navigation.
+### Added
 
-### Split panes & workspaces
-- Recursive pane tree (horizontal / vertical / nested) with keyboard shortcuts
-  and drag-resize.
-- Multi-workspace support, independent PTY namespaces, inactive workspaces stay
-  alive in the background.
-- Two-level Explorer tree (workspace → terminal), drag/rename/keyboard nav.
-- Collapsible sidebar with shortcut.
+- Recursive split panes — horizontal, vertical, nested without depth limit.
+  Each pane is an independent terminal session with its own working directory
+  and command history.
+- Multi-workspace support. Each workspace keeps its own panes and processes
+  alive when you switch away.
+- Stable terminal experience across PowerShell, bash, zsh, and cmd. Unicode,
+  clickable hyperlinks, scrollback that holds several megabytes of output.
+- Embedded code editor as an alternative pane mode, sharing the same split
+  layout as terminals.
+- File explorer with create / rename / delete / drag-and-drop / keyboard
+  navigation, plus "Reveal in file manager" via context menu.
+- Cross-pane search panel — search and replace across every open workspace
+  at once, with case / whole-word / regex toggles and glob filters.
+- Git commit graph rendered directly from repository history, refreshing
+  automatically when the working tree changes.
+- Per-pane Git status badge showing branch, ahead / behind counts, and
+  uncommitted change count, with an inline branch picker and "create branch"
+  input.
+- Source-control panel for staging, committing, and viewing diffs. Auto-detects
+  git worktree links so the right HEAD is shown for each working tree.
+- Claude Code agent collaboration — agents launched from a Ridge pane can
+  list, name, create, and close panes, and read the working directory of any
+  pane.
+- Three built-in themes and a selectable editor font.
+- Per-pane scrollback history viewer with search and "load older" paging.
 
-### Editor
-- Monaco editor as a second pane mode, sharing the same PaneTree as terminals.
-- Editor font dropdown; three themes shipped.
-- Sidebar Search: parallel scan of every distinct cwd in `paneCwdStore` with
-  dedupe, glob filters, optional replace bucketed per repo root.
+### Improved
 
-### Git / SCM
-- Canvas-rendered Git Graph.
-- `PaneGitPill` per pane: branch + diff summary + inline branch picker /
-  "+ create new branch" input.
-- SCM status driven entirely by `.git/` file watching (no polling). Linked
-  worktrees auto-detected by parsing the `.git` redirect file.
-- Round-64 SCM refresh policy: only two trigger paths (cwd change, watcher
-  event); mount-time discover is skipped if the cache is fresh (<30 s).
+- Repository state refreshes from filesystem changes alone — no polling, no
+  manual reload required.
+- All confirm / input dialogs use Ridge's own window chrome, so prompts no
+  longer interrupt the visual flow with native OS popups.
+- File paths are normalised consistently across the app on Windows; the
+  explorer no longer shows duplicate columns for the same directory.
 
-### Agent teams
-- Self-built tmux-compatible shim binary (`src-tauri/src/bin/tmux.rs` →
-  `dist/teammate-shim/tmux.exe`), bundled into the installer with PATH
-  registration via NSIS / WiX.
-- Shim translates `list-panes` (with cwd) / `display-message` template vars /
-  `kill-pane` / `rename-window` into POST/GET against the local teammate API.
-- `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` injected into PTY child env so
-  Claude Code agents inherit them automatically.
+### Known limitations
 
-### UI / DX
-- `WindDialog` API replaces all native `alert` / `confirm` / `prompt` to keep
-  the chrome consistent inside Tauri.
-- overlayscrollbars takes over complex scroll regions; horizontal-tabs preset
-  for tab strips.
-- Modal z-index registry — every overlay mounted as a sibling of the root
-  layout to avoid parent stacking-context bleed.
-- `ContextMenu` keyboard navigation (Up/Down/Home/End/Enter/Esc/Right/Left).
-
-### Engineering gates
-- `cargo build --lib` emits **0 warnings** as of round 19. CI can safely run
-  `cargo clippy -- -D warnings`.
-- Future-use APIs and legacy compatibility stubs tagged with `#[allow(dead_code)]`
-  + a one-line comment explaining why.
-
-### Docs site
-- GitHub Pages site under `/site/` with theme-matched homepage, docs hub, and
-  release log; deployed via `.github/workflows/deploy-pages.yml`.
-- Recording slot system: placeholder SVGs labelled with the exact target path,
-  swapped at runtime when real media is dropped at `site/assets/media/*`.
+- Official installers for v0.1.0 are Windows-only. macOS and Linux users
+  build from source.
+- Agent collaboration is verified against Claude Code; other clients
+  implementing the same multi-pane session protocol are not fully tested.
+- Demo screenshots and recordings on the marketing site are still being
+  captured; some are placeholders.
 
 [0.1.0]: https://github.com/MySetsuna/ridge/releases/tag/v0.1.0

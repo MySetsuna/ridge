@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ridge — 在终端里耕耘</title>
-  <meta name="description" content="Ridge：分屏终端 + 嵌入式编辑器 + Git 可视化 + 智能体协作。像田埂一样划分你的工作面，让每一块地都被认真耕耘。" />
+  <title>Ridge — 分屏终端工作台</title>
+  <meta name="description" content="Ridge 是一个桌面终端工作台：递归分屏终端、内嵌代码编辑器、Git 提交图，可与 Claude Code 智能体协作。Windows / macOS / Linux。" />
   <meta name="theme-color" content="#0c1310" />
 
-  <meta property="og:title" content="Ridge — 在终端里耕耘" />
-  <meta property="og:description" content="像田埂一样划分你的工作面：分屏终端、嵌入式编辑器、Git 可视化、Claude Code 智能体团队。" />
+  <meta property="og:title" content="Ridge — 分屏终端工作台" />
+  <meta property="og:description" content="分屏终端、内嵌编辑器、Git 提交图、Claude Code 智能体协作，集中在一个桌面应用中。" />
   <meta property="og:type" content="website" />
 
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
@@ -42,15 +42,14 @@
     <section class="hero">
       <div class="hero-grid">
         <div>
-          <span class="eyebrow">v0.1.0 · Tauri + Svelte 5 · MIT</span>
+          <span class="eyebrow">v0.1.0 · MIT License</span>
           <h1 class="hero-title">
-            像田埂一样<br/>
-            <span class="accent">划分</span>你的<span class="soil">工作面</span>。
+            把终端、编辑器和 Git<br/>
+            放进同一个<span class="accent">工作台</span>。
           </h1>
           <p class="hero-sub">
-            Ridge 是一个原生分屏终端 + 嵌入式编辑器 + Git 可视化的桌面工作台。
-            屏幕上的每一道分割线都是一道<strong style="color:var(--ridge)">田埂</strong>，
-            把你的注意力切成可以独立耕耘的田块——终端、编辑器、Agent，各就各位。
+            Ridge 是一个本地桌面应用，提供递归分屏终端、内嵌代码编辑器和 Git 提交图。
+            每个分屏都是独立的会话，可以单独运行命令、编辑文件，或交给 Claude Code 协作完成。
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" href="./releases.html">
@@ -65,38 +64,37 @@
           </div>
           <div class="meta-row">
             <span><i class="dot"></i> Windows / macOS / Linux</span>
-            <span class="mono">portable-pty · xterm.js · Monaco</span>
           </div>
         </div>
 
         <div class="field-frame">
           <div class="field-titlebar">
             <div class="lights"><span></span><span></span><span></span></div>
-            <span>~/code/ridge · 4 plots</span>
+            <span>~/code/ridge · 4 panes</span>
             <span class="pulse">●</span>
           </div>
           <div class="field-plots">
             <div class="plot">
-              <div class="label">PLOT · TERM</div>
+              <div class="label">PANE · TERMINAL</div>
               <div class="row cmd">$ pnpm tauri dev</div>
               <div class="row">▸ vite v6.0 ready in 412ms</div>
               <div class="row ok">▸ tauri compiled OK</div>
             </div>
             <div class="plot">
-              <div class="label">PLOT · GIT</div>
+              <div class="label">PANE · GIT</div>
               <div class="row">● main</div>
               <div class="row">┃</div>
               <div class="row">●─ feat/agent-team</div>
               <div class="row warn">┃ 3 ahead</div>
             </div>
             <div class="plot">
-              <div class="label">PLOT · EDITOR</div>
-              <div class="row" style="color:#7fb069">fn cultivate() {</div>
-              <div class="row">&nbsp;&nbsp;let plot = ...;</div>
+              <div class="label">PANE · EDITOR</div>
+              <div class="row" style="color:#7fb069">fn render() {</div>
+              <div class="row">&nbsp;&nbsp;let pane = ...;</div>
               <div class="row">}</div>
             </div>
             <div class="plot">
-              <div class="label">PLOT · AGENT</div>
+              <div class="label">PANE · AGENT</div>
               <div class="row cmd">claude › ✦</div>
               <div class="row">scaffolding...</div>
               <div class="row ok">✓ 4 files written</div>
@@ -106,15 +104,12 @@
       </div>
     </section>
 
-    <!-- ─── METAPHOR LINE ─────────────────────────────────── -->
-    <div class="ridge-divider">田埂　Ridge　Ridge　田埂</div>
-
     <!-- ─── FEATURES ──────────────────────────────────────── -->
     <section id="features">
       <div class="section-head">
         <span class="eyebrow">Features · 特性</span>
-        <h2>每一块地，都被认真耕耘。</h2>
-        <p>从最小的 PTY 到最复杂的多 Agent 协作流，Ridge 把所有需要的工具铺到同一片田里。</p>
+        <h2>为日常开发流程而设计。</h2>
+        <p>Ridge 把命令行、代码编辑、版本控制和智能体协作整合到同一个窗口，减少在多个独立工具之间切换的成本。</p>
       </div>
 
       <div class="feature-grid">
@@ -123,42 +118,42 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
           </div>
           <h3>递归分屏</h3>
-          <p>水平、垂直、嵌套切分都不限层数。每一块地都是独立的会话——独立 PTY、独立 cwd、独立滚动历史。</p>
+          <p>水平、垂直、嵌套切分都不限层数。每个分屏都是独立的终端会话，拥有自己的工作目录与命令历史。</p>
         </div>
         <div class="feature reveal">
           <div class="feature-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           </div>
-          <h3>真·终端模拟</h3>
-          <p>portable-pty + xterm.js + WebGL 渲染。Unicode 11、超链接、64 KiB 块状滚回 (4 MiB 上限)、OSC 7 cwd 同步全部到位。</p>
+          <h3>稳定的本地终端</h3>
+          <p>支持 Unicode、可点击超链接、可滚动数 MB 的命令历史。无论是 PowerShell、bash、zsh 还是 cmd，体验与原生终端一致。</p>
         </div>
         <div class="feature reveal">
           <div class="feature-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
           </div>
           <h3>嵌入式编辑器</h3>
-          <p>Monaco 编辑器作为另一种 Pane 模式：与终端共享同一棵分屏树，文件、命令、AI 协作在同一片田里来回。</p>
+          <p>代码编辑器与终端共享同一套分屏布局：可以把任意分屏切换为编辑器模式，文件、命令与智能体回应保持在同一视野内。</p>
         </div>
         <div class="feature reveal">
           <div class="feature-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><line x1="8.5" y1="7.5" x2="15.5" y2="10.5"/><line x1="8.5" y1="16.5" x2="15.5" y2="13.5"/></svg>
           </div>
           <h3>Git Graph 可视化</h3>
-          <p>Canvas 绘制的提交图，分支选取、diff 摘要、SCM 状态实时跟随 .git/ 文件变化（无轮询）。</p>
+          <p>提交图直接渲染分支拓扑；分支选取、diff 摘要、SCM 状态会随仓库变更自动刷新，无需手动重载。</p>
         </div>
         <div class="feature reveal">
           <div class="feature-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </div>
-          <h3>tmux 兼容 Shim</h3>
-          <p>内置自研 <code style="color:var(--sun);font-family:var(--font-mono)">tmux.exe</code>，让 Claude Code 等工具误以为自己在 tmux 里。Agent 团队、跨 Pane RPC 自然接入。</p>
+          <h3>Claude Code 智能体协作</h3>
+          <p>从 Ridge 内的分屏启动 Claude Code，可以直接以多分屏模式协作：智能体能列出、命名、新建、关闭分屏，并查询每个分屏的工作目录。</p>
         </div>
         <div class="feature reveal">
           <div class="feature-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
           </div>
           <h3>多工作区 / 多语境</h3>
-          <p>每个工作区独立 PTY 进程、独立 Pane ID 命名空间，可同时打开多个项目；侧栏 Search 平行扫描所有 cwd。</p>
+          <p>每个工作区有独立的进程与命令历史，可同时打开多个项目；侧栏搜索会并行扫描所有打开中的目录。</p>
         </div>
       </div>
     </section>
@@ -167,19 +162,19 @@
     <section id="showcase">
       <div class="section-head">
         <span class="eyebrow">Showcase · 演示</span>
-        <h2>看一眼就明白。</h2>
-        <p>下面的位置都是录制位——内容会在你录好后自动出现。</p>
+        <h2>演示。</h2>
+        <p>下面四组截图位用于呈现核心场景，正式录屏到位后会自动替换占位图。</p>
       </div>
 
       <div class="showcase-row">
         <div class="showcase-text">
-          <span class="eyebrow">Plot 1 · Split</span>
-          <h2>切一刀，又是一片地。</h2>
-          <p>Ctrl+\ 横切，Ctrl+- 竖切，递归层数不限。每条分割线都是一道田埂。</p>
+          <span class="eyebrow">01 · Split</span>
+          <h2>按需分屏。</h2>
+          <p>Ctrl + \ 水平切分，Ctrl + - 垂直切分，可以无限嵌套。</p>
           <ul>
             <li>键盘快捷键 / 鼠标拖拽都能 resize</li>
-            <li>每个 Pane 独立 PTY，独立滚回</li>
-            <li>Pane 标题栏显示 cwd + Git 状态</li>
+            <li>每个分屏独立运行，互不干扰</li>
+            <li>分屏标题栏显示当前目录与 Git 状态</li>
           </ul>
         </div>
         <div class="showcase-media">
@@ -198,12 +193,12 @@
 
       <div class="showcase-row flip">
         <div class="showcase-text">
-          <span class="eyebrow">Plot 2 · Editor</span>
-          <h2>编辑器，是另一种 Pane。</h2>
-          <p>资源管理器树 + Monaco 编辑器，与终端共用同一棵分屏树。打开文件就像在田里多种了一垄。</p>
+          <span class="eyebrow">02 · Editor</span>
+          <h2>编辑器是另一种分屏模式。</h2>
+          <p>内置文件树与代码编辑器，与终端共享同一套分屏布局。打开文件不会跳出当前窗口。</p>
           <ul>
             <li>侧栏文件树：拖拽、重命名、键盘导航</li>
-            <li>Search 标签：跨工作区并行 grep + glob 过滤</li>
+            <li>搜索面板：跨工作区并行查找，支持 glob 过滤与替换</li>
             <li>SCM 标签：暂存、提交、分支切换一站式</li>
           </ul>
         </div>
@@ -223,13 +218,13 @@
 
       <div class="showcase-row">
         <div class="showcase-text">
-          <span class="eyebrow">Plot 3 · Git</span>
-          <h2>历史的纹路，看得见。</h2>
-          <p>Canvas 绘制的提交图，分支拓扑一目了然。每个 Pane 标题栏的 Git Pill 即时显示 ahead/behind。</p>
+          <span class="eyebrow">03 · Git</span>
+          <h2>直接查看分支历史。</h2>
+          <p>提交图直接渲染分支拓扑。每个分屏标题栏会显示当前分支与 ahead / behind 数量。</p>
           <ul>
-            <li>Git 状态由 .git/ 文件监听驱动（无轮询）</li>
+            <li>仓库变更后状态自动刷新</li>
             <li>分支选择器内嵌「+ 创建新分支」</li>
-            <li>linked worktree 自动识别</li>
+            <li>自动识别 git worktree</li>
           </ul>
         </div>
         <div class="showcase-media">
@@ -248,13 +243,13 @@
 
       <div class="showcase-row flip">
         <div class="showcase-text">
-          <span class="eyebrow">Plot 4 · Agents</span>
-          <h2>把 Agent 也安一块田。</h2>
-          <p>内置的 tmux shim 让 Claude Code 直接把 Ridge 当作多终端会话。多个 Agent 并行耕作，互不打扰。</p>
+          <span class="eyebrow">04 · Agents</span>
+          <h2>与 Claude Code 协作。</h2>
+          <p>Ridge 兼容 Claude Code 的多分屏会话协议。可以让多个智能体并行在不同分屏上工作，输出互不干扰。</p>
           <ul>
-            <li>tmux shim 暴露 list-panes / display-message / kill-pane</li>
-            <li><code style="color:var(--sun)">RIDGE_TEAMMATE_URL/TOKEN</code> 注入到 PTY</li>
-            <li>list-panes 返回 cwd，Agent 自然知道在哪片田工作</li>
+            <li>智能体可以列出、命名、新建、关闭分屏</li>
+            <li>从分屏内启动智能体，环境变量自动就绪</li>
+            <li>智能体可以查询每个分屏当前的工作目录</li>
           </ul>
         </div>
         <div class="showcase-media">
@@ -276,8 +271,8 @@
     <section id="start">
       <div class="section-head">
         <span class="eyebrow">Quick Start · 快速开始</span>
-        <h2>从零到第一块田，2 分钟。</h2>
-        <p>需要 Node 18+, pnpm, 以及 Rust 工具链 (1.77+).</p>
+        <h2>两分钟跑起来。</h2>
+        <p>源码构建需要 Node 18+、pnpm 9+、Rust 1.77+。</p>
       </div>
 
       <div class="tabs" role="tablist">
@@ -314,11 +309,7 @@
 <span class="prompt">$</span> open <span class="str">https://github.com/MySetsuna/ridge/releases/tag/v0.1.0</span>
 
 <span class="cmt"># Windows: 双击 .msi 或 .exe 安装即可</span>
-<span class="cmt"># tmux shim 会随安装包附带，PATH 自动注册</span>
-
-<span class="cmt"># 验证 tmux shim 已生效</span>
-<span class="prompt">$</span> <span class="kw">tmux</span> -V
-<span class="cmt"># → ridge-tmux-shim/0.1.0</span></div>
+<span class="cmt"># macOS / Linux: v0.1.0 暂未提供官方二进制，请参考"开发模式"自行构建</span></div>
       </div>
     </section>
 
@@ -326,27 +317,27 @@
     <section id="recent-release">
       <div class="section-head">
         <span class="eyebrow">Latest · v0.1.0</span>
-        <h2>第一犁地。</h2>
-        <p>开荒之版本——所有特性的起点。</p>
+        <h2>最新版本 v0.1.0</h2>
+        <p>Ridge 0.1.0 是首个对外发布的版本，奠定了分屏、终端、编辑器、Git 与智能体协作的基础体验。</p>
       </div>
 
       <div class="release">
         <div class="release-head">
-          <div class="release-tag"><span class="v">v</span>0.1.0 <span style="font-size:14px;color:var(--mist);font-weight:400;margin-left:8px">"开荒"</span></div>
+          <div class="release-tag"><span class="v">v</span>0.1.0</div>
           <div class="release-meta">
             <span class="pill first">FIRST RELEASE</span>
             <span>2026-04-30</span>
           </div>
         </div>
-        <p>Ridge 的第一个公开版本。包含分屏终端、嵌入式编辑器、Git 可视化、tmux shim、智能体团队接入等核心能力。</p>
+        <p>Ridge 的第一个公开版本。在这一版里，分屏终端、代码编辑器、Git 提交图与智能体协作首次同时可用。</p>
         <h4>亮点</h4>
         <ul>
-          <li>递归分屏（水平 / 垂直 / 嵌套）+ 多工作区</li>
-          <li>portable-pty + xterm.js (WebGL) 终端，4 MiB 块状滚回</li>
-          <li>Monaco 编辑器作为另一种 Pane 模式</li>
-          <li>Canvas Git Graph + 实时 SCM 状态（基于 .git/ 文件监听）</li>
-          <li>内置 tmux shim，Claude Code Agent 团队即插即用</li>
-          <li>三套主题 + 字体下拉框；Cargo 零警告闸门</li>
+          <li>递归分屏与多工作区</li>
+          <li>稳定的终端体验，可滚动数 MB 的命令历史</li>
+          <li>内置代码编辑器，与终端共享分屏布局</li>
+          <li>Git 提交图与实时仓库状态</li>
+          <li>开箱即用的 Claude Code 智能体协作</li>
+          <li>多套主题、可切换编辑器字体</li>
         </ul>
         <p style="margin-top:18px">
           <a href="./releases.html" class="btn" style="font-size:14px;padding:10px 18px">查看全部 Release</a>
@@ -358,7 +349,8 @@
   <footer class="foot">
     <div class="foot-inner">
       <div>
-        <strong style="color:var(--crop)">Ridge</strong> · 在终端里耕耘 · MIT License
+        <strong style="color:var(--crop)">Ridge</strong> · MIT License
+        <div class="muted" style="font-size:12px;font-family:var(--font-mono);margin-top:6px">Built with Tauri 2 · Svelte 5 · Rust · TypeScript</div>
       </div>
       <div class="links">
         <a href="https://github.com/MySetsuna/ridge" target="_blank" rel="noopener">GitHub</a>
