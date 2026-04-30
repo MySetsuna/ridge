@@ -3,6 +3,7 @@
 import { writable } from 'svelte/store';
 
 export const searchFolderStore = writable<string | null>(null);
+export const searchQueryStore = writable<string>('');
 
 export function searchInFolder(path: string): void {
 	searchFolderStore.set(path);

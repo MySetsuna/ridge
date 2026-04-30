@@ -1,5 +1,5 @@
 {
-  "name": "rg-split",
+  "name": "@ridge/split",
   "version": "0.1.0",
   "description": "Lightweight split-pane primitives for Svelte 5. Pure flex container + percentage-sized panes. No internal drag state — consumers wire their own mousedown logic.",
   "type": "module",

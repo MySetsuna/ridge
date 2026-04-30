@@ -32,9 +32,11 @@
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
-  import { searchFolderStore, clearSearchFolder } from '$lib/stores/searchState';
+  import { searchFolderStore, clearSearchFolder, searchQueryStore } from '$lib/stores/searchState';
   import { settingsStore } from '$lib/stores/settings';
   import { get } from 'svelte/store';
+
+  const { active = false } = $props<{ active?: boolean }>();
 
   interface SearchResult {
     file: string;
@@ -59,7 +61,7 @@
   }
 
   // ─── Query state ─────────────────────────────────────────────────────────
-  let query = $state('');
+  let query = $state(get(searchQueryStore));
   let replaceText = $state('');
   let showReplace = $state(false);
   let caseSensitive = $state(false);
@@ -126,6 +128,19 @@
       if (cwd) set.add(cwd);
     }
     return Array.from(set).sort();
+  });
+
+  let queryInput: HTMLInputElement | undefined;
+
+  $effect(() => {
+    searchQueryStore.set(query);
+  });
+
+  $effect(() => {
+    if (active && queryInput) {
+      queryInput.focus();
+      queryInput.select();
+    }
   });
 
   // ─── Auto-search debounce ────────────────────────────────────────────────
@@ -553,6 +568,7 @@
       <input
         type="text"
         bind:value={query}
+        bind:this={queryInput}
         onkeydown={onQueryKeydown}
         placeholder="搜索…"
         class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] focus:outline-none focus:border-[var(--rg-accent)]/60 placeholder:text-[var(--rg-fg-muted)]/70"

@@ -124,10 +124,10 @@ export const SNAP_THRESHOLD_PX = 10;
  *   - 且若鼠标距离 BC 交点的两条 axis 距离都 ≤ `INTERSECTION_PROXIMITY_PX`，
  *     则触发 A、B 联动拖动。
  */
-export const SAME_AXIS_ATTRACT_PX = 20;
+export const SAME_AXIS_ATTRACT_PX = 35;
 
 /** 联动 mousedown 触发距离：鼠标距 BC/ABC 交点欧几里得距离 ≤ 此值时，同向兄弟被纳入联动（圆形热区） */
-export const INTERSECTION_PROXIMITY_PX = 30;
+export const INTERSECTION_PROXIMITY_PX = 50;
 
 /**
  * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"AB 中线对齐"，
@@ -173,7 +173,7 @@ export function pointerInCoupleZone(
  */
 const UNSNAP_THRESHOLD_PX = 9999;
 
-const HOVER_DEBOUNCE_MS = 90;
+const HOVER_DEBOUNCE_MS = 20;
 const MIN_PANE_RATIO = 6;
 let splitHoverTimer: ReturnType<typeof setTimeout> | undefined;
 export const splitResizeUiState = writable<SplitResizeUiState>({
@@ -529,7 +529,8 @@ export function clearSplitResizeUi() {
 
 export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   const ui = get(splitResizeUiState);
-  if (ui.phase !== 'junction') return;
+  if (ui.phase !== 'junction' && ui.phase !== 'pending') return;
+  clearSplitHoverTimer();
   const root = get(paneTreeStore);
 
   // Check if 4-way junction snap (3+ coupled splitters at same junction)

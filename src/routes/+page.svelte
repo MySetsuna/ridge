@@ -1052,7 +1052,7 @@ function expandSidebar() {
           </div>
         {:else if sidebarTab === 'search'}
           <div class="flex-1 min-h-0 overflow-hidden">
-            <SearchSidebar />
+            <SearchSidebar active={sidebarTab === 'search'} />
           </div>
         {:else if sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled}
           <ClaudeCodePanel />

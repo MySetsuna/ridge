@@ -6,6 +6,7 @@ import { Unicode11Addon } from 'xterm-addon-unicode11';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { SearchAddon } from 'xterm-addon-search';
 import { WebglAddon } from 'xterm-addon-webgl';
+import { SerializeAddon } from 'xterm-addon-serialize';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -206,6 +207,7 @@ let removeCompositionHandlers: (() => void) | undefined;
 let resizeObserver: ResizeObserver | undefined;
 /** ResizeObserver 触发的 fit+PTY：每帧合并一次，避免 debounce 造成拖动时 PTY 与 xterm 尺寸脱节 */
 let resizeRaf: number | undefined;
+let resizePtySyncTimer: ReturnType<typeof setTimeout> | undefined;
 let ptyClosedUnlisten: (() => void) | undefined;
 let recoveringPty = false;
 
@@ -237,6 +239,7 @@ let unsubXtermTheme: (() => void) | undefined;
  *  atlas and force a redraw (xterm 5.3 + addon-webgl 0.16 sometimes leaves
  *  glyphs cached against the old background color). */
 let webglAddon: WebglAddon | null = null;
+let serializeAddon: SerializeAddon | null = null;
 
 // ── Terminal in-pane search (Ctrl+F) ────────────────────────────────────────
 let searchAddon: SearchAddon | null = null;
@@ -301,6 +304,10 @@ function cancelResizeRaf() {
 	if (resizeRaf !== undefined) {
 		cancelAnimationFrame(resizeRaf);
 		resizeRaf = undefined;
+	}
+	if (resizePtySyncTimer !== undefined) {
+		clearTimeout(resizePtySyncTimer);
+		resizePtySyncTimer = undefined;
 	}
 }
 
@@ -430,6 +437,7 @@ async function renderView() {
 	fitAddon = null;
 	// term.dispose disposes loaded addons too; just drop our reference.
 	webglAddon = null;
+	serializeAddon = null;
 
 	if (!viewInner) return;
 
@@ -473,7 +481,7 @@ async function renderView() {
 				screenReaderMode: false,
 				// 仅在终端获得焦点时展示光标；失焦后隐藏，避免在输出区域"乱闪"
 				cursorInactiveStyle: 'none',
-				scrollback: 8000,
+				scrollback: 2000,
 				theme: xtermThemeFor(get(settingsStore).theme)
 			});
 			fitAddon = new FitAddon();
@@ -494,6 +502,9 @@ async function renderView() {
 			// In-pane search: Ctrl+F opens the search bar, highlights matches.
 			searchAddon = new SearchAddon();
 			term.loadAddon(searchAddon);
+			const sAddon = new SerializeAddon();
+			term.loadAddon(sAddon);
+			serializeAddon = sAddon;
 			term.open(viewInner);
 			// 加载 WebGL renderer：xterm 5 默认 DOM renderer 不支持 customGlyphs，
 			// box-drawing / block-element 字符（│ ─ ┘ ░ █）依赖字体 glyph，cell 之间
@@ -822,12 +833,20 @@ async function renderView() {
 
 		resizeObserver = new ResizeObserver(() => {
 			if (!alive || isComposing) return;
-			if (resizeRaf !== undefined) return;
-			resizeRaf = requestAnimationFrame(() => {
-				resizeRaf = undefined;
+			if (resizeRaf === undefined) {
+				resizeRaf = requestAnimationFrame(() => {
+					resizeRaf = undefined;
+					if (!alive || isComposing) return;
+					fitAddon?.fit();
+				});
+			}
+			if (resizePtySyncTimer !== undefined) clearTimeout(resizePtySyncTimer);
+			resizePtySyncTimer = setTimeout(() => {
+				resizePtySyncTimer = undefined;
 				if (!alive || isComposing) return;
 				void fitAndSyncPty();
-			});
+				webglAddon?.clearTextureAtlas();
+			}, 200);
 		});
 		resizeObserver.observe(viewInner);
 

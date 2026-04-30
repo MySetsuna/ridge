@@ -56,6 +56,9 @@ importers:
       xterm-addon-search:
         specifier: ^0.13.0
         version: 0.13.0(xterm@5.3.0)
+      xterm-addon-serialize:
+        specifier: ^0.11.0
+        version: 0.11.0(xterm@5.3.0)
       xterm-addon-unicode11:
         specifier: ^0.6.0
         version: 0.6.0(xterm@5.3.0)
@@ -1821,6 +1824,12 @@ packages:
     peerDependencies:
       xterm: ^5.0.0
 
+  xterm-addon-serialize@0.11.0:
+    resolution: {integrity: sha512-2CNDnmLdLkNWfsxNFkGsI5FE9W/BbsMzeOrbu59yNqH9L6k1gmL+Ab6VXxEp2NQUJSzaiqi6t0nFR5k5EDkVIg==}
+    deprecated: This package is now deprecated. Move to @xterm/addon-serialize instead.
+    peerDependencies:
+      xterm: ^5.0.0
+
   xterm-addon-unicode11@0.6.0:
     resolution: {integrity: sha512-5pkb8YoS/deRtNqQRw8t640mu+Ga8B2MG3RXGQu0bwgcfr8XiXIRI880TWM49ICAHhTmnOLPzIIBIjEnCq7k2A==}
     deprecated: This package is now deprecated. Move to @xterm/addon-unicode11 instead.
@@ -3335,6 +3344,10 @@ snapshots:
       xterm: 5.3.0
 
   xterm-addon-search@0.13.0(xterm@5.3.0):
+    dependencies:
+      xterm: 5.3.0
+
+  xterm-addon-serialize@0.11.0(xterm@5.3.0):
     dependencies:
       xterm: 5.3.0
 

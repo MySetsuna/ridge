@@ -261,7 +261,7 @@
 
   function splitHighlighted(path: number[], ui: SplitResizeUiState): boolean {
     if (ui.phase === 'drag') return false;
-    if (ui.phase === 'junction') {
+    if (ui.phase === 'junction' || ui.phase === 'pending') {
       if (pathEqual(path, ui.primary.splitPath)) return true;
       return ui.orthogonals.some((r) => pathEqual(path, r.splitPath));
     }
@@ -284,12 +284,6 @@
   function splitAligned(path: number[], ui: SplitResizeUiState): boolean {
     if (ui.phase !== 'pending' && ui.phase !== 'junction') return false;
     if (ui.sameAxisCandidates.length === 0) return false;
-    // 仅当鼠标实际落在某个 sibling 的 BC 圆 15px 热区内才高亮：
-    // 否则即使 perpDistance 已对齐，hover 也不应给 B 任何视觉强调。
-    const inZone = ui.sameAxisCandidates.some((sib) =>
-      pointerInCoupleZone(ui.primary, sib, ui.pointer)
-    );
-    if (!inZone) return false;
     if (pathEqual(path, ui.primary.splitPath)) return true;
     return ui.sameAxisCandidates.some((r) => pathEqual(path, r.splitPath));
   }

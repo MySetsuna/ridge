@@ -327,6 +327,64 @@ fn find_idle_pane(_url: &str, _token: &str) -> Option<usize> {
     None
 }
 
+fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
+    let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
+    let res = client().get(u).headers(auth_headers(token)).send().ok()?;
+    let json: serde_json::Value = res.json().ok()?;
+    let panes = json.get("panes")?.as_array()?;
+    for pane in panes {
+        let title = pane.get("title").and_then(|t| t.as_str()).unwrap_or("");
+        if title == name {
+            let idx = pane.get("index")?.as_u64()? as usize;
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn rename_pane_http(url: &str, token: &str, pane_index: usize, name: &str) {
+    let u = format!("{}/api/v1/rename-pane", url.trim_end_matches('/'));
+    let body = serde_json::json!({ "pane_index": pane_index, "name": name });
+    match client().post(u).headers(auth_headers(token)).json(&body).send() {
+        Ok(res) => log_to_file(&format!("rename_pane: pane={pane_index} name={name} status={}", res.status())),
+        Err(e) => log_to_file(&format!("rename_pane: HTTP error: {e}")),
+    }
+}
+
+fn resolve_named_pane_target(v: &str, url: &str, token: &str) -> SendTarget {
+    let v = v.trim();
+    if let Some(n) = v.strip_prefix('%') {
+        if let Ok(idx) = n.parse::<usize>() {
+            return SendTarget::Index(idx);
+        }
+    }
+    if let Some(colon) = v.find(':') {
+        let after_colon = &v[colon + 1..];
+        if let Some(dot) = after_colon.rfind('.') {
+            if let Ok(idx) = after_colon[dot + 1..].parse::<usize>() {
+                return SendTarget::Index(idx);
+            }
+        }
+        if let Ok(idx) = after_colon.parse::<usize>() {
+            return SendTarget::Index(idx);
+        }
+        log_to_file(&format!("resolve_named_pane_target: lookup name={after_colon:?}"));
+        if let Some(idx) = find_pane_by_name(url, token, after_colon) {
+            return SendTarget::Index(idx);
+        }
+        return SendTarget::TmuxCurrent;
+    }
+    if let Ok(idx) = v.parse::<usize>() {
+        return SendTarget::Index(idx);
+    }
+    if let Some(dot) = v.rfind('.') {
+        if let Ok(idx) = v[dot + 1..].parse::<usize>() {
+            return SendTarget::Index(idx);
+        }
+    }
+    SendTarget::TmuxCurrent
+}
+
 /// Minimal JSON shape returned by `/api/v1/list-panes?json=1`.
 /// Only the fields we need for dynamic template substitution.
 #[derive(serde::Deserialize)]
@@ -492,7 +550,7 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         command,
         cwd,
         print_template.as_deref(),
-    )
+    ).map(|_| ())
 }
 
 fn post_split(
@@ -503,7 +561,7 @@ fn post_split(
     command: Option<String>,
     cwd: Option<String>,
     print_template: Option<&str>,
-) -> Result<(), ()> {
+) -> Result<usize, ()> {
     log_to_file(&format!(
         "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}",
         horizontal,
@@ -558,7 +616,7 @@ fn post_split(
     if let Some(tpl) = print_template {
         println!("{}", render_tmux_format(tpl, new_idx));
     }
-    Ok(())
+    Ok(new_idx)
 }
 
 fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
@@ -818,7 +876,7 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             if v.is_empty() {
                 target = SendTarget::TmuxCurrent;
             } else {
-                target = SendTarget::Index(parse_pane_target(v));
+                target = resolve_named_pane_target(v, url, token);
             }
             i += 2;
             continue;
@@ -1260,8 +1318,11 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             "-d" => {} // don't make it the active window
             "-a" => {} // after index
             "-t" if i + 1 < rest.len() => {
-                // Target pane index
-                pane_index = Some(parse_pane_target(&rest[i + 1]));
+                let t = rest[i + 1].trim();
+                // Only treat as pane index if numeric or %N — session names are ignored
+                if t.parse::<usize>().is_ok() || t.starts_with('%') {
+                    pane_index = Some(parse_pane_target(t));
+                }
                 i += 1;
             }
             _ => {
@@ -1291,7 +1352,11 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     // 如果找到空闲 pane，使用它而不是创建新的
     let target_pane_index = idle_pane_index.or(pane_index);
 
-    post_split(url, token, false, target_pane_index, command, cwd, None)
+    let new_idx = post_split(url, token, false, target_pane_index, command, cwd, None)?;
+    if let Some(name) = &window_name {
+        rename_pane_http(url, token, new_idx, name);
+    }
+    Ok(())
 }
 
 fn cmd_select_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
@@ -1532,7 +1597,7 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
  // 如果找到空闲 pane，使用它而不是创建新的
  let target_pane_index = idle_pane_index.or(pane_index);
 
-    post_split(url, token, false, target_pane_index, None, None, None)
+    post_split(url, token, false, target_pane_index, None, None, None).map(|_| ())
 }
 
 fn cmd_has_session(rest: &[String]) -> Result<(), ()> {
