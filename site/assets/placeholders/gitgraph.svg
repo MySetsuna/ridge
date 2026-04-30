@@ -1,0 +1,25 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Recording slot — git graph">
+  <rect width="1280" height="720" fill="#0c1310"/>
+  <pattern id="g3" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0v32" fill="none" stroke="#1f2c25"/></pattern>
+  <rect width="1280" height="720" fill="url(#g3)"/>
+  <g stroke="#7fb069" stroke-width="2" fill="none" stroke-opacity="0.5">
+    <line x1="200" y1="100" x2="200" y2="620"/>
+    <line x1="280" y1="200" x2="280" y2="540"/>
+    <path d="M200 220 C220 220, 260 220, 280 200"/>
+    <path d="M280 540 C260 540, 220 540, 200 520"/>
+  </g>
+  <g fill="#7fb069">
+    <circle cx="200" cy="120" r="6"/>
+    <circle cx="200" cy="220" r="6"/>
+    <circle cx="280" cy="200" r="6"/>
+    <circle cx="280" cy="320" r="6"/>
+    <circle cx="280" cy="540" r="6"/>
+    <circle cx="200" cy="520" r="6"/>
+    <circle cx="200" cy="600" r="6"/>
+  </g>
+  <g font-family="ui-monospace, monospace" fill="#8a9a8d" text-anchor="middle">
+    <text x="760" y="332" font-size="20" letter-spacing="6" fill="#7fb069">RECORDING SLOT · 录制位</text>
+    <text x="760" y="378" font-size="36" font-weight="700" fill="#ece0c4">gitgraph.png</text>
+    <text x="760" y="412" font-size="13">Git Graph 分支可视化截图</text>
+  </g>
+</svg>

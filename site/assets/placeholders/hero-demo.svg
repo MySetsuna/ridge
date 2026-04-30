@@ -1,0 +1,30 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Recording slot — hero demo">
+  <defs>
+    <pattern id="grid-h" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1f2c25" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="vignette-h" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0c1310"/>
+      <stop offset="100%" stop-color="#121a16"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#vignette-h)"/>
+  <rect width="1280" height="720" fill="url(#grid-h)" opacity="0.6"/>
+  <line x1="640" y1="0" x2="640" y2="720" stroke="#7fb069" stroke-width="1.5" stroke-opacity="0.35"/>
+  <line x1="0" y1="360" x2="1280" y2="360" stroke="#7fb069" stroke-width="1.5" stroke-opacity="0.35"/>
+  <g font-family="ui-monospace, SF Mono, Menlo, Consolas, monospace" fill="#8a9a8d">
+    <text x="640" y="320" text-anchor="middle" font-size="22" letter-spacing="6" fill="#7fb069">RECORDING SLOT · 录制位</text>
+    <text x="640" y="360" text-anchor="middle" font-size="40" font-weight="700" fill="#ece0c4">hero-demo.mp4</text>
+    <text x="640" y="400" text-anchor="middle" font-size="14">放置主演示视频或 GIF（建议 1280×720, 8–15 秒循环）</text>
+    <text x="640" y="440" text-anchor="middle" font-size="13" fill="#5b6b62">drop in: site/assets/media/hero-demo.mp4 (or .gif)</text>
+  </g>
+  <g stroke="#2a3a31" stroke-width="1" fill="none">
+    <rect x="60" y="60" width="220" height="14" rx="3"/>
+    <rect x="60" y="86" width="160" height="10" rx="3"/>
+  </g>
+  <g stroke="#7fb069" stroke-opacity="0.25" stroke-width="2" fill="none">
+    <circle cx="1180" cy="80" r="6"/>
+    <circle cx="1200" cy="80" r="6"/>
+    <circle cx="1220" cy="80" r="6"/>
+  </g>
+</svg>

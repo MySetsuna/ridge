@@ -1,0 +1,12 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Recording slot — split panes">
+  <rect width="1280" height="720" fill="#0c1310"/>
+  <pattern id="g1" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0v32" fill="none" stroke="#1f2c25"/></pattern>
+  <rect width="1280" height="720" fill="url(#g1)"/>
+  <line x1="640" y1="0" x2="640" y2="720" stroke="#547549" stroke-width="2"/>
+  <line x1="0" y1="360" x2="640" y2="360" stroke="#547549" stroke-width="2"/>
+  <g font-family="ui-monospace, monospace" fill="#8a9a8d" text-anchor="middle">
+    <text x="640" y="332" font-size="20" letter-spacing="6" fill="#7fb069">RECORDING SLOT · 录制位</text>
+    <text x="640" y="378" font-size="36" font-weight="700" fill="#ece0c4">splitpanes.gif</text>
+    <text x="640" y="412" font-size="13">分屏拖拽 / 嵌套切分 演示（建议 8 秒循环）</text>
+  </g>
+</svg>

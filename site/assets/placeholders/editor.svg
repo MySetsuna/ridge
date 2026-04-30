@@ -1,0 +1,11 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Recording slot — editor">
+  <rect width="1280" height="720" fill="#0c1310"/>
+  <pattern id="g2" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0v32" fill="none" stroke="#1f2c25"/></pattern>
+  <rect width="1280" height="720" fill="url(#g2)"/>
+  <rect x="40" y="40" width="220" height="640" fill="#121a16" stroke="#2a3a31"/>
+  <g font-family="ui-monospace, monospace" fill="#8a9a8d" text-anchor="middle">
+    <text x="760" y="332" font-size="20" letter-spacing="6" fill="#7fb069">RECORDING SLOT · 录制位</text>
+    <text x="760" y="378" font-size="36" font-weight="700" fill="#ece0c4">editor.png</text>
+    <text x="760" y="412" font-size="13">资源管理器 + Monaco 编辑器 截图</text>
+  </g>
+</svg>

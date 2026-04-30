@@ -1,0 +1,16 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Recording slot — agent team">
+  <rect width="1280" height="720" fill="#0c1310"/>
+  <pattern id="g4" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0v32" fill="none" stroke="#1f2c25"/></pattern>
+  <rect width="1280" height="720" fill="url(#g4)"/>
+  <g stroke="#547549" stroke-width="2" fill="none">
+    <rect x="80" y="80" width="560" height="280"/>
+    <rect x="80" y="380" width="270" height="260"/>
+    <rect x="370" y="380" width="270" height="260"/>
+    <rect x="680" y="80" width="520" height="560"/>
+  </g>
+  <g font-family="ui-monospace, monospace" fill="#8a9a8d" text-anchor="middle">
+    <text x="640" y="332" font-size="20" letter-spacing="6" fill="#d97757">RECORDING SLOT · 录制位</text>
+    <text x="640" y="378" font-size="36" font-weight="700" fill="#ece0c4">agent-team.gif</text>
+    <text x="640" y="412" font-size="13">tmux shim + Claude Code 多终端协作</text>
+  </g>
+</svg>
