@@ -332,14 +332,20 @@ fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
     let res = client().get(u).headers(auth_headers(token)).send().ok()?;
     let json: serde_json::Value = res.json().ok()?;
     let panes = json.get("panes")?.as_array()?;
+    // Prefer the highest index when multiple panes share a name (most recently created).
+    let mut best: Option<usize> = None;
     for pane in panes {
         let title = pane.get("title").and_then(|t| t.as_str()).unwrap_or("");
         if title == name {
-            let idx = pane.get("index")?.as_u64()? as usize;
-            return Some(idx);
+            if let Some(idx) = pane.get("index").and_then(|v| v.as_u64()).map(|v| v as usize) {
+                best = Some(match best {
+                    Some(prev) => prev.max(idx),
+                    None => idx,
+                });
+            }
         }
     }
-    None
+    best
 }
 
 fn rename_pane_http(url: &str, token: &str, pane_index: usize, name: &str) {

@@ -131,13 +131,13 @@ export const INTERSECTION_PROXIMITY_PX = 50;
 
 /**
  * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"AB 中线对齐"，
- * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致（30），让"联动范围 = 以 BC 端点
- * 为圆心、半径 30px 的圆"成立 —— 不再因 perpDistance > 5 提前 reject 圆内的 mousedown。
+ * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致，让"联动范围 = 以 BC 端点
+ * 为圆心的圆"成立 —— 不再因 perpDistance 过大提前 reject 圆内的 mousedown。
  */
 export const SAME_AXIS_ALIGN_EPSILON_PX = 30;
 
 /**
- * 判定鼠标是否落在某个同向兄弟 B 的"BC 交点 30px 圆形热区"内。
+ * 判定鼠标是否落在某个同向兄弟 B 的"BC 交点圆形热区"（半径 INTERSECTION_PROXIMITY_PX）内。
  * 触发条件 (用于 mousedown 联动 gating + hover 高亮)：
  *   - perpDistance(primary, sibling) ≤ SAME_AXIS_ALIGN_EPSILON_PX (中线对齐)
  *   - 鼠标到 B 离鼠标更近端点的欧几里得距离 ≤ INTERSECTION_PROXIMITY_PX
