@@ -1,9 +1,15 @@
 {
-  "name": "@ridge/split",
+  "name": "rg-split",
   "version": "0.1.0",
-  "description": "Lightweight split-pane layout for Svelte 5. Pure flex container + percentage-sized panes. Pure rendering layer — drag/snap logic is the consumer's responsibility (or use the optional self-driving wrapper).",
+  "description": "Lightweight split-pane primitives for Svelte 5. Pure flex container + percentage-sized panes. No internal drag state — consumers wire their own mousedown logic.",
   "type": "module",
   "license": "MIT",
+  "keywords": ["svelte", "split", "pane", "layout", "resizable", "svelte5"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/rg-split"
+  },
+  "homepage": "https://YOUR_USERNAME.github.io/rg-split/",
   "files": [
     "src/lib"
   ],
