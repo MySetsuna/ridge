@@ -65,6 +65,8 @@ pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
             teammate_pane_states: std::collections::HashMap::new(),
             teammate_agent_pane_map: std::collections::HashMap::new(),
             associated_file_path: None,
+            pending_spawns: std::collections::HashMap::new(),
+            teammate_metrics: crate::state::TeammateMetrics::default(),
             },
         );
     }
@@ -265,6 +267,8 @@ pub fn restore_workspace(
             teammate_pane_states: std::collections::HashMap::new(),
             teammate_agent_pane_map: std::collections::HashMap::new(),
             associated_file_path: None,
+            pending_spawns: std::collections::HashMap::new(),
+            teammate_metrics: crate::state::TeammateMetrics::default(),
             },
         );
     }

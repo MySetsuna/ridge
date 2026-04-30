@@ -35,6 +35,8 @@
     collapseCwd,
   } from '$lib/stores/paneTree';
   import { overlayScroll } from '$lib/actions/overlayScroll';
+  import { portal } from '$lib/actions/portal';
+  import { popupStyleFor } from '$lib/utils/anchorRect';
   import { invalidatePaneGitStatusForRepo } from '$lib/stores/paneGitStatus';
   import { onFsChange, type FsChangedPayload } from '$lib/stores/fsEvents';
   import {
@@ -754,6 +756,10 @@
   }
   let branchLists: Record<string, BranchInfo[]> = $state({});
   let branchPickerOpen = $state<string>(''); // root whose picker is open
+  let pickerAnchor: HTMLElement | undefined = $state();
+  let creatingBranchName = $state<string | null>(null); // null = not creating; '' or 'foo' = inline input visible
+  let creatingBranchRoot = $state<string>('');
+  let pendingCreateCommit = $state(false);
   let syncing = $state<string>(''); // root currently running a sync op
 
   async function loadBranches(root: string): Promise<void> {
@@ -766,12 +772,16 @@
       console.error('list branches', e);
     }
   }
-  async function openBranchPicker(root: string): Promise<void> {
+  async function openBranchPicker(root: string, ev: MouseEvent): Promise<void> {
     if (branchPickerOpen === root) {
       branchPickerOpen = '';
+      creatingBranchName = null;
       return;
     }
+    pickerAnchor = ev.currentTarget as HTMLElement;
     branchPickerOpen = root;
+    creatingBranchName = null;
+    creatingBranchRoot = '';
     await loadBranches(root);
   }
   async function switchBranch(root: string, branch: string): Promise<void> {
@@ -785,17 +795,35 @@
       await alertDialog({ title: '切换分支失败', message: String(e), danger: true });
     }
   }
-  async function createBranch(root: string): Promise<void> {
-    const name = prompt('新分支名称');
-    if (!name || !name.trim()) return;
-    branchPickerOpen = '';
+  function startCreateBranch(root: string): void {
+    creatingBranchRoot = root;
+    creatingBranchName = '';
+  }
+  function cancelCreateBranch(): void {
+    creatingBranchName = null;
+    creatingBranchRoot = '';
+  }
+  async function commitCreateBranch(): Promise<void> {
+    if (pendingCreateCommit) return;
+    const name = (creatingBranchName ?? '').trim();
+    const root = creatingBranchRoot;
+    if (!name || !root) {
+      cancelCreateBranch();
+      return;
+    }
+    pendingCreateCommit = true;
     try {
-      await invoke('git_checkout', { repoRoot: root, branch: name.trim(), create: true });
+      branchPickerOpen = '';
+      creatingBranchName = null;
+      creatingBranchRoot = '';
+      await invoke('git_checkout', { repoRoot: root, branch: name, create: true });
       await refreshStatus(root);
       await loadBranches(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
       await alertDialog({ title: '创建分支失败', message: String(e), danger: true });
+    } finally {
+      pendingCreateCommit = false;
     }
   }
   async function runSync(root: string, op: 'fetch' | 'pull' | 'push' | 'sync'): Promise<void> {
@@ -1155,7 +1183,7 @@ onMount(() => {
                     type="button"
                     class="flex items-center gap-1 h-6 px-1.5 rounded text-[10px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/25 transition-colors max-w-[140px]"
                     data-rg-branch-picker={root}
-                    onclick={() => void openBranchPicker(root)}
+                    onclick={(ev) => void openBranchPicker(root, ev)}
                     title={s?.current_branch ? `当前分支：${s.current_branch}（点击切换）` : '切换分支'}
                   >
                     <GitBranch class="h-3 w-3 shrink-0" />
@@ -1206,27 +1234,62 @@ onMount(() => {
                   </button>
                 </div>
 
-                <!-- 分支 picker 下拉（绝对定位，覆盖头部下方）。
+                <!-- 分支 picker 下拉。portaled 到 body，避免被 sidebar overflow 裁剪；
+                     位置由 pickerAnchor + popupStyleFor 计算（bottom-start, gap=4）。
                      ESC / 点击外部关闭逻辑见 `onGlobalMousedown` / `onGlobalKeydown`。
                      data-rg-branch-picker 标记让全局 mousedown 判定"这是 picker 内部"。 -->
-                {#if branchPickerOpen === root}
+                {#if branchPickerOpen === root && pickerAnchor}
                   {@const blist = branchLists[root] ?? []}
                   <div
-                    class="absolute left-3 right-3 top-[34px] z-40 bg-[var(--rg-bg)] border border-[var(--rg-border)] rounded shadow-lg max-h-[260px]"
+                    class="z-[9990] bg-[var(--rg-bg)] border border-[var(--rg-border)] rounded shadow-lg max-h-[260px]"
+                    style={popupStyleFor(pickerAnchor, 'bottom-start') + ';width:240px'}
                     data-rg-branch-picker={root}
+                    data-rg-portal-id={`branch-picker:${root}`}
+                    use:portal={{ id: `branch-picker:${root}` }}
                     use:overlayScroll
                   >
-                    <button
-                      type="button"
-                      class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] border-b border-[var(--rg-border)]/60 transition-colors"
-                      onclick={() => void createBranch(root)}
-                    >
-                      <Plus class="h-3 w-3" /> 创建新分支…
-                    </button>
+                    {#if creatingBranchName !== null && creatingBranchRoot === root}
+                      <div
+                        class="flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--rg-accent)] border-b border-[var(--rg-border)]/60"
+                        data-rg-branch-picker={root}
+                      >
+                        <Plus class="h-3 w-3 shrink-0" />
+                        <!-- svelte-ignore a11y_autofocus -->
+                        <input
+                          type="text"
+                          autofocus
+                          class="flex-1 bg-transparent border-0 outline-none text-[var(--rg-fg)] placeholder-[var(--rg-fg-muted)]/60"
+                          placeholder="新分支名称"
+                          bind:value={creatingBranchName}
+                          onkeydown={(ev) => {
+                            if (ev.key === 'Enter') {
+                              ev.preventDefault();
+                              void commitCreateBranch();
+                            } else if (ev.key === 'Escape') {
+                              ev.preventDefault();
+                              cancelCreateBranch();
+                            }
+                          }}
+                          onblur={() => {
+                            if (!pendingCreateCommit) cancelCreateBranch();
+                          }}
+                        />
+                      </div>
+                    {:else}
+                      <button
+                        type="button"
+                        class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] border-b border-[var(--rg-border)]/60 transition-colors"
+                        data-rg-branch-picker={root}
+                        onclick={() => startCreateBranch(root)}
+                      >
+                        <Plus class="h-3 w-3" /> 创建新分支…
+                      </button>
+                    {/if}
                     {#each blist as b (b.name)}
                       <button
                         type="button"
                         class="group w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
+                        data-rg-branch-picker={root}
                         onclick={() => void switchBranch(root, b.name)}
                       >
                         {#if b.is_current}

@@ -6,7 +6,7 @@ import { Unicode11Addon } from 'xterm-addon-unicode11';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { SearchAddon } from 'xterm-addon-search';
 import { WebglAddon } from 'xterm-addon-webgl';
-import { SerializeAddon } from 'xterm-addon-serialize';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import * as monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -16,6 +16,7 @@ import { getRegisteredTerminal, registerTerminal, parkTerminal, restoreTerminal 
 import { get } from 'svelte/store';
 import { settingsStore, type ThemeId } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
+import { showToast } from '$lib/stores/toast';
 import { termFontSize } from '$lib/stores/termSettings';
 import 'xterm/css/xterm.css';
 
@@ -377,6 +378,75 @@ const MAX_TERM_COLS = 500;
 let lastSyncedRows = -1;
 let lastSyncedCols = -1;
 
+/**
+ * Block until the container has plausible terminal-cell dimensions or we
+ * give up. Without this, `term.open` runs against a 0×0 box and xterm's
+ * internal `_innerRefresh` produces a black canvas that survives the first
+ * paint. Polls per-frame so we resolve as soon as splitpanes settles, and
+ * caps at `timeoutMs` so a hidden pane can't deadlock the renderer.
+ *
+ * Returns true if dimensions are usable, false if we timed out (caller
+ * proceeds anyway — the rAF "兜底 fit" at the end will catch up later).
+ */
+async function waitForContainerLayout(
+	el: HTMLElement,
+	maxFrames = 30,
+	timeoutMs = 800,
+): Promise<boolean> {
+	const start = performance.now();
+	for (let i = 0; i < maxFrames; i++) {
+		if (performance.now() - start > timeoutMs) break;
+		await new Promise<number>((r) => requestAnimationFrame(r));
+		const { width, height } = el.getBoundingClientRect();
+		if (width >= 8 && height >= 16) return true;
+	}
+	return false;
+}
+
+/** Component-level WebGL rebuild budget. xterm's onContextLoss usually fires
+ *  once after a driver reset, but a genuinely-broken GPU can loop us into a
+ *  rebuild storm that pegs CPU. Cap total rebuilds for THIS pane's lifetime;
+ *  past the cap, fall back to DOM permanently. */
+let webglRebuildsThisPane = 0;
+const MAX_WEBGL_REBUILDS = 6;
+
+/**
+ * Attach the WebGL renderer with bounded retries. xterm's WebglAddon emits
+ * onContextLoss on rare WebView2 GPU resets / driver hiccups; rather than
+ * permanently degrading to DOM, retry up to 3× per call before giving up.
+ *
+ * The component-level `webglRebuildsThisPane` counter is the harder cap:
+ * once we've spent the lifetime budget, we don't try to attach again even
+ * if a contextLoss fires. The DOM renderer keeps the pane usable.
+ */
+function attachWebgl(t: Terminal, attempts = 3): WebglAddon | null {
+	if (webglRebuildsThisPane >= MAX_WEBGL_REBUILDS) {
+		console.warn(
+			`[term] WebGL rebuild limit (${MAX_WEBGL_REBUILDS}) reached, staying on DOM renderer`,
+		);
+		return null;
+	}
+	for (let i = 0; i < attempts; i++) {
+		try {
+			const addon = new WebglAddon();
+			addon.onContextLoss(() => {
+				webglRebuildsThisPane++;
+				addon.dispose();
+				if (webglAddon === addon) webglAddon = null;
+				if (alive && term) {
+					const replacement = attachWebgl(term, attempts - 1);
+					if (replacement) webglAddon = replacement;
+				}
+			});
+			t.loadAddon(addon);
+			return addon;
+		} catch (err) {
+			console.warn(`[term] WebGL attach attempt ${i + 1}/${attempts} failed`, err);
+		}
+	}
+	return null;
+}
+
 async function fitAndSyncPty() {
 	if (!alive || !term || !fitAddon) return;
 	fitAddon.fit();
@@ -442,6 +512,11 @@ async function renderView() {
 	if (!viewInner) return;
 
 	if (mode === 'terminal') {
+		// Wait for the splitpanes / dock layout to settle so xterm.open runs
+		// against a non-zero box. Without this, the canvas paints a black
+		// 0×0 surface that survives until the next ResizeObserver tick.
+		await waitForContainerLayout(viewInner);
+		if (!alive || isComposing) return;
 		// ── Restore terminal from parking lot (pane split) ──────────────────────
 		// On a pane split, the previous Pane component parks the terminal instead
 		// of disposing it, keeping the WebGL context alive. The new component
@@ -451,6 +526,7 @@ async function renderView() {
 			term = _parked.term;
 			fitAddon = _parked.fitAddon;
 			webglAddon = _parked.webglAddon;
+			serializeAddon = _parked.serializeAddon;
 			// Apply settings that may have changed while the terminal was parked.
 			term.options.fontSize = get(termFontSize);
 			term.options.theme = xtermThemeFor(get(settingsStore).theme);
@@ -512,20 +588,9 @@ async function renderView() {
 			// 由 GPU 自绘 box-drawing 线段，cell 完美贴合。
 			// fallback: 若 WebGL context 创建失败（极少数 WebView2 软件渲染场景），
 			// addon 会触发 contextLoss 事件；此处 try/catch 兜底退回到 DOM renderer。
-			try {
-				const addon = new WebglAddon();
-				addon.onContextLoss(() => {
-					addon.dispose();
-					webglAddon = null;
-				});
-				term.loadAddon(addon);
-				webglAddon = addon;
-			} catch (err) {
-				console.warn('[term] WebGL renderer unavailable, falling back to DOM:', err);
-				webglAddon = null;
-			}
+			webglAddon = attachWebgl(term);
 			// Register so the terminal survives future pane splits.
-			registerTerminal(paneId, { term, fitAddon, webglAddon });
+			registerTerminal(paneId, { term, fitAddon, webglAddon, serializeAddon });
 		} // end if (!term)
 
 		// Keep font size in sync with the global termFontSize store across all pane instances.
@@ -779,6 +844,64 @@ async function renderView() {
 				ptyUnlisten = undefined;
 				return;
 			}
+			// Phase-2 spawn: with the listener wired up and queueing, activate
+			// the PTY so the child shell starts. Idempotent — if the PTY is
+			// already alive (parked terminal restored, or activate already
+			// fired from a previous call) the backend returns Ok immediately.
+			//
+			// Defensive synchronous fit immediately before the invoke so
+			// `term.rows/cols` reflect real container dimensions instead of
+			// xterm's 24×80 default. We deliberately don't use fitAndSyncPty
+			// here — that would call `resize_pane`, which returns
+			// PaneNotFound while the PTY is still in PendingSpawn state.
+			if (fitAddon && term) {
+				try {
+					fitAddon.fit();
+				} catch {
+					/* 容器尺寸异常时静默 — activate 仍以当前 rows/cols 进行 */
+				}
+			}
+			try {
+				await invoke('activate_pane_pty', {
+					workspaceId,
+					paneId,
+					rows: term?.rows ?? null,
+					cols: term?.cols ?? null,
+				});
+			} catch (e) {
+				// PaneNotFound is expected on resilience paths (e.g. recover
+				// after backend pane was already torn down) — surface other
+				// errors via toast so the user knows the agent split failed
+				// instead of silently producing a black pane.
+				const msg = String(e);
+				if (!msg.includes('Pane not found')) {
+					console.error('activate_pane_pty failed', paneId, e);
+					showToast(`PTY activation failed: ${msg}`, 'error');
+				}
+			}
+			// Workspace-restore replay: if `.ridge` carried serialized state
+			// for this pane, write it before the live PTY's first byte so
+			// the user sees their previous scrollback + visible buffer.
+			// `take_pane_replay_state` is one-shot — calling twice yields
+			// null on the second call, so re-mounts (split, recover) won't
+			// double-replay. Marker line distinguishes restored content from
+			// fresh shell output.
+			try {
+				const replay = await invoke<string | null>('take_pane_replay_state', {
+					paneId,
+				});
+				if (alive && term && replay) {
+					term.write(replay);
+					term.write('\r\n\x1b[2m─── session restored ───\x1b[0m\r\n');
+				}
+			} catch {
+				/* no-op — replay is best-effort */
+			}
+			if (!alive) {
+				ptyUnlisten();
+				ptyUnlisten = undefined;
+				return;
+			}
 			// Replay scrollback before any new output so history is preserved.
 			// Phase 2 of the block-scrollback migration (docs/TERMINAL_SCROLLBACK.md):
 			// use the paged tail API with a 256 KiB budget instead of the deprecated
@@ -836,16 +959,25 @@ async function renderView() {
 			if (resizeRaf === undefined) {
 				resizeRaf = requestAnimationFrame(() => {
 					resizeRaf = undefined;
-					if (!alive || isComposing) return;
+					if (!alive || isComposing || !term) return;
+					// On every frame: fit immediately, clear the WebGL texture
+					// atlas (so the new cell size doesn't smear last frame's
+					// glyphs), and refresh the visible rows so the GPU re-rasterises
+					// the buffer with the new geometry. Eliminates the
+					// half-second black gap during drag-resize.
 					fitAddon?.fit();
+					webglAddon?.clearTextureAtlas();
+					term.refresh(0, term.rows - 1);
 				});
 			}
+			// Debounce the PTY-side resize so we don't flood `resize_pane` IPC
+			// during continuous drag. The xterm side already updates per-frame
+			// via the rAF above; the backend only needs the final size.
 			if (resizePtySyncTimer !== undefined) clearTimeout(resizePtySyncTimer);
 			resizePtySyncTimer = setTimeout(() => {
 				resizePtySyncTimer = undefined;
 				if (!alive || isComposing) return;
 				void fitAndSyncPty();
-				webglAddon?.clearTextureAtlas();
 			}, 200);
 		});
 		resizeObserver.observe(viewInner);

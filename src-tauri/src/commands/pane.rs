@@ -388,6 +388,9 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         ws.teammate_pane_states.remove(&pane_id);
         ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
         ws.pane_sizes.remove(&pane_id);
+        // Drop any not-yet-activated PendingSpawn so a recycled pane_id
+        // can't accidentally resurrect a dead PTY pair on next activate.
+        ws.pending_spawns.remove(&pane_id);
         ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
     }
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);

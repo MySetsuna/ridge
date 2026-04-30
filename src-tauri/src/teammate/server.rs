@@ -186,6 +186,91 @@ fn find_idle_pane_index(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
     None
 }
 
+/// CWD normalisation matching `engine/pty.rs::normalize_cwd_str`. Inlined
+/// here to keep the helper module-private; the two callsites must stay in
+/// sync if the rule ever changes (forward-slashes on Windows, identity
+/// elsewhere).
+fn normalize_cwd_for_match(raw: &str) -> String {
+    #[cfg(windows)]
+    {
+        raw.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        raw.to_string()
+    }
+}
+
+/// Pick the leaf-pane index that should be split when a teammate split
+/// request lands without an explicit `-t`. Priority:
+///
+/// 1. **CWD match + idle**: a pane whose current cwd equals `target_cwd`
+///    AND whose `teammate_pane_state` is `Idle` is the best candidate —
+///    splitting it keeps the agent in its preferred directory and avoids
+///    bumping a busy peer.
+/// 2. **CWD match (any state)**: failing that, any pane with the same cwd
+///    works — agents often expect their split to inherit the cwd.
+/// 3. **Largest area**: no cwd match → split the biggest pane so the new
+///    pane has more room to breathe. Tie-break by preferring the highest
+///    leaf index (most recently created), which feels less disruptive.
+///
+/// Returns `None` only if the workspace has no leaves at all.
+fn select_split_target(
+    state: &AppState,
+    wid: uuid::Uuid,
+    target_cwd: Option<&std::path::Path>,
+) -> Option<usize> {
+    let map = state.workspaces.read();
+    let ws = map.get(&wid)?;
+    let leaves = ws.pane_tree.get_all_leaves();
+    if leaves.is_empty() {
+        return None;
+    }
+
+    let target_norm = target_cwd.map(|p| normalize_cwd_for_match(&p.to_string_lossy()));
+
+    // Tier 1+2: scan for cwd-matched panes; remember whether each is idle.
+    let cwd_match: Vec<(usize, uuid::Uuid, bool)> = leaves
+        .iter()
+        .enumerate()
+        .filter_map(|(i, pid)| {
+            let pane_norm = normalize_cwd_for_match(
+                &ws.pane_tree.panes.get(pid)?.cwd.as_ref()?.to_string_lossy(),
+            );
+            if Some(&pane_norm) == target_norm.as_ref() {
+                let is_idle = matches!(
+                    ws.teammate_pane_states.get(pid),
+                    Some(crate::state::PaneState::Idle)
+                );
+                Some((i, *pid, is_idle))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !cwd_match.is_empty() {
+        return cwd_match
+            .iter()
+            .find(|(_, _, idle)| *idle)
+            .or_else(|| cwd_match.first())
+            .map(|(i, _, _)| *i);
+    }
+
+    // Tier 3: pick the largest pane by character area. Tie-break by
+    // preferring the LOWEST leaf index — keeps the split target stable
+    // across resize events (top-most pane wins consistently).
+    leaves
+        .iter()
+        .enumerate()
+        .map(|(i, pid)| {
+            let (r, c) = ws.pane_sizes.get(pid).copied().unwrap_or((80, 120));
+            (i, r as u32 * c as u32)
+        })
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(i, _)| i)
+}
+
 /// 查找空闲 pane 的 UUID
 #[allow(dead_code)] // internal helper kept for upcoming auto-assign-pane logic
 fn find_idle_pane_uuid(state: &AppState, wid: uuid::Uuid) -> Option<uuid::Uuid> {
@@ -404,10 +489,11 @@ async fn route_split(
     }
 
     // Split target selection:
-    // 1. If explicit pane_index from -t flag → use it
-    // 2. Else pick the pane with the LARGEST character area across all leaves.
-    //    `pane_sizes` is populated by the frontend's `resize_pane` command; newly
-    //    created panes fall back to the default (80, 120) until the first resize event.
+    // 1. If explicit pane_index from -t flag → use it.
+    // 2. Else delegate to `select_split_target`: prefer cwd-matched + idle,
+    //    fall back to cwd-matched (any state), fall back to largest-area
+    //    pane. Direction is then inferred from the chosen pane's shape so
+    //    the resulting two panes stay roughly square.
     let (idx, inferred_direction) = {
         let map = ctx.state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
@@ -423,23 +509,17 @@ async fn route_split(
                 return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
             }
         } else {
-            let mut target_idx = ws.teammate_tmux_pane_cursor.min(pane_count.saturating_sub(1));
-            let mut target_area: u32 = 0;
-            for (i, leaf_id) in leaves.iter().enumerate() {
-                let (rows, cols) = ws
-                    .pane_sizes
-                    .get(leaf_id)
-                    .copied()
-                    .unwrap_or((80, 120));
-                let area = rows as u32 * cols as u32;
-                if area > target_area {
-                    target_idx = i;
-                    target_area = area;
-                }
-            }
+            // Drop the read lock so `select_split_target` can take its own.
+            drop(map);
+            let target_path = body.cwd.as_deref().map(std::path::Path::new);
+            let target_idx = select_split_target(&ctx.state, wid, target_path).unwrap_or(0);
 
-            // Shape-based direction inference: split along the longer dimension
-            // so the two resulting panes are as square as possible.
+            // Re-acquire to read the chosen pane's shape for direction inference.
+            let map = ctx.state.workspaces.read();
+            let Some(ws) = map.get(&wid) else {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
+            };
+            let leaves = ws.pane_tree.get_all_leaves();
             let (rows, cols) = leaves
                 .get(target_idx)
                 .and_then(|pid| ws.pane_sizes.get(pid).copied())
@@ -511,6 +591,19 @@ async fn route_split(
                     .unwrap_or(0)
             };
             let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+            // Bookkeeping + readiness signal. The oneshot lets us *observe*
+            // whether the front-end's `activate_pane_pty` actually launched
+            // the child, so we can return an honest HTTP status to the agent.
+            {
+                let mut map = ctx.state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.teammate_metrics.split_attempts += 1;
+                }
+            }
+            let trace_id = uuid::Uuid::new_v4().to_string();
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
             if let Err(e) = terminal::ensure_pane_pty_workspace(
                 &ctx.state,
                 wid,
@@ -520,11 +613,15 @@ async fn route_split(
                 cmd,
                 None,
                 Some(new_idx),
+                Some(ready_tx),
+                Some(trace_id.clone()),
             ) {
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
                         let _ = ws.pane_tree.close(new_id);
+                        ws.pane_sizes.remove(&new_id);
+                        *ws.teammate_metrics.failures.entry("phase1_failed".into()).or_insert(0) += 1;
                     }
                 }
                 return (
@@ -554,21 +651,106 @@ async fn route_split(
                     }
                 }
             }
-            let _ = ctx.handle.emit("teammate-layout-changed", ());
+            let _ = ctx.handle.emit(
+                "teammate-layout-changed",
+                serde_json::json!({ "trace_id": trace_id }),
+            );
             let _ = ctx
                 .handle
                 .emit("teammate-active-pane-changed", new_id.to_string());
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "ok": true,
-                    "new_pane_id": new_id.to_string(),
-                    "new_pane_index": new_idx,
-                    "source_pane_index": idx,
-                    "direction_inferred": inferred_direction,
-                })),
-            )
-                .into_response()
+
+            // 30s watchdog: if the front-end never calls `activate_pane_pty`,
+            // drain the orphan PendingSpawn so the slave/cmd are dropped (and
+            // the pane removed from the layout). 30s is a generous budget —
+            // a healthy mount completes in <1s.
+            //
+            // Emit `teammate-layout-changed` after cleanup so the front-end
+            // re-renders without the now-dead leaf. Without this the user
+            // sees a phantom pane that swallows clicks but has no PTY.
+            let watch_state = ctx.state.clone();
+            let watch_handle = ctx.handle.clone();
+            let watch_wid = wid;
+            let watch_pid = new_id;
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let cleaned = {
+                    let mut map = watch_state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&watch_wid) {
+                        if ws.pending_spawns.remove(&watch_pid).is_some() {
+                            let _ = ws.pane_tree.close(watch_pid);
+                            ws.pane_sizes.remove(&watch_pid);
+                            *ws.teammate_metrics.failures.entry("watchdog_30s".into()).or_insert(0) += 1;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if cleaned {
+                    let _ = watch_handle.emit(
+                        "teammate-layout-changed",
+                        serde_json::Value::Null,
+                    );
+                }
+            });
+
+            // Wait up to 3s for the front-end to mount + fit + activate.
+            // tokio::time::timeout wraps the recv future; the outer Result
+            // is "did the timeout elapse"; the inner is "did the sender drop";
+            // the innermost is the actual spawn outcome.
+            match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
+                Ok(Ok(Ok(()))) => {
+                    {
+                        let mut map = ctx.state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&wid) {
+                            ws.teammate_metrics.split_success += 1;
+                        }
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "ok": true,
+                            "new_pane_id": new_id.to_string(),
+                            "new_pane_index": new_idx,
+                            "source_pane_index": idx,
+                            "direction_inferred": inferred_direction,
+                            "trace_id": trace_id,
+                        })),
+                    )
+                        .into_response()
+                }
+                Ok(Ok(Err(e))) => {
+                    {
+                        let mut map = ctx.state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&wid) {
+                            *ws.teammate_metrics.failures.entry("activate_failed".into()).or_insert(0) += 1;
+                        }
+                    }
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("activate_pane_pty failed: {e}"),
+                    )
+                        .into_response()
+                }
+                _ => {
+                    // Timeout or sender dropped without sending. Don't tear
+                    // down the pending entry here — the 30s watchdog handles
+                    // that path and the front-end might still complete late.
+                    {
+                        let mut map = ctx.state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&wid) {
+                            *ws.teammate_metrics.failures.entry("activate_timeout_3s".into()).or_insert(0) += 1;
+                        }
+                    }
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        format!("activate_pane_pty timed out after 3s (trace_id={trace_id})"),
+                    )
+                        .into_response()
+                }
+            }
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
@@ -726,6 +908,8 @@ async fn route_spawn_process(
         None,
         Some(command),
         Some(pane_idx),
+        None,
+        None,
     ) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1047,6 +1231,8 @@ async fn route_new_window(
                 cmd,
                 None,
                 Some(new_idx),
+                None,
+                None,
             ) {
                 {
                     let mut map = ctx.state.workspaces.write();

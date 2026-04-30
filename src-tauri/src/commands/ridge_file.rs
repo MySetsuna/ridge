@@ -51,6 +51,14 @@ pub struct RidgeFile {
     /// NOT persisted — it's session-scoped and would lie across restarts.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub pane_titles: HashMap<String, String>,
+    /// Per-pane serialized xterm state (visible buffer + scrollback) keyed by
+    /// pane UUID string. Captured at save time via `serializeTerminalState`
+    /// and replayed at load time so reopening a workspace restores not just
+    /// the layout but the visible terminal contents. May contain ANSI
+    /// escape sequences and shell history — file permissions on `.ridge`
+    /// are tightened to user-only for this reason.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub serialized_panes: HashMap<String, String>,
 }
 
 /// 默认保存目录：`<home>/ridge-workspaces/`（不存在时创建）。
@@ -104,7 +112,41 @@ fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
     }
     let tmp = path.with_extension("ridge.tmp");
     std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    // Tighten permissions to user-only after the rename. `.ridge` files now
+    // include serialized scrollback (shell command history, env-printed
+    // values, possibly secrets that scrolled past). Best-effort — failure
+    // is logged but doesn't fail the save.
+    if let Err(e) = set_secure_permissions(path) {
+        eprintln!(
+            "[ridge] warning: failed to set 0600 on {}: {e}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Restrict `path` to the current user only.
+///
+/// - **Unix**: `chmod 0600` via `PermissionsExt`.
+/// - **Windows**: `set_readonly(false)` is the only knob `std::fs` exposes
+///   without pulling in `winapi`/`windows-sys` ACL APIs. Real Windows ACL
+///   tightening would require `SetSecurityInfo`/`SetEntriesInAcl`; we leave
+///   the default ACL (inherits from parent, typically user-private under
+///   `%USERPROFILE%`) and explicitly clear the readonly bit so future
+///   atomic writes can rename over the file.
+#[cfg(unix)]
+fn set_secure_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(windows)]
+fn set_secure_permissions(path: &Path) -> std::io::Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(path, perms)
 }
 
 fn last_opened_pointer_path(app: &tauri::AppHandle) -> PathBuf {
@@ -167,7 +209,15 @@ pub struct WorkspaceSaveInfo {
 }
 
 /// 构造当前工作区的 RidgeFile 快照。
-fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Result<RidgeFile, String> {
+///
+/// `serialized_panes` 由前端 (`saveCurrentWorkspace`) 在 invoke 时携带 —
+/// 后端读不到 xterm.js 的 buffer，必须从前端传入。
+fn snapshot_workspace(
+    state: &AppState,
+    workspace_id: Uuid,
+    name: &str,
+    serialized_panes: Option<HashMap<String, String>>,
+) -> Result<RidgeFile, String> {
     let map = state.workspaces.read();
     let ws = map.get(&workspace_id).ok_or_else(|| "工作区不存在".to_string())?;
     let tree_json = serde_json::to_value(&ws.pane_tree).map_err(|e| e.to_string())?;
@@ -194,7 +244,36 @@ fn snapshot_workspace(state: &AppState, workspace_id: Uuid, name: &str) -> Resul
         git_repos,
         index_path: None,
         pane_titles,
+        // Drop any pane ids the caller passed that don't belong to THIS
+        // workspace's pane tree. The front-end's `serializeAllTerminalStates`
+        // walks a registry that may contain panes from other workspaces;
+        // without this filter we'd write workspace B's scrollback into
+        // workspace A's `.ridge`, defeating the 0600 privacy boundary.
+        serialized_panes: {
+            let known: std::collections::HashSet<String> =
+                ws.pane_tree.panes.keys().map(|u| u.to_string()).collect();
+            serialized_panes
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(k, _)| known.contains(k))
+                .collect()
+        },
     })
+}
+
+/// One-shot read-and-remove of a pane's serialized terminal state, populated
+/// by `open_workspace_from_file` and consumed by the front-end after each
+/// Pane mounts + activates its PTY. Returns `None` if no replay buffer was
+/// staged (typical case: pane wasn't in the loaded `.ridge` or was already
+/// taken by a previous call).
+#[tauri::command]
+pub fn take_pane_replay_state(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<Option<String>, String> {
+    let id = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
+    let mut map = state.pending_pane_replays.write();
+    Ok(map.remove(&id))
 }
 
 /// 简单的向上查找 `.git` 目录，命中即返回仓库根。
@@ -220,6 +299,7 @@ pub fn save_workspace_to_file(
     workspace_id: String,
     name: String,
     path: Option<String>,
+    serialized_panes: Option<HashMap<String, String>>,
 ) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -228,7 +308,7 @@ pub fn save_workspace_to_file(
     let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let target = resolve_target_path(trimmed, path);
 
-    let wf = snapshot_workspace(&state, id, trimmed)?;
+    let wf = snapshot_workspace(&state, id, trimmed, serialized_panes)?;
     let json = serde_json::to_vec_pretty(&wf).map_err(|e| e.to_string())?;
     atomic_write(&target, &json).map_err(|e| e.to_string())?;
 
@@ -365,8 +445,8 @@ pub fn open_workspace_from_file(
     // whose UUID no longer exists in the restored tree (stale ids from edits
     // made after the last save). Runtime state (busy / idle) stays empty —
     // sessions always start clean, see RidgeFile docstring.
+    let known: std::collections::HashSet<Uuid> = tree.panes.keys().copied().collect();
     let restored_titles: HashMap<Uuid, String> = {
-        let known: std::collections::HashSet<Uuid> = tree.panes.keys().copied().collect();
         wf.pane_titles
             .iter()
             .filter_map(|(k, v)| {
@@ -377,6 +457,19 @@ pub fn open_workspace_from_file(
             })
             .collect()
     };
+    // Stash serialized pane state so the front-end's `take_pane_replay_state`
+    // can pick it up after each Pane mounts + activates. Filter the same way
+    // as titles so only currently-known panes get a replay buffer.
+    {
+        let mut replays = state.pending_pane_replays.write();
+        for (k, v) in wf.serialized_panes.iter() {
+            if let Ok(id) = Uuid::parse_str(k) {
+                if known.contains(&id) {
+                    replays.insert(id, v.clone());
+                }
+            }
+        }
+    }
     {
         let mut map = state.workspaces.write();
         map.insert(
@@ -392,6 +485,8 @@ pub fn open_workspace_from_file(
                 teammate_pane_states: HashMap::new(),
                 teammate_agent_pane_map: HashMap::new(),
                 associated_file_path: Some(file_path.clone()),
+                pending_spawns: HashMap::new(),
+                teammate_metrics: crate::state::TeammateMetrics::default(),
             },
         );
     }
@@ -657,7 +752,11 @@ fn write_workspace_snapshot(state: &AppState, workspace_id: Uuid) -> Result<(), 
             .unwrap_or_else(|| "workspace".to_string());
         (path, name)
     };
-    let wf = snapshot_workspace(state, workspace_id, &name)?;
+    // Auto-save runs in a background thread without front-end coupling, so
+    // we don't have access to xterm's serialized state — pass `None`. The
+    // explicit `save_workspace_to_file` Tauri command is the path that
+    // captures terminal contents.
+    let wf = snapshot_workspace(state, workspace_id, &name, None)?;
     let json = serde_json::to_vec_pretty(&wf).map_err(|e| e.to_string())?;
     atomic_write(&path, &json).map_err(|e| e.to_string())
 }

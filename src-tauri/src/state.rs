@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use portable_pty::{CommandBuilder, MasterPty, SlavePty};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -13,6 +15,51 @@ use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::types::GlobalEvent;
+
+/// Two-stage PTY spawn record.
+///
+/// Phase 1 (`ensure_pane_pty_workspace`) opens a PTY pair, clones the reader,
+/// captures the writer, and builds the `CommandBuilder` — but does **not**
+/// spawn a child process. The pre-built record lands here so the front-end
+/// can call `activate_pane_pty` once the xterm container has stable
+/// dimensions. This eliminates the "spawn before mount" race that produced
+/// black panes when the shell wrote its initial banner before xterm was
+/// ready to receive it.
+///
+/// Phase 2 (`activate_pane_pty`) consumes the record: optionally resizes the
+/// master to the front-end-reported size, calls `slave.spawn_command(cmd)`,
+/// installs the resulting `PtyHandle` into `Workspace.terminals`, and signals
+/// the optional `ready_tx` so callers (e.g. teammate `split-window`) can
+/// observe success/failure.
+/// The bundle of one-shot, !Sync handles that activation consumes.
+/// Kept inside one `Option` so a single `take()` flips `PendingSpawn` to
+/// "drained" atomically.
+pub struct PendingSpawnInner {
+    pub command: CommandBuilder,
+    pub slave: Box<dyn SlavePty + Send>,
+    pub reader: Box<dyn std::io::Read + Send>,
+}
+
+pub struct PendingSpawn {
+    /// `Mutex<Option<...>>`: the `Mutex` keeps `PendingSpawn` `Sync`
+    /// (the inner contents are only `Send`), and the `Option` lets
+    /// `activate_pane_pty` `take()` everything atomically on consumption.
+    pub inner: Mutex<Option<PendingSpawnInner>>,
+    pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    pub ready_tx: Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>,
+    pub trace_id: String,
+}
+
+/// Aggregate counters surfaced to the SettingsPanel "Agent 统计" section so
+/// users can see how many teammate-initiated splits succeeded vs. failed and
+/// why. Counts are per-workspace and serialised straight to the front-end.
+#[derive(Default, Clone, serde::Serialize)]
+pub struct TeammateMetrics {
+    pub split_attempts: u64,
+    pub split_success: u64,
+    pub failures: HashMap<String, u64>,
+}
 
 /// Claude Code tmux shim 连接本地控制面所需（注入到子 shell）。
 #[derive(Clone, Debug)]
@@ -60,6 +107,13 @@ pub struct Workspace {
     /// 关联的 .ridge 文件绝对路径。`Some` 表示该工作区已保存到磁盘；
     /// 后续任何 cwd/布局/git 变化都会触发防抖自动回写。
     pub associated_file_path: Option<PathBuf>,
+    /// Phase-1 PTY records waiting for `activate_pane_pty` to spawn the child.
+    /// Keyed by pane id. See `PendingSpawn` for the rationale behind splitting
+    /// `openpty` from `spawn_command` into two stages.
+    pub pending_spawns: HashMap<Uuid, PendingSpawn>,
+    /// Per-workspace counters for teammate-initiated splits (success / failure
+    /// reasons). Surfaced read-only via `get_teammate_metrics`.
+    pub teammate_metrics: TeammateMetrics,
 }
 
 /// Block-based PTY scrollback store. See `docs/TERMINAL_SCROLLBACK.md` for the
@@ -176,6 +230,9 @@ pub struct AppState {
     /// 通用文件系统 watcher：覆盖 Explorer 列出的 cwd 和编辑器打开的外部文件，
     /// emit `fs-changed` 事件供前端文件树/编辑器订阅。
     pub fs_watcher: Arc<FsWatcher>,
+    /// 一次性窗格回放状态：`.ridge` 加载后存入，前端 Pane 挂载并 activate
+    /// 完成后通过 `take_pane_replay_state` 取走。Take 之后丢弃，避免重复回放。
+    pub pending_pane_replays: Arc<RwLock<HashMap<Uuid, String>>>,
 }
 
 impl AppState {
@@ -206,6 +263,8 @@ impl AppState {
                 teammate_pane_states: HashMap::new(),
                 teammate_agent_pane_map: HashMap::new(),
                 associated_file_path: None,
+                pending_spawns: HashMap::new(),
+                teammate_metrics: TeammateMetrics::default(),
             },
         );
         Self {
@@ -220,6 +279,7 @@ impl AppState {
             current_project: Arc::new(RwLock::new(None)),
             git_watcher: Arc::new(GitWatcher::new()),
             fs_watcher: Arc::new(FsWatcher::new()),
+            pending_pane_replays: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

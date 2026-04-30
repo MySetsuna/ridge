@@ -31,12 +31,14 @@ pub fn create_skip(workspace_id: Uuid, pane_id: Uuid) {
 pub fn create_skip(_workspace_id: Uuid, _pane_id: Uuid) {}
 
 #[cfg(debug_assertions)]
-pub fn create_spawned(workspace_id: Uuid, pane_id: Uuid) {
-    eprintln!("[ridge][pty] create_spawned ws={workspace_id} pane={pane_id}");
+pub fn create_spawned(workspace_id: Uuid, pane_id: Uuid, trace_id: &str) {
+    eprintln!(
+        "[ridge][pty] create_spawned ws={workspace_id} pane={pane_id} trace={trace_id}"
+    );
 }
 
 #[cfg(not(debug_assertions))]
-pub fn create_spawned(_workspace_id: Uuid, _pane_id: Uuid) {}
+pub fn create_spawned(_workspace_id: Uuid, _pane_id: Uuid, _trace_id: &str) {}
 
 pub fn reader_eof(workspace_id: Uuid, pane_id: Uuid) {
     eprintln!("[ridge][pty] reader_eof ws={workspace_id} pane={pane_id}");
@@ -62,3 +64,24 @@ pub fn teammate_replace_pty(workspace_id: Uuid, pane_id: Uuid) {
 
 #[cfg(not(debug_assertions))]
 pub fn teammate_replace_pty(_workspace_id: Uuid, _pane_id: Uuid) {}
+
+/// Phase-1 spawn: PTY pair opened, child not yet started. Trace id rides
+/// through to `activate_pane_pty` for cross-correlation in logs.
+#[cfg(debug_assertions)]
+pub fn create_pending(workspace_id: Uuid, pane_id: Uuid, trace_id: &str) {
+    eprintln!(
+        "[ridge][pty] create_pending ws={workspace_id} pane={pane_id} trace={trace_id}"
+    );
+}
+
+#[cfg(not(debug_assertions))]
+pub fn create_pending(_workspace_id: Uuid, _pane_id: Uuid, _trace_id: &str) {}
+
+/// Phase-2 spawn failed: child process couldn't start. Always logged at
+/// error severity since it indicates an actionable problem (bad PATH,
+/// permission denied, etc.).
+pub fn activate_err(workspace_id: Uuid, pane_id: Uuid, trace_id: &str, err: &str) {
+    eprintln!(
+        "[ridge][pty] activate_err ws={workspace_id} pane={pane_id} trace={trace_id} err={err}"
+    );
+}

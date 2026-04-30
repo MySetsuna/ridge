@@ -6,7 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon } from 'lucide-svelte';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
@@ -17,6 +17,16 @@
     type ThemeId,
   } from '$lib/stores/settings';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
+  import { activeWorkspaceId } from '$lib/stores/paneTree';
+
+  /** Backend `TeammateMetrics` shape. Mirrors the Rust struct serialized
+   *  via `get_teammate_metrics`. Failure-type keys are dynamic strings
+   *  emitted by route_split (e.g. "activate_failed", "watchdog_30s"). */
+  interface TeammateMetrics {
+    split_attempts: number;
+    split_success: number;
+    failures: Record<string, number>;
+  }
 
   interface Props {
     open: boolean;
@@ -25,8 +35,51 @@
 
   let { open, onClose }: Props = $props();
 
-  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions';
+  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions' | 'agent';
   let activeSection = $state<SectionId>('appearance');
+
+  // ── Agent 统计 ────────────────────────────────────────────────────────────
+  let agentMetrics = $state<TeammateMetrics | null>(null);
+  let agentMetricsLoading = $state(false);
+  let agentMetricsError = $state<string | null>(null);
+
+  async function loadAgentMetrics(wid: string): Promise<void> {
+    if (!isTauri()) return;
+    agentMetricsLoading = true;
+    agentMetricsError = null;
+    try {
+      agentMetrics = await invoke<TeammateMetrics>('get_teammate_metrics', {
+        workspaceId: wid,
+      });
+    } catch (e) {
+      agentMetricsError = String(e);
+      agentMetrics = null;
+    } finally {
+      agentMetricsLoading = false;
+    }
+  }
+
+  // Auto-load when the user opens the agent section AND re-fetch on
+  // workspace switch. Subscribing to `$activeWorkspaceId` here makes Svelte
+  // re-run the effect whenever the user changes the active workspace, so
+  // the metrics view always reflects the workspace currently in focus.
+  $effect(() => {
+    const wid = $activeWorkspaceId;
+    if (open && activeSection === 'agent' && wid) void loadAgentMetrics(wid);
+  });
+
+  /** Success rate as 0-100 with one decimal place; "—" when no attempts yet. */
+  const agentSuccessRate = $derived.by(() => {
+    if (!agentMetrics || agentMetrics.split_attempts === 0) return '—';
+    const pct = (agentMetrics.split_success / agentMetrics.split_attempts) * 100;
+    return `${pct.toFixed(1)}%`;
+  });
+
+  /** Stable, alphabetised entries for the failures table. */
+  const agentFailureRows = $derived.by(() => {
+    if (!agentMetrics) return [] as Array<[string, number]>;
+    return Object.entries(agentMetrics.failures).sort((a, b) => a[0].localeCompare(b[0]));
+  });
 
   // T14：可用 shell 列表 —— 第一次打开 settings 面板时拉一次。
   interface ShellInfo {
@@ -81,6 +134,7 @@
     { id: 'font',        label: '字体',     icon: Type },
     { id: 'terminal',    label: '终端',     icon: TerminalIcon },
     { id: 'extensions',  label: '扩展',     icon: Puzzle },
+    { id: 'agent',       label: 'Agent 统计', icon: Activity },
   ];
 </script>
 
@@ -289,6 +343,70 @@
               <code class="font-mono">$lib/stores/sidebarPlugins</code>
               注册的内置插件会随 Claude 扩展开关一并启停。
             </div>
+
+          {:else if activeSection === 'agent'}
+            <!-- Agent 统计：Claude Code 通过 teammate HTTP 触发的 split 操作度量。
+                 后端 route_split 维护 split_attempts / split_success / failures，
+                 在这里只读展示，方便排查 agent 启动失败的频率与原因。 -->
+            <div class="flex items-start justify-between gap-4 mb-3">
+              <div class="min-w-0 flex-1">
+                <div class="text-[12px] text-[var(--rg-fg)]">当前工作区 split 度量</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">
+                  统计来自 teammate HTTP 路由（Claude Code shim 触发的 split 请求）。切换工作区会切换数据源。
+                </div>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 flex items-center gap-1 h-7 px-2 rounded text-[11px] border border-[var(--rg-border)] bg-[var(--rg-surface)] text-[var(--rg-fg)] hover:bg-[var(--rg-surface-2)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={agentMetricsLoading || !$activeWorkspaceId}
+                onclick={() => {
+                  const wid = $activeWorkspaceId;
+                  if (wid) void loadAgentMetrics(wid);
+                }}
+              >
+                <RefreshCw class="h-3 w-3 {agentMetricsLoading ? 'animate-spin' : ''}" />
+                刷新
+              </button>
+            </div>
+
+            {#if agentMetricsError}
+              <div class="p-3 rounded border border-red-500/40 bg-red-500/10 text-[11px] text-red-300">
+                {agentMetricsError}
+              </div>
+            {:else if !agentMetrics}
+              <div class="text-[11px] text-[var(--rg-fg-muted)]/70">{agentMetricsLoading ? '读取中…' : '尚未加载，点击刷新。'}</div>
+            {:else}
+              <div class="grid grid-cols-3 gap-2 mb-3">
+                <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
+                  <div class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">尝试</div>
+                  <div class="text-[18px] font-mono text-[var(--rg-fg)] mt-1">{agentMetrics.split_attempts}</div>
+                </div>
+                <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
+                  <div class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">成功</div>
+                  <div class="text-[18px] font-mono text-[var(--rg-accent)] mt-1">{agentMetrics.split_success}</div>
+                </div>
+                <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
+                  <div class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">成功率</div>
+                  <div class="text-[18px] font-mono text-[var(--rg-fg)] mt-1">{agentSuccessRate}</div>
+                </div>
+              </div>
+
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-1.5">失败类型分布</div>
+              {#if agentFailureRows.length === 0}
+                <div class="p-3 rounded border border-[var(--rg-border)]/60 bg-[var(--rg-surface)]/30 text-[11px] text-[var(--rg-fg-muted)]/70">
+                  无失败记录。
+                </div>
+              {:else}
+                <div class="border border-[var(--rg-border)] rounded overflow-hidden">
+                  {#each agentFailureRows as [reason, count] (reason)}
+                    <div class="flex items-center justify-between px-3 h-7 text-[11px] border-b border-[var(--rg-border)]/40 last:border-b-0 bg-[var(--rg-surface)]/30">
+                      <code class="font-mono text-[var(--rg-fg)]">{reason}</code>
+                      <span class="font-mono text-amber-300">{count}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {/if}
           {/if}
         </div>
       </section>

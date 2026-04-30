@@ -18,11 +18,17 @@
 import type { Terminal } from 'xterm';
 import type { FitAddon } from 'xterm-addon-fit';
 import type { WebglAddon } from 'xterm-addon-webgl';
+import type { SerializeAddon } from '@xterm/addon-serialize';
 
 export interface TerminalEntry {
   term: Terminal;
   fitAddon: FitAddon;
   webglAddon: WebglAddon | null;
+  /** Optional SerializeAddon attached at register-time. Used by
+   *  `serializeTerminalState` to capture the visible buffer + scrollback
+   *  on park/save so a future restore (e.g. workspace reopen) can replay
+   *  the terminal's last state. */
+  serializeAddon: SerializeAddon | null;
 }
 
 const registry = new Map<string, TerminalEntry>();
@@ -61,17 +67,74 @@ export function parkTerminal(paneId: string): void {
   }
 }
 
+/** Capture the current visible buffer + up to 5000 lines of scrollback as
+ *  an ANSI-encoded string. Returns null if the pane isn't registered or
+ *  has no SerializeAddon attached.
+ *
+ *  Use this for workspace save (write to .ridge) — the returned string can
+ *  be `term.write(...)`-ed back into a fresh terminal to reproduce the
+ *  scrollback. The caller is responsible for storage durability and any
+ *  filesystem permissioning required for sensitive output. */
+export function serializeTerminalState(paneId: string): string | null {
+  const entry = registry.get(paneId);
+  if (!entry || !entry.serializeAddon) return null;
+  try {
+    return entry.serializeAddon.serialize({ scrollback: 5000 });
+  } catch {
+    return null;
+  }
+}
+
+/** Snapshot every registered pane's terminal state into a `paneId →
+ *  serialized` map. Skips panes whose serialize call returns null. Used by
+ *  `saveWorkspaceToFile` to populate `RidgeFile.serialized_panes`. */
+export function serializeAllTerminalStates(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [paneId] of registry) {
+    const s = serializeTerminalState(paneId);
+    if (s) out[paneId] = s;
+  }
+  return out;
+}
+
 /** Move the terminal's DOM element from parking lot back into `container`.
- *  Returns true if successfully restored. */
+ *  Returns true if successfully restored.
+ *
+ *  Multi-frame fit: split-restore drops the canvas back into a container
+ *  whose dimensions are still settling. A single fit() at append time often
+ *  reads stale 0×0 dimensions and produces a black row across the top.
+ *
+ *  Strategy:
+ *  1. fit + clearTextureAtlas + refresh immediately (may run against stale
+ *     dimensions; cheap to retry).
+ *  2. Poll up to 3 rAF ticks for `rect.width>0 && rect.height>0`. As soon
+ *     as the container has measured itself, re-run the trio and stop.
+ *
+ *  3 frames is enough to cover splitpanes' two-phase layout settling (one
+ *  frame for the new pane to mount, one for the parent to redistribute,
+ *  one for slack); going beyond rarely helps and can mask real bugs. */
 export function restoreTerminal(paneId: string, container: HTMLElement): boolean {
   const entry = registry.get(paneId);
   if (!entry || !entry.term.element) return false;
   try {
     container.appendChild(entry.term.element);
+    // Immediate three-set: best-effort, may run against stale dimensions.
     entry.fitAddon.fit();
-    requestAnimationFrame(() => {
-      if (entry.term.element?.isConnected) entry.fitAddon.fit();
-    });
+    entry.webglAddon?.clearTextureAtlas();
+    entry.term.refresh(0, entry.term.rows - 1);
+    let frame = 0;
+    const tick = () => {
+      if (!entry.term.element?.isConnected) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        entry.fitAddon.fit();
+        entry.webglAddon?.clearTextureAtlas();
+        entry.term.refresh(0, entry.term.rows - 1);
+        return;
+      }
+      if (++frame < 3) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
     return true;
   } catch {
     return false;

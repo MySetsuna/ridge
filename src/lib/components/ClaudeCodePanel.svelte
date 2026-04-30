@@ -17,6 +17,8 @@
   import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
   import { settingsStore, setClaudeExtensionEnabled } from '$lib/stores/settings';
   import { overlayScroll } from '$lib/actions/overlayScroll';
+  import { portal } from '$lib/actions/portal';
+  import { popupStyleFor } from '$lib/utils/anchorRect';
   import { openDiffEditor } from './DiffEditorModal.svelte';
   import { isTauri, invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
@@ -296,9 +298,12 @@
     >
       <Settings class="h-3.5 w-3.5" />
     </button>
-  {#if settingsOpen}
+  {#if settingsOpen && settingsAnchor}
     <div
-      class="absolute right-2 top-9 z-30 min-w-[220px] rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl py-1 text-[12px]"
+      class="z-[9990] min-w-[220px] rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl py-1 text-[12px]"
+      style={popupStyleFor(settingsAnchor, 'bottom-end')}
+      data-rg-portal-id="claude-code-panel-settings"
+      use:portal={{ id: 'claude-code-panel-settings' }}
     >
       <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">
         扩展

@@ -179,6 +179,8 @@ fn create_pane_inner(
 		None,
 		None,
 		None,
+		None,
+		None,
 	)?;
 
 	// 设置 pane 的工作目录用于 git diff 跟踪
@@ -309,6 +311,8 @@ pub fn ensure_pane_pty_workspace(
 	initial_command: Option<&str>,
 	structured_command: Option<StructuredPtyCommand>,
 	tmux_pane_index: Option<usize>,
+	ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+	trace_id: Option<String>,
 ) -> Result<(), AppError> {
 	let ic = initial_command.map(str::trim).filter(|s| !s.is_empty());
 	let sc = structured_command
@@ -461,25 +465,36 @@ pub fn ensure_pane_pty_workspace(
 			}
 		}
 	}
-	let shim_dir = if let Some(ref bind) = *state.teammate_binding.read() {
-		let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
-		cmd.env("RIDGE_TEAMMATE_URL", bind.base_url.as_str());
-		cmd.env("RIDGE_TEAMMATE_TOKEN", bind.token.as_str());
-		cmd.env("WIND_TERMINAL", "1");
-		// Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
-		let pane_slot = tmux_pane_index.unwrap_or(0);
-		cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
-		// Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
-		cmd.env("TMUX_PANE", format!("{pane_slot}"));
-		let log_path = std::env::var("WIND_TMUX_LOG")
-			.ok()
-			.filter(|s| !s.trim().is_empty());
-		if let Some(ref log) = log_path {
-			cmd.env("WIND_TMUX_LOG", log.as_str());
+	// Hard guarantee: if Claude Code (or any structured-command caller) asks
+	// for a pane and the teammate HTTP server hasn't bound yet, fail loudly
+	// instead of spawning a process that won't have RIDGE_TEAMMATE_* in its
+	// env. Spawning anyway leads to silent agent failures downstream.
+	let teammate_binding = state.teammate_binding.read().clone();
+	let shim_dir = match (teammate_binding, sc.as_ref()) {
+		(None, Some(_)) => {
+			return Err(AppError::PtyError(
+				"teammate server not ready; cannot spawn agent pane".into(),
+			));
 		}
-		shim_dir
-	} else {
-		None
+		(Some(bind), _) => {
+			let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
+			cmd.env("RIDGE_TEAMMATE_URL", bind.base_url.as_str());
+			cmd.env("RIDGE_TEAMMATE_TOKEN", bind.token.as_str());
+			cmd.env("WIND_TERMINAL", "1");
+			// Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
+			let pane_slot = tmux_pane_index.unwrap_or(0);
+			cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
+			// Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
+			cmd.env("TMUX_PANE", format!("{pane_slot}"));
+			let log_path = std::env::var("WIND_TMUX_LOG")
+				.ok()
+				.filter(|s| !s.trim().is_empty());
+			if let Some(ref log) = log_path {
+				cmd.env("WIND_TMUX_LOG", log.as_str());
+			}
+			shim_dir
+		}
+		(None, None) => None,
 	};
 	if let Some(spec) = sc.as_ref() {
 		for (k, v) in &spec.env {
@@ -508,7 +523,7 @@ pub fn ensure_pane_pty_workspace(
 		})
 		.map_err(|e| AppError::PtyError(e.to_string()))?;
 
-	let master = pair.master;
+	let portable_pty::PtyPair { master, slave } = pair;
 	let reader = master
 		.try_clone_reader()
 		.map_err(|e| AppError::PtyError(e.to_string()))?;
@@ -519,14 +534,163 @@ pub fn ensure_pane_pty_workspace(
 	let master = Arc::new(Mutex::new(master));
 	let writer = Arc::new(Mutex::new(writer));
 
-	let child = pair
-		.slave
-		.spawn_command(cmd)
-		.map_err(|e| AppError::PtyError(e.to_string()))?;
+	// Phase 1: register a `PendingSpawn` keyed by pane_id. The child process
+	// is **not** started here — `activate_pane_pty` will consume this record
+	// once the front-end's xterm container has stable dimensions. This is
+	// what makes the "agent split → black pane" race impossible: the shell
+	// can't write its banner before xterm is ready, because the shell hasn't
+	// even started yet.
+	//
+	// `trace_id`: callers (e.g. teammate route_split) pass the same trace id
+	// they emit to the front-end so cross-stack logs can be correlated.
+	// Manual-split callers (`create_pane`) pass None and we mint one here.
+	let trace_id = trace_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+	{
+		let mut map = state.workspaces.write();
+		let ws = map
+			.get_mut(&workspace_id)
+			.ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+		if ws.terminals.contains_key(&pane_id) || ws.pending_spawns.contains_key(&pane_id) {
+			pty_log::create_skip(workspace_id, pane_id);
+			// Drop the freshly-built halves; spawning a duplicate would
+			// shadow the live PTY.
+			return Ok(());
+		}
+		ws.pending_spawns.insert(
+			pane_id,
+			crate::state::PendingSpawn {
+				inner: Mutex::new(Some(crate::state::PendingSpawnInner {
+					command: cmd,
+					slave,
+					reader,
+				})),
+				master,
+				writer,
+				ready_tx: Mutex::new(ready_tx),
+				trace_id: trace_id.clone(),
+			},
+		);
+		ws.pane_sizes.insert(pane_id, (80, 120));
+	}
+	pty_log::create_pending(workspace_id, pane_id, &trace_id);
 
-	let mut handle = PtyHandle {
-		master,
-		writer,
+	Ok(())
+}
+
+/// Phase 2: turn a `PendingSpawn` into a live PTY. Idempotent — returns
+/// `Ok(())` immediately if the pane is already running. Called by the
+/// front-end **after** xterm.fitAddon has reported real container dimensions
+/// so the child shell's initial size matches what the user sees.
+#[tauri::command]
+pub async fn activate_pane_pty(
+	state: State<'_, AppState>,
+	app: tauri::AppHandle,
+	workspace_id: String,
+	pane_id: String,
+	rows: Option<u16>,
+	cols: Option<u16>,
+) -> Result<(), String> {
+	activate_pane_pty_inner(state, app, workspace_id, pane_id, rows, cols)
+		.map_err(|e| e.to_string())
+}
+
+fn activate_pane_pty_inner(
+	state: State<'_, AppState>,
+	app: tauri::AppHandle,
+	workspace_id: String,
+	pane_id: String,
+	rows: Option<u16>,
+	cols: Option<u16>,
+) -> Result<(), AppError> {
+	use tauri::Emitter;
+	let workspace_id = Uuid::parse_str(&workspace_id)
+		.map_err(|_| AppError::PtyError("invalid workspace_id".into()))?;
+	let pane_id = parse_pane_id(&pane_id)?;
+
+	// Idempotency: already activated → no-op success. Front-end can call
+	// activate twice (mount + restore) without consequence.
+	{
+		let map = state.workspaces.read();
+		if let Some(ws) = map.get(&workspace_id) {
+			if ws.terminals.contains_key(&pane_id) {
+				return Ok(());
+			}
+		}
+	}
+
+	// Take the PendingSpawn off the workspace under a write lock.
+	let pending = {
+		let mut map = state.workspaces.write();
+		let ws = map
+			.get_mut(&workspace_id)
+			.ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+		ws.pending_spawns.remove(&pane_id)
+	};
+	let Some(pending) = pending else {
+		// No pending record and no live terminal → the front-end called
+		// activate before create_pane / route_split set up the PTY. Surface
+		// this as an explicit error so callers can retry rather than silently
+		// drop the request.
+		return Err(AppError::PaneNotFound(pane_id));
+	};
+
+	let trace_id = pending.trace_id.clone();
+	let inner = pending
+		.inner
+		.lock()
+		.take()
+		.ok_or_else(|| AppError::PtyError("pending spawn already drained".into()))?;
+	let crate::state::PendingSpawnInner { command, slave, reader } = inner;
+
+	// Resize the master to the front-end-reported dimensions before spawning
+	// so the child's terminal env (LINES/COLUMNS, ConPTY initial size) is
+	// correct from the first byte of output. Best-effort — skip on absurd or
+	// missing values; the front-end's "兜底 fit" rAF will fix any drift.
+	if let (Some(r), Some(c)) = (rows, cols) {
+		let r = r.clamp(1, 500);
+		let c = c.clamp(1, 500);
+		let m = pending.master.lock();
+		let _ = m.resize(PtySize {
+			rows: r,
+			cols: c,
+			pixel_width: 0,
+			pixel_height: 0,
+		});
+	}
+
+	let child = match slave.spawn_command(command) {
+		Ok(c) => c,
+		Err(e) => {
+			let msg = e.to_string();
+			pty_log::activate_err(workspace_id, pane_id, &trace_id, &msg);
+			// Notify any waiter (e.g. teammate route_split) of the failure
+			// so it can return an error to the agent.
+			if let Some(tx) = pending.ready_tx.lock().take() {
+				let _ = tx.send(Err(msg.clone()));
+			}
+			// Tear down the pane-tree entry — the layout shouldn't keep a
+			// ghost pane with no PTY behind it.
+			{
+				let mut map = state.workspaces.write();
+				if let Some(ws) = map.get_mut(&workspace_id) {
+					let _ = ws.pane_tree.close(pane_id);
+					ws.pane_sizes.remove(&pane_id);
+				}
+			}
+			// Tell the frontend the layout changed so the dead leaf is
+			// dropped from the visible split tree (front-end re-renders
+			// the workspace from authoritative backend state).
+			let _ = app.emit(
+				"teammate-layout-changed",
+				serde_json::json!({ "trace_id": trace_id, "activate_failed": true }),
+			);
+			return Err(AppError::PtyError(msg));
+		}
+	};
+
+	let handle = PtyHandle {
+		master: pending.master.clone(),
+		writer: pending.writer.clone(),
 		_child: child,
 	};
 
@@ -535,20 +699,30 @@ pub fn ensure_pane_pty_workspace(
 		let ws = map
 			.get_mut(&workspace_id)
 			.ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
-		if ws.terminals.contains_key(&pane_id) {
-			pty_log::create_skip(workspace_id, pane_id);
-			let _ = handle._child.kill();
-			return Ok(());
-		}
 		ws.terminals.insert(pane_id, handle);
-            ws.pane_sizes.insert(pane_id, (80, 120));
 	}
 
-	pty_log::create_spawned(workspace_id, pane_id);
-	let st = state.clone();
+	pty_log::create_spawned(workspace_id, pane_id, &trace_id);
+	let st = state.inner().clone();
 	spawn_pty_reader(st, workspace_id, pane_id, reader);
 
+	if let Some(tx) = pending.ready_tx.lock().take() {
+		let _ = tx.send(Ok(()));
+	}
+
 	Ok(())
+}
+
+/// Read-only counters surfaced to the SettingsPanel "Agent 统计" section.
+#[tauri::command]
+pub async fn get_teammate_metrics(
+	state: State<'_, AppState>,
+	workspace_id: String,
+) -> Result<crate::state::TeammateMetrics, String> {
+	let wid = Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id")?;
+	let map = state.workspaces.read();
+	let ws = map.get(&wid).ok_or("workspace not found")?;
+	Ok(ws.teammate_metrics.clone())
 }
 
 #[tauri::command]
@@ -620,6 +794,18 @@ fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, col
                 pty_log::resize_err(wid, pane_id, rows, cols, &msg);
                 AppError::PtyError(msg)
             })
+        } else if let Some(pending) = ws.pending_spawns.get(&pane_id) {
+            // Pre-activate path: the user is dragging splitpanes before the
+            // shell has spawned. Resize the master so the eventual
+            // spawn_command inherits the correct dimensions instead of the
+            // 80×120 default; activate_pane_pty will not need to re-resize.
+            let master = pending.master.lock();
+            master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            }).map_err(|e| AppError::PtyError(e.to_string()))
         } else {
             pty_log::pane_not_found("resize", wid, pane_id);
             Err(AppError::PaneNotFound(pane_id))
@@ -648,10 +834,15 @@ fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, col
 /// 在指定工作区内移除并结束 PTY（若存在）。
 pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
 	state.clear_pty_scrollback(workspace_id, pane_id);
-	let handle = {
+	// Drain both the live terminal AND any unconsumed PendingSpawn under a
+	// single write lock. The `_pending` binding's drop releases its master /
+	// slave / cmd halves, freeing the OS-level PTY fds — without this, a
+	// pane that was Phase-1-prepared but never activated leaks the pair.
+	let (handle, _pending) = {
 		let mut map = state.workspaces.write();
 		map.get_mut(&workspace_id)
-			.and_then(|ws| ws.terminals.remove(&pane_id))
+			.map(|ws| (ws.terminals.remove(&pane_id), ws.pending_spawns.remove(&pane_id)))
+			.unwrap_or((None, None))
 	};
 	if let Some(mut handle) = handle {
 		let _ = handle.writer.lock().write_all(b"exit\n");
@@ -695,10 +886,16 @@ pub fn write_pty_bytes_workspace(
 async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<(), AppError> {
 	let pane_id = parse_pane_id(&pane_id)?;
 	let wid = state.active_workspace_id();
+	// Existence check covers BOTH live terminals and PendingSpawn — without
+	// the latter, panes still in Phase-1 can't be killed (their
+	// PendingSpawn would leak until the 30s watchdog).
 	let exists = {
 		let map = state.workspaces.read();
 		map.get(&wid)
-			.map(|ws| ws.terminals.contains_key(&pane_id))
+			.map(|ws| {
+				ws.terminals.contains_key(&pane_id)
+					|| ws.pending_spawns.contains_key(&pane_id)
+			})
 			.unwrap_or(false)
 	};
 	if !exists {

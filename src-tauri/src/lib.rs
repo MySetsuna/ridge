@@ -256,6 +256,8 @@ pub fn run() {
             pane::register_teammate_agent,
             pane::release_teammate_agent,
             terminal::create_pane,
+            terminal::activate_pane_pty,
+            terminal::get_teammate_metrics,
             terminal::detect_available_shells,
             terminal::write_to_pty,
             terminal::resize_pane,
@@ -308,6 +310,7 @@ pub fn run() {
             // .ridge file commands
             ridge_file::save_workspace_to_file,
             ridge_file::open_workspace_from_file,
+            ridge_file::take_pane_replay_state,
             ridge_file::delete_workspace_file,
             ridge_file::get_workspace_save_info,
             ridge_file::list_workspace_save_info,

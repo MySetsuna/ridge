@@ -32,6 +32,8 @@
   import MarkdownPreview from './MarkdownPreview.svelte';
   import { isMarkdownPath } from '$lib/utils/markdown';
   import { overlayScroll } from '$lib/actions/overlayScroll';
+  import { portal } from '$lib/actions/portal';
+  import { popupStyleFor } from '$lib/utils/anchorRect';
   import { settingsStore } from '$lib/stores/settings';
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { alertDialog } from './RidgeDialog.svelte';
@@ -60,6 +62,7 @@
   let editor: monaco.editor.IStandaloneCodeEditor | null = null;
   let currentModelPath: string | null = null;
   let settingsOpen = $state(false);
+  let settingsAnchor: HTMLElement | undefined = $state();
   let isResizingDrawer = $state(false);
   let isDraggingFloating = $state(false);
   let isResizingFloating = $state(false);
@@ -798,7 +801,7 @@
         </button>
       {/if}
 
-      <div class="rg-editor-settings relative">
+      <div class="rg-editor-settings relative" bind:this={settingsAnchor}>
         <button
           type="button"
           class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors {settingsOpen
@@ -809,9 +812,12 @@
         >
           <Settings class="h-3.5 w-3.5" />
         </button>
-        {#if settingsOpen}
+        {#if settingsOpen && settingsAnchor}
           <div
-            class="absolute right-0 top-9 w-56 rounded-lg bg-[var(--rg-surface-2)] border border-[var(--rg-border)] shadow-xl z-10 py-1 text-[12px]"
+            class="rg-editor-settings w-56 rounded-lg bg-[var(--rg-surface-2)] border border-[var(--rg-border)] shadow-xl z-[9990] py-1 text-[12px]"
+            style={popupStyleFor(settingsAnchor, 'bottom-end')}
+            data-rg-portal-id="file-editor-settings"
+            use:portal={{ id: 'file-editor-settings' }}
           >
             <div
               class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]"

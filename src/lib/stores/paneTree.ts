@@ -1163,10 +1163,17 @@ export async function saveWorkspaceToFile(
   name: string,
   path?: string
 ): Promise<string> {
+  // Capture each live pane's serialized terminal state so reopening the
+  // workspace replays the visible buffer + scrollback. Imported lazily to
+  // keep the store-import surface tidy and avoid a top-level cycle with
+  // terminalRegistry → Pane.svelte.
+  const { serializeAllTerminalStates } = await import('./terminalRegistry');
+  const serializedPanes = serializeAllTerminalStates();
   const out = await invoke<string>('save_workspace_to_file', {
     workspaceId,
     name,
     path: path ?? null,
+    serializedPanes,
   });
   // 刷新 workspacesList 以便标签页/Explorer 头部能立刻显示新名字；
   // refreshWorkspaces 内部已串行调用 refreshWorkspaceSaveInfo()。
