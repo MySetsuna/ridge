@@ -42,6 +42,7 @@ self.MonacoEnvironment = {
   import { Bot } from 'lucide-svelte';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
+  import { portal } from '$lib/actions/portal';
   // Side-effect import: each built-in plugin auto-registers via its module
   // script. Must land once, at app chrome level.
   import '$lib/plugins';
@@ -407,12 +408,11 @@ function expandSidebar() {
         paneEl.getAttribute('data-pane-id') ||
         (paneEl as HTMLElement).dataset?.paneId;
       // 判断是终端还是编辑器（通过 class 判断）。
-      // 历史 typo 修：`.rg-terminal` 实际类名是 `.rg-terminal-surface`
-      // （Pane.svelte），`.rg-editor` 不存在（用 `.monaco-editor` 兜底）。
-      // 不修这两条 contextmenu target 就只能落到 `pane-content`，菜单
-      // 项也对应不上终端/编辑器特化项。
+      // RidgePane 渲染时挂 `.rg-pane-container[data-rg-pane-id]`；保留
+      // `.rg-terminal-surface` 兜底以防其他外壳类名出现。Monaco 编辑器
+      // 永远是 `.monaco-editor`。
       const isTerminal =
-        target.closest('.xterm') || target.closest('.rg-terminal-surface');
+        target.closest('.rg-pane-container') || target.closest('.rg-terminal-surface');
       const isEditor = target.closest('.monaco-editor');
       if (isTerminal) {
         return { target: 'terminal', paneId };
@@ -846,6 +846,14 @@ function expandSidebar() {
     // 启动时把当前主题写到 <html data-rg-theme>，避免首帧短暂闪默认色。
     initSettingsBoot();
 
+    // 终端主题桥：把 Ridge 的 CSS 变量（--rg-term-bg / --rg-fg /
+    // --rg-accent / --rg-selection-bg）映射到 wasm 内核的 Theme，
+    // 订阅 settingsStore 让暗/亮主题切换跟随。否则 wasm 永远用编译期
+    // 默认蓝色 selection bg，与 Ridge 绿色 accent 不搭。详见 TASKS Bug A。
+    void import('$lib/terminal/themeBridge').then((m) => {
+      m.setupTerminalThemeBridge();
+    });
+
     // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
     // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
     initFileWatcherSync();
@@ -1088,6 +1096,7 @@ function expandSidebar() {
                 style={recentPopupStyle}
                 class="rg-popup w-[300px] max-w-[90vw]"
                 role="menu"
+                use:portal={{ id: 'recent-workspaces' }}
               >
                 <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
                   <span>最近的工作区</span>

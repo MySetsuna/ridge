@@ -239,6 +239,30 @@ impl<B: RenderBackend> Renderer<B> {
         }
         self.last_cursor = new_cursor;
 
+        // Selection overlay anti-stacking: if a partial redraw is about to
+        // happen (some rows dirty, but not all selection rows) AND the
+        // selection is non-empty, force the selection-covered rows into
+        // `dirty_rows` so their backgrounds get repainted opaquely
+        // before `draw_selection_overlay` lays a fresh alpha on top.
+        // Without this, every cursor-blink tick would paint another
+        // 0x60-alpha overlay on selection rows that aren't otherwise
+        // dirty — alpha accumulates frame-over-frame, the selection
+        // tint darkens visibly within seconds.
+        //
+        // We skip this when full_redraw_pending is already set (every
+        // row will be cleared + repainted anyway, so adding to dirty_rows
+        // is redundant) and when no rows are otherwise dirty (return
+        // false below — keeping the previous frame's pixels intact is
+        // exactly what we want for an idle selected viewport).
+        if !self.full_redraw_pending && !dirty_rows.is_empty() && selection.is_some() {
+            let sel_rects = selection_to_rects(selection, terminal.cols(), terminal.rows());
+            for &(row, _, _) in &sel_rects {
+                if row < rows_n && !dirty_rows.contains(&row) {
+                    dirty_rows.push(row);
+                }
+            }
+        }
+
         if dirty_rows.is_empty() && !self.full_redraw_pending {
             return false;
         }
