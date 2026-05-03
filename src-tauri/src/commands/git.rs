@@ -1606,14 +1606,6 @@ pub fn set_pane_workdir(_pane_id: String, _workdir: String) -> Result<(), String
     Ok(())
 }
 
-/// 注册新的 git 命令到 lib.rs
-#[allow(dead_code)] // legacy: get_git_info_with_cwd is the active path; this stub is kept for the older invoke('get_git_info') signature.
-#[tauri::command]
-pub fn get_git_info(_workspace_id: String, _pane_id: String) -> Result<GitRepoInfo, String> {
-    // 暂时不使用，通过 cwd 获取
-    Err("Use get_git_info_with_cwd instead".to_string())
-}
-
 #[cfg(test)]
 mod decoration_tests {
     use super::*;
