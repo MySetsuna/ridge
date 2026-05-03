@@ -882,7 +882,7 @@ export async function refreshWorkspaces() {
     activeWorkspaceId.set(active);
     reconcileActivePaneId(layout);
     const cwds = extractCwdsFromLayout(layout, active);
-    paneCwdStore.update((store) => ({ ...store, ...cwds }));
+    paneCwdStore.update((store) => mergePaneCwds(store, cwds));
     await setupPaneCwdListeners(active);
     // Save info changes on workspace add/remove/rename; keep UI badges accurate.
     await refreshWorkspaceSaveInfo();
@@ -922,7 +922,7 @@ export async function switchWorkspace(workspaceId: string) {
     activeWorkspaceId.set(workspaceId);
     reconcileActivePaneId(layout);
     const cwds = extractCwdsFromLayout(layout, workspaceId);
-    paneCwdStore.update((store) => ({ ...store, ...cwds }));
+    paneCwdStore.update((store) => mergePaneCwds(store, cwds));
     await setupPaneCwdListeners(workspaceId);
   } catch (e) {
     console.error('switchWorkspace', workspaceId, e);
@@ -1291,8 +1291,46 @@ function normalizeCwd(cwd: string): string {
   return cwd.replace(/\\/g, '/');
 }
 
-export function setPaneCwd(workspaceId: string, paneId: string, cwd: string) {
-  paneCwdStore.update((store) => ({ ...store, [`${workspaceId}:${paneId}`]: normalizeCwd(cwd) }));
+/**
+ * Merge `additions` into `target`, returning the SAME reference when no
+ * value actually changed. Svelte's `writable` uses strict-equality on
+ * the value returned from `update(...)` — if we always allocated a new
+ * object via `{...target, ...additions}`, every subscriber would fire
+ * on every call, regardless of whether content changed.
+ *
+ * This matters most on the cwd hot path: shell prompt redraws (Ctrl+C,
+ * Enter, every `cd`-then-`cd`-back) emit OSC 7 → `setPaneCwd` →
+ * `mergePaneCwds`. Without identity preservation, the file tree, SCM,
+ * sidebar plugins, etc. all re-run their cwd subscribers on every
+ * keystroke that produces a prompt redraw.
+ */
+function mergePaneCwds(
+  target: Record<string, string>,
+  additions: Record<string, string>,
+): Record<string, string> {
+  let next = target;
+  let mutated = false;
+  for (const [k, v] of Object.entries(additions)) {
+    if (target[k] === v) continue;
+    if (!mutated) {
+      next = { ...target };
+      mutated = true;
+    }
+    next[k] = v;
+  }
+  return next;
+}
+
+export function setPaneCwd(workspaceId: string, paneId: string, cwd: string): void {
+  const key = `${workspaceId}:${paneId}`;
+  const normalized = normalizeCwd(cwd);
+  paneCwdStore.update((store) => {
+    // Identity-preserving early return: same value means no subscribers
+    // need to fire. Critical for the Ctrl+C / Enter prompt-redraw loop
+    // — see mergePaneCwds doc above.
+    if (store[key] === normalized) return store;
+    return { ...store, [key]: normalized };
+  });
 }
 
 /** Retrieve the cwd for a specific pane, if known. */
@@ -1373,7 +1411,7 @@ export async function loadSavedWorkspaces() {
     // The layout's LayoutNode::Leaf carries cwd from the backend.
     for (const sw of list) {
       const cwds = extractCwdsFromLayout(sw.paneTree, sw.id);
-      paneCwdStore.update((store) => ({ ...store, ...cwds }));
+      paneCwdStore.update((store) => mergePaneCwds(store, cwds));
     }
 
     // Set up cwd change listeners for the currently active workspace
