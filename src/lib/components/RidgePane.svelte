@@ -221,9 +221,33 @@ function onSearchInputKey(e: KeyboardEvent) {
 	// Other keys fall through; refresh runs on input event.
 }
 
+// UUID v4 shape check. Backend's `parse_pane_id` requires a UUID;
+// split node ids ("split-N" from engine_node_to_layout) are not valid
+// pane targets. RidgePane should NEVER be mounted with a split-id —
+// SplitContainer renders Pane only on `node.type === 'leaf'` branches —
+// but a tracked-down report (TASKS 2026-05-03) shows split-1 reaching
+// resize_pane somehow. Guard here surfaces the offending paneId at
+// mount time so the next reproduction has full context, and prevents
+// the IPC spam (every drag → backend rejection → console.error).
+const PANE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidPaneId(id: string): boolean {
+	return PANE_ID_RE.test(id);
+}
+
 onMount(() => {
 	if (!isTauri()) {
 		console.warn('[ridge-pane] requires Tauri');
+		return;
+	}
+
+	if (!isValidPaneId(paneId)) {
+		console.error(
+			'[ridge-pane] mounted with non-UUID paneId:',
+			paneId,
+			'workspaceId:',
+			workspaceId,
+			'— refusing to attach. This indicates SplitContainer rendered Pane on a non-leaf node or a malformed leaf. Please grab a stack trace and the paneTreeStore snapshot.',
+		);
 		return;
 	}
 
@@ -276,6 +300,15 @@ onMount(() => {
 
 		// 2) Resize → PTY: backend syncs SIGWINCH
 		manager.onResize(paneId, (rows, cols) => {
+			// Defensive: should be impossible after the onMount UUID guard
+			// above, but leaving the cheap check in catches any future
+			// path that smuggles a bad id past attach.
+			if (!isValidPaneId(paneId)) {
+				if (import.meta.env?.DEV) {
+					console.warn('[ridge-pane] resize skipped — non-UUID paneId:', paneId);
+				}
+				return;
+			}
 			void invoke('resize_pane', { paneId, rows, cols }).catch((err) => {
 				console.error('resize_pane', err);
 			});
