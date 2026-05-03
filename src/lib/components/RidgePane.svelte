@@ -318,6 +318,13 @@ onDestroy(() => {
 	alive = false;
 	ptyUnlisten?.();
 	ptyClosedUnlisten?.();
+	// Cancel pending Bell flash so the timer can't fire after unmount.
+	// Without this, a Bell received within 120ms of pane close leaves a
+	// dangling setTimeout that writes `bellFlash` on a torn-down component.
+	if (bellFlashTimer !== null) {
+		clearTimeout(bellFlashTimer);
+		bellFlashTimer = null;
+	}
 	if (attached) {
 		manager.detach(paneId);
 	}
