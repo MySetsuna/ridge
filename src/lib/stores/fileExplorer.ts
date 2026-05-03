@@ -168,18 +168,23 @@ function createFileExplorerStore() {
 						// 重进老目录时，缓存的 tree 多半已过时 —— 但直接 `tree = null` 会导致
 						// 视图先空屏再填充，形成"打开文件夹时的闪烁"。改为：保留旧树原地显示，
 						// 在 Explorer 层异步调用 loadTree 做后台刷新，数据就绪后再原子替换。
+						//
+						// `hasNewJoiner` 触发 needsRefresh，无论 tree 是否已缓存：
+						// 新 pane 加入往往意味着用户切回老目录（FS 可能被其他 pane 改动），
+						// 即使有缓存也应在后台重扫一次保新鲜。Explorer.svelte:101 用
+						// `(!col.tree || col.needsRefresh)` 触发 loadTree，缓存命中走
+						// 「先显示旧 → 后台 fetch → 数据就绪原子替换」，零空屏闪烁。
+						// （TASKS §7.3：commit 7f45cd5 加 `&& existing.tree === null` 约束
+						// 是 regression——上层 Chinese 注释 / Explorer.svelte:99 注释 /
+						// E6 测试三处都期望 cached-tree 场景也 refresh。本次回退。）
 						const prevSet = new Set(existing.paneIds);
 						const hasNewJoiner = paneIds.some((id) => !prevSet.has(id));
-						// Only request a refresh when the tree hasn't loaded yet.
-						// If a cached tree already exists, a new pane sharing this cwd
-						// reuses it without re-scanning (the user can always hit the
-						// refresh button to force an update).
 						newColumns.push({
 							...existing,
 							paneIds,
 							paneTitles: mergedTitles,
 							tree: existing.tree,
-							needsRefresh: existing.needsRefresh || (hasNewJoiner && existing.tree === null),
+							needsRefresh: existing.needsRefresh || hasNewJoiner,
 						});
 					} else {
 						// New CWD: create column, tree: null triggers load.
