@@ -1,5 +1,14 @@
 # 主项目 Bug 修复计划（与 xterm 替换无关）
 
+> **状态（2026-05-03 末次复核）**：xterm round 7 已 retire，`Pane.svelte` 已删除。
+> 本文档表内 BUG-1 / BUG-2 / BUG-5 / BUG-6 文件位置都是 `Pane.svelte`——这些 patch 已**moot**，因为 `RidgePane.svelte` 是从零写的全新组件，不继承 Pane.svelte 的双 listener / 1.5s 轮询 / 连环 rAF / 前端 2000 行 buffer 这些具体代码 pattern。RidgePane.svelte 是否有等价 bug 需独立审计——ptyBridge.ts 已避免 listener 重订（详见 TASKS §5.1 parking lot）；polling 由 manager 节流；scrollback 走 §5.2 决议（保留 ~700 KB 重复，方案 A）。
+>
+> 仍适用的 patch：
+> - **BUG-3**（PTY reader `rt.block_on` send 事件）— `engine/pty.rs` 仍现行（grep 确认 line 193/218/323/339 仍存在）。
+> - **BUG-4**（4 ms 合批窗口对单字符 echo 是纯延迟）— `lib.rs` 后端 batch 路径仍现行；`REPLACE_AND_FIX_PLAN.md` 提到压缩到 < 10 ms 需 SharedArrayBuffer 替换 IPC，更大改造。
+>
+> 后端两条仍可单独 cherry-pick，与本会话其他工作正交。
+
 > 本文档列出在 review `src.zip` 时发现的**独立 bug**，与 ridge-term 项目正交。
 > 每条都给出：
 > - 症状 / 用户感知
