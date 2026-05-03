@@ -7,7 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Ridge** (codenamed Ridge) is a modern terminal emulator with split-pane functionality, embedded code editor, and Git visualization. It's built with Tauri v2 (Rust backend) + Svelte 5 (TypeScript frontend).
 
 Key features:
-- Terminal emulation via xterm.js with PTY support (portable-pty)
+- Terminal emulation via in-house **ridge-term** wasm kernel (VT/ANSI parser
+  in Rust → Canvas2D renderer) with PTY support (portable-pty). xterm.js
+  was retired in round 7; see `docs/term-rebuild/` for design history.
 - Monaco Editor integration for code editing
 - Recursive split-pane layout (horizontal/vertical)
 - Git Graph visualization with Canvas rendering
@@ -37,7 +39,9 @@ cargo clippy        # Lint Rust code
 
 - **Svelte 5 with runes** (`$state`, `$derived`, `$effect`)
 - **Tailwind CSS v4** for styling
-- **xterm.js** for terminal display
+- **ridge-term wasm** (`@ridge/term-wasm`, source in `packages/ridge-term/`)
+  for terminal display — `RidgePane.svelte` mounts a `<canvas>` and forwards
+  PTY bytes through `TerminalManager` to the wasm kernel
 - **Monaco Editor** for code editing
 - **svelte-splitpanes** for split layout
 
@@ -167,7 +171,7 @@ See `docs/TERMINAL_SCROLLBACK.md` for the full design. In-tree:
 
 - Backend `state::PaneScrollback`: `VecDeque<Arc<Vec<u8>>>` blocks of `SCROLLBACK_BLOCK_SIZE = 64 KiB`, capped at `SCROLLBACK_MAX_BYTES = 4 MiB`. Each block carries a starting `seq` (monotonic byte counter) so callers page deterministically.
 - Frontend commands: `get_pane_scrollback_tail(pane_id, max_bytes)` for newest bytes; `get_pane_scrollback_before(pane_id, before_seq, max_bytes)` for "load older". Legacy `get_pane_scrollback` is a deprecated shim — keep it working until phase-3 wraps.
-- `Pane.svelte` mount-time replays the latest 256 KiB tail before live streaming kicks in.
+- `RidgePane.svelte` mount-time replays the latest 256 KiB tail before live streaming kicks in. It also seeds `oldestSeq` / `atOldest` from the chunk so `Shift+PageUp` past the wasm kernel buffer triggers `get_pane_scrollback_before` paging via `manager.prependScrollback` (TASKS §2.1).
 - `ScrollbackHistoryModal.svelte` is the user-visible viewer: 256 KiB initial pull, "加载更早" pages 128 KiB at a time, ANSI is stripped for clean copy/search, in-modal search bar with n/N navigation and case-sensitive toggle.
 
 ## Plugin sidebar API
