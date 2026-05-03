@@ -1,83 +1,134 @@
-# ridge-term — Rust terminal kernel (round 1: skeleton)
+# ridge-term — Rust terminal kernel + Canvas2D renderer (WASM)
 
-This is **round 1 of N** in replacing xterm.js with a Rust+WASM terminal
-emulator. **It cannot yet replace xterm in your `Pane.svelte`.** What
-landed this round is the foundation:
+In-house VT/ANSI terminal emulator for the Ridge IDE — replaces xterm.js +
+WebGL addon. Compiled to a single `@ridge/term-wasm` package via wasm-pack
+and consumed by `src/lib/terminal/manager.ts` in the Ridge frontend.
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  JS:  new Terminal(rows, cols, scrollback)                      │
-│       term.feed(uint8Array)   ← bytes from PTY                  │
-│       term.dumpVisibleText()  ← string[] for smoke testing      │
+│  JS:  new TerminalKernel(rows, cols, scrollback)                │
+│       kernel.feed(uint8Array)         ← bytes from PTY          │
+│       kernel.encodeKey(...)           → bytes to PTY            │
+│       kernel.takePendingResponse()    → DSR/DA bytes            │
+│       kernel.takePendingEvents()      → KernelEvent[] (OSC/Bell)│
+│       new RenderHandle(canvas)        ← rAF render driver       │
+│       handle.render(kernel) / .resize(w, h, dpr) / .applyTheme  │
 └──────────────────────┬──────────────────────────────────────────┘
                        │  wasm-bindgen
 ┌──────────────────────▼──────────────────────────────────────────┐
-│  Terminal facade (terminal.rs)                                  │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │  vte::Parser  ─────►  Performer (parser.rs)            │     │
-│  │  state machine        translates callbacks to grid ops │     │
-│  └────────────────────────────────────────────────────────┘     │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │  Grid (grid.rs)                                        │     │
-│  │  · Vec<Row> visible rows  · cursor + pending_wrap      │     │
-│  │  · AttrTable flyweight    · saved_cursor (DECSC)       │     │
-│  └────────────────────────────────────────────────────────┘     │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │  Scrollback ring buffer (scrollback.rs)                │     │
-│  │  · fixed capacity, recycles row allocations on eviction│     │
-│  └────────────────────────────────────────────────────────┘     │
+│  Terminal (term/terminal.rs)                                    │
+│   · vte::Parser → Performer → Grid                              │
+│   · pending_response (DSR/DA query replies → PTY)               │
+│   · pending_events (Title/Cwd/Bell → JS Svelte stores)          │
+│   · prepend_scrollback (sandbox feed → push_front; for backend  │
+│     scrollback bridge, see TASKS §2.1)                          │
+│                                                                 │
+│  Grid (term/grid.rs)                                            │
+│   · primary + alt screen, DECSTBM region, AttrTable flyweight   │
+│   · reflow_primary on column change (Phase 1: live grid;        │
+│     wide-char split protected, cursor pending_wrap preserved)   │
+│                                                                 │
+│  Renderer (render/renderer.rs)                                  │
+│   · per-row dirty tracking via content hash                     │
+│   · selection overlay anti-stacking (force selection rows in    │
+│     dirty_rows when partial redraw)                             │
+│   · cursor blink state machine                                  │
+│                                                                 │
+│  Canvas2dBackend (render/canvas2d.rs)                           │
+│   · RenderBackend trait impl; resize_surface keeps CSS at 100%  │
+│     so canvas tracks container; HTML width/height = device px   │
+│   · selection_bg / hyperlink underline / cursor block-bar-line  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## What works
+## Status
 
-- VT/ANSI parser via `vte` (full Paul Williams state machine — same as Alacritty)
-- C0 controls: BS / HT / LF / VT / FF / CR
-- CSI: cursor motion (A/B/C/D/H/f), erase (J/K), scroll (S/T), SGR (m)
-- ESC: DECSC / DECRC / IND / NEL / RI
-- SGR: 0/1/2/3/4/5/7/8/9/21–29 + ANSI 16 + 256 + truecolor (semicolon and colon forms)
-- DECAWM pending-wrap (vim's bottom-right cell renders correctly)
-- Wide cells (CJK / emoji) — coarse table, full one next round
-- Scrollback with allocation recycling
-- 9 unit tests covering the above (`cargo test --lib`)
+End-to-end functional. xterm.js is retired in the consumer; Ridge's
+terminal panes run on this kernel exclusively. See
+`docs/term-rebuild/TASKS.md` and `docs/term-rebuild/OVERVIEW.md` for the
+full progress log and remaining deferred items.
 
-## Explicitly NOT in this round
+| Round | Scope | Status |
+|---|---|---|
+| 1   | VT kernel skeleton                                  | ✅ |
+| 2.1 | wcwidth + alt screen + DECSTBM + DEC modes          | ✅ |
+| 2.2 | RenderBackend trait + Canvas2D backend              | ✅ |
+| 2.3 | JS surface API (write/onData/resize/key encoder)    | ✅ |
+| 2.4 | TerminalManager (TS) + RidgePane.svelte             | ✅ |
+| 3   | WebGPU backend + glyph atlas + shared surface       | ⏳ not started |
+| 4   | reflow Phase 2 / IME v3 / grapheme                  | ⏳ partial |
+| 5   | OSC UI integration                                  | ✅ |
+| 6   | parking lot (split survival)                        | ✅ |
+| 7   | xterm retirement                                    | ✅ |
 
-These are deliberate omissions, not oversights:
+## What's implemented
 
-| Feature | Round |
-|---|---|
-| Renderer (WebGPU/Canvas/DOM) | 2 |
-| `onData(cb)` keyboard input | 2 |
-| Selection / copy / search | 3 |
-| Alt screen buffer | 2 |
-| OSC titles / hyperlinks (8) / cwd (7) | 3 |
-| DECSTBM scroll regions | 2 |
-| DEC private modes (mouse, bracketed paste, cursor visibility) | 3 |
-| Resize reflow of soft-wrapped lines | 4 |
-| IME helper-textarea integration | 4 |
-| `WebLinksAddon` / `SearchAddon` equivalents | 3 |
-| Full Unicode-11 wcwidth + emoji-wide override | 2 |
+- **VT/ANSI parser** via `vte` (Paul Williams state machine — same as
+  Alacritty)
+- **C0 controls** (BS / HT / LF / VT / FF / CR / BEL → KernelEvent::Bell)
+- **CSI**: cursor motion (A/B/C/D/E/F/G/`/d/H/f), erase (J/K), scroll
+  (S/T), insert/delete (L/M, ICH `@`, DCH `P`), erase-char (ECH `X`),
+  repeat (REP `b`), HPR/VPR (`a`/`e`), SCO save/restore (`s`/`u`),
+  DECSTBM (`r`), mode set/reset (h/l), SGR (m), DSR/DECXCPR (n), DA
+  primary/secondary (c, `>c`), cursor shape (DECSCUSR ` q`)
+- **ESC**: DECSC / DECRC / IND / NEL / RI / DECPAM / DECPNM / RIS
+- **SGR**: 0/1/2/3/4/5/7/8/9/21..29 flags, ANSI 16 (30..37 / 40..47 /
+  90..97 / 100..107), 256 (38;5;n / 48;5;n), truecolor (38;2;r;g;b),
+  colon-subparam form (38:2:cs:r:g:b)
+- **Screen modes**: primary + alt (?47 / ?1049), DECAWM pending-wrap,
+  DECTCEM, cursor blink (?12), application keypad (?1), bracketed paste
+  (?2004), synchronous output (?2026), focus reporting (?1004), mouse
+  (?9 / ?1000 / ?1002 / ?1003 / ?1006), DEC origin (?6), insert (4),
+  LNM (20)
+- **OSC**: 0/1/2 title (→ KernelEvent::TitleChanged /
+  IconNameChanged), 7 cwd (→ CwdChanged), 8 hyperlinks (cell-level
+  annotation; Ctrl+click via `kernel.hyperlinkAt(row, col)`)
+- **Wide chars**: CJK + emoji wcwidth=2; reflow-aware split protection
+- **Scrollback**: fixed-capacity ring with allocation recycling +
+  `prepend_scrollback` for the backend scrollback bridge
 
-## What I need from you for round 2
+## Tests
 
-Confirm these so I can plan the right surface:
+```bash
+cargo test --lib                     # 113 unit tests
+cargo test --tests                   # 22 integration tests
+```
 
-1. **Renderer target:** WebGPU primary + Canvas2D fallback (per your original
-   prompt), or just Canvas2D first to ship faster?
-2. **PTY transport:** the existing `invoke('write_to_pty', { paneId, data })`
-   stays, right? The kernel just needs an `onData(cb)` event — it doesn't
-   own the channel.
-3. **Scrollback replay:** your current code calls `get_pane_scrollback_tail`
-   and `term.write(bytes)`. Same flow works here — `feed()` is the new `write`.
+Integration tests (`tests/protocol_smoke.rs`) cover realistic byte-stream
+scenarios: DSR-CPR, PSReadLine prompt redraw, Ink frame replace, ECH
+char-residue repro, ?1049 alt-screen round-trip, OSC 8 cross-feed
+persistence, ICH+DCH inline edit, `?2026` toggle, `?1004` focus
+reporting, REP, RIS, OSC 133/633 prompt marks (no render), and OSC
+events in order.
 
 ## Build
 
 ```bash
-cargo test --lib            # native; no wasm needed
-wasm-pack build --target web --out-dir pkg --release
+node build.mjs           # release build (wasm-pack --release + wasm-opt -Oz)
+node build.mjs --dev     # dev build (~5× faster compile, larger wasm)
 ```
 
-Sandbox here doesn't have `cargo`, so I haven't run the tests myself — see
-"caveat" in the chat reply. If anything fails to compile when you try it,
-paste the error and I'll fix in the next round.
+`build.mjs` runs wasm-pack with `--target web`, patches
+`pkg/package.json` to the scoped name `@ridge/term-wasm`, and removes
+the auto-generated `pkg/.gitignore` so the consumer's
+`link:packages/ridge-term/pkg` works on fresh clones.
+
+## Consumer
+
+The Ridge frontend imports the published surface as `@ridge/term-wasm`
+(linked locally via `link:packages/ridge-term/pkg`). Entry points:
+
+- `src/lib/terminal/manager.ts` — single-instance `TerminalManager`
+  owns the wasm kernels + RenderHandles, runs the rAF loop, exposes
+  `feed`/`onData`/`onResize`/`attach`/`park`/`unpark`/`detach`/
+  `prependScrollback`/etc.
+- `src/lib/terminal/ptyBridge.ts` — host-aware sidecar; subscribes to
+  Tauri `pty-output-{ws}-{pane}` events and the `pane-pty-closed`
+  rebuild path. Listener lifetime tracks kernel lifetime, surviving
+  Svelte component mount cycles (so split / reparent doesn't drop bytes).
+- `src/lib/terminal/themeBridge.ts` — pushes Ridge's CSS-variable theme
+  into the wasm Theme overrides on settings change.
+- `src/lib/components/RidgePane.svelte` — Svelte component that mounts
+  the canvas and wires keyboard / mouse / IME events.
