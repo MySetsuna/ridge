@@ -160,7 +160,7 @@ Each leaf pane's header renders these affordances right-aligned (in order):
 
 1. **`<PaneGitPill paneId>`** — branch + diff summary; click opens an inline picker that lazy-loads `git_list_branches`. "+ 创建新分支…" is an inline `<input>` (Enter submit, Esc cancel) — no `prompt()`. Ctrl-click pill jumps to the SCM sidebar tab.
 2. **`Bot` button** — opens `ClaudeAgentLauncher` modal for the pane; Shift/Alt-click skips the prompt and launches bare `claude`.
-3. **`History` button** — opens `ScrollbackHistoryModal` (read-only browser of pane scrollback bytes that may have scrolled past xterm's own buffer).
+3. **`History` button** — opens `ScrollbackHistoryModal` (read-only browser of pane scrollback bytes that may have scrolled past the wasm kernel's own buffer; backed by the backend's 4 MiB block store via `get_pane_scrollback_before`).
 4. **`×` close pane**.
 
 Per-pane git status lives in `paneGitStatus.ts`: a debounced (250ms) per-cwd resolver that parallels `find_git_repo_root` + `get_scm_status` + `git_diff_summary`, cached by repoRoot to coalesce panes that share a repo. Round-trip after staging/commit goes through `invalidatePaneGitStatusForRepo(repoRoot)`.
