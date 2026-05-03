@@ -118,6 +118,23 @@ interface PaneEntry {
 	pointerDownListener: (e: PointerEvent) => void;
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
+	/** Parking state (TASKS §5.1, Round 6).
+	 *
+	 *  When `parked = true`:
+	 *   - `kernel` is alive (terminal grid, scrollback, attrs, modes,
+	 *     scroll offset, current_link, IME composition state — everything
+	 *     load-bearing for user-perceived continuity is preserved).
+	 *   - `handle` has been `.free()`'d and `canvas` removed from DOM.
+	 *   - All container event listeners are unbound.
+	 *   - `dataHandler` / `eventHandler` / `resizeHandler` callbacks are
+	 *     still wired so PTY bytes arriving during the park window land
+	 *     in the kernel without loss.
+	 *   - The render loop skips this pane (no handle to call render on).
+	 *
+	 *  Set true by `park(paneId)` and false by `unpark(paneId, container)`.
+	 *  `detach(paneId)` works regardless of parked state — both code paths
+	 *  release wasm resources at the end. */
+	parked: boolean;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -391,6 +408,7 @@ export class TerminalManager {
 			pointerDownListener,
 			pointerMoveListener,
 			pointerUpListener,
+			parked: false,
 		};
 		entry.resizeObserver.observe(container);
 
@@ -406,12 +424,61 @@ export class TerminalManager {
 	}
 
 	/**
-	 * Tear down a pane. Removes the canvas, drops the wasm kernel/handle,
-	 * and stops observing.
+	 * Tear down a pane completely. Frees the kernel, frees the render
+	 * handle, removes the canvas, and drops the entry from the map.
+	 *
+	 * Idempotent against parking state: if the pane is currently parked,
+	 * `entry.handle` and `entry.canvas` are already gone, so we just free
+	 * the kernel and remove the entry. Caller must use `detach` for
+	 * "the pane is permanently gone" (e.g. removed from paneTree) and
+	 * `park` for "transient unmount across split / reparent" — see §5.1.
 	 */
 	detach(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
+		if (!entry.parked) {
+			// Live entry — release DOM bindings before freeing wasm.
+			entry.resizeObserver.disconnect();
+			entry.container.removeEventListener('focusin', entry.focusListener);
+			entry.container.removeEventListener('focusout', entry.blurListener);
+			entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
+			entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
+			entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+			if (entry.pendingFitTimer !== null) {
+				clearTimeout(entry.pendingFitTimer);
+				entry.pendingFitTimer = null;
+			}
+			try {
+				entry.canvas.remove();
+			} catch {
+				/* canvas already detached */
+			}
+			try { entry.handle.free(); } catch { /* ignore */ }
+		}
+		// Kernel always alive while in the map (parked or not).
+		try { entry.kernel.free(); } catch { /* ignore */ }
+		this.panes.delete(paneId);
+		if (this.panes.size === 0) {
+			this.stopRafLoop();
+		}
+	}
+
+	/**
+	 * Park a pane: release everything that's bound to the current DOM
+	 * container (canvas, render handle, ResizeObserver, focus / pointer
+	 * listeners) but keep the wasm kernel + dataHandler / eventHandler /
+	 * resizeHandler closures alive.
+	 *
+	 * Used when a Svelte component unmounts due to a split or reparent —
+	 * we don't know yet whether the pane is genuinely closing or about
+	 * to remount. Parking is cheap to reverse via `unpark`.
+	 *
+	 * If the pane is already parked or unknown, this is a no-op.
+	 */
+	park(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+
 		entry.resizeObserver.disconnect();
 		entry.container.removeEventListener('focusin', entry.focusListener);
 		entry.container.removeEventListener('focusout', entry.blurListener);
@@ -422,19 +489,94 @@ export class TerminalManager {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
-		try {
-			entry.canvas.remove();
-		} catch {
-			/* canvas already detached */
-		}
-		// Free wasm-side resources. wasm-bindgen generates `.free()` on each
-		// exported class; calling it explicitly drops the Rust-side state.
+		// Clear transient pointer drag state — if the user was mid-drag
+		// when the unmount fired, the next attach should start fresh.
+		entry.selecting = false;
+		entry.selectionStart = null;
+
+		try { entry.canvas.remove(); } catch { /* already detached */ }
 		try { entry.handle.free(); } catch { /* ignore */ }
-		try { entry.kernel.free(); } catch { /* ignore */ }
-		this.panes.delete(paneId);
-		if (this.panes.size === 0) {
-			this.stopRafLoop();
+
+		entry.parked = true;
+		// Don't stopRafLoop here — other panes may still need rendering.
+		// The render-loop guards against parked entries by checking the
+		// flag before calling `entry.handle.render(...)`.
+	}
+
+	/**
+	 * Reverse of `park`: bind the existing kernel to a new container.
+	 * Creates a fresh canvas + RenderHandle, re-installs the previously
+	 * captured listener closures (which look up `this.panes.get(paneId)`
+	 * and so naturally see the updated `entry.container`), and rejoins
+	 * the render loop.
+	 *
+	 * Throws if the paneId isn't in the map at all (caller bug — should
+	 * have called `attach` instead) or if the entry is already attached
+	 * (double-unpark indicates a lifecycle ordering bug).
+	 */
+	unpark(paneId: string, container: HTMLElement): void {
+		if (!this.wasmReady) {
+			throw new Error('TerminalManager.unpark: call ready() first');
 		}
+		const entry = this.panes.get(paneId);
+		if (!entry) {
+			throw new Error(`TerminalManager.unpark: pane ${paneId} not parked (use attach for new panes)`);
+		}
+		if (!entry.parked) {
+			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
+		}
+
+		const canvas = document.createElement('canvas');
+		canvas.style.cssText = 'display:block; width:100%; height:100%;';
+		canvas.setAttribute('aria-hidden', 'true');
+		container.appendChild(canvas);
+
+		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
+			container.style.padding = `${this.opts.paddingPx}px`;
+		}
+
+		const handle = new RenderHandle(canvas);
+		const dpr = window.devicePixelRatio || 1;
+		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
+			| [number, number]
+			| Float32Array;
+		if (this.opts.theme) {
+			handle.applyTheme(this.opts.theme);
+		}
+
+		entry.container = container;
+		entry.canvas = canvas;
+		entry.handle = handle;
+		entry.cellW = Number(cellW);
+		entry.cellH = Number(cellH);
+		// Force a resize-handler emit on the next fit so PTY rows/cols
+		// resync — in particular if the new container has different
+		// dimensions from the parked one.
+		entry.lastReportedRows = -1;
+		entry.lastReportedCols = -1;
+
+		container.addEventListener('focusin', entry.focusListener);
+		container.addEventListener('focusout', entry.blurListener);
+		container.addEventListener('pointerdown', entry.pointerDownListener);
+		container.addEventListener('pointermove', entry.pointerMoveListener);
+		container.addEventListener('pointerup', entry.pointerUpListener);
+		entry.resizeObserver = new ResizeObserver(() => this.viewportChanged(paneId));
+		entry.resizeObserver.observe(container);
+
+		entry.parked = false;
+
+		requestAnimationFrame(() => {
+			const e = this.panes.get(paneId);
+			if (e && !e.parked) this.fitPane(e);
+		});
+		this.startRafLoop();
+	}
+
+	/** True if a pane is in the manager but currently parked.
+	 *  Useful for the RidgePane onMount path to decide attach vs unpark. */
+	isParked(paneId: string): boolean {
+		const entry = this.panes.get(paneId);
+		return entry !== undefined && entry.parked;
 	}
 
 	/** Feed PTY bytes into the pane's kernel. Accepts string or Uint8Array.
@@ -678,6 +820,9 @@ export class TerminalManager {
 		this.opts.fontSizePx = sizePx;
 		const dpr = window.devicePixelRatio || 1;
 		for (const entry of this.panes.values()) {
+			// Skip parked entries — their handle has been freed. They'll
+			// pick up the new font on the next unpark via this.opts.
+			if (entry.parked) continue;
 			const [w, h] = entry.handle.configure(family, sizePx, dpr) as
 				| [number, number]
 				| Float32Array;
@@ -692,6 +837,8 @@ export class TerminalManager {
 	setTheme(theme: Record<string, string>): void {
 		this.opts.theme = theme;
 		for (const entry of this.panes.values()) {
+			// Parked panes pick up the theme on the next unpark via this.opts.
+			if (entry.parked) continue;
 			entry.handle.applyDefaultTheme();
 			entry.handle.applyTheme(theme);
 		}
@@ -714,14 +861,17 @@ export class TerminalManager {
 	 */
 	viewportChanged(paneId: string): void {
 		const entry = this.panes.get(paneId);
-		if (!entry) return;
+		if (!entry || entry.parked) return;
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 		}
 		entry.pendingFitTimer = setTimeout(() => {
 			entry.pendingFitTimer = null;
-			if (!this.panes.has(paneId)) return;
-			this.fitPane(entry);
+			const e = this.panes.get(paneId);
+			// Re-check parked: a park() call could have come in during
+			// the 120 ms debounce window, freeing entry.handle.
+			if (!e || e.parked) return;
+			this.fitPane(e);
 		}, 120);
 	}
 
@@ -785,6 +935,9 @@ export class TerminalManager {
 			this.rafHandle = null;
 			const now = performance.now();
 			for (const entry of this.panes.values()) {
+				// Skip parked entries — kernel is alive but handle was
+				// freed by park(); render would dereference a dead pointer.
+				if (entry.parked) continue;
 				// Synchronous output mode (?2026): hold rendering while the
 				// TUI emits a multi-step redraw, so the user never sees a
 				// torn intermediate frame. Timeout (150ms) prevents a stuck
