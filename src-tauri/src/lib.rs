@@ -56,11 +56,30 @@ pub fn run() {
             let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
             tauri::async_runtime::spawn(async move {
                 use std::collections::HashMap;
-                // 合批窗口：同一 pane 的连续 PtyOutput 在 COALESCE_WINDOW_MS 内合并为一次 emit，
-                // 显著降低高吞吐（`cat huge.log`）场景下的 IPC 次数与前端渲染压力。
-                const COALESCE_WINDOW_MS: u64 = 4;
+                // Adaptive coalesce window. A fixed 4ms window was fine for
+                // bulk output but added pure latency to keyboard echo (BUG-4).
+                // The window now scales with the previous flush's byte count:
+                //   < 256 bytes  → 0ms  (echo path: dispatch immediately)
+                //   < 4096 bytes → 2ms  (medium activity)
+                //   ≥ 4096 bytes → 8ms  (bulk: amortise serialise overhead)
+                const COALESCE_WINDOW_FAST_MS: u64 = 0;
+                const COALESCE_WINDOW_MED_MS: u64 = 2;
+                const COALESCE_WINDOW_SLOW_MS: u64 = 8;
                 const COALESCE_MAX_BYTES: usize = 64 * 1024;
+                let coalesce_window_for = |last_bytes: usize| -> u64 {
+                    if last_bytes < 256 {
+                        COALESCE_WINDOW_FAST_MS
+                    } else if last_bytes < 4096 {
+                        COALESCE_WINDOW_MED_MS
+                    } else {
+                        COALESCE_WINDOW_SLOW_MS
+                    }
+                };
                 let mut pending_output: HashMap<(uuid::Uuid, uuid::Uuid), String> = HashMap::new();
+                // Tracks the size of the most recent flush so the window can
+                // adapt. Initialised to 0 so the first iteration uses the
+                // fast window (typical: prompt redraw on shell start is small).
+                let mut last_flush_bytes: usize = 0;
 
                 // 事件循环：
                 //   - 无积压 PtyOutput 时，无限等待下一条事件；
@@ -79,7 +98,7 @@ pub fn run() {
                         }
                     } else {
                         match tokio::time::timeout(
-                            std::time::Duration::from_millis(COALESCE_WINDOW_MS),
+                            std::time::Duration::from_millis(coalesce_window_for(last_flush_bytes)),
                             event_rx.recv(),
                         )
                         .await
@@ -194,18 +213,40 @@ pub fn run() {
                                 serde_json::json!({ "title": title }),
                             );
                         }
+                        Some(GlobalEvent::PanePromptDetected {
+                            workspace_id,
+                            pane_id,
+                        }) => {
+                            // Fire-and-forget IPC. Frontend Pane.svelte listens on
+                            // `pane-prompt-{ws}-{pane}` and uses it as the fast
+                            // path for diff refresh (BUG-1 follow-up). Empty
+                            // payload — the URL identifies the pane fully and
+                            // there's no per-prompt state to convey.
+                            let label = pane_id.to_string();
+                            let _ = handle.emit(
+                                &format!("pane-prompt-{workspace_id}-{label}"),
+                                serde_json::json!({}),
+                            );
+                        }
                         None => {
                             // timeout — flush all pending per-pane buffers.
                             if !pending_output.is_empty() {
+                                let mut flushed_bytes: usize = 0;
                                 let drained: Vec<((uuid::Uuid, uuid::Uuid), String)> =
                                     pending_output.drain().collect();
                                 for ((ws, pane), payload) in drained {
+                                    flushed_bytes += payload.len();
                                     let label = pane.to_string();
                                     let _ = handle.emit(
                                         &format!("pty-output-{ws}-{label}"),
                                         serde_json::json!({ "data": payload }),
                                     );
                                 }
+                                // Update window for the NEXT iteration based
+                                // on this flush's total bytes. Bulk flushes
+                                // → larger window; small echo flushes →
+                                // 0ms window (immediate dispatch).
+                                last_flush_bytes = flushed_bytes;
                             }
                         }
                     }
@@ -262,7 +303,6 @@ pub fn run() {
             terminal::write_to_pty,
             terminal::resize_pane,
             terminal::kill_pane,
-            terminal::get_pane_scrollback,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
             workspace::create_workspace,
@@ -310,7 +350,6 @@ pub fn run() {
             // .ridge file commands
             ridge_file::save_workspace_to_file,
             ridge_file::open_workspace_from_file,
-            ridge_file::take_pane_replay_state,
             ridge_file::delete_workspace_file,
             ridge_file::get_workspace_save_info,
             ridge_file::list_workspace_save_info,

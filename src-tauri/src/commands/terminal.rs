@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::engine::pty::{spawn_pty_reader, PtyHandle};
+use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
 use crate::state::AppState;
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
@@ -423,7 +425,7 @@ pub fn ensure_pane_pty_workspace(
 	//   脚本之前被 PS 执行完，所以用户自定义 prompt 不会丢失。
 	// - Bash: 设置 `PROMPT_COMMAND` 环境变量，bash 启动时自动读取；每次渲染 prompt 前执行。
 	//   如果用户已有 PROMPT_COMMAND，我们叠加在前（; 分号分隔），不会覆盖。
-	// - Zsh: 设置 `WIND_SHELL_INTEGRATION=1` 作为标记（TODO: 完整 precmd hook 需 stdin
+	// - Zsh: 设置 `Ridge_SHELL_INTEGRATION=1` 作为标记（TODO: 完整 precmd hook 需 stdin
 	//   注入或 ZDOTDIR 技术，下一轮补），此处先让 bash/powershell 的主流场景工作。
 	// - Cmd.exe: 无可靠 hook 机制，保持原行为（polling + 用户执行外部命令时才更新 PEB）。
 	if !has_explicit_launch {
@@ -480,17 +482,17 @@ pub fn ensure_pane_pty_workspace(
 			let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
 			cmd.env("RIDGE_TEAMMATE_URL", bind.base_url.as_str());
 			cmd.env("RIDGE_TEAMMATE_TOKEN", bind.token.as_str());
-			cmd.env("WIND_TERMINAL", "1");
+			cmd.env("Ridge_TERMINAL", "1");
 			// Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
 			let pane_slot = tmux_pane_index.unwrap_or(0);
 			cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
 			// Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
 			cmd.env("TMUX_PANE", format!("{pane_slot}"));
-			let log_path = std::env::var("WIND_TMUX_LOG")
+			let log_path = std::env::var("Ridge_TMUX_LOG")
 				.ok()
 				.filter(|s| !s.trim().is_empty());
 			if let Some(ref log) = log_path {
-				cmd.env("WIND_TMUX_LOG", log.as_str());
+				cmd.env("Ridge_TMUX_LOG", log.as_str());
 			}
 			shim_dir
 		}
@@ -692,6 +694,7 @@ fn activate_pane_pty_inner(
 		master: pending.master.clone(),
 		writer: pending.writer.clone(),
 		_child: child,
+		resize_silence_deadline: Arc::new(AtomicI64::new(0)),
 	};
 
 	{
@@ -784,7 +787,7 @@ fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, col
             .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
         if let Some(handle) = ws.terminals.get(&pane_id) {
             let master = handle.master.lock();
-            master.resize(PtySize {
+            let res = master.resize(PtySize {
                 rows,
                 cols,
                 pixel_width: 0,
@@ -793,7 +796,19 @@ fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, col
                 let msg = e.to_string();
                 pty_log::resize_err(wid, pane_id, rows, cols, &msg);
                 AppError::PtyError(msg)
-            })
+            });
+            // 成功 resize 后开启 ConPTY reflow 静默窗口：PTY reader 线程将丢弃
+            // 后续来自 ConPTY 的 viewport 重发字节，直到检测到 shell-integration
+            // prompt OSC（OSC 133;A / OSC 633;A 等）或硬超时（800ms）。
+            if res.is_ok() {
+                let deadline = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+                    + RESIZE_SILENCE_WINDOW_MS;
+                handle.resize_silence_deadline.store(deadline, Ordering::Release);
+            }
+            res
         } else if let Some(pending) = ws.pending_spawns.get(&pane_id) {
             // Pre-activate path: the user is dragging splitpanes before the
             // shell has spawned. Resize the master so the eventual
@@ -903,21 +918,6 @@ async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<
 	}
 	kill_pty_if_present(&*state, wid, pane_id).await;
 	Ok(())
-}
-
-/// Deprecated shim — returns the full retained scrollback as a single string.
-/// Kept only so pre-existing frontend callers (xterm mount replay) don't break
-/// during the Phase 1 → Phase 2 rollout. New callers should use
-/// `get_pane_scrollback_tail` + `get_pane_scrollback_before` for paged reads.
-#[tauri::command]
-pub fn get_pane_scrollback(
-	state: State<'_, AppState>,
-	pane_id: String,
-) -> Result<String, String> {
-	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-	let workspace_id = state.active_workspace_id();
-	let chunk = state.get_pty_scrollback_tail(workspace_id, pane_id, usize::MAX);
-	Ok(chunk.bytes)
 }
 
 /// Return the latest (tail) bytes of a pane's scrollback, up to `max_bytes`.
