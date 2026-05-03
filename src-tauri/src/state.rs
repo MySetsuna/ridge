@@ -76,7 +76,7 @@ pub enum PaneState {
     /// 有 agent 运行中
     Busy,
     /// Pane 正在启动中（agent register 已发但 PTY 还没收到首条 prompt 输出时使用）
-    #[allow(dead_code)]
+    #[allow(dead_code)] // half-built: enum + serialization (commands/pane.rs:60-64) + TS union + UI badge (SplitContainer.svelte:592-599) all in place, but teammate/server.rs:register_agent_to_pane goes Idle→Busy directly. See TASKS §1.14.
     Starting,
 }
 
