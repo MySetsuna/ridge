@@ -216,7 +216,7 @@ When adding a new modal, claim a free slot and document it here.
 
 ## Cargo zero-warning gate
 
-`cargo build --lib` emits **0 warnings** as of round 19. Future-use APIs and legacy compatibility stubs are tagged with `#[allow(dead_code)]` and a one-line comment explaining why; do not remove the attribute without verifying nothing depends on the symbol externally. CI can safely run `cargo clippy -- -D warnings`.
+`cargo build --lib --manifest-path src-tauri/Cargo.toml` emits **0 warnings** (last verified 2026-05-03). Future-use APIs and legacy compatibility stubs are tagged with `#[allow(dead_code)]` and a one-line comment explaining why; do not remove the attribute without verifying nothing depends on the symbol externally. **However**, when the comment cites a now-shipped phase / round / mechanism (e.g. "used by phase-3 scroll-to-tail logic" after Phase 3 shipped via a different code path), the justification is dead — verify with grep, then delete the symbol. CI can safely run `cargo clippy -- -D warnings`.
 
 ## Next-loop planning
 
