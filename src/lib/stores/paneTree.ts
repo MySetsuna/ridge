@@ -173,6 +173,25 @@ export function pointerInCoupleZone(
  */
 const UNSNAP_THRESHOLD_PX = 9999;
 
+/**
+ * Default for split-drag auto-coupling. When `true`, dragging a splitter at
+ * a junction also moves nearby aligned splitters (same-axis siblings,
+ * orthogonal partners, snapState 4-way splitters) — a snap-style
+ * convenience.
+ *
+ * User feedback (TASKS §1.12, 2026-05-03): in nested layouts like
+ * `(A|B) / (C|D)`, the C/D splitter is geometrically aligned with A/B
+ * at 50/50 ratio and falls within the 50 px junction zone. Dragging A/B
+ * therefore unintentionally fanned to C/D. The user wants only the
+ * dragged splitter's adjacent panes to move.
+ *
+ * Set this constant to `true` to restore the old snap behavior. Visual
+ * attract previews (sameAxisAttractors UI state) and hover detection
+ * stay wired regardless — only the coupling activation in
+ * `startSplitResizeDrag` is gated.
+ */
+const SPLIT_DRAG_AUTO_COUPLING_ENABLED = false;
+
 const HOVER_DEBOUNCE_MS = 20;
 const MIN_PANE_RATIO = 6;
 let splitHoverTimer: ReturnType<typeof setTimeout> | undefined;
@@ -533,13 +552,24 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   clearSplitHoverTimer();
   const root = get(paneTreeStore);
 
-  // Check if 4-way junction snap (3+ coupled splitters at same junction)
+  // Check if 4-way junction snap (3+ coupled splitters at same junction).
+  // Only used for visual feedback (rg-resize-4way body class) below; the
+  // ratio-update fan-out is gated separately on
+  // SPLIT_DRAG_AUTO_COUPLING_ENABLED so the visual hint stays consistent
+  // with whether we actually couple.
   const is4WaySnap =
-    ui.snapState !== null && ui.snapState.coupledSplitters.length >= 3;
+    SPLIT_DRAG_AUTO_COUPLING_ENABLED &&
+    ui.snapState !== null &&
+    ui.snapState.coupledSplitters.length >= 3;
 
-  // Include all coupled splitters from snap state for 4-way resize
-  let refs = dedupeRefs([ui.primary, ...ui.orthogonals]);
-  if (ui.snapState) {
+  // Build the snapshot ref set. Default (SPLIT_DRAG_AUTO_COUPLING_ENABLED
+  // = false): only the primary splitter moves on a drag — that's the
+  // user-confirmed "drag A/B → only A and B resize" behavior. Toggle the
+  // constant to restore snap-style multi-splitter coupling.
+  let refs: SplitterRef[] = SPLIT_DRAG_AUTO_COUPLING_ENABLED
+    ? dedupeRefs([ui.primary, ...ui.orthogonals])
+    : [ui.primary];
+  if (SPLIT_DRAG_AUTO_COUPLING_ENABLED && ui.snapState) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
@@ -572,10 +602,13 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
         : endpoints.end;
     const dyAlongLine = nearestEndpoint - pointerAlongLine;
     const distToBC = Math.sqrt(dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine);
-    if (
+    const eligible =
       perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
-      distToBC <= INTERSECTION_PROXIMITY_PX
-    ) {
+      distToBC <= INTERSECTION_PROXIMITY_PX;
+    // When auto-coupling is OFF (default), eligible siblings still get
+    // routed to the visual attractor list — the user keeps the highlight
+    // hint without unwanted ratio updates on the sibling split.
+    if (eligible && SPLIT_DRAG_AUTO_COUPLING_ENABLED) {
       coupledSameAxis.push(sibling);
     } else {
       attractOnlySameAxis.push(sibling);
@@ -588,8 +621,12 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   // 4-way junction 全方向跟随：每条 orthogonal C 也可能有自己的同向兄弟 D。
   // 当 D 与 C 中线对齐 (≤1px) 且鼠标到 CD 端点（即 ABCD 交汇点）的欧几里得
   // 距离 ≤ INTERSECTION_PROXIMITY_PX 时，D 同样加入联动。
+  //
+  // Skip the entire loop when auto-coupling is off — there's no visual
+  // attractor consumer for ortho-sibling proximity (unlike sameAxis), so
+  // computing it would be pure waste.
   const coupledOrthoSiblings: SplitterRef[] = [];
-  for (const ortho of ui.orthogonals) {
+  if (SPLIT_DRAG_AUTO_COUPLING_ENABLED) for (const ortho of ui.orthogonals) {
     const orthoCenter = getSplitterScreenCenter(ortho);
     if (orthoCenter == null) continue;
     // ortho.axis ⊥ primary.axis，所以"沿 ortho 拖动轴" = "沿 primary 沿线方向"
