@@ -11,36 +11,9 @@ use std::path::PathBuf;
 
 const OSC7_PREFIX: &[u8] = b"\x1b]7;";
 
-// Byte-level search helpers. `find_subsequence` / `find_byte` /
-// `find_byte_either_with_value` are kept around for future OSC parsers that
-// don't fit the existing `find_last_*` patterns. Marked dead_code to match
-// reality without deleting still-tested ergonomic wrappers.
-#[allow(dead_code)]
-fn find_subsequence(needle: &[u8], haystack: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    for i in 0..=(haystack.len().saturating_sub(needle.len())) {
-        if haystack[i..].starts_with(needle) {
-            return Some(i);
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn find_byte(byte: u8, haystack: &[u8]) -> Option<usize> {
-    haystack.iter().position(|&b| b == byte)
-}
-
 /// Searches for the first occurrence of either `a` or `b` in `haystack`.
 fn find_byte_either(a: u8, b: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().position(|&c| c == a || c == b)
-}
-
-#[allow(dead_code)]
-fn find_byte_either_with_value(a: u8, b: u8, haystack: &[u8]) -> Option<(usize, u8)> {
-    haystack.iter().position(|&c| c == a || c == b).map(|i| (i, haystack[i]))
 }
 
 /// Returns `haystack` stripped of the given `prefix`, or `None` if it doesn't match.
