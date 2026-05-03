@@ -268,6 +268,13 @@ impl Grid {
 
         let cursor_src_row = self.primary.cursor.row;
         let cursor_src_col = self.primary.cursor.col;
+        // pending_wrap conceptually parks the cursor "one past" col cols-1
+        // — print() resolves it by linefeed-then-write. Reflow needs to
+        // see that virtual past-end position too, otherwise a cursor at
+        // (last_col, pending_wrap=true) gets mapped to a mid-row position
+        // in the new layout instead of end-of-line, and the right-edge
+        // wrap semantic is lost. (TASKS §1.10.)
+        let cursor_src_pending_wrap = self.primary.cursor.pending_wrap;
 
         // Step 1: find last row that has content (or contains the cursor).
         let last_with_content = self
@@ -295,6 +302,14 @@ impl Grid {
             if r_idx == cursor_src_row {
                 cursor_logical_idx = logical_lines.len();
                 cursor_logical_offset = current.len() + cursor_src_col;
+                if cursor_src_pending_wrap {
+                    // Bump to the virtual "one past last col" position so
+                    // the post-while end-of-line branch picks up the
+                    // right-edge case below. May overshoot a now-trimmed
+                    // line.len() if the anchor cell was a blank that
+                    // got stripped — clamped at push time below.
+                    cursor_logical_offset += 1;
+                }
                 cursor_placed = true;
             }
             current.extend_from_slice(&row.cells);
@@ -307,7 +322,17 @@ impl Grid {
                 while current.last().map(|c| c.is_blank()).unwrap_or(false) {
                     current.pop();
                 }
+                let pushed_idx = logical_lines.len();
+                let pushed_len = current.len();
                 logical_lines.push(std::mem::take(&mut current));
+                // Clamp pending_wrap-bumped offset if the anchor cell
+                // was trimmed (rare: cursor at last col with pending_wrap
+                // and the just-printed char at last col was a blank).
+                if pushed_idx == cursor_logical_idx
+                    && cursor_logical_offset > pushed_len
+                {
+                    cursor_logical_offset = pushed_len;
+                }
             }
         }
         // Edge case: cursor was below last_content_row entirely (e.g.,
@@ -324,6 +349,12 @@ impl Grid {
         let mut out: Vec<Row> = Vec::new();
         let mut cursor_target_row: usize = 0;
         let mut cursor_target_col: usize = 0;
+        // pending_wrap state for the relocated cursor. Defaults to false;
+        // the end-of-line branch flips it to true when the cursor lands
+        // on the last column of an exactly-filled row (used == 0 case),
+        // matching what print() will see on the next character (it should
+        // wrap to a new row, not overwrite the last cell).
+        let mut cursor_pending_wrap = false;
 
         for (ll_idx, line) in logical_lines.iter().enumerate() {
             let on_this_line = ll_idx == cursor_logical_idx;
@@ -377,12 +408,26 @@ impl Grid {
             }
             // Cursor at the very end of the line (offset == line.len()) lands
             // on the next column of the last emitted row, or wraps if at edge.
+            //
+            // Exact-boundary case (used == 0 && line.len() > 0): the line is
+            // exactly k * new_cols cells long, so the last emitted row is
+            // already FULL at width new_cols. Conceptually the cursor is at
+            // "col 0 of an unborn (k+1)-th row". Place it at the last col of
+            // the last row and set pending_wrap=true — matches print()'s
+            // semantics: next character wraps to a new row instead of
+            // overwriting cell (last_row, new_cols-1). Without pending_wrap,
+            // the next print clobbers the just-emitted last cell.
             if on_this_line && cursor_logical_offset == line.len() {
                 let last_idx = out.len().saturating_sub(1);
                 cursor_target_row = last_idx;
                 let used = line.len() % new_cols;
-                cursor_target_col = if used == 0 { new_cols - 1 } else { used };
-                cursor_target_col = cursor_target_col.min(new_cols - 1);
+                if used == 0 && !line.is_empty() {
+                    cursor_target_col = new_cols - 1;
+                    cursor_pending_wrap = true;
+                } else {
+                    cursor_target_col = used.min(new_cols - 1);
+                    cursor_pending_wrap = false;
+                }
             }
         }
 
@@ -403,7 +448,10 @@ impl Grid {
         self.primary.rows = out;
         self.primary.cursor.row = cursor_target_row.min(last);
         self.primary.cursor.col = cursor_target_col.min(new_cols - 1);
-        self.primary.cursor.pending_wrap = false;
+        // pending_wrap was tracked through Step 3 — preserves the right-edge
+        // semantics across reflow (TASKS §1.10). Inner-line cursor positions
+        // leave it at the default `false`.
+        self.primary.cursor.pending_wrap = cursor_pending_wrap;
         // Scroll region: reset to full screen. Reflow invalidates any custom
         // DECSTBM region (rows have moved); the next program-emitted DECSTBM
         // will re-establish it. Matches xterm.js behavior.
@@ -1169,6 +1217,57 @@ mod tests {
         for r in 1..8 {
             assert_eq!(row_text(&g, r), "");
         }
+    }
+
+    #[test]
+    fn reflow_preserves_pending_wrap_at_exact_boundary() {
+        // 10 chars in a 10-col grid → cursor at col 9 with pending_wrap=true
+        // (print() set it; next char would wrap to new row).
+        let mut g = Grid::new(5, 10, 100);
+        for ch in "0123456789".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        assert_eq!(g.cursor().col, 9, "cursor at last col after 10 prints in 10-col grid");
+        assert!(g.cursor().pending_wrap, "print() set pending_wrap at right edge");
+
+        // Resize to 5 cols. Reflow stitches 10 chars → 1 logical line of
+        // length 10. Re-wrap: row 0 = "01234" (wrap=true), row 1 = "56789"
+        // (wrap=false). Cursor was at logical offset 10 (== line.len()).
+        // new_cols=5, used = 10 % 5 = 0 → exact-boundary case. Cursor
+        // should land at (1, 4) WITH pending_wrap=true preserved.
+        g.resize(5, 5);
+
+        assert_eq!(g.cursor().row, 1, "cursor on last row of wrap chain");
+        assert_eq!(g.cursor().col, 4, "cursor at last col of that row");
+        assert!(
+            g.cursor().pending_wrap,
+            "pending_wrap preserved across reflow at exact boundary"
+        );
+
+        // Sanity: next print should wrap (not overwrite cell (1,4)).
+        g.print('x', Attrs::DEFAULT);
+        assert_eq!(g.row(1).unwrap().cells[4].ch, '9', "row 1 col 4 unchanged");
+        assert_eq!(g.row(2).unwrap().cells[0].ch, 'x', "'x' wrapped to row 2 col 0");
+    }
+
+    #[test]
+    fn reflow_no_pending_wrap_when_line_doesnt_fill_last_row() {
+        // Inverse of the above: line.len() = 7 chars, new_cols = 5.
+        // 7 % 5 = 2. Cursor at offset 7 lands on (1, 2) — middle of row 1,
+        // pending_wrap should be false (next print writes to (1, 2), no wrap).
+        let mut g = Grid::new(5, 10, 100);
+        for ch in "abcdefg".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        // Cursor after 7 prints: col 7 (no pending_wrap because we haven't
+        // hit the right edge of the 10-col line).
+        assert_eq!(g.cursor().col, 7);
+        assert!(!g.cursor().pending_wrap);
+
+        g.resize(5, 5);
+        assert_eq!(g.cursor().row, 1);
+        assert_eq!(g.cursor().col, 2);
+        assert!(!g.cursor().pending_wrap, "no pending_wrap mid-row");
     }
 
     #[test]
