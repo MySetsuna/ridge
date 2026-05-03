@@ -106,6 +106,14 @@ interface PaneEntry {
 	 *  elapses (timeout fallback so a misbehaving TUI can't freeze the
 	 *  pane). Reset to null once sync ends. */
 	syncStart: number | null;
+	/** True once the rAF tick rendered the post-timeout "best-effort" frame
+	 *  for a stuck `?2026` sync. Subsequent frames suspend rendering until
+	 *  the kernel exits sync mode — without this, the tick would fall
+	 *  through to `entry.handle.render(...)` every frame after the
+	 *  timeout (since `now - syncStart` keeps exceeding the threshold),
+	 *  burning CPU while the TUI is misbehaving. Cleared together with
+	 *  `syncStart` when sync mode clears (TASKS §1.4). */
+	syncTimeoutRendered: boolean;
 	/** focusin listener bound to `container`. Held so detach() can remove
 	 *  it cleanly. Emits `\x1b[I` to PTY when kernel.isFocusReporting(). */
 	focusListener: (e: FocusEvent) => void;
@@ -408,6 +416,7 @@ export class TerminalManager {
 			lastReportedCols: -1,
 			pendingFitTimer: null,
 			syncStart: null,
+			syncTimeoutRendered: false,
 			focusListener,
 			blurListener,
 			selecting: false,
@@ -980,13 +989,21 @@ export class TerminalManager {
 					if (now - entry.syncStart < SYNC_OUTPUT_TIMEOUT_MS) {
 						continue; // hold the frame
 					}
-					// Timeout reached — fall through and render anyway. We
-					// keep syncStart set so we don't burst-render every frame
-					// while sync stays stuck on; only one render per cycle
-					// past the timeout.
+					// Timeout reached. Render the best-effort frame ONCE,
+					// then suspend further renders until the kernel exits
+					// sync. Without this guard, every subsequent rAF tick
+					// satisfies `now - syncStart >= TIMEOUT` and falls
+					// through to `handle.render(...)` — burst-rendering
+					// at 60 fps for as long as the TUI's sync stays stuck
+					// (TASKS §1.4).
+					if (entry.syncTimeoutRendered) {
+						continue;
+					}
+					entry.syncTimeoutRendered = true;
 				} else if (entry.syncStart !== null) {
 					// Clean exit from sync mode — reset for next cycle.
 					entry.syncStart = null;
+					entry.syncTimeoutRendered = false;
 				}
 				try {
 					entry.handle.render(entry.kernel);
