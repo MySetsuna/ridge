@@ -171,9 +171,14 @@ impl Grid {
         self.cursor_to(0, 0);
     }
 
-    /// Resize. Naive: truncate/pad rows + cols on both screens. Soft-wrap
-    /// reflow is left for a later round (it requires walking back through
-    /// `wrapped` flags to glue continuation lines).
+    /// Resize. Primary screen reflows on column change (Phase 1 — see
+    /// `reflow_primary` below; design notes in OVERVIEW.md §7 / TASKS §2.3).
+    /// Alt screen and rows-only changes keep the naive truncate/pad path
+    /// because alt-screen TUIs redraw on SIGWINCH anyway, and re-wrapping at
+    /// the same column count is a no-op. Phase 2 (scrollback reflow +
+    /// selection / hyperlink anchor migration) is still deferred — long lines
+    /// already in scrollback show with the old column width when scrolled
+    /// into view.
     ///
     /// Scroll-region preservation rule: if the region was the default
     /// full screen before resize (top=0, bottom=rows-1), extend it to
