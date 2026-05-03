@@ -597,6 +597,7 @@ function onContainerMouseDown(e: MouseEvent) {
 
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
 	bind:this={container}
 	class="rg-pane-container h-full w-full min-h-0 min-w-0 outline-none relative"
@@ -671,10 +672,11 @@ function onContainerMouseDown(e: MouseEvent) {
 {/if}
 
 <style>
-	.rg-pane-container {
-		/* Strict containment lets the browser skip layout/paint on
-		 * unrelated mutations elsewhere — small win in multi-pane setups. */
-	}
+	/* `.rg-pane-container { contain: strict }` is applied inline at the
+	 * element (style="contain: strict;") to keep this stylesheet free of
+	 * empty rulesets. The strict containment lets the browser skip
+	 * layout/paint on unrelated mutations elsewhere — small win in
+	 * multi-pane setups. */
 	.rg-pane-container.bell-flash {
 		/* Brief inset highlight to draw the eye on BEL (0x07). 120ms is
 		 * long enough to register, short enough not to be annoying. */
