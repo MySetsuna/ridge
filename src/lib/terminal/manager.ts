@@ -58,13 +58,18 @@ export interface ManagerOptions {
 
 /** Tagged kernel event shape that mirrors `KernelEvent` in Rust. The
  *  wasm-bindgen serde tag-content config emits these as plain JS objects
- *  with `type` + (when applicable) `value` fields. */
+ *  with `type` + (when applicable) `value` fields.
+ *
+ *  Note: OSC 8 hyperlinks do NOT show up here. Open/close transitions
+ *  used to be emitted as `HyperlinkOpen` / `HyperlinkClose` but those
+ *  variants were removed in TASKS §3.2 — every consumer reads the
+ *  per-cell hyperlink state via `kernel.hyperlinkAt(row, col)` (used
+ *  by the renderer's underline pass and the Ctrl+click hit-testing in
+ *  this file), which made the event stream redundant. */
 export type KernelEvent =
 	| { type: 'TitleChanged'; value: string }
 	| { type: 'IconNameChanged'; value: string }
 	| { type: 'CwdChanged'; value: string }
-	| { type: 'HyperlinkOpen'; value: { id: string | null; uri: string } }
-	| { type: 'HyperlinkClose' }
 	| { type: 'Bell' };
 
 interface PaneEntry {

@@ -270,11 +270,6 @@ onMount(() => {
 				case 'Bell':
 					triggerBellFlash();
 					break;
-				case 'HyperlinkOpen':
-				case 'HyperlinkClose':
-					// Round 5: link affordance + Ctrl+click hit testing.
-					if (import.meta.env?.DEV) console.debug('[ridge-kernel-event]', paneId, ev);
-					break;
 			}
 		});
 
