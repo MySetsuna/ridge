@@ -108,7 +108,12 @@ describe('flattenVisiblePaths', () => {
     expect(flattenVisiblePaths(col)).toEqual([]);
   });
 
-  it('lists root first then expanded-children in DFS order', () => {
+  it('lists tree.children in DFS order respecting expandedPaths (root skipped)', () => {
+    // `flattenVisiblePaths` skips the tree root because Explorer.svelte
+    // renders `col.tree.children` directly — the top-level folder layer
+    // was removed (see fileExplorer.ts:714 "Skip root" comment). Test
+    // fixture has `/r` as the cached root; only `/r/a`, `/r/a/a1`, and
+    // `/r/b` should appear.
     const col: ExplorerColumn = {
       id: 'x',
       workspaceId: 'ws',
@@ -142,7 +147,6 @@ describe('flattenVisiblePaths', () => {
       loading: false,
     };
     expect(flattenVisiblePaths(col)).toEqual([
-      '/r',
       '/r/a',
       '/r/a/a1',
       // `/r/b` is collapsed → its children are not visible
