@@ -1,0 +1,43 @@
+[package]
+name = "ridge-term"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust terminal kernel (VT parser + grid + render backends) compiled to WebAssembly"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# VT/ANSI escape sequence parser. Same crate Alacritty uses; covers the full
+# Paul Williams state machine including DCS / OSC / CSI parameter parsing.
+vte = "0.13"
+
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+console_error_panic_hook = "0.1"
+
+# Render backends use web-sys for Canvas2D / WebGPU types. The render
+# module itself is gated on `target_arch = "wasm32"`, so native `cargo
+# test --lib` skips compiling it — VT kernel tests still run on the host.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "TextMetrics",
+    "CssStyleDeclaration",
+] }
+
+[dev-dependencies]
+# Native tests don't need wasm.
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
