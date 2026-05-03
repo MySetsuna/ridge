@@ -183,41 +183,232 @@ impl Grid {
     /// scroll_bottom=23, leaving rows 24..25 as a frozen footer; LF at the
     /// real bottom never scrolls and scrollback never grows.
     pub fn resize(&mut self, rows: usize, cols: usize) {
-        for screen in [&mut self.primary, &mut self.alt] {
-            // Capture region-was-default before mutating rows.
-            let old_last = screen.rows.len().saturating_sub(1);
-            let region_was_full = screen.scroll_top == 0 && screen.scroll_bottom == old_last;
+        let cols_changed = cols != self.cols;
 
-            if cols != self.cols {
-                for r in &mut screen.rows { r.resize(cols); }
-            }
-            if rows < screen.rows.len() {
-                screen.rows.truncate(rows);
-            } else {
-                while screen.rows.len() < rows {
-                    screen.rows.push(Row::new(cols));
-                }
-            }
-            // Clamp cursor to new bounds.
-            let last = rows.saturating_sub(1);
-            screen.cursor.row = screen.cursor.row.min(last);
-            screen.cursor.col = screen.cursor.col.min(cols.saturating_sub(1));
-            screen.cursor.pending_wrap = false;
-
-            if region_was_full {
-                screen.scroll_top = 0;
-                screen.scroll_bottom = last;
-            } else {
-                screen.scroll_top = screen.scroll_top.min(last);
-                screen.scroll_bottom = screen.scroll_bottom.min(last);
-                if screen.scroll_top >= screen.scroll_bottom {
-                    screen.scroll_top = 0;
-                    screen.scroll_bottom = last;
-                }
-            }
+        // Primary screen: reflow when columns change (preserves wrapped lines,
+        // see OVERVIEW.md §7 for design). Rows-only change keeps the naive
+        // truncate/pad path because re-wrapping at the same column count is a
+        // no-op.
+        if cols_changed {
+            self.reflow_primary(rows, cols);
+        } else {
+            Self::naive_resize_screen(&mut self.primary, rows, cols);
         }
+
+        // Alt screen: always naive truncate/pad. TUIs (vim/less/htop) own
+        // their alt-screen redraw via SIGWINCH; reflowing under them would
+        // smear the half-drawn frame they're about to overwrite anyway.
+        Self::naive_resize_screen(&mut self.alt, rows, cols);
+
         self.rows = rows;
         self.cols = cols;
+    }
+
+    /// Existing truncate/pad behavior, factored out so `resize()` can pick
+    /// per-screen behavior. Used by alt screen unconditionally and by primary
+    /// when only the row count changed.
+    fn naive_resize_screen(screen: &mut Screen, rows: usize, cols: usize) {
+        let old_last = screen.rows.len().saturating_sub(1);
+        let region_was_full = screen.scroll_top == 0 && screen.scroll_bottom == old_last;
+
+        for r in &mut screen.rows {
+            r.resize(cols);
+        }
+        if rows < screen.rows.len() {
+            screen.rows.truncate(rows);
+        } else {
+            while screen.rows.len() < rows {
+                screen.rows.push(Row::new(cols));
+            }
+        }
+        let last = rows.saturating_sub(1);
+        screen.cursor.row = screen.cursor.row.min(last);
+        screen.cursor.col = screen.cursor.col.min(cols.saturating_sub(1));
+        screen.cursor.pending_wrap = false;
+
+        if region_was_full {
+            screen.scroll_top = 0;
+            screen.scroll_bottom = last;
+        } else {
+            screen.scroll_top = screen.scroll_top.min(last);
+            screen.scroll_bottom = screen.scroll_bottom.min(last);
+            if screen.scroll_top >= screen.scroll_bottom {
+                screen.scroll_top = 0;
+                screen.scroll_bottom = last;
+            }
+        }
+    }
+
+    /// Re-wrap the primary screen for a new column count.
+    ///
+    /// Algorithm (see OVERVIEW.md §7.5):
+    ///   1. Find `last_content_row` = max(highest row with non-blank cells,
+    ///      cursor row). Rows below this are unused "future" buffer.
+    ///   2. Stitch wrapped chains into logical lines. While stitching,
+    ///      record the cursor's logical offset (which line + offset within).
+    ///      Trim trailing blank padding from each logical line.
+    ///   3. Re-wrap each logical line to `new_cols`, setting `wrapped=true`
+    ///      on intermediate breaks. Empty logical lines become one blank row.
+    ///   4. Place cursor at its tracked logical offset.
+    ///   5. If overflow (>new_rows), push oldest rows to scrollback and
+    ///      shift the cursor up by the same amount.
+    ///   6. If underflow (<new_rows), pad the bottom with blank rows.
+    ///
+    /// Phase 1 limitations (TASKS §2.3): per-row hyperlink spans are dropped
+    /// — they regenerate naturally on next print. Selection clears via the
+    /// caller (kernel-level `JsTerminal::resize` already calls
+    /// `selection.clear()`). Scrollback stays at original width — paging
+    /// up after reflow shows historical content at its old wrapping.
+    fn reflow_primary(&mut self, new_rows: usize, new_cols: usize) {
+        if new_cols == 0 || new_rows == 0 {
+            // Pathological dimensions — fall back to naive resize.
+            Self::naive_resize_screen(&mut self.primary, new_rows, new_cols);
+            return;
+        }
+
+        let cursor_src_row = self.primary.cursor.row;
+        let cursor_src_col = self.primary.cursor.col;
+
+        // Step 1: find last row that has content (or contains the cursor).
+        let last_with_content = self
+            .primary
+            .rows
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, r)| r.cells.iter().any(|c| !c.is_blank()))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let last_content_row = last_with_content
+            .max(cursor_src_row)
+            .min(self.primary.rows.len().saturating_sub(1));
+
+        // Step 2: stitch into logical lines, tracking cursor.
+        let mut logical_lines: Vec<Vec<Cell>> = Vec::new();
+        let mut cursor_logical_idx: usize = 0;
+        let mut cursor_logical_offset: usize = 0;
+        let mut cursor_placed = false;
+        let mut current: Vec<Cell> = Vec::new();
+
+        for r_idx in 0..=last_content_row {
+            let row = &self.primary.rows[r_idx];
+            if r_idx == cursor_src_row {
+                cursor_logical_idx = logical_lines.len();
+                cursor_logical_offset = current.len() + cursor_src_col;
+                cursor_placed = true;
+            }
+            current.extend_from_slice(&row.cells);
+            // Continue stitching only while wrapped flag is set AND we have
+            // more rows in our content range. Hard-stop at last_content_row.
+            let line_continues = row.wrapped && r_idx < last_content_row;
+            if !line_continues {
+                // Trim trailing blank padding so a row that ended at col 5
+                // doesn't carry 75 trailing spaces into the new wrap.
+                while current.last().map(|c| c.is_blank()).unwrap_or(false) {
+                    current.pop();
+                }
+                logical_lines.push(std::mem::take(&mut current));
+            }
+        }
+        // Edge case: cursor was below last_content_row entirely (e.g.,
+        // freshly-cleared screen with cursor on row 10, all rows blank).
+        if !cursor_placed {
+            while logical_lines.len() <= cursor_src_row {
+                logical_lines.push(Vec::new());
+            }
+            cursor_logical_idx = cursor_src_row;
+            cursor_logical_offset = cursor_src_col;
+        }
+
+        // Step 3: re-wrap each logical line to new_cols.
+        let mut out: Vec<Row> = Vec::new();
+        let mut cursor_target_row: usize = 0;
+        let mut cursor_target_col: usize = 0;
+
+        for (ll_idx, line) in logical_lines.iter().enumerate() {
+            let on_this_line = ll_idx == cursor_logical_idx;
+            if line.is_empty() {
+                if on_this_line {
+                    cursor_target_row = out.len();
+                    cursor_target_col = cursor_logical_offset.min(new_cols - 1);
+                }
+                out.push(Row::new(new_cols));
+                continue;
+            }
+            let mut start = 0;
+            while start < line.len() {
+                let mut end = (start + new_cols).min(line.len());
+                // Wide-char split protection: if the would-be slice puts a
+                // wide glyph's lead (width=2) at the LAST cell of this row
+                // and its continuation half (width=0) at the START of the
+                // next row, pull the slice back by 1 cell so the wide char
+                // moves to the next row intact. The freed cell at the row's
+                // end stays blank — same convention xterm uses when a wide
+                // char doesn't fit at the right margin.
+                //
+                // Guards:
+                //   `end < line.len()`     — only when actually wrapping.
+                //   `end - start >= 2`     — degenerate `new_cols == 1` case
+                //                            can't preserve wide chars; orphan
+                //                            and accept the rendering glitch.
+                if end < line.len()
+                    && end - start >= 2
+                    && line[end - 1].width == 2
+                {
+                    end -= 1;
+                }
+                let mut new_row = Row::new(new_cols);
+                for (i, cell) in line[start..end].iter().enumerate() {
+                    new_row.cells[i] = *cell;
+                }
+                new_row.wrapped = end < line.len();
+                // Cursor placement: use `end` (post-pullback), not
+                // `start + new_cols`. After a wide-char pullback, cursor
+                // offsets in the freed cell belong to the NEXT row.
+                if on_this_line
+                    && cursor_logical_offset >= start
+                    && cursor_logical_offset < end
+                {
+                    cursor_target_row = out.len();
+                    cursor_target_col = (cursor_logical_offset - start).min(new_cols - 1);
+                }
+                out.push(new_row);
+                start = end;
+            }
+            // Cursor at the very end of the line (offset == line.len()) lands
+            // on the next column of the last emitted row, or wraps if at edge.
+            if on_this_line && cursor_logical_offset == line.len() {
+                let last_idx = out.len().saturating_sub(1);
+                cursor_target_row = last_idx;
+                let used = line.len() % new_cols;
+                cursor_target_col = if used == 0 { new_cols - 1 } else { used };
+                cursor_target_col = cursor_target_col.min(new_cols - 1);
+            }
+        }
+
+        // Step 5: push overflow to scrollback (oldest first); cursor follows.
+        while out.len() > new_rows {
+            let oldest = out.remove(0);
+            self.scrollback.push(oldest);
+            cursor_target_row = cursor_target_row.saturating_sub(1);
+        }
+
+        // Step 6: pad bottom with blank rows if we shrank.
+        while out.len() < new_rows {
+            out.push(Row::new(new_cols));
+        }
+
+        // Final commit + reset scroll region.
+        let last = new_rows - 1;
+        self.primary.rows = out;
+        self.primary.cursor.row = cursor_target_row.min(last);
+        self.primary.cursor.col = cursor_target_col.min(new_cols - 1);
+        self.primary.cursor.pending_wrap = false;
+        // Scroll region: reset to full screen. Reflow invalidates any custom
+        // DECSTBM region (rows have moved); the next program-emitted DECSTBM
+        // will re-establish it. Matches xterm.js behavior.
+        self.primary.scroll_top = 0;
+        self.primary.scroll_bottom = last;
     }
 
     // ------------------------------------------------------------------
@@ -842,5 +1033,204 @@ mod tests {
         assert_eq!(g.row(1).unwrap().cells[0].ch, ' ');
         assert_eq!(g.row(2).unwrap().cells[0].ch, 'b');
         assert_eq!(g.row(3).unwrap().cells[0].ch, 'c');
+    }
+
+    // ---- Reflow (Phase 1) ---------------------------------------------
+    // See OVERVIEW.md §7 + TASKS §2.3 for the design these tests cover.
+
+    /// Helper: read the printable text of a row (stripping trailing blanks).
+    fn row_text(g: &Grid, r: usize) -> String {
+        let row = g.row(r).expect("row in range");
+        let mut s: String = row.cells.iter().map(|c| c.ch).collect();
+        while s.ends_with(' ') {
+            s.pop();
+        }
+        s
+    }
+
+    #[test]
+    fn reflow_shrink_wraps_long_line() {
+        // 80-col grid, print 70 'a's. Resize to 40 cols. The single logical
+        // line of 70 'a's should re-wrap into 40 + 30 (with first row wrapped).
+        let mut g = Grid::new(5, 80, 100);
+        for _ in 0..70 {
+            g.print('a', Attrs::DEFAULT);
+        }
+        g.resize(5, 40);
+        assert_eq!(g.cols(), 40);
+        assert_eq!(row_text(&g, 0), "a".repeat(40));
+        assert_eq!(g.row(0).unwrap().wrapped, true);
+        assert_eq!(row_text(&g, 1), "a".repeat(30));
+        assert_eq!(g.row(1).unwrap().wrapped, false);
+    }
+
+    #[test]
+    fn reflow_grow_unwraps_continued_line() {
+        // 40-col grid, print 70 'a's → row 0 has 40 'a's (wrapped=true),
+        // row 1 has 30 'a's. Resize to 80 cols → single row with 70 'a's.
+        let mut g = Grid::new(5, 40, 100);
+        for _ in 0..70 {
+            g.print('a', Attrs::DEFAULT);
+        }
+        // Sanity check the setup.
+        assert_eq!(g.row(0).unwrap().wrapped, true);
+        assert_eq!(row_text(&g, 1), "a".repeat(30));
+
+        g.resize(5, 80);
+        assert_eq!(g.cols(), 80);
+        assert_eq!(row_text(&g, 0), "a".repeat(70));
+        assert_eq!(g.row(0).unwrap().wrapped, false);
+        // Row 1 should be blank now (the long line collapsed into row 0).
+        assert_eq!(row_text(&g, 1), "");
+    }
+
+    #[test]
+    fn reflow_preserves_cursor_logical_position() {
+        // Print "hello world" then move cursor onto 'w' at (0, 6).
+        // After reflow to 5 cols, the logical line "hello world" wraps into
+        // ["hello", " worl", "d"]; cursor at logical offset 6 lands at
+        // row 1, col 1 (the space before 'w', since offset 6 = 1*5 + 1).
+        let mut g = Grid::new(5, 20, 100);
+        for ch in "hello world".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.cursor_to(0, 6);
+        g.resize(5, 5);
+        assert_eq!(g.cols(), 5);
+        assert_eq!(row_text(&g, 0), "hello");
+        assert_eq!(g.row(0).unwrap().wrapped, true);
+        // Cursor was at logical offset 6 → (6 / 5, 6 % 5) = (1, 1).
+        assert_eq!(g.cursor().row, 1);
+        assert_eq!(g.cursor().col, 1);
+    }
+
+    #[test]
+    fn reflow_skips_alt_screen() {
+        // Alt screen content should be truncate/pad-resized regardless of
+        // column change, because TUIs handle SIGWINCH themselves.
+        let mut g = Grid::new(3, 10, 100);
+        g.enter_alt_screen(true);
+        for ch in "abcdefghij".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        // Alt row 0 holds 10 chars at cols=10. Resize to cols=5 should
+        // truncate to "abcde", NOT reflow into 2 rows.
+        g.resize(3, 5);
+        assert_eq!(g.cols(), 5);
+        assert_eq!(row_text(&g, 0), "abcde");
+        // Row 1 stays blank — proof we didn't reflow the truncated half.
+        assert_eq!(row_text(&g, 1), "");
+        // Wrapped flag stays false since we did not reflow.
+        assert_eq!(g.row(0).unwrap().wrapped, false);
+    }
+
+    #[test]
+    fn reflow_chain_of_three_rows_round_trip() {
+        // Wrap a 25-char line across 3 rows at cols=10:
+        // ["0123456789", "abcdefghij", "ABCDE"]. Resize to 15 → two rows
+        // (15 + 10). Resize back to 10 → original three rows.
+        let mut g = Grid::new(5, 10, 100);
+        for ch in "0123456789abcdefghijABCDE".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        assert_eq!(row_text(&g, 0), "0123456789");
+        assert_eq!(row_text(&g, 1), "abcdefghij");
+        assert_eq!(row_text(&g, 2), "ABCDE");
+        assert_eq!(g.row(0).unwrap().wrapped, true);
+        assert_eq!(g.row(1).unwrap().wrapped, true);
+        assert_eq!(g.row(2).unwrap().wrapped, false);
+
+        g.resize(5, 15);
+        assert_eq!(row_text(&g, 0), "0123456789abcde");
+        assert_eq!(row_text(&g, 1), "fghijABCDE");
+        assert_eq!(g.row(0).unwrap().wrapped, true);
+        assert_eq!(g.row(1).unwrap().wrapped, false);
+
+        g.resize(5, 10);
+        assert_eq!(row_text(&g, 0), "0123456789");
+        assert_eq!(row_text(&g, 1), "abcdefghij");
+        assert_eq!(row_text(&g, 2), "ABCDE");
+    }
+
+    #[test]
+    fn reflow_no_op_when_cols_unchanged() {
+        // Rows-only change must NOT re-wrap (which would also strip trailing
+        // blank padding on intermediate rows). The old naive truncate/pad
+        // path should be taken instead.
+        let mut g = Grid::new(5, 20, 100);
+        for ch in "hello".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.resize(8, 20); // grow rows, same cols
+        assert_eq!(g.rows(), 8);
+        assert_eq!(g.cols(), 20);
+        assert_eq!(row_text(&g, 0), "hello");
+        // Rows 1..7 should be blank (padding).
+        for r in 1..8 {
+            assert_eq!(row_text(&g, r), "");
+        }
+    }
+
+    #[test]
+    fn reflow_keeps_wide_char_intact_at_boundary() {
+        // 80-col grid: 39 ASCII 'a's, then a wide CJK '中' at cols 39-40
+        // (lead at 39, continuation half at 40), then 'b' at col 41.
+        // Resizing to 40 cols would naïvely slice [0..40] → lead at idx 39
+        // (last col of new row), half at idx 40 (next row first col):
+        // wide char split. Protection should pull slice back to end=39
+        // so the lead+half move together to row 1.
+        let mut g = Grid::new(5, 80, 100);
+        for _ in 0..39 {
+            g.print('a', Attrs::DEFAULT);
+        }
+        g.print('中', Attrs::DEFAULT); // wcwidth → 2, occupies cols 39-40
+        g.print('b', Attrs::DEFAULT); // col 41
+
+        g.resize(5, 40);
+
+        // Row 0 should have 39 'a's then a blank at col 39 (the freed cell).
+        let row0 = g.row(0).unwrap();
+        let mut count_a = 0;
+        for c in &row0.cells {
+            if c.ch == 'a' {
+                count_a += 1;
+            }
+        }
+        assert_eq!(count_a, 39, "row 0 keeps 39 'a's after pullback");
+        assert!(row0.cells[39].is_blank(), "freed cell at col 39 is blank");
+        assert!(row0.wrapped, "row 0 wraps to row 1");
+
+        // Row 1 starts with the intact wide char (lead width=2, half width=0)
+        // followed by 'b'.
+        let row1 = g.row(1).unwrap();
+        assert_eq!(row1.cells[0].ch, '中', "wide lead moved to row 1 col 0");
+        assert_eq!(row1.cells[0].width, 2);
+        assert_eq!(row1.cells[1].width, 0, "continuation half at row 1 col 1");
+        assert_eq!(row1.cells[2].ch, 'b');
+    }
+
+    #[test]
+    fn reflow_shrink_overflow_pushes_to_scrollback() {
+        // 5-row grid, fill all 5 rows with distinct content (no soft-wrap).
+        // Resize from 10 cols to 5 cols. Each line wraps into 2 rows → 10
+        // total rows. With new_rows=5, the oldest 5 wrapped rows must enter
+        // scrollback so cursor + most-recent content stays visible.
+        let mut g = Grid::new(5, 10, 100);
+        for line in 0..5 {
+            for _ in 0..10 {
+                g.print(char::from(b'A' + line as u8), Attrs::DEFAULT);
+            }
+            if line < 4 {
+                g.linefeed();
+                g.carriage_return();
+            }
+        }
+        assert_eq!(g.scrollback.len(), 0);
+        g.resize(5, 5);
+        // Every line was 10 chars wide, now wraps to 2 rows of 5 → 10 rows
+        // of content. Visible window holds 5 rows; oldest 5 went to scrollback.
+        assert_eq!(g.scrollback.len(), 5);
+        // The last visible row should contain the tail of "EEEEEEEEEE".
+        assert!(row_text(&g, 4).contains('E'));
     }
 }
