@@ -174,13 +174,6 @@ impl PaneScrollback {
         }
     }
 
-    /// Global seq just past the end of what we've stored — equals the seq
-    /// the next appended byte will carry.
-    #[allow(dead_code)] // used by phase-3 scroll-to-tail logic; expose now to keep API stable
-    pub fn head_seq(&self) -> u64 {
-        self.current_start_seq + self.current.len() as u64
-    }
-
     /// Seq of the first byte still available to callers.
     pub fn oldest_seq(&self) -> u64 {
         if let Some(&s) = self.block_start_seqs.front() {
@@ -218,7 +211,7 @@ pub struct AppState {
     /// Block-based store — see `PaneScrollback` and
     /// `docs/TERMINAL_SCROLLBACK.md`.
     pub pty_scrollback: Arc<RwLock<HashMap<(Uuid, Uuid), PaneScrollback>>>,
-    /// 本进程 teammate HTTP 绑定信息；存在时新 PTY 会注入 WIND_TEAMMATE_*。
+    /// 本进程 teammate HTTP 绑定信息；存在时新 PTY 会注入 Ridge_TEAMMATE_*。
     pub teammate_binding: Arc<RwLock<Option<TeammateBinding>>>,
     /// Project store for managing projects
     pub project_store: Option<Arc<ProjectStore>>,
@@ -230,9 +223,6 @@ pub struct AppState {
     /// 通用文件系统 watcher：覆盖 Explorer 列出的 cwd 和编辑器打开的外部文件，
     /// emit `fs-changed` 事件供前端文件树/编辑器订阅。
     pub fs_watcher: Arc<FsWatcher>,
-    /// 一次性窗格回放状态：`.ridge` 加载后存入，前端 Pane 挂载并 activate
-    /// 完成后通过 `take_pane_replay_state` 取走。Take 之后丢弃，避免重复回放。
-    pub pending_pane_replays: Arc<RwLock<HashMap<Uuid, String>>>,
 }
 
 impl AppState {
@@ -279,7 +269,6 @@ impl AppState {
             current_project: Arc::new(RwLock::new(None)),
             git_watcher: Arc::new(GitWatcher::new()),
             fs_watcher: Arc::new(FsWatcher::new()),
-            pending_pane_replays: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
