@@ -3,6 +3,8 @@
 本文档把 round 2.4 产物落到你 ridge 项目里所需的**所有**改动按顺序列出。
 预计耗时：30-40 分钟。
 
+> **状态（2026-05-03 末次复核）**：本文档是 round 2.4 的并存接入指引（xterm + 实验 wasm 切换）。Round 7 已 retire xterm，`Pane.svelte` / `PaneRouter.svelte` / `terminalRegistry.ts` 全部删除，`@xterm/*` 从 `package.json` 移除。当前 `SplitContainer` 直接 `import RidgePane from './RidgePane.svelte'`，无并存切换需求。下方的「已知不工作」清单（鼠标拖选 / IME / Ctrl+F / Ctrl+click 等）当时是 round 2.4 范围外项，2026-05-02 的协议补全 patch + round 4 部分提前已全部实现（详见 OVERVIEW row「round 4 部分提前」+ TASKS §3.1/§3.2）。「回滚」指令（rm RidgePane.svelte 等）已不可用——回滚需 revert round 2.4 → round 7 整批工作。文档体保留 verbatim 用于设计史延续。
+
 > **不可逆性**：完成步骤 1-3 后，wasm 包成为项目依赖；步骤 4-7 是 svelte
 > 文件新增 + SplitContainer 一行修改。**xterm 仍然是默认实现**，要打开
 > 实验渲染器必须手工把 settings.json 改了。回滚成本：删除 `pkg/`、删除
