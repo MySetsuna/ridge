@@ -1,0 +1,6 @@
+# Rust build artifacts (~600+ MB; rebuilt locally via `node build.mjs`).
+/target
+
+# Windows native crash dumps left behind by occasional Cargo / wasm-pack
+# child-process aborts under MSYS-style shells.
+*.stackdump
