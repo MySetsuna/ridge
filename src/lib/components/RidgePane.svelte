@@ -15,13 +15,13 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles } from '$lib/stores/paneTree';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager, type KernelEvent } from '$lib/terminal/manager';
+import { ensurePtyBridge } from '$lib/terminal/ptyBridge';
 
 interface Props {
 	paneId: string;
@@ -32,9 +32,19 @@ let { paneId, workspaceId }: Props = $props();
 
 let container: HTMLElement;
 let alive = true;
-let attached = false;
-let ptyUnlisten: (() => void) | undefined;
-let ptyClosedUnlisten: (() => void) | undefined;
+// `$state` so the focus + padding `$effect`s re-run when `attached` flips
+// from false → true inside the async onMount IIFE. Without reactivity the
+// effects only ran once (at mount with attached=false), leaving the new
+// pane's wasm renderer at its default `focused=true` → both panes blink
+// after a split until the next activePaneId change.
+let attached = $state(false);
+
+// PTY listener subscriptions used to live here as ptyUnlisten /
+// ptyClosedUnlisten. Both moved to `$lib/terminal/ptyBridge` (TASKS §5.1)
+// so listener lifetime tracks the wasm kernel lifetime (manager.attach →
+// manager.detach) rather than this Svelte component's mount cycle —
+// otherwise PTY bytes emitted during the unmount window of a split /
+// reparent would be silently dropped.
 
 const manager = TerminalManager.instance();
 
@@ -221,9 +231,34 @@ onMount(() => {
 		await manager.ready();
 		if (!alive) return;
 
-		// Attach to manager — creates canvas + wasm kernel.
+		// Branch on parking state (TASKS §5.1).
+		//
+		// If the manager already holds a parked entry for this paneId,
+		// this is a re-mount across a split / reparent. The kernel is
+		// alive with the prior viewport / scrollback / selection /
+		// search state; the PTY bridge has been forwarding bytes into
+		// it during the unmount window. Just bind a fresh canvas and
+		// rejoin the render loop.
+		if (manager.isParked(paneId)) {
+			manager.unpark(paneId, container);
+			attached = true;
+			manager.setFocused(paneId, get(activePaneId) === paneId);
+			manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
+			return;
+		}
+
+		// First attach: create kernel + canvas, register handlers,
+		// start backend PTY, replay scrollback, activate stream.
 		manager.attach(paneId, container);
 		attached = true;
+
+		// Sync focus state immediately so a freshly-split pane doesn't draw
+		// a phantom cursor between attach and the next $effect tick. The
+		// renderer defaults to `focused=true`; for a non-active pane we must
+		// explicitly tell it false BEFORE the rAF loop paints its first frame.
+		// Apply the user's preferred padding for the same reason.
+		manager.setFocused(paneId, get(activePaneId) === paneId);
+		manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
 
 		// 1) Outbound: keyboard → PTY
 		manager.onData(paneId, (bytes) => {
@@ -285,12 +320,14 @@ onMount(() => {
 		}
 		if (!alive) return;
 
-		// 4) PTY output → kernel
-		const outCh = `pty-output-${workspaceId}-${paneId}`;
-		ptyUnlisten = await listen<{ data: string }>(outCh, (e) => {
-			if (!alive) return;
-			manager.feed(paneId, e.payload.data);
-		});
+		// 4) PTY output + closed-event listeners. ensurePtyBridge owns
+		// these subscriptions for the kernel's lifetime — they survive
+		// split / reparent unmount so PTY bytes during the unmount
+		// window are fed into the parked kernel rather than dropped.
+		// `pane-pty-closed` rebuild (create_pane + activate_pane_pty)
+		// also lives in the bridge.
+		await ensurePtyBridge(paneId, workspaceId);
+		if (!alive) return;
 
 		// 5) Replay scrollback. Seed `oldestSeq` / `atOldest` from the
 		// tail chunk so subsequent `Shift+PageUp` past the kernel buffer
@@ -337,57 +374,14 @@ onMount(() => {
 			}
 		}
 
-		// 7) PTY closed event — recover by recreating.
-		//
-		// The handler must run BOTH create_pane AND activate_pane_pty:
-		// create_pane only allocates the backend PTY entry; activate_pane_pty
-		// is what actually spawns the shell and starts the byte-emit loop.
-		// Calling create_pane alone leaves the pane stuck — the new PTY
-		// exists but never emits, so the user sees a frozen screen.
-		//
-		// We do NOT re-register `ptyUnlisten` (the pty-output listener):
-		// the channel name is keyed by paneId, so the existing listener
-		// catches output from the rebuilt PTY automatically.
-		//
-		// We also skip scrollback replay: the wasm kernel already holds
-		// the prior session's content; replaying would duplicate it.
-		ptyClosedUnlisten = await listen<{ workspaceId: string; paneId: string }>(
-			'pane-pty-closed',
-			async (e) => {
-				if (!alive) return;
-				if (e.payload.workspaceId !== workspaceId || e.payload.paneId !== paneId) return;
-				try {
-					await invoke('create_pane', {
-						paneId,
-						shell: get(settingsStore).defaultShell || null,
-					});
-				} catch (err) {
-					console.error('create_pane (rebuild) failed', err);
-					return;
-				}
-				if (!alive) return;
-				try {
-					await invoke('activate_pane_pty', {
-						workspaceId,
-						paneId,
-						rows: manager.rows(paneId),
-						cols: manager.cols(paneId),
-					});
-				} catch (err) {
-					const msg = String(err);
-					if (!msg.includes('Pane not found')) {
-						console.error('activate_pane_pty (rebuild) failed', err);
-					}
-				}
-			},
-		);
+		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
+		// across this component's mount cycle, so we don't subscribe
+		// here. See ptyBridge.ts.
 	})();
 });
 
 onDestroy(() => {
 	alive = false;
-	ptyUnlisten?.();
-	ptyClosedUnlisten?.();
 	// Cancel pending Bell flash so the timer can't fire after unmount.
 	// Without this, a Bell received within 120ms of pane close leaves a
 	// dangling setTimeout that writes `bellFlash` on a torn-down component.
@@ -395,13 +389,20 @@ onDestroy(() => {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
 	}
+	// Park instead of detach (TASKS §5.1). We don't know in onDestroy
+	// whether this is a transient unmount (split / reparent) or a real
+	// close — parking is cheap to reverse via unpark, and the PTY bridge
+	// keeps feeding bytes into the kernel during the unmount window.
+	// Real cleanup (manager.detach + teardownPtyBridge + title-store
+	// purge) happens in `paneTree.closePane` after the backend close_pane
+	// IPC succeeds.
 	if (attached) {
-		manager.detach(paneId);
+		manager.park(paneId);
 	}
-	// Mirror Pane.svelte cleanup: drop title entries so SplitContainer
-	// doesn't keep a stale label after the pane closes.
-	terminalTitles.update((t) => { const c = { ...t }; delete c[paneId]; return c; });
-	paneOscTitleStore.update((s) => { const c = { ...s }; delete c[paneId]; return c; });
+	// NOTE: title stores are intentionally NOT cleared here. The kernel
+	// is still alive, the bridge is still parsing OSC events into them,
+	// and clearing on transient unmount would cause title flicker.
+	// closePane handles the real removal.
 });
 
 // Active-pane tracking — drives the data attribute (used by CSS targeting)

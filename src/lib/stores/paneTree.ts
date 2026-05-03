@@ -803,7 +803,7 @@ function reconcileActivePaneId(layout: PaneNode) {
  * 比较两棵 pane 树是否结构等价 —— 用于跳过"layout 变化但实际无差异"的 store
  * 触发。split / dock / resize 等操作回填时如果布局未变（例如：split 操作被取消
  * 后回拉一次最新状态），不应让 paneTreeStore 改 reference，否则所有订阅者
- * （SplitContainer / Pane / Explorer）都被迫重算 + xterm fit + Monaco reflow。
+ * （SplitContainer / Pane / Explorer）都被迫重算 + 终端 fit + Monaco reflow。
  * 用 JSON 串作为指纹是足够的：树深度有限，序列化 cost 远小于无谓的 DOM 重排。
  */
 function paneLayoutsEquivalent(a: PaneNode, b: PaneNode): boolean {
@@ -1011,10 +1011,36 @@ export async function splitActivePane(direction: 'horizontal' | 'vertical') {
 export async function closePane(paneId: string) {
   if (!isTauri()) return;
   await invoke('close_pane', { paneId });
+  // Real-close cleanup (TASKS §5.1). Manager.park stays mounted across
+  // split / reparent unmount, so detach must happen here when the pane
+  // is genuinely gone from the backend tree.
+  //
+  // Order matters:
+  //   1. Tear down PTY bridge → no more pty-output events delivered
+  //      to a kernel we're about to free.
+  //   2. Manager.detach → frees wasm kernel + render handle.
+  //   3. Drop title-store entries so SplitContainer / Explorer don't
+  //      keep showing a label for a pane that no longer exists.
+  // Lazy-import to keep paneTree.ts independent of the terminal layer
+  // for non-Tauri / SSR / test contexts (paneTree.test.ts mocks only
+  // its own surface).
+  const { TerminalManager } = await import('$lib/terminal/manager');
+  const { teardownPtyBridge } = await import('$lib/terminal/ptyBridge');
+  teardownPtyBridge(paneId);
+  TerminalManager.instance().detach(paneId);
+  paneOscTitleStore.update((s) => {
+    if (!(paneId in s)) return s;
+    const c = { ...s };
+    delete c[paneId];
+    return c;
+  });
+  terminalTitles.update((t) => {
+    if (!(paneId in t)) return t;
+    const c = { ...t };
+    delete c[paneId];
+    return c;
+  });
   await syncPaneLayoutFromBackend();
-  // Dispose the parked terminal now that the pane is truly gone.
-  // Dynamic import avoids a circular dep between paneTree ↔ terminalRegistry.
-  void import('$lib/stores/terminalRegistry').then(({ disposeTerminal }) => disposeTerminal(paneId));
 }
 
 export async function toggleEditor(paneId: string, filePath?: string) {
@@ -1163,17 +1189,10 @@ export async function saveWorkspaceToFile(
   name: string,
   path?: string
 ): Promise<string> {
-  // Capture each live pane's serialized terminal state so reopening the
-  // workspace replays the visible buffer + scrollback. Imported lazily to
-  // keep the store-import surface tidy and avoid a top-level cycle with
-  // terminalRegistry → Pane.svelte.
-  const { serializeAllTerminalStates } = await import('./terminalRegistry');
-  const serializedPanes = serializeAllTerminalStates();
   const out = await invoke<string>('save_workspace_to_file', {
     workspaceId,
     name,
     path: path ?? null,
-    serializedPanes,
   });
   // 刷新 workspacesList 以便标签页/Explorer 头部能立刻显示新名字；
   // refreshWorkspaces 内部已串行调用 refreshWorkspaceSaveInfo()。
@@ -1244,7 +1263,7 @@ export function collapseCwd(cwd: string): string {
   if (!cwd) return '';
   try {
     const home =
-      (typeof window !== 'undefined' && ((window as unknown) as Record<string, unknown>).__WIND_HOME__ as string) ||
+      (typeof window !== 'undefined' && ((window as unknown) as Record<string, unknown>).__Ridge_HOME__ as string) ||
       undefined;
     if (home && cwd.startsWith(home)) {
       return '~' + cwd.slice(home.length);
