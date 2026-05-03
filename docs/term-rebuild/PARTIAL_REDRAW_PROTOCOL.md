@@ -67,8 +67,8 @@ CSI ? 2026 l         ; end synchronous update（终端原子刷新到显示）
 | 删除/补全候选不消失 | DCH (`CSI <n> P`) 未实现 | ✅ 已修 |
 | 用 SCO 系列的库回不到原位 | CSI s / CSI u（DECSC/DECRC 别名）未实现 | ✅ 已修 |
 | 部分库布局错乱 | `CSI 18 t`（窗口尺寸查询）无响应 | ✅ 已修 |
-| 个别新 TUI 闪烁 | `CSI ? 2026 h/l`（同步输出模式）未实现 | ⏳ TODO（round 4） |
-| Ink 长行 reflow 后偶发错位 | resize reflow 未实现（OVERVIEW 标"远期"） | ⏳ 远期 |
+| 个别新 TUI 闪烁 | `CSI ? 2026 h/l`（同步输出模式）未实现 | ✅ 2026-05-02（详见 §4.1） |
+| Ink 长行 reflow 后偶发错位 | resize reflow Phase 1（live grid 主屏幕）未实现 | ✅ 2026-05-03（Phase 1 ✅，Phase 2 scrollback / 锚点 ⏳ 远期，详见 §4.6） |
 
 ---
 
@@ -316,14 +316,11 @@ container.addEventListener('focusout', blurListener);
 的事件流，事件源（DOM focus）在 JS 层。kernel 只暴露 mode bool 让 manager
 判断要不要发字节。这避免在 wasm 里造一个"我要监听 DOM 事件"的耦合。
 
-### 4.6 长行 resize reflow
+### 4.6 长行 resize reflow — Phase 1 ✅ 2026-05-03 / Phase 2 ⏳ 远期
 
-OVERVIEW 已标"远期"。目前 resize 时长行被截断，下一帧 TUI 重绘会盖掉，
-所以**视觉上不一定可见**——除非用户 resize 后立即看历史。
+Phase 1（live grid 主屏幕）已落地：`packages/ridge-term/src/term/grid.rs::reflow_primary` 在 `cols` 改变且 `!is_alt` 时 stitch wrapped 链 → 逻辑行 → 按 `new_cols` 重切片，cursor 偏移按逻辑位置迁移；alt 屏幕维持 truncate/pad（依赖 SIGWINCH 让 TUI 自己重画）。覆盖 10 条单测（详见 TASKS §2.3 Phase 1）。
 
-主要复杂度：要走 scrollback 拼接 + `wrapped` 标志反向追踪，可能要换数据
-结构（用 logical line + visual offset，类似 alacritty）。**建议放到
-round 6 之后**，先完成功能等价，性能再说。
+Phase 2（scrollback reflow + selection / hyperlink 锚点跨 reflow 迁移）保留远期：要走 scrollback ring 同算法重排（4 MB 全量一次几十 ms 可接受）+ 锚点逻辑行 + offset 反推（避免 reflow 后选区 / 链接错位）。当前 scrollback 翻历史时长行仍按旧列宽显示。
 
 ---
 
