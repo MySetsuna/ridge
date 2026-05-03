@@ -913,6 +913,22 @@ export class TerminalManager {
 			// the same — kernel resize would be a no-op, skip.
 			return;
 		}
+		// Dev-only diagnostic: which paneIds are actually firing a real
+		// rows×cols change. Lets the user (and us) verify in DevTools
+		// console which panes a splitter drag actually triggers, to
+		// disambiguate "non-adjacent panes are resizing" reports — if
+		// only the two adjacent paneIds log here on a single drag, the
+		// CSS layer is doing the right thing; if more panes log, it's
+		// a real fan-out bug. Production builds gate on import.meta.env.DEV
+		// so this never reaches end users.
+		if (import.meta.env?.DEV) {
+			console.debug(
+				'[ridge-term] fit',
+				entry.paneId,
+				`${cols}×${rows}`,
+				`(was ${entry.lastReportedCols < 0 ? '?' : entry.lastReportedCols}×${entry.lastReportedRows < 0 ? '?' : entry.lastReportedRows})`,
+			);
+		}
 		entry.lastReportedRows = rows;
 		entry.lastReportedCols = cols;
 
