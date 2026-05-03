@@ -379,17 +379,7 @@ onMount(() => {
 				atOldest = chunk.at_oldest;
 			}
 		} catch {
-			// Older backend fallback — try the legacy shim. The legacy
-			// shim returns plain bytes without seq metadata, so we mark
-			// `atOldest = true` to disable further paging.
-			try {
-				const sb = await invoke<string>('get_pane_scrollback', { paneId });
-				if (alive && sb) manager.feed(paneId, sb);
-				if (alive) atOldest = true;
-			} catch {
-				/* no scrollback */
-				if (alive) atOldest = true;
-			}
+			if (alive) atOldest = true;
 		}
 
 		// 6) Activate PTY now that listener is wired and history replayed

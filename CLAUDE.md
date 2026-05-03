@@ -170,7 +170,7 @@ Per-pane git status lives in `paneGitStatus.ts`: a debounced (250ms) per-cwd res
 See `docs/TERMINAL_SCROLLBACK.md` for the full design. In-tree:
 
 - Backend `state::PaneScrollback`: `VecDeque<Arc<Vec<u8>>>` blocks of `SCROLLBACK_BLOCK_SIZE = 64 KiB`, capped at `SCROLLBACK_MAX_BYTES = 4 MiB`. Each block carries a starting `seq` (monotonic byte counter) so callers page deterministically.
-- Frontend commands: `get_pane_scrollback_tail(pane_id, max_bytes)` for newest bytes; `get_pane_scrollback_before(pane_id, before_seq, max_bytes)` for "load older". Legacy `get_pane_scrollback` is a deprecated shim — keep it working until phase-3 wraps.
+- Frontend commands: `get_pane_scrollback_tail(pane_id, max_bytes)` for newest bytes; `get_pane_scrollback_before(pane_id, before_seq, max_bytes)` for "load older". The legacy `get_pane_scrollback` (full-string shim) was removed post-round-7 once xterm retired and the wasm kernel adopted paged reads as the only path.
 - `RidgePane.svelte` mount-time replays the latest 256 KiB tail before live streaming kicks in. It also seeds `oldestSeq` / `atOldest` from the chunk so `Shift+PageUp` past the wasm kernel buffer triggers `get_pane_scrollback_before` paging via `manager.prependScrollback` (TASKS §2.1).
 - `ScrollbackHistoryModal.svelte` is the user-visible viewer: 256 KiB initial pull, "加载更早" pages 128 KiB at a time, ANSI is stripped for clean copy/search, in-modal search bar with n/N navigation and case-sensitive toggle.
 

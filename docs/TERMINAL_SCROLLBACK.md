@@ -168,18 +168,16 @@ QA checklist (manual for now; cargo/playwright doesn't exercise PTY):
 
 ## Phase-plan (what to do when)
 
-| Phase | Contents | Rounds |
-|---|---|---|
-| 0 | This doc (baseline + design) | 16 |
-| 1 | Backend block model + two new `get_*_tail` / `get_*_before` commands; keep `get_pane_scrollback` as deprecated shim | 17 |
-| 2 | Frontend `Pane.svelte` replay on mount (tail only) | 17 |
-| 3 | Frontend `onScroll` → prepend older blocks; virtual-scroll wrapper if we pick xterm out or swap | 18 |
-| 4 | Cap bump from 384 KiB → 4 MiB default; user-configurable `MAX_BYTES` | after phase 2 observed |
+| Phase | Contents | Rounds | Status |
+|---|---|---|---|
+| 0 | This doc (baseline + design) | 16 | ✅ |
+| 1 | Backend block model + two new `get_*_tail` / `get_*_before` commands; deprecated `get_pane_scrollback` shim kept during transition | 17 | ✅ |
+| 2 | Frontend mount-time replay on tail bytes | 17 | ✅ (now in `RidgePane.svelte` after xterm retirement) |
+| 3 | Frontend `onScroll` → prepend older blocks; virtual-scroll wrapper | 18 | ✅ shipped via `manager.prependScrollback` + wasm kernel `prepend_scrollback` (TASKS §2.1); no virtual-scroll wrapper needed once xterm was retired |
+| 4 | Cap bump from 384 KiB → 4 MiB default; user-configurable `MAX_BYTES` | after phase 2 observed | ✅ (4 MiB default in `state::SCROLLBACK_MAX_BYTES`; user-configurable knob still ⏳ if requested) |
 
-All four phases can land without user-visible regressions if phase 1's
-deprecated shim is kept. Phase 3's virtual-scroll wrapper is the biggest risk
-because it touches IME / cursor / resize behaviour — best done in an
-isolated round with a known baseline (this doc).
+Phases 1–3 shipped and the deprecated `get_pane_scrollback` shim was
+removed post-round-7 (xterm retired, paged reads are the only path).
 
 ---
 
