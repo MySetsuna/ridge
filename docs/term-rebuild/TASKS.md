@@ -162,6 +162,12 @@
 - **测试**：新增 `reflow_keeps_wide_char_intact_at_boundary`：80 cols / 39 ASCII + 「中」 + b → resize 40 cols → 行 0 为 39a + 空格（wrap=true），行 1 为「中」（lead）+ continuation + b。111 lib 测试全绿。
 - **未做**：cursor 在 `line.len() % new_cols == 0` 边界 + pending_wrap 状态保持（review 提的另一处 [MEDIUM]，单独跟踪）。
 
+### 1.13 [LOW] `cargo test --lib` 中 `commands/project.rs` + `git.rs` async 测试预存编译错误 ✅ 2026-05-03
+
+- **背景**：本会话审计 dead code 时，`cargo test --manifest-path src-tauri/Cargo.toml --lib` 报 23 个错误。`commands/project.rs::{delete_path, copy_path, move_path}` 9 条测试 + `commands/git.rs::find_git_repos_below` 5 条测试（共 14 条 async 函数测试）走 `#[test]` + 同步 `.unwrap()` 语义，但函数已是 `pub async fn`。
+- **修法（已实施）**：每条测试 `#[test]` → `#[tokio::test]`、`fn name(` → `async fn name(`、production-call 后插 `.await`。tokio 已配 `macros + rt-multi-thread`（Cargo.toml 验证），无需改 dep。
+- **结果**：`cargo test --manifest-path src-tauri/Cargo.toml --lib` **73 passed; 0 failed; 0 ignored**，含 9 条 project + 5 条 git 修复后的测试全部通过。`cargo check --lib`（生产 profile）维持 0 警告。
+
 ---
 
 ## 2. Round 4 收尾（IME v3 / 反向 scrollback / reflow）
@@ -424,13 +430,9 @@
 - 2026-05-03 — `BUGFIX.md` 顶部加 2026-05-03 状态横幅：BUG-1 / 2 / 5 / 6 全部 file=`Pane.svelte`，文件已删除（round 7），patch moot（RidgePane.svelte 是从零写、不继承相同 code pattern；具体行为问题需独立审计：listener 重订由 ptyBridge.ts 避免、polling 由 manager 节流、scrollback 走 §5.2 方案 A）。BUG-3（`engine/pty.rs::rt.block_on` 在 reader 线程，4 处 line 193/218/323/339）+ BUG-4（`lib.rs` 4ms 合批）仍现行可 cherry-pick。文档 body（具体 diff/patch 文本）保持 verbatim 用于复现。 — `56ad115`
 - 2026-05-03 — `REPLACE_AND_FIX_PLAN.md` 顶部加 2026-05-03 状态横幅 + §2 对照表的「原行 / 现状」映射：8-10 周时间线已走完。痛点 1 (BUG-4 未 patch)、痛点 2 (✅)、痛点 3 (共享 surface 推到 round 3)、痛点 4 (§5.2 方案 A 保留双 buffer)、痛点 5 (✅ 2026-05-02)、BUG-1/2/5/6 moot、BUG-3/4 仍现行。文档体（决策树 / 时间线 / §5 取舍 / §6 推荐执行计划）保持 verbatim 用于设计史延续。 — `a2f3a2d`
 - 2026-05-03 — `INTEGRATION.md` + `INTEGRATION_R2_4.md` 顶部加 2026-05-03 状态横幅。INTEGRATION.md（接入契约）原诚实声明说「round 2.2/2.3/2.4 还没实现」+ ⚠️ 标记，加复核说明：所有 ⚠️ 已交付（`createTerminalManager` / `feed` / `onData` / `resize` / `encodeKey` / `render` 在 manager.ts + lib.rs wasm-bindgen 实现，`Pane.svelte` 重写后 round 7 整体删除，被 `RidgePane.svelte` 取代）。INTEGRATION_R2_4.md（round 2.4 步骤）状态横幅说 round 7 已 retire xterm，「已知不工作」清单（鼠标拖选/IME/Ctrl+F/Ctrl+click）2026-05-02 patch 已交付，回滚指令 `rm RidgePane.svelte` 不再适用。两文档体保留 verbatim 用于设计契约 / 设计史延续。 — `647f636`
-- 2026-05-03 — §0 进度快照「round 4 部分提前」row 措辞收尾：原文「与 INTEGRATION_R2_4.md 中"已知不工作"清单背离——实际代码已完成」（描述早期 doc 与代码的不一致状态）。现在 INTEGRATION_R2_4.md 顶部 banner 已对齐该清单，row 改为「✅ 2026-05-02 | INTEGRATION_R2_4.md 顶部已加 2026-05-03 状态横幅同步该清单」——日期标注 + 指向 banner，去掉"背离"措辞（不再是事实）。本会话两次 gate sanity check：`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告；`pnpm check` 0 错 0 警告。`cargo test --lib` 73 passed（修复 §1.13 后稳定）。
+- 2026-05-03 — §0 进度快照「round 4 部分提前」row 措辞收尾：原文「与 INTEGRATION_R2_4.md 中"已知不工作"清单背离——实际代码已完成」（描述早期 doc 与代码的不一致状态）。现在 INTEGRATION_R2_4.md 顶部 banner 已对齐该清单，row 改为「✅ 2026-05-02 | INTEGRATION_R2_4.md 顶部已加 2026-05-03 状态横幅同步该清单」——日期标注 + 指向 banner，去掉"背离"措辞（不再是事实）。本会话两次 gate sanity check：`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告；`pnpm check` 0 错 0 警告。`cargo test --lib` 73 passed（修复 §1.13 后稳定）。 — `3af216f`
+- 2026-05-03 — 修复 §1.13 任务条目位置错误：当时添加新任务时误插到「进度记录」chronological log section 中间（line 429，处于 2026-05-02 协议补全 patch bullet 之前），破坏了 log 的时间线 + 任务结构分层。现把 §1.13 任务条目（heading + 3 个 bullet）从 log 段移到 §1 主体末尾（§1.8 ✅ 2026-05-03 之后、§2 章前的 `---` 分隔之前），与 §1.1-§1.12 同列。Log 段恢复纯时间线流向。
 
-### 1.13 [LOW] `cargo test --lib` 中 `commands/project.rs` + `git.rs` async 测试预存编译错误 ✅ 2026-05-03
-
-- **背景**：本会话审计 dead code 时，`cargo test --manifest-path src-tauri/Cargo.toml --lib` 报 23 个错误。`commands/project.rs::{delete_path, copy_path, move_path}` 9 条测试 + `commands/git.rs::find_git_repos_below` 5 条测试（共 14 条 async 函数测试）走 `#[test]` + 同步 `.unwrap()` 语义，但函数已是 `pub async fn`。
-- **修法（已实施）**：每条测试 `#[test]` → `#[tokio::test]`、`fn name(` → `async fn name(`、production-call 后插 `.await`。tokio 已配 `macros + rt-multi-thread`（Cargo.toml 验证），无需改 dep。
-- **结果**：`cargo test --manifest-path src-tauri/Cargo.toml --lib` **73 passed; 0 failed; 0 ignored**，含 9 条 project + 5 条 git 修复后的测试全部通过。`cargo check --lib`（生产 profile）维持 0 警告。
 - 2026-05-02 — 一系列协议补全 patch：ECH/ICH/DCH/REP/DECSCUSR/DSR/DA/?2026/?1004/OSC0/1/2/7/8、鼠标拖选（含 word/line/shift-click）、Ctrl+F 搜索、IME v2 cursor-tracking、Ctrl+click OSC 8 链接 — 详见 git log
 
 ---
