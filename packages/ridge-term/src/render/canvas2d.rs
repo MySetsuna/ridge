@@ -124,12 +124,26 @@ impl RenderBackend for Canvas2dBackend {
         let backing_h = (height_css as f32 * dpr).round() as u32;
         self.canvas.set_width(backing_w.max(1));
         self.canvas.set_height(backing_h.max(1));
-        // Use inline style so the canvas displays at CSS size regardless
-        // of DPR. JS callers may override.
+        // CSS size: lock to 100% of the container's content-box so the
+        // canvas tracks subsequent container resizes automatically.
+        //
+        // Earlier code wrote `style.width = "{N}px"` here; that froze
+        // the canvas at the first fit's pixel size. After freeze,
+        // `getBoundingClientRect` always returned the frozen rect, so
+        // `manager.ts::fitPane` (which reads canvas dims to compute
+        // rows/cols) decided `sizeChanged === false` and bailed —
+        // PTY and wasm kernel were never resized again. Container
+        // would visually grow / shrink while the terminal content
+        // stayed at the first-mount cols/rows. (TASKS §1.9, 2026-05-03.)
+        //
+        // The HTML width/height attributes (set via `set_width` /
+        // `set_height` above) control the device-pixel backing buffer
+        // and are independent of CSS — DPR changes update the buffer
+        // without touching CSS layout.
         let style = self.canvas.style();
-        style.set_property("width", &format!("{}px", width_css))
+        style.set_property("width", "100%")
             .map_err(|e| format!("style.width: {:?}", e))?;
-        style.set_property("height", &format!("{}px", height_css))
+        style.set_property("height", "100%")
             .map_err(|e| format!("style.height: {:?}", e))?;
         // Reset transform — setting width/height clears the transform
         // matrix automatically, but we'll re-apply scale in begin_frame.
