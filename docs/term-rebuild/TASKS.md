@@ -184,13 +184,19 @@
 - **文件**：`src/lib/components/RidgePane.svelte`
 - **修法**：可选——在 dev 环境观察到布局抖动再加。当前不阻塞。
 
-### 2.3 Resize reflow（软换行行重排）⏳ 进行中
+### 2.3 Resize reflow（软换行行重排）⏳ Phase 1 ✅ / Phase 2 远期
 
-- **背景**：现在 `Grid::resize`（grid.rs:185）只做 truncate/pad — 收窄丢字符，拉宽留空白；翻历史时 scrollback 也错位。120 ms debounce 已经实现「松开鼠标后才触发」，缺的是 reflow 本体。
+- **背景**：原 `Grid::resize`（grid.rs:185）只做 truncate/pad — 收窄丢字符，拉宽留空白；翻历史时 scrollback 也错位。120 ms debounce 已经实现「松开鼠标后才触发」。Phase 1 已落地 reflow 本体（live grid 主屏幕列变重排），Phase 2 还差 scrollback + selection / hyperlink 锚点迁移。
 - **设计参考**：`OVERVIEW.md §7「Resize reflow 设计」` —— 完整的方案对比、分阶段交付、算法、测试覆盖。
-- **文件**：`packages/ridge-term/src/term/grid.rs::resize` + 新增 `reflow_to_cols(new_cols)` 私有方法。
+- **文件**：`packages/ridge-term/src/term/grid.rs::resize` + 私有方法 `reflow_primary`（已实现，line 262）。
 
-#### Phase 1（本轮）— live grid 列变 reflow，仅主屏幕
+#### Phase 1（本轮）— live grid 列变 reflow，仅主屏幕 ✅ 2026-05-03
+
+- **状态**：完成。`grid.rs::resize` 当 `cols` 改变且 `!is_alt` 时调 `reflow_primary(new_rows, new_cols)`；alt 屏幕仍走 truncate/pad。
+- **测试**（10 条全绿）：`reflow_shrink_wraps_long_line`、`reflow_grow_unwraps_continued_line`、`reflow_preserves_cursor_logical_position`、`reflow_skips_alt_screen`、`reflow_chain_of_three_rows_round_trip`、`reflow_no_op_when_cols_unchanged`、`reflow_preserves_pending_wrap_at_exact_boundary`、`reflow_no_pending_wrap_when_line_doesnt_fill_last_row`、`reflow_keeps_wide_char_intact_at_boundary`、`reflow_shrink_overflow_pushes_to_scrollback`。覆盖原 §2.3 列出的 6 条加 4 条边界（pending_wrap 双向 + wide-char 切片 + scrollback 溢出）。
+- **不做（留 Phase 2）**：scrollback reflow、selection / hyperlink 锚点跨 reflow 迁移。
+
+##### Phase 1 算法记录（已实施）
 
 - **作用域**：仅当 `cols` 改变且当前是主屏幕（`!is_alt`）时触发；alt 屏幕（vim/less/htop）维持原 truncate/pad，依赖 SIGWINCH 让 TUI 自己重画。
 - **算法**：
@@ -200,17 +206,9 @@
   4. 重设 cursor: row = offset / new_cols, col = offset % new_cols。
   5. 行数溢出时最旧的进 scrollback（与正常 LF 滚动一致）。
 - **副作用**：selection 清空（最简策略，用户重新选）；hyperlink span 跟着 cell 搬运（per-row 元数据按新行 col 范围重写）。
-- **测试**：`grid.rs` 内 `#[cfg(test)] mod tests`，至少覆盖：
-  - `reflow_shrink_wraps_long_line`
-  - `reflow_grow_unwraps_continued_line`
-  - `reflow_preserves_cursor_logical_position`
-  - `reflow_skips_alt_screen`
-  - `reflow_chain_of_three_rows_round_trip`
-  - `reflow_no_op_when_cols_unchanged`
 - **触发路径**：复用 `manager.ts::viewportChanged` 的 120 ms debounce → `fitPane` → `kernel.resize`。无需新触发器。
-- **不做（留 Phase 2）**：scrollback reflow、selection / hyperlink 锚点跨 reflow 迁移。
 
-#### Phase 2（round 5+）— scrollback + 锚点迁移
+#### Phase 2（round 5+）— scrollback + 锚点迁移 ⏳
 
 - scrollback ring 同算法重排（4 MB 全量一次几十 ms 可接受）。
 - selection 锚点：reflow 前记下逻辑行 + offset，reflow 后按新列宽推回 (row, col)。
@@ -405,7 +403,8 @@
 - 2026-05-03 — §1.11 follow-up：`syncPaneLayoutFromBackend` 之前误判为「已有 mutated 守卫」，实际不是。补上 mutated 跟踪——pass 1 drop 或 pass 2 seed 时才克隆，否则返回原 store。每次 splitPane / closePane / dockPane / switchWorkspace 调 sync 时不再误 fire（即使 pane 集合不变）。— `6065e8b`
 - 2026-05-03 — §1.12 split drag fan-out 修复：新增 `SPLIT_DRAG_AUTO_COUPLING_ENABLED = false`；`startSplitResizeDrag` 默认 refs 只含 primary，`is4WaySnap` / `snapState.coupledSplitters` / `coupledSameAxis` / `coupledOrthoSiblings` 四条联动全部 gate；保留视觉 attractor。`(A|B) / (C|D)` 拖 A/B 现在只动 A 和 B。svelte-check 0 错误。— `deea0db`
 - 2026-05-03 — §1.4 sync-output 超时 cool-down：`PaneEntry` 新增 `syncTimeoutRendered`，rAF tick 在超时分支只渲染一次 best-effort frame，之后 `continue` 直到 kernel 退出 sync；kernel 清 sync 时同步 reset。修了原注释承诺却未兑现的「only one render per cycle」语义。svelte-check 0 错误。— `666300c`
-- 2026-05-03 — `packages/ridge-term/README.md` + `pkg/README.md` 同步到 round-7 后实际状态：删除「round 1 of N」「cannot yet replace xterm in your `Pane.svelte`」等过期声明；更新架构图反映 Terminal facade（pending_response / pending_events / prepend_scrollback）+ Grid（alt + DECSTBM + reflow_primary）+ Renderer（per-row dirty + selection anti-stack + cursor blink）+ Canvas2dBackend（CSS 100% / device-px attrs）；新增 round 状态表（1/2.1/2.2/2.3/2.4/5/6/7 ✅，3/4 ⏳）；What's implemented 列出实际涵盖（CSI ECH/ICH/DCH/REP/HPR/VPR/SCO save/DECSTBM/DSR/DA/DECSCUSR、ESC DECPAM/DECPNM/RIS、SGR truecolor 双语义、screen modes ?47/?1049/?2026/?1004/?6/4/20/all 鼠标 modes、OSC 0/1/2/7/8）；Tests 行数更新为 113 + 22；删除「Explicitly NOT in this round」表 + 「What I need from you for round 2」整段；Build 改成 `node build.mjs`/`--dev`。Consumer 段新增 manager.ts/ptyBridge.ts/themeBridge.ts/RidgePane.svelte 入口说明。
+- 2026-05-03 — `packages/ridge-term/README.md` + `pkg/README.md` 同步到 round-7 后实际状态：删除「round 1 of N」「cannot yet replace xterm in your `Pane.svelte`」等过期声明；更新架构图反映 Terminal facade（pending_response / pending_events / prepend_scrollback）+ Grid（alt + DECSTBM + reflow_primary）+ Renderer（per-row dirty + selection anti-stack + cursor blink）+ Canvas2dBackend（CSS 100% / device-px attrs）；新增 round 状态表（1/2.1/2.2/2.3/2.4/5/6/7 ✅，3/4 ⏳）；What's implemented 列出实际涵盖（CSI ECH/ICH/DCH/REP/HPR/VPR/SCO save/DECSTBM/DSR/DA/DECSCUSR、ESC DECPAM/DECPNM/RIS、SGR truecolor 双语义、screen modes ?47/?1049/?2026/?1004/?6/4/20/all 鼠标 modes、OSC 0/1/2/7/8）；Tests 行数更新为 113 + 22；删除「Explicitly NOT in this round」表 + 「What I need from you for round 2」整段；Build 改成 `node build.mjs`/`--dev`。Consumer 段新增 manager.ts/ptyBridge.ts/themeBridge.ts/RidgePane.svelte 入口说明。 — `3c1252b`
+- 2026-05-03 — §2.3 Phase 1 状态对齐：实测 `cargo test --lib reflow` 10/10 全绿（覆盖 6 条规约 + pending_wrap 双向 + wide-char 切片 + scrollback 溢出 4 条边界），TASKS.md 把 §2.3 从「⏳ 进行中」改为「Phase 1 ✅ / Phase 2 远期」；Phase 1 子标题加 ✅ 2026-05-03 + 「状态：完成」+ 测试清单；移除原「至少覆盖」的占位列表（已实兑）。Phase 2（scrollback reflow + 锚点迁移）状态保留 ⏳。
 - 2026-05-02 — 一系列协议补全 patch：ECH/ICH/DCH/REP/DECSCUSR/DSR/DA/?2026/?1004/OSC0/1/2/7/8、鼠标拖选（含 word/line/shift-click）、Ctrl+F 搜索、IME v2 cursor-tracking、Ctrl+click OSC 8 链接 — 详见 git log
 
 ---
