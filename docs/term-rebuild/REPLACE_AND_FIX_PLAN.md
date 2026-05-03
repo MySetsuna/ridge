@@ -1,5 +1,19 @@
 # 替换 xterm 与 Bug 修复整合计划
 
+> **状态（2026-05-03 末次复核）**：本文档是 round 1 之前的整合计划，时间线（"8-10 周替换 + 1 周独立 patch"）已经被实际进度走完。Round 7 retire xterm + 删除 `Pane.svelte` 后，§2 对照表的多数行可以现状映射如下：
+>
+> | 原行 | 现状 |
+> |---|---|
+> | 痛点 1 输入响应 / BUG-4 | ⏳ BUG-4 未打 patch；< 10 ms 路径仍要 SharedArrayBuffer，未启动 |
+> | 痛点 2 渲染抖动 / BUG-5 | ✅ round 2.4 + RidgePane.svelte（BUG-5 moot，Pane.svelte 删） |
+> | 痛点 3 多 pane 假死 / 共享 surface | ⏳ 共享 surface 推到 round 3 WebGPU（详见 OVERVIEW row 2.4 注） |
+> | 痛点 4 内存 / BUG-6 | ⚠️ round 2.4 ✅；§5.2 决议保留双 buffer（每 pane ~700 KB 重复，方案 A） |
+> | 痛点 5 选择/搜索/IME | ✅ 2026-05-02（mouse drag/word/line/shift-click、Ctrl+F、IME v2、Ctrl+click 链接） |
+> | BUG-1 / 2 / 5 / 6 | moot（Pane.svelte 已删；详见 BUGFIX.md 顶部状态横幅） |
+> | BUG-3 / 4 | ⏳ 仍现行（backend），可单独 cherry-pick |
+>
+> 下方文档体（决策树 / 时间线 / §5 取舍 / §6 推荐执行计划）保留 verbatim 用于设计史延续——给新读者看当时的整合思考路径。
+>
 > 本文档回答：**"替换 xterm 完成后，痛点和 bug 是否自动消失？"**
 >
 > 答案：**部分消失，部分不消失**。
