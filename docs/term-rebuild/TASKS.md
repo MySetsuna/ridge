@@ -347,6 +347,14 @@
 - **现状**：xterm 路径已 retire（`src/lib/components/Pane.svelte` 与 `PaneRouter.svelte` 都已删除），`RidgePane.svelte` 是唯一终端组件。`grep -rn useExperimentalRenderer src/` 无任何命中——这个 toggle 已经没有任何消费者。
 - **决策**：不再补 typed 字段。这一项随 round 7 「删除 xterm」工作天然消失。如果未来需要类似的"实验渲染器"开关，到时候按 INTEGRATION_R2_4 §Step 5 重新加即可。
 
+### 7.3 [LOW] fileExplorer.test.ts 两条 pre-existing 失败 ⏳
+
+- **背景**：2026-05-03 自审审计 `pnpm test` 时发现，`src/lib/stores/fileExplorer.test.ts` 有 2 条失败（在我的 paneTree.ts 修改前就已存在，验证方式：`git stash` 后失败仍在）。源文件最后修改于 commit `48991f8`（早于本会话）。
+- **失败 1: E6 (line 422)**：「preserves cached tree and sets needsRefresh when a new pane joins」。代码 (`fileExplorer.ts::syncWithPaneCwds`) 写 `needsRefresh: existing.needsRefresh || (hasNewJoiner && existing.tree === null)`——只在 tree 为 null 时刷新。测试期望「即使 tree 已缓存，新 pane 加入时也调度后台刷新」。code 注释自相矛盾（前段说「在 Explorer 层异步调用 loadTree 做后台刷新」，后段说「reuses it without re-scanning」）。**这是产品决策**——是否在 split 时自动后台刷新 file tree。
+- **失败 2: flattenVisiblePaths line 146**：「lists root first then expanded-children in DFS order」。期望返回 `[/r, /r/a, /r/a/a1, /r/b]`，实际返回不同。需要细查实现是 missing path 还是 ordering bug。
+- **决定**：不动他人测试与代码——E6 是 product call，flattenVisible 需要实现作者确认意图。**留作 round 4/5 收尾时一并梳理**。
+- **影响**：无运行时 bug 报告；仅测试套未通过 → CI 跑 `pnpm test` 时会红。
+
 ### 7.2 浏览器端真实跑通验证 ⏳ 高优先级
 
 - **背景**：OVERVIEW §R1 风险。所有"看起来对"的代码迄今只在 Rust 单元测试通过，没有 `pnpm tauri dev` 内被人用过的证据（除最近修的 RidgePane 输入失效问题）。
