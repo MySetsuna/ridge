@@ -884,13 +884,18 @@ export async function syncPaneLayoutFromBackend() {
     const prefix = `${active}:`;
     const layoutCwds = extractCwdsFromLayout(layout, active);
     paneCwdStore.update((store) => {
+      let mutated = false;
       const next: Record<string, string> = {};
       // Pass 1: keep live panes, drop dead ones.
       for (const [k, v] of Object.entries(store)) {
         if (k.startsWith(prefix)) {
           const paneId = k.slice(prefix.length);
-          if (livePaneIds.has(paneId)) next[k] = v;
-          // else: deleted pane — drop
+          if (livePaneIds.has(paneId)) {
+            next[k] = v;
+          } else {
+            // deleted pane — drop
+            mutated = true;
+          }
         } else {
           next[k] = v; // other workspaces: untouched
         }
@@ -898,9 +903,19 @@ export async function syncPaneLayoutFromBackend() {
       // Pass 2: seed cwds for panes present in layout but not yet in store
       // (new split panes, or panes restored from saved workspace).
       for (const [k, v] of Object.entries(layoutCwds)) {
-        if (!(k in next)) next[k] = v;
+        if (!(k in next)) {
+          next[k] = v;
+          mutated = true;
+        }
       }
-      return next;
+      // Identity-preserving early return: when nothing was dropped or
+      // seeded, the new object would be byte-for-byte identical to the
+      // existing store. Svelte writable strict-equals — returning `store`
+      // skips subscriber fire on every layout sync that didn't actually
+      // change pane membership (TASKS §1.11 follow-up: this site was
+      // missed in 971f7fa, fan-out still firing on every split/close/
+      // dock that didn't change pane membership counts).
+      return mutated ? next : store;
     });
     await setupPaneCwdListeners(active);
   }
