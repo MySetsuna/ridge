@@ -118,6 +118,13 @@ interface PaneEntry {
 	pointerDownListener: (e: PointerEvent) => void;
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
+	/** Last `clamped` value passed to `setPadding`. Used to short-circuit
+	 *  no-op calls (RidgePane wires setPadding into a $effect that fires
+	 *  on every settings store update — without this, every font-size /
+	 *  shell-pref / search-glob change would cascade to viewportChanged →
+	 *  fitPane on every pane just to re-set padding to its current value).
+	 *  `undefined` means "not yet set" — first call applies regardless. */
+	lastAppliedPaddingPx?: number;
 	/** Parking state (TASKS §5.1, Round 6).
 	 *
 	 *  When `parked = true`:
@@ -730,11 +737,20 @@ export class TerminalManager {
 	/** Apply CSS padding (px) to a pane's container. Pushes the canvas inward
 	 *  so glyphs aren't flush against the pane border. The change triggers a
 	 *  fit on the next animation frame (ResizeObserver picks it up); for an
-	 *  immediate effect we also call `viewportChanged(paneId)` synchronously. */
+	 *  immediate effect we also call `viewportChanged(paneId)` synchronously.
+	 *
+	 *  No-op when the resolved px hasn't changed since the last call for
+	 *  this pane — RidgePane wires this from a `$effect` keyed on
+	 *  `$settingsStore.terminalPaddingPx`, and Svelte's $effect re-runs on
+	 *  any settings store fire (font, shell, search globs, …). Without
+	 *  this guard a font-size change would cascade to a viewportChanged
+	 *  → fitPane on every pane just to re-set padding to its current value. */
 	setPadding(paneId: string, px: number): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const clamped = Math.max(0, Math.min(64, Math.round(px)));
+		if (entry.lastAppliedPaddingPx === clamped) return;
+		entry.lastAppliedPaddingPx = clamped;
 		entry.container.style.padding = clamped > 0 ? `${clamped}px` : '';
 		this.viewportChanged(paneId);
 	}
