@@ -71,6 +71,71 @@ function triggerBellFlash() {
 let imeHelper: HTMLTextAreaElement | undefined = $state(undefined);
 let isComposing = $state(false);
 
+// Reverse-scrollback bridge state (TASKS §2.1).
+//
+// `oldestSeq` is the backend `seq` (monotonic byte counter) of the first
+// byte the kernel's scrollback currently holds. Initial value comes from
+// the `get_pane_scrollback_tail` response at mount; each successful
+// `get_pane_scrollback_before` fetch updates it to the older chunk's
+// `start_seq`.
+//
+// `atOldest` flips true when the backend tells us we've drained its
+// retention window; further fetches are no-ops.
+//
+// `pendingScrollbackFetch` guards against piling up overlapping fetches
+// when the user mashes Shift+PageUp.
+let oldestSeq = 0;
+let atOldest = false;
+let pendingScrollbackFetch = false;
+
+async function fetchOlderScrollback(): Promise<void> {
+	if (!alive || !attached) return;
+	if (atOldest || pendingScrollbackFetch) return;
+	pendingScrollbackFetch = true;
+	try {
+		const chunk = await invoke<{
+			bytes: string;
+			start_seq: number;
+			at_oldest: boolean;
+		}>('get_pane_scrollback_before', {
+			paneId,
+			beforeSeq: oldestSeq,
+			maxBytes: 128 * 1024,
+		});
+		if (!alive) return;
+		if (chunk.bytes) {
+			manager.prependScrollback(paneId, chunk.bytes);
+			oldestSeq = chunk.start_seq;
+		}
+		if (chunk.at_oldest) {
+			atOldest = true;
+		}
+	} catch (err) {
+		// Backend may not support before-seq paging on older builds; treat
+		// as "no more history" rather than spamming console for every key.
+		atOldest = true;
+		if (import.meta.env?.DEV) {
+			console.debug('[ridge-pane] get_pane_scrollback_before failed', err);
+		}
+	} finally {
+		pendingScrollbackFetch = false;
+	}
+}
+
+/** Trigger a backend fetch when the viewport is near the top of the
+ *  in-kernel scrollback. Called from Shift+PageUp / wheel-up paths. */
+function maybePrefetchOlder(): void {
+	if (atOldest || pendingScrollbackFetch) return;
+	const { offset, total } = manager.scrollState(paneId);
+	// Fire when the user is within one viewport of the top — gives the
+	// fetch time to land before they actually hit the boundary, so heavy
+	// scrolling doesn't stutter visibly.
+	const rows = manager.rows(paneId);
+	if (total - offset <= rows) {
+		void fetchOlderScrollback();
+	}
+}
+
 function repositionImeHelper() {
 	if (!imeHelper) return;
 	const pos = manager.cursorPixelPosition(paneId);
@@ -232,7 +297,9 @@ onMount(() => {
 			manager.feed(paneId, e.payload.data);
 		});
 
-		// 5) Replay scrollback
+		// 5) Replay scrollback. Seed `oldestSeq` / `atOldest` from the
+		// tail chunk so subsequent `Shift+PageUp` past the kernel buffer
+		// boundary can page further into the backend's 4 MiB store.
 		try {
 			const chunk = await invoke<{
 				bytes: string;
@@ -242,13 +309,21 @@ onMount(() => {
 			if (alive && chunk.bytes) {
 				manager.feed(paneId, chunk.bytes);
 			}
+			if (alive) {
+				oldestSeq = chunk.start_seq;
+				atOldest = chunk.at_oldest;
+			}
 		} catch {
-			// Older backend fallback — try the legacy shim.
+			// Older backend fallback — try the legacy shim. The legacy
+			// shim returns plain bytes without seq metadata, so we mark
+			// `atOldest = true` to disable further paging.
 			try {
 				const sb = await invoke<string>('get_pane_scrollback', { paneId });
 				if (alive && sb) manager.feed(paneId, sb);
+				if (alive) atOldest = true;
 			} catch {
 				/* no scrollback */
+				if (alive) atOldest = true;
 			}
 		}
 
@@ -334,10 +409,27 @@ onDestroy(() => {
 	paneOscTitleStore.update((s) => { const c = { ...s }; delete c[paneId]; return c; });
 });
 
-// Active-pane tracking — keep parity with XtermPane.
+// Active-pane tracking — drives the data attribute (used by CSS targeting)
+// AND tells the wasm renderer whether to draw the cursor. Only the focused
+// pane should blink; unfocused panes hide the cursor entirely. The renderer's
+// `setFocused` is idempotent, so emitting on every effect run is safe.
 $effect(() => {
 	if (!container) return;
-	container.dataset.rgPaneActive = String($activePaneId === paneId);
+	const isActive = $activePaneId === paneId;
+	container.dataset.rgPaneActive = String(isActive);
+	if (attached) {
+		manager.setFocused(paneId, isActive);
+	}
+});
+
+// Apply the user's preferred terminal padding. The setter is clamped + a
+// no-op when the value is unchanged, so re-running on every settings tick
+// is cheap. `attached` gate prevents a transient style write before the
+// canvas exists.
+$effect(() => {
+	if (!attached) return;
+	const px = $settingsStore.terminalPaddingPx;
+	manager.setPadding(paneId, px);
 });
 
 function onContainerKeyDown(e: KeyboardEvent) {
@@ -399,6 +491,10 @@ function onContainerKeyDown(e: KeyboardEvent) {
 	// hijack programs like less that use bare PageUp.
 	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageUp') {
 		manager.scrollUp(paneId, manager.rows(paneId) - 1);
+		// Pull older history from the backend if we're approaching the
+		// top of the kernel buffer; fire-and-forget so the immediate
+		// scroll stays responsive (TASKS §2.1).
+		maybePrefetchOlder();
 		e.preventDefault();
 		return;
 	}
@@ -422,8 +518,15 @@ function onContainerWheel(e: WheelEvent) {
 	const delta = e.deltaY;
 	// 3 lines per wheel notch — matches xterm/most terminals.
 	const lines = Math.max(1, Math.round(Math.abs(delta) / 30));
-	if (delta < 0) manager.scrollUp(paneId, lines);
-	else manager.scrollDown(paneId, lines);
+	if (delta < 0) {
+		manager.scrollUp(paneId, lines);
+		// Same paging behaviour as Shift+PageUp — fire-and-forget fetch
+		// when approaching the top, so heavy wheel scrolling can keep
+		// drilling into backend history (TASKS §2.1).
+		maybePrefetchOlder();
+	} else {
+		manager.scrollDown(paneId, lines);
+	}
 	e.preventDefault();
 }
 

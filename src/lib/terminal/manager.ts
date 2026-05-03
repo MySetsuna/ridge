@@ -50,6 +50,10 @@ export interface ManagerOptions {
 	scrollbackLines: number;
 	/** xterm-style theme object. Keys: background/foreground/cursor/black/red/... */
 	theme?: Record<string, string>;
+	/** CSS padding (px) applied to each pane's container. Pushes the canvas
+	 *  inward so glyphs aren't flush against the pane border. Default 0
+	 *  preserves the original look; per-pane overrides via `setPadding`. */
+	paddingPx?: number;
 }
 
 /** Tagged kernel event shape that mirrors `KernelEvent` in Rust. The
@@ -194,6 +198,13 @@ export class TerminalManager {
 		canvas.style.cssText = 'display:block; width:100%; height:100%;';
 		canvas.setAttribute('aria-hidden', 'true');
 		container.appendChild(canvas);
+
+		// Apply initial padding to the container so the canvas (width:100%
+		// inside content-box) starts inset by `opts.paddingPx`. Per-pane
+		// updates after attach come through `setPadding(paneId, px)`.
+		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
+			container.style.padding = `${this.opts.paddingPx}px`;
+		}
 
 		const handle = new RenderHandle(canvas);
 		const dpr = window.devicePixelRatio || 1;
@@ -461,6 +472,28 @@ export class TerminalManager {
 		}
 	}
 
+	/** Prepend older history bytes at the OLDEST end of this pane's
+	 *  scrollback ring. The bytes go through an isolated sandbox terminal
+	 *  in wasm so the live grid / cursor / attrs / pending queues are
+	 *  untouched (see `Terminal::prepend_scrollback` in Rust).
+	 *
+	 *  Caller is responsible for fetching the bytes from wherever they
+	 *  live (the Tauri `get_pane_scrollback_before` IPC, in Ridge's case)
+	 *  and tracking the seq cursor for paged "load older" UX. Manager
+	 *  itself stays host-agnostic — it doesn't know about Tauri. */
+	prependScrollback(paneId: string, data: string | Uint8Array): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+		if (bytes.length === 0) return;
+		entry.kernel.prependScrollback(bytes);
+		// No selection / search clear here: prepend grows the scrollback
+		// at its older end and leaves all existing rows in place, so any
+		// currently-active selection or search anchor is still valid.
+		// Likewise no pending_response / pending_events to drain — the
+		// kernel discards both for prepend-mode bytes by design.
+	}
+
 	/** Subscribe to typed kernel events (title, cwd, hyperlinks, bell).
 	 *  Replaces any previously-registered handler for the same pane. */
 	onEvent(paneId: string, cb: (event: KernelEvent) => void): void {
@@ -537,6 +570,26 @@ export class TerminalManager {
 
 	clearSelection(paneId: string): void {
 		this.panes.get(paneId)?.kernel.clearSelection();
+	}
+
+	/** Tell the wasm renderer whether this pane is the focused one. Only the
+	 *  truly focused pane should blink its cursor; unfocused panes hide it
+	 *  entirely. RidgePane wires this to the global `activePaneId` store so
+	 *  switching panes flips the cursor visibility on both sides instantly. */
+	setFocused(paneId: string, focused: boolean): void {
+		this.panes.get(paneId)?.handle.setFocused(focused);
+	}
+
+	/** Apply CSS padding (px) to a pane's container. Pushes the canvas inward
+	 *  so glyphs aren't flush against the pane border. The change triggers a
+	 *  fit on the next animation frame (ResizeObserver picks it up); for an
+	 *  immediate effect we also call `viewportChanged(paneId)` synchronously. */
+	setPadding(paneId: string, px: number): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		const clamped = Math.max(0, Math.min(64, Math.round(px)));
+		entry.container.style.padding = clamped > 0 ? `${clamped}px` : '';
+		this.viewportChanged(paneId);
 	}
 
 	// ---- search forwarders -----------------------------------------
@@ -668,7 +721,11 @@ export class TerminalManager {
 	}
 
 	private fitPane(entry: PaneEntry): void {
-		const rect = entry.container.getBoundingClientRect();
+		// Read CANVAS dimensions (not container) so any padding applied to the
+		// container is correctly excluded. Canvas is `width:100%; height:100%`
+		// inside the container's content-box, so its rect is the actual
+		// drawing area regardless of `paddingPx`.
+		const rect = entry.canvas.getBoundingClientRect();
 		const wCss = Math.floor(rect.width);
 		const hCss = Math.floor(rect.height);
 
