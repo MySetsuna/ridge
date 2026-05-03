@@ -1,0 +1,225 @@
+# Ridge Term — 项目总览
+
+> 自研 Rust + WASM 终端模拟器，用于替换 ridge 项目当前的 xterm.js + WebGL addon。
+> 本文档描述**最终交付形态**、设计取舍、当前进度、剩余里程碑、已知风险。
+
+---
+
+## 1. 为什么自研
+
+xterm.js + addon-webgl 在 ridge 的实际使用中暴露了 5 类痛点（详见 `BUGFIX.md` 的诊断章节）：
+
+1. 输入响应慢
+2. 渲染抖动 / resize 抽搐
+3. 多 pane（10+）时 UI 假死
+4. 内存膨胀（每 xterm 实例 ~5MB + 4MB 后端 scrollback）
+5. 选择 / 复制 / 搜索体验差（跨软换行断裂等）
+
+经过分析，痛点 3/4 的根因是 **每个 pane 各自持有一个 WebGL context + 字形 atlas + VT 解析器**，这是 xterm 架构层面的限制，无法通过调参解决。
+
+自研的核心架构赢面：**所有 pane 共享一个 GPU surface 和一个全局字形 atlas**，把 N×资源 压成 1×。这条路 xterm 不可能走（它的 IRenderer 接口是按实例设计的）。
+
+---
+
+## 2. 最终架构
+
+```
+┌────────────────────────────── 浏览器/WebView2 进程 ──────────────────────────────┐
+│                                                                                   │
+│  ┌─ JS 侧 (Svelte) ──────────────────────────────────────────────────────────┐  │
+│  │                                                                             │  │
+│  │  Pane.svelte (×N)        ─┐                                                │  │
+│  │   - 仅持有 paneId + 容器     │  逻辑挂在全局 ridgeTerm 单例                   │  │
+│  │   - 不再持有 Terminal 实例   ▼                                                │  │
+│  │                          ┌─────────────────────────────┐                    │  │
+│  │   ridgeTerm (全局单例)   │  TerminalManager (TS)         │                  │  │
+│  │   ┌────────────────────┐│   - paneId → grid 映射         │                  │  │
+│  │   │ 1 × <canvas>       ││   - 按需 mount/unmount         │                  │  │
+│  │   │   全屏 / overlay   ││   - 每帧只重绘活跃可见 pane    │                  │  │
+│  │   └────────────────────┘└──────────────┬──────────────┘                    │  │
+│  │                                         │ wasm-bindgen FFI                  │  │
+│  └─────────────────────────────────────────┼──────────────────────────────────┘  │
+│                                            │                                       │
+│  ┌─ Rust → WASM (ridge-term crate) ────────▼──────────────────────────────────┐  │
+│  │                                                                              │  │
+│  │  TerminalRegistry  ── PaneId → Terminal kernel                               │  │
+│  │       │                                                                      │  │
+│  │       └─► Terminal (per pane)                                                │  │
+│  │             ├─ vte::Parser (Paul Williams ANSI 状态机)                       │  │
+│  │             ├─ Grid: 主屏 + alt 屏 + cursor + scroll region (DECSTBM)        │  │
+│  │             ├─ Modes: DECAWM/DECTCEM/bracketed paste/mouse 等                │  │
+│  │             ├─ AttrTable: SGR 属性 flyweight (250k cell → ~3MB)              │  │
+│  │             └─ Scrollback: ring buffer，分配回收                             │  │
+│  │                                                                              │  │
+│  │  Renderer (全局唯一)                                                          │  │
+│  │       ├─ trait RenderBackend                                                 │  │
+│  │       ├─ WebGpuBackend  (优先)                                                │  │
+│  │       └─ Canvas2dBackend (fallback)                                           │  │
+│  │                                                                              │  │
+│  │  GlyphAtlas (全局共享)  ── (font, size, glyph) → texture region             │  │
+│  │  InputEncoder           ── 键盘事件 → PTY 字节 (受 modes 影响)                │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                           │
+                                           │  Tauri IPC (现有)
+                                           ▼
+                            ┌───────── Tauri 主进程 ──────────┐
+                            │  pty.rs / commands/terminal.rs    │
+                            │  (本项目不动后端，IPC 接口保持)   │
+                            └───────────────────────────────────┘
+```
+
+### 关键设计决策
+
+**D1: 共享 surface、共享 atlas**
+- 一个 `<canvas>` 元素覆盖所有 pane 区域，按 scissor rectangle 分区
+- 同字号的字形位图全 pane 共用一份
+- 收益：10 pane 时 GPU context 1 个（旧方案 10 个）、atlas 1 份（旧方案 10 份）
+
+**D2: VT 内核与渲染器解耦**
+- 内核只产 grid 数据 + 脏区标记
+- 渲染器读 grid，按帧重绘
+- 替换渲染器后端不需要改内核（先 Canvas2D 验证正确性，再换 WebGPU 优化性能）
+
+**D3: PTY 字节流不变**
+- 后端 Tauri 的 pty.rs 完全不动
+- WASM 内核接收 `Uint8Array` 走 `feed()`，行为对齐 xterm 的 `term.write(bytes)`
+- 后端 emit 的 `pty-output-{ws}-{pane}` 事件继续用
+
+**D4: 不复刻 xterm 全部 API，只覆盖 ridge 用到的**
+- 见 `INTEGRATION.md` 的"API 表面对照"章节
+- 砍掉的：插件系统、IDecorationsService、IBufferLine 公开 API、CanvasAddon
+- 保留语义但 API 形状不同的：选择、搜索（重新设计为字符流而非 cell 流）
+
+**D5: 增量迁移**
+- 内核 + xterm 并存验证 → 用户级实验开关 → 全量替换 → 删 xterm
+- 任何阶段可以回退到 xterm，不锁死
+
+---
+
+## 3. 当前进度（按 round 计）
+
+> 上次更新：2026-05-03（核对 patch 2026-05-02 后实际落地状态）。可执行任务列表请见 [`TASKS.md`](TASKS.md)。
+
+| Round | 范围 | 状态 |
+|---|---|---|
+| 1 | VT 内核骨架（vte 接线、grid、cursor、scrollback、SGR） | ✅ 27 测试通过 |
+| 2.1 | wcwidth 完整表 + alt screen + DECSTBM + DEC modes | ✅ 28 测试通过 |
+| 2.2 | 渲染抽象 trait + Canvas2D 后端 | ✅ `src/render/{backend.rs, canvas2d.rs, renderer.rs}` 全部落地 |
+| 2.3 | JS 表面 API（write/onData/resize/key encoder/render call） | ✅ `src/lib.rs` `TerminalKernel`/`RenderHandle` wasm-bindgen 导出，含 `pending_response`/`pending_events` 通道 |
+| 2.4 | TerminalManager (TS) + 共享 canvas 单例 + Pane.svelte 替换 | ✅ `manager.ts` + `RidgePane.svelte` + `PaneRouter.svelte`；**注**：「共享 canvas 单例」推迟到 round 3 一并做，当前每 pane 一个 `<canvas>` |
+| — | 协议补全 patch（OVERVIEW §4 列表） | ✅ 2026-05-02：ECH/ICH/DCH/REP/DECSCUSR/DSR/DA/?2026/?1004/OSC0/1/2/7/8；92 单测 + 7 集成测试 |
+| — | round 4 部分提前 | ✅ 2026-05-02：鼠标拖选（含 word/line/shift-click）、Ctrl+F 搜索（含 scrollback）、IME v2 cursor-tracking、Ctrl+click 链接；与 INTEGRATION_R2_4.md 中"已知不工作"清单背离 |
+| 3 | WebGPU 后端 + 字形 atlas（替换 Canvas2D）+ 共享 surface | ⏳ 未开始 |
+| 4 | IME v3 + scrollback bridge + reflow + 链接 affordance 收尾 | ⏳ 部分完成（mouse / IME v2 / 搜索 / Ctrl+click 已交付；反向 scrollback / reflow / IME v3 守护未做） |
+| 5 | OSC UI 接入收尾 | ⏳ 部分完成（事件通道与 store 写入已通；SplitContainer 标题渲染、HyperlinkOpen/Close 实装待验证） |
+| 6 | parking lot 重新设计 + split 保活 + 双 scrollback 去重 | ⏳ 未开始 |
+| 7 | 删除 xterm 依赖、清理 | ⏳ 未开始 |
+
+**当前实际位置：round 2.4 末尾 + round 4/5 局部提前交付**。剩余主线工作是 round 3（WebGPU + atlas + 共享 surface）以及 round 4/5 收尾（反向 scrollback、IME v3、OSC UI 验证）。round 6/7 视用户验证情况推进。
+
+---
+
+## 4. 已实现行为清单（截至 round 2.4 + 协议补全 patch 2026-05-02）
+
+### VT/ANSI 解析
+- C0 控制：BS / HT / LF / VT / FF / CR
+- CSI verb: A/B/C/D（cursor 移动）、E/F（CNL/CPL）、G/`/d（绝对定位）、H/f（光标到）、J/K（erase）、S/T（scroll）、L/M（IL/DL）、r（DECSTBM）、h/l（mode set/reset）、m（SGR）
+- **CSI cell-edit verbs（2026-05-02 补）**：X（ECH 擦字）、@（ICH 插字）、P（DCH 删字）、a（HPR）、e（VPR）、s/u（SCO 光标存/取）。这一组是 Ink/PSReadLine/readline/ratatui 做局部刷新依赖的核心动词，**不接 = 字符残留 + 错行**。详见 [PARTIAL_REDRAW_PROTOCOL.md](PARTIAL_REDRAW_PROTOCOL.md)。
+- **CSI 查询响应（2026-05-02 补）**：n（DSR-status/DSR-CPR/DECXCPR）、c/`>c`（DA primary/secondary）、t（窗口尺寸 18/19）。响应通过新的 `Terminal::pending_response` 队列回送 PTY；不接 = PowerShell 退 TUI 后 prompt 落到错行。
+- **OSC events 通道（2026-05-02 补）**：解析 OSC 0/1/2（标题）、7（CWD）、8（hyperlink）、BEL，通过新的 `Terminal::pending_events: Vec<KernelEvent>` 队列暴露给 JS。`KernelEvent` enum 用 serde tag-content 序列化为 JS 对象。`manager.ts` 在 feed 后 drain 并调 `eventHandler` 路由到 Svelte stores。已接通 CWD → `paneCwdStore`；标题/超链接/Bell 暂为占位符待 round 4-5 UI 接入。
+- ESC: 7/8（DECSC/DECRC）、D/E/M（IND/NEL/RI）、=/>（DECPAM/DECPNM）、c（RIS）
+
+### SGR
+- 0/1/2/3/4/5/7/8/9/21..29 全部 flag
+- 30..37 / 40..47 / 90..97 / 100..107 ANSI 16
+- 38;5;n / 48;5;n 256 色
+- 38;2;r;g;b / 48;2;r;g;b truecolor
+- 38:2:cs:r:g:b / 38:2:r:g:b 冒号子参数形式
+
+### 屏幕语义
+- 主屏 + alt 屏（DECSET/RST 47 / 1047 / 1049）
+- 滚动区（DECSTBM）—— SU/SD/IL/DL/IND/RI 全部区域感知
+- DECAWM pending wrap（vim 右下角字符正确）
+- 宽字符（CJK + emoji 强制宽 2）
+- 软换行标志（reflow 预留）
+
+### 模式
+- DECAWM(?7) / DECTCEM(?25) / 光标闪烁(?12)
+- 应用键盘(?1) / app keypad
+- bracketed paste(?2004)
+- **同步输出模式(?2026)（2026-05-02 补）** — kernel 追 `Modes::sync_output`；manager rAF 在 sync_output=true 时 hold frame；JS 端 150ms timeout fallback 防卡死
+- 鼠标(?9/?1000/?1002/?1003/?1004/?1006)
+- DEC origin(?6)、insert mode(4)、LNM(20)
+
+### 缓冲与回收
+- AttrTable flyweight（u16 索引去重）
+- Scrollback ring buffer，row 分配跨界回收（无 alloc churn）
+
+---
+
+## 5. 已知未实现（后续 round 处理）
+
+| 功能 | 计划 round | 备注 |
+|---|---|---|
+| 渲染（任何形式） | 2.2 | 没渲染就看不到屏幕 |
+| 键盘 → PTY 编码 | 2.3 | onData 等价物 |
+| Resize → 后端 IPC | 2.3 | 你现有 `resize_pane` 沿用 |
+| OSC 0/1/2 标题 | ✅ 2026-05-02 完成 | RidgePane 在 onEvent 把 TitleChanged/IconNameChanged 写到 `paneOscTitleStore` + `terminalTitles`，与 Pane.svelte 的 backend-event 路径并行幂等；onDestroy 清理 |
+| OSC 7 cwd | ✅ 2026-05-02 完成 | RidgePane TitleChanged 之前已接 `setPaneCwd(workspaceId, paneId, value)` |
+| OSC 8 超链接 — 数据层 + Ctrl+click | ✅ 2026-05-02 完成 | cell.rs 加 HyperlinkSpan + Row.hyperlinks Vec；parser 在 OSC 8 之间为每个 print 标记 cell（自动 coalesce 邻接同 uri）；JsTerminal::hyperlinkAt 查询；manager pointerdown 检 Ctrl+click → @tauri-apps/plugin-opener 打开 |
+| OSC 8 超链接 — 视觉下划线 + Ctrl-hover | ✅ 2026-05-02 完成 | Theme 加 hyperlink_color；新 `RenderBackend::draw_hyperlink_underlines` trait method（canvas2d 1px fill_rect at cell bottom）；renderer.tick 收集 viewport hyperlink rects 经 draw_frame 在 selection overlay 之前画；manager pointermove 检 ctrl+hyperlinkAt → `container.style.cursor = 'pointer'` |
+| IME helper textarea — v1 基础合成 | ✅ 2026-05-02 完成 | RidgePane 加 invisible textarea 钉在 pane 左下，container.pointerdown → textarea.focus；compositionstart 设 isComposing 守卫，compositionend 经 manager.write 把 e.data 送 PTY；container tabindex=-1，键盘焦点全部经 textarea；onContainerKeyDown 检 isComposing/e.isComposing 跳过|
+| IME — v2 cursor-tracking | ✅ 2026-05-02 完成 | lib.rs 暴露 `cursorRow/cursorCol`；manager `cursorPixelPosition(paneId)` 返回 `{x, y, cellH}`；RidgePane `repositionImeHelper()` 在 pointerdown→focus 之后 + compositionstart + textarea focus 时调，把 textarea 钉在光标下方一行（候选窗自然出现在那里）|
+| IME — v3 pin observer 防破坏 | 4 (远期) | 当前没有外部代码改 textarea style，所以暂不需要 MutationObserver；如果未来加了 portal 等容器变换可能需要 |
+| 选择 + 复制（鼠标拖动 + 视觉高亮） | ✅ 2026-05-02 完成 | manager 接 pointerdown/move/up，translate 像素 → cell；renderer 加 selection_bg + draw_selection_overlay，selection 变化 force redraw 防 ghost 残留 |
+| 选择 — 双击词 / 三击行 | ✅ 2026-05-02 完成 | selection.rs 加 select_word/select_line；manager 路由 e.detail 2/3；多击不进 drag 模式 |
+| 选择 — Shift-click 扩展 | ✅ 2026-05-02 完成 | manager pointerdown 检 e.shiftKey + 复用 entry.selectionStart 作为 anchor；后续 move 继续延伸（xterm 行为） |
+| 在 pane 内搜索（含 scrollback） | ✅ 2026-05-02 完成 | `src/search.rs` 模块；初版仅 viewport，2026-05-02 后续扩展到 scrollback：用 abs_row 坐标统一编码（0..sb_len = scrollback, sb_len.. = viewport），next/prev 自动 scroll viewport 把活动匹配带到顶部；活动匹配复用 selection_bg overlay 高亮 |
+| Grapheme cluster（多码点合并） | 远期 | 当前 0-width 字符直接丢弃，最常见 emoji ZWJ 序列会显示不对 |
+| Resize reflow（软换行行重排） | 远期 | 现在 resize 不重排，长行被截断 |
+| sixel / DCS 图形 | 不做 | 不在范围 |
+| ~~同步输出模式（`?2026`）~~ | ✅ 2026-05-02 完成 | Ink/lazygit 用来防止帧分撕，详见 [PARTIAL_REDRAW_PROTOCOL §4.1](PARTIAL_REDRAW_PROTOCOL.md#41-同步输出模式2026--已交付2026-05-02-后续-patch) |
+| ~~REP `CSI <n> b`（重复上一字符）~~ | ✅ 2026-05-02 完成 | Terminal 跟踪 last_printed (char,attrs)，REP 复读；详见 [PARTIAL_REDRAW_PROTOCOL §4.2](PARTIAL_REDRAW_PROTOCOL.md#42-rep-csi-n-b) |
+| ~~DECSCUSR `CSI <n> SP q`（光标形状）~~ | ✅ 2026-05-02 完成 | vim insert mode / readline 视觉切换；`Modes::cursor_shape` + renderer 直接读 |
+| OSC events 通道（typed event queue） | 5 | DSR 已有 `pending_response` 通道，OSC 需要 typed events（Title/Cwd/Hyperlink） |
+| ~~焦点事件回送（`?1004`）~~ | ✅ 2026-05-02 完成 | manager 监听 container focusin/focusout，按 mode 发 `\x1b[I`/`\x1b[O`。详见 [PARTIAL_REDRAW_PROTOCOL §4.5](PARTIAL_REDRAW_PROTOCOL.md#45-焦点事件回送) |
+
+---
+
+## 6. 风险与限制
+
+### 已识别的高风险点
+
+**R1 — 没有自动化集成测试环境** _(2026-05-02 部分缓解)_
+我（Claude）的沙箱不能跑 `wasm-pack`、不能跑你的 Tauri app。所有"看起来对"的代码每轮都要你帮忙跑 `cargo test --lib` 才能验证。
+**已缓解**：新加 `tests/` 集成测试目录（cargo 标准位置），`tests/common/mod.rs` 提供 `run_scenario / run_chunks` helpers，`tests/protocol_smoke.rs` 7 个 realistic 字节流场景（DSR-CPR、PSReadLine prompt redraw、Ink frame replace、ECH 字符残留 repro、?1049 alt-screen round-trip、OSC 8 跨 feed 持久化、ICH+DCH inline edit）。`cargo test` 一键 run 全部 99 个（92 unit + 7 integration）。后续协议补全 patch 都应附带集成场景。
+
+**R2 — 第一版性能不一定打得过 xterm + WebGL**
+内核正确性可以 round-by-round 收敛，但渲染性能要等 round 3 WebGPU + atlas 调到位。round 2.4 接入后第一次跑，**很可能比 xterm 慢 30-50%**，需要 1-2 轮调优。这不是失败，是预期内。
+
+**R3 — IME 移植踩坑**
+你 Pane.svelte 有大段 IME 修复代码（compositionend 后清空 textarea、helper-textarea pin 防止跟着光标跑）。新内核会重新踩这些坑。round 4 留了专项时间。
+
+**R4 — ConPTY reflow 协议**
+你后端的 resize-silence 机制（`pty.rs:88` 的 `RESIZE_SILENCE_WINDOW_MS`）是为 xterm 设计的。新内核需要协调一次——具体见 `BUGFIX.md` 的 B 项（自适应合批 + resize broadcast）。
+
+**R5 — 后端 4MB scrollback / 前端 2000 行 buffer 的双重存储**
+现在 xterm 自己存 2000 行 scrollback，**同时**后端 state.rs 存 4MB block。新内核接管后这层重复要消除：前端只缓存当前 viewport + 256KB tail，深翻历史走后端 `get_pane_scrollback_before` API。
+
+### 不可逆改动列表
+
+接入完成后这些不能再回滚：
+- Pane.svelte 不再 import `@xterm/*`
+- terminalRegistry.ts 改成只持有 paneId（不再持有 Terminal 实例）
+- 用户的本地工作区文件如果有 xterm 相关序列化字段会被忽略
+
+回滚成本：1-2 个 commit revert，但前提是 round 4 之后没人再改 Pane.svelte。
+
+---
+
+## 7. 文档导航
+
+- 你正在读：`OVERVIEW.md`
+- 接入步骤：`INTEGRATION.md`（最终态接入，不含分阶段过渡）
+- 主项目独立 bug 清单与 patch：`BUGFIX.md`（与本替换工作正交，可单独 merge）
