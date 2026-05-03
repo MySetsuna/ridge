@@ -4,6 +4,8 @@
 > **不含**：分阶段过渡（实验开关、xterm 并存验证）。
 > **前置**：阅读 `OVERVIEW.md` 了解整体架构。
 
+> **状态（2026-05-03 末次复核）**：rounds 1 → 7 全部落地。本文档是当时的接入契约——具体 API 名最终被实现采用：`TerminalManager` (`src/lib/terminal/manager.ts`)、`feed/onData/resize/encodeKey/render`（wasm-bindgen 暴露）、`RidgePane.svelte` 替代了原来描述的"新 Pane.svelte"。`Pane.svelte` 整文件已删除。文档体保持 verbatim 用于设计契约延续。当前现行接口入口见 `packages/ridge-term/README.md` + CLAUDE.md「Frontend」段。
+
 ---
 
 ## ⚠️ 关于本文档的诚实声明
@@ -11,6 +13,8 @@
 写这份文档时，**round 2.2 / 2.3 / 2.4 还没实现**。下面所有 `ridgeTerm.xxx()`、`createTerminalManager()` 等 API 是 **我承诺会做出的最终接口形状**，不是你今天能 `npm install` 用上的东西。
 
 我会用 ⚠️ 标出每段当前不存在的代码。文档定的是契约——后续 round 我会照这个契约写实现，如果实现时发现某个签名不可行，我会**回头改这份文档**而不是悄悄改实现。
+
+> **2026-05-03 复核更新**：rounds 1-7 全部完工。所有 ⚠️ 标记均已交付：`createTerminalManager()` 在 `manager.ts` 实现、`feed`/`onData`/`resize`/`encodeKey`/`render` 在 `lib.rs` 通过 wasm-bindgen 暴露、`Pane.svelte` 重写后又在 round 7 整体删除（被 `RidgePane.svelte` 取代，`SplitContainer` 直接 `import RidgePane from './RidgePane.svelte'`）。详见 `OVERVIEW.md` §3 + `TASKS.md` §0 + `packages/ridge-term/README.md`。
 
 ---
 
