@@ -168,6 +168,13 @@
 - **修法（已实施）**：每条测试 `#[test]` → `#[tokio::test]`、`fn name(` → `async fn name(`、production-call 后插 `.await`。tokio 已配 `macros + rt-multi-thread`（Cargo.toml 验证），无需改 dep。
 - **结果**：`cargo test --manifest-path src-tauri/Cargo.toml --lib` **73 passed; 0 failed; 0 ignored**，含 9 条 project + 5 条 git 修复后的测试全部通过。`cargo check --lib`（生产 profile）维持 0 警告。
 
+### 1.14 [LOW] `PaneState::Starting` 后端 / 前端 半实现 gap ⏳
+
+- **背景**：`state.rs:73-80` 定义 `PaneState { Idle, Busy, Starting }` + 注释「Pane 正在启动中（agent register 已发但 PTY 还没收到首条 prompt 输出时使用）」。前端有完整 UI affordance：`SplitContainer.svelte:592-599` 当 `agentState === 'starting'` 时渲染琥珀色脉动 STARTING badge；`src/lib/types.ts:9` 把 `'starting'` 列入 `AgentState` union；`commands/pane.rs:60-64` 完整 `match` 把 `Starting` 序列化为 `"starting"`。
+- **gap**：`teammate/server.rs:293-298 register_agent_to_pane` 直接 `Insert(pane_id, PaneState::Busy)`，**永远不经过 Starting**。Grep 全工程 `PaneState::Starting` 唯一构造位置 = enum 定义本身（line 80）。`Starting` UI affordance 永远不会渲染。
+- **判定**：半实现（half-built）。enum + 序列化 + UI 都在，唯一缺失是 register-time 改为 Starting + 收到首条 PTY 字节后 transition 到 Busy。设计意图明确（注释清楚说"agent register 已发但 PTY 还没收到首条 prompt 输出时使用"），但需用户决定何时 transition + 是否影响 Claude Code 集成的现有时序假设。
+- **不实施理由**：需要用户对 teammate 流程时序的判断。本 audit 仅记录，等用户决策。
+
 ---
 
 ## 2. Round 4 收尾（IME v3 / 反向 scrollback / reflow）
@@ -433,7 +440,8 @@
 - 2026-05-03 — §0 进度快照「round 4 部分提前」row 措辞收尾：原文「与 INTEGRATION_R2_4.md 中"已知不工作"清单背离——实际代码已完成」（描述早期 doc 与代码的不一致状态）。现在 INTEGRATION_R2_4.md 顶部 banner 已对齐该清单，row 改为「✅ 2026-05-02 | INTEGRATION_R2_4.md 顶部已加 2026-05-03 状态横幅同步该清单」——日期标注 + 指向 banner，去掉"背离"措辞（不再是事实）。本会话两次 gate sanity check：`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告；`pnpm check` 0 错 0 警告。`cargo test --lib` 73 passed（修复 §1.13 后稳定）。 — `3af216f`
 - 2026-05-03 — 修复 §1.13 任务条目位置错误：当时添加新任务时误插到「进度记录」chronological log section 中间（line 429，处于 2026-05-02 协议补全 patch bullet 之前），破坏了 log 的时间线 + 任务结构分层。现把 §1.13 任务条目（heading + 3 个 bullet）从 log 段移到 §1 主体末尾（§1.8 ✅ 2026-05-03 之后、§2 章前的 `---` 分隔之前），与 §1.1-§1.12 同列。Log 段恢复纯时间线流向。 — `29e164c`
 - 2026-05-03 — `OVERVIEW.md` 三处 Phase 1 stale 引用同步：(1) §3 进度表 row 112 的「与 INTEGRATION_R2_4.md ... 已知不工作 ... 清单背离」改为「INTEGRATION_R2_4.md 顶部已加 2026-05-03 状态横幅同步该清单」（与 TASKS §0 row 22 用同一措辞）；(2) §5 已知未实现表 row 180 的「Resize reflow — Phase 1 | round 4 收尾」改为「✅ 2026-05-03 | grid.rs::reflow_primary 已实现，10 条单测全绿」；(3) §7.3 分阶段交付段「**Phase 1（round 4 收尾）**」改为「**Phase 1 ✅ 2026-05-03**」。三处都是 Phase 1 落地后留下的过时 future-tense。 — `3769aa3`
-- 2026-05-03 — 全文档 grep `round 4 收尾|Phase 1.*round 4|Phase 1.*未实现` 收尾扫描：仅余 2 处合理命中——`PARTIAL_REDRAW_PROTOCOL.md:71` 行的「Phase 1 ... 未实现」是 §2 表「现象 / 协议根因 / 状态」三列约定中的"原始根因"列描述（与同表 ECH/ICH/DCH/REP 等其他行的「未实现」并列，是历史根因不是当前状态）；TASKS.md 内同字符串只在自我引用的进度日志条目中出现（quote 旧措辞为修复对照）。不构成 stale 引用。
+- 2026-05-03 — 全文档 grep `round 4 收尾|Phase 1.*round 4|Phase 1.*未实现` 收尾扫描：仅余 2 处合理命中——`PARTIAL_REDRAW_PROTOCOL.md:71` 行的「Phase 1 ... 未实现」是 §2 表「现象 / 协议根因 / 状态」三列约定中的"原始根因"列描述（与同表 ECH/ICH/DCH/REP 等其他行的「未实现」并列，是历史根因不是当前状态）；TASKS.md 内同字符串只在自我引用的进度日志条目中出现（quote 旧措辞为修复对照）。不构成 stale 引用。 — `9ff1ef2`
+- 2026-05-03 — 新增 §1.14 跟踪条目「PaneState::Starting 后端 / 前端 半实现 gap」。本会话审计时发现：enum 定义（`state.rs:73-80`）+ 序列化 match（`commands/pane.rs:60-64`）+ TS union（`types.ts:9`）+ UI affordance（`SplitContainer.svelte:592-599` 琥珀色 STARTING badge）四件齐全，但 `teammate/server.rs:293-298 register_agent_to_pane` 直接 Idle→Busy，永不经过 Starting。Grep 全工程 `PaneState::Starting` 唯一构造点 = enum 定义本身。半实现：UI 永不渲染。设计意图清楚（agent register 已发但 PTY 还没收到首条 prompt 输出时用 Starting），但实施需用户对 teammate 流程时序判断（影响 Claude Code 集成的 Idle→Busy 当前假设）。本 audit 仅登记，不动代码。
 
 - 2026-05-02 — 一系列协议补全 patch：ECH/ICH/DCH/REP/DECSCUSR/DSR/DA/?2026/?1004/OSC0/1/2/7/8、鼠标拖选（含 word/line/shift-click）、Ctrl+F 搜索、IME v2 cursor-tracking、Ctrl+click OSC 8 链接 — 详见 git log
 
