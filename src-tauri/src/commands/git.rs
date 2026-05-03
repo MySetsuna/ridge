@@ -1799,40 +1799,40 @@ mod scan_tests {
         super::canonicalize_cwd(p)
     }
 
-    #[test]
-    fn finds_repo_at_the_scan_root() {
+    #[tokio::test]
+    async fn finds_repo_at_the_scan_root() {
         let td = TempDir::new("root");
         td.mkrepo("");
-        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(1));
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(1)).await;
         assert_eq!(out, vec![norm(&td.path)]);
     }
 
-    #[test]
-    fn finds_nested_repos_up_to_max_depth() {
+    #[tokio::test]
+    async fn finds_nested_repos_up_to_max_depth() {
         let td = TempDir::new("nested");
         let a = td.mkrepo("a");
         let b = td.mkrepo("sub/b");
-        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4));
+        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4)).await;
         out.sort();
         let mut expected = vec![norm(&a), norm(&b)];
         expected.sort();
         assert_eq!(out, expected);
     }
 
-    #[test]
-    fn does_not_recurse_into_found_repo() {
+    #[tokio::test]
+    async fn does_not_recurse_into_found_repo() {
         // A repo inside a repo should only surface the outer one — matches the
         // "`.git` marks a boundary" contract at line 228 (`continue`).
         let td = TempDir::new("boundary");
         let outer = td.mkrepo("outer");
         // Nested `.git` inside `outer/sub` — scanner should NOT report it.
         std::fs::create_dir_all(outer.join("sub/.git")).unwrap();
-        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4));
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4)).await;
         assert_eq!(out, vec![norm(&outer)]);
     }
 
-    #[test]
-    fn skips_node_modules_and_target_trees() {
+    #[tokio::test]
+    async fn skips_node_modules_and_target_trees() {
         let td = TempDir::new("skip");
         // Planting a repo inside node_modules / target should NOT be discovered,
         // saving us a huge BFS on a typical monorepo install.
@@ -1841,20 +1841,20 @@ mod scan_tests {
         td.mkrepo(".idea/inline-git");
         // …but a real repo alongside should still show up.
         let real = td.mkrepo("app");
-        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4));
+        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4)).await;
         out.sort();
         assert_eq!(out, vec![norm(&real)]);
     }
 
-    #[test]
-    fn respects_max_depth() {
+    #[tokio::test]
+    async fn respects_max_depth() {
         let td = TempDir::new("depth");
         let deep = td.mkrepo("l1/l2/l3/l4/l5");
         // Depth 2 means we can descend 2 levels from root; repo at L5 is out of reach.
-        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(2));
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(2)).await;
         assert!(out.is_empty(), "expected empty, got {out:?}");
         // Depth 5 finds it.
-        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(5));
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(5)).await;
         assert_eq!(out, vec![norm(&deep)]);
     }
 }

@@ -722,58 +722,58 @@ mod tests {
     }
 
     // ── delete_path ─────────────────────────────────────────────────────────
-    #[test]
-    fn delete_path_removes_file() {
+    #[tokio::test]
+    async fn delete_path_removes_file() {
         let td = TempDir::new("rm-file");
         let target = td.path_string("a.txt");
         create_file(target.clone()).unwrap();
-        delete_path(target.clone()).unwrap();
+        delete_path(target.clone()).await.unwrap();
         assert!(!std::path::Path::new(&target).exists());
     }
 
-    #[test]
-    fn delete_path_removes_directory_recursively() {
+    #[tokio::test]
+    async fn delete_path_removes_directory_recursively() {
         let td = TempDir::new("rm-dir");
         let dir = td.path_string("dir");
         create_directory(dir.clone()).unwrap();
         create_file(td.path_string("dir/x.txt")).unwrap();
         create_file(td.path_string("dir/sub/y.txt")).unwrap();
-        delete_path(dir.clone()).unwrap();
+        delete_path(dir.clone()).await.unwrap();
         assert!(!std::path::Path::new(&dir).exists());
     }
 
-    #[test]
-    fn delete_path_reports_missing() {
+    #[tokio::test]
+    async fn delete_path_reports_missing() {
         let td = TempDir::new("rm-miss");
-        let err = delete_path(td.path_string("nothing")).unwrap_err();
+        let err = delete_path(td.path_string("nothing")).await.unwrap_err();
         assert!(err.contains("路径不存在"));
     }
 
     // ── copy_path ───────────────────────────────────────────────────────────
-    #[test]
-    fn copy_path_copies_single_file() {
+    #[tokio::test]
+    async fn copy_path_copies_single_file() {
         let td = TempDir::new("cp-f");
         let from = td.path_string("a.txt");
         let to = td.path_string("b.txt");
         std::fs::write(&from, b"hello").unwrap();
-        copy_path(from.clone(), to.clone(), None).unwrap();
+        copy_path(from.clone(), to.clone(), None).await.unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"hello");
         assert!(std::path::Path::new(&from).exists(), "copy preserves source");
     }
 
-    #[test]
-    fn copy_path_refuses_overwrite_by_default() {
+    #[tokio::test]
+    async fn copy_path_refuses_overwrite_by_default() {
         let td = TempDir::new("cp-clash");
         let from = td.path_string("a.txt");
         let to = td.path_string("b.txt");
         create_file(from.clone()).unwrap();
         create_file(to.clone()).unwrap();
-        let err = copy_path(from, to, None).unwrap_err();
+        let err = copy_path(from, to, None).await.unwrap_err();
         assert!(err.contains("目标已存在"));
     }
 
-    #[test]
-    fn copy_path_recursive_for_directory() {
+    #[tokio::test]
+    async fn copy_path_recursive_for_directory() {
         let td = TempDir::new("cp-d");
         let src = td.path_string("src");
         let dst = td.path_string("dst");
@@ -782,7 +782,7 @@ mod tests {
         std::fs::create_dir_all(td.join("src/sub")).unwrap();
         std::fs::write(td.join("src/sub/b.txt"), b"B").unwrap();
 
-        copy_path(src.clone(), dst.clone(), None).unwrap();
+        copy_path(src.clone(), dst.clone(), None).await.unwrap();
 
         assert_eq!(std::fs::read(td.join("dst/a.txt")).unwrap(), b"A");
         assert_eq!(std::fs::read(td.join("dst/sub/b.txt")).unwrap(), b"B");
@@ -791,37 +791,37 @@ mod tests {
     }
 
     // ── move_path ───────────────────────────────────────────────────────────
-    #[test]
-    fn move_path_moves_file_and_clears_source() {
+    #[tokio::test]
+    async fn move_path_moves_file_and_clears_source() {
         let td = TempDir::new("mov-f");
         let from = td.path_string("a.txt");
         let to = td.path_string("b.txt");
         std::fs::write(&from, b"X").unwrap();
-        move_path(from.clone(), to.clone()).unwrap();
+        move_path(from.clone(), to.clone()).await.unwrap();
         assert!(!std::path::Path::new(&from).exists());
         assert_eq!(std::fs::read(&to).unwrap(), b"X");
     }
 
-    #[test]
-    fn move_path_moves_directory_recursively() {
+    #[tokio::test]
+    async fn move_path_moves_directory_recursively() {
         let td = TempDir::new("mov-d");
         let src = td.path_string("src");
         let dst = td.path_string("dst");
         create_directory(src.clone()).unwrap();
         std::fs::write(td.join("src/x.txt"), b"x").unwrap();
-        move_path(src.clone(), dst.clone()).unwrap();
+        move_path(src.clone(), dst.clone()).await.unwrap();
         assert!(!std::path::Path::new(&src).exists());
         assert_eq!(std::fs::read(td.join("dst/x.txt")).unwrap(), b"x");
     }
 
-    #[test]
-    fn move_path_refuses_when_target_exists() {
+    #[tokio::test]
+    async fn move_path_refuses_when_target_exists() {
         let td = TempDir::new("mov-clash");
         let a = td.path_string("a.txt");
         let b = td.path_string("b.txt");
         create_file(a.clone()).unwrap();
         create_file(b.clone()).unwrap();
-        let err = move_path(a, b).unwrap_err();
+        let err = move_path(a, b).await.unwrap_err();
         assert!(err.contains("目标已存在"));
     }
 }

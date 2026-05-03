@@ -415,14 +415,14 @@
 - 2026-05-03 — 删除 `state::PaneScrollback::head_seq()` 死方法：注释声称「used by phase-3 scroll-to-tail logic; expose now to keep API stable」，但 Phase 3（§2.1 反向 scrollback bridge）实际走 `get_pane_scrollback_tail` 返回的 `start_seq`/`at_oldest` 字段，never 经 `head_seq`。`Grep head_seq\b|\.head_seq\(` 仅定义点，11 个 state 消费者全部不调用。删除 `#[allow(dead_code)]` + 注释 + 函数体（4 行）。`tail_seq` 仍保留为活跃 API 对偶。`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告。 — `5d5a3d5`
 - 2026-05-03 — CLAUDE.md「Cargo zero-warning gate」段同步：把「as of round 19」（陈旧轮次引用）换成「last verified 2026-05-03」(实跑 `cargo build --lib --manifest-path src-tauri/Cargo.toml` 验证 0 警告)；并补一条规则细则——当 `#[allow(dead_code)]` 注释引用「now-shipped phase / round / mechanism」时（比如 Phase 3 已通过另一条路径 ship），该 justification 已死，应 grep 验证后删除。这条规则正是本轮删 head_seq / get_pane_scrollback shim 的指导原则。 — `131ab2a`
 - 2026-05-03 — 删除 `commands/git.rs::get_git_info` 死 Tauri command stub：`#[tauri::command]` 标注但 `lib.rs invoke_handler!` 从未注册，前端 `src/` 下 0 处 `invoke('get_git_info', ...)` 引用（Grep 确认），body 仅 `Err("Use get_git_info_with_cwd instead")` 占位。删除 doc comment + `#[allow(dead_code)]` + `#[tauri::command]` + 函数体共 7 行。`get_git_info_with_cwd` 仍为活跃路径并已注册（lib.rs:262）。`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告。同样套用 CLAUDE.md 新加的规则（justification 引用过期机制时 grep + 删除）。 — `ac201ca`
-- 2026-05-03 — 删除 `engine/cwd.rs` 三个未使用的字节查找辅助 `find_subsequence` / `find_byte` / `find_byte_either_with_value`：注释自称「still-tested ergonomic wrappers」但 Grep `cwd.rs` 内只有定义点，无任何调用方（包括 #[cfg(test)] 块）。三个都是 `fn`（非 `pub fn`），文件外不可见。`find_byte_either`（无 `_with_value` 后缀）仍由 `parse_cwd_from_output:180` 使用并保留。`engine/title.rs` 自带独立同名 `find_subsequence`（签名不同），不受影响。共删 28 行（含 `#[allow(dead_code)]` × 3 + 注释段）。`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告。
+- 2026-05-03 — 删除 `engine/cwd.rs` 三个未使用的字节查找辅助 `find_subsequence` / `find_byte` / `find_byte_either_with_value`：注释自称「still-tested ergonomic wrappers」但 Grep `cwd.rs` 内只有定义点，无任何调用方（包括 #[cfg(test)] 块）。三个都是 `fn`（非 `pub fn`），文件外不可见。`find_byte_either`（无 `_with_value` 后缀）仍由 `parse_cwd_from_output:180` 使用并保留。`engine/title.rs` 自带独立同名 `find_subsequence`（签名不同），不受影响。共删 28 行（含 `#[allow(dead_code)]` × 3 + 注释段）。`cargo check --manifest-path src-tauri/Cargo.toml` 0 错 0 警告。 — `f80ece3`
+- 2026-05-03 — §1.13 ✅ 修复 `commands/project.rs` 9 条 + `commands/git.rs` 5 条 async 测试（共 14 条）的预存编译错误：批量 `#[test]` → `#[tokio::test]`、`fn` → `async fn`、调用末尾插 `.await`。`cargo test --manifest-path src-tauri/Cargo.toml --lib` 现在 **73 passed; 0 failed**（修复前 23 errors 完全无法编译 lib test profile）。tokio 已具 `macros + rt-multi-thread` 特性，无需改 Cargo.toml。
 
-### 1.13 [LOW] `cargo test --lib` 中 `commands/project.rs` move_path 测试预存编译错误 ⏳
+### 1.13 [LOW] `cargo test --lib` 中 `commands/project.rs` + `git.rs` async 测试预存编译错误 ✅ 2026-05-03
 
-- **背景**：本会话审计 dead code 时，`cargo test --manifest-path src-tauri/Cargo.toml --lib` 报 23 个错误，全部位于 `src/commands/project.rs:812+` 的 `move_path` 测试块——`move_path` 函数已改为 `async fn`，但旧测试仍走 `move_path(src, dst).unwrap()` 同步语义（应该 `.await.unwrap()`）。
-- **影响**：`cargo build --lib`（生产 profile）0 错 0 警告，CI gate 不受影响。但 `cargo test --lib` 全量测试无法跑——只能 `cargo test --lib <pattern>` 绕开，或不跑 lib 测试。
-- **修法**：在每个 `move_path(...)` 调用后追加 `.await`；测试函数若不是 `#[tokio::test]` 需先改成 async。粗看 23 处大概 5-6 个 test fn 的多次调用。
-- **决定**：本轮先记录，留 dedicated 修。修法机械，但需要核对每个 test fn 的 attribute（`#[test]` vs `#[tokio::test]`）。
+- **背景**：本会话审计 dead code 时，`cargo test --manifest-path src-tauri/Cargo.toml --lib` 报 23 个错误。`commands/project.rs::{delete_path, copy_path, move_path}` 9 条测试 + `commands/git.rs::find_git_repos_below` 5 条测试（共 14 条 async 函数测试）走 `#[test]` + 同步 `.unwrap()` 语义，但函数已是 `pub async fn`。
+- **修法（已实施）**：每条测试 `#[test]` → `#[tokio::test]`、`fn name(` → `async fn name(`、production-call 后插 `.await`。tokio 已配 `macros + rt-multi-thread`（Cargo.toml 验证），无需改 dep。
+- **结果**：`cargo test --manifest-path src-tauri/Cargo.toml --lib` **73 passed; 0 failed; 0 ignored**，含 9 条 project + 5 条 git 修复后的测试全部通过。`cargo check --lib`（生产 profile）维持 0 警告。
 - 2026-05-02 — 一系列协议补全 patch：ECH/ICH/DCH/REP/DECSCUSR/DSR/DA/?2026/?1004/OSC0/1/2/7/8、鼠标拖选（含 word/line/shift-click）、Ctrl+F 搜索、IME v2 cursor-tracking、Ctrl+click OSC 8 链接 — 详见 git log
 
 ---
