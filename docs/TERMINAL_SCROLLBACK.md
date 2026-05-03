@@ -1,5 +1,21 @@
 # Terminal Scrollback — Current State & Virtual-Scroll Plan
 
+> **Status (2026-05-03):** the "Baseline" section below is the **historical**
+> as-of-round-16 (2026-04-25) snapshot that justified the redesign. Phases
+> 1–3 of the plan have shipped (see "Phase-plan" table) and xterm was
+> retired in round 7. For the current scrollback architecture see:
+>
+> - **Backend block model:** `src-tauri/src/state.rs::PaneScrollback`
+>   (64 KiB blocks, 4 MiB cap, monotonic `seq`).
+> - **IPC commands:** `get_pane_scrollback_tail` (newest), `get_pane_scrollback_before`
+>   (load older). The legacy `get_pane_scrollback` shim was removed
+>   post-round-7.
+> - **Frontend replay:** `RidgePane.svelte` mount-time tail replay +
+>   `manager.prependScrollback` for `Shift+PageUp` paging past the wasm
+>   kernel boundary (TASKS §2.1).
+>
+> Below text is preserved verbatim for design-history continuity.
+
 Last reviewed: round 16 (2026-04-25).
 
 This document captures what the PTY / xterm scrollback pipeline looks like
