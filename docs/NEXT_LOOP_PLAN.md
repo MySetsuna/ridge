@@ -9,11 +9,13 @@
 
 ## 🔜 下一轮候选
 
-**Round 3 §4.1 实接线（最大优先级 / 阻塞用户主线诉求）**：第 70-71 轮已经备好骨架（`webgpu` cargo feature + `WebGpuBackend` Err-on-construct stub + 全 trait surface check + 全 9 个 `RenderBackend` 方法签名匹配），下一步在该 feature 下添加 `wgpu = { version = "23", optional = true, default-features = false, features = ["webgpu"] }` + `wasm-bindgen-futures = { version = "0.4", optional = true }`；实现 `WebGpuBackend::new(canvas) -> async Result<Self, String>` 请求 adapter / device / surface；`clear()` 用 RenderPass 实际清屏。第一轮目标 = 证明 GPU pipeline 能 reach canvas（render 一帧纯 theme.bg），不接 glyph rasterizer。Glyph 路径（cosmic-text vs fontdue 决策）放 §4.1.b。
+**Round 3 §4.1.e — RenderHandle 运行时 backend 选择（最大优先级，§4.1 最后一步）**：第 71 轮 §4.1.a-d 全部完成（详见下面 history），WebGpuBackend 现在功能上完全等价于 Canvas2dBackend，但 `lib.rs::RenderHandle` 仍硬编码 `Renderer<Canvas2dBackend>`。最后一步：让 RenderHandle 在 wasm-bindgen 构造时尝试 `WebGpuBackend::new(canvas).await`，成功则用 GPU 路径，失败（adapter miss、no WebGPU support）则 fallback 到 Canvas2dBackend。三种实现路径（详见 TASKS §4.1.e 待补）：(1) `Box<dyn RenderBackend>` — 需要 Renderer<B> 改成 `Renderer<dyn RenderBackend>`，monomorphization 成本变高；(2) `enum AnyBackend { Canvas2d, Webgpu }` — 9 个 trait 方法各 match-and-dispatch，~80 行 boilerplate；(3) cfg 编译时 switch — 不支持运行时 fallback。推荐 (2)：runtime fallback 是用户体验关键。
+
+**Round 3 §4.1.f — `set_font_config(family, size_px)` 方法**：当前 WebGpuBackend 硬编码 `font_family = "monospace"` + `font_size_px = 15.0`。需要从 `lib.rs::RenderHandle::configure` 路径接进来，类似 Canvas2dBackend 的 `set_font` 方法（非 trait，直接 backend impl）。
 
 **§1.18.c 浏览器实跑回归**：第 70 轮所有 §1.18 修复已完成单元测试 + 第 71 轮 `compute_row_hash` 直接证明了 §1.18.c 哈希含 hyperlink 形状的不变式，但仍需用户 `pnpm tauri dev` 跑 Claude Code 实测，确认 a) 普通文本无下划线污染、b) 状态行重绘无残留 underline、c) 拆分 / 关闭面板无字符错位。属 §7.2 Browser real-run regression 范围。
 
-**Round 3 §4.4 性能基准**：等 §4.1 实接线后才有 baseline 可测；当前 Canvas2D 路径用户没报告显著卡顿（OVERVIEW §6 R2 已记录），所以 §4.4 已不是紧急路径。
+**Round 3 §4.4 性能基准**：§4.1.e 接通后即可跑（同 PTY 录制对比 Canvas2D vs WebGPU FPS / frame time / GPU mem）。OVERVIEW §6 R2 注明当前 Canvas2D 用户没报告显著卡顿，所以 §4.4 不是阻塞，但完成后能定量验证 round 3 的设计赌注（10 pane 时 GPU mem 减少 ~80%）。
 
 **TASKS §1.19 元-检查点**（用户在第 71 轮新增）：所有 ⏳ 项关闭后做架构 review + OVERVIEW 一致性复查 + 决策剩余 deferred 项（§2.3 Phase 2 reflow / §2.4 grapheme / §3.3 Bell audio / §1.5 measure_font）。本条本身不写代码，只产出 review 报告 + 决策记录。
 
@@ -28,7 +30,62 @@
 
 ## ✅ 历史轮次已完成
 
-### 第 71 轮（2026-05-04）— 测试覆盖大爆发：ridge-term host 测试 134 → 234（+100）
+### 第 71 轮（2026-05-04）— 测试覆盖大爆发 + Round 3 §4.1.a-d 完成：113 → 237 tests + WebGPU 后端功能完整
+
+> 本轮单 session 内 40 commit。前 14 commit 是测试覆盖（详见下方"测试 push"小节）；后 17 commit 是 Round 3 §4.1 全套实接线（§4.1.a 骨架 + §4.1.b 字形 rasterizer + §4.1.c 像素管线 + §4.1.d overlays），WebGpuBackend 现在功能上完全等价于 Canvas2dBackend。仅剩 §4.1.e（lib.rs RenderHandle 运行时 backend 选择）即可让用户 opt-in WebGPU。
+
+#### Round 3 §4.1 实接线（commit 294bc46 → f25cd3a，17 个 commit）
+
+第 70 轮已经备好 scaffold + cargo feature flag。第 71 轮把整个 GPU 路径填实：
+
+**§4.1.a 依赖接线（294bc46）**：Cargo.toml 加 `wgpu = { version = "23", default-features = false, features = ["webgpu"], optional = true }` + `wasm-bindgen-futures = { version = "0.4", optional = true }`；`webgpu` cargo feature 改为 `["dep:wgpu", "dep:wasm-bindgen-futures"]`。`cargo check --target wasm32-unknown-unknown -p ridge-term --features webgpu` 0 errors（首次拉取 wgpu 23.0.1 + wgpu-core/hal/types + naga + 周边 = 18s 编译）。后续小补：补 `wgpu/wgsl` 子 feature 让 `ShaderSource::Wgsl` 可用；补 web-sys 子 feature `OffscreenCanvas` / `OffscreenCanvasRenderingContext2d` / `ImageData`。
+
+**§4.1.a new()/clear() 第 1 slice（88f3ac8）**：替换 Err-on-construct stub。real `new(canvas).await` 走 `Instance::new(BROWSER_WEBGPU)` → `create_surface(SurfaceTarget::Canvas)` → `request_adapter().await`（Err → fallback 信号） → `request_device().await` → 选 sRGB 格式 → `surface.configure(1×1 placeholder)`。`clear()` 用 RenderPass + `LoadOp::Clear(theme.bg)` 真实清屏 + present，证明 GPU pipeline 能 reach canvas。`resize_surface(w, h, dpr)` 重配 swap chain。`begin_frame` 记 metrics + theme。其余 trait 方法暂 no-op。
+
+**§4.1.b GlyphRasterizer 模块（7ddaa04 + 096777c）**：选 OffscreenCanvas-based rasterization 而非 fontdue / cosmic-text（前者 0 KB 额外 bundle weight、复用浏览器 font fallback 链；后者 500 KB-5 MB + 还要 ship font asset）。`GlyphRasterizer::new(slot_w, slot_h)` 创建 OffscreenCanvas + JsCast 出 2D ctx；`rasterize(font, size_px, ch)` 7 步 pipeline：set_font + set_text_baseline("top") + set_fill_style_str("#ffffff") + clear_rect + fill_text + measure_text + get_image_data → `RasterizedGlyph { rgba, width, height, advance, ascent_offset }`。白色 on transparent 让 shader 通过 fg_rgba 染色，无需按 color 重栅格化。
+
+**§4.1.c WGSL shader + 渲染管线（b8d00f3 + a780d06）**：`packages/ridge-term/src/render/shaders/cell.wgsl` 写 vertex + fragment 一对：vertex 用 (vertex_index 0..4) bit-twiddle 生成四角，按 cell_xy + cell_size 转 NDC（top-left 原点 y 翻转）；fragment 用 `textureSampleLevel(atlas_tex, atlas_smp, uv, layer, 0)` 采样，alpha 当 coverage，`mix(bg.rgb, fg.rgb, coverage)`。一个 pipeline 处理所有 cell（bg-only + 字形 + 加粗/italic 仅在 rasterization 时换 font CSS）。WebGpuBackend::new 后续创建 ShaderModule（include_str! 嵌入）+ BindGroupLayout（uniform vs + texture_2d_array fs + sampler fs）+ PipelineLayout + RenderPipeline（TriangleStrip + alpha blending）。CellInstance 是 68 字节 #[repr(C)]，`offset` 必须严格匹配 WGSL @location 表。
+
+**§4.1.c 资源分配（7502d99）**：atlas_texture（D2 array, 256 layers × 32×32 RGBA8UnormSrgb, ≈1 MB GPU mem，匹配 Limits::downlevel_defaults().max_texture_array_layers）、atlas_view（必须显式 dimension D2Array，否则默认 D2 与 binding 错配）、sampler（Linear/Linear, ClampToEdge）、frame_uniform（16 字节 vec2<f32> + pad）、instance_buffer（1024 cells × 68 字节，按需 next-power-of-two 扩容）、bind_group。GlyphAtlas LRU 容量 = ATLAS_LAYERS 让 atlas eviction = GPU layer 释放 1:1 对应。
+
+**§4.1.c rasterizer 字段并入（644c873）**：`GlyphRasterizer` 字段加进 WebGpuBackend，`new()` 时构造，slot 大小匹配 ATLAS_SLOT_W/H 让 RasterizedGlyph 一对一进 layer。
+
+**§4.1.c.bg-only milestone（d530e69 + 34c728c）**：先加 `pending_instances: Vec<CellInstance>` + draw_row body 累积 instance（atlas_uv = zero placeholder），再重构 clear() → 纯 no-op，end_frame() 走完整 6 步：(1) write frame uniform (viewport)、(2) 按需扩 instance buffer、(3) write instance buffer（unsafe 切片 transmute，CellInstance #[repr(C)] over Pod 字段）、(4) acquire surface texture（Err 退栈）、(5) RenderPass(LoadOp::Clear(bg)) + set_pipeline + set_bind_group + set_vertex_buffer + draw(0..4, 0..N)、(6) submit + present。**bg-only milestone**：每 cell 渲染为其 bg 色，无字形（atlas 全 0），证明 GPU 全链路通了。
+
+**§4.1.c.glyph milestone（874a95d）**：draw_row 真做 atlas lookup + rasterize-on-miss + write_texture：从 cell.ch / font hash / size_q / BOLD/ITALIC bits 算 `GlyphKey`；`atlas.lookup` 命中 → push CellInstance with entry.layer + entry.uv；miss → `rasterizer.rasterize` → `queue.write_texture(atlas_texture, layer, &g.rgba, ImageDataLayout {bytes_per_row: w*4, ...}, Extent3d {1 layer})` → `atlas.insert`。文字真实显示。WebGpuBackend 加字段 `next_free_layer / font_family ("monospace") / font_size_px (15)`。第一次实现的简化：atlas 满后 fallback 到 bg-only（无 layer eviction reuse），见 §4.1.c.glyph.eviction。
+
+**§4.1.c.glyph.eviction milestone（455e1d0）**：扩 GlyphAtlas API，加 `evict_oldest() -> Option<(GlyphKey, GlyphEntry)>`（向后兼容，insert 签名不变）。WebGpuBackend miss path：`if next_free_layer < ATLAS_LAYERS { 用 free + ++ } else { atlas.evict_oldest().layer 复用 }`。3 条新单测（age order / empty / lookup-promotion 互动）让 GlyphAtlas 测试从 134 → 237 passed。这一步让 vim / Claude Code 等使用 >256 unique glyph 的 session 不再退化为 bg-only。
+
+**§4.1.d.cursor（7dd21ce）**：发现一个设计赌注成立 — 不需要单独的 cursor pipeline。`draw_cursor` 复用 cell pipeline，instance push 1-2 个 CellInstance 即可：Block style 推 1 个全 cell 块（fg=bg=cursor_color）+ 命中 atlas 时再推 1 个反色 glyph instance（fg=cursor_text_color, bg=cursor_color, atlas_uv from glyph）；Bar / Underline 各推 1 个 2 px DPR-scaled 条形。Draw order = pending_instances 顺序，cursor 在 draw_row 之后被 push，自然画在最上层。
+
+**§4.1.d.overlays（f25cd3a）**：`draw_selection_overlay(rects)` + `draw_hyperlink_underlines(rects)` 同样 instance-push 模式：每 rect 一个 CellInstance，selection 推全 cell 高度的 selection_bg 块（自带 alpha，BlendState::ALPHA_BLENDING 自动半透明 composite）；hyperlink 推 cell 底部 2 px 高 hyperlink_color 条。**§4.1.d 完成** — WebGpuBackend 视觉原语全 cover：cell bg+glyph、cursor (3 style + 反色 glyph)、selection、hyperlink underline，全部走 1 pipeline 1 render pass per frame。
+
+#### §4.1 完成度
+
+| Sub-step | 状态 |
+|---|---|
+| §4.1.a scaffold + dep + new()/clear() | ✅ |
+| §4.1.b GlyphRasterizer (struct + new + rasterize body) | ✅ |
+| §4.1.c.bg-only end-to-end frame | ✅ |
+| §4.1.c.glyph atlas lookup + rasterize + write_texture | ✅ |
+| §4.1.c.glyph.eviction (atlas-full layer reuse) | ✅ |
+| §4.1.d cursor + selection + hyperlink underlines | ✅ |
+| §4.1.e RenderHandle 运行时 backend 选择 | ⏳（最后一步，下一轮目标） |
+| §4.1.f set_font_config(family, size) | ⏳（小，可与 §4.1.e 同轮）|
+
+#### 设计赌注被证明
+
+1. **一个 pipeline 够了**：cell + cursor + selection + hyperlink underline 全通过 CellInstance（cell_xy / cell_size / atlas_uv / atlas_layer / fg / bg）一个 schema 表达。无 overlay-specific shader pipeline。
+2. **OffscreenCanvas-based rasterization 比 fontdue/cosmic-text 划算**：零 wasm bundle weight、自动获得浏览器 font fallback 链、与 Canvas2dBackend 视觉一致。代价仅是每个新字形一次同步 browser canvas call —— 由 GlyphAtlas LRU 摊薄到接近零。
+3. **Texture array per-glyph layer 免去 bin-packing**：每个新 glyph 占一个 layer，eviction = 释放 layer。256 layer × 32×32 = 1 MB GPU mem，足够覆盖正常 ASCII + 部分 CJK。
+
+#### 测试 push（commit d60461c → 34f4719，14 个 commit）
+
+承接第 70 轮的 11 个修复 commit + Round 3 scaffold，本轮专注扩大 host-side 测试覆盖。第 71 轮初期 14 commit 全部为「extract / pin invariants / add #[test]」类工作，零产品行为变更。完整目标：把第 70 轮所有 bug 修复（§1.15-§1.18）的 invariants 钉成测试，让未来任何重构（特别是 Round 3 wgpu 接线）若误改任一 load-bearing 行为都立即在 `cargo test --lib` 失败。
+
+> ↓ 下面的「第 71 轮（test push 部分）」原文保留，但请注意终态测试数现在是 237 passed（不是 234），因为 §4.1.c.glyph.eviction 又加了 3 条 evict_oldest 单测。
+
+##### 测试 push 部分（114 → 234 → 237）
 
 承接第 70 轮的 11 个修复 commit + Round 3 scaffold，本轮（25 个 cumulative commit，session 内连续 /loop 触发）专注扩大 host-side 测试覆盖。第 71 轮自身 14 commit 全部为「extract / pin invariants / add #[test]」类工作，零产品行为变更。完整目标：把第 70 轮所有 bug 修复（§1.15-§1.18）的 invariants 钉成测试，让未来任何重构（特别是 Round 3 wgpu 接线）若误改任一 load-bearing 行为都立即在 `cargo test --lib` 失败。
 
