@@ -600,6 +600,94 @@ mod tests {
         assert!(t.take_pending_events().is_empty());
     }
 
+    // ─── OSC 8 hyperlink lifecycle vs partial-erase paths ──────────────
+    // TASKS §1.18.b: pre-fix, erase_in_line / erase_in_display / ECH
+    // wiped cells but left HyperlinkSpan untouched, so the renderer's
+    // hyperlink-underline pass painted underlines on now-blank cells.
+    // Claude Code emits these escapes heavily for status-line redraws.
+    #[test]
+    fn csi_2k_erases_hyperlink_spans_on_line() {
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
+        // CSI 2 K: erase entire line. Cursor row is 0 (still on row 0
+        // since "hello" was 5 chars in a 20-col grid).
+        t.feed(b"\x1b[2K");
+        let row = t.grid().row(0).unwrap();
+        assert!(row.hyperlinks.is_empty(), "CSI 2K must clear hyperlink spans");
+    }
+
+    #[test]
+    fn ech_clips_hyperlink_span_tail_when_erase_overlaps_end() {
+        // Hyperlink covers cols 0..5 ("hello"). Move cursor to col 3
+        // (CSI 4 G is 1-based → col index 3) and ECH 5 — wipes cols 3..8,
+        // which is past the row width but clamped. Span tail clipped to col 3.
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
+        t.feed(b"\x1b[4G\x1b[5X");
+        let row = t.grid().row(0).unwrap();
+        assert_eq!(row.hyperlinks.len(), 1);
+        let span = &row.hyperlinks[0];
+        assert_eq!(span.col_start, 0);
+        assert_eq!(span.col_end, 3, "tail clipped to ECH start");
+    }
+
+    #[test]
+    fn ech_drops_hyperlink_span_when_erase_engulfs_it() {
+        // Span at cols 0..5; ECH 10 from col 0 wipes cols 0..10. Span
+        // entirely inside erase window — drop.
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
+        t.feed(b"\x1b[1G\x1b[10X");
+        let row = t.grid().row(0).unwrap();
+        assert!(row.hyperlinks.is_empty());
+    }
+
+    #[test]
+    fn ech_drops_hyperlink_span_when_erase_punches_middle_hole() {
+        // Span at cols 0..10 ("helloworld"); ECH from col 4 with N=2
+        // wipes cols 4..6 — middle hole. We can't split into two spans
+        // mid-`retain`, so we drop the whole span (matches xterm UX).
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://example.com\x07helloworld\x1b]8;;\x07");
+        t.feed(b"\x1b[5G\x1b[2X");
+        let row = t.grid().row(0).unwrap();
+        assert!(row.hyperlinks.is_empty(), "middle-hole drops the span");
+    }
+
+    #[test]
+    fn ech_clips_hyperlink_span_head_when_erase_overlaps_start() {
+        // Span at cols 5..10 (move cursor to col 6 first, write "world");
+        // ECH 3 from col 4 wipes cols 4..7. Span head clipped forward to col 7.
+        let mut t = Terminal::new(2, 20, 0);
+        // 5 leading blanks then "world" with hyperlink:
+        t.feed(b"     \x1b]8;;https://example.com\x07world\x1b]8;;\x07");
+        // Move cursor to col 4 (CSI 5 G is 1-based) and ECH 3 → wipes 4..7.
+        t.feed(b"\x1b[5G\x1b[3X");
+        let row = t.grid().row(0).unwrap();
+        assert_eq!(row.hyperlinks.len(), 1);
+        let span = &row.hyperlinks[0];
+        assert_eq!(span.col_start, 7, "head clipped forward past ECH end");
+        assert_eq!(span.col_end, 10);
+    }
+
+    #[test]
+    fn ech_keeps_hyperlink_outside_erase_range() {
+        // Two spans on one row: 0..3 and 10..15. ECH at col 5, N=4
+        // wipes cols 5..9 — between the two spans. Both kept intact.
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://a\x07AAA\x1b]8;;\x07");
+        t.feed(b"       "); // pad cols 3..10 (7 blanks)
+        t.feed(b"\x1b]8;;https://b\x07BBBBB\x1b]8;;\x07");
+        // Move to col 6 and erase 4 chars (cols 5..9, 0-indexed).
+        t.feed(b"\x1b[6G\x1b[4X");
+        let row = t.grid().row(0).unwrap();
+        assert_eq!(row.hyperlinks.len(), 2, "both spans survive between-erase");
+        assert_eq!(row.hyperlinks[0].col_start, 0);
+        assert_eq!(row.hyperlinks[0].col_end, 3);
+        assert_eq!(row.hyperlinks[1].col_start, 10);
+        assert_eq!(row.hyperlinks[1].col_end, 15);
+    }
+
     #[test]
     fn bel_emits_event_outside_osc() {
         // 10 cols so "hithere" fits without soft-wrap noise.

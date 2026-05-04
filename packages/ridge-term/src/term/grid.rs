@@ -683,9 +683,17 @@ impl Grid {
 
     fn erase_row_range(&mut self, row: usize, start: usize, end: usize) {
         if let Some(r) = self.screen_mut().rows.get_mut(row) {
-            for c in start..end.min(r.cells.len()) {
+            let clamped_end = end.min(r.cells.len());
+            for c in start..clamped_end {
                 r.cells[c] = Cell::EMPTY;
             }
+            // OSC 8 hyperlink spans must be kept in sync with the cells
+            // they describe. Without this, CSI K / CSI J erase paths
+            // wipe the cells but leave the span — and the renderer's
+            // hyperlink-underline pass then paints an underline under
+            // empty cells. Claude Code emits these heavily for status
+            // redraws (TASKS §1.18.b residue symptom).
+            clip_hyperlinks_around(&mut r.hyperlinks, start, clamped_end);
         }
     }
 
@@ -709,9 +717,14 @@ impl Grid {
         let cols = self.cols;
         let end = (cur_col + n).min(cols);
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
-            for c in cur_col..end.min(r.cells.len()) {
+            let clamped_end = end.min(r.cells.len());
+            for c in cur_col..clamped_end {
                 r.cells[c] = Cell::EMPTY;
             }
+            // Same hyperlink-clipping invariant as `erase_row_range`:
+            // ECH wipes cells, so any span overlapping the cleared
+            // range must be clipped or dropped. (TASKS §1.18.b.)
+            clip_hyperlinks_around(&mut r.hyperlinks, cur_col, clamped_end);
         }
         // ECH explicitly clears pending_wrap per xterm spec.
         self.cursor_mut().pending_wrap = false;
@@ -940,6 +953,51 @@ impl Grid {
         cur_mut.col = 0;
         cur_mut.pending_wrap = false;
     }
+}
+
+/// Clip OSC 8 hyperlink spans on a row so they no longer cover cells in
+/// the just-erased `[start, end)` column range.
+///
+/// Per TASKS §1.18.b, the partial-erase paths (`CSI K` line erase,
+/// `CSI J` cursor-relative display erase, `CSI X` ECH) used to leave
+/// hyperlink spans untouched while wiping the underlying cells. The
+/// renderer's hyperlink-underline pass then drew an underline under
+/// blank cells, producing the "leftover residue" the user reported in
+/// Claude Code output (which uses these escapes heavily for status-line
+/// redraws).
+///
+/// Cases:
+///   - span entirely outside `[start, end)` → keep
+///   - span entirely inside `[start, end)` → drop
+///   - erase wipes span tail (span.col_start < start && span.col_end <= end) → clip end to start
+///   - erase wipes span head (span.col_start >= start && span.col_end > end) → clip start to end
+///   - erase punches a hole in the middle of a span (span.col_start < start && span.col_end > end)
+///     → drop the entire span. We can't split into two without growing the Vec
+///     mid-`retain`; the surviving prefix and suffix become unlinked, which
+///     matches xterm's "erase invalidates the link" UX (the user can re-emit
+///     OSC 8 to restore it). This is rare in practice — partial-erase usually
+///     covers a whole word or label.
+fn clip_hyperlinks_around(spans: &mut Vec<super::cell::HyperlinkSpan>, start: usize, end: usize) {
+    if start >= end {
+        return;
+    }
+    spans.retain_mut(|span| {
+        if span.col_end <= start || span.col_start >= end {
+            true // entirely outside the erase window
+        } else if span.col_start >= start && span.col_end <= end {
+            false // entirely inside — drop
+        } else if span.col_start < start && span.col_end > end {
+            false // hole punched in the middle — drop (see doc-comment)
+        } else if span.col_end > end {
+            // erase covers the head; clip start forward to `end`.
+            span.col_start = end;
+            true
+        } else {
+            // erase covers the tail; clip end backward to `start`.
+            span.col_end = start;
+            true
+        }
+    });
 }
 
 #[cfg(test)]
