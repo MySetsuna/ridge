@@ -60,18 +60,54 @@ fn rgba_to_wgpu_color(rgba: [u8; 4]) -> wgpu::Color {
     }
 }
 
-/// WebGPU backend — round 3 §4.1 first slice. Holds the device, queue,
-/// surface, and the current swap-chain configuration. Glyph atlas + per-
-/// frame buffers will land in §4.1.b once cosmic-text / fontdue is wired.
+/// WebGPU backend — round 3 §4.1.c. Holds the device, queue, surface,
+/// the current swap-chain configuration, and the cell render pipeline
+/// (shader module + bind-group layout + pipeline state). Texture-array
+/// atlas + per-frame instance buffer + frame uniform buffer + bind-
+/// group instances land in §4.1.c body next iteration.
 pub struct WebGpuBackend {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// The cell vertex+fragment shader compiled from `shaders/cell.wgsl`.
+    /// Cached so future hot-reload could swap it without rebuilding the
+    /// pipeline_layout / bind_group_layout.
+    cell_shader: wgpu::ShaderModule,
+    /// Bind-group layout matching the WGSL `@group(0)` triple
+    /// (uniform buffer + texture_2d_array + sampler). Used both at
+    /// pipeline-create time and at every-frame bind-group instantiation.
+    cell_bind_group_layout: wgpu::BindGroupLayout,
+    /// Render pipeline driving cell.wgsl. One pipeline handles all
+    /// cells (bg-only + glyph-bearing + bold/italic) — style differences
+    /// are font-CSS at rasterization time, not pipeline switches.
+    cell_pipeline: wgpu::RenderPipeline,
     atlas: GlyphAtlas,
     metrics: FrameMetrics,
     theme: Theme,
 }
+
+/// CPU-side instance struct matching the WGSL `InstanceIn` layout.
+/// `#[repr(C)]` makes the field order load-bearing — must mirror the
+/// `attributes: &[VertexAttribute { offset, ... }]` array passed to
+/// `RenderPipelineDescriptor::vertex.buffers`.
+///
+/// Future iteration will populate a Vec<CellInstance> per frame from
+/// the renderer's dirty rows, then `queue.write_buffer` it before the
+/// indirect draw.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // Populated by §4.1.c draw_row body in a future iteration.
+struct CellInstance {
+    cell_xy: [f32; 2],     // 0..8
+    cell_size: [f32; 2],   // 8..16
+    atlas_uv: [f32; 4],    // 16..32
+    atlas_layer: u32,      // 32..36
+    fg_rgba: [f32; 4],     // 36..52
+    bg_rgba: [f32; 4],     // 52..68
+}
+
+const CELL_INSTANCE_STRIDE: u64 = std::mem::size_of::<CellInstance>() as u64;
 
 impl WebGpuBackend {
     /// Acquire a WebGPU adapter and device for `canvas`. Async because
@@ -141,11 +177,146 @@ impl WebGpuBackend {
         };
         surface.configure(&device, &config);
 
+        // ─── Shader + bind-group layout + render pipeline ────────────
+        // Compile the WGSL cell shader. `include_str!` baked at
+        // compile time so the binary doesn't need to read the .wgsl
+        // file at runtime.
+        let cell_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ridge-cell-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                std::borrow::Cow::Borrowed(include_str!("shaders/cell.wgsl")),
+            ),
+        });
+
+        // Bind group layout matches WGSL @group(0): uniform buffer
+        // (FrameUniform) + texture_2d_array<f32> + sampler.
+        let cell_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("ridge-cell-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            },
+        );
+
+        let pipeline_layout = device.create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("ridge-cell-pipeline-layout"),
+                bind_group_layouts: &[&cell_bind_group_layout],
+                push_constant_ranges: &[],
+            },
+        );
+
+        // Vertex buffer layout — one buffer of CellInstance, stepped
+        // per-instance. Field offsets must match the #[repr(C)] struct
+        // declaration above so the WGSL @location attributes pull from
+        // the right bytes.
+        let instance_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: CELL_INSTANCE_STRIDE,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                }, // cell_xy
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                }, // cell_size
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                }, // atlas_uv
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Uint32,
+                }, // atlas_layer
+                wgpu::VertexAttribute {
+                    offset: 36,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                }, // fg_rgba
+                wgpu::VertexAttribute {
+                    offset: 52,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                }, // bg_rgba
+            ],
+        };
+
+        let cell_pipeline = device.create_render_pipeline(
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("ridge-cell-pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &cell_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[instance_buffer_layout],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &cell_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview: None,
+                cache: None,
+            },
+        );
+
         Ok(Self {
             surface,
             device,
             queue,
             config,
+            cell_shader,
+            cell_bind_group_layout,
+            cell_pipeline,
             atlas: GlyphAtlas::new(1024),
             metrics: FrameMetrics {
                 cell_w: 8.0,
