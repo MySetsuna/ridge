@@ -365,6 +365,65 @@ mod tests {
     }
 
     #[test]
+    fn sgr_4_sets_underline() {
+        // Bare CSI 4 m — single underline on. Baseline behaviour.
+        let mut t = Terminal::new(1, 5, 0);
+        t.feed(b"\x1b[4mU");
+        let a = t.grid().attrs.get(t.grid().row(0).unwrap().cells[0].attr);
+        assert!(a.flags.contains(Flags::UNDERLINE));
+        assert!(!a.flags.contains(Flags::DBL_UNDERLINE));
+    }
+
+    #[test]
+    fn sgr_4_zero_clears_underline() {
+        // Extended-underline OFF (CSI 4:0 m). Modern CLIs including
+        // Claude Code use this to release a hyperlink underline cleanly.
+        // Pre-fix this routed into the "code == 4" arm and flipped
+        // underline ON instead of OFF — see TASKS §1.18.
+        let mut t = Terminal::new(1, 5, 0);
+        t.feed(b"\x1b[4mA\x1b[4:0mB");
+        let row = t.grid().row(0).unwrap();
+        let a = t.grid().attrs.get(row.cells[0].attr);
+        let b = t.grid().attrs.get(row.cells[1].attr);
+        assert!(a.flags.contains(Flags::UNDERLINE), "first cell must be underlined");
+        assert!(!b.flags.contains(Flags::UNDERLINE), "after CSI 4:0 m the next cell must NOT be underlined");
+    }
+
+    #[test]
+    fn sgr_4_two_sets_double_underline() {
+        // CSI 4:2 m → double underline ON, single underline OFF.
+        let mut t = Terminal::new(1, 5, 0);
+        t.feed(b"\x1b[4:2mD");
+        let a = t.grid().attrs.get(t.grid().row(0).unwrap().cells[0].attr);
+        assert!(a.flags.contains(Flags::DBL_UNDERLINE));
+        assert!(!a.flags.contains(Flags::UNDERLINE));
+    }
+
+    #[test]
+    fn sgr_4_curly_degrades_to_single() {
+        // CSI 4:3 m (curly) — renderer doesn't yet support curly, but
+        // we still treat the cell as underlined (single) so the user
+        // sees *something*. Better to over-style than to silently drop
+        // the intent until the renderer ships curly.
+        let mut t = Terminal::new(1, 5, 0);
+        t.feed(b"\x1b[4:3mC");
+        let a = t.grid().attrs.get(t.grid().row(0).unwrap().cells[0].attr);
+        assert!(a.flags.contains(Flags::UNDERLINE));
+        assert!(!a.flags.contains(Flags::DBL_UNDERLINE));
+    }
+
+    #[test]
+    fn sgr_24_clears_underline_after_4_zero_no_op() {
+        // Belt-and-suspenders: if a CLI emits CSI 4:0 m followed by
+        // CSI 24 m (the canonical "underline off"), state is consistent.
+        let mut t = Terminal::new(1, 5, 0);
+        t.feed(b"\x1b[4mA\x1b[4:0m\x1b[24mB");
+        let b = t.grid().attrs.get(t.grid().row(0).unwrap().cells[1].attr);
+        assert!(!b.flags.contains(Flags::UNDERLINE));
+        assert!(!b.flags.contains(Flags::DBL_UNDERLINE));
+    }
+
+    #[test]
     fn dec_1049_enters_alt_screen() {
         let mut t = Terminal::new(3, 5, 10);
         t.feed(b"home");
