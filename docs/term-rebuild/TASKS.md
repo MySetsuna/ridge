@@ -395,7 +395,7 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ + wgpu dep ✅ + new()/clear() 第 1 slice ✅ + GlyphRasterizer ✅ + WGSL cell shader ✅ + 渲染管线 ✅ + 资源分配 ✅（256 layer × 32×32 atlas + 16B frame uniform + 1024 cell instance buffer + bind group）2026-05-04 / draw_row body + texture upload glue ⏳ §4.1.c.next / cursor/overlay/underline ⏳ §4.1.d
+### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ + wgpu dep ✅ + new()/clear() ✅ + GlyphRasterizer 模块 ✅ + WGSL cell shader ✅ + 渲染管线 ✅ + 资源分配 ✅ + rasterizer 字段并入 WebGpuBackend ✅ 2026-05-04 / draw_row body（atlas lookup + write_texture + CellInstance 累积）⏳ §4.1.c.next / end_frame submit ⏳ §4.1.c.next / cursor/overlay/underline ⏳ §4.1.d
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))] pub mod webgpu;`），`packages/ridge-term/Cargo.toml`（新增 `[features] webgpu = []`）
 - **关键 API**：
