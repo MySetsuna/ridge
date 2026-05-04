@@ -195,6 +195,41 @@
 - **测试**：`cargo check --lib` 0 错误 0 警告。浏览器实跑验证留给 §7.2。
 - **关联**：fs_watch.rs 已经 SEGMENT_BLACKLIST 过滤 `.git/`、`node_modules/`、`target/` 等，不会经 fs-changed 路径误触发。
 
+### 1.18 [HIGH] 终端运行 Claude Code 出现非预期下划线 + 字符刷新错位 / 残留 ⏳ 调研
+
+- **背景**：用户报告「终端中运行 claude code，所有输出出现非预期的下划线，字符刷新区也出现一定的错位和多余、残留字符显示，深入而全面的调研修复方法，调查当前行业最佳实现是怎么做的」。
+- **症状拆解**：
+  1. **非预期下划线**：Claude Code 的所有输出（普通文本，非 OSC 8 hyperlink）显示下划线。说明 SGR underline 状态被错误 set 后没有 reset，或 Ridge 把某种 SGR 子参数误判为 underline。
+  2. **字符刷新错位**：partial redraw 区域字符位置偏移，疑似 cursor positioning（CSI H / VPA / HPA）和我们的 grid 状态不一致。
+  3. **多余 / 残留字符**：旧字符在 cell 上没被新字符覆盖。说明 cell bg 没在 partial redraw 时清掉（背景不重新绘制就直接 fillText 新字形 → 旧字形像素仍在）。
+- **疑点 trace**：
+  1. **下划线源**：
+     - `term/parser.rs::handle_sgr`（SGR 解析）—— 检查 `4` 是否被正确识别为 underline-on，`24` 为 underline-off，`0` 为 reset-all（包括 underline）。如果只 reset 了部分 attr 没清 underline，状态污染。
+     - **扩展下划线（CSI 4:N）**：xterm + iTerm2 + kitty 支持 `CSI 4:0m`（off）、`CSI 4:1m`（single）、`CSI 4:2m`（double）、`CSI 4:3m`（curly，VTE 扩展）、`CSI 4:4m`（dotted）、`CSI 4:5m`（dashed）。如果 Claude Code 用了 `CSI 4:0m` 关闭下划线，但我们 sub-parameter parser 把它当成 `CSI 4m`（默认 single underline on），就解释为何「所有输出都有下划线」。
+     - **OSC 8 hyperlink underline 残留**：Claude Code 内部可能用 OSC 8 包装路径，OSC 8 在 close 时（`OSC 8 ; ; ST`）应清掉 hyperlink span。检查 `term/parser.rs` OSC 8 close path 是否正确终止 span，否则下划线一直延续到行尾或后续行。
+  2. **字符错位**：
+     - `term/parser.rs::CSI_H` (cursor position absolute)：1-based row;col。Claude Code 频繁用绝对定位刷新 status line，如果我们 0-based / 1-based 转换有误，每次重绘都会偏移。
+     - **`CSI ?25l/h` (DECTCEM)**：cursor 隐藏期间的位置移动，部分仿真器累积偏移；检查 `modes.rs::cursor_visible` 是否正确通过。
+     - **DECSTBM scroll region**：Claude Code 可能设 scroll top/bottom 排除 status line，scroll 时只滚区域内行；我们的实现是否正确？
+     - **wcwidth + reflow**：Claude Code 输出包含 emoji（box-drawing、▶、●、✔），如果 wcwidth 把 width=2 的字符算成 1，后续 cell 会偏移半格。
+  3. **残留字符**：
+     - `render/canvas2d.rs::draw_row` 当前**总是先填 bg 再画 glyph**（line 183-189 的 pass 1 + line 195+ 的 pass 2，注释明确说"Conservative: always paint, accept the perf hit"）。理论上 partial redraw 也会清 bg。但如果 dirty_rows 漏算，整行就不进 draw_row，旧像素全留。
+     - `render/renderer.rs::tick` 用 per-row 64-bit hash diff 判定 dirty，hash 包含 `(ch, attr_id, width)`。如果 attr_id 包含动态 hyperlink span 但内容相同，hash 不变 → row 不 dirty → 不重画 → 残留前帧。
+     - **alt screen ↔ primary screen 切换**（CSI ?1049h/l）：Claude Code 可能进 alt screen 显示菜单，再退回 primary。切换时 grid 状态切了但 renderer snapshot 没强 invalidate？检查 `lib.rs::JsTerminal::resize` / 切屏路径是否调 `invalidateAll`。
+- **行业最佳实现参考**（待研究）：
+  - **xterm（C, 参考实现）**：`charproc.c::doparsing` 处理 SGR；`button.c` 处理 selection；`screen.c::ScreenWrite` 是 cell 写入路径。
+  - **iTerm2（Obj-C, macOS）**：`VT100Terminal.m::executeSGR`；公认的 SGR sub-parameter 实现最完整。
+  - **kitty（Python+C, 高性能）**：`kitty/parser.c`，扩展下划线最早的实现者之一；wezterm 也参考其实现。
+  - **alacritty（Rust, GPU）**：`alacritty_terminal/src/ansi.rs::Processor`；Ridge 的 vte crate 解析层与其同源。
+  - **wezterm（Rust, GPU）**：`wezterm-escape-parser/src/csi.rs`，文档化最全的 SGR / OSC 8 实现。
+- **下一步**：
+  1. 启动 Ridge `pnpm tauri dev`，在终端跑 claude code，DevTools network → frontend 用 `manager.feed` 的 paneId 上一个 PTY 字节 dumper（dev-only），把 raw bytes 与渲染结果对照，定位是 SGR 解析错还是渲染错。
+  2. 写一个 fixture 用 raw byte 序列（比如 `\x1b[4m...\x1b[24m`、`\x1b[4:3m`、`CSI ?1049h`/`CSI ?1049l`）单测，跑通 vte → grid → render 全链路。
+  3. 对照 wezterm + iTerm2 的 SGR sub-parameter 实现差异，对齐我们的 parser。
+  4. 如果是 partial-redraw 残留 → 在 `tick()` 加 alt-screen-switched / mode-switched / scrollback-changed 强制 `invalidate_all` guards。
+- **判定**：本条不能 1-loop 修完，先建 task 收集线索；下一两个 loop 迭代深入实现。
+- **关联**：与 §1.15 padding / §1.17 input-loss 是不同 root cause（这俩已修），但症状叠在一起会让用户感到「split + claude code 后整个终端都坏了」。
+
 ### 1.17 [HIGH] 拆分窗口后原终端无法输入（RidgePane unpark 不重新注册 dataHandler）✅ 2026-05-04
 
 - **文件**：`src/lib/components/RidgePane.svelte`（onMount + 三个 handler 提取）
@@ -307,24 +342,35 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳
+### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ 2026-05-04 / wgpu 接线 ⏳
 
-- **文件**：新增 `src/render/webgpu.rs`，实现 `RenderBackend` trait（`backend.rs` 已经定义好接口）
+- **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(target_arch = "wasm32")] pub mod webgpu;`）
 - **关键 API**：
   - `configure(font, size, dpr) -> (cellW, cellH)`
   - `render(rows: &[RowDraw], cursor: CursorDraw, frame: FrameMetrics)`
   - `apply_theme(theme)`
-- **注意**：**`RenderHandle` 当前硬编码 `Canvas2dBackend`**（`src/lib.rs`），需要改成运行时选择或 wasm-bindgen 从 JS 传入选择标志。
+- **状态**：`WebGpuBackend` struct + `impl RenderBackend` 全部 9 个方法签名已就位，trait 契约对齐 `backend.rs`。`new()` 当前返回 `Err("WebGpuBackend not yet implemented — see TASKS §4.1")`，9 个 trait 方法体一律 `unreachable!()`——只有真实接线时才会被构造，scaffold 阶段不可能命中。`#![cfg(target_arch = "wasm32")]` 让 host build 完全跳过该文件。
+- **下一步（接线）**：
+  1. `Cargo.toml` 加 `wgpu = "23.0"` 在 `[target.'cfg(target_arch = "wasm32")'.dependencies]`，`web-sys` features 加 `"GpuCanvasContext"`。
+  2. `WebGpuBackend::new(canvas: HtmlCanvasElement)` request adapter + device → create surface → configure swap chain；adapter miss 时 fallback Canvas2D。
+  3. 持有 `super::glyph_atlas::GlyphAtlas`（§4.2 已 ✅）。
+  4. `cosmic-text` 或 `fontdue` 栅格化新字形 → 上传到 texture array → 填 `GlyphEntry`。
+  5. `draw_row` 构建 `(cell_xy, atlas_uv, fg_rgba, bg_rgba)` instance buffer，每行一次 indirect draw。
+  6. cursor / selection / hyperlink overlay 各一个 small pipeline pass（full-quad shader + scissor rect）。
+- **注意**：**`RenderHandle` 当前硬编码 `Canvas2dBackend`**（`src/lib.rs`），接线 §4.1 时需要改成 `Box<dyn RenderBackend>` 或 wasm-bindgen 从 JS 传入选择标志。Err-on-construction 模式让本提交不需要修改 `lib.rs`，未来只改 `new()` 函数体即可。
+- **测试**：`cargo check --target wasm32-unknown-unknown --manifest-path packages/ridge-term/Cargo.toml --lib` 0 错误；host `cargo test --lib` 仍 120 passed（不变）。
 
-### 4.2 `GlyphAtlas` 数据结构 ⏳
+### 4.2 `GlyphAtlas` 数据结构 ✅ 2026-05-04
 
-- **文件**：新增 `src/render/glyph_atlas.rs`
-- **设计要点**：
-  - key = `(font_family_hash, font_size, glyph_id)`
-  - 值 = `(texture_layer, uv_rect, advance, ascent_offset)`
-  - LRU 淘汰 + 容量上限（避免 4K 字符 × 多字号 OOM）
-  - 字形栅格化用 `cosmic-text` 或 `fontdue`（前者支持 fallback chain）
-- **解耦**：atlas 与 `WebGpuBackend` 解耦，后续 Canvas2D 也可以读取（虽然现 Canvas2D 用浏览器原生 fillText，不走 atlas）
+- **文件**：`packages/ridge-term/src/render/glyph_atlas.rs`（新增）
+- **设计要点（已实施）**：
+  - `GlyphKey { font_family_hash: u64, font_size_q: u16, glyph_id: u32, style_flags: u8 }`——color 故意不进 key（SDF/coverage 渲染时 shader uniform 渲染）；font_size 量化为 1/100 px 防 DPR rounding 撕裂。
+  - `GlyphEntry { layer: u16, uv: [f32; 4], advance: f32, ascent_offset: f32, px_w: u16, px_h: u16 }`。
+  - LRU 淘汰：`HashMap<GlyphKey, GlyphEntry>` + `VecDeque<GlyphKey>`（MRU 在 back）。`lookup` 提升到 MRU；`insert` 满时 pop_front 并返回被驱逐 key 让 backend 释放纹理槽。
+  - 字形栅格化暂未集成（接 §4.1 时引 `cosmic-text` 或 `fontdue`）；本数据结构 GPU/字体库无关，host 可测。
+  - `capacity == 0` 退化分支：直接 reject 新插入并把 key 当作"被驱逐"返回。
+- **解耦**：atlas 与 `WebGpuBackend` 解耦——纯数据结构，`mod.rs` 中 `pub mod glyph_atlas;` 不带 cfg 门，host build 也编译。后续 Canvas2D 若需要也能读（虽然 Canvas2D 现走浏览器原生 fillText 不需要）。
+- **测试**：7 条单元测试，全部 host pass（`cargo test --lib glyph_atlas`）：lookup 缺失/命中、eviction 容量边界、LRU promotion 顺序、duplicate insert 替换不驱逐、capacity-0 拒绝、clear。120 passed total（113 + 7）。
 
 ### 4.3 共享 surface（OVERVIEW D1）⏳
 
