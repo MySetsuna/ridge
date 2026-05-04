@@ -1,6 +1,6 @@
 # Ridge — Next Loop 计划
 
-最后更新：2026-04-27（第 69 轮） · 由 /loop 自动生成
+最后更新：2026-05-04（第 70 轮） · 由 /loop 自动生成
 
 > 本文档由 /loop 循环结束时写入，下一轮 `/loop` 会优先读取本文档。
 > 对标：VS Code、JetBrains Fleet、Warp、Zed。
@@ -9,13 +9,81 @@
 
 ## 🔜 下一轮候选
 
-- **工作区底部粘性（Explorer）**：当有多工作区时，非活跃工作区 header 使用 IntersectionObserver 实现底部固定，彻底解决多工作区被挤出视野的问题（当前轮临时方案：max-h-[32vh]）。
-- **FileTree 对齐细化**：depth=0 根节点无缩进，考虑 8px 左起始统一。
-- **Rust 线程池监控**：为 spawn_blocking 任务加 tracing span 方便排查慢操作。
+**Round 3 §4.1 实接线（最大优先级）**：在 `webgpu` cargo feature 已就位的前提下，添加 `wgpu = { version = "23", optional = true }` 与 `cosmic-text` 或 `fontdue` 作为可选依赖；实现 `WebGpuBackend::new(canvas: HtmlCanvasElement)` 请求 adapter / device / surface；`clear()` 实际清屏；`draw_row` 用 instance buffer 走一次 indirect draw。第一轮目标是验证 GPU pipeline 能 reach canvas，glyph rasterizer 留给 §4.1.b。
+
+**§1.18.c 浏览器实跑回归**：本会话所有 §1.18 修复（SGR 4:N、CSI K/J/X/ICH/DCH 的 OSC 8 span clip、renderer 加 hyperlink hash）都需要用户 `pnpm tauri dev` 跑 Claude Code 实测，确认 a) 普通文本无下划线污染、b) 状态行重绘无残留 underline、c) 拆分 / 关闭面板无字符错位。属 §7.2 Browser real-run regression 范围。
+
+**Round 3 §4.4 性能基准（条件依赖）**：等 §4.1 实接线后才有 baseline 可测，提前不便做。
+
+**已记录但未启动的 backlog**：
+- 工作区底部粘性（Explorer）：第 69 轮遗留候选。
+- FileTree 对齐细化：第 69 轮遗留候选。
+- Rust 线程池监控（tracing span）：第 69 轮遗留候选。
+- §1.5 `canvas2d::measure_font` 'M' 测宽（CJK fallback 1-2 px 偏移）：等 round 3 重做 metrics 时一并处理。
+- §1.14 `PaneState::Starting` 半实现 gap：需用户对 teammate 流程时序判断。
 
 ---
 
 ## ✅ 历史轮次已完成
+
+### 第 70 轮（2026-05-04）— 终端 split / 关闭后 padding & 输入修复 + Claude Code 渲染清理 + Round 3 scaffold
+
+本轮由用户连续多次 `/loop` 触发，单会话 9 个 commit。关键修复 5 条 bug + Round 3 §4.1/§4.2 骨架就绪。ridge-term `cargo test --lib` 113 → 134 passed（+21 测试）；src-tauri 73 stable；svelte-check 0 errors / 0 warnings；wasm `cargo check --target wasm32-unknown-unknown` 0 errors（feature 默认 + `--features webgpu` 两态都验证）。
+
+#### TASKS §1.15（`fee674b`）— Padding cache 残留 → split / 关闭面板 padding 丢失
+
+`PaneEntry.lastAppliedPaddingPx` 在 park 时不清空，unpark 拿到全新 DOM container（无 inline padding）后 RidgePane onMount 调 `setPadding(paneId, settingsStore.terminalPaddingPx)` —— `cached === clamped` 提前 return，新 container 永远不被赋 padding。修法：unpark 重置 `lastAppliedPaddingPx = undefined`，下一次 setPadding 必然命中 apply 分支。`src/lib/terminal/manager.ts::unpark`，svelte-check 0 errors。
+
+#### TASKS §1.16（`71385e9`）— GitWatcher 噪声过滤 → Ctrl+C 不再触发 SCM 重载
+
+`GitWatcher` 直接监听 `<repo>/.git/` 递归，把任意写入 emit 为 `scm-repo-changed`。shell prompt hook（starship / oh-my-posh / powerlevel10k）每次重绘时跑 `git status / rev-parse`，根据 git 配置可能往 `.git/objects/` / `.git/logs/` / `.git/index.lock` 写——这些都是内部 churn，不影响 porcelain 输出但被 GitWatcher 当成"仓库变了"上报。修法：debouncer 回调里加 `is_scm_relevant(path)` 过滤 `/objects/`、`/logs/`、`/info/`、`*.lock`；只要至少一个事件路径属于 HEAD / refs / index / packed-refs / FETCH_HEAD / 操作状态文件就 emit。行业对照 xterm `ClearInLine` / wezterm `erase_in_line` / alacritty `clear_line`。`src-tauri/src/commands/watch.rs`，cargo check --lib 0 errors / 0 warnings。
+
+#### TASKS §1.17（`6474c5e`）— RidgePane unpark 不重新注册 PTY handlers → 拆分后原终端无法输入
+
+最重要修复。SplitContainer split→leaf 折叠或 leaf→split 包装强制 RidgePane 重挂载，原 component onDestroy 把 `alive = false`。`manager.park` 故意保留 dataHandler / eventHandler / resizeHandler 闭包（continuity 设计），但这些闭包内联在原 onMount IIFE 里，**捕获了原 component 的 alive**。新 component onMount 命中 unpark 分支后 setFocused / setPadding 然后**立即 return**，**不重新注册 handlers**。`entry.dataHandler` 仍指向旧闭包，`if (!alive) return;` 静默吞掉**每个按键**（focus 看起来对、cursor 闪、但 PTY 永远收不到 byte）。修法：把 onPtyData / onPtyResize / onKernelEvent 三个 handler 提到 component scope 顶级 `function`，每个 RidgePane 实例自然拥有自己的 alive 闭包；onMount 两个分支（首次 attach + unpark）都调一次 manager.onData/onResize/onEvent。Manager 的 onData 等会替换之前 callback。`src/lib/components/RidgePane.svelte`，svelte-check 0 errors。
+
+#### TASKS §1.18.a（`0eac8e4`）— SGR 扩展下划线 `CSI 4:N m` 子参数解析
+
+VTE crate 把 `CSI 4:0 m`（关闭下划线，kitty / iTerm2 / wezterm 现代语法）解析为 `&[4, 0]`，原 parser `match sub.first()` 只看第一个值 → 命中 `4 => insert UNDERLINE` 分支，`CSI 4:0 m` 被解释为 `CSI 4 m`（开下划线）。Claude Code 用此语法在 OSC 8 hyperlink 关闭后释放下划线 → 状态卡死，所有后续输出被下划线污染。修法：`4` 分支读 `sub.get(1).copied().unwrap_or(1)`：0 关闭、2 双下划线、1/3/4/5/其他 单下划线（curly/dotted/dashed 暂降级为 single）。5 个新 unit test 覆盖 baseline / 4:0 / 4:2 / 4:3 / 24 reset。行业对照 xterm `parsing.c::doSGR` / wezterm `csi.rs::Sgr::Underline` / alacritty `vt100.rs::SubParam`。`packages/ridge-term/src/term/parser.rs::apply_sgr`，120 → 125 passed。
+
+#### TASKS §1.18.b（`10d8d85` + `00ce2ea`）— OSC 8 hyperlink span 在 partial-erase / line-edit 路径泄漏
+
+`Row::clear()` 正确清 hyperlinks，但 partial-erase 路径 `erase_row_range`（CSI K / CSI J 部分）和 `erase_chars`（CSI X / ECH）只覆写 cells **不动 spans**。Claude Code 频繁用这些 escape 做 status 重绘 → 旧 hyperlink span 残留 → renderer 的下划线 pass 在已清空 cell 上画下划线 → 视觉上「字符刷新区出现错位 + 残留」。修法：新增 `clip_hyperlinks_around(spans, start, end)` helper（5 case 处理：完全外保留、完全内 drop、尾部 clip、头部 clip、中间打洞 drop）。`erase_row_range` 和 `erase_chars` 都调用。**追加扩展同提交**：`insert_chars`（ICH, CSI @）和 `delete_chars`（DCH, CSI P）也走 line-edit，PSReadLine / readline / Claude Code prompt 编辑频繁触发——同样用 `r.hyperlinks.retain(|span| span.col_end <= cur_col)` 把 cursor 之前完整存在的 span 保留、跨 / 之后 span 全部 drop（xterm "edit invalidates link" 语义）。9 条新 unit test。`packages/ridge-term/src/term/grid.rs`，125 → 134 passed。
+
+#### TASKS §1.18.c（`8b8f614`）— Renderer per-row 哈希加 hyperlink span 形状（防御 + 审计）
+
+per-row hash 原本只 `(ch, attr_id, width)`，不含 `row.hyperlinks`。当前所有 cell-mutating 路径都已经维护 spans 同步（前述提交），但加 hyperlinks 形状到 hash 是 cheap defense-in-depth；URI/id 不入 hash（underline overlay 只随空间位置变）。**同时审计** `kernel.resize` 唯一调用点 `manager.ts::fitPane:974`（必先调 `handle.resize` → `renderer.invalidate_all`）✅、alt-screen 切换靠自然 hash diff ✅、`CSI H/VPA/HPA` 1-based decoding ✅。`packages/ridge-term/src/render/renderer.rs::tick`，134 passed 不变。
+
+#### Round 3 §4.1 + §4.2（`1a67115` + `47d3aba`）— GlyphAtlas LRU + WebGpuBackend scaffold + cargo feature flag
+
+新增 `packages/ridge-term/src/render/glyph_atlas.rs`：GPU-agnostic LRU 缓存。`GlyphKey { font_family_hash, font_size_q (1/100 px), glyph_id, style_flags }` → `GlyphEntry { layer, uv, advance, ascent_offset, px_w, px_h }`，`HashMap + VecDeque` ordering，lookup 提到 MRU、insert 满时 pop_front 并返回 evicted key 让 backend 释放纹理槽。color 故意不进 key（SDF/coverage tint 在 shader 做，否则 cache 爆 16M×）。font_size 量化 1/100 px 防 DPR rounding 撕裂。7 单元测试覆盖 miss/hit/eviction/promotion/duplicate-replace/capacity-zero/clear。
+
+新增 `packages/ridge-term/src/render/webgpu.rs`：wasm-only WebGpuBackend struct + `impl RenderBackend` 全部 9 方法。`new()` 返回 `Err`，trait 方法体 `unreachable!()`——instance 永不存在，trait surface 检查依旧生效（`backend.rs` 签名漂移会立即编译失败）。
+
+**追加 cargo feature flag**：`Cargo.toml` 加 `[features] webgpu = []`。`webgpu.rs` 与 `mod.rs` 的 `pub mod webgpu;` 都加 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]` 双重门禁。默认构建（pnpm tauri build / wasm-pack build / 默认 cargo check）**完全不编译** webgpu.rs，wasm 包不变。`cargo check --features webgpu` 编译 trait surface 检查；将来 `pnpm tauri build --features webgpu` 用来打实际 GPU 包。
+
+113 → 120（atlas）→ 134 passed total。host + wasm 默认 + wasm `--features webgpu` 三种构建模式都 0 errors。
+
+#### 本轮验证矩阵
+
+| Gate | 状态 |
+|---|---|
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 73 passed; 0 failed; 0 warnings |
+| `cargo test --manifest-path packages/ridge-term/Cargo.toml --lib` | 134 passed; 0 failed |
+| `cargo check --target wasm32-unknown-unknown --manifest-path packages/ridge-term/Cargo.toml --lib` | 0 errors（默认） |
+| `cargo check --target wasm32-unknown-unknown --manifest-path packages/ridge-term/Cargo.toml --lib --features webgpu` | 0 errors |
+| `pnpm check` (svelte-check) | 0 errors / 0 warnings |
+| `cargo check --manifest-path src-tauri/Cargo.toml --lib` | 0 errors / 0 warnings |
+
+#### 本轮关键设计教训
+
+1. **手动跨 mount 保活的 manager API**（park / unpark 模式）必须在 unpark 路径上**重新注册所有承载 component scope 的 callback**，否则旧 component 死亡 (`alive = false`) 后闭包静默失效。本轮 §1.17 是第一次踩到这个坑；未来加新 manager.onPaste / onSelection 等都要补 unpark 分支注册。
+2. **PaneEntry 缓存字段需要审视 park / unpark 生命周期**。本轮 §1.15 `lastAppliedPaddingPx` 不重置导致 setPadding 提前 return；`lastReportedRows / lastReportedCols` 已经在 unpark 显式重置为 -1。任何"距上次值未变就跳过"的优化都要考虑 park 期间 DOM 已重建。
+3. **OSC 8 hyperlink span 必须与 cells 同步**。clip 工具函数已抽出，Grid 的所有 cell-mutating 方法都过它。renderer per-row hash 也算 spans 形状作为 defense-in-depth。
+4. **`/objects/`、`/logs/`、`*.lock` 等 .git 内部 churn 不应触发 SCM 重载**。和 fs-changed 的 `SEGMENT_BLACKLIST` 概念上类似，但 GitWatcher 自己也要过滤。
+5. **`CSI 4:N m` 扩展下划线必须按子参数路由**。VTE crate 不区分 sub-parameter / parameter，靠 `sub.first()` 看 SGR code 时永远命中第一个；正确做法是查 `sub.get(1)` 找 style index。
+
+---
 
 ### 第 69 轮（2026-04-27）— 性能/线程池 + 侧边栏 resize + 文件树 UI
 
