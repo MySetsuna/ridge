@@ -185,6 +185,20 @@
 - **验收**：浏览器实跑（§7.2）—— A | B 布局关闭 A，B 应保留用户 settingsStore.terminalPaddingPx，且终端字符位置随 grid 重排而 reflow（不再"卡在原坐标"）。
 - **后续观察**：用户原报告同时提到「字符在原本位置刷新」。padding 丢失会让 canvas 尺寸偏大、cols×rows 比期望大，PTY emits 在更宽的 grid 上而 shell 还没收到 SIGWINCH 时就会出现错位假象。padding 修好后 ResizeObserver 重新走一次 fit 路径，理论上同步消失；若仍残留再加 §1.16 单独跟。
 
+### 1.19 [META] 全部 §1.x / §2-§7 完成后做架构 review + 计划 refresh ⏳
+
+- **触发条件**：所有 §1.x / §2-§7 中标记 ✅ / 已实施 / 决定不做 的项加在一起 = 100% 完成。剩余 ⏳ 项要么用户已显式标 not-needed，要么已经合并入新 plan。
+- **范围（用户原文）**：「如果最后完成所有可执行计划，重新通过文档 `C:\code\wind\docs\term-rebuild\OVERVIEW.md` 进行架构设计实现复查，进行 review code，确定一些未实现计划是否要继续进行，以及是否需要补充一些新任务以达到最初进行重构的目标。如果有必要，可以进行一轮新的总的架构设计规划，以达到预期性能和使用体验。」
+- **执行步骤（建议）**：
+  1. **Cross-check OVERVIEW.md vs 实际代码**：逐节读 OVERVIEW，grep / 阅读对应实现文件，标记 (a) 已实现一致、(b) 已实现但偏离原设计（记录偏离原因 + 是否需修正）、(c) 未实现（评估必要性）。
+  2. **Code review 全 ridge-term 包**：从 `packages/ridge-term/src/{lib.rs, term/, render/, selection.rs, search.rs, input.rs}` 入手，看是否有：(i) 历史遗留死代码、(ii) 命名 / API 不一致、(iii) 测试覆盖盲区、(iv) 性能 hotspot 没量化（特别是 §4.4 perf bench 一直 ⏳）。
+  3. **Round 3 决策点**：评估 wgpu 接线投入产出。当前 Canvas2D 路径用户没报告显著卡顿（OVERVIEW §6 R2 已记录），WebGPU 路径仍能拉低 GPU 内存（10 pane 时从 10 ctx 压到 1）。决定继续 / 推迟 / cancel。
+  4. **Round 4 / 5 决策**：reflow Phase 2 (§2.3 远期)、grapheme cluster (§2.4 远期)、Bell audio (§3.3 远期) — 是否补做或正式 cancel。
+  5. **新 plan**（若需要）：基于现状产出下一阶段方向，如 (a) 性能基准 + 优化、(b) UX 抛光（multi-pane focus / IME v3 / accessibility）、(c) 跨 OS 验证（macOS / Linux 上的 webview WebGPU 支持）。
+- **不在本条范围**：本条本身不要写代码，只产出 review 报告 + 决策记录。代码工作由后续具体 task 承接。
+- **触发时机**：等用户明确说「所有 ⏳ 都搞定了，开始 review」时启动；本 task 仅作占位 + 检查清单。
+- **关联**：复查 dimension 包括但不限于 `OVERVIEW §3 进度表`、`PROBLEM_COVERAGE.md`、`PARTIAL_REDRAW_PROTOCOL.md`、`BUGFIX.md`、`INTEGRATION.md` / `INTEGRATION_R2_4.md` / `REPLACE_AND_FIX_PLAN.md` 全套 8 个 term-rebuild 文档。
+
 ### 1.16 [HIGH] 终端 Ctrl+C 不应触发 SCM / 文件树重载 ✅ 2026-05-04
 
 - **文件**：`src-tauri/src/commands/watch.rs::GitWatcher`
