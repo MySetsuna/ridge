@@ -93,4 +93,86 @@ mod tests {
         assert_eq!(id1, id2);
         assert_eq!(t.len(), 2); // default + a
     }
+
+    #[test]
+    fn get_returns_attrs_for_valid_id() {
+        let mut t = AttrTable::default();
+        let red_bold = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::BOLD };
+        let id = t.intern(red_bold);
+        assert_eq!(t.get(id), red_bold);
+        // Default still resolves correctly.
+        assert_eq!(t.get(AttrId::DEFAULT), Attrs::DEFAULT);
+    }
+
+    #[test]
+    fn get_out_of_bounds_returns_default() {
+        // Defensive fallback path: if a Cell carries a stale AttrId
+        // that points past the table (e.g. after a bug or a
+        // sandbox-flush race in prepend_scrollback), get() must NOT
+        // panic — it returns Attrs::DEFAULT. Verifies the
+        // `unwrap_or(Attrs::DEFAULT)` branch.
+        let t = AttrTable::default();
+        // Table only has slot 0 (DEFAULT). Asking for slot 100 should
+        // fall through to the default.
+        assert_eq!(t.get(AttrId(100)), Attrs::DEFAULT);
+        assert_eq!(t.get(AttrId(u16::MAX)), Attrs::DEFAULT);
+    }
+
+    #[test]
+    fn distinct_attrs_produce_distinct_ids() {
+        let mut t = AttrTable::default();
+        let a = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::BOLD };
+        let b = Attrs { fg: Color::indexed(2), bg: Color::DEFAULT, flags: Flags::BOLD };
+        let c = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::ITALIC };
+        let id_a = t.intern(a);
+        let id_b = t.intern(b);
+        let id_c = t.intern(c);
+        assert_ne!(id_a, id_b);
+        assert_ne!(id_a, id_c);
+        assert_ne!(id_b, id_c);
+        // None should equal DEFAULT.
+        assert_ne!(id_a, AttrId::DEFAULT);
+        assert_ne!(id_b, AttrId::DEFAULT);
+        assert_ne!(id_c, AttrId::DEFAULT);
+    }
+
+    #[test]
+    fn multiple_interns_grow_in_insertion_order() {
+        let mut t = AttrTable::default();
+        let a = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::empty() };
+        let b = Attrs { fg: Color::indexed(2), bg: Color::DEFAULT, flags: Flags::empty() };
+        let c = Attrs { fg: Color::indexed(3), bg: Color::DEFAULT, flags: Flags::empty() };
+        let id_a = t.intern(a);
+        let id_b = t.intern(b);
+        let id_c = t.intern(c);
+        assert_eq!(id_a, AttrId(1));
+        assert_eq!(id_b, AttrId(2));
+        assert_eq!(id_c, AttrId(3));
+        assert_eq!(t.len(), 4); // default + 3 interned
+    }
+
+    #[test]
+    fn rgb_truecolor_attrs_intern_separately() {
+        // Each distinct RGB value is its own table entry. With many
+        // distinct truecolors (e.g. syntax-highlighted source files)
+        // the table grows linearly — bounded only by u16::MAX before
+        // the saturation fallback to DEFAULT kicks in.
+        let mut t = AttrTable::default();
+        let a = Attrs {
+            fg: Color::rgb(0x12, 0x34, 0x56),
+            bg: Color::DEFAULT,
+            flags: Flags::empty(),
+        };
+        let b = Attrs {
+            fg: Color::rgb(0x12, 0x34, 0x57), // differs by one bit
+            bg: Color::DEFAULT,
+            flags: Flags::empty(),
+        };
+        let id_a = t.intern(a);
+        let id_b = t.intern(b);
+        assert_ne!(id_a, id_b);
+        // Round-trip both.
+        assert_eq!(t.get(id_a), a);
+        assert_eq!(t.get(id_b), b);
+    }
 }
