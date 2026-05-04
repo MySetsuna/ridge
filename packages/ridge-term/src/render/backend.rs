@@ -451,4 +451,155 @@ mod tests {
         // ANSI red unchanged.
         assert_eq!(t.palette[1], original_red);
     }
+
+    // ─── parse_hex_color edge cases ───────────────────────────────────
+
+    #[test]
+    fn parse_hex_color_rejects_empty_and_single_char() {
+        assert_eq!(parse_hex_color(""), None);
+        assert_eq!(parse_hex_color("#"), None);
+        assert_eq!(parse_hex_color("a"), None);
+        assert_eq!(parse_hex_color("#a"), None);
+    }
+
+    #[test]
+    fn parse_hex_color_rejects_odd_lengths_5_and_7() {
+        assert_eq!(parse_hex_color("#abcde"), None);
+        assert_eq!(parse_hex_color("#abcdefa"), None);
+    }
+
+    #[test]
+    fn parse_hex_color_accepts_uppercase_and_mixed() {
+        assert_eq!(parse_hex_color("#FFAABB"), Some([0xff, 0xaa, 0xbb, 0xff]));
+        assert_eq!(parse_hex_color("#fFaAbB"), Some([0xff, 0xaa, 0xbb, 0xff]));
+    }
+
+    #[test]
+    fn parse_hex_color_accepts_zero_and_max_components() {
+        assert_eq!(parse_hex_color("#000000"), Some([0x00, 0x00, 0x00, 0xff]));
+        assert_eq!(parse_hex_color("#ffffff"), Some([0xff, 0xff, 0xff, 0xff]));
+        assert_eq!(parse_hex_color("#00000000"), Some([0x00, 0x00, 0x00, 0x00]));
+    }
+
+    // ─── Theme::resolve ───────────────────────────────────────────────
+
+    #[test]
+    fn theme_resolve_default_fg_returns_theme_fg() {
+        use crate::term::attrs::Color;
+        let t = Theme::default_dark();
+        let resolved = t.resolve(Color::DEFAULT, true);
+        assert_eq!(resolved, t.fg);
+    }
+
+    #[test]
+    fn theme_resolve_default_bg_returns_theme_bg() {
+        use crate::term::attrs::Color;
+        let t = Theme::default_dark();
+        let resolved = t.resolve(Color::DEFAULT, false);
+        assert_eq!(resolved, t.bg);
+    }
+
+    #[test]
+    fn theme_resolve_indexed_returns_palette_entry() {
+        use crate::term::attrs::Color;
+        let t = Theme::default_dark();
+        // ANSI 1 (red) — palette[1] is what xterm calls red.
+        let resolved = t.resolve(Color::indexed(1), true);
+        assert_eq!(resolved, t.palette[1]);
+
+        // 256-color cube entry.
+        let resolved_cube = t.resolve(Color::indexed(196), true);
+        assert_eq!(resolved_cube, t.palette[196]);
+    }
+
+    #[test]
+    fn theme_resolve_rgb_returns_literal_with_alpha_ff() {
+        use crate::term::attrs::Color;
+        let t = Theme::default_dark();
+        let resolved = t.resolve(Color::rgb(0x12, 0x34, 0x56), true);
+        // RGB resolution always sets alpha = 0xff (24-bit truecolor has no alpha channel).
+        assert_eq!(resolved, [0x12, 0x34, 0x56, 0xff]);
+    }
+
+    // ─── Theme::apply_partial — coverage gaps ─────────────────────────
+
+    #[test]
+    fn theme_apply_partial_background_drives_cursor_text_color() {
+        // Documented behavior (line 121-123): when bg changes and the
+        // user did NOT set cursorAccent, cursor_text_color tracks bg
+        // so the cursor's glyph stays legible against the new bg.
+        use std::collections::HashMap;
+        let mut t = Theme::default_dark();
+        let mut m = HashMap::new();
+        m.insert("background".to_string(), "#102030".to_string());
+        t.apply_partial(|k| m.get(k).cloned());
+        assert_eq!(t.bg, [0x10, 0x20, 0x30, 0xff]);
+        assert_eq!(t.cursor_text_color, [0x10, 0x20, 0x30, 0xff]);
+    }
+
+    #[test]
+    fn theme_apply_partial_cursor_accent_overrides_bg_default() {
+        // Explicit cursorAccent wins over the bg-derived default.
+        use std::collections::HashMap;
+        let mut t = Theme::default_dark();
+        let mut m = HashMap::new();
+        m.insert("background".to_string(), "#102030".to_string());
+        m.insert("cursorAccent".to_string(), "#ffeedd".to_string());
+        t.apply_partial(|k| m.get(k).cloned());
+        assert_eq!(t.bg, [0x10, 0x20, 0x30, 0xff]);
+        assert_eq!(t.cursor_text_color, [0xff, 0xee, 0xdd, 0xff]);
+    }
+
+    #[test]
+    fn theme_apply_partial_selection_and_hyperlink_routes() {
+        use std::collections::HashMap;
+        let mut t = Theme::default_dark();
+        let mut m = HashMap::new();
+        m.insert("selectionBackground".to_string(), "#88aabbcc".to_string());
+        m.insert("hyperlinkColor".to_string(), "#ff5500".to_string());
+        t.apply_partial(|k| m.get(k).cloned());
+        assert_eq!(t.selection_bg, [0x88, 0xaa, 0xbb, 0xcc]);
+        assert_eq!(t.hyperlink_color, [0xff, 0x55, 0x00, 0xff]);
+    }
+
+    #[test]
+    fn theme_apply_partial_all_16_ansi_keys_route_to_palette() {
+        // Verify every named ANSI slot routes to its expected palette index.
+        use std::collections::HashMap;
+        let names = [
+            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+            "brightBlack", "brightRed", "brightGreen", "brightYellow",
+            "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+        ];
+        for (idx, name) in names.iter().enumerate() {
+            let mut t = Theme::default_dark();
+            let mut m = HashMap::new();
+            // Use the index as the red byte so each slot's payload is unique.
+            let payload = format!("#{:02x}0000", idx);
+            m.insert(name.to_string(), payload);
+            t.apply_partial(|k| m.get(k).cloned());
+            assert_eq!(
+                t.palette[idx],
+                [idx as u8, 0, 0, 0xff],
+                "key {} should route to palette[{}]",
+                name, idx,
+            );
+        }
+    }
+
+    #[test]
+    fn theme_apply_partial_invalid_color_strings_dont_clobber() {
+        // Garbage in → entry unchanged. (Verifies parse_hex_color None
+        // path doesn't accidentally write a default-zero color.)
+        use std::collections::HashMap;
+        let mut t = Theme::default_dark();
+        let original_bg = t.bg;
+        let original_red = t.palette[1];
+        let mut m = HashMap::new();
+        m.insert("background".to_string(), "not-a-color".to_string());
+        m.insert("red".to_string(), "#zz".to_string());
+        t.apply_partial(|k| m.get(k).cloned());
+        assert_eq!(t.bg, original_bg);
+        assert_eq!(t.palette[1], original_red);
+    }
 }
