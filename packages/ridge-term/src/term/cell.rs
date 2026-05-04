@@ -114,3 +114,178 @@ impl Row {
         self.hyperlinks.iter().find(|s| col >= s.col_start && col < s.col_end)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── Cell ────────────────────────────────────────────────────────
+
+    #[test]
+    fn cell_empty_is_blank() {
+        assert!(Cell::EMPTY.is_blank());
+    }
+
+    #[test]
+    fn cell_default_equals_empty() {
+        let d: Cell = Default::default();
+        assert_eq!(d.ch, Cell::EMPTY.ch);
+        assert_eq!(d.attr, Cell::EMPTY.attr);
+        assert_eq!(d.width, Cell::EMPTY.width);
+    }
+
+    #[test]
+    fn cell_is_blank_requires_space_and_default_attr() {
+        // Space + default attr → blank.
+        let blank = Cell::new(' ', AttrId::DEFAULT, 1);
+        assert!(blank.is_blank());
+
+        // Non-space char → NOT blank, even at default attr.
+        let letter = Cell::new('a', AttrId::DEFAULT, 1);
+        assert!(!letter.is_blank());
+
+        // Space at non-default attr → NOT blank (paints colored bg
+        // even though glyph is invisible — counts as content).
+        let colored_space = Cell::new(' ', AttrId(7), 1);
+        assert!(!colored_space.is_blank());
+    }
+
+    #[test]
+    fn cell_new_records_all_fields() {
+        let c = Cell::new('X', AttrId(42), 2);
+        assert_eq!(c.ch, 'X');
+        assert_eq!(c.attr, AttrId(42));
+        assert_eq!(c.width, 2);
+    }
+
+    #[test]
+    fn cell_wide_spacer_is_continuation_half() {
+        // Width-0 continuation cell sitting in slot N+1 of a wide
+        // glyph rendered at slot N. Carries the parent cell's attr
+        // so bg color spans both halves of the wide cell.
+        let spacer = Cell::wide_spacer(AttrId(99));
+        assert_eq!(spacer.ch, '\0');
+        assert_eq!(spacer.width, 0);
+        assert_eq!(spacer.attr, AttrId(99));
+    }
+
+    // ─── Row ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn row_new_initializes_empty_cells_and_no_metadata() {
+        let r = Row::new(5);
+        assert_eq!(r.cells.len(), 5);
+        for c in &r.cells {
+            assert!(c.is_blank());
+        }
+        assert!(!r.wrapped);
+        assert!(r.hyperlinks.is_empty());
+    }
+
+    #[test]
+    fn row_clear_resets_cells_wrap_and_hyperlinks() {
+        let mut r = Row::new(5);
+        r.cells[0] = Cell::new('a', AttrId(1), 1);
+        r.cells[1] = Cell::new('b', AttrId(2), 1);
+        r.wrapped = true;
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 0, col_end: 2, uri: "u".into(), id: None,
+        });
+        r.clear();
+        assert!(r.cells.iter().all(|c| c.is_blank()));
+        assert!(!r.wrapped);
+        assert!(r.hyperlinks.is_empty());
+    }
+
+    #[test]
+    fn row_resize_grow_pads_with_empty() {
+        let mut r = Row::new(3);
+        r.cells[0] = Cell::new('x', AttrId::DEFAULT, 1);
+        r.resize(6);
+        assert_eq!(r.cells.len(), 6);
+        assert_eq!(r.cells[0].ch, 'x');
+        // Newly-allocated tail cells are blank.
+        for i in 3..6 {
+            assert!(r.cells[i].is_blank());
+        }
+    }
+
+    #[test]
+    fn row_resize_shrink_truncates_cells() {
+        let mut r = Row::new(8);
+        for i in 0..8 {
+            r.cells[i] = Cell::new(char::from_u32(b'a' as u32 + i as u32).unwrap(), AttrId::DEFAULT, 1);
+        }
+        r.resize(3);
+        assert_eq!(r.cells.len(), 3);
+        assert_eq!(r.cells[0].ch, 'a');
+        assert_eq!(r.cells[2].ch, 'c');
+    }
+
+    #[test]
+    fn row_resize_drops_hyperlinks_past_new_width() {
+        let mut r = Row::new(20);
+        r.hyperlinks.push(HyperlinkSpan { col_start: 0, col_end: 3, uri: "a".into(), id: None });
+        r.hyperlinks.push(HyperlinkSpan { col_start: 8, col_end: 12, uri: "b".into(), id: None });
+        r.hyperlinks.push(HyperlinkSpan { col_start: 15, col_end: 18, uri: "c".into(), id: None });
+        // Shrink to 10 cols. Span 'a' (0..3) survives; 'b' (8..12)
+        // straddles, col_end clamped; 'c' (15..18) starts past width,
+        // dropped.
+        r.resize(10);
+        assert_eq!(r.hyperlinks.len(), 2);
+        assert_eq!(r.hyperlinks[0].uri, "a");
+        assert_eq!(r.hyperlinks[1].uri, "b");
+        assert_eq!(r.hyperlinks[1].col_end, 10);
+    }
+
+    #[test]
+    fn row_resize_keeps_all_hyperlinks_when_growing() {
+        let mut r = Row::new(5);
+        r.hyperlinks.push(HyperlinkSpan { col_start: 0, col_end: 5, uri: "u".into(), id: None });
+        r.resize(10);
+        assert_eq!(r.hyperlinks.len(), 1);
+        assert_eq!(r.hyperlinks[0].col_end, 5);
+    }
+
+    // ─── link_at ─────────────────────────────────────────────────────
+
+    #[test]
+    fn link_at_returns_none_on_empty_row() {
+        let r = Row::new(10);
+        assert!(r.link_at(0).is_none());
+        assert!(r.link_at(5).is_none());
+    }
+
+    #[test]
+    fn link_at_finds_span_containing_col() {
+        let mut r = Row::new(10);
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 2, col_end: 7, uri: "u".into(), id: Some("anchor".into()),
+        });
+        // Inside range.
+        assert_eq!(r.link_at(2).unwrap().uri, "u");
+        assert_eq!(r.link_at(5).unwrap().uri, "u");
+        assert_eq!(r.link_at(6).unwrap().uri, "u");
+        // Boundary semantics: col_start inclusive, col_end exclusive.
+        assert!(r.link_at(7).is_none());
+        // Below start.
+        assert!(r.link_at(1).is_none());
+        // Far past end.
+        assert!(r.link_at(9).is_none());
+    }
+
+    #[test]
+    fn link_at_picks_span_when_multiple_present() {
+        let mut r = Row::new(20);
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 0, col_end: 5, uri: "first".into(), id: None,
+        });
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 10, col_end: 15, uri: "second".into(), id: None,
+        });
+        assert_eq!(r.link_at(2).unwrap().uri, "first");
+        assert_eq!(r.link_at(12).unwrap().uri, "second");
+        // Gap between spans.
+        assert!(r.link_at(7).is_none());
+    }
+}
