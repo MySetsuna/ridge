@@ -176,6 +176,25 @@
 - **判定**：半实现（half-built）。enum + 序列化 + UI 都在，唯一缺失是 register-time 改为 Starting + 收到首条 PTY 字节后 transition 到 Busy。设计意图明确（注释清楚说"agent register 已发但 PTY 还没收到首条 prompt 输出时使用"），但需用户决定何时 transition + 是否影响 Claude Code 集成的现有时序假设。
 - **不实施理由**：需要用户对 teammate 流程时序的判断。本 audit 仅记录，等用户决策。
 
+### 1.15 [HIGH] 拆分 / 关闭面板后 padding 丢失（unpark `lastAppliedPaddingPx` 缓存残留）✅ 2026-05-04
+
+- **文件**：`src/lib/terminal/manager.ts::unpark`
+- **现象**：用户报告「在终端中拆分窗口或者关闭窗口，会让部分终端窗口丢失 padding 并且无法输入」。一旦 SplitContainer 因 split→leaf 折叠或 leaf→split 包装导致 `<RgPane>` 重挂载，幸存 RidgePane 走 onDestroy → `manager.park` → onMount → `manager.unpark` 路径。新挂载的 container 是全新 DOM 节点（无 inline padding）。
+- **根因**：`PaneEntry.lastAppliedPaddingPx` 记录上次 setPadding 入参，park 不清空；unpark 拿到新 container 后没有重置缓存。RidgePane onMount 调 `setPadding(paneId, settingsStore.terminalPaddingPx)` —— `entry.lastAppliedPaddingPx === clamped` 提前 return，新 container 永远不被赋 inline padding。视觉表现 = padding 丢失；canvas 因为 `width:100%; height:100%` 直接铺满 content-box，反而比期望尺寸大。
+- **修法（已实施）**：unpark 在重置 `lastReportedRows / lastReportedCols = -1` 之后追加 `entry.lastAppliedPaddingPx = undefined`。下一次 setPadding 必然命中 `cached !== clamped` 分支并应用，新 container 立即拿到正确的 inline padding；setPadding 内部紧接着调 `viewportChanged` → 120 ms 后 fitPane 再读一次 canvas rect，cols/rows 按"扣掉 padding 之后"的尺寸重算并下发到 PTY + kernel grid。
+- **验收**：浏览器实跑（§7.2）—— A | B 布局关闭 A，B 应保留用户 settingsStore.terminalPaddingPx，且终端字符位置随 grid 重排而 reflow（不再"卡在原坐标"）。
+- **后续观察**：用户原报告同时提到「字符在原本位置刷新」。padding 丢失会让 canvas 尺寸偏大、cols×rows 比期望大，PTY emits 在更宽的 grid 上而 shell 还没收到 SIGWINCH 时就会出现错位假象。padding 修好后 ResizeObserver 重新走一次 fit 路径，理论上同步消失；若仍残留再加 §1.16 单独跟。
+
+### 1.16 [HIGH] 终端 Ctrl+C 不应触发 SCM / 文件树重载 ⏳
+
+- **背景**：用户报告「shortcut key : ctrl + C should not let scource manager file tree reload, it is not go to a new cwd」。§1.11 已给 `setPaneCwd` 加 identity-preserving early return，相同 cwd 不再 fire `paneCwdStore`。本条是后续观察 —— 在 `setPaneCwd` 已 identity-guard 的前提下，Ctrl+C 仍能让 SCM 面板重新拉数据。
+- **疑似路径**（待验证）：
+  1. `SourceControl.svelte:1014 unsubCwdWatch = paneCwdStore.subscribe(...)` —— §1.11 已止血，正常情况下不会再被 Ctrl+C 触发，但需确认 normalize 后字符串确实相等（trailing slash / 大小写 / forward-slash 规范化全部一致）。
+  2. `SourceControl.svelte:1024 unsubFsChange = onFsChange(...)` —— 监听后端 fs-changed 事件。如果 shell 提示符 hook（starship / oh-my-posh / git status precmd）在 Ctrl+C 之后 redraw 时偶发触碰 `.git/index.lock` 之类文件，会让 watcher 把整个 repo root 标记为 changed → 250 ms debounce 后 refreshStatus。需要 trace 后端 emit log 看 Ctrl+C 时是否有 `.git/` 写入。
+  3. `SourceControl.svelte:1060 listen<string>('scm-repo-changed', ...)` —— `GitWatcher` 直接监听 `.git/`，等价路径 (2)。
+- **下一步**：在浏览器 DevTools 监控 `paneCwdStore` 触发频率（订阅打 `console.debug`），同时在后端 `watch.rs::GitWatcher` 加临时 trace 看 Ctrl+C 时 fs 事件流；确认是 SCM panel 还是 Explorer 文件树（用户用「scource manager file tree」，可能两者之一）。复现路径：终端 cd 到 git repo → 启动一个长任务（`sleep 60`） → Ctrl+C 中断 → 观察 SCM 是否 spin / Explorer 是否重排。
+- **不在本条范围**：不能盲改 § 1.11 的 identity guard（已确认正确）；也不能粗暴关闭 GitWatcher，外部 commit 依赖它。
+
 ---
 
 ## 2. Round 4 收尾（IME v3 / 反向 scrollback / reflow）

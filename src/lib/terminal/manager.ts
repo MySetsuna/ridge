@@ -570,6 +570,12 @@ export class TerminalManager {
 		// dimensions from the parked one.
 		entry.lastReportedRows = -1;
 		entry.lastReportedCols = -1;
+		// Reset the padding cache: the fresh container has no inline
+		// padding, but the cache still holds the pre-park value. Without
+		// this, RidgePane's onMount setPadding(paneId, samePx) sees
+		// `cached === clamped` and short-circuits — leaving the new
+		// container at zero padding after every split / reparent.
+		entry.lastAppliedPaddingPx = undefined;
 
 		container.addEventListener('focusin', entry.focusListener);
 		container.addEventListener('focusout', entry.blurListener);
