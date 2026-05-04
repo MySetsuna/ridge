@@ -195,7 +195,7 @@
 - **测试**：`cargo check --lib` 0 错误 0 警告。浏览器实跑验证留给 §7.2。
 - **关联**：fs_watch.rs 已经 SEGMENT_BLACKLIST 过滤 `.git/`、`node_modules/`、`target/` 等，不会经 fs-changed 路径误触发。
 
-### 1.18 [HIGH] 终端运行 Claude Code 出现非预期下划线 + 字符刷新错位 / 残留 ⏳ 部分修复（下划线 ✅ 2026-05-04 / 错位 + 残留 待查）
+### 1.18 [HIGH] 终端运行 Claude Code 出现非预期下划线 + 字符刷新错位 / 残留 ⏳ 主要 ✅（下划线 ✅ + OSC 8 残留 ✅ / 错位 待浏览器实跑确认）
 
 - **背景**：用户报告「终端中运行 claude code，所有输出出现非预期的下划线，字符刷新区也出现一定的错位和多余、残留字符显示，深入而全面的调研修复方法，调查当前行业最佳实现是怎么做的」。
 - **症状拆解**：
@@ -242,14 +242,28 @@
 - **测试**：5 条新 unit test 覆盖 `CSI 4 m` baseline、`CSI 4:0 m` 关闭、`CSI 4:2 m` double、`CSI 4:3 m` curly degrade、`CSI 24 m` no-op 后的状态一致性。`cargo test --lib` **125 passed**（原 120 + 5）。
 - **行业对照**：xterm 的 `parsing.c::doSGR` (line 5400+) 同样按 sub[1] 路由；wezterm 的 `wezterm-escape-parser/src/csi.rs` 中 `Sgr::Underline` 直接用 enum；alacritty 的 `vt100.rs::Csi::SubParam` 解析时如果遇到 `4:0` 显式置 `Underline::None`。Ridge 现在与这三家行业实现对齐。
 
-#### 1.18.b [HIGH] Claude Code 字符刷新错位 + 残留字符 ⏳ 待 1.18.a 验证后定位
+#### 1.18.b [HIGH] Claude Code 字符刷新残留 — OSC 8 hyperlink span 不随 erase 一起 clip ✅ 2026-05-04
 
-- **现状**：1.18.a 修好 SGR 之后，部分用户报告的「错位 / 残留」症状可能本就是下划线导致的视觉错觉（污染了背景区分度），需要浏览器实跑验证。
-- **若 1.18.a 修后症状仍在**，下一步排查顺序：
-  1. **alt-screen 切换 invalidate**：`lib.rs::JsTerminal::resize` 已调 `selection.clear()` 但**没有触发 renderer.invalidate_all**；切 `?1049h/l` 时同理。检查 `term/parser.rs` 模式切换路径是否要给 renderer 发信号。
-  2. **per-row hash 缺信息**：`render/renderer.rs::tick` 用 `(ch, attr_id, width)` 哈希。如果 attrs_table 不变但 hyperlink span 变了，hash 不变但视觉应该变。需要把 `row.hyperlinks` 也并入 hash。
-  3. **partial redraw bg 清理**：canvas2d::draw_row 已对每个 cell `set_fill_style + fill_rect`，理论上能清旧像素。但 `fillText` 抗锯齿可能溢出 cell 边界（注释 line 22-26 说 two-pass 已经 mitigate）。再确认。
-  4. **CSI H / VPA / HPA 1-based 解析**：`parser.rs` 的绝对定位是否正确？写 fixture `b"\x1b[3;5H*\x1b[2;1HX"` 验证。
+- **文件**：`packages/ridge-term/src/term/grid.rs::erase_row_range` + `erase_chars` + 新增 `clip_hyperlinks_around` helper；`packages/ridge-term/src/term/terminal.rs::tests`
+- **根因**：`Row::clear()`（line 103）正确清 `hyperlinks`，但 partial-erase 路径 `erase_row_range`（line 684）和 `erase_chars`（line 706, ECH）只覆写 cells 不动 spans。一旦 Claude Code 用 `CSI K`（erase line）/ `CSI J`（partial erase display）/ `CSI X`（ECH）做 status redraw —— 它频繁这么做 —— 旧 hyperlink span 残留在 row.hyperlinks 中。renderer 的 hyperlink-underline pass 每帧从 `row.hyperlinks` 重建 hl_rects，把下划线画在已清空的 cell 上，视觉表现 = 「字符刷新区出现一定的错位和多余、残留字符显示」。
+- **修法（已实施）**：新增 `clip_hyperlinks_around(spans, start, end)` 私有 helper：
+  - span 完全在 `[start, end)` 外 → 保留
+  - span 完全在 `[start, end)` 内 → drop
+  - erase 抹掉 span 尾部 → `col_end = start`
+  - erase 抹掉 span 头部 → `col_start = end`
+  - erase 在 span 中间打洞（`span.col_start < start && span.col_end > end`） → drop（不能在 retain_mut 中分裂为两个 span，xterm 同样选择 drop）
+  - `erase_row_range` 和 `erase_chars` 都调用此 helper。
+- **测试**：6 条新 unit test：CSI 2K 清整行、ECH 抹尾部 / 中间 / 头部、ECH 全覆盖 drop、ECH 落在两 span 之间保留两端。125 → 131 passed。
+- **行业对照**：xterm 的 `screen.c::ClearInLine` 走 `RegionClear` 同步清 hyperlink registry；wezterm 的 `wezterm-term/src/terminalstate/mod.rs::erase_in_line` 通过 `screen_mut().erase_at(...)` 内部连同 hyperlink 一起 reset；alacritty 的 `term/mod.rs::clear_line` 把每个 cell 的 `hyperlink: Option<Hyperlink>` 字段一起置 None（其设计每 cell 独立持有 hyperlink，无单独 span 列表）。Ridge 现采用 span-coalesced 数据结构 + erase-time 显式 clip，行为与 xterm/wezterm 对齐。
+- **未做**：完整 fuzz / Claude Code 实跑回归 → §7.2。
+
+#### 1.18.c [MEDIUM] Claude Code 字符刷新错位 ⏳ 待浏览器实跑（1.18.a + 1.18.b 修后再观察）
+
+- **现状**：1.18.a + 1.18.b 修好之后，剩下的「错位」症状可能：(i) 本来就是 SGR 下划线 + OSC 8 残留叠加导致的视觉错觉；(ii) 真有独立的 cursor positioning bug。需要用户在浏览器里跑 Claude Code 实测。
+- **若仍存在**，下一步排查顺序：
+  1. **per-row hash 缺信息**：`render/renderer.rs::tick` 用 `(ch, attr_id, width)` 哈希；不含 `row.hyperlinks`。OSC 8 span 变更不引发 row dirty，但 1.18.b 的修复让大多数 span 变化也伴随 cell 写入，所以 hash 已经能感知。仍可考虑加 hyperlinks 进 hash 以防御。
+  2. **alt-screen 切换 invalidate**：`lib.rs::JsTerminal::resize` 已调 `selection.clear()` 但**没有触发 renderer.invalidate_all**；切 `?1049h/l` 时同理。检查 `term/parser.rs` 模式切换路径是否要给 renderer 发信号。
+  3. **CSI H / VPA / HPA 1-based 解析**：`parser.rs` 的绝对定位是否正确？写 fixture `b"\x1b[3;5H*\x1b[2;1HX"` 验证。
 
 ### 1.17 [HIGH] 拆分窗口后原终端无法输入（RidgePane unpark 不重新注册 dataHandler）✅ 2026-05-04
 
