@@ -193,7 +193,7 @@ GPU 驱动重置 / Chromium 16 GL context 上限被打破时，xterm 的 WebGL c
 
 下面这些事情**本文档的 ✅ 不包含**：
 
-1. **round 2.4 / round 3 / round 4 我还没写代码，只设计了**。上面的 ✅ 判断是基于设计方案。实施时如果踩坑、改方案，对应判断可能从 ✅ 退化到 ⚠️。**届时我会回头改这份文档**，不会悄悄变。
+1. **round 2.4 / round 3 / round 4 实现状态**：round 2.4 + round 3 §4.1 ✅ 已实施（2026-05-04 单会话 17 commit 完成 §4.1.a-f：scaffold + wgpu dep + GlyphRasterizer + WGSL + 渲染管线 + atlas + cursor/overlay/underline + AnyBackend dispatch + RenderHandle async constructor）；round 4 §2.1 反向 scrollback bridge ✅、reflow Phase 1 ✅、IME v2 ✅ 等已落地，§2.3 Phase 2 / §2.4 grapheme / §3.3 Bell ⏳ 远期。**§7.2 浏览器实跑回归仍未验证 round 3 实际渲染** —— 上面的 ✅ 判断针对设计正确性；实跑发现的问题会回头改这份文档。
 
 2. **沙箱无法跑 wasm-pack / Tauri**。所有"应该会修复"的判断在我手里没有运行验证，要等你跑起来才能确认。
 
