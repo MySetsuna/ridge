@@ -767,3 +767,103 @@ fn parse_color_from_subs(rest: &[u16]) -> Option<Color> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── parse_color_from_subs ───────────────────────────────────────
+    //
+    // Decodes the trailing portion of a `CSI 38:…m` or `CSI 48:…m`
+    // sub-parameter array (the leading 38/48 has already been stripped
+    // by `apply_sgr`). Two recognized kinds:
+    //   5 → indexed (256-color)
+    //   2 → RGB truecolor
+    // RGB truecolor has two valid wire layouts:
+    //   `2; R; G; B`        (4-element form, common)
+    //   `2; 0; R; G; B`     (5-element ITU canonical with colorspace marker)
+    // The colorspace-marker form is only triggered when rest[1] == 0 AND
+    // rest.len() >= 5; otherwise we fall back to the 4-element form (which
+    // means `[2, 1, R, G, B]` is interpreted as a 4-element sequence
+    // ignoring the trailing B — matches xterm).
+
+    #[test]
+    fn parse_color_empty_returns_none() {
+        assert_eq!(parse_color_from_subs(&[]), None);
+    }
+
+    #[test]
+    fn parse_color_unknown_kind_returns_none() {
+        assert_eq!(parse_color_from_subs(&[3, 1, 2, 3]), None);
+        assert_eq!(parse_color_from_subs(&[99, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn parse_color_indexed_basic() {
+        assert_eq!(parse_color_from_subs(&[5, 42]), Some(Color::indexed(42)));
+        assert_eq!(parse_color_from_subs(&[5, 0]), Some(Color::indexed(0)));
+        assert_eq!(parse_color_from_subs(&[5, 255]), Some(Color::indexed(255)));
+    }
+
+    #[test]
+    fn parse_color_indexed_clamps_overflow() {
+        // `i.min(255) as u8` — so 300 → 255.
+        assert_eq!(parse_color_from_subs(&[5, 300]), Some(Color::indexed(255)));
+        assert_eq!(parse_color_from_subs(&[5, 65535]), Some(Color::indexed(255)));
+    }
+
+    #[test]
+    fn parse_color_indexed_missing_index_returns_none() {
+        // [5] alone has no index slot.
+        assert_eq!(parse_color_from_subs(&[5]), None);
+    }
+
+    #[test]
+    fn parse_color_rgb_4_element_form() {
+        // CSI 38; 2; R; G; B m — common form. `rest` after the leading
+        // 38 strip is &[2, R, G, B] (4 elements).
+        assert_eq!(
+            parse_color_from_subs(&[2, 0x12, 0x34, 0x56]),
+            Some(Color::rgb(0x12, 0x34, 0x56)),
+        );
+    }
+
+    #[test]
+    fn parse_color_rgb_5_element_with_colorspace_marker() {
+        // CSI 38: 2: : R: G: B m — ITU canonical form, rest[1] = 0 marker.
+        assert_eq!(
+            parse_color_from_subs(&[2, 0, 0xab, 0xcd, 0xef]),
+            Some(Color::rgb(0xab, 0xcd, 0xef)),
+        );
+    }
+
+    #[test]
+    fn parse_color_rgb_5_element_with_nonzero_second_falls_to_4_element_form() {
+        // [2, 1, R, G, B] — second arg is non-zero, so it's NOT treated
+        // as the ITU colorspace-marker form. Falls to 4-element branch:
+        // R/G/B come from positions 1/2/3, last element ignored.
+        // Matches xterm: extra trailing args are silently dropped.
+        assert_eq!(
+            parse_color_from_subs(&[2, 1, 100, 200, 250]),
+            Some(Color::rgb(1, 100, 200)),
+        );
+    }
+
+    #[test]
+    fn parse_color_rgb_too_short_returns_none() {
+        // [2] alone, [2, R] only, [2, R, G] only — not enough components.
+        assert_eq!(parse_color_from_subs(&[2]), None);
+        assert_eq!(parse_color_from_subs(&[2, 100]), None);
+        assert_eq!(parse_color_from_subs(&[2, 100, 200]), None);
+    }
+
+    #[test]
+    fn parse_color_rgb_components_truncate_when_over_255() {
+        // u16 → u8 cast wraps via the `as u8` truncation. 256 → 0,
+        // 257 → 1. This matches what xterm does on overflow input.
+        assert_eq!(
+            parse_color_from_subs(&[2, 256, 257, 258]),
+            Some(Color::rgb(0, 1, 2)),
+        );
+    }
+}
