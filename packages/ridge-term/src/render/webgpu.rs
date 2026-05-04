@@ -607,16 +607,32 @@ impl RenderBackend for WebGpuBackend {
             // layer index + UV.
             let entry = if let Some(e) = self.atlas.lookup(&key) {
                 Some(e)
-            } else if self.next_free_layer < ATLAS_LAYERS {
-                // Miss with room. Rasterize → upload → insert.
+            } else {
+                // Miss. Rasterize first; if that fails we bail to bg-only.
                 match self.rasterizer.rasterize(
                     &self.font_family,
                     self.font_size_px,
                     cell.ch,
                 ) {
                     Ok(glyph) => {
-                        let layer = self.next_free_layer;
-                        self.next_free_layer += 1;
+                        // Pick a target layer: fresh slot if any free,
+                        // else evict the LRU and reuse its layer.
+                        let layer: u32 = if self.next_free_layer < ATLAS_LAYERS {
+                            let l = self.next_free_layer;
+                            self.next_free_layer += 1;
+                            l
+                        } else {
+                            // Atlas at capacity — pop oldest and reuse.
+                            // §4.1.c.glyph.eviction.
+                            match self.atlas.evict_oldest() {
+                                Some((_, freed)) => freed.layer as u32,
+                                // Should never happen (atlas full ⇒
+                                // non-empty) but keep a defensive bg-only
+                                // fallback rather than panicking on the
+                                // renderer hot path.
+                                None => 0,
+                            }
+                        };
                         self.queue.write_texture(
                             wgpu::ImageCopyTexture {
                                 texture: &self.atlas_texture,
@@ -649,9 +665,6 @@ impl RenderBackend for WebGpuBackend {
                     }
                     Err(_) => None, // rasterize failure → bg-only
                 }
-            } else {
-                // Atlas full + no eviction support yet → bg-only fallback.
-                None
             };
 
             let (atlas_uv, atlas_layer) = match entry {
