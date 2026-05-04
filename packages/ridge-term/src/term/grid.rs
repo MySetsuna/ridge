@@ -751,6 +751,14 @@ impl Grid {
             for c in cur_col..(cur_col + n).min(r.cells.len()) {
                 r.cells[c] = Cell::EMPTY;
             }
+            // Hyperlink spans straddling or after the cursor get
+            // invalidated. Line-edit operations (PSReadLine / readline /
+            // Claude Code prompt edits) shift cell content but the
+            // visible label of any hyperlink no longer corresponds to
+            // its original click target — drop spans that overlap or
+            // extend past the edit point. Matches xterm's "edit
+            // invalidates the link" UX. (TASKS §1.18.b extension.)
+            r.hyperlinks.retain(|span| span.col_end <= cur_col);
         }
         self.cursor_mut().pending_wrap = false;
     }
@@ -809,6 +817,9 @@ impl Grid {
             for c in (cols - n)..cols.min(r.cells.len()) {
                 r.cells[c] = Cell::EMPTY;
             }
+            // Drop any hyperlink span overlapping or after the cursor
+            // — see ICH for rationale. (TASKS §1.18.b extension.)
+            r.hyperlinks.retain(|span| span.col_end <= cur_col);
         }
         self.cursor_mut().pending_wrap = false;
     }

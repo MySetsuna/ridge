@@ -253,7 +253,8 @@
   - erase 抹掉 span 头部 → `col_start = end`
   - erase 在 span 中间打洞（`span.col_start < start && span.col_end > end`） → drop（不能在 retain_mut 中分裂为两个 span，xterm 同样选择 drop）
   - `erase_row_range` 和 `erase_chars` 都调用此 helper。
-- **测试**：6 条新 unit test：CSI 2K 清整行、ECH 抹尾部 / 中间 / 头部、ECH 全覆盖 drop、ECH 落在两 span 之间保留两端。125 → 131 passed。
+- **追加扩展（同提交）**：`insert_chars`（ICH, CSI @）和 `delete_chars`（DCH, CSI P）也走 line-edit 路径，PSReadLine / readline / Claude Code prompt 编辑频繁触发。两者用 `r.hyperlinks.retain(|span| span.col_end <= cur_col)`：cursor 之前完整存在的 span 保留，跨 cursor 或之后的 span 全部 drop。理由：edit 后可见 label 已经偏移，原 click target 不再对应；xterm 同样的「edit invalidates the link」语义。
+- **测试**：9 条新 unit test：CSI 2K 清整行、ECH 抹尾部 / 中间 / 头部 / 全覆盖 drop / 两 span 之间保留、ICH cursor 处 drop 重叠 span / 远端 span 保留、DCH cursor 处 drop 重叠 span。125 → 134 passed。
 - **行业对照**：xterm 的 `screen.c::ClearInLine` 走 `RegionClear` 同步清 hyperlink registry；wezterm 的 `wezterm-term/src/terminalstate/mod.rs::erase_in_line` 通过 `screen_mut().erase_at(...)` 内部连同 hyperlink 一起 reset；alacritty 的 `term/mod.rs::clear_line` 把每个 cell 的 `hyperlink: Option<Hyperlink>` 字段一起置 None（其设计每 cell 独立持有 hyperlink，无单独 span 列表）。Ridge 现采用 span-coalesced 数据结构 + erase-time 显式 clip，行为与 xterm/wezterm 对齐。
 - **未做**：完整 fuzz / Claude Code 实跑回归 → §7.2。
 

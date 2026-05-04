@@ -671,6 +671,42 @@ mod tests {
     }
 
     #[test]
+    fn ich_invalidates_hyperlinks_at_or_after_cursor() {
+        // Span at cols 0..5 ("hello"). Cursor moved to col 2, ICH 3 — shifts
+        // "llo" right and inserts 3 blanks. Span now visually wrong, drop.
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
+        t.feed(b"\x1b[3G\x1b[3@");
+        let row = t.grid().row(0).unwrap();
+        assert!(row.hyperlinks.is_empty(), "ICH at edit point invalidates overlapping spans");
+    }
+
+    #[test]
+    fn ich_keeps_hyperlinks_strictly_before_cursor() {
+        // Span at cols 0..3 ("AAA"). Cursor at col 10, ICH 2 — far away.
+        // Span is entirely before cursor → keep.
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://a\x07AAA\x1b]8;;\x07");
+        t.feed(b"       "); // pad cols 3..10
+        t.feed(b"\x1b[11G\x1b[2@");
+        let row = t.grid().row(0).unwrap();
+        assert_eq!(row.hyperlinks.len(), 1);
+        assert_eq!(row.hyperlinks[0].col_start, 0);
+        assert_eq!(row.hyperlinks[0].col_end, 3);
+    }
+
+    #[test]
+    fn dch_invalidates_hyperlinks_at_or_after_cursor() {
+        // Span at cols 0..5 ("hello"). Cursor at col 2, DCH 2 — shifts left.
+        // Span overlaps edit point, drop.
+        let mut t = Terminal::new(2, 20, 0);
+        t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
+        t.feed(b"\x1b[3G\x1b[2P");
+        let row = t.grid().row(0).unwrap();
+        assert!(row.hyperlinks.is_empty(), "DCH at edit point invalidates overlapping spans");
+    }
+
+    #[test]
     fn ech_keeps_hyperlink_outside_erase_range() {
         // Two spans on one row: 0..3 and 10..15. ECH at col 5, N=4
         // wipes cols 5..9 — between the two spans. Both kept intact.
