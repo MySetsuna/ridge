@@ -61,6 +61,18 @@ fn rgba_to_wgpu_color(rgba: [u8; 4]) -> wgpu::Color {
     }
 }
 
+/// Convert an `[u8; 4]` byte color into the f32 form CellInstance
+/// fields use. Vertex stage shaders can multiply linearly without
+/// re-normalizing.
+fn rgba_u8_to_f32(rgba: [u8; 4]) -> [f32; 4] {
+    [
+        rgba[0] as f32 / 255.0,
+        rgba[1] as f32 / 255.0,
+        rgba[2] as f32 / 255.0,
+        rgba[3] as f32 / 255.0,
+    ]
+}
+
 /// WebGPU backend — round 3 §4.1.c body. Holds the device, queue,
 /// surface, the cell render pipeline + bind-group layout, and the
 /// allocated GPU resources (texture-array atlas, sampler, frame
@@ -109,6 +121,15 @@ pub struct WebGpuBackend {
     /// (`ATLAS_SLOT_W`, `ATLAS_SLOT_H`) so its output bitmap fits
     /// exactly into one atlas-texture layer with no clipping.
     rasterizer: GlyphRasterizer,
+    /// Per-frame CellInstance accumulator. `begin_frame` clears it,
+    /// `draw_row` pushes one entry per non-continuation cell, the
+    /// future `end_frame` body uploads it via `queue.write_buffer`
+    /// and submits a single `draw(0..4, 0..len)` call.
+    ///
+    /// Sized lazily to match the largest frame seen so far — Vec
+    /// keeps capacity across `clear()` so steady-state allocation
+    /// settles after a few frames.
+    pending_instances: Vec<CellInstance>,
     atlas: GlyphAtlas,
     metrics: FrameMetrics,
     theme: Theme,
@@ -441,6 +462,7 @@ impl WebGpuBackend {
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             bind_group,
             rasterizer,
+            pending_instances: Vec::with_capacity(INITIAL_INSTANCE_CAPACITY as usize),
             // GlyphAtlas capacity must equal ATLAS_LAYERS so atlas
             // eviction matches GPU layer reuse exactly.
             atlas: GlyphAtlas::new(ATLAS_LAYERS as usize),
@@ -483,10 +505,12 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
-        // Record per-frame state. Actual GPU work happens in
-        // `clear()` + `end_frame()` for this slice.
+        // Record per-frame state + reset the cell-instance accumulator.
+        // Vec::clear keeps capacity, so once steady-state is reached
+        // the per-frame allocator cost is zero.
         self.metrics = metrics;
         self.theme = theme.clone();
+        self.pending_instances.clear();
     }
 
     fn clear(&mut self) {
@@ -536,9 +560,41 @@ impl RenderBackend for WebGpuBackend {
         frame.present();
     }
 
-    fn draw_row(&mut self, _row: &RowDraw<'_>, _attrs_table: &AttrTable) {
-        // No-op for §4.1 slice 1. §4.1.b lands real glyph rasterization
-        // + texture-array atlas upload + per-row instance buffer.
+    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        // Per-cell instance accumulation. For this slice, `atlas_uv`
+        // and `atlas_layer` are zeroed — the future cache-miss path
+        // (§4.1.c.next) populates them from
+        // GlyphAtlas::lookup() / rasterizer.rasterize() / write_texture.
+        // With zero UV the shader samples (0, 0, layer 0) which is
+        // empty atlas content (alpha 0), so coverage = 0 and the
+        // fragment renders as bg only. That's the correct visual for
+        // any cell whose glyph hasn't been rasterized yet — and the
+        // fallback for the bg-only-frame slice.
+        let row_idx = row.row_index;
+        let cell_w = self.metrics.cell_w * self.metrics.dpr;
+        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let theme = self.theme.clone();
+        for (col, cell) in row.cells.iter().enumerate() {
+            // Skip continuation halves of wide glyphs — the lead cell
+            // already covers both visual columns by carrying width=2.
+            if cell.width == 0 {
+                continue;
+            }
+            let (_attrs, fg, bg) = crate::render::backend::resolve_cell_colors(
+                cell, attrs_table, &theme,
+            );
+            let cell_w_px = cell_w * cell.width.max(1) as f32;
+            let pixel_x = (col as f32) * cell_w;
+            let pixel_y = (row_idx as f32) * cell_h;
+            self.pending_instances.push(CellInstance {
+                cell_xy: [pixel_x, pixel_y],
+                cell_size: [cell_w_px, cell_h],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: rgba_u8_to_f32(fg),
+                bg_rgba: rgba_u8_to_f32(bg),
+            });
+        }
     }
 
     fn draw_cursor(&mut self, _cursor: &CursorDraw, _attrs_table: &AttrTable) {
