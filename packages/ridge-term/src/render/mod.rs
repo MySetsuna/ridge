@@ -16,7 +16,11 @@ pub mod canvas2d;
 // in without further mod.rs churn.
 pub mod glyph_atlas;
 
-#[cfg(target_arch = "wasm32")]
+// WebGPU backend. Gated on both wasm32 (web-sys / GPU bindings) and the
+// `webgpu` cargo feature so default builds skip the trait-impl scaffold
+// and stay compact. Flip on with `cargo build --features webgpu` while
+// the §4.1 implementation lands.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod webgpu;
 
 pub use backend::{
