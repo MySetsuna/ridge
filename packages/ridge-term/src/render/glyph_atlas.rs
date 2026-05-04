@@ -153,6 +153,35 @@ impl GlyphAtlas {
         self.entries.clear();
         self.order.clear();
     }
+
+    /// Pop the LRU entry, returning both its key and its entry (so the
+    /// caller can reclaim the entry's resources — e.g. a WebGPU
+    /// texture-array layer index). Returns `None` when the atlas is
+    /// empty.
+    ///
+    /// Why this exists separately from `insert`'s eviction path:
+    /// `insert` returns the evicted KEY only and drops the entry.
+    /// For backends that need to reuse the entry's owned resources
+    /// (texture-array slot, vertex offset, …) BEFORE the next insert
+    /// can fill that resource, a separate evict-then-insert flow is
+    /// required.
+    ///
+    /// Typical pattern:
+    /// ```text
+    /// let (target_layer, entry) = if atlas.len() < CAPACITY {
+    ///     (next_free_layer, /* fresh */ )
+    /// } else {
+    ///     let (_, freed) = atlas.evict_oldest().unwrap();
+    ///     (freed.layer, /* reused */ )
+    /// };
+    /// queue.write_texture(target_layer, &new_bitmap, ...);
+    /// atlas.insert(new_key, GlyphEntry { layer: target_layer, ... });
+    /// ```
+    pub fn evict_oldest(&mut self) -> Option<(GlyphKey, GlyphEntry)> {
+        let key = self.order.pop_front()?;
+        let entry = self.entries.remove(&key)?;
+        Some((key, entry))
+    }
 }
 
 #[cfg(test)]
@@ -249,5 +278,47 @@ mod tests {
         a.clear();
         assert_eq!(a.len(), 0);
         assert!(a.lookup(&key(1)).is_none());
+    }
+
+    #[test]
+    fn evict_oldest_returns_lru_pair() {
+        // Insert in MRU-from-newest order; evict_oldest must return
+        // the FIRST inserted (= LRU) pair. This is the load-bearing
+        // ordering pin for WebGpuBackend's texture-layer reuse path.
+        let mut a = GlyphAtlas::new(4);
+        a.insert(key(1), entry(10));
+        a.insert(key(2), entry(20));
+        a.insert(key(3), entry(30));
+        let (k, e) = a.evict_oldest().unwrap();
+        assert_eq!(k, key(1));
+        assert_eq!(e, entry(10));
+        assert_eq!(a.len(), 2);
+        // Subsequent calls evict in age order.
+        let (k2, _) = a.evict_oldest().unwrap();
+        assert_eq!(k2, key(2));
+    }
+
+    #[test]
+    fn evict_oldest_returns_none_when_empty() {
+        let mut a = GlyphAtlas::new(4);
+        assert!(a.evict_oldest().is_none());
+        a.insert(key(1), entry(0));
+        a.evict_oldest();
+        // Now empty again.
+        assert!(a.evict_oldest().is_none());
+    }
+
+    #[test]
+    fn evict_oldest_respects_lookup_promotion() {
+        // lookup() promotes a key to MRU. After that, evict_oldest
+        // must NOT pick it — it should evict the next-oldest instead.
+        let mut a = GlyphAtlas::new(4);
+        a.insert(key(1), entry(10));
+        a.insert(key(2), entry(20));
+        a.insert(key(3), entry(30));
+        // Promote key(1) — now key(2) is LRU.
+        let _ = a.lookup(&key(1));
+        let (evicted, _) = a.evict_oldest().unwrap();
+        assert_eq!(evicted, key(2));
     }
 }
