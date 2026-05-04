@@ -514,50 +514,15 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn clear(&mut self) {
-        // Acquire current swap-chain texture and submit a single
-        // RenderPass that wipes the surface with `theme.bg`. The pass
-        // ends immediately — per-row / cursor / overlay paints land
-        // in §4.1.b+ as separate pipeline passes.
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(_e) => {
-                // Surface lost / outdated. The renderer's
-                // full_redraw_pending flag will retry on the next tick
-                // once the surface is reconfigured (which the caller
-                // must arrange via `resize_surface`). We deliberately
-                // don't log to console.warn here to avoid coupling on
-                // an extra web-sys feature; future slices may add it
-                // when the WebGpuBackend gets richer instrumentation.
-                return;
-            }
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("ridge-term-clear-encoder"),
-            });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ridge-term-clear-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(rgba_to_wgpu_color(self.theme.bg)),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            // Pass dropped here — no draws, just the clear.
-        }
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        // Records intent only — actual GPU work happens in end_frame()
+        // so a single RenderPass can include both the clear AND the
+        // draw_row instance draws. The renderer's call sequence is
+        // begin_frame → clear → draw_row* → cursor/overlay/underline →
+        // end_frame; clear() runs BEFORE draw_row, so it'd be wasteful
+        // to acquire a swap-chain texture here only to wait for the
+        // per-row instances to accumulate before drawing them.
+        //
+        // We always clear with theme.bg; no flag needs to be tracked.
     }
 
     fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
@@ -610,8 +575,104 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn end_frame(&mut self) {
-        // Slice 1: clear() already submitted + presented. Future
-        // slices will refactor so begin_frame opens a single pass
-        // and end_frame closes it after all draws.
+        // Unified per-frame submit. Steps:
+        //   1. Upload frame uniform (viewport in pixels).
+        //   2. Grow instance buffer if the frame exceeded current capacity.
+        //   3. Upload pending CellInstance bytes.
+        //   4. Acquire swap-chain texture (bail on surface-lost).
+        //   5. Single RenderPass with LoadOp::Clear(theme.bg) +
+        //      pipeline + bind group + vertex buffer + indirect-style
+        //      `draw(0..4, 0..N_cells)`.
+        //   6. Submit + present.
+
+        // 1) Frame uniform: viewport in pixels (post-DPR).
+        let viewport: [f32; 4] = [
+            self.config.width as f32,
+            self.config.height as f32,
+            0.0,
+            0.0,
+        ];
+        let viewport_bytes: [u8; 16] = unsafe {
+            std::mem::transmute::<[f32; 4], [u8; 16]>(viewport)
+        };
+        self.queue.write_buffer(&self.frame_uniform, 0, &viewport_bytes);
+
+        // 2-3) Instance buffer.
+        let n_cells = self.pending_instances.len() as u32;
+        if n_cells > 0 {
+            // Grow on overflow. Doubling keeps amortized cost O(1)
+            // per cell across a session.
+            if n_cells > self.instance_capacity {
+                let new_capacity = n_cells.next_power_of_two().max(self.instance_capacity * 2);
+                self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ridge-instance-buffer-grown"),
+                    size: (new_capacity as u64) * CELL_INSTANCE_STRIDE,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.instance_capacity = new_capacity;
+                // Bind group still references the OLD instance buffer
+                // by virtue of the binding pointing only at frame_uniform
+                // + atlas_view + sampler — instance buffer is bound
+                // per-frame via set_vertex_buffer below, so there's
+                // nothing to rebuild here. ✅
+            }
+            // Bytes view — CellInstance is #[repr(C)] over Pod fields
+            // (f32 / u32 / arrays), so the slice transmute is sound.
+            // Future iteration may add bytemuck for safer-by-default.
+            let instance_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    self.pending_instances.as_ptr() as *const u8,
+                    self.pending_instances.len() * std::mem::size_of::<CellInstance>(),
+                )
+            };
+            self.queue.write_buffer(&self.instance_buffer, 0, instance_bytes);
+        }
+
+        // 4) Swap-chain texture.
+        let frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(_e) => {
+                // Surface lost / outdated — bail this frame; the
+                // renderer's full_redraw_pending will retry on the
+                // next tick once resize_surface reconfigures.
+                return;
+            }
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // 5) Single command encoder + render pass.
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ridge-term-frame-encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ridge-term-frame-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(rgba_to_wgpu_color(self.theme.bg)),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if n_cells > 0 {
+                pass.set_pipeline(&self.cell_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+                // 4 vertices per quad (TriangleStrip), N_cells instances.
+                pass.draw(0..4, 0..n_cells);
+            }
+        }
+
+        // 6) Submit + present.
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
     }
 }
