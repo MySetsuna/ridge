@@ -214,4 +214,108 @@ mod tests {
         assert_eq!(m.set(2026, false, true), ModeEffect::None);
         assert!(!m.sync_output);
     }
+
+    #[test]
+    fn origin_mode_6_returns_jump_to_origin_effect() {
+        // DECOM (origin mode) toggle returns JumpToOrigin both ways
+        // — the caller (parser.rs) translates this into a cursor
+        // reposition to the scroll region's top-left.
+        let mut m = Modes::default();
+        assert!(!m.origin);
+        assert_eq!(m.set(6, true, true), ModeEffect::JumpToOrigin);
+        assert!(m.origin);
+        assert_eq!(m.set(6, false, true), ModeEffect::JumpToOrigin);
+        assert!(!m.origin);
+    }
+
+    #[test]
+    fn cursor_visibility_mode_25_toggles() {
+        // DECTCEM. Cursor renders or hides depending on this flag —
+        // parser flips it via CSI ?25h / CSI ?25l.
+        let mut m = Modes::default();
+        assert!(m.cursor_visible);
+        m.set(25, false, true);
+        assert!(!m.cursor_visible);
+        m.set(25, true, true);
+        assert!(m.cursor_visible);
+    }
+
+    #[test]
+    fn autowrap_mode_7_toggles() {
+        // DECAWM. xterm default = on; we follow.
+        let mut m = Modes::default();
+        assert!(m.autowrap);
+        m.set(7, false, true);
+        assert!(!m.autowrap);
+        m.set(7, true, true);
+        assert!(m.autowrap);
+    }
+
+    #[test]
+    fn bracketed_paste_mode_2004_toggles() {
+        let mut m = Modes::default();
+        assert!(!m.bracketed_paste);
+        m.set(2004, true, true);
+        assert!(m.bracketed_paste);
+        m.set(2004, false, true);
+        assert!(!m.bracketed_paste);
+    }
+
+    #[test]
+    fn mouse_modes_route_to_distinct_fields() {
+        // Each mouse-related private mode targets its own bool. Pin
+        // the routing so future refactors can't collapse them.
+        let mut m = Modes::default();
+        m.set(9, true, true);
+        m.set(1000, true, true);
+        m.set(1002, true, true);
+        m.set(1003, true, true);
+        m.set(1004, true, true);
+        m.set(1006, true, true);
+        assert!(m.mouse_x10);
+        assert!(m.mouse_normal);
+        assert!(m.mouse_button_event);
+        assert!(m.mouse_any_event);
+        assert!(m.mouse_focus);
+        assert!(m.mouse_sgr);
+    }
+
+    #[test]
+    fn app_cursor_keys_mode_1_toggles() {
+        // DECCKM. Affects which key sequences encode/cmd produce for
+        // arrow keys.
+        let mut m = Modes::default();
+        assert!(!m.app_cursor_keys);
+        m.set(1, true, true);
+        assert!(m.app_cursor_keys);
+        m.set(1, false, true);
+        assert!(!m.app_cursor_keys);
+    }
+
+    #[test]
+    fn public_mode_4_is_insert_distinct_from_private_4() {
+        // CSI 4 h (public) sets insert mode; CSI ?4 h (private) is
+        // unknown to us. Pins the is_private dispatch — a future
+        // refactor that drops the is_private flag would silently
+        // collapse these into the same handler.
+        let mut m = Modes::default();
+        assert!(!m.insert);
+        m.set(4, true, false);    // public
+        assert!(m.insert);
+        // Private 4 is unknown; should NOT touch insert.
+        m.set(4, false, true);
+        assert!(m.insert, "private mode 4 must not flip public-mode 4 state");
+    }
+
+    #[test]
+    fn public_mode_20_linefeed_newline_toggles() {
+        // LNM (line-feed/new-line). Affects whether LF triggers
+        // implicit CR. Public mode, NOT private.
+        let mut m = Modes::default();
+        assert!(!m.linefeed_newline);
+        m.set(20, true, false);
+        assert!(m.linefeed_newline);
+        m.set(20, false, false);
+        assert!(!m.linefeed_newline);
+    }
 }
