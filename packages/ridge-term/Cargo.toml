@@ -8,6 +8,18 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Default: ship Canvas2D backend only. Smallest wasm bundle, broadest
+# compatibility, no GPU adapter request to fail.
+default = []
+# Round 3 §4.1 opt-in: include the WebGpuBackend module. Today the
+# struct is a Err-on-construct stub (TASKS §4.1) so flipping this on
+# only enlarges the trait-surface check + adds the GlyphAtlas LRU.
+# Future iterations populate this with the real wgpu dep and adapter
+# wiring; until then this exists so consumers can choose to opt in
+# without a breaking change.
+webgpu = []
+
 [dependencies]
 # VT/ANSI escape sequence parser. Same crate Alacritty uses; covers the full
 # Paul Williams state machine including DCS / OSC / CSI parameter parsing.

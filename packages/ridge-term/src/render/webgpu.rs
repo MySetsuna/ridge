@@ -36,7 +36,7 @@
 //! `RenderBackend` early. The Err-construction pattern keeps the trait
 //! impl in the type system without shipping any GPU code.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 #![allow(dead_code)] // round-3 scaffold; real wiring lands in §4.1 implementation iteration.
 
 use crate::render::backend::{
