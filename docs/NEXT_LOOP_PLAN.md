@@ -1,6 +1,6 @@
 # Ridge — Next Loop 计划
 
-最后更新：2026-05-04（第 71 轮） · 由 /loop 自动生成
+最后更新：2026-05-04（第 71 轮 — Round 3 §4.1 ✅ 完整收尾） · 由 /loop 自动生成
 
 > 本文档由 /loop 循环结束时写入，下一轮 `/loop` 会优先读取本文档。
 > 对标：VS Code、JetBrains Fleet、Warp、Zed。
@@ -9,13 +9,16 @@
 
 ## 🔜 下一轮候选
 
-**Round 3 §4.1.e — RenderHandle 运行时 backend 选择（最大优先级，§4.1 最后一步）**：第 71 轮 §4.1.a-d 全部完成（详见下面 history），WebGpuBackend 现在功能上完全等价于 Canvas2dBackend，但 `lib.rs::RenderHandle` 仍硬编码 `Renderer<Canvas2dBackend>`。最后一步：让 RenderHandle 在 wasm-bindgen 构造时尝试 `WebGpuBackend::new(canvas).await`，成功则用 GPU 路径，失败（adapter miss、no WebGPU support）则 fallback 到 Canvas2dBackend。三种实现路径（详见 TASKS §4.1.e 待补）：(1) `Box<dyn RenderBackend>` — 需要 Renderer<B> 改成 `Renderer<dyn RenderBackend>`，monomorphization 成本变高；(2) `enum AnyBackend { Canvas2d, Webgpu }` — 9 个 trait 方法各 match-and-dispatch，~80 行 boilerplate；(3) cfg 编译时 switch — 不支持运行时 fallback。推荐 (2)：runtime fallback 是用户体验关键。
+**§7.2 Browser real-run regression（最大优先级，需用户）**：Round 3 §4.1 已功能完成（详见下面 history），但 WebGPU 路径 + 全部 §1.18 修复都没有在浏览器里实跑过。两条独立验证路径：
 
-**Round 3 §4.1.f — `set_font_config(family, size_px)` 方法**：当前 WebGpuBackend 硬编码 `font_family = "monospace"` + `font_size_px = 15.0`。需要从 `lib.rs::RenderHandle::configure` 路径接进来，类似 Canvas2dBackend 的 `set_font` 方法（非 trait，直接 backend impl）。
+1. **§1.18 修复实测**：用户 `pnpm tauri dev`（默认构建，Canvas2D），开 Claude Code 一段 OSC 8 hyperlink 流量，验证 (a) 普通文本无下划线污染、(b) 状态行重绘无残留 underline、(c) 拆分 / 关闭面板无字符错位。所有修复已在 host 单测固化，但实跑能确认 wasm 加载 + ResizeObserver / 焦点 / IME 等浏览器侧路径都没漏。
+2. **WebGPU 路径实测**：用户 `pnpm tauri build --features webgpu`（待 build.mjs 支持），JS 侧改用 `await RenderHandle.newWithWebgpuFirst(canvas)` 而非 sync `new(canvas)`。验证 (a) 默认 dark theme 渲染正确、(b) 字形透过 OffscreenCanvas + texture array 显示、(c) 滚屏 + 选中 + cursor blink 都对、(d) adapter miss 时静默 fallback 到 Canvas2D。
 
-**§1.18.c 浏览器实跑回归**：第 70 轮所有 §1.18 修复已完成单元测试 + 第 71 轮 `compute_row_hash` 直接证明了 §1.18.c 哈希含 hyperlink 形状的不变式，但仍需用户 `pnpm tauri dev` 跑 Claude Code 实测，确认 a) 普通文本无下划线污染、b) 状态行重绘无残留 underline、c) 拆分 / 关闭面板无字符错位。属 §7.2 Browser real-run regression 范围。
+**Round 3 §4.3 共享 surface（条件：先过 §7.2 WebGPU 实测）**：当前每个 RenderHandle 各持一个 wgpu Surface + Device + 资源（atlas / buffers / bind group）。OVERVIEW §6 R1 / §D1 设计赌注是 10 pane 时 GPU 内存压成 1× —— 一个 canvas + scissor rect per pane。等 §7.2 单 pane 跑通再做这一步，否则 debug 双倍困难。
 
-**Round 3 §4.4 性能基准**：§4.1.e 接通后即可跑（同 PTY 录制对比 Canvas2D vs WebGPU FPS / frame time / GPU mem）。OVERVIEW §6 R2 注明当前 Canvas2D 用户没报告显著卡顿，所以 §4.4 不是阻塞，但完成后能定量验证 round 3 的设计赌注（10 pane 时 GPU mem 减少 ~80%）。
+**Round 3 §4.4 perf benchmark（条件：先过 §7.2）**：同 §4.3 依赖。等基本 GPU 路径跑通就有可比 baseline。
+
+**TASKS §1.19 元-检查点（用户在第 71 轮新增）**：所有 ⏳ 项关闭后做架构 review + OVERVIEW 一致性复查 + 决策剩余 deferred 项（§2.3 Phase 2 reflow / §2.4 grapheme / §3.3 Bell audio / §1.5 measure_font）。本条本身不写代码，只产出 review 报告 + 决策记录。等 §7.2 实测通过后是自然触发点。
 
 **TASKS §1.19 元-检查点**（用户在第 71 轮新增）：所有 ⏳ 项关闭后做架构 review + OVERVIEW 一致性复查 + 决策剩余 deferred 项（§2.3 Phase 2 reflow / §2.4 grapheme / §3.3 Bell audio / §1.5 measure_font）。本条本身不写代码，只产出 review 报告 + 决策记录。
 
@@ -60,7 +63,7 @@
 
 **§4.1.d.overlays（f25cd3a）**：`draw_selection_overlay(rects)` + `draw_hyperlink_underlines(rects)` 同样 instance-push 模式：每 rect 一个 CellInstance，selection 推全 cell 高度的 selection_bg 块（自带 alpha，BlendState::ALPHA_BLENDING 自动半透明 composite）；hyperlink 推 cell 底部 2 px 高 hyperlink_color 条。**§4.1.d 完成** — WebGpuBackend 视觉原语全 cover：cell bg+glyph、cursor (3 style + 反色 glyph)、selection、hyperlink underline，全部走 1 pipeline 1 render pass per frame。
 
-#### §4.1 完成度
+#### §4.1 完成度（2026-05-04 终态）
 
 | Sub-step | 状态 |
 |---|---|
@@ -70,8 +73,28 @@
 | §4.1.c.glyph atlas lookup + rasterize + write_texture | ✅ |
 | §4.1.c.glyph.eviction (atlas-full layer reuse) | ✅ |
 | §4.1.d cursor + selection + hyperlink underlines | ✅ |
-| §4.1.e RenderHandle 运行时 backend 选择 | ⏳（最后一步，下一轮目标） |
-| §4.1.f set_font_config(family, size) | ⏳（小，可与 §4.1.e 同轮）|
+| §4.1.f set_font_config(family, size) | ✅ |
+| §4.1.e step 1/2 — AnyBackend enum dispatch | ✅ |
+| §4.1.e step 2/2 — RenderHandle Renderer<AnyBackend> + async constructor | ✅ |
+| **Round 3 §4.1 = 功能完整** | **✅** |
+
+#### §4.1 收尾 commit
+
+- **`00535d0`** §4.1.f set_font_config method (5-line non-trait method on WebGpuBackend, mirrors Canvas2dBackend::set_font).
+- **`d7bda5c`** §4.1.e step 1/2 — AnyBackend enum + impl RenderBackend (~80 行 dispatch boilerplate; cfg-gated webgpu variant; non-trait set_font_config 方法 unify Canvas2D / WebGPU 两边的 font 入口）。
+- **`1d8c4ee`** §4.1.e step 2/2 — RenderHandle 切到 `Renderer<AnyBackend>`；新增 `#[wasm_bindgen]` async fn `newWithWebgpuFirst(canvas)`，cfg-gated `feature = "webgpu"`，try WebGpuBackend then fall back to Canvas2dBackend。configure() 改用 `set_font_config` 走统一入口。
+
+After 1d8c4ee：`pnpm tauri build --features webgpu` 时 JS 用 `await RenderHandle.newWithWebgpuFirst(canvas)` 试 WebGPU，failure 静默回退 Canvas2D。默认 build 不变（Canvas2D-only，async 函数不存在，JS 用 typeof 探测）。Round 3 §4.1 功能等价于 Canvas2dBackend，等用户 §7.2 实跑验证。
+
+#### Round 3 后续路线
+
+| 阶段 | 状态 | 阻塞 |
+|---|---|---|
+| §4.1 实接线 | ✅ 完成 | — |
+| §7.2 Browser real-run regression（含 WebGPU 路径） | ⏳ | 需用户 |
+| §4.3 shared-surface scissor（多 pane 共享 1 个 GPU surface） | ⏳ | 等 §7.2 验证单 pane WebGPU 跑通 |
+| §4.4 perf bench（Canvas2D vs WebGPU 对比） | ⏳ | 等 §7.2 |
+| §4.1.f.async-set-font（替换 sync set_font_config 为 async / re-rasterize on font change） | optional | 当前架构无需 — atlas 自带 font_family_hash，font 切换时 LRU 自然淘汰旧 entry |
 
 #### 设计赌注被证明
 
