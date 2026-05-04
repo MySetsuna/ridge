@@ -395,7 +395,7 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + 全 §4.1.c ✅ + 全 §4.1.d ✅ + **set_font_config ✅（§4.1.f）** 2026-05-04 / RenderHandle 运行时 backend 选择 ⏳ §4.1.e（最后一步：让用户能 opt-in WebGPU）
+### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + 全 §4.1.c ✅ + 全 §4.1.d ✅ + set_font_config ✅ + **AnyBackend enum 分发基础 ✅（§4.1.e step 1/2）** 2026-05-04 / RenderHandle 切到 Renderer<AnyBackend> + async constructor ⏳ §4.1.e step 2/2
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))] pub mod webgpu;`），`packages/ridge-term/Cargo.toml`（新增 `[features] webgpu = []`）
 - **关键 API**：

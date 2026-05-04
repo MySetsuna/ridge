@@ -37,3 +37,140 @@ pub use renderer::Renderer;
 
 #[cfg(target_arch = "wasm32")]
 pub use canvas2d::Canvas2dBackend;
+
+// ─── AnyBackend (Round 3 §4.1.e infrastructure) ─────────────────────
+//
+// Enum-dispatch wrapper that holds either a Canvas2dBackend or
+// (when the `webgpu` cargo feature is on) a WebGpuBackend. Implements
+// `RenderBackend` by forwarding every trait method to the active
+// variant. Lets `RenderHandle` use `Renderer<AnyBackend>` and switch
+// backends at construction time based on adapter availability without
+// changing the `Renderer<B>` generic to `Renderer<dyn RenderBackend>`
+// (which would force trait-object dispatch through a vtable for every
+// frame's per-row draw call — not what we want on the hot path).
+//
+// The match arms on each method are mechanical but the compiler
+// inlines monomorphized variants on optimization, so the runtime
+// cost is one branch + a tail call.
+//
+// Wiring `RenderHandle` to use this lands in §4.1.e.next; this
+// commit just defines the enum + impl so the dispatch code is
+// reviewable in isolation.
+
+#[cfg(target_arch = "wasm32")]
+pub enum AnyBackend {
+    Canvas2d(Canvas2dBackend),
+    #[cfg(feature = "webgpu")]
+    Webgpu(webgpu::WebGpuBackend),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl AnyBackend {
+    /// Set the font CSS family + pixel size. Translates the unified
+    /// (family, size_px) form into whichever shape each backend
+    /// expects: Canvas2D wants a single CSS string; WebGPU wants
+    /// the two parts separately for the rasterizer.
+    pub fn set_font_config(&mut self, font_family: String, font_size_px: f32) {
+        match self {
+            AnyBackend::Canvas2d(b) => {
+                b.set_font(format!("{}px {}", font_size_px, font_family));
+            }
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => {
+                b.set_font_config(font_family, font_size_px);
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl RenderBackend for AnyBackend {
+    fn measure_font(
+        &self,
+        font_family: &str,
+        font_size_px: f32,
+    ) -> Result<(f32, f32), String> {
+        match self {
+            AnyBackend::Canvas2d(b) => b.measure_font(font_family, font_size_px),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.measure_font(font_family, font_size_px),
+        }
+    }
+
+    fn resize_surface(
+        &mut self,
+        width_css: u32,
+        height_css: u32,
+        dpr: f32,
+    ) -> Result<(), String> {
+        match self {
+            AnyBackend::Canvas2d(b) => b.resize_surface(width_css, height_css, dpr),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.resize_surface(width_css, height_css, dpr),
+        }
+    }
+
+    fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.begin_frame(metrics, theme),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.begin_frame(metrics, theme),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.clear(),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.clear(),
+        }
+    }
+
+    fn draw_row(
+        &mut self,
+        row: &RowDraw<'_>,
+        attrs_table: &crate::term::attr_table::AttrTable,
+    ) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_row(row, attrs_table),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_row(row, attrs_table),
+        }
+    }
+
+    fn draw_cursor(
+        &mut self,
+        cursor: &CursorDraw,
+        attrs_table: &crate::term::attr_table::AttrTable,
+    ) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_cursor(cursor, attrs_table),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_cursor(cursor, attrs_table),
+        }
+    }
+
+    fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_selection_overlay(rects),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_selection_overlay(rects),
+        }
+    }
+
+    fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_hyperlink_underlines(rects),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_hyperlink_underlines(rects),
+        }
+    }
+
+    fn end_frame(&mut self) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.end_frame(),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.end_frame(),
+        }
+    }
+}
