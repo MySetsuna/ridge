@@ -258,13 +258,16 @@
 - **行业对照**：xterm 的 `screen.c::ClearInLine` 走 `RegionClear` 同步清 hyperlink registry；wezterm 的 `wezterm-term/src/terminalstate/mod.rs::erase_in_line` 通过 `screen_mut().erase_at(...)` 内部连同 hyperlink 一起 reset；alacritty 的 `term/mod.rs::clear_line` 把每个 cell 的 `hyperlink: Option<Hyperlink>` 字段一起置 None（其设计每 cell 独立持有 hyperlink，无单独 span 列表）。Ridge 现采用 span-coalesced 数据结构 + erase-time 显式 clip，行为与 xterm/wezterm 对齐。
 - **未做**：完整 fuzz / Claude Code 实跑回归 → §7.2。
 
-#### 1.18.c [MEDIUM] Claude Code 字符刷新错位 ⏳ 待浏览器实跑（1.18.a + 1.18.b 修后再观察）
+#### 1.18.c [MEDIUM] Claude Code 字符刷新错位 ⏳ 防御已部署 / 浏览器实跑确认
 
-- **现状**：1.18.a + 1.18.b 修好之后，剩下的「错位」症状可能：(i) 本来就是 SGR 下划线 + OSC 8 残留叠加导致的视觉错觉；(ii) 真有独立的 cursor positioning bug。需要用户在浏览器里跑 Claude Code 实测。
-- **若仍存在**，下一步排查顺序：
-  1. **per-row hash 缺信息**：`render/renderer.rs::tick` 用 `(ch, attr_id, width)` 哈希；不含 `row.hyperlinks`。OSC 8 span 变更不引发 row dirty，但 1.18.b 的修复让大多数 span 变化也伴随 cell 写入，所以 hash 已经能感知。仍可考虑加 hyperlinks 进 hash 以防御。
-  2. **alt-screen 切换 invalidate**：`lib.rs::JsTerminal::resize` 已调 `selection.clear()` 但**没有触发 renderer.invalidate_all**；切 `?1049h/l` 时同理。检查 `term/parser.rs` 模式切换路径是否要给 renderer 发信号。
-  3. **CSI H / VPA / HPA 1-based 解析**：`parser.rs` 的绝对定位是否正确？写 fixture `b"\x1b[3;5H*\x1b[2;1HX"` 验证。
+- **背景**：1.18.a + 1.18.b（含 ICH/DCH 扩展） 修好之后，剩下的「错位」症状可能：(i) 是 SGR 下划线 + OSC 8 残留叠加导致的视觉错觉；(ii) 真有独立的 cursor positioning bug；(iii) shell SIGWINCH 处理的固有 race（不是 kernel bug）。
+- **审计 (2026-05-04)**：
+  1. **`kernel.resize` 调用链**：唯一生产调用点 = `src/lib/terminal/manager.ts::fitPane:974`。该函数**必先调** `entry.handle.resize(wCss, hCss, dpr)`，后者内部 `renderer.invalidate_all()`。故 grid 尺寸变化 ⇒ renderer 必然被强制 full-redraw。✅
+  2. **alt-screen 切换 (`?1049h/l`, `?47h/l`)**：renderer 用 per-row 64-bit hash 比对 last snapshot；alt vs primary 内容 hash 不一致 ⇒ 全行 dirty ⇒ 全屏重绘。无需额外 invalidate 信号，自然机制覆盖。clear-on-enter (1049) 和 preserve-on-enter (47) 两种模式都正确。✅
+  3. **CSI H / VPA / HPA decoding**：parser.rs:186-200 / 167-185 / 173-185 全部正确做 1-based-on-wire ↔ 0-based-internal `saturating_sub(1)`，`cursor_to` 也清 `pending_wrap`。验证通过。✅
+- **追加防御（已实施）**：`renderer.rs::tick` 的 per-row hash 现在并入 `row.hyperlinks` 的形状（`(spans.len(), col_start, col_end)`）。当前所有 cell-mutating Grid 方法（clear / erase_in_line / erase_chars / insert_chars / delete_chars / Row::resize）都已经维护 spans 同步，但 hash 加上 hyperlinks 形状是 cheap defense-in-depth：未来若新加 span-only 突变路径，dirty calc 仍能感知。URI/id 不入 hash（underline overlay 只随空间位置变，相同 col 范围必产生相同像素）。
+- **测试**：134 tests 全绿（renderer 单测覆盖弱因为后端是 wasm-only；hash 逻辑改动是 5 行附加，由 trait surface + 现有 cell-mutation 测试间接覆盖）。
+- **剩余可能**：浏览器实跑后若仍报告错位，疑点剩下：(i) 用户的 shell 在 SIGWINCH 处理上有延迟 / race（不是 Ridge bug）、(ii) wcwidth 数据表对某些 emoji / box-drawing 字符判错（需要具体复现 case）。
 
 ### 1.17 [HIGH] 拆分窗口后原终端无法输入（RidgePane unpark 不重新注册 dataHandler）✅ 2026-05-04
 
