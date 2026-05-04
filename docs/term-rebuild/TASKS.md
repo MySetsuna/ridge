@@ -185,15 +185,15 @@
 - **验收**：浏览器实跑（§7.2）—— A | B 布局关闭 A，B 应保留用户 settingsStore.terminalPaddingPx，且终端字符位置随 grid 重排而 reflow（不再"卡在原坐标"）。
 - **后续观察**：用户原报告同时提到「字符在原本位置刷新」。padding 丢失会让 canvas 尺寸偏大、cols×rows 比期望大，PTY emits 在更宽的 grid 上而 shell 还没收到 SIGWINCH 时就会出现错位假象。padding 修好后 ResizeObserver 重新走一次 fit 路径，理论上同步消失；若仍残留再加 §1.16 单独跟。
 
-### 1.16 [HIGH] 终端 Ctrl+C 不应触发 SCM / 文件树重载 ⏳
+### 1.16 [HIGH] 终端 Ctrl+C 不应触发 SCM / 文件树重载 ✅ 2026-05-04
 
-- **背景**：用户报告「shortcut key : ctrl + C should not let scource manager file tree reload, it is not go to a new cwd」。§1.11 已给 `setPaneCwd` 加 identity-preserving early return，相同 cwd 不再 fire `paneCwdStore`。本条是后续观察 —— 在 `setPaneCwd` 已 identity-guard 的前提下，Ctrl+C 仍能让 SCM 面板重新拉数据。
-- **疑似路径**（待验证）：
-  1. `SourceControl.svelte:1014 unsubCwdWatch = paneCwdStore.subscribe(...)` —— §1.11 已止血，正常情况下不会再被 Ctrl+C 触发，但需确认 normalize 后字符串确实相等（trailing slash / 大小写 / forward-slash 规范化全部一致）。
-  2. `SourceControl.svelte:1024 unsubFsChange = onFsChange(...)` —— 监听后端 fs-changed 事件。如果 shell 提示符 hook（starship / oh-my-posh / git status precmd）在 Ctrl+C 之后 redraw 时偶发触碰 `.git/index.lock` 之类文件，会让 watcher 把整个 repo root 标记为 changed → 250 ms debounce 后 refreshStatus。需要 trace 后端 emit log 看 Ctrl+C 时是否有 `.git/` 写入。
-  3. `SourceControl.svelte:1060 listen<string>('scm-repo-changed', ...)` —— `GitWatcher` 直接监听 `.git/`，等价路径 (2)。
-- **下一步**：在浏览器 DevTools 监控 `paneCwdStore` 触发频率（订阅打 `console.debug`），同时在后端 `watch.rs::GitWatcher` 加临时 trace 看 Ctrl+C 时 fs 事件流；确认是 SCM panel 还是 Explorer 文件树（用户用「scource manager file tree」，可能两者之一）。复现路径：终端 cd 到 git repo → 启动一个长任务（`sleep 60`） → Ctrl+C 中断 → 观察 SCM 是否 spin / Explorer 是否重排。
-- **不在本条范围**：不能盲改 § 1.11 的 identity guard（已确认正确）；也不能粗暴关闭 GitWatcher，外部 commit 依赖它。
+- **文件**：`src-tauri/src/commands/watch.rs::GitWatcher`
+- **现象**：用户报告「shortcut key : ctrl + C should not let scource manager file tree reload, it is not go to a new cwd」。§1.11 已给 `setPaneCwd` 加 identity-preserving early return；本条是后续观察发现的剩余路径。
+- **根因**：`GitWatcher` 直接 watch `<repo>/.git/` 递归，把任意路径变化都 emit 为 `scm-repo-changed`。shell prompt hook（starship / oh-my-posh / powerlevel10k）每次绘制提示符都会跑 `git status / rev-parse`，根据 git 版本和 `core.fsmonitor` 设置可能往 `.git/objects/`、`.git/logs/`、`.git/index.lock`（瞬时）等位置写。这些路径都属于 git 内部存储 churn，**不影响 porcelain 输出**，但都被 GitWatcher 当成"仓库变了"上报。Ctrl+C 触发 prompt redraw → prompt hook git probe → `.git/objects/` write → `scm-repo-changed` → SourceControl.svelte 250 ms debounce 后跑 `refreshStatus + loadGraph`。
+- **修法（已实施）**：在 GitWatcher 的 debouncer 回调里加 `is_scm_relevant(path)` 过滤——一个 debounce 窗口内的所有事件路径若全部是噪声（`/objects/`、`/logs/`、`/info/`、`*.lock`）则不 emit；只要至少一个事件路径属于 HEAD / index / refs / packed-refs / FETCH_HEAD / 操作状态文件就照常 emit。
+- **保留信号**：分支切换、commit、fetch、merge/rebase 进度、index 更新都仍然触发刷新——它们写的是 `.git/HEAD`、`.git/refs/`、`.git/index`、`.git/MERGE_HEAD` 等非噪声路径。
+- **测试**：`cargo check --lib` 0 错误 0 警告。浏览器实跑验证留给 §7.2。
+- **关联**：fs_watch.rs 已经 SEGMENT_BLACKLIST 过滤 `.git/`、`node_modules/`、`target/` 等，不会经 fs-changed 路径误触发。
 
 ---
 

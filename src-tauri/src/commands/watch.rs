@@ -1,11 +1,52 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent, Debouncer};
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
+
+/// Whether a single watched-path event represents an SCM-relevant change
+/// (branch, refs, working-tree status, in-progress operation) rather than
+/// git-internal storage churn that the SCM panel should ignore.
+///
+/// Without this filter, every shell-prompt git hook (powerlevel10k,
+/// starship, oh-my-posh) caused `scm-repo-changed` to fire on every
+/// terminal Ctrl+C → prompt redraw — triggering full SCM refresh +
+/// graph reload even though branch / index / refs hadn't moved.
+/// TASKS §1.16.
+///
+/// Noise patterns (anywhere under the watched git dir):
+///   - `objects/` — pack DB churn (every write goes here; not in porcelain)
+///   - `logs/`    — reflog (every git op appends; not visible in status)
+///   - `info/`    — sparse-checkout / exclude config (rarely changes;
+///                  user can manually refresh if they edit it)
+///   - `*.lock`   — transient locks created and deleted within one op
+///                  (`index.lock`, `HEAD.lock`, `config.lock`, …)
+///
+/// Kept (relevant):
+///   - `HEAD`, `MERGE_HEAD`, `REBASE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`
+///   - `index`
+///   - `refs/` (heads, remotes, tags, stash)
+///   - `packed-refs`
+///   - `FETCH_HEAD`, `ORIG_HEAD`
+fn is_scm_relevant(path: &Path) -> bool {
+    let s = path.to_string_lossy().replace('\\', "/");
+    if s.contains("/objects/") {
+        return false;
+    }
+    if s.contains("/logs/") {
+        return false;
+    }
+    if s.contains("/info/") {
+        return false;
+    }
+    if s.ends_with(".lock") {
+        return false;
+    }
+    true
+}
 
 /// Manages notify debouncers for one or more git repo roots.
 /// Held in `AppState` so it lives for the entire app lifetime.
@@ -33,11 +74,17 @@ impl GitWatcher {
         let mut debouncer = new_debouncer(
             Duration::from_millis(500),
             move |events: Result<Vec<DebouncedEvent>, notify::Error>| {
-                if events.is_ok() {
-                    let root_str = root_clone.to_string_lossy().to_string();
-                    // Generic "any repo changed" event — payload is the repo root path.
-                    let _ = app.emit("scm-repo-changed", root_str);
+                let Ok(events) = events else { return; };
+                // Skip when every event in the debounce window is git-internal
+                // noise (objects DB / reflog / info / transient locks). Keeps
+                // shell-prompt git probes from spamming the SCM panel on every
+                // Ctrl+C → prompt redraw. See `is_scm_relevant` for the list.
+                if !events.iter().any(|e| is_scm_relevant(&e.path)) {
+                    return;
                 }
+                let root_str = root_clone.to_string_lossy().to_string();
+                // Generic "any repo changed" event — payload is the repo root path.
+                let _ = app.emit("scm-repo-changed", root_str);
             },
         )?;
 
