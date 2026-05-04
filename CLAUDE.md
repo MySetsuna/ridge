@@ -8,12 +8,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Key features:
 - Terminal emulation via in-house **ridge-term** wasm kernel (VT/ANSI parser
-  in Rust → Canvas2D renderer) with PTY support (portable-pty). xterm.js
-  was retired in round 7; see `docs/term-rebuild/` for design history.
+  in Rust → Canvas2D renderer by default; opt-in WebGPU renderer behind
+  the `webgpu` cargo feature, see "Render backends" below) with PTY support
+  (portable-pty). xterm.js was retired in round 7; see `docs/term-rebuild/`
+  for design history.
 - Monaco Editor integration for code editing
 - Recursive split-pane layout (horizontal/vertical)
 - Git Graph visualization with Canvas rendering
 - Multi-workspace support (independent terminal sessions)
+
+## Render backends (ridge-term)
+
+Two `RenderBackend` impls live in `packages/ridge-term/src/render/`:
+
+- **`Canvas2dBackend`** (default) — uses the browser's 2D canvas API.
+  Always available, ships in every wasm bundle. JS constructs via
+  `new RenderHandle(canvas)`.
+- **`WebGpuBackend`** (opt-in via `--features webgpu`) — uses wgpu 23 +
+  the browser's WebGPU API. Single shader pipeline (`shaders/cell.wgsl`)
+  + 256-layer texture-array glyph atlas + OffscreenCanvas-based
+  rasterizer. JS constructs via `await RenderHandle.newWithWebgpuFirst(canvas)`,
+  which tries WebGPU and falls back to Canvas2D on adapter miss. The
+  function only exists in `--features webgpu` builds; JS detects via
+  `typeof RenderHandle.newWithWebgpuFirst === 'function'`.
+
+`AnyBackend` (in `render/mod.rs`) is the enum-dispatch wrapper that
+lets `RenderHandle` hold `Renderer<AnyBackend>` and switch backends at
+construction. `WebGpuBackend` covers every visual primitive
+Canvas2dBackend does (cell bg+glyph, cursor in 3 styles, selection
+overlay, hyperlink underlines) all through one render pass per frame.
+
+Status: Round 3 §4.1 functionally complete (2026-05-04). §7.2
+browser real-run regression for the WebGPU path is the next gate
+before §4.3 (shared surface across panes) / §4.4 (perf benchmark)
+become meaningful. Default `pnpm tauri build` ships Canvas2D-only
+with no perf or bundle regression.
 
 ## Commands
 
