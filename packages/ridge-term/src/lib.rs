@@ -373,22 +373,68 @@ impl JsTerminal {
 #[cfg(target_arch = "wasm32")]
 mod renderer_js {
     use super::*;
-    use crate::render::{Canvas2dBackend, FrameMetrics, Renderer, Theme};
+    use crate::render::{AnyBackend, Canvas2dBackend, FrameMetrics, Renderer, Theme};
     use crate::render::backend::RenderBackend;
     use web_sys::HtmlCanvasElement;
 
     #[wasm_bindgen]
     pub struct RenderHandle {
-        renderer: Renderer<Canvas2dBackend>,
+        renderer: Renderer<AnyBackend>,
     }
 
     #[wasm_bindgen]
     impl RenderHandle {
+        /// Sync constructor — Canvas2D-only. JS calls
+        /// `new RenderHandle(canvas)`. For runtime-WebGPU adoption with
+        /// graceful Canvas2D fallback, JS calls
+        /// `await RenderHandle.newWithWebgpuFirst(canvas)` instead.
         #[wasm_bindgen(constructor)]
         pub fn new(canvas: HtmlCanvasElement) -> Result<RenderHandle, JsValue> {
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
             let metrics = FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 };
-            let renderer = Renderer::new(backend, metrics, Theme::default_dark());
+            let renderer = Renderer::new(
+                AnyBackend::Canvas2d(backend),
+                metrics,
+                Theme::default_dark(),
+            );
+            Ok(RenderHandle { renderer })
+        }
+
+        /// Async constructor — try WebGPU first, fall back to Canvas2D
+        /// on adapter miss / device-creation failure. Always succeeds
+        /// when `Canvas2dBackend::new` succeeds; returns Err only if
+        /// even the Canvas2D fallback can't initialize (rare; usually
+        /// indicates a malformed canvas element).
+        ///
+        /// Only compiled when the `webgpu` cargo feature is on (the
+        /// `wasm-bindgen-futures` dep needed for `#[wasm_bindgen]
+        /// async fn` is gated behind that feature). In default builds,
+        /// JS callers should use the sync `new RenderHandle(canvas)`
+        /// constructor; they can detect the async constructor's
+        /// presence via `typeof RenderHandle.newWithWebgpuFirst ===
+        /// 'function'`.
+        #[cfg(feature = "webgpu")]
+        #[wasm_bindgen(js_name = newWithWebgpuFirst)]
+        pub async fn new_with_webgpu_first(
+            canvas: HtmlCanvasElement,
+        ) -> Result<RenderHandle, JsValue> {
+            if let Ok(b) = crate::render::webgpu::WebGpuBackend::new(canvas.clone()).await {
+                let metrics = FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 };
+                let renderer = Renderer::new(
+                    AnyBackend::Webgpu(b),
+                    metrics,
+                    Theme::default_dark(),
+                );
+                return Ok(RenderHandle { renderer });
+            }
+            // WebGPU adapter missed — fall through to Canvas2D.
+            let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
+            let metrics = FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 };
+            let renderer = Renderer::new(
+                AnyBackend::Canvas2d(backend),
+                metrics,
+                Theme::default_dark(),
+            );
             Ok(RenderHandle { renderer })
         }
 
@@ -401,8 +447,14 @@ mod renderer_js {
             font_size_px: f32,
             dpr: f32,
         ) -> Result<Vec<f32>, JsValue> {
-            let font_css = format!("{}px {}", font_size_px, font_family);
-            self.renderer.backend_mut().set_font(font_css);
+            // Unified font config — AnyBackend dispatches to
+            // Canvas2dBackend::set_font (which expects a single CSS
+            // string built from family+size) or to
+            // WebGpuBackend::set_font_config (which takes them
+            // separately for the rasterizer).
+            self.renderer
+                .backend_mut()
+                .set_font_config(font_family.clone(), font_size_px);
             let (w, h) = self.renderer
                 .backend_mut()
                 .measure_font(&font_family, font_size_px)

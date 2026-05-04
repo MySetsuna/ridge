@@ -395,7 +395,11 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + 全 §4.1.c ✅ + 全 §4.1.d ✅ + set_font_config ✅ + **AnyBackend enum 分发基础 ✅（§4.1.e step 1/2）** 2026-05-04 / RenderHandle 切到 Renderer<AnyBackend> + async constructor ⏳ §4.1.e step 2/2
+### 4.1 `WebGpuBackend` 骨架 ✅ 2026-05-04（全部完成）
+
+scaffold ✅ + §4.1.a-d 全 GPU 链路 ✅ + set_font_config ✅ + AnyBackend enum 分发 ✅ + **RenderHandle 切到 Renderer<AnyBackend> + `newWithWebgpuFirst` async constructor ✅（§4.1.e 完成）**。
+
+`pnpm tauri build --features webgpu` 时 JS 侧 `await RenderHandle.newWithWebgpuFirst(canvas)`：先尝试 WebGPU adapter，失败回退 Canvas2D。默认构建 JS 走 `new RenderHandle(canvas)` 同步 path（Canvas2D 直接），newWithWebgpuFirst 函数不存在（JS 用 `typeof` 探测）。Round 3 §4.1 功能上完成 — 等用户 opt-in 测试。
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))] pub mod webgpu;`），`packages/ridge-term/Cargo.toml`（新增 `[features] webgpu = []`）
 - **关键 API**：
