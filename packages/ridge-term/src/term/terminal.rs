@@ -364,6 +364,88 @@ mod tests {
         assert!(a.flags.contains(Flags::BOLD));
     }
 
+    // ─── viewport scroll + viewport_row mixed-mode ────────────────────
+
+    #[test]
+    fn scroll_up_view_clamps_at_scrollback_length() {
+        let mut t = Terminal::new(2, 5, 5);
+        // Push 3 lines so 1 lands in scrollback (3 - 2 viewport rows = 1).
+        t.feed(b"a\r\nb\r\nc");
+        let sb_len = t.scrollback_len();
+        // Try to scroll past the available history.
+        t.scroll_up_view(100);
+        assert_eq!(t.scroll_offset(), sb_len, "scroll_up_view must clamp at scrollback_len");
+    }
+
+    #[test]
+    fn scroll_down_view_saturates_at_zero() {
+        let mut t = Terminal::new(2, 5, 0);
+        t.scroll_down_view(50);
+        assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn scroll_to_bottom_resets_offset() {
+        let mut t = Terminal::new(2, 5, 5);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.scroll_up_view(2);
+        assert!(t.scroll_offset() > 0);
+        t.scroll_to_bottom();
+        assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn viewport_row_offset_zero_passes_through_grid() {
+        let mut t = Terminal::new(2, 3, 0);
+        t.feed(b"ab\r\ncd");
+        // No scrollback, offset 0 — viewport_row(i) == grid.row(i).
+        assert_eq!(t.viewport_row(0).unwrap().cells[0].ch, 'a');
+        assert_eq!(t.viewport_row(1).unwrap().cells[0].ch, 'c');
+    }
+
+    #[test]
+    fn viewport_row_past_rows_returns_none() {
+        let t = Terminal::new(2, 5, 0);
+        // Only rows 0..2 exist.
+        assert!(t.viewport_row(2).is_none());
+        assert!(t.viewport_row(99).is_none());
+    }
+
+    #[test]
+    fn viewport_row_mixed_scrollback_plus_grid_at_offset_1() {
+        // 2-row viewport with capacity-5 scrollback. Push 'a' onto its
+        // own row, then 'b\r\nc' fills the viewport with [b, c]. After
+        // the second LF push 'd': [c, d] viewport, ['a', 'b'] scrollback.
+        let mut t = Terminal::new(2, 3, 5);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        let sb = t.scrollback_len();
+        assert!(sb >= 1);
+        t.scroll_up_view(1);
+        // offset=1 → vp_row 0 pulls scrollback[sb-1] (most recent
+        // scrollback row = 'b'), vp_row 1 pulls grid.row(0) = 'c'.
+        let top = t.viewport_row(0).unwrap();
+        let bot = t.viewport_row(1).unwrap();
+        assert_eq!(top.cells[0].ch, 'b');
+        assert_eq!(bot.cells[0].ch, 'c');
+    }
+
+    #[test]
+    fn viewport_row_at_max_offset_pulls_top_rows_from_scrollback() {
+        // Push enough lines so scrollback fills with several entries.
+        // Then scroll all the way up and verify the top row is the
+        // OLDEST scrollback entry (not the most recent).
+        let mut t = Terminal::new(2, 3, 10);
+        t.feed(b"a\r\nb\r\nc\r\nd\r\ne");
+        // Scrollback now contains ['a', 'b', 'c'] (oldest-first), grid
+        // shows ['d', 'e']. Scroll back the full sb_len.
+        let sb_len = t.scrollback_len();
+        t.scroll_up_view(sb_len);
+        // vp_row 0 at full offset pulls scrollback[sb_len - sb_len + 0]
+        // = scrollback[0] = oldest = 'a'.
+        let top = t.viewport_row(0).unwrap();
+        assert_eq!(top.cells[0].ch, 'a');
+    }
+
     #[test]
     fn sgr_4_sets_underline() {
         // Bare CSI 4 m — single underline on. Baseline behaviour.
