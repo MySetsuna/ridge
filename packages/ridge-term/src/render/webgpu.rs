@@ -683,8 +683,93 @@ impl RenderBackend for WebGpuBackend {
         }
     }
 
-    fn draw_cursor(&mut self, _cursor: &CursorDraw, _attrs_table: &AttrTable) {
-        // No-op; §4.1.c lands cursor pipeline.
+    fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
+        // Cursor reuses the cell pipeline — geometrically it's just
+        // another colored quad at (cursor.row, cursor.col), drawn
+        // OVER the row instances that draw_row already pushed for
+        // that cell. Draw order = instance order in pending_instances,
+        // so pushing the cursor here (after all draw_row calls) puts
+        // it on top.
+        //
+        // Style:
+        //   Block       — fills the full cell with cursor_color
+        //   Bar         — 2-px-wide vertical strip at left edge
+        //   Underline   — 2-px-tall horizontal strip at bottom edge
+        //
+        // §4.1.d.cursor_text: paint cursor.ch on top of the block in
+        // cursor_text_color (xterm's "inverse cursor"). Done here too:
+        // a SECOND instance pulls the glyph from the atlas and uses
+        // cursor_text_color as fg + cursor_color as bg.
+        use crate::render::backend::CursorStyle;
+
+        let cell_w = self.metrics.cell_w * self.metrics.dpr;
+        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let pixel_x = (cursor.col as f32) * cell_w;
+        let pixel_y = (cursor.row as f32) * cell_h;
+        let cell_w_px = cell_w * cursor.width.max(1) as f32;
+        let bar_thickness = 2.0 * self.metrics.dpr;
+
+        // 1) Cursor block (colored rectangle at the appropriate
+        //    style-specific size).
+        let (block_x, block_y, block_w, block_h) = match cursor.style {
+            CursorStyle::Block => (pixel_x, pixel_y, cell_w_px, cell_h),
+            CursorStyle::Bar => (pixel_x, pixel_y, bar_thickness, cell_h),
+            CursorStyle::Underline => (
+                pixel_x,
+                pixel_y + cell_h - bar_thickness,
+                cell_w_px,
+                bar_thickness,
+            ),
+        };
+        let cursor_color = rgba_u8_to_f32(self.theme.cursor_color);
+        self.pending_instances.push(CellInstance {
+            cell_xy: [block_x, block_y],
+            cell_size: [block_w, block_h],
+            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+            atlas_layer: 0,
+            fg_rgba: cursor_color,
+            bg_rgba: cursor_color,
+        });
+
+        // 2) Inverted glyph (only meaningful for Block — Bar / Underline
+        //    don't cover the cell so the underlying glyph is still
+        //    visible from the row's CellInstance push). For Block, we
+        //    look up cursor.ch in the atlas and push a CellInstance
+        //    with bg=cursor_color, fg=cursor_text_color so the glyph
+        //    renders inverted on top of the cursor block.
+        if matches!(cursor.style, CursorStyle::Block) && cursor.ch != ' ' {
+            let font_family_hash = {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                self.font_family.hash(&mut h);
+                h.finish()
+            };
+            let font_size_q = (self.font_size_px * 100.0).round() as u16;
+            let key = GlyphKey {
+                font_family_hash,
+                font_size_q,
+                glyph_id: cursor.ch as u32,
+                style_flags: 0, // cursor uses default style; bold cursor not modeled
+            };
+            // Atlas hit only — we don't rasterize-on-miss inside
+            // draw_cursor to keep the per-frame work bounded. If the
+            // glyph isn't cached yet, the cursor renders as a solid
+            // block this frame; the subsequent draw_row tick will
+            // populate the atlas, and the next frame's cursor draw
+            // gets the inverted glyph.
+            if let Some(entry) = self.atlas.lookup(&key) {
+                let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [pixel_x, pixel_y],
+                    cell_size: [cell_w_px, cell_h],
+                    atlas_uv: entry.uv,
+                    atlas_layer: entry.layer as u32,
+                    fg_rgba: cursor_text_color,
+                    bg_rgba: cursor_color,
+                });
+            }
+        }
     }
 
     fn draw_selection_overlay(&mut self, _rects: &[(usize, usize, usize)]) {
