@@ -195,9 +195,23 @@ impl<B: RenderBackend> Renderer<B> {
             self.last_offset = offset;
         }
 
-        // Compute dirty rows by hashing each visible row's cells. Hash
-        // is keyed off (ch, attr_id, width). We read via `viewport_row`
-        // so the same code path covers live grid AND scrollback views.
+        // Compute dirty rows by hashing each visible row's cells +
+        // hyperlink span shape. Cell hash is keyed off (ch, attr_id,
+        // width); span shape adds (count, col_start, col_end) per
+        // span. We read via `viewport_row` so the same code path
+        // covers live grid AND scrollback views.
+        //
+        // Why include hyperlink spans: the hyperlink-underline pass
+        // paints from `row.hyperlinks` every frame. A row whose span
+        // set changes without the cell content changing would
+        // otherwise stay "clean" → underline pixels persist or
+        // vanish a frame late. All current cell-mutating Grid
+        // methods (clear / erase_in_line / erase_chars / insert_chars
+        // / delete_chars / Row::resize) already keep spans in sync,
+        // but defending the dirty calc against future span-only
+        // mutations is cheap (most rows have 0 spans). URI/id are NOT
+        // hashed — the underline overlay only varies spatially, so
+        // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
         let mut dirty_rows: Vec<usize> = Vec::with_capacity(rows_n);
         for r in 0..rows_n {
             let Some(row) = terminal.viewport_row(r) else { continue };
@@ -206,6 +220,11 @@ impl<B: RenderBackend> Renderer<B> {
                 cell.ch.hash(&mut hasher);
                 cell.attr.0.hash(&mut hasher);
                 cell.width.hash(&mut hasher);
+            }
+            row.hyperlinks.len().hash(&mut hasher);
+            for span in &row.hyperlinks {
+                span.col_start.hash(&mut hasher);
+                span.col_end.hash(&mut hasher);
             }
             let h = hasher.finish();
             if self.full_redraw_pending || h != self.snapshot[r] {
