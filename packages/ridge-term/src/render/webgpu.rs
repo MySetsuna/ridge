@@ -42,7 +42,7 @@ use crate::render::backend::{
     CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
 use crate::term::attr_table::AttrTable;
-use super::glyph_atlas::GlyphAtlas;
+use super::glyph_atlas::{GlyphAtlas, GlyphEntry, GlyphKey};
 use super::glyph_rasterizer::GlyphRasterizer;
 use web_sys::HtmlCanvasElement;
 
@@ -130,6 +130,23 @@ pub struct WebGpuBackend {
     /// keeps capacity across `clear()` so steady-state allocation
     /// settles after a few frames.
     pending_instances: Vec<CellInstance>,
+    /// Next free atlas-texture-array layer. Incremented on each new
+    /// glyph admitted to the atlas; once it reaches `ATLAS_LAYERS`
+    /// new misses fall back to bg-only rendering.
+    ///
+    /// §4.1.c.glyph.eviction (future) extends GlyphAtlas to return
+    /// the evicted entry's layer so this counter can be replaced by
+    /// proper layer-reuse-on-eviction.
+    next_free_layer: u32,
+    /// CSS font-family used for glyph rasterization. Stored so
+    /// draw_row can pass it to `rasterizer.rasterize()` without
+    /// rethreading per call. Defaults to "monospace" until a future
+    /// `set_font_config` method (analogous to Canvas2dBackend's
+    /// set_font) wires the user's terminal font setting.
+    font_family: String,
+    /// Font size in CSS pixels (post-DPR-divide; rasterizer multiplies
+    /// internally). Defaults to 15 to match Canvas2dBackend.
+    font_size_px: f32,
     atlas: GlyphAtlas,
     metrics: FrameMetrics,
     theme: Theme,
@@ -463,6 +480,9 @@ impl WebGpuBackend {
             bind_group,
             rasterizer,
             pending_instances: Vec::with_capacity(INITIAL_INSTANCE_CAPACITY as usize),
+            next_free_layer: 0,
+            font_family: String::from("monospace"),
+            font_size_px: 15.0,
             // GlyphAtlas capacity must equal ATLAS_LAYERS so atlas
             // eviction matches GPU layer reuse exactly.
             atlas: GlyphAtlas::new(ATLAS_LAYERS as usize),
@@ -526,36 +546,124 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
-        // Per-cell instance accumulation. For this slice, `atlas_uv`
-        // and `atlas_layer` are zeroed — the future cache-miss path
-        // (§4.1.c.next) populates them from
-        // GlyphAtlas::lookup() / rasterizer.rasterize() / write_texture.
-        // With zero UV the shader samples (0, 0, layer 0) which is
-        // empty atlas content (alpha 0), so coverage = 0 and the
-        // fragment renders as bg only. That's the correct visual for
-        // any cell whose glyph hasn't been rasterized yet — and the
-        // fallback for the bg-only-frame slice.
+        // Per-cell instance accumulation with atlas lookup. For each
+        // non-continuation cell:
+        //   1. Compute GlyphKey from (font hash, size, codepoint, style).
+        //   2. atlas.lookup → on hit, push CellInstance with entry's
+        //      layer + uv.
+        //   3. On miss: if layer pool isn't full, rasterize via the
+        //      OffscreenCanvas, queue.write_texture into the next free
+        //      layer, atlas.insert, push CellInstance. If full, fall
+        //      back to bg-only (atlas_layer=0, atlas_uv=zero) — the
+        //      shader samples empty content there, coverage=0, mix
+        //      collapses to bg. Layer reuse on eviction lands in
+        //      §4.1.c.glyph.eviction.
         let row_idx = row.row_index;
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
         let theme = self.theme.clone();
+        // Pre-compute a stable hash for the current font family so
+        // every cell of the current frame keys to the same bucket.
+        let font_family_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            self.font_family.hash(&mut h);
+            h.finish()
+        };
+        // Quantize size to 1/100 px (per GlyphKey docstring).
+        let font_size_q = (self.font_size_px * 100.0).round() as u16;
+
         for (col, cell) in row.cells.iter().enumerate() {
-            // Skip continuation halves of wide glyphs — the lead cell
-            // already covers both visual columns by carrying width=2.
             if cell.width == 0 {
                 continue;
             }
+            let attrs = attrs_table.get(cell.attr);
             let (_attrs, fg, bg) = crate::render::backend::resolve_cell_colors(
                 cell, attrs_table, &theme,
             );
             let cell_w_px = cell_w * cell.width.max(1) as f32;
             let pixel_x = (col as f32) * cell_w;
             let pixel_y = (row_idx as f32) * cell_h;
+
+            // Style flags: pack BOLD + ITALIC bits per GlyphKey docstring.
+            let mut style_flags: u8 = 0;
+            if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
+                style_flags |= GlyphKey::STYLE_BOLD;
+            }
+            if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
+                style_flags |= GlyphKey::STYLE_ITALIC;
+            }
+
+            let key = GlyphKey {
+                font_family_hash,
+                font_size_q,
+                glyph_id: cell.ch as u32,
+                style_flags,
+            };
+
+            // Try the LRU atlas. On hit (and on first paint of this
+            // glyph in this session) `entry` carries the texture-array
+            // layer index + UV.
+            let entry = if let Some(e) = self.atlas.lookup(&key) {
+                Some(e)
+            } else if self.next_free_layer < ATLAS_LAYERS {
+                // Miss with room. Rasterize → upload → insert.
+                match self.rasterizer.rasterize(
+                    &self.font_family,
+                    self.font_size_px,
+                    cell.ch,
+                ) {
+                    Ok(glyph) => {
+                        let layer = self.next_free_layer;
+                        self.next_free_layer += 1;
+                        self.queue.write_texture(
+                            wgpu::ImageCopyTexture {
+                                texture: &self.atlas_texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &glyph.rgba,
+                            wgpu::ImageDataLayout {
+                                offset: 0,
+                                bytes_per_row: Some(glyph.width as u32 * 4),
+                                rows_per_image: Some(glyph.height as u32),
+                            },
+                            wgpu::Extent3d {
+                                width: glyph.width as u32,
+                                height: glyph.height as u32,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                        let new_entry = GlyphEntry {
+                            layer: layer as u16,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            advance: glyph.advance,
+                            ascent_offset: glyph.ascent_offset,
+                            px_w: glyph.width,
+                            px_h: glyph.height,
+                        };
+                        self.atlas.insert(key, new_entry);
+                        Some(new_entry)
+                    }
+                    Err(_) => None, // rasterize failure → bg-only
+                }
+            } else {
+                // Atlas full + no eviction support yet → bg-only fallback.
+                None
+            };
+
+            let (atlas_uv, atlas_layer) = match entry {
+                Some(e) => (e.uv, e.layer as u32),
+                None => ([0.0, 0.0, 0.0, 0.0], 0),
+            };
+
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
                 cell_size: [cell_w_px, cell_h],
-                atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                atlas_layer: 0,
+                atlas_uv,
+                atlas_layer,
                 fg_rgba: rgba_u8_to_f32(fg),
                 bg_rgba: rgba_u8_to_f32(bg),
             });
