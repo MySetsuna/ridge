@@ -248,4 +248,71 @@ mod tests {
         // Row 0 was soft-wrapped, so no '\n' between "abcd" and "ef".
         assert!(text.starts_with("abcdef"), "got {:?}", text);
     }
+
+    #[test]
+    fn range_is_empty_when_start_equals_end() {
+        let r = Range { start: Pos { row: 1, col: 5 }, end: Pos { row: 1, col: 5 } };
+        assert!(r.is_empty());
+        let r2 = Range { start: Pos { row: 1, col: 5 }, end: Pos { row: 1, col: 6 } };
+        assert!(!r2.is_empty());
+    }
+
+    #[test]
+    fn set_empty_range_clears_selection() {
+        // Selection::set with an empty range collapses to None — keeps
+        // the renderer's selection-overlay pass quiet on a no-op drag.
+        let mut s = Selection::default();
+        s.set(Range { start: Pos { row: 0, col: 0 }, end: Pos { row: 0, col: 5 } });
+        assert!(!s.is_empty());
+        s.set(Range { start: Pos { row: 0, col: 0 }, end: Pos { row: 0, col: 0 } });
+        assert!(s.is_empty(), "empty range must collapse to None on set()");
+    }
+
+    #[test]
+    fn clear_resets_state() {
+        let mut s = Selection::default();
+        s.set(Range { start: Pos { row: 0, col: 0 }, end: Pos { row: 1, col: 3 } });
+        assert!(!s.is_empty());
+        s.clear();
+        assert!(s.is_empty());
+        assert!(s.range().is_none());
+    }
+
+    #[test]
+    fn set_normalizes_reversed_range() {
+        // User dragged backwards: start > end. set() must normalize.
+        let mut s = Selection::default();
+        s.set(Range {
+            start: Pos { row: 2, col: 5 },
+            end:   Pos { row: 0, col: 0 },
+        });
+        let r = s.range().unwrap();
+        assert_eq!(r.start, Pos { row: 0, col: 0 });
+        assert_eq!(r.end,   Pos { row: 2, col: 5 });
+    }
+
+    #[test]
+    fn hard_wrapped_rows_join_with_newline() {
+        // No soft-wrap (cols wide enough); explicit CRLF between rows.
+        // text() must insert '\n' between hard-wrapped rows.
+        let mut t = Terminal::new(2, 10, 0);
+        t.feed(b"abc\r\ndef");
+        let mut s = Selection::default();
+        s.select_all(&t);
+        let text = s.text(&t);
+        assert!(text.contains("abc"));
+        assert!(text.contains("def"));
+        assert!(text.contains('\n'), "hard-wrapped rows must be separated by \\n: got {:?}", text);
+    }
+
+    #[test]
+    fn select_word_at_col_zero_selects_first_word() {
+        // Word-select on the first character — make sure the boundary
+        // walk doesn't over-extend into the previous (non-existent) row.
+        let mut t = Terminal::new(1, 20, 0);
+        t.feed(b"first second third");
+        let mut s = Selection::default();
+        s.select_word(&t, 0, 0);
+        assert_eq!(s.text(&t), "first");
+    }
 }
