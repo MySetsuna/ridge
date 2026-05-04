@@ -311,4 +311,62 @@ mod tests {
         let r = SearchState::match_to_viewport_range(m, 0, 5, 3).unwrap();
         assert_eq!(r.start.row, 1);
     }
+
+    #[test]
+    fn match_to_viewport_range_returns_none_when_above_visible_window() {
+        // sb_len=5, rows=3, offset=0 → visible rows are abs 5..8.
+        // A match at abs_row=2 is in scrollback that's NOT scrolled
+        // into view → returns None.
+        let m = MatchAbs { abs_row: 2, col_start: 0, col_end: 3 };
+        assert!(SearchState::match_to_viewport_range(m, 0, 5, 3).is_none());
+    }
+
+    #[test]
+    fn match_to_viewport_range_returns_none_when_below_visible_window() {
+        // sb_len=5, rows=3, offset=3 → visible rows are abs 2..5
+        // (top-of-viewport = sb_len - offset = 2). A live-grid match
+        // at abs_row=7 is below the visible window.
+        let m = MatchAbs { abs_row: 7, col_start: 0, col_end: 3 };
+        assert!(SearchState::match_to_viewport_range(m, 3, 5, 3).is_none());
+    }
+
+    #[test]
+    fn desired_scroll_offset_recent_grid_match_returns_zero() {
+        // Match in live grid (abs_row >= sb_len) needs no scrollback —
+        // already visible at offset=0.
+        let m = MatchAbs { abs_row: 6, col_start: 0, col_end: 3 };
+        let off = SearchState::desired_scroll_offset_for(m, /*sb_len=*/5);
+        assert_eq!(off, 0);
+    }
+
+    #[test]
+    fn desired_scroll_offset_for_oldest_scrollback_returns_full_offset() {
+        // To bring abs_row=0 (oldest scrollback) to viewport top,
+        // user must scroll back the full scrollback length.
+        let m = MatchAbs { abs_row: 0, col_start: 0, col_end: 3 };
+        let off = SearchState::desired_scroll_offset_for(m, /*sb_len=*/10);
+        assert_eq!(off, 10);
+    }
+
+    #[test]
+    fn clear_resets_matches_and_active_index() {
+        let mut t = Terminal::new(1, 20, 0);
+        t.feed(b"hello world");
+        let mut s = SearchState::new();
+        s.set_query(&t, "hello", true);
+        assert_eq!(s.match_count(), 1);
+        assert!(s.active_index().is_some());
+        s.clear();
+        assert_eq!(s.match_count(), 0);
+        assert!(s.active_index().is_none());
+        assert!(s.active_match().is_none());
+    }
+
+    #[test]
+    fn match_count_zero_for_fresh_state() {
+        let s = SearchState::new();
+        assert_eq!(s.match_count(), 0);
+        assert!(s.active_index().is_none());
+        assert!(s.active_match().is_none());
+    }
 }
