@@ -395,7 +395,7 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ + wgpu dep ✅ + GlyphRasterizer 模块 ✅ + WGSL cell shader ✅ + 渲染管线 ✅ + 资源分配 ✅ + rasterizer 字段 ✅ + draw_row CellInstance 累积 ✅ + 统一 end_frame render pass ✅ + atlas lookup + rasterize-on-miss + write_texture ✅ + **glyph layer eviction reuse ✅（§4.1.c.glyph.eviction milestone）** 2026-05-04 / set_font_config 方法 ⏳（目前硬编码 monospace 15px） / cursor/overlay/underline ⏳ §4.1.d / RenderHandle 运行时 backend 选择 ⏳ §4.1.e
+### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + 全 §4.1.c ✅（pipeline + 资源 + 累积 + 提交 + atlas + eviction） + **draw_cursor ✅（block/bar/underline 三种 style + 反色 glyph）** 2026-05-04 / set_font_config 方法 ⏳ / draw_selection_overlay + draw_hyperlink_underlines ⏳ §4.1.d / RenderHandle 运行时 backend 选择 ⏳ §4.1.e
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))] pub mod webgpu;`），`packages/ridge-term/Cargo.toml`（新增 `[features] webgpu = []`）
 - **关键 API**：
