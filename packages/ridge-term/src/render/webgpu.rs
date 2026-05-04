@@ -772,12 +772,64 @@ impl RenderBackend for WebGpuBackend {
         }
     }
 
-    fn draw_selection_overlay(&mut self, _rects: &[(usize, usize, usize)]) {
-        // No-op; §4.1.c lands overlay pipeline.
+    fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
+        // Selection overlay reuses the cell pipeline — each
+        // (row, col_start, col_end) rect becomes one CellInstance
+        // covering the full cell-height with `selection_bg` (which
+        // carries its own alpha, typically 0x3d-0x60 for "translucent
+        // tint"). Alpha blending in the pipeline composites it over
+        // the cell content draw_row already pushed.
+        if rects.is_empty() {
+            return;
+        }
+        let cell_w = self.metrics.cell_w * self.metrics.dpr;
+        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let sel_color = rgba_u8_to_f32(self.theme.selection_bg);
+        for &(row, col_start, col_end) in rects {
+            if col_end <= col_start {
+                continue;
+            }
+            let pixel_x = (col_start as f32) * cell_w;
+            let pixel_y = (row as f32) * cell_h;
+            let width = ((col_end - col_start) as f32) * cell_w;
+            self.pending_instances.push(CellInstance {
+                cell_xy: [pixel_x, pixel_y],
+                cell_size: [width, cell_h],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: sel_color,
+                bg_rgba: sel_color,
+            });
+        }
     }
 
-    fn draw_hyperlink_underlines(&mut self, _rects: &[(usize, usize, usize)]) {
-        // No-op; §4.1.c lands underline pipeline.
+    fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
+        // Hyperlink underlines: a 2-px-tall (DPR-scaled) strip at
+        // cell-bottom for each (row, col_start, col_end) span. Solid
+        // color from theme.hyperlink_color.
+        if rects.is_empty() {
+            return;
+        }
+        let cell_w = self.metrics.cell_w * self.metrics.dpr;
+        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let thickness = 2.0 * self.metrics.dpr;
+        let link_color = rgba_u8_to_f32(self.theme.hyperlink_color);
+        for &(row, col_start, col_end) in rects {
+            if col_end <= col_start {
+                continue;
+            }
+            let pixel_x = (col_start as f32) * cell_w;
+            let pixel_y = (row as f32) * cell_h + cell_h - thickness;
+            let width = ((col_end - col_start) as f32) * cell_w;
+            self.pending_instances.push(CellInstance {
+                cell_xy: [pixel_x, pixel_y],
+                cell_size: [width, thickness],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: link_color,
+                bg_rgba: link_color,
+            });
+        }
     }
 
     fn end_frame(&mut self) {
