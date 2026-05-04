@@ -234,6 +234,69 @@ function isValidPaneId(id: string): boolean {
 	return PANE_ID_RE.test(id);
 }
 
+// Handler closures hoisted to component scope so every RidgePane
+// instance owns its own `alive` / `triggerBellFlash` capture.
+//
+// Why this matters: TerminalManager preserves dataHandler /
+// resizeHandler / eventHandler across park (kernel survives the
+// unmount window). When a SplitContainer split / reparent forces a
+// RidgePane re-mount, the OLD component's onDestroy sets alive=false;
+// if those handlers were registered with closures that captured the
+// OLD `alive`, every keystroke through the new pane goes through
+// `manager.handleKeyDown → entry.dataHandler(bytes) → if (!alive) return;`
+// and is silently dropped — even though a fresh component is sitting
+// at the keyboard. By hoisting and re-registering on every mount
+// (both first attach and unpark branches), each instance always gets
+// the live `alive` flag of the currently-attached component.
+// (TASKS §1.17.)
+function onPtyData(bytes: Uint8Array) {
+	if (!alive) return;
+	// Tauri's write_to_pty currently expects a JS string. We send
+	// the raw bytes through TextDecoder. NOTE: this is lossy for
+	// non-UTF-8 byte sequences — the encoder never produces those
+	// (key sequences are all ASCII), but a future binary tunneling
+	// path may want a base64 alternative.
+	const s = new TextDecoder().decode(bytes);
+	void invoke('write_to_pty', { paneId, data: s }).catch((err) => {
+		console.error('write_to_pty', err);
+	});
+}
+
+function onPtyResize(rows: number, cols: number) {
+	// Defensive: should be impossible after the onMount UUID guard
+	// below, but leaving the cheap check in catches any future
+	// path that smuggles a bad id past attach.
+	if (!isValidPaneId(paneId)) {
+		if (import.meta.env?.DEV) {
+			console.warn('[ridge-pane] resize skipped — non-UUID paneId:', paneId);
+		}
+		return;
+	}
+	void invoke('resize_pane', { paneId, rows, cols }).catch((err) => {
+		console.error('resize_pane', err);
+	});
+}
+
+function onKernelEvent(ev: KernelEvent) {
+	switch (ev.type) {
+		case 'CwdChanged':
+			setPaneCwd(workspaceId, paneId, ev.value);
+			break;
+		case 'TitleChanged':
+		case 'IconNameChanged':
+			// Mirror Pane.svelte's policy: OSC title takes priority
+			// over the polled foreground process name. Write both
+			// stores so SplitContainer's `$terminalTitles[paneId]`
+			// shows the new title immediately.
+			paneOscTitleStore.update((s) => ({ ...s, [paneId]: ev.value }));
+			terminalTitles.update((m) => ({ ...m, [paneId]: ev.value }));
+			break;
+		case 'Bell':
+			triggerBellFlash();
+			break;
+	}
+}
+
 onMount(() => {
 	if (!isTauri()) {
 		console.warn('[ridge-pane] requires Tauri');
@@ -268,6 +331,14 @@ onMount(() => {
 			attached = true;
 			manager.setFocused(paneId, get(activePaneId) === paneId);
 			manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
+			// Re-register handlers so this fresh component owns the
+			// closures (the previous instance's `alive` is now false
+			// and would silently drop every keystroke). Manager's
+			// onData/onResize/onEvent replace any prior callback for
+			// the same paneId.
+			manager.onData(paneId, onPtyData);
+			manager.onResize(paneId, onPtyResize);
+			manager.onEvent(paneId, onKernelEvent);
 			return;
 		}
 
@@ -284,62 +355,15 @@ onMount(() => {
 		manager.setFocused(paneId, get(activePaneId) === paneId);
 		manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
 
-		// 1) Outbound: keyboard → PTY
-		manager.onData(paneId, (bytes) => {
-			if (!alive) return;
-			// Tauri's write_to_pty currently expects a JS string. We send
-			// the raw bytes through TextDecoder. NOTE: this is lossy for
-			// non-UTF-8 byte sequences — the encoder never produces those
-			// (key sequences are all ASCII), but a future binary tunneling
-			// path may want a base64 alternative.
-			const s = new TextDecoder().decode(bytes);
-			void invoke('write_to_pty', { paneId, data: s }).catch((err) => {
-				console.error('write_to_pty', err);
-			});
-		});
-
-		// 2) Resize → PTY: backend syncs SIGWINCH
-		manager.onResize(paneId, (rows, cols) => {
-			// Defensive: should be impossible after the onMount UUID guard
-			// above, but leaving the cheap check in catches any future
-			// path that smuggles a bad id past attach.
-			if (!isValidPaneId(paneId)) {
-				if (import.meta.env?.DEV) {
-					console.warn('[ridge-pane] resize skipped — non-UUID paneId:', paneId);
-				}
-				return;
-			}
-			void invoke('resize_pane', { paneId, rows, cols }).catch((err) => {
-				console.error('resize_pane', err);
-			});
-		});
-
+		// 1) Outbound: keyboard → PTY.
+		// 2) Resize → PTY: backend syncs SIGWINCH.
 		// 2b) Typed kernel events: cwd, title, hyperlinks, bell.
-		// CWD updates the same paneCwdStore the backend OSC 7 path writes to;
-		// duplicate writes are idempotent (setPaneCwd normalizes + dedupes
-		// per key). Title/Hyperlink/Bell are placeholders pending UI work
-		// (round 4-5) — log so dev can see they're flowing.
-		manager.onEvent(paneId, (ev: KernelEvent) => {
-			switch (ev.type) {
-				case 'CwdChanged':
-					setPaneCwd(workspaceId, paneId, ev.value);
-					break;
-				case 'TitleChanged':
-				case 'IconNameChanged':
-					// Mirror Pane.svelte's policy: OSC title takes priority
-					// over the polled foreground process name. Write both
-					// stores so SplitContainer's `$terminalTitles[paneId]`
-					// shows the new title immediately. (Pane.svelte does the
-					// same with backend-emitted title events; we replace that
-					// signal with the kernel-side OSC events here.)
-					paneOscTitleStore.update((s) => ({ ...s, [paneId]: ev.value }));
-					terminalTitles.update((m) => ({ ...m, [paneId]: ev.value }));
-					break;
-				case 'Bell':
-					triggerBellFlash();
-					break;
-			}
-		});
+		// All three handlers live at script scope and capture this
+		// component's `alive` / `triggerBellFlash`; see the comment
+		// block above each function for details.
+		manager.onData(paneId, onPtyData);
+		manager.onResize(paneId, onPtyResize);
+		manager.onEvent(paneId, onKernelEvent);
 
 		// 3) PTY backend lifecycle
 		try {

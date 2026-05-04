@@ -195,6 +195,25 @@
 - **测试**：`cargo check --lib` 0 错误 0 警告。浏览器实跑验证留给 §7.2。
 - **关联**：fs_watch.rs 已经 SEGMENT_BLACKLIST 过滤 `.git/`、`node_modules/`、`target/` 等，不会经 fs-changed 路径误触发。
 
+### 1.17 [HIGH] 拆分窗口后原终端无法输入（RidgePane unpark 不重新注册 dataHandler）✅ 2026-05-04
+
+- **文件**：`src/lib/components/RidgePane.svelte`（onMount + 三个 handler 提取）
+- **现象**：用户报告「终端如果进行窗口拆分，原窗口依然无法正常输入」。键盘 focus 看起来对，光标也在闪，但每个按键都没传到 shell。padding 修复（§1.15）只解决了视觉 inset，输入丢失是独立的更深 bug。
+- **根因（trace 全链路）**：
+  1. `RidgePane.svelte:288/302/322` 把 `onPtyData / onPtyResize / onKernelEvent` 三个 handler **以箭头函数内联定义在 onMount IIFE 里**，每个闭包都捕获了**当时**的 component scope `alive`、`triggerBellFlash`、stores 等。
+  2. `manager.onData/onResize/onEvent(paneId, cb)` 在 `manager.ts:670/689/662` 仅把 `cb` 存进 `entry.dataHandler / .resizeHandler / .eventHandler` 字段。
+  3. SplitContainer 因 `(A|B)` → `((A|new) | B)` 包装而结构性 re-render：原 `<RgPane><Pane id=A/>` 卸载，新 `<SplitLayout>` 重挂载内部 `<RgPane><Pane id=A/>`。RidgePane id=A 走 onDestroy（`alive = false`，`manager.park(paneId)`） → onMount。
+  4. `manager.park` 故意保留 dataHandler/eventHandler/resizeHandler（注释清楚说「load-bearing for user-perceived continuity」）。
+  5. RidgePane 新实例 onMount 命中 `if (manager.isParked(paneId))` 走 unpark 分支，原版代码在 `setFocused / setPadding` 后**立即 return**，**不会重新调 manager.onData/onResize/onEvent**。
+  6. entry.dataHandler 仍指向旧实例的箭头函数，闭包里 `alive === false`（旧实例 onDestroy 已置 false）。`onContainerKeyDown` → `manager.handleKeyDown` → `entry.dataHandler(bytes)` → `if (!alive) return;` —— **每个按键被静默吞掉**，不抛错、不 invoke、不打 console。
+- **影响面**：
+  - **dataHandler**：key/paste/IME composition 全部丢失（最显眼，用户立即报）。
+  - **eventHandler**：CwdChanged/TitleChanged 没检 alive 但 `triggerBellFlash` 改的是旧 component 的 $state，新实例的视觉 bell 永远不闪；其他全局 store 写入仍生效。
+  - **resizeHandler**：没检 alive，PTY resize_pane invoke 仍正常（这就是为什么 §1.15 padding 修好后 fitPane 仍能下发 SIGWINCH 但用户依然无法输入）。
+- **修法（已实施）**：把三个 handler 从 onMount IIFE 内提到 `<script>` top-level（紧跟在 `triggerBellFlash` 定义之后），每个 RidgePane 实例自然拥有自己的 `function` 标识符，闭包通过名字捕获**当前**实例的 `alive`、`paneId`、`workspaceId`、`triggerBellFlash` 等。然后在 onMount 的两个分支（首次 attach + unpark）都调一次 `manager.onData(paneId, onPtyData)` / `manager.onResize(paneId, onPtyResize)` / `manager.onEvent(paneId, onKernelEvent)`。Manager 的 onData 等方法会**替换**之前注册的 callback（docstring 已写明，无需先 clear）。
+- **测试**：`pnpm check` 0 errors 0 warnings。浏览器实跑（§7.2）路径：`A` pane 输入正常 → 拆分得到 `A | B` → 在 A 中继续输入应正常工作（不再吞）。
+- **设计教训**：手动跨 mount 保活的 manager API 必须在 unpark 路径上重新注册所有承载 component scope 的 callback，或把这些 callback 做成 manager 内部方法 + ref-to-current-component 模式。本次只补 RidgePane 这一个调用点；如果未来再加新 handler（`manager.onPaste`、`manager.onSelection` 等），onMount 两个分支都要补。
+
 ---
 
 ## 2. Round 4 收尾（IME v3 / 反向 scrollback / reflow）
