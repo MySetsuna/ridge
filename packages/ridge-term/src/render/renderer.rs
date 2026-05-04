@@ -215,18 +215,7 @@ impl<B: RenderBackend> Renderer<B> {
         let mut dirty_rows: Vec<usize> = Vec::with_capacity(rows_n);
         for r in 0..rows_n {
             let Some(row) = terminal.viewport_row(r) else { continue };
-            let mut hasher = DefaultHasher::new();
-            for cell in &row.cells {
-                cell.ch.hash(&mut hasher);
-                cell.attr.0.hash(&mut hasher);
-                cell.width.hash(&mut hasher);
-            }
-            row.hyperlinks.len().hash(&mut hasher);
-            for span in &row.hyperlinks {
-                span.col_start.hash(&mut hasher);
-                span.col_end.hash(&mut hasher);
-            }
-            let h = hasher.finish();
+            let h = compute_row_hash(row);
             if self.full_redraw_pending || h != self.snapshot[r] {
                 self.snapshot[r] = h;
                 dirty_rows.push(r);
@@ -403,4 +392,139 @@ fn selection_to_rects(
         }
     }
     out
+}
+
+/// Compute the per-row dirty hash. Extracted from `Renderer::tick` so
+/// the §1.18.c invariant — that hyperlink span shape changes dirty the
+/// row, while URI/id-only changes do not — has direct host-side test
+/// coverage. The cells contribute `(ch, attr_id, width)`; the
+/// hyperlinks contribute `(count, col_start, col_end)` per span.
+fn compute_row_hash(row: &crate::term::cell::Row) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for cell in &row.cells {
+        cell.ch.hash(&mut hasher);
+        cell.attr.0.hash(&mut hasher);
+        cell.width.hash(&mut hasher);
+    }
+    row.hyperlinks.len().hash(&mut hasher);
+    for span in &row.hyperlinks {
+        span.col_start.hash(&mut hasher);
+        span.col_end.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_row_hash;
+    use crate::term::cell::{Cell, HyperlinkSpan, Row};
+
+    fn row_with_text(text: &str, cols: usize) -> Row {
+        let mut r = Row::new(cols);
+        for (i, ch) in text.chars().enumerate() {
+            if i >= cols { break; }
+            r.cells[i] = Cell::new(ch, crate::term::attr_table::AttrId::DEFAULT, 1);
+        }
+        r
+    }
+
+    #[test]
+    fn identical_rows_hash_equal() {
+        let a = row_with_text("hello", 10);
+        let b = row_with_text("hello", 10);
+        assert_eq!(compute_row_hash(&a), compute_row_hash(&b));
+    }
+
+    #[test]
+    fn cell_change_dirties_hash() {
+        let a = row_with_text("hello", 10);
+        let b = row_with_text("hellz", 10);
+        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
+    }
+
+    #[test]
+    fn span_added_dirties_hash() {
+        // §1.18.c regression test: adding a hyperlink span to an
+        // otherwise-identical row must change the dirty hash so the
+        // renderer redraws the row and the underline pass paints
+        // (or — on removal — bg+glyph repaint clears the previous
+        // underline pixels).
+        let a = row_with_text("hello", 10);
+        let mut b = row_with_text("hello", 10);
+        b.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 5,
+            uri: "https://example.com".into(),
+            id: None,
+        });
+        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
+    }
+
+    #[test]
+    fn span_position_change_dirties_hash() {
+        let mut a = row_with_text("hello", 10);
+        a.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 5,
+            uri: "https://example.com".into(),
+            id: None,
+        });
+        let mut b = row_with_text("hello", 10);
+        b.hyperlinks.push(HyperlinkSpan {
+            col_start: 1,
+            col_end: 5,
+            uri: "https://example.com".into(),
+            id: None,
+        });
+        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
+    }
+
+    #[test]
+    fn span_uri_only_change_does_not_dirty_hash() {
+        // URI/id are intentionally NOT in the hash. The underline
+        // overlay is purely spatial — same (col_start, col_end) →
+        // same pixels. Avoids redraws on URI-only rebuilds (e.g.,
+        // some shells re-emit OSC 8 with a slightly different
+        // tracking id every frame).
+        let mut a = row_with_text("hello", 10);
+        a.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 5,
+            uri: "https://example.com".into(),
+            id: None,
+        });
+        let mut b = row_with_text("hello", 10);
+        b.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 5,
+            uri: "https://different.example.com".into(),
+            id: Some("anchor-42".into()),
+        });
+        assert_eq!(compute_row_hash(&a), compute_row_hash(&b));
+    }
+
+    #[test]
+    fn span_count_difference_dirties_hash() {
+        let mut a = row_with_text("ab cd", 10);
+        a.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 2,
+            uri: "u".into(),
+            id: None,
+        });
+        let mut b = row_with_text("ab cd", 10);
+        b.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 2,
+            uri: "u".into(),
+            id: None,
+        });
+        b.hyperlinks.push(HyperlinkSpan {
+            col_start: 3,
+            col_end: 5,
+            uri: "u2".into(),
+            id: None,
+        });
+        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
+    }
 }
