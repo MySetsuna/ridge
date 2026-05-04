@@ -23,6 +23,13 @@ pub mod glyph_atlas;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod webgpu;
 
+// Glyph rasterizer (Round 3 §4.1.b). OffscreenCanvas-based — uses the
+// browser's font fallback chain for free, no extra wasm bundle weight.
+// Owned by future WebGpuBackend::draw_row cache-miss path; gated on
+// the same wasm32 + webgpu feature combination.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub mod glyph_rasterizer;
+
 pub use backend::{
     CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
