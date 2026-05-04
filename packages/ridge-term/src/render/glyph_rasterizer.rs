@@ -100,24 +100,72 @@ impl GlyphRasterizer {
         })
     }
 
-    /// Rasterize a single glyph to RGBA pixels. Stub for slice 1 —
-    /// future iteration will:
-    ///   1. `ctx.set_font(format!("{size}px {family}"))`.
-    ///   2. `ctx.set_text_baseline("top")`.
-    ///   3. `ctx.set_fill_style_str("#ffffff")` — render in white so
-    ///      shaders can tint via fg_rgba uniform.
-    ///   4. `ctx.clear_rect(0, 0, slot_w, slot_h)` — reset to transparent.
-    ///   5. `ctx.fill_text(&ch.to_string(), 0.0, 0.0)`.
-    ///   6. `ctx.get_image_data(0, 0, w, h)?.data().to_vec()` →
-    ///      `RasterizedGlyph { rgba, .. }`.
-    ///   7. `ctx.measure_text(...)` for the advance.
+    /// Rasterize a single glyph to RGBA pixels via the browser's 2D
+    /// canvas API. The pipeline:
+    ///
+    ///   1. Set the CSS font string. `font-size font-family` form —
+    ///      family inherits the user's terminal font setting and the
+    ///      browser supplies its full fallback chain.
+    ///   2. Top-baseline so a glyph drawn at y=0 has its top edge
+    ///      flush with the slot's top — simplifies the future shader
+    ///      that places the bitmap at cell-top + ascent_offset.
+    ///   3. Render in pure white so the shader can tint via the
+    ///      cell's `fg_rgba` uniform without re-rasterizing per color.
+    ///   4. Clear the slot before each glyph — `fill_text` paints
+    ///      additively.
+    ///   5. Paint the glyph at (0, 0). Returns Err if the browser
+    ///      throws (rare; usually CORS-tainted fonts but our canvas
+    ///      is internal so this should never fire).
+    ///   6. Read back the entire slot as RGBA pixels. The atlas /
+    ///      caller can crop to the actual glyph bounding box later
+    ///      if texture-array memory pressure demands it.
+    ///   7. Capture the horizontal advance from `measure_text` so
+    ///      the renderer can validate width-2 cells got an
+    ///      appropriately wide glyph.
     pub fn rasterize(
         &self,
-        _font_family: &str,
-        _font_size_px: f32,
-        _ch: char,
+        font_family: &str,
+        font_size_px: f32,
+        ch: char,
     ) -> Result<RasterizedGlyph, String> {
-        Err("GlyphRasterizer::rasterize not yet implemented — see TASKS §4.1.b".to_string())
+        let font_css = format!("{}px {}", font_size_px, font_family);
+        self.ctx.set_font(&font_css);
+        self.ctx.set_text_baseline("top");
+        self.ctx.set_fill_style_str("#ffffff");
+
+        let slot_w = self.slot_w as f64;
+        let slot_h = self.slot_h as f64;
+        self.ctx.clear_rect(0.0, 0.0, slot_w, slot_h);
+
+        let s = ch.to_string();
+        self.ctx
+            .fill_text(&s, 0.0, 0.0)
+            .map_err(|e| format!("GlyphRasterizer::fill_text: {e:?}"))?;
+
+        let metrics = self
+            .ctx
+            .measure_text(&s)
+            .map_err(|e| format!("GlyphRasterizer::measure_text: {e:?}"))?;
+        let advance = metrics.width() as f32;
+
+        let image_data = self
+            .ctx
+            .get_image_data(0.0, 0.0, slot_w, slot_h)
+            .map_err(|e| format!("GlyphRasterizer::get_image_data: {e:?}"))?;
+        let rgba: Vec<u8> = image_data.data().to_vec();
+
+        Ok(RasterizedGlyph {
+            rgba,
+            width: self.slot_w,
+            height: self.slot_h,
+            advance,
+            // `set_text_baseline("top")` plus `fill_text(_, 0.0, 0.0)`
+            // means the glyph's top edge sits at y=0, so the offset
+            // from cell-top to glyph-top is 0. A future slice that
+            // wants pixel-perfect baseline alignment can re-derive
+            // this from `metrics.font_bounding_box_ascent()`.
+            ascent_offset: 0.0,
+        })
     }
 
     pub fn slot_dimensions(&self) -> (u16, u16) {
