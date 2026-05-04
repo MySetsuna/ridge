@@ -63,7 +63,7 @@ web-sys = { version = "0.3", features = [
 # Vulkan/Metal/DX12), keeping the wasm bundle as small as possible
 # for a GPU-rendering crate. `default-features = false` prunes
 # native-OS bits that wouldn't link in wasm32 anyway.
-wgpu = { version = "23", default-features = false, features = ["webgpu"], optional = true }
+wgpu = { version = "23", default-features = false, features = ["webgpu", "wgsl"], optional = true }
 # wasm-bindgen-futures lets WebGpuBackend::new use `.await` on the
 # adapter / device request promises that wgpu returns through
 # wasm-bindgen.
