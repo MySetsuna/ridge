@@ -1,6 +1,6 @@
 # Ridge — Next Loop 计划
 
-最后更新：2026-05-04（第 70 轮） · 由 /loop 自动生成
+最后更新：2026-05-04（第 71 轮） · 由 /loop 自动生成
 
 > 本文档由 /loop 循环结束时写入，下一轮 `/loop` 会优先读取本文档。
 > 对标：VS Code、JetBrains Fleet、Warp、Zed。
@@ -9,22 +9,96 @@
 
 ## 🔜 下一轮候选
 
-**Round 3 §4.1 实接线（最大优先级）**：在 `webgpu` cargo feature 已就位的前提下，添加 `wgpu = { version = "23", optional = true }` 与 `cosmic-text` 或 `fontdue` 作为可选依赖；实现 `WebGpuBackend::new(canvas: HtmlCanvasElement)` 请求 adapter / device / surface；`clear()` 实际清屏；`draw_row` 用 instance buffer 走一次 indirect draw。第一轮目标是验证 GPU pipeline 能 reach canvas，glyph rasterizer 留给 §4.1.b。
+**Round 3 §4.1 实接线（最大优先级 / 阻塞用户主线诉求）**：第 70-71 轮已经备好骨架（`webgpu` cargo feature + `WebGpuBackend` Err-on-construct stub + 全 trait surface check + 全 9 个 `RenderBackend` 方法签名匹配），下一步在该 feature 下添加 `wgpu = { version = "23", optional = true, default-features = false, features = ["webgpu"] }` + `wasm-bindgen-futures = { version = "0.4", optional = true }`；实现 `WebGpuBackend::new(canvas) -> async Result<Self, String>` 请求 adapter / device / surface；`clear()` 用 RenderPass 实际清屏。第一轮目标 = 证明 GPU pipeline 能 reach canvas（render 一帧纯 theme.bg），不接 glyph rasterizer。Glyph 路径（cosmic-text vs fontdue 决策）放 §4.1.b。
 
-**§1.18.c 浏览器实跑回归**：本会话所有 §1.18 修复（SGR 4:N、CSI K/J/X/ICH/DCH 的 OSC 8 span clip、renderer 加 hyperlink hash）都需要用户 `pnpm tauri dev` 跑 Claude Code 实测，确认 a) 普通文本无下划线污染、b) 状态行重绘无残留 underline、c) 拆分 / 关闭面板无字符错位。属 §7.2 Browser real-run regression 范围。
+**§1.18.c 浏览器实跑回归**：第 70 轮所有 §1.18 修复已完成单元测试 + 第 71 轮 `compute_row_hash` 直接证明了 §1.18.c 哈希含 hyperlink 形状的不变式，但仍需用户 `pnpm tauri dev` 跑 Claude Code 实测，确认 a) 普通文本无下划线污染、b) 状态行重绘无残留 underline、c) 拆分 / 关闭面板无字符错位。属 §7.2 Browser real-run regression 范围。
 
-**Round 3 §4.4 性能基准（条件依赖）**：等 §4.1 实接线后才有 baseline 可测，提前不便做。
+**Round 3 §4.4 性能基准**：等 §4.1 实接线后才有 baseline 可测；当前 Canvas2D 路径用户没报告显著卡顿（OVERVIEW §6 R2 已记录），所以 §4.4 已不是紧急路径。
 
-**已记录但未启动的 backlog**：
+**TASKS §1.19 元-检查点**（用户在第 71 轮新增）：所有 ⏳ 项关闭后做架构 review + OVERVIEW 一致性复查 + 决策剩余 deferred 项（§2.3 Phase 2 reflow / §2.4 grapheme / §3.3 Bell audio / §1.5 measure_font）。本条本身不写代码，只产出 review 报告 + 决策记录。
+
+**已记录但未启动的 backlog**（第 69 轮遗留 + 第 70/71 轮新增）：
 - 工作区底部粘性（Explorer）：第 69 轮遗留候选。
 - FileTree 对齐细化：第 69 轮遗留候选。
 - Rust 线程池监控（tracing span）：第 69 轮遗留候选。
-- §1.5 `canvas2d::measure_font` 'M' 测宽（CJK fallback 1-2 px 偏移）：等 round 3 重做 metrics 时一并处理。
+- §1.5 `canvas2d::measure_font` 'M' 测宽：等 round 3 重做 metrics 时一并处理。
 - §1.14 `PaneState::Starting` 半实现 gap：需用户对 teammate 流程时序判断。
 
 ---
 
 ## ✅ 历史轮次已完成
+
+### 第 71 轮（2026-05-04）— 测试覆盖大爆发：ridge-term host 测试 134 → 234（+100）
+
+承接第 70 轮的 11 个修复 commit + Round 3 scaffold，本轮（25 个 cumulative commit，session 内连续 /loop 触发）专注扩大 host-side 测试覆盖。第 71 轮自身 14 commit 全部为「extract / pin invariants / add #[test]」类工作，零产品行为变更。完整目标：把第 70 轮所有 bug 修复（§1.15-§1.18）的 invariants 钉成测试，让未来任何重构（特别是 Round 3 wgpu 接线）若误改任一 load-bearing 行为都立即在 `cargo test --lib` 失败。
+
+#### 验证矩阵（第 71 轮终态）
+
+| Gate | 状态 |
+|---|---|
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 73 passed; 0 failed; 0 warnings |
+| `cargo test --manifest-path packages/ridge-term/Cargo.toml --lib` | **234 passed**; 0 failed |
+| `cargo check --target wasm32-unknown-unknown -p ridge-term` (默认) | 0 errors / 0 warnings |
+| `cargo check --target wasm32-unknown-unknown -p ridge-term --features webgpu` | 0 errors / 0 warnings |
+| `pnpm check` (svelte-check) | 0 errors / 0 warnings |
+| `cargo build --lib --manifest-path src-tauri/Cargo.toml` | 0 warnings (CLAUDE.md gate refreshed 2026-05-04) |
+
+#### 第 71 轮所有 commit（按提交序）
+
+1. **`d60461c`** docs(loop-plan): 第 70 轮 ledger 入账（11 commits + Round 3 scaffold）。
+2. **`c57b8e6`** docs(claude-md): cargo zero-warning gate 时间戳 → 2026-05-04，新增 wasm 模式覆盖。
+3. **`da547fe`** test(renderer): 提取 `compute_row_hash` 为可测函数 + 6 host 测试，**直接证明 §1.18.c hyperlink 哈希形状不变式**。
+4. **`9e6478f`** test(renderer): 7 个 `selection_to_rects` 测试（多行 clip、reverse-drag normalize、视口外 clamp、单行 empty）。
+5. **`77febee`** test(renderer): 13 个 `cursor_eq` + `selection_eq` 测试，pin「ch 差异不应 dirty cursor」+「reverse range normalize 后等价」两个反直觉行为。
+6. **`c5d2763`** test(backend): 13 个 theme + parse_hex_color 测试（resolve 三分支、apply_partial 全 22 keys、color edge cases）。
+7. **`2fc1190`** test(parser): 10 个 `parse_color_from_subs` 测试（256-color、truecolor 4/5-element、xterm-compat 5-element-non-zero-second fallback）。
+8. **`672f3d5`** test(attr_table): 5 个测试，特别 pin out-of-bounds AttrId 的 defensive `unwrap_or(DEFAULT)` fallback（prepend_scrollback sandbox 路径需要）。
+9. **`9145d61`** test(scrollback): 5 个测试，包括 push 容量 0、`get` OOB、`clear`、**push wrap modulo math** (`(head + idx) % capacity`) — 防御深翻历史时的环形偏移漂移。
+10. **`49cb6eb`** test(cell): 14 个测试覆盖 Cell + Row + link_at（**col_start inclusive / col_end exclusive boundary** pin、colored space ≠ blank pin、Row::resize 超宽 hyperlinks 裁剪）。
+11. **`6c29b9c`** test(modes): 8 个测试覆盖 DECOM / DECTCEM / mouse 6 modes / **public 4 vs private 4 dispatch**（`is_private` 必须存在，否则 bash insert 模式与未知 private mode 撞车）。
+12. **`d51b374`** test(search): 6 个测试覆盖 `desired_scroll_offset_for` + viewport-range 出窗口返回 None + clear。
+13. **`b4aa07f`** docs(tasks): 记录 §1.19 元-检查点（用户新加 task）。
+14. **`0a047ed`** test(terminal): 7 个测试覆盖 viewport_row 混合 scrollback+grid（offset > 0 时 vp_row N-1 = scrollback[sb-1]、vp_row N = grid.row(0) 文档对应的算术），以及 scroll_up_view 钳位 / scroll_down_view 饱和 / scroll_to_bottom 重置。
+15. **`34f4719`** test(selection): 6 个测试覆盖 Range::is_empty / Selection::set/clear/normalize / **hard-wrap vs soft-wrap newline 对**（剪贴板复制 round-trip 保真）。
+
+#### 测试覆盖按层（最终 +121 测试）
+
+| 层 | 第 71 轮新增测试 |
+|---|---|
+| Bug 修复（§1.15-§1.18, 第 70 轮承接） | 14 |
+| `compute_row_hash` | 6 |
+| `selection_to_rects` | 7 |
+| `cursor_eq` / `selection_eq` | 13 |
+| `Theme::resolve` + `parse_hex_color` + `apply_partial` | 13 |
+| `parse_color_from_subs` | 10 |
+| `attr_table` | 5 |
+| `glyph_atlas`（Round 3 §4.2） | 7 |
+| `scrollback` | 5 |
+| `Cell` / `Row` / `link_at` | 14 |
+| `modes` | 8 |
+| `search` | 6 |
+| `terminal` viewport scroll | 7 |
+| `selection` | 6 |
+
+#### 第 71 轮关键设计教训 / 反直觉 invariants 已 pin
+
+1. **`cursor_eq` 故意忽略 ch 差异** — cell 内容变更已被 per-row hash 抓到，cursor_eq 只比 row/col/style；未来 refactor 让它「更严」会引入 gratuitous redraw。
+2. **`selection_eq` 必须 normalize 双方** — drag-forward 与 drag-backward 跨同一区间产生 swap-start/end 的 Range，不正规化会让方向反转触发 full redraw。
+3. **`HyperlinkSpan` 的 col_end 是 exclusive** — Ctrl+click 命中检测对此敏感，refactor 错读成 inclusive 会让链接正后方的 cell 也激活点击。
+4. **Colored space ≠ blank** — 着色空格保留 bg paint 意图，optimize 误判会吃掉终端菜单 / 状态条 / 颜色 demo 的视觉。
+5. **Public mode 4 ≠ Private mode 4** — bash readline raw mode 用 `CSI 4 h`（公共 insert），与某些 private mode 4 撞码；`is_private` dispatch 不能去掉。
+6. **`CSI 4:N m` 5-element-non-zero-second 走 4-element 路径** — xterm-compat 行为，不是 ITU canonical；refactor 加严长度检查会破坏发非标准 5-element 的 shell。
+7. **AttrTable::get OOB → DEFAULT** — defensive fallback；refactor 换成 unwrap() 看似安全但 prepend_scrollback sandbox-flush 与 alt-screen swap 会偶发 stale-id。
+8. **Soft-wrap vs Hard-wrap 决定 newline** — 复制粘贴 round-trip 保真依赖这一对契约同时成立。
+9. **Renderer per-row hash 含 hyperlink 形状不含 URI** — 形状变就 dirty（layout 变了），URI 变不 dirty（overlay 纯空间，相同 col 范围必同像素）。
+
+#### 第 71 轮设计判断：测试 push 已饱和
+
+22 commit 之后所有 ridge-term 包内有公共 API 的 leaf 模块（render::{backend, renderer, glyph_atlas} + term::{cell, modes, scrollback, attr_table, parser, terminal} + search + selection）都有 host-side 直接测试。剩余「未直接测试」的 surface 要么是：(a) 集成路径（必须经 `Terminal::feed` 才能触发），已被现有 feed-style 测试覆盖；(b) wasm-only backend trait impl（Canvas2dBackend / WebGpuBackend），需要 wasm 运行环境；(c) `lib.rs` wasm-bindgen 包装层，本质就是 IPC 转发。继续加测试边际收益递减；下一轮应该 pivot 到实际产品工作（首推 Round 3 §4.1 wgpu 接线）。
+
+---
+
+### 第 70 轮（2026-05-04）— 终端 split / 关闭后 padding & 输入修复 + Claude Code 渲染清理 + Round 3 scaffold
 
 ### 第 70 轮（2026-05-04）— 终端 split / 关闭后 padding & 输入修复 + Claude Code 渲染清理 + Round 3 scaffold
 
