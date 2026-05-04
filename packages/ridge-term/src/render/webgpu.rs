@@ -494,6 +494,21 @@ impl WebGpuBackend {
             theme: Theme::default_dark(),
         })
     }
+
+    /// Set the CSS font family + pixel size used for glyph
+    /// rasterization. Mirrors `Canvas2dBackend::set_font` (a non-trait
+    /// method). Caller (eventually `RenderHandle::configure` in §4.1.e)
+    /// invokes this whenever the user picks a new terminal font.
+    ///
+    /// Changing the font does NOT invalidate the GlyphAtlas — the
+    /// `font_family_hash` field on `GlyphKey` already disambiguates
+    /// per-font cache entries. Bumping fonts mid-session simply means
+    /// the next miss rasterizes against the new family; old entries
+    /// stay cached until LRU evicts them.
+    pub fn set_font_config(&mut self, font_family: String, font_size_px: f32) {
+        self.font_family = font_family;
+        self.font_size_px = font_size_px;
+    }
 }
 
 impl RenderBackend for WebGpuBackend {
