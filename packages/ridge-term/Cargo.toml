@@ -18,7 +18,19 @@ default = []
 # no native Vulkan/Metal/DX12 backends, keeping the wasm bundle
 # minimal. wasm-bindgen-futures bridges JS Promises to Rust .await
 # inside the WebGpuBackend::new constructor.
-webgpu = ["dep:wgpu", "dep:wasm-bindgen-futures"]
+#
+# The web-sys subfeatures (OffscreenCanvas + 2d ctx + ImageData) are
+# only pulled when this feature is on — the §4.1.b glyph rasterizer
+# uses an OffscreenCanvas to leverage the browser's font fallback
+# chain instead of bundling a fontdue/cosmic-text crate (which would
+# add 500 KB-5 MB to the wasm bundle plus require shipping a font).
+webgpu = [
+    "dep:wgpu",
+    "dep:wasm-bindgen-futures",
+    "web-sys/OffscreenCanvas",
+    "web-sys/OffscreenCanvasRenderingContext2d",
+    "web-sys/ImageData",
+]
 
 [dependencies]
 # VT/ANSI escape sequence parser. Same crate Alacritty uses; covers the full

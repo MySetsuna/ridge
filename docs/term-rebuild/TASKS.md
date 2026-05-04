@@ -395,7 +395,7 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ + wgpu dep ✅ + new()/clear() 第 1 slice ✅ 2026-05-04 / glyph atlas + cursor/overlay 接线 ⏳ §4.1.b §4.1.c
+### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ + wgpu dep ✅ + new()/clear() 第 1 slice ✅ + GlyphRasterizer scaffold ✅ 2026-05-04 / glyph 实接线 ⏳ §4.1.b body / cursor/overlay ⏳ §4.1.c
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))] pub mod webgpu;`），`packages/ridge-term/Cargo.toml`（新增 `[features] webgpu = []`）
 - **关键 API**：
