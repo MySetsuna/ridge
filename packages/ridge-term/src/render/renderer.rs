@@ -591,4 +591,121 @@ mod tests {
         let rects = selection_to_rects(Some(range(3, 5, 3, 5)), 80, 24);
         assert!(rects.is_empty());
     }
+
+    // ─── cursor_eq ────────────────────────────────────────────────────
+    use super::cursor_eq;
+    use crate::render::backend::{CursorDraw, CursorStyle};
+
+    fn cursor(row: usize, col: usize, style: CursorStyle) -> CursorDraw {
+        CursorDraw {
+            row,
+            col,
+            style,
+            // The ch / ch_attr / width fields are intentionally NOT
+            // compared by cursor_eq — they're carried inline so the
+            // backend can paint the glyph on top of the cursor block,
+            // but a cell content change is already caught by the
+            // per-row dirty hash. Filling them with arbitrary values
+            // here proves cursor_eq ignores them.
+            ch: ' ',
+            ch_attr: crate::term::attr_table::AttrId::DEFAULT,
+            width: 1,
+        }
+    }
+
+    #[test]
+    fn cursor_eq_both_none() {
+        assert!(cursor_eq(&None, &None));
+    }
+
+    #[test]
+    fn cursor_eq_none_vs_some_false() {
+        assert!(!cursor_eq(&None, &Some(cursor(0, 0, CursorStyle::Block))));
+        assert!(!cursor_eq(&Some(cursor(0, 0, CursorStyle::Block)), &None));
+    }
+
+    #[test]
+    fn cursor_eq_same_position_and_style_true() {
+        let a = cursor(5, 12, CursorStyle::Block);
+        let b = cursor(5, 12, CursorStyle::Block);
+        assert!(cursor_eq(&Some(a), &Some(b)));
+    }
+
+    #[test]
+    fn cursor_eq_ignores_ch_difference() {
+        // ch and ch_attr differ but row/col/style match — equal.
+        // Production-correct: cell content changes already dirty the
+        // row via the hash, so the cursor doesn't need to also re-mark.
+        let mut a = cursor(3, 7, CursorStyle::Block);
+        let b = cursor(3, 7, CursorStyle::Block);
+        a.ch = 'A';
+        assert!(cursor_eq(&Some(a), &Some(b)));
+    }
+
+    #[test]
+    fn cursor_eq_different_row_false() {
+        let a = cursor(2, 5, CursorStyle::Block);
+        let b = cursor(3, 5, CursorStyle::Block);
+        assert!(!cursor_eq(&Some(a), &Some(b)));
+    }
+
+    #[test]
+    fn cursor_eq_different_col_false() {
+        let a = cursor(2, 5, CursorStyle::Block);
+        let b = cursor(2, 6, CursorStyle::Block);
+        assert!(!cursor_eq(&Some(a), &Some(b)));
+    }
+
+    #[test]
+    fn cursor_eq_different_style_false() {
+        let a = cursor(2, 5, CursorStyle::Block);
+        let b = cursor(2, 5, CursorStyle::Bar);
+        assert!(!cursor_eq(&Some(a), &Some(b)));
+    }
+
+    // ─── selection_eq ─────────────────────────────────────────────────
+    use super::selection_eq;
+
+    #[test]
+    fn selection_eq_both_none() {
+        assert!(selection_eq(None, None));
+    }
+
+    #[test]
+    fn selection_eq_none_vs_some_false() {
+        let r = range(1, 2, 3, 4);
+        assert!(!selection_eq(None, Some(r)));
+        assert!(!selection_eq(Some(r), None));
+    }
+
+    #[test]
+    fn selection_eq_identical_true() {
+        let a = range(1, 2, 3, 4);
+        let b = range(1, 2, 3, 4);
+        assert!(selection_eq(Some(a), Some(b)));
+    }
+
+    #[test]
+    fn selection_eq_reversed_ranges_normalize_to_equal() {
+        // Drag-forward and drag-backward over the same span produce
+        // ranges with swapped start/end. Renderer must treat them as
+        // equal so it doesn't redraw on a no-op direction flip.
+        let a = range(1, 2, 3, 4);
+        let b = range(3, 4, 1, 2);
+        assert!(selection_eq(Some(a), Some(b)));
+    }
+
+    #[test]
+    fn selection_eq_different_start_false() {
+        let a = range(1, 2, 3, 4);
+        let b = range(1, 3, 3, 4);
+        assert!(!selection_eq(Some(a), Some(b)));
+    }
+
+    #[test]
+    fn selection_eq_different_end_false() {
+        let a = range(1, 2, 3, 4);
+        let b = range(1, 2, 3, 5);
+        assert!(!selection_eq(Some(a), Some(b)));
+    }
 }
