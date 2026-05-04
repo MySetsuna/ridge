@@ -43,6 +43,7 @@ use crate::render::backend::{
 };
 use crate::term::attr_table::AttrTable;
 use super::glyph_atlas::GlyphAtlas;
+use super::glyph_rasterizer::GlyphRasterizer;
 use web_sys::HtmlCanvasElement;
 
 /// Convert an `[u8; 4]` RGBA color into a wgpu linear-color triple.
@@ -104,6 +105,10 @@ pub struct WebGpuBackend {
     /// across frames — only the buffer + texture contents change, not
     /// the binding shape.
     bind_group: wgpu::BindGroup,
+    /// OffscreenCanvas-based glyph rasterizer. Sized to match
+    /// (`ATLAS_SLOT_W`, `ATLAS_SLOT_H`) so its output bitmap fits
+    /// exactly into one atlas-texture layer with no clipping.
+    rasterizer: GlyphRasterizer,
     atlas: GlyphAtlas,
     metrics: FrameMetrics,
     theme: Theme,
@@ -415,6 +420,11 @@ impl WebGpuBackend {
             ],
         });
 
+        // OffscreenCanvas-based rasterizer sized to match the atlas
+        // slot exactly so RasterizedGlyph.rgba can be written into a
+        // texture layer via queue.write_texture without cropping.
+        let rasterizer = GlyphRasterizer::new(ATLAS_SLOT_W as u16, ATLAS_SLOT_H as u16)?;
+
         Ok(Self {
             surface,
             device,
@@ -430,6 +440,7 @@ impl WebGpuBackend {
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             bind_group,
+            rasterizer,
             // GlyphAtlas capacity must equal ATLAS_LAYERS so atlas
             // eviction matches GPU layer reuse exactly.
             atlas: GlyphAtlas::new(ATLAS_LAYERS as usize),
