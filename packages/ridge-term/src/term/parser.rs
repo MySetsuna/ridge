@@ -667,7 +667,41 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
             1  => attrs.flags.insert(Flags::BOLD),
             2  => attrs.flags.insert(Flags::DIM),
             3  => attrs.flags.insert(Flags::ITALIC),
-            4  => attrs.flags.insert(Flags::UNDERLINE),
+            4  => {
+                // Extended underline syntax (kitty / iTerm2 / wezterm):
+                //   CSI 4 m       → single underline ON      (no sub)
+                //   CSI 4:0 m     → underline OFF
+                //   CSI 4:1 m     → single underline ON
+                //   CSI 4:2 m     → double underline ON
+                //   CSI 4:3 m     → curly underline ON  (degrade to single — no curly renderer yet)
+                //   CSI 4:4 m     → dotted underline ON (degrade to single)
+                //   CSI 4:5 m     → dashed underline ON (degrade to single)
+                //
+                // Without the sub-parameter check, `CSI 4:0 m` (used by
+                // modern CLIs — including Claude Code — to release a
+                // hyperlink underline cleanly) routed into the bare-`4`
+                // arm and turned underline ON instead of OFF. The user's
+                // §1.18 report ("all output gets unexpected underline")
+                // was this exact bug.
+                let style = sub.get(1).copied().unwrap_or(1);
+                match style {
+                    0 => {
+                        attrs.flags.remove(Flags::UNDERLINE);
+                        attrs.flags.remove(Flags::DBL_UNDERLINE);
+                    }
+                    2 => {
+                        attrs.flags.insert(Flags::DBL_UNDERLINE);
+                        attrs.flags.remove(Flags::UNDERLINE);
+                    }
+                    _ => {
+                        // 1 / 3 / 4 / 5 / unknown — single underline.
+                        // Degrades curly/dotted/dashed to single until
+                        // the renderer learns those styles.
+                        attrs.flags.insert(Flags::UNDERLINE);
+                        attrs.flags.remove(Flags::DBL_UNDERLINE);
+                    }
+                }
+            }
             5  => attrs.flags.insert(Flags::BLINK),
             7  => attrs.flags.insert(Flags::INVERSE),
             8  => attrs.flags.insert(Flags::HIDDEN),

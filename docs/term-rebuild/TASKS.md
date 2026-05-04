@@ -195,7 +195,7 @@
 - **测试**：`cargo check --lib` 0 错误 0 警告。浏览器实跑验证留给 §7.2。
 - **关联**：fs_watch.rs 已经 SEGMENT_BLACKLIST 过滤 `.git/`、`node_modules/`、`target/` 等，不会经 fs-changed 路径误触发。
 
-### 1.18 [HIGH] 终端运行 Claude Code 出现非预期下划线 + 字符刷新错位 / 残留 ⏳ 调研
+### 1.18 [HIGH] 终端运行 Claude Code 出现非预期下划线 + 字符刷新错位 / 残留 ⏳ 部分修复（下划线 ✅ 2026-05-04 / 错位 + 残留 待查）
 
 - **背景**：用户报告「终端中运行 claude code，所有输出出现非预期的下划线，字符刷新区也出现一定的错位和多余、残留字符显示，深入而全面的调研修复方法，调查当前行业最佳实现是怎么做的」。
 - **症状拆解**：
@@ -229,6 +229,27 @@
   4. 如果是 partial-redraw 残留 → 在 `tick()` 加 alt-screen-switched / mode-switched / scrollback-changed 强制 `invalidate_all` guards。
 - **判定**：本条不能 1-loop 修完，先建 task 收集线索；下一两个 loop 迭代深入实现。
 - **关联**：与 §1.15 padding / §1.17 input-loss 是不同 root cause（这俩已修），但症状叠在一起会让用户感到「split + claude code 后整个终端都坏了」。
+
+#### 1.18.a [HIGH] SGR 扩展下划线 (CSI 4:N m) 子参数解析 ✅ 2026-05-04
+
+- **文件**：`packages/ridge-term/src/term/parser.rs::apply_sgr` + `packages/ridge-term/src/term/terminal.rs::tests`
+- **根因（命中）**：`apply_sgr` 用 `match sub.first().copied()` 判断 SGR code，然后 `4 => attrs.flags.insert(Flags::UNDERLINE)` —— **完全忽略 sub-parameter**。VTE crate 把 `CSI 4:0 m` 解析为 `&[4, 0]` 单元素 sub-array：`sub.first() == Some(4)` 命中下划线-ON 分支，**`CSI 4:0 m`（关闭下划线）被解释为 `CSI 4 m`（开启下划线）**。Claude Code 用 `CSI 4:0 m` 在 OSC 8 hyperlink 关闭后释放下划线状态——结果状态卡死，所有后续输出被下划线污染。
+- **修法（已实施）**：`4` 分支改为读 `sub.get(1).copied().unwrap_or(1)`：
+  - `0` → 关闭 UNDERLINE + DBL_UNDERLINE。
+  - `2` → 开启 DBL_UNDERLINE，关 UNDERLINE。
+  - `1 / 3 / 4 / 5 / 其他` → 开启 UNDERLINE，关 DBL_UNDERLINE（curly/dotted/dashed 暂时降级为 single underline，等 renderer 支持后再分流）。
+  - 不带 sub（裸 `CSI 4 m`） → 默认 1，单下划线 ON，与之前行为一致。
+- **测试**：5 条新 unit test 覆盖 `CSI 4 m` baseline、`CSI 4:0 m` 关闭、`CSI 4:2 m` double、`CSI 4:3 m` curly degrade、`CSI 24 m` no-op 后的状态一致性。`cargo test --lib` **125 passed**（原 120 + 5）。
+- **行业对照**：xterm 的 `parsing.c::doSGR` (line 5400+) 同样按 sub[1] 路由；wezterm 的 `wezterm-escape-parser/src/csi.rs` 中 `Sgr::Underline` 直接用 enum；alacritty 的 `vt100.rs::Csi::SubParam` 解析时如果遇到 `4:0` 显式置 `Underline::None`。Ridge 现在与这三家行业实现对齐。
+
+#### 1.18.b [HIGH] Claude Code 字符刷新错位 + 残留字符 ⏳ 待 1.18.a 验证后定位
+
+- **现状**：1.18.a 修好 SGR 之后，部分用户报告的「错位 / 残留」症状可能本就是下划线导致的视觉错觉（污染了背景区分度），需要浏览器实跑验证。
+- **若 1.18.a 修后症状仍在**，下一步排查顺序：
+  1. **alt-screen 切换 invalidate**：`lib.rs::JsTerminal::resize` 已调 `selection.clear()` 但**没有触发 renderer.invalidate_all**；切 `?1049h/l` 时同理。检查 `term/parser.rs` 模式切换路径是否要给 renderer 发信号。
+  2. **per-row hash 缺信息**：`render/renderer.rs::tick` 用 `(ch, attr_id, width)` 哈希。如果 attrs_table 不变但 hyperlink span 变了，hash 不变但视觉应该变。需要把 `row.hyperlinks` 也并入 hash。
+  3. **partial redraw bg 清理**：canvas2d::draw_row 已对每个 cell `set_fill_style + fill_rect`，理论上能清旧像素。但 `fillText` 抗锯齿可能溢出 cell 边界（注释 line 22-26 说 two-pass 已经 mitigate）。再确认。
+  4. **CSI H / VPA / HPA 1-based 解析**：`parser.rs` 的绝对定位是否正确？写 fixture `b"\x1b[3;5H*\x1b[2;1HX"` 验证。
 
 ### 1.17 [HIGH] 拆分窗口后原终端无法输入（RidgePane unpark 不重新注册 dataHandler）✅ 2026-05-04
 
