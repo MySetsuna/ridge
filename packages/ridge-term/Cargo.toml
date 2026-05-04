@@ -12,13 +12,13 @@ crate-type = ["cdylib", "rlib"]
 # Default: ship Canvas2D backend only. Smallest wasm bundle, broadest
 # compatibility, no GPU adapter request to fail.
 default = []
-# Round 3 §4.1 opt-in: include the WebGpuBackend module. Today the
-# struct is a Err-on-construct stub (TASKS §4.1) so flipping this on
-# only enlarges the trait-surface check + adds the GlyphAtlas LRU.
-# Future iterations populate this with the real wgpu dep and adapter
-# wiring; until then this exists so consumers can choose to opt in
-# without a breaking change.
-webgpu = []
+# Round 3 §4.1 opt-in: include the WebGpuBackend module + pull wgpu
+# and wasm-bindgen-futures (for async adapter/device acquisition).
+# wgpu's `webgpu` feature targets the browser's WebGPU API only —
+# no native Vulkan/Metal/DX12 backends, keeping the wasm bundle
+# minimal. wasm-bindgen-futures bridges JS Promises to Rust .await
+# inside the WebGpuBackend::new constructor.
+webgpu = ["dep:wgpu", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 # VT/ANSI escape sequence parser. Same crate Alacritty uses; covers the full
@@ -45,6 +45,17 @@ web-sys = { version = "0.3", features = [
     "TextMetrics",
     "CssStyleDeclaration",
 ] }
+
+# Round 3 §4.1 — optional, only pulled when `--features webgpu` is set.
+# wgpu's `webgpu` feature is the browser-WebGPU backend (no native
+# Vulkan/Metal/DX12), keeping the wasm bundle as small as possible
+# for a GPU-rendering crate. `default-features = false` prunes
+# native-OS bits that wouldn't link in wasm32 anyway.
+wgpu = { version = "23", default-features = false, features = ["webgpu"], optional = true }
+# wasm-bindgen-futures lets WebGpuBackend::new use `.await` on the
+# adapter / device request promises that wgpu returns through
+# wasm-bindgen.
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 # Native tests don't need wasm.

@@ -395,7 +395,7 @@
 
 ## 4. Round 3 — WebGPU 后端 + 字形 atlas
 
-### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ 2026-05-04 / wgpu 接线 ⏳
+### 4.1 `WebGpuBackend` 骨架 ⏳ scaffold ✅ + feature flag ✅ + wgpu dep ✅ 2026-05-04 / `new()` body 接线 ⏳
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs`（新增），`packages/ridge-term/src/render/mod.rs`（新增 `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))] pub mod webgpu;`），`packages/ridge-term/Cargo.toml`（新增 `[features] webgpu = []`）
 - **关键 API**：
@@ -403,7 +403,9 @@
   - `render(rows: &[RowDraw], cursor: CursorDraw, frame: FrameMetrics)`
   - `apply_theme(theme)`
 - **状态**：`WebGpuBackend` struct + `impl RenderBackend` 全部 9 个方法签名已就位，trait 契约对齐 `backend.rs`。`new()` 当前返回 `Err("WebGpuBackend not yet implemented — see TASKS §4.1")`，9 个 trait 方法体一律 `unreachable!()`——只有真实接线时才会被构造，scaffold 阶段不可能命中。
-- **Feature flag**：`#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]` 双重门禁。默认构建（`pnpm tauri build` / `wasm-pack build` / `cargo check --target wasm32-unknown-unknown`）**完全不编译** webgpu.rs，wasm 包大小不变。`cargo build --features webgpu` 编译 trait surface 检查；`pnpm tauri build --features webgpu`（待 build.mjs 支持）将来用来打实际 GPU 包。两种模式下 host `cargo test --lib` 维持 134 passed 无变化。
+- **Feature flag**：`#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]` 双重门禁。默认构建（`pnpm tauri build` / `wasm-pack build` / `cargo check --target wasm32-unknown-unknown`）**完全不编译** webgpu.rs，wasm 包大小不变。`cargo build --features webgpu` 编译 trait surface 检查；`pnpm tauri build --features webgpu`（待 build.mjs 支持）将来用来打实际 GPU 包。两种模式下 host `cargo test --lib` 维持 234 passed 无变化。
+- **wgpu dep ✅ 2026-05-04**：Cargo.toml 加 `wgpu = { version = "23", default-features = false, features = ["webgpu"], optional = true }` + `wasm-bindgen-futures = { version = "0.4", optional = true }`。`webgpu` cargo feature 改为 `["dep:wgpu", "dep:wasm-bindgen-futures"]`。wgpu 自身 `webgpu` feature 是浏览器 WebGPU 后端，不拉 native Vulkan/Metal/DX12，wasm 包损耗最小。`cargo check --target wasm32-unknown-unknown -p ridge-term --features webgpu` 0 错误（首次拉取 wgpu 23.0.1 + wgpu-core/hal/types + naga + 周边 = 18s 编译完成）。
+- **下一步**：`WebGpuBackend::new(canvas: HtmlCanvasElement) -> async Result<Self, String>`，`async fn` 拿 wasm-bindgen-futures 跑 `instance.request_adapter().await` + `adapter.request_device().await`；adapter miss / device 创建失败 → 返回 Err 让 caller fallback Canvas2D。`new()` 拿到 device + queue + surface 后 configure swap chain。本步骤不接 glyph，仅做「能 reach canvas」的 baseline。glyph 路径走 §4.1.b。
 - **下一步（接线）**：
   1. `Cargo.toml` 加 `wgpu = "23.0"` 在 `[target.'cfg(target_arch = "wasm32")'.dependencies]`，`web-sys` features 加 `"GpuCanvasContext"`。
   2. `WebGpuBackend::new(canvas: HtmlCanvasElement)` request adapter + device → create surface → configure swap chain；adapter miss 时 fallback Canvas2D。
