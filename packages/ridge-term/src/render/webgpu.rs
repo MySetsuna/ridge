@@ -60,11 +60,11 @@ fn rgba_to_wgpu_color(rgba: [u8; 4]) -> wgpu::Color {
     }
 }
 
-/// WebGPU backend — round 3 §4.1.c. Holds the device, queue, surface,
-/// the current swap-chain configuration, and the cell render pipeline
-/// (shader module + bind-group layout + pipeline state). Texture-array
-/// atlas + per-frame instance buffer + frame uniform buffer + bind-
-/// group instances land in §4.1.c body next iteration.
+/// WebGPU backend — round 3 §4.1.c body. Holds the device, queue,
+/// surface, the cell render pipeline + bind-group layout, and the
+/// allocated GPU resources (texture-array atlas, sampler, frame
+/// uniform buffer, per-instance buffer, bind group). draw_row body
+/// remains a no-op for this slice — that wiring lands in §4.1.c.next.
 pub struct WebGpuBackend {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -82,10 +82,46 @@ pub struct WebGpuBackend {
     /// cells (bg-only + glyph-bearing + bold/italic) — style differences
     /// are font-CSS at rasterization time, not pipeline switches.
     cell_pipeline: wgpu::RenderPipeline,
+    /// Glyph atlas texture array. Each layer is one slot for a single
+    /// rasterized glyph (white-on-transparent RGBA8). Layer count is
+    /// the GlyphAtlas LRU capacity — eviction frees a layer for reuse.
+    atlas_texture: wgpu::Texture,
+    /// View over `atlas_texture` as a 2D array (matches the WGSL
+    /// `texture_2d_array<f32>` binding).
+    atlas_view: wgpu::TextureView,
+    /// Linear-filtering sampler for atlas reads. Shared across all
+    /// pane backends since terminal cell sampling is uniform.
+    sampler: wgpu::Sampler,
+    /// 16-byte uniform buffer holding `FrameUniform { viewport, _pad }`.
+    /// queue.write_buffer'd at the start of every frame.
+    frame_uniform: wgpu::Buffer,
+    /// Per-cell instance buffer. Initial capacity = `INITIAL_INSTANCE_CAPACITY`
+    /// cells; future iterations grow on demand via `device.create_buffer`
+    /// when a frame's cell count exceeds capacity.
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: u32,
+    /// Bind group instance against `cell_bind_group_layout`. Reusable
+    /// across frames — only the buffer + texture contents change, not
+    /// the binding shape.
+    bind_group: wgpu::BindGroup,
     atlas: GlyphAtlas,
     metrics: FrameMetrics,
     theme: Theme,
 }
+
+/// Slot dimensions in device pixels — generous square covering most
+/// cell sizes × DPR. Future iteration can make this configurable per
+/// font size; for the §4.1.c slice a fixed slot is fine.
+const ATLAS_SLOT_W: u32 = 32;
+const ATLAS_SLOT_H: u32 = 32;
+/// Number of texture-array layers = GlyphAtlas LRU capacity.
+/// `Limits::downlevel_defaults().max_texture_array_layers == 256` so
+/// this is the safe portable baseline.
+const ATLAS_LAYERS: u32 = 256;
+/// Initial per-frame cell instance buffer capacity. Realistic terminal
+/// sessions have a few thousand cells; 1024 covers small panes and the
+/// buffer grows on demand for larger ones.
+const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
 
 /// CPU-side instance struct matching the WGSL `InstanceIn` layout.
 /// `#[repr(C)]` makes the field order load-bearing — must mirror the
@@ -309,6 +345,76 @@ impl WebGpuBackend {
             },
         );
 
+        // ─── GPU resource allocation ─────────────────────────────────
+        // Glyph atlas: D2 texture array, ATLAS_LAYERS layers, RGBA8.
+        // Format must be sRGB-aware so the sampled coverage carries
+        // through linearly without extra gamma fixup in the shader.
+        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ridge-atlas-texture"),
+            size: wgpu::Extent3d {
+                width: ATLAS_SLOT_W,
+                height: ATLAS_SLOT_H,
+                depth_or_array_layers: ATLAS_LAYERS,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("ridge-atlas-view"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ridge-atlas-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // FrameUniform { viewport: vec2<f32>, _pad: vec2<f32> } — 16 bytes.
+        let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ridge-frame-uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Per-instance vertex buffer.
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ridge-instance-buffer"),
+            size: (INITIAL_INSTANCE_CAPACITY as u64) * CELL_INSTANCE_STRIDE,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ridge-cell-bg"),
+            layout: &cell_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
         Ok(Self {
             surface,
             device,
@@ -317,7 +423,16 @@ impl WebGpuBackend {
             cell_shader,
             cell_bind_group_layout,
             cell_pipeline,
-            atlas: GlyphAtlas::new(1024),
+            atlas_texture,
+            atlas_view,
+            sampler,
+            frame_uniform,
+            instance_buffer,
+            instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            bind_group,
+            // GlyphAtlas capacity must equal ATLAS_LAYERS so atlas
+            // eviction matches GPU layer reuse exactly.
+            atlas: GlyphAtlas::new(ATLAS_LAYERS as usize),
             metrics: FrameMetrics {
                 cell_w: 8.0,
                 cell_h: 16.0,
