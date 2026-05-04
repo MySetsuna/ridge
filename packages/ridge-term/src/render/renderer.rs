@@ -527,4 +527,68 @@ mod tests {
         });
         assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
     }
+
+    // ─── selection_to_rects ───────────────────────────────────────────
+    use super::selection_to_rects;
+    use crate::selection::{Pos, Range};
+
+    fn range(sr: usize, sc: usize, er: usize, ec: usize) -> Range {
+        Range { start: Pos { row: sr, col: sc }, end: Pos { row: er, col: ec } }
+    }
+
+    #[test]
+    fn selection_none_returns_empty() {
+        let rects = selection_to_rects(None, 80, 24);
+        assert!(rects.is_empty());
+    }
+
+    #[test]
+    fn selection_single_row_one_rect_clipped_to_range() {
+        // (5, 3) → (5, 10) in an 80×24 viewport.
+        let rects = selection_to_rects(Some(range(5, 3, 5, 10)), 80, 24);
+        assert_eq!(rects, vec![(5, 3, 10)]);
+    }
+
+    #[test]
+    fn selection_multi_row_first_and_last_clipped_middle_full_width() {
+        // (2, 5) → (4, 7) over 80 cols × 24 rows. Row 2 starts at col 5,
+        // row 3 spans full width, row 4 ends at col 7.
+        let rects = selection_to_rects(Some(range(2, 5, 4, 7)), 80, 24);
+        assert_eq!(rects, vec![
+            (2, 5, 80),
+            (3, 0, 80),
+            (4, 0, 7),
+        ]);
+    }
+
+    #[test]
+    fn selection_normalizes_reversed_range() {
+        // Range with start > end (user dragged backwards) — must
+        // normalize before slicing.
+        let rects = selection_to_rects(Some(range(5, 10, 5, 3)), 80, 24);
+        assert_eq!(rects, vec![(5, 3, 10)]);
+    }
+
+    #[test]
+    fn selection_clamps_end_row_past_viewport() {
+        // End row 50 in a 24-row viewport → clamp to row 23.
+        let rects = selection_to_rects(Some(range(20, 0, 50, 5)), 80, 24);
+        // Rows 20, 21, 22, 23 — last clamped.
+        assert_eq!(rects.len(), 4);
+        assert_eq!(rects[0], (20, 0, 80));
+        assert_eq!(rects[3].0, 23);
+    }
+
+    #[test]
+    fn selection_returns_empty_when_start_row_past_viewport() {
+        let rects = selection_to_rects(Some(range(50, 0, 60, 0)), 80, 24);
+        assert!(rects.is_empty());
+    }
+
+    #[test]
+    fn selection_skips_empty_ranges_within_row() {
+        // Single row with start col == end col → empty rect, skipped.
+        let rects = selection_to_rects(Some(range(3, 5, 3, 5)), 80, 24);
+        assert!(rects.is_empty());
+    }
 }
