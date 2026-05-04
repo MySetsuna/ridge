@@ -203,4 +203,64 @@ mod tests {
         assert_eq!(returned.cells[0].ch, 'z');
         assert_eq!(s.len(), 0);
     }
+
+    #[test]
+    fn push_capacity_zero_returns_input() {
+        // Symmetric to push_front_capacity_zero_returns_input.
+        let mut s = Scrollback::new(0);
+        let returned = s.push(row_marked('z')).unwrap();
+        assert_eq!(returned.cells[0].ch, 'z');
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn get_out_of_bounds_returns_none() {
+        let mut s = Scrollback::new(3);
+        s.push(row_marked('a'));
+        s.push(row_marked('b'));
+        // len == 2, so idx 0 and 1 are valid; 2, 3, MAX are not.
+        assert!(s.get(2).is_none());
+        assert!(s.get(3).is_none());
+        assert!(s.get(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn is_empty_tracks_state() {
+        let mut s = Scrollback::new(3);
+        assert!(s.is_empty());
+        s.push(row_marked('a'));
+        assert!(!s.is_empty());
+        s.clear();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn clear_drops_all_rows() {
+        let mut s = Scrollback::new(3);
+        s.push(row_marked('a'));
+        s.push(row_marked('b'));
+        s.push(row_marked('c'));
+        assert_eq!(s.len(), 3);
+        s.clear();
+        assert_eq!(s.len(), 0);
+        assert!(s.get(0).is_none());
+        // After clear, can still push fresh content.
+        s.push(row_marked('x'));
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.get(0).unwrap().cells[0].ch, 'x');
+    }
+
+    #[test]
+    fn push_wraps_head_past_capacity_x_2() {
+        // Push 5 rows into capacity 2 — head wraps multiple times.
+        // Verifies the modulo head-pointer math doesn't drift.
+        let mut s = Scrollback::new(2);
+        for ch in ['a', 'b', 'c', 'd', 'e'] {
+            s.push(row_marked(ch));
+        }
+        assert_eq!(s.len(), 2);
+        // Last two: 'd', 'e'.
+        assert_eq!(s.get(0).unwrap().cells[0].ch, 'd');
+        assert_eq!(s.get(1).unwrap().cells[0].ch, 'e');
+    }
 }
