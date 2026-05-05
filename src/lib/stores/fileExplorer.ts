@@ -164,27 +164,24 @@ function createFileExplorerStore() {
 						...paneTitles,
 					};
 					if (existing) {
-						// 检测是否有新 pane 加入到这个既有列（说明可能是重进/切回到老目录）。
-						// 重进老目录时，缓存的 tree 多半已过时 —— 但直接 `tree = null` 会导致
-						// 视图先空屏再填充，形成"打开文件夹时的闪烁"。改为：保留旧树原地显示，
-						// 在 Explorer 层异步调用 loadTree 做后台刷新，数据就绪后再原子替换。
+						// 用户策略（2026-05-05）：「如果终端的 cwd 切换到已在资源管理器中
+						// 的文件树，那么只进行终端的对文件树 label 的切换，而不进行文件树
+						// 的刷新」。所以新 pane 加入既有 cached column 时，不再触发
+						// needsRefresh —— 列的 paneIds 更新即可，tree 保持原状，0 IPC、
+						// 0 重新加载。文件系统真有变化的话由 fileWatcherSync 的 backend
+						// watcher 路径（refreshColumnsCovering）兜底；用户也可以手动点
+						// 刷新按钮。
 						//
-						// `hasNewJoiner` 触发 needsRefresh，无论 tree 是否已缓存：
-						// 新 pane 加入往往意味着用户切回老目录（FS 可能被其他 pane 改动），
-						// 即使有缓存也应在后台重扫一次保新鲜。Explorer.svelte:101 用
-						// `(!col.tree || col.needsRefresh)` 触发 loadTree，缓存命中走
-						// 「先显示旧 → 后台 fetch → 数据就绪原子替换」，零空屏闪烁。
-						// （TASKS §7.3：commit 7f45cd5 加 `&& existing.tree === null` 约束
-						// 是 regression——上层 Chinese 注释 / Explorer.svelte:99 注释 /
-						// E6 测试三处都期望 cached-tree 场景也 refresh。本次回退。）
-						const prevSet = new Set(existing.paneIds);
-						const hasNewJoiner = paneIds.some((id) => !prevSet.has(id));
+						// 历史：早先策略是「保留旧树 + 后台静默刷新」（hasNewJoiner →
+						// needsRefresh=true → loadTree 静默 refetch）。但用户反馈即使
+						// 后台刷新也会被感知到「闪烁」，且 fs 真改动有 watcher 兜底。
+						// 故放弃 auto-refresh-on-join，watcher-driven 成为唯一来源。
 						newColumns.push({
 							...existing,
 							paneIds,
 							paneTitles: mergedTitles,
 							tree: existing.tree,
-							needsRefresh: existing.needsRefresh || hasNewJoiner,
+							needsRefresh: existing.needsRefresh,
 						});
 					} else {
 						// New CWD: create column, tree: null triggers load.
@@ -216,6 +213,46 @@ function createFileExplorerStore() {
 					columnOrder,
 					activeColumnId: state.activeColumnId,
 				};
+			});
+		},
+
+		/**
+		 * Update pane title display in existing columns WITHOUT re-syncing
+		 * cwds or column membership. Identity-preserving: returns the same
+		 * state reference when no title actually changed.
+		 *
+		 * §1.21: shells re-emit OSC 0/1/2 on every prompt redraw (Ctrl+C,
+		 * Enter, command lifecycle); titles can legitimately change without
+		 * any cwd movement. If Explorer's cwd-sync $effect depended on
+		 * terminalTitles, every Enter would call syncWithPaneCwds and
+		 * reallocate the columns array even when only titles changed —
+		 * causing FileTree re-eval and visible flicker. Title sync runs in
+		 * its own $effect via this method.
+		 */
+		updatePaneTitles(
+			workspaceId: string,
+			paneTitles: Record<string, string>,
+		): void {
+			update((state) => {
+				let columnsChanged = false;
+				const nextColumns = state.columns.map((col) => {
+					if (col.workspaceId !== workspaceId) return col;
+					let titlesChanged = false;
+					const next: Record<string, string> = { ...col.paneTitles };
+					for (const pid of col.paneIds) {
+						const incoming = paneTitles[pid];
+						if (incoming === undefined) continue;
+						if (next[pid] !== incoming) {
+							next[pid] = incoming;
+							titlesChanged = true;
+						}
+					}
+					if (!titlesChanged) return col;
+					columnsChanged = true;
+					return { ...col, paneTitles: next };
+				});
+				if (!columnsChanged) return state;
+				return { ...state, columns: nextColumns };
 			});
 		},
 

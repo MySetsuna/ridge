@@ -152,15 +152,43 @@ pub struct WebGpuBackend {
     theme: Theme,
 }
 
-/// Slot dimensions in device pixels — generous square covering most
-/// cell sizes × DPR. Future iteration can make this configurable per
-/// font size; for the §4.1.c slice a fixed slot is fine.
-const ATLAS_SLOT_W: u32 = 32;
-const ATLAS_SLOT_H: u32 = 32;
-/// Number of texture-array layers = GlyphAtlas LRU capacity.
+/// Slot dimensions in device pixels — sized to cover the realistic
+/// cell-size range we ship: font 12–18 CSS px × DPR up to 2.5, plus
+/// CJK wide cells (cell.width=2) which require roughly 2× the regular
+/// advance.
+///
+/// Worst-case width: 18 CSS × 2.5 DPR × 2 (wide CJK) ≈ 90 device px →
+/// 64 covers up to font ~18 + DPR 2 + CJK or font ~24 + DPR 2 + ASCII.
+/// Worst-case height: 18 CSS × 2.5 DPR × 1.4 line-height ≈ 63 device
+/// px → 96 leaves headroom up to ~24 CSS px at DPR 2.5.
+///
+/// Was 32×32; on HiDPI displays at the default 15 CSS px font that
+/// produced ~36 device-px line-height which was clamped to 32, cropping
+/// glyph descenders ('g', 'p', 'y'). Memory cost: was 1 MiB per atlas
+/// (32×32×256×4); now 6 MiB. Per-pane today; collapses to one shared
+/// atlas in §4.3.
+///
+/// Future improvement: `set_font_config` could re-allocate the atlas
+/// texture + rasterizer's OffscreenCanvas based on `font_size × max_dpr
+/// × line_height_factor` so we don't over-allocate at the small-font
+/// end and don't crop at the large-font end. Today the constants are a
+/// pragmatic mid-point.
+const ATLAS_SLOT_W: u32 = 64;
+const ATLAS_SLOT_H: u32 = 96;
+/// Total texture-array layer count.
 /// `Limits::downlevel_defaults().max_texture_array_layers == 256` so
 /// this is the safe portable baseline.
 const ATLAS_LAYERS: u32 = 256;
+/// Layer 0 is reserved as a permanent transparent fallback (§4.5.d).
+/// Cells with no atlas hit (rasterizer failure / ascii-NUL / control char)
+/// push CellInstance with `atlas_layer = 0` + `atlas_uv = (0,0,0,0)` so the
+/// fragment samples a zero-coverage texel and `mix(bg, fg, 0) == bg`.
+/// Without this reservation the first rasterized glyph would land on
+/// layer 0 and the fallback would sample its top-left pixel — for emoji
+/// or filled-cell glyphs that's a visible color leak.
+const ATLAS_RESERVED_LAYERS: u32 = 1;
+/// Glyph-usable layers (atlas LRU capacity).
+const ATLAS_USABLE_LAYERS: u32 = ATLAS_LAYERS - ATLAS_RESERVED_LAYERS;
 /// Initial per-frame cell instance buffer capacity. Realistic terminal
 /// sessions have a few thousand cells; 1024 covers small panes and the
 /// buffer grows on demand for larger ones.
@@ -171,11 +199,12 @@ const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
 /// `attributes: &[VertexAttribute { offset, ... }]` array passed to
 /// `RenderPipelineDescriptor::vertex.buffers`.
 ///
-/// Future iteration will populate a Vec<CellInstance> per frame from
-/// the renderer's dirty rows, then `queue.write_buffer` it before the
-/// indirect draw.
+/// Pod + Zeroable allow `bytemuck::cast_slice(&[CellInstance])` to
+/// return `&[u8]` without unsafe transmutes (§4.5.c). Layout: 6 fields,
+/// all f32 / u32 / [f32; N] arrays, 4-byte aligned, 68 bytes total — no
+/// implicit padding so `Pod` is sound.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[allow(dead_code)] // Populated by §4.1.c draw_row body in a future iteration.
 struct CellInstance {
     cell_xy: [f32; 2],     // 0..8
@@ -417,8 +446,16 @@ impl WebGpuBackend {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            // Nearest filtering preserves the browser's already-AA'd glyph
+            // alpha exactly (the rasterizer's `fill_text` produces hinted +
+            // anti-aliased coverage). Linear sampling on top blurs box-
+            // drawing characters and produces a half-transparent edge at
+            // the UV-cropped bbox boundary because it interpolates with
+            // the cleared (transparent) area beyond. Nearest avoids both
+            // and is what most terminal emulators use for cell rendering.
+            // (User report 2026-05-05: 字符画细线 / 列间残留缝隙.)
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -480,12 +517,14 @@ impl WebGpuBackend {
             bind_group,
             rasterizer,
             pending_instances: Vec::with_capacity(INITIAL_INSTANCE_CAPACITY as usize),
-            next_free_layer: 0,
+            // Layer 0 reserved (§4.5.d) — start handing out from 1.
+            next_free_layer: ATLAS_RESERVED_LAYERS,
             font_family: String::from("monospace"),
             font_size_px: 15.0,
-            // GlyphAtlas capacity must equal ATLAS_LAYERS so atlas
-            // eviction matches GPU layer reuse exactly.
-            atlas: GlyphAtlas::new(ATLAS_LAYERS as usize),
+            // GlyphAtlas capacity matches the USABLE layer count so the
+            // LRU's eviction trigger fires exactly when GPU slots are
+            // exhausted — never trying to evict the reserved layer 0.
+            atlas: GlyphAtlas::new(ATLAS_USABLE_LAYERS as usize),
             metrics: FrameMetrics {
                 cell_w: 8.0,
                 cell_h: 16.0,
@@ -514,13 +553,26 @@ impl WebGpuBackend {
 impl RenderBackend for WebGpuBackend {
     fn measure_font(
         &self,
-        _font_family: &str,
-        _font_size_px: f32,
+        font_family: &str,
+        font_size_px: f32,
     ) -> Result<(f32, f32), String> {
-        // §4.1.b will return real metrics from the glyph rasterizer.
-        // For the bg-only slice we return a sentinel; consumers will
-        // route font-measurement queries through Canvas2D until then.
-        Err("WebGpuBackend::measure_font not implemented — defer to Canvas2D".to_string())
+        // Delegate to the OffscreenCanvas-backed rasterizer (§4.5.a).
+        // Same `measure_text("M")` + `size * 1.4` heuristic Canvas2dBackend
+        // uses, just on the rasterizer's already-allocated 2D context —
+        // so cellW/cellH agrees across backends bit-for-bit and fitPane
+        // stays backend-agnostic.
+        self.rasterizer.measure(font_family, font_size_px)
+    }
+
+    fn requires_full_frame(&self) -> bool {
+        // `LoadOp::Clear(theme.bg)` in `end_frame` wipes the entire
+        // swap-chain texture every frame, so non-dirty rows from the
+        // previous frame don't survive the clear. The renderer must
+        // re-emit every visible row through `draw_row` each tick —
+        // that's what this hook signals. Canvas2D returns the default
+        // false because its partial-clear (`fill_rect` only on dirty
+        // rows) preserves un-touched pixels.
+        true
     }
 
     fn resize_surface(
@@ -577,6 +629,14 @@ impl RenderBackend for WebGpuBackend {
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
         let theme = self.theme.clone();
+        // Integer-align row top + bottom so adjacent rows share an exact
+        // pixel boundary with no fractional gap or overlap. cell_h can
+        // be fractional when DPR is non-integer (e.g., 1.25, 1.5) and
+        // the resulting fractional-pixel column quads expose thin seams
+        // between adjacent rows / cells in box-drawing characters.
+        let row_top = ((row_idx as f32) * cell_h).floor();
+        let row_bot = (((row_idx + 1) as f32) * cell_h).floor();
+        let row_h_int = (row_bot - row_top).max(1.0);
         // Pre-compute a stable hash for the current font family so
         // every cell of the current frame keys to the same bucket.
         let font_family_hash = {
@@ -597,9 +657,16 @@ impl RenderBackend for WebGpuBackend {
             let (_attrs, fg, bg) = crate::render::backend::resolve_cell_colors(
                 cell, attrs_table, &theme,
             );
-            let cell_w_px = cell_w * cell.width.max(1) as f32;
-            let pixel_x = (col as f32) * cell_w;
-            let pixel_y = (row_idx as f32) * cell_h;
+            // Integer-aligned column boundaries — same scheme as row_top /
+            // row_bot above. Cell width is derived from the integer
+            // boundaries (NOT from `cell_w * cell.width`), which keeps
+            // adjacent cells flush even when `cell_w` is fractional.
+            let cell_span = cell.width.max(1) as usize;
+            let pixel_x = ((col as f32) * cell_w).floor();
+            let pixel_x_right =
+                (((col + cell_span) as f32) * cell_w).floor();
+            let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
+            let pixel_y = row_top;
 
             // Style flags: pack BOLD + ITALIC bits per GlyphKey docstring.
             let mut style_flags: u8 = 0;
@@ -624,9 +691,17 @@ impl RenderBackend for WebGpuBackend {
                 Some(e)
             } else {
                 // Miss. Rasterize first; if that fails we bail to bg-only.
+                // Pass DPR so the rasterizer paints at device-pixel scale
+                // (§7.2 fix: glyphs were rendering at CSS-px size on a
+                // device-px slot, so the cell quad sampled mostly-empty
+                // texture and the user saw tiny / thin text).
+                // Pass the same style_flags used for the GlyphKey so the
+                // browser actually paints BOLD/ITALIC variants (§4.5.b).
                 match self.rasterizer.rasterize(
                     &self.font_family,
                     self.font_size_px,
+                    self.metrics.dpr,
+                    style_flags,
                     cell.ch,
                 ) {
                     Ok(glyph) => {
@@ -648,6 +723,10 @@ impl RenderBackend for WebGpuBackend {
                                 None => 0,
                             }
                         };
+                        // Upload only the bbox region; the rest of the
+                        // slot stays cleared from prior frames (texture
+                        // is allocated zero-filled). This also keeps
+                        // bytes_per_row aligned to glyph.width × 4.
                         self.queue.write_texture(
                             wgpu::ImageCopyTexture {
                                 texture: &self.atlas_texture,
@@ -658,18 +737,30 @@ impl RenderBackend for WebGpuBackend {
                             &glyph.rgba,
                             wgpu::ImageDataLayout {
                                 offset: 0,
-                                bytes_per_row: Some(glyph.width as u32 * 4),
-                                rows_per_image: Some(glyph.height as u32),
+                                // Source data is the full slot (Vec<u8>
+                                // length == slot_w × slot_h × 4); upload
+                                // covers the bbox region. Stride matches
+                                // the source row width = ATLAS_SLOT_W.
+                                bytes_per_row: Some(ATLAS_SLOT_W * 4),
+                                rows_per_image: Some(ATLAS_SLOT_H),
                             },
                             wgpu::Extent3d {
-                                width: glyph.width as u32,
-                                height: glyph.height as u32,
+                                width: ATLAS_SLOT_W,
+                                height: ATLAS_SLOT_H,
                                 depth_or_array_layers: 1,
                             },
                         );
+                        // Crop UV to the actual glyph bounding box. The
+                        // cell quad samples [u0,v0] → [u1,v1]; outside
+                        // this rect the texture is empty (transparent),
+                        // so without the crop the cell over-samples a
+                        // mostly-empty 32×32 slot and stretches the
+                        // glyph into the upper-left corner of the cell.
+                        let u1 = (glyph.width as f32) / (ATLAS_SLOT_W as f32);
+                        let v1 = (glyph.height as f32) / (ATLAS_SLOT_H as f32);
                         let new_entry = GlyphEntry {
                             layer: layer as u16,
-                            uv: [0.0, 0.0, 1.0, 1.0],
+                            uv: [0.0, 0.0, u1, v1],
                             advance: glyph.advance,
                             ascent_offset: glyph.ascent_offset,
                             px_w: glyph.width,
@@ -689,7 +780,9 @@ impl RenderBackend for WebGpuBackend {
 
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
-                cell_size: [cell_w_px, cell_h],
+                // Use integer row height so adjacent rows share an exact
+                // pixel boundary; same for column width (computed above).
+                cell_size: [cell_w_px, row_h_int],
                 atlas_uv,
                 atlas_layer,
                 fg_rgba: rgba_u8_to_f32(fg),
@@ -719,19 +812,25 @@ impl RenderBackend for WebGpuBackend {
 
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
-        let pixel_x = (cursor.col as f32) * cell_w;
-        let pixel_y = (cursor.row as f32) * cell_h;
-        let cell_w_px = cell_w * cursor.width.max(1) as f32;
-        let bar_thickness = 2.0 * self.metrics.dpr;
+        // Integer-aligned cell box (same scheme as draw_row).
+        let pixel_x = ((cursor.col as f32) * cell_w).floor();
+        let cursor_span = cursor.width.max(1) as usize;
+        let pixel_x_right =
+            (((cursor.col + cursor_span) as f32) * cell_w).floor();
+        let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
+        let pixel_y = ((cursor.row as f32) * cell_h).floor();
+        let pixel_y_bot = (((cursor.row + 1) as f32) * cell_h).floor();
+        let cell_h_int = (pixel_y_bot - pixel_y).max(1.0);
+        let bar_thickness = (2.0 * self.metrics.dpr).floor().max(1.0);
 
         // 1) Cursor block (colored rectangle at the appropriate
         //    style-specific size).
         let (block_x, block_y, block_w, block_h) = match cursor.style {
-            CursorStyle::Block => (pixel_x, pixel_y, cell_w_px, cell_h),
-            CursorStyle::Bar => (pixel_x, pixel_y, bar_thickness, cell_h),
+            CursorStyle::Block => (pixel_x, pixel_y, cell_w_px, cell_h_int),
+            CursorStyle::Bar => (pixel_x, pixel_y, bar_thickness, cell_h_int),
             CursorStyle::Underline => (
                 pixel_x,
-                pixel_y + cell_h - bar_thickness,
+                pixel_y + cell_h_int - bar_thickness,
                 cell_w_px,
                 bar_thickness,
             ),
@@ -777,7 +876,7 @@ impl RenderBackend for WebGpuBackend {
                 let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
                 self.pending_instances.push(CellInstance {
                     cell_xy: [pixel_x, pixel_y],
-                    cell_size: [cell_w_px, cell_h],
+                    cell_size: [cell_w_px, cell_h_int],
                     atlas_uv: entry.uv,
                     atlas_layer: entry.layer as u32,
                     fg_rgba: cursor_text_color,
@@ -804,12 +903,18 @@ impl RenderBackend for WebGpuBackend {
             if col_end <= col_start {
                 continue;
             }
-            let pixel_x = (col_start as f32) * cell_w;
-            let pixel_y = (row as f32) * cell_h;
-            let width = ((col_end - col_start) as f32) * cell_w;
+            // Integer-aligned overlay box — same boundary scheme as
+            // draw_row so the translucent tint flush-aligns with the
+            // cell content beneath, with no fractional-pixel halo.
+            let pixel_x = ((col_start as f32) * cell_w).floor();
+            let pixel_x_right = ((col_end as f32) * cell_w).floor();
+            let width = (pixel_x_right - pixel_x).max(1.0);
+            let pixel_y = ((row as f32) * cell_h).floor();
+            let pixel_y_bot = (((row + 1) as f32) * cell_h).floor();
+            let height = (pixel_y_bot - pixel_y).max(1.0);
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
-                cell_size: [width, cell_h],
+                cell_size: [width, height],
                 atlas_uv: [0.0, 0.0, 0.0, 0.0],
                 atlas_layer: 0,
                 fg_rgba: sel_color,
@@ -827,15 +932,18 @@ impl RenderBackend for WebGpuBackend {
         }
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
-        let thickness = 2.0 * self.metrics.dpr;
+        let thickness = (2.0 * self.metrics.dpr).floor().max(1.0);
         let link_color = rgba_u8_to_f32(self.theme.hyperlink_color);
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
                 continue;
             }
-            let pixel_x = (col_start as f32) * cell_w;
-            let pixel_y = (row as f32) * cell_h + cell_h - thickness;
-            let width = ((col_end - col_start) as f32) * cell_w;
+            // Integer-aligned underline strip flush with cell boundaries.
+            let pixel_x = ((col_start as f32) * cell_w).floor();
+            let pixel_x_right = ((col_end as f32) * cell_w).floor();
+            let width = (pixel_x_right - pixel_x).max(1.0);
+            let pixel_y_bot = (((row + 1) as f32) * cell_h).floor();
+            let pixel_y = pixel_y_bot - thickness;
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
                 cell_size: [width, thickness],
@@ -865,10 +973,10 @@ impl RenderBackend for WebGpuBackend {
             0.0,
             0.0,
         ];
-        let viewport_bytes: [u8; 16] = unsafe {
-            std::mem::transmute::<[f32; 4], [u8; 16]>(viewport)
-        };
-        self.queue.write_buffer(&self.frame_uniform, 0, &viewport_bytes);
+        // `[f32; 4]` is Pod (Zeroable + transmute-safe); cast via bytemuck
+        // instead of an unsafe transmute (§4.5.c).
+        self.queue
+            .write_buffer(&self.frame_uniform, 0, bytemuck::bytes_of(&viewport));
 
         // 2-3) Instance buffer.
         let n_cells = self.pending_instances.len() as u32;
@@ -890,15 +998,10 @@ impl RenderBackend for WebGpuBackend {
                 // per-frame via set_vertex_buffer below, so there's
                 // nothing to rebuild here. ✅
             }
-            // Bytes view — CellInstance is #[repr(C)] over Pod fields
-            // (f32 / u32 / arrays), so the slice transmute is sound.
-            // Future iteration may add bytemuck for safer-by-default.
-            let instance_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    self.pending_instances.as_ptr() as *const u8,
-                    self.pending_instances.len() * std::mem::size_of::<CellInstance>(),
-                )
-            };
+            // Bytes view — CellInstance derives bytemuck::Pod, so
+            // `cast_slice` is checked at compile time without unsafe
+            // (§4.5.c).
+            let instance_bytes: &[u8] = bytemuck::cast_slice(&self.pending_instances);
             self.queue.write_buffer(&self.instance_buffer, 0, instance_bytes);
         }
 

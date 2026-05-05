@@ -189,6 +189,8 @@ impl Grid {
     /// real bottom never scrolls and scrollback never grows.
     pub fn resize(&mut self, rows: usize, cols: usize) {
         let cols_changed = cols != self.cols;
+        let rows_changed = rows != self.rows;
+        let dim_changed = cols_changed || rows_changed;
 
         // Primary screen: reflow when columns change (preserves wrapped lines,
         // see OVERVIEW.md §7 for design). Rows-only change keeps the naive
@@ -204,6 +206,29 @@ impl Grid {
         // their alt-screen redraw via SIGWINCH; reflowing under them would
         // smear the half-drawn frame they're about to overwrite anyway.
         Self::naive_resize_screen(&mut self.alt, rows, cols);
+
+        // §1.22 (2026-05-05): when CURRENTLY viewing alt screen at resize,
+        // clear the alt buffer so the application's SIGWINCH-driven redraw
+        // lands on a blank canvas. Without this, the OLD layout (cells from
+        // before resize, now naively repositioned by truncate/pad) overlaps
+        // with the NEW redraw — Claude Code / lazygit / Ink-based CLIs use
+        // partial-diff redraws and DON'T necessarily repaint every cell,
+        // so the result is "错位行和字符" (offset rows and chars). Native
+        // terminal emulators (Windows Terminal, iTerm2) wipe the visible
+        // alt-screen on resize for the same reason; this is mainstream.
+        //
+        // Only fires when (a) the user is currently on alt screen AND
+        // (b) dimensions actually changed. No-op resizes (same dims) leave
+        // existing content alone. Primary screen's reflow path above
+        // already preserves shell prompt content.
+        if dim_changed && self.is_alt {
+            for r in &mut self.alt.rows {
+                r.clear();
+            }
+            self.alt.cursor = Cursor::default();
+            self.alt.scroll_top = 0;
+            self.alt.scroll_bottom = rows.saturating_sub(1);
+        }
 
         self.rows = rows;
         self.cols = cols;
@@ -1121,6 +1146,53 @@ mod tests {
         assert!(g.primary.is_full_region());
     }
 
+    // §1.22 (2026-05-05): when on alt screen and dimensions change, the alt
+    // buffer should be wiped so the application's SIGWINCH redraw paints on
+    // a clean canvas (Claude Code / lazygit / Ink-based CLIs use partial-
+    // diff redraws that DON'T necessarily repaint every cell).
+    #[test]
+    fn resize_on_alt_screen_clears_alt_buffer() {
+        let mut g = Grid::new(5, 10, 0);
+        g.enter_alt_screen(true);
+        // Paint some content on the alt screen.
+        for ch in ['x', 'y', 'z'] {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        // Sanity: alt now has those cells.
+        assert_eq!(g.row(0).unwrap().cells[0].ch, 'x');
+        assert_eq!(g.row(0).unwrap().cells[1].ch, 'y');
+        assert_eq!(g.row(0).unwrap().cells[2].ch, 'z');
+
+        g.resize(8, 14);
+
+        // After resize on alt, every visible cell should be cleared.
+        for r_idx in 0..g.rows() {
+            let row = g.row(r_idx).unwrap();
+            for cell in &row.cells {
+                assert_eq!(
+                    cell.ch, ' ',
+                    "cell at row {r_idx} not cleared post-resize on alt"
+                );
+            }
+        }
+        // Cursor reset to home.
+        let cur = g.cursor();
+        assert_eq!(cur.row, 0);
+        assert_eq!(cur.col, 0);
+    }
+
+    #[test]
+    fn resize_on_primary_does_not_clear_primary() {
+        let mut g = Grid::new(5, 10, 0);
+        // We're on primary by default. Paint something.
+        for ch in ['p', 'q', 'r'] {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.resize(8, 14);
+        // Primary content should reflow / be preserved, not blanked.
+        assert_eq!(g.row(0).unwrap().cells[0].ch, 'p');
+    }
+
     #[test]
     fn ri_at_scroll_top_scrolls_down() {
         let mut g = Grid::new(3, 3, 0);
@@ -1227,23 +1299,32 @@ mod tests {
     }
 
     #[test]
-    fn reflow_skips_alt_screen() {
-        // Alt screen content should be truncate/pad-resized regardless of
-        // column change, because TUIs handle SIGWINCH themselves.
+    fn reflow_skips_alt_screen_and_clears_on_resize() {
+        // §1.22 (2026-05-05): alt-screen resize neither reflows NOR
+        // preserves content — it CLEARS the buffer so the application's
+        // SIGWINCH-driven redraw lands on a blank canvas. The "no reflow"
+        // contract still holds (we don't try to re-wrap mid-frame), and
+        // the "clear visible content" contract is the new behaviour for
+        // continuous-refresh CLIs (Claude Code, lazygit, Ink-based).
         let mut g = Grid::new(3, 10, 100);
         g.enter_alt_screen(true);
         for ch in "abcdefghij".chars() {
             g.print(ch, Attrs::DEFAULT);
         }
-        // Alt row 0 holds 10 chars at cols=10. Resize to cols=5 should
-        // truncate to "abcde", NOT reflow into 2 rows.
         g.resize(3, 5);
         assert_eq!(g.cols(), 5);
-        assert_eq!(row_text(&g, 0), "abcde");
-        // Row 1 stays blank — proof we didn't reflow the truncated half.
-        assert_eq!(row_text(&g, 1), "");
-        // Wrapped flag stays false since we did not reflow.
-        assert_eq!(g.row(0).unwrap().wrapped, false);
+        // Every alt cell is now empty.
+        for r_idx in 0..g.rows() {
+            assert_eq!(
+                row_text(&g, r_idx),
+                "",
+                "alt row {r_idx} not cleared after resize"
+            );
+        }
+        // No reflow happened (no row should claim wrapped=true).
+        for r_idx in 0..g.rows() {
+            assert_eq!(g.row(r_idx).unwrap().wrapped, false);
+        }
     }
 
     #[test]

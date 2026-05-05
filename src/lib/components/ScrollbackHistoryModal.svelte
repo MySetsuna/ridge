@@ -6,9 +6,10 @@
    * (`+page.svelte`); any pane header opens it via `openScrollbackHistory(paneId)`
    * regardless of nesting depth in `SplitContainer`.
    *
-   * Showing terminal history while xterm keeps streaming is a read-only
-   * complement to the live pane — users get to review / copy / search
-   * material that has scrolled past xterm's own 8000-line buffer.
+   * Showing terminal history while the live pane keeps streaming is a
+   * read-only complement — users get to review / copy / search material
+   * that has scrolled past the live viewport (backend keeps 4 MiB of
+   * block-paged scrollback per pane).
    */
   interface OpenRequest {
     paneId: string;
@@ -110,8 +111,8 @@
 
   /**
    * Auto-page guard. Prevents the scroll handler from firing loadOlder()
-   * multiple times while one request is in-flight or just resolved (xterm /
-   * overlayscrollbars sometimes emits 2-3 scroll events per frame near the
+   * multiple times while one request is in-flight or just resolved
+   * (overlayscrollbars sometimes emits 2-3 scroll events per frame near the
    * boundary). Cleared 200 ms after a successful loadOlder.
    */
   let recentlyAutoLoaded = false;
@@ -492,8 +493,8 @@
       </header>
 
       <!-- Read-only history viewer. ANSI is stripped because we want
-           selection / copy / browser-Ctrl+F to work cleanly. The live xterm
-           pane in the background still shows colour.
+           selection / copy / browser-Ctrl+F to work cleanly. The live
+           terminal pane in the background still shows colour.
            Segmented render: each search hit becomes a `<mark>` so we can
            scrollIntoView the active one without re-laying-out the entire
            buffer on every Enter. -->

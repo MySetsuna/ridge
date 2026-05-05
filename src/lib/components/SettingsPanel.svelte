@@ -250,6 +250,24 @@
             </div>
 
             <div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-padding">终端内边距</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">把终端 canvas 从 pane 边框向内推。0 – 32 px。建议 4 – 12，避免字符贴边。</div>
+              <div class="flex items-center gap-3">
+                <input
+                  id="set-term-padding"
+                  type="range"
+                  min="0"
+                  max="32"
+                  step="1"
+                  value={$settingsStore.terminalPaddingPx}
+                  oninput={(e) => setSetting('terminalPaddingPx', Number((e.currentTarget as HTMLInputElement).value))}
+                  class="flex-1 accent-[var(--rg-accent)]"
+                />
+                <span class="w-12 text-right text-[12px] font-mono text-[var(--rg-fg)]">{$settingsStore.terminalPaddingPx} px</span>
+              </div>
+            </div>
+
+            <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-font">编辑器字号</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图共享。8 – 32 px。</div>
               <div class="flex items-center gap-3">

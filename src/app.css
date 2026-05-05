@@ -191,7 +191,7 @@ body {
     0 8px 32px rgba(0, 0, 0, 0.45);
 }
 
-/* 侧栏、主区等通用细滚动条 — 对齐终端（xterm-viewport）滚动条样式 */
+/* 侧栏、主区等通用细滚动条 — 与终端 wasm canvas 旁的滚动条视觉对齐 */
 .rg-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--rg-scrollbar) transparent;
@@ -268,51 +268,6 @@ body {
   app-region: no-drag;
 }
 
-/*
- * 终端区域：与全局 body 的 font-feature-settings / optimizeLegibility 隔离，
- * 避免连字或 UI 数字体特性在等宽栅格里看起来像“字符合并”；字距归零与 xterm letterSpacing: 0 一致。
- */
-.rg-terminal-surface,
-.rg-terminal-surface .xterm {
-  letter-spacing: 0;
-  font-feature-settings: normal;
-  font-variant-ligatures: none;
-  font-kerning: none;
-  text-rendering: auto;
-}
-
-/*
- * 为 xterm 容器在右侧预留 6px 作为滚动条区域（与 webkit 滚动条宽度一致）。
- * FitAddon 从 parentElement.width - padding - scrollBarWidth 计算可用宽度；
- * scrollBarWidth = viewport.offsetWidth - scrollArea.offsetWidth = 6，
- * 因此 padding-right 也设为 6px，避免双重扣减导致终端列数偏少。
- */
-.rg-terminal-surface .xterm {
-  padding-right: 6px;
-}
-
-/*
- * 消除 xterm 辅助 textarea 的原生 caret（白色竖线光标）。
- * 该 textarea 只用于接收键盘事件与 IME 合成，视觉光标由 xterm 自行绘制。
- * 若不关闭 caret-color，某些 WebView 会忽略 opacity:0 仍绘制系统 caret，
- * 形成 "xterm 主题色光标 + 白色 caret" 的双光标现象。
- *
- * IME 修复：不使用 position:fixed（WebView2 中 fixed 定位会破坏输入法候选框的触发），
- * 保留 xterm 默认的 position:absolute，只将 left 从 -9999em 覆盖为 0 以使
- * 候选框出现在可见区域（左上角）而非屏幕外。width/height 须为非零值，
- * 否则 Windows IME 认为元素无效不弹出候选框。
- */
-.rg-terminal-surface .xterm-helper-textarea {
-  caret-color: transparent !important;
-  /* position: absolute is inherited from xterm's own CSS — do NOT override to fixed */
-  top: 0 !important;
-  left: 0 !important;
-  width: 1px !important;
-  height: 1px !important;
-  opacity: 0 !important;
-  pointer-events: none !important;
-}
-
 /* T16：侧边栏 resize handle，与 SplitContainer 终端 splitter 视觉对齐。
    常态：1px 中线 var(--rg-border)；hover / dragging：scaleX(4) + accent + glow。
    外层 `.rg-sidebar-resize` 是 8px 透明命中区，::before 画中线。 */
@@ -343,68 +298,6 @@ body {
   transform: translateX(-50%) scaleX(4);
   background: var(--rg-accent);
   box-shadow: 0 0 12px var(--rg-accent-glow);
-}
-
-/* T13：双光标兜底。
- * 1. 非活跃 pane 强行隐藏 xterm cursor 层 —— xterm 的 cursorInactiveStyle:'none'
- *    在某些 WebView2 路径下不生效（focus 状态滞后），CSS 直接抹掉光标层最稳。
- * 2. 输入法 composition 期间 textarea caret-color 兜底，防止 IME 把系统 caret 重新点亮。 */
-.rg-terminal-surface[data-rg-pane-active="false"] .xterm-cursor-layer,
-.rg-terminal-surface[data-rg-pane-active="false"] .xterm-cursor {
-  display: none !important;
-}
-.rg-terminal-surface .xterm-helper-textarea:focus {
-  caret-color: transparent !important;
-}
-
-/*
- * xterm 滚动条：仅用 webkit 伪元素定制外观（勿加 scrollbar-width: thin —
- * Windows WebView2 会退回系统细条并带两端箭头）。
- * viewport 保持 xterm 默认的全宽绝对定位，不收窄宽度，以免 FitAddon 的
- * scrollBarWidth 计算异常（6px viewport 使 scrollArea.offsetWidth=0，
- * 导致 FitAddon 将 padding-right 与 scrollBarWidth 双重扣减，浪费列数）。
- *
- * 滚动条可拖拽修复：
- * .xterm-screen 是覆盖在 viewport 上的绝对定位容器，其宽度延伸至终端全宽（含滚动条
- * 所在的 6px 区域）。虽然内部 canvas 已按 clientWidth 精确裁剪，但 .xterm-screen
- * div 本身仍会在右侧 6px 区域拦截鼠标事件，导致 scrollbar-thumb 无法被点击/拖拽。
- * 解决方案：对 .xterm-screen 设 pointer-events:none，令该区域的事件穿透到 viewport，
- * 同时对其所有直接子元素（canvas、selection-layer 等）恢复 auto，保证文字选取正常。
- */
-.xterm-viewport {
-  overflow-y: scroll !important;
-  overflow-x: hidden;
-  /* 覆盖 xterm 通过 inline style 注入的背景色，避免遮挡终端内容 */
-  background-color: transparent !important;
-  pointer-events: auto !important;
-}
-
-.xterm-screen {
-  pointer-events: none !important;
-}
-
-.xterm-screen > * {
-  pointer-events: auto !important;
-}
-
-.xterm-viewport::-webkit-scrollbar {
-  width: 6px;
-}
-.xterm-viewport::-webkit-scrollbar-button {
-  display: none !important;
-  height: 0 !important;
-  width: 0 !important;
-}
-.xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-.xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--rg-scrollbar);
-  border-radius: 999px;
-  min-height: 48px;
-}
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--rg-scrollbar-hover);
 }
 
 /* 水平 tab 栏（工作区 tabs、文件编辑器 tabs）— 隐藏滚动条，仍可用滚轮/触控板横向滑动 */

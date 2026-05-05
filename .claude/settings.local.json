@@ -7,7 +7,23 @@
       "Bash(sed -i '130 s/^/    /' lib.rs)",
       "Bash(cargo check *)",
       "Bash(pnpm check *)",
-      "Bash(xxd)"
+      "Bash(xxd)",
+      "Bash(grep -rn 'paneCwdStore\\\\|$paneCwdStore' src/lib/stores/fileExplorer.ts src/lib/components/Explorer.svelte src/lib/components/FileTree.svelte)",
+      "Bash(grep -n '^\\\\s*$effect\\\\|$effect\\\\b\\\\|fileExplorerStore\\\\.' src/lib/components/Explorer.svelte)",
+      "Bash(cargo test *)",
+      "Bash(node build.mjs)",
+      "Bash(grep -n 'terminalTitles\\\\|$terminalTitles' src/lib/components/Explorer.svelte)",
+      "Bash(pnpm test *)",
+      "Bash(git -C C:/code/wind log --oneline --diff-filter=D --all -- \"src/lib/components/Pane.svelte\")",
+      "Bash(git -C C:/code/wind log --oneline --all -- \"src/lib/components/Pane.svelte\")",
+      "Bash(git -C C:/code/wind show 531516d:src/lib/components/Pane.svelte)",
+      "Bash(git -C C:/code/wind log --oneline --all -S \"拆分\" --pickaxe-regex)",
+      "Bash(git -C C:/code/wind log --oneline --all -S \"term-split-right\" --pickaxe-regex)",
+      "Bash(git -C C:/code/wind log --oneline --all -S \"向右分屏\\\\|向下分屏\\\\|split-right\\\\|split-down\" --pickaxe-regex)",
+      "Bash(git -C C:/code/wind grep -l \"splitPane\\\\|paneTreeStore.split\\\\|splitHorizontal\\\\|splitVertical\" -- \"src/lib/components/*.svelte\")",
+      "Bash(git -C C:/code/wind grep -l \"split\" -- \"src/lib/components/*.svelte\")",
+      "Bash(grep -n \"^- 2026-05-04\\\\|^---$\\\\|^## 文档导航\" C:/code/wind/docs/term-rebuild/TASKS.md)",
+      "Bash(grep -n \"OSC 7\\\\|CwdChanged\\\\|file://\\\\|0x07.*7\\\\|\\\\\\\\bb'7'\" C:/code/wind/packages/ridge-term/src/term/parser.rs)"
     ]
   }
 }

@@ -58,15 +58,30 @@
 	}
 
 	// --- Initial sync: all workspaces ---
+	// §1.21 (2026-05-05 follow-up): drop `$terminalTitles` from this
+	// effect's dependency set. It used to call `initFileExplorer(wsList,
+	// titles)` which forwarded titles into `syncAllWorkspaces` →
+	// `syncWithPaneCwds` (which always reallocates the columns array),
+	// so every OSC title emit re-built the explorer and the file tree
+	// flickered. Title sync now lives in the dedicated `updatePaneTitles`
+	// effect below; this effect is purely for workspace structure.
 	$effect(() => {
 		const wsList = $workspacesList;
-		const titles = $terminalTitles;
 		if (wsList.length > 0) {
-			initFileExplorer(wsList, titles);
+			initFileExplorer(wsList);
 		}
 	});
 
 	// --- Reactive sync: re-run whenever any pane cwd changes ---
+	//
+	// §1.21 (2026-05-05): split title sync OUT of this $effect. Shells re-emit
+	// OSC 0/1/2 on every prompt redraw (Ctrl+C, Enter, command lifecycle), so
+	// $terminalTitles legitimately changes on every keystroke that produces
+	// a prompt. Including titles here would re-call syncWithPaneCwds (which
+	// always returns a new state object) → fileExplorerStore subscribers fire
+	// → FileTree re-evaluates → user-visible flicker. Title-only changes now
+	// flow through the dedicated `updatePaneTitles` effect below, which is
+	// identity-preserving and never touches column structure / loadTree.
 	//
 	// 两条并行路径，用户强调"一定一定要确保 cwd 切换时文件树刷新"：
 	//   1) $effect 走 Svelte 5 runes 自动订阅 —— 负责基础的 columns/paneIds 同步；
@@ -74,24 +89,20 @@
 	//      文件树（即使之前缓存过），彻底解决"切回老目录看不到新文件"的场景。
 	$effect(() => {
 		const cwds = $paneCwdStore;
-		const titles = $terminalTitles;
 		const wsList = $workspacesList;
 
 		updateWorkspaceNames(wsList);
 
 		for (const ws of wsList) {
 			const workspaceCwds: Record<string, string> = {};
-			const workspaceTitles: Record<string, string> = {};
 			for (const [key, cwd] of Object.entries(cwds)) {
 				if (key.startsWith(`${ws.id}:`)) {
 					const paneId = key.slice(ws.id.length + 1);
 					workspaceCwds[paneId] = cwd;
-					if (titles[paneId]) {
-						workspaceTitles[paneId] = titles[paneId];
-					}
 				}
 			}
-			fileExplorerStore.syncWithPaneCwds(ws.id, workspaceCwds, workspaceTitles);
+			// Pass empty titles map — title sync runs in its own effect below.
+			fileExplorerStore.syncWithPaneCwds(ws.id, workspaceCwds, {});
 		}
 
 		const cols = get(fileExplorerStore).columns;
@@ -101,6 +112,19 @@
 			if (!col.loading && (!col.tree || col.needsRefresh)) {
 				void fileExplorerStore.loadTree(col.id);
 			}
+		}
+	});
+
+	// --- Title-only sync: identity-preserving, no column rebuild. ---
+	// Runs whenever $terminalTitles changes. updatePaneTitles returns the
+	// same state ref when no title actually differs from the cached one,
+	// so prompt-redraw OSC events that happen to re-emit the previous
+	// title are completely silent for fileExplorerStore subscribers.
+	$effect(() => {
+		const titles = $terminalTitles;
+		const wsList = $workspacesList;
+		for (const ws of wsList) {
+			fileExplorerStore.updatePaneTitles(ws.id, titles);
 		}
 	});
 

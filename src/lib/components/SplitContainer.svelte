@@ -1,7 +1,7 @@
 <script lang="ts">
   import { get } from 'svelte/store';
   import { onDestroy } from 'svelte';
-  import Pane from './Pane.svelte';
+  import Pane from './RidgePane.svelte';
   import SplitLayout from './SplitContainer.svelte';
   // T20 重做：弃用 svelte-splitpanes，改用自家 @ridge/split。后者纯渲染，无内部
   // 状态机，paneTreeStore.ratios 是唯一真相源；Ridge 的 startSplitResizeDrag /
@@ -654,11 +654,12 @@
               </button>
               {/if}
               <!-- History browser — read-only viewer for bytes that scrolled past
-                   xterm's own 8000-line buffer. Lives in a modal because the
-                   pane header is already busy with branch / agent affordances. -->
+                   the live pane viewport (backend keeps 4 MiB of block-paged
+                   scrollback per pane). Lives in a modal because the pane
+                   header is already busy with branch / agent affordances. -->
               <button
                 type="button"
-                title="查看终端历史记录（包含已滚出 xterm 视窗的早期输出）"
+                title="查看终端历史记录（包含已滚出视窗的早期输出）"
                 disabled={!isTauri()}
                 class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-[var(--rg-accent)]/10 hover:text-[var(--rg-accent)] disabled:opacity-25 disabled:pointer-events-none"
                 onclick={() => openScrollbackHistory(node.id)}

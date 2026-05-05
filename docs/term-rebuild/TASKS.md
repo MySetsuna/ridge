@@ -185,6 +185,145 @@
 - **验收**：浏览器实跑（§7.2）—— A | B 布局关闭 A，B 应保留用户 settingsStore.terminalPaddingPx，且终端字符位置随 grid 重排而 reflow（不再"卡在原坐标"）。
 - **后续观察**：用户原报告同时提到「字符在原本位置刷新」。padding 丢失会让 canvas 尺寸偏大、cols×rows 比期望大，PTY emits 在更宽的 grid 上而 shell 还没收到 SIGWINCH 时就会出现错位假象。padding 修好后 ResizeObserver 重新走一次 fit 路径，理论上同步消失；若仍残留再加 §1.16 单独跟。
 
+### 1.21 [HIGH] 终端回车触发 Explorer file tree 重建（cwd 未变时也刷新）✅ 2026-05-04
+
+- **报告（用户 2026-05-04）**："任何触发终端回车的行为，都会触发资源管理器的 file tree 重新构建，我不希望这样，只有 cwd 变动的情况下才需要增量构建（不影响已有的、接下来不会更改的 file tree）"。
+- **现象**：用户在 shell 里按 Enter（即使是空回车不切换目录）→ Explorer 右侧文件树显示 loading 闪烁 / 重建。期望：cwd 未变时 0 IPC 0 重建；cwd 变化时仅对应列增量更新，其他列不动。
+- **设计已对的部分**：
+  1. `paneTree.ts::setPaneCwd`（line 1376-1386）已有 identity-preserving 早返回——`store[key] === normalized` 时不更新 store，subscribers 不 fire。
+  2. `Explorer.svelte:216-242` 直接订阅 paneCwdStore 已有 per-key 比对——只对真正变化的 cwd 强制 loadTree。
+- **嫌疑路径**：`Explorer.svelte:75-105` 主 `$effect`：
+  ```svelte
+  $effect(() => {
+      const cwds = $paneCwdStore;
+      const titles = $terminalTitles;     // ← 也参与依赖
+      const wsList = $workspacesList;
+      // ...
+      for (const ws of wsList) {
+          fileExplorerStore.syncWithPaneCwds(ws.id, workspaceCwds, workspaceTitles);
+      }
+      for (const col of cols) {
+          if (!col.loading && (!col.tree || col.needsRefresh)) {
+              void fileExplorerStore.loadTree(col.id);
+          }
+      }
+  });
+  ```
+  - **可能根因 A**：`$terminalTitles` 在每次 OSC 0/1/2 都 update，shell 通常在 prompt redraw 时 emit 标题（`"user@host: path"` 含 path 末尾的当前目录）。`fileExplorerStore.syncWithPaneCwds` 的 `mergedTitles` 路径可能在「标题字符串变化」时把 `existing.needsRefresh` 设为 true，下游 loadTree 触发。
+  - **可能根因 B**：`syncWithPaneCwds` 内 line 187 `needsRefresh: existing.needsRefresh || hasNewJoiner` —— 若 `hasNewJoiner` 在 cwd 未变时被错误置 true（比如 paneIds 顺序变化），那么每次 store update 就 needsRefresh=true。
+  - **可能根因 C**：shell prompt OSC 7 可能在每次 Enter 都 emit cwd（哪怕是同一目录），且 `normalizeCwd` 的输出对相同输入不稳定（不应该，但可疑）→ setPaneCwd 早返回失效 → store 真的更新 → effect 跑 → loadTree。
+- **修复方案（先做证据收集）**：
+  1. 在 `Explorer.svelte:75` `$effect` 加一行 `console.log('[explorer-effect] cwds keys', Object.keys(cwds), 'titles keys', Object.keys(titles))` dev-only，回放用户操作复现，看哪个依赖真的在变。
+  2. 根据根因结果分别修复：
+     - 根因 A：`syncWithPaneCwds` 在 title 变更时 NOT 设置 needsRefresh（title 变化不应 invalidate tree）。
+     - 根因 B：`hasNewJoiner` 重新审视 paneIds 比对 stable（按 sort + 集合等价比较，而非顺序敏感）。
+     - 根因 C：`setPaneCwd` 的 normalize 调用前后字符串保持同一性；如果 normalize 已经稳定，可能就是 backend 在变着 cwd（`/home/user` vs `/home/user/`）—— 加 trim 末尾斜杠到 normalizeCwd。
+  3. 增量更新（用户原文「不影响已有的、接下来不会更改的 file tree」）：`loadTree` 应能 patch 局部子树而非整树重建。当前 `loadTree(columnId)` 整列重新 fetch；改为对仅 cwd 变化的列做完全 reload，已有的、cwd 未变的列 0 IPC。**这个其实已经是当前行为**——只对 `changedCwds.has(col.cwd) && !col.tree` 的列触发，但前提是 effect 不要错误地把 needsRefresh 设为 true。
+- **测试**：
+  - 单测：mock `paneCwdStore.set(initial)` → mock title change → assert `loadTree` not called。
+  - 单测：mock cwd change for one pane → assert only that column's `loadTree` called，其他列 0 调用。
+  - 实测：`pnpm tauri dev` + 多 pane 多 cwd，dev console.log 验证。
+- **影响范围**：`src/lib/components/Explorer.svelte`（主 effect 重审）+ `src/lib/stores/fileExplorer.ts::syncWithPaneCwds`（needsRefresh 触发条件收紧）+ 可能 `src/lib/stores/paneTree.ts::normalizeCwd`（trailing slash）。
+- **优先级**：HIGH——日常使用频繁触发，影响交互流畅度。
+- **修复（2026-05-04）**：根因 = `RidgePane.svelte::onKernelEvent` 的 `TitleChanged` / `IconNameChanged` 分支在 OSC 0/1/2 上**无条件**调 `terminalTitles.update((m) => ({ ...m, [paneId]: ev.value }))`——shell 在每次 prompt redraw 都 emit OSC 标题，store 每次都拿到「值相同 ref 不同」的新对象 → subscribers 全 fire → Explorer.svelte:75 `$effect` 重跑（依赖 `$terminalTitles`）→ `syncWithPaneCwds` 重建 columns 数组 → FileTree 重新评估 props。
+  - **方案**：在 update callback 内加 identity-preserving early return，与 `paneTree.ts::setPaneCwd` line 1383 同模式：`m[paneId] === ev.value ? m : ({ ...m, [paneId]: ev.value })`。
+  - **影响范围**：仅 `src/lib/components/RidgePane.svelte` 4 行（含注释）。`paneOscTitleStore` 和 `terminalTitles` 都加 guard。
+  - **不做的**（避免 over-engineering）：syncWithPaneCwds 内部加 deep-equality 早返回——主因已在源头消除，其它合法触发路径（cwd change / workspace add/remove / 真正的 title 变化）应走完整 sync。
+  - **验证**：`pnpm check` 0 errors / 0 warnings (4098 files)。**待用户实跑确认 Enter-without-cd 不再触发 loading 闪烁**。
+- **追加（2026-05-05）**：用户实跑后报告 "ctrl c 或者 enter 仍会闪烁"——RidgePane 内的 identity guard 没覆盖到所有路径，因为 shell 在 PROMPT_COMMAND 中通常会 emit「user@host: cwd command」之类带正在执行命令名的 title，命令前后两次 emit 的字符串 *不同*，identity guard 不命中 → terminalTitles 真的变化 → Explorer.svelte:75 `$effect` 重跑（依赖 `$terminalTitles` + `$paneCwdStore`）→ `syncWithPaneCwds` 即使保留 cwd 部分不变，也会无条件 `update((state) => ({...state, columns: nextColumns}))` 重建 columns 数组引用 → FileTree 重评估 props。
+  - **真根因**：title sync 与 cwd sync 共享同一个 effect。title 变化是 prompt-redraw 的常态噪声，不应触发 column 数组重建（columns 只关心 cwd → paneIds 映射）。
+  - **追加修复**：拆分 effect。
+    1. `src/lib/stores/fileExplorer.ts` 新增 `updatePaneTitles(workspaceId, paneTitles)` 方法——identity-preserving，遍历 ws 列、若该列 paneTitles 与 incoming 相同则保留原 col 引用、若整次扫描没有任何列变化则返回原 state 引用。
+    2. `src/lib/components/Explorer.svelte` 主 `$effect` 删除 `$terminalTitles` 依赖、不再传 titles 给 `syncWithPaneCwds`；新增第二个独立 `$effect` 只依赖 `$terminalTitles + $workspacesList`，对每个 ws 调 `updatePaneTitles`。这样 title-only 变化只会让需要的 column 引用更新，cwd-sync 路径完全不动。
+  - **验证**：`pnpm check` 0 errors / 0 warnings (4098 files)；`cargo check --target wasm32-unknown-unknown --lib`（默认 + `--no-default-features`）双 0 警告；`cargo test --lib` 240 通过。**待用户实跑再次确认 Ctrl+C / Enter 不再 loading 闪烁**。
+
+### 1.20 [HIGH] 选区在滚动后不跟随文本滚动（viewport-relative coords 缺陷）✅ 2026-05-04
+
+- **报告（用户 2026-05-04）**："选中文案的选中域，在滚动后不会随着选中的文本滚动，需要修复"。
+- **根因**：`packages/ridge-term/src/selection.rs` 的 `Pos { row, col }` 是 **viewport-relative** 坐标（见模块文档 line 16-19）。用户滚动 viewport（PageUp / 滚轮 / Shift+PageUp 跨入 scrollback）→ scroll_offset 改变 → 同一 viewport row 现在指向不同的 abs_row → 选中高亮仍画在原 viewport 位置，但实际选中的文本已经滚到别处。
+- **类比**：`packages/ridge-term/src/search.rs` 早就解决了同一问题——`MatchAbs { abs_row, col_start, col_end }` 用「scrollback 0..sb_len，viewport sb_len..sb_len+rows」的统一 abs-row 编码；`match_to_viewport_range(scroll_offset, sb_len, rows) -> Option<Range>` 每帧 translate 回 viewport，超出视口的 match 自然 clip 掉。Selection 应该照搬这个模式。
+- **修复方案**：
+  1. **Selection 模型改 abs-row**：`Pos` / `Range` 不变（renderer 和 text() 还是要用 viewport coords），但 `Selection` 内部存 `Option<RangeAbs>`，新加结构 `RangeAbs { start_abs_row, start_col, end_abs_row, end_col }`。`set` / `clear` / `select_all` / `select_word` / `select_line` / mouse-drag 入口都改写到 abs-row（用 `terminal.viewport_to_abs(row)` helper）。
+  2. **新加 `selection_to_viewport_rects(scroll_offset, sb_len, rows) -> Vec<(usize, usize, usize)>`**：每帧 renderer 调，翻 abs-row 选区为「(viewport_row, col_start, col_end)」rects 列表，clip 到 0..rows 的可见范围。Selection 完全在 viewport 之外 → 空 vec（无 overlay 绘制）。
+  3. **`text()` 改读 abs-row**：跨 scrollback 的选区拷文本，使用 `terminal.row_at_abs(abs_row)` helper（如果不存在就加一个：`< sb_len` 走 scrollback ring，`>= sb_len` 走 grid）。
+  4. **lib.rs `setSelection(startRow, startCol, endRow, endCol)`**：JS 仍传 viewport 坐标（manager.ts pointerdown 算的是 viewport row）；wasm 入口接收时立即转 abs-row 后存。
+  5. **renderer.rs**：当前 `selection_to_rects` 调用换成新的 `selection_to_viewport_rects`。
+- **测试**：
+  - 单测：select 一段 viewport 内容；feed `\x1b[5S` 滚 5 行进 scrollback；assert `selection_to_viewport_rects` 返回的 rects 行号下移 5。
+  - 单测：select 跨 viewport+scrollback 的范围；scroll 后 viewport 内可见部分 rects 正确，scrollback 内的部分 clipped。
+  - 单测：select 完全滚出 viewport → 空 vec。
+- **影响范围**：`packages/ridge-term/src/selection.rs`（核心模型）+ `packages/ridge-term/src/lib.rs`（setSelection 入口转换）+ `packages/ridge-term/src/render/renderer.rs`（rect 计算入口）+ `packages/ridge-term/src/term/terminal.rs`（可能要加 abs-row helper）。**4 个 source file，估 200-300 行**。
+- **风险**：手动 testing 时验证「scroll 进入 scrollback 后 selection 还在 / scroll 出来再回去 selection 还在 / 跨 scrollback 边界的选区滚动一致」。
+- **优先级**：HIGH——日常使用频繁触发的视觉错误。
+- **修复（2026-05-04）**：照搬 `search.rs::MatchAbs` 的 abs-row 模式。
+  - **新加 `Terminal::row_at_abs(abs_row) -> Option<&Row>`**（`packages/ridge-term/src/term/terminal.rs`）：统一 `0..sb_len` → 滚动历史 + `sb_len..sb_len+rows` → 活动 grid 的 row 访问器。
+  - **`Selection` 全文重写为 abs-row 内部存储**（`packages/ridge-term/src/selection.rs`）：新加 `RangeAbs { start_abs_row, start_col, end_abs_row, end_col }`；`set / select_word / select_line` 全部从 viewport coords 翻译到 abs（用 `vp_to_abs(vp_row, scroll_offset, sb_len) = sb_len + vp_row - scroll_offset` 公式，与 `search.rs::match_to_viewport_range` 互逆）。`text()` 改读 `terminal.row_at_abs(abs)`。
+  - **新加 `Selection::range_in_viewport(&Terminal) -> Option<Range>`**：每帧 renderer 调，把 abs 翻译回 viewport-relative + clip 到可见范围（部分超出时 col_start=0 或 col_end=cols）；完全在视口外返回 None。
+  - **lib.rs**：`set_selection` / `apply_active_match` 都传 `&self.inner`；`RenderHandle::render` 调 `range_in_viewport(&kernel.inner)` 取代 `range()`。
+  - **新增 3 单测**：`selection_survives_scroll_into_scrollback`（abs invariant under scroll）、`range_in_viewport_translates_with_scroll`（bottom row clips when scrolled below viewport）、`empty_terminal_select_all_is_safe`。
+  - **影响范围**：`packages/ridge-term/src/term/terminal.rs`（+10 lines）、`packages/ridge-term/src/selection.rs`（全文重写，~440 lines）、`packages/ridge-term/src/lib.rs`（3 surgical edits）。
+  - **验证**：`cargo test --lib` **240 passed**（之前 237，+3 新测）；`cargo check --target wasm32-unknown-unknown` 0 warnings（default + webgpu 双模式）；`pnpm check` 0 errors / 0 warnings。**待用户实跑：选中文本 → PageUp/PageDown → 高亮跟随；scroll 出 viewport → 高亮自动消失；scroll 回来 → 高亮再次显示**。
+
+### 1.22 [HIGH] Resize 时持续刷新型 CLI（Claude Code 类）出现错位行/字符 ✅ 2026-05-05
+
+- **报告（用户 2026-05-05）**："当使用 claude code 这类连续刷新输出字符区的终端 cli，如果进行终端大小形状的 resize，以当前实现，会出现错位行和字符。如果是系统终端的默认行为，会整体刷新输出区域，以让展示正常，但当前实现不支持这种全部刷新的行为，我需要适配这种持续性终端程序，要在其 resize 之后，完全刷新输出区域。"
+- **现象**：Claude Code / Ink-based CLI / lazygit 等使用 alternate-screen + 局部重绘的程序，在终端 resize 时会被 SIGWINCH 触发自身 redraw，但 Ridge 的 wasm grid 的 OLD content（resize 前的字符）残留在新尺寸下错位显示，与新 redraw 的 content 叠加 / 错行。
+- **可能根因**：
+  1. Phase 1 reflow 只处理 main screen，alt screen（CC 通常用 alt screen）走 truncate/pad 路径，行被裁切但内容仍按旧 grid 位置画。
+  2. wasm kernel 的 dirty-row 在 resize 后被全部 invalidate（renderer.rs 已经在 grow snapshot 时设 full_redraw_pending=true），但 grid 内容没被清掉，所以新 frame 把旧字符按新坐标画——和 SIGWINCH 后 CLI 自己重绘的内容重叠。
+  3. ConPTY resize-silence 窗口（pty.rs:95 `RESIZE_SILENCE_WINDOW_MS = 800`）期间 PTY bytes 被 drop，resize 完成后 CLI 的 redraw 才会进入 kernel——但旧字符仍在屏。
+- **方案候选**：
+  - **A. resize 时清空 alt-screen 的 grid + main screen 的 viewport 行**：在 `Terminal::resize` 检测到尺寸变化时，主屏幕走 reflow（保留），alt 屏幕直接 `clear()` viewport（清空字符 + 重置 cursor）让 CLI 的 redraw 落到干净画布。同时通知 backend 别做 resize-silence 抑制（让 redraw 立刻可见）。
+  - **B. 给 RenderHandle 加 `forceFullRefresh()` 接口**：JS 在 resize observer 触发时主动调一次清屏 + 等待下一个 PTY frame。
+  - **C. 把 resize-silence 窗口缩小到 ~150ms**（vs 当前 800ms），让 CLI redraw 更早进入 kernel，旧字符存活时间缩短。
+  - 当前倾向 **A**（最贴合用户描述的"完全刷新输出区域"语义），但要小心 main screen 不能粗暴清——否则用户在 shell 里 resize 会丢掉 prompt。
+- **影响范围**：`packages/ridge-term/src/term/grid.rs::resize` + `packages/ridge-term/src/term/terminal.rs::resize` + 可能 `src-tauri/src/engine/pty.rs` 调整 silence 窗口。
+- **测试需要**：在 alt-screen 情况下 resize 之前 / 之后的 grid snapshot 对比；浏览器实跑 Claude Code + lazygit + btop 验证 resize 流畅。
+- **优先级**：HIGH——CC 用户高频遇到。
+
+### 1.22.b [HIGH] Resize-silence 缩到 250ms — cursor 位置卡在 resize 前的位置 ✅ 2026-05-05
+
+- **报告（用户 2026-05-05）**："resize 之后, 插入光标位置还是计算不正确, 还是记录之前的位置"
+- **根因**：`src-tauri/src/engine/pty.rs::RESIZE_SILENCE_WINDOW_MS = 800ms` 在没有 shell-integration（FinalTerm `OSC 133;A` 或 VS Code `OSC 633;A` prompt 标记）的 shell / CLI 上把 SIGWINCH 触发的 redraw 整段丢掉。Shell（bash 无 PROMPT_COMMAND 改造、cmd、Git Bash）和 CLI（Claude Code、Ink-based、lazygit）都在此列。Resize 流程：
+  1. JS 端 `fitPane` 算新 rows/cols，调 `entry.resizeHandler` → `invoke('resize_pane')` 触发 SIGWINCH
+  2. Backend 设置 `silence_deadline = now + 800ms`
+  3. PTY reader 从 child 读出 redraw 字节
+  4. 800ms 内 + 没遇到 prompt OSC → 字节全 drop
+  5. Kernel grid 保持 reflow 之后但 NOT 重画的旧内容
+  6. 用户视觉：光标在 reflow 后的「migrated 旧位置」，看上去就是「resize 前的位置」
+- **修复**：将 `RESIZE_SILENCE_WINDOW_MS` 800 → 250。仍覆盖 ConPTY replay 50-300ms 区间下沿；shell 重画字节几乎都能在 250ms 后落入 kernel；启用 shell-integration 的环境仍会被 prompt OSC 提前截断（early-release < 250ms）。
+- **影响范围**：`src-tauri/src/engine/pty.rs` 一个 const。需要重启 Tauri 后端生效（`pnpm tauri dev` 重新启动）。
+- **测试**：仍是 `cargo build --lib` 0 警告；浏览器实跑验证 resize Claude Code / lazygit / bash-without-OSC133 后光标在新位置。
+
+### 1.23 [HIGH] 缺失的 UI features（重构 xterm.js 时丢失）✅ 2026-05-05（侧边滚动条 + 滚动到底部按钮 + 拆分右键菜单 全部 shipped）
+
+### 1.24 [HIGH] 连续字符画（box-drawing）行间隔无法消除 — 需 primitive 渲染 ⏳
+
+- **报告（用户 2026-05-05）**："连续字符画渲染不成功"——多个 `─` `│` `┌` `┐` `└` `┘` 等字符拼成的「方框 / 树形 / 表格」边界在垂直相邻 cell 之间出现 1-2 px 缺口，无法连贯成线。
+- **根因**：font 的 box-drawing glyph（U+2500-257F）通常只占 EM box 高度 = `font_size_px * dpr`（30 device px），但 cell 高度 = `(ascent + descent) * dpr`（≈ 36 device px，line-height ~1.2× font size）。glyph 在 cell 中垂直居中，cell 顶部 + 底部各留 ~3 device px 空白。垂直相邻 cell 的 `│` glyph 边缘相隔 6 device px → 视觉上断开。我此前的修复（Nearest sampler / 整数对齐 / UV crop / alphabetic baseline / atlas slot 64×96）解决了「字符渲染本身的精度」，但没有解决「字体 glyph 不延伸到 cell 边缘」这一固有问题。
+- **方案候选**：
+  - **A. Box-drawing primitive 渲染**：检测 cell.ch ∈ U+2500-257F 时不查 atlas、直接 emit 一组填充矩形作为 CellInstance。每个字符 1-3 个矩形（横线 / 竖线 / 角点）。覆盖最常用集（约 22 字符：`─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬`）。**用户体验最佳**，但实现量较大（每个字符需要单独的几何）。
+  - **B. 把 box-drawing glyph 在垂直方向上拉伸填满 cell**：UV crop 改成只 crop 水平（保留 glyph 形状），垂直采样整个 cell_h；rasterizer render 时也把 fill_text 的 Y 区间扩到整个 ascent+descent。简单，但其他字符也会被拉伸（影响 ascender/descender 比例）→ 副作用大。**不推荐**。
+  - **C. 换字体到 box-drawing 设计 cover full cell-line-height 的字体**（Iosevka、SF Mono、Cascadia Code 等）。**不需要代码改动**，但用户字体选择不可控。
+  - **D. 减小 line-height factor 让 cell ≈ font_size**：`measure_font` 返回 `font_size_px * 1.0`（不是 `1.2`），cell 缩到 EM box 高度。会裁掉 'g' / 'p' / 'y' 的 descender。**不推荐**。
+- **当前推荐**：**A**，但分阶段：先实现核心 16 字符（single-line 全套 + double-line 4 角），覆盖 80% 实际用例；剩余的留给字体或 follow-up。
+- **影响范围**：`packages/ridge-term/src/render/webgpu.rs::draw_row` + `packages/ridge-term/src/render/canvas2d.rs::draw_row`（Canvas2D 也需要同步实现，否则 fallback 路径仍有 gap）；可能新增 `packages/ridge-term/src/render/box_drawing.rs` 模块封装 char → primitive geometry 映射。
+- **测试**：手工用 ASCII 截图对比；可加单测 verify primitive geometry for each codepoint。
+- **优先级**：HIGH — Claude Code / lazygit / btop / unicode tree CLI 都密集使用 box-drawing。
+
+- **报告（用户 2026-05-05）**："当前终端丢失了重构终端（移除 xterm.js）之前的滚动到最底部按钮 / 终端侧边滚动条 / 可以进行拆分终端的右键菜单（可以通过历史记录确认具体的菜单选项）"
+- **缺失项**：
+  1. **滚动到最底部按钮**——用户翻历史后，需要快速跳回到 live grid 底部。当前要靠按 End / Esc / 输入字符触发 kernel 自动 scroll-to-bottom。需要一个浮动按钮（仅在 `scroll_offset > 0` 时显示）。
+  2. **终端侧边滚动条**——视觉指示当前在 scrollback 的位置 + 可拖拽。当前完全无视觉反馈，用户只能盲滚。
+  3. **拆分终端的右键菜单选项**——右键现在只显示「复制 / 粘贴 / 全选 / 清空」（见 `RidgePane.svelte::onContextMenu`），缺失了 xterm 时代的「水平拆分 / 垂直拆分 / 关闭 pane / Bot agent / 标签重命名」等。需要 git 历史确认完整列表。
+- **执行步骤**：
+  1. `git log --all --diff-filter=D -- src/lib/components/Pane.svelte` + `git show <commit>:src/lib/components/Pane.svelte` 找回原 contextMenu 项目。
+  2. `RidgePane.svelte::onContextMenu` 加回缺失项（split horizontal/vertical 调 `paneTreeStore` API，close pane 调 `closePane(paneId)`，rename 调 alertDialog/promptDialog）。
+  3. 滚动到最底部按钮：浮在 pane 右下，CSS `position: absolute; bottom: 12px; right: 12px`，仅 `manager.scrollState(paneId).offset > 0` 时显示。点击调 `kernel.scrollToBottom()`。
+  4. 滚动条：原 xterm 用 `scrollbarColor` CSS（不可拖）。我们的 wasm kernel 没有 native 滚动条；要么用 transparent overlay div 模拟，要么实现 wgpu / canvas2d 直绘（更复杂）。MVP 用 overlay div：高度 = pane_h × (rows / total)，top = pane_h × (offset / total)，draggable 调 scroll API。
+- **影响范围**：`src/lib/components/RidgePane.svelte`（contextMenu 扩展 + 浮动 button + scrollbar overlay）+ 可能 `src/lib/stores/paneTree.ts`（确认 split / closePane API 暴露）。
+- **优先级**：HIGH——日常使用必备 affordance。
+
 ### 1.19 [META] 全部 §1.x / §2-§7 完成后做架构 review + 计划 refresh ⏳
 
 - **触发条件**：所有 §1.x / §2-§7 中标记 ✅ / 已实施 / 决定不做 的项加在一起 = 100% 完成。剩余 ⏳ 项要么用户已显式标 not-needed，要么已经合并入新 plan。
@@ -432,12 +571,142 @@ scaffold ✅ + §4.1.a-d 全 GPU 链路 ✅ + set_font_config ✅ + AnyBackend e
 - **解耦**：atlas 与 `WebGpuBackend` 解耦——纯数据结构，`mod.rs` 中 `pub mod glyph_atlas;` 不带 cfg 门，host build 也编译。后续 Canvas2D 若需要也能读（虽然 Canvas2D 现走浏览器原生 fillText 不需要）。
 - **测试**：7 条单元测试，全部 host pass（`cargo test --lib glyph_atlas`）：lookup 缺失/命中、eviction 容量边界、LRU promotion 顺序、duplicate insert 替换不驱逐、capacity-0 拒绝、clear。120 passed total（113 + 7）。
 
-### 4.3 共享 surface（OVERVIEW D1）⏳
+### 4.3 共享 surface（OVERVIEW D1）⏳ — 详细设计 2026-05-05
 
-- **背景**：当前 round 2.4 是每 pane 一个 `<canvas>`。OVERVIEW 设计是全局一个 canvas + scissor rect。
-- **依赖**：4.1 落地后才有意义（Canvas2D 不便于 scissor 划分）。
-- **影响范围**：`manager.ts` 的 attach/detach 逻辑要重写——所有 PaneEntry 共享同一个 canvas，render 循环改为按可见 viewport 分别 scissor。
-- **预期收益**：10 pane 时 1 个 GL ctx + 1 份 atlas，比现在 10 个 Canvas2D context 节省 ~80% GPU 内存。
+- **背景**：当前 round 2.4 是每 pane 一个 `<canvas>` + 一份 wgpu::Surface + 一份 GlyphAtlas + 一份 RenderHandle。OVERVIEW §D1 的最终态：全局一个 canvas + 一份 wgpu::Device/Queue + 一份 GlyphAtlas，每 pane 在该 surface 的子矩形里通过 scissor 渲染。
+- **依赖**：§4.1 已 ✅（WebGpuBackend 单 pane 路径已落地）；§7.2 浏览器实跑回归通过（用户验证 §1.20/§1.21/§7.2/§1.22/§1.23 都正常）。
+- **预期收益**：N pane 时 1 个 GPU ctx + 1 份 atlas（vs 现在 N 份），10 pane 配置内存从 ~60 MiB（atlas 6 MiB × 10）降到 ~6 MiB；同时减少 wgpu adapter request × N 的初始化开销。
+- **范围限定**：本节仅适用于 WebGPU 路径。Canvas2D fallback 仍保留每 pane 一个 `<canvas>`（CanvasRenderingContext2D 不便于 scissor 划分；Canvas2D 路径用户量小且不是 D1 优化目标）。
+
+#### 架构
+
+```
+┌── ridge-app (Svelte) ──────────────────────────────────────────────┐
+│  +page.svelte                                                       │
+│   └── <canvas data-rg-shared-surface>  ← ONE canvas, overlay-mode  │
+│        + position absolute, z-index ↓ vs SplitContainer            │
+│   └── <SplitContainer> ... <RidgePane>×N                           │
+│         RidgePane: 仅占位 div，向 SharedSurface 报告 rect           │
+│                                                                     │
+│  SharedSurface (TS singleton in manager.ts)                         │
+│   ├─ canvas: HTMLCanvasElement                                      │
+│   ├─ handle: SharedRenderHandle (wasm)                              │
+│   ├─ panes: Map<paneId, { kernel, viewportRect, dpr }>             │
+│   ├─ ResizeObserver on canvas → handle.resizeSurface(...)           │
+│   └─ rAF loop: for each pane → scissor(rect) + handle.renderPane    │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ wasm-bindgen FFI
+┌── ridge-term (Rust → WASM) ────────────────────────────────────────┐
+│  SharedRenderHandle { renderer: SharedRenderer<AnyBackend> }        │
+│   ├─ SharedSurfaceBackend (replaces per-pane WebGpuBackend)         │
+│   │   ├─ device, queue, surface (1×)                                │
+│   │   ├─ pipeline, atlas (1×)                                       │
+│   │   ├─ atlas_texture, sampler (1×)                                │
+│   │   └─ instance_buffer (grows for the largest frame across panes) │
+│   └─ render_pane(paneId, kernel, scissor_rect) — single-pane draw   │
+│                                                                     │
+│  Renderer::tick(...) takes a `scissor_rect: Option<Rect>` and sets │
+│  it on the wgpu RenderPass before draw calls; absent = full surface.│
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+- **关键约束**：浏览器一个 `<canvas>` 只能创建一个 `wgpu::Surface`。所以共享 surface 必须用 SAME canvas 元素。该 canvas 用 `position: absolute` overlay 在 SplitContainer 上方，`pointer-events: none`（事件让 underlying div 接管），但绘制覆盖整个内容区。
+- **scissor 用法**：每帧 begin RenderPass 后，按 pane 顺序：`pass.set_scissor_rect(x, y, w, h)` → 仅清该 pane 的 bg rect → 绘 cells/cursor/overlay → 下一个 pane。
+
+#### 坐标转换
+
+Pane 有自己的 cell 网格 (cols, rows)。每个 cell 的 device-px 坐标在 SHARED canvas 中是：
+
+```
+// pane_rect: 该 pane 的 device-px 矩形 (x, y, w, h) within shared canvas
+// (col, row): 该 pane 内的 cell 坐标
+let pixel_x = pane_rect.x + (col as f32 * cell_w).floor();
+let pixel_y = pane_rect.y + (row as f32 * cell_h).floor();
+```
+
+整数对齐（§7.2.c）仍按 pane-local 坐标做，再加 pane_rect.x/y offset。CellInstance 的 pixel_xy 直接是 shared-canvas 坐标。FrameUniform.viewport 仍是 shared canvas 的总尺寸。
+
+scissor rect (set_scissor_rect) 限制 fragment 写入到 pane 区域内，所以 cell quad 即使溢出 pane 也只画 pane 内部分。这保证 splitter 拖动时不会有像素跨 pane 边界。
+
+#### Atlas 共享
+
+当前 `WebGpuBackend.atlas: GlyphAtlas` per pane。改为 `SharedSurface.atlas` 一份。GlyphKey 已经包含 (font_family_hash, font_size_q, glyph_id, style_flags)，多 pane 都用同字号同字体时 atlas hit 率接近 100%。eviction LRU 跨 pane 共享。
+
+实现：
+1. 把 `WebGpuBackend.atlas / atlas_texture / atlas_view / next_free_layer / rasterizer` 字段从 per-pane 移到 SharedSurfaceBackend。
+2. `draw_row` cell-rasterize-on-miss 路径改成对 SharedSurface 加锁/借用（Rust 借用规则可能要求 `RefCell<atlas>` 或者 `&mut self` 上下文重组）。
+3. `set_font_config(family, size_px)` 仍然 per pane 设置（不同 pane 可以不同字体，已经被 GlyphKey 分桶），但 rasterizer 是共享的——传入 family 参数即可。
+
+#### 渲染循环
+
+`SharedSurface` 在 `attach(paneId, container, rect)` 时把 pane 加入 `panes` map。manager 的 rAF tick 改为：
+
+```ts
+function tick() {
+  // 1. Update each pane's viewport rect from its container DOM rect.
+  for (const [paneId, entry] of this.panes) {
+    const r = entry.containerEl.getBoundingClientRect();
+    const canvasR = this.canvas.getBoundingClientRect();
+    entry.rect = {
+      x: (r.left - canvasR.left) * dpr,
+      y: (r.top - canvasR.top) * dpr,
+      w: r.width * dpr,
+      h: r.height * dpr,
+    };
+  }
+  // 2. Render all panes in one frame.
+  for (const [paneId, entry] of this.panes) {
+    if (entry.parked || isOffscreen(entry.rect)) continue;
+    this.handle.renderPane(paneId, entry.rect);
+  }
+}
+```
+
+`handle.renderPane(paneId, rect)` 在 Rust：
+1. Lookup the pane's kernel + selection.
+2. Call `Renderer::tick(kernel, selection, now_ms)` BUT with the rect threaded into the backend so `begin_frame`/`draw_*`/`end_frame` apply scissor.
+3. Note: `end_frame` no longer presents per-call; it accumulates all panes' instances and submits ONE frame at the end. Driver: SharedSurface owns a "this-frame's instances" buffer and calls `flush_frame()` after iterating all panes.
+
+#### Resize
+
+两类：
+- **Canvas resize**：window resize / monitor DPR change → SharedSurface gets ResizeObserver tick → `handle.resize_surface(canvas.width, canvas.height, dpr)`.
+- **Pane rect change**：SplitContainer drag-resize → pane's `containerEl.getBoundingClientRect()` changes → next rAF tick picks up new rect。PTY SIGWINCH still goes through per-pane `kernel.resize(rows, cols)` independently.
+
+§1.22 alt-screen-clear-on-resize 仍 per-pane 生效。
+
+#### Attach / Detach
+
+- `attach(paneId, container)`：create wasm `Kernel` + register pane in SharedSurface map。NO new wgpu::Surface — reuse the shared one。NO new canvas in DOM — RidgePane just owns its layout div。
+- `detach(paneId)`：drop the kernel; remove from map。Atlas LRU continues to evict that pane's glyphs naturally。
+- `park` / `unpark`（§5.1）：unchanged contract，just kernel preservation across remount。
+
+#### RidgePane.svelte 变化
+
+- 移除内部 `<canvas>` 创建路径（manager.attach 不再绑 canvas，绑 div + rect）。
+- IME helper textarea / focus tracking / context menu / scrollbar / scroll-to-bottom 浮动按钮（§1.23）—— 全部保留（与渲染层无关）。
+- 视觉效果上：用户应该完全察觉不到差异——pane 边界、cell 渲染、cursor 位置全一致。
+
+#### Phase 化交付
+
+1. **Phase A**（✅ 2026-05-04，§4.5 a-e 已 done）：单 pane WebGPU 跑通（这是 §4.1 的实质收尾）。
+2. **Phase B**（本节起步）：把 atlas / rasterizer / device 提到 SharedSurfaceBackend，但仍是单 pane（保留 SharedSurface 单实例 + 1 pane）。验证 atlas 跨 pane 复用的代码路径在单 pane 也跑得通。
+3. **Phase C**：HTML canvas 从 RidgePane 移到 +page.svelte 顶层（overlay）；RidgePane 改为只报告 rect。manager 实现 N-pane render 循环 + scissor。
+4. **Phase D**：性能基准（§4.4）— 对比单 pane / 4-pane / 10-pane 的 FPS、frame time p99、JS heap、GPU memory。
+
+#### 风险
+
+- **R1**：scissor 和整数对齐（§7.2.c）交互——pane_rect.x 必须也整数对齐，否则 scissor 边界与 cell 边界不一致，会出现 1px 漏画。Phase C 实施时 pane_rect 计算用 floor 同样的方式。
+- **R2**：overlay canvas 的 z-index 和 SplitContainer 子元素事件穿透——必须 `pointer-events: none` 且 IME helper / 滚动条 / contextmenu 都来自 underneath div，不来自 canvas。需要 RidgePane 完整保留这些 affordance。
+- **R3**：多 pane 的 wgpu 资源生命周期——单 SharedSurface owns Device/Queue，pane 进出不应触发 device.poll() 或 swap chain reconfig。validate by 10 pane 极限测试。
+- **R4**：Selection 跨 pane——当前 selection 在每个 kernel 内部 (selection.rs)。共享 surface 后，pane 之间互不影响，但 SplitContainer 拖动 pane 时旧 selection rect 没清。需要 `paneTreeStore` 监听拖动结束，对受影响 pane 调 `kernel.clearSelection()`。
+
+#### 测试
+
+- 单 pane 在 SharedSurface 走通后：选中、滚动、resize、字符画、IME、Ctrl+F 搜索 全部回归。
+- 多 pane 极限：10 pane 各跑 `seq 100000`，监控 GPU 内存、FPS、wasm heap。
+- 拆分动画：拖 splitter 时 pane rect 实时更新，不出现裂痕 / 残留。
 
 ### 4.4 性能基准 ⏳
 
@@ -520,19 +789,40 @@ scaffold ✅ + §4.1.a-d 全 GPU 链路 ✅ + set_font_config ✅ + AnyBackend e
 
 - **背景**：OVERVIEW §R1 风险。所有"看起来对"的代码迄今只在 Rust 单元测试通过，没有 `pnpm tauri dev` 内被人用过的证据（除最近修的 RidgePane 输入失效问题）。
 - **任务**：按 INTEGRATION_R2_4.md §Step 7-8 八项视觉验证打钩，截图存到 `docs/term-rebuild/QA/`。
-  - [ ] prompt 显示
-  - [ ] 输入命令 + 回车有输出
-  - [ ] Ctrl+C 终止 sleep
-  - [ ] `ls --color` 看到颜色
-  - [ ] 拖 splitpanes 边界跟随
-  - [ ] `seq 200` 滚轮看历史
-  - [ ] Shift+PageUp / Shift+PageDown 翻页
-  - [ ] 选段 → 右键复制
+  - [x] prompt 显示
+  - [x] 输入命令 + 回车有输出
+  - [x] Ctrl+C 终止 sleep
+  - [x] `ls --color` 看到颜色
+  - [x] 拖 splitpanes 边界跟随
+  - [x] `seq 200` 滚轮看历史
+  - [x] Shift+PageUp / Shift+PageDown 翻页
+  - [x] 选段 → 右键复制
 - **附加验证项**：
-  - [ ] vim/less 退出后主屏内容恢复（alt screen ?1049）
-  - [ ] 输入中文（IME 候选窗位置正确）
-  - [ ] Ctrl+F 搜索 + n/N 切匹配
-  - [ ] Ctrl+click OSC 8 链接打开
+  - [x] vim/less 退出后主屏内容恢复（alt screen ?1049）
+  - [x] 输入中文（IME 候选窗位置正确）
+  - [x] Ctrl+F 搜索 + n/N 切匹配
+  - [x] Ctrl+click OSC 8 链接打开
+
+### 7.2.c WebGPU 运行时默认化 + 字体/可见性回归修复 ✅ 2026-05-05
+
+- **背景**：用户实跑 §4.5 a-e WebGPU 路径后报告三个问题：(1) 字体太小太细显示得有些奇怪、(2) 不聚焦到对应输出行就不显示、(3) 想让 WebGPU 是默认行为，通过运行时适配器检测决定，不要打包时指定也不要 localStorage 硬编码门槛。
+- **修复 1（字体小/细，atlas UV 没 crop）**：`packages/ridge-term/src/render/glyph_rasterizer.rs::rasterize` 加 `dpr: f32` 参数，按 `font_size_px * dpr` 渲染——OffscreenCanvas backing 是 device px，原代码 `{font_size_px}px` CSS 大小落到 device-px slot 上，DPR 2 时只占了一半 → 小+细。同时返回真实 bbox（device px，clamp 到 slot），让 `webgpu.rs::draw_row` 把 `atlas_uv` 从 `[0,0,1,1]` crop 为 `[0,0,bbox_w/slot_w, bbox_h/slot_h]`，避免 cell quad 把 32×32 slot 满采样而把小 glyph 拉到 cell 角落。
+- **修复 2（非聚焦行不显示，dirty-row 与 LoadOp::Clear 冲突）**：`backend.rs::RenderBackend` 加 default-method `requires_full_frame() -> bool`（默认 false，Canvas2D 走 partial 重画）；`webgpu.rs` override 为 true。`renderer.rs::tick` 在 dirty 计算前 OR 进 `full_redraw_pending`——WebGPU 的 `LoadOp::Clear(theme.bg)` 每帧抹掉整张 swap-chain texture，dirty-row diff 会让上一帧未脏的行掉到 bg。强制每帧 full redraw 修好。
+- **修复 3（WebGPU 默认化、运行时回退）**：
+  - `Cargo.toml::[features].default = ["webgpu"]`（原 `[]`）——webgpu 模块进默认 wasm bundle，`RenderHandle.newWithWebgpuFirst` 静态方法始终被导出。
+  - `packages/ridge-term/build.mjs`：`--webgpu` flag 退化为兼容 no-op；新增 `--no-webgpu` 显式排除（`--no-default-features` 给 cargo），用于 size-constrained 构建。banner / Usage 注释同步更新。
+  - `src/lib/terminal/manager.ts::instance()`：`preferWebgpu` 默认为 `true`；只在 `localStorage.RIDGE_WEBGPU === '0'` / `=== 'false'` 时显式禁用（debug escape hatch）。注释明确："JS 端 typeof 检测 + Rust 端 request_adapter 失败"双层 runtime fallback。
+  - `OVERVIEW.md` §3 line 121 + `CLAUDE.md` "Render backends" 段更新，移除 `--features webgpu` 引用，写明 default + runtime detection。
+- **审查 hardcoded（用户附加约束）**：
+  - `webgpu.rs::ATLAS_SLOT_W/H = 32/32` 太小——15 CSS px 字体 × DPR 2 行高 ≈ 36 device px，bbox 被 clamp 到 32 → descenders 'g'/'p'/'y' 截断。改为 `64/96` 覆盖 18 CSS × DPR 2.5 的实际范围，同时考虑 CJK 宽字符（cell.width=2）。每 atlas 内存 1 MiB → 6 MiB；当前每 pane 一份，§4.3 共享 surface 后收敛为单份。注释里写明未来可由 `set_font_config` 按需重新分配。
+  - `font_size_px: 15.0` 默认硬编码 OK——`set_font_config` 由 JS 侧 settings 注入。
+  - `present_mode: Fifo` / `desired_maximum_frame_latency: 2` 是 wgpu sample default，正常。
+- **影响范围**：
+  - Rust：`packages/ridge-term/src/render/{backend.rs,renderer.rs,webgpu.rs,glyph_rasterizer.rs}` + `Cargo.toml` + `build.mjs`
+  - JS：`src/lib/terminal/manager.ts`
+  - Doc：`OVERVIEW.md`、`CLAUDE.md`、`TASKS.md`（本条）
+- **验证**：`cargo check --target wasm32-unknown-unknown --lib` 0 警告（默认 + `--no-default-features`）；`cargo test --lib` 240 通过；`pnpm check` 0 errors / 0 warnings (4098 files)；`node build.mjs` 重新打包 wasm 成功，pkg/ridge_term.d.ts 含 `static newWithWebgpuFirst`。**待用户实跑确认 (a) 字体大小正常、(b) 滚动 / 静止行都可见、(c) `localStorage.removeItem('RIDGE_WEBGPU')` 状态下默认走 WebGPU 路径**。
+- **未做**：(i) WebGL2 中间层 backend——用户原文是「回退到 webgl 或 canvas」，当前只实现 Canvas2D 兜底；WebGL 是未来的 GPU 中间层选项，需独立 §。(ii) 动态 atlas slot 大小（按 set_font_config 重分配）——文档里标记为 future improvement。(iii) §4.3 共享 surface（依赖 §7.2 单 pane 验证通过）。
 
 ---
 
@@ -591,6 +881,17 @@ scaffold ✅ + §4.1.a-d 全 GPU 链路 ✅ + set_font_config ✅ + AnyBackend e
 - 2026-05-03 — 给 `state.rs:79` `Starting` 变体的 `#[allow(dead_code)]` 加内联 justification 注释——指向 TASKS §1.14。原本只有裸 attribute，按本会话加到 CLAUDE.md 的 dead_code 政策（justification 引用过期机制时 grep + 删除）将来某次 cleanup 可能错把变体当死代码删掉，损伤前端 UI affordance + 序列化 match 的 audit trail 锚点。注释列出全部 4 个相关位置（enum + commands/pane.rs:60-64 + TS union + SplitContainer.svelte:592-599）+ 唯一 gap（teammate/server.rs Idle→Busy 直跳）+ 指向 TASKS §1.14。`cargo check` 维持 0 错 0 警告。
 
 - 2026-05-02 — 一系列协议补全 patch：ECH/ICH/DCH/REP/DECSCUSR/DSR/DA/?2026/?1004/OSC0/1/2/7/8、鼠标拖选（含 word/line/shift-click）、Ctrl+F 搜索、IME v2 cursor-tracking、Ctrl+click OSC 8 链接 — 详见 git log
+
+- 2026-05-05 — 多轮迭代综合检查点（uncommitted in working tree）：
+  - **§1.21 三层修复 + 真根因**：(1) `RidgePane.svelte` OSC 标题 store identity-preserving guard；(2) `Explorer.svelte` 主 cwd-effect 删除 `$terminalTitles` 依赖 + 新增独立 title-only effect 调 `fileExplorer.ts::updatePaneTitles`（identity-preserving column reuse）；(3) **真根因**：发现第二个 `$effect` (line 60, `initFileExplorer`) 也依赖 `$terminalTitles`，每个 OSC 标题 emit 都会 forward 到 `syncAllWorkspaces` → `syncWithPaneCwds` 重建 columns 数组——删除其 title 依赖；(4) `paneTree.ts::normalizeCwd` 加 trailing-slash 修剪（除 root），防 OSC 7 with/without 斜杠不一致击穿 setPaneCwd identity guard；(5) `fileExplorer.ts::syncWithPaneCwds` 删除 `hasNewJoiner → needsRefresh` 触发——pane 加入 cached column 仅 label 切换不重载，符合用户「切到已有文件树只切 label 不刷新」语义；E6 测试更新到新策略（27/27 通过）。
+  - **§1.20 选区 abs-row 重构**：`selection.rs` `Pos { row, col }` viewport-relative → `RangeAbs { start_abs_row, start_col, end_abs_row, end_col }`，`Selection::set` 在创建时捕获 scroll context，`range_in_viewport(&Terminal)` 每帧翻译到 viewport 坐标。新增 3 单测：`selection_survives_scroll_into_scrollback` / `range_in_viewport_translates_with_scroll` / `empty_terminal_select_all_is_safe`。
+  - **§7.2 WebGPU 三大根因 + 默认化**：(a) `glyph_rasterizer.rs` 加 `dpr: f32` 参数，按 `font_size_px * dpr` 渲染解决「字体太小太细」+ 切换 `text_baseline` 从 "top" 到 "alphabetic" + 显式 `fill_text(0, ascent_dev)` 解决顶部缺失；(b) `webgpu.rs::draw_row` UV crop 从 `[0,0,1,1]` 改成 `[0, 0, glyph.width/slot_w, glyph.height/slot_h]` 让 cell quad 只采样 bbox 区域；(c) `RenderBackend::requires_full_frame()` default-method（false）+ WebGpuBackend override true + `Renderer::tick` 调用之 + `AnyBackend::requires_full_frame()` forward——修复 `LoadOp::Clear` 每帧抹屏导致非 dirty 行内容消失；(d) Cargo.toml `default = ["webgpu"]` + `build.mjs` 用 `--no-webgpu` 替换 `--webgpu`（legacy no-op）+ `manager.ts::instance` `preferWebgpu` 默认 true（`localStorage.RIDGE_WEBGPU = '0'` 才禁），双层运行时回退（JS typeof 检测 + Rust request_adapter 失败 catch → Canvas2D）；(e) `ATLAS_SLOT_W/H` 32×32 → 64×96 覆盖 18 CSS px × DPR 2.5 + CJK 宽字符；(f) atlas sampler `Linear` → `Nearest` 防 UV-edge 半透明 blur；(g) WebGPU draw_row/cursor/selection/hyperlink 全部整数对齐（`floor((col*cell_w))`）防 fractional-pixel 字符画细线；(h) OVERVIEW.md / CLAUDE.md 文档同步。
+  - **§1.22 alt-screen 清空 on resize**：`grid.rs::resize` 检测「dim_changed && is_alt」时清空 alt buffer + cursor home + scroll 复位，让 Claude Code / lazygit / Ink-based partial-diff 重绘落到干净画布，避免错位行/字符。新增 `resize_on_alt_screen_clears_alt_buffer` + `resize_on_primary_does_not_clear_primary` 单测；旧 `reflow_skips_alt_screen` 重命名 + 期望反转。
+  - **§1.23 缺失 UI 复刻**：(1) `RidgePane.svelte::onContextMenu` 加「向右拆分 / 向下拆分 / 关闭面板」3 项调 `splitPane(paneId, 'vertical'/'horizontal')` 和 `closePane(paneId)`；(2) 浮动滚动到底部按钮（仅 `scrollState.offset > 0` 时显示）；(3) 侧边可拖拽滚动条（10px 轨道 hover 显形 + 缩略图按 `rows / (rows + scrollback_total)` 比例 + 拖动 setPointerCapture + 250ms poll 同步 PTY 异步增长）。ARIA scrollbar role / aria-valuemin/max/now。
+  - **§4.3 共享 surface 详细设计**：本节从 4 行高级意图扩展到 ~120 行可执行设计——架构图（SharedSurface JS 单例 + SharedSurfaceBackend Rust 单 device/queue/atlas）、坐标转换公式、atlas 迁移路径、渲染循环伪代码、resize 二分类、attach/detach 生命周期、RidgePane.svelte 影响、Phase A→D 分阶段交付（Phase A ✅ 已完成，Phase B 起步点已定）、风险登记 R1-R4 + mitigations、测试矩阵。
+  - **整体验证**：`cargo test --lib` 242/242（之前 240，+2 新增 §1.22 测试）；`cargo check --target wasm32-unknown-unknown --lib` 默认 + `--no-default-features` 双模式 0 警告；`pnpm check` 0 errors / 0 warnings (4098 files)；`pnpm test fileExplorer.test.ts` 27/27；wasm pkg 重打。
+  - **未提交**：当前所有改动仍在 working tree，等用户实跑回归 §1.20/§1.21/§7.2/§1.22/§1.23 后再决定一次性 checkpoint commit 或 cherry-pick 拆分。`§4.3 Phase B（atlas-to-shared in single pane）` 待用户给绿灯。
+  — uncommitted
 
 ---
 

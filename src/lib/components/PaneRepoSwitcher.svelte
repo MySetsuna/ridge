@@ -16,6 +16,7 @@
     setPaneSelectedRepo,
     type PaneGitInfo,
   } from '$lib/stores/paneGitStatus';
+  import { portal } from '$lib/actions/portal';
 
   interface Props {
     paneId: string;
@@ -43,7 +44,10 @@
   function onGlobalMousedown(e: MouseEvent): void {
     if (!open) return;
     const t = e.target as HTMLElement | null;
-    if (root && t && root.contains(t)) return;
+    if (!t) return;
+    if (root && root.contains(t)) return;
+    // Portaled popup lives under <body>, so root.contains() misses it.
+    if (t.closest(`[data-rg-portal-id="reposwitcher_${paneId}"]`)) return;
     open = false;
   }
   function onGlobalKeydown(e: KeyboardEvent): void {
@@ -89,6 +93,7 @@
 
     {#if open}
       <div
+        use:portal={{ id: `reposwitcher_${paneId}` }}
         style={popupStyle}
         class="rg-popup min-w-[180px] max-w-[320px] overflow-hidden"
         role="menu"

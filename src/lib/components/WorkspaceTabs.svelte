@@ -135,31 +135,33 @@
      container and remain visible regardless of scroll position.
      wheel → horizontal pan (no Shift needed) is handled by overlayScroll. -->
 <div class="min-w-0 flex-1 flex items-center">
+  <!-- Actions slot (e.g. "+" new-workspace button): always visible on the
+       right, never scrolls with the tab strip. -->
+  {#if actions}
+  <div class="shrink-0 rg-no-drag">
+    {@render actions()}
+  </div>
+  {/if}
   <!-- Scrollable tab strip: tab items are direct flex children so shrink-0
        causes them to overflow the container width, enabling scroll. -->
-  <div
-    class="rg-no-drag min-w-0 flex-1 py-1 gap-1"
-    use:overlayScroll={{ preset: 'horizontal-tabs' }}
-  >
+  <div class="rg-no-drag min-w-0 flex-1 py-1 gap-1" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
     {#each workspaces as ws, i (ws.id)}
-      <div
-        class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move
+    <div class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move
         {ws.id === activeWorkspaceId
           ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
           : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}
-        {dragOverIndex === i ? 'ring-2 ring-[var(--rg-accent)]/50' : ''}"
-        draggable="true"
-        ondragstart={(e) => handleDragStart(e, i)}
-        ondragover={(e) => handleDragOver(e, i)}
-        ondragleave={handleDragLeave}
-        ondrop={(e) => handleDrop(e, i)}
-        ondragend={handleDragEnd}
-        oncontextmenu={(e) => handleContextMenu(e, ws)}
-        role="button"
-        tabindex="0"
+        {dragOverIndex === i ? 'ring-2 ring-[var(--rg-accent)]/50' : ''}" draggable="true" ondragstart={(e)=>
+      handleDragStart(e, i)}
+      ondragover={(e) => handleDragOver(e, i)}
+      ondragleave={handleDragLeave}
+      ondrop={(e) => handleDrop(e, i)}
+      ondragend={handleDragEnd}
+      oncontextmenu={(e) => handleContextMenu(e, ws)}
+      role="button"
+      tabindex="0"
       >
-        {#if editingId === ws.id}
-          <input
+      {#if editingId === ws.id}
+      <input
             type="text"
             bind:this={renameInput}
             bind:value={editingName}
@@ -168,7 +170,7 @@
             onkeydown={(e) => handleRenameKeydown(e, ws.id)}
           />
         {:else}
-          <button
+      <button
             type="button"
             class="text-inherit"
             title="切换到 {getWorkspaceName(ws)}"
@@ -176,10 +178,10 @@
           >
             {getWorkspaceName(ws)}
           </button>
-        {/if}
+      {/if}
 
-        {#if workspaces.length > 1}
-          <button
+      {#if workspaces.length > 1}
+      <button
             type="button"
             class="ml-1 opacity-60 hover:opacity-100 hover:text-red-400 transition-opacity"
             title="关闭工作区"
@@ -198,15 +200,8 @@
               <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" />
             </svg>
           </button>
-        {/if}
-      </div>
+      {/if}
+    </div>
     {/each}
   </div>
-  <!-- Actions slot (e.g. "+" new-workspace button): always visible on the
-       right, never scrolls with the tab strip. -->
-  {#if actions}
-    <div class="shrink-0 rg-no-drag">
-      {@render actions()}
-    </div>
-  {/if}
 </div>

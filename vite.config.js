@@ -38,11 +38,11 @@ export default defineConfig({
   // 优化依赖预构建
   optimizeDeps: {
     include: [
-      'xterm',
-      'xterm-addon-fit',
       'monaco-editor',
       'svelte-splitpanes',
       '@tauri-apps/api'
     ],
+    exclude: ['@ridge/term-wasm'],
   },
+  assetsInclude: ['**/*.wasm'],
 });

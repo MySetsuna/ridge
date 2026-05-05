@@ -8,16 +8,11 @@
 //     `pnpm add file:...` ends up with the wrong package name.
 //
 // Usage:
-//   node build.mjs                   # release, dual-backend (Canvas2D + WebGPU; default)
-//   node build.mjs --dev             # dev (faster compile, larger wasm)
-//   node build.mjs --no-webgpu       # release, Canvas2D-only (smaller wasm)
-//   node build.mjs --dev --no-webgpu # dev + Canvas2D-only
+//   node build.mjs           # release
+//   node build.mjs --dev     # dev (faster compile, larger wasm)
 //
-// Note: `--webgpu` (legacy flag from round 4.5) is still accepted but is
-// now a no-op — WebGPU ships in the default cargo feature set so the JS
-// `RenderHandle.newWithWebgpuFirst` is always present, and TerminalManager
-// runtime-detects the GPU adapter at attach time. To force a Canvas2D-only
-// bundle (e.g. size-constrained), pass `--no-webgpu`.
+// Or via npm script (added to Cargo project's package.json — none here,
+// so users invoke this directly).
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -26,14 +21,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv.includes('--dev');
-// `--no-webgpu` strips the WebGPU backend by passing `--no-default-features`
-// to cargo. Default builds include WebGPU because the user wants the GPU
-// path on by default with runtime adapter detection (no build-time gate).
-const noWebgpu = process.argv.includes('--no-webgpu');
 
-console.log(
-	`[ridge-term] ${isDev ? 'dev' : 'release'} build${noWebgpu ? ' (Canvas2D-only)' : ' (Canvas2D + WebGPU)'}`,
-);
+console.log(`[ridge-term] ${isDev ? 'dev' : 'release'} build`);
 
 // 1. Run wasm-pack. We don't pin its location — assume it's on PATH.
 //    --target web: standard ESM output that works in Vite without plugins
@@ -45,13 +34,6 @@ const wasmPackArgs = [
 	'--out-name', 'ridge_term',
 	isDev ? '--dev' : '--release',
 ];
-
-// `wasm-pack build` forwards everything after `--` to cargo. The webgpu
-// feature is in cargo's default feature set (Cargo.toml `[features]`),
-// so we only need cargo-side flags when explicitly opting OUT.
-if (noWebgpu) {
-	wasmPackArgs.push('--', '--no-default-features');
-}
 
 const wasmPackResult = spawnSync('wasm-pack', wasmPackArgs, {
 	stdio: 'inherit',
@@ -100,18 +82,6 @@ pkg.types = './ridge_term.d.ts';
 
 fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2));
 console.log(`[ridge-term] patched pkg/package.json → name = ${pkg.name}`);
-
-// 4. Remove the auto-generated `pkg/.gitignore`. wasm-pack writes a
-//    one-line `*` here so the build output is opt-out from VCS by
-//    default — sensible if you publish to npm, but this project
-//    consumes `pkg/` via `link:packages/ridge-term/pkg` from the root
-//    package.json, so the directory MUST live in git to survive a
-//    fresh clone. Re-deleting on every build keeps the workflow clean.
-const pkgGitignorePath = path.join(__dirname, 'pkg', '.gitignore');
-if (fs.existsSync(pkgGitignorePath)) {
-	fs.unlinkSync(pkgGitignorePath);
-	console.log('[ridge-term] removed wasm-pack-generated pkg/.gitignore (committed pkg/ workflow)');
-}
 
 console.log('[ridge-term] done.');
 console.log('  next: cd ../ridge-app && pnpm add file:../ridge-term/pkg');

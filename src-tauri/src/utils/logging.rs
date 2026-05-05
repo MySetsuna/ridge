@@ -41,7 +41,7 @@ pub fn init_once(app_data_dir: &PathBuf) {
     let (nb, guard) = tracing_appender::non_blocking(file_appender);
     let _ = GUARD.set(guard);
 
-    let filter = EnvFilter::try_from_env("WIND_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_env("Ridge_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
     let file_layer = fmt::layer()
         .with_writer(nb)

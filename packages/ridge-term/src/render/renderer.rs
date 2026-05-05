@@ -186,6 +186,15 @@ impl<B: RenderBackend> Renderer<B> {
             self.full_redraw_pending = true;
         }
 
+        // Backends that can't preserve content across frames (WebGPU
+        // clears the swap-chain on every present) need every visible row
+        // dirty every tick — otherwise non-dirty rows render only their
+        // cleared bg and lose all glyphs. Canvas2D returns false here so
+        // dirty-row diffing keeps its perf benefit.
+        if self.backend.requires_full_frame() {
+            self.full_redraw_pending = true;
+        }
+
         // Viewport scroll offset change → full redraw. The row→content
         // mapping shifts when the user pages history, so per-row hashes
         // computed against last frame's mapping aren't valid.

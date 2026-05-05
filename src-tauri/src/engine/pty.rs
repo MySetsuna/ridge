@@ -2,7 +2,9 @@ use parking_lot::Mutex;
 use portable_pty::MasterPty;
 use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::engine::cwd;
@@ -78,6 +80,62 @@ pub struct PtyHandle {
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub _child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Resize-silence deadline in epoch milliseconds. When `> 0` and `now < deadline`,
+    /// the PTY reader thread suppresses scrollback writes AND frontend emits to swallow
+    /// ConPTY's viewport-replay byte storm. Cleared (set to 0) the moment a prompt OSC
+    /// (`OSC 133;A/B/P` FinalTerm or `OSC 633;A/B/P` VS Code shell-integration) is seen
+    /// in the byte stream, OR when the hard timeout elapses.
+    pub resize_silence_deadline: Arc<AtomicI64>,
+}
+
+/// 默认 resize 静默窗口（毫秒）。ConPTY 在 `ResizePseudoConsole` 后会把整个
+/// viewport 通过 stdout 重发；这段重发到 PTY 读端的延迟一般在 50-300ms。
+///
+/// **2026-05-05 缩到 250 ms**：旧值 800 ms 在没有 shell-integration（FinalTerm
+/// `OSC 133;A` 或 VS Code `OSC 633;A`）的 shell / CLI 上会把 SIGWINCH 触发的
+/// redraw 整段吞掉——用户报告 resize 后 cursor 还在「之前的位置」、字符画
+/// 错位、连续字符画不成功，根因都是 redraw 字节落进静默窗口被丢弃，kernel
+/// grid 保留 reflow 前的内容看上去「没刷新」。把窗口缩到 250 ms 后，shell
+/// 的 SIGWINCH 重画几乎都能在 250 ms 之后落入 kernel，对没有 shell-
+/// integration 的环境也能让光标快速恢复正确位置；Shell 启用了 shell-
+/// integration 时仍会被 prompt OSC 提前截断（早于 250 ms），保持原行为。
+/// 250 ms 仍然覆盖 ConPTY replay 区间的下沿；replay tail 偶尔会泄漏少量
+/// 字节进入 kernel，但相对「光标卡 800ms 在错位置」是更小的视觉事故。
+pub const RESIZE_SILENCE_WINDOW_MS: i64 = 250;
+
+/// 当前 epoch 毫秒；时钟异常时返回 0（导致 `silent` 判定为 false，安全降级）。
+fn now_epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 在 `data` 中查找最早出现的 shell-integration prompt OSC 起始字节偏移。
+///
+/// 检测下列序列起始（任一前 7 字节，不要求匹配 ST/BEL 终止符 —— xterm.js 会
+/// 在收到流后自行解析完整序列）：
+/// - `\x1b]133;A` / `\x1b]133;B` / `\x1b]133;P` — FinalTerm 语义 prompt 协议
+/// - `\x1b]633;A` / `\x1b]633;B` / `\x1b]633;P` — VS Code shell-integration 扩展
+///
+/// 返回首个命中的字节偏移（基于原 `data: &str` 的字节位置，可安全用于
+/// `data[off..]` 切片）。若未命中，返回 `None`。
+fn find_prompt_osc(data: &str) -> Option<usize> {
+    const MARKERS: [&str; 6] = [
+        "\x1b]133;A",
+        "\x1b]133;B",
+        "\x1b]133;P",
+        "\x1b]633;A",
+        "\x1b]633;B",
+        "\x1b]633;P",
+    ];
+    let mut earliest: Option<usize> = None;
+    for m in MARKERS.iter() {
+        if let Some(idx) = data.find(m) {
+            earliest = Some(earliest.map_or(idx, |e| e.min(idx)));
+        }
+    }
+    earliest
 }
 
 /// 从工作区表里摘掉该 pane 的 PTY（读线程结束或异常时用）。不影响其它 pane 的表项。
@@ -103,6 +161,17 @@ pub fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
 ) {
     let handle = tokio::runtime::Handle::try_current();
+    // Clone the silence-deadline Arc once at thread start (single read-lock acquire),
+    // so the per-iteration silence check is a pure atomic load with no map locking.
+    // If the handle is gone (race with rapid open+close), fall back to a fresh atomic
+    // — silence will simply never activate, which is safe.
+    let silence_deadline: Arc<AtomicI64> = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .map(|h| h.resize_silence_deadline.clone())
+            .unwrap_or_else(|| Arc::new(AtomicI64::new(0)))
+    };
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
         .spawn(move || {
@@ -112,6 +181,16 @@ pub fn spawn_pty_reader(
             };
             let mut buf = [0u8; 8192];
             let mut utf8_pending: Vec<u8> = Vec::new();
+            // Carryover buffer for the BUG-3 try_send path. When event_tx is
+            // momentarily full, the bytes that failed to send are stashed here
+            // and prepended to the next iteration's chunk. This avoids
+            // `rt.block_on(send)` on the reader thread, which would
+            // back-pressure the kernel pipe and stall the child shell during
+            // bursts. The consumer (the global event-loop in lib.rs) is the
+            // only thing draining event_tx, so as long as it makes progress,
+            // carryover stays small. No upper bound: scrollback already retains
+            // history independently, so we don't need to truncate carryover.
+            let mut carryover: String = String::new();
             let read_result = catch_unwind(AssertUnwindSafe(|| {
                 loop {
                     match reader.read(&mut buf) {
@@ -160,23 +239,105 @@ pub fn spawn_pty_reader(
                             break;
                         }
                         Ok(n) => {
-                            let data = take_decoded_utf8(&mut utf8_pending, &buf[..n]);
+                            let raw = take_decoded_utf8(&mut utf8_pending, &buf[..n]);
+                            if raw.is_empty() {
+                                continue;
+                            }
+                            // Resize silence: while ConPTY is replaying its viewport
+                            // post-`ResizePseudoConsole`, drop bytes from BOTH scrollback
+                            // and frontend emit until the next prompt OSC (FinalTerm
+                            // OSC 133;A / VS Code OSC 633;A) tells us the shell is back
+                            // at a clean prompt. Hard timeout (800ms) auto-releases for
+                            // shells without shell-integration so we don't permanently
+                            // mute the pane.
+                            let deadline = silence_deadline.load(Ordering::Acquire);
+                            let silenced = deadline > 0 && now_epoch_ms() < deadline;
+                            let data = if silenced {
+                                match find_prompt_osc(&raw) {
+                                    Some(off) => {
+                                        // Prompt OSC found — release silence and keep
+                                        // only the post-OSC tail. Pre-OSC bytes are
+                                        // ConPTY reflow noise; dropping them is the
+                                        // whole point of this gate.
+                                        silence_deadline.store(0, Ordering::Release);
+                                        raw[off..].to_string()
+                                    }
+                                    None => {
+                                        // Still inside reflow storm; drop bytes.
+                                        // (Original outputs were already captured into
+                                        // scrollback BEFORE the resize, so this drop
+                                        // doesn't lose user-visible history.)
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                // Either never silenced, or silenced-but-timed-out.
+                                // Reset deadline opportunistically so the next iteration
+                                // doesn't redo the time math.
+                                if deadline > 0 {
+                                    silence_deadline.store(0, Ordering::Release);
+                                }
+                                raw
+                            };
                             if data.is_empty() {
                                 continue;
                             }
                             let data_for_cwd = data.clone();
                             let bytes_for_title = data.as_bytes().to_vec();
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
-                            let _ = rt.block_on(async {
-                                state
-                                    .event_tx
-                                    .send(GlobalEvent::PtyOutput {
-                                        workspace_id,
-                                        pane_id,
-                                        data,
-                                    })
-                                    .await
-                            });
+                            // BUG-1 follow-up: scan for shell-integration prompt
+                            // mark (FinalTerm OSC 133;A / VS Code OSC 633;A) BEFORE
+                            // the try_send below moves `data`. We only need the
+                            // boolean — the offset that find_prompt_osc returns
+                            // isn't useful here. The actual emit happens after
+                            // try_send so the cheaper `Ok` path stays hot.
+                            // NOTE: in the silence-release case `data` is the
+                            // post-OSC tail (the marker was stripped), so this
+                            // scan misses that one chunk — the frontend's 800ms
+                            // debounce fallback covers it.
+                            let prompt_seen = find_prompt_osc(&data).is_some();
+                            // BUG-3: non-blocking try_send + carryover. If the
+                            // global event_rx is full, stash the (combined)
+                            // payload back into carryover for retry on the
+                            // next iteration instead of blocking the reader.
+                            let payload = if carryover.is_empty() {
+                                data
+                            } else {
+                                let mut combined = std::mem::take(&mut carryover);
+                                combined.push_str(&data);
+                                combined
+                            };
+                            match state.event_tx.try_send(GlobalEvent::PtyOutput {
+                                workspace_id,
+                                pane_id,
+                                data: payload,
+                            }) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(ev)) => {
+                                    if let GlobalEvent::PtyOutput { data, .. } = ev {
+                                        carryover = data;
+                                    }
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    // Receiver gone — runtime tearing down.
+                                    break;
+                                }
+                            }
+                            // BUG-1 follow-up emit. block_on (not try_send) is OK
+                            // because prompt events fire ~once per command and
+                            // consistency with the title/cwd block_on path
+                            // matters more than reader throughput.
+                            if prompt_seen {
+                                let event_tx = state.event_tx.clone();
+                                let _ = rt.block_on(async move {
+                                    let _ = event_tx
+                                        .send(GlobalEvent::PanePromptDetected {
+                                            workspace_id,
+                                            pane_id,
+                                        })
+                                        .await;
+                                });
+                            }
                             // T1：扫描 OSC 0/1/2 标题序列。shell 提示符、Claude Code、
                             // ssh 等都用这条机制设置窗口标题，emit 后前端按 teammate >
                             // OSC > 进程名 优先级合并展示。
