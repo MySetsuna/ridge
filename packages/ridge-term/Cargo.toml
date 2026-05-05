@@ -9,11 +9,16 @@ license = "MIT"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Default: ship Canvas2D backend only. Smallest wasm bundle, broadest
-# compatibility, no GPU adapter request to fail.
-default = []
-# Round 3 §4.1 opt-in: include the WebGpuBackend module + pull wgpu
-# and wasm-bindgen-futures (for async adapter/device acquisition).
+# Default: ship the WebGpuBackend module so wasm bundles include the
+# GPU path out of the box. The JS-side `RenderHandle.newWithWebgpuFirst`
+# tries WebGPU at attach time and falls back to Canvas2D when the
+# browser / GPU adapter is unavailable, so this is safe to enable for
+# every target — Canvas2D remains the no-WebGPU fallback.
+# (User feedback 2026-05-05: don't require a build flag or localStorage
+# opt-in to use the GPU; runtime adapter detection should drive it.)
+default = ["webgpu"]
+# Round 3 §4.1: include the WebGpuBackend module + pull wgpu, bytemuck,
+# wasm-bindgen-futures (for async adapter/device acquisition).
 # wgpu's `webgpu` feature targets the browser's WebGPU API only —
 # no native Vulkan/Metal/DX12 backends, keeping the wasm bundle
 # minimal. wasm-bindgen-futures bridges JS Promises to Rust .await
@@ -27,6 +32,7 @@ default = []
 webgpu = [
     "dep:wgpu",
     "dep:wasm-bindgen-futures",
+    "dep:bytemuck",
     "web-sys/OffscreenCanvas",
     "web-sys/OffscreenCanvasRenderingContext2d",
     "web-sys/ImageData",
@@ -68,6 +74,10 @@ wgpu = { version = "23", default-features = false, features = ["webgpu", "wgsl"]
 # adapter / device request promises that wgpu returns through
 # wasm-bindgen.
 wasm-bindgen-futures = { version = "0.4", optional = true }
+# bytemuck replaces two `unsafe transmute` blocks in webgpu.rs::end_frame
+# (TASKS §4.5.c). The `derive` feature lets CellInstance + FrameUniform
+# get `Pod` + `Zeroable` impls without hand-written unsafe blocks.
+bytemuck = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 # Native tests don't need wasm.

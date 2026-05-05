@@ -235,6 +235,22 @@ impl Terminal {
     pub fn scroll_offset(&self) -> usize { self.scroll_offset }
     pub fn scrollback_len(&self) -> usize { self.grid.scrollback.len() }
 
+    /// Look up a row by absolute-row coord (matches `search.rs` /
+    /// `selection.rs` abs encoding):
+    ///   * `0..scrollback_len()` → scrollback row, oldest-first
+    ///   * `scrollback_len()..scrollback_len()+rows()` → live grid row
+    ///
+    /// Used by `Selection::text` so cross-scrollback selections can read
+    /// their cells without re-deriving the offset arithmetic each call.
+    pub fn row_at_abs(&self, abs_row: usize) -> Option<&crate::term::cell::Row> {
+        let sb_len = self.grid.scrollback.len();
+        if abs_row < sb_len {
+            self.grid.scrollback.get(abs_row)
+        } else {
+            self.grid.row(abs_row - sb_len)
+        }
+    }
+
     pub fn resize(&mut self, rows: usize, cols: usize) {
         self.grid.resize(rows, cols);
     }

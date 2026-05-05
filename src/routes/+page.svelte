@@ -1,4 +1,4 @@
-﻿<!-- src/routes/+page.svelte -->
+<!-- src/routes/+page.svelte -->
 <script lang="ts">
 
 // Monaco Editor Worker 配置 - 必须在使用 monaco 之前配置
@@ -1224,7 +1224,7 @@ function expandSidebar() {
           {#snippet actions()}
             <button
               type="button"
-              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-violet-400/40 hover:text-violet-200 hover:bg-violet-500/[0.06] transition-colors"
+              class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-violet-400/40 hover:text-violet-200 hover:bg-violet-500/[0.06] transition-colors"
               title="新建根工作区（独立分屏树与终端）"
               onclick={() => createWorkspace()}
             >

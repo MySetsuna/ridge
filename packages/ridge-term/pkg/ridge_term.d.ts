@@ -32,7 +32,29 @@ export class RenderHandle {
      * invalidating external state without using the dedicated setters.
      */
     invalidateAll(): void;
+    /**
+     * Sync constructor — Canvas2D-only. JS calls
+     * `new RenderHandle(canvas)`. For runtime-WebGPU adoption with
+     * graceful Canvas2D fallback, JS calls
+     * `await RenderHandle.newWithWebgpuFirst(canvas)` instead.
+     */
     constructor(canvas: HTMLCanvasElement);
+    /**
+     * Async constructor — try WebGPU first, fall back to Canvas2D
+     * on adapter miss / device-creation failure. Always succeeds
+     * when `Canvas2dBackend::new` succeeds; returns Err only if
+     * even the Canvas2D fallback can't initialize (rare; usually
+     * indicates a malformed canvas element).
+     *
+     * Only compiled when the `webgpu` cargo feature is on (the
+     * `wasm-bindgen-futures` dep needed for `#[wasm_bindgen]
+     * async fn` is gated behind that feature). In default builds,
+     * JS callers should use the sync `new RenderHandle(canvas)`
+     * constructor; they can detect the async constructor's
+     * presence via `typeof RenderHandle.newWithWebgpuFirst ===
+     * 'function'`.
+     */
+    static newWithWebgpuFirst(canvas: HTMLCanvasElement): Promise<RenderHandle>;
     /**
      * Drive one frame from the kernel's current grid. Returns true
      * if anything was drawn (caller can use this to decide whether
@@ -197,8 +219,18 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_renderhandle_free: (a: number, b: number) => void;
     readonly __wbg_terminalkernel_free: (a: number, b: number) => void;
     readonly _init: () => void;
+    readonly renderhandle_applyDefaultTheme: (a: number) => void;
+    readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
+    readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly renderhandle_invalidateAll: (a: number) => void;
+    readonly renderhandle_new: (a: any) => [number, number, number];
+    readonly renderhandle_newWithWebgpuFirst: (a: any) => any;
+    readonly renderhandle_render: (a: number, b: number) => number;
+    readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly renderhandle_setFocused: (a: number, b: number) => void;
     readonly terminalkernel_clearSelection: (a: number) => void;
     readonly terminalkernel_cols: (a: number) => number;
     readonly terminalkernel_cursorCol: (a: number) => number;
@@ -237,21 +269,17 @@ export interface InitOutput {
     readonly terminalkernel_setSelection: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
-    readonly __wbg_renderhandle_free: (a: number, b: number) => void;
-    readonly renderhandle_applyDefaultTheme: (a: number) => void;
-    readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
-    readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly renderhandle_invalidateAll: (a: number) => void;
-    readonly renderhandle_new: (a: any) => [number, number, number];
-    readonly renderhandle_render: (a: number, b: number) => number;
-    readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42_2: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;

@@ -21,28 +21,65 @@ Key features:
 
 Two `RenderBackend` impls live in `packages/ridge-term/src/render/`:
 
-- **`Canvas2dBackend`** (default) — uses the browser's 2D canvas API.
-  Always available, ships in every wasm bundle. JS constructs via
-  `new RenderHandle(canvas)`.
-- **`WebGpuBackend`** (opt-in via `--features webgpu`) — uses wgpu 23 +
-  the browser's WebGPU API. Single shader pipeline (`shaders/cell.wgsl`)
-  + 256-layer texture-array glyph atlas + OffscreenCanvas-based
-  rasterizer. JS constructs via `await RenderHandle.newWithWebgpuFirst(canvas)`,
-  which tries WebGPU and falls back to Canvas2D on adapter miss. The
-  function only exists in `--features webgpu` builds; JS detects via
-  `typeof RenderHandle.newWithWebgpuFirst === 'function'`.
+- **`Canvas2dBackend`** — uses the browser's 2D canvas API. Always
+  available; serves as the runtime fallback when WebGPU adapter
+  acquisition fails.
+- **`WebGpuBackend`** — uses wgpu 23 + the browser's WebGPU API. Single
+  shader pipeline (`shaders/cell.wgsl`) + 256-layer texture-array glyph
+  atlas + OffscreenCanvas-based rasterizer. **Ships in cargo's default
+  feature set since 2026-05-05** (was opt-in `--features webgpu`).
+  JS constructs via `await RenderHandle.newWithWebgpuFirst(canvas)`,
+  which tries WebGPU and falls back to Canvas2D on adapter miss in Rust.
+  JS additionally guards with `typeof RenderHandle.newWithWebgpuFirst ===
+  'function'` for forward-compat with possible Canvas2D-only builds
+  (`node build.mjs --no-webgpu`).
 
 `AnyBackend` (in `render/mod.rs`) is the enum-dispatch wrapper that
 lets `RenderHandle` hold `Renderer<AnyBackend>` and switch backends at
 construction. `WebGpuBackend` covers every visual primitive
 Canvas2dBackend does (cell bg+glyph, cursor in 3 styles, selection
 overlay, hyperlink underlines) all through one render pass per frame.
+WebGPU sets `RenderBackend::requires_full_frame() == true` so the
+renderer marks every visible row dirty per tick — `LoadOp::Clear` wipes
+the swap-chain texture each frame, so dirty-row diffing would otherwise
+lose non-touched rows (the "only the line you're typing on shows up"
+regression).
 
-Status: Round 3 §4.1 functionally complete (2026-05-04). §7.2
-browser real-run regression for the WebGPU path is the next gate
-before §4.3 (shared surface across panes) / §4.4 (perf benchmark)
-become meaningful. Default `pnpm tauri build` ships Canvas2D-only
-with no perf or bundle regression.
+Status: Round 3 §4.1 functionally complete (2026-05-04) + §4.5 a-e
+WebGPU integration shipped (2026-05-04). 2026-05-05: WebGPU promoted
+to default backend with runtime adapter detection + Canvas2D runtime
+fallback (no compile-time gate, no localStorage opt-in). §7.2 browser
+real-run regression for the WebGPU path is the next gate before §4.3
+(shared surface across panes) / §4.4 (perf benchmark).
+
+### WebGPU is on by default — runtime detection
+
+`pnpm tauri build` and `node build.mjs` ship the dual-backend wasm
+bundle. At pane attach, `TerminalManager._makeHandle(canvas)`:
+
+1. Checks `typeof RenderHandle.newWithWebgpuFirst === 'function'`
+   (always true on default builds; false only on `--no-webgpu` bundles).
+2. `await RenderHandle.newWithWebgpuFirst(canvas)` — Rust calls
+   `instance.request_adapter(...)` + `adapter.request_device(...)`. If
+   the browser doesn't expose `navigator.gpu`, no adapter responds, or
+   device acquisition fails, the constructor returns `Err` and JS catches.
+3. On the catch path (or step 1 false), JS falls back to
+   `new RenderHandle(canvas)` — the synchronous Canvas2D constructor.
+
+Both paths return a working `RenderHandle`. The user sees no failure;
+the only difference is which backend `Renderer<AnyBackend>` holds.
+
+To force Canvas2D for debugging:
+
+```js
+localStorage.RIDGE_WEBGPU = '0'; location.reload()
+```
+
+To rebuild a Canvas2D-only bundle (size-constrained builds):
+
+```bash
+cd packages/ridge-term && node build.mjs --no-webgpu
+```
 
 ## Commands
 

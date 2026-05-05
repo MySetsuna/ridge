@@ -47,6 +47,11 @@ export interface UserSettings {
    * 其他: zsh）。`detect_available_shells` 返回的 program 字段可作为此字段值。
    */
   defaultShell: string;
+  /**
+   * 终端 pane 内边距（px），把 wasm 渲染的 canvas 从 pane 边框向内推。
+   * 0 = 紧贴边框（早期默认）。建议 4-12 之间，避免字符被滚动条 / 分隔线擦边。
+   */
+  terminalPaddingPx: number;
 }
 
 const DEFAULTS: UserSettings = {
@@ -57,6 +62,7 @@ const DEFAULTS: UserSettings = {
   searchIncludeGlobs: '',
   searchExcludeGlobs: '',
   defaultShell: '',
+  terminalPaddingPx: 6,
 };
 
 const LS_KEY = 'ridge-settings';
@@ -110,6 +116,13 @@ function load(): UserSettings {
         : DEFAULTS.searchExcludeGlobs,
     defaultShell:
       typeof obj.defaultShell === 'string' ? obj.defaultShell : DEFAULTS.defaultShell,
+    terminalPaddingPx:
+      typeof obj.terminalPaddingPx === 'number' &&
+      Number.isFinite(obj.terminalPaddingPx) &&
+      obj.terminalPaddingPx >= 0 &&
+      obj.terminalPaddingPx <= 64
+        ? obj.terminalPaddingPx
+        : DEFAULTS.terminalPaddingPx,
   };
 }
 

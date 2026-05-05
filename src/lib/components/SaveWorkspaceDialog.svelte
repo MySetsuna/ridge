@@ -3,6 +3,7 @@
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getDefaultWorkspaceSaveDir } from '$lib/stores/paneTree';
+  import { portal } from '$lib/actions/portal';
 
   interface Props {
     open: boolean;
@@ -154,6 +155,7 @@
     role="presentation"
     class="fixed inset-0 z-[9995] bg-black/50 flex items-center justify-center"
     onclick={() => { onCancel(); open = false; }}
+    use:portal={{ id: 'save-workspace-dialog' }}
   >
     <div
       role="dialog"

@@ -36,4 +36,15 @@ pub enum GlobalEvent {
         pane_id: Uuid,
         title: String,
     },
+    /// PTY 解析到 shell-integration prompt 标记时 emit。FinalTerm `OSC 133;A`
+    /// 与 VS Code `OSC 633;A` 都触发同一事件 —— 它们语义都是"shell 又回到
+    /// 了交互式 prompt"，是触发 git diff 等 prompt-cycle 任务的精准信号。
+    /// 前端 Pane.svelte 在 BUG-1 patch 之上叠加这个 fast path：收到事件
+    /// 即立即刷新 diff，比 800ms trailing-edge debounce 反应更快，且对
+    /// 持续输出（`tail -f`）不会误触发。Shell 没启用 shell-integration
+    /// 时 backend 不会 emit，前端的 debounce 仍作为 fallback 保留。
+    PanePromptDetected {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    },
 }

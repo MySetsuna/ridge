@@ -1,8 +1,18 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_renderhandle_free: (a: number, b: number) => void;
 export const __wbg_terminalkernel_free: (a: number, b: number) => void;
 export const _init: () => void;
+export const renderhandle_applyDefaultTheme: (a: number) => void;
+export const renderhandle_applyTheme: (a: number, b: any) => [number, number];
+export const renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const renderhandle_invalidateAll: (a: number) => void;
+export const renderhandle_new: (a: any) => [number, number, number];
+export const renderhandle_newWithWebgpuFirst: (a: any) => any;
+export const renderhandle_render: (a: number, b: number) => number;
+export const renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
+export const renderhandle_setFocused: (a: number, b: number) => void;
 export const terminalkernel_clearSelection: (a: number) => void;
 export const terminalkernel_cols: (a: number) => number;
 export const terminalkernel_cursorCol: (a: number) => number;
@@ -41,21 +51,17 @@ export const terminalkernel_selectWordAt: (a: number, b: number, c: number) => v
 export const terminalkernel_setSelection: (a: number, b: number, c: number, d: number, e: number) => void;
 export const terminalkernel_takePendingEvents: (a: number) => [number, number];
 export const terminalkernel_takePendingResponse: (a: number) => [number, number];
-export const __wbg_renderhandle_free: (a: number, b: number) => void;
-export const renderhandle_applyDefaultTheme: (a: number) => void;
-export const renderhandle_applyTheme: (a: number, b: any) => [number, number];
-export const renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-export const renderhandle_invalidateAll: (a: number) => void;
-export const renderhandle_new: (a: any) => [number, number, number];
-export const renderhandle_render: (a: number, b: number) => number;
-export const renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
-export const renderhandle_setFocused: (a: number, b: number) => void;
+export const wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b: (a: number, b: number, c: any) => [number, number];
+export const wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f: (a: number, b: number, c: any, d: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42_2: (a: number, b: number, c: any) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-export const __wbindgen_free: (a: number, b: number, c: number) => void;
 export const __wbindgen_exn_store: (a: number) => void;
 export const __externref_table_alloc: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_destroy_closure: (a: number, b: number) => void;
 export const __externref_table_dealloc: (a: number) => void;
 export const __externref_drop_slice: (a: number, b: number) => void;
 export const __wbindgen_start: () => void;

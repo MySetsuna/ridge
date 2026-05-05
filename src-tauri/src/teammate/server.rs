@@ -130,7 +130,7 @@ async fn run_server(
         let _ = tx.send(());
     }
     eprintln!(
-        "[ridge] teammate HTTP {base_url} (inject WIND_TEAMMATE_* into PTY; use tmux shim on PATH)"
+        "[ridge] teammate HTTP {base_url} (inject Ridge_TEAMMATE_* into PTY; use tmux shim on PATH)"
     );
 
     let ctx = TeammateCtx {

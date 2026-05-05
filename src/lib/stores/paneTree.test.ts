@@ -139,6 +139,84 @@ describe('paneCwdStore', () => {
     expect(store['ws-a:pane-2']).toBe('/home/bob');
     expect(store['ws-b:pane-1']).toBe('/home/charlie');
   });
+
+  // ── normalize (canonicalization between backend + wasm OSC 7 emitters) ──
+
+  it('normalizes Windows backslash paths to forward slash', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:\\code\\wind');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('C:/code/wind');
+  });
+
+  it('strips trailing slash except on root drives', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:/code/wind/');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('C:/code/wind');
+
+    paneTreeModule.setPaneCwd('ws1', 'pane-b', '/home/user/');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-b']).toBe('/home/user');
+
+    // Drive root preserved.
+    paneTreeModule.setPaneCwd('ws1', 'pane-c', 'C:/');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-c']).toBe('C:/');
+
+    // POSIX root preserved.
+    paneTreeModule.setPaneCwd('ws1', 'pane-d', '/');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-d']).toBe('/');
+  });
+
+  // Critical: the wasm OSC 7 parser emits `/C:/...` while the Tauri
+  // backend emits `C:/...` for the same dir. Both fire on every Enter
+  // / Ctrl+C. Without this canonicalization they'd alternately write
+  // two different strings to paneCwdStore on every prompt redraw,
+  // defeating the identity guard and causing Explorer flicker.
+  it('strips leading slash before a Windows drive letter', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/C:/code/wind');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('C:/code/wind');
+
+    // Lower case drive letter — same canonicalization.
+    paneTreeModule.setPaneCwd('ws1', 'pane-b', '/d:/projects');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-b']).toBe('d:/projects');
+
+    // POSIX path NOT stripped (no colon at index 2).
+    paneTreeModule.setPaneCwd('ws1', 'pane-c', '/home/user');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-c']).toBe('/home/user');
+  });
+
+  it('two writers (backend + wasm) for the same dir resolve to one identity', () => {
+    // Simulate the dual-writer path: backend emits without leading slash;
+    // wasm parser emits with leading slash. After normalize, paneCwdStore
+    // sees the same value both times — second setPaneCwd should be a
+    // no-op because identity guard hits.
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:/code/wind'); // backend shape
+    const storeAfterBackend = get(paneTreeModule.paneCwdStore);
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', '/C:/code/wind'); // wasm shape
+    const storeAfterWasm = get(paneTreeModule.paneCwdStore);
+    // The store object reference is preserved because the guard skips
+    // updates when the canonicalized value matches.
+    expect(storeAfterWasm).toBe(storeAfterBackend);
+    // And the value is the canonical form.
+    expect(storeAfterWasm['ws1:pane-a']).toBe('C:/code/wind');
+  });
+
+  it('repeated Ctrl+C / Enter (same OSC 7 cwd) preserves store identity', () => {
+    // Initial set via backend shape.
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:/code/wind');
+    const baseline = get(paneTreeModule.paneCwdStore);
+
+    // Many prompt redraws — backend and wasm writers alternate, plus
+    // shells that emit trailing-slash and backslash variants on the
+    // same dir.
+    for (let i = 0; i < 10; i++) {
+      paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:/code/wind');
+      paneTreeModule.setPaneCwd('ws1', 'pane-a', '/C:/code/wind');
+      paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:/code/wind/');
+      paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:\\code\\wind');
+    }
+    const final = get(paneTreeModule.paneCwdStore);
+    // Same reference throughout — Explorer cwd-effect would NOT have
+    // re-run for any of these prompt-redraw writes.
+    expect(final).toBe(baseline);
+    expect(final['ws1:pane-a']).toBe('C:/code/wind');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

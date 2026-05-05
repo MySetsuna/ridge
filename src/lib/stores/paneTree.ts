@@ -1334,13 +1334,43 @@ export function collapseCwd(cwd: string): string {
 }
 
 /** Update the cwd for a specific pane. */
-/** Normalize Windows backslashes to forward slashes so paneCwdStore always
- *  holds a single canonical form regardless of which shell or code path set it.
- *  Without this, Git Bash emits "C:/code" and PowerShell emits "C:\code" for
- *  the same directory — making syncWithPaneCwds treat them as two different cwds
- *  and preventing the Explorer file-tree column merge. */
+/** Normalize a cwd string into a single canonical form so the Tauri
+ *  backend's emit and the wasm kernel's OSC 7 parser converge on the
+ *  SAME literal even when their wire shapes differ.
+ *
+ *  - **Backslash → slash**: Git Bash emits "C:/code" while PowerShell
+ *    shell-integration emits "C:\\code" for the same directory.
+ *  - **Drop leading "/" before a Windows drive letter**: backend
+ *    `engine/cwd.rs:138-145` strips a leading `/` after URL parsing
+ *    (`file:///C:/...` → `C:/...`), but the wasm parser at
+ *    `parser.rs::parse_file_uri_path` returns the path verbatim from
+ *    the first `/` after the host (`file:///C:/...` → `/C:/...`). Both
+ *    fire on every OSC 7 emit and ALTERNATELY write to `paneCwdStore`
+ *    with strings differing only in the leading slash → identity
+ *    guard is defeated → Explorer cwd-effect runs twice per Enter →
+ *    file tree flickers. Funnel both writers to the same canonical
+ *    form here. (User report 2026-05-05 — root cause of the
+ *    repeat-flicker traced this round.)
+ *  - **Trailing slash trim**: some shells emit OSC 7 with a trailing
+ *    "/" once and without it the next time — same identity-guard
+ *    defeat. Trim except when it IS the root (POSIX "/", Windows "C:/").
+ */
 function normalizeCwd(cwd: string): string {
-  return cwd.replace(/\\/g, '/');
+  let out = cwd.replace(/\\/g, '/');
+  // Drop leading "/" before a Windows drive letter ("/C:/..." → "C:/...").
+  // The check is positional: only the very first three chars of "/X:"
+  // where X is alphabetic count.
+  if (out.length >= 3 && out[0] === '/' && /[A-Z]/i.test(out[1]) && out[2] === ':') {
+    out = out.slice(1);
+  }
+  if (out.length > 1 && out.endsWith('/')) {
+    // Don't strip a Windows drive root like "C:/" or POSIX root "/".
+    const isWindowsRoot = /^[A-Z]:\/$/i.test(out);
+    if (!isWindowsRoot) {
+      out = out.replace(/\/+$/, '');
+    }
+  }
+  return out;
 }
 
 /**

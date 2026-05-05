@@ -97,6 +97,22 @@ impl RenderBackend for AnyBackend {
         }
     }
 
+    fn requires_full_frame(&self) -> bool {
+        // CRITICAL: forward to the active variant. Without this override,
+        // AnyBackend would fall back to the trait's default `false`
+        // regardless of which inner backend is active — and the WebGPU
+        // visibility fix (`renderer.rs::tick` uses this to mark every
+        // visible row dirty for backends that can't preserve content
+        // across frames) would be entirely defeated. Caught 2026-05-05
+        // from a user report that non-active rows disappeared with
+        // WebGPU active.
+        match self {
+            AnyBackend::Canvas2d(b) => b.requires_full_frame(),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.requires_full_frame(),
+        }
+    }
+
     fn resize_surface(
         &mut self,
         width_css: u32,

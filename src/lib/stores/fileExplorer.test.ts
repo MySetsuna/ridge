@@ -403,9 +403,11 @@ describe('syncWithPaneCwds — zombie pruning & split-pane merging (E1–E9)', (
     expect(colsFor('ws2')[0].cwd).toBe('/other');
   });
 
-  // E6 — Cached tree is preserved (no blank-flash) when a new pane joins;
-  //      needsRefresh is set so Explorer schedules a background reload.
-  it('E6: preserves cached tree and sets needsRefresh when a new pane joins', async () => {
+  // E6 — Cached tree is preserved AND no auto-refresh when a new pane
+  //      joins. User policy 2026-05-05: pane joining an existing cached
+  //      column should be a label-only change; staleness is resolved by
+  //      the filesystem watcher, not by reactive reload-on-join.
+  it('E6: preserves cached tree without auto-refresh when a new pane joins', async () => {
     fileExplorerStore.syncWithPaneCwds('ws1', { 'pane-a': '/code' });
 
     // Prime the column with a fake tree via loadTree mock.
@@ -422,8 +424,8 @@ describe('syncWithPaneCwds — zombie pruning & split-pane merging (E1–E9)', (
     });
 
     const col = colsFor('ws1')[0];
-    expect(col.tree).not.toBeNull();     // tree preserved — no blank-flash
-    expect(col.needsRefresh).toBe(true); // background refresh scheduled
+    expect(col.tree).not.toBeNull();          // tree preserved — no blank-flash
+    expect(col.needsRefresh).toBeFalsy();     // NO auto refresh on join
     expect(col.paneIds).toContain('pane-b');
   });
 });

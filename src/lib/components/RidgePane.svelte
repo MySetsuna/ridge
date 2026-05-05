@@ -16,7 +16,7 @@
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles } from '$lib/stores/paneTree';
+import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
@@ -288,8 +288,15 @@ function onKernelEvent(ev: KernelEvent) {
 			// over the polled foreground process name. Write both
 			// stores so SplitContainer's `$terminalTitles[paneId]`
 			// shows the new title immediately.
-			paneOscTitleStore.update((s) => ({ ...s, [paneId]: ev.value }));
-			terminalTitles.update((m) => ({ ...m, [paneId]: ev.value }));
+			//
+			// Identity-preserving early return (§1.21): shells re-emit
+			// OSC 0/1/2 on every prompt redraw — without the equality
+			// guard, every Enter creates a new store object with the
+			// same content, and Explorer's `$effect` re-runs (calling
+			// `syncWithPaneCwds` → new column refs → FileTree re-eval).
+			// Same pattern paneCwdStore::setPaneCwd uses (paneTree.ts).
+			paneOscTitleStore.update((s) => s[paneId] === ev.value ? s : ({ ...s, [paneId]: ev.value }));
+			terminalTitles.update((m) => m[paneId] === ev.value ? m : ({ ...m, [paneId]: ev.value }));
 			break;
 		case 'Bell':
 			triggerBellFlash();
@@ -327,7 +334,8 @@ onMount(() => {
 		// it during the unmount window. Just bind a fresh canvas and
 		// rejoin the render loop.
 		if (manager.isParked(paneId)) {
-			manager.unpark(paneId, container);
+			await manager.unpark(paneId, container);
+			if (!alive) return;
 			attached = true;
 			manager.setFocused(paneId, get(activePaneId) === paneId);
 			manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
@@ -344,7 +352,8 @@ onMount(() => {
 
 		// First attach: create kernel + canvas, register handlers,
 		// start backend PTY, replay scrollback, activate stream.
-		manager.attach(paneId, container);
+		await manager.attach(paneId, container);
+		if (!alive) return;
 		attached = true;
 
 		// Sync focus state immediately so a freshly-split pane doesn't draw
@@ -427,6 +436,25 @@ onMount(() => {
 	})();
 });
 
+// §1.23 (2026-05-05): low-frequency poll so the side scrollbar's thumb
+// position stays in sync as new PTY output arrives (scrollback grows
+// asynchronously; the keystroke / wheel handlers alone miss it). 250 ms
+// = 4Hz which is plenty for visual feedback and costs ~0.05% CPU on the
+// O(1) `manager.scrollState` read. Stops on detach (the !alive guard
+// inside refreshScrollState makes it a no-op even if the timer ticks
+// once after onDestroy).
+let scrollStatePollTimer: ReturnType<typeof setInterval> | null = null;
+$effect(() => {
+	if (!attached) return;
+	scrollStatePollTimer = setInterval(refreshScrollState, 250);
+	return () => {
+		if (scrollStatePollTimer !== null) {
+			clearInterval(scrollStatePollTimer);
+			scrollStatePollTimer = null;
+		}
+	};
+});
+
 onDestroy(() => {
 	alive = false;
 	// Cancel pending Bell flash so the timer can't fire after unmount.
@@ -435,6 +463,12 @@ onDestroy(() => {
 	if (bellFlashTimer !== null) {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
+	}
+	// Defensive scrollbar poll cleanup; the $effect cleanup handles the
+	// usual case but onDestroy is the last-line guard.
+	if (scrollStatePollTimer !== null) {
+		clearInterval(scrollStatePollTimer);
+		scrollStatePollTimer = null;
 	}
 	// Park instead of detach (TASKS §5.1). We don't know in onDestroy
 	// whether this is a transient unmount (split / reparent) or a real
@@ -538,18 +572,23 @@ function onContainerKeyDown(e: KeyboardEvent) {
 		// top of the kernel buffer; fire-and-forget so the immediate
 		// scroll stays responsive (TASKS §2.1).
 		maybePrefetchOlder();
+		refreshScrollState();
 		e.preventDefault();
 		return;
 	}
 	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageDown') {
 		manager.scrollDown(paneId, manager.rows(paneId) - 1);
+		refreshScrollState();
 		e.preventDefault();
 		return;
 	}
 
 	// Default: pass through to kernel's key encoder.
+	// User typing usually causes the kernel to auto-scroll to bottom; refresh
+	// the local mirror so the scroll-to-bottom button re-hides.
 	if (manager.handleKeyDown(paneId, e)) {
 		e.preventDefault();
+		refreshScrollState();
 	}
 }
 
@@ -570,6 +609,7 @@ function onContainerWheel(e: WheelEvent) {
 	} else {
 		manager.scrollDown(paneId, lines);
 	}
+	refreshScrollState();
 	e.preventDefault();
 }
 
@@ -590,7 +630,138 @@ function onContextMenu(e: MouseEvent) {
 			// Send Ctrl+L (form feed) — shells respond by clearing.
 			if (isTauri()) void invoke('write_to_pty', { paneId, data: '\x0c' }).catch(() => {});
 		}},
+		// §1.23 (2026-05-05): split + close options restored to right-click
+		// menu. Pre-xterm-removal Pane.svelte never carried these; user
+		// asked for a richer menu now that splits are a primary affordance.
+		{ id: 'term-sep2', divider: true },
+		{ id: 'term-split-right', label: '向右拆分', action: () => {
+			void splitPane(paneId, 'vertical');
+		}},
+		{ id: 'term-split-down', label: '向下拆分', action: () => {
+			void splitPane(paneId, 'horizontal');
+		}},
+		{ id: 'term-sep3', divider: true },
+		{ id: 'term-close', label: '关闭面板', action: () => {
+			void closePane(paneId);
+		}},
 	], 'terminal', paneId, workspaceId);
+}
+
+// §1.23 (2026-05-05): scroll-to-bottom affordance + side scrollbar.
+// When user pages back into history, the floating button gives a
+// one-click jump to the live grid bottom. The scrollbar visualises
+// the current scroll position over the combined scrollback + viewport
+// span, with a draggable thumb. Both update from the same scroll-state
+// mirror to stay consistent.
+//
+// `scrollOffset` and `scrollTotal` mirror `manager.scrollState(paneId)`.
+// `offset` is lines BACK from live grid (0 = at bottom). `total` is the
+// scrollback line count. Combined visible span is `total + rows`.
+let isAtBottom = $state(true);
+let scrollOffset = $state(0);
+let scrollTotal = $state(0);
+function refreshScrollState() {
+	if (!alive || !attached) return;
+	const s = manager.scrollState(paneId);
+	if (s.offset !== scrollOffset) scrollOffset = s.offset;
+	if (s.total !== scrollTotal) scrollTotal = s.total;
+	const next = s.offset === 0;
+	if (next !== isAtBottom) isAtBottom = next;
+}
+function jumpToBottom() {
+	if (!alive || !attached) return;
+	manager.scrollToBottom(paneId);
+	refreshScrollState();
+	imeHelper?.focus();
+}
+
+// Scrollbar geometry, derived from current state. Both thumb top and
+// thumb height are FRACTIONS of the pane container's height so CSS can
+// express them as `top: x%; height: y%`.
+let scrollbarVisible = $derived(scrollTotal > 0);
+let scrollbarThumbHeightPct = $derived.by(() => {
+	if (!scrollbarVisible) return 100;
+	const r = manager.rows(paneId);
+	const span = scrollTotal + r;
+	if (span <= 0) return 100;
+	// Minimum 4% so very-deep scrollback keeps the thumb grabbable.
+	return Math.max(4, (r / span) * 100);
+});
+let scrollbarThumbTopPct = $derived.by(() => {
+	if (!scrollbarVisible) return 0;
+	const r = manager.rows(paneId);
+	const span = scrollTotal + r;
+	if (span <= 0) return 0;
+	// Top of viewport in absolute lines = total - offset
+	// (offset=0 → top of viewport = total = bottom of scroll-able range)
+	const raw = ((scrollTotal - scrollOffset) / span) * 100;
+	// Clamp so `top + height` ≤ 100%. On a very short pane the 4%-min
+	// thumb height takes a large fraction of the track, so an unclamped
+	// raw value near 95-100% would push the thumb's bottom past the
+	// track end and visually overhang the cell content area.
+	return Math.max(0, Math.min(raw, 100 - scrollbarThumbHeightPct));
+});
+
+// Drag-thumb interaction.
+// `dragging` carries the active pointer's start state so move events
+// can compute a delta-based new offset without re-measuring the track.
+let scrollbarTrackEl: HTMLDivElement | undefined = $state(undefined);
+let dragging: { startY: number; startOffset: number; trackH: number } | null = null;
+function onScrollbarThumbPointerDown(e: PointerEvent) {
+	if (!alive || !attached || !scrollbarTrackEl) return;
+	e.stopPropagation();
+	e.preventDefault();
+	const rect = scrollbarTrackEl.getBoundingClientRect();
+	dragging = {
+		startY: e.clientY,
+		startOffset: scrollOffset,
+		trackH: rect.height,
+	};
+	(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function onScrollbarThumbPointerMove(e: PointerEvent) {
+	if (!dragging) return;
+	const r = manager.rows(paneId);
+	const span = scrollTotal + r;
+	if (span <= 0 || dragging.trackH <= 0) return;
+	// Pixels-per-line on the track:
+	const px_per_line = dragging.trackH / span;
+	if (px_per_line <= 0) return;
+	const dy = e.clientY - dragging.startY;
+	// Dragging DOWN reduces offset (closer to bottom), UP increases it.
+	const targetOffset = Math.max(
+		0,
+		Math.min(scrollTotal, Math.round(dragging.startOffset - dy / px_per_line)),
+	);
+	const delta = targetOffset - scrollOffset;
+	if (delta > 0) manager.scrollUp(paneId, delta);
+	else if (delta < 0) manager.scrollDown(paneId, -delta);
+	refreshScrollState();
+}
+function onScrollbarThumbPointerUp(e: PointerEvent) {
+	if (!dragging) return;
+	dragging = null;
+	(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+}
+
+// Click on the empty track jumps the thumb center to the cursor — same
+// behaviour as native OS scrollbars when you click outside the thumb.
+function onScrollbarTrackClick(e: MouseEvent) {
+	if (!alive || !attached || !scrollbarTrackEl) return;
+	const rect = scrollbarTrackEl.getBoundingClientRect();
+	const r = manager.rows(paneId);
+	const span = scrollTotal + r;
+	if (span <= 0 || rect.height <= 0) return;
+	// Where the click landed as a fraction of the track.
+	const fraction = (e.clientY - rect.top) / rect.height;
+	// Convert to "line at top of viewport" in the absolute span:
+	const viewportTopLine = Math.round(fraction * span);
+	// Then offset = total - viewportTopLine (clamped).
+	const targetOffset = Math.max(0, Math.min(scrollTotal, scrollTotal - viewportTopLine));
+	const delta = targetOffset - scrollOffset;
+	if (delta > 0) manager.scrollUp(paneId, delta);
+	else if (delta < 0) manager.scrollDown(paneId, -delta);
+	refreshScrollState();
 }
 
 function onContainerPointerDown() {
@@ -649,6 +820,56 @@ function onContainerMouseDown(e: MouseEvent) {
 		oncompositionend={onCompositionEnd}
 		onfocus={onImeHelperFocus}
 	></textarea>
+
+	<!-- §1.23 (2026-05-05): floating scroll-to-bottom button.
+	     Only shown when the user has paged into history (`isAtBottom`
+	     starts true and stays true unless wheel/PageUp triggered a scroll
+	     that left scroll_offset > 0). Click jumps the kernel viewport
+	     back to the live grid and re-focuses the IME helper for input. -->
+	{#if !isAtBottom}
+		<button
+			type="button"
+			class="rg-jump-bottom"
+			title="滚动到最新输出 (End)"
+			onclick={jumpToBottom}
+			aria-label="滚动到最新输出"
+		>
+			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+				<path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+				<path d="M3 10l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+			</svg>
+		</button>
+	{/if}
+
+	<!-- §1.23 (2026-05-05): side scrollbar overlay.
+	     Visible only when there is actual scrollback (total > 0). Track
+	     covers full pane height; thumb position + height reflect current
+	     viewport within (scrollback + viewport) span. Click track to
+	     jump; drag thumb for live scrolling. -->
+	{#if scrollbarVisible}
+		<div
+			class="rg-scrollbar-track"
+			bind:this={scrollbarTrackEl}
+			onclick={onScrollbarTrackClick}
+			role="presentation"
+		>
+			<div
+				class="rg-scrollbar-thumb"
+				role="scrollbar"
+				tabindex="-1"
+				aria-orientation="vertical"
+				aria-controls={`rg-pane-${paneId}`}
+				aria-valuemin={0}
+				aria-valuemax={scrollTotal}
+				aria-valuenow={scrollTotal - scrollOffset}
+				style="top: {scrollbarThumbTopPct}%; height: {scrollbarThumbHeightPct}%;"
+				onpointerdown={onScrollbarThumbPointerDown}
+				onpointermove={onScrollbarThumbPointerMove}
+				onpointerup={onScrollbarThumbPointerUp}
+				oncontextmenu={(e) => e.stopPropagation()}
+			></div>
+		</div>
+	{/if}
 </div>
 
 {#if termSearchOpen}
@@ -732,6 +953,81 @@ function onContainerMouseDown(e: MouseEvent) {
 		overflow: hidden;
 		background: transparent;
 	}
+	.rg-jump-bottom {
+		/* §1.23 — floating scroll-to-bottom shortcut. Anchored to the
+		 * pane's bottom-right corner; only rendered when the user has
+		 * paged into scrollback. Pointer-events:auto despite the parent
+		 * container blocking some surfaces because it's the user's
+		 * primary affordance to return to the live grid. */
+		position: absolute;
+		right: 14px;
+		bottom: 14px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 30px;
+		border-radius: 9999px;
+		border: 1px solid var(--rg-border, #333);
+		background: var(--rg-surface, rgba(30, 30, 30, 0.92));
+		color: var(--rg-fg, #ddd);
+		cursor: pointer;
+		opacity: 0.85;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+		transition: opacity 120ms ease-out, transform 120ms ease-out, background 120ms ease-out;
+		z-index: 9;
+	}
+	.rg-jump-bottom:hover {
+		opacity: 1;
+		background: var(--rg-accent, #4a8cff);
+		color: #fff;
+		transform: translateY(-1px);
+	}
+	.rg-jump-bottom:focus {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
+	}
+
+	/* §1.23 — side scrollbar (track + thumb). Track is a thin overlay
+	 * column on the right edge; thumb is positioned via inline-style
+	 * `top` / `height` percentages computed from scroll state. Track
+	 * stays transparent so the terminal's last column glyphs show through
+	 * if the pane is narrow; the thumb itself is the visible affordance. */
+	.rg-scrollbar-track {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: 10px;
+		z-index: 8;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 150ms ease-out;
+	}
+	.rg-pane-container:hover .rg-scrollbar-track {
+		opacity: 1;
+	}
+	.rg-scrollbar-thumb {
+		position: absolute;
+		left: 2px;
+		right: 2px;
+		min-height: 18px;
+		border-radius: 6px;
+		background: var(--rg-fg-muted, rgba(180, 180, 180, 0.45));
+		opacity: 0.55;
+		cursor: grab;
+		transition: opacity 120ms ease-out, background 120ms ease-out;
+		touch-action: none;
+	}
+	.rg-scrollbar-thumb:hover {
+		opacity: 0.85;
+	}
+	.rg-scrollbar-thumb:active {
+		opacity: 1;
+		cursor: grabbing;
+		background: var(--rg-accent, #4a8cff);
+	}
+
 	.rg-search-bar {
 		position: absolute;
 		top: 4px;

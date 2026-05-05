@@ -22,11 +22,11 @@ fn log_to_file(msg: &str) {
 }
 
 fn log_file_path() -> Option<PathBuf> {
-    if let Ok(p) = env::var("WIND_TMUX_LOG") {
+    if let Ok(p) = env::var("Ridge_TMUX_LOG") {
         let t = p.trim();
         if !t.is_empty() {
             let pb = PathBuf::from(t);
-            // 允许把 `WIND_TMUX_LOG` 设成「目录」：此前会把目录当文件 open 失败并静默落到 %TEMP%。
+            // 允许把 `Ridge_TMUX_LOG` 设成「目录」：此前会把目录当文件 open 失败并静默落到 %TEMP%。
             if pb.is_dir() {
                 return Some(pb.join("tmux-shim.log"));
             }
@@ -96,7 +96,7 @@ fn main() {
         }
         if a == "--help" {
             log_to_file("probe help");
-            eprintln!("tmux shim: supports all tmux commands (needs WIND_TEAMMATE_*)");
+            eprintln!("tmux shim: supports all tmux commands (needs Ridge_TEAMMATE_*)");
             process::exit(0);
         }
     }

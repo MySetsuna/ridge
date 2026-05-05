@@ -220,7 +220,10 @@ impl JsTerminal {
         start_row: usize, start_col: usize,
         end_row: usize, end_col: usize,
     ) {
-        self.selection.set(Range {
+        // Pass &self.inner so Selection captures the current scroll state
+        // and stores the range in abs-row form (§1.20). After this, scroll
+        // changes don't dislodge the highlight from its original cells.
+        self.selection.set(&self.inner, Range {
             start: Pos { row: start_row, col: start_col },
             end:   Pos { row: end_row,   col: end_col },
         });
@@ -304,7 +307,10 @@ impl JsTerminal {
             self.inner.scroll_up_view(offset);
         }
         if let Some(r) = SearchState::match_to_viewport_range(m, offset, sb_len, rows_n) {
-            self.selection.set(r);
+            // After scroll_up_view above, &self.inner reports the new
+            // scroll_offset; selection.set captures it and converts r
+            // to abs-row form (§1.20).
+            self.selection.set(&self.inner, r);
         } else {
             self.selection.clear();
         }
@@ -519,7 +525,13 @@ mod renderer_js {
         pub fn render(&mut self, kernel: &JsTerminal) -> bool {
             self.renderer.tick(
                 &kernel.inner,
-                kernel.selection.range(),
+                // range_in_viewport translates the stored abs-row
+                // selection through the current scroll state per
+                // frame, naturally clipping rows outside the viewport
+                // (§1.20). Renderer's last_selection comparator sees
+                // updated vp coords on scroll → triggers redraw with
+                // the highlight at its new position.
+                kernel.selection.range_in_viewport(&kernel.inner),
                 js_sys::Date::now(),
             )
         }

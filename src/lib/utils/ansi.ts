@@ -2,7 +2,7 @@
 //
 // Strip ANSI / OSC escape sequences from a captured terminal byte stream so
 // the result is suitable for `<pre>` rendering, browser-`Ctrl+F`, and
-// clipboard copy. The live xterm pane keeps full colour — this helper only
+// clipboard copy. The live terminal pane keeps full colour — this helper only
 // runs on the read-only history viewer.
 //
 // Coverage targets the >95% real-world cases: CSI (cursor / colour / SGR),

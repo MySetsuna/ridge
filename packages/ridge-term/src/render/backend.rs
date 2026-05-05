@@ -239,6 +239,19 @@ pub trait RenderBackend {
     /// `font_family` is a CSS font-family string, including fallbacks.
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String>;
 
+    /// Whether this backend cannot preserve content across frames and
+    /// therefore needs the renderer to mark every visible row dirty
+    /// every tick (full redraw).
+    ///
+    /// Canvas2D returns `false` (default): un-touched rows keep their
+    /// previous frame's pixels because we only `fillRect`/`fillText`
+    /// where dirty.
+    /// WebGPU returns `true`: `LoadOp::Clear` wipes the entire swap-chain
+    /// texture each frame; without forcing every row through `draw_row`,
+    /// non-dirty rows lose their glyphs and the user sees only the row
+    /// they're typing on.
+    fn requires_full_frame(&self) -> bool { false }
+
     /// Resize the underlying surface. Called when canvas size or DPR changes.
     fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String>;
 

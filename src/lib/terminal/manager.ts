@@ -54,6 +54,18 @@ export interface ManagerOptions {
 	 *  inward so glyphs aren't flush against the pane border. Default 0
 	 *  preserves the original look; per-pane overrides via `setPadding`. */
 	paddingPx?: number;
+	/** Try the WebGPU render backend first, fall back to Canvas2D on
+	 *  adapter miss / device-creation failure (TASKS §4.5.e).
+	 *
+	 *  When the wasm bundle was built without `--features webgpu`, the
+	 *  `RenderHandle.newWithWebgpuFirst` static method does not exist;
+	 *  `_makeHandle` detects this via `typeof` and falls back to the
+	 *  synchronous `new RenderHandle(canvas)` constructor. Setting this
+	 *  flag in a Canvas2D-only build is therefore a no-op, not an error.
+	 *
+	 *  Default: read from `localStorage.RIDGE_WEBGPU === '1'` so users can
+	 *  flip it from the browser console without rebuilding. */
+	preferWebgpu?: boolean;
 }
 
 /** Tagged kernel event shape that mirrors `KernelEvent` in Rust. The
@@ -176,12 +188,33 @@ export class TerminalManager {
 
 	static instance(opts?: ManagerOptions): TerminalManager {
 		if (!TerminalManager._instance) {
+			// WebGPU is the default backend (user feedback 2026-05-05).
+			// `_makeHandle` runtime-detects whether the wasm bundle exposes
+			// `newWithWebgpuFirst`; if it does, that path internally calls
+			// `navigator.gpu.requestAdapter()` and falls back to Canvas2D
+			// in Rust on adapter miss. If the wasm bundle was built without
+			// the webgpu feature (a future Canvas-only profile), the `typeof
+			// === 'function'` check skips the upgrade and goes straight to
+			// Canvas2D. Either way, no opt-in build flag or storage gate.
+			//
+			// Escape hatch (debugging only):
+			//   localStorage.RIDGE_WEBGPU = '0'; location.reload()
+			let preferWebgpu = true;
+			try {
+				if (typeof localStorage !== 'undefined') {
+					const v = localStorage.getItem('RIDGE_WEBGPU');
+					if (v === '0' || v === 'false') preferWebgpu = false;
+				}
+			} catch {
+				// LS denied (private mode / SSR) — keep the WebGPU default.
+			}
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
 					fontFamily:
 						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
 					fontSizePx: 15,
 					scrollbackLines: 2000,
+					preferWebgpu,
 				},
 			);
 			// Dev convenience: expose the singleton so `window.__rt` works in
@@ -216,14 +249,51 @@ export class TerminalManager {
 	}
 
 	/**
+	 * Construct a `RenderHandle` for `canvas`. When `opts.preferWebgpu`
+	 * is true AND the wasm bundle exposes the async `newWithWebgpuFirst`
+	 * static (i.e. it was built with `--features webgpu`), use that —
+	 * it tries WebGPU first and falls back to Canvas2D on adapter miss
+	 * inside Rust. Otherwise build a Canvas2D handle synchronously.
+	 *
+	 * Returns a Promise either way so `attach` / `unpark` can `await`
+	 * uniformly. The Canvas2D-only path resolves on the same tick.
+	 */
+	private async _makeHandle(canvas: HTMLCanvasElement): Promise<RenderHandle> {
+		// `RenderHandle.newWithWebgpuFirst` only exists when the wasm
+		// bundle was built with `--features webgpu`. Detect via `typeof`;
+		// no static type from `@ridge/term-wasm` declares it, so cast.
+		const HandleCtor = RenderHandle as unknown as {
+			newWithWebgpuFirst?: (c: HTMLCanvasElement) => Promise<RenderHandle>;
+		};
+		if (this.opts.preferWebgpu && typeof HandleCtor.newWithWebgpuFirst === 'function') {
+			try {
+				return await HandleCtor.newWithWebgpuFirst(canvas);
+			} catch (err) {
+				// WebGPU path failed catastrophically (rare — the Rust
+				// constructor already retries Canvas2D inside on adapter
+				// miss). Fall through to JS-side Canvas2D as a final
+				// safety net so attach() never rejects.
+				if (import.meta.env?.DEV) {
+					console.warn('[ridge-term] newWithWebgpuFirst threw; falling back to Canvas2D', err);
+				}
+			}
+		}
+		return new RenderHandle(canvas);
+	}
+
+	/**
 	 * Bind a pane to the manager. Creates a `<canvas>` child of `container`,
 	 * spins up the wasm kernel/renderer, starts observing the container
 	 * for resize events.
 	 *
 	 * Throws if the manager isn't ready (caller must `await ready()` first)
 	 * or if `paneId` is already attached.
+	 *
+	 * Async because the optional WebGPU upgrade path (`opts.preferWebgpu`)
+	 * needs to await the Rust adapter request. Canvas2D-only builds resolve
+	 * on the same tick — call sites should still `await` to stay consistent.
 	 */
-	attach(paneId: string, container: HTMLElement): void {
+	async attach(paneId: string, container: HTMLElement): Promise<void> {
 		if (!this.wasmReady) {
 			throw new Error('TerminalManager.attach: call ready() first');
 		}
@@ -243,7 +313,7 @@ export class TerminalManager {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
 
-		const handle = new RenderHandle(canvas);
+		const handle = await this._makeHandle(canvas);
 		const dpr = window.devicePixelRatio || 1;
 
 		// configure() returns [cellW, cellH] in CSS pixels at the supplied DPR.
@@ -530,7 +600,7 @@ export class TerminalManager {
 	 * have called `attach` instead) or if the entry is already attached
 	 * (double-unpark indicates a lifecycle ordering bug).
 	 */
-	unpark(paneId: string, container: HTMLElement): void {
+	async unpark(paneId: string, container: HTMLElement): Promise<void> {
 		if (!this.wasmReady) {
 			throw new Error('TerminalManager.unpark: call ready() first');
 		}
@@ -551,7 +621,7 @@ export class TerminalManager {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
 
-		const handle = new RenderHandle(canvas);
+		const handle = await this._makeHandle(canvas);
 		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
 			| [number, number]

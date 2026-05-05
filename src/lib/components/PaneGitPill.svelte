@@ -13,6 +13,7 @@
   import { GitBranch, ArrowUp, ArrowDown, Check, ExternalLink, Plus } from 'lucide-svelte';
   import { alertDialog } from './RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
+  import { portal } from '$lib/actions/portal';
   import {
     paneGitStatusStore,
     invalidatePaneGitStatusForRepo,
@@ -217,7 +218,15 @@
   function onGlobalMousedown(e: MouseEvent): void {
     if (!open) return;
     const t = e.target as HTMLElement | null;
-    if (root && t && root.contains(t)) return;
+    if (!t) return;
+    // Click inside the trigger area (still in `root` after portal — only the
+    // popup gets moved out).
+    if (root && root.contains(t)) return;
+    // Click inside the portaled popup (now under <body>, so root.contains
+    // doesn't catch it). The `data-rg-pane-git-picker` attribute identifies
+    // popups belonging to ANY pill instance; we also check the stable
+    // `picker_${paneId}` id so multiple panes don't cross-talk.
+    if (t.closest(`[data-rg-portal-id="picker_${paneId}"]`)) return;
     open = false;
   }
 
@@ -284,9 +293,13 @@
     </button>
 
     {#if open}
-      <!-- Fixed-position popup: escapes pane header overflow:hidden and any
-           backdrop-blur stacking context. Coords set by togglePicker(). -->
+      <!-- Portaled popup: physically moved to <body> so it escapes ANY
+           ancestor stacking-context / contain / transform that would clip
+           or shrink position:fixed. Coords set by togglePicker(). The
+           outside-click handler matches `data-rg-portal-id="picker_<paneId>"`
+           so clicks inside the popup don't close it. -->
       <div
+        use:portal={{ id: `picker_${paneId}` }}
         style={popupStyle}
         class="rg-popup min-w-[200px] max-w-[320px] max-h-[280px] overflow-y-auto rg-scroll"
         role="menu"
