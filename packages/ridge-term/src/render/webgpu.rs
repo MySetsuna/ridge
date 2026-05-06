@@ -430,10 +430,38 @@ impl RenderBackend for WebGpuBackend {
             if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
                 style_flags |= GlyphKey::STYLE_ITALIC;
             }
+
+            // §4.7 (2026-05-07): if the row sidecar registered a multi-
+            // codepoint grapheme cluster at this column, atlas-key it by
+            // a cluster hash with the high bit set so it can't collide
+            // with any Unicode codepoint (max 0x10FFFF, well below the
+            // tag bit). The rasterizer receives the full cluster string
+            // so the browser paints ZWJ / RIS / VS clusters as a single
+            // visual unit. Non-cluster cells take the existing codepoint
+            // path — zero overhead for ASCII / CJK output.
+            const CLUSTER_TAG: u32 = 0x8000_0000;
+            let cluster_text: Option<&str> = if !row.clusters.is_empty() {
+                let target = col.min(u16::MAX as usize) as u16;
+                row.clusters
+                    .iter()
+                    .find(|c| c.col == target)
+                    .map(|c| c.text.as_ref())
+            } else {
+                None
+            };
+            let glyph_id: u32 = match cluster_text {
+                Some(text) => {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    std::hash::Hash::hash(text, &mut h);
+                    let raw = std::hash::Hasher::finish(&h) as u32;
+                    CLUSTER_TAG | (raw & !CLUSTER_TAG)
+                }
+                None => cell.ch as u32,
+            };
             let key = GlyphKey {
                 font_family_hash,
                 font_size_q,
-                glyph_id: cell.ch as u32,
+                glyph_id,
                 style_flags,
             };
 
@@ -444,12 +472,19 @@ impl RenderBackend for WebGpuBackend {
             //    safe; we just have to make sure the borrow ends BEFORE
             //    the post-loop frame_pinned write so a later iteration's
             //    borrow_mut doesn't nest.
+            //    §4.7: pass cluster string when present, otherwise the
+            //    single codepoint as a one-char string slice.
+            let mut ch_buf = [0u8; 4];
+            let glyph_text: &str = match cluster_text {
+                Some(text) => text,
+                None => cell.ch.encode_utf8(&mut ch_buf),
+            };
             let entry: Option<GlyphEntry> = {
                 let mut ctx = self.ctx.borrow_mut();
                 match ctx.atlas.lookup(&key) {
                     Some(e) => Some(e),
                     None => ctx
-                        .rasterize_and_admit(key, cell.ch, dpr, style_flags, &self.frame_pinned)
+                        .rasterize_and_admit(key, glyph_text, dpr, style_flags, &self.frame_pinned)
                         .ok(),
                 }
             };

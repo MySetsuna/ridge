@@ -33,12 +33,17 @@
 //! of rows to redraw plus the data for those rows.
 
 use crate::term::attrs::Attrs;
-use crate::term::cell::Cell;
+use crate::term::cell::{Cell, ClusterSpan};
 
 /// A single row of cells handed to the backend, plus its grid row index.
+/// §4.7 (2026-05-07): `clusters` carries the row's grapheme-cluster
+/// overrides so backends can paint multi-codepoint clusters (👨‍👩‍👧,
+/// 🏳️‍🌈, 🇺🇸) as a single visual unit instead of just the first
+/// codepoint stored in `cells[col].ch`. Empty for the common case.
 pub struct RowDraw<'a> {
     pub row_index: usize,
     pub cells: &'a [Cell],
+    pub clusters: &'a [ClusterSpan],
 }
 
 /// Cursor descriptor passed each frame. `None` = don't draw cursor

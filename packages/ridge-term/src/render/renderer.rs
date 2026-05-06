@@ -240,6 +240,31 @@ impl<B: RenderBackend> Renderer<B> {
             self.full_redraw_pending = true;
         }
 
+        // §1.27 (2026-05-07): Ink/log-update walks the cursor up through
+        // its previous frame via repeated CUU+EL2, then writes the new
+        // frame and emits CHA `\x1b[G` at the end (which trips the
+        // §A.3 absolute-positioning timestamp). The per-row hash diff
+        // can leave Canvas2D pixels stale when a row's *cells* match
+        // across two ticks but the row was painted over by an opaque
+        // overlay (the IME helper textarea) earlier in the session.
+        // Force full-frame whenever the inline-TUI heuristic says we're
+        // inside an Ink-style redraw window — bounded by the 2 s
+        // INLINE_TUI_DECAY_MS so quiescent shells stay on the dirty-row
+        // diff fast path. WebGPU already redraws everything, so this
+        // branch is a no-op for the WebGPU path; Canvas2D gains
+        // correctness for the Ink-active window only. Uses wall-clock
+        // (`clock::now_ms()`, unix-epoch `i64`) to match the timestamp
+        // domain `note_absolute_positioning` records — the renderer's
+        // own `now_ms: f64` parameter is `performance.now()` (page-load
+        // relative) and would always read as far in the past.
+        let wall_ms = crate::term::clock::now_ms();
+        if terminal
+            .grid()
+            .is_inline_tui_active_at(wall_ms, terminal.modes().cursor_visible)
+        {
+            self.full_redraw_pending = true;
+        }
+
         // Viewport scroll offset change → full redraw. The row→content
         // mapping shifts when the user pages history, so per-row hashes
         // computed against last frame's mapping aren't valid.
@@ -342,6 +367,7 @@ impl<B: RenderBackend> Renderer<B> {
             .filter_map(|&idx| terminal.viewport_row(idx).map(|r| RowDraw {
                 row_index: idx,
                 cells: &r.cells,
+                clusters: &r.clusters,
             }))
             .collect();
 
@@ -563,6 +589,15 @@ fn compute_row_hash(row: &crate::term::cell::Row) -> u64 {
     for span in &row.hyperlinks {
         span.col_start.hash(&mut hasher);
         span.col_end.hash(&mut hasher);
+    }
+    // §4.7 (2026-05-07): include grapheme cluster sidecar in the row
+    // hash so a cluster-only change (e.g. a ZWJ cluster overwritten
+    // with a different ZWJ cluster at the same col) re-renders the
+    // row even when `cell.ch` (= first codepoint) happens to match.
+    row.clusters.len().hash(&mut hasher);
+    for span in &row.clusters {
+        span.col.hash(&mut hasher);
+        span.text.hash(&mut hasher);
     }
     hasher.finish()
 }

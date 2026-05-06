@@ -90,6 +90,14 @@ pub struct Terminal {
     /// chunk and the closing `\x1b]8;;\x07` in another. Cells printed
     /// while this is `Some` get annotated via `Grid::annotate_cell_with_link`.
     current_link: Option<(String, Option<String>)>,
+    /// §4.7 (2026-05-07) — grapheme cluster buffer used by the parser
+    /// to coalesce multi-codepoint extended grapheme clusters (emoji
+    /// ZWJ sequences, RIS pairs, VS-modified emoji) before emitting a
+    /// single visual unit to the grid. Persists across feed batches —
+    /// a TUI may end one chunk mid-cluster (e.g. "👨\u{200d}") and
+    /// finish it in the next chunk ("👩"). Flushed (a) on every
+    /// non-print Perform event and (b) at the end of `feed()`.
+    grapheme_buf: String,
 }
 
 impl Terminal {
@@ -105,6 +113,7 @@ impl Terminal {
             pending_events: Vec::new(),
             last_printed: None,
             current_link: None,
+            grapheme_buf: String::new(),
         }
     }
 
@@ -130,10 +139,20 @@ impl Terminal {
             pending_events: &mut self.pending_events,
             last_printed: &mut self.last_printed,
             current_link: &mut self.current_link,
+            grapheme_buf: &mut self.grapheme_buf,
         };
         for &b in bytes {
             self.parser.advance(&mut perf, b);
         }
+        // §4.7: flush whatever's in the grapheme buffer at end of feed.
+        // Mid-cluster bytes legitimately span feed batches (a multi-MB
+        // PTY chunk may split inside a ZWJ sequence) so we don't
+        // unconditionally drain on every feed; but at end-of-feed any
+        // leftover trailing grapheme should at least be visible. The
+        // buffer is preserved for next feed if it ends with an
+        // extending codepoint (so a cluster that genuinely spans feeds
+        // still resolves correctly when the partner arrives).
+        perf.flush_buffer_if_complete();
         // Crossing the alt-screen boundary invalidates the viewport
         // lock: alt-screen has no scrollback, and after we leave it
         // the user expects to be at the live tail of the primary

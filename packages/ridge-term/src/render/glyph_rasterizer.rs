@@ -139,13 +139,19 @@ impl GlyphRasterizer {
     ///   7. Capture the horizontal advance from `measure_text` so
     ///      the renderer can validate width-2 cells got an
     ///      appropriately wide glyph.
+    /// §4.7 (2026-05-07): `glyph_text` may be a single codepoint (the
+    /// common path, ASCII / CJK / single emoji) OR a multi-codepoint
+    /// extended grapheme cluster (👨‍👩‍👧, 🏳️‍🌈, 🇺🇸). The browser's
+    /// `fill_text` natively handles ZWJ / variation selectors / RIS
+    /// pairs when the font stack includes color-emoji fonts, so the
+    /// rasterizer body is identical — only the input width is wider.
     pub fn rasterize(
         &self,
         font_family: &str,
         font_size_px: f32,
         dpr: f32,
         style_flags: u8,
-        ch: char,
+        glyph_text: &str,
     ) -> Result<RasterizedGlyph, String> {
         // The OffscreenCanvas backing store is `slot_w × slot_h` DEVICE
         // pixels. Painting at `{font_size_px}px` (CSS px) without DPR
@@ -183,10 +189,9 @@ impl GlyphRasterizer {
         // Measure first so we know where to place the baseline. We only
         // need the font-wide ascent here; per-glyph actualBoundingBox
         // is derived after the fill_text call below.
-        let s = ch.to_string();
         let metrics = self
             .ctx
-            .measure_text(&s)
+            .measure_text(glyph_text)
             .map_err(|e| format!("GlyphRasterizer::measure_text: {e:?}"))?;
         let advance_dev = metrics.width() as f32;
         let advance = advance_dev / dpr_eff;
@@ -210,7 +215,7 @@ impl GlyphRasterizer {
         };
 
         self.ctx
-            .fill_text(&s, 0.0, baseline_y)
+            .fill_text(glyph_text, 0.0, baseline_y)
             .map_err(|e| format!("GlyphRasterizer::fill_text: {e:?}"))?;
 
         let image_data = self
