@@ -177,6 +177,29 @@ interface PaneEntry {
 	 *  `detach(paneId)` works regardless of parked state — both code paths
 	 *  release wasm resources at the end. */
 	parked: boolean;
+	/** Stable user-input anchor for the IME helper textarea (§1.27 fix).
+	 *
+	 *  Reading the *live* kernel cursor every time `compositionupdate`
+	 *  fires is unsafe when an Ink-based CLI (Claude Code, lazygit, …) is
+	 *  redrawing its frame: log-update walks the cursor up through every
+	 *  previously-rendered row via `(\x1b[2K\x1b[1A)*N + \x1b[G` before
+	 *  writing the new frame. If the user starts typing pinyin during one
+	 *  of those walks, the helper teleports to the spinner row and its
+	 *  opaque background covers the loading area.
+	 *
+	 *  Instead we snapshot the kernel cursor *after* each user-initiated
+	 *  write (`handleKeyDown` / `paste` / `write`) on the next animation
+	 *  frame — by then the shell has echoed the typed bytes and the
+	 *  cursor sits at its real post-input position. Background PTY
+	 *  output (spinner ticks) does NOT update this anchor.
+	 *
+	 *  `null` until the first user-initiated write. `RidgePane` falls back
+	 *  to the live cursor in that case. */
+	imeAnchor: { row: number; col: number } | null;
+	/** rAF id for the pending anchor-capture frame. Coalesces multiple
+	 *  rapid writes into a single capture: at most one rAF outstanding
+	 *  per pane. Cleared by the rAF callback. */
+	imeAnchorRaf: number | null;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -526,6 +549,8 @@ export class TerminalManager {
 			pointerMoveListener,
 			pointerUpListener,
 			parked: false,
+			imeAnchor: null,
+			imeAnchorRaf: null,
 		};
 		entry.resizeObserver.observe(container);
 
@@ -571,6 +596,13 @@ export class TerminalManager {
 				/* canvas already detached */
 			}
 			try { entry.handle.free(); } catch { /* ignore */ }
+		}
+		// §1.27: cancel any pending IME-anchor rAF before freeing the
+		// kernel — the rAF body would otherwise call cursorRow() on a
+		// freed kernel and crash.
+		if (entry.imeAnchorRaf !== null) {
+			cancelAnimationFrame(entry.imeAnchorRaf);
+			entry.imeAnchorRaf = null;
 		}
 		// Kernel always alive while in the map (parked or not).
 		try { entry.kernel.free(); } catch { /* ignore */ }
@@ -806,7 +838,10 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry || !entry.dataHandler) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-		if (bytes.length > 0) entry.dataHandler(bytes);
+		if (bytes.length > 0) {
+			entry.dataHandler(bytes);
+			this.scheduleImeAnchorCapture(entry);
+		}
 	}
 
 	/** Register a callback for (rows, cols) changes — wire to PTY resize.
@@ -848,6 +883,7 @@ export class TerminalManager {
 		const bytes = entry.kernel.encodeKey(ev.key, ctrl, ev.altKey, ev.shiftKey, ev.metaKey);
 		if (bytes.length === 0) return false;
 		entry.dataHandler(bytes);
+		this.scheduleImeAnchorCapture(entry);
 		return true;
 	}
 
@@ -860,6 +896,7 @@ export class TerminalManager {
 		if (!entry || !entry.dataHandler) return;
 		const bytes = entry.kernel.encodePaste(text);
 		entry.dataHandler(bytes);
+		this.scheduleImeAnchorCapture(entry);
 	}
 
 	/** Programmatic select-all. */
@@ -964,6 +1001,27 @@ export class TerminalManager {
 	rows(paneId: string): number { return this.panes.get(paneId)?.kernel.rows() ?? 0; }
 	cols(paneId: string): number { return this.panes.get(paneId)?.kernel.cols() ?? 0; }
 
+	/** Schedule a single rAF that snapshots the kernel cursor as the new
+	 *  IME anchor. Coalesces rapid writes — at most one outstanding rAF
+	 *  per pane (`imeAnchorRaf` guard). The rAF gives the shell echo time
+	 *  to land before we read, so the snapshot reflects the cursor's
+	 *  *post-input* position rather than its position at the moment we
+	 *  forwarded the bytes (which on Windows ConPTY can be one frame
+	 *  behind the echo). See `PaneEntry.imeAnchor` doc-comment for the
+	 *  motivating §1.27 bug. */
+	private scheduleImeAnchorCapture(entry: PaneEntry): void {
+		if (entry.parked) return;
+		if (entry.imeAnchorRaf !== null) return;
+		entry.imeAnchorRaf = requestAnimationFrame(() => {
+			entry.imeAnchorRaf = null;
+			if (entry.parked) return;
+			entry.imeAnchor = {
+				row: entry.kernel.cursorRow(),
+				col: entry.kernel.cursorCol(),
+			};
+		});
+	}
+
 	/** Pixel position of the kernel cursor relative to the pane container's
 	 *  top-left, plus the cell height (so callers can place a one-line
 	 *  helper element BELOW the current cursor row). Returns null when
@@ -982,6 +1040,49 @@ export class TerminalManager {
 			cellH: e.cellH,
 			fontSizePx: this.opts.fontSizePx,
 		};
+	}
+
+	/** Pixel position of the IME helper anchor (§1.27 fix) — uses the
+	 *  stable user-input snapshot (`PaneEntry.imeAnchor`) instead of the
+	 *  live kernel cursor, so background PTY redraws (Ink/log-update
+	 *  spinner walks) don't drag the helper. Falls back to the live
+	 *  cursor when no anchor has been captured yet (e.g. user clicked
+	 *  into a pane and started composing without typing first). */
+	inputAnchorPixelPosition(
+		paneId: string,
+	): { x: number; y: number; cellW: number; cellH: number; fontSizePx: number } | null {
+		const e = this.panes.get(paneId);
+		if (!e || e.cellW <= 0 || e.cellH <= 0) return null;
+		const anchor = e.imeAnchor;
+		if (!anchor) return this.cursorPixelPosition(paneId);
+		// Clamp to current grid in case the kernel resized smaller since
+		// the snapshot — pixel-rounding NaN-prone positions away from the
+		// edge keeps the helper inside the visible viewport.
+		const rows = e.kernel.rows();
+		const cols = e.kernel.cols();
+		const row = Math.min(anchor.row, Math.max(0, rows - 1));
+		const col = Math.min(anchor.col, Math.max(0, cols - 1));
+		return {
+			x: Math.round(col * e.cellW),
+			y: Math.round(row * e.cellH),
+			cellW: e.cellW,
+			cellH: e.cellH,
+			fontSizePx: this.opts.fontSizePx,
+		};
+	}
+
+	/** Force a full-frame redraw on the next rAF tick (§1.27 fix). Used
+	 *  by `RidgePane::onCompositionEnd` to repaint cells underneath the
+	 *  IME helper textarea — without this, Canvas2D's per-row hash diff
+	 *  may skip redrawing rows whose `cells` are unchanged but whose
+	 *  pixels were smeared by the opaque `.is-composing` overlay. WebGPU
+	 *  already redraws every row per tick, so this is a no-op there
+	 *  beyond a single extra wake. */
+	forceFullRedraw(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		entry.handle.invalidateAll();
+		this.wake();
 	}
 
 	/**
