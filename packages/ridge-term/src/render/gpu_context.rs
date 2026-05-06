@@ -80,11 +80,31 @@ pub const ATLAS_LAYERS_MAX: u32 = 1024;
 /// `mix(bg, fg, 0) == bg` collapses to background fill.
 pub const ATLAS_RESERVED_LAYERS: u32 = 1;
 
-/// Hardcoded swap-chain format. WebGPU spec requires every canvas to
-/// support `bgra8unorm-srgb` for compositing; we pick it so the cell
-/// pipeline can be built at GpuContext construction time without first
-/// querying any surface's capabilities.
-pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+/// Format passed to `GPUCanvasContext.configure()` (i.e. the
+/// `wgpu::SurfaceConfiguration.format` field). The WebGPU spec restricts
+/// canvas configure to `bgra8unorm`, `rgba8unorm`, or `rgba16float` —
+/// sRGB variants are texture-only and Chrome rejects them with
+/// `TypeError: Unsupported canvas context format 'bgra8unorm-srgb'`.
+/// We therefore configure the canvas as linear `Bgra8Unorm` and create
+/// an sRGB texture view per frame for the pipeline to render through
+/// (see `view_formats` on the surface config + the explicit `format` on
+/// the per-frame `create_view` call in `webgpu.rs`).
+pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
+/// Render-target format the cell pipeline writes through, and the format
+/// of the per-frame `TextureView` we render INTO. Same as `CANVAS_FORMAT`
+/// (linear `Bgra8Unorm`) so the byte values the shader writes show up
+/// on screen unchanged — `theme.bg = #1e1e2e` produces pixels at exactly
+/// `#1e1e2e`, matching the Canvas2D backend (which uses CSS `rgba()`
+/// strings for fills, also no gamma awareness). Earlier this was
+/// `Bgra8UnormSrgb` so the ROP would gamma-encode the shader's linear
+/// output, but that produced a darker background than Canvas2D / theme
+/// asked for and wasn't visually consistent with the rest of the app
+/// (CSS `rgb(...)` colors are sRGB byte values too). Trade-off: the
+/// shader's alpha blending happens in sRGB space rather than linear
+/// space — same as Canvas2D and any DOM compositing, so the choice
+/// keeps the two backends visually identical.
+pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 /// Per-process shared GPU resources. One instance for all panes.
 pub struct GpuContext {

@@ -267,6 +267,17 @@ pub trait RenderBackend {
     /// the renderer-side invalidation.
     fn invalidate_atlas(&mut self) {}
 
+    /// Notify the backend that the next frame will be a full redraw and
+    /// that any per-frame preserved-content optimization needs to seed a
+    /// fresh background. Default no-op — Canvas2D draws bg+glyph
+    /// directly per dirty row and doesn't need to know. WebGPU flips
+    /// `needs_initial_clear` so `end_frame` switches back to
+    /// `LoadOp::Clear` for that one frame; subsequent frames return to
+    /// `LoadOp::Load` + row-dirty diff. Called by `Renderer::tick`
+    /// whenever `full_redraw_pending` becomes true (first frame, scroll
+    /// offset change, selection toggle, snapshot growth).
+    fn on_full_invalidate(&mut self) {}
+
     /// Begin a frame — record metrics + theme for this draw cycle.
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme);
 

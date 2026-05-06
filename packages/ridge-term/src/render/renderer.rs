@@ -184,6 +184,10 @@ impl<B: RenderBackend> Renderer<B> {
         if sel_changed {
             self.full_redraw_pending = true;
             self.last_selection = selection;
+            // Notify backend so any preserved-content path (WebGPU
+            // `LoadOp::Load`) seeds bg this frame instead of compositing
+            // a new selection state over stale pixels.
+            self.backend.on_full_invalidate();
         }
 
         // Cursor blink phase: 500ms on / 500ms off, derived from now_ms
@@ -206,10 +210,25 @@ impl<B: RenderBackend> Renderer<B> {
             self.last_blink_phase = blink_phase;
         }
 
-        // Grow snapshot if the grid grew.
-        if self.snapshot.len() < rows_n {
+        // Grow OR shrink the snapshot if the grid changed size. §A.3
+        // (2026-05-07): previously this branch only fired on growth, so
+        // a *narrowing* primary-screen resize left the dirty-row cache
+        // sized to the old grid and Canvas2D never marked the trailing
+        // rows for redraw — old pixels past the new bottom or right of
+        // each row stayed visible (the §1.26 ghost-prompt symptom under
+        // Canvas2D specifically). Forcing both ends to track `rows_n`
+        // here pairs with `Grid::resize` clearing the cell state: the
+        // next frame re-hashes everything against the cleared cells and
+        // paints blanks over the stale pixels. WebGPU was already safe
+        // because `requires_full_frame()` clears the swap-chain every
+        // tick, but going through this path keeps both backends honest.
+        if self.snapshot.len() != rows_n {
             self.snapshot.resize(rows_n, 0);
             self.full_redraw_pending = true;
+            // Backing pixels for new / wrap-around rows are undefined
+            // — backend must seed bg so `LoadOp::Load` doesn't expose
+            // them.
+            self.backend.on_full_invalidate();
         }
 
         // Backends that can't preserve content across frames (WebGPU
@@ -228,6 +247,10 @@ impl<B: RenderBackend> Renderer<B> {
         if offset != self.last_offset {
             self.full_redraw_pending = true;
             self.last_offset = offset;
+            // Row→content remap means every row's pixels now correspond
+            // to a different scrollback position; backend must seed bg
+            // so `LoadOp::Load` doesn't carry over the prior mapping.
+            self.backend.on_full_invalidate();
         }
 
         // Compute dirty rows by hashing each visible row's cells +
@@ -349,6 +372,101 @@ impl<B: RenderBackend> Renderer<B> {
         self.first_frame = false;
         self.full_redraw_pending = false;
         true
+    }
+
+    /// Non-mutating mirror of the early-exit conditions in `tick`.
+    /// Returns true when the next `tick` call would do any drawing
+    /// work — false when the renderer has nothing to redraw and the
+    /// caller can safely sleep its RAF loop. Used by `manager.ts` to
+    /// pause the per-pane animation frame loop on idle.
+    ///
+    /// Cost: ~24 row hashes for an 80×24 grid (≈4 µs). The hashes are
+    /// re-computed in `tick`; calling both back-to-back doubles that
+    /// cost — still cheaper than one `draw_row` call by two orders of
+    /// magnitude, and avoids tearing the snapshot.
+    pub fn is_dirty(
+        &self,
+        terminal: &Terminal,
+        selection: Option<SelRange>,
+        now_ms: f64,
+    ) -> bool {
+        // Pending unconditional redraw — first frame or set by an
+        // earlier mutation we haven't tick-consumed yet.
+        if self.first_frame || self.full_redraw_pending {
+            return true;
+        }
+
+        // Selection toggled / range changed.
+        if !selection_eq(selection, self.last_selection) {
+            return true;
+        }
+
+        // Viewport scrolled.
+        if terminal.scroll_offset() != self.last_offset {
+            return true;
+        }
+
+        // Cursor blink phase boundary crossed since last draw — but
+        // only when the cursor is visible at all (DECTCEM on +
+        // focused + viewport at live grid). Off-half phases when the
+        // cursor was previously visible also count, since the prior
+        // frame painted it and this frame must erase it.
+        let blink_active = terminal.modes().cursor_visible
+            && terminal.modes().cursor_blink;
+        let blink_phase = if blink_active {
+            ((now_ms / 500.0) as i64).rem_euclid(2) == 1
+        } else {
+            true
+        };
+        if blink_phase != self.last_blink_phase {
+            return true;
+        }
+
+        // Snapshot length mismatch → grid grew.
+        let rows_n = terminal.rows();
+        if self.snapshot.len() < rows_n {
+            return true;
+        }
+
+        // Per-row content + hyperlink-span hash diff.
+        for r in 0..rows_n {
+            let Some(row) = terminal.viewport_row(r) else {
+                continue;
+            };
+            if compute_row_hash(row) != self.snapshot[r] {
+                return true;
+            }
+        }
+
+        // Cursor moved (position / style / glyph beneath).
+        let offset = terminal.scroll_offset();
+        let new_cursor = if self.focused && offset == 0 && blink_phase {
+            self.compute_cursor_draw(terminal)
+        } else {
+            None
+        };
+        !cursor_eq(&self.last_cursor, &new_cursor)
+    }
+
+    /// Milliseconds until the next cursor-blink phase boundary, given
+    /// the current wall-clock `now_ms`. Returns `f64::INFINITY` when
+    /// the cursor isn't blinking (DECTCEM off or `cursor_blink` mode
+    /// off) so the caller can skip scheduling a wakeup.
+    ///
+    /// Phase boundary is every 500 ms aligned to the same time origin
+    /// `tick` uses. Caller is responsible for the lower bound (e.g.
+    /// `Math.max(deadline, 1)` to avoid 0-ms timers).
+    pub fn next_blink_deadline_ms(&self, terminal: &Terminal, now_ms: f64) -> f64 {
+        let blink_active =
+            terminal.modes().cursor_visible && terminal.modes().cursor_blink;
+        if !blink_active {
+            return f64::INFINITY;
+        }
+        let half = 500.0;
+        // ms past the most recent phase boundary
+        let past = now_ms.rem_euclid(half);
+        // ms remaining until the next one
+        half - past
     }
 
     /// Compute the cursor descriptor for this frame. Returns None when

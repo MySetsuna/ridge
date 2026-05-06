@@ -114,6 +114,41 @@ fn scenario_alt_screen_1049_survives_cols_resize() {
     assert_eq!(t.grid().cursor().col, 12, "col anchored to pre-alt position");
 }
 
+/// §1.24 (2026-05-06): an alt-screen TUI's redraw bytes that arrive
+/// immediately after a resize must land on the freshly-wiped alt buffer.
+/// This test exercises the kernel side of the §1.24 fix: the §1.22 wipe
+/// runs on the alt buffer, then the synthetic redraw bytes (clear + home
+/// + content) paint cleanly with no overlay from pre-resize content.
+///
+/// (Backend silence-skip is exercised separately in Tauri integration
+/// tests; this test ensures the kernel ordering remains correct so the
+/// fix doesn't regress the wipe path.)
+#[test]
+fn scenario_alt_screen_resize_does_not_swallow_redraw() {
+    use ridge_term::term::Terminal;
+    let mut t = Terminal::new(10, 80, 100);
+    t.feed(b"\x1b[?1049h");                         // enter alt
+    t.feed(b"OLD CONTENT FROM BEFORE RESIZE\r\n");  // pollute alt buffer
+    t.resize(10, 40);                                // shrink cols → §1.22 wipe fires
+    // Synthetic redraw the alt-screen TUI would emit after SIGWINCH.
+    // ESC [2J  = clear screen
+    // ESC [H   = cursor home
+    t.feed(b"\x1b[2J\x1b[Hpost-resize redraw");
+
+    assert!(t.grid().is_alt_screen(), "still on alt");
+    let row0 = t.grid().row(0).expect("row 0 exists");
+    let visible: String = row0.cells.iter().take(20).map(|c| c.ch).collect();
+    assert!(
+        visible.starts_with("post-resize redraw"),
+        "redraw bytes painted on wiped alt buffer (got {visible:?})"
+    );
+    // Confirm the §1.22 wipe ran by checking the diagnostic ring.
+    let diags = t.last_resize_diags();
+    let last = diags.last().expect("at least one resize recorded");
+    assert!(last.is_alt && last.dim_changed && last.wipe_fired,
+            "§1.22 wipe should have fired: {last:?}");
+}
+
 /// OSC 8 hyperlink across feed boundaries: the `current_link` state
 /// must persist between feed batches because real PTYs deliver bytes
 /// in arbitrary chunks (one OS read might split mid-sequence).
@@ -583,3 +618,109 @@ fn scenario_ich_dch_combined_inline_edit() {
     //   CUP col 0; DCH 2 → drop "he" → "lloNEW world".
     assert_eq!(&snap.visible[0], "lloNEW world");
 }
+
+/// §1.26 (2026-05-07): on a primary-screen resize the kernel clears the
+/// cursor row from `cursor.col + 1` to end-of-row, plus every row strictly
+/// below the cursor. Without this, PSReadLine's SIGWINCH-driven prompt
+/// redraw lands on top of stale cells past the new prompt's end and the
+/// user sees ghost characters with the path-to-`>` gap collapsed. Pairs
+/// with the §A.2 silence-window shrink so PSReadLine's redraw bytes
+/// actually make it through; this test exercises the kernel side only.
+#[test]
+fn scenario_primary_resize_clears_below_cursor() {
+    use ridge_term::term::Terminal;
+    let mut t = Terminal::new(8, 30, 100);
+    // Five rows of content. Each row is short enough to fit in 20 cols
+    // after shrink (so naive resize doesn't truncate any of the visible
+    // characters we're asserting on).
+    t.feed(b"row0_content\r\nrow1_content\r\nrow2_content\r\nrow3_content\r\nrow4_content");
+    // Park cursor at row 2 col 5 (0-based) — between "row2_" and "content".
+    t.feed(b"\x1b[3;6H");
+    assert!(!t.grid().is_alt_screen(), "primary screen for §1.26 path");
+    assert_eq!(t.grid().cursor().row, 2);
+    assert_eq!(t.grid().cursor().col, 5);
+
+    // Shrink cols 30 → 20. Triggers `dim_changed && !is_alt`.
+    t.resize(8, 20);
+
+    let row2 = t.grid().row(2).expect("row 2 still exists");
+    // cols 0..=5 preserved (cursor.col INCLUSIVE — the cell at the
+    // cursor stays so shells without SIGWINCH-driven full redraws keep
+    // already-typed text).
+    let preserved: String = row2.cells.iter().take(6).map(|c| c.ch).collect();
+    assert_eq!(preserved, "row2_c", "cells [0..=5] preserved");
+    // cols 6..20 cleared.
+    for col in 6..20 {
+        assert!(
+            row2.cells[col].is_blank(),
+            "row 2 col {col} should be blank, got {:?}", row2.cells[col]
+        );
+    }
+    // Rows 3..=7 entirely blank.
+    for r in 3..8 {
+        let row = t.grid().row(r).unwrap_or_else(|| panic!("row {r} exists"));
+        assert!(
+            row.cells.iter().all(|c| c.is_blank()),
+            "row {r} should be all blank after §1.26 cleanup"
+        );
+    }
+    // Rows 0..=1 untouched.
+    for r in 0..=1 {
+        let row = t.grid().row(r).unwrap();
+        let visible: String = row.cells.iter().take(12).map(|c| c.ch).collect();
+        let expected = format!("row{r}_content");
+        assert_eq!(visible, expected, "row {r} preserved across resize");
+    }
+    // Diagnostic ring records that the §1.26 partial cleanup fired.
+    // `inline_tui_wipe` is the §A.3 full-wipe flag (only true when the
+    // caller flagged an inline TUI as active, e.g. Ink-based foreground
+    // app); this test exercises the plain-shell case so that field
+    // stays false.
+    let diags = t.last_resize_diags();
+    let last = diags.last().expect("at least one resize recorded");
+    assert!(
+        last.cleared_below_cursor && !last.is_alt && last.dim_changed,
+        "§1.26 cleanup should have fired: {last:?}"
+    );
+    assert!(!last.inline_tui_wipe, "§A.3 full wipe should NOT fire without inline-TUI flag");
+}
+
+/// §1.26 negative case: the cleanup MUST NOT touch cells to the left of
+/// the cursor on the cursor row, nor any row above the cursor — those
+/// hold prior command output / scrollback that the user expects to keep.
+/// PSReadLine's redraw on SIGWINCH only repaints the prompt area
+/// (cursor row + shell input), so erasing prior output here would
+/// permanently delete history.
+#[test]
+fn scenario_primary_resize_preserves_left_and_above_of_cursor() {
+    use ridge_term::term::Terminal;
+    let mut t = Terminal::new(6, 30, 100);
+    t.feed(b"command-output-A\r\ncommand-output-B\r\nprompt> input-text");
+    // Cursor naturally lands at row 2 col 18 (after "prompt> input-text").
+    assert_eq!(t.grid().cursor().row, 2);
+    assert_eq!(t.grid().cursor().col, 18);
+
+    t.resize(6, 25);
+
+    // Row 0 (above cursor) — unchanged.
+    let row0 = t.grid().row(0).unwrap();
+    let r0: String = row0.cells.iter().take(16).map(|c| c.ch).collect();
+    assert_eq!(r0, "command-output-A", "row 0 preserved (above cursor)");
+
+    // Row 1 (above cursor) — unchanged.
+    let row1 = t.grid().row(1).unwrap();
+    let r1: String = row1.cells.iter().take(16).map(|c| c.ch).collect();
+    assert_eq!(r1, "command-output-B", "row 1 preserved (above cursor)");
+
+    // Row 2 (cursor row) — cols 0..17 hold the typed string, col 18 is
+    // the (blank) cell the cursor is parked on (never written), cells
+    // 19..25 cleared by §1.26. cur_col=18 so `start = cur_col + 1 = 19`.
+    let row2 = t.grid().row(2).unwrap();
+    let r2_left: String = row2.cells.iter().take(18).map(|c| c.ch).collect();
+    assert_eq!(r2_left, "prompt> input-text", "left-of-cursor preserved");
+    assert!(row2.cells[18].is_blank(), "cell at cursor was never written");
+    for col in 19..25 {
+        assert!(row2.cells[col].is_blank(), "col {col} cleared");
+    }
+}
+

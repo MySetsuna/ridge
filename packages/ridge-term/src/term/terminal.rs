@@ -3,7 +3,7 @@
 use vte::Parser;
 
 use super::attrs::Attrs;
-use super::grid::Grid;
+use super::grid::{Grid, ResizeDiag};
 use super::modes::Modes;
 use super::parser::Performer;
 
@@ -298,7 +298,36 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
-        self.grid.resize(rows, cols);
+        // §A.3 (2026-05-07): drive the inline-TUI heuristic into
+        // `Grid::resize_with_inline_tui` so primary-screen Ink apps
+        // (Claude Code's input box) get the same SIGWINCH-blank-canvas
+        // treatment alt-screen TUIs already have via §1.22. Sampled
+        // here (not from JS) so the kernel and the wipe see the same
+        // mode snapshot — an OSC arriving between the JS query and
+        // the wasm resize call cannot desync the decision.
+        let now_ms = super::clock::now_ms();
+        let inline_tui_active = self
+            .grid
+            .is_inline_tui_active_at(now_ms, self.modes.cursor_visible);
+        self.grid
+            .resize_with_inline_tui(rows, cols, inline_tui_active);
+    }
+
+    /// Inline-TUI heuristic snapshot, exposed for the JS layer so
+    /// `manager.ts::fitPane` can broaden the wipe-first ordering branch
+    /// (§A.3) to cover Ink apps in addition to alt-screen TUIs. See
+    /// `Grid::is_inline_tui_active_at` for the heuristic itself.
+    pub fn is_inline_tui_mode_at(&self, now_ms: i64) -> bool {
+        self.grid
+            .is_inline_tui_active_at(now_ms, self.modes.cursor_visible)
+    }
+
+    /// Diagnostic accessor — returns the most recent `Grid::resize` calls.
+    /// Used by `JsTerminal::lastResizeDiags` to surface live-repro evidence
+    /// to frontend devtools, and by integration tests to verify which
+    /// branch fired in a given scenario.
+    pub fn last_resize_diags(&self) -> &[ResizeDiag] {
+        self.grid.last_resize_diags()
     }
 
     pub fn rows(&self) -> usize { self.grid.rows() }

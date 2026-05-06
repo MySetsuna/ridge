@@ -101,7 +101,16 @@ pub struct PtyHandle {
 /// integration 时仍会被 prompt OSC 提前截断（早于 250 ms），保持原行为。
 /// 250 ms 仍然覆盖 ConPTY replay 区间的下沿；replay tail 偶尔会泄漏少量
 /// 字节进入 kernel，但相对「光标卡 800ms 在错位置」是更小的视觉事故。
-pub const RESIZE_SILENCE_WINDOW_MS: i64 = 250;
+/// 静默窗口硬上限。每次 `resize_pane` 后 PTY reader 在该窗口内丢弃 ConPTY
+/// viewport replay 字节（直到命中 OSC 133;A / OSC 633;A 之类的 prompt OSC
+/// 即提前释放）。§A.2 (2026-05-07)：从 250 ms 缩到 80 ms。原 250 ms 会把
+/// PSReadLine / fish-zle / zsh-zle 的 SIGWINCH 重画字节也吞掉（它们通常在
+/// SIGWINCH 后 10–50 ms 落地），导致 §1.26 「resize 后 prompt 间距塌缩 +
+/// 字符残留」。80 ms 仍然覆盖 ConPTY replay 的下沿，且让合法 redraw 顺利
+/// 到达 kernel；万一仍有 redraw 字节漏进窗口，§1.26 在 `grid.rs::resize`
+/// 末尾对 primary 屏从 cursor.col+1 起的清理是最后兜底——后续 redraw 落
+/// 在已清理过的区域上，不留鬼影。
+pub const RESIZE_SILENCE_WINDOW_MS: i64 = 80;
 
 /// 当前 epoch 毫秒；时钟异常时返回 0（导致 `silent` 判定为 false，安全降级）。
 fn now_epoch_ms() -> i64 {

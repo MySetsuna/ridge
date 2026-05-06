@@ -30,6 +30,7 @@
 use vte::{Params, Perform};
 
 use super::attrs::{Attrs, Color, Flags};
+use super::clock;
 use super::grid::{EraseMode, Grid};
 use super::modes::{CursorShape, ModeEffect, Modes};
 
@@ -169,6 +170,12 @@ impl<'a> Perform for Performer<'a> {
                 let col = p1().saturating_sub(1);
                 let row = self.grid.cursor().row;
                 self.grid.cursor_to(row, col);
+                // §A.3: feed the inline-TUI heuristic. CHA / HPA / VPA / CUP
+                // / HVP are the cursor primitives Ink-style apps use for
+                // partial-diff repaints; tracking the most recent one lets
+                // `Grid::resize_with_inline_tui` decide whether to fire the
+                // primary full wipe.
+                self.grid.note_absolute_positioning(clock::now_ms());
             }
             'd' => {
                 // VPA: vertical position absolute. DECOM-aware: when
@@ -182,6 +189,7 @@ impl<'a> Perform for Performer<'a> {
                 };
                 let col = self.grid.cursor().col;
                 self.grid.cursor_to(row, col);
+                self.grid.note_absolute_positioning(clock::now_ms());
             }
             'H' | 'f' => {
                 // CUP / HVP: cursor position. DECOM-aware: when origin
@@ -197,6 +205,7 @@ impl<'a> Perform for Performer<'a> {
                     r
                 };
                 self.grid.cursor_to(row, col);
+                self.grid.note_absolute_positioning(clock::now_ms());
             }
             'I' => {
                 // CHT — cursor forward N tab stops. Each step uses the
