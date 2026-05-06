@@ -502,10 +502,17 @@ impl GpuContext {
     /// (visible-unique-glyph count > capacity in one frame — vanishingly
     /// rare). Caller falls back to bg-only for that cell; the next
     /// frame retries once pins clear.
+    /// §4.7 (2026-05-07): `glyph_text` may be a single codepoint or a
+    /// multi-codepoint extended grapheme cluster. The atlas stores one
+    /// rasterized bitmap per `GlyphKey` regardless of how many
+    /// codepoints it represents — `key.glyph_id` discriminates between
+    /// codepoint slots and cluster slots so a hash-collision-free
+    /// lookup is the caller's responsibility (see `webgpu.rs::draw_row`
+    /// for the cluster-hash tagging scheme).
     pub fn rasterize_and_admit(
         &mut self,
         key: GlyphKey,
-        ch: char,
+        glyph_text: &str,
         dpr: f32,
         style_flags: u8,
         frame_pinned: &[bool],
@@ -515,7 +522,7 @@ impl GpuContext {
             self.font_size_px,
             dpr,
             style_flags,
-            ch,
+            glyph_text,
         )?;
 
         let layer: u32 = if self.next_free_layer < self.atlas_layers {

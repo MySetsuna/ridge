@@ -214,12 +214,27 @@ impl RenderBackend for Canvas2dBackend {
             }
 
             let x = (col as f64 * cell_w).round();
-            // Fill text. Use `fill_text` (no max-width) — clipping happens
-            // visually because the next cell's bg pass next frame will
-            // cover any overhang.
-            let mut buf = [0u8; 4];
-            let s = cell.ch.encode_utf8(&mut buf);
-            let _ = self.ctx.fill_text(s, x, y_top);
+            // §4.7: if a multi-codepoint grapheme cluster was registered
+            // at this column, paint the full cluster string via
+            // `fill_text` (browsers handle ZWJ + variation selectors
+            // natively when the font stack includes color-emoji fonts).
+            // Otherwise fall back to the single codepoint stored in
+            // `cell.ch`. Linear scan over `row.clusters` is cheap because
+            // most rows have 0 clusters and emoji-heavy rows still have
+            // <10.
+            let cluster = if !row.clusters.is_empty() {
+                let target = col.min(u16::MAX as usize) as u16;
+                row.clusters.iter().find(|c| c.col == target)
+            } else {
+                None
+            };
+            if let Some(cspan) = cluster {
+                let _ = self.ctx.fill_text(&cspan.text, x, y_top);
+            } else {
+                let mut buf = [0u8; 4];
+                let s = cell.ch.encode_utf8(&mut buf);
+                let _ = self.ctx.fill_text(s, x, y_top);
+            }
 
             // Underline / strikethrough as separate strokes after the glyph.
             if attrs.flags.contains(Flags::UNDERLINE) {

@@ -724,3 +724,144 @@ fn scenario_primary_resize_preserves_left_and_above_of_cursor() {
     }
 }
 
+/// §4.7 (2026-05-07) — single-codepoint emoji round-trips correctly:
+/// occupies two grid cells (width=2 first, width=0 wide-spacer next),
+/// `cell.ch` carries the codepoint, and NO cluster sidecar entry is
+/// allocated (single-codepoint clusters take the fast path). Sanity
+/// check that ASCII / CJK output stayed on the existing zero-overhead
+/// path after the §4.7 grapheme buffering refactor.
+#[test]
+fn scenario_prints_single_emoji_no_cluster_sidecar() {
+    use ridge_term::term::Terminal;
+    let mut t = Terminal::new(4, 20, 0);
+    t.feed("🚀".as_bytes());
+    let row0 = t.grid().row(0).expect("row 0");
+    assert_eq!(row0.cells[0].ch, '🚀', "single emoji at col 0");
+    assert_eq!(row0.cells[0].width, 2, "🚀 is wcwidth=2");
+    assert_eq!(row0.cells[1].width, 0, "wide spacer at col 1");
+    assert!(
+        row0.clusters.is_empty(),
+        "single-codepoint emoji should NOT take the cluster sidecar path"
+    );
+    // Cursor advanced past the wide cell.
+    assert_eq!(t.grid().cursor().col, 2);
+}
+
+/// §4.7 — ZWJ family emoji (man + ZWJ + woman + ZWJ + girl) collapses
+/// into a SINGLE grid cell occupying width 2, with the full cluster
+/// string registered on the row's `clusters` sidecar. Without §4.7 the
+/// 5 codepoints would fan out across multiple cells (each emoji as
+/// width=2, ZWJ as width=0 dropped) and the cursor would advance way
+/// past where the cluster visually lives.
+#[test]
+fn scenario_prints_zwj_family_as_single_cluster() {
+    use ridge_term::term::Terminal;
+    let zwj = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // 👨‍👩‍👧
+    let mut t = Terminal::new(4, 20, 0);
+    t.feed(zwj.as_bytes());
+    let row0 = t.grid().row(0).expect("row 0");
+    // First cell carries the FIRST codepoint (👨) at width 2.
+    assert_eq!(row0.cells[0].ch, '\u{1F468}');
+    assert_eq!(row0.cells[0].width, 2, "ZWJ cluster occupies width 2");
+    assert_eq!(row0.cells[1].width, 0, "wide spacer at col 1");
+    // Sidecar holds the full cluster string at col 0.
+    assert_eq!(row0.clusters.len(), 1, "exactly one ClusterSpan");
+    let span = &row0.clusters[0];
+    assert_eq!(span.col, 0);
+    assert_eq!(span.text.as_ref(), zwj, "full ZWJ cluster preserved");
+    // Cursor sits past the wide cell, NOT past 5 separate codepoint cells.
+    assert_eq!(t.grid().cursor().col, 2);
+}
+
+/// §4.7 — VS16-modified flag emoji (🏳 + VS16 + ZWJ + 🌈) collapses to
+/// a single cluster cell. VS16 (U+FE0F) is wcwidth=0 (variation
+/// selector) so individually contributes no width; the cluster's
+/// `wcwidth_grapheme` returns 2 because both 🏳 and 🌈 are wcwidth=2.
+#[test]
+fn scenario_prints_rainbow_flag_with_vs16_as_single_cluster() {
+    use ridge_term::term::Terminal;
+    let flag = "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}"; // 🏳️‍🌈
+    let mut t = Terminal::new(4, 20, 0);
+    t.feed(flag.as_bytes());
+    let row0 = t.grid().row(0).expect("row 0");
+    assert_eq!(row0.cells[0].ch, '\u{1F3F3}');
+    assert_eq!(row0.cells[0].width, 2);
+    assert_eq!(row0.cells[1].width, 0);
+    assert_eq!(row0.clusters.len(), 1);
+    assert_eq!(row0.clusters[0].text.as_ref(), flag);
+    assert_eq!(t.grid().cursor().col, 2);
+}
+
+/// §4.7 — Regional Indicator Symbol pair (🇺🇸 = US flag) is two
+/// codepoints each individually wcwidth=1, but rendered as a single
+/// width-2 flag glyph. `wcwidth_grapheme` special-cases RIS pairs to
+/// return 2; the kernel patches the cell width up to 2 so the glyph
+/// doesn't overflow into the neighbour cell.
+#[test]
+fn scenario_prints_ris_flag_pair_as_width2_cluster() {
+    use ridge_term::term::Terminal;
+    let us_flag = "\u{1F1FA}\u{1F1F8}"; // 🇺🇸
+    let mut t = Terminal::new(4, 20, 0);
+    t.feed(us_flag.as_bytes());
+    let row0 = t.grid().row(0).expect("row 0");
+    assert_eq!(row0.cells[0].ch, '\u{1F1FA}', "first RIS at col 0");
+    assert_eq!(row0.cells[0].width, 2, "RIS pair upgraded to width 2");
+    assert_eq!(row0.cells[1].width, 0, "wide spacer at col 1");
+    assert_eq!(row0.clusters.len(), 1);
+    assert_eq!(row0.clusters[0].col, 0);
+    assert_eq!(row0.clusters[0].text.as_ref(), us_flag);
+    assert_eq!(t.grid().cursor().col, 2);
+}
+
+/// §4.7 — `wcwidth_grapheme` direct unit test for ZWJ + RIS + simple
+/// cases. Lives in protocol_smoke (not the wcwidth.rs `mod tests`)
+/// because the integration suite is where developers look for
+/// "does emoji work" answers.
+#[test]
+fn scenario_wcwidth_grapheme_handles_emoji_clusters() {
+    use ridge_term::term::wcwidth::wcwidth_grapheme;
+    assert_eq!(wcwidth_grapheme("a"), 1, "ascii narrow");
+    assert_eq!(wcwidth_grapheme("中"), 2, "single CJK wide");
+    assert_eq!(wcwidth_grapheme("🚀"), 2, "single emoji wide");
+    assert_eq!(
+        wcwidth_grapheme("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"),
+        2,
+        "ZWJ family"
+    );
+    assert_eq!(
+        wcwidth_grapheme("\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}"),
+        2,
+        "rainbow flag with VS16"
+    );
+    assert_eq!(
+        wcwidth_grapheme("\u{1F1FA}\u{1F1F8}"),
+        2,
+        "RIS pair (US flag) special-cased to 2"
+    );
+}
+
+/// §4.7 — a ZWJ cluster is correctly *replaced* by a subsequent
+/// non-cluster write at the same column. Without the `clear_cluster_at`
+/// call in `Grid::print`, the row sidecar would still hold the stale
+/// ZWJ string after we've overwritten the cell with a plain ASCII
+/// char, and renderers would paint the old emoji glyph on top of the
+/// new char.
+#[test]
+fn scenario_zwj_cluster_cleared_when_overwritten_by_ascii() {
+    use ridge_term::term::Terminal;
+    let zwj = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    let mut t = Terminal::new(4, 20, 0);
+    t.feed(zwj.as_bytes());
+    assert_eq!(t.grid().row(0).unwrap().clusters.len(), 1);
+    // Overwrite at col 0 with an ASCII letter.
+    t.feed(b"\x1b[1;1H");                   // CUP (1,1) → col 0
+    t.feed(b"X");
+    let row0 = t.grid().row(0).unwrap();
+    assert_eq!(row0.cells[0].ch, 'X');
+    assert!(
+        row0.clusters.is_empty(),
+        "stale cluster sidecar was cleared by overwrite"
+    );
+}
+
+

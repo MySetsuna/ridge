@@ -33,7 +33,7 @@ use super::attrs::Attrs;
 use super::cell::{Cell, Row};
 use super::cursor::{Cursor, SavedCursor};
 use super::scrollback::Scrollback;
-use super::wcwidth::wcwidth;
+use super::wcwidth::{wcwidth, wcwidth_grapheme};
 
 /// Erase-in-display modes (CSI J).
 #[derive(Debug, Clone, Copy)]
@@ -598,15 +598,20 @@ impl Grid {
             }
         }
 
-        // Place the cell(s).
+        // Place the cell(s). §4.7: also drop any stale ClusterSpan
+        // anchored at the col we're about to overwrite — single-char
+        // writes must not leave a previous multi-codepoint cluster's
+        // sidecar pointing at a now-mismatched cell.
         let row_idx = self.screen().cursor.row;
         if w == 2 {
             let col = self.screen().cursor.col;
+            self.screen_mut().rows[row_idx].clear_cluster_at(col);
             self.screen_mut().rows[row_idx].cells[col] = Cell::new(ch, attr_id, 2);
             self.screen_mut().rows[row_idx].cells[col + 1] = Cell::wide_spacer(attr_id);
             self.screen_mut().cursor.col += 2;
         } else {
             let col = self.screen().cursor.col;
+            self.screen_mut().rows[row_idx].clear_cluster_at(col);
             self.screen_mut().rows[row_idx].cells[col] = Cell::new(ch, attr_id, 1);
             self.screen_mut().cursor.col += 1;
         }
@@ -621,6 +626,102 @@ impl Grid {
         // Silence unused warnings — these will be consumed when we
         // implement region-aware operations next round.
         let _ = (scroll_top, scroll_bottom);
+    }
+
+    /// §4.7 (2026-05-07) — print one extended grapheme cluster as a
+    /// single visual unit. Called by the parser AFTER it segments the
+    /// incoming byte stream into clusters via `unicode-segmentation`.
+    ///
+    /// Single-codepoint clusters fast-path through `print(ch, attrs)` —
+    /// no sidecar entry, no Box allocation — so ASCII / CJK output
+    /// keeps its existing zero-overhead path.
+    ///
+    /// Multi-codepoint clusters (👨‍👩‍👧, 🏳️‍🌈, 🇺🇸, 👨‍💻):
+    ///   1. Compute visual width from the whole cluster
+    ///      (`wcwidth_grapheme` accounts for ZWJ → 0, RIS pairs → 2).
+    ///   2. Place the FIRST codepoint via `print(first, attrs)` so all
+    ///      the wrap / pending_wrap / wide-spacer bookkeeping stays in
+    ///      one place. The cell at that col carries the first codepoint
+    ///      as `cell.ch` (so per-cell hashing / search / selection
+    ///      still see *some* glyph).
+    ///   3. If the cluster's visual width disagrees with the first
+    ///      codepoint's wcwidth (e.g. RIS pair: each is wcwidth=1 but
+    ///      together they're width=2), patch the cell's width and the
+    ///      cursor so subsequent prints land at the right col.
+    ///   4. Register the full cluster string on the row's `clusters`
+    ///      sidecar at the placement col so renderers paint the
+    ///      cluster glyph instead of just the first codepoint.
+    ///
+    /// Whole-cluster zero-width strings (rare — combining-only input
+    /// like a stray ZWJ) fall back to `print(first, attrs)` which itself
+    /// short-circuits on width-0.
+    pub fn print_grapheme(&mut self, s: &str, attrs: Attrs) {
+        let mut chars = s.chars();
+        let Some(first) = chars.next() else { return; };
+        let multi = chars.next().is_some();
+
+        if !multi {
+            self.print(first, attrs);
+            return;
+        }
+
+        let cluster_w = wcwidth_grapheme(s);
+        if cluster_w == 0 {
+            self.print(first, attrs);
+            return;
+        }
+
+        // Place first codepoint via the existing path. After the call,
+        // the cursor has advanced and `pending_wrap` may be set.
+        self.print(first, attrs);
+
+        // Compute the col where the cell was actually written. After
+        // print(), cursor sits at `written_col + first_w` (or stays
+        // at cols-1 with pending_wrap when first_w==1 hit the right
+        // edge).
+        let cur = *self.cursor();
+        let row_idx = cur.row;
+        let first_w = wcwidth(first as u32);
+        let written_col = if cur.pending_wrap {
+            cur.col
+        } else {
+            cur.col.saturating_sub(first_w as usize)
+        };
+
+        // Patch cell width if the cluster's visual width differs from
+        // the first codepoint's wcwidth — RIS pair is the canonical
+        // case (first RIS is wcwidth=1, pair renders at width 2). We
+        // only widen (1 → 2), never narrow (renderer can paint a
+        // cluster that's "smaller than declared" cleanly; the reverse
+        // would clip).
+        if cluster_w == 2 && first_w == 1 {
+            let cols = self.cols;
+            let row_len = self.screen().rows[row_idx].cells.len();
+            if written_col + 1 < row_len {
+                let attr_id = self.attrs.intern(attrs);
+                self.screen_mut().rows[row_idx].cells[written_col] =
+                    Cell::new(first, attr_id, 2);
+                self.screen_mut().rows[row_idx].cells[written_col + 1] =
+                    Cell::wide_spacer(attr_id);
+                // Advance cursor by the extra column claimed by the
+                // upgraded width-2 placement, mirroring the wide-char
+                // path in `print`.
+                if !cur.pending_wrap {
+                    self.screen_mut().cursor.col = (cur.col + 1).min(cols.saturating_sub(1));
+                    if self.screen().cursor.col + 1 >= cols {
+                        self.screen_mut().cursor.col = cols.saturating_sub(1);
+                        self.screen_mut().cursor.pending_wrap = true;
+                    }
+                }
+            }
+        }
+
+        // Register the cluster on the row sidecar.
+        let row_len = self.screen().rows[row_idx].cells.len();
+        if written_col < row_len {
+            self.screen_mut().rows[row_idx]
+                .set_cluster(written_col, Box::from(s));
+        }
     }
 
     // ------------------------------------------------------------------

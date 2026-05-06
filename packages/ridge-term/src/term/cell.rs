@@ -58,8 +58,24 @@ pub struct HyperlinkSpan {
     pub id: Option<String>,
 }
 
+/// §4.7 (2026-05-07) — multi-codepoint grapheme cluster anchored at a
+/// specific column on a row. Used so emoji ZWJ sequences (👨‍👩‍👧),
+/// flag-style RIS pairs (🇺🇸), and emoji-with-VS16 (🏳️‍🌈) survive as
+/// a single visual glyph instead of fanning out across N cells per
+/// codepoint. The cell at `col` carries the FIRST codepoint of the
+/// cluster (so per-cell hashing / reflow / selection still see *some*
+/// glyph there); renderers that find a matching `ClusterSpan` use
+/// `text` instead of `cell.ch`. Ordered by `col`; a row typically has
+/// 0–2 clusters in non-emoji-heavy output, so linear scan is fine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterSpan {
+    pub col: u16,
+    pub text: Box<str>,
+}
+
 /// One row. Wraps `Vec<Cell>` plus a small amount of per-row metadata
-/// (wrap flag for reflow, hyperlink spans for OSC 8 click-through).
+/// (wrap flag for reflow, hyperlink spans for OSC 8 click-through,
+/// grapheme cluster spans for ZWJ-emoji rendering).
 #[derive(Debug, Clone)]
 pub struct Row {
     pub cells: Vec<Cell>,
@@ -71,6 +87,11 @@ pub struct Row {
     /// links (the common case). Spans are stored in scan order; a
     /// quick linear lookup via `link_at` finds the span containing a col.
     pub hyperlinks: Vec<HyperlinkSpan>,
+    /// §4.7 grapheme cluster overrides. Empty for the common ASCII /
+    /// CJK case — only populated when the parser saw a multi-codepoint
+    /// extended grapheme cluster (emoji ZWJ sequences etc.). Renderers
+    /// must check `cluster_at(col)` before falling back to `cell.ch`.
+    pub clusters: Vec<ClusterSpan>,
 }
 
 impl Row {
@@ -79,12 +100,15 @@ impl Row {
             cells: vec![Cell::EMPTY; cols],
             wrapped: false,
             hyperlinks: Vec::new(),
+            clusters: Vec::new(),
         }
     }
 
     /// Resize in-place. Growth pads with EMPTY; shrink truncates.
     /// Hyperlink spans past the new width are dropped; spans straddling
-    /// the boundary get clipped (col_end clamped to new cols).
+    /// the boundary get clipped (col_end clamped to new cols). Cluster
+    /// spans past the new width are dropped (a cluster lives at exactly
+    /// one column — no straddle case).
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::EMPTY);
         if !self.hyperlinks.is_empty() {
@@ -95,17 +119,54 @@ impl Row {
                 }
             }
         }
+        if !self.clusters.is_empty() {
+            let cols_u16 = cols.min(u16::MAX as usize) as u16;
+            self.clusters.retain(|c| c.col < cols_u16);
+        }
     }
 
-    /// Reset all cells to default + clear wrap flag + drop hyperlinks.
-    /// Used by ED (erase display) and when scrollback ejects a row back
-    /// into the grid.
+    /// Reset all cells to default + clear wrap flag + drop hyperlinks
+    /// + drop cluster overrides. Used by ED (erase display) and when
+    /// scrollback ejects a row back into the grid.
     pub fn clear(&mut self) {
         for c in &mut self.cells {
             *c = Cell::EMPTY;
         }
         self.wrapped = false;
         self.hyperlinks.clear();
+        self.clusters.clear();
+    }
+
+    /// §4.7 — return the cluster span anchored at `col` if any. O(N)
+    /// linear scan; expected N is 0 for the common case and small
+    /// (<10) even for emoji-heavy rows.
+    pub fn cluster_at(&self, col: usize) -> Option<&ClusterSpan> {
+        if self.clusters.is_empty() { return None; }
+        let target = col.min(u16::MAX as usize) as u16;
+        self.clusters.iter().find(|c| c.col == target)
+    }
+
+    /// §4.7 — register a multi-codepoint grapheme cluster anchored at
+    /// `col`. Idempotent: if a cluster already lives at `col` it's
+    /// replaced. Single-codepoint "clusters" should NOT come through
+    /// here — caller should put the codepoint in `Cell::ch` directly
+    /// and skip the sidecar overhead.
+    pub fn set_cluster(&mut self, col: usize, text: Box<str>) {
+        let col_u16 = col.min(u16::MAX as usize) as u16;
+        if let Some(existing) = self.clusters.iter_mut().find(|c| c.col == col_u16) {
+            existing.text = text;
+        } else {
+            self.clusters.push(ClusterSpan { col: col_u16, text });
+        }
+    }
+
+    /// §4.7 — drop any cluster anchored at `col`. Called on cell
+    /// overwrite paths so a non-cluster write (regular ASCII / CJK)
+    /// at a previously-clustered col doesn't leave a stale sidecar.
+    pub fn clear_cluster_at(&mut self, col: usize) {
+        if self.clusters.is_empty() { return; }
+        let target = col.min(u16::MAX as usize) as u16;
+        self.clusters.retain(|c| c.col != target);
     }
 
     /// Return the hyperlink span containing `col`, if any. O(N) over

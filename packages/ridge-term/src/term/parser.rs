@@ -27,12 +27,21 @@
 //! and the parser executes the corresponding grid op. This keeps mode
 //! state and screen state cleanly separated.
 
+use unicode_segmentation::UnicodeSegmentation;
 use vte::{Params, Perform};
 
 use super::attrs::{Attrs, Color, Flags};
 use super::clock;
 use super::grid::{EraseMode, Grid};
 use super::modes::{CursorShape, ModeEffect, Modes};
+use super::wcwidth::{could_extend_grapheme, wcwidth, wcwidth_grapheme};
+
+/// §4.7 — safety cap on how big the grapheme buffer can grow before
+/// the parser force-flushes it. A well-formed extended grapheme cluster
+/// is typically 1–7 codepoints (the longest common cluster is family
+/// emoji like 👨‍👩‍👧‍👦 = 7 codepoints). 32 chars gives ~4× headroom for
+/// pathological inputs without unbounded growth on garbage bytes.
+const MAX_GRAPHEME_BUF_CHARS: usize = 32;
 
 pub struct Performer<'a> {
     pub grid: &'a mut Grid,
@@ -52,32 +61,114 @@ pub struct Performer<'a> {
     /// annotated with this (uri, id) on its row via `Grid::annotate_cell_with_link`.
     /// Persists across feed batches.
     pub current_link: &'a mut Option<(String, Option<String>)>,
+    /// §4.7 — grapheme cluster buffer (owned by Terminal so it persists
+    /// across feed batches). Accumulates codepoints from `print` until a
+    /// cluster boundary is reached, then emits each completed cluster as
+    /// a single unit via `emit_grapheme`.
+    pub grapheme_buf: &'a mut String,
 }
 
-impl<'a> Perform for Performer<'a> {
-    fn print(&mut self, c: char) {
-        let w = super::wcwidth::wcwidth(c as u32) as usize;
-        // IRM (insert mode, CSI 4h). When on, printing shifts existing
-        // cells from the cursor rightward by the new char's width, then
-        // the print writes into the now-vacated cell. Modern shells
-        // don't use IRM (they emit explicit ICH `CSI <n> @` instead) but
-        // the spec requires it and `Modes::insert` was already wired by
-        // the public `CSI h/l` handler — leaving the bool unread would
-        // be a silent doc-vs-code drift. w=0 (combining marks) skips
-        // the shift since they don't occupy a cell.
+impl<'a> Performer<'a> {
+    /// §4.7 — drain all but the LAST grapheme from the buffer. Called
+    /// after every `print(c)` so completed clusters land on the grid as
+    /// soon as the next codepoint disambiguates them. The trailing
+    /// grapheme stays buffered because more codepoints may yet extend
+    /// it (ZWJ partners, variation selectors, combining marks).
+    fn drain_complete_graphemes(&mut self) {
+        let n = self.grapheme_buf.graphemes(true).count();
+        if n < 2 { return; }
+        // Collect to owned strings so we can call `&mut self` methods
+        // while emitting (the iterator borrows `grapheme_buf`).
+        let graphemes: Vec<String> = self
+            .grapheme_buf
+            .graphemes(true)
+            .map(str::to_string)
+            .collect();
+        let last = graphemes.last().expect("n >= 2").clone();
+        for g in &graphemes[..graphemes.len() - 1] {
+            self.emit_grapheme(g);
+        }
+        self.grapheme_buf.clear();
+        self.grapheme_buf.push_str(&last);
+    }
+
+    /// §4.7 — force-flush the entire buffer. Called BEFORE every
+    /// non-print Perform event so any pending cluster lands on the
+    /// grid before a CSI / OSC / control byte takes effect, and on
+    /// the buffer-overflow safety path. Empty buffer is a no-op.
+    fn flush_grapheme_buf(&mut self) {
+        if self.grapheme_buf.is_empty() { return; }
+        let buf = std::mem::take(self.grapheme_buf);
+        // Buffer may legitimately hold multiple complete clusters
+        // (the drain step keeps only the trailing one, but a force-
+        // flush has to emit them all). Iterate and emit each.
+        let graphemes: Vec<String> = buf.graphemes(true).map(str::to_string).collect();
+        for g in &graphemes {
+            self.emit_grapheme(g);
+        }
+    }
+
+    /// §4.7 — at end of feed, flush whatever's in the buffer. We
+    /// previously tried to hold an "extending" trailing codepoint
+    /// across feed boundaries (so a cluster genuinely split between
+    /// PTY chunks would resolve), but the heuristic over-held in the
+    /// RIS case (a complete `🇺🇸` flag pair has a trailing RIS, which
+    /// the heuristic flagged as extending → buffer held forever → cell
+    /// stayed blank). Cross-feed cluster splits are rare in practice
+    /// — PTYs deliver full UTF-8 sequences and emoji clusters tend to
+    /// align with chunk boundaries — so the simpler always-flush rule
+    /// loses very little correctness for a lot of robustness.
+    pub(super) fn flush_buffer_if_complete(&mut self) {
+        if self.grapheme_buf.is_empty() { return; }
+        self.flush_grapheme_buf();
+    }
+
+    /// §4.7 — emit a single complete grapheme to the grid + handle
+    /// IRM (insert mode), `last_printed` for REP, and OSC 8 hyperlink
+    /// annotation. Both single-codepoint and multi-codepoint paths
+    /// share this entry so the IRM / link bookkeeping stays in one
+    /// place.
+    fn emit_grapheme(&mut self, g: &str) {
+        if g.is_empty() { return; }
+        let mut chars = g.chars();
+        let first = match chars.next() {
+            Some(c) => c,
+            None => return,
+        };
+        let multi = chars.next().is_some();
+
+        // Visual width: cluster width for multi-codepoint, raw wcwidth
+        // for single. ZWJ-only or combining-only clusters have width 0
+        // and skip IRM shifting.
+        let w = if multi {
+            wcwidth_grapheme(g) as usize
+        } else {
+            wcwidth(first as u32) as usize
+        };
+
+        // IRM (CSI 4h). Modern shells don't emit it but the spec
+        // requires it; matches the pre-§4.7 behavior.
         if w > 0 && self.modes.insert {
             self.grid.insert_chars(w);
         }
-        self.grid.print(c, *self.current_attrs);
-        // Record for REP. Width-0 chars (combining marks etc.) are dropped
-        // by grid.print so we still record them — REP is rare and harmless
-        // either way; correctness over micro-tuning.
-        *self.last_printed = Some((c, *self.current_attrs));
-        // OSC 8 hyperlink annotation. After grid.print, the cursor sits
-        // either at (row, col + w) for non-wrap writes, or at (row, cols-1)
-        // with pending_wrap=true for w=1 at last column. The just-written
-        // cell is therefore at col = (cur.col - w) when no pending_wrap,
-        // or col = cur.col when pending_wrap. width is w (1 or 2).
+
+        if multi {
+            self.grid.print_grapheme(g, *self.current_attrs);
+        } else {
+            self.grid.print(first, *self.current_attrs);
+        }
+
+        // Record for REP. We only stash the FIRST codepoint of a
+        // multi-codepoint cluster — REP repeats one "char" by spec, and
+        // upgrading it to repeat full clusters would require widening
+        // `last_printed`'s type. Acceptable trade-off: REP after an
+        // emoji ZWJ cluster repeats the base emoji, not the cluster;
+        // niche enough to defer.
+        *self.last_printed = Some((first, *self.current_attrs));
+
+        // OSC 8 hyperlink annotation. After print/print_grapheme, cursor
+        // advanced by `w` (or stayed at cols-1 with pending_wrap when
+        // w==1 hit the right edge).
         if w > 0 {
             if let Some((uri, id)) = self.current_link.as_ref() {
                 let cur = *self.grid.cursor();
@@ -87,12 +178,57 @@ impl<'a> Perform for Performer<'a> {
                     cur.col.saturating_sub(w)
                 };
                 let id_ref: Option<&str> = id.as_deref();
-                self.grid.annotate_cell_with_link(cur.row, written_col, w, uri.as_str(), id_ref);
+                self.grid.annotate_cell_with_link(
+                    cur.row, written_col, w, uri.as_str(), id_ref,
+                );
             }
         }
     }
+}
+
+impl<'a> Perform for Performer<'a> {
+    fn print(&mut self, c: char) {
+        // §4.7 — buffer the codepoint, drain completed clusters, hold
+        // the trailing one for possible extension.
+        //
+        // Strategy:
+        //   1. Push c to the cluster buffer.
+        //   2. Drain all but the LAST grapheme — UnicodeSegmentation
+        //      already split the buffer into N grapheme clusters, the
+        //      first N-1 of which are CLOSED by definition (the next
+        //      codepoint can only extend the trailing one). Emit them.
+        //   3. The trailing grapheme stays buffered. Even if the
+        //      current codepoint LOOKS like a non-extender (e.g. 👨,
+        //      width 2, not ZWJ/VS), the NEXT codepoint may still be a
+        //      ZWJ that joins it into a multi-codepoint cluster — so
+        //      we can't flush yet. The flush happens at:
+        //        a. The next non-print Perform event (CSI / OSC / CR
+        //           / LF / control bytes), or
+        //        b. End of feed (`flush_buffer_if_complete`), if the
+        //           trailing codepoint is non-extending.
+        //   4. Safety cap: if the buffer balloons past
+        //      `MAX_GRAPHEME_BUF_CHARS` (pathological garbage stream),
+        //      force-flush so we don't grow unbounded.
+        //
+        // Single-codepoint output (ASCII, CJK, single emoji) emits at
+        // most one codepoint of latency within a feed batch — the
+        // typical PTY chunk + end-of-feed flush makes this invisible
+        // to users and tests.
+        self.grapheme_buf.push(c);
+        self.drain_complete_graphemes();
+        if self.grapheme_buf.chars().count() > MAX_GRAPHEME_BUF_CHARS {
+            self.flush_grapheme_buf();
+        }
+        // Suppress unused-import warning for `could_extend_grapheme` —
+        // it lives in the `flush_buffer_if_complete` end-of-feed path.
+        let _ = could_extend_grapheme;
+    }
 
     fn execute(&mut self, byte: u8) {
+        // §4.7: flush any pending grapheme cluster so its visual unit
+        // lands BEFORE this control byte takes effect (BEL / BS / HT /
+        // LF / CR can move the cursor, change the active row, etc.).
+        self.flush_grapheme_buf();
         match byte {
             0x07 => {
                 // BEL outside of OSC string-terminator context. (vte feeds
@@ -123,6 +259,9 @@ impl<'a> Perform for Performer<'a> {
         _ignore: bool,
         action: char,
     ) {
+        // §4.7: flush pending grapheme so cursor / attrs / mode changes
+        // affect the NEXT print, not the just-buffered cluster.
+        self.flush_grapheme_buf();
         let is_private = intermediates.first() == Some(&b'?');
 
         // Private CSI ? h / l — DEC mode set/reset.
@@ -376,6 +515,9 @@ impl<'a> Perform for Performer<'a> {
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        // §4.7: flush pending grapheme so DECSC / DECRC / IND / NEL /
+        // RI etc. don't act on stale cursor state.
+        self.flush_grapheme_buf();
         match byte {
             b'7' => {
                 // DECSC — save full cursor state per VT spec: position,
@@ -437,6 +579,9 @@ impl<'a> Perform for Performer<'a> {
     /// each as a `KernelEvent` on `pending_events`; the JS layer routes
     /// from there to the relevant Svelte store.
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // §4.7: flush pending grapheme so OSC 8 hyperlink open/close
+        // and OSC 0/2/7/133 events apply to the NEXT print.
+        self.flush_grapheme_buf();
         use super::terminal::KernelEvent;
 
         // OSC always opens with `<command>;<rest...>`. Need at least the

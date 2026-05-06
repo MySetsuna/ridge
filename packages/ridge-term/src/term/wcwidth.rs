@@ -67,6 +67,65 @@ pub fn wcwidth(cp: u32) -> u8 {
     1
 }
 
+/// §4.7 (2026-05-07) — width of an extended grapheme cluster as it
+/// occupies grid cells. Take the maximum `wcwidth` across all
+/// codepoints in the cluster: ZWJ / variation selectors / combining
+/// marks all return 0, but the cluster's *visible* glyph width is
+/// driven by the widest base codepoint inside it. Examples:
+///   "👨"           → 2 (single wide codepoint).
+///   "👨\u{200d}👩" → 2 (👨 wide, ZWJ zero, 👩 wide → max 2).
+///   "🏳\u{fe0f}\u{200d}🌈" → 2 (rainbow flag with VS16 → max 2).
+///   "🇺🇸"           → 2 (RIS pair = flag, special-cased to width 2).
+///   "a"             → 1.
+///   "à" (a + combining grave) → 1.
+/// Empty string returns 0 (caller shouldn't pass empty, but safe default).
+///
+/// Regional Indicator pair special case: each RIS codepoint by itself
+/// is `wcwidth == 1`, but two adjacent RIS codepoints render as a
+/// single flag emoji that fonts paint at 2-cell width. Without the
+/// special case the cluster would write width=1 and the glyph would
+/// overflow into the neighbour cell.
+#[inline]
+pub fn wcwidth_grapheme(s: &str) -> u8 {
+    let mut chars = s.chars();
+    if let (Some(a), Some(b)) = (chars.next(), chars.next()) {
+        let acp = a as u32;
+        let bcp = b as u32;
+        if (0x1F1E6..=0x1F1FF).contains(&acp) && (0x1F1E6..=0x1F1FF).contains(&bcp) {
+            return 2;
+        }
+    }
+    s.chars()
+        .map(|c| wcwidth(c as u32))
+        .max()
+        .unwrap_or(0)
+}
+
+/// §4.7 — `true` when the codepoint COULD combine with what comes next
+/// to extend the current grapheme cluster, so the parser should buffer
+/// rather than emitting immediately. Conservative — false positives
+/// (buffering one extra char) are harmless but false negatives (split
+/// cluster mid-flight) would render the cluster wrong. Catches:
+///   - ZWJ (U+200D): emoji ZWJ sequences.
+///   - Variation Selectors (U+FE00..=U+FE0F, U+E0100..=U+E01EF).
+///   - Regional Indicator Symbols (U+1F1E6..=U+1F1FF) — first half
+///     of a flag pair waits for the partner.
+///   - Anything else with `wcwidth == 0` (combining marks, etc.).
+///   - Hangul L jamo (U+1100..=U+115F): wcwidth=2 already (so caught
+///     by the L+V+T composition rule via grapheme segmenter), but the
+///     segmenter only sees the extension AFTER it arrives — buffer to
+///     give it that chance.
+#[inline]
+pub fn could_extend_grapheme(c: char) -> bool {
+    let cp = c as u32;
+    if cp == 0x200D { return true; }
+    if (0xFE00..=0xFE0F).contains(&cp) { return true; }
+    if (0xE0100..=0xE01EF).contains(&cp) { return true; }
+    if (0x1F1E6..=0x1F1FF).contains(&cp) { return true; }
+    if (0x1100..=0x115F).contains(&cp) { return true; }
+    wcwidth(cp) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
