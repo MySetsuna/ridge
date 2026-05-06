@@ -322,6 +322,17 @@ export class TerminalKernel {
         return ret !== 0;
     }
     /**
+     * Whether the user has paged into history and PTY output is
+     * currently being held back from auto-snapping the viewport.
+     * JS surfaces this as a "follow tail" indicator. Cleared by
+     * `scrollToBottom`.
+     * @returns {boolean}
+     */
+    isUserScrollLocked() {
+        const ret = wasm.terminalkernel_isUserScrollLocked(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * @param {number} rows
      * @param {number} cols
      * @param {number} scrollback

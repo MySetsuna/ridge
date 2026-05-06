@@ -255,6 +255,18 @@ pub trait RenderBackend {
     /// Resize the underlying surface. Called when canvas size or DPR changes.
     fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String>;
 
+    /// Drop any cached glyph state that becomes stale when cell metrics
+    /// change (DPR change, font size change, font family change). Default
+    /// is a no-op — Canvas2D rasterizes per-frame and has no state to
+    /// drop. WebGPU clears its `GlyphAtlas` LRU and resets the next-free
+    /// texture-array layer pointer so the next frame re-rasterizes
+    /// against the new metrics instead of pointing the shader at stale
+    /// UVs left over from the previous size.
+    ///
+    /// Called from `Renderer::invalidate_all` so the atlas can never lag
+    /// the renderer-side invalidation.
+    fn invalidate_atlas(&mut self) {}
+
     /// Begin a frame — record metrics + theme for this draw cycle.
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme);
 

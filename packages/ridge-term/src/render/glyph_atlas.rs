@@ -98,9 +98,15 @@ impl GlyphAtlas {
         }
     }
 
-    pub fn capacity(&self) -> usize { self.capacity }
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 
     /// Returns `Some(entry)` on hit and promotes the key to MRU. `None`
     /// on miss — caller is responsible for rasterizing + `insert`.
@@ -182,6 +188,65 @@ impl GlyphAtlas {
         let entry = self.entries.remove(&key)?;
         Some((key, entry))
     }
+}
+
+/// Pick a texture-array layer the caller can safely overwrite this frame.
+///
+/// The atlas is at capacity (every usable slot is occupied), so an entry
+/// must be evicted to free a layer. Eviction rule: walk LRU → MRU, but
+/// skip any entry whose `layer` is currently *pinned* (i.e. an earlier
+/// instance in the caller's per-frame draw queue already references that
+/// layer's pixels). Skipped entries are re-inserted afterward so they
+/// stay live in the cache; their MRU rotation reflects the truth that
+/// they are being actively sampled by the current frame.
+///
+/// Returns `None` only when **every** layer in the LRU is pinned — i.e.
+/// the visible-unique-glyph count exceeds atlas capacity in a single
+/// frame. The caller should fall back to its bg-only path for the cell
+/// that triggered the miss; the next frame can re-rasterize once some
+/// layers release their pins.
+///
+/// ## Why this lives in `glyph_atlas.rs`
+///
+/// The function is GPU-agnostic: it takes `&mut GlyphAtlas` and a
+/// `&[bool]` indexed by layer. The pin-bitmap concept is general
+/// ("don't pick these layers"), not WebGPU-specific. Hosting it in the
+/// atlas module lets host `cargo test --lib` exercise the eviction walk
+/// without any `wasm32 + webgpu` build, which is the only place a real
+/// regression would otherwise be observable.
+///
+/// ## Bug history
+///
+/// Without the pinning skip, the WebGPU backend was reusing a layer
+/// that an earlier instance in the same frame had already cited;
+/// `queue.write_texture` then overwrote the layer's pixels before the
+/// GPU sampled them, so the earlier cell rendered the *new* glyph. The
+/// frame-to-frame variation produced the visible "Claude TUI 历史输出
+/// 字符不停刷新" symptom.
+pub fn pick_evictable_layer(atlas: &mut GlyphAtlas, pinned: &[bool]) -> Option<u32> {
+    // Hold pinned entries we walk past so we can re-insert them after
+    // we either find an evictable layer or exhaust the cache. Pre-
+    // reserve 8: typical pin density is small (LRU is almost always
+    // unpinned, so requeue stays length 0 on the steady-state hot
+    // path). Under thrash the Vec grows in place.
+    let mut requeue: Vec<(GlyphKey, GlyphEntry)> = Vec::with_capacity(8);
+    let mut chosen: Option<u32> = None;
+    while let Some((k, e)) = atlas.evict_oldest() {
+        let layer = e.layer as usize;
+        let is_pinned = pinned.get(layer).copied().unwrap_or(false);
+        if !is_pinned {
+            chosen = Some(e.layer as u32);
+            break;
+        }
+        requeue.push((k, e));
+    }
+    // Restore every pinned entry we skipped so they remain in the
+    // cache. Re-insertion places them at MRU which is correct: they're
+    // being actively sampled by the current frame's draw queue.
+    for (k, e) in requeue {
+        atlas.insert(k, e);
+    }
+    chosen
 }
 
 #[cfg(test)]
@@ -320,5 +385,96 @@ mod tests {
         let _ = a.lookup(&key(1));
         let (evicted, _) = a.evict_oldest().unwrap();
         assert_eq!(evicted, key(2));
+    }
+
+    // ─── pick_evictable_layer ────────────────────────────────────────
+    //
+    // Regression coverage for the "Claude TUI 历史输出字符不停刷新"
+    // bug: WebGpuBackend's draw_row was reusing a layer that an earlier
+    // instance in the same frame had already cited, so the GPU sampled
+    // overwritten pixels and the earlier cell visually morphed into a
+    // different glyph. `pick_evictable_layer` enforces the invariant
+    // that pinned layers are never returned for reuse.
+
+    #[test]
+    fn pick_evictable_layer_skips_pinned_and_preserves_lookup() {
+        let mut a = GlyphAtlas::new(5);
+        // Insert 5 glyphs; LRU→MRU order is [0, 1, 2, 3, 4].
+        for i in 0..5u16 {
+            a.insert(key(i as u32), entry(i));
+        }
+        // Pin layers 0, 2, 4 — simulate an in-frame draw_row that
+        // looked up keys with those layer ids first this frame.
+        let pinned = [true, false, true, false, true];
+
+        // First eviction must return an unpinned layer (1 or 3).
+        let first = pick_evictable_layer(&mut a, &pinned);
+        assert!(
+            matches!(first, Some(1) | Some(3)),
+            "expected an unpinned layer (1 or 3), got {first:?}"
+        );
+
+        // Second eviction returns the OTHER unpinned layer.
+        let second = pick_evictable_layer(&mut a, &pinned);
+        assert!(
+            matches!(second, Some(1) | Some(3)),
+            "expected the remaining unpinned layer (1 or 3), got {second:?}"
+        );
+        assert_ne!(first, second, "must not return the same layer twice");
+
+        // Third call: every remaining layer is pinned → None.
+        let third = pick_evictable_layer(&mut a, &pinned);
+        assert_eq!(third, None, "all remaining layers pinned → must be None");
+
+        // Critically: pinned keys must STILL be in the atlas after the
+        // eviction walk. Without this invariant the bug morphs into
+        // "pinned glyphs disappear" — also a regression but a different
+        // visual symptom.
+        assert!(a.lookup(&key(0)).is_some(), "pinned key 0 must survive");
+        assert!(a.lookup(&key(2)).is_some(), "pinned key 2 must survive");
+        assert!(a.lookup(&key(4)).is_some(), "pinned key 4 must survive");
+    }
+
+    #[test]
+    fn pick_evictable_layer_returns_lru_when_nothing_pinned() {
+        let mut a = GlyphAtlas::new(3);
+        a.insert(key(10), entry(0)); // LRU after insert
+        a.insert(key(11), entry(1));
+        a.insert(key(12), entry(2));
+        let pinned = [false, false, false];
+        // No pins → standard LRU rule wins → layer 0 (key 10).
+        assert_eq!(pick_evictable_layer(&mut a, &pinned), Some(0));
+    }
+
+    #[test]
+    fn pick_evictable_layer_returns_none_for_empty_atlas() {
+        let mut a = GlyphAtlas::new(4);
+        let pinned = [false; 4];
+        assert_eq!(pick_evictable_layer(&mut a, &pinned), None);
+    }
+
+    #[test]
+    fn pick_evictable_layer_re_insertion_does_not_corrupt_lru_order() {
+        // After picking an unpinned layer past one pinned entry, the
+        // remaining live atlas should still resolve all surviving keys
+        // without dups or losses.
+        let mut a = GlyphAtlas::new(4);
+        a.insert(key(100), entry(0)); // pinned, will be skipped
+        a.insert(key(101), entry(1)); // chosen for eviction
+        a.insert(key(102), entry(2));
+        a.insert(key(103), entry(3));
+        let pinned = [true, false, false, false];
+
+        let chosen = pick_evictable_layer(&mut a, &pinned);
+        assert_eq!(chosen, Some(1));
+
+        // Atlas should now contain keys 100, 102, 103 — exactly the
+        // non-evicted ones, with no duplication of the re-inserted
+        // pinned key.
+        assert_eq!(a.len(), 3);
+        assert!(a.lookup(&key(100)).is_some());
+        assert!(a.lookup(&key(101)).is_none());
+        assert!(a.lookup(&key(102)).is_some());
+        assert!(a.lookup(&key(103)).is_some());
     }
 }

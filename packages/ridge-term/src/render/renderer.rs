@@ -103,10 +103,36 @@ impl<B: RenderBackend> Renderer<B> {
         }
     }
 
-    /// Force a full redraw next frame. Call after font / theme / size changes.
+    /// Force a full redraw next frame. Call after font / theme / size
+    /// changes — covers theme swap, font config change, DPR change,
+    /// surface resize, and pane reattach.
+    ///
+    /// Resets every per-frame cache the renderer carries:
+    ///   * `snapshot` — per-row hashes (next tick re-hashes everything).
+    ///   * `last_cursor` — old cursor coords may now be off-grid after
+    ///     a reflow / resize; clearing forces an unconditional draw of
+    ///     the new cursor without trying to "erase" a stale row that
+    ///     no longer exists.
+    ///   * `last_offset` — the row→content mapping has changed; the
+    ///     stored offset is meaningless against the new grid.
+    ///   * `last_selection` — overlay rects refer to absolute rows
+    ///     that may have shifted under reflow.
+    ///   * `last_blink_phase` — pin to "visible" so the post-resize
+    ///     frame actually shows the cursor instead of catching it on
+    ///     the off-half by accident.
+    ///
+    /// Also forwards to the backend's `invalidate_atlas` so any GPU
+    /// glyph cache (WebGPU `GlyphAtlas`) drops stale entries sized for
+    /// the previous metrics. Canvas2D's default no-op is a free
+    /// fall-through.
     pub fn invalidate_all(&mut self) {
         self.snapshot.clear();
+        self.last_cursor = None;
+        self.last_offset = 0;
+        self.last_selection = None;
+        self.last_blink_phase = true;
         self.full_redraw_pending = true;
+        self.backend.invalidate_atlas();
     }
 
     /// Multi-pane hosts call this when the active pane changes. When the

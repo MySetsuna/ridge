@@ -10,7 +10,7 @@
 //!     - encodeKey(key, ctrl, alt, shift, meta) → Uint8Array
 //!     - encodePaste(text) → Uint8Array  (bracketed-paste aware)
 //!     - scrollUp(n) / scrollDown(n) / scrollToBottom()
-//!     - scrollOffset() / scrollbackLen()
+//!     - scrollOffset() / scrollbackLen() / isUserScrollLocked()
 //!     - selectAll()
 //!     - clearSelection()
 //!     - setSelection(startRow, startCol, endRow, endCol)
@@ -188,6 +188,15 @@ impl JsTerminal {
 
     #[wasm_bindgen(js_name = scrollbackLen)]
     pub fn scrollback_len(&self) -> usize { self.inner.scrollback_len() }
+
+    /// Whether the user has paged into history and PTY output is
+    /// currently being held back from auto-snapping the viewport.
+    /// JS surfaces this as a "follow tail" indicator. Cleared by
+    /// `scrollToBottom`.
+    #[wasm_bindgen(js_name = isUserScrollLocked)]
+    pub fn is_user_scroll_locked(&self) -> bool {
+        self.inner.is_user_scroll_locked()
+    }
 
     // ---- selection --------------------------------------------------
 

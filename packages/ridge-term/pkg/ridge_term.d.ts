@@ -131,6 +131,13 @@ export class TerminalKernel {
      * boolean check.
      */
     isSyncOutput(): boolean;
+    /**
+     * Whether the user has paged into history and PTY output is
+     * currently being held back from auto-snapping the viewport.
+     * JS surfaces this as a "follow tail" indicator. Cleared by
+     * `scrollToBottom`.
+     */
+    isUserScrollLocked(): boolean;
     constructor(rows: number, cols: number, scrollback: number);
     /**
      * Prepend older history at the OLDEST end of the scrollback ring.
@@ -248,6 +255,7 @@ export interface InitOutput {
     readonly terminalkernel_isCursorVisible: (a: number) => number;
     readonly terminalkernel_isFocusReporting: (a: number) => number;
     readonly terminalkernel_isSyncOutput: (a: number) => number;
+    readonly terminalkernel_isUserScrollLocked: (a: number) => number;
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
     readonly terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;
     readonly terminalkernel_resize: (a: number, b: number, c: number) => void;

@@ -38,12 +38,10 @@
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 #![allow(dead_code)] // round-3 §4.1 first slice; draw methods are still no-ops.
 
-use crate::render::backend::{
-    CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme,
-};
-use crate::term::attr_table::AttrTable;
-use super::glyph_atlas::{GlyphAtlas, GlyphEntry, GlyphKey};
+use super::glyph_atlas::{pick_evictable_layer, GlyphAtlas, GlyphEntry, GlyphKey};
 use super::glyph_rasterizer::GlyphRasterizer;
+use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
+use crate::term::attr_table::AttrTable;
 use web_sys::HtmlCanvasElement;
 
 /// Convert an `[u8; 4]` RGBA color into a wgpu linear-color triple.
@@ -118,8 +116,10 @@ pub struct WebGpuBackend {
     /// the binding shape.
     bind_group: wgpu::BindGroup,
     /// OffscreenCanvas-based glyph rasterizer. Sized to match
-    /// (`ATLAS_SLOT_W`, `ATLAS_SLOT_H`) so its output bitmap fits
-    /// exactly into one atlas-texture layer with no clipping.
+    /// (`slot_w`, `slot_h`) — see [`Self::slot_dims_for`] — so its
+    /// output bitmap fits exactly into one atlas-texture layer with
+    /// no clipping. Recreated together with `atlas_texture` whenever
+    /// metrics push the required slot beyond the current allocation.
     rasterizer: GlyphRasterizer,
     /// Per-frame CellInstance accumulator. `begin_frame` clears it,
     /// `draw_row` pushes one entry per non-continuation cell, the
@@ -131,13 +131,29 @@ pub struct WebGpuBackend {
     /// settles after a few frames.
     pending_instances: Vec<CellInstance>,
     /// Next free atlas-texture-array layer. Incremented on each new
-    /// glyph admitted to the atlas; once it reaches `ATLAS_LAYERS`
-    /// new misses fall back to bg-only rendering.
-    ///
-    /// §4.1.c.glyph.eviction (future) extends GlyphAtlas to return
-    /// the evicted entry's layer so this counter can be replaced by
-    /// proper layer-reuse-on-eviction.
+    /// glyph admitted to the atlas; once it reaches `self.atlas_layers`
+    /// new misses pick an evictable layer via `pick_evictable_layer`
+    /// (LRU among unpinned layers) and reuse it.
     next_free_layer: u32,
+    /// Actual texture-array depth chosen at backend construction —
+    /// `clamp(adapter.limits().max_texture_array_layers,
+    /// ATLAS_LAYERS_MIN, ATLAS_LAYERS_MAX)`. Stored on the struct
+    /// because it drives the texture allocation, the LRU capacity, and
+    /// the `frame_pinned` length, all of which need to agree.
+    atlas_layers: u32,
+    /// Per-layer pin flag, reset to all-`false` every `begin_frame`.
+    /// A layer is pinned the moment any cell in this frame's
+    /// `pending_instances` references it (atlas-hit OR fresh insert),
+    /// so the eviction path can skip layers whose pixels would be
+    /// overwritten before the GPU samples them.
+    ///
+    /// Guards against the in-frame race where `evict_oldest` returns a
+    /// layer already cited by an earlier instance in the same frame:
+    /// `queue.write_texture` would overwrite that layer's bitmap before
+    /// `end_frame` submits the render pass, so the earlier cell would
+    /// sample the new glyph and visibly morph from frame to frame.
+    /// Length always equals `atlas_layers`; indexed by layer id.
+    frame_pinned: Vec<bool>,
     /// CSS font-family used for glyph rasterization. Stored so
     /// draw_row can pass it to `rasterizer.rasterize()` without
     /// rethreading per call. Defaults to "monospace" until a future
@@ -148,37 +164,53 @@ pub struct WebGpuBackend {
     /// internally). Defaults to 15 to match Canvas2dBackend.
     font_size_px: f32,
     atlas: GlyphAtlas,
+    /// Current atlas slot width in device pixels (per layer). Computed
+    /// from the active `FrameMetrics` in `begin_frame` via
+    /// [`Self::slot_dims_for`]; bumped + atlas rebuilt when the
+    /// metrics demand a larger slot than the existing allocation.
+    /// Rounded up to a power of two so `bytes_per_row` stays aligned
+    /// to wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT` without padding.
+    slot_w: u32,
+    slot_h: u32,
     metrics: FrameMetrics,
     theme: Theme,
 }
 
-/// Slot dimensions in device pixels — sized to cover the realistic
-/// cell-size range we ship: font 12–18 CSS px × DPR up to 2.5, plus
-/// CJK wide cells (cell.width=2) which require roughly 2× the regular
-/// advance.
+/// Atlas slot dimension floors in device pixels. Actual per-instance
+/// `slot_w` / `slot_h` live on `WebGpuBackend` and are computed from
+/// the current `FrameMetrics` via [`WebGpuBackend::slot_dims_for`] —
+/// growing past these floors when `cell_w × dpr × 2` (wide CJK) or
+/// `cell_h × dpr` exceed them, so a "中" glyph never gets clipped at
+/// the slot boundary on HiDPI / large-font setups (2026-05-06 fix:
+/// previously a hard `64` const truncated the right half of CJK
+/// glyphs whenever `font_size_px × dpr > 64` — visible as "右半缺失").
 ///
-/// Worst-case width: 18 CSS × 2.5 DPR × 2 (wide CJK) ≈ 90 device px →
-/// 64 covers up to font ~18 + DPR 2 + CJK or font ~24 + DPR 2 + ASCII.
-/// Worst-case height: 18 CSS × 2.5 DPR × 1.4 line-height ≈ 63 device
-/// px → 96 leaves headroom up to ~24 CSS px at DPR 2.5.
+/// `slot_w` is rounded up to a power of two so `bytes_per_row =
+/// slot_w × 4` automatically satisfies wgpu's 256-byte
+/// COPY_BYTES_PER_ROW_ALIGNMENT (slot_w must be ≥ 64 and a multiple of
+/// 64). `slot_h` carries no such constraint.
 ///
-/// Was 32×32; on HiDPI displays at the default 15 CSS px font that
-/// produced ~36 device-px line-height which was clamped to 32, cropping
-/// glyph descenders ('g', 'p', 'y'). Memory cost: was 1 MiB per atlas
-/// (32×32×256×4); now 6 MiB. Per-pane today; collapses to one shared
-/// atlas in §4.3.
-///
-/// Future improvement: `set_font_config` could re-allocate the atlas
-/// texture + rasterizer's OffscreenCanvas based on `font_size × max_dpr
-/// × line_height_factor` so we don't over-allocate at the small-font
-/// end and don't crop at the large-font end. Today the constants are a
-/// pragmatic mid-point.
-const ATLAS_SLOT_W: u32 = 64;
-const ATLAS_SLOT_H: u32 = 96;
-/// Total texture-array layer count.
-/// `Limits::downlevel_defaults().max_texture_array_layers == 256` so
-/// this is the safe portable baseline.
-const ATLAS_LAYERS: u32 = 256;
+/// Memory cost scales with `slot_w × slot_h × atlas_layers × 4`. At
+/// the default 64×96 floor with 1024 layers that's ≈ 24 MiB; doubling
+/// slot_w to 128 (font ~24 CSS px @ DPR 2) costs ≈ 48 MiB. Per-pane
+/// today; collapses to one shared atlas in §4.3. Devices that only
+/// expose 256 layers (the WebGPU MVP floor) cap out at ≈ 6 MiB.
+const ATLAS_SLOT_W_FLOOR: u32 = 64;
+const ATLAS_SLOT_H_FLOOR: u32 = 96;
+/// Floor for the texture-array layer count. `Limits::downlevel_defaults()
+/// .max_texture_array_layers == 256` is the WebGPU MVP guarantee — we
+/// always ask for at least this many so the texture allocation never
+/// fails on a portable device.
+const ATLAS_LAYERS_MIN: u32 = 256;
+/// Ceiling for the texture-array layer count. Most desktop adapters
+/// expose 2048 in `adapter.limits().max_texture_array_layers`; we cap at
+/// 1024 to bound atlas memory at `slot_w × slot_h × 1024 × 4` bytes
+/// (default slot 64×96 ≈ 24 MiB, the wide-CJK 128×96 case ≈ 48 MiB).
+/// Beyond this the marginal hit-rate gain doesn't justify the per-pane
+/// allocation. The actual layer count picked at construction is
+/// `clamp(adapter_limit, MIN, MAX)` and stored on the backend so the
+/// runtime keeps working on hardware that exposes anything in between.
+const ATLAS_LAYERS_MAX: u32 = 1024;
 /// Layer 0 is reserved as a permanent transparent fallback (§4.5.d).
 /// Cells with no atlas hit (rasterizer failure / ascii-NUL / control char)
 /// push CellInstance with `atlas_layer = 0` + `atlas_uv = (0,0,0,0)` so the
@@ -187,8 +219,6 @@ const ATLAS_LAYERS: u32 = 256;
 /// layer 0 and the fallback would sample its top-left pixel — for emoji
 /// or filled-cell glyphs that's a visible color leak.
 const ATLAS_RESERVED_LAYERS: u32 = 1;
-/// Glyph-usable layers (atlas LRU capacity).
-const ATLAS_USABLE_LAYERS: u32 = ATLAS_LAYERS - ATLAS_RESERVED_LAYERS;
 /// Initial per-frame cell instance buffer capacity. Realistic terminal
 /// sessions have a few thousand cells; 1024 covers small panes and the
 /// buffer grows on demand for larger ones.
@@ -207,15 +237,15 @@ const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[allow(dead_code)] // Populated by §4.1.c draw_row body in a future iteration.
 struct CellInstance {
-    cell_xy: [f32; 2],     // 0..8
-    cell_size: [f32; 2],   // 8..16
-    atlas_uv: [f32; 4],    // 16..32
-    atlas_layer: u32,      // 32..36
-    fg_rgba: [f32; 4],     // 36..52
-    bg_rgba: [f32; 4],     // 52..68
+    cell_xy: [f32; 2],   // 0..8
+    cell_size: [f32; 2], // 8..16
+    atlas_uv: [f32; 4],  // 16..32
+    atlas_layer: u32,    // 32..36
+    fg_rgba: [f32; 4],   // 36..52
+    bg_rgba: [f32; 4],   // 52..68
 }
 
-const CELL_INSTANCE_STRIDE: u64 = std::mem::size_of::<CellInstance>() as u64;
+pub(super) const CELL_INSTANCE_STRIDE: u64 = std::mem::size_of::<CellInstance>() as u64;
 
 impl WebGpuBackend {
     /// Acquire a WebGPU adapter and device for `canvas`. Async because
@@ -241,16 +271,30 @@ impl WebGpuBackend {
             })
             .await
             .ok_or_else(|| {
-                "WebGpuBackend: no GPU adapter available — falling back to Canvas2D"
-                    .to_string()
+                "WebGpuBackend: no GPU adapter available — falling back to Canvas2D".to_string()
             })?;
+
+        // Pick the texture-array depth before requesting the device:
+        // wgpu only honors `max_texture_array_layers` up to whatever we
+        // declare in `required_limits`. The adapter advertises a hard
+        // ceiling (typically 2048 on desktop, 256 on the WebGPU MVP
+        // floor); we clamp it into [`ATLAS_LAYERS_MIN`, `ATLAS_LAYERS_MAX`]
+        // so memory stays bounded while still giving Claude-style TUIs
+        // (which mix CJK + box-drawing + spinner glyphs) enough cache
+        // headroom to avoid LRU thrash.
+        let atlas_layers: u32 = adapter
+            .limits()
+            .max_texture_array_layers
+            .clamp(ATLAS_LAYERS_MIN, ATLAS_LAYERS_MAX);
+        let mut required_limits = wgpu::Limits::downlevel_defaults();
+        required_limits.max_texture_array_layers = atlas_layers;
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("ridge-term-device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    required_limits,
                     memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
@@ -291,15 +335,15 @@ impl WebGpuBackend {
         // file at runtime.
         let cell_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ridge-cell-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                std::borrow::Cow::Borrowed(include_str!("shaders/cell.wgsl")),
-            ),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "shaders/cell.wgsl"
+            ))),
         });
 
         // Bind group layout matches WGSL @group(0): uniform buffer
         // (FrameUniform) + texture_2d_array<f32> + sampler.
-        let cell_bind_group_layout = device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
+        let cell_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("ridge-cell-bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
@@ -329,16 +373,13 @@ impl WebGpuBackend {
                         count: None,
                     },
                 ],
-            },
-        );
+            });
 
-        let pipeline_layout = device.create_pipeline_layout(
-            &wgpu::PipelineLayoutDescriptor {
-                label: Some("ridge-cell-pipeline-layout"),
-                bind_group_layouts: &[&cell_bind_group_layout],
-                push_constant_ranges: &[],
-            },
-        );
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ridge-cell-pipeline-layout"),
+            bind_group_layouts: &[&cell_bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
         // Vertex buffer layout — one buffer of CellInstance, stepped
         // per-instance. Field offsets must match the #[repr(C)] struct
@@ -381,52 +422,63 @@ impl WebGpuBackend {
             ],
         };
 
-        let cell_pipeline = device.create_render_pipeline(
-            &wgpu::RenderPipelineDescriptor {
-                label: Some("ridge-cell-pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &cell_shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[instance_buffer_layout],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &cell_shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview: None,
-                cache: None,
+        let cell_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ridge-cell-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cell_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[instance_buffer_layout],
             },
-        );
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &cell_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
 
         // ─── GPU resource allocation ─────────────────────────────────
-        // Glyph atlas: D2 texture array, ATLAS_LAYERS layers, RGBA8.
+        // Compute the initial slot dimensions from the default
+        // FrameMetrics (cell_w=8, cell_h=16, dpr=1.0). The first
+        // `begin_frame` call from the renderer will provide actual
+        // metrics; if they require a larger slot, the atlas + rasterizer
+        // are rebuilt then. For default metrics this evaluates to the
+        // historical 64 × 96 baseline.
+        let initial_metrics = FrameMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            dpr: 1.0,
+        };
+        let (slot_w, slot_h) = Self::slot_dims_for(&initial_metrics);
+
+        // Glyph atlas: D2 texture array, `atlas_layers` layers, RGBA8.
         // Format must be sRGB-aware so the sampled coverage carries
         // through linearly without extra gamma fixup in the shader.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ridge-atlas-texture"),
             size: wgpu::Extent3d {
-                width: ATLAS_SLOT_W,
-                height: ATLAS_SLOT_H,
-                depth_or_array_layers: ATLAS_LAYERS,
+                width: slot_w,
+                height: slot_h,
+                depth_or_array_layers: atlas_layers,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -498,7 +550,7 @@ impl WebGpuBackend {
         // OffscreenCanvas-based rasterizer sized to match the atlas
         // slot exactly so RasterizedGlyph.rgba can be written into a
         // texture layer via queue.write_texture without cropping.
-        let rasterizer = GlyphRasterizer::new(ATLAS_SLOT_W as u16, ATLAS_SLOT_H as u16)?;
+        let rasterizer = GlyphRasterizer::new(slot_w as u16, slot_h as u16)?;
 
         Ok(Self {
             surface,
@@ -519,17 +571,20 @@ impl WebGpuBackend {
             pending_instances: Vec::with_capacity(INITIAL_INSTANCE_CAPACITY as usize),
             // Layer 0 reserved (§4.5.d) — start handing out from 1.
             next_free_layer: ATLAS_RESERVED_LAYERS,
+            atlas_layers,
+            // One slot per texture-array layer; reset every begin_frame.
+            // `vec![false; n]` is the only allocation; subsequent frames
+            // reuse the buffer in place.
+            frame_pinned: vec![false; atlas_layers as usize],
             font_family: String::from("monospace"),
             font_size_px: 15.0,
             // GlyphAtlas capacity matches the USABLE layer count so the
             // LRU's eviction trigger fires exactly when GPU slots are
             // exhausted — never trying to evict the reserved layer 0.
-            atlas: GlyphAtlas::new(ATLAS_USABLE_LAYERS as usize),
-            metrics: FrameMetrics {
-                cell_w: 8.0,
-                cell_h: 16.0,
-                dpr: 1.0,
-            },
+            atlas: GlyphAtlas::new((atlas_layers - ATLAS_RESERVED_LAYERS) as usize),
+            slot_w,
+            slot_h,
+            metrics: initial_metrics,
             theme: Theme::default_dark(),
         })
     }
@@ -539,23 +594,123 @@ impl WebGpuBackend {
     /// method). Caller (eventually `RenderHandle::configure` in §4.1.e)
     /// invokes this whenever the user picks a new terminal font.
     ///
-    /// Changing the font does NOT invalidate the GlyphAtlas — the
-    /// `font_family_hash` field on `GlyphKey` already disambiguates
-    /// per-font cache entries. Bumping fonts mid-session simply means
-    /// the next miss rasterizes against the new family; old entries
-    /// stay cached until LRU evicts them.
+    /// Changing size or family invalidates the GlyphAtlas — even though
+    /// `font_family_hash` + `font_size_q` on `GlyphKey` already
+    /// disambiguate cache entries by metrics, the texture-array layers
+    /// occupied by the OLD-size entries remain bound until natural LRU
+    /// rotation. On a sudden DPR / font-size change every visible cell
+    /// becomes a miss simultaneously, the atlas hits its capacity, the
+    /// evict-and-reuse path engages mid-frame, and the user sees one or
+    /// two frames of bg-only fallback ("missing characters" /
+    /// "字符位置错乱" right after window resize). Eagerly clearing LRU
+    /// + resetting `next_free_layer` lets new-size glyphs land in slot
+    /// 0 immediately on the next frame.
     pub fn set_font_config(&mut self, font_family: String, font_size_px: f32) {
+        let size_changed = (self.font_size_px - font_size_px).abs() > 0.01;
+        let family_changed = self.font_family != font_family;
         self.font_family = font_family;
         self.font_size_px = font_size_px;
+        if size_changed || family_changed {
+            self.invalidate_atlas();
+        }
+    }
+
+    /// Compute the device-pixel atlas slot size required for the given
+    /// metrics. Wide CJK cells need ≥ `cell_w × dpr × 2` device pixels
+    /// horizontally so the rasterizer's OffscreenCanvas can hold the
+    /// full advance without clipping. `slot_w` is rounded up to the
+    /// next power of two so `bytes_per_row = slot_w × 4` always
+    /// satisfies wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT` of 256 bytes
+    /// (i.e. slot_w must be a multiple of 64 — power-of-two starting
+    /// at 64 covers all valid sizes).
+    ///
+    /// Vertically we add a 25% safety margin over `cell_h × dpr` to
+    /// catch font_bounding_box descenders, italics overhang, and
+    /// stacked combining marks. No alignment requirement on slot_h.
+    fn slot_dims_for(metrics: &FrameMetrics) -> (u32, u32) {
+        let cell_w_dev = (metrics.cell_w * metrics.dpr).max(1.0);
+        let cell_h_dev = (metrics.cell_h * metrics.dpr).max(1.0);
+        let wide_w_dev = (cell_w_dev * 2.0).ceil() as u32;
+        let row_h_dev = cell_h_dev.ceil() as u32;
+        let slot_w = wide_w_dev.max(ATLAS_SLOT_W_FLOOR).next_power_of_two();
+        let slot_h = (row_h_dev + row_h_dev / 4).max(ATLAS_SLOT_H_FLOOR);
+        (slot_w, slot_h)
+    }
+
+    /// Rebuild the GPU atlas resources at the current `slot_w` /
+    /// `slot_h`. Called from `begin_frame` when new metrics demand a
+    /// slot larger than the existing allocation. All cached glyphs are
+    /// dropped — the next frame's `draw_row` re-rasterizes them at the
+    /// new slot dimensions. Bounded cost: at most one rebuild per
+    /// metric change (font / DPR / cell-size), and the renderer's
+    /// `requires_full_frame() == true` ensures every visible row gets
+    /// re-emitted on the very next tick so the user never sees a
+    /// half-populated atlas.
+    fn rebuild_atlas(&mut self) -> Result<(), String> {
+        // Drop the LRU cache contents — every entry's (layer, uv) are
+        // about to become stale because the texture array is being
+        // reallocated.
+        self.atlas.clear();
+        self.next_free_layer = ATLAS_RESERVED_LAYERS;
+
+        // Re-allocate the texture array at the new slot dimensions.
+        let atlas_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ridge-atlas-texture"),
+            size: wgpu::Extent3d {
+                width: self.slot_w,
+                height: self.slot_h,
+                depth_or_array_layers: self.atlas_layers,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("ridge-atlas-view"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        // Bind group references the atlas view directly; the old
+        // bind_group still holds a reference to the OLD view, so it
+        // must be replaced before the next end_frame submission.
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ridge-cell-bg"),
+            layout: &self.cell_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.frame_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+
+        // Rasterizer's OffscreenCanvas dimensions must match the slot
+        // exactly so its `get_image_data` output is `slot_w × slot_h
+        // × 4` bytes — same shape `queue.write_texture` expects.
+        let rasterizer = GlyphRasterizer::new(self.slot_w as u16, self.slot_h as u16)?;
+
+        self.atlas_texture = atlas_texture;
+        self.atlas_view = atlas_view;
+        self.bind_group = bind_group;
+        self.rasterizer = rasterizer;
+        Ok(())
     }
 }
 
 impl RenderBackend for WebGpuBackend {
-    fn measure_font(
-        &self,
-        font_family: &str,
-        font_size_px: f32,
-    ) -> Result<(f32, f32), String> {
+    fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         // Delegate to the OffscreenCanvas-backed rasterizer (§4.5.a).
         // Same `measure_text("M")` + `size * 1.4` heuristic Canvas2dBackend
         // uses, just on the rasterizer's already-allocated 2D context —
@@ -575,12 +730,7 @@ impl RenderBackend for WebGpuBackend {
         true
     }
 
-    fn resize_surface(
-        &mut self,
-        width_css: u32,
-        height_css: u32,
-        dpr: f32,
-    ) -> Result<(), String> {
+    fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
         let backing_w = ((width_css as f32) * dpr).round().max(1.0) as u32;
         let backing_h = ((height_css as f32) * dpr).round().max(1.0) as u32;
         if self.config.width != backing_w || self.config.height != backing_h {
@@ -591,6 +741,23 @@ impl RenderBackend for WebGpuBackend {
         Ok(())
     }
 
+    fn invalidate_atlas(&mut self) {
+        // Drop every cached `(GlyphKey, GlyphEntry)` mapping and reset
+        // the texture-array layer pointer back to the first usable
+        // layer (= `ATLAS_RESERVED_LAYERS`; layer 0 is the permanent
+        // transparent fallback for atlas-miss cells, see §4.5.d).
+        // Texture pixels are NOT zero-filled — the next
+        // `queue.write_texture` call overwrites whatever bytes lived
+        // in the slot. Anything still sampling those slots from a
+        // stale instance buffer would alias, but `pending_instances`
+        // is cleared every `begin_frame` and the renderer's
+        // `full_redraw_pending` guarantees the next frame re-pushes
+        // every visible cell with fresh atlas hits — so by the time
+        // the GPU samples, the new glyph bitmaps are already uploaded.
+        self.atlas.clear();
+        self.next_free_layer = ATLAS_RESERVED_LAYERS;
+    }
+
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
         // Record per-frame state + reset the cell-instance accumulator.
         // Vec::clear keeps capacity, so once steady-state is reached
@@ -598,6 +765,30 @@ impl RenderBackend for WebGpuBackend {
         self.metrics = metrics;
         self.theme = theme.clone();
         self.pending_instances.clear();
+        // Reset per-layer pin flags. Each `draw_row` call will pin the
+        // layers it references so the eviction path can avoid clobbering
+        // them mid-frame. Filling in place keeps the allocation; cost is
+        // O(atlas_layers) ≈ 1 µs at 1024 layers.
+        for p in &mut self.frame_pinned {
+            *p = false;
+        }
+
+        // Atlas slot tracks current metrics. Grow only — shrinking on
+        // every small metric jiggle would thrash the rasterizer's
+        // OffscreenCanvas allocation. Once slot_w / slot_h are big
+        // enough, they stay there for the life of this backend.
+        let (need_w, need_h) = Self::slot_dims_for(&self.metrics);
+        if need_w > self.slot_w || need_h > self.slot_h {
+            self.slot_w = need_w.max(self.slot_w);
+            self.slot_h = need_h.max(self.slot_h);
+            // Best-effort rebuild. On failure we keep the old (now
+            // undersized) atlas — wide glyphs continue to clip but
+            // the renderer doesn't crash. The error path is rare:
+            // OffscreenCanvas / get_context only fail under exotic
+            // browser conditions, and at that point this pane already
+            // had a working atlas one frame earlier.
+            let _ = self.rebuild_atlas();
+        }
     }
 
     fn clear(&mut self) {
@@ -654,17 +845,15 @@ impl RenderBackend for WebGpuBackend {
                 continue;
             }
             let attrs = attrs_table.get(cell.attr);
-            let (_attrs, fg, bg) = crate::render::backend::resolve_cell_colors(
-                cell, attrs_table, &theme,
-            );
+            let (_attrs, fg, bg) =
+                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme);
             // Integer-aligned column boundaries — same scheme as row_top /
             // row_bot above. Cell width is derived from the integer
             // boundaries (NOT from `cell_w * cell.width`), which keeps
             // adjacent cells flush even when `cell_w` is fractional.
             let cell_span = cell.width.max(1) as usize;
             let pixel_x = ((col as f32) * cell_w).floor();
-            let pixel_x_right =
-                (((col + cell_span) as f32) * cell_w).floor();
+            let pixel_x_right = (((col + cell_span) as f32) * cell_w).floor();
             let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
             let pixel_y = row_top;
 
@@ -688,6 +877,11 @@ impl RenderBackend for WebGpuBackend {
             // glyph in this session) `entry` carries the texture-array
             // layer index + UV.
             let entry = if let Some(e) = self.atlas.lookup(&key) {
+                // Pin the hit layer so a later miss in the same frame
+                // can't evict + overwrite it before end_frame submits.
+                if (e.layer as usize) < self.frame_pinned.len() {
+                    self.frame_pinned[e.layer as usize] = true;
+                }
                 Some(e)
             } else {
                 // Miss. Rasterize first; if that fails we bail to bg-only.
@@ -705,69 +899,87 @@ impl RenderBackend for WebGpuBackend {
                     cell.ch,
                 ) {
                     Ok(glyph) => {
-                        // Pick a target layer: fresh slot if any free,
-                        // else evict the LRU and reuse its layer.
-                        let layer: u32 = if self.next_free_layer < ATLAS_LAYERS {
+                        // Pick a target layer:
+                        //   1. Fresh slot if any free (pre-eviction phase
+                        //      while next_free_layer hasn't filled).
+                        //   2. Else evict the oldest *unpinned* LRU entry
+                        //      and reuse its layer — pinning prevents the
+                        //      in-frame race where we'd reuse a layer
+                        //      already cited by an earlier instance.
+                        //   3. If every layer is pinned (visible-unique-
+                        //      glyph count > capacity, vanishingly rare
+                        //      after Fix B), fall through to bg-only.
+                        let chosen: Option<u32> = if self.next_free_layer < self.atlas_layers {
                             let l = self.next_free_layer;
                             self.next_free_layer += 1;
-                            l
+                            Some(l)
                         } else {
-                            // Atlas at capacity — pop oldest and reuse.
-                            // §4.1.c.glyph.eviction.
-                            match self.atlas.evict_oldest() {
-                                Some((_, freed)) => freed.layer as u32,
-                                // Should never happen (atlas full ⇒
-                                // non-empty) but keep a defensive bg-only
-                                // fallback rather than panicking on the
-                                // renderer hot path.
-                                None => 0,
+                            pick_evictable_layer(&mut self.atlas, &self.frame_pinned)
+                        };
+                        match chosen {
+                            Some(layer) => {
+                                // Pin BEFORE write_texture so a later miss
+                                // in this same frame can't reclaim the
+                                // layer we're about to fill.
+                                if (layer as usize) < self.frame_pinned.len() {
+                                    self.frame_pinned[layer as usize] = true;
+                                }
+                                // Upload only the bbox region; the rest of
+                                // the slot stays cleared from prior frames
+                                // (texture is allocated zero-filled). This
+                                // also keeps bytes_per_row aligned to
+                                // glyph.width × 4.
+                                self.queue.write_texture(
+                                    wgpu::ImageCopyTexture {
+                                        texture: &self.atlas_texture,
+                                        mip_level: 0,
+                                        origin: wgpu::Origin3d {
+                                            x: 0,
+                                            y: 0,
+                                            z: layer,
+                                        },
+                                        aspect: wgpu::TextureAspect::All,
+                                    },
+                                    &glyph.rgba,
+                                    wgpu::ImageDataLayout {
+                                        offset: 0,
+                                        // Source data is the full slot
+                                        // (Vec<u8> length == slot_w ×
+                                        // slot_h × 4); upload covers the
+                                        // bbox region. Stride matches the
+                                        // source row width = self.slot_w.
+                                        bytes_per_row: Some(self.slot_w * 4),
+                                        rows_per_image: Some(self.slot_h),
+                                    },
+                                    wgpu::Extent3d {
+                                        width: self.slot_w,
+                                        height: self.slot_h,
+                                        depth_or_array_layers: 1,
+                                    },
+                                );
+                                // Crop UV to the actual glyph bounding
+                                // box. The cell quad samples [u0,v0] →
+                                // [u1,v1]; outside this rect the texture
+                                // is empty (transparent), so without the
+                                // crop the cell over-samples a mostly-
+                                // empty slot and stretches the glyph into
+                                // the upper-left corner of the cell.
+                                let u1 = (glyph.width as f32) / (self.slot_w as f32);
+                                let v1 = (glyph.height as f32) / (self.slot_h as f32);
+                                let new_entry = GlyphEntry {
+                                    layer: layer as u16,
+                                    uv: [0.0, 0.0, u1, v1],
+                                    advance: glyph.advance,
+                                    ascent_offset: glyph.ascent_offset,
+                                    px_w: glyph.width,
+                                    px_h: glyph.height,
+                                };
+                                self.atlas.insert(key, new_entry);
+                                Some(new_entry)
                             }
-                        };
-                        // Upload only the bbox region; the rest of the
-                        // slot stays cleared from prior frames (texture
-                        // is allocated zero-filled). This also keeps
-                        // bytes_per_row aligned to glyph.width × 4.
-                        self.queue.write_texture(
-                            wgpu::ImageCopyTexture {
-                                texture: &self.atlas_texture,
-                                mip_level: 0,
-                                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
-                                aspect: wgpu::TextureAspect::All,
-                            },
-                            &glyph.rgba,
-                            wgpu::ImageDataLayout {
-                                offset: 0,
-                                // Source data is the full slot (Vec<u8>
-                                // length == slot_w × slot_h × 4); upload
-                                // covers the bbox region. Stride matches
-                                // the source row width = ATLAS_SLOT_W.
-                                bytes_per_row: Some(ATLAS_SLOT_W * 4),
-                                rows_per_image: Some(ATLAS_SLOT_H),
-                            },
-                            wgpu::Extent3d {
-                                width: ATLAS_SLOT_W,
-                                height: ATLAS_SLOT_H,
-                                depth_or_array_layers: 1,
-                            },
-                        );
-                        // Crop UV to the actual glyph bounding box. The
-                        // cell quad samples [u0,v0] → [u1,v1]; outside
-                        // this rect the texture is empty (transparent),
-                        // so without the crop the cell over-samples a
-                        // mostly-empty 32×32 slot and stretches the
-                        // glyph into the upper-left corner of the cell.
-                        let u1 = (glyph.width as f32) / (ATLAS_SLOT_W as f32);
-                        let v1 = (glyph.height as f32) / (ATLAS_SLOT_H as f32);
-                        let new_entry = GlyphEntry {
-                            layer: layer as u16,
-                            uv: [0.0, 0.0, u1, v1],
-                            advance: glyph.advance,
-                            ascent_offset: glyph.ascent_offset,
-                            px_w: glyph.width,
-                            px_h: glyph.height,
-                        };
-                        self.atlas.insert(key, new_entry);
-                        Some(new_entry)
+                            // Every layer pinned this frame — bg-only.
+                            None => None,
+                        }
                     }
                     Err(_) => None, // rasterize failure → bg-only
                 }
@@ -778,16 +990,68 @@ impl RenderBackend for WebGpuBackend {
                 None => ([0.0, 0.0, 0.0, 0.0], 0),
             };
 
-            self.pending_instances.push(CellInstance {
-                cell_xy: [pixel_x, pixel_y],
-                // Use integer row height so adjacent rows share an exact
-                // pixel boundary; same for column width (computed above).
-                cell_size: [cell_w_px, row_h_int],
-                atlas_uv,
-                atlas_layer,
-                fg_rgba: rgba_u8_to_f32(fg),
-                bg_rgba: rgba_u8_to_f32(bg),
-            });
+            if cell_span >= 2 {
+                // Wide cell (CJK / fullwidth): split into a background
+                // instance covering the full 2-cell quad + a glyph
+                // instance sized to the glyph's actual advance. Without
+                // this split the shader linearly stretches a 1 em CJK
+                // glyph across a ~1.2 em (2 latin advances) quad — the
+                // visible symptom users hit when slot was also too
+                // narrow was "中文只有左半边" (Step 1 stops the slot
+                // truncation; Step 2 stops the residual 20% horizontal
+                // stretch and brings WebGPU output to pixel-parity with
+                // Canvas2D's `fill_text` left-aligned glyph rendering).
+                //
+                // Background instance: atlas_layer=0 (reserved
+                // transparent layer) + atlas_uv=zero → shader samples
+                // alpha 0, `mix(bg, fg, 0) == bg` → opaque cell bg
+                // covering the full 2-cell rect.
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [pixel_x, pixel_y],
+                    cell_size: [cell_w_px, row_h_int],
+                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                    atlas_layer: 0,
+                    fg_rgba: rgba_u8_to_f32(fg),
+                    bg_rgba: rgba_u8_to_f32(bg),
+                });
+                if let Some(e) = entry {
+                    // Glyph natural width in device pixels (advance.ceil
+                    // from the rasterizer, already clamped to slot_w).
+                    // Cap at the cell quad width so an unusually wide
+                    // glyph doesn't bleed past the cell into the next
+                    // column. Left-align (cell_xy.x = pixel_x) to match
+                    // Canvas2D's `fill_text` baseline placement.
+                    let glyph_w_px = (e.px_w as f32).min(cell_w_px).max(1.0);
+                    // bg=transparent so this instance composites as
+                    // premultiplied fg over the bg instance via the
+                    // pipeline's ALPHA_BLENDING — `mix(0, fg, coverage)`
+                    // already yields premultiplied output.
+                    self.pending_instances.push(CellInstance {
+                        cell_xy: [pixel_x, pixel_y],
+                        cell_size: [glyph_w_px, row_h_int],
+                        atlas_uv: e.uv,
+                        atlas_layer: e.layer as u32,
+                        fg_rgba: rgba_u8_to_f32(fg),
+                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                    });
+                }
+            } else {
+                // Narrow cell: bg + glyph collapse into a single
+                // instance because the natural advance fits the cell
+                // quad (or we don't know any better — bbox is already
+                // ≤ 1 cell). The shader's `mix(bg, fg, coverage)` paints
+                // the glyph over the cell bg in one pass.
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [pixel_x, pixel_y],
+                    // Use integer row height so adjacent rows share an
+                    // exact pixel boundary; same for column width.
+                    cell_size: [cell_w_px, row_h_int],
+                    atlas_uv,
+                    atlas_layer,
+                    fg_rgba: rgba_u8_to_f32(fg),
+                    bg_rgba: rgba_u8_to_f32(bg),
+                });
+            }
         }
     }
 
@@ -815,8 +1079,7 @@ impl RenderBackend for WebGpuBackend {
         // Integer-aligned cell box (same scheme as draw_row).
         let pixel_x = ((cursor.col as f32) * cell_w).floor();
         let cursor_span = cursor.width.max(1) as usize;
-        let pixel_x_right =
-            (((cursor.col + cursor_span) as f32) * cell_w).floor();
+        let pixel_x_right = (((cursor.col + cursor_span) as f32) * cell_w).floor();
         let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
         let pixel_y = ((cursor.row as f32) * cell_h).floor();
         let pixel_y_bot = (((cursor.row + 1) as f32) * cell_h).floor();
@@ -1002,7 +1265,8 @@ impl RenderBackend for WebGpuBackend {
             // `cast_slice` is checked at compile time without unsafe
             // (§4.5.c).
             let instance_bytes: &[u8] = bytemuck::cast_slice(&self.pending_instances);
-            self.queue.write_buffer(&self.instance_buffer, 0, instance_bytes);
+            self.queue
+                .write_buffer(&self.instance_buffer, 0, instance_bytes);
         }
 
         // 4) Swap-chain texture.
@@ -1020,9 +1284,11 @@ impl RenderBackend for WebGpuBackend {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // 5) Single command encoder + render pass.
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("ridge-term-frame-encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ridge-term-frame-encoder"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ridge-term-frame-pass"),

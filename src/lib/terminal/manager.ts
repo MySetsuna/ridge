@@ -1042,6 +1042,22 @@ export class TerminalManager {
 		// the cursor clamps to the new last row.
 		entry.resizeHandler?.(rows, cols);
 		entry.kernel.resize(rows, cols);
+
+		// Synchronous first frame after resize. The next rAF tick is
+		// up to ~16ms away, and a TUI like `claude` that's continuously
+		// emitting bytes can land several PTY chunks in that window —
+		// chunks that get parsed against the new grid size while the
+		// renderer is still showing the previous frame's pixels.
+		// Driving one frame here closes the gap so the very next visible
+		// pixel reflects the new metrics + freshly-cleared atlas,
+		// instead of a stale composite. Wrapped in try/catch so a
+		// transient render error never blocks the resize from
+		// completing — the rAF loop will pick it up next tick.
+		try {
+			entry.handle.render(entry.kernel);
+		} catch (err) {
+			console.error('[ridge-term] post-resize render error', entry.paneId, err);
+		}
 	}
 
 	// ---- frame loop -------------------------------------------------

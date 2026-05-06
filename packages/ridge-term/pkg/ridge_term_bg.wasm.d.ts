@@ -30,6 +30,7 @@ export const terminalkernel_isBracketedPaste: (a: number) => number;
 export const terminalkernel_isCursorVisible: (a: number) => number;
 export const terminalkernel_isFocusReporting: (a: number) => number;
 export const terminalkernel_isSyncOutput: (a: number) => number;
+export const terminalkernel_isUserScrollLocked: (a: number) => number;
 export const terminalkernel_new: (a: number, b: number, c: number) => number;
 export const terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;
 export const terminalkernel_resize: (a: number, b: number, c: number) => void;
