@@ -150,19 +150,69 @@ function repositionImeHelper() {
 	if (!imeHelper) return;
 	const pos = manager.cursorPixelPosition(paneId);
 	if (!pos) return;
-	// Anchor the helper one row BELOW the cursor row so the IME candidate
-	// window opens beneath the input position rather than covering it.
-	// The textarea itself stays 1×1px transparent — only the candidate
-	// window placement is what users notice.
+	// Anchor the helper AT the cursor cell so the visible preedit text
+	// (set by `.is-composing` CSS) overlays the canvas cursor exactly.
+	// Earlier we anchored one row below to keep the candidate popup
+	// "out of the way", but that left the typed pinyin invisible AND
+	// the underlying canvas cursor kept blinking through, producing the
+	// flicker users reported. With the textarea at the cursor cell, the
+	// canvas cursor sits underneath the opaque textarea (no flicker)
+	// and the IME candidate popup naturally opens below the textarea
+	// caret in every browser we've tested.
 	imeHelper.style.left = `${pos.x}px`;
-	imeHelper.style.top = `${pos.y + pos.cellH}px`;
+	imeHelper.style.top = `${pos.y}px`;
 	imeHelper.style.bottom = 'auto';
+	// Drive the visible-during-composition styles via CSS custom
+	// properties so the textarea matches the wasm renderer's metrics
+	// (cellW for min-width, cellH for line-height, fontSizePx for font
+	// size). Set unconditionally — the styles only apply when the
+	// `.is-composing` class is also present.
+	imeHelper.style.setProperty('--rg-ime-cell-w', `${pos.cellW}px`);
+	imeHelper.style.setProperty('--rg-ime-cell-h', `${pos.cellH}px`);
+	imeHelper.style.setProperty('--rg-ime-font-size', `${pos.fontSizePx}px`);
+}
+
+// §1.27 (2026-05-07): RIDGE_DIAG-gated IME composition trace. The dim/IME
+// residue investigation needs concrete evidence about when composition
+// starts, what data lands on `compositionend`, and what the cursor cell
+// state looks like around it — so we can tell IME-overlay rendering bugs
+// (textarea shrink leaving stale canvas pixels) apart from grid-state
+// bugs (DIM-attr cells leaking from prior writes). Gate is sampled once
+// per pane mount so `localStorage.RIDGE_DIAG='1'; location.reload()`
+// flips it without runtime overhead in normal use.
+const dimDiagEnabled = (() => {
+	if (typeof window === 'undefined') return false;
+	try {
+		return window.localStorage?.RIDGE_DIAG === '1';
+	} catch {
+		return false;
+	}
+})();
+
+function diagLogIme(event: string, extra?: Record<string, unknown>) {
+	if (!dimDiagEnabled) return;
+	console.log('[ime]', event, {
+		paneId,
+		isComposing,
+		imeValue: imeHelper?.value,
+		...extra,
+	});
 }
 
 function onCompositionStart() {
 	isComposing = true;
 	// Re-anchor right before the candidate window appears.
 	repositionImeHelper();
+	diagLogIme('start');
+}
+
+function onCompositionUpdate(e: CompositionEvent) {
+	// Re-anchor on every keystroke during composition: the user may
+	// scroll the canvas (e.g. PageUp closes the IME on most systems
+	// but defensive); also lets the candidate-window popup track if
+	// the cursor row shifts while composing.
+	repositionImeHelper();
+	diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
 }
 
 function onImeHelperFocus() {
@@ -178,6 +228,16 @@ function onCompositionEnd(e: CompositionEvent) {
 	}
 	// Clear the helper textarea so the next composition starts at length 0.
 	if (imeHelper) imeHelper.value = '';
+
+	// §1.27 diag: log the committed string. The companion cells_at()
+	// call to inspect cell state around the cursor lives in the
+	// devtools console — see `docs/term-rebuild/REPRO_dim_residue.md`
+	// for the recipe. Adding a kernel-access helper to TerminalManager
+	// solely for this diagnostic is heavier than the inspector
+	// deserves at this stage; calling cellsAt() directly via the
+	// kernel handle from devtools is sufficient evidence to drive
+	// the §1.27 fix.
+	diagLogIme('end', { committed: data });
 }
 
 function refreshSearch() {
@@ -262,7 +322,12 @@ function onPtyData(bytes: Uint8Array) {
 	});
 }
 
-function onPtyResize(rows: number, cols: number) {
+function onPtyResize(
+	rows: number,
+	cols: number,
+	isAlt: boolean,
+	isInlineTui: boolean,
+): Promise<void> {
 	// Defensive: should be impossible after the onMount UUID guard
 	// below, but leaving the cheap check in catches any future
 	// path that smuggles a bad id past attach.
@@ -270,11 +335,23 @@ function onPtyResize(rows: number, cols: number) {
 		if (import.meta.env?.DEV) {
 			console.warn('[ridge-pane] resize skipped — non-UUID paneId:', paneId);
 		}
-		return;
+		return Promise.resolve();
 	}
-	void invoke('resize_pane', { paneId, rows, cols }).catch((err) => {
-		console.error('resize_pane', err);
-	});
+	// §1.24 / §A.3: `isAlt` and `isInlineTui` both let the backend skip
+	// the ConPTY resize-silence window so the foreground app's
+	// SIGWINCH-driven redraw isn't dropped. See manager.ts and
+	// src-tauri/src/commands/terminal.rs::resize_pane_inner.
+	//
+	// We return the invoke promise so `manager.ts::fitPane` can `await`
+	// it on plain primary — the kernel grid only narrows AFTER the
+	// backend ConPTY resize completes, eliminating the in-flight byte
+	// race that used to cause border characters to wrap on shrink.
+	return invoke('resize_pane', { paneId, rows, cols, isAlt, isInlineTui }).then(
+		() => undefined,
+		(err) => {
+			console.error('resize_pane', err);
+		},
+	);
 }
 
 function onKernelEvent(ev: KernelEvent) {
@@ -718,6 +795,15 @@ function onScrollbarThumbPointerDown(e: PointerEvent) {
 		trackH: rect.height,
 	};
 	(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+	// Suppress text selection across the whole window for the drag's
+	// duration. `e.preventDefault()` only blocks selection on the thumb
+	// element itself; once setPointerCapture routes movement events past
+	// the thumb the browser will otherwise extend a selection across
+	// whatever lies under the cursor (terminal canvas, Explorer rows,
+	// title bar). Restored on pointerup. Use both the standard property
+	// and the WebKit prefix for Tauri's older webview versions.
+	document.body.style.userSelect = 'none';
+	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = 'none';
 }
 function onScrollbarThumbPointerMove(e: PointerEvent) {
 	if (!dragging) return;
@@ -742,6 +828,11 @@ function onScrollbarThumbPointerUp(e: PointerEvent) {
 	if (!dragging) return;
 	dragging = null;
 	(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+	// Restore window-wide text selection (paired with the userSelect
+	// suppression in onScrollbarThumbPointerDown). Reset to '' so any
+	// app-wide CSS rule keeps owning the property.
+	document.body.style.userSelect = '';
+	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
 }
 
 // Click on the empty track jumps the thumb center to the cursor — same
@@ -812,11 +903,13 @@ function onContainerMouseDown(e: MouseEvent) {
 	<textarea
 		bind:this={imeHelper}
 		class="rg-ime-helper"
+		class:is-composing={isComposing}
 		aria-label="终端输入"
 		autocomplete="off"
 		autocapitalize="off"
 		spellcheck="false"
 		oncompositionstart={onCompositionStart}
+		oncompositionupdate={onCompositionUpdate}
 		oncompositionend={onCompositionEnd}
 		onfocus={onImeHelperFocus}
 	></textarea>
@@ -952,6 +1045,33 @@ function onContainerMouseDown(e: MouseEvent) {
 		resize: none;
 		overflow: hidden;
 		background: transparent;
+	}
+	.rg-ime-helper.is-composing {
+		/* While the user is mid-composition (CJK pinyin / kana), make
+		 * the textarea visible at the cursor cell so the typed preedit
+		 * letters are readable, AND so the textarea's opaque background
+		 * covers the canvas cursor underneath (otherwise the canvas
+		 * cursor keeps blinking through, producing flicker). The
+		 * underline mirrors the OS convention for inline preedit text.
+		 * Width grows with content; min-width = one cell so the candidate
+		 * popup anchors correctly even on the first keystroke before
+		 * `compositionupdate` writes anything. Font + line metrics come
+		 * from CSS custom props set by repositionImeHelper(). */
+		width: auto;
+		min-width: var(--rg-ime-cell-w, 8px);
+		height: var(--rg-ime-cell-h, 18px);
+		opacity: 1;
+		pointer-events: auto;
+		background: var(--rg-bg, #1e1e2e);
+		color: var(--rg-fg, #cdd6f4);
+		font-family: var(--rg-font-family, ui-monospace, monospace);
+		font-size: var(--rg-ime-font-size, 14px);
+		line-height: var(--rg-ime-cell-h, 18px);
+		white-space: pre;
+		overflow: visible;
+		text-decoration: underline;
+		caret-color: var(--rg-fg, #cdd6f4);
+		z-index: 5;
 	}
 	.rg-jump-bottom {
 		/* §1.23 — floating scroll-to-bottom shortcut. Anchored to the
