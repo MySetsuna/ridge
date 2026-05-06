@@ -130,6 +130,86 @@ impl JsTerminal {
         self.selection.clear();
     }
 
+    /// Diagnostic accessor for the alt-screen-resize bug investigation
+    /// (§1.22 / §1.23 / §1.24). Returns the kernel's last 32 resize calls
+    /// as a JS array of `{ old_rows, old_cols, new_rows, new_cols, is_alt,
+    /// dim_changed, branch, wipe_fired }` objects, newest last.
+    ///
+    /// Frontend usage (when `localStorage.RIDGE_DIAG === '1'`):
+    ///   `__RIDGE_KERNEL.lastResizeDiags()` after a live resize confirms
+    ///   whether `is_alt` was true at the kernel level and whether the
+    ///   §1.22 wipe path fired. See `docs/term-rebuild/REPRO_alt_resize.md`.
+    #[wasm_bindgen(js_name = lastResizeDiags)]
+    pub fn last_resize_diags(&self) -> Vec<JsValue> {
+        self.inner
+            .last_resize_diags()
+            .iter()
+            .filter_map(|d| serde_wasm_bindgen::to_value(d).ok())
+            .collect()
+    }
+
+    /// §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
+    /// residue investigation. Returns up to `len` cells starting at
+    /// (row, col) on the active screen as a JS array of plain objects
+    /// `{ col, ch, codepoint, width, attrId, dim, bold, italic,
+    /// underline, inverse, hidden, fg, bg }` so devtools can correlate
+    /// "what does the user see at this position" with "what attrs are
+    /// stored".
+    ///
+    /// Out-of-range row, col, or len silently returns a shorter array
+    /// (or empty) rather than panicking — devtools should treat the
+    /// shorter result as "row missing or too narrow".
+    ///
+    /// Frontend usage (when `localStorage.RIDGE_DIAG === '1'`):
+    ///   `__RIDGE_KERNEL.cellsAt(cursorRow, 0, 80)` right after a
+    ///   compositionEnd to verify whether DIM cells leaked into the
+    ///   prompt area, or after observing residue to confirm whether
+    ///   the underlying cell carries a DIM attribute (kernel bug) vs
+    ///   correct attrs but stale pixels (renderer bug). See
+    ///   `docs/term-rebuild/REPRO_dim_residue.md`.
+    #[wasm_bindgen(js_name = cellsAt)]
+    pub fn cells_at(&self, row: usize, col: usize, len: usize) -> Vec<JsValue> {
+        use crate::term::attrs::{ColorKind, Flags};
+        let Some(r) = self.inner.grid().row(row) else {
+            return Vec::new();
+        };
+        let attr_table = &self.inner.grid().attrs;
+        let end = col.saturating_add(len).min(r.cells.len());
+        let mut out = Vec::with_capacity(end.saturating_sub(col));
+        let fmt_color = |kind: ColorKind| match kind {
+            ColorKind::Default => "default".to_string(),
+            ColorKind::Indexed(i) => format!("idx({i})"),
+            ColorKind::Rgb(rr, gg, bb) => format!("rgb({rr},{gg},{bb})"),
+        };
+        for c in col..end {
+            let cell = r.cells[c];
+            let attrs = attr_table.get(cell.attr);
+            let fg = fmt_color(attrs.fg.kind());
+            let bg = fmt_color(attrs.bg.kind());
+            // Build the result object directly via js_sys to keep the
+            // field shape stable without a serde adapter just for this
+            // diagnostic. ignore_result on `Reflect::set` because the
+            // calls only fail on objects that aren't extensible — this
+            // brand-new Object always is.
+            let obj = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&obj, &"col".into(), &(c as u32).into());
+            let _ = js_sys::Reflect::set(&obj, &"ch".into(), &cell.ch.to_string().into());
+            let _ = js_sys::Reflect::set(&obj, &"codepoint".into(), &(cell.ch as u32).into());
+            let _ = js_sys::Reflect::set(&obj, &"width".into(), &(cell.width as u32).into());
+            let _ = js_sys::Reflect::set(&obj, &"attrId".into(), &(cell.attr.0 as u32).into());
+            let _ = js_sys::Reflect::set(&obj, &"dim".into(), &attrs.flags.contains(Flags::DIM).into());
+            let _ = js_sys::Reflect::set(&obj, &"bold".into(), &attrs.flags.contains(Flags::BOLD).into());
+            let _ = js_sys::Reflect::set(&obj, &"italic".into(), &attrs.flags.contains(Flags::ITALIC).into());
+            let _ = js_sys::Reflect::set(&obj, &"underline".into(), &attrs.flags.contains(Flags::UNDERLINE).into());
+            let _ = js_sys::Reflect::set(&obj, &"inverse".into(), &attrs.flags.contains(Flags::INVERSE).into());
+            let _ = js_sys::Reflect::set(&obj, &"hidden".into(), &attrs.flags.contains(Flags::HIDDEN).into());
+            let _ = js_sys::Reflect::set(&obj, &"fg".into(), &fg.into());
+            let _ = js_sys::Reflect::set(&obj, &"bg".into(), &bg.into());
+            out.push(obj.into());
+        }
+        out
+    }
+
     pub fn rows(&self) -> usize { self.inner.rows() }
     pub fn cols(&self) -> usize { self.inner.cols() }
 
@@ -332,6 +412,16 @@ impl JsTerminal {
 
     #[wasm_bindgen(js_name = isCursorVisible)]
     pub fn is_cursor_visible(&self) -> bool { self.inner.modes().cursor_visible }
+
+    /// §A.3 inline-TUI heuristic — true when an Ink-style app is rendering
+    /// inline on primary (cursor hidden + recent absolute-positioning CSI
+    /// within the decay window) and the kernel is NOT on alt screen.
+    /// Read by `manager.ts::fitPane` to decide whether to wipe primary
+    /// before resizing the PTY (mirrors the existing alt-screen branch).
+    #[wasm_bindgen(js_name = isInlineTuiMode)]
+    pub fn is_inline_tui_mode(&self) -> bool {
+        self.inner.is_inline_tui_mode_at(js_sys::Date::now() as i64)
+    }
 
     #[wasm_bindgen(js_name = isBracketedPaste)]
     pub fn is_bracketed_paste(&self) -> bool { self.inner.modes().bracketed_paste }
@@ -558,6 +648,40 @@ mod renderer_js {
         #[wasm_bindgen(js_name = setFocused)]
         pub fn set_focused(&mut self, focused: bool) {
             self.renderer.set_focused(focused);
+        }
+
+        /// Non-mutating mirror of `render`'s early-exit conditions:
+        /// returns `true` when the next `render` call would do any
+        /// drawing work, `false` when the renderer has nothing to
+        /// redraw and the JS caller can sleep its RAF loop. `now_ms`
+        /// must use the same epoch as the value passed to `render`
+        /// (`Date.now()` in JS).
+        ///
+        /// Cost: ~24 row hashes for an 80×24 grid (≈4 µs) plus the
+        /// selection / scroll / blink checks. Cheaper than one
+        /// `draw_row` call by two orders of magnitude.
+        #[wasm_bindgen(js_name = isDirty)]
+        pub fn is_dirty(&self, kernel: &JsTerminal, now_ms: f64) -> bool {
+            self.renderer.is_dirty(
+                &kernel.inner,
+                kernel.selection.range_in_viewport(&kernel.inner),
+                now_ms,
+            )
+        }
+
+        /// Milliseconds until the next cursor-blink phase boundary. JS
+        /// callers use this to schedule a `setTimeout` wake-up while
+        /// the RAF loop is paused. Returns a very large number
+        /// (effectively infinity) when the cursor isn't blinking — the
+        /// caller should treat any value > some reasonable cap (e.g.
+        /// 1000 ms) as "no blink, sleep at most a second on a watchdog".
+        #[wasm_bindgen(js_name = nextBlinkDeadlineMs)]
+        pub fn next_blink_deadline_ms(
+            &self,
+            kernel: &JsTerminal,
+            now_ms: f64,
+        ) -> f64 {
+            self.renderer.next_blink_deadline_ms(&kernel.inner, now_ms)
         }
 
         /// Internal: snapshot the current theme so apply_partial can layer
