@@ -97,8 +97,23 @@ interface PaneEntry {
 	/** Last reported (rows, cols) — used to debounce IPC resize calls. */
 	lastReportedRows: number;
 	lastReportedCols: number;
-	/** Optional callback fired when (rows, cols) changes — wired to PTY resize. */
-	resizeHandler?: (rows: number, cols: number) => void;
+	/** Optional callback fired when (rows, cols) changes — wired to PTY resize.
+	 *  `isAlt` is the kernel's alt-screen state at resize time; the backend
+	 *  uses it to skip the ConPTY resize-silence window when an alt-screen
+	 *  app (claude / vim / lazygit) is in the foreground (§1.24, 2026-05-06).
+	 *  `isInlineTui` is the §A.3 heuristic snapshot — true when an Ink-style
+	 *  app is rendering inline on primary (Claude Code's input box). The
+	 *  backend treats it as another reason to skip the silence window so
+	 *  the foreground app's SIGWINCH redraw lands promptly.
+	 *  Returns a Promise so `fitPane` can await the backend's PTY resize
+	 *  before narrowing the kernel grid — eliminates the in-flight byte
+	 *  race that caused border characters to wrap on shrink. */
+	resizeHandler?: (
+		rows: number,
+		cols: number,
+		isAlt: boolean,
+		isInlineTui: boolean,
+	) => Promise<void> | void;
 	/** Debounce timer for fit. ResizeObserver fires many times during
 	 *  splitpanes drag (or SvelteKit hydration). Each fit calls
 	 *  `kernel.resize` AND triggers an async PTY resize via the handler.
@@ -181,6 +196,17 @@ export class TerminalManager {
 	private opts: ManagerOptions;
 	private panes = new Map<string, PaneEntry>();
 	private rafHandle: number | null = null;
+	/** When set, the RAF loop is asleep; this timer is the next scheduled
+	 *  wake-up (cursor-blink boundary or a 1s watchdog). Cleared and
+	 *  fired by `wake()`. Independent of `rafHandle` — at any moment at
+	 *  most ONE of `{rafHandle, idleTimer}` is non-null while panes are
+	 *  attached. */
+	private idleTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Document `visibilitychange` listener installed once on first pane
+	 *  attach; removed on last detach. Hidden tabs throttle RAF anyway,
+	 *  but waking on visibility-restore avoids a lag the first time the
+	 *  user comes back. */
+	private visibilityListener: (() => void) | null = null;
 
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
@@ -412,6 +438,7 @@ export class TerminalManager {
 					ent.selectionStart.row, ent.selectionStart.col,
 					cell.row, cell.col,
 				);
+				this.wake();
 				return;
 			}
 			// Multi-click: e.detail counts consecutive clicks within the
@@ -421,10 +448,12 @@ export class TerminalManager {
 			// click selection (matches xterm/iTerm behaviour).
 			if (e.detail === 2) {
 				ent.kernel.selectWordAt(cell.row, cell.col);
+				this.wake();
 				return;
 			}
 			if (e.detail >= 3) {
 				ent.kernel.selectLineAt(cell.row);
+				this.wake();
 				return;
 			}
 			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
@@ -434,6 +463,7 @@ export class TerminalManager {
 			// is exactly what a single click should do (clear any prior
 			// selection until the user actually drags).
 			ent.kernel.setSelection(cell.row, cell.col, cell.row, cell.col);
+			this.wake();
 		};
 		const pointerMoveListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
@@ -462,6 +492,7 @@ export class TerminalManager {
 				hoverCell.row,
 				hoverCell.col,
 			);
+			this.wake();
 		};
 		const pointerUpListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
@@ -504,7 +535,7 @@ export class TerminalManager {
 		// directly without debounce so the PTY gets sized before any
 		// shell output arrives.
 		requestAnimationFrame(() => {
-			if (this.panes.has(paneId)) this.fitPane(entry);
+			if (this.panes.has(paneId)) void this.fitPane(entry);
 		});
 		this.startRafLoop();
 	}
@@ -659,7 +690,7 @@ export class TerminalManager {
 
 		requestAnimationFrame(() => {
 			const e = this.panes.get(paneId);
-			if (e && !e.parked) this.fitPane(e);
+			if (e && !e.parked) void this.fitPane(e);
 		});
 		this.startRafLoop();
 	}
@@ -682,7 +713,24 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
+		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
+		// resize-while-claude repro can be replayed in devtools to confirm
+		// whether ConPTY's reflow noise leaks past the silence skip.
+		if (typeof localStorage !== 'undefined' && localStorage.RIDGE_PTY_TRACE === '1') {
+			const ts = performance.now().toFixed(1);
+			const id = paneId.slice(0, 8);
+			const hex = Array.from(bytes.slice(0, 256))
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+			const more = bytes.length > 256 ? `…+${bytes.length - 256}B` : '';
+			// eslint-disable-next-line no-console
+			console.debug(`[pty-trace][${ts}ms][${id}][${bytes.length}B] ${hex}${more}`);
+		}
 		entry.kernel.feed(bytes);
+		// PTY bytes mutated kernel state — wake the RAF loop if it was
+		// sleeping. No-op when already running.
+		this.wake();
 
 		const reply = entry.kernel.takePendingResponse();
 		if (reply.length > 0 && entry.dataHandler) {
@@ -731,6 +779,7 @@ export class TerminalManager {
 		// currently-active selection or search anchor is still valid.
 		// Likewise no pending_response / pending_events to drain — the
 		// kernel discards both for prepend-mode bytes by design.
+		this.wake();
 	}
 
 	/** Subscribe to typed kernel events (title, cwd, hyperlinks, bell).
@@ -760,8 +809,24 @@ export class TerminalManager {
 		if (bytes.length > 0) entry.dataHandler(bytes);
 	}
 
-	/** Register a callback for (rows, cols) changes — wire to PTY resize. */
-	onResize(paneId: string, cb: (rows: number, cols: number) => void): void {
+	/** Register a callback for (rows, cols) changes — wire to PTY resize.
+	 *  The third arg is the kernel's alt-screen state at resize time
+	 *  (§1.24, 2026-05-06); the backend uses it to skip ConPTY's resize-
+	 *  silence window for alt-screen panes so the foreground TUI's
+	 *  SIGWINCH-driven redraw isn't dropped. The fourth arg is the §A.3
+	 *  inline-TUI heuristic — same skip-silence treatment for Ink-style
+	 *  apps (Claude Code's input box) running on primary. The callback
+	 *  may return a Promise; `fitPane` awaits it on plain primary so the
+	 *  backend ConPTY resize completes before the kernel grid narrows. */
+	onResize(
+		paneId: string,
+		cb: (
+			rows: number,
+			cols: number,
+			isAlt: boolean,
+			isInlineTui: boolean,
+		) => Promise<void> | void,
+	): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		entry.resizeHandler = cb;
@@ -800,6 +865,7 @@ export class TerminalManager {
 	/** Programmatic select-all. */
 	selectAll(paneId: string): void {
 		this.panes.get(paneId)?.kernel.selectAll();
+		this.wake();
 	}
 
 	/** Get currently selected text (empty string if no selection). */
@@ -809,6 +875,7 @@ export class TerminalManager {
 
 	clearSelection(paneId: string): void {
 		this.panes.get(paneId)?.kernel.clearSelection();
+		this.wake();
 	}
 
 	/** Tell the wasm renderer whether this pane is the focused one. Only the
@@ -817,6 +884,8 @@ export class TerminalManager {
 	 *  switching panes flips the cursor visibility on both sides instantly. */
 	setFocused(paneId: string, focused: boolean): void {
 		this.panes.get(paneId)?.handle.setFocused(focused);
+		// Cursor visibility changed → cursor row dirties → wake.
+		this.wake();
 	}
 
 	/** Apply CSS padding (px) to a pane's container. Pushes the canvas inward
@@ -899,7 +968,9 @@ export class TerminalManager {
 	 *  top-left, plus the cell height (so callers can place a one-line
 	 *  helper element BELOW the current cursor row). Returns null when
 	 *  the pane is unknown or cell metrics aren't ready yet. */
-	cursorPixelPosition(paneId: string): { x: number; y: number; cellH: number } | null {
+	cursorPixelPosition(
+		paneId: string,
+	): { x: number; y: number; cellW: number; cellH: number; fontSizePx: number } | null {
 		const e = this.panes.get(paneId);
 		if (!e || e.cellW <= 0 || e.cellH <= 0) return null;
 		const row = e.kernel.cursorRow();
@@ -907,7 +978,9 @@ export class TerminalManager {
 		return {
 			x: Math.round(col * e.cellW),
 			y: Math.round(row * e.cellH),
+			cellW: e.cellW,
 			cellH: e.cellH,
+			fontSizePx: this.opts.fontSizePx,
 		};
 	}
 
@@ -930,8 +1003,9 @@ export class TerminalManager {
 			entry.cellW = Number(w);
 			entry.cellH = Number(h);
 			entry.handle.invalidateAll();
-			this.fitPane(entry);
+			void this.fitPane(entry);
 		}
+		this.wake();
 	}
 
 	/** Apply theme overrides to all panes. */
@@ -943,6 +1017,7 @@ export class TerminalManager {
 			entry.handle.applyDefaultTheme();
 			entry.handle.applyTheme(theme);
 		}
+		this.wake();
 	}
 
 	/**
@@ -972,11 +1047,11 @@ export class TerminalManager {
 			// Re-check parked: a park() call could have come in during
 			// the 120 ms debounce window, freeing entry.handle.
 			if (!e || e.parked) return;
-			this.fitPane(e);
+			void this.fitPane(e);
 		}, 120);
 	}
 
-	private fitPane(entry: PaneEntry): void {
+	private async fitPane(entry: PaneEntry): Promise<void> {
 		// Read CANVAS dimensions (not container) so any padding applied to the
 		// container is correctly excluded. Canvas is `width:100%; height:100%`
 		// inside the container's content-box, so its rect is the actual
@@ -1033,15 +1108,54 @@ export class TerminalManager {
 		entry.lastReportedRows = rows;
 		entry.lastReportedCols = cols;
 
-		// Critical ordering: tell PTY first, then resize kernel.
+		// Critical ordering — depends on which screen is active.
 		//
-		// Why: PSReadLine and other shells emit absolute cursor positions
-		// (e.g. CSI 39;18 H to put cursor on row 39). When the kernel
-		// resizes BEFORE the PTY knows about the new size, in-flight bytes
-		// emitted under the old size land on the new (smaller) grid and
-		// the cursor clamps to the new last row.
-		entry.resizeHandler?.(rows, cols);
-		entry.kernel.resize(rows, cols);
+		// PRIMARY screen WITHOUT inline TUI (shell prompt at PSReadLine /
+		// fish-zle / zsh-zle / cmd.exe): PTY first, then kernel.
+		//   Shells emit absolute cursor positions (e.g. CSI 39;18 H).
+		//   When the kernel resizes BEFORE the PTY knows about the new
+		//   size, in-flight bytes (emitted under the OLD size) land on
+		//   the new (smaller) grid and the cursor clamps to the new
+		//   last row. We `await` the handler so the backend ConPTY
+		//   resize completes before the kernel grid narrows — this
+		//   eliminates the millisecond-scale in-flight byte race that
+		//   used to be the dominant source of the "ghost characters
+		//   past prompt end" symptom on shrink.
+		//
+		// ALT screen OR primary with inline TUI (Claude Code's Ink input
+		// box, lazygit, vim, less, htop): kernel first, then PTY.
+		//   The §1.22 alt wipe (or the §A.3 inline-TUI primary full
+		//   wipe) inside `kernel.resize` must land BEFORE the foreground
+		//   TUI receives SIGWINCH and begins its diff redraw. Otherwise
+		//   the redraw bytes flow into the kernel while the visible
+		//   region still holds OLD content; the subsequent wipe then
+		//   erases the partial redraw, and Ink-style differential
+		//   repaint never refills the gaps (it only updates cells that
+		//   differ from its own model of the previous frame, so wiped
+		//   cells stay blank). Switching the order makes the wipe land
+		//   first, the PTY resize fire after the canvas is clean, and
+		//   the SIGWINCH-driven redraw paints onto blanks every time.
+		//
+		// §1.24 / §A.3: `isAlt` AND `isInlineTui` snapshots both let the
+		// backend skip the ConPTY resize-silence window so the foreground
+		// app's redraw isn't dropped — see
+		// src-tauri/src/commands/terminal.rs::resize_pane_inner.
+		//
+		// §1.25 (2026-05-06): the kernel itself never reflows on resize
+		// (Grid::resize always uses naive truncate/pad on both screens),
+		// so this ordering only governs the wipe vs. the TUI's own
+		// redraw — there is no kernel-side rewrap that could race with
+		// the application's repaint on either path.
+		const isAlt = entry.kernel.isAltScreen();
+		const isInlineTui = !isAlt && entry.kernel.isInlineTuiMode();
+		const wipeBeforePty = isAlt || isInlineTui;
+		if (wipeBeforePty) {
+			entry.kernel.resize(rows, cols);
+			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
+		} else {
+			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
+			entry.kernel.resize(rows, cols);
+		}
 
 		// Synchronous first frame after resize. The next rAF tick is
 		// up to ~16ms away, and a TUI like `claude` that's continuously
@@ -1058,15 +1172,34 @@ export class TerminalManager {
 		} catch (err) {
 			console.error('[ridge-term] post-resize render error', entry.paneId, err);
 		}
+		// Resize may have fired while the loop was sleeping; even though
+		// we drew one frame inline, subsequent SIGWINCH-driven redraw
+		// bytes from the TUI need the loop awake to catch them.
+		this.wake();
 	}
 
 	// ---- frame loop -------------------------------------------------
 
 	private startRafLoop(): void {
 		if (this.rafHandle !== null) return;
+		// Install the visibility listener lazily on first start. Removed in
+		// stopRafLoop so the singleton doesn't leak listeners between
+		// detach-all → re-attach cycles.
+		if (this.visibilityListener === null && typeof document !== 'undefined') {
+			this.visibilityListener = () => {
+				if (!document.hidden) this.wake();
+			};
+			document.addEventListener('visibilitychange', this.visibilityListener);
+		}
 		const tick = () => {
 			this.rafHandle = null;
-			const now = performance.now();
+			const perfNow = performance.now();
+			// Use Date.now() for the dirty / blink queries: `RenderHandle.render`
+			// reads `js_sys::Date::now()` internally, so the renderer's blink
+			// phase and our pre-render `isDirty` must use the same epoch.
+			const dateNow = Date.now();
+			let anyRendered = false;
+			let minDeadlineMs = Infinity;
 			for (const entry of this.panes.values()) {
 				// Skip parked entries — kernel is alive but handle was
 				// freed by park(); render would dereference a dead pointer.
@@ -1077,9 +1210,13 @@ export class TerminalManager {
 				// app from freezing the pane forever.
 				const sync = entry.kernel.isSyncOutput();
 				if (sync) {
-					if (entry.syncStart === null) entry.syncStart = now;
-					if (now - entry.syncStart < SYNC_OUTPUT_TIMEOUT_MS) {
-						continue; // hold the frame
+					if (entry.syncStart === null) entry.syncStart = perfNow;
+					const elapsed = perfNow - entry.syncStart;
+					if (elapsed < SYNC_OUTPUT_TIMEOUT_MS) {
+						// Hold the frame; schedule a wake at the timeout boundary.
+						const remaining = SYNC_OUTPUT_TIMEOUT_MS - elapsed;
+						if (remaining < minDeadlineMs) minDeadlineMs = remaining;
+						continue;
 					}
 					// Timeout reached. Render the best-effort frame ONCE,
 					// then suspend further renders until the kernel exits
@@ -1097,16 +1234,55 @@ export class TerminalManager {
 					entry.syncStart = null;
 					entry.syncTimeoutRendered = false;
 				}
-				try {
-					entry.handle.render(entry.kernel);
-				} catch (err) {
-					// Don't let one pane's render error kill the whole loop.
-					console.error('[ridge-term] render error', entry.paneId, err);
+				// Per-pane dirty check (Phase B 2026-05-07). When the wasm
+				// bundle was built before the isDirty export shipped (older
+				// pkg/), the property is undefined → fall back to render
+				// unconditionally so we never freeze a pane on a downgrade.
+				const handleAny = entry.handle as unknown as {
+					isDirty?: (k: TerminalKernel, t: number) => boolean;
+					nextBlinkDeadlineMs?: (k: TerminalKernel, t: number) => number;
+				};
+				let dirty = true;
+				if (typeof handleAny.isDirty === 'function') {
+					try {
+						dirty = handleAny.isDirty(entry.kernel, dateNow);
+					} catch {
+						dirty = true;
+					}
+				}
+				if (dirty) {
+					try {
+						entry.handle.render(entry.kernel);
+						anyRendered = true;
+					} catch (err) {
+						// Don't let one pane's render error kill the whole loop.
+						console.error('[ridge-term] render error', entry.paneId, err);
+					}
+				}
+				if (typeof handleAny.nextBlinkDeadlineMs === 'function') {
+					try {
+						const d = handleAny.nextBlinkDeadlineMs(entry.kernel, dateNow);
+						if (Number.isFinite(d) && d < minDeadlineMs) minDeadlineMs = d;
+					} catch {
+						// ignore — watchdog cap below covers us
+					}
 				}
 			}
-			if (this.panes.size > 0) {
+			if (this.panes.size === 0) return;
+			if (anyRendered) {
+				// Likely more work soon — stay on RAF cadence.
 				this.rafHandle = requestAnimationFrame(tick);
+				return;
 			}
+			// All idle. Sleep until the next blink boundary (or a 1s
+			// watchdog so a missed wake-up path can't hang a pane longer
+			// than that). Min 1ms keeps `setTimeout(0)` semantics off the
+			// hot path.
+			const sleepMs = Math.min(Math.max(minDeadlineMs, 1), 1000);
+			this.idleTimer = setTimeout(() => {
+				this.idleTimer = null;
+				this.startRafLoop();
+			}, sleepMs);
 		};
 		this.rafHandle = requestAnimationFrame(tick);
 	}
@@ -1115,6 +1291,30 @@ export class TerminalManager {
 		if (this.rafHandle !== null) {
 			cancelAnimationFrame(this.rafHandle);
 			this.rafHandle = null;
+		}
+		if (this.idleTimer !== null) {
+			clearTimeout(this.idleTimer);
+			this.idleTimer = null;
+		}
+		if (this.visibilityListener !== null && typeof document !== 'undefined') {
+			document.removeEventListener('visibilitychange', this.visibilityListener);
+			this.visibilityListener = null;
+		}
+	}
+
+	/** Wake the RAF loop if it's currently asleep (idleTimer pending) or
+	 *  not running at all. Idempotent — harmless to call from any state-
+	 *  mutating path: `feed` (PTY bytes arrived), `setFocused` (cursor
+	 *  visibility flip), theme/font/resize, selection drag, etc. Cheap
+	 *  enough to call generously; the cost is one branch + (when sleep
+	 *  is pending) one `clearTimeout` + one `requestAnimationFrame`. */
+	private wake(): void {
+		if (this.idleTimer !== null) {
+			clearTimeout(this.idleTimer);
+			this.idleTimer = null;
+		}
+		if (this.rafHandle === null && this.panes.size > 0) {
+			this.startRafLoop();
 		}
 	}
 }
