@@ -148,7 +148,15 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	const pos = manager.cursorPixelPosition(paneId);
+	// §1.27 fix: use the stable user-input anchor instead of the live
+	// kernel cursor. Ink/log-update walks the kernel cursor up through
+	// every previously-rendered row each spinner tick; reading the live
+	// position during compositionupdate would teleport the helper to the
+	// spinner row mid-walk, where its opaque background covers the
+	// loading area. `inputAnchorPixelPosition` snapshots after each user
+	// keystroke and stays put across PTY-driven cursor moves. Falls back
+	// to the live cursor when no keystroke has happened yet.
+	const pos = manager.inputAnchorPixelPosition(paneId);
 	if (!pos) return;
 	// Anchor the helper AT the cursor cell so the visible preedit text
 	// (set by `.is-composing` CSS) overlays the canvas cursor exactly.
@@ -228,6 +236,17 @@ function onCompositionEnd(e: CompositionEvent) {
 	}
 	// Clear the helper textarea so the next composition starts at length 0.
 	if (imeHelper) imeHelper.value = '';
+
+	// §1.27 fix: force a full-frame redraw so any canvas pixels that
+	// were under the now-shrunk `.is-composing` overlay are repainted
+	// from kernel cell state. Without this, Canvas2D's per-row hash diff
+	// can skip rows whose CELLS are unchanged but whose PIXELS were
+	// smeared by the overlay, leaving preedit-shaped residue. WebGPU
+	// already redraws every row per tick, so this is effectively a wake
+	// there. One frame is cheap; we always-redraw rather than gate on
+	// "did the user actually commit" — a cancelled composition can leak
+	// just as easily as a committed one.
+	manager.forceFullRedraw(paneId);
 
 	// §1.27 diag: log the committed string. The companion cells_at()
 	// call to inspect cell state around the cursor lives in the

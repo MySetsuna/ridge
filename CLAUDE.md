@@ -118,19 +118,48 @@ INLINE_TUI_DECAY_MS` (2 s decay). The parser records absolute-positioning
 CSI dispatches via `Grid::note_absolute_positioning(now_ms)`. See
 `docs/term-rebuild/REPRO_primary_resize.md` for the live repro recipe.
 
-§1.27 (2026-05-07, diagnostic phase only): instrumentation for the
-"莫名其妙置灰" (mysterious dim text) and "中文输入法预输入残留" (Chinese-
-IME preedit residue) investigations. Two pieces shipped:
-- `JsTerminal::cellsAt(row, col, len)` (`packages/ridge-term/src/lib.rs`)
-  — returns per-cell `{ ch, codepoint, width, attrId, dim, bold,
-  italic, underline, inverse, hidden, fg, bg }` for any range on the
-  active screen. Lets devtools answer "is the grey I see backed by
-  DIM-attributed cells, or is it stale rendering?"
-- `RidgePane.svelte` `[ime] start/update/end` console logs gated on
-  `localStorage.RIDGE_DIAG === '1'`. Captures composition lifecycle so
-  textarea-overlay leaks can be told apart from grid-state writes.
-The fix itself is deferred until live logs from these surfaces pin the
-branch. See `docs/term-rebuild/REPRO_dim_residue.md` for the recipe.
+§1.27 (2026-05-07): Claude/Ink loading-area residue + IME pre-edit
+drift. Symptom: when an Ink-based CLI (Claude Code's `claude`,
+lazygit, …) is redrawing its multi-line frame
+(`(\x1b[2K\x1b[1A)*N + \x1b[G + new frame` per
+`sindresorhus/log-update`), the kernel cursor walks up through every
+previously-rendered row mid-frame. Two visible bugs share this root
+cause:
+1. **IME helper teleports** — `repositionImeHelper()` was reading
+   `kernel.cursorRow()` live on every `compositionupdate`. If the
+   user started composing pinyin during one of those CUU walks, the
+   helper anchored to whatever spinner row the cursor was passing
+   through; with `.is-composing` styling (opaque `var(--rg-bg)`
+   background + `z-index: 5`), it covered the loading area.
+2. **Canvas2D residue** — per-row hash diff can skip rows whose
+   *cells* match across two ticks but whose *pixels* were smeared by
+   the `.is-composing` overlay or a past partial repaint.
+Three independent fixes shipped:
+- `manager.ts::PaneEntry.imeAnchor` — stable `{row, col}` snapshot
+  refreshed via `requestAnimationFrame` after each user-initiated
+  write (`handleKeyDown` / `paste` / `write`), guarded by
+  `imeAnchorRaf` to coalesce. Background PTY output (spinner ticks)
+  does NOT update it. `inputAnchorPixelPosition(paneId)` returns the
+  snapshot; falls back to live cursor on first composition before any
+  keystroke. The pending rAF is cancelled in `detach()` to avoid
+  touching a freed kernel.
+- `manager.ts::forceFullRedraw(paneId)` — wraps
+  `RenderHandle::invalidateAll()` + `wake()`. Called from
+  `RidgePane.svelte::onCompositionEnd` so canvas pixels under the
+  shrunk `.is-composing` overlay are repainted from kernel cell state
+  on the next frame regardless of hash equality.
+- `renderer.rs::tick()` — sets `full_redraw_pending = true` whenever
+  `Grid::is_inline_tui_active_at(wall_ms, cursor_visible)` returns
+  true (uses `clock::now_ms()` because `note_absolute_positioning`
+  records unix-epoch i64; the renderer's own `now_ms: f64` is
+  `performance.now()` page-load relative). Bounded by 2 s
+  `INLINE_TUI_DECAY_MS` so quiescent shells stay on the dirty-row
+  diff fast path. WebGPU was already full-redraw per tick, so this
+  branch only changes Canvas2D behaviour.
+§1.27 Phase B instrumentation (`JsTerminal::cellsAt`,
+`RIDGE_DIAG`-gated `[ime]` logs) is preserved — useful for diagnosing
+any residual cell-state leaks. See
+`docs/term-rebuild/REPRO_dim_residue.md` for the diagnostic recipe.
 
 §4.6 (2026-05-07, font-fallback only): `manager.ts:240`'s default
 `fontFamily` already includes `"Segoe UI Emoji", "Apple Color Emoji",
