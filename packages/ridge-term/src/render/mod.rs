@@ -23,6 +23,12 @@ pub mod glyph_atlas;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod webgpu;
 
+// Shared GPU context (Round 3 §4.3 Phase A): one Device / Queue /
+// pipeline / atlas for the whole process. Per-pane WebGpuBackend
+// borrows it via Rc<RefCell<>> instead of constructing its own copies.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub mod gpu_context;
+
 // Glyph rasterizer (Round 3 §4.1.b). OffscreenCanvas-based — uses the
 // browser's font fallback chain for free, no extra wasm bundle weight.
 // Owned by future WebGpuBackend::draw_row cache-miss path; gated on
@@ -123,6 +129,20 @@ impl RenderBackend for AnyBackend {
             AnyBackend::Canvas2d(b) => b.resize_surface(width_css, height_css, dpr),
             #[cfg(feature = "webgpu")]
             AnyBackend::Webgpu(b) => b.resize_surface(width_css, height_css, dpr),
+        }
+    }
+
+    fn invalidate_atlas(&mut self) {
+        // CRITICAL: forward to the active variant. Canvas2D's default
+        // no-op is fine but WebGPU MUST drop its GlyphAtlas + reset
+        // next_layer on resize / font change; without this forward,
+        // AnyBackend would fall through to the trait default and
+        // stale glyph UVs persist across DPR / font-size changes —
+        // exactly the "resize + claude → 字符位置错乱" report.
+        match self {
+            AnyBackend::Canvas2d(b) => b.invalidate_atlas(),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.invalidate_atlas(),
         }
     }
 

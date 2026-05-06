@@ -54,8 +54,22 @@ pub struct Terminal {
     /// Viewport scroll offset, in rows. 0 = looking at the live grid;
     /// `n > 0` = pull `n` rows from the top of scrollback in front of
     /// the visible grid (so the user sees history). Capped at
-    /// `scrollback.len()`. Reset to 0 on any new output.
+    /// `scrollback.len()`. Reset to 0 on any new output unless
+    /// `user_scroll_locked` is set.
     scroll_offset: usize,
+    /// User has explicitly scrolled into history (via `scroll_up_view`).
+    /// While this is set, incoming PTY bytes do NOT auto-snap the
+    /// viewport back to the live grid — so a TUI like `claude` or `top`
+    /// that keeps writing to the primary screen can't yank the viewport
+    /// out from under a user paging through history.
+    ///
+    /// Cleared by `scroll_to_bottom` (explicit "follow tail"), by
+    /// `scroll_down_view` once `scroll_offset` reaches 0, and on every
+    /// alt-screen enter/leave (alt-screen has no scrollback; carrying
+    /// the lock across the screen-switch produces a confusing mixed
+    /// viewport). Honored only on primary screen — alt-screen feed
+    /// bytes still auto-snap.
+    user_scroll_locked: bool,
     /// Bytes the parser produced that must be sent BACK to the PTY.
     /// Populated by DSR / DA query responses (CSI 5n, 6n, c, >c). The
     /// JS layer drains this after every feed() and writes it to the PTY
@@ -86,6 +100,7 @@ impl Terminal {
             current_attrs: Attrs::DEFAULT,
             modes: Modes::default(),
             scroll_offset: 0,
+            user_scroll_locked: false,
             pending_response: Vec::new(),
             pending_events: Vec::new(),
             last_printed: None,
@@ -94,11 +109,18 @@ impl Terminal {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        // Any new output snaps the viewport back to the live grid — same
-        // behavior as xterm and most terminals (so log streams don't
-        // disappear behind the user while they're paging).
+        // Auto-snap the viewport back to the live grid on new output —
+        // matches xterm so log streams don't disappear behind the user
+        // while they're paging — UNLESS the user has explicitly paged
+        // up via `scroll_up_view`. The lock is only honored on the
+        // primary screen; alt-screen TUIs (vim, less) need every byte
+        // to land in the viewport they're redrawing.
+        let alt_before = self.grid.is_alt_screen();
         if !bytes.is_empty() && self.scroll_offset != 0 {
-            self.scroll_offset = 0;
+            let respect_lock = self.user_scroll_locked && !alt_before;
+            if !respect_lock {
+                self.scroll_offset = 0;
+            }
         }
         let mut perf = Performer {
             grid: &mut self.grid,
@@ -111,6 +133,15 @@ impl Terminal {
         };
         for &b in bytes {
             self.parser.advance(&mut perf, b);
+        }
+        // Crossing the alt-screen boundary invalidates the viewport
+        // lock: alt-screen has no scrollback, and after we leave it
+        // the user expects to be at the live tail of the primary
+        // screen (closing vim shouldn't dump them back into stale
+        // history they were paging an hour ago).
+        if self.grid.is_alt_screen() != alt_before {
+            self.user_scroll_locked = false;
+            self.scroll_offset = 0;
         }
     }
 
@@ -216,24 +247,39 @@ impl Terminal {
     }
 
     /// Scroll viewport up (toward older history). `n` rows; clamped at
-    /// scrollback length.
+    /// scrollback length. Engages the user-scroll lock so subsequent
+    /// PTY output won't auto-snap the viewport back to the tail.
     pub fn scroll_up_view(&mut self, n: usize) {
         let max = self.grid.scrollback.len();
         self.scroll_offset = (self.scroll_offset + n).min(max);
+        if self.scroll_offset > 0 {
+            self.user_scroll_locked = true;
+        }
     }
 
-    /// Scroll viewport down (toward live grid). Clamped at 0.
+    /// Scroll viewport down (toward live grid). Clamped at 0. Releases
+    /// the lock once the user has paged all the way back to the tail.
     pub fn scroll_down_view(&mut self, n: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
+        if self.scroll_offset == 0 {
+            self.user_scroll_locked = false;
+        }
     }
 
-    /// Snap viewport back to live grid (= 0 offset).
+    /// Snap viewport back to live grid (= 0 offset). Releases the
+    /// user-scroll lock — explicit "follow tail" intent.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+        self.user_scroll_locked = false;
     }
 
     pub fn scroll_offset(&self) -> usize { self.scroll_offset }
     pub fn scrollback_len(&self) -> usize { self.grid.scrollback.len() }
+    /// Whether the user has paged into history and PTY output is
+    /// currently being held back from auto-snapping the viewport.
+    /// JS-side may surface this as a "x lines below — click to follow"
+    /// indicator.
+    pub fn is_user_scroll_locked(&self) -> bool { self.user_scroll_locked }
 
     /// Look up a row by absolute-row coord (matches `search.rs` /
     /// `selection.rs` abs encoding):
@@ -408,6 +454,97 @@ mod tests {
         assert!(t.scroll_offset() > 0);
         t.scroll_to_bottom();
         assert_eq!(t.scroll_offset(), 0);
+    }
+
+    // ─── user-scroll lock ─────────────────────────────────────────────
+
+    #[test]
+    fn feed_holds_offset_while_user_scroll_locked() {
+        // Push enough lines to populate scrollback, page up, then keep
+        // feeding. The lock must hold the viewport at the offset the
+        // user chose (auto-snap suppressed).
+        let mut t = Terminal::new(2, 5, 16);
+        t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf");
+        t.scroll_up_view(2);
+        let locked_offset = t.scroll_offset();
+        assert!(locked_offset > 0);
+        assert!(t.is_user_scroll_locked());
+        // Feed more content as if a TUI were repainting the live grid.
+        t.feed(b"\r\nstreamed-output");
+        assert_eq!(
+            t.scroll_offset(), locked_offset,
+            "PTY output must not auto-snap while the user-scroll lock is set",
+        );
+    }
+
+    #[test]
+    fn feed_auto_snaps_without_lock() {
+        // Without the lock, behavior matches xterm: any new output
+        // pulls the viewport back to the live grid.
+        let mut t = Terminal::new(2, 5, 8);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        // Set offset directly to simulate a different code path; lock
+        // stays clear.
+        t.scroll_offset = 1;
+        assert!(!t.is_user_scroll_locked());
+        t.feed(b"x");
+        assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn scroll_to_bottom_releases_lock() {
+        let mut t = Terminal::new(2, 5, 5);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.scroll_up_view(2);
+        assert!(t.is_user_scroll_locked());
+        t.scroll_to_bottom();
+        assert!(!t.is_user_scroll_locked());
+    }
+
+    #[test]
+    fn scroll_down_view_releases_lock_at_zero() {
+        let mut t = Terminal::new(2, 5, 5);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.scroll_up_view(2);
+        assert!(t.is_user_scroll_locked());
+        // Step down by 1 — still in history, lock stays.
+        t.scroll_down_view(1);
+        assert!(t.is_user_scroll_locked() || t.scroll_offset() == 0);
+        // Reach the tail — lock releases.
+        t.scroll_down_view(99);
+        assert_eq!(t.scroll_offset(), 0);
+        assert!(!t.is_user_scroll_locked());
+    }
+
+    #[test]
+    fn alt_screen_enter_clears_lock_and_offset() {
+        // User pages up on primary, then a TUI swaps to alt-screen via
+        // CSI ?1049h. The lock must drop so the alt-screen feed paints
+        // a clean viewport.
+        let mut t = Terminal::new(2, 5, 5);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.scroll_up_view(2);
+        assert!(t.is_user_scroll_locked());
+        // CSI ?1049h: enter alt-screen + clear.
+        t.feed(b"\x1b[?1049h");
+        assert!(t.is_alt_screen());
+        assert!(!t.is_user_scroll_locked());
+        assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn alt_screen_feed_ignores_lock() {
+        // While on alt-screen the lock must NOT inhibit auto-snap —
+        // alt-screen TUIs assume the entire viewport tracks the live
+        // alt buffer.
+        let mut t = Terminal::new(2, 5, 5);
+        t.feed(b"\x1b[?1049h");
+        // Force the (otherwise impossible) state: alt-screen + locked.
+        t.user_scroll_locked = true;
+        t.scroll_offset = 1;
+        t.feed(b"x");
+        assert_eq!(t.scroll_offset(), 0,
+            "alt-screen feed must auto-snap regardless of lock");
     }
 
     #[test]
