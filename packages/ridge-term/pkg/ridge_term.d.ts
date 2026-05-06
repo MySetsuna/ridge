@@ -33,6 +33,19 @@ export class RenderHandle {
      */
     invalidateAll(): void;
     /**
+     * Non-mutating mirror of `render`'s early-exit conditions:
+     * returns `true` when the next `render` call would do any
+     * drawing work, `false` when the renderer has nothing to
+     * redraw and the JS caller can sleep its RAF loop. `now_ms`
+     * must use the same epoch as the value passed to `render`
+     * (`Date.now()` in JS).
+     *
+     * Cost: ~24 row hashes for an 80×24 grid (≈4 µs) plus the
+     * selection / scroll / blink checks. Cheaper than one
+     * `draw_row` call by two orders of magnitude.
+     */
+    isDirty(kernel: TerminalKernel, now_ms: number): boolean;
+    /**
      * Sync constructor — Canvas2D-only. JS calls
      * `new RenderHandle(canvas)`. For runtime-WebGPU adoption with
      * graceful Canvas2D fallback, JS calls
@@ -56,6 +69,15 @@ export class RenderHandle {
      */
     static newWithWebgpuFirst(canvas: HTMLCanvasElement): Promise<RenderHandle>;
     /**
+     * Milliseconds until the next cursor-blink phase boundary. JS
+     * callers use this to schedule a `setTimeout` wake-up while
+     * the RAF loop is paused. Returns a very large number
+     * (effectively infinity) when the cursor isn't blinking — the
+     * caller should treat any value > some reasonable cap (e.g.
+     * 1000 ms) as "no blink, sleep at most a second on a watchdog".
+     */
+    nextBlinkDeadlineMs(kernel: TerminalKernel, now_ms: number): number;
+    /**
      * Drive one frame from the kernel's current grid. Returns true
      * if anything was drawn (caller can use this to decide whether
      * to schedule another frame). Selection range comes from the
@@ -76,6 +98,28 @@ export class RenderHandle {
 export class TerminalKernel {
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
+     * residue investigation. Returns up to `len` cells starting at
+     * (row, col) on the active screen as a JS array of plain objects
+     * `{ col, ch, codepoint, width, attrId, dim, bold, italic,
+     * underline, inverse, hidden, fg, bg }` so devtools can correlate
+     * "what does the user see at this position" with "what attrs are
+     * stored".
+     *
+     * Out-of-range row, col, or len silently returns a shorter array
+     * (or empty) rather than panicking — devtools should treat the
+     * shorter result as "row missing or too narrow".
+     *
+     * Frontend usage (when `localStorage.RIDGE_DIAG === '1'`):
+     *   `__RIDGE_KERNEL.cellsAt(cursorRow, 0, 80)` right after a
+     *   compositionEnd to verify whether DIM cells leaked into the
+     *   prompt area, or after observing residue to confirm whether
+     *   the underlying cell carries a DIM attribute (kernel bug) vs
+     *   correct attrs but stale pixels (renderer bug). See
+     *   `docs/term-rebuild/REPRO_dim_residue.md`.
+     */
+    cellsAt(row: number, col: number, len: number): any[];
     clearSelection(): void;
     cols(): number;
     /**
@@ -124,6 +168,14 @@ export class TerminalKernel {
      */
     isFocusReporting(): boolean;
     /**
+     * §A.3 inline-TUI heuristic — true when an Ink-style app is rendering
+     * inline on primary (cursor hidden + recent absolute-positioning CSI
+     * within the decay window) and the kernel is NOT on alt screen.
+     * Read by `manager.ts::fitPane` to decide whether to wipe primary
+     * before resizing the PTY (mirrors the existing alt-screen branch).
+     */
+    isInlineTuiMode(): boolean;
+    /**
      * Synchronous output mode `?2026`. While `true`, the manager should
      * hold off rendering frames so the user doesn't see torn intermediate
      * states during multi-step redraws (Ink/lazygit/bottom). Manager
@@ -138,6 +190,18 @@ export class TerminalKernel {
      * `scrollToBottom`.
      */
     isUserScrollLocked(): boolean;
+    /**
+     * Diagnostic accessor for the alt-screen-resize bug investigation
+     * (§1.22 / §1.23 / §1.24). Returns the kernel's last 32 resize calls
+     * as a JS array of `{ old_rows, old_cols, new_rows, new_cols, is_alt,
+     * dim_changed, branch, wipe_fired }` objects, newest last.
+     *
+     * Frontend usage (when `localStorage.RIDGE_DIAG === '1'`):
+     *   `__RIDGE_KERNEL.lastResizeDiags()` after a live resize confirms
+     *   whether `is_alt` was true at the kernel level and whether the
+     *   §1.22 wipe path fired. See `docs/term-rebuild/REPRO_alt_resize.md`.
+     */
+    lastResizeDiags(): any[];
     constructor(rows: number, cols: number, scrollback: number);
     /**
      * Prepend older history at the OLDEST end of the scrollback ring.
@@ -233,11 +297,14 @@ export interface InitOutput {
     readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
     readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly renderhandle_invalidateAll: (a: number) => void;
+    readonly renderhandle_isDirty: (a: number, b: number, c: number) => number;
     readonly renderhandle_new: (a: any) => [number, number, number];
     readonly renderhandle_newWithWebgpuFirst: (a: any) => any;
+    readonly renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number) => number;
     readonly renderhandle_render: (a: number, b: number) => number;
     readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
     readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_clearSelection: (a: number) => void;
     readonly terminalkernel_cols: (a: number) => number;
     readonly terminalkernel_cursorCol: (a: number) => number;
@@ -254,8 +321,10 @@ export interface InitOutput {
     readonly terminalkernel_isBracketedPaste: (a: number) => number;
     readonly terminalkernel_isCursorVisible: (a: number) => number;
     readonly terminalkernel_isFocusReporting: (a: number) => number;
+    readonly terminalkernel_isInlineTuiMode: (a: number) => number;
     readonly terminalkernel_isSyncOutput: (a: number) => number;
     readonly terminalkernel_isUserScrollLocked: (a: number) => number;
+    readonly terminalkernel_lastResizeDiags: (a: number) => [number, number];
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
     readonly terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;
     readonly terminalkernel_resize: (a: number, b: number, c: number) => void;

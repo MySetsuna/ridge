@@ -70,6 +70,26 @@ export class RenderHandle {
         wasm.renderhandle_invalidateAll(this.__wbg_ptr);
     }
     /**
+     * Non-mutating mirror of `render`'s early-exit conditions:
+     * returns `true` when the next `render` call would do any
+     * drawing work, `false` when the renderer has nothing to
+     * redraw and the JS caller can sleep its RAF loop. `now_ms`
+     * must use the same epoch as the value passed to `render`
+     * (`Date.now()` in JS).
+     *
+     * Cost: ~24 row hashes for an 80×24 grid (≈4 µs) plus the
+     * selection / scroll / blink checks. Cheaper than one
+     * `draw_row` call by two orders of magnitude.
+     * @param {TerminalKernel} kernel
+     * @param {number} now_ms
+     * @returns {boolean}
+     */
+    isDirty(kernel, now_ms) {
+        _assertClass(kernel, TerminalKernel);
+        const ret = wasm.renderhandle_isDirty(this.__wbg_ptr, kernel.__wbg_ptr, now_ms);
+        return ret !== 0;
+    }
+    /**
      * Sync constructor — Canvas2D-only. JS calls
      * `new RenderHandle(canvas)`. For runtime-WebGPU adoption with
      * graceful Canvas2D fallback, JS calls
@@ -104,6 +124,22 @@ export class RenderHandle {
      */
     static newWithWebgpuFirst(canvas) {
         const ret = wasm.renderhandle_newWithWebgpuFirst(canvas);
+        return ret;
+    }
+    /**
+     * Milliseconds until the next cursor-blink phase boundary. JS
+     * callers use this to schedule a `setTimeout` wake-up while
+     * the RAF loop is paused. Returns a very large number
+     * (effectively infinity) when the cursor isn't blinking — the
+     * caller should treat any value > some reasonable cap (e.g.
+     * 1000 ms) as "no blink, sleep at most a second on a watchdog".
+     * @param {TerminalKernel} kernel
+     * @param {number} now_ms
+     * @returns {number}
+     */
+    nextBlinkDeadlineMs(kernel, now_ms) {
+        _assertClass(kernel, TerminalKernel);
+        const ret = wasm.renderhandle_nextBlinkDeadlineMs(this.__wbg_ptr, kernel.__wbg_ptr, now_ms);
         return ret;
     }
     /**
@@ -154,6 +190,37 @@ export class TerminalKernel {
     free() {
         const ptr = this.__destroy_into_raw();
         wasm.__wbg_terminalkernel_free(ptr, 0);
+    }
+    /**
+     * §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
+     * residue investigation. Returns up to `len` cells starting at
+     * (row, col) on the active screen as a JS array of plain objects
+     * `{ col, ch, codepoint, width, attrId, dim, bold, italic,
+     * underline, inverse, hidden, fg, bg }` so devtools can correlate
+     * "what does the user see at this position" with "what attrs are
+     * stored".
+     *
+     * Out-of-range row, col, or len silently returns a shorter array
+     * (or empty) rather than panicking — devtools should treat the
+     * shorter result as "row missing or too narrow".
+     *
+     * Frontend usage (when `localStorage.RIDGE_DIAG === '1'`):
+     *   `__RIDGE_KERNEL.cellsAt(cursorRow, 0, 80)` right after a
+     *   compositionEnd to verify whether DIM cells leaked into the
+     *   prompt area, or after observing residue to confirm whether
+     *   the underlying cell carries a DIM attribute (kernel bug) vs
+     *   correct attrs but stale pixels (renderer bug). See
+     *   `docs/term-rebuild/REPRO_dim_residue.md`.
+     * @param {number} row
+     * @param {number} col
+     * @param {number} len
+     * @returns {any[]}
+     */
+    cellsAt(row, col, len) {
+        const ret = wasm.terminalkernel_cellsAt(this.__wbg_ptr, row, col, len);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     clearSelection() {
         wasm.terminalkernel_clearSelection(this.__wbg_ptr);
@@ -310,6 +377,18 @@ export class TerminalKernel {
         return ret !== 0;
     }
     /**
+     * §A.3 inline-TUI heuristic — true when an Ink-style app is rendering
+     * inline on primary (cursor hidden + recent absolute-positioning CSI
+     * within the decay window) and the kernel is NOT on alt screen.
+     * Read by `manager.ts::fitPane` to decide whether to wipe primary
+     * before resizing the PTY (mirrors the existing alt-screen branch).
+     * @returns {boolean}
+     */
+    isInlineTuiMode() {
+        const ret = wasm.terminalkernel_isInlineTuiMode(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Synchronous output mode `?2026`. While `true`, the manager should
      * hold off rendering frames so the user doesn't see torn intermediate
      * states during multi-step redraws (Ink/lazygit/bottom). Manager
@@ -331,6 +410,24 @@ export class TerminalKernel {
     isUserScrollLocked() {
         const ret = wasm.terminalkernel_isUserScrollLocked(this.__wbg_ptr);
         return ret !== 0;
+    }
+    /**
+     * Diagnostic accessor for the alt-screen-resize bug investigation
+     * (§1.22 / §1.23 / §1.24). Returns the kernel's last 32 resize calls
+     * as a JS array of `{ old_rows, old_cols, new_rows, new_cols, is_alt,
+     * dim_changed, branch, wipe_fired }` objects, newest last.
+     *
+     * Frontend usage (when `localStorage.RIDGE_DIAG === '1'`):
+     *   `__RIDGE_KERNEL.lastResizeDiags()` after a live resize confirms
+     *   whether `is_alt` was true at the kernel level and whether the
+     *   §1.22 wipe path fired. See `docs/term-rebuild/REPRO_alt_resize.md`.
+     * @returns {any[]}
+     */
+    lastResizeDiags() {
+        const ret = wasm.terminalkernel_lastResizeDiags(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     /**
      * @param {number} rows
@@ -527,6 +624,10 @@ export function _init() {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg_Error_3639a60ed15f87e7: function(arg0, arg1) {
+            const ret = Error(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
         __wbg_Window_b0c275b50676d397: function(arg0) {
             const ret = arg0.Window;
             return ret;
@@ -1421,17 +1522,17 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 266, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 267, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 47, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 49, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 47, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 49, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42_2);
             return ret;
         },
@@ -1448,6 +1549,11 @@ function __wbg_get_imports() {
         __wbindgen_cast_0000000000000006: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
+            return ret;
+        },
+        __wbindgen_cast_0000000000000007: function(arg0) {
+            // Cast intrinsic for `U64 -> Externref`.
+            const ret = BigInt.asUintN(64, arg0);
             return ret;
         },
         __wbindgen_init_externref_table: function() {

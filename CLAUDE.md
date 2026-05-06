@@ -52,6 +52,98 @@ fallback (no compile-time gate, no localStorage opt-in). §7.2 browser
 real-run regression for the WebGPU path is the next gate before §4.3
 (shared surface across panes) / §4.4 (perf benchmark).
 
+§1.24 (2026-05-06): the resize path now propagates the kernel's alt-
+screen state through to `resize_pane`; the backend skips its 250 ms
+ConPTY resize-silence window for alt-screen panes so foreground TUIs
+(claude / lazygit / Ink-based CLIs) don't have their SIGWINCH-driven
+redraw bytes dropped. See `docs/term-rebuild/REPRO_alt_resize.md` for
+the live repro recipe (`localStorage.RIDGE_DIAG='1'` exposes
+`__RIDGE_KERNEL.lastResizeDiags()`; `localStorage.RIDGE_PTY_TRACE='1'`
+dumps PTY-to-wasm chunks to the console).
+
+§1.25 (2026-05-06): kernel-side reflow on resize is removed. The 200-
+line `Grid::reflow_primary` rewrap algorithm (Round 3 §4.1 / TASKS §2.3
+Phase 1) is gone; both primary and alt screens always go through naive
+truncate/pad. Rationale: any application that cares about its layout
+receives SIGWINCH from the PTY and emits its own redraw — shells
+(PSReadLine / fish / zsh-zle) and TUIs (vim / less / claude code /
+lazygit) all do this. A simultaneous kernel-side reflow races with that
+redraw: cells the kernel has just relocated get overwritten by bytes
+the app emitted under a different mental model of where they were,
+producing visible "字符打架" (overdraw) and post-exit cursor drift.
+Naive truncate/pad eliminates the race entirely. This matches xterm,
+kitty, alacritty, iTerm2, and Windows Terminal — none of which reflow
+on resize by default. Scrollback (paged-up history) shows historical
+content at its original column width when wider than the new cols, the
+same as before. `ResizeBranch` collapsed to a single `Naive` variant;
+`is_alt` + `wipe_fired` carry the information the old triple encoded.
+
+§1.25 also swaps `manager.ts::fitPane` ordering by alt state: on alt
+screens, `kernel.resize` (which fires the §1.22 wipe) runs BEFORE
+`resizeHandler` (which triggers PTY resize / SIGWINCH). This guarantees
+the foreground TUI's redraw bytes always land on a freshly-cleared alt
+buffer rather than racing the wipe and getting partially erased. On
+primary the old PTY-first ordering is preserved for PSReadLine
+absolute-cursor compatibility.
+
+§1.26 (2026-05-07): primary-screen resize residue cleanup. Symptom:
+after dragging a pane narrower on PowerShell + oh-my-posh, the
+path-to-`>` gap collapses and ghost characters from the old prompt
+linger past the new prompt's end. Root causes were threefold and the
+fix has matching parts:
+1. `grid.rs::resize_with_inline_tui` post-naive cleanup: when on
+   primary AND dims changed, blank `cursor_row[cursor.col + 1 ..]` and
+   every row strictly below the cursor (`cleared_below_cursor` in
+   `ResizeDiag`). Cells AT cursor.col and to its left are preserved
+   (raw shells without SIGWINCH-driven full redraws keep their
+   in-progress text). Rows above the cursor are scrollback / prior
+   command output and are never touched.
+2. `engine/pty.rs::RESIZE_SILENCE_WINDOW_MS` 250 ms → 80 ms. Still
+   suppresses ConPTY's viewport replay tail but lets PSReadLine's
+   SIGWINCH redraw bytes (typical 10–50 ms post-SIGWINCH) actually
+   reach the kernel.
+3. `render/renderer.rs::tick` snapshot resize fires on *any* row-count
+   change, not only growth. Required because Canvas2D's dirty-row
+   diff would otherwise leave stale pixels on rows that vanished
+   under a narrowing resize.
+
+§A.3 alongside §1.26 adds the `resize_with_inline_tui(rows, cols,
+inline_tui_active)` API. When the caller flags the pane as currently
+hosting an inline TUI (Claude Code's Ink-based input box, etc.), the
+*entire* visible primary region is wiped (mutually exclusive with
+§1.26's partial cleanup). The detector lives in
+`Grid::is_inline_tui_active_at(now_ms, cursor_visible)`: returns true
+iff `!is_alt && !cursor_visible && now_ms - last_abs_csi_at_ms <
+INLINE_TUI_DECAY_MS` (2 s decay). The parser records absolute-positioning
+CSI dispatches via `Grid::note_absolute_positioning(now_ms)`. See
+`docs/term-rebuild/REPRO_primary_resize.md` for the live repro recipe.
+
+§1.27 (2026-05-07, diagnostic phase only): instrumentation for the
+"莫名其妙置灰" (mysterious dim text) and "中文输入法预输入残留" (Chinese-
+IME preedit residue) investigations. Two pieces shipped:
+- `JsTerminal::cellsAt(row, col, len)` (`packages/ridge-term/src/lib.rs`)
+  — returns per-cell `{ ch, codepoint, width, attrId, dim, bold,
+  italic, underline, inverse, hidden, fg, bg }` for any range on the
+  active screen. Lets devtools answer "is the grey I see backed by
+  DIM-attributed cells, or is it stale rendering?"
+- `RidgePane.svelte` `[ime] start/update/end` console logs gated on
+  `localStorage.RIDGE_DIAG === '1'`. Captures composition lifecycle so
+  textarea-overlay leaks can be told apart from grid-state writes.
+The fix itself is deferred until live logs from these surfaces pin the
+branch. See `docs/term-rebuild/REPRO_dim_residue.md` for the recipe.
+
+§4.6 (2026-05-07, font-fallback only): `manager.ts:240`'s default
+`fontFamily` already includes `"Segoe UI Emoji", "Apple Color Emoji",
+"Noto Color Emoji"` after the monospace stack, so single-codepoint
+emoji (🚀, ✅, 你好-style CJK) render in colour on both Canvas2D and
+WebGPU (the WebGPU rasterizer's OffscreenCanvas honours the same font
+stack). ZWJ composite emoji (👨‍👩‍👧, 🏳️‍🌈, 👨‍💻) still split into
+multiple cells because `Cell.ch: char` only holds a single Unicode
+scalar and the parser feeds the grid one codepoint at a time. Full
+ZWJ support is queued as §4.7 and requires a cross-cutting refactor
+(Cell glyph storage → grapheme cluster, parser → unicode-segmentation,
+both backends → grapheme-keyed atlas).
+
 ### WebGPU is on by default — runtime detection
 
 `pnpm tauri build` and `node build.mjs` ship the dual-backend wasm

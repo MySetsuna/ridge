@@ -463,17 +463,13 @@
 - **文件**：`src/lib/components/RidgePane.svelte`
 - **修法**：可选——在 dev 环境观察到布局抖动再加。当前不阻塞。
 
-### 2.3 Resize reflow（软换行行重排）⏳ Phase 1 ✅ / Phase 2 远期
+### 2.3 Resize reflow（软换行行重排）❌ Phase 1 retired by §1.25 / Phase 2 cancelled
 
-- **背景**：原 `Grid::resize`（grid.rs:185）只做 truncate/pad — 收窄丢字符，拉宽留空白；翻历史时 scrollback 也错位。120 ms debounce 已经实现「松开鼠标后才触发」。Phase 1 已落地 reflow 本体（live grid 主屏幕列变重排），Phase 2 还差 scrollback + selection / hyperlink 锚点迁移。
-- **设计参考**：`OVERVIEW.md §7「Resize reflow 设计」` —— 完整的方案对比、分阶段交付、算法、测试覆盖。
-- **文件**：`packages/ridge-term/src/term/grid.rs::resize` + 私有方法 `reflow_primary`（已实现，line 262）。
-
-#### Phase 1（本轮）— live grid 列变 reflow，仅主屏幕 ✅ 2026-05-03
-
-- **状态**：完成。`grid.rs::resize` 当 `cols` 改变且 `!is_alt` 时调 `reflow_primary(new_rows, new_cols)`；alt 屏幕仍走 truncate/pad。
-- **测试**（10 条全绿）：`reflow_shrink_wraps_long_line`、`reflow_grow_unwraps_continued_line`、`reflow_preserves_cursor_logical_position`、`reflow_skips_alt_screen`、`reflow_chain_of_three_rows_round_trip`、`reflow_no_op_when_cols_unchanged`、`reflow_preserves_pending_wrap_at_exact_boundary`、`reflow_no_pending_wrap_when_line_doesnt_fill_last_row`、`reflow_keeps_wide_char_intact_at_boundary`、`reflow_shrink_overflow_pushes_to_scrollback`。覆盖原 §2.3 列出的 6 条加 4 条边界（pending_wrap 双向 + wide-char 切片 + scrollback 溢出）。
-- **不做（留 Phase 2）**：scrollback reflow、selection / hyperlink 锚点跨 reflow 迁移。
+- **背景**：原 `Grid::resize`（grid.rs:185）只做 truncate/pad — 收窄丢字符，拉宽留空白；翻历史时 scrollback 也错位。Phase 1 一度落地了 `reflow_primary` 把列变化时的主屏幕 cells 跨行重排。
+- **§1.25（2026-05-06）反转决定**：Phase 1 整体退役。`Grid::reflow_primary` 已删除，`Grid::resize` 在两块屏幕上都走 truncate/pad。原因：任何在意自己布局的 application 都会收到 SIGWINCH 后自行 redraw（PSReadLine / fish / zsh-zle、vim / less / claude code / lazygit / Ink CLI）；kernel 同时做 reflow 会和它的 redraw 字节竞争 — kernel 刚把 cell 挪到新行，application 紧跟着按"自己的旧帧快照 vs 新尺寸"emit diff 字节，落到已经被挪走的位置上，结果是「字符打架」 + 退出 TUI 后光标错位。xterm / kitty / alacritty / iTerm2 / Windows Terminal 默认都不 reflow，§1.25 与主流对齐。
+- **Phase 2（scrollback reflow + 锚点迁移）取消**：基于同样的逻辑——scrollback 内容当前用旧列宽显示，与 application 自己重画历史输出（如果它愿意）正交。如未来用户报告 scrollback 翻历史错位明显，再单独做"延迟 + 仅 scrollback 端"的 reflow（不会触碰 live grid，所以也没 race）。
+- **文件**：`packages/ridge-term/src/term/grid.rs::resize` 现仅含 `naive_resize_screen` 调用 + §1.22 alt 清屏 + ResizeBranch::Naive 单分支 diag。`reflow_primary` 已删除。
+- **新测试**（§1.25）：`naive_resize_rows_only_preserves_content`、`naive_resize_shrink_cols_clips_long_line`、`naive_resize_grow_cols_pads_with_blanks`、`naive_resize_clamps_pending_wrap_inside_new_cols`、`resize_alt_clears_buffer_no_reflow`、`resize_diag_reports_naive_branch_only`。原 10 条 `reflow_*` 测试已删除。
 
 ##### Phase 1 算法记录（已实施）
 
@@ -892,6 +888,15 @@ function tick() {
   - **整体验证**：`cargo test --lib` 242/242（之前 240，+2 新增 §1.22 测试）；`cargo check --target wasm32-unknown-unknown --lib` 默认 + `--no-default-features` 双模式 0 警告；`pnpm check` 0 errors / 0 warnings (4098 files)；`pnpm test fileExplorer.test.ts` 27/27；wasm pkg 重打。
   - **未提交**：当前所有改动仍在 working tree，等用户实跑回归 §1.20/§1.21/§7.2/§1.22/§1.23 后再决定一次性 checkpoint commit 或 cherry-pick 拆分。`§4.3 Phase B（atlas-to-shared in single pane）` 待用户给绿灯。
   — uncommitted
+
+- 2026-05-06 — §1.23 + §1.24 alt-screen resize 修复闭环：
+  - **§1.23 (committed `c71a300`)**：`grid.rs::resize` 在 alt 屏幕活跃时让 primary 走 naive truncate/pad 而非 reflow，保护 `?1049h` DECSC 进 alt 时栈住的 `primary.saved_cursor`；`naive_resize_screen` 同步 clamp `saved_cursor` 防 `?1049l` DECRC 落到越界行。新增 2 单测 + 1 集成 scenario `scenario_alt_screen_1049_survives_cols_resize`。
+  - **§1.24**：用户报告即便 §1.22/§1.23 都到位，运行 `claude` resize 仍见自动换行。三个候选根因（wipe 没触发 / Ink 仅 diff redraw / ConPTY silence 吞掉 redraw 字节）。最契合的是 hypothesis 3：`RESIZE_SILENCE_WINDOW_MS = 250ms` 静默窗口在 ConPTY resize 后无差别丢字节，但 alt-screen TUI（claude/Ink）不发 FinalTerm prompt OSC，等不到 prompt OSC 提前释放、redraw 整段被丢。修复：把 kernel 的 `is_alt_screen()` 经 manager.ts → `invoke('resize_pane', { ..., isAlt })` → `resize_pane_inner(is_alt: bool)` 透传，alt-screen 时 skip silence store（ConPTY 的 viewport replay 只针对 primary，alt 时 silence 本来就没什么可压制）。
+  - **诊断仪表（Phase 1）**：`grid.rs` 加 `ResizeDiag` ring（最近 32 次 resize 的 old/new dims + is_alt + dim_changed + branch + wipe_fired）；`JsTerminal::lastResizeDiags` 暴露给 JS，`localStorage.RIDGE_DIAG='1'` 时 manager.ts 把 kernel 挂上 `window.__RIDGE_KERNEL` 让 devtools 直接 call。`manager.ts::feed` 在 `localStorage.RIDGE_PTY_TRACE='1'` 时把每个 PTY 字节块以 `[pty-trace][ts][pane8][NB] <hex>` 打到 console，方便实跑时看 ConPTY 字节流时序。仪表线上零开销（无 flag = no-op）。
+  - **测试**：新 kernel 集成 scenario `scenario_alt_screen_resize_does_not_swallow_redraw`（验证 §1.22 wipe 后合成 redraw 落到干净 alt buffer + diag ring 记录正确）。后端 silence-skip 因 `resize_pane_inner` 依赖 Tauri `State<AppState>` + 真实 `MasterPty`，stub 化代价不成正比，跳过；行为正确性靠 1 个 `if !is_alt` 分支 + 实跑验证。
+  - **文档**：新增 `docs/term-rebuild/REPRO_alt_resize.md` 描述如何用 `RIDGE_DIAG` + `RIDGE_PTY_TRACE` 跑 live repro 验证 §1.24 三层（kernel wipe / branch / 后端 silence skip）都生效；当 §1.24 后仍残留 wrap 时下一步该做什么（指向 hypothesis 2，捕获 claude redraw 字节对照 wiped canvas）。CLAUDE.md "Render backends" 同步加一行 silence-skip 说明。
+  - **验证**：`cargo test` ridge-term 254 lib + 24 integration 全过；`cargo build --lib` src-tauri 0 warning；`pnpm check` 0 errors / 0 warnings；`cargo check --target wasm32-unknown-unknown --lib` 0 warning。
+  — uncommitted（待用户实跑确认 §1.24 修复生效后再 checkpoint）
 
 ---
 
