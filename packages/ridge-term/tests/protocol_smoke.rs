@@ -90,6 +90,30 @@ fn scenario_alt_screen_1049_preserves_primary() {
     assert_eq!(snap.cursor, (5, 5), "primary cursor restored after alt-screen exit");
 }
 
+/// §1.23 (2026-05-06): if the user resizes the terminal *while* a TUI is
+/// on alt screen, the cursor on `?1049l` exit must still land at the
+/// pre-alt anchor — even though cols shrank during the alt session.
+/// Repro of the "claude exits to wrong row after resize" bug: previously
+/// `reflow_primary` ran on the background primary screen, advancing
+/// `primary.cursor` but leaving `primary.saved_cursor` (DECSC'd by
+/// `?1049h`) stale, so DECRC restored to a row that no longer matched
+/// the original prompt line. Fix routes primary through naive resize
+/// while alt is active, keeping saved_cursor coherent.
+#[test]
+fn scenario_alt_screen_1049_survives_cols_resize() {
+    use ridge_term::term::Terminal;
+    let mut t = Terminal::new(10, 80, 100);
+    t.feed(b"\x1b[6;13H");        // CUP row=6 col=13 (1-based) -> (5, 12)
+    t.feed(b"\x1b[?1049h");       // enter alt, DECSC primary cursor
+    t.feed(b"alt content here");  // pollute alt
+    t.resize(10, 40);             // cols shrink while alt is active
+    t.feed(b"\x1b[?1049l");       // exit, DECRC
+
+    assert!(!t.grid().is_alt_screen());
+    assert_eq!(t.grid().cursor().row, 5, "row anchored to pre-alt position");
+    assert_eq!(t.grid().cursor().col, 12, "col anchored to pre-alt position");
+}
+
 /// OSC 8 hyperlink across feed boundaries: the `current_link` state
 /// must persist between feed batches because real PTYs deliver bytes
 /// in arbitrary chunks (one OS read might split mid-sequence).

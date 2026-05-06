@@ -180,6 +180,11 @@ impl Grid {
     /// already in scrollback show with the old column width when scrolled
     /// into view.
     ///
+    /// Reflow only runs when primary is the *active* screen at resize time.
+    /// While alt is active, primary uses naive truncate/pad so
+    /// `primary.saved_cursor` (set by `?1049h`) stays consistent with primary
+    /// cell positions for `?1049l` restoration — see §1.23 below.
+    ///
     /// Scroll-region preservation rule: if the region was the default
     /// full screen before resize (top=0, bottom=rows-1), extend it to
     /// match the new size. Otherwise it's a custom DECSTBM range — clamp
@@ -192,11 +197,18 @@ impl Grid {
         let rows_changed = rows != self.rows;
         let dim_changed = cols_changed || rows_changed;
 
-        // Primary screen: reflow when columns change (preserves wrapped lines,
-        // see OVERVIEW.md §7 for design). Rows-only change keeps the naive
-        // truncate/pad path because re-wrapping at the same column count is a
-        // no-op.
-        if cols_changed {
+        // §1.23 (2026-05-06): primary screen reflow runs ONLY when primary
+        // is the active screen. If alt is active, a `?1049h` entry has
+        // stashed `primary.saved_cursor` via DECSC; `reflow_primary` updates
+        // `primary.cursor` to follow the rewrap, but it cannot migrate the
+        // stashed (row, col) — those coordinates were captured against the
+        // OLD column count and OLD wrap chain. Reflowing here would leave
+        // saved_cursor pointing at the wrong logical row, so `?1049l` lands
+        // on the wrong line on alt-screen exit. Tradeoff: a long resize
+        // session entirely inside a TUI leaves primary at naive truncate/pad,
+        // so right-edge content may be visibly clipped on shrink — same as
+        // Windows Terminal / iTerm2.
+        if cols_changed && !self.is_alt {
             self.reflow_primary(rows, cols);
         } else {
             Self::naive_resize_screen(&mut self.primary, rows, cols);
@@ -219,8 +231,8 @@ impl Grid {
         //
         // Only fires when (a) the user is currently on alt screen AND
         // (b) dimensions actually changed. No-op resizes (same dims) leave
-        // existing content alone. Primary screen's reflow path above
-        // already preserves shell prompt content.
+        // existing content alone. Primary uses naive resize while alt is
+        // active (see §1.23 above); reflow deferred to next non-alt resize.
         if dim_changed && self.is_alt {
             for r in &mut self.alt.rows {
                 r.clear();
@@ -252,9 +264,25 @@ impl Grid {
             }
         }
         let last = rows.saturating_sub(1);
+        let last_col = cols.saturating_sub(1);
         screen.cursor.row = screen.cursor.row.min(last);
-        screen.cursor.col = screen.cursor.col.min(cols.saturating_sub(1));
+        screen.cursor.col = screen.cursor.col.min(last_col);
         screen.cursor.pending_wrap = false;
+
+        // Clamp saved_cursor too — without this, a `?1049h` saved row may
+        // sit past the new bottom (or saved col past the new right) and
+        // the eventual `?1049l` DECRC would land out-of-bounds. Active
+        // screen here: alt screen always naive-resizes, primary naive-
+        // resizes while alt is active (§1.23 in `resize`).
+        if let Some(s) = screen.saved_cursor.as_mut() {
+            s.row = s.row.min(last);
+            s.col = s.col.min(last_col);
+            if s.col < last_col {
+                // pending_wrap is only meaningful when parked at the
+                // rightmost column; clamping inward invalidates it.
+                s.pending_wrap = false;
+            }
+        }
 
         if region_was_full {
             screen.scroll_top = 0;
@@ -1191,6 +1219,52 @@ mod tests {
         g.resize(8, 14);
         // Primary content should reflow / be preserved, not blanked.
         assert_eq!(g.row(0).unwrap().cells[0].ch, 'p');
+    }
+
+    // §1.23 (2026-05-06): when alt screen is active, a cols-resize must NOT
+    // reflow primary — that would make `primary.saved_cursor` (DECSC'd by
+    // `?1049h`) point at the wrong logical row in the rewrapped buffer, so
+    // `?1049l` would land on the wrong line. With the alt-aware guard,
+    // primary uses naive resize and the saved (row, col) stays valid.
+    #[test]
+    fn resize_on_alt_screen_preserves_primary_saved_cursor() {
+        use super::super::cursor::SavedCursor;
+        let mut g = Grid::new(10, 80, 100);
+        g.cursor_to(5, 12);
+        g.primary.saved_cursor = Some(SavedCursor {
+            row: 5,
+            col: 12,
+            attr: AttrId::DEFAULT,
+            origin: false,
+            pending_wrap: false,
+        });
+        g.enter_alt_screen(true);
+        assert!(g.is_alt_screen());
+
+        g.resize(10, 40); // cols shrink while alt is active
+
+        let s = g.primary.saved_cursor.expect("saved_cursor preserved");
+        assert_eq!(s.row, 5, "row preserved (within new bounds)");
+        assert_eq!(s.col, 12, "col preserved (within new bounds)");
+    }
+
+    #[test]
+    fn naive_resize_clamps_saved_cursor() {
+        use super::super::cursor::SavedCursor;
+        let mut g = Grid::new(10, 10, 0);
+        g.enter_alt_screen(true); // forces naive path on primary too
+        g.primary.saved_cursor = Some(SavedCursor {
+            row: 8,
+            col: 8,
+            attr: AttrId::DEFAULT,
+            origin: false,
+            pending_wrap: false,
+        });
+
+        g.resize(3, 3);
+
+        let s = g.primary.saved_cursor.expect("still Some");
+        assert_eq!((s.row, s.col), (2, 2));
     }
 
     #[test]
