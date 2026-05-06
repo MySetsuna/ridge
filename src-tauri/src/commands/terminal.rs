@@ -765,11 +765,28 @@ pub async fn resize_pane(
 	pane_id: String,
 	rows: u16,
 	cols: u16,
+	#[allow(non_snake_case)] isAlt: Option<bool>,
+	#[allow(non_snake_case)] isInlineTui: Option<bool>,
 ) -> Result<(), String> {
-	resize_pane_inner(state, pane_id, rows, cols).map_err(|e| e.to_string())
+	resize_pane_inner(
+		state,
+		pane_id,
+		rows,
+		cols,
+		isAlt.unwrap_or(false),
+		isInlineTui.unwrap_or(false),
+	)
+	.map_err(|e| e.to_string())
 }
 
-fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, cols: u16,) -> Result<(), AppError> {
+fn resize_pane_inner(
+	state: State<'_, AppState>,
+	pane_id: String,
+	rows: u16,
+	cols: u16,
+	is_alt: bool,
+	is_inline_tui: bool,
+) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     // ConPTY / portable-pty: zero or absurd dimensions can break the session.
 // 限制尺寸在合理范围内，防止极端尺寸导致 session 中断
@@ -799,14 +816,41 @@ fn resize_pane_inner(state: State<'_, AppState>, pane_id: String, rows: u16, col
             });
             // 成功 resize 后开启 ConPTY reflow 静默窗口：PTY reader 线程将丢弃
             // 后续来自 ConPTY 的 viewport 重发字节，直到检测到 shell-integration
-            // prompt OSC（OSC 133;A / OSC 633;A 等）或硬超时（800ms）。
-            if res.is_ok() {
+            // prompt OSC（OSC 133;A / OSC 633;A 等）或硬超时（250ms）。
+            //
+            // §1.24 (2026-05-06): SKIP the silence window when the kernel is
+            // currently on alt screen. ConPTY's viewport replay only targets
+            // the primary screen, so on alt-screen panes there is nothing
+            // for the silence to legitimately suppress — and dropping bytes
+            // here actively swallows the alt-screen application's own
+            // SIGWINCH-driven redraw (Claude Code / Ink / lazygit don't emit
+            // FinalTerm or VS Code prompt OSCs, so the silence only releases
+            // on the 250ms hard timeout, by which point the redraw has
+            // already been dropped). Tradeoff: a tiny amount of ConPTY tail
+            // garbage may leak through during the resize moment, but the
+            // alt-screen app's redraw lands within tens of ms and overwrites
+            // it. The kernel's §1.22 alt-buffer wipe runs first, so the
+            // visible canvas starts blank either way.
+            //
+            // §A.3 (2026-05-07): same skip when `is_inline_tui` is true.
+            // Claude Code's input box renders inline on primary (Ink-style:
+            // cursor hidden + CSI absolute positioning, no `?1049h`), so
+            // the §1.24 alt-screen guard wouldn't fire — but Ink emits no
+            // prompt OSC either, so 250ms silence drops Ink's SIGWINCH
+            // redraw bytes the same way it dropped lazygit's. The kernel's
+            // §A.3 primary-visible wipe runs first via `manager.ts::fitPane`,
+            // so the canvas is blank when Ink's redraw lands.
+            let skip_silence = is_alt || is_inline_tui;
+            if res.is_ok() && !skip_silence {
                 let deadline = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0)
                     + RESIZE_SILENCE_WINDOW_MS;
                 handle.resize_silence_deadline.store(deadline, Ordering::Release);
+            } else if res.is_ok() && skip_silence {
+                // Defensively clear any stale deadline from a prior resize.
+                handle.resize_silence_deadline.store(0, Ordering::Release);
             }
             res
         } else if let Some(pending) = ws.pending_spawns.get(&pane_id) {

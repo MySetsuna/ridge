@@ -146,6 +146,18 @@ impl RenderBackend for AnyBackend {
         }
     }
 
+    fn on_full_invalidate(&mut self) {
+        // Forward so WebGPU's `needs_initial_clear` flag flips when the
+        // renderer detects scroll / sel toggle / snapshot growth — the
+        // trait default would silently swallow it and the next frame
+        // would `LoadOp::Load` over an undefined or stale background.
+        match self {
+            AnyBackend::Canvas2d(b) => b.on_full_invalidate(),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.on_full_invalidate(),
+        }
+    }
+
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
         match self {
             AnyBackend::Canvas2d(b) => b.begin_frame(metrics, theme),

@@ -77,6 +77,61 @@ impl Screen {
     }
 }
 
+/// Which branch `Grid::resize` actually took. Retained so frontend devtools
+/// (`__RIDGE_KERNEL.lastResizeDiags()`) can confirm the §1.22 wipe path
+/// fired in a live scenario. Since §1.25 (2026-05-06) the kernel never
+/// reflows on resize — both primary and alt always go through naive
+/// truncate/pad — so only one branch exists. The enum stays for
+/// forward-compat: a future deferred-reflow mode (run only when no TUI
+/// is active and only on idle) would add a `DeferredReflow` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ResizeBranch {
+    /// Naive truncate/pad on both screens. The only branch §1.25 takes;
+    /// `ResizeDiag::is_alt` disambiguates whether alt was active and
+    /// therefore whether the §1.22 wipe ran.
+    Naive,
+}
+
+/// One entry in the resize trace ring. Captured per `Grid::resize` call.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct ResizeDiag {
+    pub old_rows: usize,
+    pub old_cols: usize,
+    pub new_rows: usize,
+    pub new_cols: usize,
+    pub is_alt: bool,
+    pub dim_changed: bool,
+    pub branch: ResizeBranch,
+    /// Whether the §1.22 alt-buffer wipe path fired (entire visible alt
+    /// region cleared + cursor homed).
+    pub wipe_fired: bool,
+    /// Whether the §1.26 partial primary cleanup fired (cursor row past
+    /// cur_col + every row below cursor cleared, rows above preserved).
+    /// Used for plain shell resizes — keeps prior command output visible.
+    pub cleared_below_cursor: bool,
+    /// Whether the §A.3 inline-TUI **full** primary wipe fired (entire
+    /// visible primary region cleared + cursor homed, scrollback
+    /// preserved). Used when an Ink-style app (Claude Code's input box)
+    /// is foreground on primary so its diff redraw lands on a blank
+    /// canvas. Mutually exclusive with `wipe_fired` (alt) and with
+    /// `cleared_below_cursor` (which would be redundant under a full wipe).
+    pub inline_tui_wipe: bool,
+    /// Snapshot of the inline-TUI heuristic at resize time, for live
+    /// debugging via `__RIDGE_KERNEL.lastResizeDiags()`. True when the
+    /// caller said "this primary pane is hosting an inline TUI right now"
+    /// (cursor hidden + recent absolute-positioning CSI within decay window).
+    pub inline_tui_active: bool,
+}
+
+const RESIZE_DIAG_RING_CAP: usize = 32;
+
+/// How long after an absolute-positioning CSI we still consider the pane
+/// "in inline-TUI mode". 2 seconds is generous enough to cover Ink's
+/// idle frames between user keystrokes, but short enough that a one-shot
+/// `clear; printf '\x1b[H'` doesn't leave the heuristic stuck on for the
+/// rest of the session.
+const INLINE_TUI_DECAY_MS: i64 = 2_000;
+
 pub struct Grid {
     rows: usize,
     cols: usize,
@@ -86,6 +141,18 @@ pub struct Grid {
     is_alt: bool,
     pub attrs: AttrTable,
     pub scrollback: Scrollback,
+    /// Bounded ring of the most recent `resize` calls. Used by JS devtools
+    /// (`__RIDGE_KERNEL.lastResizeDiags()`) to confirm which branch fired
+    /// during a live repro of the alt-screen resize bug.
+    last_resizes: Vec<ResizeDiag>,
+    /// Wall-clock ms (unix epoch) of the most recent absolute-positioning
+    /// CSI processed by the parser (CUP `H`, HVP `f`, CHA `G` / HPA `` ` ``,
+    /// VPA `d`). Combined with the `cursor_visible` mode flag this is the
+    /// "is an inline TUI live in this primary pane" heuristic — see §1.26
+    /// in CLAUDE.md. 0 sentinel = no absolute-positioning has ever been
+    /// observed (so the heuristic returns false until a TUI like Claude
+    /// Code's Ink layer drives the cursor).
+    last_abs_csi_at_ms: i64,
 }
 
 impl Grid {
@@ -98,7 +165,56 @@ impl Grid {
             is_alt: false,
             attrs: AttrTable::default(),
             scrollback: Scrollback::new(scrollback_lines),
+            last_resizes: Vec::with_capacity(RESIZE_DIAG_RING_CAP),
+            last_abs_csi_at_ms: 0,
         }
+    }
+
+    /// Most recent `resize` calls (newest last), bounded to 32 entries.
+    pub fn last_resize_diags(&self) -> &[ResizeDiag] {
+        &self.last_resizes
+    }
+
+    /// Record that the parser just dispatched an absolute-positioning CSI
+    /// (CUP `H`, HVP `f`, CHA `G` / HPA `` ` ``, VPA `d`). The timestamp
+    /// is consumed by `is_inline_tui_active_at` to decide whether the next
+    /// resize on a primary pane should wipe the visible region.
+    ///
+    /// Caller passes wall-clock ms (`crate::term::clock::now_ms()` at
+    /// runtime). Tests pass a controlled value to drive the decay window
+    /// deterministically.
+    pub fn note_absolute_positioning(&mut self, now_ms: i64) {
+        self.last_abs_csi_at_ms = now_ms;
+    }
+
+    /// Most recent absolute-positioning timestamp. 0 = never observed.
+    /// Exposed for tests and for `Terminal::is_inline_tui_mode_at`.
+    pub fn last_abs_csi_at_ms(&self) -> i64 {
+        self.last_abs_csi_at_ms
+    }
+
+    /// Inline-TUI heuristic: returns true iff
+    /// 1. NOT on alt screen (`?1049h` apps use the alt-wipe path instead).
+    /// 2. The caller's `cursor_visible` snapshot is false (`?25l` was last set).
+    /// 3. An absolute-positioning CSI was processed within the last
+    ///    `INLINE_TUI_DECAY_MS` (currently 2 s).
+    ///
+    /// The cursor-hide criterion alone would false-positive on PSReadLine
+    /// (which briefly hides cursor during prompt redraw); the absolute-
+    /// positioning criterion alone would false-positive on `clear`-style
+    /// commands that emit a one-shot `CSI H`. Together they pin the
+    /// "Ink / lazygit-style continuously-redrawing TUI on primary" case.
+    pub fn is_inline_tui_active_at(&self, now_ms: i64, cursor_visible: bool) -> bool {
+        if self.is_alt {
+            return false;
+        }
+        if cursor_visible {
+            return false;
+        }
+        if self.last_abs_csi_at_ms == 0 {
+            return false;
+        }
+        now_ms.saturating_sub(self.last_abs_csi_at_ms) < INLINE_TUI_DECAY_MS
     }
 
     pub fn rows(&self) -> usize { self.rows }
@@ -171,53 +287,72 @@ impl Grid {
         self.cursor_to(0, 0);
     }
 
-    /// Resize. Primary screen reflows on column change (Phase 1 — see
-    /// `reflow_primary` below; design notes in OVERVIEW.md §7 / TASKS §2.3).
-    /// Alt screen and rows-only changes keep the naive truncate/pad path
-    /// because alt-screen TUIs redraw on SIGWINCH anyway, and re-wrapping at
-    /// the same column count is a no-op. Phase 2 (scrollback reflow +
-    /// selection / hyperlink anchor migration) is still deferred — long lines
-    /// already in scrollback show with the old column width when scrolled
-    /// into view.
+    /// Resize. Both primary and alt screens always go through naive
+    /// truncate/pad — the kernel does not reflow.
     ///
-    /// Reflow only runs when primary is the *active* screen at resize time.
-    /// While alt is active, primary uses naive truncate/pad so
-    /// `primary.saved_cursor` (set by `?1049h`) stays consistent with primary
-    /// cell positions for `?1049l` restoration — see §1.23 below.
+    /// §1.25 (2026-05-06): the previous reflow path (`reflow_primary`) was
+    /// removed. Reasoning: any application that cares about the new size
+    /// receives SIGWINCH from the PTY and emits its own redraw at the new
+    /// width — shells (PSReadLine, fish, zsh-zle), full-screen TUIs (vim,
+    /// less, htop), and Ink-based CLIs (claude code, lazygit) all do this.
+    /// A simultaneous kernel-side reflow races with that redraw: while
+    /// reflow is moving cells around to a new wrap, the application's own
+    /// repaint bytes arrive and overwrite cells based on a layout the
+    /// kernel has already mutated, producing "字符打架" (visible
+    /// overdraw) and post-exit cursor drift. Naive truncate/pad
+    /// eliminates the race entirely — the only state the kernel mutates
+    /// is the row count and a per-row column truncation/extension; no
+    /// cells move between rows.
     ///
-    /// Scroll-region preservation rule: if the region was the default
-    /// full screen before resize (top=0, bottom=rows-1), extend it to
-    /// match the new size. Otherwise it's a custom DECSTBM range — clamp
-    /// to the new bounds and revert to full if the clamp would invalidate.
-    /// Without this, a kernel created at 24 rows then resized to 26 keeps
-    /// scroll_bottom=23, leaving rows 24..25 as a frozen footer; LF at the
-    /// real bottom never scrolls and scrollback never grows.
+    /// This matches xterm, kitty, alacritty, iTerm2, and Windows Terminal
+    /// — none of which reflow on resize by default. Reflow of *scrollback*
+    /// (when the user pages up after a width change) remains a separate,
+    /// deferrable concern that can be addressed without touching the
+    /// active viewport.
+    ///
+    /// Scroll-region preservation rule (unchanged): if the region was the
+    /// default full screen before resize (top=0, bottom=rows-1), extend it
+    /// to match the new size. Otherwise it's a custom DECSTBM range —
+    /// clamp to the new bounds and revert to full if the clamp would
+    /// invalidate. Without this, a kernel created at 24 rows then resized
+    /// to 26 keeps scroll_bottom=23, leaving rows 24..25 as a frozen
+    /// footer; LF at the real bottom never scrolls and scrollback never
+    /// grows.
+    ///
+    /// `primary.saved_cursor` (DECSC'd by `?1049h`) is clamped to the new
+    /// bounds inside `naive_resize_screen` so `?1049l` exit lands on a
+    /// valid cell. Because no rewrap moves cells, the saved (row, col)
+    /// stays semantically anchored to the same prompt line.
+    /// Convenience wrapper used by tests and the rare caller that doesn't
+    /// know whether an inline TUI is active. Equivalent to
+    /// `resize_with_inline_tui(rows, cols, false)`. The production wasm
+    /// path goes through `Terminal::resize`, which always supplies the
+    /// inline-TUI flag derived from `Grid::is_inline_tui_active_at`.
     pub fn resize(&mut self, rows: usize, cols: usize) {
+        self.resize_with_inline_tui(rows, cols, false);
+    }
+
+    /// Resize with explicit inline-TUI awareness. When `inline_tui_active`
+    /// is true and we're currently on primary AND dimensions changed, the
+    /// visible primary region is fully wiped (§A.3) so an Ink-style app's
+    /// SIGWINCH redraw paints onto a clean canvas — the same treatment
+    /// alt-screen TUIs already get via §1.22.
+    pub fn resize_with_inline_tui(
+        &mut self,
+        rows: usize,
+        cols: usize,
+        inline_tui_active: bool,
+    ) {
+        let old_rows = self.rows;
+        let old_cols = self.cols;
         let cols_changed = cols != self.cols;
         let rows_changed = rows != self.rows;
         let dim_changed = cols_changed || rows_changed;
 
-        // §1.23 (2026-05-06): primary screen reflow runs ONLY when primary
-        // is the active screen. If alt is active, a `?1049h` entry has
-        // stashed `primary.saved_cursor` via DECSC; `reflow_primary` updates
-        // `primary.cursor` to follow the rewrap, but it cannot migrate the
-        // stashed (row, col) — those coordinates were captured against the
-        // OLD column count and OLD wrap chain. Reflowing here would leave
-        // saved_cursor pointing at the wrong logical row, so `?1049l` lands
-        // on the wrong line on alt-screen exit. Tradeoff: a long resize
-        // session entirely inside a TUI leaves primary at naive truncate/pad,
-        // so right-edge content may be visibly clipped on shrink — same as
-        // Windows Terminal / iTerm2.
-        if cols_changed && !self.is_alt {
-            self.reflow_primary(rows, cols);
-        } else {
-            Self::naive_resize_screen(&mut self.primary, rows, cols);
-        }
-
-        // Alt screen: always naive truncate/pad. TUIs (vim/less/htop) own
-        // their alt-screen redraw via SIGWINCH; reflowing under them would
-        // smear the half-drawn frame they're about to overwrite anyway.
+        // §1.25: no reflow ever. Both screens take the naive path.
+        Self::naive_resize_screen(&mut self.primary, rows, cols);
         Self::naive_resize_screen(&mut self.alt, rows, cols);
+        let branch = ResizeBranch::Naive;
 
         // §1.22 (2026-05-05): when CURRENTLY viewing alt screen at resize,
         // clear the alt buffer so the application's SIGWINCH-driven redraw
@@ -233,7 +368,8 @@ impl Grid {
         // (b) dimensions actually changed. No-op resizes (same dims) leave
         // existing content alone. Primary uses naive resize while alt is
         // active (see §1.23 above); reflow deferred to next non-alt resize.
-        if dim_changed && self.is_alt {
+        let wipe_fired = dim_changed && self.is_alt;
+        if wipe_fired {
             for r in &mut self.alt.rows {
                 r.clear();
             }
@@ -242,8 +378,117 @@ impl Grid {
             self.alt.scroll_bottom = rows.saturating_sub(1);
         }
 
+        // §A.3 (2026-05-07): inline-TUI primary full wipe. When the
+        // foreground app is rendering inline on primary (Ink-based CLIs
+        // like Claude Code's input box: cursor hidden + recent absolute-
+        // positioning CSI; never enters `?1049h` alt screen), the
+        // §1.22-style alt wipe doesn't fire and the §1.26 cursor-row+
+        // below cleanup is too narrow — the input box's TOP border
+        // typically sits ABOVE the cursor row, so cursor-below cleanup
+        // leaves wrapped border garbage on the rows where the user
+        // actually sees the broken box.
+        //
+        // Fix: when CURRENTLY on primary AND dims changed AND the
+        // inline-TUI heuristic was true at the moment fitPane sampled
+        // it, clear the WHOLE visible primary region (every row), home
+        // the cursor, reset the scroll region to full-screen.
+        // Scrollback is never touched — the conversation history above
+        // the inline TUI lives there and stays intact. Ink's diff
+        // redraw on SIGWINCH then paints every cell it cares about
+        // against blanks, so any "cell unchanged in Ink's model"
+        // optimization can't leave wrapped garbage behind.
+        //
+        // Mutually exclusive with `cleared_below_cursor` below — when
+        // the full wipe fires, the partial cleanup is redundant and
+        // skipped. Mutually exclusive with `wipe_fired` (alt path) by
+        // the `!self.is_alt` guard.
+        let inline_tui_wipe = dim_changed && !self.is_alt && inline_tui_active;
+        if inline_tui_wipe {
+            for r in &mut self.primary.rows {
+                r.clear();
+            }
+            self.primary.cursor = Cursor::default();
+            self.primary.scroll_top = 0;
+            self.primary.scroll_bottom = rows.saturating_sub(1);
+        }
+
+        // §1.26 (2026-05-07): primary cursor-row+below cleanup.
+        // Symptom: after resizing a primary-screen pane (typical
+        // PowerShell + oh-my-posh prompt `<path> > `), the path-to-`>`
+        // gap collapses and ghost characters sit past the new prompt's
+        // end. Combined with §1.24's silence window, PSReadLine's own
+        // SIGWINCH-driven redraw bytes were dropped, so the kernel was
+        // left displaying old prompt cells past the new prompt's end.
+        //
+        // Fix: when CURRENTLY on primary AND dims changed AND no inline
+        // TUI was detected (the §A.3 full wipe handles that case more
+        // aggressively), blank out:
+        //   (a) cursor row, columns `cur_col + 1 .. row_len`;
+        //   (b) every row strictly below the cursor.
+        // Cells AT cursor.col and to its left are preserved — shells
+        // without SIGWINCH-driven full redraws (raw echo loops, Windows
+        // cmd.exe) keep the user's typed-but-not-yet-submitted text.
+        // PSReadLine / fish-zle / zsh-zle re-emit the full prompt on
+        // SIGWINCH; their bytes overwrite the cleared range cleanly
+        // once §1.24's (now §A.2-shrunk to 80ms) silence window
+        // releases. Rows above the cursor are scrollback / prior
+        // command output — never touched here.
+        //
+        // Alt screen has its own §1.22 wipe; this branch is gated on
+        // `!self.is_alt`. `naive_resize_screen` has already clamped
+        // `primary.cursor` and resized each row, so `cur_col + 1` and
+        // `row.cells.len()` are valid bounds.
+        let cleared_below_cursor = dim_changed && !self.is_alt && !inline_tui_wipe;
+        if cleared_below_cursor {
+            let last_row_idx = rows.saturating_sub(1);
+            let last_col_idx = cols.saturating_sub(1);
+            let cur_row = self.primary.cursor.row.min(last_row_idx);
+            let cur_col = self.primary.cursor.col.min(last_col_idx);
+            if let Some(r) = self.primary.rows.get_mut(cur_row) {
+                let row_len = r.cells.len();
+                let start = (cur_col + 1).min(row_len);
+                for c in start..row_len {
+                    r.cells[c] = Cell::EMPTY;
+                }
+                // Mirror `erase_row_range`'s hyperlink-clipping
+                // invariant so OSC 8 underlines don't outlive their
+                // cells. (TASKS §1.18.b residue symptom.)
+                if !r.hyperlinks.is_empty() {
+                    r.hyperlinks.retain(|s| s.col_start < start);
+                    for s in &mut r.hyperlinks {
+                        if s.col_end > start {
+                            s.col_end = start;
+                        }
+                    }
+                }
+            }
+            for r in self.primary.rows.iter_mut().skip(cur_row + 1) {
+                r.clear();
+            }
+        }
+
         self.rows = rows;
         self.cols = cols;
+
+        // Diagnostic ring (§1.24, Phase 1.1) — confirms in live repro which
+        // branch fired and whether the §1.22 wipe ran. Bounded to
+        // RESIZE_DIAG_RING_CAP so a long session can't grow this unbounded.
+        if self.last_resizes.len() == RESIZE_DIAG_RING_CAP {
+            self.last_resizes.remove(0);
+        }
+        self.last_resizes.push(ResizeDiag {
+            old_rows,
+            old_cols,
+            new_rows: rows,
+            new_cols: cols,
+            is_alt: self.is_alt,
+            dim_changed,
+            branch,
+            wipe_fired,
+            cleared_below_cursor,
+            inline_tui_wipe,
+            inline_tui_active,
+        });
     }
 
     /// Existing truncate/pad behavior, factored out so `resize()` can pick
@@ -295,226 +540,6 @@ impl Grid {
                 screen.scroll_bottom = last;
             }
         }
-    }
-
-    /// Re-wrap the primary screen for a new column count.
-    ///
-    /// Algorithm (see OVERVIEW.md §7.5):
-    ///   1. Find `last_content_row` = max(highest row with non-blank cells,
-    ///      cursor row). Rows below this are unused "future" buffer.
-    ///   2. Stitch wrapped chains into logical lines. While stitching,
-    ///      record the cursor's logical offset (which line + offset within).
-    ///      Trim trailing blank padding from each logical line.
-    ///   3. Re-wrap each logical line to `new_cols`, setting `wrapped=true`
-    ///      on intermediate breaks. Empty logical lines become one blank row.
-    ///   4. Place cursor at its tracked logical offset.
-    ///   5. If overflow (>new_rows), push oldest rows to scrollback and
-    ///      shift the cursor up by the same amount.
-    ///   6. If underflow (<new_rows), pad the bottom with blank rows.
-    ///
-    /// Phase 1 limitations (TASKS §2.3): per-row hyperlink spans are dropped
-    /// — they regenerate naturally on next print. Selection clears via the
-    /// caller (kernel-level `JsTerminal::resize` already calls
-    /// `selection.clear()`). Scrollback stays at original width — paging
-    /// up after reflow shows historical content at its old wrapping.
-    fn reflow_primary(&mut self, new_rows: usize, new_cols: usize) {
-        if new_cols == 0 || new_rows == 0 {
-            // Pathological dimensions — fall back to naive resize.
-            Self::naive_resize_screen(&mut self.primary, new_rows, new_cols);
-            return;
-        }
-
-        let cursor_src_row = self.primary.cursor.row;
-        let cursor_src_col = self.primary.cursor.col;
-        // pending_wrap conceptually parks the cursor "one past" col cols-1
-        // — print() resolves it by linefeed-then-write. Reflow needs to
-        // see that virtual past-end position too, otherwise a cursor at
-        // (last_col, pending_wrap=true) gets mapped to a mid-row position
-        // in the new layout instead of end-of-line, and the right-edge
-        // wrap semantic is lost. (TASKS §1.10.)
-        let cursor_src_pending_wrap = self.primary.cursor.pending_wrap;
-
-        // Step 1: find last row that has content (or contains the cursor).
-        let last_with_content = self
-            .primary
-            .rows
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, r)| r.cells.iter().any(|c| !c.is_blank()))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        let last_content_row = last_with_content
-            .max(cursor_src_row)
-            .min(self.primary.rows.len().saturating_sub(1));
-
-        // Step 2: stitch into logical lines, tracking cursor.
-        let mut logical_lines: Vec<Vec<Cell>> = Vec::new();
-        let mut cursor_logical_idx: usize = 0;
-        let mut cursor_logical_offset: usize = 0;
-        let mut cursor_placed = false;
-        let mut current: Vec<Cell> = Vec::new();
-
-        for r_idx in 0..=last_content_row {
-            let row = &self.primary.rows[r_idx];
-            if r_idx == cursor_src_row {
-                cursor_logical_idx = logical_lines.len();
-                cursor_logical_offset = current.len() + cursor_src_col;
-                if cursor_src_pending_wrap {
-                    // Bump to the virtual "one past last col" position so
-                    // the post-while end-of-line branch picks up the
-                    // right-edge case below. May overshoot a now-trimmed
-                    // line.len() if the anchor cell was a blank that
-                    // got stripped — clamped at push time below.
-                    cursor_logical_offset += 1;
-                }
-                cursor_placed = true;
-            }
-            current.extend_from_slice(&row.cells);
-            // Continue stitching only while wrapped flag is set AND we have
-            // more rows in our content range. Hard-stop at last_content_row.
-            let line_continues = row.wrapped && r_idx < last_content_row;
-            if !line_continues {
-                // Trim trailing blank padding so a row that ended at col 5
-                // doesn't carry 75 trailing spaces into the new wrap.
-                while current.last().map(|c| c.is_blank()).unwrap_or(false) {
-                    current.pop();
-                }
-                let pushed_idx = logical_lines.len();
-                let pushed_len = current.len();
-                logical_lines.push(std::mem::take(&mut current));
-                // Clamp pending_wrap-bumped offset if the anchor cell
-                // was trimmed (rare: cursor at last col with pending_wrap
-                // and the just-printed char at last col was a blank).
-                if pushed_idx == cursor_logical_idx
-                    && cursor_logical_offset > pushed_len
-                {
-                    cursor_logical_offset = pushed_len;
-                }
-            }
-        }
-        // Edge case: cursor was below last_content_row entirely (e.g.,
-        // freshly-cleared screen with cursor on row 10, all rows blank).
-        if !cursor_placed {
-            while logical_lines.len() <= cursor_src_row {
-                logical_lines.push(Vec::new());
-            }
-            cursor_logical_idx = cursor_src_row;
-            cursor_logical_offset = cursor_src_col;
-        }
-
-        // Step 3: re-wrap each logical line to new_cols.
-        let mut out: Vec<Row> = Vec::new();
-        let mut cursor_target_row: usize = 0;
-        let mut cursor_target_col: usize = 0;
-        // pending_wrap state for the relocated cursor. Defaults to false;
-        // the end-of-line branch flips it to true when the cursor lands
-        // on the last column of an exactly-filled row (used == 0 case),
-        // matching what print() will see on the next character (it should
-        // wrap to a new row, not overwrite the last cell).
-        let mut cursor_pending_wrap = false;
-
-        for (ll_idx, line) in logical_lines.iter().enumerate() {
-            let on_this_line = ll_idx == cursor_logical_idx;
-            if line.is_empty() {
-                if on_this_line {
-                    cursor_target_row = out.len();
-                    cursor_target_col = cursor_logical_offset.min(new_cols - 1);
-                }
-                out.push(Row::new(new_cols));
-                continue;
-            }
-            let mut start = 0;
-            while start < line.len() {
-                let mut end = (start + new_cols).min(line.len());
-                // Wide-char split protection: if the would-be slice puts a
-                // wide glyph's lead (width=2) at the LAST cell of this row
-                // and its continuation half (width=0) at the START of the
-                // next row, pull the slice back by 1 cell so the wide char
-                // moves to the next row intact. The freed cell at the row's
-                // end stays blank — same convention xterm uses when a wide
-                // char doesn't fit at the right margin.
-                //
-                // Guards:
-                //   `end < line.len()`     — only when actually wrapping.
-                //   `end - start >= 2`     — degenerate `new_cols == 1` case
-                //                            can't preserve wide chars; orphan
-                //                            and accept the rendering glitch.
-                if end < line.len()
-                    && end - start >= 2
-                    && line[end - 1].width == 2
-                {
-                    end -= 1;
-                }
-                let mut new_row = Row::new(new_cols);
-                for (i, cell) in line[start..end].iter().enumerate() {
-                    new_row.cells[i] = *cell;
-                }
-                new_row.wrapped = end < line.len();
-                // Cursor placement: use `end` (post-pullback), not
-                // `start + new_cols`. After a wide-char pullback, cursor
-                // offsets in the freed cell belong to the NEXT row.
-                if on_this_line
-                    && cursor_logical_offset >= start
-                    && cursor_logical_offset < end
-                {
-                    cursor_target_row = out.len();
-                    cursor_target_col = (cursor_logical_offset - start).min(new_cols - 1);
-                }
-                out.push(new_row);
-                start = end;
-            }
-            // Cursor at the very end of the line (offset == line.len()) lands
-            // on the next column of the last emitted row, or wraps if at edge.
-            //
-            // Exact-boundary case (used == 0 && line.len() > 0): the line is
-            // exactly k * new_cols cells long, so the last emitted row is
-            // already FULL at width new_cols. Conceptually the cursor is at
-            // "col 0 of an unborn (k+1)-th row". Place it at the last col of
-            // the last row and set pending_wrap=true — matches print()'s
-            // semantics: next character wraps to a new row instead of
-            // overwriting cell (last_row, new_cols-1). Without pending_wrap,
-            // the next print clobbers the just-emitted last cell.
-            if on_this_line && cursor_logical_offset == line.len() {
-                let last_idx = out.len().saturating_sub(1);
-                cursor_target_row = last_idx;
-                let used = line.len() % new_cols;
-                if used == 0 && !line.is_empty() {
-                    cursor_target_col = new_cols - 1;
-                    cursor_pending_wrap = true;
-                } else {
-                    cursor_target_col = used.min(new_cols - 1);
-                    cursor_pending_wrap = false;
-                }
-            }
-        }
-
-        // Step 5: push overflow to scrollback (oldest first); cursor follows.
-        while out.len() > new_rows {
-            let oldest = out.remove(0);
-            self.scrollback.push(oldest);
-            cursor_target_row = cursor_target_row.saturating_sub(1);
-        }
-
-        // Step 6: pad bottom with blank rows if we shrank.
-        while out.len() < new_rows {
-            out.push(Row::new(new_cols));
-        }
-
-        // Final commit + reset scroll region.
-        let last = new_rows - 1;
-        self.primary.rows = out;
-        self.primary.cursor.row = cursor_target_row.min(last);
-        self.primary.cursor.col = cursor_target_col.min(new_cols - 1);
-        // pending_wrap was tracked through Step 3 — preserves the right-edge
-        // semantics across reflow (TASKS §1.10). Inner-line cursor positions
-        // leave it at the default `false`.
-        self.primary.cursor.pending_wrap = cursor_pending_wrap;
-        // Scroll region: reset to full screen. Reflow invalidates any custom
-        // DECSTBM region (rows have moved); the next program-emitted DECSTBM
-        // will re-establish it. Matches xterm.js behavior.
-        self.primary.scroll_top = 0;
-        self.primary.scroll_bottom = last;
     }
 
     // ------------------------------------------------------------------
@@ -1217,15 +1242,17 @@ mod tests {
             g.print(ch, Attrs::DEFAULT);
         }
         g.resize(8, 14);
-        // Primary content should reflow / be preserved, not blanked.
+        // Primary content is preserved by naive truncate/pad — only the alt
+        // buffer is wiped on resize (§1.22). Cells stay anchored to their
+        // (row, col) coordinates within the new bounds.
         assert_eq!(g.row(0).unwrap().cells[0].ch, 'p');
     }
 
-    // §1.23 (2026-05-06): when alt screen is active, a cols-resize must NOT
-    // reflow primary — that would make `primary.saved_cursor` (DECSC'd by
-    // `?1049h`) point at the wrong logical row in the rewrapped buffer, so
-    // `?1049l` would land on the wrong line. With the alt-aware guard,
-    // primary uses naive resize and the saved (row, col) stays valid.
+    // §1.25 (2026-05-06): the kernel never reflows. While alt is active,
+    // primary's `saved_cursor` (DECSC'd by `?1049h`) must stay anchored to
+    // its original (row, col) so `?1049l` lands on the prompt line. Naive
+    // truncate/pad clamps the saved coordinates inside the new bounds but
+    // never moves them across rows.
     #[test]
     fn resize_on_alt_screen_preserves_primary_saved_cursor() {
         use super::super::cursor::SavedCursor;
@@ -1303,8 +1330,11 @@ mod tests {
         assert_eq!(g.row(3).unwrap().cells[0].ch, 'c');
     }
 
-    // ---- Reflow (Phase 1) ---------------------------------------------
-    // See OVERVIEW.md §7 + TASKS §2.3 for the design these tests cover.
+    // ---- Naive resize (§1.25) -----------------------------------------
+    // The kernel never reflows on resize. Both screens use truncate/pad.
+    // Any post-resize re-layout is the responsibility of the running
+    // application via its SIGWINCH redraw — this avoids the race between
+    // kernel-driven cell migration and the TUI's own diff repaint.
 
     /// Helper: read the printable text of a row (stripping trailing blanks).
     fn row_text(g: &Grid, r: usize) -> String {
@@ -1317,69 +1347,103 @@ mod tests {
     }
 
     #[test]
-    fn reflow_shrink_wraps_long_line() {
-        // 80-col grid, print 70 'a's. Resize to 40 cols. The single logical
-        // line of 70 'a's should re-wrap into 40 + 30 (with first row wrapped).
+    fn naive_resize_rows_only_preserves_content() {
+        // Rows-only grow must keep existing rows untouched and pad blanks
+        // at the bottom — no rewrap at all (cols unchanged anyway).
+        let mut g = Grid::new(5, 20, 100);
+        for ch in "hello".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.resize(8, 20);
+        assert_eq!(g.rows(), 8);
+        assert_eq!(g.cols(), 20);
+        assert_eq!(row_text(&g, 0), "hello");
+        for r in 1..8 {
+            assert_eq!(row_text(&g, r), "");
+        }
+    }
+
+    #[test]
+    fn naive_resize_shrink_cols_clips_long_line() {
+        // 80-col grid with a single line of 70 'a's. Shrinking to 40 cols
+        // must NOT rewrap onto row 1 — the line is clipped to the first 40
+        // cells of row 0, and row 1 stays blank. The TUI / shell that
+        // owns the line will get a SIGWINCH and may emit its own redraw,
+        // but the kernel itself moves no cells between rows.
         let mut g = Grid::new(5, 80, 100);
         for _ in 0..70 {
             g.print('a', Attrs::DEFAULT);
         }
         g.resize(5, 40);
         assert_eq!(g.cols(), 40);
-        assert_eq!(row_text(&g, 0), "a".repeat(40));
-        assert_eq!(g.row(0).unwrap().wrapped, true);
-        assert_eq!(row_text(&g, 1), "a".repeat(30));
-        assert_eq!(g.row(1).unwrap().wrapped, false);
-    }
-
-    #[test]
-    fn reflow_grow_unwraps_continued_line() {
-        // 40-col grid, print 70 'a's → row 0 has 40 'a's (wrapped=true),
-        // row 1 has 30 'a's. Resize to 80 cols → single row with 70 'a's.
-        let mut g = Grid::new(5, 40, 100);
-        for _ in 0..70 {
-            g.print('a', Attrs::DEFAULT);
+        assert_eq!(row_text(&g, 0), "a".repeat(40), "row 0 clipped to new width");
+        assert_eq!(g.row(0).unwrap().wrapped, false, "no synthetic wrap flag");
+        for r in 1..5 {
+            assert_eq!(row_text(&g, r), "", "row {r} untouched (no rewrap)");
         }
-        // Sanity check the setup.
-        assert_eq!(g.row(0).unwrap().wrapped, true);
-        assert_eq!(row_text(&g, 1), "a".repeat(30));
-
-        g.resize(5, 80);
-        assert_eq!(g.cols(), 80);
-        assert_eq!(row_text(&g, 0), "a".repeat(70));
-        assert_eq!(g.row(0).unwrap().wrapped, false);
-        // Row 1 should be blank now (the long line collapsed into row 0).
-        assert_eq!(row_text(&g, 1), "");
     }
 
     #[test]
-    fn reflow_preserves_cursor_logical_position() {
-        // Print "hello world" then move cursor onto 'w' at (0, 6).
-        // After reflow to 5 cols, the logical line "hello world" wraps into
-        // ["hello", " worl", "d"]; cursor at logical offset 6 lands at
-        // row 1, col 1 (the space before 'w', since offset 6 = 1*5 + 1).
-        let mut g = Grid::new(5, 20, 100);
-        for ch in "hello world".chars() {
+    fn naive_resize_grow_cols_pads_with_blanks() {
+        // Grow from 5 cols → 10 cols: existing cells stay where they are,
+        // new cells on the right are blank (no unwrapping, no stitching).
+        let mut g = Grid::new(3, 5, 0);
+        for ch in "abc".chars() {
             g.print(ch, Attrs::DEFAULT);
         }
-        g.cursor_to(0, 6);
-        g.resize(5, 5);
-        assert_eq!(g.cols(), 5);
-        assert_eq!(row_text(&g, 0), "hello");
-        assert_eq!(g.row(0).unwrap().wrapped, true);
-        // Cursor was at logical offset 6 → (6 / 5, 6 % 5) = (1, 1).
-        assert_eq!(g.cursor().row, 1);
-        assert_eq!(g.cursor().col, 1);
+        g.resize(3, 10);
+        assert_eq!(g.cols(), 10);
+        assert_eq!(g.row(0).unwrap().cells[0].ch, 'a');
+        assert_eq!(g.row(0).unwrap().cells[1].ch, 'b');
+        assert_eq!(g.row(0).unwrap().cells[2].ch, 'c');
+        for c in 3..10 {
+            assert!(g.row(0).unwrap().cells[c].is_blank(), "col {c} blank");
+        }
     }
 
     #[test]
-    fn reflow_skips_alt_screen_and_clears_on_resize() {
-        // §1.22 (2026-05-05): alt-screen resize neither reflows NOR
-        // preserves content — it CLEARS the buffer so the application's
-        // SIGWINCH-driven redraw lands on a blank canvas. The "no reflow"
-        // contract still holds (we don't try to re-wrap mid-frame), and
-        // the "clear visible content" contract is the new behaviour for
-        // continuous-refresh CLIs (Claude Code, lazygit, Ink-based).
+    fn naive_resize_clears_pending_wrap_unconditionally() {
+        // Cursor parked at the right edge with pending_wrap=true (after
+        // 10 prints into a 10-col grid). Resize must always clear
+        // pending_wrap on both screens — the "park one-past-last-col"
+        // semantic is anchored to the OLD column boundary, which the
+        // resize has just moved. Clearing it is what naive_resize_screen
+        // does at line 335; this test pins that contract.
+        let mut g = Grid::new(5, 10, 100);
+        for ch in "0123456789".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        assert_eq!(g.cursor().col, 9);
+        assert!(g.cursor().pending_wrap);
+
+        // Shrink: cursor clamps from col 9 to col 4 (new last col).
+        g.resize(5, 5);
+        assert_eq!(g.cursor().col, 4, "cursor clamped to new last col on shrink");
+        assert!(
+            !g.cursor().pending_wrap,
+            "pending_wrap cleared even when cursor lands AT new last col on shrink"
+        );
+
+        // Grow back: pending_wrap must stay false. The application that
+        // owns the cursor (shell / TUI) will re-establish its own state
+        // via SIGWINCH redraw if it cares. The kernel never re-derives
+        // pending_wrap across a resize.
+        g.cursor_to(0, 4); // keep cursor at last col of current 5-col grid
+        // print one more char to push pending_wrap=true at col 4.
+        g.print('!', Attrs::DEFAULT);
+        assert!(g.cursor().pending_wrap, "print at last col sets pending_wrap");
+        g.resize(5, 20);
+        assert!(
+            !g.cursor().pending_wrap,
+            "pending_wrap cleared on grow regardless of cursor position"
+        );
+    }
+
+    #[test]
+    fn resize_alt_clears_buffer_no_reflow() {
+        // §1.22 + §1.25: alt-screen resize wipes the alt buffer so the
+        // application's SIGWINCH-driven redraw paints on a clean canvas.
+        // No row should claim wrapped=true (no reflow ever runs).
         let mut g = Grid::new(3, 10, 100);
         g.enter_alt_screen(true);
         for ch in "abcdefghij".chars() {
@@ -1387,178 +1451,137 @@ mod tests {
         }
         g.resize(3, 5);
         assert_eq!(g.cols(), 5);
-        // Every alt cell is now empty.
         for r_idx in 0..g.rows() {
             assert_eq!(
                 row_text(&g, r_idx),
                 "",
                 "alt row {r_idx} not cleared after resize"
             );
-        }
-        // No reflow happened (no row should claim wrapped=true).
-        for r_idx in 0..g.rows() {
             assert_eq!(g.row(r_idx).unwrap().wrapped, false);
         }
     }
 
     #[test]
-    fn reflow_chain_of_three_rows_round_trip() {
-        // Wrap a 25-char line across 3 rows at cols=10:
-        // ["0123456789", "abcdefghij", "ABCDE"]. Resize to 15 → two rows
-        // (15 + 10). Resize back to 10 → original three rows.
-        let mut g = Grid::new(5, 10, 100);
-        for ch in "0123456789abcdefghijABCDE".chars() {
-            g.print(ch, Attrs::DEFAULT);
-        }
-        assert_eq!(row_text(&g, 0), "0123456789");
-        assert_eq!(row_text(&g, 1), "abcdefghij");
-        assert_eq!(row_text(&g, 2), "ABCDE");
-        assert_eq!(g.row(0).unwrap().wrapped, true);
-        assert_eq!(g.row(1).unwrap().wrapped, true);
-        assert_eq!(g.row(2).unwrap().wrapped, false);
+    fn resize_diag_reports_naive_branch_only() {
+        // §1.25: ResizeBranch collapses to a single Naive variant. Whether
+        // alt was active at resize time (and therefore whether §1.22 wipe
+        // ran) is conveyed by the is_alt + wipe_fired fields.
+        let mut g = Grid::new(5, 10, 0);
+        g.resize(5, 8);
+        let last = g.last_resize_diags().last().expect("one resize recorded");
+        assert_eq!(last.branch, ResizeBranch::Naive);
+        assert!(!last.is_alt);
+        assert!(!last.wipe_fired);
 
-        g.resize(5, 15);
-        assert_eq!(row_text(&g, 0), "0123456789abcde");
-        assert_eq!(row_text(&g, 1), "fghijABCDE");
-        assert_eq!(g.row(0).unwrap().wrapped, true);
-        assert_eq!(g.row(1).unwrap().wrapped, false);
-
-        g.resize(5, 10);
-        assert_eq!(row_text(&g, 0), "0123456789");
-        assert_eq!(row_text(&g, 1), "abcdefghij");
-        assert_eq!(row_text(&g, 2), "ABCDE");
+        g.enter_alt_screen(true);
+        g.resize(5, 12);
+        let last = g.last_resize_diags().last().expect("alt resize recorded");
+        assert_eq!(last.branch, ResizeBranch::Naive);
+        assert!(last.is_alt);
+        assert!(last.wipe_fired, "wipe runs when alt is active and dims change");
     }
 
-    #[test]
-    fn reflow_no_op_when_cols_unchanged() {
-        // Rows-only change must NOT re-wrap (which would also strip trailing
-        // blank padding on intermediate rows). The old naive truncate/pad
-        // path should be taken instead.
-        let mut g = Grid::new(5, 20, 100);
-        for ch in "hello".chars() {
-            g.print(ch, Attrs::DEFAULT);
-        }
-        g.resize(8, 20); // grow rows, same cols
-        assert_eq!(g.rows(), 8);
-        assert_eq!(g.cols(), 20);
-        assert_eq!(row_text(&g, 0), "hello");
-        // Rows 1..7 should be blank (padding).
-        for r in 1..8 {
-            assert_eq!(row_text(&g, r), "");
-        }
-    }
+    // ---- §A.3 inline-TUI primary wipe ---------------------------------
+    // Claude Code's input box renders inline on primary (cursor hidden +
+    // CSI absolute positioning, no `?1049h`). On shrink the §1.22 alt
+    // wipe doesn't fire and the §1.26 cursor-row+below partial cleanup
+    // leaves rows ABOVE the cursor stale — the input box's top border
+    // typically sits there, so wrapped border garbage stays visible.
+    // §A.3 wipes the entire visible primary region in this case so
+    // Ink's diff redraw paints on a blank canvas.
 
     #[test]
-    fn reflow_preserves_pending_wrap_at_exact_boundary() {
-        // 10 chars in a 10-col grid → cursor at col 9 with pending_wrap=true
-        // (print() set it; next char would wrap to new row).
-        let mut g = Grid::new(5, 10, 100);
-        for ch in "0123456789".chars() {
-            g.print(ch, Attrs::DEFAULT);
-        }
-        assert_eq!(g.cursor().col, 9, "cursor at last col after 10 prints in 10-col grid");
-        assert!(g.cursor().pending_wrap, "print() set pending_wrap at right edge");
-
-        // Resize to 5 cols. Reflow stitches 10 chars → 1 logical line of
-        // length 10. Re-wrap: row 0 = "01234" (wrap=true), row 1 = "56789"
-        // (wrap=false). Cursor was at logical offset 10 (== line.len()).
-        // new_cols=5, used = 10 % 5 = 0 → exact-boundary case. Cursor
-        // should land at (1, 4) WITH pending_wrap=true preserved.
-        g.resize(5, 5);
-
-        assert_eq!(g.cursor().row, 1, "cursor on last row of wrap chain");
-        assert_eq!(g.cursor().col, 4, "cursor at last col of that row");
-        assert!(
-            g.cursor().pending_wrap,
-            "pending_wrap preserved across reflow at exact boundary"
-        );
-
-        // Sanity: next print should wrap (not overwrite cell (1,4)).
+    fn inline_tui_resize_full_wipes_primary_visible_region() {
+        let mut g = Grid::new(6, 20, 100);
+        // Simulate Ink-style render: place a `╮` at col 18 of row 1
+        // (top-right corner of an old-width input box) plus a body
+        // character at row 4 col 0 — both must vanish after the full
+        // wipe, NOT just the row below the cursor.
+        g.cursor_to(1, 18);
+        g.print('╮', Attrs::DEFAULT);
+        g.cursor_to(4, 0);
         g.print('x', Attrs::DEFAULT);
-        assert_eq!(g.row(1).unwrap().cells[4].ch, '9', "row 1 col 4 unchanged");
-        assert_eq!(g.row(2).unwrap().cells[0].ch, 'x', "'x' wrapped to row 2 col 0");
+        // Park cursor at row 5 (BELOW the border) so the §1.26 partial
+        // cleanup would never have touched row 1 — only the §A.3 full
+        // wipe can.
+        g.cursor_to(5, 0);
+
+        g.resize_with_inline_tui(6, 12, true);
+
+        for r in 0..g.rows() {
+            assert_eq!(
+                row_text(&g, r),
+                "",
+                "primary row {r} should be wiped under inline-TUI resize"
+            );
+            assert_eq!(g.row(r).unwrap().wrapped, false);
+        }
+        assert_eq!(g.cursor().row, 0, "cursor homed on inline-TUI wipe");
+        assert_eq!(g.cursor().col, 0, "cursor homed on inline-TUI wipe");
+
+        let diag = g.last_resize_diags().last().expect("resize recorded");
+        assert!(diag.inline_tui_wipe, "inline_tui_wipe diag fired");
+        assert!(diag.inline_tui_active, "heuristic snapshot recorded");
+        assert!(!diag.wipe_fired, "alt-screen wipe did NOT fire on primary");
+        assert!(
+            !diag.cleared_below_cursor,
+            "partial cleanup skipped when full wipe ran"
+        );
     }
 
     #[test]
-    fn reflow_no_pending_wrap_when_line_doesnt_fill_last_row() {
-        // Inverse of the above: line.len() = 7 chars, new_cols = 5.
-        // 7 % 5 = 2. Cursor at offset 7 lands on (1, 2) — middle of row 1,
-        // pending_wrap should be false (next print writes to (1, 2), no wrap).
-        let mut g = Grid::new(5, 10, 100);
-        for ch in "abcdefg".chars() {
-            g.print(ch, Attrs::DEFAULT);
-        }
-        // Cursor after 7 prints: col 7 (no pending_wrap because we haven't
-        // hit the right edge of the 10-col line).
-        assert_eq!(g.cursor().col, 7);
-        assert!(!g.cursor().pending_wrap);
+    fn plain_primary_resize_skips_inline_tui_wipe() {
+        // No inline-TUI flag → existing §1.26 partial cleanup applies,
+        // §A.3 full wipe stays off, content above cursor preserved.
+        let mut g = Grid::new(5, 20, 100);
+        g.print('p', Attrs::DEFAULT);
+        g.print('s', Attrs::DEFAULT);
+        // Park cursor at row 2 col 0 — `prev` row 0 'ps' must survive
+        // both the partial cleanup and the (non-firing) full wipe.
+        g.cursor_to(2, 0);
 
-        g.resize(5, 5);
-        assert_eq!(g.cursor().row, 1);
-        assert_eq!(g.cursor().col, 2);
-        assert!(!g.cursor().pending_wrap, "no pending_wrap mid-row");
+        g.resize_with_inline_tui(5, 10, false);
+
+        assert_eq!(row_text(&g, 0), "ps", "row above cursor preserved");
+        let diag = g.last_resize_diags().last().expect("resize recorded");
+        assert!(!diag.inline_tui_wipe, "no full wipe without heuristic");
+        assert!(!diag.inline_tui_active, "heuristic snapshot stays off");
+        assert!(
+            diag.cleared_below_cursor,
+            "§1.26 partial cleanup still runs"
+        );
     }
 
     #[test]
-    fn reflow_keeps_wide_char_intact_at_boundary() {
-        // 80-col grid: 39 ASCII 'a's, then a wide CJK '中' at cols 39-40
-        // (lead at 39, continuation half at 40), then 'b' at col 41.
-        // Resizing to 40 cols would naïvely slice [0..40] → lead at idx 39
-        // (last col of new row), half at idx 40 (next row first col):
-        // wide char split. Protection should pull slice back to end=39
-        // so the lead+half move together to row 1.
-        let mut g = Grid::new(5, 80, 100);
-        for _ in 0..39 {
-            g.print('a', Attrs::DEFAULT);
-        }
-        g.print('中', Attrs::DEFAULT); // wcwidth → 2, occupies cols 39-40
-        g.print('b', Attrs::DEFAULT); // col 41
+    fn inline_tui_heuristic_decays_after_idle() {
+        // Heuristic depends on (a) NOT alt screen, (b) cursor hidden,
+        // (c) absolute-positioning timestamp within INLINE_TUI_DECAY_MS.
+        // We drive the timestamp directly via `note_absolute_positioning`
+        // to keep the test wall-clock-independent.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
 
-        g.resize(5, 40);
+        // Fresh stamp → heuristic on (cursor_visible=false simulates ?25l).
+        g.note_absolute_positioning(now);
+        assert!(g.is_inline_tui_active_at(now + 500, false));
+        assert!(g.is_inline_tui_active_at(now + 1_999, false));
 
-        // Row 0 should have 39 'a's then a blank at col 39 (the freed cell).
-        let row0 = g.row(0).unwrap();
-        let mut count_a = 0;
-        for c in &row0.cells {
-            if c.ch == 'a' {
-                count_a += 1;
-            }
-        }
-        assert_eq!(count_a, 39, "row 0 keeps 39 'a's after pullback");
-        assert!(row0.cells[39].is_blank(), "freed cell at col 39 is blank");
-        assert!(row0.wrapped, "row 0 wraps to row 1");
+        // Past the 2 s decay window → off.
+        assert!(!g.is_inline_tui_active_at(now + 2_001, false));
 
-        // Row 1 starts with the intact wide char (lead width=2, half width=0)
-        // followed by 'b'.
-        let row1 = g.row(1).unwrap();
-        assert_eq!(row1.cells[0].ch, '中', "wide lead moved to row 1 col 0");
-        assert_eq!(row1.cells[0].width, 2);
-        assert_eq!(row1.cells[1].width, 0, "continuation half at row 1 col 1");
-        assert_eq!(row1.cells[2].ch, 'b');
-    }
+        // Cursor visible → heuristic off regardless of fresh stamp.
+        assert!(!g.is_inline_tui_active_at(now + 500, true));
 
-    #[test]
-    fn reflow_shrink_overflow_pushes_to_scrollback() {
-        // 5-row grid, fill all 5 rows with distinct content (no soft-wrap).
-        // Resize from 10 cols to 5 cols. Each line wraps into 2 rows → 10
-        // total rows. With new_rows=5, the oldest 5 wrapped rows must enter
-        // scrollback so cursor + most-recent content stays visible.
-        let mut g = Grid::new(5, 10, 100);
-        for line in 0..5 {
-            for _ in 0..10 {
-                g.print(char::from(b'A' + line as u8), Attrs::DEFAULT);
-            }
-            if line < 4 {
-                g.linefeed();
-                g.carriage_return();
-            }
-        }
-        assert_eq!(g.scrollback.len(), 0);
-        g.resize(5, 5);
-        // Every line was 10 chars wide, now wraps to 2 rows of 5 → 10 rows
-        // of content. Visible window holds 5 rows; oldest 5 went to scrollback.
-        assert_eq!(g.scrollback.len(), 5);
-        // The last visible row should contain the tail of "EEEEEEEEEE".
-        assert!(row_text(&g, 4).contains('E'));
+        // Alt screen → heuristic off regardless of stamp / cursor.
+        g.enter_alt_screen(false);
+        g.note_absolute_positioning(now + 100);
+        assert!(!g.is_inline_tui_active_at(now + 200, false));
+
+        // Never observed (sentinel 0) → off.
+        let mut g2 = Grid::new(5, 20, 0);
+        assert!(!g2.is_inline_tui_active_at(50_000, false));
+        // Even a fresh `note` followed by cursor-visible should be off.
+        g2.note_absolute_positioning(50_000);
+        assert!(!g2.is_inline_tui_active_at(50_500, true));
     }
 }
