@@ -76,6 +76,9 @@ export interface PendingReveal {
   line: number;
   /** 1-based column. Defaults to 1 when the caller doesn't care. */
   column: number;
+  /** 命中文本长度（字符数）。> 0 时 FileEditor 会在 [column, column+matchLength)
+   *  这段加一段瞬时高亮装饰，2.5s 后自动消失。来自搜索 sidebar 的命中点击。 */
+  matchLength?: number;
 }
 
 export interface FileEditorState {
@@ -94,6 +97,20 @@ export interface FileEditorState {
    * user's manual cursor movement.
    */
   pendingReveal: PendingReveal | null;
+  /**
+   * 当前一轮搜索的全部命中（跨文件）。FileEditor 在打开的文件里把所有匹配本
+   * 文件 path 的 entry 一起画成 Monaco decoration，**只要搜索 query 不变就
+   * 保留**。SearchSidebar 在自己的 results 数组变化时整体写入；query 改 →
+   * results 变 → 这个数组同步刷新（清空时同样反应到 decoration 清除）。 */
+  searchHits: SearchHit[];
+}
+
+/** 搜索 sidebar 给 FileEditor 的命中描述。1-based line/column。 */
+export interface SearchHit {
+  path: string;
+  line: number;
+  column: number;
+  matchLength: number;
 }
 
 const LS_KEY = 'ridge-file-editor-prefs';
@@ -104,6 +121,10 @@ const MIN_H = 240;
  * this zone (spec: "悬浮在所有页面的最上方，除了侧边条tab区域").
  */
 export const SIDEBAR_TAB_W = 52;
+
+/** 顶部 workspace tab 行高（与 +page.svelte 中 `h-11` 一致）。
+ *  pin 模式悬浮窗的最小 Y 值锁到这里，保证不会盖住主应用 tab 区。 */
+export const APP_HEADER_HEIGHT = 44;
 
 function loadPrefs(): Partial<FileEditorState> {
   if (typeof localStorage === 'undefined') return {};
@@ -133,11 +154,11 @@ function savePrefs(s: FileEditorState): void {
 }
 
 function defaultFloatingRect(): FloatingRect {
-  if (typeof window === 'undefined') return { x: 200, y: 100, w: 720, h: 540 };
+  if (typeof window === 'undefined') return { x: 200, y: APP_HEADER_HEIGHT + 8, w: 720, h: 540 };
   const w = Math.min(720, Math.max(MIN_W, window.innerWidth * 0.5));
   const h = Math.min(540, Math.max(MIN_H, window.innerHeight * 0.65));
   const x = Math.max(SIDEBAR_TAB_W + 8, Math.floor((window.innerWidth - w) / 2));
-  const y = Math.max(40, Math.floor((window.innerHeight - h) / 2));
+  const y = Math.max(APP_HEADER_HEIGHT, Math.floor((window.innerHeight - h) / 2));
   return { x, y, w, h };
 }
 
@@ -149,8 +170,11 @@ const initial: FileEditorState = {
   displayMode: (prefs.displayMode as EditorDisplayMode) ?? 'drawer',
   isVisible: false,
   drawerWidth: typeof prefs.drawerWidth === 'number' ? prefs.drawerWidth : 520,
-  floatingRect: (prefs.floatingRect as FloatingRect) ?? defaultFloatingRect(),
+  // 持久化的 rect 可能源自旧版本（minY=0 时存的），再 clamp 一次确保
+  // 不会落在被 workspace tab 覆盖的区域。
+  floatingRect: clampRectToViewport((prefs.floatingRect as FloatingRect) ?? defaultFloatingRect()),
   pendingReveal: null,
+  searchHits: [],
 };
 
 export function langFromPath(path: string): string {
@@ -239,10 +263,15 @@ function createStore() {
      */
     async openFile(
       path: string,
-      opts?: { line?: number; column?: number }
+      opts?: { line?: number; column?: number; matchLength?: number }
     ): Promise<void> {
       const reveal: PendingReveal | null = opts?.line && opts.line > 0
-        ? { path, line: opts.line, column: Math.max(1, opts.column ?? 1) }
+        ? {
+            path,
+            line: opts.line,
+            column: Math.max(1, opts.column ?? 1),
+            matchLength: opts.matchLength && opts.matchLength > 0 ? opts.matchLength : undefined,
+          }
         : null;
       const state = get({ subscribe });
       const existing = state.openFiles.find((f) => f.path === path);
@@ -317,6 +346,15 @@ function createStore() {
       }));
     },
 
+    /** SearchSidebar 在 results 数组变化时整体写入；空数组等价 clear。 */
+    setSearchHits(hits: SearchHit[]): void {
+      update((s) => ({ ...s, searchHits: hits }));
+    },
+    /** 显式清掉所有搜索命中高亮（与 setSearchHits([]) 等价）。 */
+    clearSearchHits(): void {
+      update((s) => (s.searchHits.length ? { ...s, searchHits: [] } : s));
+    },
+
     /**
      * Read + clear the one-shot reveal target for `path`. Returns null if no
      * reveal is queued or if it's for a different path (callers should only
@@ -361,6 +399,23 @@ function createStore() {
         const next = [...s.openFiles];
         const [moved] = next.splice(fromIndex, 1);
         next.splice(toIndex, 0, moved);
+        return { ...s, openFiles: next };
+      });
+    },
+
+    /** 按 paths 给定的新顺序重排 openFiles。`paths` 必须是当前 openFiles
+     *  里 path 的一个排列，否则保持原状（防御性）。供 svelte-dnd-action
+     *  finalize 直接调用，避免再倒推 from/to。 */
+    setOrder(paths: string[]): void {
+      update((s) => {
+        if (paths.length !== s.openFiles.length) return s;
+        const byPath = new Map(s.openFiles.map((f) => [f.path, f]));
+        const next: typeof s.openFiles = [];
+        for (const p of paths) {
+          const f = byPath.get(p);
+          if (!f) return s;
+          next.push(f);
+        }
         return { ...s, openFiles: next };
       });
     },
@@ -753,6 +808,7 @@ function createStore() {
  * Clamp a floating rect to the viewport, enforcing:
  * - min 320 × 240
  * - left edge ≥ SIDEBAR_TAB_W (don't cover the left icon strip)
+ * - top edge ≥ APP_HEADER_HEIGHT（不允许遮挡顶部 workspace tab 区）
  * - at least 64 px of width/height always remains inside the viewport
  * (so the user can grab it back)
  */
@@ -761,10 +817,10 @@ export function clampRectToViewport(rect: FloatingRect): FloatingRect {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const w = Math.max(MIN_W, Math.min(rect.w, vw - SIDEBAR_TAB_W - 4));
-  const h = Math.max(MIN_H, Math.min(rect.h, vh - 4));
+  const h = Math.max(MIN_H, Math.min(rect.h, vh - APP_HEADER_HEIGHT - 4));
   const minX = SIDEBAR_TAB_W;
   const maxX = vw - 64; // keep ≥64 px grabbable
-  const minY = 0;
+  const minY = APP_HEADER_HEIGHT;
   const maxY = vh - 32;
   let x = Math.max(minX, Math.min(rect.x, maxX));
   let y = Math.max(minY, Math.min(rect.y, maxY));

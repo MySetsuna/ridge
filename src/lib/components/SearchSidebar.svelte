@@ -494,9 +494,28 @@
     };
   }
 
-  function openAt(file: string, line: number, column: number): void {
-    void fileEditorStore.openFile(file, { line, column });
+  function openAt(file: string, line: number, column: number, matchText?: string): void {
+    void fileEditorStore.openFile(file, {
+      line,
+      column,
+      matchLength: matchText ? matchText.length : undefined,
+    });
   }
+
+  // 把当前 results 整体推到 fileEditorStore.searchHits —— FileEditor 据此把
+  // 当前文件里所有命中一起画装饰。results 变（新搜索 / 清空 / 替换完成）
+  // 自动同步；query 改 → results 重算 → 数组刷新 → 装饰更新。
+  $effect(() => {
+    const r = results;
+    fileEditorStore.setSearchHits(
+      r.map((it) => ({
+        path: it.file,
+        line: it.line,
+        column: it.column,
+        matchLength: (it.match_text ?? query).length,
+      }))
+    );
+  });
 
   // Enter in the query input kicks off a search; Ctrl+R toggles replace row.
   function onQueryKeydown(e: KeyboardEvent): void {
@@ -730,7 +749,7 @@
               <button
                 type="button"
                 class="rg-search-row group/row flex w-full items-start gap-2 pl-7 pr-3 py-1 text-left text-[11px] hover:bg-[var(--rg-surface)]/50 transition-colors"
-                onclick={() => openAt(r.file, r.line, r.column)}
+                onclick={() => openAt(r.file, r.line, r.column, r.match_text ?? query)}
                 title={`${group.file}:${r.line}:${r.column}`}
               >
                 <span class="shrink-0 font-mono text-[10px] text-[var(--rg-fg-muted)] w-8 text-right">

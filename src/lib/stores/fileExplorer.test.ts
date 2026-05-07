@@ -442,8 +442,8 @@ describe('syncAllWorkspaces — multi-workspace routing (E7–E9)', () => {
   }
 
   const workspaces = [
-    { id: 'ws1', name: 'WS1', index: 0 },
-    { id: 'ws2', name: 'WS2', index: 1 },
+    { id: 'ws1', name: 'WS1', index: 0, displaySeq: 1 },
+    { id: 'ws2', name: 'WS2', index: 1, displaySeq: 2 },
   ];
 
   // E7 — Keys are routed to the correct workspace via "${wsId}:" prefix.

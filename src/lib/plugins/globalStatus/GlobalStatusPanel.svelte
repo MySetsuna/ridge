@@ -25,7 +25,7 @@
     $workspacesList.find((w) => w.id === $activeWorkspaceId) ?? null
   );
   const wsLabel = $derived(
-    activeWs?.name?.trim() || (activeWs ? `工作区 ${activeWs.index + 1}` : '—')
+    activeWs?.name?.trim() || (activeWs ? `工作区 ${activeWs.displaySeq}` : '—')
   );
 </script>
 

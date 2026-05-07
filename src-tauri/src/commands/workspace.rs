@@ -8,16 +8,21 @@ use crate::engine::pane_tree::PaneTree;
 use crate::state::{AppState, Workspace};
 
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceInfo {
     pub id: String,
     pub index: usize,
     pub name: Option<String>,
+    /// 创建时分配的稳定展示序号；前端用作未命名工作区的显示标签（"工作区 N"）。
+    /// 与 `index` 不同，`display_seq` 不随排序/关闭变化。
+    pub display_seq: u64,
 }
 
 #[tauri::command]
 pub fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceInfo>, String> {
     let order = state.workspace_order.read();
     let names = state.workspace_names.read();
+    let map = state.workspaces.read();
     Ok(order
         .iter()
         .enumerate()
@@ -25,6 +30,7 @@ pub fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceInfo>,
             id: id.to_string(),
             index: i,
             name: names.get(id).cloned(),
+            display_seq: map.get(id).map(|w| w.display_seq).unwrap_or(0),
         })
         .collect())
 }
@@ -50,6 +56,7 @@ pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Res
 #[tauri::command]
 pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
     let id = Uuid::new_v4();
+    let seq = state.allocate_workspace_seq();
     {
         let mut map = state.workspaces.write();
         map.insert(
@@ -67,6 +74,7 @@ pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
             associated_file_path: None,
             pending_spawns: std::collections::HashMap::new(),
             teammate_metrics: crate::state::TeammateMetrics::default(),
+            display_seq: seq,
             },
         );
     }
@@ -251,6 +259,7 @@ pub fn restore_workspace(
     let new_id = Uuid::new_v4();
     let pane_tree: PaneTree = serde_json::from_str(&item.pane_tree_json)
         .map_err(|e| e.to_string())?;
+    let seq = state.allocate_workspace_seq();
 
     {
         let mut map = state.workspaces.write();
@@ -269,6 +278,7 @@ pub fn restore_workspace(
             associated_file_path: None,
             pending_spawns: std::collections::HashMap::new(),
             teammate_metrics: crate::state::TeammateMetrics::default(),
+            display_seq: seq,
             },
         );
     }
