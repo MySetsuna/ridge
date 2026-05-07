@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import * as monaco from 'monaco-editor';
   import {
     X,
@@ -38,6 +38,7 @@
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { alertDialog } from './RidgeDialog.svelte';
   import { Copy, FolderOpen } from 'lucide-svelte';
+  import { dndzone, SOURCES } from 'svelte-dnd-action';
 
   /** 默认 monospace 栈：用户自定义 fontFamily 留空时回退到这一串。 */
   const DEFAULT_MONO =
@@ -61,6 +62,16 @@
   let mountPoint: HTMLDivElement | undefined;
   let editor: monaco.editor.IStandaloneCodeEditor | null = null;
   let currentModelPath: string | null = null;
+  // 搜索命中高亮装饰句柄。tied to editorState.searchHighlight：搜索点击时
+  // 在命中范围加 inlineClassName='rg-search-flash-inline'，query 改变 / 关闭
+  // 文件 / 切到非命中文件时 clear。
+  let searchHighlightDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  // Keep-alive 缓存：每个 path 一个 Monaco model + view state，跨 tab 切换不丢
+  // undo/redo 栈、滚动条、光标和折叠状态。Tab 关闭时才 dispose（在另一个 effect 里
+  // 监听 openFiles 做 GC）。空白态用一个单例 emptyModel 兜底，避免每次反复创建。
+  const modelCache = new Map<string, monaco.editor.ITextModel>();
+  const viewStateCache = new Map<string, monaco.editor.ICodeEditorViewState | null>();
+  let emptyModel: monaco.editor.ITextModel | null = null;
   let settingsOpen = $state(false);
   let settingsAnchor: HTMLElement | undefined = $state();
   let isResizingDrawer = $state(false);
@@ -85,9 +96,14 @@
    */
   let editorCursorLine = $state<number | null>(null);
 
-  // Tab drag-and-drop reorder state
-  let draggingTabIndex = $state<number | null>(null);
-  let dragOverTabIndex = $state<number | null>(null);
+  // dndItems 必须挂 file 引用：svelte-dnd-action 拖拽时会插入 shadow
+  // placeholder（`{...draggedItem, id: SHADOW_PLACEHOLDER_ITEM_ID}`），
+  // placeholder 的 id 是固定常量而不是真实 path，模板渲染必须能从 item 自身
+  // 拿到内容，否则 DOM 子节点数量会少于 items.length，库的 index 计算会错位
+  // 导致拖拽后丢 tab。
+  type DndItem = { id: string; file: typeof editorState.openFiles[number] };
+  let dndItems = $state<DndItem[]>([]);
+  let dndInProgress = $state(false);
 
   let editorState = $derived($fileEditorStore);
   let current = $derived($activeFile);
@@ -101,6 +117,88 @@
   // existing editor mode). Syntax highlighting works in the main thread; language
   // server features (linting, go-to-definition) are disabled, which is fine for a
   // light-weight in-place editor.
+
+  // ─── Markdown preview 滚动位置缓存 ──────────────────────────────────────────
+  // preview overlay 现在是 mountPoint 的兄弟（不在 Monaco DOM 内部），
+  // 通过 `{#if isMarkdownFile}` 始终渲染 + `style:display` 切显隐，
+  // 单实例不重建。跨文件切换时 scrollTop 串台，按 path 暂存/还原。
+  const markdownScrollCache = new Map<string, number>();
+
+  /** Svelte action：跨文件切换 / preview ↔ source 切换 / 异步内容（mermaid、
+   *  代码高亮）渲染完成后稳定保留 markdown 预览的 scrollTop。
+   *
+   *  实现要点（与朴素版本的差异）：
+   *  1) **不在隐藏态写缓存**：display:none 时 `node.scrollTop` 由规范规定为 0，
+   *     盲目 save 会把之前的合法值抹成 0。所以 save 之前先校验可见性。
+   *  2) **path 切换后做"重试 restore"窗口**：mermaid / Monaco 代码高亮是异步的，
+   *     第一帧 RAF 设的 scrollTop 可能在内容长出来之后失效（被浏览器 clamp 或
+   *     被新插入的 view 推开）。开 ~800ms 的 retry 窗口，每帧再 set 一次 scrollTop
+   *     直到用户滚动（停止抢用户的位置）或窗口超时。
+   *  3) **display:none → block 时主动 restore**：path 没变所以 update() 不会
+   *     触发；用 MutationObserver 监听 style 属性变化，回到可见态就 RAF 还原。 */
+  function preserveMdScroll(node: HTMLElement, path: string) {
+    let currentPath = path;
+    const isVisible = () => node.style.display !== 'none' && !!node.offsetParent;
+    const restore = () => {
+      const cached = markdownScrollCache.get(currentPath);
+      if (cached !== undefined) node.scrollTop = cached;
+    };
+
+    // —— 重试窗口：用于 path 切换 / 重新可见后等异步内容（mermaid 等）布局到位。
+    let retryUntilMs = 0;
+    let retryFrame: number | null = null;
+    let userScrolled = false;
+    const retry = () => {
+      retryFrame = null;
+      if (userScrolled) return;
+      if (performance.now() > retryUntilMs) return;
+      if (isVisible()) restore();
+      retryFrame = requestAnimationFrame(retry);
+    };
+    const startRetry = (durationMs: number) => {
+      userScrolled = false;
+      retryUntilMs = performance.now() + durationMs;
+      if (retryFrame === null) retryFrame = requestAnimationFrame(retry);
+    };
+
+    startRetry(800);
+
+    const onScroll = () => {
+      if (!isVisible()) return; // hidden 时浏览器 spec 上 scrollTop 报 0，跳过
+      // 用户实际滚动后停止 retry restore，把控制权还给用户。
+      userScrolled = true;
+      markdownScrollCache.set(currentPath, node.scrollTop);
+    };
+    node.addEventListener('scroll', onScroll, { passive: true });
+
+    // —— 监听 style 切换：display:none → block 时再 restore 一次。
+    const styleObserver = new MutationObserver(() => {
+      if (isVisible()) startRetry(400);
+    });
+    styleObserver.observe(node, { attributes: true, attributeFilter: ['style'] });
+
+    return {
+      update(newPath: string) {
+        if (newPath === currentPath) return;
+        // 关键：**绝不在 update 里读 node.scrollTop 写缓存**。
+        // Svelte 5 同一次 flush 里，children（`<MarkdownPreview content={current.content}>`）
+        // 的 prop 更新与 action.update 一起发生：DOM 已替成新文件内容，浏览器
+        // 同步把 scrollTop clamp 到新内容的最大值；此时读到的是被污染的值，
+        // 写回 cache[oldPath] 会把之前 onScroll 攒的合法值覆盖，下次切回
+        // oldPath 就丢位 ——「两个 md preview tab 之间切换 scrollbar 状态丢失」
+        // 就是这条路径。onScroll 已在用户每次滚动（含松手停下的最后一帧）
+        // 实时写缓存，切 tab 之前的最终位置必然已被捕获。
+        currentPath = newPath;
+        startRetry(800);
+      },
+      destroy() {
+        // 同 update：destroy 时 DOM 在卸载，scrollTop 不可信；信 onScroll。
+        node.removeEventListener('scroll', onScroll);
+        styleObserver.disconnect();
+        if (retryFrame !== null) cancelAnimationFrame(retryFrame);
+      },
+    };
+  }
 
   function disposeDiffEditor(): void {
     diffEditor?.dispose();
@@ -163,11 +261,22 @@
   }
 
   onDestroy(() => {
+    if (searchHighlightDecorations) {
+      try { searchHighlightDecorations.clear(); } catch {}
+      searchHighlightDecorations = null;
+    }
     if (editor) {
-      const model = editor.getModel();
       editor.dispose();
-      if (model) model.dispose();
       editor = null;
+    }
+    // 释放 keep-alive 缓存里所有 model；emptyModel 也一并 dispose。
+    for (const m of modelCache.values()) m.dispose();
+    modelCache.clear();
+    viewStateCache.clear();
+    markdownScrollCache.clear();
+    if (emptyModel) {
+      emptyModel.dispose();
+      emptyModel = null;
     }
     disposeDiffEditor();
   });
@@ -178,11 +287,26 @@
     if (!mountPoint || !editorState.isVisible) return;
     if (editor) return;
     if (current?.isImage || current?.diffArgs) return;
-    const initialValue = current?.content ?? '';
-    const initialLang = current?.language ?? 'plaintext';
+    // 显式构造初始 model 并塞进 modelCache，后续切回这个 path 才能复用 undo/redo 栈。
+    let initialModel: monaco.editor.ITextModel;
+    if (current) {
+      const existing = modelCache.get(current.path);
+      if (existing && !existing.isDisposed()) {
+        initialModel = existing;
+      } else {
+        try {
+          initialModel = monaco.editor.createModel(current.content, current.language);
+        } catch {
+          initialModel = monaco.editor.createModel(current.content, 'plaintext');
+        }
+        modelCache.set(current.path, initialModel);
+      }
+    } else {
+      if (!emptyModel) emptyModel = monaco.editor.createModel('', 'plaintext');
+      initialModel = emptyModel;
+    }
     editor = monaco.editor.create(mountPoint, {
-      value: initialValue,
-      language: initialLang,
+      model: initialModel,
       theme: monacoTheme,
       automaticLayout: true,
       fontFamily: editorFontFamily,
@@ -194,6 +318,10 @@
       padding: { top: 8, bottom: 8 },
     });
     currentModelPath = current?.path ?? null;
+    if (current) {
+      const vs = viewStateCache.get(current.path);
+      if (vs) editor.restoreViewState(vs);
+    }
     editor.onDidChangeModelContent(() => {
       if (!editor || !currentModelPath) return;
       const value = editor.getValue();
@@ -209,54 +337,98 @@
     });
   });
 
-  // Swap editor model when active tab changes.
+  // Swap editor model when active tab changes —— **keep-alive 模式**：
+  //   • 切到另一个 tab 时不 dispose 旧 model；先把当前的 view state（滚动、
+  //     光标、selection、折叠等）按 path 存到 viewStateCache。
+  //   • 切到目标 tab 时优先复用 modelCache 里已有的 model（含 undo/redo 栈），
+  //     再 restoreViewState 回到上次离开的位置。
+  //   • Tab 真正关闭（在 openFiles 中消失）时才 dispose model；那一步在
+  //     单独的 GC effect 里做（见下方）。
   $effect(() => {
     const c = current; // 先读 current 建立响应式订阅
     if (!editor) return;
     // Image and diff tabs don't use the regular Monaco editor.
     if (c?.isImage || c?.diffArgs) return;
-    // 所有 Monaco 调用统一包 try/catch：createModel 会懒触发 language contribution 的
-    // 异步加载，失败时可能抛 Event 样式的对象，直接冒到 window 就是 “Uncaught [object Event]”。
-    // 这里把异常吞在 effect 内，同时尽量把 editor 恢复到可用状态（降级 plaintext）。
     try {
+      // —— 0) 保存上一个 model 的 view state（仅当 path 变化时才存，避免
+      //        相同 path 自我覆盖）。
+      if (currentModelPath && currentModelPath !== c?.path) {
+        const vs = editor.saveViewState();
+        viewStateCache.set(currentModelPath, vs);
+      }
+
       if (!c) {
-        const m = monaco.editor.createModel('', 'plaintext');
-        const prev = editor.getModel();
-        // 先更新 path，再 setModel，避免 Monaco 在 setModel 时立刻回调 onDidChangeModelContent
-        // 用着旧的 currentModelPath 把新内容错写进旧文件的记录里。
+        // 没有活动文件：指向空白单例，不动 modelCache。
+        if (!emptyModel) emptyModel = monaco.editor.createModel('', 'plaintext');
         currentModelPath = null;
-        editor.setModel(m);
-        if (prev) prev.dispose();
+        editor.setModel(emptyModel);
         return;
       }
+
       if (c.path === currentModelPath) {
+        // 同一个 tab 内的 content 漂移：只在 store 里的 content 与 model 不一致
+        // 时才 setValue（会清空 undo），常见于外部文件修改回灌。
         if (editor.getValue() !== c.content) {
           editor.setValue(c.content);
         }
         return;
       }
-      let model: monaco.editor.ITextModel;
-      try {
-        model = monaco.editor.createModel(c.content, c.language);
-      } catch (err) {
-        console.warn(
-          '[FileEditor] createModel with language failed, falling back to plaintext',
-          c.language,
-          err
-        );
-        model = monaco.editor.createModel(c.content, 'plaintext');
+
+      // —— 1) 取或建 model（path 唯一缓存）。
+      let model = modelCache.get(c.path);
+      if (!model || model.isDisposed()) {
+        try {
+          model = monaco.editor.createModel(c.content, c.language);
+        } catch (err) {
+          console.warn(
+            '[FileEditor] createModel with language failed, falling back to plaintext',
+            c.language,
+            err
+          );
+          model = monaco.editor.createModel(c.content, 'plaintext');
+        }
+        modelCache.set(c.path, model);
       }
-      const prev = editor.getModel();
+
+      // —— 2) 切模型 + 还原 view state。
       currentModelPath = c.path;
       editor.setModel(model);
-      // Reset cursor line state on model swap; the next cursor-position event
-      // on the new model will repopulate it. Without this reset the preview
-      // would briefly keep scrolling using the old file's line numbers.
-      editorCursorLine = editor.getPosition()?.lineNumber ?? 1;
-      if (prev) prev.dispose();
+      const vs = viewStateCache.get(c.path);
+      if (vs) editor.restoreViewState(vs);
+      // 关键：tab 切换时 editorCursorLine **不** 设为 setPosition 后的行号，
+      // 而是设为 null —— 否则 MarkdownPreview 会把它当成"用户在 source 模式
+      // 移动了光标"，对新 path 的对应行做 `scrollIntoView({behavior:'smooth'})`，
+      // 把刚被 preserveMdScroll restore 的 scrollTop 平滑滚到顶部覆盖掉。
+      // 真正的光标移动会通过下面的 onDidChangeCursorPosition 事件再把这个值
+      // 填上来，preview 才会跟随。
+      editorCursorLine = null;
       editor.focus();
     } catch (err) {
       console.error('[FileEditor] model swap failed', err);
+    }
+  });
+
+  // —— GC：openFiles 中已经不再存在的 path，对应的 model / view state /
+  //    markdown 滚动位置一并释放。Tab 关闭走的是 fileEditorStore.closeFile →
+  //    openFiles 移除该项 → 这里命中。
+  $effect(() => {
+    const openPaths = new Set(editorState.openFiles.map((f) => f.path));
+    for (const [path, model] of modelCache) {
+      if (!openPaths.has(path)) {
+        modelCache.delete(path);
+        viewStateCache.delete(path);
+        markdownScrollCache.delete(path);
+        // 若 editor 当前正指向这个 model（极少见的关闭 active tab 时序），
+        // 让 swap effect 先把 setModel 切走再 dispose，避免在仍被使用的
+        // model 上 dispose 触发 Monaco 内部 assertion。
+        if (model !== editor?.getModel()) {
+          model.dispose();
+        }
+      }
+    }
+    // markdown-only 文件可能没进过 modelCache（也可能进了），单独再扫一遍 scroll 缓存。
+    for (const path of markdownScrollCache.keys()) {
+      if (!openPaths.has(path)) markdownScrollCache.delete(path);
     }
   });
 
@@ -314,11 +486,17 @@
   // interlock with the model-swap try/catch; if Monaco is still setting up
   // its language contributions, `reveal*` is safe to call anyway.
   $effect(() => {
+    // 显式 track `editorState.pendingReveal`：搜索命中点击的目标文件如果已经
+    // 是 active tab，`current` 引用不会变（activePath 字符串相同 → activeFile
+    // derived 命中同一 OpenFile），仅靠 `current` tracking 不会重跑 effect →
+    // 跳转不触发。读 pendingReveal 把它变成 dep，新设的命中能重新驱动 reveal。
     const c = current;
+    const pr = editorState.pendingReveal;
     if (!editor || !c) return;
-    // Only consume when the active model matches; otherwise model swap will
-    // fire this effect a second time when currentModelPath catches up.
+    // 仅当 active model 已经切到目标 path 才消费 —— 否则等 swap effect 把
+    // currentModelPath 追上后这个 effect 自然再跑一次。
     if (currentModelPath !== c.path) return;
+    if (!pr || pr.path !== c.path) return;
     const r = fileEditorStore.consumePendingReveal(c.path);
     if (!r) return;
     try {
@@ -327,6 +505,53 @@
       editor.focus();
     } catch (err) {
       console.warn('[FileEditor] reveal failed', err);
+    }
+  });
+
+  // —— 搜索命中高亮：tied 到 editorState.searchHighlight。
+  // 命中信息存在且匹配当前 model 时画装饰；否则清掉。SearchSidebar 在 query
+  // 变化时会调 clearSearchHighlight() 把 store 里的字段置空，本 effect 自然
+  // 清装饰。 */
+  function clearSearchHighlightDecoration() {
+    if (searchHighlightDecorations) {
+      searchHighlightDecorations.clear();
+      searchHighlightDecorations = null;
+    }
+  }
+  $effect(() => {
+    // 必须先读 reactive deps 再做 editor 非空校验：editor 是 plain let，
+    // 不参与 Svelte tracking。如果先 `if (!editor) return`，首次 mount 时
+    // current/searchHits 不会被注册成依赖，之后变化也不会重跑 effect。
+    const c = current;
+    const hits = editorState.searchHits;
+    if (!editor) return;
+    if (!c || currentModelPath !== c.path) {
+      clearSearchHighlightDecoration();
+      return;
+    }
+    // 当前文件的全部命中都画装饰；matchLength<=0 的容错跳过。
+    const fileHits = hits.filter((h) => h.path === c.path && h.matchLength > 0);
+    if (fileHits.length === 0) {
+      clearSearchHighlightDecoration();
+      return;
+    }
+    try {
+      const opts: monaco.editor.IModelDecorationOptions = {
+        inlineClassName: 'rg-search-flash-inline',
+        // NeverGrows*：用户在端点插入字符不扩张装饰范围。
+        stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+      };
+      const decorations = fileHits.map((h) => ({
+        range: new monaco.Range(h.line, h.column, h.line, h.column + h.matchLength),
+        options: opts,
+      }));
+      if (searchHighlightDecorations) {
+        searchHighlightDecorations.set(decorations);
+      } else {
+        searchHighlightDecorations = editor.createDecorationsCollection(decorations);
+      }
+    } catch (err) {
+      console.warn('[FileEditor] search highlight decorations failed', err);
     }
   });
 
@@ -424,32 +649,89 @@
     showContextMenu(e.clientX, e.clientY, items, 'editor');
   }
 
-  // ─── Tab drag-reorder (HTML5 DnD, same pattern as WorkspaceTabs) ──────────
-  function onTabDragStart(e: DragEvent, index: number) {
-    draggingTabIndex = index;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', String(index));
+  // ─── Tab drag-reorder (svelte-dnd-action) ─────────────────────────────────
+  // 同步策略：
+  //   • path 序列变化（新增 / 删除 / 重排）→ 用新数组重建 dndItems。
+  //   • path 序列没变（仅 dirty / external 等内部字段更新）→ 原地把 file 引用
+  //     替换成最新的，不动 dndItems 的数组身份；svelte-dnd-action 的 action
+  //     不会因为 items 引用变化而重新跑 FLIP，落位动画不抖。
+  // 必须挂 file 引用：svelte-dnd-action 拖拽时插入 shadow placeholder
+  // (`{...draggedItem, id: SHADOW_PLACEHOLDER_ITEM_ID}`)，placeholder 的 id
+  // 不是真实 path，模板渲染必须能从 item 自身拿到 file，否则 DOM 子节点比
+  // items.length 少，库的 index 计算错位 → 拖完丢 tab。
+  $effect(() => {
+    if (dndInProgress) return;
+    const files = editorState.openFiles;
+    untrack(() => {
+      const paths = files.map((f) => f.path);
+      if (!sameIdSeq(dndItems, paths)) {
+        dndItems = files.map((f) => ({ id: f.path, file: f }));
+        return;
+      }
+      // path 序列一致：把每一项的 file 引用替换成最新的。注意这里不能新建
+      // 数组（否则 dndzone 会重新跑 FLIP，导致闪烁）。Svelte 5 的代理写入
+      // 会驱动模板里 `it.file` 读取者重渲染。
+      for (let i = 0; i < files.length; i++) {
+        if (dndItems[i].file !== files[i]) {
+          dndItems[i].file = files[i];
+        }
+      }
+    });
+  });
+
+  function sameIdSeq(items: Array<{ id: string }>, paths: string[]): boolean {
+    if (items.length !== paths.length) return false;
+    for (let i = 0; i < paths.length; i++) {
+      if (items[i].id !== paths[i]) return false;
     }
+    return true;
   }
-  function onTabDragOver(e: DragEvent, index: number) {
-    e.preventDefault();
-    dragOverTabIndex = index;
+
+  function onTabsConsider(e: CustomEvent<{ items: DndItem[]; info: { source: string } }>) {
+    dndInProgress = true;
+    dndItems = e.detail.items;
   }
-  function onTabDragLeave() {
-    dragOverTabIndex = null;
+  function onTabsFinalize(e: CustomEvent<{ items: DndItem[]; info: { source: string } }>) {
+    dndInProgress = false;
+    const next = e.detail.items;
+    dndItems = next;
+    if (e.detail.info.source !== SOURCES.POINTER) return;
+    fileEditorStore.setOrder(next.map((it) => it.id));
   }
-  function onTabDrop(e: DragEvent, toIndex: number) {
-    e.preventDefault();
-    if (draggingTabIndex !== null && draggingTabIndex !== toIndex) {
-      fileEditorStore.reorder(draggingTabIndex, toIndex);
-    }
-    draggingTabIndex = null;
-    dragOverTabIndex = null;
+  /** 拖拽 tab 视觉反馈 + 锁定 Y 轴：editor tab 只能水平拖动。
+   *  原理同 WorkspaceTabs：MutationObserver 监听 `style` 变化，把
+   *  svelte-dnd-action 写入的 Y 覆盖回起点 Y，X 仍然跟随指针。 */
+  function transformDraggedEditorTab(el: HTMLElement | undefined) {
+    if (!el) return;
+    el.style.transition = 'box-shadow 120ms ease-out, opacity 120ms ease-out';
+    el.style.boxShadow = '0 10px 24px -6px rgba(0,0,0,0.45), 0 0 0 1px var(--rg-accent)';
+    el.style.background = 'var(--rg-bg-raised, var(--rg-surface))';
+    el.style.opacity = '0.96';
+    // 必须高于 pin (floating) 模式编辑器面板的 z-index:60，否则在 pin 模式下
+    // 拖拽 tab 时浮动副本会被面板自身遮住，看起来像"消失了"。仍然低于 9990
+    // 起跳的 modal 层（见 CLAUDE.md 的 z-index 注册表）。
+    el.style.zIndex = '100';
+
+    let lockedY: number | null = null;
+    const observer = new MutationObserver(() => {
+      const t = el.style.transform;
+      const m = t.match(/translate3d\((-?[\d.]+)px,\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\)/);
+      if (!m) return;
+      const x = m[1];
+      const y = parseFloat(m[2]);
+      if (lockedY === null) {
+        lockedY = y;
+        return;
+      }
+      if (Math.abs(y - lockedY) < 0.5) return;
+      el.style.transform = `translate3d(${x}px, ${lockedY}px, 0)`;
+    });
+    observer.observe(el, { attributes: true, attributeFilter: ['style'] });
   }
-  function onTabDragEnd() {
-    draggingTabIndex = null;
-    dragOverTabIndex = null;
+
+  /** 关闭图标拦截 pointer 起手事件，避免在 X 上拖拽误触 reorder。 */
+  function blockEditorTabDragStart(e: Event) {
+    e.stopPropagation();
   }
   function setMode(mode: EditorDisplayMode) {
     fileEditorStore.setDisplayMode(mode);
@@ -659,12 +941,14 @@
       : ''}"
   style={containerStyle}
 >
-  <!-- ═══ Header (tabs + actions) ═══ -->
-  <!-- toolbar 角色要求 tabindex 以便键盘用户 Tab 进入后用内部 Tab 遍历按钮。 -->
+  <!-- ═══ Header row 1: actions ═══ -->
+  <!-- 紧凑高度（h-7=28px），与下方 tabs 行（h-6）之间不画分隔线 —— 视觉上
+       是一个整体的两层 header。pin（floating）模式下整行（按钮以外的空白区）
+       作为拖拽手柄。`onFloatingDragStart` 内部已过滤掉 button/input/select。 -->
   <div
-    class="flex items-center shrink-0 h-9 border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/90 {editorState.displayMode ===
+    class="rg-editor-toolbar flex items-center shrink-0 h-7 bg-[var(--rg-surface)]/90 {editorState.displayMode ===
     'floating'
-      ? 'cursor-grab active:cursor-grabbing'
+      ? 'cursor-grab active:cursor-grabbing select-none'
       : ''}"
     role="toolbar"
     tabindex="-1"
@@ -676,7 +960,7 @@
     {#if editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded'}
       <button
         type="button"
-        class="rg-no-drag flex h-9 w-8 shrink-0 items-center justify-center text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors border-r border-[var(--rg-border)]"
+        class="rg-no-drag flex h-7 w-7 shrink-0 items-center justify-center text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors border-r border-[var(--rg-border)]"
         title="收起编辑器面板"
         onmousedown={(e) => e.stopPropagation()}
         onclick={hidePanel}
@@ -684,73 +968,28 @@
         <PanelRightClose class="h-3.5 w-3.5" />
       </button>
     {/if}
-    <!-- Tabs: pure CSS horizontal scroll, no gutter, wheel handler in action -->
-    <div class="flex-1 min-w-0" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
-      {#each editorState.openFiles as f, i (f.path)}
-        <button
-          type="button"
-          class="group flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-[12px] shrink-0 border-r border-[var(--rg-border)] transition-colors cursor-grab active:cursor-grabbing {editorState.activePath ===
-          f.path
-            ? 'bg-[var(--rg-bg-raised)] text-[var(--rg-fg)]'
-            : 'text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)]/60 hover:text-[var(--rg-fg)]'}
-              {draggingTabIndex === i ? 'opacity-50' : ''}
-              {dragOverTabIndex === i &&
-          draggingTabIndex !== null &&
-          draggingTabIndex !== i
-            ? 'ring-1 ring-[var(--rg-accent)]/60 ring-inset'
-            : ''}"
-          onclick={() => activateTab(f.path)}
-          oncontextmenu={(e) => onTabContextMenu(e, f.path)}
-          title={f.path}
-          draggable="true"
-          ondragstart={(e) => onTabDragStart(e, i)}
-          ondragover={(e) => onTabDragOver(e, i)}
-          ondragleave={onTabDragLeave}
-          ondrop={(e) => onTabDrop(e, i)}
-          ondragend={onTabDragEnd}
-        >
-          {#if f.diffArgs}
-            <GitCompare class="h-3 w-3 shrink-0 text-[var(--rg-accent)]/70" />
-          {/if}
-          <span
-            class="truncate max-w-[160px] {f.external === 'deleted'
-              ? 'text-red-500 line-through decoration-red-500/70'
-              : ''}"
-            title={f.external === 'deleted' ? `${f.name} 已被外部删除` : f.name}
-          >{f.name}</span>
-          {#if f.external === 'deleted'}
-            <span
-              class="text-[10px] px-1 py-px rounded bg-red-500/15 text-red-500 leading-none"
-              title="文件已被外部删除"
-            >已删除</span>
-          {/if}
-          {#if f.isDirty}
-            <span
-              class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--rg-accent)]"
-              title="未保存"
-            ></span>
-          {/if}
-          <span
-            role="button"
-            tabindex="0"
-            class="flex h-4 w-4 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-bg)]/50 hover:text-[var(--rg-fg)] {f.isDirty
-              ? ''
-              : 'opacity-0 group-hover:opacity-100'} transition-opacity"
-            onclick={(e) => closeTab(e, f.path)}
-            onkeydown={(e) =>
-              (e.key === 'Enter' || e.key === ' ') &&
-              closeTab(e as unknown as MouseEvent, f.path)}
-            title="关闭"
-          >
-            <X class="h-3 w-3" />
-          </span>
-        </button>
-      {/each}
+
+    <!-- 中部状态信息 + 拖拽热区：原 footer status bar 的内容（path / language /
+         dirty）合并到这里。floating 模式下整块（含 span 文本）都参与面板拖拽，
+         span 不会拦截 mousedown，事件冒泡到 toolbar 上的 `onFloatingDragStart`；
+         `select-none` 已经在 toolbar 上设置，文本拖动不会触发选区。 -->
+    <div
+      class="flex-1 min-w-0 h-full flex items-center gap-2 px-2 text-[10px] text-[var(--rg-fg-muted)] font-mono"
+    >
+      {#if current}
+        <span class="truncate flex-1" title={current.path}>{current.path}</span>
+        <span class="shrink-0">{current.language}</span>
+        {#if current.isDirty}
+          <span class="shrink-0 text-[var(--rg-accent)]">● 未保存</span>
+        {:else}
+          <span class="shrink-0">已保存</span>
+        {/if}
+      {/if}
     </div>
 
     <!-- Right-side actions -->
     <div
-      class="flex ml-auto items-center gap-0.5 px-1 shrink-0 border-l border-[var(--rg-border)]"
+      class="flex items-center gap-0.5 px-1 shrink-0 border-l border-[var(--rg-border)]"
     >
       {#if isDiffTab}
         <!-- Diff-specific controls: render mode toggle + reload -->
@@ -913,9 +1152,83 @@
     </div>
   </div>
 
+  <!-- ═══ Header row 2: file tabs ═══ -->
+  <!-- tab 行不参与面板拖拽（不绑定 onFloatingDragStart）。pure CSS horizontal
+       scroll；reorder via svelte-dnd-action（pointer-events，Tauri 兼容）。 -->
+  <div class="flex items-center shrink-0 h-6 border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/70">
+    <div class="flex-1 min-w-0" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
+      <div
+        class="rg-editor-tabs-dndzone flex items-stretch h-6"
+        use:dndzone={{
+          items: dndItems,
+          flipDurationMs: 160,
+          type: 'editor-tabs',
+          dropTargetStyle: {},
+          transformDraggedElement: transformDraggedEditorTab,
+        }}
+        onconsider={onTabsConsider}
+        onfinalize={onTabsFinalize}
+      >
+        {#each dndItems as it (it.id)}
+        {@const f = it.file}
+        <button
+          type="button"
+          class="group flex items-center gap-1.5 h-6 pl-3 pr-1.5 text-[12px] shrink-0 border-r border-[var(--rg-border)] transition-colors cursor-grab active:cursor-grabbing {editorState.activePath ===
+          f.path
+            ? 'bg-[var(--rg-bg-raised)] text-[var(--rg-fg)]'
+            : 'text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)]/60 hover:text-[var(--rg-fg)]'}"
+          onclick={() => activateTab(f.path)}
+          oncontextmenu={(e) => onTabContextMenu(e, f.path)}
+          title={f.path}
+        >
+          {#if f.diffArgs}
+            <GitCompare class="h-3 w-3 shrink-0 text-[var(--rg-accent)]/70" />
+          {/if}
+          <span
+            class="truncate max-w-[160px] {f.external === 'deleted'
+              ? 'text-red-500 line-through decoration-red-500/70'
+              : ''}"
+            title={f.external === 'deleted' ? `${f.name} 已被外部删除` : f.name}
+          >{f.name}</span>
+          {#if f.external === 'deleted'}
+            <span
+              class="text-[10px] px-1 py-px rounded bg-red-500/15 text-red-500 leading-none"
+              title="文件已被外部删除"
+            >已删除</span>
+          {/if}
+          {#if f.isDirty}
+            <span
+              class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--rg-accent)]"
+              title="未保存"
+            ></span>
+          {/if}
+          <span
+            role="button"
+            tabindex="0"
+            class="flex h-4 w-4 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-bg)]/50 hover:text-[var(--rg-fg)] {f.isDirty
+              ? ''
+              : 'opacity-0 group-hover:opacity-100'} transition-opacity"
+            onmousedown={blockEditorTabDragStart}
+            ontouchstart={blockEditorTabDragStart}
+            onpointerdown={blockEditorTabDragStart}
+            onclick={(e) => closeTab(e, f.path)}
+            onkeydown={(e) =>
+              (e.key === 'Enter' || e.key === ' ') &&
+              closeTab(e as unknown as MouseEvent, f.path)}
+            title="关闭"
+          >
+            <X class="h-3 w-3" />
+          </span>
+        </button>
+        {/each}
+      </div>
+    </div>
+  </div>
+
   <!-- ═══ Monaco host ═══ -->
   <div class="flex-1 min-h-0 relative">
-    <!-- Regular editor — hidden when showing diff or markdown preview -->
+    <!-- Regular editor。进入 diff 时隐藏；进入 preview 时也隐藏（preview 是
+         mountPoint 的兄弟，独立 visibility，不会有继承问题）。 -->
     <div
       bind:this={mountPoint}
       class="absolute inset-0"
@@ -943,32 +1256,25 @@
       </div>
     {/if}
 
-    {#if current && isMarkdownFile && inPreviewMode}
-      <!-- The previous `use:overlayScroll` host was `absolute inset-0`,
-             which broke wheel scrolling under overlayscrollbars: the
-             synthetic viewport injected by the lib didn't get a stable
-             height with absolute positioning. Switch to native
-             `overflow-y-auto` + `rg-scroll` styling so the native
-             scroller drives wheel events deterministically. The user
-             sees a thin transparent bar matching the rest of the app
-             (defined in app.css) without the overlayscrollbars layer. -->
+    <!-- Markdown preview 容器：单实例（条件用 isMarkdownFile，不用 inPreviewMode），
+         preview ↔ source 切换通过 style:display 切显隐，组件不卸载、状态自然保留。
+         滚动条用 `rg-scroll` —— 与 Explorer / SCM 面板（overlayscrollbars 的
+         rg-os-theme）视觉上同源（细透明条），跟 Monaco 自己的宽条不一样属于
+         设计上的内部一致性 vs Monaco 自家风格的取舍：选了内部一致。 -->
+    {#if current && isMarkdownFile}
       <div
         class="absolute inset-0 bg-[var(--rg-bg-raised)] overflow-y-auto overflow-x-hidden rg-scroll"
+        style:display={inPreviewMode ? 'block' : 'none'}
+        use:preserveMdScroll={current.path}
       >
         <MarkdownPreview
           content={current.content}
           basePath={current.path.replace(/[\\/][^\\/]+$/, '')}
           cursorLine={editorCursorLine}
-          onChange={(next) =>
-            fileEditorStore.updateContent(current!.path, next)}
-          onRequestEdit={() =>
-            fileEditorStore.setViewMode(current!.path, 'source')}
+          onChange={(next) => fileEditorStore.updateContent(current!.path, next)}
           onRevealSource={(line) => {
-            // Alt-click on preview block: scroll Monaco to the source line
-            // without leaving preview mode. Switch to source only if user
-            // also wants editing (they can click again or use the toggle).
             if (!editor) return;
-            const targetLine = Math.max(1, line + 1); // data-rg-md-src-line is 0-based
+            const targetLine = Math.max(1, line + 1);
             editor.revealLineInCenter(targetLine);
             editor.setPosition({ lineNumber: targetLine, column: 1 });
           }}
@@ -1015,21 +1321,6 @@
       </button>
     {/if}
   </div>
-
-  <!-- ═══ Status bar ═══ -->
-  {#if current}
-    <div
-      class="shrink-0 h-6 flex items-center gap-2 px-3 text-[10px] text-[var(--rg-fg-muted)] border-t border-[var(--rg-border)] bg-[var(--rg-surface)]/70 font-mono"
-    >
-      <span class="truncate flex-1" title={current.path}>{current.path}</span>
-      <span>{current.language}</span>
-      {#if current.isDirty}
-        <span class="text-[var(--rg-accent)]">● 未保存</span>
-      {:else}
-        <span>已保存</span>
-      {/if}
-    </div>
-  {/if}
 
   <!-- ═══ Drawer / Embedded left-edge resizer ═══ -->
   {#if editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded'}
@@ -1135,6 +1426,19 @@
 </div>
 
 <style>
+  /* svelte-dnd-action 默认会在 dropzone 外层加描边/动画背景；这里清掉，
+     让拖拽过程的视觉只由 tab 自身的 :where() 默认 transform 体现。 */
+  :global(.rg-editor-tabs-dndzone) {
+    outline: none !important;
+  }
+  /* 搜索命中持续高亮：Monaco 把 inlineClassName 作为 <span> 的 class 加到
+     匹配文本的 token 上。`!important` 防止被 Monaco 主题 token CSS 盖掉。
+     主色 + 圆角让命中段落足够醒目。 */
+  :global(.rg-search-flash-inline) {
+    background-color: rgba(255, 200, 0, 0.45) !important;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(255, 200, 0, 0.5);
+  }
   /* Floating resize handles — small grab zones extending slightly outside the box */
   .rg-float-handle {
     position: absolute;

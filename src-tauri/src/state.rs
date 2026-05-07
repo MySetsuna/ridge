@@ -114,6 +114,9 @@ pub struct Workspace {
     /// Per-workspace counters for teammate-initiated splits (success / failure
     /// reasons). Surfaced read-only via `get_teammate_metrics`.
     pub teammate_metrics: TeammateMetrics,
+    /// 监控递增的展示序号：未命名工作区在 UI 上显示为「工作区 N」，N 在创建时分配
+    /// 后不再变化（关闭其他工作区或拖拽重排序都不影响）。关闭后不复用，避免歧义。
+    pub display_seq: u64,
 }
 
 /// Block-based PTY scrollback store. See `docs/TERMINAL_SCROLLBACK.md` for the
@@ -206,6 +209,10 @@ pub struct AppState {
     pub workspace_order: Arc<RwLock<Vec<Uuid>>>,
     pub workspace_names: Arc<RwLock<HashMap<Uuid, String>>>,
     pub active_workspace: Arc<RwLock<Uuid>>,
+    /// 下一个未命名工作区的展示序号；每次新建（包括从 .ridge 还原）`fetch_add 1`。
+    /// 关闭工作区不会回收已发出的序号 —— 用户期望「工作区 2」一旦创建就不会被另一个
+    /// 重新顶替，避免标签语义漂移。
+    pub next_workspace_seq: Arc<RwLock<u64>>,
     pub event_tx: mpsc::Sender<GlobalEvent>,
     /// 供 `capture-pane` 读取的最近输出（与 UI 展示同源 PTY 流）。
     /// Block-based store — see `PaneScrollback` and
@@ -255,6 +262,7 @@ impl AppState {
                 associated_file_path: None,
                 pending_spawns: HashMap::new(),
                 teammate_metrics: TeammateMetrics::default(),
+                display_seq: 1,
             },
         );
         Self {
@@ -262,6 +270,7 @@ impl AppState {
             workspace_order: Arc::new(RwLock::new(vec![id])),
             workspace_names: Arc::new(RwLock::new(HashMap::new())),
             active_workspace: Arc::new(RwLock::new(id)),
+            next_workspace_seq: Arc::new(RwLock::new(2)),
             event_tx,
             pty_scrollback: Arc::new(RwLock::new(HashMap::new())),
             teammate_binding: Arc::new(RwLock::new(None)),
@@ -274,6 +283,14 @@ impl AppState {
 
     pub fn active_workspace_id(&self) -> Uuid {
         *self.active_workspace.read()
+    }
+
+    /// 取下一个未命名工作区的展示序号并自增。仅在创建/还原工作区时调用一次。
+    pub fn allocate_workspace_seq(&self) -> u64 {
+        let mut seq = self.next_workspace_seq.write();
+        let n = *seq;
+        *seq = seq.saturating_add(1);
+        n
     }
 
     pub fn append_pty_scrollback(&self, ws: Uuid, pane: Uuid, chunk: &str) {

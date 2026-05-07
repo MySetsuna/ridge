@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { tick, type Snippet } from 'svelte';
+  import { tick, untrack, type Snippet } from 'svelte';
   import {
     showContextMenu,
     type ContextMenuItem,
   } from '$lib/stores/contextMenu';
   import { overlayScroll } from '$lib/actions/overlayScroll';
+  import { dndzone, SOURCES, TRIGGERS } from 'svelte-dnd-action';
 
   interface WorkspaceInfo {
     id: string;
     index: number;
     name?: string;
+    displaySeq: number;
   }
 
   interface Props {
@@ -32,8 +34,37 @@
     actions,
   }: Props = $props();
 
-  let draggingIndex: number | null = $state(null);
-  let dragOverIndex: number | null = $state(null);
+  // svelte-dnd-action 在交互期会替换 items 数组（插入 placeholder 等），
+  // 我们用本地 mirror 存放可被 dndzone 直接改写的列表，外部 props
+  // 变化时再同步过来。
+  let localItems: WorkspaceInfo[] = $state([]);
+  let dragInProgress = $state(false);
+
+  // 同步外部 workspaces 到本地 mirror，但跳过"内容相同"的赋值：reorder 落位
+  // 后 backend 往返结束会导致 workspaces 引用换新；如果这时无脑 [...workspaces]
+  // 再写一次，svelte-dnd-action 会因 items 引用变化触发第二轮 FLIP，叠加在
+  // 落位动画上产生肉眼可见的"名字闪烁"。
+  $effect(() => {
+    if (dragInProgress) return;
+    const ws = workspaces;
+    untrack(() => {
+      if (workspacesEqual(localItems, ws)) return;
+      localItems = [...ws];
+    });
+  });
+
+  function workspacesEqual(a: WorkspaceInfo[], b: WorkspaceInfo[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      const y = b[i];
+      if (x.id !== y.id) return false;
+      if (x.name !== y.name) return false;
+      if (x.displaySeq !== y.displaySeq) return false;
+    }
+    return true;
+  }
+
   let editingId: string | null = $state(null);
   let editingName: string = $state('');
   let renameInput: HTMLInputElement | undefined = $state();
@@ -44,44 +75,31 @@
     }
   });
 
-  // 当 workspaces 列表变化时重置拖拽状态
-  $effect(() => {
-    const _ = workspaces.length;
-    if (draggingIndex !== null || dragOverIndex !== null) {
-      draggingIndex = null;
-      dragOverIndex = null;
+  function handleDndConsider(e: CustomEvent<{ items: WorkspaceInfo[]; info: { source: string; trigger: string } }>) {
+    dragInProgress = true;
+    localItems = e.detail.items;
+  }
+
+  function handleDndFinalize(e: CustomEvent<{ items: WorkspaceInfo[]; info: { source: string; trigger: string } }>) {
+    dragInProgress = false;
+    const next = e.detail.items;
+    localItems = next;
+    if (e.detail.info.source !== SOURCES.POINTER) return;
+    // 对比新顺序与原顺序，找出第一个错位的位置作为 from/to。
+    const oldIds = workspaces.map((w) => w.id);
+    const newIds = next.map((w) => w.id);
+    let fromIndex = -1;
+    let toIndex = -1;
+    for (let i = 0; i < newIds.length; i++) {
+      if (newIds[i] !== oldIds[i]) {
+        fromIndex = oldIds.indexOf(newIds[i]);
+        toIndex = i;
+        break;
+      }
     }
-  });
-
-  function handleDragStart(e: DragEvent, index: number) {
-    draggingIndex = index;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', index.toString());
+    if (fromIndex >= 0 && toIndex >= 0 && fromIndex !== toIndex) {
+      onReorder(fromIndex, toIndex);
     }
-  }
-
-  function handleDragOver(e: DragEvent, index: number) {
-    e.preventDefault();
-    dragOverIndex = index;
-  }
-
-  function handleDragLeave() {
-    dragOverIndex = null;
-  }
-
-  function handleDrop(e: DragEvent, toIndex: number) {
-    e.preventDefault();
-    if (draggingIndex !== null && draggingIndex !== toIndex) {
-      onReorder(draggingIndex, toIndex);
-    }
-    draggingIndex = null;
-    dragOverIndex = null;
-  }
-
-  function handleDragEnd() {
-    draggingIndex = null;
-    dragOverIndex = null;
   }
 
   function handleContextMenu(e: MouseEvent, ws: WorkspaceInfo) {
@@ -92,7 +110,7 @@
         label: '重命名',
         action: () => {
           editingId = ws.id;
-          editingName = ws.name || `工作区 ${ws.index + 1}`;
+          editingName = ws.name || `工作区 ${ws.displaySeq}`;
         },
       },
       { id: 'divider1', divider: true },
@@ -125,7 +143,59 @@
   }
 
   function getWorkspaceName(ws: WorkspaceInfo): string {
-    return ws.name || `工作区 ${ws.index + 1}`;
+    return ws.name || `工作区 ${ws.displaySeq}`;
+  }
+
+  /** 浮动副本视觉强化 + 锁定 Y 轴：tab 拖拽时只能水平移动，Y 始终保持在
+   *  tab 条的初始位置，从而不会脱离可放置区域。
+   *
+   *  svelte-dnd-action 通过 `transform: translate3d(x, y, 0)` 跟随指针，且没有
+   *  内建的"轴锁"配置。这里用 MutationObserver 监听 `style` 变化，把库写入的
+   *  Y 立刻覆盖回拖拽起点的 Y；X 维持库的值。`transformDraggedElement` 只在
+   *  drag 起点调用一次，所以观察者必须在这里挂载。 */
+  function transformDraggedTab(el: HTMLElement | undefined) {
+    if (!el) return;
+    el.style.transition = 'box-shadow 120ms ease-out, opacity 120ms ease-out';
+    el.style.boxShadow = '0 12px 28px -6px rgba(0,0,0,0.45), 0 0 0 1px var(--rg-accent)';
+    el.style.background = 'var(--rg-surface-2, var(--rg-surface))';
+    el.style.opacity = '0.96';
+    // 高于 pin 编辑器面板（z-60）；保持低于全部 modal 层。
+    el.style.zIndex = '100';
+
+    let lockedY: number | null = null;
+    const observer = new MutationObserver(() => {
+      const t = el.style.transform;
+      const m = t.match(/translate3d\((-?[\d.]+)px,\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\)/);
+      if (!m) return;
+      const x = m[1];
+      const y = parseFloat(m[2]);
+      if (lockedY === null) {
+        lockedY = y;
+        return;
+      }
+      if (Math.abs(y - lockedY) < 0.5) return;
+      el.style.transform = `translate3d(${x}px, ${lockedY}px, 0)`;
+    });
+    observer.observe(el, { attributes: true, attributeFilter: ['style'] });
+    // shadow 元素在 drop / 取消时会从 DOM 中移除，observer 随之被 GC，无需手动 disconnect。
+  }
+
+  /** 关闭按钮 / rename 输入需要拦截 pointer 事件，防止 svelte-dnd-action
+   *  在它们身上触发拖拽。stopPropagation 同时覆盖 mousedown / touchstart，
+   *  和库内部所有可能的拖拽起手监听器对齐。 */
+  function blockDragStart(e: Event) {
+    e.stopPropagation();
+  }
+
+  /** 整个 tab（含内边距 + 名字）作为拖拽起手区，键盘 Enter/Space 触发切换。
+   *  rename 模式下不响应（输入会自己 handleRenameKeydown）。 */
+  function handleSelectKeydown(e: KeyboardEvent, ws: WorkspaceInfo) {
+    if (e.isComposing) return;
+    if (editingId === ws.id) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSwitch(ws.id);
+    }
   }
 </script>
 
@@ -135,73 +205,88 @@
      container and remain visible regardless of scroll position.
      wheel → horizontal pan (no Shift needed) is handled by overlayScroll. -->
 <div class="min-w-0 flex-1 flex items-center">
-  <!-- Actions slot (e.g. "+" new-workspace button): always visible on the
-       right, never scrolls with the tab strip. -->
   {#if actions}
   <div class="shrink-0 rg-no-drag">
     {@render actions()}
   </div>
   {/if}
-  <!-- Scrollable tab strip: tab items are direct flex children so shrink-0
-       causes them to overflow the container width, enabling scroll. -->
-  <div class="rg-no-drag min-w-0 flex-1 py-1 gap-1" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
-    {#each workspaces as ws, i (ws.id)}
-    <div class="relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-move
-        {ws.id === activeWorkspaceId
-          ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
-          : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}
-        {dragOverIndex === i ? 'ring-2 ring-[var(--rg-accent)]/50' : ''}" draggable="true" ondragstart={(e)=>
-      handleDragStart(e, i)}
-      ondragover={(e) => handleDragOver(e, i)}
-      ondragleave={handleDragLeave}
-      ondrop={(e) => handleDrop(e, i)}
-      ondragend={handleDragEnd}
-      oncontextmenu={(e) => handleContextMenu(e, ws)}
-      role="button"
-      tabindex="0"
-      >
-      {#if editingId === ws.id}
-      <input
-            type="text"
-            bind:this={renameInput}
-            bind:value={editingName}
-            class="w-20 bg-transparent border-b border-[var(--rg-accent)] outline-none text-[var(--rg-fg)] text-[12px]"
-            onblur={() => handleRenameSubmit(ws.id)}
-            onkeydown={(e) => handleRenameKeydown(e, ws.id)}
-          />
-        {:else}
-      <button
-            type="button"
-            class="text-inherit"
-            title="切换到 {getWorkspaceName(ws)}"
-            onclick={() => onSwitch(ws.id)}
-          >
-            {getWorkspaceName(ws)}
-          </button>
-      {/if}
+  <div data-tauri-drag-region class="min-w-0 flex-1 py-1" use:overlayScroll={{ preset: 'horizontal-tabs' }}>
+    <div
+      class="rg-ws-dndzone flex items-center gap-1"
+      use:dndzone={{
+        items: localItems,
+        flipDurationMs: 160,
+        type: 'workspace-tabs',
+        dropTargetStyle: {},
+        dragDisabled: editingId !== null,
+        transformDraggedElement: transformDraggedTab,
+      }}
+      onconsider={handleDndConsider}
+      onfinalize={handleDndFinalize}
+    >
+      {#each localItems as ws (ws.id)}
+      <div class="rg-no-drag relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-grab active:cursor-grabbing select-none
+          {ws.id === activeWorkspaceId
+            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
+            : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}"
+        title={editingId === ws.id ? undefined : `切换到 ${getWorkspaceName(ws)}`}
+        onclick={() => { if (editingId !== ws.id) onSwitch(ws.id); }}
+        onkeydown={(e) => handleSelectKeydown(e, ws)}
+        oncontextmenu={(e) => handleContextMenu(e, ws)}
+        role="button"
+        tabindex="0"
+        >
+        {#if editingId === ws.id}
+        <input
+              type="text"
+              bind:this={renameInput}
+              bind:value={editingName}
+              class="w-20 bg-transparent border-b border-[var(--rg-accent)] outline-none text-[var(--rg-fg)] text-[12px]"
+              onclick={(e) => e.stopPropagation()}
+              onmousedown={blockDragStart}
+              ontouchstart={blockDragStart}
+              onpointerdown={blockDragStart}
+              onblur={() => handleRenameSubmit(ws.id)}
+              onkeydown={(e) => handleRenameKeydown(e, ws.id)}
+            />
+          {:else}
+        <span class="pointer-events-none">{getWorkspaceName(ws)}</span>
+        {/if}
 
-      {#if workspaces.length > 1}
-      <button
-            type="button"
-            class="ml-1 opacity-60 hover:opacity-100 hover:text-red-400 transition-opacity"
-            title="关闭工作区"
-            onclick={(e) => {
-              e.stopPropagation();
-              onClose(ws.id);
-            }}
-          >
-            <svg
-              class="w-3 h-3"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
+        {#if workspaces.length > 1}
+        <button
+              type="button"
+              class="ml-1 opacity-60 hover:opacity-100 hover:text-red-400 transition-opacity"
+              title="关闭工作区"
+              onmousedown={blockDragStart}
+              ontouchstart={blockDragStart}
+              onpointerdown={blockDragStart}
+              onclick={(e) => {
+                e.stopPropagation();
+                onClose(ws.id);
+              }}
             >
-              <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" />
-            </svg>
-          </button>
-      {/if}
+              <svg
+                class="w-3 h-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" />
+              </svg>
+            </button>
+        {/if}
+      </div>
+      {/each}
     </div>
-    {/each}
   </div>
 </div>
+
+<style>
+  /* svelte-dnd-action 默认会在 dropzone 上加描边/阴影；这里用 scoped 样式
+     覆盖，与 Ridge 的 tab 视觉风格保持一致。 */
+  :global(.rg-ws-dndzone) {
+    outline: none !important;
+  }
+</style>
