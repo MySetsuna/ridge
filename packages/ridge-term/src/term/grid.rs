@@ -153,6 +153,20 @@ pub struct Grid {
     /// observed (so the heuristic returns false until a TUI like Claude
     /// Code's Ink layer drives the cursor).
     last_abs_csi_at_ms: i64,
+    /// §1.27-tail (2026-05-07) — cursor (row, col) snapshot at the moment
+    /// of the most recent absolute-positioning CSI. Ink-style apps emit
+    /// many CUPs per frame (one per row during the walk-and-redraw); the
+    /// LAST one of any frame parks the cursor at the input row (bottom
+    /// of the rendered frame). Sampling AFTER a feed batch completes
+    /// therefore yields the inline-TUI's stable input row even when the
+    /// live cursor was mid-walk during the frame. JS uses this as the
+    /// IME helper anchor when no user-keystroke anchor has been captured
+    /// yet (the "user clicked into a Claude Code pane and immediately
+    /// typed pinyin" case where `inputAnchorPixelPosition` would
+    /// otherwise teleport the helper to whatever spinner row the live
+    /// cursor happens to be passing through).
+    last_abs_csi_row: u16,
+    last_abs_csi_col: u16,
 }
 
 impl Grid {
@@ -167,6 +181,8 @@ impl Grid {
             scrollback: Scrollback::new(scrollback_lines),
             last_resizes: Vec::with_capacity(RESIZE_DIAG_RING_CAP),
             last_abs_csi_at_ms: 0,
+            last_abs_csi_row: 0,
+            last_abs_csi_col: 0,
         }
     }
 
@@ -180,17 +196,41 @@ impl Grid {
     /// is consumed by `is_inline_tui_active_at` to decide whether the next
     /// resize on a primary pane should wipe the visible region.
     ///
+    /// §1.27-tail also snapshots the cursor's NEW (post-CUP) position so
+    /// `last_abs_csi_position` can serve as a stable IME helper anchor for
+    /// inline TUIs that walk the cursor through every frame row.
+    ///
     /// Caller passes wall-clock ms (`crate::term::clock::now_ms()` at
     /// runtime). Tests pass a controlled value to drive the decay window
     /// deterministically.
     pub fn note_absolute_positioning(&mut self, now_ms: i64) {
         self.last_abs_csi_at_ms = now_ms;
+        let cur = self.screen().cursor;
+        self.last_abs_csi_row = cur.row.min(u16::MAX as usize) as u16;
+        self.last_abs_csi_col = cur.col.min(u16::MAX as usize) as u16;
     }
 
     /// Most recent absolute-positioning timestamp. 0 = never observed.
     /// Exposed for tests and for `Terminal::is_inline_tui_mode_at`.
     pub fn last_abs_csi_at_ms(&self) -> i64 {
         self.last_abs_csi_at_ms
+    }
+
+    /// §1.27-tail — cursor (row, col, at_ms) at the moment of the most
+    /// recent absolute-positioning CSI. Returns `None` when no abs CSI
+    /// has been observed (sentinel `at_ms == 0`). Used by JS as the IME
+    /// helper anchor when no user-keystroke anchor exists; sampling
+    /// AFTER a feed batch completes yields the inline-TUI's resting
+    /// (input-row) position even when intermediate state was mid-walk.
+    pub fn last_abs_csi_position(&self) -> Option<(usize, usize, i64)> {
+        if self.last_abs_csi_at_ms == 0 {
+            return None;
+        }
+        Some((
+            self.last_abs_csi_row as usize,
+            self.last_abs_csi_col as usize,
+            self.last_abs_csi_at_ms,
+        ))
     }
 
     /// Inline-TUI heuristic: returns true iff
@@ -586,15 +626,52 @@ impl Grid {
             self.linefeed();
         }
 
-        // If we're about to overwrite the second half of a wide cell, also
-        // clear the first half so we don't leave a stray glyph.
+        // §1.28 (2026-05-07): keep wide-cell pair integrity on overwrite.
+        //
+        // A wide char occupies two cells: a main at col (width=2) and a
+        // continuation at col+1 (width=0). Either side surviving without
+        // its partner is an orphan, and the renderer / overwrite logic
+        // both mishandle orphans:
+        //
+        //   - Renderer skips width==0 cells, so an orphan continuation
+        //     just looks like a blank, but the *next* narrow write to
+        //     that column triggers the "I see a width==0 here, clear
+        //     the main at col-1" branch below — which then wipes a
+        //     freshly-written narrow char a column to the left. That's
+        //     the chain Ink's frame-redraw triggers: 中 → narrow over
+        //     col=2 → orphan continuation at col=3 → next narrow at
+        //     col=3 deletes the col=2 narrow we just wrote. Same root
+        //     cause behind "中文字符只渲染一半", "字符消失只剩占位",
+        //     and "改色文本多余字符" symptoms during `claude` runs.
+        //
+        // Two symmetric pre-write guards tear both halves down in lock
+        // step so we never leave an orphan:
         let cur_col = self.screen().cursor.col;
         let cur_row = self.screen().cursor.row;
         if cur_col < cols {
             let here = self.screen().rows[cur_row].cells[cur_col];
+            // (a) writing onto a continuation → clear the prior main.
             if here.width == 0 && cur_col > 0 {
                 self.screen_mut().rows[cur_row].cells[cur_col - 1] =
                     Cell::new(' ', AttrId::DEFAULT, 1);
+            }
+            // (b) writing onto a main → clear the trailing continuation.
+            if here.width == 2 && cur_col + 1 < cols {
+                self.screen_mut().rows[cur_row].cells[cur_col + 1] =
+                    Cell::new(' ', AttrId::DEFAULT, 1);
+            }
+        }
+        // (c) wide writes only: the spacer we'll lay at cur_col+1 might
+        //     itself land on a different pair's main — orphan its
+        //     continuation at cur_col+2.
+        if w == 2 {
+            let nxt = cur_col + 1;
+            if nxt < cols {
+                let next_cell = self.screen().rows[cur_row].cells[nxt];
+                if next_cell.width == 2 && nxt + 1 < cols {
+                    self.screen_mut().rows[cur_row].cells[nxt + 1] =
+                        Cell::new(' ', AttrId::DEFAULT, 1);
+                }
             }
         }
 
@@ -863,6 +940,11 @@ impl Grid {
     fn erase_row_range(&mut self, row: usize, start: usize, end: usize) {
         if let Some(r) = self.screen_mut().rows.get_mut(row) {
             let clamped_end = end.min(r.cells.len());
+            // §1.28: orphan-clear any wide-pair half whose partner falls
+            // outside the erase range. Done BEFORE the wipe loop so the
+            // outside-of-range partner is normalized while the in-range
+            // half still carries its width marker for the boundary check.
+            clip_wide_pair_at_range_boundaries(&mut r.cells, start, clamped_end);
             for c in start..clamped_end {
                 r.cells[c] = Cell::EMPTY;
             }
@@ -897,6 +979,8 @@ impl Grid {
         let end = (cur_col + n).min(cols);
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let clamped_end = end.min(r.cells.len());
+            // §1.28: same wide-pair boundary guard as erase_row_range.
+            clip_wide_pair_at_range_boundaries(&mut r.cells, cur_col, clamped_end);
             for c in cur_col..clamped_end {
                 r.cells[c] = Cell::EMPTY;
             }
@@ -919,6 +1003,32 @@ impl Grid {
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let n = n.min(cols.saturating_sub(cur_col));
             if n == 0 { return; }
+            // §1.28: if the cut point splits a wide pair (cells[cur_col]
+            // is a continuation whose main lives at cur_col-1), the
+            // shift would leave the main orphaned with `n` blanks
+            // between it and a now-displaced continuation. Clear both
+            // halves before shifting.
+            if cur_col > 0
+                && cur_col < r.cells.len()
+                && r.cells[cur_col].width == 0
+                && r.cells[cur_col - 1].width == 2
+            {
+                r.cells[cur_col - 1] = Cell::EMPTY;
+                r.cells[cur_col] = Cell::EMPTY;
+            }
+            // §1.28: pairs near the right margin that the shift would
+            // push partly off the row also need their inside half
+            // cleared so an orphan main doesn't land at cells[cols-1].
+            if cols > n
+                && cols >= n + 1
+                && cols - n - 1 < r.cells.len()
+                && cols - n < r.cells.len()
+                && r.cells[cols - n - 1].width == 2
+                && r.cells[cols - n].width == 0
+            {
+                r.cells[cols - n - 1] = Cell::EMPTY;
+                r.cells[cols - n] = Cell::EMPTY;
+            }
             // Shift right-of-cursor cells right by n; cells falling off are dropped.
             // Walk from the right edge inward to avoid overwriting source cells.
             for dst in (cur_col + n..cols).rev() {
@@ -985,6 +1095,10 @@ impl Grid {
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let n = n.min(cols.saturating_sub(cur_col));
             if n == 0 { return; }
+            // §1.28: clip wide pairs at the deletion range boundaries
+            // so we don't leave orphans after the shift. Range is
+            // [cur_col, cur_col + n).
+            clip_wide_pair_at_range_boundaries(&mut r.cells, cur_col, cur_col + n);
             // Shift left.
             for dst in cur_col..(cols - n) {
                 let src = dst + n;
@@ -1167,6 +1281,42 @@ impl Grid {
 ///     matches xterm's "erase invalidates the link" UX (the user can re-emit
 ///     OSC 8 to restore it). This is rare in practice — partial-erase usually
 ///     covers a whole word or label.
+/// §1.28 (2026-05-07): when an erase / shift range `[start, end)` cuts
+/// through the middle of a wide-cell pair (main at width=2, continuation
+/// at width=0), the half that lives OUTSIDE the range becomes an orphan.
+/// This helper clears the outside half so the pair invariant survives.
+///
+/// Called by EL / ECH / ICH / DCH — every cell-edit op whose range can
+/// straddle a wide pair. Cheap (two boundary peeks); safe to call on
+/// empty rows, zero-length ranges, or out-of-bounds indices.
+fn clip_wide_pair_at_range_boundaries(
+    cells: &mut [super::cell::Cell],
+    start: usize,
+    end: usize,
+) {
+    if start >= end || cells.is_empty() {
+        return;
+    }
+    // Left boundary: cells[start] is a continuation, so its main at
+    // start-1 sits outside the range — orphan it away.
+    if start > 0 && start < cells.len()
+        && cells[start].width == 0
+        && cells[start - 1].width == 2
+    {
+        cells[start - 1] = super::cell::Cell::EMPTY;
+    }
+    // Right boundary: cells[end-1] is a wide main inside the range, so
+    // its continuation at `end` sits outside — orphan it away.
+    if end <= cells.len()
+        && end > 0
+        && end < cells.len()
+        && cells[end - 1].width == 2
+        && cells[end].width == 0
+    {
+        cells[end] = super::cell::Cell::EMPTY;
+    }
+}
+
 fn clip_hyperlinks_around(spans: &mut Vec<super::cell::HyperlinkSpan>, start: usize, end: usize) {
     if start >= end {
         return;
@@ -1684,5 +1834,150 @@ mod tests {
         // Even a fresh `note` followed by cursor-visible should be off.
         g2.note_absolute_positioning(50_000);
         assert!(!g2.is_inline_tui_active_at(50_500, true));
+    }
+
+    // ------------------------------------------------------------------
+    // §1.28 (2026-05-07): wide-cell pair invariant under cell-edit ops.
+    //
+    // These tests guard the chain that produced "中文字符只渲染一半",
+    // "字符消失只剩占位", "改色文本多余字符" symptoms when running
+    // claude/Ink inside ridge-term. Root cause: cell-edit ops (print
+    // overwrite, EL/ECH, ICH/DCH) used to leave half of a wide-cell
+    // pair behind when the other half was overwritten/erased/shifted.
+    // ------------------------------------------------------------------
+
+    /// `assert_no_orphan_pair_in(row)` — for every cell in the row,
+    /// width==0 must be immediately preceded by a width==2; width==2
+    /// must be immediately followed by a width==0. Either invariant
+    /// being violated means a wide-cell half is dangling.
+    fn assert_no_orphan_pair_in(g: &Grid, row_idx: usize) {
+        let row = g.row(row_idx).expect("row in range");
+        let cells = &row.cells;
+        for (i, cell) in cells.iter().enumerate() {
+            if cell.width == 0 {
+                assert!(i > 0, "row {row_idx} col {i}: width==0 at column 0 has no possible main");
+                let prev = cells[i - 1];
+                assert_eq!(
+                    prev.width, 2,
+                    "row {row_idx} col {i}: width==0 (continuation) without width==2 main at col {}",
+                    i - 1,
+                );
+            }
+            if cell.width == 2 {
+                assert!(
+                    i + 1 < cells.len(),
+                    "row {row_idx} col {i}: width==2 main at last col has no continuation slot",
+                );
+                let next = cells[i + 1];
+                assert_eq!(
+                    next.width, 0,
+                    "row {row_idx} col {i}: width==2 (main) without width==0 continuation at col {}",
+                    i + 1,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn print_narrow_over_wide_main_clears_continuation() {
+        let mut g = Grid::new(2, 10, 0);
+        g.print('中', Attrs::DEFAULT);
+        // Sanity: '中' occupies cols 0..=1.
+        assert_eq!(g.row(0).unwrap().cells[0].ch, '中');
+        assert_eq!(g.row(0).unwrap().cells[0].width, 2);
+        assert_eq!(g.row(0).unwrap().cells[1].width, 0);
+
+        // Move back to col 0 and overwrite with a narrow ASCII char.
+        g.cursor_to(0, 0);
+        g.print('A', Attrs::DEFAULT);
+
+        // The trailing continuation must be cleared, not orphaned.
+        assert_eq!(g.row(0).unwrap().cells[0].ch, 'A');
+        assert_eq!(g.row(0).unwrap().cells[0].width, 1);
+        assert_eq!(g.row(0).unwrap().cells[1].width, 1);
+        assert_eq!(g.row(0).unwrap().cells[1].ch, ' ');
+        assert_no_orphan_pair_in(&g, 0);
+    }
+
+    #[test]
+    fn print_narrow_at_continuation_does_not_wipe_freshly_written_main() {
+        // The exact Ink-redraw chain from the bug report:
+        //   1. write '中' at col 0..=1
+        //   2. (Ink frame redraw) cursor back to col 0, write 'A'
+        //   3. cursor advances, write 'B' at col 1
+        // Pre-§1.28: step 3's "I see width==0, clean main at col-1"
+        // branch fires and overwrites the 'A' from step 2 with a
+        // default-attr blank.
+        let mut g = Grid::new(2, 10, 0);
+        g.print('中', Attrs::DEFAULT);
+        g.cursor_to(0, 0);
+        g.print('A', Attrs::DEFAULT);
+        // After fix, cursor is now at col 1 — but instead of trusting
+        // that, set explicitly so the test is layout-agnostic.
+        g.cursor_to(0, 1);
+        g.print('B', Attrs::DEFAULT);
+
+        assert_eq!(
+            g.row(0).unwrap().cells[0].ch, 'A',
+            "the 'A' from the prior write must NOT be wiped by writing 'B' to col 1",
+        );
+        assert_eq!(g.row(0).unwrap().cells[1].ch, 'B');
+        assert_no_orphan_pair_in(&g, 0);
+    }
+
+    #[test]
+    fn el_clearing_through_wide_main_clears_continuation() {
+        // ECH 3 from cursor=col 1 against "中文" (cols 0..=3): the
+        // erase range [1, 4) cuts the main of '文' (col 2) inside but
+        // leaves nothing wide outside. Result: row [c, EMPTY, EMPTY, EMPTY,
+        // ...] — except the FIRST cell at col 0 was '中' main, whose
+        // continuation at col 1 falls inside the erase. The boundary
+        // guard must clear cells[0] too.
+        let mut g = Grid::new(2, 10, 0);
+        g.print('中', Attrs::DEFAULT); // cols 0..=1
+        g.print('文', Attrs::DEFAULT); // cols 2..=3
+        g.cursor_to(0, 1);
+        g.erase_chars(3); // erase [1, 4)
+
+        assert_no_orphan_pair_in(&g, 0);
+        // cells[0] should also be EMPTY because '中' main at col 0
+        // would otherwise be an orphan.
+        assert_eq!(g.row(0).unwrap().cells[0].width, 1);
+        assert_eq!(g.row(0).unwrap().cells[0].ch, ' ');
+    }
+
+    #[test]
+    fn ich_at_wide_continuation_clears_paired_main() {
+        // '中' at cols 0..=1, cursor on the continuation (col 1),
+        // ICH 2 → the shift would push the continuation right by 2,
+        // leaving '中' main at col 0 with two blanks before its
+        // displaced continuation. Boundary guard must clear both
+        // halves of the split pair.
+        let mut g = Grid::new(2, 10, 0);
+        g.print('中', Attrs::DEFAULT);
+        g.cursor_to(0, 1);
+        g.insert_chars(2);
+
+        assert_no_orphan_pair_in(&g, 0);
+        // Col 0 must NOT remain a width=2 main.
+        assert_eq!(g.row(0).unwrap().cells[0].width, 1);
+    }
+
+    #[test]
+    fn dch_at_wide_main_clears_paired_continuation() {
+        // DCH 1 against a wide pair starting at the cursor: the main
+        // is deleted, the continuation gets shifted left into the
+        // main's slot — without the guard it lands as a width=0 with
+        // no width=2 to its left.
+        let mut g = Grid::new(2, 10, 0);
+        g.print('中', Attrs::DEFAULT); // cols 0..=1
+        g.print('A', Attrs::DEFAULT);  // col  2
+        g.cursor_to(0, 0);
+        g.delete_chars(1); // delete cells[0], shifting [1..] left
+
+        assert_no_orphan_pair_in(&g, 0);
+        // After fix, col 0 is the cleared continuation slot (now
+        // EMPTY width=1), col 1 is the shifted-in 'A'.
+        assert_eq!(g.row(0).unwrap().cells[0].width, 1);
     }
 }

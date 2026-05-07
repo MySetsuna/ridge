@@ -247,6 +247,19 @@ function onCompositionEnd(e: CompositionEvent) {
 	// "did the user actually commit" — a cancelled composition can leak
 	// just as easily as a committed one.
 	manager.forceFullRedraw(paneId);
+	// §1.27-tail (2026-05-07): commit echo lag — `manager.write` posts
+	// the committed Chinese chars to the PTY immediately, but the
+	// shell's echo round-trips the OS scheduler + PTY readline + kernel
+	// feed and can land 30–100 ms later. The first `forceFullRedraw`
+	// above paints a frame BEFORE the echo lands, so the user briefly
+	// sees the prompt without their committed text where the textarea
+	// just collapsed. A 120 ms follow-up redraw catches the echoed
+	// cells and refreshes the canvas. `alive` guards against the
+	// component unmounting (split / close) before the timer fires.
+	setTimeout(() => {
+		if (!alive) return;
+		manager.forceFullRedraw(paneId);
+	}, 120);
 
 	// §1.27 diag: log the committed string. The companion cells_at()
 	// call to inspect cell state around the cursor lives in the

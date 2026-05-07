@@ -421,6 +421,24 @@ export class TerminalKernel {
      *   `__RIDGE_KERNEL.lastResizeDiags()` after a live resize confirms
      *   whether `is_alt` was true at the kernel level and whether the
      *   §1.22 wipe path fired. See `docs/term-rebuild/REPRO_alt_resize.md`.
+     * §1.27-tail (2026-05-07) — JS-accessible snapshot of the cursor's
+     * position at the moment of the most recent absolute-positioning
+     * CSI. Returns `null` (JS) when no abs CSI has been observed.
+     * Otherwise returns `{ row, col, atMs }` where `atMs` is the
+     * wall-clock unix-epoch ms timestamp.
+     *
+     * Frontend usage: `manager.ts::inputAnchorPixelPosition` falls back
+     * to this snapshot (when within the inline-TUI decay window) before
+     * falling back to the live cursor — so the IME helper anchor stays
+     * at the inline-TUI's input row even when the live cursor is
+     * mid-walk. See §1.27 in CLAUDE.md.
+     * @returns {any}
+     */
+    lastAbsCsiPosition() {
+        const ret = wasm.terminalkernel_lastAbsCsiPosition(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {any[]}
      */
     lastResizeDiags() {

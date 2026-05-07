@@ -200,7 +200,19 @@ export class TerminalKernel {
      *   `__RIDGE_KERNEL.lastResizeDiags()` after a live resize confirms
      *   whether `is_alt` was true at the kernel level and whether the
      *   §1.22 wipe path fired. See `docs/term-rebuild/REPRO_alt_resize.md`.
+     * §1.27-tail (2026-05-07) — JS-accessible snapshot of the cursor's
+     * position at the moment of the most recent absolute-positioning
+     * CSI. Returns `null` (JS) when no abs CSI has been observed.
+     * Otherwise returns `{ row, col, atMs }` where `atMs` is the
+     * wall-clock unix-epoch ms timestamp.
+     *
+     * Frontend usage: `manager.ts::inputAnchorPixelPosition` falls back
+     * to this snapshot (when within the inline-TUI decay window) before
+     * falling back to the live cursor — so the IME helper anchor stays
+     * at the inline-TUI's input row even when the live cursor is
+     * mid-walk. See §1.27 in CLAUDE.md.
      */
+    lastAbsCsiPosition(): any;
     lastResizeDiags(): any[];
     constructor(rows: number, cols: number, scrollback: number);
     /**
@@ -324,6 +336,7 @@ export interface InitOutput {
     readonly terminalkernel_isInlineTuiMode: (a: number) => number;
     readonly terminalkernel_isSyncOutput: (a: number) => number;
     readonly terminalkernel_isUserScrollLocked: (a: number) => number;
+    readonly terminalkernel_lastAbsCsiPosition: (a: number) => any;
     readonly terminalkernel_lastResizeDiags: (a: number) => [number, number];
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
     readonly terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;

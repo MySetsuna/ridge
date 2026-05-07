@@ -35,6 +35,7 @@ export const terminalkernel_isFocusReporting: (a: number) => number;
 export const terminalkernel_isInlineTuiMode: (a: number) => number;
 export const terminalkernel_isSyncOutput: (a: number) => number;
 export const terminalkernel_isUserScrollLocked: (a: number) => number;
+export const terminalkernel_lastAbsCsiPosition: (a: number) => any;
 export const terminalkernel_lastResizeDiags: (a: number) => [number, number];
 export const terminalkernel_new: (a: number, b: number, c: number) => number;
 export const terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;

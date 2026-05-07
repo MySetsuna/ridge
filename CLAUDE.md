@@ -161,6 +161,37 @@ Three independent fixes shipped:
 any residual cell-state leaks. See
 `docs/term-rebuild/REPRO_dim_residue.md` for the diagnostic recipe.
 
+§1.27-tail (2026-05-07) — IME helper anchor & echo-lag refinements:
+two cases not covered by the initial §1.27 fix-set leaked into live
+Claude Code use:
+1. **First-composition teleport.** When a user clicked into an
+   inline-TUI pane (Claude Code's `claude`) and immediately started
+   typing pinyin without any prior ASCII keystroke,
+   `PaneEntry.imeAnchor` was still null and the fallback fell to the
+   *live* kernel cursor — which during an Ink walk is mid-spinner and
+   not the input row. Fix: `Grid::note_absolute_positioning` now also
+   snapshots the cursor's (row, col); `Grid::last_abs_csi_position`
+   exposes `(row, col, at_ms)`; `JsTerminal::lastAbsCsiPosition()` is
+   the JS bridge. `manager.ts::inputAnchorPixelPosition` falls back
+   chain: imeAnchor → lastAbsCsiPosition (if ≤ 2 s old) → live
+   cursor. Because Ink's frame ENDS by parking the cursor at the
+   input row, the snapshot taken after a feed batch reliably resolves
+   to the input position even when an intermediate state was
+   mid-walk.
+2. **Echo-lag residue.** `manager.write` at compositionEnd posts the
+   committed Chinese chars to the PTY immediately, but the shell's
+   echo round-trips OS scheduler + PTY readline + kernel feed and
+   typically lands 30–100 ms later. The `forceFullRedraw` at
+   compositionEnd paints a frame BEFORE the echo lands, so the user
+   briefly saw the prompt without their committed text in the cells
+   the textarea just collapsed off. Fix: schedule a follow-up
+   `forceFullRedraw` 120 ms after compositionEnd (`alive`-guarded
+   against unmount) so the canvas catches the echoed cells.
+The first fix lives in the kernel + bindings; the second is a JS
+setTimeout in `RidgePane.svelte::onCompositionEnd`. WebGPU was
+already redraw-every-tick so neither fix changes its behaviour;
+both target Canvas2D + the cross-backend cursor-anchor logic.
+
 §4.6 (2026-05-07, font-fallback only): `manager.ts:240`'s default
 `fontFamily` already includes `"Segoe UI Emoji", "Apple Color Emoji",
 "Noto Color Emoji"` after the monospace stack, so single-codepoint
