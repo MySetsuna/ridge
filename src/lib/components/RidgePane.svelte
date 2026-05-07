@@ -743,11 +743,17 @@ function onContextMenu(e: MouseEvent) {
 		// menu. Pre-xterm-removal Pane.svelte never carried these; user
 		// asked for a richer menu now that splits are a primary affordance.
 		{ id: 'term-sep2', divider: true },
+		// @ridge/split convention: direction='horizontal' lays panes
+		// side-by-side (sets RgPane `width` → flex-row), so a "向右拆分"
+		// click should pass 'horizontal'; direction='vertical' stacks
+		// them (sets `height` → flex-col), so "向下拆分" passes 'vertical'.
+		// The previous mapping was inverted — see RgPane.svelte's
+		// `dim = direction === 'horizontal' ? 'width' : 'height'`.
 		{ id: 'term-split-right', label: '向右拆分', action: () => {
-			void splitPane(paneId, 'vertical');
+			void splitPane(paneId, 'horizontal');
 		}},
 		{ id: 'term-split-down', label: '向下拆分', action: () => {
-			void splitPane(paneId, 'horizontal');
+			void splitPane(paneId, 'vertical');
 		}},
 		{ id: 'term-sep3', divider: true },
 		{ id: 'term-close', label: '关闭面板', action: () => {
