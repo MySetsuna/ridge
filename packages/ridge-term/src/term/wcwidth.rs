@@ -12,10 +12,18 @@
 
 #[inline]
 pub fn wcwidth(cp: u32) -> u8 {
-    if cp < 0x20 { return 0; }
-    if cp < 0x7f { return 1; }
-    if cp < 0xa0 { return 0; }
-    if cp < 0x300 { return 1; }
+    if cp < 0x20 {
+        return 0;
+    }
+    if cp < 0x7f {
+        return 1;
+    }
+    if cp < 0xa0 {
+        return 0;
+    }
+    if cp < 0x300 {
+        return 1;
+    }
 
     // Combining marks / formatting controls / variation selectors.
     if (0x300..=0x36f).contains(&cp)
@@ -37,11 +45,14 @@ pub fn wcwidth(cp: u32) -> u8 {
         return 0;
     }
 
-    if cp < 0x1100 { return 1; }
+    if cp < 0x1100 {
+        return 1;
+    }
 
     // Wide ranges. Most-common first for branch prediction.
     if cp <= 0x115f
-        || cp == 0x2329 || cp == 0x232a
+        || cp == 0x2329
+        || cp == 0x232a
         || (0x2e80..=0x303e).contains(&cp)
         || (0x3041..=0x33ff).contains(&cp)
         || (0x3400..=0x4dbf).contains(&cp)
@@ -54,7 +65,8 @@ pub fn wcwidth(cp: u32) -> u8 {
         || (0xff00..=0xff60).contains(&cp)
         || (0xffe0..=0xffe6).contains(&cp)
         || (0x1b000..=0x1b1ff).contains(&cp)
-        || cp == 0x1f004 || cp == 0x1f0cf
+        || cp == 0x1f004
+        || cp == 0x1f0cf
         || (0x1f200..=0x1f251).contains(&cp)
         || (0x1f300..=0x1fbff).contains(&cp)
         || (0x2600..=0x27bf).contains(&cp)
@@ -95,10 +107,7 @@ pub fn wcwidth_grapheme(s: &str) -> u8 {
             return 2;
         }
     }
-    s.chars()
-        .map(|c| wcwidth(c as u32))
-        .max()
-        .unwrap_or(0)
+    s.chars().map(|c| wcwidth(c as u32)).max().unwrap_or(0)
 }
 
 /// §4.7 — `true` when the codepoint COULD combine with what comes next
@@ -118,11 +127,21 @@ pub fn wcwidth_grapheme(s: &str) -> u8 {
 #[inline]
 pub fn could_extend_grapheme(c: char) -> bool {
     let cp = c as u32;
-    if cp == 0x200D { return true; }
-    if (0xFE00..=0xFE0F).contains(&cp) { return true; }
-    if (0xE0100..=0xE01EF).contains(&cp) { return true; }
-    if (0x1F1E6..=0x1F1FF).contains(&cp) { return true; }
-    if (0x1100..=0x115F).contains(&cp) { return true; }
+    if cp == 0x200D {
+        return true;
+    }
+    if (0xFE00..=0xFE0F).contains(&cp) {
+        return true;
+    }
+    if (0xE0100..=0xE01EF).contains(&cp) {
+        return true;
+    }
+    if (0x1F1E6..=0x1F1FF).contains(&cp) {
+        return true;
+    }
+    if (0x1100..=0x115F).contains(&cp) {
+        return true;
+    }
     wcwidth(cp) == 0
 }
 
@@ -154,7 +173,7 @@ mod tests {
     fn emoji_is_wide() {
         assert_eq!(wcwidth(0x1f600), 2); // 😀
         assert_eq!(wcwidth(0x1f680), 2); // 🚀
-        assert_eq!(wcwidth(0x2705),  2); // ✅
+        assert_eq!(wcwidth(0x2705), 2); // ✅
     }
 
     #[test]

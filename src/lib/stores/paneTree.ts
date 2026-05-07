@@ -88,6 +88,9 @@ export type SplitResizeUiState =
       snapState: JunctionSnapState | null;
       /** 未命中联动 gating、但位于吸附阈值内的同向兄弟，用于拖动中视觉吸附 */
       sameAxisAttractors: SplitterRef[];
+      /** Px-anchor 计划：拖主分隔线时，descendant 同向 split 的 absorber
+       *  child 吞下尺寸变化，其余 children 保持 mousedown 时的像素宽度。 */
+      pxAnchors: PxAnchorPlan[];
     };
 
 export interface SplitRatioUpdate {
@@ -174,23 +177,68 @@ export function pointerInCoupleZone(
 const UNSNAP_THRESHOLD_PX = 9999;
 
 /**
- * Default for split-drag auto-coupling. When `true`, dragging a splitter at
- * a junction also moves nearby aligned splitters (same-axis siblings,
- * orthogonal partners, snapState 4-way splitters) — a snap-style
- * convenience.
+ * Split-drag coupling is two separate behaviours; we gate them independently
+ * so the (A|B)/(C|D) §1.12 regression doesn't force us to disable the whole
+ * feature.
  *
- * User feedback (TASKS §1.12, 2026-05-03): in nested layouts like
- * `(A|B) / (C|D)`, the C/D splitter is geometrically aligned with A/B
- * at 50/50 ratio and falls within the 50 px junction zone. Dragging A/B
- * therefore unintentionally fanned to C/D. The user wants only the
- * dragged splitter's adjacent panes to move.
+ * 1. Orthogonal coupling — when the pointer is at a true `+` junction (a
+ *    perpendicular splitter is within ORTHOGONAL_TRIGGER_PX of the pointer at
+ *    mousedown), dragging the primary also moves the perpendicular splitter
+ *    so the junction stays glued to the cursor. This is the "4-way feel".
+ *    Enabling this is what users mean by "联动拖拽".
  *
- * Set this constant to `true` to restore the old snap behavior. Visual
- * attract previews (sameAxisAttractors UI state) and hover detection
- * stay wired regardless — only the coupling activation in
- * `startSplitResizeDrag` is gated.
+ * 2. Same-axis coupling — when a parallel sibling splitter is geometrically
+ *    aligned with the primary (centre within SAME_AXIS_ALIGN_EPSILON_PX,
+ *    endpoint within INTERSECTION_PROXIMITY_PX of the pointer), dragging the
+ *    primary also moves the sibling. In a nested `(A|B)/(C|D)` layout at
+ *    50/50 ratio C/D is automatically aligned with A/B and gets coupled —
+ *    the §1.12 (2026-05-03) regression. User explicitly does NOT want this.
+ *
+ * 2026-05-07 (revised twice): user reverted §1.12. They now WANT both forms
+ * of coupling on so a 2x2 `(A|B)/(C|D)` grid resizes all four panes when the
+ * shared central junction is dragged, AND a same-axis sibling line follows
+ * the primary. Both flags are now `true`. The §1.12 side-effect (C/D moving
+ * when dragging A|B) is accepted as intended behaviour now.
+ *
+ * Visual attract previews (sameAxisAttractors UI state) and hover detection
+ * stay wired regardless — only the actual ratio fan-out is gated.
  */
-const SPLIT_DRAG_AUTO_COUPLING_ENABLED = false;
+const SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED = true;
+const SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED = true;
+
+/**
+ * Px-anchor: when an outer divider resizes a pane that internally hosts a
+ * same-axis split (e.g. dragging A|B in `(C|D)|B`), only the child closest
+ * to the moving divider absorbs the delta — siblings keep their absolute
+ * pixel widths instead of all scaling proportionally.
+ *
+ * Concretely: dragging A|B grows A by ΔPx → D (rightmost child of A, the
+ * one adjacent to A|B) absorbs the entire ΔPx → C's pixel width is locked.
+ *
+ * Only triggers when the inner split's axis matches the primary divider's
+ * axis. Recurses into the absorber so deeper nesting (`((C|D)|E)|B`) keeps
+ * C and D both anchored. Disabled when the inner split's axis differs
+ * (e.g. dragging A|B and A internally is C/D vertical) — proportional
+ * scaling there is already correct.
+ */
+const SPLIT_DRAG_PX_ANCHOR_ENABLED = true;
+
+export interface PxAnchorPlan {
+  /** Path to the descendant split whose ratios will be fan-adjusted on drag. */
+  splitPath: number[];
+  /** Index of the child that absorbs the entire outer-size delta. */
+  absorberIndex: number;
+  /** Pixel widths of each child at mousedown — non-absorbers are restored
+   *  verbatim each tick, the absorber takes whatever remains. */
+  childPxAtMousedown: number[];
+  /** Outer pixel size of this split's container at mousedown. */
+  outerPxAtMousedown: number;
+  /** Sign of the delta that scales the outer container:
+   *  - 'before' = container is on the BEFORE side of the primary splitter,
+   *    so deltaPx > 0 (pointer moves right/down) GROWS the container
+   *  - 'after'  = container is on the AFTER side, so deltaPx > 0 SHRINKS it */
+  primaryAdjacentSide: 'before' | 'after';
+}
 
 const HOVER_DEBOUNCE_MS = 20;
 const MIN_PANE_RATIO = 6;
@@ -433,6 +481,138 @@ export function findSameAxisRefs(
   return candidates.sort((a, b) => a.distance - b.distance);
 }
 
+/**
+ * Build px-anchor plans for the descendants on each side of `primary`.
+ *
+ * Walks down children[splitterIndex] (BEFORE side) and children[splitterIndex+1]
+ * (AFTER side) of primary's split. For each side, if the immediate child is
+ * itself a split with the SAME axis as primary, snapshot its current per-child
+ * pixel widths and mark the child closest to the primary divider as the
+ * absorber (last child for BEFORE side, first child for AFTER side). Recurses
+ * into the absorber so deeper nesting is also anchored.
+ *
+ * Returns empty list when:
+ *   - the feature is disabled (SPLIT_DRAG_PX_ANCHOR_ENABLED = false)
+ *   - primary's split node can't be resolved
+ *   - primary's split has fewer than 2 children
+ *   - both adjacent panes are leaves (or splits with mismatched axis)
+ */
+export function buildPxAnchorPlans(
+  root: PaneNode,
+  primary: SplitterRef,
+  primaryBasisPx: number
+): PxAnchorPlan[] {
+  if (!SPLIT_DRAG_PX_ANCHOR_ENABLED) return [];
+  const plans: PxAnchorPlan[] = [];
+  const primarySplit = getSplitNodeByPath(root, primary.splitPath);
+  if (!primarySplit || primarySplit.children.length < 2) return plans;
+  if (primary.splitterIndex < 0 || primary.splitterIndex >= primarySplit.children.length - 1) {
+    return plans;
+  }
+
+  const ratios = primarySplit.ratios.slice();
+  // Pixel size of the pane on each side of the splitter at mousedown.
+  // For multi-child splits, these are the widths of the SINGLE pane directly
+  // adjacent to the splitter — not the whole before/after block.
+  const beforePaneIdx = primary.splitterIndex;
+  const afterPaneIdx = primary.splitterIndex + 1;
+  const beforePanePx = primaryBasisPx * (ratios[beforePaneIdx] ?? 0) / 100;
+  const afterPanePx = primaryBasisPx * (ratios[afterPaneIdx] ?? 0) / 100;
+
+  walkSide(
+    primarySplit.children[beforePaneIdx],
+    [...primary.splitPath, beforePaneIdx],
+    beforePanePx,
+    'before'
+  );
+  walkSide(
+    primarySplit.children[afterPaneIdx],
+    [...primary.splitPath, afterPaneIdx],
+    afterPanePx,
+    'after'
+  );
+  return plans;
+
+  function walkSide(
+    pane: PaneNode | undefined,
+    panePath: number[],
+    panePx: number,
+    side: 'before' | 'after'
+  ) {
+    if (!pane || pane.type !== 'split') return;
+    if (pane.children.length < 2) return;
+    // Only anchor when descendant axis matches primary — perpendicular
+    // descendants stack the other way and proportional scaling is correct.
+    const paneAxis = pane.direction === 'horizontal' ? 'x' : 'y';
+    if (paneAxis !== primary.axis) return;
+
+    const absorberIndex =
+      side === 'before' ? pane.children.length - 1 : 0;
+    const childPx = pane.ratios.map((r) => panePx * (r / 100));
+    plans.push({
+      splitPath: panePath,
+      absorberIndex,
+      childPxAtMousedown: childPx,
+      outerPxAtMousedown: panePx,
+      primaryAdjacentSide: side,
+    });
+    // Recurse into the absorber — only its outer size changes downstream.
+    walkSide(
+      pane.children[absorberIndex],
+      [...panePath, absorberIndex],
+      childPx[absorberIndex],
+      side
+    );
+  }
+}
+
+/**
+ * Compute new ratios for a px-anchor plan given the signed primary delta.
+ *
+ * Non-absorber children retain their `childPxAtMousedown[i]`; absorber takes
+ * whatever's left of the new outer size. If the absorber would go below the
+ * MIN_PANE_RATIO floor, clamp it and let the non-absorbers shrink
+ * proportionally so the split stays valid.
+ */
+export function pxAnchorRatios(
+  plan: PxAnchorPlan,
+  signedDeltaPx: number
+): number[] {
+  const sideSign = plan.primaryAdjacentSide === 'before' ? 1 : -1;
+  const outerPxNew = Math.max(
+    1,
+    plan.outerPxAtMousedown + sideSign * signedDeltaPx
+  );
+  const minAbsorberPx = (outerPxNew * MIN_PANE_RATIO) / 100;
+  const nonAbsorberSum = plan.childPxAtMousedown.reduce(
+    (acc, px, i) => (i === plan.absorberIndex ? acc : acc + px),
+    0
+  );
+  const desiredAbsorberPx = outerPxNew - nonAbsorberSum;
+
+  const childPxNew = plan.childPxAtMousedown.slice();
+  if (desiredAbsorberPx >= minAbsorberPx) {
+    childPxNew[plan.absorberIndex] = desiredAbsorberPx;
+  } else {
+    // Absorber hit the floor — shrink non-absorbers proportionally so the
+    // outer size constraint still holds.
+    childPxNew[plan.absorberIndex] = minAbsorberPx;
+    const remainingPx = Math.max(0, outerPxNew - minAbsorberPx);
+    const scale = nonAbsorberSum > 0 ? remainingPx / nonAbsorberSum : 0;
+    for (let i = 0; i < childPxNew.length; i += 1) {
+      if (i !== plan.absorberIndex) {
+        childPxNew[i] = plan.childPxAtMousedown[i] * scale;
+      }
+    }
+  }
+
+  const ratios = childPxNew.map((px) => (px / outerPxNew) * 100);
+  // Enforce per-child MIN_PANE_RATIO floor and re-normalize, mirroring
+  // adjustRatiosBySplitterDelta's invariant.
+  const floored = ratios.map((r) => Math.max(MIN_PANE_RATIO, r));
+  return normalizeWithin100(floored);
+}
+
 function updatesFromSnapshots(
   snapshots: SplitterSnapshot[],
   pointer: { x: number; y: number }
@@ -554,22 +734,20 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
 
   // Check if 4-way junction snap (3+ coupled splitters at same junction).
   // Only used for visual feedback (rg-resize-4way body class) below; the
-  // ratio-update fan-out is gated separately on
-  // SPLIT_DRAG_AUTO_COUPLING_ENABLED so the visual hint stays consistent
-  // with whether we actually couple.
+  // ratio-update fan-out is gated on the orthogonal flag so the visual hint
+  // stays consistent with whether we actually couple at the +-junction.
   const is4WaySnap =
-    SPLIT_DRAG_AUTO_COUPLING_ENABLED &&
+    SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED &&
     ui.snapState !== null &&
     ui.snapState.coupledSplitters.length >= 3;
 
-  // Build the snapshot ref set. Default (SPLIT_DRAG_AUTO_COUPLING_ENABLED
-  // = false): only the primary splitter moves on a drag — that's the
-  // user-confirmed "drag A/B → only A and B resize" behavior. Toggle the
-  // constant to restore snap-style multi-splitter coupling.
-  let refs: SplitterRef[] = SPLIT_DRAG_AUTO_COUPLING_ENABLED
+  // Build the snapshot ref set. Orthogonal partners (perpendicular splitters
+  // at the same +-junction) and snapState siblings recover the "4-way feel".
+  // Same-axis fan-out (next block) stays disabled by default.
+  let refs: SplitterRef[] = SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED
     ? dedupeRefs([ui.primary, ...ui.orthogonals])
     : [ui.primary];
-  if (SPLIT_DRAG_AUTO_COUPLING_ENABLED && ui.snapState) {
+  if (SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED && ui.snapState) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
@@ -605,10 +783,10 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     const eligible =
       perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
       distToBC <= INTERSECTION_PROXIMITY_PX;
-    // When auto-coupling is OFF (default), eligible siblings still get
+    // When sameAxis coupling is OFF (default), eligible siblings still get
     // routed to the visual attractor list — the user keeps the highlight
     // hint without unwanted ratio updates on the sibling split.
-    if (eligible && SPLIT_DRAG_AUTO_COUPLING_ENABLED) {
+    if (eligible && SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) {
       coupledSameAxis.push(sibling);
     } else {
       attractOnlySameAxis.push(sibling);
@@ -622,11 +800,12 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   // 当 D 与 C 中线对齐 (≤1px) 且鼠标到 CD 端点（即 ABCD 交汇点）的欧几里得
   // 距离 ≤ INTERSECTION_PROXIMITY_PX 时，D 同样加入联动。
   //
-  // Skip the entire loop when auto-coupling is off — there's no visual
+  // Skip the entire loop when sameAxis coupling is off — there's no visual
   // attractor consumer for ortho-sibling proximity (unlike sameAxis), so
-  // computing it would be pure waste.
+  // computing it would be pure waste. Gated on the same-axis flag because
+  // ortho-siblings are themselves a parallel-fan-out variant.
   const coupledOrthoSiblings: SplitterRef[] = [];
-  if (SPLIT_DRAG_AUTO_COUPLING_ENABLED) for (const ortho of ui.orthogonals) {
+  if (SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) for (const ortho of ui.orthogonals) {
     const orthoCenter = getSplitterScreenCenter(ortho);
     if (orthoCenter == null) continue;
     // ortho.axis ⊥ primary.axis，所以"沿 ortho 拖动轴" = "沿 primary 沿线方向"
@@ -695,6 +874,14 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     });
   }
   if (!snapshots.length) return;
+  // Build px-anchor plans using the primary's recently-measured basisPx so
+  // the descendant outer sizes reflect the live container at mousedown.
+  const primarySnapshot = snapshots[0];
+  const pxAnchors = buildPxAnchorPlans(
+    root,
+    primarySnapshot.ref,
+    primarySnapshot.ref.basisPx
+  );
   splitResizeUiState.set({
     phase: 'drag',
     pointer,
@@ -703,6 +890,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     pendingUpdates: [],
     snapState: ui.snapState,
     sameAxisAttractors: attractOnlySameAxis,
+    pxAnchors,
   });
   // 拖动期间强制锁定 cursor，使其不随鼠标移出 splitter / 经过其他元素而变化：
   //   - 含正交联动 → move 全方向
@@ -792,6 +980,32 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
   }
 
   const updates = updatesFromSnapshots(workingSnapshots, effectivePointer);
+
+  // Px-anchor: fan an extra ratio update onto each anchored descendant
+  // split. Uses the SAME effectivePointer / deadzone semantics as the
+  // primary so absorber tracking stays in lock-step with the divider.
+  if (primary && ui.pxAnchors.length > 0) {
+    const axis = primary.ref.axis;
+    const rawDeltaPx =
+      axis === 'x'
+        ? effectivePointer.x - primary.dragStart.x
+        : effectivePointer.y - primary.dragStart.y;
+    // Mirror updatesFromSnapshots's primary deadzone (0.8 px) so a still
+    // pointer doesn't flutter ratios between mousedown and the first move.
+    const deltaPx = Math.abs(rawDeltaPx) <= 0.8 ? 0 : rawDeltaPx;
+    for (const plan of ui.pxAnchors) {
+      const ratios = pxAnchorRatios(plan, deltaPx);
+      // Skip anchor updates whose path collides with an existing primary
+      // update (defensive — shouldn't happen because plans always live on
+      // a descendant path strictly deeper than primary's split).
+      const collision = updates.some(
+        (u) => pathKey(u.path) === pathKey(plan.splitPath)
+      );
+      if (collision) continue;
+      updates.push({ path: plan.splitPath, ratios });
+    }
+  }
+
   paneTreeStore.update((root) => applyRatioUpdates(root, updates));
 
   splitResizeUiState.set({

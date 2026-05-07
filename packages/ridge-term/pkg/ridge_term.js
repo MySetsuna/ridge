@@ -177,8 +177,113 @@ export class RenderHandle {
     setFocused(focused) {
         wasm.renderhandle_setFocused(this.__wbg_ptr, focused);
     }
+    /**
+     * Phase B: record the pane's `(x, y)` position on the host
+     * canvas in **device pixels**. JS calls this from
+     * `manager.ts::_recomputeViewport` whenever the splitter drag
+     * moves the pane's container without changing its size.
+     *
+     * No-op for Canvas2D-backed handles. WebGPU handles forward
+     * to `WebGpuPaneBackend::set_viewport_offset`. Does **not**
+     * trigger a redraw on its own — the pane content is unchanged
+     * on a positional shift; JS calls `surfaceHost.invalidate()`
+     * after layout settle to clear the old area.
+     * @param {number} x
+     * @param {number} y
+     */
+    setViewportOffset(x, y) {
+        wasm.renderhandle_setViewportOffset(this.__wbg_ptr, x, y);
+    }
 }
 if (Symbol.dispose) RenderHandle.prototype[Symbol.dispose] = RenderHandle.prototype.free;
+
+export class SurfaceHostHandle {
+    static __wrap(ptr) {
+        const obj = Object.create(SurfaceHostHandle.prototype);
+        obj.__wbg_ptr = ptr;
+        SurfaceHostHandleFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SurfaceHostHandleFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_surfacehosthandle_free(ptr, 0);
+    }
+    /**
+     * Begin one host frame: acquire swap-chain texture + create
+     * encoder. Returns `true` on success, `false` on surface-lost
+     * — JS skips the rest of the frame and lets the next RAF
+     * retry. `theme_bg` is a 4-byte RGBA buffer; values outside
+     * `[0..255]` get clamped at the byte boundary by
+     * `Uint8Array.set`.
+     *
+     * Idempotent guard: a second call without an intervening
+     * `endFrame` drops the stale frame and starts fresh (defense
+     * against JS bugs that skip the end half).
+     * @param {Uint8Array} theme_bg
+     * @returns {boolean}
+     */
+    beginFrame(theme_bg) {
+        const ptr0 = passArray8ToWasm0(theme_bg, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.surfacehosthandle_beginFrame(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
+     * Finish the host's command encoder + queue.submit + present.
+     * One call per frame after all dirty panes have rendered. Safe
+     * to call without a matching `beginFrame` — internal guard
+     * returns early.
+     */
+    endFrame() {
+        wasm.surfacehosthandle_endFrame(this.__wbg_ptr);
+    }
+    /**
+     * Async constructor: bind the global swap chain to `canvas`
+     * (the `<canvas data-rg-host>` element in `+page.svelte`). Call
+     * once at app boot, before any pane attaches. Subsequent
+     * `WebGpuPaneBackend::new` calls discover this instance via
+     * `SurfaceHost::get()`.
+     *
+     * Returns `Err` (rejected promise on the JS side) when the
+     * WebGPU adapter / device acquisition fails or
+     * `instance.create_surface` rejects the canvas. JS catches and
+     * falls back to per-pane Canvas2D for every subsequent
+     * `attach`.
+     * @param {HTMLCanvasElement} canvas
+     * @returns {Promise<SurfaceHostHandle>}
+     */
+    static init(canvas) {
+        const ret = wasm.surfacehosthandle_init(canvas);
+        return ret;
+    }
+    /**
+     * Mark the next frame for a fresh `LoadOp::Clear`. JS calls
+     * this when a pane detaches / parks / unparks (so departed
+     * pixels don't linger), when the theme changes, and after
+     * splitter settle moves pane boundaries.
+     */
+    invalidate() {
+        wasm.surfacehosthandle_invalidate(this.__wbg_ptr);
+    }
+    /**
+     * Resize the host swap chain. JS drives this from a
+     * ResizeObserver on the host canvas's parent so the surface
+     * always matches the visible workspace area.
+     * @param {number} width_css
+     * @param {number} height_css
+     * @param {number} dpr
+     */
+    resize(width_css, height_css, dpr) {
+        wasm.surfacehosthandle_resize(this.__wbg_ptr, width_css, height_css, dpr);
+    }
+}
+if (Symbol.dispose) SurfaceHostHandle.prototype[Symbol.dispose] = SurfaceHostHandle.prototype.free;
 
 export class TerminalKernel {
     __destroy_into_raw() {
@@ -1498,6 +1603,10 @@ function __wbg_get_imports() {
         __wbg_submit_6ffa2ed48b3eaecf: function(arg0, arg1) {
             arg0.submit(arg1);
         },
+        __wbg_surfacehosthandle_new: function(arg0) {
+            const ret = SurfaceHostHandle.__wrap(arg0);
+            return ret;
+        },
         __wbg_then_20a157d939b514f5: function(arg0, arg1) {
             const ret = arg0.then(arg1);
             return ret;
@@ -1540,17 +1649,17 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 270, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 276, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 51, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 57, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 51, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 57, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42_2);
             return ret;
         },
@@ -1629,6 +1738,9 @@ const TerminalKernelFinalization = (typeof FinalizationRegistry === 'undefined')
 const RenderHandleFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_renderhandle_free(ptr, 1));
+const SurfaceHostHandleFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_surfacehosthandle_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

@@ -22,7 +22,12 @@ pub struct Cursor {
 
 impl Default for Cursor {
     fn default() -> Self {
-        Self { row: 0, col: 0, attr: AttrId::DEFAULT, pending_wrap: false }
+        Self {
+            row: 0,
+            col: 0,
+            attr: AttrId::DEFAULT,
+            pending_wrap: false,
+        }
     }
 }
 

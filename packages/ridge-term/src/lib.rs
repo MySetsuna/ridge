@@ -221,12 +221,36 @@ impl JsTerminal {
             let _ = js_sys::Reflect::set(&obj, &"codepoint".into(), &(cell.ch as u32).into());
             let _ = js_sys::Reflect::set(&obj, &"width".into(), &(cell.width as u32).into());
             let _ = js_sys::Reflect::set(&obj, &"attrId".into(), &(cell.attr.0 as u32).into());
-            let _ = js_sys::Reflect::set(&obj, &"dim".into(), &attrs.flags.contains(Flags::DIM).into());
-            let _ = js_sys::Reflect::set(&obj, &"bold".into(), &attrs.flags.contains(Flags::BOLD).into());
-            let _ = js_sys::Reflect::set(&obj, &"italic".into(), &attrs.flags.contains(Flags::ITALIC).into());
-            let _ = js_sys::Reflect::set(&obj, &"underline".into(), &attrs.flags.contains(Flags::UNDERLINE).into());
-            let _ = js_sys::Reflect::set(&obj, &"inverse".into(), &attrs.flags.contains(Flags::INVERSE).into());
-            let _ = js_sys::Reflect::set(&obj, &"hidden".into(), &attrs.flags.contains(Flags::HIDDEN).into());
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"dim".into(),
+                &attrs.flags.contains(Flags::DIM).into(),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"bold".into(),
+                &attrs.flags.contains(Flags::BOLD).into(),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"italic".into(),
+                &attrs.flags.contains(Flags::ITALIC).into(),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"underline".into(),
+                &attrs.flags.contains(Flags::UNDERLINE).into(),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"inverse".into(),
+                &attrs.flags.contains(Flags::INVERSE).into(),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"hidden".into(),
+                &attrs.flags.contains(Flags::HIDDEN).into(),
+            );
             let _ = js_sys::Reflect::set(&obj, &"fg".into(), &fg.into());
             let _ = js_sys::Reflect::set(&obj, &"bg".into(), &bg.into());
             out.push(obj.into());
@@ -234,18 +258,26 @@ impl JsTerminal {
         out
     }
 
-    pub fn rows(&self) -> usize { self.inner.rows() }
-    pub fn cols(&self) -> usize { self.inner.cols() }
+    pub fn rows(&self) -> usize {
+        self.inner.rows()
+    }
+    pub fn cols(&self) -> usize {
+        self.inner.cols()
+    }
 
     /// Cursor row in viewport coordinates (0-based). Used by the IME
     /// helper-textarea positioning to anchor the candidate window near
     /// the actual input position.
     #[wasm_bindgen(js_name = cursorRow)]
-    pub fn cursor_row(&self) -> usize { self.inner.grid().cursor().row }
+    pub fn cursor_row(&self) -> usize {
+        self.inner.grid().cursor().row
+    }
 
     /// Cursor column in viewport coordinates (0-based).
     #[wasm_bindgen(js_name = cursorCol)]
-    pub fn cursor_col(&self) -> usize { self.inner.grid().cursor().col }
+    pub fn cursor_col(&self) -> usize {
+        self.inner.grid().cursor().col
+    }
 
     // ---- input encoding ---------------------------------------------
 
@@ -264,9 +296,19 @@ impl JsTerminal {
         shift: bool,
         meta: bool,
     ) -> Vec<u8> {
-        let ev = KeyEvent { key, ctrl, alt, shift, meta };
+        let ev = KeyEvent {
+            key,
+            ctrl,
+            alt,
+            shift,
+            meta,
+        };
         let res = crate::input::encode(&ev, self.inner.modes());
-        if res.consumed { res.bytes } else { Vec::new() }
+        if res.consumed {
+            res.bytes
+        } else {
+            Vec::new()
+        }
     }
 
     /// Wrap a paste string for the PTY, applying bracketed-paste
@@ -279,19 +321,29 @@ impl JsTerminal {
     // ---- viewport scroll --------------------------------------------
 
     #[wasm_bindgen(js_name = scrollUp)]
-    pub fn scroll_up(&mut self, n: usize) { self.inner.scroll_up_view(n); }
+    pub fn scroll_up(&mut self, n: usize) {
+        self.inner.scroll_up_view(n);
+    }
 
     #[wasm_bindgen(js_name = scrollDown)]
-    pub fn scroll_down(&mut self, n: usize) { self.inner.scroll_down_view(n); }
+    pub fn scroll_down(&mut self, n: usize) {
+        self.inner.scroll_down_view(n);
+    }
 
     #[wasm_bindgen(js_name = scrollToBottom)]
-    pub fn scroll_to_bottom(&mut self) { self.inner.scroll_to_bottom(); }
+    pub fn scroll_to_bottom(&mut self) {
+        self.inner.scroll_to_bottom();
+    }
 
     #[wasm_bindgen(js_name = scrollOffset)]
-    pub fn scroll_offset(&self) -> usize { self.inner.scroll_offset() }
+    pub fn scroll_offset(&self) -> usize {
+        self.inner.scroll_offset()
+    }
 
     #[wasm_bindgen(js_name = scrollbackLen)]
-    pub fn scrollback_len(&self) -> usize { self.inner.scrollback_len() }
+    pub fn scrollback_len(&self) -> usize {
+        self.inner.scrollback_len()
+    }
 
     /// Whether the user has paged into history and PTY output is
     /// currently being held back from auto-snapping the viewport.
@@ -310,7 +362,9 @@ impl JsTerminal {
     }
 
     #[wasm_bindgen(js_name = clearSelection)]
-    pub fn clear_selection(&mut self) { self.selection.clear(); }
+    pub fn clear_selection(&mut self) {
+        self.selection.clear();
+    }
 
     /// Double-click word selection. Selects the word at the given cell
     /// coordinate; clears selection when the cell is whitespace/empty.
@@ -330,16 +384,27 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = setSelection)]
     pub fn set_selection(
         &mut self,
-        start_row: usize, start_col: usize,
-        end_row: usize, end_col: usize,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
     ) {
         // Pass &self.inner so Selection captures the current scroll state
         // and stores the range in abs-row form (§1.20). After this, scroll
         // changes don't dislodge the highlight from its original cells.
-        self.selection.set(&self.inner, Range {
-            start: Pos { row: start_row, col: start_col },
-            end:   Pos { row: end_row,   col: end_col },
-        });
+        self.selection.set(
+            &self.inner,
+            Range {
+                start: Pos {
+                    row: start_row,
+                    col: start_col,
+                },
+                end: Pos {
+                    row: end_row,
+                    col: end_col,
+                },
+            },
+        );
     }
 
     #[wasm_bindgen(js_name = getSelectionText)]
@@ -348,7 +413,9 @@ impl JsTerminal {
     }
 
     #[wasm_bindgen(js_name = hasSelection)]
-    pub fn has_selection(&self) -> bool { !self.selection.is_empty() }
+    pub fn has_selection(&self) -> bool {
+        !self.selection.is_empty()
+    }
 
     // ---- search -----------------------------------------------------
 
@@ -394,7 +461,9 @@ impl JsTerminal {
     }
 
     #[wasm_bindgen(js_name = searchMatchCount)]
-    pub fn search_match_count(&self) -> usize { self.search.match_count() }
+    pub fn search_match_count(&self) -> usize {
+        self.search.match_count()
+    }
 
     /// Returns the active match index, or `usize::MAX` when no active match.
     #[wasm_bindgen(js_name = searchActiveIndex)]
@@ -432,10 +501,14 @@ impl JsTerminal {
     // ---- mode queries -----------------------------------------------
 
     #[wasm_bindgen(js_name = isAltScreen)]
-    pub fn is_alt_screen(&self) -> bool { self.inner.is_alt_screen() }
+    pub fn is_alt_screen(&self) -> bool {
+        self.inner.is_alt_screen()
+    }
 
     #[wasm_bindgen(js_name = isCursorVisible)]
-    pub fn is_cursor_visible(&self) -> bool { self.inner.modes().cursor_visible }
+    pub fn is_cursor_visible(&self) -> bool {
+        self.inner.modes().cursor_visible
+    }
 
     /// §A.3 inline-TUI heuristic — true when an Ink-style app is rendering
     /// inline on primary (cursor hidden + recent absolute-positioning CSI
@@ -448,10 +521,14 @@ impl JsTerminal {
     }
 
     #[wasm_bindgen(js_name = isBracketedPaste)]
-    pub fn is_bracketed_paste(&self) -> bool { self.inner.modes().bracketed_paste }
+    pub fn is_bracketed_paste(&self) -> bool {
+        self.inner.modes().bracketed_paste
+    }
 
     #[wasm_bindgen(js_name = isAppCursorKeys)]
-    pub fn is_app_cursor_keys(&self) -> bool { self.inner.modes().app_cursor_keys }
+    pub fn is_app_cursor_keys(&self) -> bool {
+        self.inner.modes().app_cursor_keys
+    }
 
     /// Synchronous output mode `?2026`. While `true`, the manager should
     /// hold off rendering frames so the user doesn't see torn intermediate
@@ -459,18 +536,23 @@ impl JsTerminal {
     /// owns the timeout fallback (default 150ms) so this stays a clock-free
     /// boolean check.
     #[wasm_bindgen(js_name = isSyncOutput)]
-    pub fn is_sync_output(&self) -> bool { self.inner.modes().sync_output }
+    pub fn is_sync_output(&self) -> bool {
+        self.inner.modes().sync_output
+    }
 
     /// Focus reporting mode `?1004`. While `true`, the manager should emit
     /// `\x1b[I` on focus-in and `\x1b[O` on focus-out via the same
     /// dataHandler channel as keyboard input. claude code, vim, fzf use
     /// these to refresh state when the user switches to / from the pane.
     #[wasm_bindgen(js_name = isFocusReporting)]
-    pub fn is_focus_reporting(&self) -> bool { self.inner.modes().mouse_focus }
+    pub fn is_focus_reporting(&self) -> bool {
+        self.inner.modes().mouse_focus
+    }
 
     #[wasm_bindgen(js_name = dumpVisibleText)]
     pub fn dump_visible_text(&self) -> Vec<JsValue> {
-        self.inner.dump_visible_text()
+        self.inner
+            .dump_visible_text()
             .into_iter()
             .map(JsValue::from)
             .collect()
@@ -481,15 +563,23 @@ impl JsTerminal {
     /// the manager's Ctrl+click handler to decide whether to open a link.
     #[wasm_bindgen(js_name = hyperlinkAt)]
     pub fn hyperlink_at(&self, row: usize, col: usize) -> JsValue {
-        let Some(r) = self.inner.viewport_row(row) else { return JsValue::NULL };
-        let Some(span) = r.link_at(col) else { return JsValue::NULL };
+        let Some(r) = self.inner.viewport_row(row) else {
+            return JsValue::NULL;
+        };
+        let Some(span) = r.link_at(col) else {
+            return JsValue::NULL;
+        };
         // Build a small JS object via Reflect — avoids serde dep cost
         // for this single-shot lookup.
         let obj = js_sys::Object::new();
         let _ = js_sys::Reflect::set(&obj, &"uri".into(), &span.uri.as_str().into());
         match &span.id {
-            Some(id) => { let _ = js_sys::Reflect::set(&obj, &"id".into(), &id.as_str().into()); }
-            None => { let _ = js_sys::Reflect::set(&obj, &"id".into(), &JsValue::NULL); }
+            Some(id) => {
+                let _ = js_sys::Reflect::set(&obj, &"id".into(), &id.as_str().into());
+            }
+            None => {
+                let _ = js_sys::Reflect::set(&obj, &"id".into(), &JsValue::NULL);
+            }
         }
         obj.into()
     }
@@ -502,8 +592,8 @@ impl JsTerminal {
 #[cfg(target_arch = "wasm32")]
 mod renderer_js {
     use super::*;
-    use crate::render::{AnyBackend, Canvas2dBackend, FrameMetrics, Renderer, Theme};
     use crate::render::backend::RenderBackend;
+    use crate::render::{AnyBackend, Canvas2dBackend, FrameMetrics, Renderer, Theme};
     use web_sys::HtmlCanvasElement;
 
     #[wasm_bindgen]
@@ -520,7 +610,11 @@ mod renderer_js {
         #[wasm_bindgen(constructor)]
         pub fn new(canvas: HtmlCanvasElement) -> Result<RenderHandle, JsValue> {
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
-            let metrics = FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 };
+            let metrics = FrameMetrics {
+                cell_w: 8.0,
+                cell_h: 16.0,
+                dpr: 1.0,
+            };
             let renderer = Renderer::new(
                 AnyBackend::Canvas2d(backend),
                 metrics,
@@ -547,18 +641,36 @@ mod renderer_js {
         pub async fn new_with_webgpu_first(
             canvas: HtmlCanvasElement,
         ) -> Result<RenderHandle, JsValue> {
-            if let Ok(b) = crate::render::webgpu::WebGpuBackend::new(canvas.clone()).await {
-                let metrics = FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 };
-                let renderer = Renderer::new(
-                    AnyBackend::Webgpu(b),
-                    metrics,
-                    Theme::default_dark(),
-                );
-                return Ok(RenderHandle { renderer });
+            // Phase B: per-pane backend draws into the shared host
+            // canvas — `canvas` here is only the per-pane fallback DOM
+            // element used by Canvas2D when WebGPU isn't usable. The
+            // pane's WebGPU draws never touch this canvas.
+            //
+            // Skip the host path when the JS layer hasn't initialised
+            // the SurfaceHost yet (Canvas2D-only build, adapter miss at
+            // boot, manager.attachHost failed, …) — `WebGpuPaneBackend
+            // ::new` returns Err in that case and we fall through to
+            // Canvas2D against this pane's own canvas.
+            if crate::render::surface_host::SurfaceHost::get().is_some() {
+                if let Ok(b) = crate::render::webgpu::WebGpuPaneBackend::new().await {
+                    let metrics = FrameMetrics {
+                        cell_w: 8.0,
+                        cell_h: 16.0,
+                        dpr: 1.0,
+                    };
+                    let renderer =
+                        Renderer::new(AnyBackend::Webgpu(b), metrics, Theme::default_dark());
+                    return Ok(RenderHandle { renderer });
+                }
             }
-            // WebGPU adapter missed — fall through to Canvas2D.
+            // WebGPU adapter missed (or host not initialised) — fall
+            // through to Canvas2D.
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
-            let metrics = FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 };
+            let metrics = FrameMetrics {
+                cell_w: 8.0,
+                cell_h: 16.0,
+                dpr: 1.0,
+            };
             let renderer = Renderer::new(
                 AnyBackend::Canvas2d(backend),
                 metrics,
@@ -584,22 +696,20 @@ mod renderer_js {
             self.renderer
                 .backend_mut()
                 .set_font_config(font_family.clone(), font_size_px);
-            let (w, h) = self.renderer
+            let (w, h) = self
+                .renderer
                 .backend_mut()
                 .measure_font(&font_family, font_size_px)
                 .map_err(JsValue::from)?;
             self.renderer.set_metrics(FrameMetrics {
-                cell_w: w, cell_h: h, dpr,
+                cell_w: w,
+                cell_h: h,
+                dpr,
             });
             Ok(vec![w, h])
         }
 
-        pub fn resize(
-            &mut self,
-            width_css: u32,
-            height_css: u32,
-            dpr: f32,
-        ) -> Result<(), JsValue> {
+        pub fn resize(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), JsValue> {
             self.renderer
                 .backend_mut()
                 .resize_surface(width_css, height_css, dpr)
@@ -607,6 +717,21 @@ mod renderer_js {
             self.renderer.set_dpr(dpr);
             self.renderer.invalidate_all();
             Ok(())
+        }
+
+        /// Phase B: record the pane's `(x, y)` position on the host
+        /// canvas in **device pixels**. JS calls this from
+        /// `manager.ts::_recomputeViewport` whenever the splitter drag
+        /// moves the pane's container without changing its size.
+        ///
+        /// No-op for Canvas2D-backed handles. WebGPU handles forward
+        /// to `WebGpuPaneBackend::set_viewport_offset`. Does **not**
+        /// trigger a redraw on its own — the pane content is unchanged
+        /// on a positional shift; JS calls `surfaceHost.invalidate()`
+        /// after layout settle to clear the old area.
+        #[wasm_bindgen(js_name = setViewportOffset)]
+        pub fn set_viewport_offset(&mut self, x: u32, y: u32) {
+            self.renderer.backend_mut().set_viewport_offset(x, y);
         }
 
         /// Apply a theme. Accepts a JS object with any subset of:
@@ -700,11 +825,7 @@ mod renderer_js {
         /// caller should treat any value > some reasonable cap (e.g.
         /// 1000 ms) as "no blink, sleep at most a second on a watchdog".
         #[wasm_bindgen(js_name = nextBlinkDeadlineMs)]
-        pub fn next_blink_deadline_ms(
-            &self,
-            kernel: &JsTerminal,
-            now_ms: f64,
-        ) -> f64 {
+        pub fn next_blink_deadline_ms(&self, kernel: &JsTerminal, now_ms: f64) -> f64 {
             self.renderer.next_blink_deadline_ms(&kernel.inner, now_ms)
         }
 
@@ -717,7 +838,102 @@ mod renderer_js {
             self.renderer.theme().clone()
         }
     }
+
+    // ──────────────────────────────────────────────────────────────
+    // SurfaceHostHandle (Phase B)
+    //
+    // JS-facing wrapper around the process-wide `SurfaceHost`. Held
+    // by `manager.ts` for the lifetime of the app; per-pane render
+    // handles look up the same singleton via `SurfaceHost::get()`
+    // inside Rust.
+    //
+    // Per-frame protocol from JS RAF:
+    //   1. host.beginFrame(themeBg)         — acquire swap-chain texture
+    //   2. for each dirty pane: handle.render(kernel)
+    //   3. host.endFrame()                   — submit + present
+    // ──────────────────────────────────────────────────────────────
+
+    #[cfg(feature = "webgpu")]
+    #[wasm_bindgen]
+    pub struct SurfaceHostHandle {
+        host: std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>>,
+    }
+
+    #[cfg(feature = "webgpu")]
+    #[wasm_bindgen]
+    impl SurfaceHostHandle {
+        /// Async constructor: bind the global swap chain to `canvas`
+        /// (the `<canvas data-rg-host>` element in `+page.svelte`). Call
+        /// once at app boot, before any pane attaches. Subsequent
+        /// `WebGpuPaneBackend::new` calls discover this instance via
+        /// `SurfaceHost::get()`.
+        ///
+        /// Returns `Err` (rejected promise on the JS side) when the
+        /// WebGPU adapter / device acquisition fails or
+        /// `instance.create_surface` rejects the canvas. JS catches and
+        /// falls back to per-pane Canvas2D for every subsequent
+        /// `attach`.
+        #[wasm_bindgen(js_name = init)]
+        pub async fn init(canvas: HtmlCanvasElement) -> Result<SurfaceHostHandle, JsValue> {
+            let host = crate::render::surface_host::SurfaceHost::init(canvas)
+                .await
+                .map_err(JsValue::from)?;
+            Ok(SurfaceHostHandle { host })
+        }
+
+        /// Resize the host swap chain. JS drives this from a
+        /// ResizeObserver on the host canvas's parent so the surface
+        /// always matches the visible workspace area.
+        pub fn resize(&self, width_css: u32, height_css: u32, dpr: f32) {
+            self.host.borrow_mut().resize(width_css, height_css, dpr);
+        }
+
+        /// Mark the next frame for a fresh `LoadOp::Clear`. JS calls
+        /// this when a pane detaches / parks / unparks (so departed
+        /// pixels don't linger), when the theme changes, and after
+        /// splitter settle moves pane boundaries.
+        pub fn invalidate(&self) {
+            self.host.borrow_mut().invalidate();
+        }
+
+        /// Begin one host frame: acquire swap-chain texture + create
+        /// encoder. Returns `true` on success, `false` on surface-lost
+        /// — JS skips the rest of the frame and lets the next RAF
+        /// retry. `theme_bg` is a 4-byte RGBA buffer; values outside
+        /// `[0..255]` get clamped at the byte boundary by
+        /// `Uint8Array.set`.
+        ///
+        /// Idempotent guard: a second call without an intervening
+        /// `endFrame` drops the stale frame and starts fresh (defense
+        /// against JS bugs that skip the end half).
+        #[wasm_bindgen(js_name = beginFrame)]
+        pub fn begin_frame(&self, theme_bg: &[u8]) -> bool {
+            let mut rgba = [0u8; 4];
+            // Clamp short input to opaque-on-black so we never panic on
+            // a malformed slice; JS callers are expected to send
+            // exactly 4 bytes.
+            for (i, &b) in theme_bg.iter().take(4).enumerate() {
+                rgba[i] = b;
+            }
+            if theme_bg.len() < 4 {
+                rgba[3] = 255;
+            }
+            self.host.borrow_mut().begin_frame(rgba)
+        }
+
+        /// Finish the host's command encoder + queue.submit + present.
+        /// One call per frame after all dirty panes have rendered. Safe
+        /// to call without a matching `beginFrame` — internal guard
+        /// returns early.
+        #[wasm_bindgen(js_name = endFrame)]
+        pub fn end_frame(&self) {
+            self.host.borrow_mut().end_frame();
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub use renderer_js::RenderHandle;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub use renderer_js::SurfaceHostHandle;

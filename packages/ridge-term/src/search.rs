@@ -40,17 +40,14 @@ pub struct SearchState {
 }
 
 impl SearchState {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Recompute matches for `query` against the terminal's current
     /// viewport. Returns the number of matches found. Sets `active` to
     /// the first match (Some(0)) if any, else None.
-    pub fn set_query(
-        &mut self,
-        terminal: &Terminal,
-        query: &str,
-        case_sensitive: bool,
-    ) -> usize {
+    pub fn set_query(&mut self, terminal: &Terminal, query: &str, case_sensitive: bool) -> usize {
         // Fast path: same query AND case → keep existing matches/active.
         // Caller can force a refresh by passing an empty query first.
         if !self.matches.is_empty()
@@ -71,21 +68,39 @@ impl SearchState {
         } else {
             query.to_lowercase().chars().collect()
         };
-        if needle.is_empty() { return 0; }
+        if needle.is_empty() {
+            return 0;
+        }
 
         let sb_len = terminal.scrollback_len();
         // Pass 1: scrollback (oldest → newest). Direct access via grid
         // bypasses viewport_row's scroll-offset logic — search must scan
         // the full state regardless of where the user has scrolled to.
         for sb_idx in 0..sb_len {
-            let Some(row) = terminal.grid().scrollback.get(sb_idx) else { continue };
-            scan_row_into(&row.cells, &needle, case_sensitive, sb_idx, &mut self.matches);
+            let Some(row) = terminal.grid().scrollback.get(sb_idx) else {
+                continue;
+            };
+            scan_row_into(
+                &row.cells,
+                &needle,
+                case_sensitive,
+                sb_idx,
+                &mut self.matches,
+            );
         }
         // Pass 2: viewport rows (top → bottom). Same direct grid access.
         let rows_n = terminal.rows();
         for r in 0..rows_n {
-            let Some(row) = terminal.grid().row(r) else { continue };
-            scan_row_into(&row.cells, &needle, case_sensitive, sb_len + r, &mut self.matches);
+            let Some(row) = terminal.grid().row(r) else {
+                continue;
+            };
+            scan_row_into(
+                &row.cells,
+                &needle,
+                case_sensitive,
+                sb_len + r,
+                &mut self.matches,
+            );
         }
         if !self.matches.is_empty() {
             self.active = Some(0);
@@ -112,10 +127,18 @@ impl SearchState {
         //   abs_row in viewport (>= sb_len):  vp = abs_row - sb_len + N
         // So unified: vp = (abs_row + N).checked_sub(sb_len)? — but only if vp < rows_n.
         let vp = (m.abs_row + scroll_offset).checked_sub(scrollback_len)?;
-        if vp >= rows_n { return None; }
+        if vp >= rows_n {
+            return None;
+        }
         Some(Range {
-            start: Pos { row: vp, col: m.col_start },
-            end: Pos { row: vp, col: m.col_end },
+            start: Pos {
+                row: vp,
+                col: m.col_start,
+            },
+            end: Pos {
+                row: vp,
+                col: m.col_end,
+            },
         })
     }
 
@@ -133,7 +156,9 @@ impl SearchState {
     /// Advance to the next match (wraps around). Returns the active match
     /// after the advance, or None if no matches exist.
     pub fn next(&mut self) -> Option<MatchAbs> {
-        if self.matches.is_empty() { return None; }
+        if self.matches.is_empty() {
+            return None;
+        }
         let new_idx = match self.active {
             None => 0,
             Some(i) => (i + 1) % self.matches.len(),
@@ -144,7 +169,9 @@ impl SearchState {
 
     /// Step backwards (wraps around).
     pub fn prev(&mut self) -> Option<MatchAbs> {
-        if self.matches.is_empty() { return None; }
+        if self.matches.is_empty() {
+            return None;
+        }
         let new_idx = match self.active {
             None => self.matches.len() - 1,
             Some(0) => self.matches.len() - 1,
@@ -160,9 +187,13 @@ impl SearchState {
         self.last_query.clear();
     }
 
-    pub fn match_count(&self) -> usize { self.matches.len() }
+    pub fn match_count(&self) -> usize {
+        self.matches.len()
+    }
 
-    pub fn active_index(&self) -> Option<usize> { self.active }
+    pub fn active_index(&self) -> Option<usize> {
+        self.active
+    }
 
     pub fn active_match(&self) -> Option<MatchAbs> {
         self.active.and_then(|i| self.matches.get(i).copied())
@@ -182,12 +213,20 @@ fn scan_row_into(
     let mut chars: Vec<char> = Vec::with_capacity(cells.len());
     let mut char_to_cell: Vec<usize> = Vec::with_capacity(cells.len());
     for (col, cell) in cells.iter().enumerate() {
-        if cell.width == 0 { continue; }
-        let ch = if case_sensitive { cell.ch } else { cell.ch.to_ascii_lowercase() };
+        if cell.width == 0 {
+            continue;
+        }
+        let ch = if case_sensitive {
+            cell.ch
+        } else {
+            cell.ch.to_ascii_lowercase()
+        };
         chars.push(ch);
         char_to_cell.push(col);
     }
-    if chars.len() < needle.len() { return; }
+    if chars.len() < needle.len() {
+        return;
+    }
     let max_start = chars.len() - needle.len() + 1;
     for start in 0..max_start {
         if chars[start..start + needle.len()] == needle[..] {
@@ -244,10 +283,14 @@ mod tests {
         let mut s = SearchState::new();
         s.set_query(&t, "abc", true);
         assert_eq!(s.active_index(), Some(0));
-        s.next(); assert_eq!(s.active_index(), Some(1));
-        s.next(); assert_eq!(s.active_index(), Some(2));
-        s.next(); assert_eq!(s.active_index(), Some(0));
-        s.prev(); assert_eq!(s.active_index(), Some(2));
+        s.next();
+        assert_eq!(s.active_index(), Some(1));
+        s.next();
+        assert_eq!(s.active_index(), Some(2));
+        s.next();
+        assert_eq!(s.active_index(), Some(0));
+        s.prev();
+        assert_eq!(s.active_index(), Some(2));
     }
 
     #[test]
@@ -290,7 +333,8 @@ mod tests {
         assert!(
             first.abs_row < t.scrollback_len(),
             "first match abs_row {} should land in scrollback (sb_len {})",
-            first.abs_row, t.scrollback_len(),
+            first.abs_row,
+            t.scrollback_len(),
         );
     }
 
@@ -299,7 +343,11 @@ mod tests {
         // sb_len = 5, rows = 3. abs_row 0..5 = scrollback, 5..8 = viewport.
         // To bring scrollback[2] (oldest scrollback) to top of viewport,
         // we'd choose offset = sb_len - 2 = 3. Then vp_row 0 should map.
-        let m = MatchAbs { abs_row: 2, col_start: 4, col_end: 7 };
+        let m = MatchAbs {
+            abs_row: 2,
+            col_start: 4,
+            col_end: 7,
+        };
         let r = SearchState::match_to_viewport_range(m, 3, 5, 3).unwrap();
         assert_eq!(r.start.row, 0);
         assert_eq!(r.start.col, 4);
@@ -307,7 +355,11 @@ mod tests {
 
         // Viewport match at abs_row 6 (= viewport row 1), offset 0:
         // vp = (6 + 0) - 5 = 1. ✓
-        let m = MatchAbs { abs_row: 6, col_start: 0, col_end: 3 };
+        let m = MatchAbs {
+            abs_row: 6,
+            col_start: 0,
+            col_end: 3,
+        };
         let r = SearchState::match_to_viewport_range(m, 0, 5, 3).unwrap();
         assert_eq!(r.start.row, 1);
     }
@@ -317,7 +369,11 @@ mod tests {
         // sb_len=5, rows=3, offset=0 → visible rows are abs 5..8.
         // A match at abs_row=2 is in scrollback that's NOT scrolled
         // into view → returns None.
-        let m = MatchAbs { abs_row: 2, col_start: 0, col_end: 3 };
+        let m = MatchAbs {
+            abs_row: 2,
+            col_start: 0,
+            col_end: 3,
+        };
         assert!(SearchState::match_to_viewport_range(m, 0, 5, 3).is_none());
     }
 
@@ -326,7 +382,11 @@ mod tests {
         // sb_len=5, rows=3, offset=3 → visible rows are abs 2..5
         // (top-of-viewport = sb_len - offset = 2). A live-grid match
         // at abs_row=7 is below the visible window.
-        let m = MatchAbs { abs_row: 7, col_start: 0, col_end: 3 };
+        let m = MatchAbs {
+            abs_row: 7,
+            col_start: 0,
+            col_end: 3,
+        };
         assert!(SearchState::match_to_viewport_range(m, 3, 5, 3).is_none());
     }
 
@@ -334,8 +394,12 @@ mod tests {
     fn desired_scroll_offset_recent_grid_match_returns_zero() {
         // Match in live grid (abs_row >= sb_len) needs no scrollback —
         // already visible at offset=0.
-        let m = MatchAbs { abs_row: 6, col_start: 0, col_end: 3 };
-        let off = SearchState::desired_scroll_offset_for(m, /*sb_len=*/5);
+        let m = MatchAbs {
+            abs_row: 6,
+            col_start: 0,
+            col_end: 3,
+        };
+        let off = SearchState::desired_scroll_offset_for(m, /*sb_len=*/ 5);
         assert_eq!(off, 0);
     }
 
@@ -343,8 +407,12 @@ mod tests {
     fn desired_scroll_offset_for_oldest_scrollback_returns_full_offset() {
         // To bring abs_row=0 (oldest scrollback) to viewport top,
         // user must scroll back the full scrollback length.
-        let m = MatchAbs { abs_row: 0, col_start: 0, col_end: 3 };
-        let off = SearchState::desired_scroll_offset_for(m, /*sb_len=*/10);
+        let m = MatchAbs {
+            abs_row: 0,
+            col_start: 0,
+            col_end: 3,
+        };
+        let off = SearchState::desired_scroll_offset_for(m, /*sb_len=*/ 10);
         assert_eq!(off, 10);
     }
 

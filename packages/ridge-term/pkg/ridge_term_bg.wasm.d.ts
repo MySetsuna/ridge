@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_renderhandle_free: (a: number, b: number) => void;
+export const __wbg_surfacehosthandle_free: (a: number, b: number) => void;
 export const __wbg_terminalkernel_free: (a: number, b: number) => void;
 export const _init: () => void;
 export const renderhandle_applyDefaultTheme: (a: number) => void;
@@ -15,6 +16,12 @@ export const renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number)
 export const renderhandle_render: (a: number, b: number) => number;
 export const renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
 export const renderhandle_setFocused: (a: number, b: number) => void;
+export const renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
+export const surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
+export const surfacehosthandle_endFrame: (a: number) => void;
+export const surfacehosthandle_init: (a: any) => any;
+export const surfacehosthandle_invalidate: (a: number) => void;
+export const surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
 export const terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
 export const terminalkernel_clearSelection: (a: number) => void;
 export const terminalkernel_cols: (a: number) => number;

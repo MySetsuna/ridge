@@ -24,10 +24,18 @@ pub mod glyph_atlas;
 pub mod webgpu;
 
 // Shared GPU context (Round 3 §4.3 Phase A): one Device / Queue /
-// pipeline / atlas for the whole process. Per-pane WebGpuBackend
+// pipeline / atlas for the whole process. Per-pane WebGpuPaneBackend
 // borrows it via Rc<RefCell<>> instead of constructing its own copies.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod gpu_context;
+
+// Shared swap-chain host (Round 3 §4.3 Phase B): one wgpu::Surface
+// bound to the global host canvas in +page.svelte. Per-pane backends
+// record into a shared command encoder via `SurfaceHost::record_pane`,
+// each pane's draw clipped by its own scissor rect. Single submit +
+// present per frame regardless of pane count.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub mod surface_host;
 
 // Glyph rasterizer (Round 3 §4.1.b). OffscreenCanvas-based — uses the
 // browser's font fallback chain for free, no extra wasm bundle weight.
@@ -36,9 +44,7 @@ pub mod gpu_context;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod glyph_rasterizer;
 
-pub use backend::{
-    CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
-};
+pub use backend::{CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme};
 pub use renderer::Renderer;
 
 #[cfg(target_arch = "wasm32")]
@@ -67,7 +73,7 @@ pub use canvas2d::Canvas2dBackend;
 pub enum AnyBackend {
     Canvas2d(Canvas2dBackend),
     #[cfg(feature = "webgpu")]
-    Webgpu(webgpu::WebGpuBackend),
+    Webgpu(webgpu::WebGpuPaneBackend),
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -87,15 +93,31 @@ impl AnyBackend {
             }
         }
     }
+
+    /// Phase B: record the pane's `(x, y)` position on the host canvas
+    /// in device pixels. Drives `pass.set_viewport` / `set_scissor_rect`
+    /// inside the host's shared render pass so the pane's draw lands at
+    /// the correct rect on the host canvas.
+    ///
+    /// No-op for Canvas2D — that backend owns its own per-pane DOM
+    /// canvas, positioned by CSS, so JS-driven offsets are not relevant.
+    pub fn set_viewport_offset(&mut self, _x: u32, _y: u32) {
+        match self {
+            AnyBackend::Canvas2d(_) => {
+                // Per-pane canvas owns its DOM position; no GPU-side
+                // viewport to update.
+            }
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => {
+                b.set_viewport_offset(_x, _y);
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl RenderBackend for AnyBackend {
-    fn measure_font(
-        &self,
-        font_family: &str,
-        font_size_px: f32,
-    ) -> Result<(f32, f32), String> {
+    fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         match self {
             AnyBackend::Canvas2d(b) => b.measure_font(font_family, font_size_px),
             #[cfg(feature = "webgpu")]
@@ -119,12 +141,7 @@ impl RenderBackend for AnyBackend {
         }
     }
 
-    fn resize_surface(
-        &mut self,
-        width_css: u32,
-        height_css: u32,
-        dpr: f32,
-    ) -> Result<(), String> {
+    fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
         match self {
             AnyBackend::Canvas2d(b) => b.resize_surface(width_css, height_css, dpr),
             #[cfg(feature = "webgpu")]
@@ -174,11 +191,7 @@ impl RenderBackend for AnyBackend {
         }
     }
 
-    fn draw_row(
-        &mut self,
-        row: &RowDraw<'_>,
-        attrs_table: &crate::term::attr_table::AttrTable,
-    ) {
+    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable) {
         match self {
             AnyBackend::Canvas2d(b) => b.draw_row(row, attrs_table),
             #[cfg(feature = "webgpu")]

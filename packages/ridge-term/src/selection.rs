@@ -99,7 +99,9 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Programmatic set from viewport coords (e.g. mouse drag from
     /// manager.ts). Takes the terminal so it can capture the current
@@ -142,7 +144,9 @@ impl Selection {
 
     /// Raw abs-row range. Used by the renderer's selection-changed
     /// detector and by callers that need scroll-stable identity.
-    pub fn range_abs(&self) -> Option<RangeAbs> { self.range_abs }
+    pub fn range_abs(&self) -> Option<RangeAbs> {
+        self.range_abs
+    }
 
     /// Translate the stored abs-row range to a viewport-relative
     /// `Range`, clipped to the visible viewport. Returns `None` when
@@ -162,7 +166,9 @@ impl Selection {
         let sb = terminal.scrollback_len();
         let rows = terminal.rows();
         let cols = terminal.cols();
-        if rows == 0 { return None; }
+        if rows == 0 {
+            return None;
+        }
 
         // Viewport's abs-row span: [sb - off, sb - off + rows).
         let vp_first_abs = sb.saturating_sub(off);
@@ -194,12 +200,20 @@ impl Selection {
         };
 
         Some(Range {
-            start: Pos { row: vp_start_row, col: start_col },
-            end: Pos { row: vp_end_row, col: end_col },
+            start: Pos {
+                row: vp_start_row,
+                col: start_col,
+            },
+            end: Pos {
+                row: vp_end_row,
+                col: end_col,
+            },
         })
     }
 
-    pub fn is_empty(&self) -> bool { self.range_abs.is_none() }
+    pub fn is_empty(&self) -> bool {
+        self.range_abs.is_none()
+    }
 
     /// Programmatic "select all visible". Selects the entire current
     /// viewport in abs-row terms — i.e. abs `[sb_len, sb_len + rows)`.
@@ -246,9 +260,13 @@ impl Selection {
             return;
         }
         let mut lo = col;
-        while lo > 0 && is_word(r.cells[lo - 1].ch) { lo -= 1; }
+        while lo > 0 && is_word(r.cells[lo - 1].ch) {
+            lo -= 1;
+        }
         let mut hi = col + 1;
-        while hi < n && is_word(r.cells[hi].ch) { hi += 1; }
+        while hi < n && is_word(r.cells[hi].ch) {
+            hi += 1;
+        }
         let abs_row = vp_to_abs(row, terminal.scroll_offset(), terminal.scrollback_len());
         self.range_abs = Some(RangeAbs {
             start_abs_row: abs_row,
@@ -280,15 +298,27 @@ impl Selection {
     /// breaks get `\n`. Trailing whitespace per row is trimmed (same as
     /// xterm's "copy a line" convention).
     pub fn text(&self, terminal: &Terminal) -> String {
-        let Some(range) = self.range_abs else { return String::new() };
+        let Some(range) = self.range_abs else {
+            return String::new();
+        };
         let cols = terminal.cols();
         let mut out = String::new();
 
         for abs in range.start_abs_row..=range.end_abs_row {
-            let Some(row) = terminal.row_at_abs(abs) else { break };
+            let Some(row) = terminal.row_at_abs(abs) else {
+                break;
+            };
 
-            let lo = if abs == range.start_abs_row { range.start_col } else { 0 };
-            let hi = if abs == range.end_abs_row { range.end_col } else { cols };
+            let lo = if abs == range.start_abs_row {
+                range.start_col
+            } else {
+                0
+            };
+            let hi = if abs == range.end_abs_row {
+                range.end_col
+            } else {
+                cols
+            };
             let hi = hi.min(row.cells.len());
             if lo >= hi {
                 let is_last = abs == range.end_abs_row;
@@ -301,7 +331,9 @@ impl Selection {
             let mut line = String::new();
             for col in lo..hi {
                 let cell = &row.cells[col];
-                if cell.width == 0 { continue; }
+                if cell.width == 0 {
+                    continue;
+                }
                 line.push(cell.ch);
             }
             let trimmed = line.trim_end_matches(' ');
@@ -322,7 +354,10 @@ mod tests {
     use crate::term::Terminal;
 
     fn vp_range(sr: usize, sc: usize, er: usize, ec: usize) -> Range {
-        Range { start: Pos { row: sr, col: sc }, end: Pos { row: er, col: ec } }
+        Range {
+            start: Pos { row: sr, col: sc },
+            end: Pos { row: er, col: ec },
+        }
     }
 
     #[test]
@@ -345,10 +380,11 @@ mod tests {
     fn range_normalization_swaps_reverse_drag() {
         let r = Range {
             start: Pos { row: 2, col: 5 },
-            end:   Pos { row: 0, col: 0 },
-        }.normalized();
+            end: Pos { row: 0, col: 0 },
+        }
+        .normalized();
         assert_eq!(r.start, Pos { row: 0, col: 0 });
-        assert_eq!(r.end,   Pos { row: 2, col: 5 });
+        assert_eq!(r.end, Pos { row: 2, col: 5 });
     }
 
     #[test]
@@ -391,9 +427,15 @@ mod tests {
 
     #[test]
     fn range_is_empty_when_start_equals_end() {
-        let r = Range { start: Pos { row: 1, col: 5 }, end: Pos { row: 1, col: 5 } };
+        let r = Range {
+            start: Pos { row: 1, col: 5 },
+            end: Pos { row: 1, col: 5 },
+        };
         assert!(r.is_empty());
-        let r2 = Range { start: Pos { row: 1, col: 5 }, end: Pos { row: 1, col: 6 } };
+        let r2 = Range {
+            start: Pos { row: 1, col: 5 },
+            end: Pos { row: 1, col: 6 },
+        };
         assert!(!r2.is_empty());
     }
 
@@ -425,7 +467,7 @@ mod tests {
         s.set(&t, vp_range(2, 5, 0, 0));
         let r = s.range_in_viewport(&t).unwrap();
         assert_eq!(r.start, Pos { row: 0, col: 0 });
-        assert_eq!(r.end,   Pos { row: 2, col: 5 });
+        assert_eq!(r.end, Pos { row: 2, col: 5 });
     }
 
     #[test]
@@ -437,7 +479,11 @@ mod tests {
         let text = s.text(&t);
         assert!(text.contains("abc"));
         assert!(text.contains("def"));
-        assert!(text.contains('\n'), "hard-wrapped rows must be separated by \\n: got {:?}", text);
+        assert!(
+            text.contains('\n'),
+            "hard-wrapped rows must be separated by \\n: got {:?}",
+            text
+        );
     }
 
     #[test]
@@ -466,7 +512,10 @@ mod tests {
         // Scroll up 3 rows — abs-row range MUST NOT change.
         t.scroll_up_view(3);
         let abs_after = s.range_abs().unwrap();
-        assert_eq!(abs_before, abs_after, "abs-row range must be invariant under scroll");
+        assert_eq!(
+            abs_before, abs_after,
+            "abs-row range must be invariant under scroll"
+        );
     }
 
     #[test]
@@ -487,7 +536,11 @@ mod tests {
         // pushed below the viewport's bottom edge → should clip to None.
         t.scroll_up_view(1);
         let r1 = s.range_in_viewport(&t);
-        assert!(r1.is_none(), "originally-bottom row must clip after scroll up; got {:?}", r1);
+        assert!(
+            r1.is_none(),
+            "originally-bottom row must clip after scroll up; got {:?}",
+            r1
+        );
     }
 
     #[test]

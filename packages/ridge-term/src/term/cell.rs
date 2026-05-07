@@ -29,7 +29,12 @@ impl Cell {
     };
 
     pub fn new(ch: char, attr: AttrId, width: u8) -> Self {
-        Self { ch, attr, width, _pad: 0 }
+        Self {
+            ch,
+            attr,
+            width,
+            _pad: 0,
+        }
     }
 
     pub fn is_blank(self) -> bool {
@@ -39,12 +44,19 @@ impl Cell {
     /// Continuation half written to position N+1 when a wide cell is placed
     /// at N. Carries the same attr so the bg color spans both halves.
     pub fn wide_spacer(attr: AttrId) -> Self {
-        Self { ch: '\0', attr, width: 0, _pad: 0 }
+        Self {
+            ch: '\0',
+            attr,
+            width: 0,
+            _pad: 0,
+        }
     }
 }
 
 impl Default for Cell {
-    fn default() -> Self { Self::EMPTY }
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 /// One OSC 8 hyperlink range on a row: cells `[col_start, col_end)` are
@@ -141,7 +153,9 @@ impl Row {
     /// linear scan; expected N is 0 for the common case and small
     /// (<10) even for emoji-heavy rows.
     pub fn cluster_at(&self, col: usize) -> Option<&ClusterSpan> {
-        if self.clusters.is_empty() { return None; }
+        if self.clusters.is_empty() {
+            return None;
+        }
         let target = col.min(u16::MAX as usize) as u16;
         self.clusters.iter().find(|c| c.col == target)
     }
@@ -164,7 +178,9 @@ impl Row {
     /// overwrite paths so a non-cluster write (regular ASCII / CJK)
     /// at a previously-clustered col doesn't leave a stale sidecar.
     pub fn clear_cluster_at(&mut self, col: usize) {
-        if self.clusters.is_empty() { return; }
+        if self.clusters.is_empty() {
+            return;
+        }
         let target = col.min(u16::MAX as usize) as u16;
         self.clusters.retain(|c| c.col != target);
     }
@@ -172,7 +188,9 @@ impl Row {
     /// Return the hyperlink span containing `col`, if any. O(N) over
     /// spans on this row — expected to be 0..3 for typical rows.
     pub fn link_at(&self, col: usize) -> Option<&HyperlinkSpan> {
-        self.hyperlinks.iter().find(|s| col >= s.col_start && col < s.col_end)
+        self.hyperlinks
+            .iter()
+            .find(|s| col >= s.col_start && col < s.col_end)
     }
 }
 
@@ -250,7 +268,10 @@ mod tests {
         r.cells[1] = Cell::new('b', AttrId(2), 1);
         r.wrapped = true;
         r.hyperlinks.push(HyperlinkSpan {
-            col_start: 0, col_end: 2, uri: "u".into(), id: None,
+            col_start: 0,
+            col_end: 2,
+            uri: "u".into(),
+            id: None,
         });
         r.clear();
         assert!(r.cells.iter().all(|c| c.is_blank()));
@@ -275,7 +296,11 @@ mod tests {
     fn row_resize_shrink_truncates_cells() {
         let mut r = Row::new(8);
         for i in 0..8 {
-            r.cells[i] = Cell::new(char::from_u32(b'a' as u32 + i as u32).unwrap(), AttrId::DEFAULT, 1);
+            r.cells[i] = Cell::new(
+                char::from_u32(b'a' as u32 + i as u32).unwrap(),
+                AttrId::DEFAULT,
+                1,
+            );
         }
         r.resize(3);
         assert_eq!(r.cells.len(), 3);
@@ -286,9 +311,24 @@ mod tests {
     #[test]
     fn row_resize_drops_hyperlinks_past_new_width() {
         let mut r = Row::new(20);
-        r.hyperlinks.push(HyperlinkSpan { col_start: 0, col_end: 3, uri: "a".into(), id: None });
-        r.hyperlinks.push(HyperlinkSpan { col_start: 8, col_end: 12, uri: "b".into(), id: None });
-        r.hyperlinks.push(HyperlinkSpan { col_start: 15, col_end: 18, uri: "c".into(), id: None });
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 3,
+            uri: "a".into(),
+            id: None,
+        });
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 8,
+            col_end: 12,
+            uri: "b".into(),
+            id: None,
+        });
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 15,
+            col_end: 18,
+            uri: "c".into(),
+            id: None,
+        });
         // Shrink to 10 cols. Span 'a' (0..3) survives; 'b' (8..12)
         // straddles, col_end clamped; 'c' (15..18) starts past width,
         // dropped.
@@ -302,7 +342,12 @@ mod tests {
     #[test]
     fn row_resize_keeps_all_hyperlinks_when_growing() {
         let mut r = Row::new(5);
-        r.hyperlinks.push(HyperlinkSpan { col_start: 0, col_end: 5, uri: "u".into(), id: None });
+        r.hyperlinks.push(HyperlinkSpan {
+            col_start: 0,
+            col_end: 5,
+            uri: "u".into(),
+            id: None,
+        });
         r.resize(10);
         assert_eq!(r.hyperlinks.len(), 1);
         assert_eq!(r.hyperlinks[0].col_end, 5);
@@ -321,7 +366,10 @@ mod tests {
     fn link_at_finds_span_containing_col() {
         let mut r = Row::new(10);
         r.hyperlinks.push(HyperlinkSpan {
-            col_start: 2, col_end: 7, uri: "u".into(), id: Some("anchor".into()),
+            col_start: 2,
+            col_end: 7,
+            uri: "u".into(),
+            id: Some("anchor".into()),
         });
         // Inside range.
         assert_eq!(r.link_at(2).unwrap().uri, "u");
@@ -339,10 +387,16 @@ mod tests {
     fn link_at_picks_span_when_multiple_present() {
         let mut r = Row::new(20);
         r.hyperlinks.push(HyperlinkSpan {
-            col_start: 0, col_end: 5, uri: "first".into(), id: None,
+            col_start: 0,
+            col_end: 5,
+            uri: "first".into(),
+            id: None,
         });
         r.hyperlinks.push(HyperlinkSpan {
-            col_start: 10, col_end: 15, uri: "second".into(), id: None,
+            col_start: 10,
+            col_end: 15,
+            uri: "second".into(),
+            id: None,
         });
         assert_eq!(r.link_at(2).unwrap().uri, "first");
         assert_eq!(r.link_at(12).unwrap().uri, "second");

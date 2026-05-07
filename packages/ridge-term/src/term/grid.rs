@@ -257,28 +257,50 @@ impl Grid {
         now_ms.saturating_sub(self.last_abs_csi_at_ms) < INLINE_TUI_DECAY_MS
     }
 
-    pub fn rows(&self) -> usize { self.rows }
-    pub fn cols(&self) -> usize { self.cols }
-    pub fn is_alt_screen(&self) -> bool { self.is_alt }
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+    pub fn is_alt_screen(&self) -> bool {
+        self.is_alt
+    }
     /// Top of the scroll region on the active screen, 0-based inclusive.
     /// Used by the parser to apply DECOM (?6 origin mode) offsets to CUP
     /// and VPA: when origin mode is on, `H`/`f`/`d` are interpreted
     /// relative to this row instead of the screen top.
-    pub fn scroll_top(&self) -> usize { self.screen().scroll_top }
+    pub fn scroll_top(&self) -> usize {
+        self.screen().scroll_top
+    }
     /// Bottom of the scroll region on the active screen, 0-based
     /// inclusive. Used together with `scroll_top()` to clamp DECOM-mode
     /// cursor positioning.
-    pub fn scroll_bottom(&self) -> usize { self.screen().scroll_bottom }
+    pub fn scroll_bottom(&self) -> usize {
+        self.screen().scroll_bottom
+    }
 
     fn screen(&self) -> &Screen {
-        if self.is_alt { &self.alt } else { &self.primary }
+        if self.is_alt {
+            &self.alt
+        } else {
+            &self.primary
+        }
     }
     fn screen_mut(&mut self) -> &mut Screen {
-        if self.is_alt { &mut self.alt } else { &mut self.primary }
+        if self.is_alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        }
     }
 
-    pub fn cursor(&self) -> &Cursor { &self.screen().cursor }
-    pub fn cursor_mut(&mut self) -> &mut Cursor { &mut self.screen_mut().cursor }
+    pub fn cursor(&self) -> &Cursor {
+        &self.screen().cursor
+    }
+    pub fn cursor_mut(&mut self) -> &mut Cursor {
+        &mut self.screen_mut().cursor
+    }
     pub fn saved_cursor_mut(&mut self) -> &mut Option<SavedCursor> {
         &mut self.screen_mut().saved_cursor
     }
@@ -291,10 +313,14 @@ impl Grid {
     /// `clear_on_enter` corresponds to the `1049` variant: clear the alt
     /// screen on entry so we get a fresh blank canvas for fullscreen apps.
     pub fn enter_alt_screen(&mut self, clear_on_enter: bool) {
-        if self.is_alt { return; }
+        if self.is_alt {
+            return;
+        }
         self.is_alt = true;
         if clear_on_enter {
-            for r in &mut self.alt.rows { r.clear(); }
+            for r in &mut self.alt.rows {
+                r.clear();
+            }
             self.alt.cursor = Cursor::default();
             self.alt.scroll_top = 0;
             self.alt.scroll_bottom = self.rows.saturating_sub(1);
@@ -303,7 +329,9 @@ impl Grid {
 
     /// Leave alt screen (DECRST 1049 / 47 / 1047). Idempotent.
     pub fn leave_alt_screen(&mut self) {
-        if !self.is_alt { return; }
+        if !self.is_alt {
+            return;
+        }
         self.is_alt = false;
     }
 
@@ -312,8 +340,14 @@ impl Grid {
     /// xterm also moves cursor to (0,0) on STBM, so we do too.
     pub fn set_scroll_region(&mut self, top_1based: Option<usize>, bottom_1based: Option<usize>) {
         let last = self.rows.saturating_sub(1);
-        let top = top_1based.map(|v| v.saturating_sub(1)).unwrap_or(0).min(last);
-        let bottom = bottom_1based.map(|v| v.saturating_sub(1)).unwrap_or(last).min(last);
+        let top = top_1based
+            .map(|v| v.saturating_sub(1))
+            .unwrap_or(0)
+            .min(last);
+        let bottom = bottom_1based
+            .map(|v| v.saturating_sub(1))
+            .unwrap_or(last)
+            .min(last);
         if top >= bottom {
             // Invalid region — silently fall back to full screen, like xterm.
             let scr = self.screen_mut();
@@ -377,12 +411,7 @@ impl Grid {
     /// visible primary region is fully wiped (§A.3) so an Ink-style app's
     /// SIGWINCH redraw paints onto a clean canvas — the same treatment
     /// alt-screen TUIs already get via §1.22.
-    pub fn resize_with_inline_tui(
-        &mut self,
-        rows: usize,
-        cols: usize,
-        inline_tui_active: bool,
-    ) {
+    pub fn resize_with_inline_tui(&mut self, rows: usize, cols: usize, inline_tui_active: bool) {
         let old_rows = self.rows;
         let old_cols = self.cols;
         let cols_changed = cols != self.cols;
@@ -618,8 +647,7 @@ impl Grid {
         if w == 2 && self.screen().cursor.col + 1 >= cols {
             let cur = self.screen().cursor;
             if cur.col < cols {
-                self.screen_mut().rows[cur.row].cells[cur.col] =
-                    Cell::new(' ', attr_id, 1);
+                self.screen_mut().rows[cur.row].cells[cur.col] = Cell::new(' ', attr_id, 1);
             }
             self.screen_mut().rows[cur.row].wrapped = true;
             self.screen_mut().cursor.col = 0;
@@ -734,7 +762,9 @@ impl Grid {
     /// short-circuits on width-0.
     pub fn print_grapheme(&mut self, s: &str, attrs: Attrs) {
         let mut chars = s.chars();
-        let Some(first) = chars.next() else { return; };
+        let Some(first) = chars.next() else {
+            return;
+        };
         let multi = chars.next().is_some();
 
         if !multi {
@@ -776,10 +806,8 @@ impl Grid {
             let row_len = self.screen().rows[row_idx].cells.len();
             if written_col + 1 < row_len {
                 let attr_id = self.attrs.intern(attrs);
-                self.screen_mut().rows[row_idx].cells[written_col] =
-                    Cell::new(first, attr_id, 2);
-                self.screen_mut().rows[row_idx].cells[written_col + 1] =
-                    Cell::wide_spacer(attr_id);
+                self.screen_mut().rows[row_idx].cells[written_col] = Cell::new(first, attr_id, 2);
+                self.screen_mut().rows[row_idx].cells[written_col + 1] = Cell::wide_spacer(attr_id);
                 // Advance cursor by the extra column claimed by the
                 // upgraded width-2 placement, mirroring the wide-char
                 // path in `print`.
@@ -796,8 +824,7 @@ impl Grid {
         // Register the cluster on the row sidecar.
         let row_len = self.screen().rows[row_idx].cells.len();
         if written_col < row_len {
-            self.screen_mut().rows[row_idx]
-                .set_cluster(written_col, Box::from(s));
+            self.screen_mut().rows[row_idx].set_cluster(written_col, Box::from(s));
         }
     }
 
@@ -826,7 +853,9 @@ impl Grid {
 
     pub fn backspace(&mut self) {
         let cur = self.cursor_mut();
-        if cur.col > 0 { cur.col -= 1; }
+        if cur.col > 0 {
+            cur.col -= 1;
+        }
         cur.pending_wrap = false;
     }
 
@@ -848,7 +877,9 @@ impl Grid {
         let cur = self.cursor_mut();
         let mut col = cur.col;
         for _ in 0..n {
-            if col == 0 { break; }
+            if col == 0 {
+                break;
+            }
             col = ((col - 1) / 8) * 8;
         }
         cur.col = col;
@@ -868,7 +899,11 @@ impl Grid {
         // Cursor up obeys the scroll region: it doesn't go above scroll_top
         // when the cursor was already inside the region.
         let scr = self.screen();
-        let limit = if scr.cursor.row >= scr.scroll_top { scr.scroll_top } else { 0 };
+        let limit = if scr.cursor.row >= scr.scroll_top {
+            scr.scroll_top
+        } else {
+            0
+        };
         let new_row = scr.cursor.row.saturating_sub(n).max(limit);
         let cur = self.cursor_mut();
         cur.row = new_row;
@@ -878,7 +913,11 @@ impl Grid {
     pub fn cursor_down(&mut self, n: usize) {
         let scr = self.screen();
         let last = self.rows.saturating_sub(1);
-        let limit = if scr.cursor.row <= scr.scroll_bottom { scr.scroll_bottom } else { last };
+        let limit = if scr.cursor.row <= scr.scroll_bottom {
+            scr.scroll_bottom
+        } else {
+            last
+        };
         let new_row = (scr.cursor.row + n).min(limit);
         let cur = self.cursor_mut();
         cur.row = new_row;
@@ -921,7 +960,9 @@ impl Grid {
                 self.erase_row_range(cur_row, 0, cur_col + 1);
             }
             EraseMode::All => {
-                for r in &mut self.screen_mut().rows { r.clear(); }
+                for r in &mut self.screen_mut().rows {
+                    r.clear();
+                }
             }
         }
     }
@@ -933,7 +974,7 @@ impl Grid {
         match mode {
             EraseMode::Below => self.erase_row_range(cur_row, cur_col, cols),
             EraseMode::Above => self.erase_row_range(cur_row, 0, cur_col + 1),
-            EraseMode::All   => self.erase_row_range(cur_row, 0, cols),
+            EraseMode::All => self.erase_row_range(cur_row, 0, cols),
         }
     }
 
@@ -1002,7 +1043,9 @@ impl Grid {
         let cols = self.cols;
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let n = n.min(cols.saturating_sub(cur_col));
-            if n == 0 { return; }
+            if n == 0 {
+                return;
+            }
             // §1.28: if the cut point splits a wide pair (cells[cur_col]
             // is a continuation whose main lives at cur_col-1), the
             // shift would leave the main orphaned with `n` blanks
@@ -1064,7 +1107,9 @@ impl Grid {
         uri: &str,
         id: Option<&str>,
     ) {
-        let Some(r) = self.screen_mut().rows.get_mut(row) else { return };
+        let Some(r) = self.screen_mut().rows.get_mut(row) else {
+            return;
+        };
         let end = col + width.max(1);
         if let Some(last) = r.hyperlinks.last_mut() {
             let id_match = match (&last.id, id) {
@@ -1094,7 +1139,9 @@ impl Grid {
         let cols = self.cols;
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let n = n.min(cols.saturating_sub(cur_col));
-            if n == 0 { return; }
+            if n == 0 {
+                return;
+            }
             // §1.28: clip wide pairs at the deletion range boundaries
             // so we don't leave orphans after the shift. Range is
             // [cur_col, cur_col + n).
@@ -1289,20 +1336,13 @@ impl Grid {
 /// Called by EL / ECH / ICH / DCH — every cell-edit op whose range can
 /// straddle a wide pair. Cheap (two boundary peeks); safe to call on
 /// empty rows, zero-length ranges, or out-of-bounds indices.
-fn clip_wide_pair_at_range_boundaries(
-    cells: &mut [super::cell::Cell],
-    start: usize,
-    end: usize,
-) {
+fn clip_wide_pair_at_range_boundaries(cells: &mut [super::cell::Cell], start: usize, end: usize) {
     if start >= end || cells.is_empty() {
         return;
     }
     // Left boundary: cells[start] is a continuation, so its main at
     // start-1 sits outside the range — orphan it away.
-    if start > 0 && start < cells.len()
-        && cells[start].width == 0
-        && cells[start - 1].width == 2
-    {
+    if start > 0 && start < cells.len() && cells[start].width == 0 && cells[start - 1].width == 2 {
         cells[start - 1] = super::cell::Cell::EMPTY;
     }
     // Right boundary: cells[end-1] is a wide main inside the range, so
@@ -1378,7 +1418,7 @@ mod tests {
     fn scroll_region_constrains_linefeed() {
         let mut g = Grid::new(5, 5, 10);
         g.set_scroll_region(Some(2), Some(4)); // rows 1..3 (0-based)
-        // Fill some rows
+                                               // Fill some rows
         for ch in ['a', 'b', 'c', 'd', 'e'] {
             g.print(ch, Attrs::DEFAULT);
             g.linefeed();
@@ -1395,8 +1435,12 @@ mod tests {
     fn full_region_scroll_pushes_to_scrollback() {
         let mut g = Grid::new(2, 5, 10);
         // Default region = full screen.
-        g.print('1', Attrs::DEFAULT); g.linefeed(); g.carriage_return();
-        g.print('2', Attrs::DEFAULT); g.linefeed(); g.carriage_return();
+        g.print('1', Attrs::DEFAULT);
+        g.linefeed();
+        g.carriage_return();
+        g.print('2', Attrs::DEFAULT);
+        g.linefeed();
+        g.carriage_return();
         g.print('3', Attrs::DEFAULT);
         // Should have scrolled '1' into scrollback.
         assert_eq!(g.scrollback.len(), 1);
@@ -1424,7 +1468,10 @@ mod tests {
             g.carriage_return();
         }
         // 30 lines into a 26-row screen → at least 4 evictions to scrollback.
-        assert!(g.scrollback.len() >= 4, "scrollback empty after grow-resize");
+        assert!(
+            g.scrollback.len() >= 4,
+            "scrollback empty after grow-resize"
+        );
     }
 
     #[test]
@@ -1548,7 +1595,9 @@ mod tests {
     #[test]
     fn ri_at_scroll_top_scrolls_down() {
         let mut g = Grid::new(3, 3, 0);
-        g.print('a', Attrs::DEFAULT); g.linefeed(); g.carriage_return();
+        g.print('a', Attrs::DEFAULT);
+        g.linefeed();
+        g.carriage_return();
         g.print('b', Attrs::DEFAULT);
         g.cursor_to(0, 0);
         g.reverse_linefeed();
@@ -1565,7 +1614,9 @@ mod tests {
         // bottom-of-region scroll. Print + LF + CR for the first three;
         // for the last, only print (no trailing LF) so 'a' isn't ejected.
         for ch in ['a', 'b', 'c'] {
-            g.print(ch, Attrs::DEFAULT); g.linefeed(); g.carriage_return();
+            g.print(ch, Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
         }
         g.print('d', Attrs::DEFAULT);
         // Sanity: setup placed all four rows correctly.
@@ -1627,7 +1678,11 @@ mod tests {
         }
         g.resize(5, 40);
         assert_eq!(g.cols(), 40);
-        assert_eq!(row_text(&g, 0), "a".repeat(40), "row 0 clipped to new width");
+        assert_eq!(
+            row_text(&g, 0),
+            "a".repeat(40),
+            "row 0 clipped to new width"
+        );
         assert_eq!(g.row(0).unwrap().wrapped, false, "no synthetic wrap flag");
         for r in 1..5 {
             assert_eq!(row_text(&g, r), "", "row {r} untouched (no rewrap)");
@@ -1669,7 +1724,11 @@ mod tests {
 
         // Shrink: cursor clamps from col 9 to col 4 (new last col).
         g.resize(5, 5);
-        assert_eq!(g.cursor().col, 4, "cursor clamped to new last col on shrink");
+        assert_eq!(
+            g.cursor().col,
+            4,
+            "cursor clamped to new last col on shrink"
+        );
         assert!(
             !g.cursor().pending_wrap,
             "pending_wrap cleared even when cursor lands AT new last col on shrink"
@@ -1680,9 +1739,12 @@ mod tests {
         // via SIGWINCH redraw if it cares. The kernel never re-derives
         // pending_wrap across a resize.
         g.cursor_to(0, 4); // keep cursor at last col of current 5-col grid
-        // print one more char to push pending_wrap=true at col 4.
+                           // print one more char to push pending_wrap=true at col 4.
         g.print('!', Attrs::DEFAULT);
-        assert!(g.cursor().pending_wrap, "print at last col sets pending_wrap");
+        assert!(
+            g.cursor().pending_wrap,
+            "print at last col sets pending_wrap"
+        );
         g.resize(5, 20);
         assert!(
             !g.cursor().pending_wrap,
@@ -1729,7 +1791,10 @@ mod tests {
         let last = g.last_resize_diags().last().expect("alt resize recorded");
         assert_eq!(last.branch, ResizeBranch::Naive);
         assert!(last.is_alt);
-        assert!(last.wipe_fired, "wipe runs when alt is active and dims change");
+        assert!(
+            last.wipe_fired,
+            "wipe runs when alt is active and dims change"
+        );
     }
 
     // ---- §A.3 inline-TUI primary wipe ---------------------------------
@@ -1855,7 +1920,10 @@ mod tests {
         let cells = &row.cells;
         for (i, cell) in cells.iter().enumerate() {
             if cell.width == 0 {
-                assert!(i > 0, "row {row_idx} col {i}: width==0 at column 0 has no possible main");
+                assert!(
+                    i > 0,
+                    "row {row_idx} col {i}: width==0 at column 0 has no possible main"
+                );
                 let prev = cells[i - 1];
                 assert_eq!(
                     prev.width, 2,
@@ -1918,7 +1986,8 @@ mod tests {
         g.print('B', Attrs::DEFAULT);
 
         assert_eq!(
-            g.row(0).unwrap().cells[0].ch, 'A',
+            g.row(0).unwrap().cells[0].ch,
+            'A',
             "the 'A' from the prior write must NOT be wiped by writing 'B' to col 1",
         );
         assert_eq!(g.row(0).unwrap().cells[1].ch, 'B');
@@ -1971,7 +2040,7 @@ mod tests {
         // no width=2 to its left.
         let mut g = Grid::new(2, 10, 0);
         g.print('中', Attrs::DEFAULT); // cols 0..=1
-        g.print('A', Attrs::DEFAULT);  // col  2
+        g.print('A', Attrs::DEFAULT); // col  2
         g.cursor_to(0, 0);
         g.delete_chars(1); // delete cells[0], shifting [1..] left
 

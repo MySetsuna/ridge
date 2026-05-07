@@ -76,7 +76,9 @@ impl<'a> Performer<'a> {
     /// it (ZWJ partners, variation selectors, combining marks).
     fn drain_complete_graphemes(&mut self) {
         let n = self.grapheme_buf.graphemes(true).count();
-        if n < 2 { return; }
+        if n < 2 {
+            return;
+        }
         // Collect to owned strings so we can call `&mut self` methods
         // while emitting (the iterator borrows `grapheme_buf`).
         let graphemes: Vec<String> = self
@@ -97,7 +99,9 @@ impl<'a> Performer<'a> {
     /// grid before a CSI / OSC / control byte takes effect, and on
     /// the buffer-overflow safety path. Empty buffer is a no-op.
     fn flush_grapheme_buf(&mut self) {
-        if self.grapheme_buf.is_empty() { return; }
+        if self.grapheme_buf.is_empty() {
+            return;
+        }
         let buf = std::mem::take(self.grapheme_buf);
         // Buffer may legitimately hold multiple complete clusters
         // (the drain step keeps only the trailing one, but a force-
@@ -119,7 +123,9 @@ impl<'a> Performer<'a> {
     /// align with chunk boundaries — so the simpler always-flush rule
     /// loses very little correctness for a lot of robustness.
     pub(super) fn flush_buffer_if_complete(&mut self) {
-        if self.grapheme_buf.is_empty() { return; }
+        if self.grapheme_buf.is_empty() {
+            return;
+        }
         self.flush_grapheme_buf();
     }
 
@@ -129,7 +135,9 @@ impl<'a> Performer<'a> {
     /// share this entry so the IRM / link bookkeeping stays in one
     /// place.
     fn emit_grapheme(&mut self, g: &str) {
-        if g.is_empty() { return; }
+        if g.is_empty() {
+            return;
+        }
         let mut chars = g.chars();
         let first = match chars.next() {
             Some(c) => c,
@@ -178,9 +186,8 @@ impl<'a> Performer<'a> {
                     cur.col.saturating_sub(w)
                 };
                 let id_ref: Option<&str> = id.as_deref();
-                self.grid.annotate_cell_with_link(
-                    cur.row, written_col, w, uri.as_str(), id_ref,
-                );
+                self.grid
+                    .annotate_cell_with_link(cur.row, written_col, w, uri.as_str(), id_ref);
             }
         }
     }
@@ -252,13 +259,7 @@ impl<'a> Perform for Performer<'a> {
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        intermediates: &[u8],
-        _ignore: bool,
-        action: char,
-    ) {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         // §4.7: flush pending grapheme so cursor / attrs / mode changes
         // affect the NEXT print, not the just-buffered cluster.
         self.flush_grapheme_buf();
@@ -291,7 +292,7 @@ impl<'a> Perform for Performer<'a> {
 
         match action {
             'A' => self.grid.cursor_up(p1()),
-            'B' | 'e' => self.grid.cursor_down(p1()),  // 'e' = VPR (Vertical Position Relative)
+            'B' | 'e' => self.grid.cursor_down(p1()), // 'e' = VPR (Vertical Position Relative)
             'C' | 'a' => self.grid.cursor_right(p1()), // 'a' = HPR (Horizontal Position Relative)
             'D' => self.grid.cursor_left(p1()),
             'E' => {
@@ -350,7 +351,9 @@ impl<'a> Perform for Performer<'a> {
                 // CHT — cursor forward N tab stops. Each step uses the
                 // existing 8-col default tab stop. Default n=1.
                 let n = p1();
-                for _ in 0..n { self.grid.tab(); }
+                for _ in 0..n {
+                    self.grid.tab();
+                }
             }
             'Z' => {
                 // CBT — cursor backward N tab stops. Default n=1. Stops
@@ -363,7 +366,7 @@ impl<'a> Perform for Performer<'a> {
             'T' => self.grid.scroll_down(p1()),
             'L' => self.grid.insert_lines(p1()),
             'M' => self.grid.delete_lines(p1()),
-            'X' => self.grid.erase_chars(p1()),  // ECH — Erase Character (no cursor move)
+            'X' => self.grid.erase_chars(p1()), // ECH — Erase Character (no cursor move)
             '@' => self.grid.insert_chars(p1()), // ICH — Insert Character (shift right)
             'P' => self.grid.delete_chars(p1()), // DCH — Delete Character (shift left)
             's' => {
@@ -459,11 +462,7 @@ impl<'a> Perform for Performer<'a> {
                 //              without renderer cell metrics; skip
                 let code = first_param(params, 0);
                 if code == 18 || code == 19 {
-                    let resp = format!(
-                        "\x1b[8;{};{}t",
-                        self.grid.rows(),
-                        self.grid.cols(),
-                    );
+                    let resp = format!("\x1b[8;{};{}t", self.grid.rows(), self.grid.cols(),);
                     self.pending_response.extend_from_slice(resp.as_bytes());
                 }
             }
@@ -546,7 +545,10 @@ impl<'a> Perform for Performer<'a> {
                 }
             }
             b'D' => self.grid.linefeed(),
-            b'E' => { self.grid.carriage_return(); self.grid.linefeed(); }
+            b'E' => {
+                self.grid.carriage_return();
+                self.grid.linefeed();
+            }
             b'M' => self.grid.reverse_linefeed(),
             b'=' => self.modes.app_keypad = true,  // DECPAM
             b'>' => self.modes.app_keypad = false, // DECPNM
@@ -557,17 +559,17 @@ impl<'a> Perform for Performer<'a> {
                 // (xterm clears, Alacritty preserves; we follow Alacritty
                 // since users dislike losing history on stray RIS, and
                 // TUIs that need a clean screen send ED 2 explicitly).
-                *self.modes = Modes::default();        // autowrap, cursor, mouse, etc.
-                *self.current_attrs = Attrs::DEFAULT;  // SGR back to default fg/bg
-                *self.current_link = None;             // close any open OSC 8 span
-                *self.last_printed = None;             // REP has nothing to repeat
-                // Order matters: leave alt screen FIRST so the subsequent
-                // saved_cursor / scroll_region / cursor_to operations target
-                // the primary screen (the one users see post-reset). Idempotent
-                // if already on primary.
+                *self.modes = Modes::default(); // autowrap, cursor, mouse, etc.
+                *self.current_attrs = Attrs::DEFAULT; // SGR back to default fg/bg
+                *self.current_link = None; // close any open OSC 8 span
+                *self.last_printed = None; // REP has nothing to repeat
+                                           // Order matters: leave alt screen FIRST so the subsequent
+                                           // saved_cursor / scroll_region / cursor_to operations target
+                                           // the primary screen (the one users see post-reset). Idempotent
+                                           // if already on primary.
                 self.grid.leave_alt_screen();
                 self.grid.set_scroll_region(None, None); // back to full-screen region
-                *self.grid.saved_cursor_mut() = None;    // discard any DECSC slot
+                *self.grid.saved_cursor_mut() = None; // discard any DECSC slot
                 self.grid.cursor_to(0, 0);
                 self.grid.erase_in_display(EraseMode::All);
             }
@@ -586,9 +588,15 @@ impl<'a> Perform for Performer<'a> {
 
         // OSC always opens with `<command>;<rest...>`. Need at least the
         // command sub-param to do anything meaningful.
-        if params.is_empty() { return; }
-        let Some(cmd_bytes) = params.first() else { return; };
-        let Ok(cmd_str) = std::str::from_utf8(cmd_bytes) else { return; };
+        if params.is_empty() {
+            return;
+        }
+        let Some(cmd_bytes) = params.first() else {
+            return;
+        };
+        let Ok(cmd_str) = std::str::from_utf8(cmd_bytes) else {
+            return;
+        };
 
         match cmd_str {
             "0" | "2" => {
@@ -632,9 +640,9 @@ impl<'a> Perform for Performer<'a> {
                 // the cell state via `kernel.hyperlinkAt(row, col)` —
                 // open/close events were redundant signals nobody used.
                 // See TASKS §3.2.
-                let id = params.get(1).and_then(|b| {
-                    std::str::from_utf8(b).ok().and_then(parse_hyperlink_id)
-                });
+                let id = params
+                    .get(1)
+                    .and_then(|b| std::str::from_utf8(b).ok().and_then(parse_hyperlink_id));
                 let uri = osc_string_param(params, 2).unwrap_or_default();
                 if uri.is_empty() {
                     *self.current_link = None;
@@ -728,7 +736,9 @@ impl<'a> Performer<'a> {
 // ---------------------------------------------------------------------
 
 fn first_param(params: &Params, default: usize) -> usize {
-    params.iter().next()
+    params
+        .iter()
+        .next()
         .and_then(|sub| sub.first().copied())
         .map(|v| v as usize)
         .filter(|&v| v != 0)
@@ -736,7 +746,9 @@ fn first_param(params: &Params, default: usize) -> usize {
 }
 
 fn nth_param(params: &Params, n: usize, default: usize) -> usize {
-    params.iter().nth(n)
+    params
+        .iter()
+        .nth(n)
         .and_then(|sub| sub.first().copied())
         .map(|v| v as usize)
         .filter(|&v| v != 0)
@@ -744,14 +756,18 @@ fn nth_param(params: &Params, n: usize, default: usize) -> usize {
 }
 
 fn first_param_opt(params: &Params) -> Option<usize> {
-    params.iter().next()
+    params
+        .iter()
+        .next()
         .and_then(|sub| sub.first().copied())
         .map(|v| v as usize)
         .filter(|&v| v != 0)
 }
 
 fn nth_param_opt(params: &Params, n: usize) -> Option<usize> {
-    params.iter().nth(n)
+    params
+        .iter()
+        .nth(n)
         .and_then(|sub| sub.first().copied())
         .map(|v| v as usize)
         .filter(|&v| v != 0)
@@ -817,11 +833,11 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
         let sub = subs[i];
         let code = sub.first().copied().unwrap_or(0);
         match code {
-            0  => *attrs = Attrs::DEFAULT,
-            1  => attrs.flags.insert(Flags::BOLD),
-            2  => attrs.flags.insert(Flags::DIM),
-            3  => attrs.flags.insert(Flags::ITALIC),
-            4  => {
+            0 => *attrs = Attrs::DEFAULT,
+            1 => attrs.flags.insert(Flags::BOLD),
+            2 => attrs.flags.insert(Flags::DIM),
+            3 => attrs.flags.insert(Flags::ITALIC),
+            4 => {
                 // Extended underline syntax (kitty / iTerm2 / wezterm):
                 //   CSI 4 m       → single underline ON      (no sub)
                 //   CSI 4:0 m     → underline OFF
@@ -856,21 +872,27 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
                     }
                 }
             }
-            5  => attrs.flags.insert(Flags::BLINK),
-            7  => attrs.flags.insert(Flags::INVERSE),
-            8  => attrs.flags.insert(Flags::HIDDEN),
-            9  => attrs.flags.insert(Flags::STRIKETHROUGH),
+            5 => attrs.flags.insert(Flags::BLINK),
+            7 => attrs.flags.insert(Flags::INVERSE),
+            8 => attrs.flags.insert(Flags::HIDDEN),
+            9 => attrs.flags.insert(Flags::STRIKETHROUGH),
             21 => attrs.flags.insert(Flags::DBL_UNDERLINE),
-            22 => { attrs.flags.remove(Flags::BOLD); attrs.flags.remove(Flags::DIM); }
+            22 => {
+                attrs.flags.remove(Flags::BOLD);
+                attrs.flags.remove(Flags::DIM);
+            }
             23 => attrs.flags.remove(Flags::ITALIC),
-            24 => { attrs.flags.remove(Flags::UNDERLINE); attrs.flags.remove(Flags::DBL_UNDERLINE); }
+            24 => {
+                attrs.flags.remove(Flags::UNDERLINE);
+                attrs.flags.remove(Flags::DBL_UNDERLINE);
+            }
             25 => attrs.flags.remove(Flags::BLINK),
             27 => attrs.flags.remove(Flags::INVERSE),
             28 => attrs.flags.remove(Flags::HIDDEN),
             29 => attrs.flags.remove(Flags::STRIKETHROUGH),
-            30..=37  => attrs.fg = Color::indexed((code - 30) as u8),
-            90..=97  => attrs.fg = Color::indexed((code - 90 + 8) as u8),
-            40..=47  => attrs.bg = Color::indexed((code - 40) as u8),
+            30..=37 => attrs.fg = Color::indexed((code - 30) as u8),
+            90..=97 => attrs.fg = Color::indexed((code - 90 + 8) as u8),
+            40..=47 => attrs.bg = Color::indexed((code - 40) as u8),
             100..=107 => attrs.bg = Color::indexed((code - 100 + 8) as u8),
             39 => attrs.fg = Color::DEFAULT,
             49 => attrs.bg = Color::DEFAULT,
@@ -879,7 +901,10 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
                 let parsed = if sub.len() >= 2 {
                     parse_color_from_subs(&sub[1..])
                 } else {
-                    let kind = subs.get(i + 1).and_then(|s| s.first().copied()).unwrap_or(0);
+                    let kind = subs
+                        .get(i + 1)
+                        .and_then(|s| s.first().copied())
+                        .unwrap_or(0);
                     match kind {
                         5 => {
                             let idx = subs.get(i + 2).and_then(|s| s.first().copied());
@@ -887,9 +912,18 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
                             idx.map(|v| Color::indexed(v.min(255) as u8))
                         }
                         2 => {
-                            let r = subs.get(i + 2).and_then(|s| s.first().copied()).unwrap_or(0) as u8;
-                            let g = subs.get(i + 3).and_then(|s| s.first().copied()).unwrap_or(0) as u8;
-                            let b = subs.get(i + 4).and_then(|s| s.first().copied()).unwrap_or(0) as u8;
+                            let r = subs
+                                .get(i + 2)
+                                .and_then(|s| s.first().copied())
+                                .unwrap_or(0) as u8;
+                            let g = subs
+                                .get(i + 3)
+                                .and_then(|s| s.first().copied())
+                                .unwrap_or(0) as u8;
+                            let b = subs
+                                .get(i + 4)
+                                .and_then(|s| s.first().copied())
+                                .unwrap_or(0) as u8;
                             i += 4;
                             Some(Color::rgb(r, g, b))
                         }
@@ -897,7 +931,11 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
                     }
                 };
                 if let Some(c) = parsed {
-                    if is_fg { attrs.fg = c; } else { attrs.bg = c; }
+                    if is_fg {
+                        attrs.fg = c;
+                    } else {
+                        attrs.bg = c;
+                    }
                 }
             }
             _ => {}
@@ -963,7 +1001,10 @@ mod tests {
     fn parse_color_indexed_clamps_overflow() {
         // `i.min(255) as u8` — so 300 → 255.
         assert_eq!(parse_color_from_subs(&[5, 300]), Some(Color::indexed(255)));
-        assert_eq!(parse_color_from_subs(&[5, 65535]), Some(Color::indexed(255)));
+        assert_eq!(
+            parse_color_from_subs(&[5, 65535]),
+            Some(Color::indexed(255))
+        );
     }
 
     #[test]

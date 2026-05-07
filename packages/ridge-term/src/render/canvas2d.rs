@@ -63,7 +63,11 @@ impl Canvas2dBackend {
         Ok(Self {
             canvas,
             ctx,
-            metrics: FrameMetrics { cell_w: 8.0, cell_h: 16.0, dpr: 1.0 },
+            metrics: FrameMetrics {
+                cell_w: 8.0,
+                cell_h: 16.0,
+                dpr: 1.0,
+            },
             theme: Theme::default_dark(),
             font_css: String::from("15px monospace"),
             css_w: 0,
@@ -81,7 +85,13 @@ impl Canvas2dBackend {
         if c[3] == 0xff {
             format!("rgb({},{},{})", c[0], c[1], c[2])
         } else {
-            format!("rgba({},{},{},{:.3})", c[0], c[1], c[2], c[3] as f32 / 255.0)
+            format!(
+                "rgba({},{},{},{:.3})",
+                c[0],
+                c[1],
+                c[2],
+                c[3] as f32 / 255.0
+            )
         }
     }
 }
@@ -95,7 +105,9 @@ impl RenderBackend for Canvas2dBackend {
         self.ctx.save();
         self.ctx.set_font(&font);
         self.ctx.set_text_baseline("top");
-        let metrics = self.ctx.measure_text("M")
+        let metrics = self
+            .ctx
+            .measure_text("M")
             .map_err(|e| format!("measureText failed: {:?}", e))?;
         self.ctx.restore();
 
@@ -141,9 +153,11 @@ impl RenderBackend for Canvas2dBackend {
         // and are independent of CSS — DPR changes update the buffer
         // without touching CSS layout.
         let style = self.canvas.style();
-        style.set_property("width", "100%")
+        style
+            .set_property("width", "100%")
             .map_err(|e| format!("style.width: {:?}", e))?;
-        style.set_property("height", "100%")
+        style
+            .set_property("height", "100%")
             .map_err(|e| format!("style.height: {:?}", e))?;
         // Reset transform — setting width/height clears the transform
         // matrix automatically, but we'll re-apply scale in begin_frame.
@@ -157,16 +171,18 @@ impl RenderBackend for Canvas2dBackend {
         // Apply DPR scale + font + baseline at the start of every frame.
         // Setting canvas.width earlier resets the matrix to identity, so
         // we must re-scale here — this is correct, not paranoid.
-        let _ = self.ctx.set_transform(
-            metrics.dpr as f64, 0.0, 0.0, metrics.dpr as f64, 0.0, 0.0,
-        );
+        let _ = self
+            .ctx
+            .set_transform(metrics.dpr as f64, 0.0, 0.0, metrics.dpr as f64, 0.0, 0.0);
         self.ctx.set_font(&self.font_css);
         self.ctx.set_text_baseline("top");
     }
 
     fn clear(&mut self) {
-        self.ctx.set_fill_style_str(&Self::rgba_to_css(self.theme.bg));
-        self.ctx.fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
+        self.ctx
+            .set_fill_style_str(&Self::rgba_to_css(self.theme.bg));
+        self.ctx
+            .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
     }
 
     fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
@@ -193,7 +209,9 @@ impl RenderBackend for Canvas2dBackend {
         // cells — the wide cell's own draw already covers both halves)
         // and blanks (space at default attrs).
         for (col, cell) in row.cells.iter().enumerate() {
-            if cell.width == 0 { continue; }
+            if cell.width == 0 {
+                continue;
+            }
             if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
                 continue;
             }
@@ -205,8 +223,12 @@ impl RenderBackend for Canvas2dBackend {
             // — most cells stay on the base font.
             if attrs.flags.contains(Flags::BOLD) || attrs.flags.contains(Flags::ITALIC) {
                 let mut font = String::new();
-                if attrs.flags.contains(Flags::ITALIC) { font.push_str("italic "); }
-                if attrs.flags.contains(Flags::BOLD)   { font.push_str("bold "); }
+                if attrs.flags.contains(Flags::ITALIC) {
+                    font.push_str("italic ");
+                }
+                if attrs.flags.contains(Flags::BOLD) {
+                    font.push_str("bold ");
+                }
                 font.push_str(&self.font_css);
                 self.ctx.set_font(&font);
             } else {
@@ -255,17 +277,21 @@ impl RenderBackend for Canvas2dBackend {
         let y = (cursor.row as f64 * cell_h).round();
 
         // Cursor color (theme override) — paint the shape first.
-        self.ctx.set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_color));
+        self.ctx
+            .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_color));
         match cursor.style {
             CursorStyle::Block => {
-                let w = if cursor.width == 2 { cell_w * 2.0 } else { cell_w };
+                let w = if cursor.width == 2 {
+                    cell_w * 2.0
+                } else {
+                    cell_w
+                };
                 self.ctx.fill_rect(x, y, w.ceil(), cell_h.ceil());
                 // Repaint the glyph in cursor_text_color on top, so the
                 // character under the cursor stays legible.
                 if cursor.ch != ' ' && cursor.ch != '\0' {
-                    self.ctx.set_fill_style_str(
-                        &Self::rgba_to_css(self.theme.cursor_text_color),
-                    );
+                    self.ctx
+                        .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_text_color));
                     self.ctx.set_font(&self.font_css);
                     let mut buf = [0u8; 4];
                     let s = cursor.ch.encode_utf8(&mut buf);
@@ -288,9 +314,12 @@ impl RenderBackend for Canvas2dBackend {
     fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        self.ctx.set_fill_style_str(&Self::rgba_to_css(self.theme.selection_bg));
+        self.ctx
+            .set_fill_style_str(&Self::rgba_to_css(self.theme.selection_bg));
         for &(row, col_start, col_end) in rects {
-            if col_end <= col_start { continue; }
+            if col_end <= col_start {
+                continue;
+            }
             let x = (col_start as f64 * cell_w).round();
             let y = (row as f64 * cell_h).round();
             let w = ((col_end - col_start) as f64 * cell_w).ceil();
@@ -301,12 +330,15 @@ impl RenderBackend for Canvas2dBackend {
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        self.ctx.set_fill_style_str(&Self::rgba_to_css(self.theme.hyperlink_color));
+        self.ctx
+            .set_fill_style_str(&Self::rgba_to_css(self.theme.hyperlink_color));
         // 1px tall underline at the bottom of the cell row. The DPR
         // transform applied in begin_frame means 1.0 here = 1 CSS px,
         // not 1 device px — visible on hi-DPI without manual scaling.
         for &(row, col_start, col_end) in rects {
-            if col_end <= col_start { continue; }
+            if col_end <= col_start {
+                continue;
+            }
             let x = (col_start as f64 * cell_w).round();
             let y = (row as f64 * cell_h + cell_h - 1.0).round();
             let w = ((col_end - col_start) as f64 * cell_w).ceil();

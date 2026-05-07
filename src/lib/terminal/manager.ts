@@ -31,7 +31,7 @@
 //   mgr.viewportChanged(paneId);        // call when container resizes
 //   mgr.detach(paneId);                 // on pane unmount
 
-import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
+import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 // Vite-native asset URL: this returns the bundled / dev-served path of
 // the .wasm file at build time. Bypasses the "auto-locate next to .js"
 // path that breaks under vite's pre-bundle (the cause of the
@@ -200,6 +200,18 @@ interface PaneEntry {
 	 *  rapid writes into a single capture: at most one rAF outstanding
 	 *  per pane. Cleared by the rAF callback. */
 	imeAnchorRaf: number | null;
+	/** §4.3 Phase B: pane's rectangle on the host canvas in device
+	 *  pixels. Set by `_recomputeViewport` whenever the splitter drag /
+	 *  workspace resize / DPR change moves the container. Forwarded to
+	 *  `entry.handle.setViewportOffset(x, y)` and (via
+	 *  `entry.handle.resize(wCss, hCss, dpr)`) into the WebGPU pane
+	 *  backend's `viewport: ScissorRect`.
+	 *
+	 *  Undefined for Canvas2D-backed panes (and for WebGPU panes before
+	 *  the first `_recomputeViewport` runs). Host pane lookups treat
+	 *  `undefined` the same as a zero-size rect — the pane is parked-by-
+	 *  clip until JS computes a real viewport. */
+	viewport?: { x: number; y: number; w: number; h: number };
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -225,6 +237,29 @@ export class TerminalManager {
 	 *  most ONE of `{rafHandle, idleTimer}` is non-null while panes are
 	 *  attached. */
 	private idleTimer: ReturnType<typeof setTimeout> | null = null;
+	/** §4.3 Phase B: process-wide host canvas the WebGPU `SurfaceHost`
+	 *  binds its swap chain to. Mounted in `+page.svelte` and registered
+	 *  via `attachHost` exactly once per app lifetime. `null` until then,
+	 *  or permanently `null` on Canvas2D-only builds / WebGPU adapter
+	 *  miss. Per-pane Canvas2D panes ignore this field entirely — they
+	 *  still create their own per-pane `<canvas>` inside their container.
+	 */
+	private hostCanvas: HTMLCanvasElement | null = null;
+	/** §4.3 Phase B: handle to the shared swap chain. Drives
+	 *  `beginFrame` / `endFrame` once per RAF tick (wrapping all WebGPU
+	 *  pane renders), plus `resize` from the host-parent ResizeObserver
+	 *  in `+page.svelte` and `invalidate` after detach / park /
+	 *  splitter settle so departed-pane pixels don't linger. */
+	private surfaceHost: SurfaceHostHandle | null = null;
+	/** §4.3 Phase B: in-flight attachHost promise. Used so `attach()` /
+	 *  `unpark()` can `await` host initialisation (driven by
+	 *  `+page.svelte::onMount`) before deciding host vs Canvas2D mode.
+	 *  Without this de-dup, the very first RidgePane to mount would
+	 *  race ahead of attachHost and end up on the Canvas2D fallback
+	 *  path even when WebGPU is fully available. Resolves (never
+	 *  rejects) — `attachHost` swallows init errors internally and
+	 *  leaves `surfaceHost` null when WebGPU isn't usable. */
+	private attachHostPromise: Promise<void> | null = null;
 	/** Document `visibilitychange` listener installed once on first pane
 	 *  attach; removed on last detach. Hidden tabs throttle RAF anyway,
 	 *  but waking on visibility-restore avoids a lag the first time the
@@ -331,6 +366,200 @@ export class TerminalManager {
 	}
 
 	/**
+	 * §4.3 Phase B: bind a single `wgpu::Surface` to `canvas` so every
+	 * WebGPU pane composites through one swap chain instead of one
+	 * surface per pane. JS calls this once at app boot from
+	 * `+page.svelte::onMount` AFTER the host canvas DOM is mounted.
+	 *
+	 * Idempotent: a second call on the same instance is a no-op (so a
+	 * SvelteKit hot-module-reload re-running onMount can't double-init).
+	 *
+	 * Bails silently when the wasm bundle has no `SurfaceHostHandle`
+	 * (Canvas2D-only build) or when WebGPU adapter / device acquisition
+	 * fails inside the Rust `SurfaceHost::init`. In those cases per-pane
+	 * Canvas2D continues to work — `attach()` falls back to creating a
+	 * `<canvas>` inside each pane container.
+	 */
+	public attachHost(canvas: HTMLCanvasElement): Promise<void> {
+		if (this.attachHostPromise) return this.attachHostPromise;
+		if (this.surfaceHost) return Promise.resolve(); // already done
+		this.attachHostPromise = (async () => {
+			if (!this.wasmReady) await this.ready();
+			// Runtime-check the symbol so canvas-only wasm bundles
+			// (built with `--no-webgpu`) don't crash here. The static
+			// import above resolves to `undefined` on bundles missing
+			// the export, and wasm-bindgen sets the binding to
+			// undefined accordingly.
+			const SHHCtor = SurfaceHostHandle as unknown as
+				| { init: (c: HTMLCanvasElement) => Promise<SurfaceHostHandle> }
+				| undefined;
+			if (!SHHCtor || typeof SHHCtor.init !== 'function') {
+				if (import.meta.env?.DEV) {
+					console.warn('[ridge-term] SurfaceHostHandle missing; bundle was built --no-webgpu');
+				}
+				return;
+			}
+			try {
+				this.surfaceHost = await SHHCtor.init(canvas);
+			} catch (err) {
+				// Adapter miss / device-creation failure. Per-pane
+				// Canvas2D path keeps working; just log so DevTools
+				// shows why WebGPU didn't come up.
+				console.warn('[ridge-term] SurfaceHost.init failed; per-pane Canvas2D will be used', err);
+				return;
+			}
+			this.hostCanvas = canvas;
+			this.resizeHost(); // initial swap-chain configure
+		})();
+		return this.attachHostPromise;
+	}
+
+	/**
+	 * §4.3 Phase B: reconfigure the shared swap chain when the host
+	 * canvas's parent (workspace content area) changes size — window
+	 * resize, sidebar collapse, FileEditor toggle. Drives
+	 * `surface.configure` once on the host, then walks every attached
+	 * pane to recompute its host-canvas-relative scissor.
+	 *
+	 * Cheap on no-op (manager.ts + Rust side both short-circuit on
+	 * unchanged dims), so spurious ResizeObserver fires are harmless.
+	 *
+	 * No-op when `surfaceHost` is null (Canvas2D-only deployment).
+	 */
+	public resizeHost(): void {
+		if (!this.surfaceHost || !this.hostCanvas) return;
+		const parent = this.hostCanvas.parentElement;
+		if (!parent) return;
+		const rect = parent.getBoundingClientRect();
+		const dpr = window.devicePixelRatio || 1;
+		const wCss = Math.max(1, Math.floor(rect.width));
+		const hCss = Math.max(1, Math.floor(rect.height));
+		const wDev = Math.max(1, Math.round(wCss * dpr));
+		const hDev = Math.max(1, Math.round(hCss * dpr));
+		// Keep the canvas element's intrinsic size in lockstep with the
+		// surface configure so the GPU output isn't scaled.
+		if (this.hostCanvas.width !== wDev) this.hostCanvas.width = wDev;
+		if (this.hostCanvas.height !== hDev) this.hostCanvas.height = hDev;
+		this.hostCanvas.style.width = `${wCss}px`;
+		this.hostCanvas.style.height = `${hCss}px`;
+		this.surfaceHost.resize(wCss, hCss, dpr);
+		// Pane scissor rects on the host are recomputed in host-canvas
+		// device-pixel coords — host size change shifts every pane's
+		// (x, y) so we must redo them all.
+		for (const entry of this.panes.values()) {
+			if (!entry.parked) this._recomputeViewport(entry);
+		}
+		// New surface backing pixels are undefined — make sure the next
+		// frame seeds bg before any LoadOp::Load can leak driver garbage.
+		this.surfaceHost.invalidate();
+		this.wake();
+	}
+
+	/**
+	 * §4.3 Phase B: predicate. True when this entry is rendering through
+	 * the shared SurfaceHost (WebGPU host mode); false when it owns its
+	 * per-pane DOM `<canvas>` (Canvas2D fallback). Callers branch on
+	 * this to know whether to read `entry.canvas` or `entry.container`
+	 * for layout, and whether to call `setViewportOffset` /
+	 * `surfaceHost.invalidate()`.
+	 */
+	private _isHostMode(entry: PaneEntry): boolean {
+		return this.surfaceHost !== null && entry.canvas === this.hostCanvas;
+	}
+
+	/**
+	 * §4.3 Phase B: parse `opts.theme.background` (CSS hex string) into
+	 * a 4-byte RGBA Uint8Array for `surfaceHost.beginFrame`. Defaults to
+	 * opaque black on missing / unparseable input — matches how
+	 * `Theme::default_dark` initialises `bg` in Rust.
+	 *
+	 * Accepts `#rgb`, `#rrggbb`, `#rrggbbaa`. Whitespace + casing
+	 * tolerated. Anything else falls back to `[0, 0, 0, 255]`.
+	 */
+	private _currentThemeBgRgba(): Uint8Array {
+		const out = new Uint8Array([0, 0, 0, 255]);
+		const raw = this.opts.theme?.background;
+		if (typeof raw !== 'string') return out;
+		const hex = raw.trim().replace(/^#/, '');
+		const parseByte = (s: string) => {
+			const n = parseInt(s, 16);
+			return Number.isFinite(n) ? n & 0xff : 0;
+		};
+		if (hex.length === 3) {
+			out[0] = parseByte(hex[0] + hex[0]);
+			out[1] = parseByte(hex[1] + hex[1]);
+			out[2] = parseByte(hex[2] + hex[2]);
+			out[3] = 255;
+		} else if (hex.length === 6) {
+			out[0] = parseByte(hex.slice(0, 2));
+			out[1] = parseByte(hex.slice(2, 4));
+			out[2] = parseByte(hex.slice(4, 6));
+			out[3] = 255;
+		} else if (hex.length === 8) {
+			out[0] = parseByte(hex.slice(0, 2));
+			out[1] = parseByte(hex.slice(2, 4));
+			out[2] = parseByte(hex.slice(4, 6));
+			out[3] = parseByte(hex.slice(6, 8));
+		}
+		return out;
+	}
+
+	/**
+	 * §4.3 Phase B: translate `entry.container`'s DOM bounding rect into
+	 * a device-pixel scissor on the host canvas, push the (x, y) to the
+	 * pane backend via `setViewportOffset`, and push the (w, h) via the
+	 * existing `entry.handle.resize` (which the WebGPU backend now
+	 * routes to `WebGpuPaneBackend::resize_surface` — a no-surface
+	 * variant that just records the new size).
+	 *
+	 * Reads the container's content-box (rect minus computed padding)
+	 * so the per-pane padding of `opts.paddingPx` correctly insets the
+	 * scissor from the splitter / pane border. Without padding
+	 * subtraction the scissor would extend over the gutter strip and
+	 * the pane's bg color would visibly bleed past the visual gap.
+	 *
+	 * Clamped to the host canvas bounds: a pane dragged to zero width
+	 * or off-canvas resolves to `{ w: 0, h: 0 }` and the host's
+	 * `record_pane` skips it entirely (parked-by-clip).
+	 *
+	 * No-op for Canvas2D-mode panes (`entry.canvas !== this.hostCanvas`).
+	 */
+	private _recomputeViewport(entry: PaneEntry): void {
+		if (!this.hostCanvas || !this._isHostMode(entry)) return;
+		const cr = entry.container.getBoundingClientRect();
+		const hr = this.hostCanvas.getBoundingClientRect();
+		const cs = window.getComputedStyle(entry.container);
+		const padL = parseFloat(cs.paddingLeft) || 0;
+		const padT = parseFloat(cs.paddingTop) || 0;
+		const padR = parseFloat(cs.paddingRight) || 0;
+		const padB = parseFloat(cs.paddingBottom) || 0;
+		const dpr = window.devicePixelRatio || 1;
+		// Container's content-box, then host-canvas-relative.
+		const cssX = cr.left - hr.left + padL;
+		const cssY = cr.top - hr.top + padT;
+		const cssW = Math.max(0, cr.width - padL - padR);
+		const cssH = Math.max(0, cr.height - padT - padB);
+		const xDev = Math.max(0, Math.round(cssX * dpr));
+		const yDev = Math.max(0, Math.round(cssY * dpr));
+		const hostWDev = this.hostCanvas.width;
+		const hostHDev = this.hostCanvas.height;
+		const wDev = Math.max(0, Math.min(hostWDev - xDev, Math.round(cssW * dpr)));
+		const hDev = Math.max(0, Math.min(hostHDev - yDev, Math.round(cssH * dpr)));
+		entry.viewport = { x: xDev, y: yDev, w: wDev, h: hDev };
+		// Push offset (x, y) and size (w, h) separately. `setViewportOffset`
+		// is cheap (just updates two u32 fields); `resize` triggers
+		// kernel grid resize + force redraw, so we only call it when
+		// dims actually changed (it short-circuits internally).
+		const handle = entry.handle as unknown as {
+			setViewportOffset?: (x: number, y: number) => void;
+		};
+		if (typeof handle.setViewportOffset === 'function') {
+			handle.setViewportOffset(xDev, yDev);
+		}
+		entry.handle.resize(Math.round(cssW), Math.round(cssH), dpr);
+	}
+
+	/**
 	 * Bind a pane to the manager. Creates a `<canvas>` child of `container`,
 	 * spins up the wasm kernel/renderer, starts observing the container
 	 * for resize events.
@@ -349,15 +578,45 @@ export class TerminalManager {
 		if (this.panes.has(paneId)) {
 			throw new Error(`TerminalManager.attach: pane ${paneId} already attached`);
 		}
+		// §4.3 Phase B: if `+page.svelte` kicked off attachHost just
+		// before this RidgePane mounted, wait for it to settle so we
+		// pick the correct host-vs-Canvas2D path (`useHost` below).
+		if (this.attachHostPromise) {
+			try { await this.attachHostPromise; } catch { /* ignore — handled inside attachHost */ }
+		}
 
-		const canvas = document.createElement('canvas');
-		canvas.style.cssText = 'display:block; width:100%; height:100%;';
-		canvas.setAttribute('aria-hidden', 'true');
-		container.appendChild(canvas);
+		// §4.3 Phase B: when the global SurfaceHost is alive, every WebGPU
+		// pane composites through it — no per-pane DOM canvas needed.
+		// Canvas2D fallback (no host, or `--no-webgpu` build) keeps the
+		// legacy per-pane canvas path so its 2D context has a render
+		// target.
+		const useHost = this.surfaceHost !== null && this.opts.preferWebgpu;
+		let canvas: HTMLCanvasElement;
+		if (useHost && this.hostCanvas) {
+			// Sentinel: store the host canvas reference so `_isHostMode`
+			// can detect this entry. Per-pane DOM stays canvas-free —
+			// the pane's container is a layout box only.
+			canvas = this.hostCanvas;
+			// §4.3 Phase B: RidgePane.svelte's container has
+			// `background: var(--rg-term-bg)` so per-pane Canvas2D's
+			// `<canvas>` child sat on a matching backdrop. In host mode
+			// there is no per-pane canvas — the GPU draws into the host
+			// canvas BEHIND the container, so an opaque container
+			// background would hide every drawn pixel (the original
+			// "black screen" symptom on the first Phase B build).
+			// Override to transparent so the host canvas shows through.
+			container.style.background = 'transparent';
+		} else {
+			canvas = document.createElement('canvas');
+			canvas.style.cssText = 'display:block; width:100%; height:100%;';
+			canvas.setAttribute('aria-hidden', 'true');
+			container.appendChild(canvas);
+		}
 
-		// Apply initial padding to the container so the canvas (width:100%
-		// inside content-box) starts inset by `opts.paddingPx`. Per-pane
-		// updates after attach come through `setPadding(paneId, px)`.
+		// Apply initial padding to the container. In legacy mode this
+		// inset the per-pane canvas; in host mode the pane's scissor
+		// reads `getComputedStyle().padding*` (see `_recomputeViewport`)
+		// to mirror the same visual inset on the host canvas.
 		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
@@ -590,10 +849,19 @@ export class TerminalManager {
 				clearTimeout(entry.pendingFitTimer);
 				entry.pendingFitTimer = null;
 			}
-			try {
-				entry.canvas.remove();
-			} catch {
-				/* canvas already detached */
+			// §4.3 Phase B: only Canvas2D-mode panes own a per-pane DOM
+			// canvas to remove. Host-mode panes share the global host
+			// canvas; tearing down their entry leaves the host canvas
+			// alive but we ask the host to clear next frame so the
+			// pane's last pixels don't outlive its slot.
+			if (this._isHostMode(entry)) {
+				this.surfaceHost?.invalidate();
+			} else {
+				try {
+					entry.canvas.remove();
+				} catch {
+					/* canvas already detached */
+				}
 			}
 			try { entry.handle.free(); } catch { /* ignore */ }
 		}
@@ -643,7 +911,14 @@ export class TerminalManager {
 		entry.selecting = false;
 		entry.selectionStart = null;
 
-		try { entry.canvas.remove(); } catch { /* already detached */ }
+		// §4.3 Phase B: same canvas-ownership branch as detach. Host
+		// mode shares the global canvas (don't remove); Canvas2D mode
+		// owns its per-pane DOM canvas and must clean up.
+		if (this._isHostMode(entry)) {
+			this.surfaceHost?.invalidate();
+		} else {
+			try { entry.canvas.remove(); } catch { /* already detached */ }
+		}
 		try { entry.handle.free(); } catch { /* ignore */ }
 
 		entry.parked = true;
@@ -674,11 +949,28 @@ export class TerminalManager {
 		if (!entry.parked) {
 			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
 		}
+		// §4.3 Phase B: same await as attach. Mostly defensive — by
+		// the time any pane is parked, attachHost has long settled.
+		if (this.attachHostPromise) {
+			try { await this.attachHostPromise; } catch { /* ignore */ }
+		}
 
-		const canvas = document.createElement('canvas');
-		canvas.style.cssText = 'display:block; width:100%; height:100%;';
-		canvas.setAttribute('aria-hidden', 'true');
-		container.appendChild(canvas);
+		// §4.3 Phase B: same host-vs-legacy branch as `attach`. Host
+		// mode reuses the global host canvas (no per-pane DOM canvas);
+		// Canvas2D fallback creates a fresh one inside the container.
+		const useHost = this.surfaceHost !== null && this.opts.preferWebgpu;
+		let canvas: HTMLCanvasElement;
+		if (useHost && this.hostCanvas) {
+			canvas = this.hostCanvas;
+			// Same transparent override as attach — without this the
+			// re-mounted RidgePane's container bg hides the host canvas.
+			container.style.background = 'transparent';
+		} else {
+			canvas = document.createElement('canvas');
+			canvas.style.cssText = 'display:block; width:100%; height:100%;';
+			canvas.setAttribute('aria-hidden', 'true');
+			container.appendChild(canvas);
+		}
 
 		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
 			container.style.padding = `${this.opts.paddingPx}px`;
@@ -696,6 +988,14 @@ export class TerminalManager {
 		entry.container = container;
 		entry.canvas = canvas;
 		entry.handle = handle;
+		// §4.3 Phase B: a freshly-mounted pane region on the host canvas
+		// may still hold pixels from whichever pane lived there before
+		// the workspace switch (or whichever pane was parked from the
+		// same slot). Force a global Clear next frame so we don't see
+		// flickered stale content during the first fit.
+		if (useHost && this.surfaceHost) {
+			this.surfaceHost.invalidate();
+		}
 		entry.cellW = Number(cellW);
 		entry.cellH = Number(cellH);
 		// Force a resize-handler emit on the next fit so PTY rows/cols
@@ -1182,13 +1482,29 @@ export class TerminalManager {
 	}
 
 	private async fitPane(entry: PaneEntry): Promise<void> {
-		// Read CANVAS dimensions (not container) so any padding applied to the
-		// container is correctly excluded. Canvas is `width:100%; height:100%`
-		// inside the container's content-box, so its rect is the actual
-		// drawing area regardless of `paddingPx`.
-		const rect = entry.canvas.getBoundingClientRect();
-		const wCss = Math.floor(rect.width);
-		const hCss = Math.floor(rect.height);
+		// §4.3 Phase B: in host mode there is no per-pane canvas — the
+		// entry.canvas reference is the shared host canvas, which spans
+		// the whole workspace. Read the CONTAINER's content-box instead
+		// so the cell grid matches the visible pane region.
+		// Legacy Canvas2D mode keeps reading the per-pane canvas rect
+		// (which is `width:100%; height:100%` inside the container, so
+		// equivalent to the content-box).
+		let wCss: number;
+		let hCss: number;
+		if (this._isHostMode(entry)) {
+			const cr = entry.container.getBoundingClientRect();
+			const cs = window.getComputedStyle(entry.container);
+			const padL = parseFloat(cs.paddingLeft) || 0;
+			const padT = parseFloat(cs.paddingTop) || 0;
+			const padR = parseFloat(cs.paddingRight) || 0;
+			const padB = parseFloat(cs.paddingBottom) || 0;
+			wCss = Math.max(0, Math.floor(cr.width - padL - padR));
+			hCss = Math.max(0, Math.floor(cr.height - padT - padB));
+		} else {
+			const rect = entry.canvas.getBoundingClientRect();
+			wCss = Math.floor(rect.width);
+			hCss = Math.floor(rect.height);
+		}
 
 		// Skip fit until the container actually has size. splitpanes (and
 		// SvelteKit hydration in general) frequently mount a Pane whose
@@ -1209,8 +1525,16 @@ export class TerminalManager {
 
 		const dpr = window.devicePixelRatio || 1;
 
-		// Always resize the canvas surface (cheap, immediate).
-		entry.handle.resize(wCss, hCss, dpr);
+		// Resize the render target. In host mode, _recomputeViewport
+		// recomputes the host-canvas-relative scissor (which depends on
+		// container x/y as well as w/h) AND calls entry.handle.resize
+		// internally, so we dispatch to it. In Canvas2D mode, the per-
+		// pane canvas owns its own size and handle.resize is sufficient.
+		if (this._isHostMode(entry)) {
+			this._recomputeViewport(entry);
+		} else {
+			entry.handle.resize(wCss, hCss, dpr);
+		}
 
 		const sizeChanged = rows !== entry.lastReportedRows || cols !== entry.lastReportedCols;
 		if (!sizeChanged) {
@@ -1330,6 +1654,49 @@ export class TerminalManager {
 			const dateNow = Date.now();
 			let anyRendered = false;
 			let minDeadlineMs = Infinity;
+			// §4.3 Phase B (2026-05-08 fix): when ANY host-mode pane
+			// reports dirty this tick, EVERY host-mode pane must render.
+			// `SurfaceHost::begin_frame` always issues `LoadOp::Clear`
+			// (multi-buffer swap-chain needs a deterministic seed each
+			// frame), so a pane whose `isDirty` returned false would
+			// have its scissor region wiped to bg without a redraw —
+			// the visible "other panes flash blank when I type in one
+			// pane" symptom.
+			//
+			// Pre-pass: cheap row-hash check per host pane. If any
+			// dirty, set `forceHostRenderAll = true` and all host panes
+			// re-encode below. Idle ticks (no host pane dirty) skip the
+			// host frame entirely so RAF can sleep.
+			let forceHostRenderAll = false;
+			for (const entry of this.panes.values()) {
+				if (entry.parked) continue;
+				if (!this._isHostMode(entry)) continue;
+				const handleAny = entry.handle as unknown as {
+					isDirty?: (k: TerminalKernel, t: number) => boolean;
+				};
+				if (typeof handleAny.isDirty !== 'function') {
+					forceHostRenderAll = true;
+					break;
+				}
+				try {
+					if (handleAny.isDirty(entry.kernel, dateNow)) {
+						forceHostRenderAll = true;
+						break;
+					}
+				} catch {
+					forceHostRenderAll = true;
+					break;
+				}
+			}
+			let hostFrameOpen = false;
+			const themeBg = this._currentThemeBgRgba();
+			if (forceHostRenderAll && this.surfaceHost) {
+				hostFrameOpen = this.surfaceHost.beginFrame(themeBg);
+				// On surface lost, hostFrameOpen=false; host pane
+				// renders below skip via the `hostFrameOpen` guard,
+				// and the next RAF tick retries (begin_frame already
+				// re-asserted needs_initial_clear=true on entry).
+			}
 			for (const entry of this.panes.values()) {
 				// Skip parked entries — kernel is alive but handle was
 				// freed by park(); render would dereference a dead pointer.
@@ -1380,7 +1747,13 @@ export class TerminalManager {
 						dirty = true;
 					}
 				}
-				if (dirty) {
+				// §4.3 Phase B: host-mode panes render whenever the host
+				// frame is open (so cleared regions get repainted).
+				// Canvas2D-mode panes still gate on per-pane `dirty`.
+				const shouldRender = this._isHostMode(entry)
+					? hostFrameOpen
+					: dirty;
+				if (shouldRender) {
 					try {
 						entry.handle.render(entry.kernel);
 						anyRendered = true;
@@ -1396,6 +1769,16 @@ export class TerminalManager {
 					} catch {
 						// ignore — watchdog cap below covers us
 					}
+				}
+			}
+			// §4.3 Phase B: close the host frame if any pane drew.
+			// `endFrame` finishes the encoder + queue.submit + present;
+			// safe to skip when no pane drew (idle frame).
+			if (hostFrameOpen && this.surfaceHost) {
+				try {
+					this.surfaceHost.endFrame();
+				} catch (err) {
+					console.error('[ridge-term] surfaceHost.endFrame error', err);
 				}
 			}
 			if (this.panes.size === 0) return;

@@ -93,6 +93,72 @@ export class RenderHandle {
      * only the truly active terminal blinks. Idempotent.
      */
     setFocused(focused: boolean): void;
+    /**
+     * Phase B: record the pane's `(x, y)` position on the host
+     * canvas in **device pixels**. JS calls this from
+     * `manager.ts::_recomputeViewport` whenever the splitter drag
+     * moves the pane's container without changing its size.
+     *
+     * No-op for Canvas2D-backed handles. WebGPU handles forward
+     * to `WebGpuPaneBackend::set_viewport_offset`. Does **not**
+     * trigger a redraw on its own — the pane content is unchanged
+     * on a positional shift; JS calls `surfaceHost.invalidate()`
+     * after layout settle to clear the old area.
+     */
+    setViewportOffset(x: number, y: number): void;
+}
+
+export class SurfaceHostHandle {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Begin one host frame: acquire swap-chain texture + create
+     * encoder. Returns `true` on success, `false` on surface-lost
+     * — JS skips the rest of the frame and lets the next RAF
+     * retry. `theme_bg` is a 4-byte RGBA buffer; values outside
+     * `[0..255]` get clamped at the byte boundary by
+     * `Uint8Array.set`.
+     *
+     * Idempotent guard: a second call without an intervening
+     * `endFrame` drops the stale frame and starts fresh (defense
+     * against JS bugs that skip the end half).
+     */
+    beginFrame(theme_bg: Uint8Array): boolean;
+    /**
+     * Finish the host's command encoder + queue.submit + present.
+     * One call per frame after all dirty panes have rendered. Safe
+     * to call without a matching `beginFrame` — internal guard
+     * returns early.
+     */
+    endFrame(): void;
+    /**
+     * Async constructor: bind the global swap chain to `canvas`
+     * (the `<canvas data-rg-host>` element in `+page.svelte`). Call
+     * once at app boot, before any pane attaches. Subsequent
+     * `WebGpuPaneBackend::new` calls discover this instance via
+     * `SurfaceHost::get()`.
+     *
+     * Returns `Err` (rejected promise on the JS side) when the
+     * WebGPU adapter / device acquisition fails or
+     * `instance.create_surface` rejects the canvas. JS catches and
+     * falls back to per-pane Canvas2D for every subsequent
+     * `attach`.
+     */
+    static init(canvas: HTMLCanvasElement): Promise<SurfaceHostHandle>;
+    /**
+     * Mark the next frame for a fresh `LoadOp::Clear`. JS calls
+     * this when a pane detaches / parks / unparks (so departed
+     * pixels don't linger), when the theme changes, and after
+     * splitter settle moves pane boundaries.
+     */
+    invalidate(): void;
+    /**
+     * Resize the host swap chain. JS drives this from a
+     * ResizeObserver on the host canvas's parent so the surface
+     * always matches the visible workspace area.
+     */
+    resize(width_css: number, height_css: number, dpr: number): void;
 }
 
 export class TerminalKernel {
@@ -303,6 +369,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_renderhandle_free: (a: number, b: number) => void;
+    readonly __wbg_surfacehosthandle_free: (a: number, b: number) => void;
     readonly __wbg_terminalkernel_free: (a: number, b: number) => void;
     readonly _init: () => void;
     readonly renderhandle_applyDefaultTheme: (a: number) => void;
@@ -316,6 +383,12 @@ export interface InitOutput {
     readonly renderhandle_render: (a: number, b: number) => number;
     readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
     readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
+    readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
+    readonly surfacehosthandle_endFrame: (a: number) => void;
+    readonly surfacehosthandle_init: (a: any) => any;
+    readonly surfacehosthandle_invalidate: (a: number) => void;
+    readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
     readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_clearSelection: (a: number) => void;
     readonly terminalkernel_cols: (a: number) => number;
