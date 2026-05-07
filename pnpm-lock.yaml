@@ -47,6 +47,9 @@ importers:
       overlayscrollbars:
         specifier: ^2.15.1
         version: 2.15.1
+      svelte-dnd-action:
+        specifier: ^0.9.69
+        version: 0.9.69(svelte@5.55.3)
       svelte-splitpanes:
         specifier: ^8.0.12
         version: 8.0.12(svelte@5.55.3)
@@ -1665,6 +1668,11 @@ packages:
       svelte: ^4.0.0 || ^5.0.0-next.0
       typescript: '>=5.0.0'
 
+  svelte-dnd-action@0.9.69:
+    resolution: {integrity: sha512-NAmSOH7htJoYraTQvr+q5whlIuVoq88vEuHr4NcFgscDRUxfWPPxgie2OoxepBCQCikrXZV4pqV86aun60wVyw==}
+    peerDependencies:
+      svelte: '>=3.23.0 || ^5.0.0-next.0'
+
   svelte-splitpanes@8.0.12:
     resolution: {integrity: sha512-HJ07HgbtY0Q/35TEuJquGy47dtgCVavV7ay9r1FhWRx3boyUs3RpeiHlwMKliznCKy2ZotNeT+8GG+mIoNjgRA==}
     peerDependencies:
@@ -3232,6 +3240,10 @@ snapshots:
       typescript: 5.6.3
     transitivePeerDependencies:
       - picomatch
+
+  svelte-dnd-action@0.9.69(svelte@5.55.3):
+    dependencies:
+      svelte: 5.55.3
 
   svelte-splitpanes@8.0.12(svelte@5.55.3):
     dependencies:

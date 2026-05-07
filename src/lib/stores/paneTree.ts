@@ -202,7 +202,7 @@ export const splitResizeUiState = writable<SplitResizeUiState>({
 export const activeWorkspaceId = writable<string>('');
 
 export const workspacesList = writable<
-  { id: string; index: number; name?: string }[]
+  { id: string; index: number; name?: string; displaySeq: number }[]
 >([]);
 
 // 工作区名称映射（用于UI显示）
@@ -924,9 +924,9 @@ export async function syncPaneLayoutFromBackend() {
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   try {
-    const list = await invoke<{ id: string; index: number }[]>(
-      'list_workspaces'
-    );
+    const list = await invoke<
+      { id: string; index: number; name?: string; displaySeq: number }[]
+    >('list_workspaces');
     const active = await invoke<string>('get_active_workspace_id');
     const layout = await invoke<PaneNode>('get_pane_layout');
     workspacesList.set(list);
@@ -1146,13 +1146,38 @@ export async function closeWorkspace(workspaceId: string) {
   }
 }
 
-/** 重新排序工作区 */
+/** 重新排序工作区。
+ *
+ *  乐观更新：在 await invoke 之前先 **同步** 把 `workspacesList` 改成新顺序，
+ *  这样 WorkspaceTabs 的 `$effect`（用 workspacesEqual 判断是否需要重写本地
+ *  mirror）能在落位动画后第一个 tick 就 bail，与 FileEditor 的 `setOrder`
+ *  同步语义对齐，避免出现"拖完先弹回旧顺序、后端返回再跳到新顺序"的
+ *  双 FLIP 闪烁。后端 round-trip 完成后 `refreshWorkspaces` 再次 set，
+ *  内容相同 → bail，无视觉副作用。 */
 export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
+  // 同步乐观更新：仅在边界合法时才动；保留旧序列以便后端失败时回滚。
+  let rolledBack: { id: string; index: number; name?: string; displaySeq: number }[] | null = null;
+  workspacesList.update((list) => {
+    if (
+      fromIndex < 0 || toIndex < 0 ||
+      fromIndex >= list.length || toIndex >= list.length ||
+      fromIndex === toIndex
+    ) return list;
+    rolledBack = list;
+    const next = [...list];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    // 重新分配 index 字段，保持与 backend list_workspaces 的语义一致。
+    return next.map((w, i) => ({ ...w, index: i }));
+  });
+
   if (!isTauri()) return;
   try {
     await invoke('reorder_workspaces', { fromIndex, toIndex });
     await refreshWorkspaces();
   } catch (e) {
+    // 回滚到拖拽前的顺序，让 UI 与后端真实状态保持一致。
+    if (rolledBack) workspacesList.set(rolledBack);
     console.error('reorderWorkspaces', e);
     reportDevIssue({
       title: 'Workspace reorder failed',

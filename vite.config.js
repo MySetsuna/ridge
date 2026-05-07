@@ -20,8 +20,12 @@ export default defineConfig({
     port: 5173,
     strictPort: false,
     hmr: {
+      // 浏览器侧 WebSocket 连接目标必须是可达地址。`0.0.0.0` 只能用于
+      // 服务端 bind（监听全部接口），把它透传给 client 会被浏览器拒为
+      // ERR_ADDRESS_INVALID，HMR 死循环重连。Tauri WebView 与本机浏览
+      // 器都通过 localhost 访问 dev server，写死 localhost 即可。
       protocol: 'ws',
-      host: '0.0.0.0',
+      host: 'localhost',
       port: 5173,
     },
     // 允许 Tauri 的 WebView 访问

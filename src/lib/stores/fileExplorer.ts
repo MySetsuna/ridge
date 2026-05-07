@@ -47,6 +47,8 @@ export interface WorkspaceDescriptor {
 	id: string;
 	name?: string;
 	index: number;
+	/** 创建时分配的稳定展示序号；未命名工作区显示为「工作区 ${displaySeq}」。 */
+	displaySeq: number;
 }
 
 /** Grouped view: one entry per workspace, with cwd-groups inside. */
@@ -581,7 +583,7 @@ const _workspaceNames = writable<Record<string, string>>({});
 export function updateWorkspaceNames(workspaces: WorkspaceDescriptor[]): void {
 	const map: Record<string, string> = {};
 	for (const ws of workspaces) {
-		map[ws.id] = ws.name || `工作区 ${ws.index + 1}`;
+		map[ws.id] = ws.name || `工作区 ${ws.displaySeq}`;
 	}
 	_workspaceNames.set(map);
 }
