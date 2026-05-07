@@ -505,8 +505,15 @@
   >
     {#if node.type === 'leaf'}
       <RgPane size={100} class="splitpanes__pane">
+        <!-- §4.3 Phase B (2026-05-07): removed `bg-[var(--rg-surface)]/90`
+             and `backdrop-blur-md` from this wrapper. The 90 %-opaque
+             surface tint sat on top of the global host canvas and hid
+             every GPU-drawn pixel ("black screen" symptom). Per-pane
+             Canvas2D fallback paints `--rg-term-bg` directly in its own
+             child canvas so it doesn't need the wrapper tint either.
+             Card outline stays via the box-shadow. -->
         <div
-          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden bg-[var(--rg-surface)]/90 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
+          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
             <div
@@ -721,6 +728,20 @@
     --rg-splitter-color: var(--rg-border);
     --rg-splitter-active-color: var(--rg-accent);
     --rg-splitter-active-glow: var(--rg-accent-glow);
+  }
+
+  /*
+   * §4.3 Phase B (2026-05-08): bump splitter above the pane header.
+   * The header has `backdrop-blur-md` (creates a stacking context) and
+   * `z-10`, both of which would otherwise occlude the splitter's hover/
+   * drag glow at the top of the adjacent pane. RgSplitter's library
+   * default is `z-index: 1`; override here so the splitter line stays
+   * visible AND the wider hit area is reachable when the cursor is
+   * over the header strip just below the boundary.
+   */
+  :global(.splitpanes__splitter),
+  :global(.rg-split > .rg-splitter) {
+    z-index: 30;
   }
 
   /* 业务高亮：rg-split--junction (4-way orthogonal hover) 和 rg-split--aligned

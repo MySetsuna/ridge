@@ -1,16 +1,34 @@
-//! WebGPU rendering backend — Round 3 §4.3 Phase B.
+//! WebGPU per-pane backend — Round 3 §4.3 Phase B (single Surface).
 //!
 //! ## Status
 //!
 //! All panes share one process-wide [`super::gpu_context::GpuContext`]
 //! that owns `wgpu::Instance` / `Device` / `Queue` / `cell_pipeline` /
-//! `GlyphAtlas` / `atlas_texture` / `GlyphRasterizer` / `sampler`.
-//! Each `WebGpuBackend` instance keeps only what is genuinely per-pane:
-//! its own `Surface` + swap-chain `config`, a 16-byte `frame_uniform`,
-//! a vertex `instance_buffer`, a `bind_group` referencing the shared
-//! atlas view via the per-pane uniform, a `pending_instances` accumulator,
-//! and a per-frame `frame_pinned` bitmap that guards the in-frame atlas
-//! eviction race.
+//! `GlyphAtlas` / `atlas_texture` / `GlyphRasterizer` / `sampler`, AND
+//! one process-wide [`super::surface_host::SurfaceHost`] that owns the
+//! single `wgpu::Surface` bound to the global host canvas in
+//! `+page.svelte`.
+//!
+//! Each `WebGpuPaneBackend` instance keeps only what is genuinely
+//! per-pane: a 16-byte `frame_uniform`, a vertex `instance_buffer`, a
+//! `bind_group` referencing the shared atlas view via the per-pane
+//! uniform, a `pending_instances` accumulator, a per-frame
+//! `frame_pinned` bitmap that guards the in-frame atlas eviction race,
+//! and a `viewport: ScissorRect` describing where on the host canvas
+//! this pane lives in device pixels.
+//!
+//! ## Per-frame protocol (Phase B)
+//!
+//! 1. JS RAF tick calls `SurfaceHostHandle::beginFrame(theme_bg)` once.
+//! 2. For each dirty pane, the renderer drives `begin_frame` /
+//!    `draw_row` / overlays / `end_frame` against THIS struct.
+//! 3. `end_frame` here uploads its uniform + instance buffer, then
+//!    invokes `host.record_pane(viewport, &pipeline, |pass| draw)` —
+//!    the host opens the render pass on its shared encoder, sets
+//!    viewport + scissor to clip the pane's draw to its rect on the
+//!    host canvas, and lets the closure record the actual draw call.
+//! 4. JS calls `SurfaceHostHandle::endFrame()` after all panes; one
+//!    `queue.submit` + one `present` for the entire window.
 //!
 //! ## Atlas-generation cross-pane invalidation
 //!
@@ -23,8 +41,9 @@
 //!
 //! ## Adapter-miss policy
 //!
-//! `new` returns `Err` when `GpuContext::get_or_init` fails (no GPU
-//! adapter, surface creation rejected, etc.). `RenderHandle
+//! `new` returns `Err` when [`SurfaceHost::get`](super::surface_host::SurfaceHost::get)
+//! returns `None` (host never initialised — usually a JS bug or adapter
+//! miss at boot) or `GpuContext::get_or_init` fails. `RenderHandle
 //! ::newWithWebgpuFirst` falls back to `Canvas2dBackend` so the pane
 //! never crashes; the error string is the only signal.
 
@@ -34,24 +53,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::glyph_atlas::{GlyphEntry, GlyphKey};
-use super::gpu_context::{GpuContext, CANVAS_FORMAT};
+use super::gpu_context::GpuContext;
+use super::surface_host::{ScissorRect, SurfaceHost};
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
 use crate::term::attr_table::AttrTable;
-use web_sys::HtmlCanvasElement;
-
-/// Convert an `[u8; 4]` RGBA color into a wgpu linear-color triple.
-/// wgpu expects sRGB framebuffer stores, but the Color value passed to
-/// `LoadOp::Clear` is in *linear* color space (the surface's sRGB
-/// view applies the OETF on store). For simplicity we pass the raw
-/// 0..1 normalized bytes — visually close enough.
-fn rgba_to_wgpu_color(rgba: [u8; 4]) -> wgpu::Color {
-    wgpu::Color {
-        r: (rgba[0] as f64) / 255.0,
-        g: (rgba[1] as f64) / 255.0,
-        b: (rgba[2] as f64) / 255.0,
-        a: (rgba[3] as f64) / 255.0,
-    }
-}
 
 /// Convert an `[u8; 4]` byte color into the f32 form CellInstance
 /// fields use. Vertex stage shaders can multiply linearly without
@@ -97,28 +102,39 @@ struct CellInstance {
 /// `gpu_context.rs::new` would silently corrupt every drawn cell.
 pub(super) const CELL_INSTANCE_STRIDE: u64 = std::mem::size_of::<CellInstance>() as u64;
 
-/// WebGPU backend — Phase B form. The heavy GPU resources live on a
-/// shared [`GpuContext`] (see module doc); this struct keeps just the
-/// per-pane surface and per-frame scratch.
-pub struct WebGpuBackend {
+/// WebGPU per-pane backend — Phase B form. The heavy GPU resources live
+/// on a shared [`GpuContext`], the swap-chain surface lives on a shared
+/// [`SurfaceHost`]; this struct keeps just per-pane scratch buffers + a
+/// scissor rect describing where on the host canvas this pane lives.
+pub struct WebGpuPaneBackend {
     /// Shared GPU stack (instance / device / queue / pipeline / atlas /
     /// rasterizer / sampler). All `borrow` / `borrow_mut` calls in this
     /// file are short-lived and **never nested** — see `draw_row` for
     /// the lookup-then-admit pattern that splits hits and misses into
     /// separate borrows.
     ctx: Rc<RefCell<GpuContext>>,
+    /// Shared swap-chain host. `end_frame` calls
+    /// `host.record_pane(viewport, &pipeline, |pass| draw)` so all panes
+    /// composite into one render pass per frame on the global host
+    /// canvas. Never `borrow_mut`'d while `ctx` is borrowed (host's
+    /// `record_pane` itself takes a fresh `ctx.borrow()` inside).
+    host: Rc<RefCell<SurfaceHost>>,
     /// Last `ctx.atlas_generation` this pane built `bind_group` against.
     /// When `begin_frame` sees a higher value it rebuilds the bind
     /// group so the next `draw_row` samples the new `atlas_view`.
     atlas_generation_seen: u64,
-
-    /// Per-pane swap-chain surface, bound 1-1 to the pane's `<canvas>`.
-    surface: wgpu::Surface<'static>,
-    /// Configuration last applied to `surface` — width/height tracked so
-    /// repeated `resize_surface` calls at the same dims short-circuit.
-    config: wgpu::SurfaceConfiguration,
+    /// Pane's rectangle on the host canvas in **device pixels**.
+    /// `resize_surface` records the new value; `end_frame` passes it to
+    /// `host.record_pane` which sets viewport + scissor on the shared
+    /// pass. Empty rects (`w == 0 || h == 0`) skip drawing entirely
+    /// (parked-by-clip — pane dragged to zero width or off-canvas).
+    viewport: ScissorRect,
     /// 16-byte uniform buffer holding `FrameUniform { viewport, _pad }`.
-    /// Per-pane because each pane has its own viewport size.
+    /// Per-pane because the vertex shader's NDC conversion divides
+    /// `cell_xy` by this `viewport` (= pane-local device-pixel size).
+    /// `record_pane` then maps the resulting NDC into the pane's rect
+    /// on the host canvas via `pass.set_viewport(scissor.x, scissor.y,
+    /// scissor.w, scissor.h, 0, 1)`.
     frame_uniform: wgpu::Buffer,
     /// Per-cell instance buffer. Initial capacity =
     /// `INITIAL_INSTANCE_CAPACITY`; doubles on overflow inside `end_frame`.
@@ -131,7 +147,7 @@ pub struct WebGpuBackend {
     bind_group: wgpu::BindGroup,
     /// Per-frame CellInstance accumulator. `begin_frame` clears it,
     /// `draw_row` / `draw_cursor` / `draw_*_overlay` push, `end_frame`
-    /// uploads via `queue.write_buffer` and submits.
+    /// uploads via `queue.write_buffer` and forwards to host.
     pending_instances: Vec<CellInstance>,
     /// Per-layer pin flag, reset to all-`false` every `begin_frame`.
     /// A layer is pinned the moment any cell in this frame's
@@ -141,60 +157,41 @@ pub struct WebGpuBackend {
     frame_pinned: Vec<bool>,
     metrics: FrameMetrics,
     theme: Theme,
-    /// Set when the next frame must seed a fresh background via
-    /// `LoadOp::Clear(theme.bg)`. Reset to false at the bottom of
-    /// `end_frame` after `frame.present()`. Subsequent frames use
-    /// `LoadOp::Load` so non-dirty rows from the previous frame survive
-    /// — the row-hash diff in `Renderer::tick` then drives sub-frame
-    /// work down to zero on idle. Set true on construct, on
-    /// `resize_surface` dim change, on `invalidate_atlas`, on
-    /// surface-lost recovery, on cross-pane atlas-generation rebuild,
-    /// and via `on_full_invalidate` when the renderer detects scroll /
+    /// Set when the renderer must re-encode every visible row on the
+    /// next frame. Drives `requires_full_frame()` (consumed by
+    /// `Renderer::tick` to mark all rows dirty so the row-hash diff
+    /// doesn't skip them). Reset to false at the bottom of `end_frame`
+    /// after the host pass records the draw. The host's
+    /// `LoadOp::Clear` vs `Load` decision is now governed by
+    /// `SurfaceHost::needs_initial_clear` (frame-level, cross-pane),
+    /// independent from this per-pane re-encode flag.
+    /// Set true on construct, on `resize_surface` dim change, on
+    /// `invalidate_atlas`, on cross-pane atlas-generation rebuild, and
+    /// via `on_full_invalidate` when the renderer detects scroll /
     /// selection / snapshot-growth.
     needs_initial_clear: bool,
 }
 
-impl WebGpuBackend {
-    /// Acquire (or reuse) the shared `GpuContext`, then create this
-    /// pane's surface + per-pane buffers + bind group. Async because
-    /// the first call performs the full WebGPU adapter / device
-    /// bootstrap; subsequent calls return the cached `Rc` immediately.
-    pub async fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
+impl WebGpuPaneBackend {
+    /// Acquire (or reuse) the shared `GpuContext` + `SurfaceHost`, then
+    /// allocate this pane's per-pane buffers + bind group. Async
+    /// because the first call performs the full WebGPU adapter /
+    /// device bootstrap; subsequent calls return the cached `Rc`
+    /// immediately.
+    ///
+    /// Returns `Err("SurfaceHost not initialized")` when JS hasn't
+    /// called `SurfaceHostHandle::init(canvas)` yet — the caller in
+    /// `lib.rs::RenderHandle::new_with_webgpu_first` falls back to
+    /// `Canvas2dBackend` so the pane never crashes.
+    pub async fn new() -> Result<Self, String> {
+        let host = SurfaceHost::get().ok_or_else(|| {
+            "WebGpuPaneBackend: SurfaceHost not initialized — call \
+             SurfaceHostHandle.init(canvas) before constructing pane backends"
+                .to_string()
+        })?;
         let ctx = GpuContext::get_or_init().await?;
-        let (
-            surface,
-            config,
-            frame_uniform,
-            instance_buffer,
-            bind_group,
-            atlas_generation_seen,
-            frame_pinned,
-        ) = {
+        let (frame_uniform, instance_buffer, bind_group, atlas_generation_seen, frame_pinned) = {
             let ctx_b = ctx.borrow();
-
-            let surface = ctx_b
-                .instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-                .map_err(|e| format!("WebGpuBackend: create_surface failed: {e:?}"))?;
-
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                // Canvas-facing format must be linear `bgra8unorm`
-                // (WebGPU spec rejects sRGB variants in canvas configure).
-                // Pipeline render-target format == this same linear format
-                // so the shader's color writes map byte-for-byte to the
-                // displayed pixels — `theme.bg = #1e1e2e` shows as
-                // `#1e1e2e`, matching Canvas2D's behavior with no gamma
-                // surprises. See `SURFACE_FORMAT` doc in gpu_context.rs.
-                format: CANVAS_FORMAT,
-                width: 1,
-                height: 1,
-                present_mode: wgpu::PresentMode::Fifo,
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            };
-            surface.configure(&ctx_b.device, &config);
 
             let frame_uniform = ctx_b.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ridge-frame-uniform"),
@@ -214,8 +211,6 @@ impl WebGpuBackend {
             let frame_pinned = vec![false; ctx_b.atlas_layers as usize];
 
             (
-                surface,
-                config,
                 frame_uniform,
                 instance_buffer,
                 bind_group,
@@ -226,9 +221,9 @@ impl WebGpuBackend {
 
         Ok(Self {
             ctx,
+            host,
             atlas_generation_seen,
-            surface,
-            config,
+            viewport: ScissorRect::ZERO,
             frame_uniform,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
@@ -241,8 +236,8 @@ impl WebGpuBackend {
                 dpr: 1.0,
             },
             theme: Theme::default_dark(),
-            // First frame must seed bg — swap-chain texture contents
-            // are undefined after `surface.configure`.
+            // First frame must re-encode every row — viewport rect just
+            // assigned by JS is fresh and the pane has never drawn.
             needs_initial_clear: true,
         })
     }
@@ -259,9 +254,21 @@ impl WebGpuBackend {
             .borrow_mut()
             .set_font_config(font_family, font_size_px);
     }
+
+    /// Update the pane's `(x, y)` position on the host canvas, in device
+    /// pixels. Called by JS (`manager.ts::_recomputeViewport`) when the
+    /// splitter drag moves a pane's container without changing its
+    /// dimensions. Does not flag `needs_initial_clear` — the pane's own
+    /// pixels are unchanged on a positional shift; JS calls
+    /// `surfaceHost.invalidate()` after layout settle so the host's
+    /// next frame `LoadOp::Clear`s the old area.
+    pub fn set_viewport_offset(&mut self, x: u32, y: u32) {
+        self.viewport.x = x;
+        self.viewport.y = y;
+    }
 }
 
-impl RenderBackend for WebGpuBackend {
+impl RenderBackend for WebGpuPaneBackend {
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         // Delegate to the shared rasterizer's OffscreenCanvas-backed
         // measure path. Bit-for-bit identical to Canvas2dBackend so
@@ -273,14 +280,24 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn requires_full_frame(&self) -> bool {
-        // True only on the *seed* frame after construction / resize /
-        // atlas reallocation / surface-lost / scroll / etc. — the flag
-        // is reset at the bottom of `end_frame`. Subsequent frames
-        // return false so `Renderer::tick` honours its row-hash dirty
-        // diff and skips re-encoding non-dirty rows. `end_frame` then
-        // selects `LoadOp::Load` to preserve pixels from the prior
-        // present (see the conditional inside the render-pass block).
-        self.needs_initial_clear
+        // §4.3 Phase B: always true. The host's multi-buffered swap
+        // chain (`desired_maximum_frame_latency: 2`) makes
+        // `LoadOp::Load` cross-frame semantics unreliable — the
+        // texture acquired this frame may hold frame N-2's content,
+        // not frame N-1's. To guarantee every visible pixel is freshly
+        // drawn each present, every visible row of every host-mode
+        // pane re-encodes every tick. Combined with
+        // `SurfaceHost::begin_frame` re-asserting its own
+        // `needs_initial_clear` so the first pane's pass starts with
+        // `LoadOp::Clear`, this gives a deterministic full repaint per
+        // frame regardless of which pane is "dirty".
+        //
+        // The cost is ~80 cells × 24 rows × pane-count of cell
+        // instance encoding per frame — well under 1 ms even on a
+        // dozen panes. The dirty-row optimisation re-emerges at the
+        // FRAME level: when no pane has new content, JS skips the
+        // entire `beginFrame` / `endFrame` round trip.
+        true
     }
 
     fn on_full_invalidate(&mut self) {
@@ -293,17 +310,25 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
+        // Phase B: pane no longer owns its own surface. We record the
+        // pane's WIDTH × HEIGHT here (in device pixels) and let JS
+        // separately drive the (x, y) host-canvas offset through
+        // `set_viewport_offset` whenever the splitter / window layout
+        // moves the container. The host's own surface.configure runs
+        // via `SurfaceHost::resize`, called from
+        // `manager.ts::resizeHost()` on the host-parent ResizeObserver.
         let backing_w = ((width_css as f32) * dpr).round().max(1.0) as u32;
         let backing_h = ((height_css as f32) * dpr).round().max(1.0) as u32;
-        if self.config.width != backing_w || self.config.height != backing_h {
-            self.config.width = backing_w;
-            self.config.height = backing_h;
-            // Borrow `ctx` only for the duration of the configure call.
-            self.surface
-                .configure(&self.ctx.borrow().device, &self.config);
-            // Swap-chain texture contents are undefined after configure
-            // — the next frame must seed bg via `LoadOp::Clear`, else
-            // `LoadOp::Load` would composite over driver-defined garbage.
+        if self.viewport.w != backing_w || self.viewport.h != backing_h {
+            self.viewport.w = backing_w;
+            self.viewport.h = backing_h;
+            // Resize re-flows the row→content mapping; the renderer's
+            // tick logic relies on `requires_full_frame()` returning
+            // true here so every visible row is re-encoded against the
+            // new dimensions on the next frame. The host pane backend
+            // also asks the host to clear (via JS
+            // `surfaceHost.invalidate()` after a settled fit) so the
+            // pane's old pixels don't bleed past its new scissor.
             self.needs_initial_clear = true;
         }
         Ok(())
@@ -680,117 +705,104 @@ impl RenderBackend for WebGpuBackend {
     }
 
     fn end_frame(&mut self) {
-        // Unified per-frame submit. Steps:
-        //   1. Upload frame uniform (viewport in pixels).
+        // Phase B per-frame protocol. Steps:
+        //   1. Upload frame uniform (pane-local viewport size in pixels).
         //   2. Grow instance buffer if the frame exceeded current capacity.
         //   3. Upload pending CellInstance bytes.
-        //   4. Acquire swap-chain texture (bail on surface-lost).
-        //   5. Single RenderPass with LoadOp::Clear(theme.bg) + pipeline
-        //      + bind group + vertex buffer + draw(0..4, 0..N_cells).
-        //   6. Submit + present.
+        //   4. Forward to `host.record_pane(viewport, &cell_pipeline,
+        //      |pass| draw)` — host opens RenderPass on its shared
+        //      encoder, sets viewport + scissor to clip the pane's draw
+        //      to its rect on the host canvas, and lets the closure
+        //      record `set_bind_group` / `set_vertex_buffer` / `draw`.
         //
-        // All GPU resources except `surface`, `frame_uniform`,
-        // `instance_buffer`, and `bind_group` come from `self.ctx`,
-        // borrowed immutably for the duration of the call.
-
-        let viewport: [f32; 4] = [
-            self.config.width as f32,
-            self.config.height as f32,
-            0.0,
-            0.0,
-        ];
+        // No `surface.get_current_texture` / `queue.submit` /
+        // `frame.present` here in Phase B — those happen once per frame
+        // in `SurfaceHost::end_frame`, called by JS after iterating
+        // every dirty pane.
 
         let n_cells = self.pending_instances.len() as u32;
 
-        let ctx = self.ctx.borrow();
+        // The vertex shader divides `cell_xy` by `frame.viewport` to
+        // produce NDC. With single-canvas + scissor, `cell_xy` is
+        // pane-local device-pixel coords, so the uniform must hold the
+        // pane's own viewport size — `host.record_pane` then maps that
+        // NDC into the pane's rect on the host canvas via
+        // `pass.set_viewport(scissor)`.
+        let viewport_uniform: [f32; 4] = [self.viewport.w as f32, self.viewport.h as f32, 0.0, 0.0];
 
-        ctx.queue
-            .write_buffer(&self.frame_uniform, 0, bytemuck::bytes_of(&viewport));
-
-        if n_cells > 0 {
-            // Grow on overflow. Doubling keeps amortized cost O(1)
-            // per cell across a session.
-            if n_cells > self.instance_capacity {
-                let new_capacity = n_cells.next_power_of_two().max(self.instance_capacity * 2);
-                self.instance_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        // Step 2: grow the instance buffer outside any ctx borrow so
+        // `&mut self.instance_buffer` doesn't conflict with a live
+        // `ctx.borrow()`.
+        if n_cells > self.instance_capacity {
+            let new_capacity = n_cells.next_power_of_two().max(self.instance_capacity * 2);
+            let new_buffer = self
+                .ctx
+                .borrow()
+                .device
+                .create_buffer(&wgpu::BufferDescriptor {
                     label: Some("ridge-instance-buffer-grown"),
                     size: (new_capacity as u64) * CELL_INSTANCE_STRIDE,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                self.instance_capacity = new_capacity;
-                // bind_group references frame_uniform + atlas_view +
-                // sampler — instance buffer is bound per-frame via
-                // `set_vertex_buffer` below, so no rebuild needed here.
-            }
-            let instance_bytes: &[u8] = bytemuck::cast_slice(&self.pending_instances);
-            ctx.queue
-                .write_buffer(&self.instance_buffer, 0, instance_bytes);
+            self.instance_buffer = new_buffer;
+            self.instance_capacity = new_capacity;
+            // bind_group references frame_uniform + atlas_view +
+            // sampler — instance buffer is bound per-frame via
+            // `set_vertex_buffer` below, so no rebuild needed here.
         }
 
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(_e) => {
-                // Surface lost / outdated — bail this frame; the
-                // renderer's full_redraw_pending will retry on the
-                // next tick once resize_surface reconfigures. Force a
-                // bg seed on the recovery frame: the new swap-chain
-                // texture's contents are undefined, so `LoadOp::Load`
-                // would expose driver garbage.
-                self.needs_initial_clear = true;
-                return;
-            }
-        };
-        // Default view — same format as the swap-chain texture (linear
-        // Bgra8Unorm). No gamma encoding at the ROP, so shader byte
-        // outputs land in the canvas unchanged. See SURFACE_FORMAT doc
-        // in gpu_context.rs for why we don't use an sRGB view here.
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("ridge-term-frame-encoder"),
-            });
+        // Step 1 + 3: write uniform + instance bytes via the shared
+        // queue. Borrow scoped tight so the `host.borrow_mut()` call
+        // below doesn't risk nested borrows on either Rc.
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ridge-term-frame-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        // Seed frame: LoadOp::Clear paints the entire
-                        // swap-chain with theme.bg. Steady-state frames:
-                        // LoadOp::Load preserves the prior present so
-                        // non-dirty rows render zero work (CellInstance
-                        // accumulator is empty for untouched rows under
-                        // `requires_full_frame() == false`).
-                        load: if self.needs_initial_clear {
-                            wgpu::LoadOp::Clear(rgba_to_wgpu_color(self.theme.bg))
-                        } else {
-                            wgpu::LoadOp::Load
-                        },
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            let ctx = self.ctx.borrow();
+            ctx.queue.write_buffer(
+                &self.frame_uniform,
+                0,
+                bytemuck::bytes_of(&viewport_uniform),
+            );
             if n_cells > 0 {
-                pass.set_pipeline(&ctx.cell_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                pass.draw(0..4, 0..n_cells);
+                let instance_bytes: &[u8] = bytemuck::cast_slice(&self.pending_instances);
+                ctx.queue
+                    .write_buffer(&self.instance_buffer, 0, instance_bytes);
             }
         }
 
-        ctx.queue.submit(Some(encoder.finish()));
-        frame.present();
-        // Seed frame consumed — subsequent frames go through
-        // `LoadOp::Load` until something invalidates again.
+        // Empty viewport (parked-by-clip) or no draws → skip the host
+        // record entirely. `host.record_pane` itself short-circuits on
+        // empty rect, but bailing here also avoids the `ctx.borrow()`
+        // round-trip + closure capture.
+        if self.viewport.is_empty() || n_cells == 0 {
+            // Even with nothing to draw, we may still need to consume
+            // the seed-clear flag — but the host owns the seed-clear
+            // decision in Phase B (one Clear per frame, regardless of
+            // which pane goes first), so just clear the per-pane flag
+            // and bail.
+            self.needs_initial_clear = false;
+            return;
+        }
+
+        // Step 4: hand off to host. `&ctx.cell_pipeline` is borrowed
+        // through the `Ref<GpuContext>` guard for the entire
+        // `record_pane` call; the closure additionally captures
+        // `&self.bind_group` and `&self.instance_buffer` (lifetimes
+        // bounded by `&mut self`).
+        let viewport = self.viewport;
+        let bind_group = &self.bind_group;
+        let instance_buffer = &self.instance_buffer;
+        let ctx = self.ctx.borrow();
+        self.host
+            .borrow_mut()
+            .record_pane(viewport, &ctx.cell_pipeline, |pass| {
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.set_vertex_buffer(0, instance_buffer.slice(..));
+                pass.draw(0..4, 0..n_cells);
+            });
+
+        // Seed-equivalent flag consumed — `requires_full_frame` returns
+        // false next tick so the row-hash diff in Renderer::tick can
+        // skip non-dirty rows.
         self.needs_initial_clear = false;
     }
 }

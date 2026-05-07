@@ -151,11 +151,15 @@ impl<B: RenderBackend> Renderer<B> {
         }
     }
 
-    pub fn backend_mut(&mut self) -> &mut B { &mut self.backend }
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
 
     /// Read-only access to the current theme — used by the JS layer when
     /// it wants to layer partial overrides on top of the existing theme.
-    pub fn theme(&self) -> &Theme { &self.theme }
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
 
     /// Drive one frame. Returns `true` if anything was drawn (caller may
     /// use this to decide whether to skip swapchain present in WebGPU
@@ -170,12 +174,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// or any monotonic millisecond source). Used for cursor-blink phase
     /// computation. Pass 0.0 if you want a stable non-blinking cursor —
     /// blink is also gated on `Modes::cursor_blink`.
-    pub fn tick(
-        &mut self,
-        terminal: &Terminal,
-        selection: Option<SelRange>,
-        now_ms: f64,
-    ) -> bool {
+    pub fn tick(&mut self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         let rows_n = terminal.rows();
 
         // Selection changed → force redraw so old translucent overlay
@@ -194,8 +193,7 @@ impl<B: RenderBackend> Renderer<B> {
         // so all panes blink in unison and we don't need a wakeup timer.
         // Phase change → mark previous cursor row dirty (so the cursor
         // gets erased on the off-half).
-        let blink_active = terminal.modes().cursor_visible
-            && terminal.modes().cursor_blink;
+        let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         let blink_phase = if blink_active {
             ((now_ms / 500.0) as i64).rem_euclid(2) == 1
         } else {
@@ -297,7 +295,9 @@ impl<B: RenderBackend> Renderer<B> {
         // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
         let mut dirty_rows: Vec<usize> = Vec::with_capacity(rows_n);
         for r in 0..rows_n {
-            let Some(row) = terminal.viewport_row(r) else { continue };
+            let Some(row) = terminal.viewport_row(r) else {
+                continue;
+            };
             let h = compute_row_hash(row);
             if self.full_redraw_pending || h != self.snapshot[r] {
                 self.snapshot[r] = h;
@@ -364,11 +364,13 @@ impl<B: RenderBackend> Renderer<B> {
         // sees the live grid or scrollback storage directly.
         let rows: Vec<RowDraw<'_>> = dirty_rows
             .iter()
-            .filter_map(|&idx| terminal.viewport_row(idx).map(|r| RowDraw {
-                row_index: idx,
-                cells: &r.cells,
-                clusters: &r.clusters,
-            }))
+            .filter_map(|&idx| {
+                terminal.viewport_row(idx).map(|r| RowDraw {
+                    row_index: idx,
+                    cells: &r.cells,
+                    clusters: &r.clusters,
+                })
+            })
             .collect();
 
         let do_full = self.first_frame || self.full_redraw_pending;
@@ -379,7 +381,9 @@ impl<B: RenderBackend> Renderer<B> {
         // erased by other row repaints.
         let mut hl_rects: Vec<(usize, usize, usize)> = Vec::new();
         for r in 0..rows_n {
-            let Some(row) = terminal.viewport_row(r) else { continue };
+            let Some(row) = terminal.viewport_row(r) else {
+                continue;
+            };
             for span in &row.hyperlinks {
                 hl_rects.push((r, span.col_start, span.col_end));
             }
@@ -410,12 +414,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// re-computed in `tick`; calling both back-to-back doubles that
     /// cost — still cheaper than one `draw_row` call by two orders of
     /// magnitude, and avoids tearing the snapshot.
-    pub fn is_dirty(
-        &self,
-        terminal: &Terminal,
-        selection: Option<SelRange>,
-        now_ms: f64,
-    ) -> bool {
+    pub fn is_dirty(&self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         // Pending unconditional redraw — first frame or set by an
         // earlier mutation we haven't tick-consumed yet.
         if self.first_frame || self.full_redraw_pending {
@@ -437,8 +436,7 @@ impl<B: RenderBackend> Renderer<B> {
         // focused + viewport at live grid). Off-half phases when the
         // cursor was previously visible also count, since the prior
         // frame painted it and this frame must erase it.
-        let blink_active = terminal.modes().cursor_visible
-            && terminal.modes().cursor_blink;
+        let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         let blink_phase = if blink_active {
             ((now_ms / 500.0) as i64).rem_euclid(2) == 1
         } else {
@@ -483,8 +481,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// `tick` uses. Caller is responsible for the lower bound (e.g.
     /// `Math.max(deadline, 1)` to avoid 0-ms timers).
     pub fn next_blink_deadline_ms(&self, terminal: &Terminal, now_ms: f64) -> f64 {
-        let blink_active =
-            terminal.modes().cursor_visible && terminal.modes().cursor_blink;
+        let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         if !blink_active {
             return f64::INFINITY;
         }
@@ -557,9 +554,13 @@ fn selection_to_rects(
     cols: usize,
     rows: usize,
 ) -> Vec<(usize, usize, usize)> {
-    let Some(range) = range else { return Vec::new() };
+    let Some(range) = range else {
+        return Vec::new();
+    };
     let r = range.normalized();
-    if r.start.row >= rows { return Vec::new() }
+    if r.start.row >= rows {
+        return Vec::new();
+    }
     let mut out = Vec::with_capacity(r.end.row.saturating_sub(r.start.row) + 1);
     let last_row = r.end.row.min(rows.saturating_sub(1));
     for row in r.start.row..=last_row {
@@ -610,7 +611,9 @@ mod tests {
     fn row_with_text(text: &str, cols: usize) -> Row {
         let mut r = Row::new(cols);
         for (i, ch) in text.chars().enumerate() {
-            if i >= cols { break; }
+            if i >= cols {
+                break;
+            }
             r.cells[i] = Cell::new(ch, crate::term::attr_table::AttrId::DEFAULT, 1);
         }
         r
@@ -721,7 +724,10 @@ mod tests {
     use crate::selection::{Pos, Range};
 
     fn range(sr: usize, sc: usize, er: usize, ec: usize) -> Range {
-        Range { start: Pos { row: sr, col: sc }, end: Pos { row: er, col: ec } }
+        Range {
+            start: Pos { row: sr, col: sc },
+            end: Pos { row: er, col: ec },
+        }
     }
 
     #[test]
@@ -742,11 +748,7 @@ mod tests {
         // (2, 5) → (4, 7) over 80 cols × 24 rows. Row 2 starts at col 5,
         // row 3 spans full width, row 4 ends at col 7.
         let rects = selection_to_rects(Some(range(2, 5, 4, 7)), 80, 24);
-        assert_eq!(rects, vec![
-            (2, 5, 80),
-            (3, 0, 80),
-            (4, 0, 7),
-        ]);
+        assert_eq!(rects, vec![(2, 5, 80), (3, 0, 80), (4, 0, 7),]);
     }
 
     #[test]

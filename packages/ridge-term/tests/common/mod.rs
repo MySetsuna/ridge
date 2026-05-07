@@ -46,12 +46,7 @@ pub struct Snapshot {
 /// Run a complete byte stream through a fresh `Terminal` and capture
 /// the resulting state. Useful for end-to-end protocol scenarios.
 #[allow(dead_code)]
-pub fn run_scenario(
-    rows: usize,
-    cols: usize,
-    scrollback_lines: usize,
-    bytes: &[u8],
-) -> Snapshot {
+pub fn run_scenario(rows: usize, cols: usize, scrollback_lines: usize, bytes: &[u8]) -> Snapshot {
     let mut t = Terminal::new(rows, cols, scrollback_lines);
     t.feed(bytes);
     Snapshot {
@@ -67,12 +62,7 @@ pub fn run_scenario(
 /// to simulate streaming arrival. Useful for "first chunk OSC 8 open,
 /// second chunk close" cross-batch scenarios.
 #[allow(dead_code)]
-pub fn run_chunks(
-    rows: usize,
-    cols: usize,
-    scrollback_lines: usize,
-    chunks: &[&[u8]],
-) -> Snapshot {
+pub fn run_chunks(rows: usize, cols: usize, scrollback_lines: usize, chunks: &[&[u8]]) -> Snapshot {
     let mut t = Terminal::new(rows, cols, scrollback_lines);
     for chunk in chunks {
         t.feed(chunk);

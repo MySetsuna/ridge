@@ -61,8 +61,18 @@ pub struct EncodeResult {
 }
 
 impl EncodeResult {
-    fn ignored() -> Self { Self { bytes: vec![], consumed: false } }
-    fn bytes(b: impl Into<Vec<u8>>) -> Self { Self { bytes: b.into(), consumed: true } }
+    fn ignored() -> Self {
+        Self {
+            bytes: vec![],
+            consumed: false,
+        }
+    }
+    fn bytes(b: impl Into<Vec<u8>>) -> Self {
+        Self {
+            bytes: b.into(),
+            consumed: true,
+        }
+    }
 }
 
 /// Main entry point.
@@ -147,7 +157,9 @@ fn encode_named_key(key: &str, ev: &KeyEvent, modes: &Modes) -> Option<EncodeRes
         if let Some(m) = modifier {
             // Modified arrows always use CSI form (not SS3), with explicit
             // params. Pattern: ESC [ 1 ; <m> <letter>
-            return Some(EncodeResult::bytes(format!("\x1b[1;{}{}", m, letter).into_bytes()));
+            return Some(EncodeResult::bytes(
+                format!("\x1b[1;{}{}", m, letter).into_bytes(),
+            ));
         }
         // Unmodified — depends on app mode.
         return Some(if modes.app_cursor_keys {
@@ -201,9 +213,9 @@ fn encode_named_key(key: &str, ev: &KeyEvent, modes: &Modes) -> Option<EncodeRes
         //   End     → SS3 F or CSI F  (likewise)
         //   PageUp  → CSI 5 ~
         //   PageDn  → CSI 6 ~
-        "Insert"   => editing_seq("2", ev),
-        "Delete"   => editing_seq("3", ev),
-        "PageUp"   => editing_seq("5", ev),
+        "Insert" => editing_seq("2", ev),
+        "Delete" => editing_seq("3", ev),
+        "PageUp" => editing_seq("5", ev),
         "PageDown" => editing_seq("6", ev),
         "Home" => {
             if let Some(m) = encode_modifier(ev) {
@@ -233,10 +245,10 @@ fn encode_named_key(key: &str, ev: &KeyEvent, modes: &Modes) -> Option<EncodeRes
 /// Map "ArrowUp"/"ArrowDown"/"ArrowLeft"/"ArrowRight" to their letter (A/B/D/C).
 fn arrow_letter(key: &str) -> Option<&'static str> {
     match key {
-        "ArrowUp"    => Some("A"),
-        "ArrowDown"  => Some("B"),
+        "ArrowUp" => Some("A"),
+        "ArrowDown" => Some("B"),
         "ArrowRight" => Some("C"),
-        "ArrowLeft"  => Some("D"),
+        "ArrowLeft" => Some("D"),
         _ => None,
     }
 }
@@ -246,10 +258,20 @@ fn arrow_letter(key: &str) -> Option<&'static str> {
 /// Returns None if no modifier is held (caller emits unmodified form).
 fn encode_modifier(ev: &KeyEvent) -> Option<u32> {
     let mut m: u32 = 1;
-    if ev.shift { m += 1; }
-    if ev.alt   { m += 2; }
-    if ev.ctrl  { m += 4; }
-    if m == 1 { None } else { Some(m) }
+    if ev.shift {
+        m += 1;
+    }
+    if ev.alt {
+        m += 2;
+    }
+    if ev.ctrl {
+        m += 4;
+    }
+    if m == 1 {
+        None
+    } else {
+        Some(m)
+    }
 }
 
 /// Editing-block keys (Insert/Delete/PageUp/PageDown). Pattern:
@@ -267,15 +289,15 @@ fn editing_seq(num: &str, ev: &KeyEvent) -> EncodeResult {
 /// `<num> ; <mod> ~` form for F5+.
 fn function_key(key: &str, ev: &KeyEvent) -> Option<String> {
     let (n, letter) = match key {
-        "F1"  => (None,    Some("P")),
-        "F2"  => (None,    Some("Q")),
-        "F3"  => (None,    Some("R")),
-        "F4"  => (None,    Some("S")),
-        "F5"  => (Some(15), None),
-        "F6"  => (Some(17), None),
-        "F7"  => (Some(18), None),
-        "F8"  => (Some(19), None),
-        "F9"  => (Some(20), None),
+        "F1" => (None, Some("P")),
+        "F2" => (None, Some("Q")),
+        "F3" => (None, Some("R")),
+        "F4" => (None, Some("S")),
+        "F5" => (Some(15), None),
+        "F6" => (Some(17), None),
+        "F7" => (Some(18), None),
+        "F8" => (Some(19), None),
+        "F9" => (Some(20), None),
         "F10" => (Some(21), None),
         "F11" => (Some(23), None),
         "F12" => (Some(24), None),
@@ -283,9 +305,9 @@ fn function_key(key: &str, ev: &KeyEvent) -> Option<String> {
     };
     let modifier = encode_modifier(ev);
     Some(match (n, letter, modifier) {
-        (None, Some(l), None)    => format!("\x1bO{}", l),
+        (None, Some(l), None) => format!("\x1bO{}", l),
         (None, Some(l), Some(m)) => format!("\x1b[1;{}{}", m, l),
-        (Some(num), None, None)    => format!("\x1b[{}~", num),
+        (Some(num), None, None) => format!("\x1b[{}~", num),
         (Some(num), None, Some(m)) => format!("\x1b[{};{}~", num, m),
         _ => unreachable!(),
     })
@@ -310,9 +332,17 @@ mod tests {
     use super::*;
 
     fn key(k: &str) -> KeyEvent {
-        KeyEvent { key: k.into(), ctrl: false, alt: false, shift: false, meta: false }
+        KeyEvent {
+            key: k.into(),
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: false,
+        }
     }
-    fn modes() -> Modes { Modes::default() }
+    fn modes() -> Modes {
+        Modes::default()
+    }
 
     #[test]
     fn plain_letter_passthrough() {

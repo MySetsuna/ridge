@@ -145,9 +145,22 @@ impl Theme {
 
         // ANSI 16 — order matches palette indices.
         let ansi_keys = [
-            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-            "brightBlack", "brightRed", "brightGreen", "brightYellow",
-            "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "white",
+            "brightBlack",
+            "brightRed",
+            "brightGreen",
+            "brightYellow",
+            "brightBlue",
+            "brightMagenta",
+            "brightCyan",
+            "brightWhite",
         ];
         for (i, name) in ansi_keys.iter().enumerate() {
             if let Some(c) = get(name).and_then(|s| parse_hex_color(&s)) {
@@ -160,7 +173,13 @@ impl Theme {
     pub fn resolve(&self, c: crate::term::attrs::Color, is_fg: bool) -> [u8; 4] {
         use crate::term::attrs::ColorKind;
         match c.kind() {
-            ColorKind::Default => if is_fg { self.fg } else { self.bg },
+            ColorKind::Default => {
+                if is_fg {
+                    self.fg
+                } else {
+                    self.bg
+                }
+            }
             ColorKind::Indexed(i) => self.palette[i as usize],
             ColorKind::Rgb(r, g, b) => [r, g, b, 0xff],
         }
@@ -193,8 +212,12 @@ fn build_xterm_palette() -> [[u8; 4]; 256] {
         [0x00, 0xff, 0xff, 0xff], // bright cyan
         [0xff, 0xff, 0xff, 0xff], // bright white
     ];
-    for i in 0..8 { pal[i] = ansi[i]; }
-    for i in 0..8 { pal[i + 8] = bright[i]; }
+    for i in 0..8 {
+        pal[i] = ansi[i];
+    }
+    for i in 0..8 {
+        pal[i + 8] = bright[i];
+    }
 
     // 16..232: 6×6×6 cube. Per xterm: each axis uses values 0, 95, 135,
     // 175, 215, 255 (NOT a uniform 51-step ramp, which is a common bug).
@@ -255,7 +278,9 @@ pub trait RenderBackend {
     /// texture each frame; without forcing every row through `draw_row`,
     /// non-dirty rows lose their glyphs and the user sees only the row
     /// they're typing on.
-    fn requires_full_frame(&self) -> bool { false }
+    fn requires_full_frame(&self) -> bool {
+        false
+    }
 
     /// Resize the underlying surface. Called when canvas size or DPR changes.
     fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String>;
@@ -294,11 +319,7 @@ pub trait RenderBackend {
     ///      to save fill calls — caller doesn't optimize this).
     ///   2. Paint each cell's glyph.
     /// `attrs_table` resolves `AttrId` to colors and flags.
-    fn draw_row(
-        &mut self,
-        row: &RowDraw<'_>,
-        attrs_table: &crate::term::attr_table::AttrTable,
-    );
+    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
 
     /// Draw the cursor on top of any existing cell content. Coordinates
     /// are in cell units (0..cols, 0..rows).
@@ -312,17 +333,11 @@ pub trait RenderBackend {
     /// `theme.selection_bg`. Each tuple is `(row, col_start, col_end)` —
     /// `col_end` exclusive. Caller is responsible for normalizing the
     /// list per-row; backend just paints. No-op when `rects` is empty.
-    fn draw_selection_overlay(
-        &mut self,
-        rects: &[(usize, usize, usize)],
-    );
+    fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]);
 
     /// Draw a 1-cell-wide underline beneath each (row, col_start, col_end)
     /// hyperlink range using `theme.hyperlink_color`. No-op when empty.
-    fn draw_hyperlink_underlines(
-        &mut self,
-        rects: &[(usize, usize, usize)],
-    );
+    fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]);
 
     /// Commit the frame to the surface. For Canvas2D this is a no-op
     /// (drawing was already direct); for WebGPU this submits the command
@@ -413,12 +428,12 @@ fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
             let b = u8::from_str_radix(&format!("{}{}", chs[2], chs[2]), 16).ok()?;
             return Some([r, g, b, 0xff]);
         }
-        6 => {
-            (0..3).map(|i| u8::from_str_radix(&hex[i*2..i*2+2], 16).ok()).collect::<Option<Vec<_>>>()?
-        }
-        8 => {
-            (0..4).map(|i| u8::from_str_radix(&hex[i*2..i*2+2], 16).ok()).collect::<Option<Vec<_>>>()?
-        }
+        6 => (0..3)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok())
+            .collect::<Option<Vec<_>>>()?,
+        8 => (0..4)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok())
+            .collect::<Option<Vec<_>>>()?,
         _ => return None,
     };
     if bytes.len() == 3 {
@@ -608,9 +623,22 @@ mod tests {
         // Verify every named ANSI slot routes to its expected palette index.
         use std::collections::HashMap;
         let names = [
-            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-            "brightBlack", "brightRed", "brightGreen", "brightYellow",
-            "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "white",
+            "brightBlack",
+            "brightRed",
+            "brightGreen",
+            "brightYellow",
+            "brightBlue",
+            "brightMagenta",
+            "brightCyan",
+            "brightWhite",
         ];
         for (idx, name) in names.iter().enumerate() {
             let mut t = Theme::default_dark();
@@ -623,7 +651,8 @@ mod tests {
                 t.palette[idx],
                 [idx as u8, 0, 0, 0xff],
                 "key {} should route to palette[{}]",
-                name, idx,
+                name,
+                idx,
             );
         }
     }

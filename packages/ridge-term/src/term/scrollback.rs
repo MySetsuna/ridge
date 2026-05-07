@@ -27,12 +27,23 @@ impl Scrollback {
     pub fn new(capacity: usize) -> Self {
         let mut entries = Vec::with_capacity(capacity);
         entries.resize_with(capacity, || None);
-        Self { entries, head: 0, len: 0, capacity }
+        Self {
+            entries,
+            head: 0,
+            len: 0,
+            capacity,
+        }
     }
 
-    pub fn capacity(&self) -> usize { self.capacity }
-    pub fn len(&self) -> usize { self.len }
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     /// Push a row to the newest end. If at capacity, returns the evicted
     /// oldest row so the caller can recycle its allocation.
@@ -88,7 +99,9 @@ impl Scrollback {
 
     /// Index 0 = oldest, len-1 = newest.
     pub fn get(&self, idx: usize) -> Option<&Row> {
-        if idx >= self.len { return None; }
+        if idx >= self.len {
+            return None;
+        }
         let real = (self.head + idx) % self.capacity;
         self.entries[real].as_ref()
     }

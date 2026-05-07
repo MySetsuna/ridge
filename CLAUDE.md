@@ -23,34 +23,105 @@ Two `RenderBackend` impls live in `packages/ridge-term/src/render/`:
 
 - **`Canvas2dBackend`** — uses the browser's 2D canvas API. Always
   available; serves as the runtime fallback when WebGPU adapter
-  acquisition fails.
-- **`WebGpuBackend`** — uses wgpu 23 + the browser's WebGPU API. Single
-  shader pipeline (`shaders/cell.wgsl`) + 256-layer texture-array glyph
-  atlas + OffscreenCanvas-based rasterizer. **Ships in cargo's default
-  feature set since 2026-05-05** (was opt-in `--features webgpu`).
-  JS constructs via `await RenderHandle.newWithWebgpuFirst(canvas)`,
-  which tries WebGPU and falls back to Canvas2D on adapter miss in Rust.
-  JS additionally guards with `typeof RenderHandle.newWithWebgpuFirst ===
-  'function'` for forward-compat with possible Canvas2D-only builds
-  (`node build.mjs --no-webgpu`).
+  acquisition fails. Each Canvas2D pane owns its own per-pane DOM
+  `<canvas>` element appended into `entry.container`.
+- **`WebGpuPaneBackend`** — uses wgpu 23 + the browser's WebGPU API.
+  Single shader pipeline (`shaders/cell.wgsl`) + 256-layer texture-
+  array glyph atlas + OffscreenCanvas-based rasterizer. **Ships in
+  cargo's default feature set since 2026-05-05** (was opt-in
+  `--features webgpu`). Per-pane backend records draws into a single
+  process-wide `<canvas data-rg-host>` via the shared `SurfaceHost` —
+  see Phase B below.
+
+JS constructs via `await RenderHandle.newWithWebgpuFirst(canvas)`,
+which tries WebGPU first and falls back to Canvas2D on adapter miss
+in Rust. Frontend additionally guards with `typeof
+RenderHandle.newWithWebgpuFirst === 'function'` for forward-compat
+with possible Canvas2D-only builds (`node build.mjs --no-webgpu`).
 
 `AnyBackend` (in `render/mod.rs`) is the enum-dispatch wrapper that
 lets `RenderHandle` hold `Renderer<AnyBackend>` and switch backends at
-construction. `WebGpuBackend` covers every visual primitive
+construction. `WebGpuPaneBackend` covers every visual primitive
 Canvas2dBackend does (cell bg+glyph, cursor in 3 styles, selection
-overlay, hyperlink underlines) all through one render pass per frame.
-WebGPU sets `RenderBackend::requires_full_frame() == true` so the
-renderer marks every visible row dirty per tick — `LoadOp::Clear` wipes
-the swap-chain texture each frame, so dirty-row diffing would otherwise
-lose non-touched rows (the "only the line you're typing on shows up"
-regression).
+overlay, hyperlink underlines) all through one render pass per pane
+per frame, scissored to the pane's rect on the host canvas.
 
-Status: Round 3 §4.1 functionally complete (2026-05-04) + §4.5 a-e
-WebGPU integration shipped (2026-05-04). 2026-05-05: WebGPU promoted
-to default backend with runtime adapter detection + Canvas2D runtime
-fallback (no compile-time gate, no localStorage opt-in). §7.2 browser
-real-run regression for the WebGPU path is the next gate before §4.3
-(shared surface across panes) / §4.4 (perf benchmark).
+### §4.3 Phase A — shared `GpuContext` (2026-05-06)
+
+`gpu_context.rs` exposes a `Rc<RefCell<GpuContext>>` thread-local
+singleton holding the `wgpu::Instance` + `Device` + `Queue` +
+`cell_pipeline` + `GlyphAtlas` + `atlas_view` + `GlyphRasterizer` +
+`sampler`. Per-pane `WebGpuPaneBackend::new()` borrows it instead of
+constructing its own copies. Cross-pane atlas reallocation propagates
+via `atlas_generation` — pane A growing the atlas (font enlarged, DPR
+jumped) bumps the counter; pane B's next `begin_frame` detects the
+mismatch and rebuilds its `bind_group` against the new `atlas_view`.
+
+### §4.3 Phase B — single `Surface` + scissor (2026-05-07)
+
+`surface_host.rs` exposes a second thread-local singleton — a
+`Rc<RefCell<SurfaceHost>>` that owns the only `wgpu::Surface` for the
+process. JS mounts a global `<canvas data-rg-host>` in
+`+page.svelte` (covering the workspace content area, `position:
+absolute; inset:0; z-index:0; pointer-events:none`), and
+`SurfaceHostHandle::init(canvas)` (called from
+`manager.ts::attachHost`) binds the surface to it.
+
+Per-frame protocol from `manager.ts::startRafLoop`:
+
+1. **Lazy frame-open**: when the first WebGPU pane this tick reports
+   dirty, JS calls `surfaceHost.beginFrame(themeBg)` once. All-idle
+   ticks skip the swap-chain acquisition entirely.
+2. **Per-pane record**: each dirty pane's `RenderHandle.render()`
+   drives `WebGpuPaneBackend::end_frame`, which uploads its uniform +
+   instance buffer and calls `host.record_pane(viewport, &pipeline,
+   |pass| draw)`. The host opens a `RenderPass` on its shared encoder,
+   sets `pass.set_viewport` + `pass.set_scissor_rect` to the pane's
+   device-pixel rect, and lets the closure record the draw.
+3. **Frame-close**: after the pane loop, `surfaceHost.endFrame()`
+   finishes the encoder, runs one `queue.submit`, and one
+   `frame.present()`. N panes → 1 swap-chain present, 1 submit.
+
+`WebGpuPaneBackend::requires_full_frame()` returns `true`
+unconditionally and `SurfaceHost::begin_frame` resets
+`needs_initial_clear=true` every frame. Reasoning: multi-buffered
+swap chains (`desired_maximum_frame_latency: 2`) may hand back a
+texture from N-2 frames ago, so `LoadOp::Load` cross-frame is
+unreliable. By forcing every visible row of every pane to re-encode
+each tick AND starting each frame with a `LoadOp::Clear`, the swap-
+chain texture is fully consistent every present. The dirty-row
+optimisation re-emerges at the FRAME level: when no pane is dirty, JS
+skips `beginFrame`/`endFrame` entirely (cost: per-pane `isDirty`
+hash check only).
+
+Per-pane scissor coords come from `manager.ts::_recomputeViewport`,
+which reads `entry.container.getBoundingClientRect()` (minus computed
+padding) and translates into host-canvas device-pixel coords. The
+splitter / drag UX is unchanged — DOM layout still drives container
+size, only the render target moved. ResizeObserver on each
+`entry.container` triggers `viewportChanged` (120 ms debounce) → fit
+→ `_recomputeViewport`. ResizeObserver on the host canvas's parent
+triggers `manager.resizeHost()` which re-configures the surface and
+recomputes every pane's scissor.
+
+`detach` / `park` / `unpark` / theme change call
+`surfaceHost.invalidate()` so the next frame seeds bg afresh — keeps
+departed pane pixels from lingering. Splitpane drag implicitly
+re-clears via `requires_full_frame=true` repaints, so no extra
+`invalidate` is needed during drag.
+
+When `SurfaceHostHandle.init` fails (no GPU adapter, surface creation
+rejected, Canvas2D-only build), `manager.attachHost` swallows the
+error and leaves `surfaceHost = null`. Every subsequent pane attach
+takes the per-pane Canvas2D path — `manager.attach()` creates a
+`<canvas>` inside the container as before. The global host canvas
+still mounts but stays unused (`pointer-events: none`). To force this
+fallback for debugging: `localStorage.RIDGE_WEBGPU = '0'; location.reload()`.
+
+Status: §4.1 functionally complete (2026-05-04), §4.5 a-e WebGPU
+integration shipped (2026-05-04), Phase A shared GpuContext shipped
+(2026-05-06), Phase B single Surface shipped (2026-05-07).
+§4.4 perf benchmark is the remaining Round 3 milestone.
 
 §1.24 (2026-05-06): the resize path now propagates the kernel's alt-
 screen state through to `resize_pane`; the backend skips its 250 ms

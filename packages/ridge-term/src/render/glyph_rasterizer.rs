@@ -158,7 +158,11 @@ impl GlyphRasterizer {
         // scaling left the glyph occupying only `font_size / dpr` of
         // those device pixels — visibly tiny / thin on HiDPI. Render
         // at `font_size_px * dpr` so the glyph fills DPR-scaled pixels.
-        let dpr_eff = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+        let dpr_eff = if dpr.is_finite() && dpr > 0.0 {
+            dpr
+        } else {
+            1.0
+        };
         let device_size_px = (font_size_px * dpr_eff).max(1.0);
 
         // Build CSS font string with optional `bold ` / `italic ` prefix
@@ -268,11 +272,7 @@ impl GlyphRasterizer {
     ///
     /// Sub-pixel cell sizes cause boundary-alignment issues documented
     /// in `canvas2d.rs`'s module header — rounding here is load-bearing.
-    pub fn measure(
-        &self,
-        font_family: &str,
-        font_size_px: f32,
-    ) -> Result<(f32, f32), String> {
+    pub fn measure(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         let font_css = format!("{}px {}", font_size_px, font_family);
         self.ctx.set_font(&font_css);
         self.ctx.set_text_baseline("top");

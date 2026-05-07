@@ -39,12 +39,12 @@ pub struct Modes {
     pub linefeed_newline: bool,
 
     // Mouse reporting. Off by default; many TUIs request these.
-    pub mouse_x10: bool,        // ?9
-    pub mouse_normal: bool,     // ?1000
+    pub mouse_x10: bool,          // ?9
+    pub mouse_normal: bool,       // ?1000
     pub mouse_button_event: bool, // ?1002 (drag)
     pub mouse_any_event: bool,    // ?1003 (motion)
-    pub mouse_sgr: bool,        // ?1006 (extended SGR encoding)
-    pub mouse_focus: bool,      // ?1004 (focus in/out events)
+    pub mouse_sgr: bool,          // ?1006 (extended SGR encoding)
+    pub mouse_focus: bool,        // ?1004 (focus in/out events)
 
     /// Bracketed paste (?2004). When on, the input encoder must wrap
     /// pasted text as `\x1b[200~ <text> \x1b[201~` so shells distinguish
@@ -134,42 +134,96 @@ impl Modes {
     pub fn set(&mut self, code: u16, value: bool, is_private: bool) -> ModeEffect {
         if is_private {
             match code {
-                7    => { self.autowrap = value; ModeEffect::None }
-                25   => { self.cursor_visible = value; ModeEffect::None }
-                12   => { self.cursor_blink = value; ModeEffect::None }
-                6    => { self.origin = value; ModeEffect::JumpToOrigin }
-                1    => { self.app_cursor_keys = value; ModeEffect::None }
+                7 => {
+                    self.autowrap = value;
+                    ModeEffect::None
+                }
+                25 => {
+                    self.cursor_visible = value;
+                    ModeEffect::None
+                }
+                12 => {
+                    self.cursor_blink = value;
+                    ModeEffect::None
+                }
+                6 => {
+                    self.origin = value;
+                    ModeEffect::JumpToOrigin
+                }
+                1 => {
+                    self.app_cursor_keys = value;
+                    ModeEffect::None
+                }
 
-                9    => { self.mouse_x10 = value; ModeEffect::None }
-                1000 => { self.mouse_normal = value; ModeEffect::None }
-                1002 => { self.mouse_button_event = value; ModeEffect::None }
-                1003 => { self.mouse_any_event = value; ModeEffect::None }
-                1004 => { self.mouse_focus = value; ModeEffect::None }
-                1006 => { self.mouse_sgr = value; ModeEffect::None }
+                9 => {
+                    self.mouse_x10 = value;
+                    ModeEffect::None
+                }
+                1000 => {
+                    self.mouse_normal = value;
+                    ModeEffect::None
+                }
+                1002 => {
+                    self.mouse_button_event = value;
+                    ModeEffect::None
+                }
+                1003 => {
+                    self.mouse_any_event = value;
+                    ModeEffect::None
+                }
+                1004 => {
+                    self.mouse_focus = value;
+                    ModeEffect::None
+                }
+                1006 => {
+                    self.mouse_sgr = value;
+                    ModeEffect::None
+                }
 
-                2004 => { self.bracketed_paste = value; ModeEffect::None }
-                2026 => { self.sync_output = value; ModeEffect::None }
+                2004 => {
+                    self.bracketed_paste = value;
+                    ModeEffect::None
+                }
+                2026 => {
+                    self.sync_output = value;
+                    ModeEffect::None
+                }
 
                 47 => {
-                    if value { ModeEffect::EnterAltScreen }
-                    else { ModeEffect::LeaveAltScreen }
+                    if value {
+                        ModeEffect::EnterAltScreen
+                    } else {
+                        ModeEffect::LeaveAltScreen
+                    }
                 }
                 1047 => {
-                    if value { ModeEffect::EnterAltScreenAndClear }
-                    else { ModeEffect::LeaveAltScreen }
+                    if value {
+                        ModeEffect::EnterAltScreenAndClear
+                    } else {
+                        ModeEffect::LeaveAltScreen
+                    }
                 }
                 1049 => {
-                    if value { ModeEffect::EnterAltScreenSaveCursor }
-                    else { ModeEffect::LeaveAltScreenRestoreCursor }
+                    if value {
+                        ModeEffect::EnterAltScreenSaveCursor
+                    } else {
+                        ModeEffect::LeaveAltScreenRestoreCursor
+                    }
                 }
 
                 _ => ModeEffect::None, // unknown private mode — ignore
             }
         } else {
             match code {
-                4  => { self.insert = value; ModeEffect::None }
-                20 => { self.linefeed_newline = value; ModeEffect::None }
-                _  => ModeEffect::None,
+                4 => {
+                    self.insert = value;
+                    ModeEffect::None
+                }
+                20 => {
+                    self.linefeed_newline = value;
+                    ModeEffect::None
+                }
+                _ => ModeEffect::None,
             }
         }
     }
@@ -190,8 +244,14 @@ mod tests {
     #[test]
     fn private_modes_route_alt_screen() {
         let mut m = Modes::default();
-        assert_eq!(m.set(1049, true, true), ModeEffect::EnterAltScreenSaveCursor);
-        assert_eq!(m.set(1049, false, true), ModeEffect::LeaveAltScreenRestoreCursor);
+        assert_eq!(
+            m.set(1049, true, true),
+            ModeEffect::EnterAltScreenSaveCursor
+        );
+        assert_eq!(
+            m.set(1049, false, true),
+            ModeEffect::LeaveAltScreenRestoreCursor
+        );
         assert_eq!(m.set(47, true, true), ModeEffect::EnterAltScreen);
         assert_eq!(m.set(47, false, true), ModeEffect::LeaveAltScreen);
         assert_eq!(m.set(1047, true, true), ModeEffect::EnterAltScreenAndClear);
@@ -300,7 +360,7 @@ mod tests {
         // collapse these into the same handler.
         let mut m = Modes::default();
         assert!(!m.insert);
-        m.set(4, true, false);    // public
+        m.set(4, true, false); // public
         assert!(m.insert);
         // Private 4 is unknown; should NOT touch insert.
         m.set(4, false, true);

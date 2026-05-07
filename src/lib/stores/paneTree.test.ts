@@ -772,3 +772,131 @@ describe('syncPaneLayoutFromBackend — zombie pruning & split-pane seeding', ()
     expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('/new');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: px-anchor (C-locked, D-absorbs) for nested same-axis splits
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('px-anchor: buildPxAnchorPlans + pxAnchorRatios', () => {
+  // Layout: (C|D) | B at top level, all horizontal-direction splits.
+  //   top-level split: children=[A, B_leaf], ratios=[60, 40]
+  //   A: split direction=horizontal, children=[C_leaf, D_leaf], ratios=[50, 50]
+  // Total container = 1000 px wide.
+  function buildLayout() {
+    return {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'horizontal' as const,
+      children: [
+        {
+          type: 'split' as const,
+          id: 'A',
+          direction: 'horizontal' as const,
+          children: [
+            { type: 'leaf' as const, id: 'C' },
+            { type: 'leaf' as const, id: 'D' },
+          ],
+          ratios: [50, 50],
+        },
+        { type: 'leaf' as const, id: 'B' },
+      ],
+      ratios: [60, 40],
+    };
+  }
+
+  it('emits a plan for the inner C|D split when primary is the top-level A|B splitter', () => {
+    const root = buildLayout();
+    const plans = paneTreeModule.buildPxAnchorPlans(
+      root,
+      { splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1000 },
+      1000
+    );
+    expect(plans).toHaveLength(1);
+    expect(plans[0].splitPath).toEqual([0]);
+    // Before-side: absorber is the LAST child (closest to the moving divider).
+    expect(plans[0].absorberIndex).toBe(1);
+    // C/D each at 300 px (1000 * 60% * 50%).
+    expect(plans[0].childPxAtMousedown).toEqual([300, 300]);
+    expect(plans[0].outerPxAtMousedown).toBe(600);
+    expect(plans[0].primaryAdjacentSide).toBe('before');
+  });
+
+  it('builds NO plan when descendant axis differs from primary axis', () => {
+    // Build a fresh layout where A's inner split is vertical (axis ≠ 'x').
+    const root = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'horizontal' as 'horizontal' | 'vertical',
+      children: [
+        {
+          type: 'split' as const,
+          id: 'A',
+          direction: 'vertical' as 'horizontal' | 'vertical',
+          children: [
+            { type: 'leaf' as const, id: 'C' },
+            { type: 'leaf' as const, id: 'D' },
+          ],
+          ratios: [50, 50],
+        },
+        { type: 'leaf' as const, id: 'B' },
+      ],
+      ratios: [60, 40],
+    };
+    const plans = paneTreeModule.buildPxAnchorPlans(
+      root,
+      { splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1000 },
+      1000
+    );
+    // Inner axis='y' differs from primary axis='x' → proportional scaling
+    // is already correct; no anchor plan needed.
+    expect(plans).toHaveLength(0);
+  });
+
+  it('after dragging A|B right by +100 px, C ratio reflects locked 300 px width', () => {
+    const root = buildLayout();
+    const [plan] = paneTreeModule.buildPxAnchorPlans(
+      root,
+      { splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1000 },
+      1000
+    );
+    const ratios = paneTreeModule.pxAnchorRatios(plan, +100);
+
+    // A's new outer = 600 + 100 = 700 px.
+    // C should still be 300 px → ratio 300/700 ≈ 42.857%.
+    // D should be 700 - 300 = 400 px → ratio 400/700 ≈ 57.143%.
+    expect(ratios[0]).toBeCloseTo((300 / 700) * 100, 2);
+    expect(ratios[1]).toBeCloseTo((400 / 700) * 100, 2);
+    expect(ratios[0] + ratios[1]).toBeCloseTo(100, 5);
+  });
+
+  it('after dragging A|B left by -100 px, C still locks at 300 px while D shrinks', () => {
+    const root = buildLayout();
+    const [plan] = paneTreeModule.buildPxAnchorPlans(
+      root,
+      { splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1000 },
+      1000
+    );
+    const ratios = paneTreeModule.pxAnchorRatios(plan, -100);
+
+    // A's new outer = 600 - 100 = 500 px.
+    // C still 300 px → ratio 300/500 = 60%.
+    // D = 500 - 300 = 200 px → ratio 200/500 = 40%.
+    expect(ratios[0]).toBeCloseTo(60, 5);
+    expect(ratios[1]).toBeCloseTo(40, 5);
+  });
+
+  it('clamps absorber to MIN_PANE_RATIO floor when delta would push it below 6%', () => {
+    const root = buildLayout();
+    const [plan] = paneTreeModule.buildPxAnchorPlans(
+      root,
+      { splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1000 },
+      1000
+    );
+    // Drag A|B left 350 px → A new outer = 250 px; D would need to be -50 px
+    // to keep C at 300 px. Floor protects D, C shrinks proportionally.
+    const ratios = paneTreeModule.pxAnchorRatios(plan, -350);
+    expect(ratios[0]).toBeGreaterThanOrEqual(6);
+    expect(ratios[1]).toBeGreaterThanOrEqual(6);
+    expect(ratios[0] + ratios[1]).toBeCloseTo(100, 5);
+  });
+});

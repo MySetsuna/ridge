@@ -292,13 +292,19 @@ impl Terminal {
         self.user_scroll_locked = false;
     }
 
-    pub fn scroll_offset(&self) -> usize { self.scroll_offset }
-    pub fn scrollback_len(&self) -> usize { self.grid.scrollback.len() }
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+    pub fn scrollback_len(&self) -> usize {
+        self.grid.scrollback.len()
+    }
     /// Whether the user has paged into history and PTY output is
     /// currently being held back from auto-snapping the viewport.
     /// JS-side may surface this as a "x lines below — click to follow"
     /// indicator.
-    pub fn is_user_scroll_locked(&self) -> bool { self.user_scroll_locked }
+    pub fn is_user_scroll_locked(&self) -> bool {
+        self.user_scroll_locked
+    }
 
     /// Look up a row by absolute-row coord (matches `search.rs` /
     /// `selection.rs` abs encoding):
@@ -349,11 +355,21 @@ impl Terminal {
         self.grid.last_resize_diags()
     }
 
-    pub fn rows(&self) -> usize { self.grid.rows() }
-    pub fn cols(&self) -> usize { self.grid.cols() }
-    pub fn grid(&self) -> &Grid { &self.grid }
-    pub fn modes(&self) -> &Modes { &self.modes }
-    pub fn is_alt_screen(&self) -> bool { self.grid.is_alt_screen() }
+    pub fn rows(&self) -> usize {
+        self.grid.rows()
+    }
+    pub fn cols(&self) -> usize {
+        self.grid.cols()
+    }
+    pub fn grid(&self) -> &Grid {
+        &self.grid
+    }
+    pub fn modes(&self) -> &Modes {
+        &self.modes
+    }
+    pub fn is_alt_screen(&self) -> bool {
+        self.grid.is_alt_screen()
+    }
 
     /// Renderer entry point: returns the row at viewport-relative index
     /// `vp_row` (0..rows), accounting for `scroll_offset`. When the user
@@ -397,7 +413,9 @@ impl Terminal {
             let row = self.grid.row(r).unwrap();
             let mut s = String::with_capacity(row.cells.len());
             for cell in &row.cells {
-                if cell.width == 0 { continue; }
+                if cell.width == 0 {
+                    continue;
+                }
                 s.push(cell.ch);
             }
             out.push(s.trim_end_matches(' ').to_string());
@@ -484,7 +502,11 @@ mod tests {
         let sb_len = t.scrollback_len();
         // Try to scroll past the available history.
         t.scroll_up_view(100);
-        assert_eq!(t.scroll_offset(), sb_len, "scroll_up_view must clamp at scrollback_len");
+        assert_eq!(
+            t.scroll_offset(),
+            sb_len,
+            "scroll_up_view must clamp at scrollback_len"
+        );
     }
 
     #[test]
@@ -520,7 +542,8 @@ mod tests {
         // Feed more content as if a TUI were repainting the live grid.
         t.feed(b"\r\nstreamed-output");
         assert_eq!(
-            t.scroll_offset(), locked_offset,
+            t.scroll_offset(),
+            locked_offset,
             "PTY output must not auto-snap while the user-scroll lock is set",
         );
     }
@@ -591,8 +614,11 @@ mod tests {
         t.user_scroll_locked = true;
         t.scroll_offset = 1;
         t.feed(b"x");
-        assert_eq!(t.scroll_offset(), 0,
-            "alt-screen feed must auto-snap regardless of lock");
+        assert_eq!(
+            t.scroll_offset(),
+            0,
+            "alt-screen feed must auto-snap regardless of lock"
+        );
     }
 
     #[test]
@@ -668,8 +694,14 @@ mod tests {
         let row = t.grid().row(0).unwrap();
         let a = t.grid().attrs.get(row.cells[0].attr);
         let b = t.grid().attrs.get(row.cells[1].attr);
-        assert!(a.flags.contains(Flags::UNDERLINE), "first cell must be underlined");
-        assert!(!b.flags.contains(Flags::UNDERLINE), "after CSI 4:0 m the next cell must NOT be underlined");
+        assert!(
+            a.flags.contains(Flags::UNDERLINE),
+            "first cell must be underlined"
+        );
+        assert!(
+            !b.flags.contains(Flags::UNDERLINE),
+            "after CSI 4:0 m the next cell must NOT be underlined"
+        );
     }
 
     #[test]
@@ -743,7 +775,7 @@ mod tests {
     fn decstbm_sets_scroll_region() {
         let mut t = Terminal::new(5, 5, 0);
         t.feed(b"\x1b[2;4r"); // rows 2..4 (1-based) = 1..3 (0-based)
-        // After STBM, cursor should be at home.
+                              // After STBM, cursor should be at home.
         assert_eq!(t.grid().cursor().row, 0);
         assert_eq!(t.grid().cursor().col, 0);
     }
@@ -858,7 +890,11 @@ mod tests {
         let mut t = Terminal::new(2, 20, 0);
         t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
         let row = t.grid().row(0).unwrap();
-        assert_eq!(row.hyperlinks.len(), 1, "should coalesce 5 prints into 1 span");
+        assert_eq!(
+            row.hyperlinks.len(),
+            1,
+            "should coalesce 5 prints into 1 span"
+        );
         let span = &row.hyperlinks[0];
         assert_eq!(span.col_start, 0);
         assert_eq!(span.col_end, 5);
@@ -896,7 +932,10 @@ mod tests {
         // since "hello" was 5 chars in a 20-col grid).
         t.feed(b"\x1b[2K");
         let row = t.grid().row(0).unwrap();
-        assert!(row.hyperlinks.is_empty(), "CSI 2K must clear hyperlink spans");
+        assert!(
+            row.hyperlinks.is_empty(),
+            "CSI 2K must clear hyperlink spans"
+        );
     }
 
     #[test]
@@ -961,7 +1000,10 @@ mod tests {
         t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
         t.feed(b"\x1b[3G\x1b[3@");
         let row = t.grid().row(0).unwrap();
-        assert!(row.hyperlinks.is_empty(), "ICH at edit point invalidates overlapping spans");
+        assert!(
+            row.hyperlinks.is_empty(),
+            "ICH at edit point invalidates overlapping spans"
+        );
     }
 
     #[test]
@@ -986,7 +1028,10 @@ mod tests {
         t.feed(b"\x1b]8;;https://example.com\x07hello\x1b]8;;\x07");
         t.feed(b"\x1b[3G\x1b[2P");
         let row = t.grid().row(0).unwrap();
-        assert!(row.hyperlinks.is_empty(), "DCH at edit point invalidates overlapping spans");
+        assert!(
+            row.hyperlinks.is_empty(),
+            "DCH at edit point invalidates overlapping spans"
+        );
     }
 
     #[test]
@@ -1041,10 +1086,13 @@ mod tests {
     fn ich_inserts_n_blank_cells_shifting_right() {
         let mut t = Terminal::new(1, 10, 0);
         t.feed(b"abcdef");
-        t.feed(b"\x1b[1;2H");  // cursor to col 2 (1-based: 2 → 0-based: 1)
-        t.feed(b"\x1b[2@");    // insert 2 blanks at cursor
+        t.feed(b"\x1b[1;2H"); // cursor to col 2 (1-based: 2 → 0-based: 1)
+        t.feed(b"\x1b[2@"); // insert 2 blanks at cursor
         let line = &t.dump_visible_text()[0];
-        assert_eq!(line, "a  bcdef", "ICH inserts blanks, shifts rest right (last 'f' falls off)");
+        assert_eq!(
+            line, "a  bcdef",
+            "ICH inserts blanks, shifts rest right (last 'f' falls off)"
+        );
         assert_eq!(t.grid().cursor().col, 1, "cursor must not move");
     }
 
@@ -1052,20 +1100,23 @@ mod tests {
     fn dch_deletes_n_cells_shifting_left() {
         let mut t = Terminal::new(1, 10, 0);
         t.feed(b"abcdefghij");
-        t.feed(b"\x1b[1;3H");  // cursor to col 3 (0-based 2)
-        t.feed(b"\x1b[3P");    // delete 3 cells at cursor
+        t.feed(b"\x1b[1;3H"); // cursor to col 3 (0-based 2)
+        t.feed(b"\x1b[3P"); // delete 3 cells at cursor
         let line = &t.dump_visible_text()[0];
-        assert_eq!(line, "abfghij", "DCH deletes 'cde', shifts rest left, blanks fill right");
+        assert_eq!(
+            line, "abfghij",
+            "DCH deletes 'cde', shifts rest left, blanks fill right"
+        );
         assert_eq!(t.grid().cursor().col, 2);
     }
 
     #[test]
     fn sco_save_restore_aliases_decsc_decrc() {
         let mut t = Terminal::new(5, 5, 0);
-        t.feed(b"\x1b[3;3H");  // cursor to (2, 2)
-        t.feed(b"\x1b[s");     // SCO save
-        t.feed(b"\x1b[5;5H");  // cursor elsewhere
-        t.feed(b"\x1b[u");     // SCO restore
+        t.feed(b"\x1b[3;3H"); // cursor to (2, 2)
+        t.feed(b"\x1b[s"); // SCO save
+        t.feed(b"\x1b[5;5H"); // cursor elsewhere
+        t.feed(b"\x1b[u"); // SCO restore
         assert_eq!(t.grid().cursor().row, 2);
         assert_eq!(t.grid().cursor().col, 2);
     }
@@ -1099,8 +1150,11 @@ mod tests {
         // TUI exits — we should land back on the saved primary cursor row.
         t.feed(b"\x1b[?1049l");
         assert!(!t.is_alt_screen());
-        assert_eq!(t.grid().cursor().row, 5,
-            "?1049l must restore primary cursor row (saved by ?1049h)");
+        assert_eq!(
+            t.grid().cursor().row,
+            5,
+            "?1049l must restore primary cursor row (saved by ?1049h)"
+        );
         assert_eq!(t.grid().cursor().col, 0);
     }
 
@@ -1127,7 +1181,9 @@ mod tests {
             let row = sb.get(i).unwrap();
             let mut s = String::new();
             for c in &row.cells {
-                if c.width == 0 { continue; }
+                if c.width == 0 {
+                    continue;
+                }
                 s.push(c.ch);
             }
             out.push(s.trim_end_matches(' ').to_string());
@@ -1146,7 +1202,11 @@ mod tests {
         // Order should be [older1, older2, recent1].
         assert_eq!(
             dump_scrollback_text(&t),
-            vec!["older1".to_string(), "older2".to_string(), "recent1".to_string()]
+            vec![
+                "older1".to_string(),
+                "older2".to_string(),
+                "recent1".to_string()
+            ]
         );
         // Live grid untouched.
         let lines = t.dump_visible_text();
@@ -1172,9 +1232,7 @@ mod tests {
     #[test]
     fn prepend_scrollback_does_not_emit_pending_events() {
         let mut t = Terminal::new(2, 10, 100);
-        t.prepend_scrollback(
-            b"\x1b]0;old-title\x07hi\x07\r\n\x1b]7;file:///old\x07line2",
-        );
+        t.prepend_scrollback(b"\x1b]0;old-title\x07hi\x07\r\n\x1b]7;file:///old\x07line2");
         assert!(t.take_pending_events().is_empty());
         assert!(t.take_pending_response().is_empty());
     }

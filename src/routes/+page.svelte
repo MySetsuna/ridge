@@ -173,9 +173,18 @@ self.MonacoEnvironment = {
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { TerminalManager } from '$lib/terminal/manager';
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
+
+  // §4.3 Phase B: process-wide single canvas the WebGPU SurfaceHost
+  // binds its swap chain to. Lives at the workspace-content layer so
+  // it covers every pane container, regardless of split layout.
+  // Per-pane Canvas2D fallback panes still create their own DOM canvas
+  // inside their container; this host is invisible to them
+  // (`pointer-events: none`, `z-index: 0`).
+  let hostCanvas = $state<HTMLCanvasElement | undefined>(undefined);
 
   type SidebarTab = 'git' | 'files' | 'search' | 'claude';
   let sidebarTab = $state<SidebarTab>('files');
@@ -401,12 +410,17 @@ function expandSidebar() {
     }
 
     // 检查是否点击在终端或编辑器内容区域
+    // 注意属性名是 `data-rg-pane-id`（RidgePane.svelte 用的就是这个），早期
+    // 重构前的 `data-pane-id` 现在没有任何元素设置 —— 旧选择器一直 miss，
+    // 导致这里返回 target='unknown'，document-level handler 进而把它的
+    // 「unknown」菜单贴在 RidgePane.onContextMenu 已显示的丰富菜单上面，
+    // 用户看到的就是 RidgePane 菜单一闪而过，最后留下错误菜单。
     const paneEl =
-      target.closest('.rg-pane-root') || target.closest('[data-pane-id]');
+      target.closest('.rg-pane-root') || target.closest('[data-rg-pane-id]');
     if (paneEl) {
       const paneId =
-        paneEl.getAttribute('data-pane-id') ||
-        (paneEl as HTMLElement).dataset?.paneId;
+        paneEl.getAttribute('data-rg-pane-id') ||
+        (paneEl as HTMLElement).dataset?.rgPaneId;
       // 判断是终端还是编辑器（通过 class 判断）。
       // RidgePane 渲染时挂 `.rg-pane-container[data-rg-pane-id]`；保留
       // `.rg-terminal-surface` 兜底以防其他外壳类名出现。Monaco 编辑器
@@ -815,6 +829,15 @@ function expandSidebar() {
     // Monaco 已经显示了它自己的菜单 —— Ridge 不再叠加一层稀疏菜单。
     if (target === 'editor') return;
 
+    // 终端窗格的右键菜单由 RidgePane.svelte::onContextMenu 拥有 ——
+    // 它包含真正终端语义的项目（复制 / 粘贴 / 全选 / 清空），并在 paneId
+    // 上下文里调 manager.* API。document-level handler 这里只做兜底，
+    // 不能再把它的「分割 / 关闭 / cwd」泛化菜单贴在 terminal 头上覆盖
+    // 掉 RidgePane 已经显示的丰富菜单（先 bubble 到 RidgePane，再 bubble
+    // 到 document，后者后跑会覆盖前者）。同样的「让最贴近 target 的
+    // handler 拥有其菜单」模式见上面 editor。
+    if (target === 'terminal') return;
+
     const items = getContextMenuItems(target, paneId);
     showContextMenu(e.clientX, e.clientY, items, target, paneId);
   }
@@ -853,6 +876,35 @@ function expandSidebar() {
     void import('$lib/terminal/themeBridge').then((m) => {
       m.setupTerminalThemeBridge();
     });
+
+    // §4.3 Phase B: bind the host canvas to a single wgpu::Surface so
+    // every WebGPU pane composites through one swap chain. Manager
+    // returns silently when the wasm bundle has no SurfaceHostHandle
+    // (Canvas2D-only build) or when WebGPU adapter acquisition fails;
+    // either way per-pane Canvas2D path keeps working.
+    let hostResizeObserver: ResizeObserver | undefined;
+    void (async () => {
+      if (!hostCanvas) return;
+      const manager = TerminalManager.instance();
+      try {
+        await manager.attachHost(hostCanvas);
+      } catch (err) {
+        // `attachHost` already swallows WebGPU-init failures internally
+        // and falls back to per-pane Canvas2D. Anything reaching here
+        // is unexpected — log so we can see it in DevTools but don't
+        // block boot.
+        console.warn('[ridge] SurfaceHost attach failed; per-pane Canvas2D fallback', err);
+        return;
+      }
+      // Drive surface.configure on parent resize. Throttling lives in
+      // manager.resizeHost (idempotent on no-op size); spurious
+      // observer fires are cheap.
+      const parent = hostCanvas.parentElement;
+      if (parent) {
+        hostResizeObserver = new ResizeObserver(() => manager.resizeHost());
+        hostResizeObserver.observe(parent);
+      }
+    })();
 
     // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
     // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
@@ -948,6 +1000,7 @@ function expandSidebar() {
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
+      hostResizeObserver?.disconnect();
     };
   });
 
@@ -1374,7 +1427,19 @@ function expandSidebar() {
     <div
       class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--rg-bg-raised)]"
     >
-      <div class="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+      <div class="relative flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+        <!-- §4.3 Phase B host canvas. Sits beneath every pane container
+             (z-index:0, pointer-events:none) and is bound to a single
+             wgpu::Surface via SurfaceHostHandle.init. Stays mounted
+             across workspace switches — `{#key}` only remounts
+             SplitContainer below, so the surface lives for the app
+             lifetime. -->
+        <canvas
+          bind:this={hostCanvas}
+          data-rg-host
+          aria-hidden="true"
+          style="position:absolute; inset:0; pointer-events:none; z-index:0;"
+        ></canvas>
         {#if $activeWorkspaceId && hasPaneLayout}
           {#key $activeWorkspaceId}
             <SplitContainer workspaceId={$activeWorkspaceId} node={rootNode} />

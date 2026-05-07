@@ -21,7 +21,9 @@ impl AttrId {
 }
 
 impl Default for AttrId {
-    fn default() -> Self { AttrId::DEFAULT }
+    fn default() -> Self {
+        AttrId::DEFAULT
+    }
 }
 
 pub struct AttrTable {
@@ -66,10 +68,15 @@ impl AttrTable {
     pub fn get(&self, id: AttrId) -> Attrs {
         // Out-of-bounds shouldn't happen if everyone goes through intern,
         // but a corrupt id should not panic on the hot path.
-        self.by_id.get(id.0 as usize).copied().unwrap_or(Attrs::DEFAULT)
+        self.by_id
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or(Attrs::DEFAULT)
     }
 
-    pub fn len(&self) -> usize { self.by_id.len() }
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
 }
 
 #[cfg(test)]
@@ -87,7 +94,11 @@ mod tests {
     #[test]
     fn intern_dedupes() {
         let mut t = AttrTable::default();
-        let a = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::BOLD };
+        let a = Attrs {
+            fg: Color::indexed(1),
+            bg: Color::DEFAULT,
+            flags: Flags::BOLD,
+        };
         let id1 = t.intern(a);
         let id2 = t.intern(a);
         assert_eq!(id1, id2);
@@ -97,7 +108,11 @@ mod tests {
     #[test]
     fn get_returns_attrs_for_valid_id() {
         let mut t = AttrTable::default();
-        let red_bold = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::BOLD };
+        let red_bold = Attrs {
+            fg: Color::indexed(1),
+            bg: Color::DEFAULT,
+            flags: Flags::BOLD,
+        };
         let id = t.intern(red_bold);
         assert_eq!(t.get(id), red_bold);
         // Default still resolves correctly.
@@ -121,9 +136,21 @@ mod tests {
     #[test]
     fn distinct_attrs_produce_distinct_ids() {
         let mut t = AttrTable::default();
-        let a = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::BOLD };
-        let b = Attrs { fg: Color::indexed(2), bg: Color::DEFAULT, flags: Flags::BOLD };
-        let c = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::ITALIC };
+        let a = Attrs {
+            fg: Color::indexed(1),
+            bg: Color::DEFAULT,
+            flags: Flags::BOLD,
+        };
+        let b = Attrs {
+            fg: Color::indexed(2),
+            bg: Color::DEFAULT,
+            flags: Flags::BOLD,
+        };
+        let c = Attrs {
+            fg: Color::indexed(1),
+            bg: Color::DEFAULT,
+            flags: Flags::ITALIC,
+        };
         let id_a = t.intern(a);
         let id_b = t.intern(b);
         let id_c = t.intern(c);
@@ -139,9 +166,21 @@ mod tests {
     #[test]
     fn multiple_interns_grow_in_insertion_order() {
         let mut t = AttrTable::default();
-        let a = Attrs { fg: Color::indexed(1), bg: Color::DEFAULT, flags: Flags::empty() };
-        let b = Attrs { fg: Color::indexed(2), bg: Color::DEFAULT, flags: Flags::empty() };
-        let c = Attrs { fg: Color::indexed(3), bg: Color::DEFAULT, flags: Flags::empty() };
+        let a = Attrs {
+            fg: Color::indexed(1),
+            bg: Color::DEFAULT,
+            flags: Flags::empty(),
+        };
+        let b = Attrs {
+            fg: Color::indexed(2),
+            bg: Color::DEFAULT,
+            flags: Flags::empty(),
+        };
+        let c = Attrs {
+            fg: Color::indexed(3),
+            bg: Color::DEFAULT,
+            flags: Flags::empty(),
+        };
         let id_a = t.intern(a);
         let id_b = t.intern(b);
         let id_c = t.intern(c);

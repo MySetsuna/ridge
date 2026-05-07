@@ -22,11 +22,16 @@ fn scenario_dsr_cpr_replies_after_content() {
     // 24-row terminal. Print 5 lines of content, advance to row 5,
     // then issue CSI 6n. Expect reply CSI 6;1R (1-based).
     let mut bytes: Vec<u8> = Vec::new();
-    for _ in 0..5 { bytes.extend_from_slice(b"line\r\n"); }
+    for _ in 0..5 {
+        bytes.extend_from_slice(b"line\r\n");
+    }
     bytes.extend_from_slice(b"\x1b[6n");
     let snap = run_scenario(24, 80, 100, &bytes);
     assert_eq!(snap.cursor, (5, 0), "cursor on row 5 col 0 after 5 LFs");
-    assert_eq!(snap.pending_response, b"\x1b[6;1R", "DSR-CPR must reply 1-based row;col");
+    assert_eq!(
+        snap.pending_response, b"\x1b[6;1R",
+        "DSR-CPR must reply 1-based row;col"
+    );
 }
 
 /// PSReadLine prompt-redraw cycle: clear-line + write-prompt + content.
@@ -34,11 +39,7 @@ fn scenario_dsr_cpr_replies_after_content() {
 /// This is the most common single PSReadLine action on every keystroke.
 #[test]
 fn scenario_psreadline_prompt_redraw_replaces_line() {
-    let snap = run_chunks(2, 30, 0, &[
-        b"PS C:\\>",
-        b"\r\x1b[K",
-        b"PS C:\\code\\wind>",
-    ]);
+    let snap = run_chunks(2, 30, 0, &[b"PS C:\\>", b"\r\x1b[K", b"PS C:\\code\\wind>"]);
     assert_eq!(&snap.visible[0], "PS C:\\code\\wind>");
     assert_eq!(snap.cursor.1, "PS C:\\code\\wind>".len());
 }
@@ -48,12 +49,17 @@ fn scenario_psreadline_prompt_redraw_replaces_line() {
 /// for re-rendering React-tree updates.
 #[test]
 fn scenario_ink_frame_replace_via_cup_and_ed() {
-    let snap = run_chunks(5, 20, 0, &[
-        b"frame 1 a\r\nframe 1 b\r\nframe 1 c",
-        b"\r\x1b[2A",         // cursor up 2 + col 0 → back to top of 3-line block
-        b"\x1b[J",            // erase from cursor to end of display
-        b"frame 2 X\r\nframe 2 Y\r\nframe 2 Z",
-    ]);
+    let snap = run_chunks(
+        5,
+        20,
+        0,
+        &[
+            b"frame 1 a\r\nframe 1 b\r\nframe 1 c",
+            b"\r\x1b[2A", // cursor up 2 + col 0 → back to top of 3-line block
+            b"\x1b[J",    // erase from cursor to end of display
+            b"frame 2 X\r\nframe 2 Y\r\nframe 2 Z",
+        ],
+    );
     assert_eq!(&snap.visible[0], "frame 2 X");
     assert_eq!(&snap.visible[1], "frame 2 Y");
     assert_eq!(&snap.visible[2], "frame 2 Z");
@@ -64,12 +70,17 @@ fn scenario_ink_frame_replace_via_cup_and_ed() {
 /// cells beyond the new content should be blank (not the old chars).
 #[test]
 fn scenario_ech_clears_old_chars_in_place() {
-    let snap = run_chunks(1, 20, 0, &[
-        b"abcdefghij",
-        b"\r",          // back to col 0
-        b"\x1b[10X",    // erase 10 cells in place
-        b"123",         // new shorter content
-    ]);
+    let snap = run_chunks(
+        1,
+        20,
+        0,
+        &[
+            b"abcdefghij",
+            b"\r",       // back to col 0
+            b"\x1b[10X", // erase 10 cells in place
+            b"123",      // new shorter content
+        ],
+    );
     assert_eq!(&snap.visible[0], "123");
 }
 
@@ -77,17 +88,26 @@ fn scenario_ech_clears_old_chars_in_place() {
 /// primary screen + cursor must be exactly what they were before entry.
 #[test]
 fn scenario_alt_screen_1049_preserves_primary() {
-    let snap = run_chunks(10, 20, 50, &[
-        b"prompt > ",
-        b"\x1b[4;1H\r\nshell history",
-        b"\x1b[6;6H",         // cursor to (5, 5) — the "anchor" before alt
-        b"\x1b[?1049h",       // enter alt + DECSC primary cursor
-        b"vim-like fullscreen UI here",
-        b"\x1b[3;3H...",
-        b"\x1b[?1049l",       // exit alt + DECRC primary cursor
-    ]);
+    let snap = run_chunks(
+        10,
+        20,
+        50,
+        &[
+            b"prompt > ",
+            b"\x1b[4;1H\r\nshell history",
+            b"\x1b[6;6H",   // cursor to (5, 5) — the "anchor" before alt
+            b"\x1b[?1049h", // enter alt + DECSC primary cursor
+            b"vim-like fullscreen UI here",
+            b"\x1b[3;3H...",
+            b"\x1b[?1049l", // exit alt + DECRC primary cursor
+        ],
+    );
     assert!(!snap.is_alt_screen);
-    assert_eq!(snap.cursor, (5, 5), "primary cursor restored after alt-screen exit");
+    assert_eq!(
+        snap.cursor,
+        (5, 5),
+        "primary cursor restored after alt-screen exit"
+    );
 }
 
 /// §1.23 (2026-05-06): if the user resizes the terminal *while* a TUI is
@@ -103,15 +123,19 @@ fn scenario_alt_screen_1049_preserves_primary() {
 fn scenario_alt_screen_1049_survives_cols_resize() {
     use ridge_term::term::Terminal;
     let mut t = Terminal::new(10, 80, 100);
-    t.feed(b"\x1b[6;13H");        // CUP row=6 col=13 (1-based) -> (5, 12)
-    t.feed(b"\x1b[?1049h");       // enter alt, DECSC primary cursor
-    t.feed(b"alt content here");  // pollute alt
-    t.resize(10, 40);             // cols shrink while alt is active
-    t.feed(b"\x1b[?1049l");       // exit, DECRC
+    t.feed(b"\x1b[6;13H"); // CUP row=6 col=13 (1-based) -> (5, 12)
+    t.feed(b"\x1b[?1049h"); // enter alt, DECSC primary cursor
+    t.feed(b"alt content here"); // pollute alt
+    t.resize(10, 40); // cols shrink while alt is active
+    t.feed(b"\x1b[?1049l"); // exit, DECRC
 
     assert!(!t.grid().is_alt_screen());
     assert_eq!(t.grid().cursor().row, 5, "row anchored to pre-alt position");
-    assert_eq!(t.grid().cursor().col, 12, "col anchored to pre-alt position");
+    assert_eq!(
+        t.grid().cursor().col,
+        12,
+        "col anchored to pre-alt position"
+    );
 }
 
 /// §1.24 (2026-05-06): an alt-screen TUI's redraw bytes that arrive
@@ -127,12 +151,12 @@ fn scenario_alt_screen_1049_survives_cols_resize() {
 fn scenario_alt_screen_resize_does_not_swallow_redraw() {
     use ridge_term::term::Terminal;
     let mut t = Terminal::new(10, 80, 100);
-    t.feed(b"\x1b[?1049h");                         // enter alt
-    t.feed(b"OLD CONTENT FROM BEFORE RESIZE\r\n");  // pollute alt buffer
-    t.resize(10, 40);                                // shrink cols → §1.22 wipe fires
-    // Synthetic redraw the alt-screen TUI would emit after SIGWINCH.
-    // ESC [2J  = clear screen
-    // ESC [H   = cursor home
+    t.feed(b"\x1b[?1049h"); // enter alt
+    t.feed(b"OLD CONTENT FROM BEFORE RESIZE\r\n"); // pollute alt buffer
+    t.resize(10, 40); // shrink cols → §1.22 wipe fires
+                      // Synthetic redraw the alt-screen TUI would emit after SIGWINCH.
+                      // ESC [2J  = clear screen
+                      // ESC [H   = cursor home
     t.feed(b"\x1b[2J\x1b[Hpost-resize redraw");
 
     assert!(t.grid().is_alt_screen(), "still on alt");
@@ -145,8 +169,10 @@ fn scenario_alt_screen_resize_does_not_swallow_redraw() {
     // Confirm the §1.22 wipe ran by checking the diagnostic ring.
     let diags = t.last_resize_diags();
     let last = diags.last().expect("at least one resize recorded");
-    assert!(last.is_alt && last.dim_changed && last.wipe_fired,
-            "§1.22 wipe should have fired: {last:?}");
+    assert!(
+        last.is_alt && last.dim_changed && last.wipe_fired,
+        "§1.22 wipe should have fired: {last:?}"
+    );
 }
 
 /// OSC 8 hyperlink across feed boundaries: the `current_link` state
@@ -180,11 +206,11 @@ fn scenario_decsc_decrc_round_trips_origin_and_pending_wrap() {
     use ridge_term::term::terminal::Terminal;
     let mut t = Terminal::new(4, 10, 0);
     // Snapshot 1: DECOM round-trip via DECSC/DECRC.
-    t.feed(b"\x1b[?6h");                 // DECOM ON
-    t.feed(b"\x1b7");                    // DECSC — origin SHOULD be saved as true
-    t.feed(b"\x1b[?6l");                 // DECOM OFF (toggles cursor jump too)
+    t.feed(b"\x1b[?6h"); // DECOM ON
+    t.feed(b"\x1b7"); // DECSC — origin SHOULD be saved as true
+    t.feed(b"\x1b[?6l"); // DECOM OFF (toggles cursor jump too)
     assert!(!t.modes().origin, "DECOM toggled off mid-flight");
-    t.feed(b"\x1b8");                    // DECRC — origin must come back as true
+    t.feed(b"\x1b8"); // DECRC — origin must come back as true
     assert!(t.modes().origin, "DECRC restored DECOM=on");
 
     // Snapshot 2: pending_wrap round-trip. Print cols-1 chars to put
@@ -192,18 +218,27 @@ fn scenario_decsc_decrc_round_trips_origin_and_pending_wrap() {
     // (this resets cursor); DECRC; the next print should wrap to the
     // next row instead of overwriting cols-1.
     let mut t = Terminal::new(2, 5, 0);
-    t.feed(b"abcde");                     // 5 chars fill row 0; cursor parked at col 4 with pending_wrap=true
+    t.feed(b"abcde"); // 5 chars fill row 0; cursor parked at col 4 with pending_wrap=true
     assert_eq!(t.grid().cursor().col, 4);
-    assert!(t.grid().cursor().pending_wrap, "DECAWM parked cursor in pending wrap");
-    t.feed(b"\x1b7");                     // DECSC — must save pending_wrap=true
-    t.feed(b"\x1b[H");                    // CUP home — clears pending_wrap
+    assert!(
+        t.grid().cursor().pending_wrap,
+        "DECAWM parked cursor in pending wrap"
+    );
+    t.feed(b"\x1b7"); // DECSC — must save pending_wrap=true
+    t.feed(b"\x1b[H"); // CUP home — clears pending_wrap
     assert!(!t.grid().cursor().pending_wrap, "CUP clears pending_wrap");
-    t.feed(b"\x1b8");                     // DECRC — restores pending_wrap=true
-    assert!(t.grid().cursor().pending_wrap, "DECRC restored pending_wrap");
+    t.feed(b"\x1b8"); // DECRC — restores pending_wrap=true
+    assert!(
+        t.grid().cursor().pending_wrap,
+        "DECRC restored pending_wrap"
+    );
     // Next print should wrap to row 1 col 1, not overwrite (0, 4).
     t.feed(b"X");
     let visible = t.dump_visible_text();
-    assert_eq!(&visible[0], "abcde", "row 0 still 'abcde' (pending wrap → no overwrite)");
+    assert_eq!(
+        &visible[0], "abcde",
+        "row 0 still 'abcde' (pending wrap → no overwrite)"
+    );
     assert!(visible[1].starts_with('X'), "wrap landed 'X' on row 1");
 }
 
@@ -217,29 +252,49 @@ fn scenario_decsc_decrc_round_trips_origin_and_pending_wrap() {
 #[test]
 fn scenario_cht_cbt_navigate_by_tab_stops() {
     // CHT 2 from col 0 → col 16 (two 8-col jumps).
-    let snap = run_chunks(2, 80, 0, &[
-        b"\x1b[2I",      // CHT 2
-    ]);
+    let snap = run_chunks(
+        2,
+        80,
+        0,
+        &[
+            b"\x1b[2I", // CHT 2
+        ],
+    );
     assert_eq!(snap.cursor.1, 16, "CHT 2 from col 0 → col 16");
 
     // CBT from col 19 (mid-tab) → col 16 → col 8.
-    let snap = run_chunks(2, 80, 0, &[
-        b"\x1b[20G",     // CHA col 20 (1-based) → cursor at col 19
-        b"\x1b[2Z",      // CBT 2
-    ]);
+    let snap = run_chunks(
+        2,
+        80,
+        0,
+        &[
+            b"\x1b[20G", // CHA col 20 (1-based) → cursor at col 19
+            b"\x1b[2Z",  // CBT 2
+        ],
+    );
     assert_eq!(snap.cursor.1, 8, "CBT 2 from col 19 → 16 → 8");
 
     // CBT default n=1 from col 8 (on a tab stop) → col 0.
-    let snap = run_chunks(2, 80, 0, &[
-        b"\x1b[9G",      // CHA col 9 → cursor at col 8
-        b"\x1b[Z",       // CBT default n=1
-    ]);
+    let snap = run_chunks(
+        2,
+        80,
+        0,
+        &[
+            b"\x1b[9G", // CHA col 9 → cursor at col 8
+            b"\x1b[Z",  // CBT default n=1
+        ],
+    );
     assert_eq!(snap.cursor.1, 0, "CBT 1 from on-tab-stop col 8 → col 0");
 
     // CBT clamps at 0 — extra back-tabs from col 0 stay at col 0.
-    let snap = run_chunks(2, 80, 0, &[
-        b"\x1b[5Z",      // CBT 5 from col 0
-    ]);
+    let snap = run_chunks(
+        2,
+        80,
+        0,
+        &[
+            b"\x1b[5Z", // CBT 5 from col 0
+        ],
+    );
     assert_eq!(snap.cursor.1, 0, "CBT past col 0 clamps");
 }
 
@@ -256,14 +311,14 @@ fn scenario_decstr_soft_resets_state_preserves_screen() {
     use ridge_term::term::terminal::Terminal;
     let mut t = Terminal::new(8, 10, 0);
     // Set up dirty state: print content, set modes, scroll region.
-    t.feed(b"hello");                              // visible content on row 0
-    t.feed(b"\x1b[3;5r");                          // DECSTBM rows 3..5 (1-based)
-    t.feed(b"\x1b[?6h");                           // DECOM on
-    t.feed(b"\x1b[4h");                            // IRM on
-    t.feed(b"\x1b[?25l");                          // DECTCEM off (cursor hidden)
-    t.feed(b"\x1b[?7l");                           // DECAWM off
-    t.feed(b"\x1b[31m");                           // SGR red foreground
-    // Sanity before DECSTR.
+    t.feed(b"hello"); // visible content on row 0
+    t.feed(b"\x1b[3;5r"); // DECSTBM rows 3..5 (1-based)
+    t.feed(b"\x1b[?6h"); // DECOM on
+    t.feed(b"\x1b[4h"); // IRM on
+    t.feed(b"\x1b[?25l"); // DECTCEM off (cursor hidden)
+    t.feed(b"\x1b[?7l"); // DECAWM off
+    t.feed(b"\x1b[31m"); // SGR red foreground
+                         // Sanity before DECSTR.
     assert!(t.modes().origin);
     assert!(t.modes().insert);
     assert!(!t.modes().cursor_visible);
@@ -306,13 +361,13 @@ fn scenario_ris_resets_all_kernel_state() {
     let mut t = Terminal::new(8, 10, 50);
     // Set up dirty state: scroll region, alt screen, saved cursor,
     // last_printed (via print + REP-eligible char), current_link, modes.
-    t.feed(b"\x1b[3;5r");                               // DECSTBM
-    t.feed(b"\x1b[?1049h");                              // alt screen + DECSC primary
-    t.feed(b"\x1b]8;;https://example.com\x1b\\");       // OSC 8 hyperlink open
-    t.feed(b"X");                                        // print → last_printed = ('X', attrs)
-    t.feed(b"\x1b[?6h");                                 // DECOM on
-    t.feed(b"\x1b[4h");                                  // IRM on
-    // Sanity: state is dirty before RIS.
+    t.feed(b"\x1b[3;5r"); // DECSTBM
+    t.feed(b"\x1b[?1049h"); // alt screen + DECSC primary
+    t.feed(b"\x1b]8;;https://example.com\x1b\\"); // OSC 8 hyperlink open
+    t.feed(b"X"); // print → last_printed = ('X', attrs)
+    t.feed(b"\x1b[?6h"); // DECOM on
+    t.feed(b"\x1b[4h"); // IRM on
+                        // Sanity: state is dirty before RIS.
     assert!(t.is_alt_screen(), "alt screen active before RIS");
     assert!(t.modes().origin, "DECOM on before RIS");
     assert!(t.modes().insert, "IRM on before RIS");
@@ -337,7 +392,10 @@ fn scenario_ris_resets_all_kernel_state() {
     // hyperlink annotation on its row (current_link cleared).
     t.feed(b"Y");
     let row = t.grid().row(0).expect("row 0 exists");
-    assert!(row.hyperlinks.is_empty(), "no hyperlink span on the post-RIS print");
+    assert!(
+        row.hyperlinks.is_empty(),
+        "no hyperlink span on the post-RIS print"
+    );
 }
 
 /// DECOM (`CSI ? 6 h` / `l`) — origin mode. When on, CUP and VPA
@@ -351,16 +409,27 @@ fn scenario_ris_resets_all_kernel_state() {
 /// scroll_bottom) → clamps to (4, 0). Print 'Y' there.
 #[test]
 fn scenario_decom_constrains_cursor_to_scroll_region() {
-    let snap = run_chunks(8, 10, 0, &[
-        b"\x1b[3;5r",     // DECSTBM rows 3..5 (1-based) = scroll_top=2, scroll_bottom=4
-        b"\x1b[?6h",      // DECOM on
-        b"\x1b[1;1H",     // CUP (1,1): origin-relative → (scroll_top+0, 0) = (2, 0)
-        b"X",             // print 'X' at (2, 0)
-        b"\x1b[10;1H",    // CUP (10,1): origin-relative row 9 → clamps to scroll_bottom=4
-        b"Y",             // print 'Y' at (4, 0)
-    ]);
-    assert_eq!(&snap.visible[2], "X", "DECOM-on CUP (1,1) lands at scroll_top row");
-    assert_eq!(&snap.visible[4], "Y", "DECOM-on CUP past bottom clamps to scroll_bottom");
+    let snap = run_chunks(
+        8,
+        10,
+        0,
+        &[
+            b"\x1b[3;5r",  // DECSTBM rows 3..5 (1-based) = scroll_top=2, scroll_bottom=4
+            b"\x1b[?6h",   // DECOM on
+            b"\x1b[1;1H",  // CUP (1,1): origin-relative → (scroll_top+0, 0) = (2, 0)
+            b"X",          // print 'X' at (2, 0)
+            b"\x1b[10;1H", // CUP (10,1): origin-relative row 9 → clamps to scroll_bottom=4
+            b"Y",          // print 'Y' at (4, 0)
+        ],
+    );
+    assert_eq!(
+        &snap.visible[2], "X",
+        "DECOM-on CUP (1,1) lands at scroll_top row"
+    );
+    assert_eq!(
+        &snap.visible[4], "Y",
+        "DECOM-on CUP past bottom clamps to scroll_bottom"
+    );
     // Rows outside the scroll region should be untouched.
     assert!(snap.visible[0].trim().is_empty(), "row 0 untouched");
     assert!(snap.visible[7].trim().is_empty(), "row 7 untouched");
@@ -406,14 +475,19 @@ fn scenario_decom_toggle_jumps_cursor_to_origin() {
 /// B) — expecting "AXYCD" (Y overwrites B because IRM is off again).
 #[test]
 fn scenario_irm_mode_4_inserts_then_overwrites() {
-    let snap = run_chunks(1, 10, 0, &[
-        b"ABCD",          // row = "ABCD      " (6 trailing spaces), cursor at col 4
-        b"\x1b[1;2H",     // CUP to row 1 col 2 (1-based) = (0, 1) 0-based — over 'B'
-        b"\x1b[4h",       // IRM on
-        b"X",             // insert 'X' at col 1: shift B/C/D right → "AXBCD"
-        b"\x1b[4l",       // IRM off
-        b"Y",             // overwrite at col 2 (after X advance) → "AXYCD"
-    ]);
+    let snap = run_chunks(
+        1,
+        10,
+        0,
+        &[
+            b"ABCD",      // row = "ABCD      " (6 trailing spaces), cursor at col 4
+            b"\x1b[1;2H", // CUP to row 1 col 2 (1-based) = (0, 1) 0-based — over 'B'
+            b"\x1b[4h",   // IRM on
+            b"X",         // insert 'X' at col 1: shift B/C/D right → "AXBCD"
+            b"\x1b[4l",   // IRM off
+            b"Y",         // overwrite at col 2 (after X advance) → "AXYCD"
+        ],
+    );
     assert_eq!(
         &snap.visible[0], "AXYCD",
         "IRM-on insert should shift then advance; IRM-off should overwrite"
@@ -430,13 +504,17 @@ fn scenario_irm_mode_4_inserts_then_overwrites() {
 /// any artefact from the OSC marker.
 #[test]
 fn scenario_osc_133_633_prompt_marks_dont_render() {
-    let snap = run_chunks(1, 30, 0, &[
-        b"before\x1b]133;A\x07after",      // FinalTerm 133;A bracketed by text
-        b" \x1b]633;A\x07tail",             // VS Code 633;A bracketed by text
-    ]);
+    let snap = run_chunks(
+        1,
+        30,
+        0,
+        &[
+            b"before\x1b]133;A\x07after", // FinalTerm 133;A bracketed by text
+            b" \x1b]633;A\x07tail",       // VS Code 633;A bracketed by text
+        ],
+    );
     assert_eq!(
-        &snap.visible[0],
-        "beforeafter tail",
+        &snap.visible[0], "beforeafter tail",
         "OSC 133/633 prompt marks must not leave any artefact on screen"
     );
     // Cursor advanced over only the visible chars (no spurious advance
@@ -452,10 +530,15 @@ fn scenario_osc_133_633_prompt_marks_dont_render() {
 /// still works).
 #[test]
 fn scenario_rep_repeats_last_printed() {
-    let snap = run_chunks(1, 20, 0, &[
-        b"-",          // print one '-'; last_printed = '-'
-        b"\x1b[5b",    // REP 5: print '-' five more times → 6 dashes
-    ]);
+    let snap = run_chunks(
+        1,
+        20,
+        0,
+        &[
+            b"-",       // print one '-'; last_printed = '-'
+            b"\x1b[5b", // REP 5: print '-' five more times → 6 dashes
+        ],
+    );
     assert_eq!(&snap.visible[0], "------", "1 original + 5 REP'd dashes");
     assert_eq!(snap.cursor.1, 6, "cursor advanced over 6 chars");
 }
@@ -530,8 +613,7 @@ fn scenario_bracketed_paste_2004_toggle_and_wrap() {
     // On → wrap_paste prepends \x1b[200~ and appends \x1b[201~.
     let wrapped = wrap_paste("hello", true);
     assert_eq!(
-        wrapped,
-        b"\x1b[200~hello\x1b[201~",
+        wrapped, b"\x1b[200~hello\x1b[201~",
         "bracketed paste markers must surround the text"
     );
     // Disable again.
@@ -548,20 +630,30 @@ fn scenario_bracketed_paste_2004_toggle_and_wrap() {
 /// common-case bug surface.)
 #[test]
 fn scenario_decsc_decrc_round_trips_cursor() {
-    let snap = run_chunks(5, 20, 0, &[
-        b"\x1b[3;5H",     // cursor to (row 3, col 5) 1-based = (2, 4) 0-based
-        b"\x1b7",         // DECSC — save (2, 4) + current attrs
-        b"\x1b[1;1H",     // cursor to top-left
-        b"foo",           // print 3 chars at (0, 0..2), cursor now (0, 3)
-        b"\x1b8",         // DECRC — restore to (2, 4)
-        b"X",             // print 'X' at (2, 4); cursor advances to (2, 5)
-    ]);
-    assert_eq!(snap.cursor, (2, 5), "after DECRC + 1 char, cursor at (2, 5)");
+    let snap = run_chunks(
+        5,
+        20,
+        0,
+        &[
+            b"\x1b[3;5H", // cursor to (row 3, col 5) 1-based = (2, 4) 0-based
+            b"\x1b7",     // DECSC — save (2, 4) + current attrs
+            b"\x1b[1;1H", // cursor to top-left
+            b"foo",       // print 3 chars at (0, 0..2), cursor now (0, 3)
+            b"\x1b8",     // DECRC — restore to (2, 4)
+            b"X",         // print 'X' at (2, 4); cursor advances to (2, 5)
+        ],
+    );
+    assert_eq!(
+        snap.cursor,
+        (2, 5),
+        "after DECRC + 1 char, cursor at (2, 5)"
+    );
     assert_eq!(&snap.visible[0], "foo", "row 0 has the pre-DECRC content");
     // Row 2 col 4 holds 'X'; trim_end strips trailing spaces.
     assert!(
         snap.visible[2].starts_with("    X"),
-        "row 2 should have 4 spaces then 'X', got {:?}", snap.visible[2]
+        "row 2 should have 4 spaces then 'X', got {:?}",
+        snap.visible[2]
     );
 }
 
@@ -585,7 +677,11 @@ fn scenario_osc_events_emit_title_cwd_bell_in_order() {
     t.feed(b"\x1b]7;file:///tmp/foo\x07");
     t.feed(b"\x07");
     let events = t.take_pending_events();
-    assert_eq!(events.len(), 3, "expected 3 events: title + cwd + bell, got {events:?}");
+    assert_eq!(
+        events.len(),
+        3,
+        "expected 3 events: title + cwd + bell, got {events:?}"
+    );
     assert_eq!(events[0], KernelEvent::TitleChanged("Window Title".into()));
     assert_eq!(events[1], KernelEvent::CwdChanged("/tmp/foo".into()));
     assert_eq!(events[2], KernelEvent::Bell);
@@ -593,7 +689,10 @@ fn scenario_osc_events_emit_title_cwd_bell_in_order() {
     // single-consumer (drain-on-take). Critical for the JS layer's
     // `feed → drain → dispatch` per-frame contract.
     let drained_again = t.take_pending_events();
-    assert!(drained_again.is_empty(), "second take must return empty queue");
+    assert!(
+        drained_again.is_empty(),
+        "second take must return empty queue"
+    );
 }
 
 /// Combined inline-edit scenario: ICH (insert 3 blanks) + write 3 chars
@@ -601,14 +700,19 @@ fn scenario_osc_events_emit_title_cwd_bell_in_order() {
 /// — they all advance/maintain cursor and shift the row consistently.
 #[test]
 fn scenario_ich_dch_combined_inline_edit() {
-    let snap = run_chunks(1, 20, 0, &[
-        b"hello world",
-        b"\r\x1b[6G",   // cursor to col 6 (between "hello " and "world")
-        b"\x1b[3@",     // ICH 3 — insert 3 blanks at col 6
-        b"NEW",         // overwrite the 3 blanks with "NEW"
-        b"\r\x1b[1G",   // back to col 0
-        b"\x1b[2P",     // DCH 2 — delete first 2 chars, shift left
-    ]);
+    let snap = run_chunks(
+        1,
+        20,
+        0,
+        &[
+            b"hello world",
+            b"\r\x1b[6G", // cursor to col 6 (between "hello " and "world")
+            b"\x1b[3@",   // ICH 3 — insert 3 blanks at col 6
+            b"NEW",       // overwrite the 3 blanks with "NEW"
+            b"\r\x1b[1G", // back to col 0
+            b"\x1b[2P",   // DCH 2 — delete first 2 chars, shift left
+        ],
+    );
     // Trace: original "hello world" (col 0..10).
     //   CUP col 6 (= 0-based 5 = the space between "hello" and "world").
     //   ICH 3: inserts 3 blanks AT col 5, shifting [col 5..] right. Row
@@ -653,7 +757,8 @@ fn scenario_primary_resize_clears_below_cursor() {
     for col in 6..20 {
         assert!(
             row2.cells[col].is_blank(),
-            "row 2 col {col} should be blank, got {:?}", row2.cells[col]
+            "row 2 col {col} should be blank, got {:?}",
+            row2.cells[col]
         );
     }
     // Rows 3..=7 entirely blank.
@@ -682,7 +787,10 @@ fn scenario_primary_resize_clears_below_cursor() {
         last.cleared_below_cursor && !last.is_alt && last.dim_changed,
         "§1.26 cleanup should have fired: {last:?}"
     );
-    assert!(!last.inline_tui_wipe, "§A.3 full wipe should NOT fire without inline-TUI flag");
+    assert!(
+        !last.inline_tui_wipe,
+        "§A.3 full wipe should NOT fire without inline-TUI flag"
+    );
 }
 
 /// §1.26 negative case: the cleanup MUST NOT touch cells to the left of
@@ -718,7 +826,10 @@ fn scenario_primary_resize_preserves_left_and_above_of_cursor() {
     let row2 = t.grid().row(2).unwrap();
     let r2_left: String = row2.cells.iter().take(18).map(|c| c.ch).collect();
     assert_eq!(r2_left, "prompt> input-text", "left-of-cursor preserved");
-    assert!(row2.cells[18].is_blank(), "cell at cursor was never written");
+    assert!(
+        row2.cells[18].is_blank(),
+        "cell at cursor was never written"
+    );
     for col in 19..25 {
         assert!(row2.cells[col].is_blank(), "col {col} cleared");
     }
@@ -854,7 +965,7 @@ fn scenario_zwj_cluster_cleared_when_overwritten_by_ascii() {
     t.feed(zwj.as_bytes());
     assert_eq!(t.grid().row(0).unwrap().clusters.len(), 1);
     // Overwrite at col 0 with an ASCII letter.
-    t.feed(b"\x1b[1;1H");                   // CUP (1,1) → col 0
+    t.feed(b"\x1b[1;1H"); // CUP (1,1) → col 0
     t.feed(b"X");
     let row0 = t.grid().row(0).unwrap();
     assert_eq!(row0.cells[0].ch, 'X');
@@ -864,4 +975,71 @@ fn scenario_zwj_cluster_cleared_when_overwritten_by_ascii() {
     );
 }
 
-
+/// §1.28 (2026-05-07) Ink-style frame redraw with mixed CJK + SGR
+/// recolour over wide chars. Pre-§1.28 this sequence produced orphan
+/// wide-pair halves that the renderer turned into "中文字符只渲染
+/// 一半 / 英文字符只剩占位 / 改色文本多余字符" symptoms when
+/// running `claude` inside ridge-term.
+///
+/// The byte stream models log-update's `(ESC[2K ESC[1A)*N + ESC[G +
+/// new frame` frame-replacement pattern intermixed with SGR colour
+/// changes and CJK/ASCII transitions, plus ECH/ICH/DCH probes that
+/// straddle wide-pair boundaries. After the dust settles the kernel
+/// must hold a grid where:
+///
+///   - every `width == 2` main cell is followed by a `width == 0`
+///     continuation,
+///   - every `width == 0` continuation is preceded by a `width == 2`
+///     main.
+///
+/// The assertion is the wide-pair invariant — orthogonal to which
+/// chars survived. If a future change re-introduces an orphan path
+/// (e.g. a new CSI handler that shifts cells without integrity
+/// checks), this test fires before the visible regression ships.
+#[test]
+fn scenario_ink_redraw_keeps_wide_pair_invariant() {
+    use ridge_term::term::Terminal;
+    let mut t = Terminal::new(4, 12, 0);
+    let chunks: &[&[u8]] = &[
+        // Initial frame: SGR red + 中文 + space + ASCII tail.
+        b"\x1b[31m\xe4\xb8\xad\xe6\x96\x87 abc\x1b[m",
+        // Walk back + EL clear + SGR green + new CJK.
+        b"\r\x1b[2K\x1b[32m\xe4\xbd\xa0\xe5\xa5\xbd",
+        // ECH spanning the right-half of the new pair (cuts a wide pair).
+        b"\x1b[3X",
+        // CUP into the middle of a wide pair, ICH 1.
+        b"\x1b[1;3H\x1b[1@",
+        // CUP back, DCH 2 (straddles a continuation cell).
+        b"\x1b[1;2H\x1b[2P",
+        b"\x1b[m",
+    ];
+    for chunk in chunks {
+        t.feed(chunk);
+    }
+    for row_idx in 0..4 {
+        let row = t.grid().row(row_idx).unwrap();
+        for (i, cell) in row.cells.iter().enumerate() {
+            if cell.width == 0 {
+                assert!(i > 0, "row {row_idx} col 0: width==0 has no possible main",);
+                let prev = row.cells[i - 1];
+                assert_eq!(
+                    prev.width, 2,
+                    "row {row_idx} col {i}: width==0 (continuation) without width==2 main at col {}",
+                    i - 1,
+                );
+            }
+            if cell.width == 2 {
+                let next_idx = i + 1;
+                assert!(
+                    next_idx < row.cells.len(),
+                    "row {row_idx} col {i}: width==2 main at last col has no continuation slot",
+                );
+                let next = row.cells[next_idx];
+                assert_eq!(
+                    next.width, 0,
+                    "row {row_idx} col {i}: width==2 (main) without width==0 continuation at col {next_idx}",
+                );
+            }
+        }
+    }
+}

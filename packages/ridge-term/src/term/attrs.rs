@@ -61,21 +61,31 @@ pub enum ColorKind {
 pub struct Flags(u16);
 
 impl Flags {
-    pub const BOLD:          Flags = Flags(1 << 0);
-    pub const DIM:           Flags = Flags(1 << 1);
-    pub const ITALIC:        Flags = Flags(1 << 2);
-    pub const UNDERLINE:     Flags = Flags(1 << 3);
-    pub const BLINK:         Flags = Flags(1 << 4);
-    pub const INVERSE:       Flags = Flags(1 << 5);
-    pub const HIDDEN:        Flags = Flags(1 << 6);
+    pub const BOLD: Flags = Flags(1 << 0);
+    pub const DIM: Flags = Flags(1 << 1);
+    pub const ITALIC: Flags = Flags(1 << 2);
+    pub const UNDERLINE: Flags = Flags(1 << 3);
+    pub const BLINK: Flags = Flags(1 << 4);
+    pub const INVERSE: Flags = Flags(1 << 5);
+    pub const HIDDEN: Flags = Flags(1 << 6);
     pub const STRIKETHROUGH: Flags = Flags(1 << 7);
     pub const DBL_UNDERLINE: Flags = Flags(1 << 8);
 
-    pub const fn empty() -> Self { Flags(0) }
-    pub fn contains(self, other: Flags) -> bool { (self.0 & other.0) == other.0 }
-    pub fn insert(&mut self, other: Flags) { self.0 |= other.0; }
-    pub fn remove(&mut self, other: Flags) { self.0 &= !other.0; }
-    pub fn bits(self) -> u16 { self.0 }
+    pub const fn empty() -> Self {
+        Flags(0)
+    }
+    pub fn contains(self, other: Flags) -> bool {
+        (self.0 & other.0) == other.0
+    }
+    pub fn insert(&mut self, other: Flags) {
+        self.0 |= other.0;
+    }
+    pub fn remove(&mut self, other: Flags) {
+        self.0 &= !other.0;
+    }
+    pub fn bits(self) -> u16 {
+        self.0
+    }
 }
 
 /// Full per-cell graphical attributes. `Eq + Hash` so the flyweight table
