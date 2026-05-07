@@ -139,6 +139,30 @@ impl JsTerminal {
     ///   `__RIDGE_KERNEL.lastResizeDiags()` after a live resize confirms
     ///   whether `is_alt` was true at the kernel level and whether the
     ///   §1.22 wipe path fired. See `docs/term-rebuild/REPRO_alt_resize.md`.
+    /// §1.27-tail (2026-05-07) — JS-accessible snapshot of the cursor's
+    /// position at the moment of the most recent absolute-positioning
+    /// CSI. Returns `null` (JS) when no abs CSI has been observed.
+    /// Otherwise returns `{ row, col, atMs }` where `atMs` is the
+    /// wall-clock unix-epoch ms timestamp.
+    ///
+    /// Frontend usage: `manager.ts::inputAnchorPixelPosition` falls back
+    /// to this snapshot (when within the inline-TUI decay window) before
+    /// falling back to the live cursor — so the IME helper anchor stays
+    /// at the inline-TUI's input row even when the live cursor is
+    /// mid-walk. See §1.27 in CLAUDE.md.
+    #[wasm_bindgen(js_name = lastAbsCsiPosition)]
+    pub fn last_abs_csi_position(&self) -> JsValue {
+        let Some((row, col, at_ms)) = self.inner.grid().last_abs_csi_position() else {
+            return JsValue::NULL;
+        };
+        let obj = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&obj, &"row".into(), &(row as u32).into());
+        let _ = js_sys::Reflect::set(&obj, &"col".into(), &(col as u32).into());
+        // f64 covers the full unix-epoch ms range comfortably.
+        let _ = js_sys::Reflect::set(&obj, &"atMs".into(), &(at_ms as f64).into());
+        obj.into()
+    }
+
     #[wasm_bindgen(js_name = lastResizeDiags)]
     pub fn last_resize_diags(&self) -> Vec<JsValue> {
         self.inner

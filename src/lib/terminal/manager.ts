@@ -1045,30 +1045,59 @@ export class TerminalManager {
 	/** Pixel position of the IME helper anchor (§1.27 fix) — uses the
 	 *  stable user-input snapshot (`PaneEntry.imeAnchor`) instead of the
 	 *  live kernel cursor, so background PTY redraws (Ink/log-update
-	 *  spinner walks) don't drag the helper. Falls back to the live
-	 *  cursor when no anchor has been captured yet (e.g. user clicked
-	 *  into a pane and started composing without typing first). */
+	 *  spinner walks) don't drag the helper.
+	 *
+	 *  §1.27-tail fallback chain when `imeAnchor` is null (user clicked
+	 *  into a pane and started composing without typing any ASCII first):
+	 *    1. `kernel.lastAbsCsiPosition()` if recent (≤ 2 s) — for an Ink-
+	 *       style inline TUI, the LAST absolute-positioning CSI of any
+	 *       frame parks the cursor at the input row, so this reflects
+	 *       the Ink-stable input position even when the live cursor is
+	 *       mid-walk in some intermediate spinner state.
+	 *    2. Live `cursorPixelPosition` — for plain shells the live
+	 *       cursor sits at end-of-prompt and is a fine anchor.
+	 *  This avoids the live-cursor teleport bug for inline TUIs while
+	 *  preserving correct behaviour for plain shells. */
 	inputAnchorPixelPosition(
 		paneId: string,
 	): { x: number; y: number; cellW: number; cellH: number; fontSizePx: number } | null {
 		const e = this.panes.get(paneId);
 		if (!e || e.cellW <= 0 || e.cellH <= 0) return null;
-		const anchor = e.imeAnchor;
-		if (!anchor) return this.cursorPixelPosition(paneId);
-		// Clamp to current grid in case the kernel resized smaller since
-		// the snapshot — pixel-rounding NaN-prone positions away from the
-		// edge keeps the helper inside the visible viewport.
 		const rows = e.kernel.rows();
 		const cols = e.kernel.cols();
-		const row = Math.min(anchor.row, Math.max(0, rows - 1));
-		const col = Math.min(anchor.col, Math.max(0, cols - 1));
-		return {
-			x: Math.round(col * e.cellW),
-			y: Math.round(row * e.cellH),
-			cellW: e.cellW,
-			cellH: e.cellH,
-			fontSizePx: this.opts.fontSizePx,
+		// §1.27-tail decay window — must match `INLINE_TUI_DECAY_MS` in
+		// `packages/ridge-term/src/term/grid.rs` so a stale CSI from a
+		// long-quiet shell (>2 s) isn't preferred over the live cursor.
+		const ABS_CSI_DECAY_MS = 2_000;
+
+		const pickAt = (row: number, col: number) => {
+			const r = Math.min(row, Math.max(0, rows - 1));
+			const c = Math.min(col, Math.max(0, cols - 1));
+			return {
+				x: Math.round(c * e.cellW),
+				y: Math.round(r * e.cellH),
+				cellW: e.cellW,
+				cellH: e.cellH,
+				fontSizePx: this.opts.fontSizePx,
+			};
 		};
+
+		const anchor = e.imeAnchor;
+		if (anchor) return pickAt(anchor.row, anchor.col);
+
+		// Try lastAbsCsiPosition for inline-TUI scenarios where the live
+		// cursor is unreliable. Defensive feature-detection so an older
+		// wasm bundle without the method still falls through cleanly.
+		const k = e.kernel as unknown as {
+			lastAbsCsiPosition?: () => { row: number; col: number; atMs: number } | null;
+		};
+		if (typeof k.lastAbsCsiPosition === 'function') {
+			const csi = k.lastAbsCsiPosition();
+			if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
+				return pickAt(csi.row, csi.col);
+			}
+		}
+		return this.cursorPixelPosition(paneId);
 	}
 
 	/** Force a full-frame redraw on the next rAF tick (§1.27 fix). Used
