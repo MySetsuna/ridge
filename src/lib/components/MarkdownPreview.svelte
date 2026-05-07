@@ -351,15 +351,12 @@
   }
 
   /**
-   * Keyboard path mirrors the click delegate for the "click blank area → switch
-   * to source" behaviour only. Task-list checkboxes and anchors already have
-   * native keyboard support (they're real `<input>` / `<a>` elements), so we
-   * don't re-handle them here.
+   * Keyboard handler kept for future hooks (e.g. shortcut for jump-to-source);
+   * currently a no-op because切换源码/预览只能由 header 上的切换按钮触发，
+   * 不再让在预览正文里的 Enter / 点击隐式切走（用户痛点：误触跳到 code 模式）。
    */
-  function onKeydownBody(e: KeyboardEvent) {
-    if (e.key !== 'Enter' || e.target !== e.currentTarget) return;
-    e.preventDefault();
-    onRequestEdit?.();
+  function onKeydownBody(_e: KeyboardEvent) {
+    // intentionally empty
   }
 
   function onClickBody(e: MouseEvent) {
@@ -404,8 +401,8 @@
       }
     }
 
-    // Anything else → request switch to source edit.
-    onRequestEdit?.();
+    // 其它点击不再隐式切到源码模式 —— 切换源码/预览由 header 上的按钮独占触发。
+    // checkbox / anchor / alt-click 等特殊场景已在上面单独处理。
   }
 </script>
 

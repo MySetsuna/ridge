@@ -6,6 +6,7 @@
  id: string;
  index: number;
  name?: string;
+ displaySeq: number;
  }
 
  interface Props {
@@ -80,7 +81,7 @@
  label: '重命名',
  action: () => {
  editingId = ws.id;
- editingName = ws.name || `工作区 ${ws.index + 1}`;
+ editingName = ws.name || `工作区 ${ws.displaySeq}`;
  }
  },
  { id: 'divider1', divider: true },
@@ -112,7 +113,7 @@
  }
 
  function getWorkspaceName(ws: WorkspaceItem): string {
- return ws.name || `工作区 ${ws.index + 1}`;
+ return ws.name || `工作区 ${ws.displaySeq}`;
  }
 </script>
 
