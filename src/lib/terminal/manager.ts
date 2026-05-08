@@ -44,6 +44,16 @@ import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/te
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 
+/** §A.4 — concatenate two Uint8Arrays without allocating a JS array. Used
+ *  by the inline-TUI feed coalescer to grow `entry.feedBuffer` across
+ *  ConPTY split-write fragments before flushing once to the kernel. */
+function concatU8(a: Uint8Array, b: Uint8Array): Uint8Array {
+	const out = new Uint8Array(a.length + b.length);
+	out.set(a, 0);
+	out.set(b, a.length);
+	return out;
+}
+
 export interface ManagerOptions {
 	fontFamily: string;
 	fontSizePx: number;
@@ -200,6 +210,17 @@ interface PaneEntry {
 	 *  rapid writes into a single capture: at most one rAF outstanding
 	 *  per pane. Cleared by the rAF callback. */
 	imeAnchorRaf: number | null;
+	/** §A.4 (2026-05-08) — pending PTY bytes held back briefly while the
+	 *  kernel is in inline-TUI mode (Ink/log-update emitting walk + new
+	 *  frame across multiple ConPTY reads). Without coalescing, a rAF
+	 *  tick can sample the kernel between an EL-walk event and the new-
+	 *  frame write event, painting a partial state Canvas2D doesn't fully
+	 *  overwrite next frame → "wrong word" jitter on the spinner row.
+	 *  Null when no buffer is pending. */
+	feedBuffer: Uint8Array | null;
+	/** §A.4 — outstanding flush timer for `feedBuffer`. Coalesces ConPTY
+	 *  fragment bursts within 8 ms into one `kernel.feed` call. */
+	feedFlushTimer: ReturnType<typeof setTimeout> | null;
 	/** §4.3 Phase B: pane's rectangle on the host canvas in device
 	 *  pixels. Set by `_recomputeViewport` whenever the splitter drag /
 	 *  workspace resize / DPR change moves the container. Forwarded to
@@ -268,6 +289,35 @@ export class TerminalManager {
 
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
+
+		// Twemoji loads asynchronously (registered from +layout.svelte's
+		// onMount). If the user opens a pane and types emoji BEFORE the
+		// font finishes loading, the WebGPU rasterizer's atlas caches the
+		// glyph against Segoe UI Emoji's bitmap and keeps that stale entry
+		// forever. Listening for `document.fonts.loadingdone` lets us
+		// invalidate every pane's renderer state once Twemoji lands, so
+		// the next frame re-rasterizes against the new font. Canvas2D
+		// also benefits — `invalidate_all` clears its row-hash snapshot
+		// so the next tick repaints every visible row from kernel state
+		// using the new font stack. The listener stays alive for the
+		// process lifetime; Twemoji is the dominant trigger but other
+		// font loads (custom user font installs at runtime) are equally
+		// well served by a redraw.
+		if (typeof document !== 'undefined' && 'fonts' in document) {
+			document.fonts.addEventListener('loadingdone', () => {
+				this.invalidateAllPanes();
+			});
+		}
+	}
+
+	/** Return the existing singleton without creating one. Used by
+	 *  `$lib/fonts/twemoji` to invalidate panes after the Twemoji
+	 *  webfont finishes loading — only meaningful if a pane has
+	 *  already been attached. Returns null when no pane has spun the
+	 *  manager up yet (in which case the next attach starts with a
+	 *  fresh atlas that picks up Twemoji on its first miss anyway). */
+	static tryInstance(): TerminalManager | null {
+		return TerminalManager._instance;
 	}
 
 	static instance(opts?: ManagerOptions): TerminalManager {
@@ -295,7 +345,7 @@ export class TerminalManager {
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
 					fontFamily:
-						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
+						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Twemoji", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
 					fontSizePx: 15,
 					scrollbackLines: 2000,
 					preferWebgpu,
@@ -810,6 +860,8 @@ export class TerminalManager {
 			parked: false,
 			imeAnchor: null,
 			imeAnchorRaf: null,
+			feedBuffer: null,
+			feedFlushTimer: null,
 		};
 		entry.resizeObserver.observe(container);
 
@@ -872,6 +924,18 @@ export class TerminalManager {
 			cancelAnimationFrame(entry.imeAnchorRaf);
 			entry.imeAnchorRaf = null;
 		}
+		// §A.4: flush any pending coalesced PTY bytes to the kernel BEFORE
+		// `kernel.free()` so we don't drop end-of-stream bytes on a tab
+		// close. After flush, drop the timer/buffer so no setTimeout
+		// callback fires against a freed kernel.
+		if (entry.feedFlushTimer !== null) {
+			clearTimeout(entry.feedFlushTimer);
+			entry.feedFlushTimer = null;
+		}
+		if (entry.feedBuffer !== null && entry.feedBuffer.length > 0) {
+			try { entry.kernel.feed(entry.feedBuffer); } catch { /* kernel already freed elsewhere */ }
+		}
+		entry.feedBuffer = null;
 		// Kernel always alive while in the map (parked or not).
 		try { entry.kernel.free(); } catch { /* ignore */ }
 		this.panes.delete(paneId);
@@ -920,6 +984,12 @@ export class TerminalManager {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
 		try { entry.handle.free(); } catch { /* ignore */ }
+
+		// §A.4: kernel stays alive while parked, but the flush timer is
+		// tied to setTimeout — cancel it and replay any buffered bytes
+		// directly into the live kernel so background PTY output that
+		// arrives during the parked window doesn't get lost.
+		this._flushFeedBuffer(entry);
 
 		entry.parked = true;
 		// Don't stopRafLoop here — other panes may still need rendering.
@@ -1045,13 +1115,72 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+
+		// §A.4 (2026-05-08) — coalesce sub-frame ConPTY split-writes during
+		// inline-TUI so a rAF tick can't sample the kernel mid-walk. ConPTY
+		// on Windows splits a single application write across 2-3 reads when
+		// the byte stream straddles its internal buffer; Ink's
+		// `(walk)+\x1b[G+frame` then arrives as separate `pty-output` events.
+		// Without batching, the renderer paints a partial state (cells erased
+		// but new content not yet fed). 8 ms is well below Ink's ~30 ms
+		// spinner cadence and well above ConPTY's 1-2 ms inter-fragment gap.
+		// Disabled when not inline-TUI so ordinary shells feed immediately.
+		let inlineTui = false;
+		try {
+			inlineTui = entry.kernel.isInlineTuiMode();
+		} catch {
+			// Older wasm bundle without isInlineTuiMode export → bypass coalescing.
+			inlineTui = false;
+		}
+		// §A.4 — tick trace: correlate feed timing with rAF sampling.
+		if (typeof localStorage !== 'undefined' && localStorage.RIDGE_TICK_TRACE === '1') {
+			const ts = performance.now().toFixed(1);
+			const id = paneId.slice(0, 8);
+			const buffered = entry.feedBuffer ? entry.feedBuffer.length : 0;
+			const pending = entry.feedFlushTimer !== null ? 'pending' : 'idle';
+			// eslint-disable-next-line no-console
+			console.debug(
+				`[tick-trace][${ts}ms][${id}][feed +${bytes.length}B inlineTui=${inlineTui} buffered=${buffered}B flush=${pending}]`,
+			);
+		}
+		if (inlineTui) {
+			entry.feedBuffer = entry.feedBuffer
+				? concatU8(entry.feedBuffer, bytes)
+				: bytes;
+			if (entry.feedBuffer.length >= 8192) {
+				this._flushFeedBuffer(entry);
+				return;
+			}
+			if (entry.feedFlushTimer === null) {
+				entry.feedFlushTimer = setTimeout(() => {
+					entry.feedFlushTimer = null;
+					this._flushFeedBuffer(entry);
+				}, 8);
+			}
+			return;
+		}
+
+		// Non-inline path: preserve byte order if a buffer was just left
+		// over from a recent inline-TUI window (cursor became visible
+		// between events) — flush it first, then feed the new bytes.
+		if (entry.feedBuffer !== null) {
+			this._flushFeedBuffer(entry);
+		}
+		this._feedNow(entry, bytes);
+	}
+
+	/** §A.4 — feed bytes to the kernel synchronously, including PTY trace,
+	 *  reply / event drain, and rAF wake. Extracted from `feed()` so the
+	 *  inline-TUI coalescer can call it once per flush instead of once per
+	 *  PTY event. Always feeds — does NOT consult the inline-TUI gate. */
+	private _feedNow(entry: PaneEntry, bytes: Uint8Array): void {
 		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
 		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
 		// resize-while-claude repro can be replayed in devtools to confirm
 		// whether ConPTY's reflow noise leaks past the silence skip.
 		if (typeof localStorage !== 'undefined' && localStorage.RIDGE_PTY_TRACE === '1') {
 			const ts = performance.now().toFixed(1);
-			const id = paneId.slice(0, 8);
+			const id = entry.paneId.slice(0, 8);
 			const hex = Array.from(bytes.slice(0, 256))
 				.map((b) => b.toString(16).padStart(2, '0'))
 				.join('');
@@ -1085,10 +1214,26 @@ export class TerminalManager {
 				'[ridge-term] feed() drained',
 				events.length,
 				'kernel events but no eventHandler registered for pane',
-				paneId,
+				entry.paneId,
 				'— events discarded; check onEvent() registration order',
 			);
 		}
+	}
+
+	/** §A.4 — flush any pending coalesced bytes to the kernel and clear the
+	 *  timer. Safe to call when the buffer is empty (no-op). */
+	private _flushFeedBuffer(entry: PaneEntry): void {
+		if (entry.feedFlushTimer !== null) {
+			clearTimeout(entry.feedFlushTimer);
+			entry.feedFlushTimer = null;
+		}
+		const buf = entry.feedBuffer;
+		if (buf === null || buf.length === 0) {
+			entry.feedBuffer = null;
+			return;
+		}
+		entry.feedBuffer = null;
+		this._feedNow(entry, buf);
 	}
 
 	/** Prepend older history bytes at the OLDEST end of this pane's
@@ -1411,6 +1556,21 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
 		entry.handle.invalidateAll();
+		this.wake();
+	}
+
+	/** Same as `forceFullRedraw` but applied across every attached pane.
+	 *  Used when a global font event lands — e.g. Twemoji finishes loading
+	 *  AFTER panes have already been streaming output. Each pane's
+	 *  `invalidateAll` clears the WebGPU `GlyphAtlas` LRU and resets the
+	 *  Canvas2D row-hash snapshot so the next frame re-rasterizes from
+	 *  scratch against the new font stack. Parked panes are skipped (their
+	 *  handles have been freed); they pick up the new font on unpark. */
+	invalidateAllPanes(): void {
+		for (const entry of this.panes.values()) {
+			if (entry.parked) continue;
+			entry.handle.invalidateAll();
+		}
 		this.wake();
 	}
 
@@ -1753,6 +1913,48 @@ export class TerminalManager {
 				const shouldRender = this._isHostMode(entry)
 					? hostFrameOpen
 					: dirty;
+				// §A.4 — tick trace: dump cursor row's cells per frame. Lets us
+				// answer "what does the kernel grid hold at the moment Canvas2D
+				// samples it" — if the cells are right but render is wrong, it's
+				// a render bug; if cells are wrong, it's a parser/feed bug.
+				if (
+					typeof localStorage !== 'undefined' &&
+					localStorage.RIDGE_TICK_TRACE === '1'
+				) {
+					try {
+						const kAny = entry.kernel as unknown as {
+							cursorRow?: () => number;
+							cursorCol?: () => number;
+							isInlineTuiMode?: () => boolean;
+							cellsAt?: (row: number, col: number, len: number) => Array<{
+								col: number;
+								ch: string;
+								width: number;
+							}>;
+						};
+						const cr = typeof kAny.cursorRow === 'function' ? kAny.cursorRow() : -1;
+						const cc = typeof kAny.cursorCol === 'function' ? kAny.cursorCol() : -1;
+						const inTui =
+							typeof kAny.isInlineTuiMode === 'function'
+								? kAny.isInlineTuiMode()
+								: false;
+						let rowDump = '';
+						if (cr >= 0 && typeof kAny.cellsAt === 'function') {
+							const cells = kAny.cellsAt(cr, 0, 80);
+							rowDump = cells
+								.map((c) => (c.ch === ' ' ? '·' : c.ch))
+								.join('');
+						}
+						const ts = performance.now().toFixed(1);
+						const id = entry.paneId.slice(0, 8);
+						// eslint-disable-next-line no-console
+						console.debug(
+							`[tick-trace][${ts}ms][${id}][cur=(${cr},${cc}) inlineTui=${inTui} dirty=${dirty} render=${shouldRender}] row${cr}="${rowDump}"`,
+						);
+					} catch {
+						/* missing wasm export → skip the trace silently */
+					}
+				}
 				if (shouldRender) {
 					try {
 						entry.handle.render(entry.kernel);

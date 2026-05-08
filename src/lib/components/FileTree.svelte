@@ -54,15 +54,16 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		onSelect,
 	}: Props = $props();
 
-	// 用户要求"打开文件夹时不要有加载提示以及避免闪烁"：
-	// loadTree 已经按 depth=3 预取了三层结构，节点本身的 node.children
-	// 通常已经在手。展开目录时直接拿 prefetched 的 children 渲染，避免
-	// 在 IPC 回程那几十毫秒里 children 数组先空一帧、再被 loadChildren
-	// 替换的"闪一下"现象。仅当 node.children 完全缺失（深度边界、刷新
-	// 后第一次展开等）才走异步 loadChildren 兜底。
-	// 初始值留空，由下方 $effect 在挂载/prop 变化时同步——避免 svelte 5
-	// 的 "state referenced locally" 警告（只捕获初始 node 引用）。
-	let children = $state<FileNode[]>([]);
+	// 资源管理器现在按 depth=1 懒加载：根树只带一层直接子节点，子目录的
+	// children 在用户第一次展开时通过 loadChildrenPage 分批拉取（每批
+	// DEFAULT_CHILDREN_PAGE_SIZE 条，剩余条数体现在 "加载更多 (剩余 N)" 行）。
+	// 当父级 loadTree 已经把 node.children 喂满（兼容历史 depth>1 路径），
+	// 我们直接把它当作完整页面接管，避免重复 IPC。
+	let childrenPage = $state<FileNode[]>([]);
+	let childrenLoadedTotal = $state(0);
+	let childrenTotalCount = $state(0);
+	let childrenHasMore = $state(false);
+	let childrenLoading = $state(false);
 	let hasLoaded = $state(false);
 
 	let isExpanded = $derived(expandedPaths.has(node.path));
@@ -72,6 +73,14 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	let isSelected = $derived(selectedPaths.has(node.path) || isPrimary);
 	/** Cut state — VSCode dims the row until paste (or Esc) consumes. */
 	let isCut = $derived(!!cutPaths && cutPaths.has(node.path));
+	/**
+	 * Backend marks `is_ignored = true` on entries matched by the cwd's
+	 * `.gitignore` chain (or `false` otherwise; `undefined` outside any
+	 * git repo). We render those rows with reduced opacity + italic to
+	 * match VS Code's gitignored treatment, but they remain fully
+	 * interactive — click to open, F2 to rename, Delete to remove.
+	 */
+	let isIgnored = $derived(node.is_ignored === true);
 
 	/**
 	 * Inline edit state. VS Code-style: the node's name swaps to an <input>
@@ -84,31 +93,58 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	let editInput: HTMLInputElement | undefined = $state();
 	let pendingEditCommit = $state(false);
 
-	// 当父级 loadTree 返回新树后（比如 needsRefresh / 用户点击刷新），
-	// node.children 会被替换为最新数据。把它原子同步进本地 children
-	// 状态，避免渲染滞留旧值；同时把 hasLoaded 修正回去，防止下一次
-	// expand 误触发 loadChildren。
+	// Reset paged state — invoked when a refresh / rename / drop invalidates
+	// what we've already loaded. Next expand re-fetches page 0.
+	function resetChildrenState(): void {
+		childrenPage = [];
+		childrenLoadedTotal = 0;
+		childrenTotalCount = 0;
+		childrenHasMore = false;
+		hasLoaded = false;
+	}
+
+	// 当父级 loadTree 返回新树后（needsRefresh / 用户刷新 / drop after-effect），
+	// node.children 是最新的"完整一页"。直接接管：把它当作 page 0 已加载，
+	// hasMore=false（depth=1 下只有 root 自己有 children；其它节点 children
+	// 总是 None，走下方懒加载分支）。
 	$effect(() => {
 		if (node.children) {
-			children = node.children;
+			childrenPage = node.children;
+			childrenLoadedTotal = node.children.length;
+			childrenTotalCount = node.children.length;
+			childrenHasMore = false;
 			hasLoaded = true;
 		}
 	});
 
-	// Load children when expanding
+	// First expand → fetch page 0. Subsequent pages load via the
+	// "加载更多" button, not implicit on expand.
 	$effect(() => {
-		if (isExpanded && node.is_dir && !hasLoaded) {
-			loadChildren();
+		if (isExpanded && node.is_dir && !hasLoaded && !childrenLoading) {
+			void loadNextChildrenPage();
 		}
 	});
 
-	async function loadChildren() {
+	async function loadNextChildrenPage(): Promise<void> {
 		if (!node.is_dir) return;
+		if (childrenLoading) return;
+		if (hasLoaded && !childrenHasMore) return;
+		childrenLoading = true;
 		try {
-			children = await fileExplorerStore.loadChildren(columnId, node.path);
+			const page = await fileExplorerStore.loadChildrenPage(
+				columnId,
+				node.path,
+				childrenLoadedTotal,
+			);
+			childrenPage = [...childrenPage, ...page.entries];
+			childrenLoadedTotal += page.entries.length;
+			childrenTotalCount = page.total;
+			childrenHasMore = page.has_more;
 			hasLoaded = true;
 		} catch (e) {
-			console.error('Failed to load children:', e);
+			console.error('Failed to load children page:', e);
+		} finally {
+			childrenLoading = false;
 		}
 	}
 
@@ -224,7 +260,13 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		const cmd = copy ? 'copy_path' : 'move_path';
 		// Names already in the target dir — auto-rename on conflict so we
 		// never silently clobber. Shared helper with paste path.
-		const existing = new Set<string>((node.children ?? []).map((c) => c.path));
+		// Drag-drop is rare and needs the FULL child list (not just the
+		// pages the user has expanded into). Use the legacy
+		// paginate-then-concat wrapper so cross-page conflicts (e.g.
+		// drop "foo.ts" into a folder whose existing "foo.ts" is on
+		// page 4) are still caught.
+		const fullChildren = await fileExplorerStore.loadChildren(columnId, node.path);
+		const existing = new Set<string>(fullChildren.map((c) => c.path));
 		const sep = node.path.includes('\\') && !node.path.includes('/') ? '\\' : '/';
 		const cleanTarget = node.path.replace(/[\\/]+$/, '');
 		const errors: string[] = [];
@@ -242,7 +284,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		// Reload target + any column caching the target dir (covers "two
 		// workspaces at same cwd" scenarios). For moves, also refresh the
 		// source parents so the row disappears there.
-		hasLoaded = false;
+		resetChildrenState();
 		await refreshColumnsCovering(node.path);
 		if (!copy) {
 			const sourceDirs = new Set<string>(
@@ -452,7 +494,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				}
 				try {
 					await invoke(isFile ? 'create_file' : 'create_directory', { path: target });
-					hasLoaded = false;
+					resetChildrenState();
 					await refreshColumnTree();
 					if (isFile) await fileEditorStore.openFile(target);
 				} catch (e) {
@@ -561,9 +603,12 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			? 'bg-[var(--rg-accent)]/20 text-[var(--rg-accent)]'
 			: 'text-[var(--rg-fg)]'} {isPrimary ? 'ring-1 ring-inset ring-[var(--rg-accent)]/60' : ''} {isCut
 			? 'opacity-50'
-			: ''} {isDragTarget ? 'bg-[var(--rg-accent)]/30 ring-2 ring-inset ring-[var(--rg-accent)]' : ''}"
+			: ''} {isDragTarget
+			? 'bg-[var(--rg-accent)]/30 ring-2 ring-inset ring-[var(--rg-accent)]'
+			: ''} {isIgnored ? 'rg-tree-ignored' : ''}"
 		data-rg-tree-path={node.path}
 		data-rg-tree-column={columnId}
+		data-rg-ignored={isIgnored ? 'true' : null}
 		draggable="true"
 		ondragstart={onNodeDragStart}
 		ondragover={onNodeDragOver}
@@ -636,8 +681,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					</div>
 				</div>
 			{/if}
-			{#if hasLoaded && children.length > 0}
-				{#each children as child (child.path)}
+			{#if hasLoaded && childrenPage.length > 0}
+				{#each childrenPage as child (child.path)}
 					<FileTree
 						{columnId}
 						node={child}
@@ -649,12 +694,35 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 						{onSelect}
 					/>
 				{/each}
-			{:else if hasLoaded && children.length === 0 && !editing}
+			{:else if hasLoaded && childrenPage.length === 0 && !editing}
 				<div
 					class="px-2 py-1 text-[12px] text-[var(--rg-fg-muted)]"
 					style="padding-left: {(depth + 1) * 8}px"
 				>
 					空目录
+				</div>
+			{/if}
+			{#if childrenHasMore}
+				<!--
+					Paged "load more" row. Visible only when the backend reported
+					additional entries beyond what we've fetched. Disabled while
+					a fetch is in flight so a double-click doesn't double-page.
+				-->
+				<div class="file-tree-node" style="padding-left: {(depth + 1) * 8}px">
+					<button
+						type="button"
+						class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[12px] text-[var(--rg-fg-muted)] hover:bg-[var(--rg-accent)]/10 disabled:opacity-50"
+						onclick={() => void loadNextChildrenPage()}
+						disabled={childrenLoading}
+					>
+						<span class="w-4 h-4"></span>
+						<span class="w-4 h-4"></span>
+						{#if childrenLoading}
+							加载中…
+						{:else}
+							加载更多 (剩余 {Math.max(0, childrenTotalCount - childrenLoadedTotal)})
+						{/if}
+					</button>
 				</div>
 			{/if}
 			<!-- 展开过程中不再显示"点击展开"/"加载中"文本，避免子列表在几 ms 内抖动出现。 -->
@@ -670,5 +738,17 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	.file-tree-node button:focus-visible {
 		outline: 1px solid var(--rg-accent);
 		outline-offset: -1px;
+	}
+
+	/*
+	 * Gitignored row treatment — VS Code parity. Italic + 50% opacity
+	 * + muted foreground; selection highlight still wins because the
+	 * selected-row class is applied alongside `rg-tree-ignored` and
+	 * raises foreground/background to the accent palette.
+	 */
+	.file-tree-node :global(.rg-tree-ignored) {
+		opacity: 0.5;
+		font-style: italic;
+		color: var(--rg-fg-muted);
 	}
 </style>

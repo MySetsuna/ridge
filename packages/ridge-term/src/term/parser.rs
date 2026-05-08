@@ -291,8 +291,19 @@ impl<'a> Perform for Performer<'a> {
         let p1 = || first_param(params, 1);
 
         match action {
-            'A' => self.grid.cursor_up(p1()),
-            'B' | 'e' => self.grid.cursor_down(p1()), // 'e' = VPR (Vertical Position Relative)
+            'A' => {
+                // CUU — cursor up. §A.4: also feed the inline-TUI redraw
+                // heuristic so log-update's `(\x1b[2K\x1b[1A)*N` walk
+                // activates the §1.27 full-redraw fast path from the first
+                // CUU rather than only at the trailing absolute CHA.
+                self.grid.cursor_up(p1());
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
+            'B' | 'e' => {
+                // CUD / VPR (Vertical Position Relative).
+                self.grid.cursor_down(p1());
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
             'C' | 'a' => self.grid.cursor_right(p1()), // 'a' = HPR (Horizontal Position Relative)
             'D' => self.grid.cursor_left(p1()),
             'E' => {
@@ -360,8 +371,19 @@ impl<'a> Perform for Performer<'a> {
                 // at column 0 (does NOT wrap to previous row).
                 self.grid.cursor_back_tab(p1());
             }
-            'J' => self.grid.erase_in_display(parse_erase_mode(params)),
-            'K' => self.grid.erase_in_line(parse_erase_mode(params)),
+            'J' => {
+                // ED — erase in display. §A.4: tracks redraw activity for
+                // inline-TUI heuristic (Ink may emit `\x1b[J` before a frame).
+                self.grid.erase_in_display(parse_erase_mode(params));
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
+            'K' => {
+                // EL — erase in line. §A.4: log-update's walk emits one EL
+                // per row before the absolute CHA fires; tracking it here
+                // keeps the inline-TUI heuristic alive throughout the walk.
+                self.grid.erase_in_line(parse_erase_mode(params));
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
             'S' => self.grid.scroll_up(p1()),
             'T' => self.grid.scroll_down(p1()),
             'L' => self.grid.insert_lines(p1()),

@@ -15,10 +15,18 @@
 //     packing trivial: each rasterized glyph gets its own layer with
 //     the full slot rectangle. Future iteration can compact via
 //     bin-packing if memory pressure justifies the complexity.
-//   - White-on-transparent rasterization (per glyph_rasterizer.rs)
-//     means alpha = coverage. Multiplying by fg.rgb at composite
-//     time gives any tint without re-rasterization — load-bearing
-//     for SGR color palette + 24-bit truecolor support.
+//   - Two-mode glyph rasterization in glyph_rasterizer.rs:
+//     * Monochrome glyphs (ASCII / CJK / outline emoji) — painted
+//       in pure white #ffffff, so RGB is always (1,1,1) and alpha
+//       carries coverage. Fragment tints with fg.rgb at composite
+//       time — load-bearing for SGR palette + 24-bit truecolor.
+//     * Color emoji (COLR / CPAL / sbix / SVG fonts) — the browser
+//       ignores fillStyle and stamps the font's native palette into
+//       RGB. Fragment detects this per-pixel and passes RGB through
+//       unchanged so single codepoint + ZWJ composite emoji stay
+//       multicolor on WebGPU.
+//     The two paths share one pipeline, one atlas format, one cache
+//     key — the discriminator is per-pixel RGB inspection in fs_main.
 //
 // Per-instance attributes (loaded from the per-cell instance buffer):
 //   @location(0) cell_xy     vec2<f32>  pixel position of cell top-left
@@ -113,14 +121,26 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         0.0,
     );
 
-    // White-on-transparent rasterization → alpha is glyph coverage.
+    // Alpha is glyph coverage in both rasterization modes.
     let coverage = glyph.a;
 
-    // Composite fg over bg weighted by coverage. RGB linearly
+    // Per-pixel detection of color-emoji output. Monochrome glyphs
+    // are painted in pure white (#ffffff) — getImageData returns
+    // non-premultiplied bytes so RGB stays (1,1,1) regardless of
+    // alpha. Color-emoji fonts (COLR / CPAL / sbix / SVG) ignore
+    // fillStyle and write their native palette into RGB — those
+    // pixels have at least one channel below 1.0. The 0.99 threshold
+    // tolerates sRGB→linear quantization at boundary white pixels
+    // (decoded ~0.992) so monochrome AA edges aren't misclassified
+    // as colored.
+    let is_color = (glyph.r < 0.99) || (glyph.g < 0.99) || (glyph.b < 0.99);
+    let glyph_rgb = select(in.fg.rgb, glyph.rgb, is_color);
+
+    // Composite glyph RGB over bg weighted by coverage. RGB linearly
     // interpolates; alpha goes to 1.0 wherever the glyph paints
     // anything (cells should always be opaque since the renderer's
     // theme.bg already has alpha=1).
-    let rgb = mix(in.bg.rgb, in.fg.rgb, coverage);
+    let rgb = mix(in.bg.rgb, glyph_rgb, coverage);
     let a = mix(in.bg.a, 1.0, coverage);
     return vec4<f32>(rgb, a);
 }

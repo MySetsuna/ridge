@@ -167,6 +167,15 @@ pub struct Grid {
     /// cursor happens to be passing through).
     last_abs_csi_row: u16,
     last_abs_csi_col: u16,
+    /// §A.4 (2026-05-08) — most-recent timestamp of a CSI that participates
+    /// in an inline-TUI redraw walk but does NOT specify an absolute target
+    /// position: EL `K`, ED `J`, CUU `A`, CUD `B` / VPR `e`. These open
+    /// Ink/log-update's `(\x1b[2K\x1b[1A)*N` walk-and-erase prelude before
+    /// the trailing `\x1b[G` parks the cursor. Tracked separately from
+    /// `last_abs_csi_at_ms` so `last_abs_csi_position()` (read by the IME
+    /// helper anchor) keeps its "last absolute LANDING" semantics — adding
+    /// redraw CSIs there would corrupt the anchor.
+    last_redraw_csi_at_ms: i64,
 }
 
 impl Grid {
@@ -183,6 +192,7 @@ impl Grid {
             last_abs_csi_at_ms: 0,
             last_abs_csi_row: 0,
             last_abs_csi_col: 0,
+            last_redraw_csi_at_ms: 0,
         }
     }
 
@@ -208,6 +218,15 @@ impl Grid {
         let cur = self.screen().cursor;
         self.last_abs_csi_row = cur.row.min(u16::MAX as usize) as u16;
         self.last_abs_csi_col = cur.col.min(u16::MAX as usize) as u16;
+    }
+
+    /// §A.4 (2026-05-08) — record an EL/ED/CUU/CUD dispatch. Only the
+    /// timestamp is stored (no cursor snapshot): this is purely a "redraw
+    /// activity is happening" hint that participates in
+    /// `is_inline_tui_active_at` but must NOT affect the IME anchor read
+    /// from `last_abs_csi_position()`.
+    pub fn note_redraw_csi(&mut self, now_ms: i64) {
+        self.last_redraw_csi_at_ms = now_ms;
     }
 
     /// Most recent absolute-positioning timestamp. 0 = never observed.
@@ -251,10 +270,15 @@ impl Grid {
         if cursor_visible {
             return false;
         }
-        if self.last_abs_csi_at_ms == 0 {
+        // §A.4 — accept either an absolute-positioning CSI (CUP/HVP/CHA/VPA)
+        // OR a redraw-walk CSI (EL/ED/CUU/CUD) within the decay window. The
+        // latter covers Ink/log-update's `(\x1b[2K\x1b[1A)*N` prelude where
+        // §1.27 alone would not activate until the trailing `\x1b[G`.
+        let last = self.last_abs_csi_at_ms.max(self.last_redraw_csi_at_ms);
+        if last == 0 {
             return false;
         }
-        now_ms.saturating_sub(self.last_abs_csi_at_ms) < INLINE_TUI_DECAY_MS
+        now_ms.saturating_sub(last) < INLINE_TUI_DECAY_MS
     }
 
     pub fn rows(&self) -> usize {
@@ -1899,6 +1923,49 @@ mod tests {
         // Even a fresh `note` followed by cursor-visible should be off.
         g2.note_absolute_positioning(50_000);
         assert!(!g2.is_inline_tui_active_at(50_500, true));
+    }
+
+    #[test]
+    fn is_inline_tui_active_at_after_redraw_csi() {
+        // §A.4 — EL/ED/CUU/CUD must independently activate the heuristic
+        // (without any absolute-positioning CSI), so log-update's
+        // `(\x1b[2K\x1b[1A)*N` walk fires §1.27 from the first iteration.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+
+        // No CSI yet → off.
+        assert!(!g.is_inline_tui_active_at(now, false));
+
+        // Redraw CSI alone activates it.
+        g.note_redraw_csi(now);
+        assert!(g.is_inline_tui_active_at(now + 500, false));
+        assert!(g.is_inline_tui_active_at(now + 1_999, false));
+
+        // Same 2 s decay window.
+        assert!(!g.is_inline_tui_active_at(now + 2_001, false));
+
+        // Cursor-visible / alt-screen guards still apply.
+        assert!(!g.is_inline_tui_active_at(now + 500, true));
+    }
+
+    #[test]
+    fn redraw_csi_does_not_corrupt_abs_position() {
+        // §A.4 — the new redraw timestamp must NOT touch the IME anchor
+        // payload (`last_abs_csi_position`). Tracking redraw CSIs and
+        // absolute CSIs in separate fields preserves the IME helper's
+        // "last absolute LANDING" semantics.
+        let mut g = Grid::new(5, 20, 0);
+
+        assert!(g.last_abs_csi_position().is_none());
+
+        // After many redraw CSIs, the absolute position is still untouched.
+        g.note_redraw_csi(10);
+        g.note_redraw_csi(20);
+        g.note_redraw_csi(30);
+        assert!(
+            g.last_abs_csi_position().is_none(),
+            "redraw CSIs must not register as absolute landings"
+        );
     }
 
     // ------------------------------------------------------------------

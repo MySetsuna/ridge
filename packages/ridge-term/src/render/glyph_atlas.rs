@@ -71,6 +71,12 @@ pub struct GlyphEntry {
     /// against the atlas slot it was uploaded to.
     pub px_w: u16,
     pub px_h: u16,
+    /// True when the glyph carries a color-emoji palette in its atlas
+    /// pixels (per `RasterizedGlyph::is_color`). Renderer uses this to
+    /// stretch the cell quad to the full 2-cell width on wide cells —
+    /// emoji fonts target ~1em advance, narrower than 2 latin cells,
+    /// and would otherwise leave a visible gap.
+    pub is_color: bool,
 }
 
 /// LRU-evicting cache. `lookup` promotes a key to the most-recently-used
@@ -270,6 +276,7 @@ mod tests {
             ascent_offset: 12.0,
             px_w: 8,
             px_h: 16,
+            is_color: false,
         }
     }
 

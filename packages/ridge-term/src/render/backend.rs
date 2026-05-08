@@ -402,13 +402,18 @@ pub fn resolve_cell_colors(
     if attrs.flags.contains(Flags::HIDDEN) {
         fg = bg;
     }
-    if attrs.flags.contains(Flags::DIM) {
-        // Dim is "halve the fg luminance toward bg". Cheap approximation:
-        // average fg with bg.
-        for i in 0..3 {
-            fg[i] = ((fg[i] as u16 + bg[i] as u16) / 2) as u8;
-        }
-    }
+    // SGR 2 (DIM / faint) intentionally NOT rendered. Earlier iterations
+    // tried `(fg + bg) / 2` (50% wash toward bg) and `fg * 0.7`
+    // (Alacritty-style luminance cut); both produced visible greyed-out
+    // segments in PSReadLine / oh-my-posh prompts that the user perceived
+    // as "前景色污染" — especially noticeable when an IME composing
+    // overlay collapsed and revealed dim cells underneath. Disabling the
+    // attribute matches Windows Terminal's default behaviour and removes
+    // the ambiguity entirely. The DIM bit is still parsed and held in
+    // the attr table (so SGR 0 / 22 reset semantics stay correct); we
+    // just don't translate it to a color change at draw time. BOLD
+    // (SGR 1) and the rest of the SGR set are unaffected.
+    let _ = Flags::DIM;
 
     (attrs, fg, bg)
 }

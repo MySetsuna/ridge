@@ -266,12 +266,30 @@
       dismiss();
       return;
     }
-    // Ctrl/Cmd+Enter submits (the same idiom as GitHub's PR comment boxes
-    // and VS Code's input fields). Plain Enter leaves newlines intact so
-    // users can paste multi-line prompts.
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      void submit();
+    // Chat-app idiom (ChatGPT / Slack / WeChat 输入框)：
+    //   Enter          → 提交
+    //   Ctrl/Cmd+Enter → 在光标处换行
+    //   Shift+Enter    → 浏览器原生换行（保留为兼容快捷键）
+    // Ctrl+C / V / Z / Y 等编辑快捷键交给浏览器默认处理，不在此拦截。
+    if (e.key === 'Enter') {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const ta = e.currentTarget as HTMLTextAreaElement;
+        const start = ta.selectionStart;
+        const end = ta.selectionEnd;
+        // setRangeText preserves the native undo stack so Ctrl+Z still
+        // walks back through the inserted newline; reassigning value would
+        // wipe it.
+        ta.setRangeText('\n', start, end, 'end');
+        // bind:value reads through the input event — synthesize one so
+        // promptText stays in sync with the DOM.
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+      if (!e.shiftKey) {
+        e.preventDefault();
+        void submit();
+      }
     }
   }
 </script>
@@ -363,10 +381,13 @@
         <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Esc</kbd>
         取消
         <span class="select-none">·</span>
+        <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Enter</kbd>
+        提交
+        <span class="select-none">·</span>
         <kbd class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Ctrl</kbd>+<kbd
           class="px-1.5 py-0.5 rounded bg-white/[0.06] border border-[var(--rg-border)] font-mono">Enter</kbd
         >
-        提交
+        换行
         <span class="flex-1"></span>
         <button
           type="button"
