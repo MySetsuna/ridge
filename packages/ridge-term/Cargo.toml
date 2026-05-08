@@ -33,8 +33,6 @@ webgpu = [
     "dep:wgpu",
     "dep:wasm-bindgen-futures",
     "dep:bytemuck",
-    "web-sys/OffscreenCanvas",
-    "web-sys/OffscreenCanvasRenderingContext2d",
     "web-sys/ImageData",
 ]
 
@@ -64,10 +62,13 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Document",
     "Element",
+    "HtmlElement",
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",
     "TextMetrics",
     "CssStyleDeclaration",
+    "Storage",
+    "console",
 ] }
 
 # Round 3 §4.1 — optional, only pulled when `--features webgpu` is set.

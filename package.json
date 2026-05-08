@@ -21,7 +21,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@fontsource/noto-color-emoji": "^5.2.12",
     "@gitgraph/js": "^1.4.0",
     "@ridge/split": "workspace:*",
     "@ridge/term-wasm": "link:packages/ridge-term/pkg",

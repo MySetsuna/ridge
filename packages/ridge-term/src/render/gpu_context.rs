@@ -80,6 +80,20 @@ pub const ATLAS_LAYERS_MAX: u32 = 1024;
 /// `mix(bg, fg, 0) == bg` collapses to background fill.
 pub const ATLAS_RESERVED_LAYERS: u32 = 1;
 
+/// §A.8 (2026-05-08) — atlas-side supersampling factor. Glyphs are
+/// rasterised at `dpr * ATLAS_SUPERSAMPLE` device pixels per CSS pixel
+/// and uploaded into atlas slots sized accordingly; the fragment shader
+/// then samples this denser source through the Linear filter, which
+/// effectively performs a 2×2 box downsample per output pixel — visibly
+/// smoother edges on color emoji and CJK with no perceptible perf hit
+/// (rasterisation is one-shot per glyph; only sampling cost per frame
+/// changes, and that's GPU-cheap). Cost: atlas memory scales with
+/// `ATLAS_SUPERSAMPLE²`. At the 64-floor + 1024-layer cap that's still
+/// ≈ 96 MiB worst case — well within VRAM budgets even for integrated
+/// adapters. Setting back to 1 disables supersampling cleanly (slot
+/// dims and rasterisation density both fall back to native DPR).
+pub const ATLAS_SUPERSAMPLE: u32 = 2;
+
 /// Format passed to `GPUCanvasContext.configure()` (i.e. the
 /// `wgpu::SurfaceConfiguration.format` field). The WebGPU spec restricts
 /// canvas configure to `bgra8unorm`, `rgba8unorm`, or `rgba16float` —
@@ -341,8 +355,21 @@ impl GpuContext {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            // §A.8 (2026-05-08): Linear filtering for atlas sampling.
+            // Color emoji from system fonts (Segoe UI Emoji ≈ 1.37em
+            // advance) get sampled into a 2-cell-wide quad (≈ 1.2em),
+            // i.e. a slight horizontal compression — Nearest produced
+            // visible jagged edges, Linear smooths the resampling so
+            // emoji match the sharpness of native PowerShell text.
+            // For ASCII / CJK glyphs at 1:1 atlas-px-to-quad-px the
+            // Linear filter degenerates to the source pixel
+            // (touching only one texel), so Latin / CJK rendering is
+            // unaffected. Combined with §A.8's 2x supersampling at
+            // rasterisation time and natural-advance quads for color
+            // emoji, this restores a "native" look across both
+            // backends.
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -362,7 +389,19 @@ impl GpuContext {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            // Linear (NOT sRGB) — matches `SURFACE_FORMAT` so the whole
+            // pipeline treats colors as "sRGB byte / 255" semantic values
+            // throughout. With `Rgba8UnormSrgb` here, sampling would
+            // gamma-decode the OffscreenCanvas's sRGB-byte glyph pixels
+            // into linear space, the shader would mix in linear, then
+            // write back to `Bgra8Unorm` (linear) — net effect: every
+            // color-emoji RGB channel ends up displayed at its linear
+            // value reinterpreted as sRGB byte (e.g. byte 200 → 149,
+            // byte 100 → 32). Color emoji bodies appeared crushed-dark /
+            // near-black against dark themes ("blank emoji" report on
+            // 2026-05-08; matches the surface-format fix that already
+            // landed).
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -410,8 +449,13 @@ impl GpuContext {
     /// satisfies wgpu's 256-byte alignment. Vertical adds 25% safety
     /// for descenders / italic overhang / stacked combining marks.
     pub fn slot_dims_for(cell_w_css: f32, cell_h_css: f32, dpr: f32) -> (u32, u32) {
-        let cell_w_dev = (cell_w_css * dpr).max(1.0);
-        let cell_h_dev = (cell_h_css * dpr).max(1.0);
+        // §A.8: account for atlas-side supersampling — the rasteriser
+        // paints into slots at `dpr * ATLAS_SUPERSAMPLE` device pixels
+        // per CSS pixel, so slots must be `ATLAS_SUPERSAMPLE`× larger
+        // along each axis than they would be at native DPR.
+        let ss = ATLAS_SUPERSAMPLE as f32;
+        let cell_w_dev = (cell_w_css * dpr * ss).max(1.0);
+        let cell_h_dev = (cell_h_css * dpr * ss).max(1.0);
         let wide_w_dev = (cell_w_dev * 2.0).ceil() as u32;
         let row_h_dev = cell_h_dev.ceil() as u32;
         let slot_w = wide_w_dev.max(ATLAS_SLOT_W_FLOOR).next_power_of_two();
@@ -438,7 +482,7 @@ impl GpuContext {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -517,10 +561,18 @@ impl GpuContext {
         style_flags: u8,
         frame_pinned: &[bool],
     ) -> Result<GlyphEntry, String> {
+        // §A.8 — pass an SS-multiplied dpr to the rasteriser so the
+        // resulting bitmap is `ATLAS_SUPERSAMPLE`× denser than the
+        // shader's quad. The rasteriser doesn't need to know about SS
+        // — to it this just looks like a higher-DPR display. We then
+        // downsample to logical device pixels when populating
+        // `GlyphEntry.px_w / px_h` (below) so the renderer keeps
+        // sizing quads in logical units.
+        let ss = ATLAS_SUPERSAMPLE as f32;
         let glyph = self.rasterizer.rasterize(
             &self.font_family,
             self.font_size_px,
-            dpr,
+            dpr * ss,
             style_flags,
             glyph_text,
         )?;
@@ -571,13 +623,21 @@ impl GpuContext {
 
         let u1 = (glyph.width as f32) / (self.slot_w as f32);
         let v1 = (glyph.height as f32) / (self.slot_h as f32);
+        // §A.8 — `glyph.width / glyph.height` are bitmap dimensions
+        // in atlas device pixels (= dpr * ATLAS_SUPERSAMPLE). The
+        // renderer (webgpu.rs::draw_row) sizes quads in *logical*
+        // device pixels (= dpr only), so divide back here. UVs above
+        // already cancel out — bbox/slot_w stays the same ratio
+        // because both numerator and denominator scale with SS.
+        let logical_px_w = ((glyph.width as u32) / ATLAS_SUPERSAMPLE).max(1) as u16;
+        let logical_px_h = ((glyph.height as u32) / ATLAS_SUPERSAMPLE).max(1) as u16;
         let entry = GlyphEntry {
             layer: layer as u16,
             uv: [0.0, 0.0, u1, v1],
             advance: glyph.advance,
             ascent_offset: glyph.ascent_offset,
-            px_w: glyph.width,
-            px_h: glyph.height,
+            px_w: logical_px_w,
+            px_h: logical_px_h,
             is_color: glyph.is_color,
         };
         self.atlas.insert(key, entry);
@@ -627,8 +687,12 @@ mod tests {
     // propagation across panes.
 
     fn slot_dims_for_pub(cell_w_css: f32, cell_h_css: f32, dpr: f32) -> (u32, u32) {
-        let cell_w_dev = (cell_w_css * dpr).max(1.0);
-        let cell_h_dev = (cell_h_css * dpr).max(1.0);
+        // Mirrors the live `slot_dims_for` impl including the §A.8
+        // ATLAS_SUPERSAMPLE multiplier so tests pin the actual
+        // formula, not a stale pre-SS copy.
+        let ss = super::ATLAS_SUPERSAMPLE as f32;
+        let cell_w_dev = (cell_w_css * dpr * ss).max(1.0);
+        let cell_h_dev = (cell_h_css * dpr * ss).max(1.0);
         let wide_w_dev = (cell_w_dev * 2.0).ceil() as u32;
         let row_h_dev = cell_h_dev.ceil() as u32;
         let slot_w = wide_w_dev
@@ -640,8 +704,9 @@ mod tests {
 
     #[test]
     fn slot_dims_default_metrics_hit_floor() {
-        // 8×16 CSS px, DPR 1 → wide_w = 16, row_h = 16 — both well
-        // below the 64×96 floor, so floors carry.
+        // 8×16 CSS px, DPR 1, SS 2 → cell_w_dev = 16, wide_w = 32 —
+        // still under the 64 floor. Vertical 32 + 25% = 40, under the
+        // 96 floor. Floors carry on small fonts even with SS.
         let (w, h) = slot_dims_for_pub(8.0, 16.0, 1.0);
         assert_eq!(w, super::ATLAS_SLOT_W_FLOOR);
         assert_eq!(h, super::ATLAS_SLOT_H_FLOOR);
@@ -649,12 +714,12 @@ mod tests {
 
     #[test]
     fn slot_dims_grow_for_large_font_at_high_dpr() {
-        // 24 CSS px font at DPR 2 → cell_w_dev = 48, wide_w = 96.
-        // Ceiling power-of-two = 128. Vertical row_h = 48, +25% = 60,
-        // floor = 96 wins.
+        // 24 CSS px font at DPR 2, SS 2 → cell_w_dev = 96,
+        // wide_w = 192. Next power-of-two ≥ 192 is 256.
+        // Vertical: row_h = 96, + 25% = 120 — beats the 96 floor.
         let (w, h) = slot_dims_for_pub(24.0, 24.0, 2.0);
-        assert_eq!(w, 128);
-        assert_eq!(h, super::ATLAS_SLOT_H_FLOOR);
+        assert_eq!(w, 256);
+        assert_eq!(h, 120);
     }
 
     #[test]
@@ -667,17 +732,18 @@ mod tests {
 
     #[test]
     fn slot_dims_rounds_up_to_power_of_two() {
-        // 33 px wide cell × DPR 1 → wide_w = 66 → next pow2 = 128.
+        // 33 px wide cell × DPR 1 × SS 2 → cell_w_dev = 66,
+        // wide_w = 132 → next pow2 = 256.
         let (w, _) = slot_dims_for_pub(33.0, 16.0, 1.0);
-        assert_eq!(w, 128);
+        assert_eq!(w, 256);
     }
 
     #[test]
     fn slot_dims_grows_height_when_row_exceeds_floor() {
-        // 100 css px row × DPR 2 → row_h_dev = 200 → 200 + 50 = 250 wins
-        // over the 96 floor.
+        // 100 css px row × DPR 2 × SS 2 → row_h_dev = 400 →
+        // 400 + 100 = 500 wins over the 96 floor.
         let (_, h) = slot_dims_for_pub(8.0, 100.0, 2.0);
-        assert_eq!(h, 250);
+        assert_eq!(h, 500);
     }
 
     fn make_key(id: u32) -> GlyphKey {

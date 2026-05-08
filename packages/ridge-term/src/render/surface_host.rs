@@ -108,27 +108,24 @@ pub struct SurfaceHost {
     current_encoder: Option<wgpu::CommandEncoder>,
 }
 
-thread_local! {
-    /// Process-wide singleton. `None` until the first
-    /// [`SurfaceHost::init`] call succeeds; cached `Some` thereafter.
-    /// Failure is *not* cached — a transient adapter miss on call N
-    /// can succeed on call N+1.
-    static SHARED_HOST: RefCell<Option<Rc<RefCell<SurfaceHost>>>> = const { RefCell::new(None) };
-}
-
 impl SurfaceHost {
-    /// Initialise the global host bound to `canvas`. JS must call this
-    /// exactly once after `+page.svelte` mounts the host canvas; per-pane
-    /// `WebGpuPaneBackend::new` calls then look up the shared instance
-    /// via [`SurfaceHost::get`].
+    /// Construct a new host bound to `canvas`. Per-workspace model
+    /// (2026-05-08 refactor): JS creates ONE SurfaceHost per workspace
+    /// tab so each tab's canvas keeps its own swap chain. The browser's
+    /// compositor preserves the inactive tab's last-painted pixels as
+    /// long as the canvas DOM element stays mounted, giving instant
+    /// (no-flash) workspace switches.
+    ///
+    /// The shared `GpuContext` (instance / device / queue / pipeline /
+    /// atlas / rasterizer / sampler) stays a process-wide singleton —
+    /// only the `Surface` + per-frame transients are per-workspace.
+    /// Memory cost: ~14 MiB per workspace at typical resolution
+    /// (2 swap-chain textures × BGRA × ~4 MP).
     ///
     /// Returns `Err` if the WebGPU adapter / device acquisition fails or
     /// `instance.create_surface` rejects the canvas. JS catches and falls
     /// back to per-pane Canvas2D (each pane gets its own DOM canvas).
     pub async fn init(canvas: HtmlCanvasElement) -> Result<Rc<RefCell<Self>>, String> {
-        if let Some(rc) = SHARED_HOST.with(|cell| cell.borrow().clone()) {
-            return Ok(rc);
-        }
         let ctx = GpuContext::get_or_init().await?;
         let surface = {
             let ctx_b = ctx.borrow();
@@ -156,7 +153,7 @@ impl SurfaceHost {
             surface.configure(&ctx_b.device, &config);
         }
 
-        let host = Rc::new(RefCell::new(Self {
+        Ok(Rc::new(RefCell::new(Self {
             ctx,
             surface,
             config,
@@ -170,16 +167,7 @@ impl SurfaceHost {
             current_frame: None,
             current_view: None,
             current_encoder: None,
-        }));
-        SHARED_HOST.with(|cell| *cell.borrow_mut() = Some(host.clone()));
-        Ok(host)
-    }
-
-    /// Look up the cached host. Returns `None` until `init` succeeds.
-    /// Per-pane backends use this to fail-fast with a clear error
-    /// instead of silently bootstrapping a per-pane surface.
-    pub fn get() -> Option<Rc<RefCell<Self>>> {
-        SHARED_HOST.with(|cell| cell.borrow().clone())
+        })))
     }
 
     /// Resize the host canvas's swap chain. Called by JS in response to

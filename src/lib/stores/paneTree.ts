@@ -43,6 +43,65 @@ export const paneTreeStore = writable<PaneNode>({
   id: '',
 });
 
+/**
+ * Per-workspace pane tree cache. Populated on switchWorkspace /
+ * refreshWorkspaces / syncPaneLayoutFromBackend / split-ratio mutations
+ * via `setActiveTree` / `updateActiveTree` helpers below. The +page.svelte
+ * template iterates this map to render every known workspace's
+ * SplitContainer in parallel (CSS display:none for inactive), so workspace
+ * tab switches are CSS-only and panes stay mounted across switches —
+ * eliminating the black-screen + reload that the prior `{#key
+ * activeWorkspaceId}` block forced.
+ *
+ * Invariant: the active workspace's entry always equals `paneTreeStore`.
+ * Mutations go through the helpers, never `paneTreeStore.set/update`
+ * directly, so the two stay in sync.
+ */
+export const workspacePaneTrees = writable<Map<string, PaneNode>>(new Map());
+
+/**
+ * Set the active workspace's tree in BOTH `paneTreeStore` (legacy single-
+ * tree consumers like SplitContainer for the active workspace) and the
+ * per-workspace cache (new keep-alive renderer). Callers must pass the
+ * correct workspace id — usually the just-switched-to one or `get(activeWorkspaceId)`.
+ */
+function setActiveTree(wsId: string, tree: PaneNode): void {
+  paneTreeStore.set(tree);
+  if (!wsId) return;
+  workspacePaneTrees.update((m) => {
+    const next = new Map(m);
+    next.set(wsId, tree);
+    return next;
+  });
+}
+
+/** Update the active workspace's tree via a transform fn; mirrors the
+ *  result into the per-workspace cache. */
+function updateActiveTree(wsId: string, fn: (root: PaneNode) => PaneNode): void {
+  paneTreeStore.update((root) => {
+    const next = fn(root);
+    if (wsId) {
+      workspacePaneTrees.update((m) => {
+        const m2 = new Map(m);
+        m2.set(wsId, next);
+        return m2;
+      });
+    }
+    return next;
+  });
+}
+
+/** Drop a workspace from the per-workspace tree cache (used on workspace close). */
+export function forgetWorkspaceTree(wsId: string): void {
+  if (!wsId) return;
+  workspacePaneTrees.update((m) => {
+    if (!m.has(wsId)) return m;
+    const next = new Map(m);
+    next.delete(wsId);
+    return next;
+  });
+}
+
 /** 最近一次点击/聚焦的终端窗格；分屏针对此 id（与 layout 中 leaf id 一致）。 */
 export const activePaneId = writable<string>('');
 
@@ -1006,7 +1065,9 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
     }
   }
 
-  paneTreeStore.update((root) => applyRatioUpdates(root, updates));
+  updateActiveTree(get(activeWorkspaceId), (root: PaneNode) =>
+    applyRatioUpdates(root, updates)
+  );
 
   splitResizeUiState.set({
     ...ui,
@@ -1067,8 +1128,20 @@ export async function syncPaneLayoutFromBackend() {
   try {
     layout = await invoke<PaneNode>('get_pane_layout');
     const current = get(paneTreeStore);
+    const wsId = get(activeWorkspaceId);
     if (!paneLayoutsEquivalent(current, layout)) {
-      paneTreeStore.set(layout);
+      setActiveTree(wsId, layout);
+    } else if (wsId) {
+      // Layout structure unchanged but ensure cache has an entry (first
+      // time we see this workspace, e.g. after refreshWorkspaces).
+      const cache = get(workspacePaneTrees);
+      if (!cache.has(wsId)) {
+        workspacePaneTrees.update((m) => {
+          const m2 = new Map(m);
+          m2.set(wsId, layout);
+          return m2;
+        });
+      }
     }
     reconcileActivePaneId(layout);
   } catch (e) {
@@ -1135,6 +1208,49 @@ export async function syncPaneLayoutFromBackend() {
   }
 }
 
+/**
+ * §4a workspace keep-alive: load every workspace's pane tree into the
+ * `workspacePaneTrees` cache so the +page.svelte template can mount
+ * each workspace's SplitContainer in parallel. Active workspace is
+ * skipped — caller already wrote it.
+ *
+ * Failures per-workspace are non-fatal: we just leave that workspace's
+ * cache slot unset, which makes its first switch fall back to the prior
+ * IPC-driven path. Idempotent — safe to call repeatedly.
+ */
+async function prefetchAllWorkspaceTrees(
+  list: { id: string }[],
+  activeId: string,
+  activeLayout: PaneNode
+): Promise<void> {
+  if (!isTauri()) return;
+  // Active is already cached by caller via setActiveTree; ensure it's
+  // there in case the caller path skipped (defensive).
+  workspacePaneTrees.update((m) => {
+    const m2 = new Map(m);
+    m2.set(activeId, activeLayout);
+    return m2;
+  });
+  await Promise.all(
+    list
+      .filter((w) => w.id && w.id !== activeId)
+      .map(async (w) => {
+        try {
+          const layout = await invoke<PaneNode>('get_pane_layout_for', {
+            workspaceId: w.id,
+          });
+          workspacePaneTrees.update((m) => {
+            const m2 = new Map(m);
+            m2.set(w.id, layout);
+            return m2;
+          });
+        } catch (err) {
+          console.warn('prefetchAllWorkspaceTrees', w.id, err);
+        }
+      })
+  );
+}
+
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   try {
@@ -1144,9 +1260,15 @@ export async function refreshWorkspaces() {
     const active = await invoke<string>('get_active_workspace_id');
     const layout = await invoke<PaneNode>('get_pane_layout');
     workspacesList.set(list);
-    paneTreeStore.set(layout);
+    setActiveTree(active, layout);
     activeWorkspaceId.set(active);
     reconcileActivePaneId(layout);
+    // §4a workspace keep-alive: prefetch every workspace's layout so the
+    // +page.svelte template can render their SplitContainers in parallel
+    // (CSS hidden for inactive). First switch to a previously-untouched
+    // workspace becomes a CSS class flip + one frame instead of an IPC
+    // round-trip + remount + atlas warm-up.
+    void prefetchAllWorkspaceTrees(list, active, layout);
     const cwds = extractCwdsFromLayout(layout, active);
     paneCwdStore.update((store) => mergePaneCwds(store, cwds));
     await setupPaneCwdListeners(active);
@@ -1184,7 +1306,7 @@ export async function switchWorkspace(workspaceId: string) {
   try {
     await invoke('switch_workspace', { workspaceId });
     const layout = await invoke<PaneNode>('get_pane_layout');
-    paneTreeStore.set(layout);
+    setActiveTree(workspaceId, layout);
     activeWorkspaceId.set(workspaceId);
     reconcileActivePaneId(layout);
     const cwds = extractCwdsFromLayout(layout, workspaceId);
@@ -1241,7 +1363,9 @@ export async function dockPane(
 /** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一条 path）。 */
 export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
   const norm = normalizeSplitRatios(sizes);
-  paneTreeStore.update((root) => applyRatiosAtPath(root, splitPath, norm));
+  updateActiveTree(get(activeWorkspaceId), (root) =>
+    applyRatiosAtPath(root, splitPath, norm)
+  );
   if (!isTauri()) return;
   try {
     await invoke('set_split_ratios_at_path', { path: splitPath, ratios: norm });
@@ -1254,7 +1378,9 @@ export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
 /** 一次性持久化多个 split 的 ratios（用于横纵联动拖拽松手提交）。 */
 export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
   if (!updates.length) return;
-  paneTreeStore.update((root) => applyRatioUpdates(root, updates));
+  updateActiveTree(get(activeWorkspaceId), (root) =>
+    applyRatioUpdates(root, updates)
+  );
   if (!isTauri()) return;
   try {
     await invoke('set_split_ratios_batch', { updates });
@@ -1348,6 +1474,7 @@ export async function closeWorkspace(workspaceId: string) {
       return mutated ? next : store;
     });
     fileExplorerStore.clearWorkspace(workspaceId);
+    forgetWorkspaceTree(workspaceId);
     await refreshWorkspaces();
   } catch (e) {
     console.error('closeWorkspace', e);

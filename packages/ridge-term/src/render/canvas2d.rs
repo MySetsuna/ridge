@@ -300,16 +300,35 @@ impl RenderBackend for Canvas2dBackend {
                 Some(cspan) => glyph_str = &cspan.text,
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
-            if stretch_emoji || visual_wide_stretch {
-                // Target width = 2 cells for both paths. For width=2 cells
-                // (color emoji) `cell.width.max(1) == 2`; for visual-wide
-                // narrow we substitute 2 explicitly.
-                let target_cells = if visual_wide_stretch {
-                    2.0
-                } else {
-                    cell.width.max(1) as f64
-                };
-                let target_w = cell_w * target_cells;
+            // §A.9 (2026-05-08, partial revert): restore §A.8's
+            // unconditional natural-advance paint for the
+            // visual_wide_stretch + stretch_emoji branch — the brief
+            // "compress when next cell occupied" attempt visibly
+            // squashed color emoji every time they touched real text.
+            // Trade-off: Segoe / Apple emoji whose natural advance
+            // exceeds 2 latin cells extend ~14% into col+cell_span;
+            // in real terminals that's almost always a space, and on
+            // the rare edge case only the AA halo of the emoji
+            // overlaps. Matches iTerm2 / Hyper's behaviour.
+            //
+            // The narrow-cell `else` branch keeps `fill_text_with_max_width`
+            // because there the overflow is severe (~130% for ✻/✶/❯
+            // Dingbats whose 1.4em font advance into a 0.6em cell
+            // would smear two columns of text together). When
+            // is_visual_wide is true and next is blank, the
+            // visual_wide_stretch branch above already enlarges the
+            // glyph correctly; only the "next-cell-occupied" case
+            // still falls through and benefits from maxWidth
+            // compression.
+            let cell_span = cell.width.max(1) as usize;
+            if visual_wide_stretch || stretch_emoji {
+                // Allowed to overflow / stretch. Target = 2 cells.
+                // scale_x clamped to [1.0, 1.5] — never compresses,
+                // so we only ENLARGE narrow Dingbats up to the
+                // 2-cell target. Color emoji whose natural advance
+                // already exceeds the target paint at natural advance
+                // (scale_x = 1.0), preserving aspect.
+                let target_w = cell_w * 2.0;
                 let natural_w = self
                     .ctx
                     .measure_text(glyph_str)
@@ -327,7 +346,16 @@ impl RenderBackend for Canvas2dBackend {
                 let _ = self.ctx.fill_text(glyph_str, 0.0, 0.0);
                 self.ctx.restore();
             } else {
-                let _ = self.ctx.fill_text(glyph_str, x, y_top);
+                // Constrained narrow-cell path — `fill_text_with_max_width`
+                // degenerates to plain fillText when natural ≤ max_w
+                // (the ASCII / CJK hot path: zero overhead). Only
+                // engages when a glyph's natural advance would
+                // overflow ≥ cell_span cells AND the glyph isn't in
+                // the visual-wide / color-emoji whitelist above.
+                let max_w = cell_w * cell_span as f64;
+                let _ = self
+                    .ctx
+                    .fill_text_with_max_width(glyph_str, x, y_top, max_w);
             }
 
             // Underline / strikethrough as separate strokes after the glyph.

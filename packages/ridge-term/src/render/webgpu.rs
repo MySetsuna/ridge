@@ -41,11 +41,10 @@
 //!
 //! ## Adapter-miss policy
 //!
-//! `new` returns `Err` when [`SurfaceHost::get`](super::surface_host::SurfaceHost::get)
-//! returns `None` (host never initialised — usually a JS bug or adapter
-//! miss at boot) or `GpuContext::get_or_init` fails. `RenderHandle
-//! ::newWithWebgpuFirst` falls back to `Canvas2dBackend` so the pane
-//! never crashes; the error string is the only signal.
+//! `new(host)` returns `Err` when `GpuContext::get_or_init` fails (no
+//! WebGPU adapter). `RenderHandle::newWithWebgpuFirst` then falls back
+//! to `Canvas2dBackend` so the pane never crashes; the error string
+//! is the only signal.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
@@ -171,6 +170,18 @@ pub struct WebGpuPaneBackend {
     /// via `on_full_invalidate` when the renderer detects scroll /
     /// selection / snapshot-growth.
     needs_initial_clear: bool,
+    /// §4b per-pane increment cache (2026-05-08). Number of valid
+    /// CellInstance entries currently uploaded to `instance_buffer`
+    /// from the last successful `end_frame`. `record_cached_only` uses
+    /// this to re-issue the same instanced draw without retraversing
+    /// the kernel grid. Reset to 0 by anything that would invalidate
+    /// the cached instances:
+    ///   - resize_surface (cell coords change)
+    ///   - on_full_invalidate (renderer-side full-redraw signal)
+    ///   - invalidate_atlas (UVs in cached instances point at evicted slots)
+    ///   - cross-pane atlas-generation bump (same reason, detected in begin_frame)
+    /// Updated by end_frame after a successful upload + record.
+    cached_n_cells: u32,
 }
 
 impl WebGpuPaneBackend {
@@ -180,16 +191,11 @@ impl WebGpuPaneBackend {
     /// device bootstrap; subsequent calls return the cached `Rc`
     /// immediately.
     ///
-    /// Returns `Err("SurfaceHost not initialized")` when JS hasn't
-    /// called `SurfaceHostHandle::init(canvas)` yet — the caller in
-    /// `lib.rs::RenderHandle::new_with_webgpu_first` falls back to
-    /// `Canvas2dBackend` so the pane never crashes.
-    pub async fn new() -> Result<Self, String> {
-        let host = SurfaceHost::get().ok_or_else(|| {
-            "WebGpuPaneBackend: SurfaceHost not initialized — call \
-             SurfaceHostHandle.init(canvas) before constructing pane backends"
-                .to_string()
-        })?;
+    /// Per-workspace SurfaceHost passed in by JS. Caller obtains the
+    /// reference from a `SurfaceHostHandle` constructed for the
+    /// pane's workspace tab — no thread-local lookup, multiple
+    /// SurfaceHost instances coexist, one per workspace canvas.
+    pub async fn new(host: Rc<RefCell<SurfaceHost>>) -> Result<Self, String> {
         let ctx = GpuContext::get_or_init().await?;
         let (frame_uniform, instance_buffer, bind_group, atlas_generation_seen, frame_pinned) = {
             let ctx_b = ctx.borrow();
@@ -240,6 +246,7 @@ impl WebGpuPaneBackend {
             // First frame must re-encode every row — viewport rect just
             // assigned by JS is fresh and the pane has never drawn.
             needs_initial_clear: true,
+            cached_n_cells: 0,
         })
     }
 
@@ -308,6 +315,9 @@ impl RenderBackend for WebGpuPaneBackend {
         // so the new row→content mapping doesn't paint over stale
         // background pixels left from the previous mapping.
         self.needs_initial_clear = true;
+        // §4b: cached instances reflect the OLD scroll/selection state;
+        // invalidate the cache so the next frame goes through full encode.
+        self.cached_n_cells = 0;
     }
 
     fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
@@ -331,6 +341,9 @@ impl RenderBackend for WebGpuPaneBackend {
             // `surfaceHost.invalidate()` after a settled fit) so the
             // pane's old pixels don't bleed past its new scissor.
             self.needs_initial_clear = true;
+            // §4b: cached instances were sized against the OLD viewport;
+            // their cell_xy/cell_size values are stale. Drop the cache.
+            self.cached_n_cells = 0;
         }
         Ok(())
     }
@@ -348,6 +361,8 @@ impl RenderBackend for WebGpuPaneBackend {
         // stale pixels from the prior atlas can't show through any
         // sub-pixel anti-alias gaps.
         self.needs_initial_clear = true;
+        // §4b: cached instances reference now-invalid atlas slots.
+        self.cached_n_cells = 0;
     }
 
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
@@ -388,6 +403,8 @@ impl RenderBackend for WebGpuPaneBackend {
             // `LoadOp::Load`-ing over visually-correct-but-now-stale
             // pixels.
             self.needs_initial_clear = true;
+            // §4b: cached cell instances point at evicted atlas slots.
+            self.cached_n_cells = 0;
         }
 
         // 3) Reset frame_pinned — defensive sync with atlas_layers, then
@@ -607,15 +624,35 @@ impl RenderBackend for WebGpuPaneBackend {
                     bg_rgba: rgba_u8_to_f32(bg),
                 });
                 if let Some(e) = entry {
-                    // Color emoji glyphs (COLR / CPAL / sbix / SVG) have
-                    // a natural advance ≈ 1em — narrower than the 2 latin
-                    // cells the renderer reserved. Stretch their quad to
-                    // the full cell pair so the emoji fills the space.
-                    // CJK glyphs (e.is_color = false) keep the natural
-                    // advance to avoid horizontal distortion of the
-                    // character.
+                    // §A.8 (2026-05-08, restored 2026-05-08 after the
+                    // §A.9 conditional-compress regression): paint
+                    // color emoji at NATURAL advance (clamped ≥ 1 cell
+                    // for degenerate sub-cell glyphs). Trade-off
+                    // accepted upstream: when natural advance > 2
+                    // cells (Segoe UI Emoji ≈ 1.37em, target ≈ 1.2em)
+                    // the rightmost ~14% of the glyph extends into
+                    // col+cell_span. In practice this is a space ~99%
+                    // of the time, and even when it's not, only the
+                    // anti-aliased edge of the emoji crosses the cell
+                    // boundary — the glyph body is rendered at correct
+                    // proportions.
+                    //
+                    // §A.9's "compress when neighbour is occupied"
+                    // path was tried but reverted — Linear-filter
+                    // 14% compression visibly squashed every color
+                    // emoji that touched a non-blank neighbour, and
+                    // Wind's main inline-text-with-emoji users (CLI
+                    // tool output, chat-like interfaces) hit that
+                    // case constantly. iTerm2 / Apple Terminal /
+                    // Hyper all chose this same trade-off.
+                    //
+                    // CJK glyphs (e.is_color = false) keep the
+                    // natural-advance-clamped-to-2-cells path: CJK
+                    // fonts are em-square by design and shouldn't
+                    // ever overflow; clamping protects against fonts
+                    // whose advance metric is slightly > 2 cells.
                     let glyph_w_px = if e.is_color {
-                        cell_w_px
+                        (e.px_w as f32).max(cell_w_px)
                     } else {
                         (e.px_w as f32).min(cell_w_px).max(1.0)
                     };
@@ -852,6 +889,8 @@ impl RenderBackend for WebGpuPaneBackend {
             // which pane goes first), so just clear the per-pane flag
             // and bail.
             self.needs_initial_clear = false;
+            // §4b: with 0 instances we have nothing to cache.
+            self.cached_n_cells = 0;
             return;
         }
 
@@ -876,5 +915,82 @@ impl RenderBackend for WebGpuPaneBackend {
         // false next tick so the row-hash diff in Renderer::tick can
         // skip non-dirty rows.
         self.needs_initial_clear = false;
+        // §4b: remember the just-uploaded instance count so a future
+        // `record_cached_only` can re-issue this exact draw without
+        // walking the kernel grid.
+        self.cached_n_cells = n_cells;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebGpuPaneBackend {
+    /// §4b per-pane increment cache (2026-05-08): re-record this pane's
+    /// PREVIOUSLY-uploaded instance buffer into the host's current
+    /// frame WITHOUT retraversing the kernel grid, generating new
+    /// CellInstances, or re-uploading them. The vertex buffer in
+    /// `instance_buffer` already holds the last successful frame's
+    /// data; we just need to ask the host to record another draw call
+    /// against it inside the pane's scissor.
+    ///
+    /// Returns `false` (caller must fall back to a full `render` /
+    /// `end_frame` cycle) when:
+    ///   - `cached_n_cells == 0` (no prior frame, OR cache was
+    ///     invalidated by `on_full_invalidate` / `resize_surface` /
+    ///     `invalidate_atlas` / atlas-generation bump);
+    ///   - viewport is empty (pane scissor collapsed to 0×0 — drawing
+    ///     would be a no-op anyway);
+    ///   - the host is in a `needs_initial_clear` state for this pane
+    ///     (paint correctness requires re-encoding from scratch).
+    ///
+    /// Returns `true` after successfully recording the draw — the next
+    /// `SurfaceHost::end_frame` will include this pane's pixels.
+    ///
+    /// Used by JS `manager.ts::startRafLoop` for visible host-mode
+    /// panes that pre-pass marked NOT dirty: the swap-chain `LoadOp::
+    /// Clear` would otherwise wipe their region (forcing a re-encode
+    /// even for unchanged content), and this method is the cheap path
+    /// that paints the cached pixels back without a kernel grid sweep.
+    /// On a typing-into-one-pane workload with N other static panes,
+    /// the per-tick CPU cost of those N panes drops from O(rows × cols)
+    /// per pane to one GPU draw call per pane.
+    pub fn record_cached_only(&mut self) -> bool {
+        if self.cached_n_cells == 0
+            || self.viewport.is_empty()
+            || self.needs_initial_clear
+        {
+            return false;
+        }
+        // Defensive: an atlas-generation bump must invalidate cached
+        // UVs. Catch the case where invalidation happened between
+        // begin_frame's check and this call (e.g., another pane in the
+        // same RAF tick triggered atlas rebuild).
+        let ctx_gen = self.ctx.borrow().atlas_generation;
+        if ctx_gen != self.atlas_generation_seen {
+            self.cached_n_cells = 0;
+            return false;
+        }
+
+        // Re-upload the frame uniform — cheap (16 bytes) and guards
+        // against any out-of-band viewport change since last frame.
+        let viewport_uniform: [f32; 4] =
+            [self.viewport.w as f32, self.viewport.h as f32, 0.0, 0.0];
+        let n_cells = self.cached_n_cells;
+        let viewport = self.viewport;
+        let bind_group = &self.bind_group;
+        let instance_buffer = &self.instance_buffer;
+        let ctx = self.ctx.borrow();
+        ctx.queue.write_buffer(
+            &self.frame_uniform,
+            0,
+            bytemuck::bytes_of(&viewport_uniform),
+        );
+        self.host
+            .borrow_mut()
+            .record_pane(viewport, &ctx.cell_pipeline, |pass| {
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.set_vertex_buffer(0, instance_buffer.slice(..));
+                pass.draw(0..4, 0..n_cells);
+            });
+        true
     }
 }

@@ -67,7 +67,7 @@ export class RenderHandle {
      * presence via `typeof RenderHandle.newWithWebgpuFirst ===
      * 'function'`.
      */
-    static newWithWebgpuFirst(canvas: HTMLCanvasElement): Promise<RenderHandle>;
+    static newWithWebgpuFirst(canvas: HTMLCanvasElement, surface_host?: SurfaceHostHandle | null): Promise<RenderHandle>;
     /**
      * Milliseconds until the next cursor-blink phase boundary. JS
      * callers use this to schedule a `setTimeout` wake-up while
@@ -77,6 +77,23 @@ export class RenderHandle {
      * 1000 ms) as "no blink, sleep at most a second on a watchdog".
      */
     nextBlinkDeadlineMs(kernel: TerminalKernel, now_ms: number): number;
+    /**
+     * §4b per-pane increment cache (2026-05-08): re-record this
+     * pane's previously-uploaded GPU instance buffer into the
+     * host's current frame without retraversing the kernel grid.
+     * Returns `true` on success, `false` when the cache was
+     * invalidated (caller must fall back to full `render`).
+     *
+     * Used by `manager.ts::startRafLoop` for visible host-mode
+     * panes that pre-pass marked NOT dirty: the swap-chain
+     * `LoadOp::Clear` would otherwise wipe their region (forcing
+     * a re-encode for unchanged content). With this path, the
+     * per-tick CPU cost of N idle visible panes drops from
+     * O(rows × cols × N) to one GPU draw call per pane —
+     * eliminating the typing-while-other-panes-have-output lag
+     * (forceHostRenderAll's multiplier).
+     */
+    recordCachedOnly(): boolean;
     /**
      * Drive one frame from the kernel's current grid. Returns true
      * if anything was drawn (caller can use this to decide whether
@@ -126,6 +143,17 @@ export class SurfaceHostHandle {
      */
     beginFrame(theme_bg: Uint8Array): boolean;
     /**
+     * JS-callable clone: produces a new `SurfaceHostHandle` JS
+     * wrapper that bumps the inner `Rc` refcount. Required because
+     * `RenderHandle::newWithWebgpuFirst(canvas, host)` consumes
+     * its `host` parameter (wasm-bindgen `Option<T>` semantics —
+     * the JS-side wrapper is freed after the call). When N panes
+     * in the same workspace each call attach, JS must
+     * `host.clone()` per call so the manager's stored handle
+     * stays alive.
+     */
+    clone(): SurfaceHostHandle;
+    /**
      * Finish the host's command encoder + queue.submit + present.
      * One call per frame after all dirty panes have rendered. Safe
      * to call without a matching `beginFrame` — internal guard
@@ -133,17 +161,16 @@ export class SurfaceHostHandle {
      */
     endFrame(): void;
     /**
-     * Async constructor: bind the global swap chain to `canvas`
-     * (the `<canvas data-rg-host>` element in `+page.svelte`). Call
-     * once at app boot, before any pane attaches. Subsequent
-     * `WebGpuPaneBackend::new` calls discover this instance via
-     * `SurfaceHost::get()`.
+     * Async constructor: create one swap chain bound to `canvas`.
+     * One SurfaceHostHandle per workspace tab — JS holds a Map
+     * keyed by workspace id and passes the matching handle to
+     * each pane's `RenderHandle.newWithWebgpuFirst(canvas, host)`.
      *
      * Returns `Err` (rejected promise on the JS side) when the
      * WebGPU adapter / device acquisition fails or
-     * `instance.create_surface` rejects the canvas. JS catches and
-     * falls back to per-pane Canvas2D for every subsequent
-     * `attach`.
+     * `instance.create_surface` rejects the canvas. JS catches
+     * and either retries or falls back to per-pane Canvas2D for
+     * panes in this workspace.
      */
     static init(canvas: HTMLCanvasElement): Promise<SurfaceHostHandle>;
     /**
@@ -378,13 +405,15 @@ export interface InitOutput {
     readonly renderhandle_invalidateAll: (a: number) => void;
     readonly renderhandle_isDirty: (a: number, b: number, c: number) => number;
     readonly renderhandle_new: (a: any) => [number, number, number];
-    readonly renderhandle_newWithWebgpuFirst: (a: any) => any;
+    readonly renderhandle_newWithWebgpuFirst: (a: any, b: number) => any;
     readonly renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number) => number;
+    readonly renderhandle_recordCachedOnly: (a: number) => number;
     readonly renderhandle_render: (a: number, b: number) => number;
     readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
     readonly renderhandle_setFocused: (a: number, b: number) => void;
     readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
     readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
+    readonly surfacehosthandle_clone: (a: number) => number;
     readonly surfacehosthandle_endFrame: (a: number) => void;
     readonly surfacehosthandle_init: (a: any) => any;
     readonly surfacehosthandle_invalidate: (a: number) => void;
@@ -432,10 +461,10 @@ export interface InitOutput {
     readonly terminalkernel_setSelection: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h15d8de1645cc0e42_2: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

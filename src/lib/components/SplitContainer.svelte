@@ -29,6 +29,7 @@
   } from '$lib/stores/paneTree';
   import {
     paneTreeStore,
+    workspacePaneTrees,
     getAllPaneIds,
     closePane as closePaneApi,
     activePaneId,
@@ -75,7 +76,12 @@
   let dragUpUnlisten: (() => void) | undefined;
   const ORTHOGONAL_TRIGGER_PX = 8;
 
-  let leafCount = $derived(getAllPaneIds($paneTreeStore).length);
+  // §4a workspace keep-alive: count from THIS workspace's tree, not the
+  // global active one. Falls back to paneTreeStore on first paint before
+  // workspacePaneTrees is populated.
+  let leafCount = $derived(
+    getAllPaneIds($workspacePaneTrees.get(workspaceId) ?? $paneTreeStore).length
+  );
   const splitPathKey = $derived(splitPath.join('/'));
   const splitAxis = $derived(
     node.type === 'split' ? (node.direction === 'horizontal' ? 'x' : 'y') : ''

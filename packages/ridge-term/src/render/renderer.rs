@@ -522,6 +522,19 @@ impl<B: RenderBackend> Renderer<B> {
     }
 }
 
+/// §4b per-pane increment cache (2026-05-08): a thin `AnyBackend`-only
+/// passthrough for the WebGPU cached-record path. Lives in its own
+/// impl block (not the generic `impl<B: RenderBackend>`) because the
+/// underlying method exists on `AnyBackend::record_cached_only` rather
+/// than the `RenderBackend` trait — Canvas2D returns `false` and the
+/// caller falls back to a normal `tick`/`render` cycle.
+#[cfg(target_arch = "wasm32")]
+impl Renderer<crate::render::AnyBackend> {
+    pub fn record_cached_only(&mut self) -> bool {
+        self.backend.record_cached_only()
+    }
+}
+
 fn cursor_eq(a: &Option<CursorDraw>, b: &Option<CursorDraw>) -> bool {
     match (a, b) {
         (None, None) => true,
