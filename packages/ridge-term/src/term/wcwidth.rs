@@ -187,6 +187,45 @@ pub fn is_color_emoji_codepoint(cp: u32) -> bool {
         || (0x2600..=0x27BF).contains(&cp)    // Misc symbols + Dingbats (✅ ☀ ⚡ etc.)
 }
 
+/// §A.6 (2026-05-08) — `true` when a width=1 codepoint should still be
+/// RENDERED with a 2-cell visual advance so the glyph isn't horizontally
+/// compressed by the renderer's narrow-cell quad.
+///
+/// Cell layout still treats these as width 1 (matching `string-width` /
+/// `unicode-width` and Claude Code's column accounting — see §A.5), but
+/// in the draw pipeline they're stretched to a 2-cell quad **only when
+/// the next cell is blank** (space at default attrs), so the overflowing
+/// half cannot collide with a neighbouring glyph that would otherwise
+/// paint over it.
+///
+/// Initial set: star / asterisk / florette Dingbats commonly used as
+/// spinner glyphs. `Emoji_Presentation` codepoints in the same block
+/// (✨ U+2728 etc.) are intentionally EXCLUDED — they already get
+/// width=2 from `wcwidth`, so they don't need this visual-only path
+/// and including them would double-stretch.
+///
+/// `❯` U+276F (HEAVY RIGHT-POINTING ANGLE QUOTATION MARK) is NOT in
+/// the set: it's commonly used as a shell prompt arrow and looks
+/// correct at 1-cell natural advance — stretching it would make the
+/// prompt feel "fat" relative to surrounding ASCII.
+#[inline]
+pub fn is_visual_wide_codepoint(cp: u32) -> bool {
+    // Star Dingbats (0x2605..=0x2606) — solid + outlined star.
+    // Heavy / floral / pinwheel asterisks and stars (0x2726..=0x273F),
+    // excluding 0x2728 ✨ (already Emoji_Presentation, width=2).
+    // Ornamental stars (0x2740..=0x274D), excluding 0x274C/0x274E
+    // (Emoji_Presentation).
+    matches!(
+        cp,
+        0x2605 | 0x2606
+            | 0x2726
+            | 0x2727
+            | 0x2729..=0x273F
+            | 0x2740..=0x274B
+            | 0x274D
+    )
+}
+
 /// §4.7 — `true` when the codepoint COULD combine with what comes next
 /// to extend the current grapheme cluster, so the parser should buffer
 /// rather than emitting immediately. Conservative — false positives
@@ -263,6 +302,27 @@ mod tests {
         assert_eq!(wcwidth(0x273D), 1, "✽ HEAVY TEARDROP-SPOKED ASTERISK");
         assert_eq!(wcwidth(0x2736), 1, "✶ SIX POINTED BLACK STAR");
         assert_eq!(wcwidth(0x276F), 1, "❯ HEAVY RIGHT-POINTING ANGLE QUOTATION MARK");
+    }
+
+    #[test]
+    fn visual_wide_set_matches_spinner_glyphs() {
+        // §A.6 — narrow-but-visually-wide codepoints. Cell layout
+        // returns width 1 (verified above), but the renderer should
+        // stretch their quad to 2 cells when the next cell is blank.
+        assert!(is_visual_wide_codepoint(0x273B), "✻");
+        assert!(is_visual_wide_codepoint(0x273D), "✽");
+        assert!(is_visual_wide_codepoint(0x2736), "✶");
+        assert!(is_visual_wide_codepoint(0x2737), "✷");
+        assert!(is_visual_wide_codepoint(0x2605), "★");
+        // Emoji_Presentation: NOT in the visual-wide set (already
+        // wide via wcwidth).
+        assert!(!is_visual_wide_codepoint(0x2728), "✨ already wcwidth=2");
+        assert!(!is_visual_wide_codepoint(0x274C), "❌ already wcwidth=2");
+        // Prompt arrow: intentionally excluded — looks fine narrow.
+        assert!(!is_visual_wide_codepoint(0x276F), "❯ stays narrow");
+        // ASCII / random: untouched.
+        assert!(!is_visual_wide_codepoint(b'a' as u32));
+        assert!(!is_visual_wide_codepoint(b'*' as u32));
     }
 
     #[test]
