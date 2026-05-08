@@ -21,6 +21,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@fontsource/noto-color-emoji": "^5.2.12",
     "@gitgraph/js": "^1.4.0",
     "@ridge/split": "workspace:*",
     "@ridge/term-wasm": "link:packages/ridge-term/pkg",
@@ -35,8 +36,7 @@
     "monaco-editor": "^0.55.1",
     "overlayscrollbars": "^2.15.1",
     "svelte-dnd-action": "^0.9.69",
-    "svelte-splitpanes": "^8.0.12",
-    "twemoji-colr-font": "^15.0.3"
+    "svelte-splitpanes": "^8.0.12"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

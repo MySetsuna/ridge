@@ -34,7 +34,7 @@
      back to color-emoji glyphs when the primary fonts have no glyph for an
      emoji codepoint. */
   --font-ui: "Inter", ui-sans-serif, system-ui, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
-  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, ui-monospace, "Twemoji", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace;
+  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, ui-monospace, "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", monospace;
   --rg-title-proc: #36c26e;
   --rg-title-sep: #2a4832;
   --rg-title-cwd: #72a87c;
