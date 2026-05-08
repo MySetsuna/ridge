@@ -461,7 +461,9 @@ onMount(() => {
 
 		// First attach: create kernel + canvas, register handlers,
 		// start backend PTY, replay scrollback, activate stream.
-		await manager.attach(paneId, container);
+		// §A.8 — pass workspaceId so the manager binds this pane to
+		// the correct per-workspace SurfaceHost / canvas.
+		await manager.attach(paneId, container, workspaceId);
 		if (!alive) return;
 		attached = true;
 

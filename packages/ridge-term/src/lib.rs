@@ -640,19 +640,22 @@ mod renderer_js {
         #[wasm_bindgen(js_name = newWithWebgpuFirst)]
         pub async fn new_with_webgpu_first(
             canvas: HtmlCanvasElement,
+            surface_host: Option<SurfaceHostHandle>,
         ) -> Result<RenderHandle, JsValue> {
-            // Phase B: per-pane backend draws into the shared host
-            // canvas — `canvas` here is only the per-pane fallback DOM
-            // element used by Canvas2D when WebGPU isn't usable. The
-            // pane's WebGPU draws never touch this canvas.
+            // Per-workspace SurfaceHost (2026-05-08): JS passes the
+            // pane's workspace's SurfaceHostHandle. If `None` (Canvas2D-
+            // only build, manager.attachHost failed for this workspace,
+            // adapter miss), fall through to Canvas2D against this
+            // pane's own canvas.
             //
-            // Skip the host path when the JS layer hasn't initialised
-            // the SurfaceHost yet (Canvas2D-only build, adapter miss at
-            // boot, manager.attachHost failed, …) — `WebGpuPaneBackend
-            // ::new` returns Err in that case and we fall through to
-            // Canvas2D against this pane's own canvas.
-            if crate::render::surface_host::SurfaceHost::get().is_some() {
-                if let Ok(b) = crate::render::webgpu::WebGpuPaneBackend::new().await {
+            // The `canvas` parameter is the per-pane fallback DOM
+            // element used by Canvas2D. WebGPU draws never touch it
+            // — they go through the per-workspace `<canvas data-rg-ws-host>`
+            // bound to the workspace's SurfaceHost.
+            if let Some(handle) = surface_host {
+                if let Ok(b) =
+                    crate::render::webgpu::WebGpuPaneBackend::new(handle.host_rc()).await
+                {
                     let metrics = FrameMetrics {
                         cell_w: 8.0,
                         cell_h: 16.0,
@@ -663,8 +666,7 @@ mod renderer_js {
                     return Ok(RenderHandle { renderer });
                 }
             }
-            // WebGPU adapter missed (or host not initialised) — fall
-            // through to Canvas2D.
+            // No host available or WebGPU adapter missed — Canvas2D.
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
             let metrics = FrameMetrics {
                 cell_w: 8.0,
@@ -791,6 +793,25 @@ mod renderer_js {
             self.renderer.invalidate_all();
         }
 
+        /// §4b per-pane increment cache (2026-05-08): re-record this
+        /// pane's previously-uploaded GPU instance buffer into the
+        /// host's current frame without retraversing the kernel grid.
+        /// Returns `true` on success, `false` when the cache was
+        /// invalidated (caller must fall back to full `render`).
+        ///
+        /// Used by `manager.ts::startRafLoop` for visible host-mode
+        /// panes that pre-pass marked NOT dirty: the swap-chain
+        /// `LoadOp::Clear` would otherwise wipe their region (forcing
+        /// a re-encode for unchanged content). With this path, the
+        /// per-tick CPU cost of N idle visible panes drops from
+        /// O(rows × cols × N) to one GPU draw call per pane —
+        /// eliminating the typing-while-other-panes-have-output lag
+        /// (forceHostRenderAll's multiplier).
+        #[wasm_bindgen(js_name = recordCachedOnly)]
+        pub fn record_cached_only(&mut self) -> bool {
+            self.renderer.record_cached_only()
+        }
+
         /// Multi-pane hosts call this when the active pane changes. When
         /// `focused` is false, the renderer skips cursor draw entirely so
         /// only the truly active terminal blinks. Idempotent.
@@ -840,39 +861,71 @@ mod renderer_js {
     }
 
     // ──────────────────────────────────────────────────────────────
-    // SurfaceHostHandle (Phase B)
+    // SurfaceHostHandle (§A.8 per-workspace)
     //
-    // JS-facing wrapper around the process-wide `SurfaceHost`. Held
-    // by `manager.ts` for the lifetime of the app; per-pane render
-    // handles look up the same singleton via `SurfaceHost::get()`
-    // inside Rust.
+    // JS-facing wrapper around a `SurfaceHost`. One instance per
+    // workspace tab — `manager.ts` holds a Map<workspaceId, handle>
+    // and passes the matching handle to each pane's
+    // `RenderHandle.newWithWebgpuFirst(canvas, host)` so the pane's
+    // WebGPU draws land on its workspace's canvas.
     //
-    // Per-frame protocol from JS RAF:
+    // Per-frame protocol from JS RAF (active workspace only):
     //   1. host.beginFrame(themeBg)         — acquire swap-chain texture
-    //   2. for each dirty pane: handle.render(kernel)
+    //   2. for each dirty pane in this workspace: handle.render(kernel)
     //   3. host.endFrame()                   — submit + present
     // ──────────────────────────────────────────────────────────────
 
     #[cfg(feature = "webgpu")]
     #[wasm_bindgen]
+    #[derive(Clone)]
     pub struct SurfaceHostHandle {
         host: std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>>,
     }
 
     #[cfg(feature = "webgpu")]
+    impl SurfaceHostHandle {
+        /// Internal accessor: the per-workspace SurfaceHost Rc. Used by
+        /// `RenderHandle::new_with_webgpu_first` so newly-constructed
+        /// `WebGpuPaneBackend`s share the same SurfaceHost (and thus
+        /// the same `<canvas data-rg-ws-host>`) as their workspace tab.
+        pub(crate) fn host_rc(
+            &self,
+        ) -> std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>>
+        {
+            self.host.clone()
+        }
+    }
+
+    #[cfg(feature = "webgpu")]
     #[wasm_bindgen]
     impl SurfaceHostHandle {
-        /// Async constructor: bind the global swap chain to `canvas`
-        /// (the `<canvas data-rg-host>` element in `+page.svelte`). Call
-        /// once at app boot, before any pane attaches. Subsequent
-        /// `WebGpuPaneBackend::new` calls discover this instance via
-        /// `SurfaceHost::get()`.
+        /// JS-callable clone: produces a new `SurfaceHostHandle` JS
+        /// wrapper that bumps the inner `Rc` refcount. Required because
+        /// `RenderHandle::newWithWebgpuFirst(canvas, host)` consumes
+        /// its `host` parameter (wasm-bindgen `Option<T>` semantics —
+        /// the JS-side wrapper is freed after the call). When N panes
+        /// in the same workspace each call attach, JS must
+        /// `host.clone()` per call so the manager's stored handle
+        /// stays alive.
+        #[wasm_bindgen(js_name = clone)]
+        pub fn js_clone(&self) -> SurfaceHostHandle {
+            Clone::clone(self)
+        }
+    }
+
+    #[cfg(feature = "webgpu")]
+    #[wasm_bindgen]
+    impl SurfaceHostHandle {
+        /// Async constructor: create one swap chain bound to `canvas`.
+        /// One SurfaceHostHandle per workspace tab — JS holds a Map
+        /// keyed by workspace id and passes the matching handle to
+        /// each pane's `RenderHandle.newWithWebgpuFirst(canvas, host)`.
         ///
         /// Returns `Err` (rejected promise on the JS side) when the
         /// WebGPU adapter / device acquisition fails or
-        /// `instance.create_surface` rejects the canvas. JS catches and
-        /// falls back to per-pane Canvas2D for every subsequent
-        /// `attach`.
+        /// `instance.create_surface` rejects the canvas. JS catches
+        /// and either retries or falls back to per-pane Canvas2D for
+        /// panes in this workspace.
         #[wasm_bindgen(js_name = init)]
         pub async fn init(canvas: HtmlCanvasElement) -> Result<SurfaceHostHandle, JsValue> {
             let host = crate::render::surface_host::SurfaceHost::init(canvas)

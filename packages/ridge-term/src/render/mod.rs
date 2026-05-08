@@ -113,6 +113,21 @@ impl AnyBackend {
             }
         }
     }
+
+    /// §4b per-pane increment cache (2026-05-08): re-record this pane's
+    /// previously-uploaded instance buffer into the host's current
+    /// frame without retraversing the kernel grid. Returns `false` for
+    /// Canvas2D (no GPU instance buffer to cache — Canvas2D's per-row
+    /// dirty diff already gives equivalent cheapness) and for WebGPU
+    /// when the cache was invalidated. Caller must fall back to a full
+    /// `render` cycle on `false`.
+    pub fn record_cached_only(&mut self) -> bool {
+        match self {
+            AnyBackend::Canvas2d(_) => false,
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.record_cached_only(),
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

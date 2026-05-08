@@ -44,10 +44,24 @@
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 #![allow(dead_code)] // round-3 §4.1.b first slice; rasterize() body is stubbed.
 
-use wasm_bindgen::JsCast;
-use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
+use wasm_bindgen::{JsCast, JsValue};
+use web_sys::{console, CanvasRenderingContext2d, HtmlCanvasElement};
 
 use super::glyph_atlas::GlyphKey;
+
+/// True iff `localStorage.RIDGE_DIAG === '1'` at call time. Used to gate
+/// the emoji-rasterisation diagnostic log so users can capture a
+/// per-glyph trace via `localStorage.RIDGE_DIAG='1'; location.reload()`
+/// when investigating "emoji renders blank" reports without paying the
+/// pixel-scan cost on the hot path. Cheap (3 JS calls + a string
+/// compare) and emoji-codepoint-gated at the call site.
+fn ridge_diag_enabled() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("RIDGE_DIAG").ok().flatten())
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
 
 /// Translate a style_flags bitset (matches `GlyphKey::STYLE_BOLD/ITALIC`)
 /// into the leading CSS-font keyword used by the canvas 2D `font` shorthand.
@@ -92,30 +106,71 @@ pub struct RasterizedGlyph {
 
 /// Browser-canvas-based glyph rasterizer.
 ///
-/// Owns one OffscreenCanvas + 2D context, sized to fit any single
-/// glyph the terminal ever asks for. Slot is intentionally generous
-/// (square = max cell-height × 2) because the OffscreenCanvas backing
+/// Owns one DOM `HTMLCanvasElement` + 2D context, sized to fit any
+/// single glyph the terminal ever asks for. Slot is intentionally
+/// generous (square = max cell-height × 2) because the canvas backing
 /// store is a one-time allocation per WebGpuBackend lifetime and
 /// resizing it mid-session would clear the in-flight rendering state.
+///
+/// **Why a DOM canvas instead of `OffscreenCanvas`:** WebView2 / older
+/// Chromium revisions resolve `measureText` against a permissive
+/// font-fallback fast path but punt `fillText` to a stricter pipeline
+/// that doesn't see system emoji fonts (Segoe UI Emoji) nor the
+/// document's `@font-face`-declared faces (Noto Color Emoji). Symptom
+/// captured 2026-05-08 via the §A.7 RIDGE_DIAG trace: every emoji
+/// codepoint reported `advance_dev > 0` AND `ascent_dev == font_size`
+/// (browser placeholder when no font matched) AND `non_zero_px == 0`
+/// (zero pixels actually painted) — `fillText` silently no-op'd. A
+/// detached-from-DOM `HTMLCanvasElement` exhibits the same gap on some
+/// Chromium versions, but a canvas inserted into `document.body` does
+/// inherit the document's full font-fallback chain reliably. We hide
+/// it via inline `position:absolute; left:-9999px; visibility:hidden`
+/// so layout / pointer-events don't see it.
 pub struct GlyphRasterizer {
-    canvas: OffscreenCanvas,
-    ctx: OffscreenCanvasRenderingContext2d,
+    canvas: HtmlCanvasElement,
+    ctx: CanvasRenderingContext2d,
     slot_w: u16,
     slot_h: u16,
 }
 
 impl GlyphRasterizer {
-    /// Create an OffscreenCanvas of `slot_w × slot_h` device pixels +
-    /// its 2D context. Returns Err if the browser can't supply
-    /// OffscreenCanvas or 2D rendering on this canvas.
+    /// Create a hidden DOM `<canvas>` of `slot_w × slot_h` device
+    /// pixels + its 2D context. Returns Err if the browser can't
+    /// supply a canvas or 2D rendering on it.
     pub fn new(slot_w: u16, slot_h: u16) -> Result<Self, String> {
-        let canvas = OffscreenCanvas::new(slot_w as u32, slot_h as u32)
-            .map_err(|e| format!("GlyphRasterizer: OffscreenCanvas::new failed: {e:?}"))?;
+        let document = web_sys::window()
+            .ok_or_else(|| "GlyphRasterizer: no window".to_string())?
+            .document()
+            .ok_or_else(|| "GlyphRasterizer: no document".to_string())?;
+        let canvas: HtmlCanvasElement = document
+            .create_element("canvas")
+            .map_err(|e| format!("GlyphRasterizer: createElement('canvas') threw: {e:?}"))?
+            .dyn_into()
+            .map_err(|_| "GlyphRasterizer: createElement returned non-canvas".to_string())?;
+        canvas.set_width(slot_w as u32);
+        canvas.set_height(slot_h as u32);
+        // Hide the canvas off-screen and out of layout. Some
+        // Chromium / WebView2 versions only resolve the document's
+        // full font-fallback chain (system Segoe UI Emoji + the
+        // @font-face Noto Color Emoji subsets) for canvases attached
+        // to the document tree — switching here from OffscreenCanvas
+        // was the §A.7 fix for "emoji rasterises blank" reports.
+        canvas
+            .set_attribute(
+                "style",
+                "position:absolute;left:-9999px;top:-9999px;width:0;height:0;visibility:hidden;pointer-events:none",
+            )
+            .ok();
+        document
+            .body()
+            .ok_or_else(|| "GlyphRasterizer: no document.body".to_string())?
+            .append_child(&canvas)
+            .map_err(|e| format!("GlyphRasterizer: append_child failed: {e:?}"))?;
         let ctx = canvas
             .get_context("2d")
             .map_err(|e| format!("GlyphRasterizer: get_context('2d') threw: {e:?}"))?
             .ok_or_else(|| "GlyphRasterizer: get_context('2d') returned None".to_string())?
-            .dyn_into::<OffscreenCanvasRenderingContext2d>()
+            .dyn_into::<CanvasRenderingContext2d>()
             .map_err(|_| "GlyphRasterizer: 2D context type mismatch".to_string())?;
         Ok(Self {
             canvas,
@@ -265,6 +320,27 @@ impl GlyphRasterizer {
                 }
             }
             i += 4;
+        }
+
+        // Emoji-rasterisation diagnostic. Gated on (a) leading codepoint
+        // ≥ U+2600 (covers Dingbats + every SMP emoji block, skips ASCII
+        // / CJK / Latin extension hot paths) and (b) RIDGE_DIAG=1, so
+        // normal users pay nothing. When user reports "emoji blank", the
+        // emitted line tells us in one shot whether the rasterizer
+        // received any pixels at all (non_zero_px), whether color was
+        // detected (is_color), and which font_css the OffscreenCanvas
+        // resolved against — three orthogonal failure modes.
+        let first_cp = glyph_text.chars().next().map(|c| c as u32).unwrap_or(0);
+        if first_cp >= 0x2600 && ridge_diag_enabled() {
+            let total_px = rgba.len() / 4;
+            let non_zero_px = rgba.chunks_exact(4).filter(|p| p[3] >= 8).count();
+            let msg = format!(
+                "[noto-emoji-diag] cp=U+{first_cp:04X} font=\"{font_css}\" \
+                 advance_dev={advance_dev:.2} ascent_dev={ascent_dev:.2} \
+                 bbox=({bbox_w}x{bbox_h}) is_color={is_color} \
+                 non_zero_px={non_zero_px}/{total_px}"
+            );
+            console::log_1(&JsValue::from_str(&msg));
         }
 
         Ok(RasterizedGlyph {

@@ -101,14 +101,32 @@ fn engine_node_to_layout(
 #[tauri::command]
 pub fn get_pane_layout(state: State<'_, AppState>) -> Result<LayoutNode, String> {
     let wid = state.active_workspace_id();
+    get_pane_layout_for_inner(&state, &wid.to_string())
+}
+
+/// §4a workspace keep-alive: read any workspace's layout without
+/// switching to it. Used by the frontend to prefetch every workspace's
+/// tree on boot so all SplitContainers can mount in parallel and
+/// workspace switches become CSS-only.
+#[tauri::command]
+pub fn get_pane_layout_for(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<LayoutNode, String> {
+    get_pane_layout_for_inner(&state, &workspace_id)
+}
+
+fn get_pane_layout_for_inner(
+    state: &State<'_, AppState>,
+    workspace_id: &str,
+) -> Result<LayoutNode, String> {
+    let wid = Uuid::parse_str(workspace_id)
+        .map_err(|e| format!("workspace_id 不是合法 UUID: {e}"))?;
     let map = state.workspaces.read();
     let ws = map
         .get(&wid)
-        .ok_or_else(|| "无活动工作区".to_string())?;
+        .ok_or_else(|| format!("workspace {} 不存在", workspace_id))?;
     let mut c = 0u64;
-    // Reverse lookup: agent_id → pane_id map is stored as pane_id → agent_id
-    // in the other direction (`teammate_agent_pane_map: agent_id → pane_id`);
-    // flip it once so layout serialisation is O(panes).
     let mut agent_by_pane: HashMap<Uuid, String> = HashMap::new();
     for (agent_id, pane_id) in &ws.teammate_agent_pane_map {
         agent_by_pane.insert(*pane_id, agent_id.clone());

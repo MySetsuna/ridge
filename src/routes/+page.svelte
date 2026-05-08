@@ -77,6 +77,7 @@ self.MonacoEnvironment = {
   } from 'lucide-svelte';
   import {
     paneTreeStore,
+    workspacePaneTrees,
     activePaneId,
     splitActivePane,
     syncPaneLayoutFromBackend,
@@ -178,13 +179,43 @@ self.MonacoEnvironment = {
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
-  // §4.3 Phase B: process-wide single canvas the WebGPU SurfaceHost
-  // binds its swap chain to. Lives at the workspace-content layer so
-  // it covers every pane container, regardless of split layout.
-  // Per-pane Canvas2D fallback panes still create their own DOM canvas
-  // inside their container; this host is invisible to them
-  // (`pointer-events: none`, `z-index: 0`).
-  let hostCanvas = $state<HTMLCanvasElement | undefined>(undefined);
+  // §A.8 (2026-05-08) — per-workspace canvas. Each workspace tab owns
+  // its own `<canvas data-rg-ws-host>` mounted inside its wrapper div
+  // (rendered by the {#each} loop further down). Switching tabs is
+  // then a CSS `display:flex/none` flip — the inactive tab's canvas
+  // keeps its last-painted pixels via the browser compositor, so
+  // the user sees no flash, no clear, no re-rasterise.
+  //
+  // Svelte action: bind a workspace's canvas to its SurfaceHost via
+  // manager.attachHost(canvas, workspaceId), and observe the canvas's
+  // parent for resize so the swap chain stays in sync. Cleans up on
+  // canvas unmount (workspace closed).
+  function workspaceHostCanvas(node: HTMLCanvasElement, workspaceId: string) {
+    const manager = TerminalManager.instance();
+    void manager.attachHost(node, workspaceId).catch((err) => {
+      console.warn('[ridge] attachHost failed for workspace', workspaceId, err);
+    });
+    const parent = node.parentElement;
+    let observer: ResizeObserver | undefined;
+    let pendingRaf = 0;
+    if (parent) {
+      observer = new ResizeObserver(() => {
+        if (pendingRaf !== 0) return;
+        pendingRaf = requestAnimationFrame(() => {
+          pendingRaf = 0;
+          manager.resizeHost(workspaceId);
+        });
+      });
+      observer.observe(parent);
+    }
+    return {
+      destroy() {
+        if (pendingRaf !== 0) cancelAnimationFrame(pendingRaf);
+        observer?.disconnect();
+        manager.detachHost(workspaceId);
+      },
+    };
+  }
 
   type SidebarTab = 'git' | 'files' | 'search' | 'claude';
   let sidebarTab = $state<SidebarTab>('files');
@@ -877,34 +908,11 @@ function expandSidebar() {
       m.setupTerminalThemeBridge();
     });
 
-    // §4.3 Phase B: bind the host canvas to a single wgpu::Surface so
-    // every WebGPU pane composites through one swap chain. Manager
-    // returns silently when the wasm bundle has no SurfaceHostHandle
-    // (Canvas2D-only build) or when WebGPU adapter acquisition fails;
-    // either way per-pane Canvas2D path keeps working.
-    let hostResizeObserver: ResizeObserver | undefined;
-    void (async () => {
-      if (!hostCanvas) return;
-      const manager = TerminalManager.instance();
-      try {
-        await manager.attachHost(hostCanvas);
-      } catch (err) {
-        // `attachHost` already swallows WebGPU-init failures internally
-        // and falls back to per-pane Canvas2D. Anything reaching here
-        // is unexpected — log so we can see it in DevTools but don't
-        // block boot.
-        console.warn('[ridge] SurfaceHost attach failed; per-pane Canvas2D fallback', err);
-        return;
-      }
-      // Drive surface.configure on parent resize. Throttling lives in
-      // manager.resizeHost (idempotent on no-op size); spurious
-      // observer fires are cheap.
-      const parent = hostCanvas.parentElement;
-      if (parent) {
-        hostResizeObserver = new ResizeObserver(() => manager.resizeHost());
-        hostResizeObserver.observe(parent);
-      }
-    })();
+    // §A.8 (2026-05-08) — host canvases are now per-workspace; each
+    // workspace's div in the {#each} loop renders its own canvas via
+    // the `workspaceHostCanvas` action, which calls
+    // `manager.attachHost(canvas, ws.id)` on mount and detaches on
+    // unmount. No global host canvas, no global attachHost call here.
 
     // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
     // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
@@ -1000,7 +1008,6 @@ function expandSidebar() {
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
-      hostResizeObserver?.disconnect();
     };
   });
 
@@ -1428,22 +1435,32 @@ function expandSidebar() {
       class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--rg-bg-raised)]"
     >
       <div class="relative flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
-        <!-- §4.3 Phase B host canvas. Sits beneath every pane container
-             (z-index:0, pointer-events:none) and is bound to a single
-             wgpu::Surface via SurfaceHostHandle.init. Stays mounted
-             across workspace switches — `{#key}` only remounts
-             SplitContainer below, so the surface lives for the app
-             lifetime. -->
-        <canvas
-          bind:this={hostCanvas}
-          data-rg-host
-          aria-hidden="true"
-          style="position:absolute; inset:0; pointer-events:none; z-index:0;"
-        ></canvas>
+        <!-- §A.8 (2026-05-08) — per-workspace canvas. Each workspace
+             tab owns its own `<canvas data-rg-ws-host>` mounted INSIDE
+             its wrapper div; switching tabs is a CSS display flip and
+             the inactive tab's canvas keeps its last-painted pixels
+             via the browser compositor — instant switch, no flash, no
+             clear, no re-rasterise. The `workspaceHostCanvas` action
+             registers each canvas with the manager. -->
         {#if $activeWorkspaceId && hasPaneLayout}
-          {#key $activeWorkspaceId}
-            <SplitContainer workspaceId={$activeWorkspaceId} node={rootNode} />
-          {/key}
+          {#each $workspacesList as ws (ws.id)}
+            {@const tree = $workspacePaneTrees.get(ws.id)}
+            {#if tree}
+              <div
+                class="relative flex-1 min-w-0 min-h-0"
+                style="display:{ws.id === $activeWorkspaceId ? 'flex' : 'none'};"
+                data-rg-ws-pane-host={ws.id}
+              >
+                <canvas
+                  use:workspaceHostCanvas={ws.id}
+                  data-rg-ws-host={ws.id}
+                  aria-hidden="true"
+                  style="position:absolute; inset:0; pointer-events:none; z-index:0;"
+                ></canvas>
+                <SplitContainer workspaceId={ws.id} node={tree} />
+              </div>
+            {/if}
+          {/each}
         {:else}
           <div
             class="flex flex-1 items-center justify-center text-[13px] text-[var(--rg-fg-muted)]"

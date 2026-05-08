@@ -290,6 +290,7 @@ pub fn run() {
             pane::close_pane,
             pane::dock_pane,
             pane::get_pane_layout,
+            pane::get_pane_layout_for,
             pane::set_split_ratios_at_path,
             pane::set_split_ratios_batch,
             pane::split_pane,

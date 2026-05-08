@@ -497,12 +497,50 @@ impl Grid {
         // the `!self.is_alt` guard.
         let inline_tui_wipe = dim_changed && !self.is_alt && inline_tui_active;
         if inline_tui_wipe {
-            for r in &mut self.primary.rows {
+            // §3 (2026-05-08): narrow the wipe to "from the inline-TUI's
+            // top row downward". The original §A.3 implementation cleared
+            // the ENTIRE visible primary region — for `claude` (Ink input
+            // box at the bottom + multi-line conversation history above),
+            // this also blanked the conversation rows. Ink's diff redraw
+            // on SIGWINCH only re-emits the input box's own rows, so the
+            // conversation history stayed blank until the next scroll —
+            // the user-perceptible "已输出内容表现为被截断" symptom.
+            //
+            // `last_abs_csi_row` is the row index where the most recent
+            // absolute-positioning CSI (CUP / HVP / VPA / CHA / HPA) put
+            // the cursor. For Ink-based CLIs that's the start of their
+            // own frame (log-update writes a final `\x1b[G` after the
+            // walk). Clearing only `[abs_row..rows]` preserves rows above
+            // (the conversation, prior shell output, etc.) and gives Ink
+            // a clean canvas for the rows IT cares about. Cursor goes to
+            // (abs_row, 0) so post-resize movement starts where Ink
+            // expects it.
+            //
+            // Fallback: if we have NO recorded absolute-positioning
+            // event (cold pane, or the heuristic was driven purely by
+            // EL/CUU CSIs without an absolute landing — see §A.4
+            // `last_redraw_csi_at_ms`), keep the original full-wipe
+            // behaviour. That's correct for the original §A.3 case
+            // (lazygit's bottom-of-screen sticky bar, etc.) which
+            // doesn't have a stable inline frame top row.
+            let last_row_idx = rows.saturating_sub(1);
+            let wipe_from_row = if self.last_abs_csi_at_ms != 0 {
+                (self.last_abs_csi_row as usize).min(last_row_idx)
+            } else {
+                0
+            };
+            for r in self.primary.rows.iter_mut().skip(wipe_from_row) {
                 r.clear();
             }
-            self.primary.cursor = Cursor::default();
+            // Preserve current SGR attrs by mutating instead of
+            // rebuilding the Cursor struct — avoids the `attr` field
+            // resetting to default and breaking colored-prompt apps
+            // that mid-frame got a SIGWINCH.
+            self.primary.cursor.row = wipe_from_row;
+            self.primary.cursor.col = 0;
+            self.primary.cursor.pending_wrap = false;
             self.primary.scroll_top = 0;
-            self.primary.scroll_bottom = rows.saturating_sub(1);
+            self.primary.scroll_bottom = last_row_idx;
         }
 
         // §1.26 (2026-05-07): primary cursor-row+below cleanup.
