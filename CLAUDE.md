@@ -378,6 +378,62 @@ spaces shown as `·` for visibility). Used to nail this bug from a
 single user session log; should remain the go-to first step for
 any future "wrong char in inline-TUI cell" report.
 
+§A.6 (2026-05-08) — visual-wide-narrow Dingbats stretch (decoupling
+display width from logical cell width). After §A.5 fixed the column-
+shift bug by returning `wcwidth=1` for Dingbats stars (✻ ✽ ✶ ★ etc.),
+the user reported that those glyphs now look "compressed / ugly" —
+the renderer was mapping a glyph whose natural advance is closer to
+2 cells onto a 1-cell quad, and the shader (WebGPU) /  font-stack
+fallback (Canvas2D) ended up squashing it horizontally. Fix:
+decouple **logical cell width** (used for cursor accounting / column
+math, MUST stay 1 to align with `string-width`) from **visual quad
+width** (used only for the draw call). New helper
+`is_visual_wide_codepoint(cp)` in `wcwidth.rs` lists the star /
+asterisk / florette Dingbats that benefit from a 2-cell visual
+stretch — Emoji_Presentation codepoints (✨ U+2728 etc.) and the
+prompt arrow `❯` U+276F are explicitly excluded (the former are
+already `wcwidth=2`; the latter looks correct narrow). Renderer
+changes:
+
+1. **Canvas2D** (`canvas2d.rs::draw_row` Pass 2): when
+   `cell.width == 1 && is_visual_wide_codepoint(leading_cp) &&
+    row.cells[col+1] is space-at-default`, route through the existing
+   `stretch_emoji` scale-and-fillText path with `target_cells = 2.0`.
+   The `fillText` is preceded by `translate(x, y_top)` + `scale(2x, 1)`
+   so the glyph paints at 2x natural advance, overflowing into col+1's
+   slot. Pass 1 already painted col+1's bg; the overflow paints over
+   it, but since the gate requires col+1 to be space-at-default, no
+   real glyph is drawn at col+1 in Pass 2 to clobber the overflow.
+
+2. **WebGPU** (`webgpu.rs::draw_row`): when `visual_wide_narrow` is
+   true, emit the existing wide-cell SPLIT pattern but with
+   asymmetric widths — bg quad is `cell_w_px` (1 cell) so the
+   logical bg layer doesn't paint over col+1's bg; glyph quad is
+   `min(e.px_w, 2*cell_w_px).max(cell_w_px)` so the glyph displays
+   at its natural advance up to 2 cells, never squashed below 1
+   cell. The per-glyph atlas slot was already 2-cell-wide
+   (`gpu_context::slot_dims_for` always rounds up to wide; see §4.3),
+   so the rasterized glyph already exists at full natural-advance
+   resolution — only the draw quad needed to grow.
+
+The conservative "next cell must be blank" gate is the user-chosen
+trade-off (alternative: always stretch and let neighbour glyphs
+paint over the overflow — rejected because partial-stretch
+truncation is uglier than 1-cell natural). For Claude Code's
+spinner row format `✻ Tomfool…` the gate fires every frame
+because the spinner glyph is always followed by a space.
+
+`is_color_emoji_codepoint` is unchanged — it remains the heuristic
+for "should a wide-cell color emoji glyph be stretched to fill its
+2-cell quad". The two helpers together cover the three render
+shapes:
+- `wcwidth=2` + `is_color_emoji_codepoint=true`  → wide cell, glyph stretched to 2 cells
+- `wcwidth=2` + `is_color_emoji_codepoint=false` → wide cell, glyph at natural advance (CJK)
+- `wcwidth=1` + `is_visual_wide_codepoint=true` + next blank → narrow cell, glyph painted into 2-cell quad
+
+New tests in `wcwidth.rs::tests`: `visual_wide_set_matches_spinner_glyphs`
+asserts ✻ ✽ ✶ ✷ ★ are in the set, ✨ ❌ ❯ ASCII '*' / 'a' are not.
+
 §4.6 (2026-05-07, font-fallback only): `manager.ts:240`'s default
 `fontFamily` already includes `"Segoe UI Emoji", "Apple Color Emoji",
 "Noto Color Emoji"` after the monospace stack, so single-codepoint

@@ -55,6 +55,7 @@ use std::rc::Rc;
 use super::glyph_atlas::{GlyphEntry, GlyphKey};
 use super::gpu_context::GpuContext;
 use super::surface_host::{ScissorRect, SurfaceHost};
+use crate::term::wcwidth::is_visual_wide_codepoint;
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
 use crate::term::attr_table::AttrTable;
 
@@ -442,6 +443,15 @@ impl RenderBackend for WebGpuPaneBackend {
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme);
 
             let cell_span = cell.width.max(1) as usize;
+            // §A.6 (2026-05-08) — visual-wide narrow: same conservative
+            // gate as Canvas2D. cell_span stays 1 (logical layout / cursor
+            // accounting); visual_span becomes 2 only when the next cell
+            // is BLANK so the overflowing glyph half can't visually
+            // collide with a real neighbour glyph.
+            // The exact `is_visual_wide_codepoint` check is deferred until
+            // we know `leading_cp` (after the cluster lookup below); we
+            // first lock down `pixel_x` / `cell_w_px` against `cell_span`
+            // to keep the bg quad faithful to the logical layout.
             let pixel_x = ((col as f32) * cell_w).floor();
             let pixel_x_right = (((col + cell_span) as f32) * cell_w).floor();
             let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
@@ -530,7 +540,58 @@ impl RenderBackend for WebGpuPaneBackend {
                 None => ([0.0, 0.0, 0.0, 0.0], 0),
             };
 
-            if cell_span >= 2 {
+            // §A.6 (2026-05-08) — visual-wide narrow detection. Cell stays
+            // logically 1-wide (cursor / column accounting unchanged), but
+            // the glyph quad may span up to 2 cells visually so the
+            // rasterized advance isn't horizontally compressed by the
+            // 1-cell cell_size. Conservative gate: only when the next
+            // cell is BLANK (space at default attrs) so the overflow can
+            // never visually clobber a real neighbour glyph.
+            let leading_cp: u32 = match cluster_text {
+                Some(text) => text.chars().next().map(|c| c as u32).unwrap_or(0),
+                None => cell.ch as u32,
+            };
+            let next_cell_blank = match row.cells.get(col + 1) {
+                Some(n) => {
+                    n.ch == ' ' && n.attr == crate::term::attr_table::AttrId::DEFAULT
+                }
+                None => false,
+            };
+            let visual_wide_narrow = cell_span == 1
+                && is_visual_wide_codepoint(leading_cp)
+                && next_cell_blank;
+
+            if visual_wide_narrow {
+                // Split: bg covers the logical 1-cell rect; glyph quad
+                // grows up to 2 cells, capped at the rasterized natural
+                // advance (`e.px_w`) and floored at 1 cell so the glyph
+                // never ends up SMALLER than before. Mirrors the wide-
+                // cell split so the bg quad's right edge stays exactly
+                // at the next cell's left edge — important when the
+                // next cell has a different bg colour (Selection / SGR
+                // background) so we don't paint over it.
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [pixel_x, pixel_y],
+                    cell_size: [cell_w_px, row_h_int],
+                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                    atlas_layer: 0,
+                    fg_rgba: rgba_u8_to_f32(fg),
+                    bg_rgba: rgba_u8_to_f32(bg),
+                });
+                if let Some(e) = entry {
+                    let visual_target_w = 2.0 * cell_w_px;
+                    let glyph_w_px =
+                        (e.px_w as f32).min(visual_target_w).max(cell_w_px);
+                    self.pending_instances.push(CellInstance {
+                        cell_xy: [pixel_x, pixel_y],
+                        cell_size: [glyph_w_px, row_h_int],
+                        atlas_uv: e.uv,
+                        atlas_layer: e.layer as u32,
+                        fg_rgba: rgba_u8_to_f32(fg),
+                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                    });
+                }
+            } else if cell_span >= 2 {
                 // Wide cell (CJK / fullwidth): split into a background
                 // instance covering the full 2-cell quad + a glyph
                 // instance sized to the glyph's actual advance. Without

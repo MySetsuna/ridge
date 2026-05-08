@@ -34,7 +34,7 @@ use crate::render::backend::{
 };
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
-use crate::term::wcwidth::is_color_emoji_codepoint;
+use crate::term::wcwidth::{is_color_emoji_codepoint, is_visual_wide_codepoint};
 
 pub struct Canvas2dBackend {
     canvas: HtmlCanvasElement,
@@ -274,6 +274,25 @@ impl RenderBackend for Canvas2dBackend {
                 Some(c) => c.text.chars().next().map(|ch| ch as u32).unwrap_or(0),
                 None => cell.ch as u32,
             };
+            // §A.6 (2026-05-08) — visual-wide narrow: cell.width == 1 in
+            // the grid (so column accounting matches Claude Code's
+            // `string-width`), but the glyph is rendered into a 2-cell
+            // visual quad so it isn't horizontally compressed. Conservative
+            // gate: only when the next cell is BLANK (space at default
+            // attrs) so the overflow can't visually clobber a real
+            // neighbour glyph. The user's choice — see plan §A.6.
+            let visual_wide_stretch = cell.width == 1
+                && is_visual_wide_codepoint(leading_cp)
+                && {
+                    let next = row.cells.get(col + 1);
+                    match next {
+                        Some(n) => {
+                            n.ch == ' '
+                                && n.attr == crate::term::attr_table::AttrId::DEFAULT
+                        }
+                        None => false,
+                    }
+                };
             let stretch_emoji = cell.width >= 2 && is_color_emoji_codepoint(leading_cp);
             let glyph_str: &str;
             let mut buf = [0u8; 4];
@@ -281,8 +300,16 @@ impl RenderBackend for Canvas2dBackend {
                 Some(cspan) => glyph_str = &cspan.text,
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
-            if stretch_emoji {
-                let target_w = cell_w * (cell.width.max(1) as f64);
+            if stretch_emoji || visual_wide_stretch {
+                // Target width = 2 cells for both paths. For width=2 cells
+                // (color emoji) `cell.width.max(1) == 2`; for visual-wide
+                // narrow we substitute 2 explicitly.
+                let target_cells = if visual_wide_stretch {
+                    2.0
+                } else {
+                    cell.width.max(1) as f64
+                };
+                let target_w = cell_w * target_cells;
                 let natural_w = self
                     .ctx
                     .measure_text(glyph_str)
