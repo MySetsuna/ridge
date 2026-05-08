@@ -290,19 +290,20 @@ export class TerminalManager {
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
 
-		// Twemoji loads asynchronously (registered from +layout.svelte's
-		// onMount). If the user opens a pane and types emoji BEFORE the
-		// font finishes loading, the WebGPU rasterizer's atlas caches the
-		// glyph against Segoe UI Emoji's bitmap and keeps that stale entry
-		// forever. Listening for `document.fonts.loadingdone` lets us
-		// invalidate every pane's renderer state once Twemoji lands, so
-		// the next frame re-rasterizes against the new font. Canvas2D
-		// also benefits — `invalidate_all` clears its row-hash snapshot
-		// so the next tick repaints every visible row from kernel state
-		// using the new font stack. The listener stays alive for the
-		// process lifetime; Twemoji is the dominant trigger but other
-		// font loads (custom user font installs at runtime) are equally
-		// well served by a redraw.
+		// Noto Color Emoji loads asynchronously (registered from
+		// +layout.svelte's onMount). If the user opens a pane and types
+		// emoji BEFORE the relevant subset finishes loading, the WebGPU
+		// rasterizer's atlas caches the glyph against Segoe UI Emoji's
+		// bitmap and keeps that stale entry forever. Listening for
+		// `document.fonts.loadingdone` lets us invalidate every pane's
+		// renderer state once Noto lands, so the next frame
+		// re-rasterizes against the new font. Canvas2D also benefits —
+		// `invalidate_all` clears its row-hash snapshot so the next tick
+		// repaints every visible row from kernel state using the new
+		// font stack. The listener stays alive for the process lifetime;
+		// Noto subsets are the dominant trigger but other font loads
+		// (custom user font installs at runtime) are equally well served
+		// by a redraw.
 		if (typeof document !== 'undefined' && 'fonts' in document) {
 			document.fonts.addEventListener('loadingdone', () => {
 				this.invalidateAllPanes();
@@ -311,11 +312,11 @@ export class TerminalManager {
 	}
 
 	/** Return the existing singleton without creating one. Used by
-	 *  `$lib/fonts/twemoji` to invalidate panes after the Twemoji
-	 *  webfont finishes loading — only meaningful if a pane has
-	 *  already been attached. Returns null when no pane has spun the
-	 *  manager up yet (in which case the next attach starts with a
-	 *  fresh atlas that picks up Twemoji on its first miss anyway). */
+	 *  `$lib/fonts/noto-color-emoji` to invalidate panes after the
+	 *  Noto Color Emoji webfont finishes loading — only meaningful if
+	 *  a pane has already been attached. Returns null when no pane has
+	 *  spun the manager up yet (in which case the next attach starts
+	 *  with a fresh atlas that picks up Noto on its first miss anyway). */
 	static tryInstance(): TerminalManager | null {
 		return TerminalManager._instance;
 	}
@@ -345,7 +346,7 @@ export class TerminalManager {
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
 					fontFamily:
-						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Twemoji", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
+						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", monospace',
 					fontSizePx: 15,
 					scrollbackLines: 2000,
 					preferWebgpu,

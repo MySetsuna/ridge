@@ -4,16 +4,16 @@
   import { browser, dev } from '$app/environment';
   import { onMount } from 'svelte';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
-  import { registerTwemoji } from '$lib/fonts/twemoji';
+  import { registerNotoColorEmoji } from '$lib/fonts/noto-color-emoji';
 
-  // Kick off Twemoji loading as early as possible. The font is
-  // restricted to emoji codepoints via unicode-range so it doesn't
-  // affect any latin / CJK / box-drawing rendering even before it
-  // finishes loading. Both Canvas2D and the WebGPU rasterizer's
-  // OffscreenCanvas pick it up automatically once it's in
-  // document.fonts.
+  // Kick off Noto Color Emoji (Google) loading as early as possible.
+  // Each @font-face is restricted to emoji codepoints via unicode-range
+  // so it doesn't affect any latin / CJK / box-drawing rendering even
+  // before it finishes loading. Both Canvas2D and the WebGPU
+  // rasterizer's OffscreenCanvas pick it up automatically once the
+  // FontFace set finishes loading.
   onMount(() => {
-    registerTwemoji();
+    registerNotoColorEmoji();
   });
 </script>
 

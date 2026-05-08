@@ -434,12 +434,22 @@ shapes:
 New tests in `wcwidth.rs::tests`: `visual_wide_set_matches_spinner_glyphs`
 asserts ✻ ✽ ✶ ✷ ★ are in the set, ✨ ❌ ❯ ASCII '*' / 'a' are not.
 
-§4.6 (2026-05-07, font-fallback only): `manager.ts:240`'s default
-`fontFamily` already includes `"Segoe UI Emoji", "Apple Color Emoji",
-"Noto Color Emoji"` after the monospace stack, so single-codepoint
-emoji (🚀, ✅, 你好-style CJK) render in colour on both Canvas2D and
-WebGPU (the WebGPU rasterizer's OffscreenCanvas honours the same font
-stack). ZWJ composite emoji (👨‍👩‍👧, 🏳️‍🌈, 👨‍💻) still split into
+§4.6 (2026-05-07, font-fallback only; 2026-05-08 updated to ship
+Google Noto Color Emoji as a webfont): `manager.ts`'s default
+`fontFamily` includes `"Noto Color Emoji", "Segoe UI Emoji", "Apple
+Color Emoji"` after the monospace stack, so single-codepoint emoji
+(🚀, ✅, 你好-style CJK) render in colour on both Canvas2D and WebGPU
+(the WebGPU rasterizer's OffscreenCanvas honours the same font stack).
+The bundled Noto Color Emoji webfont is registered from
+`src/lib/fonts/noto-color-emoji.ts` (called once from `+layout.svelte`
+on mount) via `@fontsource/noto-color-emoji@^5.2.12` (Google Fonts
+v39, COLRv1, Feb 2026). It ships 11 woff2 subsets each gated by
+`unicode-range`, so the browser only fetches the subset(s) actually
+needed by emoji codepoints in flight (typical terminal usage: 1-2
+subsets, ≈5-10 MB; worst case all 11, ≈25 MB). Replaces the prior
+single-file Twemoji bundle — Noto's vector COLRv1 outlines render
+distinctly more polished than Segoe UI Emoji's older 2D style on
+Windows. ZWJ composite emoji (👨‍👩‍👧, 🏳️‍🌈, 👨‍💻) still split into
 multiple cells because `Cell.ch: char` only holds a single Unicode
 scalar and the parser feeds the grid one codepoint at a time. Full
 ZWJ support is queued as §4.7 and requires a cross-cutting refactor
