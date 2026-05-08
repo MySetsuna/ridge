@@ -40,6 +40,16 @@ export interface ExplorerColumn {
 	 * CWD). Explorer triggers a background loadTree and drops the flag.
 	 */
 	needsRefresh?: boolean;
+	/**
+	 * Monotonic counter bumped every time `loadTree` lands a fresh depth=1
+	 * tree. The depth=1 fetch only refreshes the immediate children of `cwd`;
+	 * any subdirectory the user has expanded keeps its paginated children in
+	 * FileTree's component-local state, which is invisible to the store.
+	 * Components watch this counter and reset their pagination + re-fetch
+	 * page 0 on bump, so a manual refresh OR a fs-watcher refresh actually
+	 * propagates all the way down the visible tree.
+	 */
+	refreshNonce: number;
 }
 
 /** Workspace descriptor used for multi-workspace sync. */
@@ -204,6 +214,7 @@ function createFileExplorerStore() {
 							anchorPath: primary,
 							tree: null,
 							loading: false,
+							refreshNonce: 0,
 						});
 					}
 				}
@@ -328,7 +339,14 @@ function createFileExplorerStore() {
 					update((s) => ({
 						...s,
 						columns: s.columns.map((c) =>
-							c.id === columnId ? { ...c, tree: mockTree, loading: false } : c
+							c.id === columnId
+								? {
+										...c,
+										tree: mockTree,
+										loading: false,
+										refreshNonce: (c.refreshNonce ?? 0) + 1,
+									}
+								: c
 						),
 					}));
 					return;
@@ -351,7 +369,16 @@ function createFileExplorerStore() {
 						if (c.id !== columnId) return c;
 						const pruned = new Set<string>();
 						for (const p of c.expandedPaths) if (seen.has(p)) pruned.add(p);
-						const nextCol = { ...c, tree, loading: false, expandedPaths: pruned };
+						const nextCol = {
+							...c,
+							tree,
+							loading: false,
+							expandedPaths: pruned,
+							// Bump on every successful refresh so FileTree subtrees
+							// (whose children live in component-local state, NOT in
+							// `tree`) reset + re-fetch page 0.
+							refreshNonce: (c.refreshNonce ?? 0) + 1,
+						};
 						if (pruned.size !== c.expandedPaths.size) savePersistedColumn(nextCol);
 						return nextCol;
 					}),
@@ -376,7 +403,14 @@ function createFileExplorerStore() {
 				update((s) => ({
 					...s,
 					columns: s.columns.map((c) =>
-						c.id === columnId ? { ...c, tree: placeholder, loading: false } : c
+						c.id === columnId
+							? {
+									...c,
+									tree: placeholder,
+									loading: false,
+									refreshNonce: (c.refreshNonce ?? 0) + 1,
+								}
+							: c
 					),
 				}));
 			}
@@ -765,16 +799,26 @@ export function uniqueChildName(
  */
 export async function refreshColumnsCovering(dirPath: string): Promise<void> {
 	const state = get(fileExplorerStore);
-	const contains = (node: FileNode | null): boolean => {
-		if (!node) return false;
-		if (node.path === dirPath) return true;
-		if (!node.children) return false;
-		for (const c of node.children) if (contains(c)) return true;
-		return false;
+	// Normalize both sides before compare: `node.path` from the Rust side comes
+	// out of `path.to_string_lossy()` which on Windows has BACKSLASHES, while
+	// fs-changed payload paths and `col.cwd` are normalised to FORWARD slashes.
+	// Without this normalization, every fs-changed event silently no-oped on
+	// Windows because `node.path === dirPath` could never be true.
+	const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '');
+	const target = norm(dirPath);
+	// A column "covers" `dirPath` iff the changed dir is the column's cwd
+	// itself or a descendant. Walking only `col.tree` (depth=1 cache) misses
+	// every path under a paginated subdir — those children live in FileTree's
+	// component-local state, not in `col.tree`. Matching by cwd ancestry instead
+	// captures the true superset and lets the loadTree-bumped refreshNonce
+	// fan-out re-fetch every expanded subtree.
+	const isUnderCwd = (cwd: string): boolean => {
+		const c = norm(cwd);
+		return target === c || target.startsWith(c + '/');
 	};
 	await Promise.all(
 		state.columns
-			.filter((c) => contains(c.tree))
+			.filter((c) => isUnderCwd(c.cwd))
 			.map((c) => fileExplorerStore.loadTree(c.id))
 	);
 }

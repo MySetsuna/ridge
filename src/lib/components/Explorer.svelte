@@ -271,8 +271,21 @@
 		slowTimers.clear(); slowPrevLoading.clear();
 	});
 
-	function handleRefresh(columnId: string) {
-		void fileExplorerStore.loadTree(columnId);
+	// 刷新按钮 in-flight 标记 —— spinner 视觉反馈靠这个 Set；用 reassign
+	// 触发 Svelte 5 reactivity（mutate Set 不会通知 $state）。
+	let refreshingColumns = $state<Set<string>>(new Set());
+
+	async function handleRefresh(columnId: string): Promise<void> {
+		const next = new Set(refreshingColumns);
+		next.add(columnId);
+		refreshingColumns = next;
+		try {
+			await fileExplorerStore.loadTree(columnId);
+		} finally {
+			const out = new Set(refreshingColumns);
+			out.delete(columnId);
+			refreshingColumns = out;
+		}
 	}
 
 	/**
@@ -731,14 +744,17 @@
 								</span>
 								<button
 									type="button"
-									class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/col:opacity-60 hover:!opacity-100 hover:bg-[var(--rg-accent)]/20 hover:text-[var(--rg-fg)] transition-all"
+									class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] {refreshingColumns.has(col.id)
+										? 'opacity-100'
+										: 'opacity-0 group-hover/col:opacity-60 hover:!opacity-100'} hover:bg-[var(--rg-accent)]/20 hover:text-[var(--rg-fg)] transition-all disabled:cursor-not-allowed"
+									disabled={refreshingColumns.has(col.id)}
 									onclick={(e) => {
 										e.stopPropagation();
-										handleRefresh(col.id);
+										void handleRefresh(col.id);
 									}}
 									title={`刷新 ${col.cwd}`}
 								>
-									<RefreshCw class="h-2.5 w-2.5" />
+									<RefreshCw class="h-2.5 w-2.5 {refreshingColumns.has(col.id) ? 'animate-spin' : ''}" />
 								</button>
 							</div>
 
@@ -780,6 +796,7 @@
 													expandedPaths={col.expandedPaths}
 													selectedPath={col.selectedPath}
 													selectedPaths={col.selectedPaths}
+													refreshNonce={col.refreshNonce}
 													cutPaths={$explorerClipboard?.mode === 'cut'
 														? new Set($explorerClipboard.paths)
 														: undefined}
