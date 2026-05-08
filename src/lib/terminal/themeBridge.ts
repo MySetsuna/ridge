@@ -27,48 +27,12 @@
 //     already active.
 
 import { settingsStore } from '$lib/stores/settings';
+import { hex8 } from '$lib/utils/cssColor';
 import { TerminalManager } from './manager';
 
-// Lazily-created canvas 2d context used to normalize ANY CSS color string
-// into one of two canonical forms the browser returns:
-//   - "#rrggbb" for opaque colors
-//   - "rgba(r, g, b, a)" for translucent (alpha < 1)
-// We then convert both to "#rrggbbaa" for the wasm parse_hex_color path.
-let _normCtx: CanvasRenderingContext2D | null = null;
-
-function normalizeColor(css: string): string | null {
-	if (!css) return null;
-	const trimmed = css.trim();
-	if (!trimmed) return null;
-
-	if (typeof document === 'undefined') return null;
-	if (_normCtx === null) {
-		const c = document.createElement('canvas');
-		_normCtx = c.getContext('2d');
-		if (!_normCtx) return null;
-	}
-
-	// Reset to a known-good value first so an unparseable input keeps
-	// the reset value rather than the previous successful parse —
-	// without this, invalid CSS would silently inherit a stale color.
-	_normCtx.fillStyle = '#000000';
-	_normCtx.fillStyle = trimmed;
-	const out = _normCtx.fillStyle as string;
-
-	if (out.startsWith('#')) {
-		// Browser returns #RRGGBB for opaque colors. Append full alpha.
-		return out.length === 7 ? `${out}ff` : out;
-	}
-	// Translucent — "rgba(r, g, b, a)" form.
-	const m = out.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
-	if (!m) return null;
-	const r = parseInt(m[1], 10);
-	const g = parseInt(m[2], 10);
-	const b = parseInt(m[3], 10);
-	const a = m[4] !== undefined ? Math.round(parseFloat(m[4]) * 255) : 255;
-	const hex = (n: number) => n.toString(16).padStart(2, '0');
-	return `#${hex(r)}${hex(g)}${hex(b)}${hex(a)}`;
-}
+// Color normalization moved to $lib/utils/cssColor — shared with
+// $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the
+// same way against the same `--rg-*` CSS-variable values.
 
 /**
  * Read Ridge's terminal-relevant CSS variables and project them onto the
@@ -79,7 +43,7 @@ function normalizeColor(css: string): string | null {
 function readRidgeTheme(): Record<string, string> {
 	if (typeof document === 'undefined') return {};
 	const cs = getComputedStyle(document.documentElement);
-	const v = (name: string) => normalizeColor(cs.getPropertyValue(name));
+	const v = (name: string) => hex8(cs.getPropertyValue(name));
 
 	const bg = v('--rg-term-bg');
 	const fg = v('--rg-fg');

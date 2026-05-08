@@ -1,4 +1,4 @@
-use crate::fs::{FileTree, FileNode, SearchEngine, SearchResult, ReplaceStats, SearchOptions};
+use crate::fs::{DirectoryPage, FileNode, FileTree, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -117,6 +117,15 @@ fn normalize_path_input(input: &str) -> PathBuf {
     }
 }
 
+/// Default lazy-load depth for the Explorer's initial tree request. Just
+/// the root + its direct children; descendants load on first expand via
+/// `get_directory_children`. Was 5 in the eager-load era.
+const DEFAULT_TREE_DEPTH: usize = 1;
+/// Default page size for `get_directory_children`. Set to balance "see
+/// most directories in one shot" against "first paint stays snappy on
+/// `node_modules`-class folders" (~ 1500 entries → 8 pages).
+const DEFAULT_CHILDREN_PAGE_SIZE: usize = 200;
+
 #[tauri::command]
 pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, String> {
     let root = normalize_path_input(&path);
@@ -127,7 +136,7 @@ pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNod
         return Err(format!("Path is not a directory: {}", root.display()));
     }
 
-    let max_depth = depth.unwrap_or(5);
+    let max_depth = depth.unwrap_or(DEFAULT_TREE_DEPTH);
     tokio::task::spawn_blocking(move || {
         FileTree::build(&root, max_depth)
             .map_err(|e| format!("Failed to build file tree: {}", e))
@@ -137,7 +146,11 @@ pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNod
 }
 
 #[tauri::command]
-pub async fn get_directory_children(path: String) -> Result<Vec<FileNode>, String> {
+pub async fn get_directory_children(
+    path: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<DirectoryPage, String> {
     let dir = normalize_path_input(&path);
     if !dir.exists() {
         return Err(format!("Path does not exist: {}", dir.display()));
@@ -146,8 +159,10 @@ pub async fn get_directory_children(path: String) -> Result<Vec<FileNode>, Strin
         return Err(format!("Path is not a directory: {}", dir.display()));
     }
 
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(DEFAULT_CHILDREN_PAGE_SIZE);
     tokio::task::spawn_blocking(move || {
-        FileTree::get_children(&dir)
+        FileTree::page_children(&dir, offset, limit)
             .map_err(|e| format!("Failed to get directory contents: {}", e))
     })
     .await

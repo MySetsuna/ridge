@@ -69,10 +69,62 @@ pub fn wcwidth(cp: u32) -> u8 {
         || cp == 0x1f0cf
         || (0x1f200..=0x1f251).contains(&cp)
         || (0x1f300..=0x1fbff).contains(&cp)
-        || (0x2600..=0x27bf).contains(&cp)
         || (0x20000..=0x2fffd).contains(&cp)
         || (0x30000..=0x3fffd).contains(&cp)
     {
+        return 2;
+    }
+
+    // §A.5 (2026-05-08) — Misc Symbols + Dingbats (0x2600..=0x27BF).
+    // ONLY the codepoints with Unicode property `Emoji_Presentation=Yes`
+    // need width 2 (color-emoji glyphs from system fonts overflow a
+    // single cell on WebView2/Chromium). The earlier blanket rule
+    // `(0x2600..=0x27BF) => 2` overshot massively: it forced "Neutral"-
+    // width Dingbats like `✻` U+273B / `✽` U+273D / `✶` U+2736 / `❯`
+    // U+276F (Claude Code's spinner glyphs and prompt arrow) to
+    // width 2, while npm's `string-width` library (which Claude Code
+    // uses) treats them as width 1 per the canonical `unicode-width`
+    // table. Result: Claude's incremental cursor-and-write updates
+    // (e.g. `\x1b[14;14Hg`) targeted columns computed against a
+    // 1-wide-leading model, while ridge-term's 2-wide-leading shift
+    // placed the actual cell one column to the right — visible bug:
+    // spinner words like "Tomfoolering" rendered as "Tomfoolerigg".
+    // The list below mirrors `emoji-data.txt`'s Emoji_Presentation
+    // set restricted to this block.
+    if matches!(
+        cp,
+        0x2614 | 0x2615
+            | 0x26a1
+            | 0x26aa
+            | 0x26ab
+            | 0x26bd
+            | 0x26be
+            | 0x26c4
+            | 0x26c5
+            | 0x26ce
+            | 0x26d4
+            | 0x26ea
+            | 0x26f2
+            | 0x26f3
+            | 0x26f5
+            | 0x26fa
+            | 0x26fd
+            | 0x2705
+            | 0x270a
+            | 0x270b
+            | 0x2728
+            | 0x274c
+            | 0x274e
+            | 0x2753
+            | 0x2754
+            | 0x2755
+            | 0x2757
+            | 0x2795
+            | 0x2796
+            | 0x2797
+            | 0x27b0
+            | 0x27bf
+    ) {
         return 2;
     }
 
@@ -108,6 +160,31 @@ pub fn wcwidth_grapheme(s: &str) -> u8 {
         }
     }
     s.chars().map(|c| wcwidth(c as u32)).max().unwrap_or(0)
+}
+
+/// True when the codepoint is in a Unicode block fonts typically render
+/// as a color emoji glyph (COLR / CPAL / sbix / SVG). Used by Canvas2D
+/// to decide whether a width-2 cell should stretch its `fillText` output
+/// horizontally to fill both cells — emoji glyphs from system fonts
+/// have a natural advance ≈ 1em, which is narrower than 2 latin-cell
+/// widths, leaving a visible gap on the right of the cell pair.
+///
+/// Conservative on purpose: covers the major emoji blocks but not every
+/// possible color glyph. CJK ideographs (also width-2) are NOT included
+/// — their fonts target 1em advance by design and shouldn't be stretched.
+///
+/// WebGPU has a more accurate per-glyph detection (pixel-scan in the
+/// rasterizer, stored as `GlyphEntry::is_color`); Canvas2D draws
+/// directly via the browser's `fillText` and never sees the rasterized
+/// pixels, so it falls back to this codepoint heuristic.
+#[inline]
+pub fn is_color_emoji_codepoint(cp: u32) -> bool {
+    cp == 0x1F004                            // 🀄
+        || cp == 0x1F0CF                      // 🃏
+        || (0x1F1E6..=0x1F1FF).contains(&cp)  // Regional Indicators (flag halves)
+        || (0x1F200..=0x1F251).contains(&cp)  // Enclosed CJK
+        || (0x1F300..=0x1FBFF).contains(&cp)  // Symbols + emoticons + Supplemental Symbols
+        || (0x2600..=0x27BF).contains(&cp)    // Misc symbols + Dingbats (✅ ☀ ⚡ etc.)
 }
 
 /// §4.7 — `true` when the codepoint COULD combine with what comes next
@@ -174,6 +251,31 @@ mod tests {
         assert_eq!(wcwidth(0x1f600), 2); // 😀
         assert_eq!(wcwidth(0x1f680), 2); // 🚀
         assert_eq!(wcwidth(0x2705), 2); // ✅
+    }
+
+    #[test]
+    fn dingbats_neutral_are_narrow() {
+        // §A.5 — Dingbats with East Asian Width = Neutral and no
+        // Emoji_Presentation property must be width 1, matching what
+        // npm `string-width` reports. Earlier blanket rule wrongly
+        // returned 2 for the entire 0x2600-0x27BF block.
+        assert_eq!(wcwidth(0x273B), 1, "✻ BLACK FOUR POINTED STAR");
+        assert_eq!(wcwidth(0x273D), 1, "✽ HEAVY TEARDROP-SPOKED ASTERISK");
+        assert_eq!(wcwidth(0x2736), 1, "✶ SIX POINTED BLACK STAR");
+        assert_eq!(wcwidth(0x276F), 1, "❯ HEAVY RIGHT-POINTING ANGLE QUOTATION MARK");
+    }
+
+    #[test]
+    fn dingbats_emoji_presentation_stay_wide() {
+        // §A.5 — Codepoints in the Misc Symbols / Dingbats range that
+        // ARE Emoji_Presentation=Yes must still be width 2 so color-
+        // emoji fonts paint at full 2-cell glyph advance.
+        assert_eq!(wcwidth(0x2614), 2); // ☔
+        assert_eq!(wcwidth(0x2615), 2); // ☕
+        assert_eq!(wcwidth(0x26A1), 2); // ⚡
+        assert_eq!(wcwidth(0x2728), 2); // ✨
+        assert_eq!(wcwidth(0x274C), 2); // ❌
+        assert_eq!(wcwidth(0x2753), 2); // ❓
     }
 
     #[test]

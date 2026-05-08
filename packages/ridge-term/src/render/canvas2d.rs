@@ -34,6 +34,7 @@ use crate::render::backend::{
 };
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
+use crate::term::wcwidth::is_color_emoji_codepoint;
 
 pub struct Canvas2dBackend {
     canvas: HtmlCanvasElement,
@@ -179,6 +180,17 @@ impl RenderBackend for Canvas2dBackend {
     }
 
     fn clear(&mut self) {
+        // §A.4 (2026-05-08) — hard-clear before painting bg so any pixel
+        // residue left by partial-alpha overlays (selection tint, IME helper
+        // shadow), or by a previous frame's draw that wrote outside cell
+        // bounds (cursor extension at sub-pixel rounding), cannot survive a
+        // full-redraw frame. Only fires on the full-redraw path
+        // (`backend.rs::draw_frame` calls `clear` iff `full_redraw == true`),
+        // so partial dirty-row updates remain on the optimised path. CSS-px
+        // units match the subsequent `fill_rect` (set_transform applies dpr
+        // scale uniformly to both calls).
+        self.ctx
+            .clear_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.bg));
         self.ctx
@@ -250,12 +262,45 @@ impl RenderBackend for Canvas2dBackend {
             } else {
                 None
             };
-            if let Some(cspan) = cluster {
-                let _ = self.ctx.fill_text(&cspan.text, x, y_top);
+            // Wide-cell color emoji stretch: emoji fonts target ~1em
+            // advance, narrower than 2 latin cells, so a bare `fillText`
+            // leaves a gap on the right. Detect by codepoint range
+            // (Canvas2D doesn't rasterize so we use a Unicode-block
+            // heuristic — see `is_color_emoji_codepoint`). On match,
+            // measure the natural advance and scale horizontally to
+            // fill the 2-cell box. Cap the scale at 1.5× so degenerate
+            // measurements can't grossly distort the glyph.
+            let leading_cp: u32 = match cluster {
+                Some(c) => c.text.chars().next().map(|ch| ch as u32).unwrap_or(0),
+                None => cell.ch as u32,
+            };
+            let stretch_emoji = cell.width >= 2 && is_color_emoji_codepoint(leading_cp);
+            let glyph_str: &str;
+            let mut buf = [0u8; 4];
+            match cluster {
+                Some(cspan) => glyph_str = &cspan.text,
+                None => glyph_str = cell.ch.encode_utf8(&mut buf),
+            }
+            if stretch_emoji {
+                let target_w = cell_w * (cell.width.max(1) as f64);
+                let natural_w = self
+                    .ctx
+                    .measure_text(glyph_str)
+                    .ok()
+                    .map(|m| m.width())
+                    .unwrap_or(target_w);
+                let scale_x = if natural_w > 1.0 {
+                    (target_w / natural_w).clamp(1.0, 1.5)
+                } else {
+                    1.0
+                };
+                self.ctx.save();
+                let _ = self.ctx.translate(x, y_top);
+                let _ = self.ctx.scale(scale_x, 1.0);
+                let _ = self.ctx.fill_text(glyph_str, 0.0, 0.0);
+                self.ctx.restore();
             } else {
-                let mut buf = [0u8; 4];
-                let s = cell.ch.encode_utf8(&mut buf);
-                let _ = self.ctx.fill_text(s, x, y_top);
+                let _ = self.ctx.fill_text(glyph_str, x, y_top);
             }
 
             // Underline / strikethrough as separate strokes after the glyph.

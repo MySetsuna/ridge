@@ -14,6 +14,34 @@
 import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
 import 'overlayscrollbars/overlayscrollbars.css';
 
+/**
+ * One-time global guard: while the user is dragging a scrollbar handle or
+ * track, toggle `body.rg-os-dragging` so app.css can suppress text selection
+ * across the whole document. overlayscrollbars handles pointer routing but
+ * does not stop the browser from extending a pre-existing selection during
+ * the drag, nor shield text adjacent to the handle on jittery pointerdowns.
+ * The class is consumed by the `body.rg-os-dragging *` rule in app.css.
+ */
+let dragGuardInstalled = false;
+function installScrollbarDragGuard(): void {
+  if (dragGuardInstalled || typeof document === 'undefined') return;
+  dragGuardInstalled = true;
+  const onDown = (e: PointerEvent): void => {
+    const target = e.target as Element | null;
+    if (target?.closest('.os-scrollbar-handle, .os-scrollbar-track')) {
+      document.body.classList.add('rg-os-dragging');
+    }
+  };
+  const clear = (): void => {
+    document.body.classList.remove('rg-os-dragging');
+  };
+  document.addEventListener('pointerdown', onDown, true);
+  document.addEventListener('pointerup', clear, true);
+  document.addEventListener('pointercancel', clear, true);
+  // Window blur (alt-tab during drag) — release lock so selection works again.
+  window.addEventListener('blur', clear);
+}
+
 /** Preset names */
 export type OverlayScrollPreset = 'sidebar' | 'horizontal-tabs';
 
@@ -130,6 +158,7 @@ export function overlayScroll(
 	node: HTMLElement,
 	params: OverlayScrollOptions | undefined = undefined
 ) {
+	installScrollbarDragGuard();
 	const preset = params?.preset ?? 'sidebar';
 
 	// For horizontal-tabs: use pure CSS, no OverlayScrollbars

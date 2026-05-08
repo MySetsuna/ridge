@@ -1,7 +1,7 @@
 // src/lib/stores/fileExplorer.ts
 import { writable, get, derived } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { FileNode } from './project';
+import type { DirectoryPage, FileNode } from './project';
 import { paneCwdStore } from './paneTree';
 import { reportDevIssue } from '$lib/devIssue';
 
@@ -298,7 +298,7 @@ function createFileExplorerStore() {
 		 * exactly once so the caller can show a subtle indicator if desired,
 		 * but the body render path avoids a "加载中..." placeholder.
 		 */
-		async loadTree(columnId: string, depth = 3): Promise<void> {
+		async loadTree(columnId: string, depth = 1): Promise<void> {
 			const state = get({ subscribe });
 			const column = state.columns.find((c) => c.id === columnId);
 			if (!column || column.loading) return;
@@ -383,21 +383,64 @@ function createFileExplorerStore() {
 		},
 
 		/**
-		 * Load children for an expanded directory.
+		 * Load a single page of children for an expanded directory. The
+		 * Rust side returns at most `limit` entries starting at `offset`,
+		 * sorted (dirs first, then alphabetic). The FileTree row state
+		 * machine appends pages on user-triggered "load more" clicks.
+		 *
+		 * `is_ignored` on each entry mirrors the cwd's `.gitignore`
+		 * chain — see `FileTreeContext::matches` on the Rust side.
 		 */
-		async loadChildren(columnId: string, dirPath: string): Promise<FileNode[]> {
+		async loadChildrenPage(
+			columnId: string,
+			dirPath: string,
+			offset = 0,
+			limit?: number,
+		): Promise<DirectoryPage> {
 			try {
 				if (!isTauri()) {
-					return [
+					const mock: FileNode[] = [
 						{ name: 'file1.ts', path: `${dirPath}/file1.ts`, is_dir: false },
 						{ name: 'file2.ts', path: `${dirPath}/file2.ts`, is_dir: false },
 					];
+					return {
+						entries: offset === 0 ? mock : [],
+						total: mock.length,
+						offset,
+						has_more: false,
+					};
 				}
-				return await invoke<FileNode[]>('get_directory_children', { path: dirPath });
+				const args: { path: string; offset: number; limit?: number } = {
+					path: dirPath,
+					offset,
+				};
+				if (typeof limit === 'number') args.limit = limit;
+				return await invoke<DirectoryPage>('get_directory_children', args);
 			} catch (e) {
 				reportDevIssue({ message: `Failed to load directory children: ${e}` });
-				return [];
+				return { entries: [], total: 0, offset, has_more: false };
 			}
+		},
+
+		/**
+		 * Legacy: full directory listing via paginate-then-concat over
+		 * `loadChildrenPage`. Drag-drop conflict resolution and the
+		 * `refreshColumnsCovering` walker call this when they need every
+		 * entry; UI rendering should prefer `loadChildrenPage` so big
+		 * directories stay snappy. Hard-cap at 50 pages (10000 entries
+		 * with the default limit) so a misbehaving FS can't pin the UI
+		 * thread forever.
+		 */
+		async loadChildren(columnId: string, dirPath: string): Promise<FileNode[]> {
+			const all: FileNode[] = [];
+			let offset = 0;
+			for (let i = 0; i < 50; i += 1) {
+				const page = await this.loadChildrenPage(columnId, dirPath, offset);
+				all.push(...page.entries);
+				if (!page.has_more || page.entries.length === 0) break;
+				offset += page.entries.length;
+			}
+			return all;
 		},
 
 		/**

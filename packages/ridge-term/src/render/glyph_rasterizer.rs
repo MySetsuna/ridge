@@ -80,6 +80,14 @@ pub struct RasterizedGlyph {
     pub advance: f32,
     /// Vertical offset from cell top to glyph baseline, CSS pixels.
     pub ascent_offset: f32,
+    /// True when the rasterized pixels carry the font's native color
+    /// palette (color emoji from COLR / CPAL / sbix / SVG fonts) rather
+    /// than the white-on-transparent coverage mask the rasterizer
+    /// requested via `fillStyle = "#ffffff"`. The renderer uses this to
+    /// stretch the cell quad to the full 2-cell width for wide emoji
+    /// (their natural advance ≈ 1em is narrower than 2 latin cells and
+    /// would otherwise leave a visible gap on the right).
+    pub is_color: bool,
 }
 
 /// Browser-canvas-based glyph rasterizer.
@@ -235,6 +243,30 @@ impl GlyphRasterizer {
         let bbox_w = advance_dev.ceil().clamp(1.0, self.slot_w as f32) as u16;
         let bbox_h = bbox_h_dev.ceil().clamp(1.0, self.slot_h as f32) as u16;
 
+        // Detect whether the browser stamped a color-emoji palette into
+        // RGB, or honoured the white fillStyle (monochrome glyph). Scan
+        // pixels with non-trivial alpha; if any has at least one channel
+        // below ~0.98 (= 250/255) the glyph carries native color. We
+        // bail on first hit — typical color emoji has thousands of color
+        // pixels so the loop costs ~10s of bytes in practice. Threshold
+        // 250 matches the shader's 0.99 cutoff (decoded sRGB white at
+        // boundary AA pixels lands ~0.992 = 253/255).
+        let mut is_color = false;
+        let mut i = 0usize;
+        while i + 3 < rgba.len() {
+            let a = rgba[i + 3];
+            if a >= 8 {
+                let r = rgba[i];
+                let g = rgba[i + 1];
+                let b = rgba[i + 2];
+                if r < 250 || g < 250 || b < 250 {
+                    is_color = true;
+                    break;
+                }
+            }
+            i += 4;
+        }
+
         Ok(RasterizedGlyph {
             rgba,
             // Was: `self.slot_w / self.slot_h`. That was wrong per the
@@ -250,6 +282,7 @@ impl GlyphRasterizer {
             // wants pixel-perfect baseline alignment can re-derive
             // this from `metrics.font_bounding_box_ascent()`.
             ascent_offset: 0.0,
+            is_color,
         })
     }
 

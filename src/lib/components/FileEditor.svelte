@@ -35,6 +35,7 @@
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
   import { settingsStore } from '$lib/stores/settings';
+  import { applyRidgeMonacoTheme, ridgeMonacoThemeId } from '$lib/monaco/ridgeTheme';
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { alertDialog } from './RidgeDialog.svelte';
   import { Copy, FolderOpen } from 'lucide-svelte';
@@ -47,16 +48,18 @@
     $settingsStore.editorFontFamily.trim() || DEFAULT_MONO
   );
   const editorFontSize = $derived($settingsStore.editorFontSize);
-  // Monaco theme follows ridge theme. light ids ('sand' / 'grass') map to 'vs',
-  // dark ids ('dark' / 'soil') map to 'vs-dark'. Switching theme at runtime calls
-  // monaco.editor.setTheme(...) which retints both inline and diff editors.
-  const monacoTheme = $derived(
-    $settingsStore.theme === 'sand' || $settingsStore.theme === 'grass'
-      ? 'vs'
-      : 'vs-dark'
-  );
+  // Monaco theme follows the active Ridge theme. Each Ridge theme id
+  // (dark / sand / grass / soil / wheat / starsky) gets its own custom
+  // Monaco theme registered as `ridge-${id}` whose editor.background /
+  // foreground / selection / cursor / etc. are read from the live
+  // `--rg-*` CSS variables. See $lib/monaco/ridgeTheme.
+  //
+  // The $effect re-runs on every theme change, which re-defines the
+  // theme (picking up the latest CSS-var values) and retints both the
+  // inline editor and any active diff editor via setTheme.
+  const monacoTheme = $derived(ridgeMonacoThemeId($settingsStore.theme));
   $effect(() => {
-    monaco.editor.setTheme(monacoTheme);
+    applyRidgeMonacoTheme($settingsStore.theme);
   });
 
   let mountPoint: HTMLDivElement | undefined;

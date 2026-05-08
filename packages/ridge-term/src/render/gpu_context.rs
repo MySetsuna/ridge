@@ -578,6 +578,7 @@ impl GpuContext {
             ascent_offset: glyph.ascent_offset,
             px_w: glyph.width,
             px_h: glyph.height,
+            is_color: glyph.is_color,
         };
         self.atlas.insert(key, entry);
         Ok(entry)
@@ -696,6 +697,7 @@ mod tests {
             ascent_offset: 12.0,
             px_w: 8,
             px_h: 16,
+            is_color: false,
         }
     }
 

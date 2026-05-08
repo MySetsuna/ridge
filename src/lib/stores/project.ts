@@ -8,10 +8,37 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { derived, writable, get } from 'svelte/store';
 
+/**
+ * One page of a directory's children, returned by the
+ * `get_directory_children(path, offset, limit)` IPC. Mirrors the Rust
+ * `DirectoryPage` struct in `src-tauri/src/fs/tree.rs`.
+ */
+export interface DirectoryPage {
+  entries: FileNode[];
+  /** Total entries in the directory (after `should_ignore` filtering). */
+  total: number;
+  /** Echoed-back offset, clamped to `[0, total]` by the backend. */
+  offset: number;
+  has_more: boolean;
+}
+
 export interface FileNode {
   name: string;
   path: string;
   is_dir: boolean;
+  /**
+   * True when the path is matched by a `.gitignore` rule for the
+   * Explorer's cwd. Undefined when the cwd is not inside a git repo
+   * (or the field was not populated by the IPC). Frontend renders the
+   * row grayed when true; behaviour stays fully interactive.
+   */
+  is_ignored?: boolean;
+  /**
+   * Total number of immediate entries in the directory, regardless of
+   * pagination. Undefined for files. Used by FileTree to display
+   * "加载更多 (剩余 N)" with the right N.
+   */
+  child_count?: number;
   children?: FileNode[];
   expanded?: boolean;
 }

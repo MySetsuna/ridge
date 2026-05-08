@@ -176,10 +176,18 @@ fn encode_named_key(key: &str, ev: &KeyEvent, modes: &Modes) -> Option<EncodeRes
 
     Some(match key {
         "Enter" => {
-            // LNM mode: CR+LF. Default: CR only. (xterm default = CR.)
-            if modes.linefeed_newline {
+            // Ctrl+Enter → LF (0x0a, ^J). 这是 Claude Code 的 Ink TextInput、
+            // lazygit 提交框、以及其他区分"提交 vs. 行内换行"的 CLI 所识别
+            // 的换行字节。普通 Enter 仍然发 CR（被 Ink 视为"提交"），这样
+            // 用户在 Claude `claude` 等 inline TUI 中可用 Ctrl+Enter 插入
+            // 新行而不触发提交。
+            if ev.ctrl && !ev.alt && !ev.shift {
+                EncodeResult::bytes(vec![0x0a])
+            } else if modes.linefeed_newline {
+                // LNM mode: CR+LF.
                 EncodeResult::bytes(b"\r\n".to_vec())
             } else {
+                // Default: CR only. (xterm default = CR.)
                 EncodeResult::bytes(b"\r".to_vec())
             }
         }
@@ -387,6 +395,27 @@ mod tests {
         let mut m = modes();
         m.linefeed_newline = true;
         assert_eq!(encode(&key("Enter"), &m).bytes, b"\r\n");
+    }
+
+    #[test]
+    fn ctrl_enter_is_lf_for_inline_tui_newline() {
+        // Claude Code Ink / lazygit / readline-style inputs treat LF as
+        // "newline within input", CR as "submit". Round 5 maps Ctrl+Enter
+        // → LF so users can insert newlines without triggering submit.
+        let mut k = key("Enter");
+        k.ctrl = true;
+        assert_eq!(encode(&k, &modes()).bytes, vec![0x0a]);
+    }
+
+    #[test]
+    fn ctrl_enter_lf_overrides_lnm_crlf() {
+        // Even under LNM mode, Ctrl+Enter must stay LF so the inline-TUI
+        // newline behaviour is independent of terminal line-feed mode.
+        let mut m = modes();
+        m.linefeed_newline = true;
+        let mut k = key("Enter");
+        k.ctrl = true;
+        assert_eq!(encode(&k, &m).bytes, vec![0x0a]);
     }
 
     #[test]

@@ -34,7 +34,7 @@
      back to color-emoji glyphs when the primary fonts have no glyph for an
      emoji codepoint. */
   --font-ui: "Inter", ui-sans-serif, system-ui, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
-  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, ui-monospace, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace;
+  --font-mono-term: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, ui-monospace, "Twemoji", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace;
   --rg-title-proc: #36c26e;
   --rg-title-sep: #2a4832;
   --rg-title-cwd: #72a87c;
@@ -240,8 +240,8 @@ body {
  */
 .os-theme-rg-os-theme,
 .os-theme-rg-os-theme.os-scrollbar {
-  --os-size: 10px;
-  --os-padding-perpendicular: 2px;
+  --os-size: 12px;
+  --os-padding-perpendicular: 4px;
   --os-padding-axis: 2px;
   --os-track-border-radius: 999px;
   --os-track-bg: transparent;
@@ -252,6 +252,25 @@ body {
   --os-handle-bg-active: rgba(167, 139, 250, 0.75);
   --os-handle-border-radius: 999px;
   --os-handle-min-size: 36px;
+}
+
+/* 滚动条交互细节：
+ *  1. 拖拽 / 悬停时不显示 grab/move 等"可拖动"光标，保持默认箭头，避免视觉噪音。
+ *  2. 抓取 thumb 拖动时，禁止页面文本被意外选中。overlayscrollbars 不会自动加
+ *     user-select:none —— body 上的 .rg-os-dragging（由 overlayScroll action
+ *     的全局 pointerdown 监听器开关）覆盖整个文档。 */
+.os-theme-rg-os-theme .os-scrollbar-track,
+.os-theme-rg-os-theme .os-scrollbar-handle,
+.os-theme-rg-os-theme.os-scrollbar,
+.os-theme-rg-os-theme.os-scrollbar.os-scrollbar-handle-interactive .os-scrollbar-handle,
+.os-theme-rg-os-theme.os-scrollbar.os-scrollbar-track-interactive .os-scrollbar-track {
+  cursor: default;
+}
+
+body.rg-os-dragging,
+body.rg-os-dragging * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 /* 确保 overlayscrollbars 的 host 元素不会因初始化强制 overflow:hidden 把子元素裁掉。

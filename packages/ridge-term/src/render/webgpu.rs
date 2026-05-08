@@ -546,7 +546,18 @@ impl RenderBackend for WebGpuPaneBackend {
                     bg_rgba: rgba_u8_to_f32(bg),
                 });
                 if let Some(e) = entry {
-                    let glyph_w_px = (e.px_w as f32).min(cell_w_px).max(1.0);
+                    // Color emoji glyphs (COLR / CPAL / sbix / SVG) have
+                    // a natural advance ≈ 1em — narrower than the 2 latin
+                    // cells the renderer reserved. Stretch their quad to
+                    // the full cell pair so the emoji fills the space.
+                    // CJK glyphs (e.is_color = false) keep the natural
+                    // advance to avoid horizontal distortion of the
+                    // character.
+                    let glyph_w_px = if e.is_color {
+                        cell_w_px
+                    } else {
+                        (e.px_w as f32).min(cell_w_px).max(1.0)
+                    };
                     self.pending_instances.push(CellInstance {
                         cell_xy: [pixel_x, pixel_y],
                         cell_size: [glyph_w_px, row_h_int],

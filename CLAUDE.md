@@ -263,6 +263,121 @@ setTimeout in `RidgePane.svelte::onCompositionEnd`. WebGPU was
 already redraw-every-tick so neither fix changes its behaviour;
 both target Canvas2D + the cross-backend cursor-anchor logic.
 
+§A.4 (2026-05-08) — inline-TUI redraw-CSI detection + Canvas2D
+full-clear + JS feed coalescing. Two symptoms persisted after §1.27 /
+§1.27-tail when running Claude Code's `claude` (Ink + log-update)
+inside a Ridge pane: (1) **字符残留** — old cells lingered on the
+spinner row across redraws; (2) **spinner ~1 cell offset on plain
+ASCII text** — flashes of mis-aligned characters made spinner words
+look wrong. User confirmed: cursor stays hidden the whole time and
+the offset is on plain ASCII, not CJK / emoji — ruling out
+`unicode_width` divergence and EAW Ambiguous-width drift. Three
+coordinated fixes shipped:
+
+1. **Kernel — `note_redraw_csi(now_ms)` + widened predicate.**
+   `Grid::is_inline_tui_active_at` previously activated only when an
+   absolute-positioning CSI (CUP `H`, HVP `f`, CHA `G` / HPA `` ` ``,
+   VPA `d`) had fired within the 2 s decay window. log-update's
+   prelude is `(\x1b[2K\x1b[1A)*N` — pure relative moves — so the
+   heuristic only flipped on at the trailing `\x1b[G`. By then,
+   Canvas2D had already painted multiple frames of the walk through
+   the dirty-row hash diff path. Fix: `Grid` now carries a parallel
+   `last_redraw_csi_at_ms` field (separate from `last_abs_csi_at_ms`
+   so `last_abs_csi_position()` and the IME helper anchor stay
+   anchored to TRUE absolute landings only). The parser CSI dispatch
+   calls `Grid::note_redraw_csi(clock::now_ms())` from the EL (`K`),
+   ED (`J`), CUU (`A`), and CUD (`B` / VPR `e`) arms. The predicate
+   now reads `max(last_abs_csi_at_ms, last_redraw_csi_at_ms)` so it
+   activates from the very first EL/CUU of an Ink walk and stays on
+   for 2 s of subsequent ticks. CUF/CUB/CNL/CPL/CHT/CBT are
+   intentionally NOT marked — they are within-row cursor moves that
+   PSReadLine emits heavily during ordinary prompt redraws (with
+   cursor briefly hidden), and gating on them would force a 2-second
+   full repaint on every shell prompt.
+
+2. **Renderer — Canvas2D `clearRect` before `fillRect` on full-redraw
+   frames.** `backend.rs::draw_frame` only calls `backend.clear()`
+   when `full_redraw == true`. The old `Canvas2dBackend::clear` did a
+   `fillRect` over `(css_w, css_h)` with `theme.bg` but no
+   `clearRect`. Pixel residue from translucent overlays (selection
+   tint, IME helper alpha shadow during composition) or sub-pixel
+   rounding could survive into the next frame. Fix: prepend
+   `ctx.clear_rect(0, 0, css_w, css_h)` in `Canvas2dBackend::clear`.
+   Only fires on full-redraw frames — partial dirty-row updates stay
+   on the optimised path. WebGPU (which clears via `LoadOp::Clear`
+   every tick) is unaffected.
+
+3. **JS — feed coalescing during inline-TUI.** ConPTY on Windows
+   regularly splits a single application write across 2-3 read
+   iterations when the byte stream straddles its internal buffer.
+   Ink's `(walk)+\x1b[G+frame` therefore arrives as separate
+   `pty-output` events 1-2 ms apart. If a rAF tick fired between two
+   such events, the kernel was sampled mid-walk: rows EL-cleared but
+   new content not yet fed. Canvas2D's full-redraw still painted
+   the partial state, and the next tick painted the completed frame
+   — but the user's eye saw a one-frame flash where ASCII characters
+   appeared shifted by ~1 cell relative to their final position.
+   Fix: when `kernel.isInlineTuiMode()` returns true, `manager.feed`
+   accumulates incoming bytes in a per-pane `feedBuffer` and flushes
+   to the kernel after an 8 ms inactivity timeout (or immediately
+   when the buffer reaches 8 KiB, or on `detach`/`park`). 8 ms is
+   well above ConPTY's 1-2 ms inter-fragment gap and well below
+   Ink's ~30 ms spinner cadence, so visual latency stays sub-frame.
+   Non-inline shells (PowerShell prompt, regular CLI output, vim,
+   lazygit on alt screen) bypass the gate and keep the original
+   synchronous feed path. `detach` flushes the residual buffer to
+   the kernel BEFORE `kernel.free()` so end-of-stream bytes aren't
+   dropped on tab close; `park` flushes before tearing down the
+   render handle so the kernel (which stays alive while parked)
+   sees the buffered bytes and the next-attach replay is consistent.
+
+Net effect on tick path:
+- Pre-§A.4: Canvas2D could enter dirty-row diff mid-Ink-walk → stale
+  cell pixels + alpha shadow residue + partial-state sampling →
+  visible residue and ASCII jitter.
+- Post-§A.4: every Ink frame reaches the kernel atomically, the
+  kernel flags inline-TUI on the FIRST EL/CUU and stays flagged
+  through the trailing CHA, every Canvas2D full-redraw frame
+  hard-clears the canvas before painting bg.
+
+§A.5 (2026-05-08) — wcwidth Dingbats narrowing (Claude Code spinner
+"Tomfoolering" → "Tomfoolerigg" bug). After §A.4 shipped the offset
+still appeared in `claude` spinner rows. Live `RIDGE_TICK_TRACE`
+capture pinned the root cause: `packages/ridge-term/src/term/wcwidth.rs`
+had a blanket `(0x2600..=0x27BF) => 2` rule covering the entire
+Misc Symbols + Dingbats Unicode block (originally added to keep
+WebView2/Chromium color-emoji glyphs from overflowing), but most
+codepoints in that block — including Claude Code's spinner glyphs
+`✻ ✽ ✶` (U+273B / U+273D / U+2736) and the prompt arrow `❯`
+(U+276F) — have East Asian Width = Neutral and `string-width`
+returns 1 for them. Mismatch shifted ridge-term's grid one column
+right of Claude's mental model, so Claude's incremental
+`\x1b[14;14Hg` updates landed on the cell that ridge-term still
+held the previous frame's `n` in. Visual: spinner words like
+"Tomfoolering" rendered as "Tomfoolerigg" because the `g` from
+column 14 in Claude's model wrote into ridge-term's column 13
+(carrying `n`). Fix: replaced the blanket range with an explicit
+`matches!()` of Unicode `Emoji_Presentation=Yes` codepoints in the
+0x2600-0x27BF block (☔ ☕ ⚡ ⚪ ⚫ ⚽ ⚾ ⛄ ⛅ ⛎ ⛔ ⛪ ⛲ ⛳ ⛵ ⛺ ⛽
+✅ ✊ ✋ ✨ ❌ ❎ ❓ ❔ ❕ ❗ ➕ ➖ ➗ ➰ ➿). Everything else in the
+range now returns width 1 — matching `unicode-width`'s default
+table and `string-width`'s output. New tests:
+`dingbats_neutral_are_narrow` and `dingbats_emoji_presentation_stay_wide`
+in `wcwidth.rs`. The existing `is_color_emoji_codepoint` (Canvas2D
+glyph-stretch heuristic) is unchanged — it's gated on
+`cell.width == 2` at the call site, so width-1 cells never reach
+the stretch path regardless of which range the heuristic claims.
+
+Diagnostic harness shipped alongside §A.5: `localStorage.RIDGE_TICK_TRACE = '1'`
+emits three correlated streams in DevTools Console — `[pty-trace]`
+(every PTY chunk's first 256 bytes hex), `[tick-trace]` per `feed()`
+call (`feed +NB inlineTui=… buffered=…B flush=idle|pending`), and
+`[tick-trace]` per rAF frame with cursor row + cells dump
+(`cur=(row,col) inlineTui=… dirty=… render=…  rowN="…cells…"`,
+spaces shown as `·` for visibility). Used to nail this bug from a
+single user session log; should remain the go-to first step for
+any future "wrong char in inline-TUI cell" report.
+
 §4.6 (2026-05-07, font-fallback only): `manager.ts:240`'s default
 `fontFamily` already includes `"Segoe UI Emoji", "Apple Color Emoji",
 "Noto Color Emoji"` after the monospace stack, so single-codepoint
