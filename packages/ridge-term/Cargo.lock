@@ -574,6 +574,7 @@ dependencies = [
  "bytemuck",
  "console_error_panic_hook",
  "js-sys",
+ "naga",
  "serde",
  "serde-wasm-bindgen",
  "unicode-segmentation",

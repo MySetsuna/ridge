@@ -46,6 +46,11 @@ struct InstanceIn {
     @location(3) atlas_layer: u32,
     @location(4) fg_rgba: vec4<f32>,
     @location(5) bg_rgba: vec4<f32>,
+    // §B.3 (2026-05-08) — per-glyph color/mono flag from the
+    // rasterizer's pixel scan. 1 = color-emoji bitmap (RGB carries the
+    // font's native palette), 0 = monochrome (RGB always (1,1,1) +
+    // alpha = coverage; tint with fg_rgba).
+    @location(6) is_color_u: u32,
 }
 
 struct VertexOut {
@@ -58,6 +63,10 @@ struct VertexOut {
     @location(1) atlas_layer: f32,
     @location(2) fg: vec4<f32>,
     @location(3) bg: vec4<f32>,
+    // §B.3 — same f32 round-trip trick as atlas_layer for the per-
+    // instance color/mono flag (interpolation is moot — the value is
+    // identical at all 4 quad corners).
+    @location(4) is_color: f32,
 }
 
 struct FrameUniform {
@@ -107,12 +116,20 @@ fn vs_main(
     out.atlas_layer = f32(instance.atlas_layer);
     out.fg = instance.fg_rgba;
     out.bg = instance.bg_rgba;
+    out.is_color = f32(instance.is_color_u);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Sample the atlas at level 0 (no mipmaps; cell glyphs are 1:1).
+    // §B.4 (2026-05-08) — atlas storage is now PREMULTIPLIED: the
+    // rasterizer multiplies rgb by alpha/255 before write_texture so
+    // Linear-filter sampling at AA fringe pixels gives correct
+    // alpha-weighted color contributions. This fixes the "color emoji
+    // edges go dark / black-haloed" symptom that straight-alpha
+    // storage produced (Linear filter independently averaged rgb,
+    // halving each channel at midway samples regardless of alpha).
     let glyph = textureSampleLevel(
         atlas_tex,
         atlas_smp,
@@ -124,23 +141,45 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Alpha is glyph coverage in both rasterization modes.
     let coverage = glyph.a;
 
-    // Per-pixel detection of color-emoji output. Monochrome glyphs
-    // are painted in pure white (#ffffff) — getImageData returns
-    // non-premultiplied bytes so RGB stays (1,1,1) regardless of
-    // alpha. Color-emoji fonts (COLR / CPAL / sbix / SVG) ignore
-    // fillStyle and write their native palette into RGB — those
-    // pixels have at least one channel below 1.0. The 0.99 threshold
-    // tolerates sRGB→linear quantization at boundary white pixels
-    // (decoded ~0.992) so monochrome AA edges aren't misclassified
-    // as colored.
-    let is_color = (glyph.r < 0.99) || (glyph.g < 0.99) || (glyph.b < 0.99);
-    let glyph_rgb = select(in.fg.rgb, glyph.rgb, is_color);
+    // §B.3 — color/mono classification carried per-instance from the
+    // rasterizer's pixel-scan (`GlyphEntry::is_color`). The earlier
+    // per-pixel `glyph.rgb < 0.99` heuristic was broken for Linear-
+    // filter sampling: AA fringe pixels interpolate to fractional rgb
+    // that the heuristic misclassified as "color emoji", then used
+    // the gray rgb instead of tinting with `fg_rgba` — visible as
+    // gray halos on monochrome glyphs (user-reported "白色毛边").
+    let is_color = in.is_color > 0.5;
 
-    // Composite glyph RGB over bg weighted by coverage. RGB linearly
-    // interpolates; alpha goes to 1.0 wherever the glyph paints
-    // anything (cells should always be opaque since the renderer's
-    // theme.bg already has alpha=1).
-    let rgb = mix(in.bg.rgb, glyph_rgb, coverage);
+    // §B.4 — premultiplied composite formula:
+    //     out_rgb = bg_rgb * (1 - coverage) + glyph_contribution
+    //
+    // For COLOR glyphs: `glyph.rgb` is already premultiplied at upload
+    // time, so it equals `coverage * actual_color` — usable directly
+    // as the contribution.
+    //
+    // For MONO glyphs: ignore the sampled rgb entirely (it's the
+    // grayscale `(coverage, coverage, coverage)` we get post-premult
+    // from a white #ffffff fillStyle, irrelevant). Build the
+    // contribution from `coverage * fg.rgb` instead — same alpha
+    // weighting, but using the cell's foreground color.
+    let glyph_contribution = select(
+        in.fg.rgb * coverage,   // mono: alpha-weighted fg
+        glyph.rgb,              // color: already premultiplied
+        is_color
+    );
+
+    // The composite. Note that for the "single-instance narrow cell"
+    // path, in.bg is the actual cell background; for the "split
+    // bg + glyph" path used by wide cells, the glyph quad sees
+    // in.bg = (0, 0, 0, 0) so this collapses to `glyph_contribution`
+    // and the premultiplied BlendState (src=One, dst=OneMinusSrcAlpha,
+    // configured in gpu_context.rs) layers it correctly over the bg
+    // quad written earlier in the same pass.
+    let rgb = in.bg.rgb * (1.0 - coverage) + glyph_contribution;
+
+    // Output alpha: opaque cell = 1, split-glyph quad = coverage so
+    // the BlendState's `(1 - src.a)` factor preserves the correct
+    // amount of the underlying bg quad.
     let a = mix(in.bg.a, 1.0, coverage);
     return vec4<f32>(rgb, a);
 }

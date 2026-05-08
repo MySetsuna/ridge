@@ -67,6 +67,24 @@ pub struct Modes {
     /// monotonic clock.
     pub sync_output: bool,
 
+    /// §B.6 (2026-05-08) — Unicode Core mode (`CSI ? 2027 h/l`). When
+    /// `true`, the application has been told the terminal handles
+    /// extended grapheme clusters with the cluster's *visual* width,
+    /// not the sum of its codepoints' wcwidths. PSReadLine 2.3.6+,
+    /// oh-my-posh, starship, and modern shell prompts query this mode
+    /// (DECRQM `CSI ? 2027 $p`) and switch their internal column
+    /// accounting to match — fixing the canonical "non-BMP emoji
+    /// renders at column 4 because .NET counts surrogate pair as 2
+    /// chars × 2 cells each" symptom on Windows.
+    ///
+    /// Wind ALWAYS uses grapheme cluster widths internally (see
+    /// `wcwidth_grapheme` + `print_grapheme`); this mode is just a
+    /// signal to the application that the terminal does so. Setting
+    /// it to `true` is harmless on apps that ignore it.
+    ///
+    /// Reference: contour-terminal/terminal-unicode-core spec.
+    pub unicode_core_2027: bool,
+
     /// Cursor shape set via DECSCUSR `CSI <n> SP q`. Renderer reads this
     /// to decide between block/underline/bar in `compute_cursor_draw`.
     /// Note: the same DECSCUSR sub-code also encodes blink — we mirror
@@ -93,6 +111,14 @@ impl Default for Modes {
             app_cursor_keys: false,
             app_keypad: false,
             sync_output: false,
+            // §B.6 — default ON. Wind's grapheme-cluster width
+            // semantics match Mode 2027's spec at construction time;
+            // advertising it eagerly means PSReadLine queries this
+            // mode at startup (oh-my-posh / starship inject the query
+            // into PROMPT_COMMAND) and gets the right answer without
+            // the user manually enabling it. Apps that DON'T speak
+            // 2027 are unaffected.
+            unicode_core_2027: true,
             cursor_shape: CursorShape::Block,
         }
     }
@@ -188,6 +214,13 @@ impl Modes {
                     self.sync_output = value;
                     ModeEffect::None
                 }
+                2027 => {
+                    // §B.6 — explicit set/reset is honoured even
+                    // though the default is ON; an app that wants to
+                    // assert legacy width behaviour can still opt out.
+                    self.unicode_core_2027 = value;
+                    ModeEffect::None
+                }
 
                 47 => {
                     if value {
@@ -263,6 +296,28 @@ mod tests {
         let mut m = Modes::default();
         assert_eq!(m.set(9999, true, true), ModeEffect::None);
         assert_eq!(m.set(9999, true, false), ModeEffect::None);
+    }
+
+    #[test]
+    fn unicode_core_2027_default_on() {
+        // §B.6 — Mode 2027 advertises grapheme-cluster width semantics.
+        // Wind ALWAYS uses cluster widths internally (`wcwidth_grapheme`
+        // + `print_grapheme`); advertising it eagerly means PSReadLine /
+        // oh-my-posh / starship pick up the right width path at startup
+        // without manual config — fixes the "non-BMP emoji renders at
+        // col 4 because .NET counts surrogate pair as 2×2 cells" symptom
+        // on Windows.
+        let m = Modes::default();
+        assert!(m.unicode_core_2027, "Mode 2027 must default to ON");
+    }
+
+    #[test]
+    fn unicode_core_2027_toggles() {
+        let mut m = Modes::default();
+        assert_eq!(m.set(2027, false, true), ModeEffect::None);
+        assert!(!m.unicode_core_2027);
+        assert_eq!(m.set(2027, true, true), ModeEffect::None);
+        assert!(m.unicode_core_2027);
     }
 
     #[test]

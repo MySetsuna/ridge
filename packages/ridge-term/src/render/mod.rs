@@ -47,6 +47,53 @@ pub mod glyph_rasterizer;
 pub use backend::{CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme};
 pub use renderer::Renderer;
 
+// ─── Static WGSL validation (host-target only) ─────────────────────────
+//
+// `cell.wgsl` is `include_str!`'d into the binary and only validated by
+// wgpu at `device.create_shader_module()` time — i.e. inside the
+// browser, on the first WebGPU pane attach. A typo there is a
+// production-only failure that surfaces as a JS console error and
+// silent fallback to Canvas2D for that pane.
+//
+// Naga is the parser+validator wgpu uses internally. Pulling it as a
+// host dev-dep (see Cargo.toml `[dev-dependencies]`) lets us validate
+// the shader on every `cargo test --lib` — synchronously, with the
+// CI gate that already exists. If you change `cell.wgsl` and break
+// it, this test fires before the browser ever sees the file.
+#[cfg(test)]
+mod wgsl_validation_tests {
+    /// Embed the same source text the WebGPU bootstrap loads at runtime
+    /// (`include_str!("shaders/cell.wgsl")` in `gpu_context.rs`). Single
+    /// source of truth — if either path drifts the test breaks loudly.
+    const CELL_WGSL: &str = include_str!("shaders/cell.wgsl");
+
+    #[test]
+    fn cell_wgsl_parses_and_validates() {
+        let module = naga::front::wgsl::parse_str(CELL_WGSL)
+            .unwrap_or_else(|e| panic!("cell.wgsl parse error:\n{}", e.emit_to_string(CELL_WGSL)));
+
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("cell.wgsl validation error: {e:?}"));
+
+        // Sanity: vs_main + fs_main must both be present in the module.
+        // (Naga's `ModuleInfo.entry_points` is private; the public list
+        // lives on `Module` itself.)
+        let names: Vec<&str> = module
+            .entry_points
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"vs_main") && names.contains(&"fs_main"),
+            "expected vs_main + fs_main, got {names:?}"
+        );
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 pub use canvas2d::Canvas2dBackend;
 

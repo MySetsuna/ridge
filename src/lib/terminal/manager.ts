@@ -32,6 +32,8 @@
 //   mgr.detach(paneId);                 // on pane unmount
 
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
+import { get } from 'svelte/store';
+import { settingsStore } from '../stores/settings';
 // Vite-native asset URL: this returns the bundled / dev-served path of
 // the .wasm file at build time. Bypasses the "auto-locate next to .js"
 // path that breaks under vite's pre-bundle (the cause of the
@@ -270,28 +272,29 @@ export class TerminalManager {
 	 *  most ONE of `{rafHandle, idleTimer}` is non-null while panes are
 	 *  attached. */
 	private idleTimer: ReturnType<typeof setTimeout> | null = null;
-	/** §A.8 (2026-05-08) — per-workspace host canvases. Each workspace
-	 *  tab owns one `<canvas data-rg-ws-host>` mounted inside its
-	 *  wrapper div; `attachHost(canvas, workspaceId)` registers a
-	 *  matching SurfaceHostHandle here. Switching workspaces is then a
-	 *  CSS `display:none/flex` flip — the inactive tab's canvas keeps
-	 *  its last-painted pixels (browser compositor preserves the canvas
-	 *  bitmap as long as the DOM element is mounted). No more shared
-	 *  global canvas, no more LoadOp::Clear flash on switch.
-	 *  Empty until first attachHost call; populated lazily as workspaces
-	 *  mount. Removed via detachHost on workspace close. */
-	private workspaceHosts = new Map<
-		string,
-		{ canvas: HTMLCanvasElement; host: SurfaceHostHandle }
-	>();
-	/** Per-workspace in-flight attachHost promise so concurrent attach()
-	 *  calls for panes in the same workspace can `await` one shared
-	 *  init instead of racing into multiple SurfaceHost::init calls.
-	 *  Resolves (never rejects) — attachHost swallows init errors
-	 *  internally and leaves `workspaceHosts` un-set for that workspace
-	 *  when WebGPU isn't usable, falling back to per-pane Canvas2D for
-	 *  every pane in the affected workspace. */
-	private attachHostPromises = new Map<string, Promise<void>>();
+	/** §A.9 (2026-05-08 follow-up) — single global host canvas, shared by
+	 *  EVERY workspace's panes. Replaces the previous per-workspace
+	 *  Map<wsId, {canvas, host}> design that forced a `surface.configure`
+	 *  on every workspace switch (display:none → display:flex) and
+	 *  produced visible black flashes while the swap chain reconfigured.
+	 *
+	 *  Single canvas means: pipeline + swap chain stay alive across
+	 *  switches; switching workspaces is a CSS display flip that changes
+	 *  which panes' container rects are non-zero, so `_recomputeViewport`
+	 *  naturally drops scissors for inactive workspaces and the next RAF
+	 *  paints the new active workspace into the existing surface — no
+	 *  reconfigure, no clear, no black flash.
+	 *
+	 *  `null` until `attachHost(canvas)` lands at app boot. Once set, the
+	 *  canvas/host pair is reused for the app lifetime. `detachHost()` is
+	 *  only meaningful at shutdown / SSR teardown. */
+	private globalHost: { canvas: HTMLCanvasElement; host: SurfaceHostHandle } | null = null;
+	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
+	 *  `unpark()` calls await this so they don't race ahead of WebGPU
+	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
+	 *  init errors internally and leaves `globalHost` null when WebGPU
+	 *  isn't usable, falling back to per-pane Canvas2D for every pane. */
+	private attachHostPromise: Promise<void> | null = null;
 	/** Document `visibilitychange` listener installed once on first pane
 	 *  attach; removed on last detach. Hidden tabs throttle RAF anyway,
 	 *  but waking on visibility-restore avoids a lag the first time the
@@ -482,10 +485,19 @@ export class TerminalManager {
 	 * affected workspace — `attach()` falls back to creating a per-pane
 	 * `<canvas>` inside each pane container.
 	 */
-	public attachHost(canvas: HTMLCanvasElement, workspaceId: string): Promise<void> {
-		const pending = this.attachHostPromises.get(workspaceId);
-		if (pending) return pending;
-		if (this.workspaceHosts.has(workspaceId)) return Promise.resolve();
+	public attachHost(canvas: HTMLCanvasElement): Promise<void> {
+		if (this.attachHostPromise) return this.attachHostPromise;
+		if (this.globalHost) {
+			// Re-attaching the SAME canvas is a no-op. Swapping to a
+			// DIFFERENT canvas would require a full WebGPU surface
+			// re-init — not supported in §A.9; the global canvas stays
+			// for the app's lifetime.
+			if (this.globalHost.canvas === canvas) return Promise.resolve();
+			console.warn(
+				'[ridge-term] attachHost called with a new canvas while one is already attached; ignoring',
+			);
+			return Promise.resolve();
+		}
 		const promise = (async () => {
 			if (!this.wasmReady) await this.ready();
 			const SHHCtor = SurfaceHostHandle as unknown as
@@ -504,37 +516,36 @@ export class TerminalManager {
 				host = await SHHCtor.init(canvas);
 			} catch (err) {
 				console.warn(
-					'[ridge-term] SurfaceHost.init failed for workspace',
-					workspaceId,
-					'; per-pane Canvas2D will be used',
+					'[ridge-term] SurfaceHost.init failed; per-pane Canvas2D will be used',
 					err,
 				);
 				return;
 			}
-			this.workspaceHosts.set(workspaceId, { canvas, host });
-			this.resizeHost(workspaceId); // initial swap-chain configure
+			this.globalHost = { canvas, host };
+			this.resizeHost(); // initial swap-chain configure
 		})();
-		this.attachHostPromises.set(workspaceId, promise);
+		this.attachHostPromise = promise;
 		return promise;
 	}
 
-	/** §A.8 — release a workspace's SurfaceHost when its tab is being
-	 *  closed. Per-pane backends still alive in this workspace will
-	 *  fail their next render call (handle.render → Rc dropped → no-op);
-	 *  caller is expected to detach panes BEFORE detaching the host. */
-	public detachHost(workspaceId: string): void {
-		this.workspaceHosts.delete(workspaceId);
-		this.attachHostPromises.delete(workspaceId);
+	/** §A.9 — release the global SurfaceHost (only meaningful at app
+	 *  shutdown / SSR teardown). All panes must be detached first;
+	 *  surviving handles will no-op on render after the Rc drops. */
+	public detachHost(): void {
+		this.globalHost = null;
+		this.attachHostPromise = null;
 	}
 
-	/** §A.8 — internal: per-workspace SurfaceHost lookup. */
-	private _hostFor(workspaceId: string): SurfaceHostHandle | null {
-		return this.workspaceHosts.get(workspaceId)?.host ?? null;
+	/** §A.9 — internal: global SurfaceHost lookup. The legacy
+	 *  per-workspace `_hostFor(wsId)` API is gone; every pane shares
+	 *  the same host now, so the wsId argument is meaningless. */
+	private _globalHostHandle(): SurfaceHostHandle | null {
+		return this.globalHost?.host ?? null;
 	}
 
-	/** §A.8 — internal: per-workspace canvas lookup. */
-	private _hostCanvasFor(workspaceId: string): HTMLCanvasElement | null {
-		return this.workspaceHosts.get(workspaceId)?.canvas ?? null;
+	/** §A.9 — internal: global canvas lookup. */
+	private _globalHostCanvas(): HTMLCanvasElement | null {
+		return this.globalHost?.canvas ?? null;
 	}
 
 	/**
@@ -549,18 +560,19 @@ export class TerminalManager {
 	 *
 	 * No-op when `surfaceHost` is null (Canvas2D-only deployment).
 	 */
-	public resizeHost(workspaceId: string): void {
-		const entry = this.workspaceHosts.get(workspaceId);
+	public resizeHost(): void {
+		const entry = this.globalHost;
 		if (!entry) return;
 		const { canvas, host } = entry;
 		const parent = canvas.parentElement;
 		if (!parent) return;
 		const rect = parent.getBoundingClientRect();
-		// §A.8 — defensive: if the canvas's parent is hidden (its
-		// workspace tab isn't active right now), the rect is 0×0. Skip
-		// surface.configure with 0×0 (wgpu rejects) — the next time
-		// this workspace becomes visible, attachHost / a manual
-		// resizeHost call will redo this with the real rect.
+		// Defensive: parent may briefly measure 0×0 during initial mount
+		// or while `display:none` is held by an ancestor. wgpu rejects
+		// surface.configure(0, 0); skip and retry on the next observer
+		// fire. With §A.9's single canvas this only happens at boot —
+		// workspace switches don't reach here at all (the canvas's
+		// parent is always-mounted and sized).
 		if (rect.width <= 0 || rect.height <= 0) return;
 		const dpr = window.devicePixelRatio || 1;
 		const wCss = Math.max(1, Math.floor(rect.width));
@@ -575,10 +587,41 @@ export class TerminalManager {
 		host.resize(wCss, hCss, dpr);
 		for (const e of this.panes.values()) {
 			if (e.parked) continue;
-			if (e.workspaceId !== workspaceId) continue;
 			this._recomputeViewport(e);
 		}
 		host.invalidate();
+		this.wake();
+	}
+
+	/**
+	 * §A.9 — call from the UI when `activeWorkspaceId` changes. With a
+	 * shared global canvas we can't rely on canvas-level ResizeObserver
+	 * to drive a redraw (the canvas itself doesn't resize on workspace
+	 * switch). Instead, walk every newly-active pane, recompute its
+	 * scissor against the (unchanged) host canvas, invalidate, and wake
+	 * the RAF loop so the very next frame paints the new workspace.
+	 *
+	 * Inactive workspaces' panes naturally fall out via `_isContainerHidden`
+	 * (their SplitContainer is `display:none`, container measures 0×0).
+	 *
+	 * No-op when WebGPU host isn't initialised (Canvas2D fallback path
+	 * has no shared surface).
+	 */
+	public onActiveWorkspaceChanged(workspaceId: string): void {
+		if (!this.globalHost) return;
+		for (const e of this.panes.values()) {
+			if (e.parked) continue;
+			if (e.workspaceId !== workspaceId) continue;
+			// Sync the host-canvas-relative scissor to the now-visible
+			// pane container. Don't touch `wasHiddenLastTick` — the RAF
+			// loop already sets it to true while the pane was hidden,
+			// and §A.9 deliberately avoids the legacy "skip render this
+			// tick" branch. Keeping the flag as-is means the next tick
+			// runs a one-shot fitPane (idempotent if size unchanged) AND
+			// renders this tick — no black flash, no missed kernel resize.
+			this._recomputeViewport(e);
+		}
+		this.globalHost.host.invalidate();
 		this.wake();
 	}
 
@@ -591,8 +634,8 @@ export class TerminalManager {
 	 * `surfaceHost.invalidate()`.
 	 */
 	private _isHostMode(entry: PaneEntry): boolean {
-		const wsHost = this.workspaceHosts.get(entry.workspaceId);
-		return wsHost !== undefined && entry.canvas === wsHost.canvas;
+		const gh = this.globalHost;
+		return gh !== null && entry.canvas === gh.canvas;
 	}
 
 	/**
@@ -681,9 +724,9 @@ export class TerminalManager {
 	 * No-op for Canvas2D-mode panes (per-pane DOM canvas, not host).
 	 */
 	private _recomputeViewport(entry: PaneEntry): void {
-		const wsEntry = this.workspaceHosts.get(entry.workspaceId);
-		if (!wsEntry || !this._isHostMode(entry)) return;
-		const hostCanvas = wsEntry.canvas;
+		const gh = this.globalHost;
+		if (!gh || !this._isHostMode(entry)) return;
+		const hostCanvas = gh.canvas;
 		const cr = entry.container.getBoundingClientRect();
 		// Hidden workspace tab → bbox 0×0 → degenerate scissor / kernel
 		// resize. Skip; the next visible-tick ResizeObserver fire (or
@@ -740,25 +783,25 @@ export class TerminalManager {
 		if (this.panes.has(paneId)) {
 			throw new Error(`TerminalManager.attach: pane ${paneId} already attached`);
 		}
-		// §A.8 — wait for this workspace's SurfaceHost to settle (kicked
-		// off by +page.svelte::onMount → manager.attachHost(canvas, ws.id)
-		// which races RidgePane mounts).
-		const wsHostPromise = this.attachHostPromises.get(workspaceId);
-		if (wsHostPromise) {
-			try { await wsHostPromise; } catch { /* attachHost handles errors internally */ }
+		// §A.9 — wait for the global SurfaceHost to settle (kicked off
+		// by +page.svelte::onMount → manager.attachHost(canvas) which
+		// races RidgePane mounts). Single global init now, so no
+		// per-workspace lookup.
+		if (this.attachHostPromise) {
+			try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
 		}
 
-		const wsHost = this.workspaceHosts.get(workspaceId);
-		const useHost = wsHost !== undefined && this.opts.preferWebgpu;
+		const gh = this.globalHost;
+		const useHost = gh !== null && this.opts.preferWebgpu;
 		let canvas: HTMLCanvasElement;
 		let hostHandle: SurfaceHostHandle | undefined;
-		if (useHost && wsHost) {
-			canvas = wsHost.canvas;
-			hostHandle = wsHost.host;
-			// Per-pane container must be transparent so the workspace
-			// canvas (sitting BEHIND the SplitContainer DOM tree) shows
-			// through. An opaque background would hide every WebGPU
-			// pixel.
+		if (useHost && gh) {
+			canvas = gh.canvas;
+			hostHandle = gh.host;
+			// Per-pane container must be transparent so the global
+			// canvas (sitting BEHIND every workspace's SplitContainer
+			// DOM tree) shows through. An opaque background would hide
+			// every WebGPU pixel.
 			container.style.background = 'transparent';
 		} else {
 			canvas = document.createElement('canvas');
@@ -785,8 +828,27 @@ export class TerminalManager {
 		const cellWnum = Number(cellW);
 		const cellHnum = Number(cellH);
 
+		// §B.2 (2026-05-08) — read scrollback capacity from settings at
+		// pane-attach time so the user's "终端 scrollback 行数" preference
+		// (SettingsPanel slider, range 100..=10000) applies to every NEW
+		// pane. Existing panes keep the capacity they were constructed
+		// with (the wasm `Vec<Option<Row>>` is fixed-capacity). Falls
+		// back to `this.opts.scrollbackLines` (constructor default 2000)
+		// when the settings store hasn't been hydrated yet (SSR boot or
+		// pre-first-attach).
+		const settings = (() => {
+			try {
+				return get(settingsStore);
+			} catch {
+				return null;
+			}
+		})();
+		const scrollbackLines =
+			settings && Number.isFinite(settings.terminalScrollbackLines)
+				? settings.terminalScrollbackLines
+				: this.opts.scrollbackLines;
 		// Seed kernel with default 24×80 — we'll resize to actual size right away.
-		const kernel = new TerminalKernel(24, 80, this.opts.scrollbackLines);
+		const kernel = new TerminalKernel(24, 80, scrollbackLines);
 
 		// Apply theme if provided.
 		if (this.opts.theme) {
@@ -1012,7 +1074,7 @@ export class TerminalManager {
 			// alive but we ask the host to clear next frame so the
 			// pane's last pixels don't outlive its slot.
 			if (this._isHostMode(entry)) {
-				this._hostFor(entry.workspaceId)?.invalidate();
+				this._globalHostHandle()?.invalidate();
 			} else {
 				try {
 					entry.canvas.remove();
@@ -1080,11 +1142,11 @@ export class TerminalManager {
 		entry.selecting = false;
 		entry.selectionStart = null;
 
-		// §A.8: host-mode panes share their workspace's canvas; just
-		// mark for clear so departed pixels don't linger. Canvas2D
-		// mode owns its per-pane DOM canvas — clean up.
+		// §A.9: host-mode panes share the global canvas; just mark for
+		// clear so departed pixels don't linger. Canvas2D mode owns its
+		// per-pane DOM canvas — clean up.
 		if (this._isHostMode(entry)) {
-			this._hostFor(entry.workspaceId)?.invalidate();
+			this._globalHostHandle()?.invalidate();
 		} else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
@@ -1124,18 +1186,17 @@ export class TerminalManager {
 		if (!entry.parked) {
 			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
 		}
-		const wsHostPromise = this.attachHostPromises.get(entry.workspaceId);
-		if (wsHostPromise) {
-			try { await wsHostPromise; } catch { /* ignore */ }
+		if (this.attachHostPromise) {
+			try { await this.attachHostPromise; } catch { /* ignore */ }
 		}
 
-		const wsHost = this.workspaceHosts.get(entry.workspaceId);
-		const useHost = wsHost !== undefined && this.opts.preferWebgpu;
+		const gh = this.globalHost;
+		const useHost = gh !== null && this.opts.preferWebgpu;
 		let canvas: HTMLCanvasElement;
 		let hostHandle: SurfaceHostHandle | undefined;
-		if (useHost && wsHost) {
-			canvas = wsHost.canvas;
-			hostHandle = wsHost.host;
+		if (useHost && gh) {
+			canvas = gh.canvas;
+			hostHandle = gh.host;
 			container.style.background = 'transparent';
 		} else {
 			canvas = document.createElement('canvas');
@@ -1484,6 +1545,25 @@ export class TerminalManager {
 
 	clearSelection(paneId: string): void {
 		this.panes.get(paneId)?.kernel.clearSelection();
+		this.wake();
+	}
+
+	/**
+	 * §B.2 (2026-05-08) — drop the in-kernel scrollback ring buffer
+	 * (physical clear) and snap viewport to live grid. Mirrors the
+	 * xterm `\x1b[3J` sequence at the JS API level so the right-click
+	 * "清空" handler can wipe both screen + saved lines without a PTY
+	 * round trip (and without depending on the active shell to translate
+	 * Ctrl+L into ED 3 — most don't).
+	 *
+	 * Use-case: user hits the right-click "清空" menu after a verbose
+	 * session and expects ALL evidence gone. Pre-fix this only sent
+	 * Ctrl+L which bash/PowerShell handle by emitting ED 2 + cursor
+	 * home — visible grid clears but pageUp still resurrects everything
+	 * the user wanted gone (the documented "clear 不能完全清理" symptom).
+	 */
+	clearScrollback(paneId: string): void {
+		this.panes.get(paneId)?.kernel.clearScrollback();
 		this.wake();
 	}
 
@@ -1999,16 +2079,17 @@ export class TerminalManager {
 			// `beginFrame` because all-cached + no clear = nothing to
 			// present — but that's a rare optimisation; the typical
 			// case is "at least one pane dirty per tick".
-			// §A.8 per-workspace canvas (2026-05-08): since only one
-			// workspace tab can be visible at a time, exactly one
-			// workspace's panes have non-zero bbox each tick. Find that
-			// workspace, gather its panes' dirty state, open ITS host
-			// frame, render its panes, close its host frame. Other
-			// workspaces' panes are hidden (display:none ancestor → bbox
-			// 0×0) and skipped — their canvases preserve their last-
-			// painted pixels via the browser compositor, so switching
-			// to them later is a CSS toggle (no re-render needed until
-			// the next dirty event reaches their kernel).
+			// §A.9 single-canvas (2026-05-08 follow-up): only one
+			// workspace tab is visible at a time → exactly one
+			// workspace's panes have non-zero bbox each tick. We pin
+			// `activeWsId` to the first visible host pane found, then
+			// render only that workspace's panes onto the shared global
+			// host. Inactive workspaces' panes are skipped via the 0×0
+			// bbox check (`_isContainerHidden`) — their kernels keep
+			// receiving PTY output but no GPU work is paid for unseen
+			// pixels. Switching workspaces simply changes WHICH panes
+			// pass the bbox gate; the host's swap chain / pipeline never
+			// reconfigures, so no black flash on switch.
 			const dirtyByPane = new Map<string, boolean>();
 			let activeWsId: string | null = null;
 			let anyDirty = false;
@@ -2041,12 +2122,23 @@ export class TerminalManager {
 			let activeHost: SurfaceHostHandle | null = null;
 			const themeBg = this._currentThemeBgRgba();
 			if (activeWsId !== null) {
-				activeHost = this._hostFor(activeWsId);
-				if (activeHost) {
-					hostFrameOpen = activeHost.beginFrame(themeBg);
-				}
+				activeHost = this._globalHostHandle();
+				// §A.9: don't open the host frame eagerly here. With one
+				// shared canvas, calling beginFrame + endFrame without
+				// drawing any pane (e.g. every visible pane is in sync
+				// mode, or every visible pane just unhid and would have
+				// taken the §4a fitPane skip) submits a LoadOp::Clear-only
+				// frame and the user sees a black flash. Open lazily
+				// inside the pane loop, when we know at least one host
+				// pane is about to draw.
 			}
 			void anyDirty;
+			const ensureHostFrame = (): boolean => {
+				if (hostFrameOpen) return true;
+				if (!activeHost) return false;
+				hostFrameOpen = activeHost.beginFrame(themeBg);
+				return hostFrameOpen;
+			};
 			for (const entry of this.panes.values()) {
 				// Skip parked entries — kernel is alive but handle was
 				// freed by park(); render would dereference a dead pointer.
@@ -2066,14 +2158,16 @@ export class TerminalManager {
 				// every browser. Belt-and-suspenders: when this tick is
 				// the first visible one after a hidden run, schedule a
 				// fitPane so the kernel grid matches the (possibly
-				// different) container size before we render. Skip render
-				// THIS tick — the fitPane's post-resize sync render will
-				// produce the first frame. Avoids a single tick of
-				// painting at the OLD pre-hide cell grid.
+				// different) container size. We DO NOT skip render this
+				// tick (§A.9): the host frame would otherwise open with
+				// LoadOp::Clear and submit black with no scissors drawn.
+				// fitPane's _recomputeViewport call sets the scissor
+				// synchronously; the kernel-resize side effect is async
+				// but only matters if cell grid actually changed (rare on
+				// pure workspace switches — typically same layout).
 				if (entry.wasHiddenLastTick) {
 					entry.wasHiddenLastTick = false;
 					void this.fitPane(entry);
-					continue;
 				}
 				// Synchronous output mode (?2026): hold rendering while the
 				// TUI emits a multi-step redraw, so the user never sees a
@@ -2129,10 +2223,14 @@ export class TerminalManager {
 					}
 				}
 				// §4.3 Phase B + §4b: host-mode panes participate in the
-				// frame whenever the host frame is open (so the
-				// `LoadOp::Clear`-wiped scissor region gets repainted).
+				// frame whenever a global host is alive (so the
+				// `LoadOp::Clear`-wiped scissor region gets repainted on
+				// every tick the active workspace is rendering).
 				// Canvas2D-mode panes still gate on per-pane `dirty`.
-				const shouldRender = isHost ? hostFrameOpen : dirty;
+				// §A.9: `hostFrameOpen` is no longer the gate — the
+				// frame is opened lazily inside the render path so we
+				// don't submit a clear-only frame when nothing draws.
+				const shouldRender = isHost ? activeHost !== null : dirty;
 				// §A.4 — tick trace: dump cursor row's cells per frame. Lets us
 				// answer "what does the kernel grid hold at the moment Canvas2D
 				// samples it" — if the cells are right but render is wrong, it's
@@ -2176,6 +2274,15 @@ export class TerminalManager {
 					}
 				}
 				if (shouldRender) {
+					// §A.9: open the global host frame lazily, on the
+					// first host pane that's actually about to draw this
+					// tick. If every pane skips (sync mode, etc.), the
+					// frame stays unopened and the canvas keeps its last
+					// presented pixels — no LoadOp::Clear flash.
+					if (isHost && !ensureHostFrame()) {
+						// Surface lost / not yet inited — skip this pane.
+						continue;
+					}
 					try {
 						// §4b per-pane increment cache: visible host
 						// pane that the pre-pass marked NOT dirty →

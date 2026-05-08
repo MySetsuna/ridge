@@ -268,6 +268,24 @@
             </div>
 
             <div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-scrollback">终端 Scrollback 行数</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">每个 pane 保留的历史行数。100 – 10000。修改仅对新 pane 生效；右键「清空」可随时物理释放已积累的 scrollback。</div>
+              <div class="flex items-center gap-3">
+                <input
+                  id="set-term-scrollback"
+                  type="range"
+                  min="100"
+                  max="10000"
+                  step="100"
+                  value={$settingsStore.terminalScrollbackLines}
+                  oninput={(e) => setSetting('terminalScrollbackLines', Number((e.currentTarget as HTMLInputElement).value))}
+                  class="flex-1 accent-[var(--rg-accent)]"
+                />
+                <span class="w-16 text-right text-[12px] font-mono text-[var(--rg-fg)]">{$settingsStore.terminalScrollbackLines} 行</span>
+              </div>
+            </div>
+
+            <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-font">编辑器字号</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图共享。8 – 32 px。</div>
               <div class="flex items-center gap-3">

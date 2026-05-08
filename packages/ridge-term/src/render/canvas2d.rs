@@ -34,7 +34,12 @@ use crate::render::backend::{
 };
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
-use crate::term::wcwidth::{is_color_emoji_codepoint, is_visual_wide_codepoint};
+// §B.8 (2026-05-08) — `is_color_emoji_codepoint` and
+// `is_visual_wide_codepoint` were the codepoint-list driven gates of
+// the pre-§B.8 stretch path; now the canvas's own `fill_text_with_max_width`
+// + `cell_w * 2.0` cap handles the overflow at runtime, codepoint-
+// agnostic. Imports removed; the helpers themselves are still in
+// `wcwidth.rs` for completeness / external consumers.
 
 pub struct Canvas2dBackend {
     canvas: HtmlCanvasElement,
@@ -262,101 +267,29 @@ impl RenderBackend for Canvas2dBackend {
             } else {
                 None
             };
-            // Wide-cell color emoji stretch: emoji fonts target ~1em
-            // advance, narrower than 2 latin cells, so a bare `fillText`
-            // leaves a gap on the right. Detect by codepoint range
-            // (Canvas2D doesn't rasterize so we use a Unicode-block
-            // heuristic — see `is_color_emoji_codepoint`). On match,
-            // measure the natural advance and scale horizontally to
-            // fill the 2-cell box. Cap the scale at 1.5× so degenerate
-            // measurements can't grossly distort the glyph.
-            let leading_cp: u32 = match cluster {
-                Some(c) => c.text.chars().next().map(|ch| ch as u32).unwrap_or(0),
-                None => cell.ch as u32,
-            };
-            // §A.6 (2026-05-08) — visual-wide narrow: cell.width == 1 in
-            // the grid (so column accounting matches Claude Code's
-            // `string-width`), but the glyph is rendered into a 2-cell
-            // visual quad so it isn't horizontally compressed. Conservative
-            // gate: only when the next cell is BLANK (space at default
-            // attrs) so the overflow can't visually clobber a real
-            // neighbour glyph. The user's choice — see plan §A.6.
-            let visual_wide_stretch = cell.width == 1
-                && is_visual_wide_codepoint(leading_cp)
-                && {
-                    let next = row.cells.get(col + 1);
-                    match next {
-                        Some(n) => {
-                            n.ch == ' '
-                                && n.attr == crate::term::attr_table::AttrId::DEFAULT
-                        }
-                        None => false,
-                    }
-                };
-            let stretch_emoji = cell.width >= 2 && is_color_emoji_codepoint(leading_cp);
             let glyph_str: &str;
             let mut buf = [0u8; 4];
             match cluster {
                 Some(cspan) => glyph_str = &cspan.text,
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
-            // §A.9 (2026-05-08, partial revert): restore §A.8's
-            // unconditional natural-advance paint for the
-            // visual_wide_stretch + stretch_emoji branch — the brief
-            // "compress when next cell occupied" attempt visibly
-            // squashed color emoji every time they touched real text.
-            // Trade-off: Segoe / Apple emoji whose natural advance
-            // exceeds 2 latin cells extend ~14% into col+cell_span;
-            // in real terminals that's almost always a space, and on
-            // the rare edge case only the AA halo of the emoji
-            // overlaps. Matches iTerm2 / Hyper's behaviour.
+            // §B.11 (2026-05-08) — natural-size rendering. Plain
+            // `fill_text` paints the glyph at its natural advance
+            // anchored at cell left. If natural > cell_w, the glyph
+            // visually overflows into the next cell. Layer-rendering
+            // semantics naturally hold here because draw_row already
+            // does TWO passes (Pass 1: backgrounds for ALL cells in
+            // the row; Pass 2: glyphs for ALL cells in cell-index
+            // order). So cell N's overflow glyph paints OVER cell
+            // N+1's already-painted bg, then cell N+1's glyph paints
+            // OVER cell N's overflow at intersection only — both
+            // glyphs visible at correct proportions.
             //
-            // The narrow-cell `else` branch keeps `fill_text_with_max_width`
-            // because there the overflow is severe (~130% for ✻/✶/❯
-            // Dingbats whose 1.4em font advance into a 0.6em cell
-            // would smear two columns of text together). When
-            // is_visual_wide is true and next is blank, the
-            // visual_wide_stretch branch above already enlarges the
-            // glyph correctly; only the "next-cell-occupied" case
-            // still falls through and benefits from maxWidth
-            // compression.
-            let cell_span = cell.width.max(1) as usize;
-            if visual_wide_stretch || stretch_emoji {
-                // Allowed to overflow / stretch. Target = 2 cells.
-                // scale_x clamped to [1.0, 1.5] — never compresses,
-                // so we only ENLARGE narrow Dingbats up to the
-                // 2-cell target. Color emoji whose natural advance
-                // already exceeds the target paint at natural advance
-                // (scale_x = 1.0), preserving aspect.
-                let target_w = cell_w * 2.0;
-                let natural_w = self
-                    .ctx
-                    .measure_text(glyph_str)
-                    .ok()
-                    .map(|m| m.width())
-                    .unwrap_or(target_w);
-                let scale_x = if natural_w > 1.0 {
-                    (target_w / natural_w).clamp(1.0, 1.5)
-                } else {
-                    1.0
-                };
-                self.ctx.save();
-                let _ = self.ctx.translate(x, y_top);
-                let _ = self.ctx.scale(scale_x, 1.0);
-                let _ = self.ctx.fill_text(glyph_str, 0.0, 0.0);
-                self.ctx.restore();
-            } else {
-                // Constrained narrow-cell path — `fill_text_with_max_width`
-                // degenerates to plain fillText when natural ≤ max_w
-                // (the ASCII / CJK hot path: zero overhead). Only
-                // engages when a glyph's natural advance would
-                // overflow ≥ cell_span cells AND the glyph isn't in
-                // the visual-wide / color-emoji whitelist above.
-                let max_w = cell_w * cell_span as f64;
-                let _ = self
-                    .ctx
-                    .fill_text_with_max_width(glyph_str, x, y_top, max_w);
-            }
+            // Reverts §B.10's bidirectional rescale + scale_x trick.
+            // The user explicitly prefers natural-shape glyphs over
+            // cursor-aligned visuals — same call as Windows Terminal /
+            // iTerm2 / Apple Terminal.
+            let _ = self.ctx.fill_text(glyph_str, x, y_top);
 
             // Underline / strikethrough as separate strokes after the glyph.
             if attrs.flags.contains(Flags::UNDERLINE) {

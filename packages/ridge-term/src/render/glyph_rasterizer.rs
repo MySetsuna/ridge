@@ -289,7 +289,7 @@ impl GlyphRasterizer {
             .ctx
             .get_image_data(0.0, 0.0, slot_w, slot_h)
             .map_err(|e| format!("GlyphRasterizer::get_image_data: {e:?}"))?;
-        let rgba: Vec<u8> = image_data.data().to_vec();
+        let mut rgba: Vec<u8> = image_data.data().to_vec();
 
         // Device-pixel bounding box of the painted glyph, clamped to
         // slot. The caller crops `atlas_uv` to this rectangle so the
@@ -320,6 +320,57 @@ impl GlyphRasterizer {
                 }
             }
             i += 4;
+        }
+
+        // §B.4 (2026-05-08) — premultiply alpha. getImageData per spec
+        // returns NON-premultiplied (straight-alpha) bytes. Linear-
+        // filter sampling of straight-alpha textures interpolates rgb
+        // independently of alpha, so an AA fringe pixel between a
+        // painted (R, G, B, alpha=255) texel and a transparent
+        // (0, 0, 0, 0) neighbour samples as (R/2, G/2, B/2, 127). The
+        // shader's previous `mix(bg, glyph_rgb, coverage)` formula
+        // then applied coverage = alpha/2 to glyph_rgb = R/2 — i.e.
+        // the color contribution at the AA fringe was (alpha/2)*(R/2)
+        // = alpha*R/4 instead of the correct alpha*R/2. Color emoji
+        // edges visibly darkened toward black; monochrome glyphs got
+        // gray halos misclassified as "color" by the per-pixel
+        // heuristic (already replaced by §B.3's per-instance flag).
+        //
+        // Premultiplying at upload time means Linear-filter samples
+        // interpolate (alpha*R, alpha*G, alpha*B, alpha) → midway
+        // = (alpha*R/2, alpha*G/2, alpha*B/2, alpha/2) which, with
+        // a premultiplied composite formula in the shader (`bg*(1-a)
+        // + sampled.rgb`) gives the correct alpha*R/2 contribution.
+        // No special case for monochrome — `(alpha, alpha, alpha)`
+        // post-premult is fine because the shader's `is_color = false`
+        // path discards `sampled.rgb` and rebuilds the contribution
+        // from `coverage * fg`.
+        //
+        // is_color detection happens BEFORE premult since the
+        // threshold (`r < 250`) is calibrated against straight-alpha
+        // bytes. After premult, every non-fully-opaque rgb value is
+        // < 255 and the heuristic would (correctly) classify the
+        // mono glyph as mono — but only because the heuristic now
+        // depends on the per-instance flag's pipeline, not on the
+        // bytes. Keeping the order explicit anyway so future
+        // refactors don't accidentally swap them.
+        for px in rgba.chunks_exact_mut(4) {
+            let a = px[3] as u32;
+            if a == 0 {
+                // Fully transparent: rgb already (0,0,0) per the
+                // Canvas2D `clear_rect` we did before fill_text. Belt
+                // and braces — explicit zero so the GPU sees no
+                // garbage if some browser path leaves residual bytes.
+                px[0] = 0;
+                px[1] = 0;
+                px[2] = 0;
+            } else if a < 255 {
+                // Round-half-to-even premultiplication: (rgb * a + 127) / 255.
+                px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
+                px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
+                px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
+            }
+            // a == 255 → unmultiplied rgb already equals premult rgb.
         }
 
         // Emoji-rasterisation diagnostic. Gated on (a) leading codepoint

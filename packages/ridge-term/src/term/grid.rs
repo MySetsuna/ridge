@@ -44,6 +44,14 @@ pub enum EraseMode {
     Above,
     /// 2: entire screen.
     All,
+    /// 3: xterm extension — erase saved (scrollback) lines. Does NOT
+    /// touch the visible grid. Modern shells (PowerShell `Clear-Host`,
+    /// bash `clear -x`, `printf '\\e[3J'`) use this when the user
+    /// explicitly asks to wipe both screen and scrollback. Without
+    /// this variant the kernel was silently demoting `\x1b[3J` to
+    /// `\x1b[2J`, leaving the in-memory ring buffer untouched —
+    /// matches the user-reported "clear 不能完全清理" symptom.
+    SavedLines,
 }
 
 /// One screen buffer. Primary and alt are both `Screen`; `Grid` switches
@@ -741,11 +749,33 @@ impl Grid {
         if cur_col < cols {
             let here = self.screen().rows[cur_row].cells[cur_col];
             // (a) writing onto a continuation → clear the prior main.
+            //     §B.2 (2026-05-08): also drop any cluster sidecar
+            //     anchored at the orphaned main col. Without this a
+            //     multi-codepoint cluster (👨‍👩‍👧, 🏳️‍🌈) survives the
+            //     overwrite as a stale sidecar pointing at a now-
+            //     replaced (' ', w=1) cell, and the renderer paints the
+            //     cluster's full emoji glyph over what should now be a
+            //     blank space — the user-visible "退格一次出现乱码字符"
+            //     symptom: shell echoes BS+SP+BS to erase a wide cluster,
+            //     SP lands on the continuation, branch (a) clears the
+            //     main, but the cluster sidecar persists and the
+            //     renderer keeps painting the original emoji on top of
+            //     the now-' '-cell.
             if here.width == 0 && cur_col > 0 {
+                self.screen_mut().rows[cur_row].clear_cluster_at(cur_col - 1);
                 self.screen_mut().rows[cur_row].cells[cur_col - 1] =
                     Cell::new(' ', AttrId::DEFAULT, 1);
             }
             // (b) writing onto a main → clear the trailing continuation.
+            //     §B.2: same cluster-sidecar invariant as (a). The cell
+            //     at cur_col itself will be overwritten by the actual
+            //     `print` below (which already calls `clear_cluster_at`),
+            //     so we only need to wipe the sidecar at cur_col+1 if
+            //     the existing main carried a cluster — but cluster
+            //     sidecars are anchored at the MAIN col only, never the
+            //     continuation. So no extra clear_cluster_at(cur_col+1)
+            //     needed; the trailing-continuation cell never owns a
+            //     sidecar by construction.
             if here.width == 2 && cur_col + 1 < cols {
                 self.screen_mut().rows[cur_row].cells[cur_col + 1] =
                     Cell::new(' ', AttrId::DEFAULT, 1);
@@ -754,11 +784,15 @@ impl Grid {
         // (c) wide writes only: the spacer we'll lay at cur_col+1 might
         //     itself land on a different pair's main — orphan its
         //     continuation at cur_col+2.
+        //     §B.2: drop the orphaned main's cluster sidecar at
+        //     cur_col+1 so it doesn't outlive the wide-cell write that
+        //     overwrites it.
         if w == 2 {
             let nxt = cur_col + 1;
             if nxt < cols {
                 let next_cell = self.screen().rows[cur_row].cells[nxt];
                 if next_cell.width == 2 && nxt + 1 < cols {
+                    self.screen_mut().rows[cur_row].clear_cluster_at(nxt);
                     self.screen_mut().rows[cur_row].cells[nxt + 1] =
                         Cell::new(' ', AttrId::DEFAULT, 1);
                 }
@@ -919,6 +953,42 @@ impl Grid {
             cur.col -= 1;
         }
         cur.pending_wrap = false;
+        // §B.4 (2026-05-08) — placeholder normalization. A wide cell
+        // occupies two grid slots: the MAIN at col N (width=2) and a
+        // CONTINUATION at col N+1 (width=0). After BS over a wide
+        // pair, the strict VT contract leaves the cursor on the
+        // continuation — but no shell / line editor expects to write
+        // INTO the middle of a wide character, so the placeholder is
+        // a meaningless cursor position visually (it appears to sit
+        // ON TOP of the right half of the wide glyph). Modern
+        // terminals (Windows Terminal, iTerm2, Konsole) normalize
+        // this by skipping past the continuation to the main.
+        //
+        // Without this, PSReadLine / readline / Ink-style editors
+        // that send only `BS` (without a follow-up `SP BS` overwrite
+        // pair) for delete-char on a wide grapheme leave the user
+        // staring at an unaltered emoji with the cursor blinking on
+        // its right half — the user-reported "退格一次出现乱码字符,
+        // 退格两次才彻底清除" symptom on 🎂.
+        //
+        // Normalize in a separate read-after-write so we don't
+        // accidentally cross a screen boundary; bounded to one extra
+        // step (placeholder is exactly 1 cell wide by construction,
+        // so we never need to skip more than once).
+        let cur_col = self.screen().cursor.col;
+        let cur_row = self.screen().cursor.row;
+        if cur_col > 0 {
+            let lands_on_placeholder = self
+                .screen()
+                .rows
+                .get(cur_row)
+                .and_then(|r| r.cells.get(cur_col))
+                .map(|c| c.width == 0)
+                .unwrap_or(false);
+            if lands_on_placeholder {
+                self.cursor_mut().col -= 1;
+            }
+        }
     }
 
     pub fn tab(&mut self) {
@@ -955,6 +1025,36 @@ impl Grid {
         cur.row = row.min(last_row);
         cur.col = col.min(last_col);
         cur.pending_wrap = false;
+        // §B.11 (2026-05-08) — placeholder normalization on absolute
+        // positioning paths. CSI CHA / CUP / HVP / VPA all funnel
+        // through `cursor_to`, so a shell that emits `CSI <col>H`
+        // pointing at the continuation half (width=0) of a wide cell
+        // would land the cursor on a meaningless position. The next
+        // print would trigger §1.28 branch (a) which clears the
+        // orphan main, replacing the wide cell's main glyph with
+        // ' ' before the new char overwrites the placeholder slot —
+        // the user-reported "退格出现乱码" pattern when shell uses
+        // CSI positioning rather than BS+SP+BS.
+        //
+        // Step BACK one cell (to the main col) when we land on a
+        // placeholder. Same convention as `backspace` and
+        // `cursor_left` (§B.4 / §B.5). Forward-step would also work
+        // but introduces unbounded skip in pathological rows;
+        // backward is bounded to ≤1 cell.
+        let cur_col = self.screen().cursor.col;
+        let cur_row = self.screen().cursor.row;
+        if cur_col > 0 {
+            let on_placeholder = self
+                .screen()
+                .rows
+                .get(cur_row)
+                .and_then(|r| r.cells.get(cur_col))
+                .map(|c| c.width == 0)
+                .unwrap_or(false);
+            if on_placeholder {
+                self.cursor_mut().col -= 1;
+            }
+        }
     }
 
     pub fn cursor_up(&mut self, n: usize) {
@@ -990,6 +1090,26 @@ impl Grid {
         let cur = self.cursor_mut();
         cur.col = cur.col.saturating_sub(n);
         cur.pending_wrap = false;
+        // §B.5 (2026-05-08) — placeholder normalization, same as
+        // `backspace`. CSI nD (CUB) is the relative-left counterpart
+        // of BS at the parser level; both must agree on what "land
+        // on placeholder" means visually so PSReadLine / readline
+        // editors see consistent behaviour whether they pick the C0
+        // BS byte or the CSI form.
+        let cur_col = self.screen().cursor.col;
+        let cur_row = self.screen().cursor.row;
+        if cur_col > 0 {
+            let on_placeholder = self
+                .screen()
+                .rows
+                .get(cur_row)
+                .and_then(|r| r.cells.get(cur_col))
+                .map(|c| c.width == 0)
+                .unwrap_or(false);
+            if on_placeholder {
+                self.cursor_mut().col -= 1;
+            }
+        }
     }
 
     pub fn cursor_right(&mut self, n: usize) {
@@ -1026,6 +1146,25 @@ impl Grid {
                     r.clear();
                 }
             }
+            EraseMode::SavedLines => {
+                // §B.2 (2026-05-08) — xterm `CSI 3 J` extension. Drops
+                // the entire scrollback ring buffer (physical clear:
+                // every `Vec<Option<Row>>` slot back to None, head/len
+                // reset to 0). Visible grid stays untouched, cursor
+                // stays put — this is the operation that makes a "real"
+                // clear actually clear: after this call both `clear`
+                // (`\x1b[2J\x1b[H`) AND scrollback are gone, so the
+                // user's pgup history doesn't resurrect what they just
+                // wiped.
+                //
+                // No-op on the alt screen — alt screen has no
+                // scrollback to begin with, and TUI apps that swap
+                // back to primary expect their preserved scrollback
+                // intact (kakoune / vim / less depend on this).
+                if !self.is_alt {
+                    self.scrollback.clear();
+                }
+            }
         }
     }
 
@@ -1037,6 +1176,12 @@ impl Grid {
             EraseMode::Below => self.erase_row_range(cur_row, cur_col, cols),
             EraseMode::Above => self.erase_row_range(cur_row, 0, cur_col + 1),
             EraseMode::All => self.erase_row_range(cur_row, 0, cols),
+            // EL has no semantic for "saved lines" — `CSI 3 K` is
+            // unspecified by xterm. Treat as no-op to match xterm's
+            // silent ignore (and avoid surprising side effects on
+            // shells that emit it by accident). EL is ROW-scoped; it
+            // never touched scrollback in any spec.
+            EraseMode::SavedLines => {}
         }
     }
 
@@ -1047,10 +1192,17 @@ impl Grid {
             // outside the erase range. Done BEFORE the wipe loop so the
             // outside-of-range partner is normalized while the in-range
             // half still carries its width marker for the boundary check.
-            clip_wide_pair_at_range_boundaries(&mut r.cells, start, clamped_end);
+            clip_wide_pair_at_range_boundaries(r, start, clamped_end);
             for c in start..clamped_end {
                 r.cells[c] = Cell::EMPTY;
             }
+            // §B.2 (2026-05-08): drop every cluster sidecar whose anchor
+            // col is in the erased range. Without this, ED/EL leaves
+            // the multi-codepoint cluster strings dangling on now-EMPTY
+            // cells, and a future re-print at the same col without
+            // setting a sidecar would let the renderer find the stale
+            // cluster and paint the original emoji over the new char.
+            r.clear_clusters_in_range(start, clamped_end);
             // OSC 8 hyperlink spans must be kept in sync with the cells
             // they describe. Without this, CSI K / CSI J erase paths
             // wipe the cells but leave the span — and the renderer's
@@ -1083,10 +1235,12 @@ impl Grid {
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let clamped_end = end.min(r.cells.len());
             // §1.28: same wide-pair boundary guard as erase_row_range.
-            clip_wide_pair_at_range_boundaries(&mut r.cells, cur_col, clamped_end);
+            clip_wide_pair_at_range_boundaries(r, cur_col, clamped_end);
             for c in cur_col..clamped_end {
                 r.cells[c] = Cell::EMPTY;
             }
+            // §B.2 — drop cluster sidecars in the erased range.
+            r.clear_clusters_in_range(cur_col, clamped_end);
             // Same hyperlink-clipping invariant as `erase_row_range`:
             // ECH wipes cells, so any span overlapping the cleared
             // range must be clipped or dropped. (TASKS §1.18.b.)
@@ -1120,6 +1274,8 @@ impl Grid {
             {
                 r.cells[cur_col - 1] = Cell::EMPTY;
                 r.cells[cur_col] = Cell::EMPTY;
+                // §B.2 — drop cluster sidecar at the orphaned main.
+                r.clear_cluster_at(cur_col - 1);
             }
             // §1.28: pairs near the right margin that the shift would
             // push partly off the row also need their inside half
@@ -1133,7 +1289,19 @@ impl Grid {
             {
                 r.cells[cols - n - 1] = Cell::EMPTY;
                 r.cells[cols - n] = Cell::EMPTY;
+                // §B.2 — orphan main at cols-n-1 dropped its cluster
+                // sidecar too. (Continuation at cols-n never carried
+                // a sidecar by construction.)
+                r.clear_cluster_at(cols - n - 1);
             }
+            // §B.2 — shift cluster sidecars at col ≥ cur_col RIGHT by n,
+            // dropping any that would land at col ≥ cols. Performed
+            // BEFORE the cell shift so the sidecar's pre-shift cols
+            // are still meaningful when matched against the cells they
+            // describe. The cells_at_split orphan-clear above already
+            // dropped sidecars that would otherwise be moved to cols-1
+            // (an orphan-main slot).
+            r.shift_clusters_right(cur_col, n, cols);
             // Shift right-of-cursor cells right by n; cells falling off are dropped.
             // Walk from the right edge inward to avoid overwriting source cells.
             for dst in (cur_col + n..cols).rev() {
@@ -1207,7 +1375,13 @@ impl Grid {
             // §1.28: clip wide pairs at the deletion range boundaries
             // so we don't leave orphans after the shift. Range is
             // [cur_col, cur_col + n).
-            clip_wide_pair_at_range_boundaries(&mut r.cells, cur_col, cur_col + n);
+            clip_wide_pair_at_range_boundaries(r, cur_col, cur_col + n);
+            // §B.2 — drop cluster sidecars in the to-be-deleted range
+            // BEFORE the shift, then shift remaining sidecars left.
+            // Order matters: clearing first means the shift never has
+            // to consider sidecars that were inside the range.
+            r.clear_clusters_in_range(cur_col, cur_col + n);
+            r.shift_clusters_left(cur_col + n, n);
             // Shift left.
             for dst in cur_col..(cols - n) {
                 let src = dst + n;
@@ -1395,17 +1569,28 @@ impl Grid {
 /// at width=0), the half that lives OUTSIDE the range becomes an orphan.
 /// This helper clears the outside half so the pair invariant survives.
 ///
+/// §B.2 (2026-05-08) — upgraded from `&mut [Cell]` to `&mut Row` so the
+/// orphan-clearing path can ALSO drop the cluster sidecar at the
+/// orphan main col. Without this, a wide cluster (👨‍👩‍👧, 🇺🇸)
+/// straddled by an erase range survived as a stale sidecar that the
+/// renderer kept painting on top of the now-blank cell.
+///
 /// Called by EL / ECH / ICH / DCH — every cell-edit op whose range can
-/// straddle a wide pair. Cheap (two boundary peeks); safe to call on
-/// empty rows, zero-length ranges, or out-of-bounds indices.
-fn clip_wide_pair_at_range_boundaries(cells: &mut [super::cell::Cell], start: usize, end: usize) {
-    if start >= end || cells.is_empty() {
+/// straddle a wide pair. Cheap (two boundary peeks + at most one
+/// `clear_cluster_at`); safe to call on empty rows, zero-length ranges,
+/// or out-of-bounds indices.
+fn clip_wide_pair_at_range_boundaries(row: &mut super::cell::Row, start: usize, end: usize) {
+    if start >= end || row.cells.is_empty() {
         return;
     }
+    let cells = &mut row.cells[..];
+    let mut left_orphan_main: Option<usize> = None;
+    let mut right_orphan_continuation: Option<usize> = None;
     // Left boundary: cells[start] is a continuation, so its main at
     // start-1 sits outside the range — orphan it away.
     if start > 0 && start < cells.len() && cells[start].width == 0 && cells[start - 1].width == 2 {
         cells[start - 1] = super::cell::Cell::EMPTY;
+        left_orphan_main = Some(start - 1);
     }
     // Right boundary: cells[end-1] is a wide main inside the range, so
     // its continuation at `end` sits outside — orphan it away.
@@ -1416,6 +1601,15 @@ fn clip_wide_pair_at_range_boundaries(cells: &mut [super::cell::Cell], start: us
         && cells[end].width == 0
     {
         cells[end] = super::cell::Cell::EMPTY;
+        right_orphan_continuation = Some(end);
+    }
+    // Cluster sidecars are anchored at the MAIN col of a wide pair —
+    // never at the continuation. So we only need to clear the sidecar
+    // for `left_orphan_main` (always a main col) and never for
+    // `right_orphan_continuation` (always a continuation col).
+    let _ = right_orphan_continuation; // documented for clarity; no-op
+    if let Some(col) = left_orphan_main {
+        row.clear_cluster_at(col);
     }
 }
 
@@ -2153,5 +2347,304 @@ mod tests {
         // After fix, col 0 is the cleared continuation slot (now
         // EMPTY width=1), col 1 is the shifted-in 'A'.
         assert_eq!(g.row(0).unwrap().cells[0].width, 1);
+    }
+
+    #[test]
+    fn backspace_skips_wide_placeholder_to_main() {
+        // §B.4 (2026-05-08) — placeholder normalization. After a wide
+        // char (🎂 or 中) is at cols 0..=1 with cursor at col 2,
+        // BS strict-VT moves cursor to col 1 (placeholder). With
+        // normalization, cursor lands at col 0 (the main) so the next
+        // SP overwrites correctly via §1.28 branch (b) in one step.
+        //
+        // Pre-fix: PSReadLine sending a single BS for delete-char
+        // left the cursor wedged on the placeholder, the wide glyph
+        // still painted full-width, and a "first BS shows residual"
+        // user complaint on 🎂.
+        let mut g = Grid::new(1, 10, 0);
+        g.print('中', Attrs::DEFAULT); // cols 0..=1
+        // Cursor should now be at col 2.
+        assert_eq!(g.cursor().col, 2);
+        g.backspace();
+        // Pre-fix this would land at col 1 (placeholder); post-fix
+        // it lands at col 0 (main).
+        assert_eq!(
+            g.cursor().col,
+            0,
+            "BS over wide placeholder must normalize to the main col"
+        );
+    }
+
+    #[test]
+    fn backspace_over_narrow_unchanged() {
+        // §B.4 — narrow chars BS exactly one step. The placeholder
+        // normalization only fires when the cursor lands on width=0,
+        // which never happens for narrow chars.
+        let mut g = Grid::new(1, 10, 0);
+        g.print('a', Attrs::DEFAULT);
+        g.print('b', Attrs::DEFAULT);
+        g.print('c', Attrs::DEFAULT);
+        // cursor at col 3.
+        g.backspace();
+        assert_eq!(g.cursor().col, 2);
+        g.backspace();
+        assert_eq!(g.cursor().col, 1);
+        g.backspace();
+        assert_eq!(g.cursor().col, 0);
+    }
+
+    #[test]
+    fn backspace_at_col_zero_clamps() {
+        // §B.4 — BS at col 0 stays at col 0 (no underflow), even with
+        // the new normalization step (which is gated on cur_col > 0).
+        let mut g = Grid::new(1, 10, 0);
+        g.cursor_to(0, 0);
+        g.backspace();
+        assert_eq!(g.cursor().col, 0);
+    }
+
+    #[test]
+    fn cluster_sidecar_survives_scroll_into_scrollback() {
+        // §B.3 invariant lock: when a row carrying a multi-codepoint
+        // cluster scrolls off the top, the cluster sidecar must
+        // travel with the Row into the scrollback ring (preserved as
+        // historical content for pgup / search / select). The Row
+        // type owns clusters as a Vec field, so `rows.remove +
+        // scrollback.push` is a whole-row move that automatically
+        // preserves it — but a future refactor that splits cells from
+        // clusters at the row boundary could break this. Lock with
+        // a test.
+        let mut g = Grid::new(3, 10, 100);
+        // Row 0 carries a ZWJ cluster at col 0..=1.
+        g.print_grapheme("\u{1F468}\u{200D}\u{1F469}", Attrs::DEFAULT);
+        // Force two scrolls so row 0 ends up in scrollback.
+        g.cursor_to(2, 0);
+        g.linefeed();
+        g.linefeed();
+        g.linefeed();
+
+        // Scrollback row 0 is the original "row 0" with cluster intact.
+        let sb_row = g.scrollback.get(0).expect("row should be in scrollback");
+        let cluster = sb_row.clusters.iter().find(|c| c.col == 0);
+        assert!(
+            cluster.is_some(),
+            "cluster sidecar must travel with the row into scrollback"
+        );
+    }
+
+    #[test]
+    fn cluster_sidecar_dropped_when_row_recycled_for_new_blank() {
+        // §B.3 invariant lock: when a row scrolls off the top and the
+        // ring buffer at capacity returns its allocation for recycling
+        // as the new bottom row, `Row::clear()` is called — which MUST
+        // drop the cluster sidecar (otherwise the recycled blank row
+        // would carry a stale sidecar pointing at evicted content).
+        let mut g = Grid::new(2, 10, 1); // capacity 1 — tight rollover
+        g.print_grapheme("\u{1F468}\u{200D}\u{1F469}", Attrs::DEFAULT);
+        g.cursor_to(1, 0);
+        // Two LFs: first pushes original row 0 into scrollback (capacity
+        // 1, no eviction yet); second evicts it and recycles the
+        // allocation back as the new bottom row.
+        g.linefeed();
+        g.linefeed();
+        g.linefeed();
+
+        // The recycled bottom row should be blank — no stale clusters.
+        let bottom = g.row(1).expect("row 1 exists");
+        assert!(
+            bottom.clusters.is_empty(),
+            "recycled row must be blank — clusters dropped by Row::clear()"
+        );
+    }
+
+    #[test]
+    fn print_at_wide_continuation_drops_paired_clusters_sidecar() {
+        // §B.2 (2026-05-08) regression test. Pre-fix:
+        //   1. print_grapheme("👨‍👩‍👧") → cell[0] (width=2 main with
+        //      cluster sidecar pointing at the multi-codepoint emoji
+        //      string), cell[1] (width=0 spacer), cursor at col 2.
+        //   2. shell echoes BS+SP+BS to erase the cluster:
+        //        - BS  (0x08) → cursor 2→1 (lands on continuation).
+        //        - SP  print(' ') at col 1: §1.28 branch (a) fires —
+        //          orphan main at col 0 cleared to (' ', w=1).
+        //   3. The renderer's draw loop scans each col, finds a cluster
+        //      sidecar at col 0 pointing at "👨‍👩‍👧", atlas-keys it as
+        //      a cluster glyph, and paints the wide emoji bitmap into
+        //      the now-1-cell-wide quad — visible "退格一次出现乱码" symptom.
+        //
+        // Post-fix: branch (a) calls clear_cluster_at(col-1) before
+        // overwriting the orphan main, so no stale sidecar survives
+        // the BS+SP echo. Subsequent renders show a blank cell.
+        let mut g = Grid::new(1, 10, 0);
+        g.print_grapheme("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", Attrs::DEFAULT);
+        // Family ZWJ cluster placed at col 0..=1 (width 2). Cluster
+        // sidecar points at the full multi-codepoint string.
+        assert_eq!(g.row(0).unwrap().cells[0].width, 2);
+        assert!(g.row(0).unwrap().cluster_at(0).is_some());
+
+        // Simulate the BS+SP that drops the cursor on the continuation
+        // and overwrites it.
+        g.cursor_to(0, 1);
+        g.print(' ', Attrs::DEFAULT);
+
+        // Orphan main at col 0 must be cleared AND its cluster sidecar
+        // dropped — the renderer must see a plain ' ' at col 0, not a
+        // sidecar resurrection of the original emoji.
+        assert_eq!(g.row(0).unwrap().cells[0].width, 1);
+        assert_eq!(g.row(0).unwrap().cells[0].ch, ' ');
+        assert!(
+            g.row(0).unwrap().cluster_at(0).is_none(),
+            "stale cluster sidecar must not survive wide-pair orphan clear"
+        );
+    }
+
+    #[test]
+    fn erase_chars_drops_clusters_in_range() {
+        // §B.2 — ECH inside a row carrying multi-codepoint clusters
+        // must drop their sidecars. Pre-fix: the cells were wiped to
+        // EMPTY but the cluster sidecar persisted, and any subsequent
+        // narrow write in the same col rendered the original emoji
+        // glyph through the cluster sidecar.
+        let mut g = Grid::new(2, 10, 0);
+        g.print_grapheme("\u{1F468}\u{200D}\u{1F469}", Attrs::DEFAULT); // 👨‍👩 at 0..=1
+        g.print_grapheme("\u{1F1FA}\u{1F1F8}", Attrs::DEFAULT); // 🇺🇸 at 2..=3
+        assert!(g.row(0).unwrap().cluster_at(0).is_some());
+        assert!(g.row(0).unwrap().cluster_at(2).is_some());
+
+        g.cursor_to(0, 0);
+        g.erase_chars(4); // wipe both clusters
+
+        assert!(g.row(0).unwrap().cluster_at(0).is_none());
+        assert!(g.row(0).unwrap().cluster_at(2).is_none());
+    }
+
+    #[test]
+    fn delete_chars_shifts_clusters_left() {
+        // §B.2 — DCH must shift cluster sidecars along with the cells
+        // they describe. Pre-fix: cells shifted but sidecars stayed
+        // anchored at their original cols, so the cluster lookup found
+        // an emoji glyph at the wrong position.
+        let mut g = Grid::new(2, 10, 0);
+        // Layout: [A][B][🇺🇸 main][🇺🇸 cont][C][...]
+        g.print('A', Attrs::DEFAULT);
+        g.print('B', Attrs::DEFAULT);
+        g.print_grapheme("\u{1F1FA}\u{1F1F8}", Attrs::DEFAULT); // 🇺🇸 at 2..=3
+        g.print('C', Attrs::DEFAULT);
+        assert!(g.row(0).unwrap().cluster_at(2).is_some());
+
+        // DCH 1 at col 0 → row becomes [B][🇺🇸 main][🇺🇸 cont][C][...]
+        g.cursor_to(0, 0);
+        g.delete_chars(1);
+
+        // Cluster sidecar must have moved from col 2 → col 1.
+        assert!(
+            g.row(0).unwrap().cluster_at(2).is_none(),
+            "stale sidecar at original col"
+        );
+        assert!(
+            g.row(0).unwrap().cluster_at(1).is_some(),
+            "sidecar must shift to new main col"
+        );
+    }
+
+    #[test]
+    fn delete_chars_drops_clusters_inside_deletion_range() {
+        // §B.2 — DCH inside a cluster must drop its sidecar entirely;
+        // the shifted cells past the deletion range carry their own
+        // sidecars (already covered above).
+        let mut g = Grid::new(2, 10, 0);
+        g.print_grapheme("\u{1F1FA}\u{1F1F8}", Attrs::DEFAULT); // 🇺🇸 at 0..=1
+        g.print('A', Attrs::DEFAULT);
+        assert!(g.row(0).unwrap().cluster_at(0).is_some());
+
+        g.cursor_to(0, 0);
+        g.delete_chars(2); // delete the whole flag
+
+        assert!(
+            g.row(0).unwrap().cluster_at(0).is_none(),
+            "cluster sidecar inside DCH range must be dropped"
+        );
+    }
+
+    #[test]
+    fn insert_chars_shifts_clusters_right() {
+        // §B.2 — ICH must shift cluster sidecars right along with the
+        // cells they describe.
+        let mut g = Grid::new(2, 10, 0);
+        // Layout: [A][🇺🇸 main][🇺🇸 cont][B][...]
+        g.print('A', Attrs::DEFAULT);
+        g.print_grapheme("\u{1F1FA}\u{1F1F8}", Attrs::DEFAULT); // 🇺🇸 at 1..=2
+        g.print('B', Attrs::DEFAULT);
+        assert!(g.row(0).unwrap().cluster_at(1).is_some());
+
+        // ICH 2 at col 1 → [A][_][_][🇺🇸 main][🇺🇸 cont][B][...]
+        g.cursor_to(0, 1);
+        g.insert_chars(2);
+
+        // Cluster sidecar must have moved from col 1 → col 3.
+        assert!(g.row(0).unwrap().cluster_at(1).is_none());
+        assert!(
+            g.row(0).unwrap().cluster_at(3).is_some(),
+            "sidecar must shift right by ICH count"
+        );
+    }
+
+    #[test]
+    fn insert_chars_drops_clusters_pushed_off_right_margin() {
+        // §B.2 — ICH that pushes cells past cols-1 must also drop the
+        // cluster sidecars on those cells.
+        let mut g = Grid::new(2, 4, 0); // narrow 4-cell row
+        g.print('A', Attrs::DEFAULT);
+        // Wide cluster anchored at col 1..=2.
+        g.print_grapheme("\u{1F1FA}\u{1F1F8}", Attrs::DEFAULT);
+        g.print('B', Attrs::DEFAULT); // col 3
+        assert!(g.row(0).unwrap().cluster_at(1).is_some());
+
+        // ICH 2 at col 1 — would shift the cluster from col 1→3, but
+        // the cluster's continuation at col 4 doesn't exist (cols=4),
+        // so the cluster gets pushed entirely off the row. The cells
+        // are also clamped — but the SIDECAR must drop too.
+        g.cursor_to(0, 1);
+        g.insert_chars(2);
+
+        // The §1.28 right-margin orphan-clear at cols-n-1=1 should
+        // have killed the wide pair AND its sidecar.
+        assert!(
+            g.row(0).unwrap().cluster_at(1).is_none(),
+            "sidecar at orphan-cleared right margin must drop"
+        );
+        // No surviving sidecars anywhere — the cluster is GONE.
+        for col in 0..g.row(0).unwrap().cells.len() {
+            assert!(
+                g.row(0).unwrap().cluster_at(col).is_none(),
+                "no sidecar should survive ICH-overflow at col {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_print_over_existing_wide_drops_overwritten_cluster_sidecar() {
+        // §B.2 — branch (c) cluster-sidecar cleanup. Layout:
+        //   col 0..=1: wide cluster A ("🇺🇸" RIS pair)
+        //   col 1..=2: would be a second wide whose main lands at col 1
+        // The wide-write path at cur_col=0 lays cell[0] = main, cell[1] =
+        // wide_spacer. If a previous cluster anchored at col=1 (because
+        // an earlier write left a wide main there) survives, the
+        // renderer paints it on top of the spacer.
+        let mut g = Grid::new(1, 10, 0);
+        // Establish: write a wide cluster starting at col 1 first.
+        g.cursor_to(0, 1);
+        g.print_grapheme("\u{1F1FA}\u{1F1F8}", Attrs::DEFAULT); // 🇺🇸
+        assert!(g.row(0).unwrap().cluster_at(1).is_some());
+
+        // Now overwrite from col 0 with a different wide cluster — the
+        // wide-write spacer at col 1 must drop the sidecar at col 1.
+        g.cursor_to(0, 0);
+        g.print_grapheme("\u{1F468}\u{200D}\u{1F469}", Attrs::DEFAULT); // 👨‍👩
+        assert!(g.row(0).unwrap().cluster_at(0).is_some());
+        assert!(
+            g.row(0).unwrap().cluster_at(1).is_none(),
+            "cluster sidecar at orphaned col must not survive wide overwrite"
+        );
     }
 }

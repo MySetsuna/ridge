@@ -738,8 +738,22 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: '全选', action: () => manager.selectAll(paneId) },
 		{ id: 'term-clear', label: '清空', action: () => {
-			// Send Ctrl+L (form feed) — shells respond by clearing.
-			if (isTauri()) void invoke('write_to_pty', { paneId, data: '\x0c' }).catch(() => {});
+			// §B.2 (2026-05-08) — full physical clear: grid + scrollback +
+			// cursor home, all in-kernel without a PTY round trip. Pre-fix
+			// this sent only Ctrl+L which the shell translated into ED 2 +
+			// cursor home — visible grid cleared but pageUp resurrected
+			// everything the user wanted gone (documented "clear 不能完全
+			// 清理" symptom). The new path:
+			//   1. `\x1b[H\x1b[2J` — cursor home + clear visible grid
+			//      (sent to PTY so the prompt redraws cleanly above the
+			//      blank rows; without this the shell still thinks the
+			//      cursor is on the old row).
+			//   2. `manager.clearScrollback(paneId)` — physical drop of
+			//      the in-memory ring buffer + viewport snap to live.
+			if (isTauri()) {
+				void invoke('write_to_pty', { paneId, data: '\x1b[H\x1b[2J' }).catch(() => {});
+			}
+			manager.clearScrollback(paneId);
 		}},
 		// §1.23 (2026-05-05): split + close options restored to right-click
 		// menu. Pre-xterm-removal Pane.svelte never carried these; user
