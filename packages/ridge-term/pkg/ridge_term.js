@@ -368,6 +368,18 @@ export class TerminalKernel {
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
     }
+    /**
+     * §B.2 (2026-05-08) — drop the in-kernel scrollback ring buffer
+     * (physical clear) and snap viewport to live grid. Mirrors
+     * `\x1b[3J` at the JS API level so the right-click "清空" path
+     * can wipe both screen + saved lines without a PTY round trip
+     * (and without stepping on shells that don't translate Ctrl+L
+     * into ED 3). Selection is cleared so it doesn't survive into
+     * nonexistent rows. Search results similarly drop.
+     */
+    clearScrollback() {
+        wasm.terminalkernel_clearScrollback(this.__wbg_ptr);
+    }
     clearSelection() {
         wasm.terminalkernel_clearSelection(this.__wbg_ptr);
     }
@@ -1030,9 +1042,6 @@ function __wbg_get_imports() {
         __wbg_fillRect_9219f775d7e8e73e: function(arg0, arg1, arg2, arg3, arg4) {
             arg0.fillRect(arg1, arg2, arg3, arg4);
         },
-        __wbg_fillText_98d725af065a75a4: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4, arg5) {
-            arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4, arg5);
-        }, arguments); },
         __wbg_fillText_9fbea3af94326c74: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4);
         }, arguments); },
@@ -1516,9 +1525,6 @@ function __wbg_get_imports() {
         __wbg_save_512a4b0787b6682e: function(arg0) {
             arg0.save();
         },
-        __wbg_scale_cb5a2c96d71a5c3b: function() { return handleError(function (arg0, arg1, arg2) {
-            arg0.scale(arg1, arg2);
-        }, arguments); },
         __wbg_setAttribute_50dcf32d70e1628c: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.setAttribute(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
         }, arguments); },
@@ -1679,9 +1685,6 @@ function __wbg_get_imports() {
             const ret = arg0.then(arg1, arg2);
             return ret;
         },
-        __wbg_translate_49770be14b6ad0c5: function() { return handleError(function (arg0, arg1, arg2) {
-            arg0.translate(arg1, arg2);
-        }, arguments); },
         __wbg_type_ba6bfed8f5073b9e: function(arg0) {
             const ret = arg0.type;
             return (__wbindgen_enum_GpuCompilationMessageType.indexOf(ret) + 1 || 4) - 1;

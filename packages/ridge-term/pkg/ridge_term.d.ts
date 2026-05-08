@@ -213,6 +213,16 @@ export class TerminalKernel {
      *   `docs/term-rebuild/REPRO_dim_residue.md`.
      */
     cellsAt(row: number, col: number, len: number): any[];
+    /**
+     * §B.2 (2026-05-08) — drop the in-kernel scrollback ring buffer
+     * (physical clear) and snap viewport to live grid. Mirrors
+     * `\x1b[3J` at the JS API level so the right-click "清空" path
+     * can wipe both screen + saved lines without a PTY round trip
+     * (and without stepping on shells that don't translate Ctrl+L
+     * into ED 3). Selection is cleared so it doesn't survive into
+     * nonexistent rows. Search results similarly drop.
+     */
+    clearScrollback(): void;
     clearSelection(): void;
     cols(): number;
     /**
@@ -419,6 +429,7 @@ export interface InitOutput {
     readonly surfacehosthandle_invalidate: (a: number) => void;
     readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
     readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly terminalkernel_clearScrollback: (a: number) => void;
     readonly terminalkernel_clearSelection: (a: number) => void;
     readonly terminalkernel_cols: (a: number) => number;
     readonly terminalkernel_cursorCol: (a: number) => number;

@@ -87,7 +87,14 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
-# Native tests don't need wasm.
+# Native tests don't need wasm. Naga is the WGSL parser/validator wgpu
+# itself uses at runtime; pulling it as a host dev-dep lets us run a
+# `#[cfg(test)]` smoke that statically validates `cell.wgsl` on every
+# `cargo test --lib` — without spinning up a browser. Catches the kind
+# of typo (missing semicolon, undeclared identifier, type mismatch in
+# `select`/`mix`) that would otherwise only surface at WebGPU
+# `device.create_shader_module` time in production.
+naga = { version = "23", features = ["wgsl-in"] }
 
 [profile.release]
 opt-level = "z"

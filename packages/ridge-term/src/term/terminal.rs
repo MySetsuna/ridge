@@ -292,11 +292,34 @@ impl Terminal {
         self.user_scroll_locked = false;
     }
 
+    /// §B.2 (2026-05-08) — drop the entire scrollback ring buffer
+    /// (physical clear) and snap the viewport back to the live grid.
+    /// Mirrors what `\x1b[3J` (xterm "Erase Saved Lines") does at the
+    /// kernel level, but invocable directly from the JS layer so the
+    /// right-click "清空" path doesn't need to go through PTY round
+    /// trip. Live grid is untouched — caller can pair with
+    /// `erase_in_display(All)` + `cursor_to(0,0)` for a full wipe.
+    pub fn clear_scrollback(&mut self) {
+        self.grid.scrollback.clear();
+        self.scroll_offset = 0;
+        self.user_scroll_locked = false;
+    }
+
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
     pub fn scrollback_len(&self) -> usize {
         self.grid.scrollback.len()
+    }
+
+    /// §B.2 (2026-05-08) — monotonically-increasing count of rows
+    /// evicted from the scrollback's oldest end. Used by the JS-facing
+    /// `feed` path to invalidate selection / search anchors only when
+    /// a feed actually caused a row to scroll off (preserving them
+    /// across TUI redraws that don't push to scrollback at all —
+    /// which is most of them).
+    pub fn scrollback_eviction_count(&self) -> u64 {
+        self.grid.scrollback.eviction_count()
     }
     /// Whether the user has paged into history and PTY output is
     /// currently being held back from auto-snapping the viewport.
@@ -493,6 +516,210 @@ mod tests {
     }
 
     // ─── viewport scroll + viewport_row mixed-mode ────────────────────
+
+    #[test]
+    fn decrqm_mode_2027_responds_permanent_set() {
+        // §B.6 — DECRQM `CSI ? 2027 $p` must respond `CSI ? 2027 ; 3 $y`
+        // (3 = permanently set). PSReadLine 2.3.6+ checks this at
+        // startup; Ps=3 is the strongest signal that the terminal
+        // handles grapheme-cluster width correctly, fixing the
+        // canonical Windows ".NET counts surrogates as 2 chars × 2
+        // cells = 4 cell width" cursor drift on non-BMP emoji like
+        // 🎂 / 👈 / 🚀 (the user's report).
+        let mut t = Terminal::new(2, 80, 0);
+        t.feed(b"\x1b[?2027$p");
+        let resp = t.take_pending_response();
+        assert_eq!(
+            resp,
+            b"\x1b[?2027;3$y",
+            "Mode 2027 query must report permanent-set (3)"
+        );
+    }
+
+    #[test]
+    fn decrqm_mode_2026_responds_actual_state() {
+        // Sanity — mode-mutable modes report their actual state (1=set,
+        // 2=reset). Sync output (2026) starts off → Ps=2.
+        let mut t = Terminal::new(2, 80, 0);
+        t.feed(b"\x1b[?2026$p");
+        assert_eq!(t.take_pending_response(), b"\x1b[?2026;2$y");
+        // Enable, query again.
+        t.feed(b"\x1b[?2026h");
+        t.feed(b"\x1b[?2026$p");
+        assert_eq!(t.take_pending_response(), b"\x1b[?2026;1$y");
+    }
+
+    #[test]
+    fn decrqm_unknown_mode_responds_zero() {
+        // Unknown/unsupported modes get Ps=0 ("not recognised") so
+        // apps know not to depend on the feature.
+        let mut t = Terminal::new(2, 80, 0);
+        t.feed(b"\x1b[?9999$p");
+        assert_eq!(t.take_pending_response(), b"\x1b[?9999;0$y");
+    }
+
+    #[test]
+    fn scrollback_eviction_count_zero_when_under_capacity() {
+        // §B.2 — feeds that scroll content into scrollback below
+        // capacity must NOT advance the eviction counter. Selection
+        // anchors stay valid through this case.
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\n");
+        // Plenty of rows in scrollback, none evicted.
+        assert!(t.scrollback_len() > 0);
+        assert_eq!(
+            t.scrollback_eviction_count(),
+            0,
+            "scrolling INTO scrollback under capacity must NOT count as eviction"
+        );
+    }
+
+    #[test]
+    fn scrollback_eviction_count_advances_only_on_capacity_rollover() {
+        // §B.2 — Three-row capacity, push 5 rows worth of scroll content.
+        // First 3 fill, last 2 evict (each overwriting one head slot).
+        let mut t = Terminal::new(2, 5, 3);
+        t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+        // After feeding 7 lines into a 2-row viewport with 3-row scrollback,
+        // some lines have been evicted. Exact count depends on the parser
+        // path but must be > 0 since scrollback is full.
+        assert_eq!(t.scrollback_len(), 3);
+        assert!(
+            t.scrollback_eviction_count() > 0,
+            "filling past capacity must advance the eviction counter"
+        );
+    }
+
+    #[test]
+    fn alt_screen_redraw_never_advances_eviction_count() {
+        // §B.2 regression — real TUI apps (vim/htop/less) swap to the
+        // alt screen via DECSET 1049, where scrollback push is
+        // unconditionally disabled (`scroll_region_up` checks
+        // `!self.is_alt`). Hundreds of full-screen frames must not
+        // touch the eviction counter, so JsTerminal::feed keeps
+        // selection anchors alive across the whole TUI session.
+        let mut t = Terminal::new(10, 80, 100);
+        // Generous cols/rows so wrap doesn't accidentally cross the
+        // scroll boundary; capacity 100 so we'd notice runaway
+        // eviction immediately.
+        t.feed(b"\x1b[?1049h"); // swap to alt screen
+        let evictions_before = t.scrollback_eviction_count();
+
+        for _ in 0..200 {
+            // Realistic TUI frame: cursor home + ED 2 + four lines.
+            t.feed(b"\x1b[H\x1b[2Jhello world\r\nline two\r\nline three\r\nline four\r\n");
+        }
+
+        assert_eq!(
+            t.scrollback_eviction_count(),
+            evictions_before,
+            "alt-screen redraws must NEVER advance the eviction counter — \
+             that's the entire point of alt-screen scrollback isolation"
+        );
+    }
+
+    #[test]
+    fn primary_screen_in_viewport_redraw_does_not_advance_eviction_count() {
+        // §B.2 — even on primary screen (where scrollback IS active),
+        // a TUI that redraws strictly inside the viewport without
+        // crossing scroll_bottom does NOT push to scrollback. This
+        // covers shell-like apps (claude code's inline frames, fzf in
+        // height mode, etc.) that don't use the alt screen but still
+        // produce zero scroll churn.
+        let mut t = Terminal::new(10, 80, 100);
+        let evictions_before = t.scrollback_eviction_count();
+
+        for _ in 0..200 {
+            // Cursor home + 4 lines, no trailing \n on the last line —
+            // cursor never reaches scroll_bottom so no LF-driven scroll
+            // ever fires.
+            t.feed(b"\x1b[H\x1b[2Jhello world\r\nline two\r\nline three\r\nline four");
+        }
+
+        assert_eq!(
+            t.scrollback_eviction_count(),
+            evictions_before,
+            "primary-screen in-viewport redraws must NOT advance counter"
+        );
+    }
+
+    #[test]
+    fn ed_3_clears_scrollback_physically_and_keeps_visible_grid() {
+        // §B.2 — `\x1b[3J` (Erase Saved Lines) must drop the entire
+        // ring buffer but leave the visible grid intact. Pre-fix the
+        // parser silently demoted this to ED 2, leaving scrollback
+        // untouched — exactly the user-reported "clear 不能完全清理".
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"a\r\nb\r\nc\r\nd"); // 'a' and 'b' spill into scrollback
+        assert!(t.scrollback_len() >= 2);
+        let visible_before: Vec<String> = t.dump_visible_text();
+
+        t.feed(b"\x1b[3J");
+
+        assert_eq!(
+            t.scrollback_len(),
+            0,
+            "ED 3 must physically clear the scrollback ring"
+        );
+        // Visible grid AND cursor untouched.
+        assert_eq!(
+            t.dump_visible_text(),
+            visible_before,
+            "ED 3 must NOT touch the visible grid"
+        );
+    }
+
+    #[test]
+    fn ed_2_does_not_touch_scrollback() {
+        // §B.2 — sanity: ED 2 (clear screen) must leave scrollback
+        // intact. Only ED 3 reaches the saved lines.
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        let sb_before = t.scrollback_len();
+
+        t.feed(b"\x1b[2J");
+
+        assert_eq!(
+            t.scrollback_len(),
+            sb_before,
+            "ED 2 must NOT touch scrollback"
+        );
+    }
+
+    #[test]
+    fn clear_scrollback_api_drops_history_and_resets_offset() {
+        // §B.2 — direct JS-facing API.
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.scroll_up_view(2); // page into history
+        assert!(t.scroll_offset() > 0);
+
+        t.clear_scrollback();
+
+        assert_eq!(t.scrollback_len(), 0);
+        assert_eq!(t.scroll_offset(), 0, "viewport must snap back to live grid");
+    }
+
+    #[test]
+    fn ed_3_on_alt_screen_preserves_scrollback() {
+        // §B.2 — alt screen has no scrollback; ED 3 there must be a
+        // no-op so apps that swap back to primary still see their
+        // history (kakoune/vim/less rely on this).
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        let sb_before = t.scrollback_len();
+        // Swap to alt screen (DECSET 1049).
+        t.feed(b"\x1b[?1049h");
+        t.feed(b"\x1b[3J");
+
+        // Swap back; primary scrollback must still have its rows.
+        t.feed(b"\x1b[?1049l");
+        assert_eq!(
+            t.scrollback_len(),
+            sb_before,
+            "ED 3 on alt screen must not touch primary scrollback"
+        );
+    }
 
     #[test]
     fn scroll_up_view_clamps_at_scrollback_length() {

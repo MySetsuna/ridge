@@ -69,16 +69,29 @@ impl JsTerminal {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        // §B.2 (2026-05-08) — selection now uses abs-row anchors that
+        // are stable across TUI redraws, viewport scroll, and even
+        // ordinary push-to-scrollback. The ONLY case where stored
+        // abs_row values become stale is when a row gets EVICTED from
+        // the oldest end of the scrollback ring (capacity rollover);
+        // after eviction, abs_row 0 silently points to a different
+        // content row. Use the monotonic eviction counter to detect
+        // that case and clear only then.
+        //
+        // Pre-fix this clear fired on EVERY non-empty feed — including
+        // every TUI frame redraw — which made user selections
+        // disappear instantly under htop / vim / claude / less, the
+        // user-reported "TUI 一直刷新无法选中复制" symptom. The
+        // abs-row infrastructure has been in place for several rounds;
+        // the over-eager invalidation was the actual blocker.
+        let evictions_before = self.inner.scrollback_eviction_count();
         self.inner.feed(bytes);
-        // Any new output invalidates the selection (matches xterm — the
-        // user's selection is anchored to cells that may have moved).
-        // Clear it; round 4's mouse-driven selection can do better than
-        // this if it tracks logical character indices.
-        if !bytes.is_empty() {
+        let evictions_after = self.inner.scrollback_eviction_count();
+        if evictions_after != evictions_before {
+            // Eviction crossed an abs-row boundary — anchor records
+            // would now point to wrong content. Drop them; user
+            // re-issues the query.
             self.selection.clear();
-            // Same reasoning for search results — old match positions
-            // point to cells that may have shifted. Caller can re-issue
-            // the query if they want fresh results.
             self.search.clear();
         }
     }
@@ -343,6 +356,20 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = scrollbackLen)]
     pub fn scrollback_len(&self) -> usize {
         self.inner.scrollback_len()
+    }
+
+    /// §B.2 (2026-05-08) — drop the in-kernel scrollback ring buffer
+    /// (physical clear) and snap viewport to live grid. Mirrors
+    /// `\x1b[3J` at the JS API level so the right-click "清空" path
+    /// can wipe both screen + saved lines without a PTY round trip
+    /// (and without stepping on shells that don't translate Ctrl+L
+    /// into ED 3). Selection is cleared so it doesn't survive into
+    /// nonexistent rows. Search results similarly drop.
+    #[wasm_bindgen(js_name = clearScrollback)]
+    pub fn clear_scrollback(&mut self) {
+        self.inner.clear_scrollback();
+        self.selection.clear();
+        self.search.clear();
     }
 
     /// Whether the user has paged into history and PTY output is

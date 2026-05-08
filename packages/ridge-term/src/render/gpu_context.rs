@@ -313,6 +313,15 @@ impl GpuContext {
                     shader_location: 5,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                // §B.3 (2026-05-08) — per-glyph color/mono flag, sourced
+                // from the rasterizer's pixel-scan and propagated via
+                // `GlyphEntry::is_color`. Replaces the per-pixel
+                // `glyph.rgb < 0.99` heuristic in `cell.wgsl::fs_main`.
+                wgpu::VertexAttribute {
+                    offset: 68,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Uint32,
+                },
             ],
         };
 
@@ -342,7 +351,27 @@ impl GpuContext {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: SURFACE_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // §B.4 (2026-05-08) — switched from ALPHA_BLENDING
+                    // (straight) to PREMULTIPLIED_ALPHA_BLENDING because
+                    // the cell shader now outputs premultiplied color
+                    // (rgb already weighted by coverage).
+                    //
+                    // Pre-fix: shader output `(coverage * glyph_rgb,
+                    // coverage)` for the split-glyph quad, then ROP
+                    // applied straight-alpha composite which multiplied
+                    // coverage A SECOND TIME — giving `coverage² *
+                    // glyph_rgb + (1 - coverage) * dst_bg` for AA fringe
+                    // pixels. Color contribution at AA edges was about
+                    // half what it should be, visibly darkening color
+                    // emoji edges.
+                    //
+                    // PREMULTIPLIED_ALPHA_BLENDING is `src + (1 -
+                    // src.a) * dst` which matches the shader's premult
+                    // output exactly. Narrow-cell single-instance path
+                    // still works because shader outputs alpha=1 for
+                    // opaque cells, collapsing the formula to `src + 0
+                    // * dst = src` (same as ALPHA_BLENDING was doing).
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -456,7 +485,25 @@ impl GpuContext {
         let ss = ATLAS_SUPERSAMPLE as f32;
         let cell_w_dev = (cell_w_css * dpr * ss).max(1.0);
         let cell_h_dev = (cell_h_css * dpr * ss).max(1.0);
-        let wide_w_dev = (cell_w_dev * 2.0).ceil() as u32;
+        // §B.10 (2026-05-08) — slot width must hold the WIDEST natural
+        // advance any glyph might be rasterised at, including non-
+        // monospace fallback fonts (Segoe UI Emoji's emoji ratio is
+        // ~1.37em RELATIVE to font_size, but the host's `cell_w_css`
+        // is `M`-advance-based ≈ 0.6em of font_size, so emoji advance
+        // can be up to 2.28× cell_w_dev). The pre-§B.10 multiplier of
+        // 2.0× wasn't enough — at DPR 2 / DPR 3 / large font sizes
+        // the rasteriser's bbox got CLIPPED at slot_w, losing the
+        // right portion of every wide emoji. Visible as "🎂 cursor
+        // exceeds visual" — the bitmap drew the left ~78% only, with
+        // the right portion missing.
+        //
+        // Bumping to 3.0× gives 50% headroom over the worst case
+        // (1.37em emoji → 2.28× cell_w_dev), with the next_power_of_two
+        // rounding pushing us to a clean atlas size. Memory cost: slot
+        // area roughly doubles (slot_w 64→128 at typical metrics);
+        // total atlas memory up to ~96 MiB at the 1024-layer cap,
+        // still well within VRAM budget.
+        let wide_w_dev = (cell_w_dev * 3.0).ceil() as u32;
         let row_h_dev = cell_h_dev.ceil() as u32;
         let slot_w = wide_w_dev.max(ATLAS_SLOT_W_FLOOR).next_power_of_two();
         let slot_h = (row_h_dev + row_h_dev / 4).max(ATLAS_SLOT_H_FLOOR);
@@ -688,12 +735,13 @@ mod tests {
 
     fn slot_dims_for_pub(cell_w_css: f32, cell_h_css: f32, dpr: f32) -> (u32, u32) {
         // Mirrors the live `slot_dims_for` impl including the §A.8
-        // ATLAS_SUPERSAMPLE multiplier so tests pin the actual
-        // formula, not a stale pre-SS copy.
+        // ATLAS_SUPERSAMPLE multiplier and the §B.10 3.0× wide-headroom
+        // factor so tests pin the actual formula, not a stale pre-SS
+        // copy.
         let ss = super::ATLAS_SUPERSAMPLE as f32;
         let cell_w_dev = (cell_w_css * dpr * ss).max(1.0);
         let cell_h_dev = (cell_h_css * dpr * ss).max(1.0);
-        let wide_w_dev = (cell_w_dev * 2.0).ceil() as u32;
+        let wide_w_dev = (cell_w_dev * 3.0).ceil() as u32;
         let row_h_dev = cell_h_dev.ceil() as u32;
         let slot_w = wide_w_dev
             .max(super::ATLAS_SLOT_W_FLOOR)
@@ -715,10 +763,10 @@ mod tests {
     #[test]
     fn slot_dims_grow_for_large_font_at_high_dpr() {
         // 24 CSS px font at DPR 2, SS 2 → cell_w_dev = 96,
-        // wide_w = 192. Next power-of-two ≥ 192 is 256.
+        // wide_w = 96 × 3 = 288. Next power-of-two ≥ 288 is 512.
         // Vertical: row_h = 96, + 25% = 120 — beats the 96 floor.
         let (w, h) = slot_dims_for_pub(24.0, 24.0, 2.0);
-        assert_eq!(w, 256);
+        assert_eq!(w, 512);
         assert_eq!(h, 120);
     }
 
@@ -733,7 +781,7 @@ mod tests {
     #[test]
     fn slot_dims_rounds_up_to_power_of_two() {
         // 33 px wide cell × DPR 1 × SS 2 → cell_w_dev = 66,
-        // wide_w = 132 → next pow2 = 256.
+        // wide_w = 66 × 3 = 198 → next pow2 = 256.
         let (w, _) = slot_dims_for_pub(33.0, 16.0, 1.0);
         assert_eq!(w, 256);
     }

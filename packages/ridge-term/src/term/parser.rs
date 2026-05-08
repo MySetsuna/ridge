@@ -427,6 +427,65 @@ impl<'a> Perform for Performer<'a> {
                     }
                 }
             }
+            'p' if intermediates.contains(&b'$') => {
+                // §B.6 (2026-05-08) — DECRQM `CSI ? <n> $ p` — Request
+                // Mode. Apps query "is mode N enabled?". Response:
+                // `CSI ? n ; Ps $ y` where Ps is:
+                //   0 = mode not recognised
+                //   1 = set
+                //   2 = reset
+                //   3 = permanently set (cannot be reset)
+                //   4 = permanently reset (cannot be set)
+                //
+                // Critical for the ✔ / 🎂 / 👈 cursor-drift symptom on
+                // Windows: PSReadLine 2.3.6+ queries Mode 2027
+                // (Unicode Core) at startup to decide whether to use
+                // grapheme-cluster width or .NET's
+                // `LengthInBufferCells` (which counts each UTF-16
+                // surrogate of a non-BMP emoji as wcwidth=2 → reports
+                // 4 cells for 🎂). Reporting Mode 2027 = set tells
+                // PSReadLine to switch to the correct width path,
+                // killing the cursor drift at its source.
+                //
+                // Standard private modes that we route through
+                // `Modes::set` get answered against `self.modes`'s
+                // current state. Public DECRQM (no `?`) we don't
+                // currently implement — apps almost never query
+                // public ANSI modes.
+                if is_private {
+                    let code = first_param(params, 0) as u16;
+                    let ps: u8 = match code {
+                        // Modes Wind models with mutable state
+                        7 => if self.modes.autowrap { 1 } else { 2 },
+                        25 => if self.modes.cursor_visible { 1 } else { 2 },
+                        12 => if self.modes.cursor_blink { 1 } else { 2 },
+                        6 => if self.modes.origin { 1 } else { 2 },
+                        1 => if self.modes.app_cursor_keys { 1 } else { 2 },
+                        9 => if self.modes.mouse_x10 { 1 } else { 2 },
+                        1000 => if self.modes.mouse_normal { 1 } else { 2 },
+                        1002 => if self.modes.mouse_button_event { 1 } else { 2 },
+                        1003 => if self.modes.mouse_any_event { 1 } else { 2 },
+                        1004 => if self.modes.mouse_focus { 1 } else { 2 },
+                        1006 => if self.modes.mouse_sgr { 1 } else { 2 },
+                        2004 => if self.modes.bracketed_paste { 1 } else { 2 },
+                        2026 => if self.modes.sync_output { 1 } else { 2 },
+                        // §B.6 — Mode 2027 advertised PERMANENT-SET
+                        // (Ps=3) so apps know they can rely on it for
+                        // the lifetime of the connection. Even if some
+                        // app emits `CSI ? 2027 l` (reset), the next
+                        // query still reports 3 because Wind's
+                        // grapheme-cluster width semantics are
+                        // structural — they don't actually toggle.
+                        2027 => 3,
+                        // Unknown / unsupported modes
+                        _ => 0,
+                    };
+                    let resp = format!("\x1b[?{};{}$y", code, ps);
+                    self.pending_response.extend_from_slice(resp.as_bytes());
+                }
+                // Public DECRQM (without `?`) intentionally ignored —
+                // see comment above.
+            }
             'p' if intermediates.first() == Some(&b'!') => {
                 // DECSTR `CSI ! p` — soft terminal reset. Spec-compliant
                 // SUBSET of RIS: resets app-controllable state but
@@ -833,9 +892,20 @@ fn parse_hyperlink_id(s: &str) -> Option<String> {
 }
 
 fn parse_erase_mode(params: &Params) -> EraseMode {
-    match first_param(params, 0).min(2) {
+    // §B.2 (2026-05-08) — accept `3` as the xterm "Erase Saved Lines"
+    // extension. Pre-fix, this fn clamped the param to `min(2)` so
+    // `\x1b[3J` was silently demoted to `\x1b[2J` (clear screen only),
+    // and the scrollback ring buffer was never physically cleared —
+    // exactly the user-reported "clear 不能完全清理" symptom. EL
+    // (CSI K) treats `SavedLines` as a no-op since EL has no
+    // saved-lines semantics in any spec.
+    match first_param(params, 0) {
         0 => EraseMode::Below,
         1 => EraseMode::Above,
+        2 => EraseMode::All,
+        3 => EraseMode::SavedLines,
+        // Unknown / out-of-range values fall back to `All` to match
+        // pre-§B.2 behaviour for terminals that emit param ≥ 4.
         _ => EraseMode::All,
     }
 }

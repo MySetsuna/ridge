@@ -61,6 +61,31 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 	const outUnlisten = await listen<{ data: string }>(
 		`pty-output-${workspaceId}-${paneId}`,
 		(e) => {
+			// §B.6 (2026-05-08) — opt-in PTY byte trace. When
+			// `localStorage.RIDGE_PTY_TRACE === '1'`, log every chunk
+			// the shell sends, formatted as the printable string +
+			// hex bytes. Lets users investigating cursor-drift issues
+			// (e.g. "🎂 看起来在 4 列之后") capture exactly what
+			// PSReadLine / ConPTY emitted, so we can pinpoint whether
+			// it's a width-disagreement (ConPTY wrote padding spaces),
+			// a CSI positioning sequence (shell jumped cursor), or
+			// something else entirely. Off by default — gated on
+			// localStorage so normal users pay nothing.
+			if (typeof localStorage !== 'undefined') {
+				try {
+					if (localStorage.getItem('RIDGE_PTY_TRACE') === '1') {
+						const data = e.payload.data;
+						const bytes = new TextEncoder().encode(data);
+						const hex = Array.from(bytes)
+							.map((b) => b.toString(16).padStart(2, '0'))
+							.join(' ');
+						const printable = data.replace(/\x1b/g, '\\e').replace(/[\x00-\x1f]/g, (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+						console.log(`[pty-trace ${paneId.slice(0, 6)}] ${printable.length} chars / ${bytes.length} bytes\n  text: ${JSON.stringify(printable)}\n  hex:  ${hex}`);
+					}
+				} catch {
+					/* localStorage denied / SSR — silently skip */
+				}
+			}
 			manager.feed(paneId, e.payload.data);
 		},
 	);

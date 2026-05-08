@@ -170,7 +170,7 @@ self.MonacoEnvironment = {
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
   import { get } from 'svelte/store';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -179,21 +179,29 @@ self.MonacoEnvironment = {
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
 
-  // §A.8 (2026-05-08) — per-workspace canvas. Each workspace tab owns
-  // its own `<canvas data-rg-ws-host>` mounted inside its wrapper div
-  // (rendered by the {#each} loop further down). Switching tabs is
-  // then a CSS `display:flex/none` flip — the inactive tab's canvas
-  // keeps its last-painted pixels via the browser compositor, so
-  // the user sees no flash, no clear, no re-rasterise.
+  // §A.9 (2026-05-08 follow-up) — single global canvas. ALL workspaces'
+  // panes render onto one `<canvas data-rg-host>` mounted ONCE at the
+  // pane area's parent (outside the per-workspace `{#each}` loop).
+  // Switching workspaces is then a pure DOM display flip on the
+  // SplitContainer side; the canvas itself never reconfigures, the
+  // pipeline never re-inits, the swap chain never clears → no black
+  // flash on switch.
   //
-  // Svelte action: bind a workspace's canvas to its SurfaceHost via
-  // manager.attachHost(canvas, workspaceId), and observe the canvas's
-  // parent for resize so the swap chain stays in sync. Cleans up on
-  // canvas unmount (workspace closed).
-  function workspaceHostCanvas(node: HTMLCanvasElement, workspaceId: string) {
+  // Inactive workspaces' panes are skipped at render time via the 0×0
+  // bbox check in manager.ts (their SplitContainer is `display:none`
+  // → contained pane containers measure 0×0 → `_isContainerHidden`
+  // skips them). Their kernels stay alive and keep receiving PTY
+  // bytes; switching back is just "the next RAF tick passes the bbox
+  // gate" — typically <16ms.
+  //
+  // Svelte action: bind THE canvas to the manager's global SurfaceHost
+  // via `manager.attachHost(canvas)`, observe its parent for resize so
+  // the swap chain stays in sync. Cleans up on app teardown only —
+  // the canvas is mounted once for the app's lifetime.
+  function globalHostCanvas(node: HTMLCanvasElement) {
     const manager = TerminalManager.instance();
-    void manager.attachHost(node, workspaceId).catch((err) => {
-      console.warn('[ridge] attachHost failed for workspace', workspaceId, err);
+    void manager.attachHost(node).catch((err) => {
+      console.warn('[ridge] attachHost failed for global canvas', err);
     });
     const parent = node.parentElement;
     let observer: ResizeObserver | undefined;
@@ -203,7 +211,7 @@ self.MonacoEnvironment = {
         if (pendingRaf !== 0) return;
         pendingRaf = requestAnimationFrame(() => {
           pendingRaf = 0;
-          manager.resizeHost(workspaceId);
+          manager.resizeHost();
         });
       });
       observer.observe(parent);
@@ -212,10 +220,40 @@ self.MonacoEnvironment = {
       destroy() {
         if (pendingRaf !== 0) cancelAnimationFrame(pendingRaf);
         observer?.disconnect();
-        manager.detachHost(workspaceId);
+        manager.detachHost();
       },
     };
   }
+
+  // §A.9 — when the active workspace changes, the SplitContainer
+  // wrappers swap their `display:none/flex` state in the same Svelte
+  // microtask. Pane containers in the newly-active workspace transition
+  // from 0×0 → real bbox; the old workspace's go the other way. The
+  // existing `_isContainerHidden` gate in the RAF loop will pick this up
+  // automatically next tick, but ResizeObserver is async and the first
+  // post-switch RAF can read stale rects → up to one tick of empty
+  // canvas.
+  //
+  // To make the switch feel truly instant: the moment the store flips,
+  // tell the manager which workspace just became active. It will
+  // recompute viewports for that workspace's panes against the (still
+  // alive) global host canvas, invalidate, and wake the RAF loop so the
+  // next frame paints the right scissors. No-op when no global host
+  // (Canvas2D fallback path doesn't share a surface).
+  $effect(() => {
+    const wsId = $activeWorkspaceId;
+    if (!wsId) return;
+    // tick() lets Svelte commit the display:flex/none toggle before we
+    // measure containers — without it, _recomputeViewport may still
+    // observe the pre-switch layout.
+    void tick().then(() => {
+      try {
+        TerminalManager.tryInstance()?.onActiveWorkspaceChanged(wsId);
+      } catch (e) {
+        console.warn('[ridge] onActiveWorkspaceChanged threw', e);
+      }
+    });
+  });
 
   type SidebarTab = 'git' | 'files' | 'search' | 'claude';
   let sidebarTab = $state<SidebarTab>('files');
@@ -908,11 +946,13 @@ function expandSidebar() {
       m.setupTerminalThemeBridge();
     });
 
-    // §A.8 (2026-05-08) — host canvases are now per-workspace; each
-    // workspace's div in the {#each} loop renders its own canvas via
-    // the `workspaceHostCanvas` action, which calls
-    // `manager.attachHost(canvas, ws.id)` on mount and detaches on
-    // unmount. No global host canvas, no global attachHost call here.
+    // §A.9 (2026-05-08 follow-up) — single global host canvas. The
+    // canvas itself is mounted by `globalHostCanvas` action on the
+    // pane-area wrapper (just outside the workspace `{#each}` loop);
+    // see the markup section below. No per-workspace canvas, no
+    // per-workspace attachHost — switching workspaces is a pure DOM
+    // toggle on the SplitContainer side, the canvas/swap-chain stays
+    // alive across switches.
 
     // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
     // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
@@ -1435,13 +1475,6 @@ function expandSidebar() {
       class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--rg-bg-raised)]"
     >
       <div class="relative flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
-        <!-- §A.8 (2026-05-08) — per-workspace canvas. Each workspace
-             tab owns its own `<canvas data-rg-ws-host>` mounted INSIDE
-             its wrapper div; switching tabs is a CSS display flip and
-             the inactive tab's canvas keeps its last-painted pixels
-             via the browser compositor — instant switch, no flash, no
-             clear, no re-rasterise. The `workspaceHostCanvas` action
-             registers each canvas with the manager. -->
         {#if $activeWorkspaceId && hasPaneLayout}
           {#each $workspacesList as ws (ws.id)}
             {@const tree = $workspacePaneTrees.get(ws.id)}
@@ -1451,12 +1484,6 @@ function expandSidebar() {
                 style="display:{ws.id === $activeWorkspaceId ? 'flex' : 'none'};"
                 data-rg-ws-pane-host={ws.id}
               >
-                <canvas
-                  use:workspaceHostCanvas={ws.id}
-                  data-rg-ws-host={ws.id}
-                  aria-hidden="true"
-                  style="position:absolute; inset:0; pointer-events:none; z-index:0;"
-                ></canvas>
                 <SplitContainer workspaceId={ws.id} node={tree} />
               </div>
             {/if}
@@ -1468,6 +1495,29 @@ function expandSidebar() {
             正在加载工作区…
           </div>
         {/if}
+
+        <!-- §A.9 (2026-05-08 follow-up) — single global canvas. ONE
+             `<canvas data-rg-host>` lives at this always-mounted wrapper
+             and serves every workspace's panes via per-pane scissors on
+             the host. Switching workspaces is just a CSS `display:flex/
+             none` flip on each workspace's SplitContainer wrapper above;
+             the canvas / WebGPU swap chain / pipeline are never torn
+             down or reconfigured, so the user sees an instant switch
+             with no black flash and no atlas re-warm.
+
+             Mounted AFTER the workspace each-loop in tree order so that
+             — within the parent's stacking context — the canvas paints
+             on top of the SplitContainer DOM. The per-pane scissor
+             leaves splitter regions transparent on the canvas, so the
+             DOM splitter strips below remain visible through those
+             gaps. `pointer-events:none` lets clicks fall through the
+             canvas to the SplitContainer for resize/focus interaction. -->
+        <canvas
+          use:globalHostCanvas
+          data-rg-host
+          aria-hidden="true"
+          style="position:absolute; inset:0; pointer-events:none; z-index:0;"
+        ></canvas>
       </div>
       <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流 -->
       <FileEditor />

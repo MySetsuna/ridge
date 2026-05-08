@@ -185,6 +185,68 @@ impl Row {
         self.clusters.retain(|c| c.col != target);
     }
 
+    /// §B.2 (2026-05-08) — drop every cluster sidecar whose anchor col
+    /// falls inside `[start, end)`. Called by erase / shift paths
+    /// (EL / ECH / DCH / ICH) so wiping or moving cells also drops
+    /// the multi-codepoint cluster strings that were anchored on those
+    /// cells. Without this the renderer's per-cell `cluster_at(col)`
+    /// lookup keeps finding the original emoji string at a now-blank
+    /// or now-shifted position, painting "ghost" emoji on cleared
+    /// cells (the user-visible "退格出现乱码" symptom in cluster-
+    /// rich rows).
+    pub fn clear_clusters_in_range(&mut self, start: usize, end: usize) {
+        if self.clusters.is_empty() || start >= end {
+            return;
+        }
+        let lo = start.min(u16::MAX as usize) as u16;
+        let hi = end.min(u16::MAX as usize) as u16;
+        self.clusters.retain(|c| c.col < lo || c.col >= hi);
+    }
+
+    /// §B.2 — shift every cluster sidecar at col ≥ `at_or_after` LEFT
+    /// by `by` cells. Used by DCH (delete-chars). Sidecars whose
+    /// post-shift col is < `at_or_after - by` (i.e. would have been
+    /// emitted from inside the deletion range — caller is expected to
+    /// drop those first via `clear_clusters_in_range`) survive only
+    /// when their original col ≥ at_or_after; this method assumes the
+    /// deletion range was already cleared. Sidecars to the LEFT of
+    /// `at_or_after` are untouched.
+    pub fn shift_clusters_left(&mut self, at_or_after: usize, by: usize) {
+        if self.clusters.is_empty() || by == 0 {
+            return;
+        }
+        let pivot = at_or_after.min(u16::MAX as usize) as u16;
+        let by_u16 = by.min(u16::MAX as usize) as u16;
+        for c in &mut self.clusters {
+            if c.col >= pivot {
+                c.col = c.col.saturating_sub(by_u16);
+            }
+        }
+    }
+
+    /// §B.2 — shift every cluster sidecar at col ≥ `at_or_after` RIGHT
+    /// by `by` cells, dropping any whose post-shift col would be ≥
+    /// `max_cols`. Used by ICH (insert-chars).
+    pub fn shift_clusters_right(&mut self, at_or_after: usize, by: usize, max_cols: usize) {
+        if self.clusters.is_empty() || by == 0 {
+            return;
+        }
+        let pivot = at_or_after.min(u16::MAX as usize) as u16;
+        let by_u16 = by.min(u16::MAX as usize) as u16;
+        let limit = max_cols.min(u16::MAX as usize) as u16;
+        // Two-pass: shift in place, then drop overflow. Single-pass
+        // retain_mut would be cleaner but stable Rust's `retain_mut`
+        // only reads the closure's mutated value at the *next* call —
+        // safer to keep semantics explicit.
+        for c in &mut self.clusters {
+            if c.col >= pivot {
+                let shifted = c.col.saturating_add(by_u16);
+                c.col = shifted;
+            }
+        }
+        self.clusters.retain(|c| c.col < limit);
+    }
+
     /// Return the hyperlink span containing `col`, if any. O(N) over
     /// spans on this row — expected to be 0..3 for typical rows.
     pub fn link_at(&self, col: usize) -> Option<&HyperlinkSpan> {

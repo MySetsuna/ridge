@@ -25,6 +25,7 @@ export const surfacehosthandle_init: (a: any) => any;
 export const surfacehosthandle_invalidate: (a: number) => void;
 export const surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
 export const terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
+export const terminalkernel_clearScrollback: (a: number) => void;
 export const terminalkernel_clearSelection: (a: number) => void;
 export const terminalkernel_cols: (a: number) => number;
 export const terminalkernel_cursorCol: (a: number) => number;

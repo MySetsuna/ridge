@@ -54,7 +54,11 @@ use std::rc::Rc;
 use super::glyph_atlas::{GlyphEntry, GlyphKey};
 use super::gpu_context::GpuContext;
 use super::surface_host::{ScissorRect, SurfaceHost};
-use crate::term::wcwidth::is_visual_wide_codepoint;
+// §B.8 (2026-05-08) — `is_visual_wide_codepoint` no longer consulted
+// by the renderer; runtime measurement of the rasterized glyph's
+// natural advance drives the overflow decision per `draw_row`'s §B.8
+// branch. The function is kept in `wcwidth.rs` for any external
+// callers and for the test that asserts its set definition.
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
 use crate::term::attr_table::AttrTable;
 
@@ -82,9 +86,20 @@ const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
 /// `gpu_context.rs::new`).
 ///
 /// Pod + Zeroable allow `bytemuck::cast_slice(&[CellInstance])` to
-/// return `&[u8]` without unsafe transmutes. Layout: 6 fields,
-/// all f32 / u32 / [f32; N] arrays, 4-byte aligned, 68 bytes total — no
+/// return `&[u8]` without unsafe transmutes. Layout: 7 fields,
+/// all f32 / u32 / [f32; N] arrays, 4-byte aligned, 72 bytes total — no
 /// implicit padding so `Pod` is sound.
+///
+/// §B.3 (2026-05-08) — `is_color` was added so the fragment shader can
+/// branch on per-glyph color/mono classification carried from the
+/// rasterizer's pixel-scan, instead of inferring it per-fragment from
+/// `glyph.rgb < 0.99`. The per-fragment heuristic was unreliable
+/// because Linear-filter sampling at AA fringe pixels averages a
+/// painted (1,1,1) texel with a transparent (0,0,0,0) neighbour,
+/// producing fractional rgb that the heuristic misclassified as
+/// "color emoji" — the shader then used the gray rgb instead of
+/// tinting with `fg_rgba`, producing the user-visible "白色毛边" /
+/// halo on monochrome glyphs against contrasting backgrounds.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CellInstance {
@@ -94,6 +109,7 @@ struct CellInstance {
     atlas_layer: u32,    // 32..36
     fg_rgba: [f32; 4],   // 36..52
     bg_rgba: [f32; 4],   // 52..68
+    is_color: u32,       // 68..72  — 1 = color emoji bitmap, 0 = monochrome / overlay
 }
 
 /// Re-exported so `gpu_context.rs` can wire the shared `cell_pipeline`'s
@@ -451,6 +467,35 @@ impl RenderBackend for WebGpuPaneBackend {
         };
         let dpr = self.metrics.dpr;
 
+        // §B.11 (2026-05-08) — Windows Terminal model: NATURAL-size
+        // glyph rendering with layer ordering. Reverts §B.10's
+        // rescaleGlyphs (which distorted aspect ratios). The user
+        // explicitly prefers natural-shape glyphs over cursor-aligned
+        // visuals, matching what Windows Terminal / iTerm2 / Apple
+        // Terminal do — emoji and CJK render at their natural advance,
+        // possibly leaving a gap on the right (when natural < cell
+        // box) or overflowing into the next cell (when natural >
+        // cell box). Cursor still advances by `wcwidth` (logical),
+        // so visual ≠ cursor is normal.
+        //
+        // Two passes per row (xterm.js layer ordering):
+        //   * BG pass — every cell's bg quad first.
+        //   * GLYPH pass — every cell's glyph quad in cell order. A
+        //     wide glyph in cell N paints its overflow ON TOP of cell
+        //     N+1's already-painted bg, then cell N+1's glyph paints
+        //     ON TOP of cell N's overflow at the intersection only.
+        //     Both glyphs visible at correct proportions; bg gaps
+        //     show through.
+        //
+        // The §B.10 slot-width bump (3.0× cell_w_dev in
+        // slot_dims_for) ensures the rasteriser captures the full
+        // natural advance even for non-monospace emoji fonts at high
+        // DPR — load-bearing here because we now render at natural
+        // (not stretched), so a clipped bitmap would directly show as
+        // a half-drawn glyph.
+        let mut row_bg_instances: Vec<CellInstance> = Vec::new();
+        let mut row_glyph_instances: Vec<CellInstance> = Vec::new();
+
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
@@ -557,128 +602,52 @@ impl RenderBackend for WebGpuPaneBackend {
                 None => ([0.0, 0.0, 0.0, 0.0], 0),
             };
 
-            // §A.6 (2026-05-08) — visual-wide narrow detection. Cell stays
-            // logically 1-wide (cursor / column accounting unchanged), but
-            // the glyph quad may span up to 2 cells visually so the
-            // rasterized advance isn't horizontally compressed by the
-            // 1-cell cell_size. Conservative gate: only when the next
-            // cell is BLANK (space at default attrs) so the overflow can
-            // never visually clobber a real neighbour glyph.
-            let leading_cp: u32 = match cluster_text {
-                Some(text) => text.chars().next().map(|c| c as u32).unwrap_or(0),
-                None => cell.ch as u32,
-            };
-            let next_cell_blank = match row.cells.get(col + 1) {
-                Some(n) => {
-                    n.ch == ' ' && n.attr == crate::term::attr_table::AttrId::DEFAULT
-                }
-                None => false,
-            };
-            let visual_wide_narrow = cell_span == 1
-                && is_visual_wide_codepoint(leading_cp)
-                && next_cell_blank;
-
-            if visual_wide_narrow {
-                // Split: bg covers the logical 1-cell rect; glyph quad
-                // grows up to 2 cells, capped at the rasterized natural
-                // advance (`e.px_w`) and floored at 1 cell so the glyph
-                // never ends up SMALLER than before. Mirrors the wide-
-                // cell split so the bg quad's right edge stays exactly
-                // at the next cell's left edge — important when the
-                // next cell has a different bg colour (Selection / SGR
-                // background) so we don't paint over it.
-                self.pending_instances.push(CellInstance {
+            // §B.11 — natural-size glyph + layer ordering. Push bg
+            // quad at exactly `cell_span * cell_w` (preserves bg
+            // colour for the whole logical cell). Push glyph quad at
+            // the rasteriser's measured natural advance (`e.px_w`),
+            // floored at 1 device px so degenerate sub-pixel glyphs
+            // still draw something. No max cap — natural-wider
+            // glyphs OVERFLOW into the next cell, where layer
+            // ordering ensures cell N+1's bg has been painted FIRST
+            // (so the overflow paints on top of it, visible) and
+            // cell N+1's glyph paints AFTER (so cell N+1's actual
+            // glyph pixels overpaint the overflow only at their
+            // intersection — both glyphs visible).
+            let is_color_flag: u32 =
+                if entry.map(|e| e.is_color).unwrap_or(false) { 1 } else { 0 };
+            // Bg quad: full cell_span × cell_w rectangle.
+            row_bg_instances.push(CellInstance {
+                cell_xy: [pixel_x, pixel_y],
+                cell_size: [cell_w_px, row_h_int],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: rgba_u8_to_f32(fg),
+                bg_rgba: rgba_u8_to_f32(bg),
+                is_color: 0,
+            });
+            // Glyph quad: at natural advance, anchored at cell left.
+            if let Some(e) = entry {
+                let natural_w = (e.px_w as f32).max(1.0);
+                row_glyph_instances.push(CellInstance {
                     cell_xy: [pixel_x, pixel_y],
-                    cell_size: [cell_w_px, row_h_int],
-                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                    atlas_layer: 0,
+                    cell_size: [natural_w, row_h_int],
+                    atlas_uv: e.uv,
+                    atlas_layer: e.layer as u32,
                     fg_rgba: rgba_u8_to_f32(fg),
-                    bg_rgba: rgba_u8_to_f32(bg),
-                });
-                if let Some(e) = entry {
-                    let visual_target_w = 2.0 * cell_w_px;
-                    let glyph_w_px =
-                        (e.px_w as f32).min(visual_target_w).max(cell_w_px);
-                    self.pending_instances.push(CellInstance {
-                        cell_xy: [pixel_x, pixel_y],
-                        cell_size: [glyph_w_px, row_h_int],
-                        atlas_uv: e.uv,
-                        atlas_layer: e.layer as u32,
-                        fg_rgba: rgba_u8_to_f32(fg),
-                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                    });
-                }
-            } else if cell_span >= 2 {
-                // Wide cell (CJK / fullwidth): split into a background
-                // instance covering the full 2-cell quad + a glyph
-                // instance sized to the glyph's actual advance. Without
-                // this split the shader linearly stretches a 1 em CJK
-                // glyph across a ~1.2 em (2 latin advances) quad — the
-                // visible "中文只有左半边" symptom from before §4.5.
-                self.pending_instances.push(CellInstance {
-                    cell_xy: [pixel_x, pixel_y],
-                    cell_size: [cell_w_px, row_h_int],
-                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                    atlas_layer: 0,
-                    fg_rgba: rgba_u8_to_f32(fg),
-                    bg_rgba: rgba_u8_to_f32(bg),
-                });
-                if let Some(e) = entry {
-                    // §A.8 (2026-05-08, restored 2026-05-08 after the
-                    // §A.9 conditional-compress regression): paint
-                    // color emoji at NATURAL advance (clamped ≥ 1 cell
-                    // for degenerate sub-cell glyphs). Trade-off
-                    // accepted upstream: when natural advance > 2
-                    // cells (Segoe UI Emoji ≈ 1.37em, target ≈ 1.2em)
-                    // the rightmost ~14% of the glyph extends into
-                    // col+cell_span. In practice this is a space ~99%
-                    // of the time, and even when it's not, only the
-                    // anti-aliased edge of the emoji crosses the cell
-                    // boundary — the glyph body is rendered at correct
-                    // proportions.
-                    //
-                    // §A.9's "compress when neighbour is occupied"
-                    // path was tried but reverted — Linear-filter
-                    // 14% compression visibly squashed every color
-                    // emoji that touched a non-blank neighbour, and
-                    // Wind's main inline-text-with-emoji users (CLI
-                    // tool output, chat-like interfaces) hit that
-                    // case constantly. iTerm2 / Apple Terminal /
-                    // Hyper all chose this same trade-off.
-                    //
-                    // CJK glyphs (e.is_color = false) keep the
-                    // natural-advance-clamped-to-2-cells path: CJK
-                    // fonts are em-square by design and shouldn't
-                    // ever overflow; clamping protects against fonts
-                    // whose advance metric is slightly > 2 cells.
-                    let glyph_w_px = if e.is_color {
-                        (e.px_w as f32).max(cell_w_px)
-                    } else {
-                        (e.px_w as f32).min(cell_w_px).max(1.0)
-                    };
-                    self.pending_instances.push(CellInstance {
-                        cell_xy: [pixel_x, pixel_y],
-                        cell_size: [glyph_w_px, row_h_int],
-                        atlas_uv: e.uv,
-                        atlas_layer: e.layer as u32,
-                        fg_rgba: rgba_u8_to_f32(fg),
-                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                    });
-                }
-            } else {
-                // Narrow cell: bg + glyph collapse into a single
-                // instance. The shader's `mix(bg, fg, coverage)` paints
-                // the glyph over the cell bg in one pass.
-                self.pending_instances.push(CellInstance {
-                    cell_xy: [pixel_x, pixel_y],
-                    cell_size: [cell_w_px, row_h_int],
-                    atlas_uv,
-                    atlas_layer,
-                    fg_rgba: rgba_u8_to_f32(fg),
-                    bg_rgba: rgba_u8_to_f32(bg),
+                    bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                    is_color: is_color_flag,
                 });
             }
         }
+        // §B.11 — flush bg pass first, then glyph pass. Within each
+        // pass cells are in left-to-right order, so cell N's overflow
+        // glyph (in glyph pass) paints over cell N+1's bg (in bg pass)
+        // BEFORE cell N+1's own glyph paints. This is the layer-
+        // rendering invariant that makes natural-size overflow
+        // visible.
+        self.pending_instances.append(&mut row_bg_instances);
+        self.pending_instances.append(&mut row_glyph_instances);
     }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
@@ -717,6 +686,7 @@ impl RenderBackend for WebGpuPaneBackend {
             atlas_layer: 0,
             fg_rgba: cursor_color,
             bg_rgba: cursor_color,
+            is_color: 0,
         });
 
         // 2) Inverted glyph (only meaningful for Block). Atlas-hit-only
@@ -752,6 +722,7 @@ impl RenderBackend for WebGpuPaneBackend {
                     atlas_layer: entry.layer as u32,
                     fg_rgba: cursor_text_color,
                     bg_rgba: cursor_color,
+                    is_color: if entry.is_color { 1 } else { 0 },
                 });
             }
         }
@@ -781,6 +752,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 atlas_layer: 0,
                 fg_rgba: sel_color,
                 bg_rgba: sel_color,
+                is_color: 0,
             });
         }
     }
@@ -809,6 +781,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 atlas_layer: 0,
                 fg_rgba: link_color,
                 bg_rgba: link_color,
+                is_color: 0,
             });
         }
     }

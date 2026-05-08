@@ -21,6 +21,21 @@ pub struct Scrollback {
     /// Number of valid entries currently stored.
     len: usize,
     capacity: usize,
+    /// §B.2 (2026-05-08) — count of rows ever evicted from the OLDEST
+    /// end via `push` at capacity. Selection / search abs-row anchors
+    /// are stored as offsets relative to the scrollback front; when
+    /// this counter advances, every previously-recorded abs_row N now
+    /// points to what was abs_row N+evictions at recording time, so
+    /// the JS-facing `feed` path uses the delta to decide whether to
+    /// invalidate selection. This replaces the prior "clear on every
+    /// feed" sledgehammer that killed TUI users' selections on every
+    /// frame redraw — even when nothing actually scrolled.
+    ///
+    /// Wraps at u64::MAX (impossibly large session). `clear()` does
+    /// NOT reset it — physical clear by ED 3 is itself a stronger
+    /// signal than per-row eviction, and the JS layer treats both as
+    /// "drop selection" via the same delta-comparison path.
+    eviction_count: u64,
 }
 
 impl Scrollback {
@@ -32,7 +47,17 @@ impl Scrollback {
             head: 0,
             len: 0,
             capacity,
+            eviction_count: 0,
         }
+    }
+
+    /// §B.2 — monotonically-increasing counter of evictions from the
+    /// oldest end. Advances on each `push` call that has to overwrite
+    /// the head slot (i.e. when the ring is at capacity). Used by the
+    /// JS-facing `feed` path to detect "did this byte stream cause a
+    /// row to roll off the top?" without inspecting individual cells.
+    pub fn eviction_count(&self) -> u64 {
+        self.eviction_count
     }
 
     pub fn capacity(&self) -> usize {
@@ -62,6 +87,7 @@ impl Scrollback {
             let evicted = self.entries[self.head].take();
             self.entries[self.head] = Some(row);
             self.head = (self.head + 1) % self.capacity;
+            self.eviction_count = self.eviction_count.wrapping_add(1);
             evicted
         }
     }
@@ -107,6 +133,13 @@ impl Scrollback {
     }
 
     pub fn clear(&mut self) {
+        // §B.2 — bump eviction_count by `len` so any extant selection
+        // anchor records get invalidated by the same delta-comparison
+        // path that handles ordinary scroll-off eviction. Belt+suspenders
+        // with `JsTerminal::clear_scrollback`'s explicit `selection.clear()`
+        // — covers the case where some other code path triggers a
+        // physical clear without going through the JS API.
+        self.eviction_count = self.eviction_count.wrapping_add(self.len as u64);
         for slot in &mut self.entries {
             *slot = None;
         }
@@ -261,6 +294,42 @@ mod tests {
         s.push(row_marked('x'));
         assert_eq!(s.len(), 1);
         assert_eq!(s.get(0).unwrap().cells[0].ch, 'x');
+    }
+
+    #[test]
+    fn eviction_counter_starts_at_zero_and_advances_on_overwrite() {
+        // §B.2 — JsTerminal::feed uses this counter to decide whether
+        // selection abs-row anchors are still valid.
+        let mut s = Scrollback::new(2);
+        assert_eq!(s.eviction_count(), 0);
+        s.push(row_marked('a'));
+        s.push(row_marked('b'));
+        // Still under capacity → no eviction yet.
+        assert_eq!(s.eviction_count(), 0);
+        // Third push overwrites 'a'.
+        s.push(row_marked('c'));
+        assert_eq!(s.eviction_count(), 1);
+        s.push(row_marked('d'));
+        assert_eq!(s.eviction_count(), 2);
+    }
+
+    #[test]
+    fn clear_advances_eviction_counter_by_len() {
+        // §B.2 — physical clear is at-least-as-strong an invalidation
+        // signal as ordinary eviction. Belt-and-suspenders for
+        // selection anchors that didn't go through the JS API path.
+        let mut s = Scrollback::new(4);
+        s.push(row_marked('a'));
+        s.push(row_marked('b'));
+        s.push(row_marked('c'));
+        let before = s.eviction_count();
+        assert_eq!(s.len(), 3);
+        s.clear();
+        assert_eq!(
+            s.eviction_count(),
+            before + 3,
+            "clear must bump the counter by the number of dropped rows"
+        );
     }
 
     #[test]

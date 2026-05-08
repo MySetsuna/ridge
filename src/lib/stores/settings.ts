@@ -52,6 +52,19 @@ export interface UserSettings {
    * 0 = 紧贴边框（早期默认）。建议 4-12 之间，避免字符被滚动条 / 分隔线擦边。
    */
   terminalPaddingPx: number;
+  /**
+   * 终端单 pane scrollback 行数。新建 pane 时生效；已开 pane 需要重启
+   * 该 pane 才会切换容量（kernel 端 ring buffer 在构造期固定大小）。
+   *
+   * 范围 100..=10000。默认 2000，约 ≈ 5 MiB / pane（80 cols × 32 B/cell ×
+   * 2000 行）。10000 行约 ≈ 25 MiB / pane — 仍在桌面级内存预算之内但
+   * 已是用户应自觉权衡的上限；100 是最小值（覆盖一屏即可的轻量模式）。
+   *
+   * 用户反馈「scrollback 太大」时应往下调；反馈「pageup 翻不到」时往
+   * 上调。配合 §B.2 ED 3 物理清理（右键「清空」），运行期可以随时
+   * 把已积累的 scrollback 清掉而无需重启 pane。
+   */
+  terminalScrollbackLines: number;
 }
 
 const DEFAULTS: UserSettings = {
@@ -63,6 +76,7 @@ const DEFAULTS: UserSettings = {
   searchExcludeGlobs: '',
   defaultShell: '',
   terminalPaddingPx: 6,
+  terminalScrollbackLines: 2000,
 };
 
 const LS_KEY = 'ridge-settings';
@@ -123,6 +137,13 @@ function load(): UserSettings {
       obj.terminalPaddingPx <= 64
         ? obj.terminalPaddingPx
         : DEFAULTS.terminalPaddingPx,
+    terminalScrollbackLines:
+      typeof obj.terminalScrollbackLines === 'number' &&
+      Number.isFinite(obj.terminalScrollbackLines) &&
+      obj.terminalScrollbackLines >= 100 &&
+      obj.terminalScrollbackLines <= 10000
+        ? Math.round(obj.terminalScrollbackLines)
+        : DEFAULTS.terminalScrollbackLines,
   };
 }
 
