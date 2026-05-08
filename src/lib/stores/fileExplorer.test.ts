@@ -104,6 +104,7 @@ describe('flattenVisiblePaths', () => {
       anchorPath: null,
       tree: null,
       loading: false,
+      refreshNonce: 0,
     };
     expect(flattenVisiblePaths(col)).toEqual([]);
   });
@@ -125,6 +126,7 @@ describe('flattenVisiblePaths', () => {
       selectedPath: null,
       selectedPaths: new Set(),
       anchorPath: null,
+      refreshNonce: 0,
       tree: {
         name: 'r',
         path: '/r',

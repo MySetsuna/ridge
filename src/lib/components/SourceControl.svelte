@@ -233,6 +233,12 @@
   let graphLoading = $state(false);
   let graphError: string | null = $state(null);
   /**
+   * Graph 刷新按钮 in-flight 标记。loadGraph 自身用 graphLoading 表示「拉本地
+   * commits」阶段；这个标记额外覆盖 git pull → refreshStatus → loadBranches 三
+   * 步前置流程，让 spinner 在整个复合操作里都转动。
+   */
+  let graphRefreshing = $state(false);
+  /**
    * Currently selected commit hash in the graph view. Derived from the
    * module-scope cache so the selection also survives tab remounts (round χ).
    * Writes go through `setScmSelectedCommit`.
@@ -610,6 +616,33 @@
       graphError = String(e);
     } finally {
       graphLoading = false;
+    }
+  }
+
+  /**
+   * 图谱刷新按钮 = 先 best-effort `git pull --ff-only`，失败也继续 reload，
+   * 这样：
+   *   • 有 upstream + 网络通时一键拉到最新远端 commits；
+   *   • 离线 / 无 upstream / 冲突时只是错过 pull，graph 仍按本地状态刷新。
+   * pull 失败不弹 alertDialog（runSync 那条路径有），仅 console.warn —— 用户
+   * 期待这里是「刷新」语义，不是「我要解决冲突」语义。
+   */
+  async function refreshGraphWithPull(root: string): Promise<void> {
+    if (!root || graphRefreshing) return;
+    graphRefreshing = true;
+    try {
+      if (isTauri()) {
+        try {
+          await invoke('git_pull', { repoRoot: root });
+        } catch (e) {
+          console.warn('refreshGraphWithPull: git pull failed', e);
+        }
+      }
+      await refreshStatus(root);
+      await loadBranches(root);
+      await loadGraph(root);
+    } finally {
+      graphRefreshing = false;
     }
   }
 
@@ -1636,11 +1669,12 @@ onMount(() => {
             </select>
             <button
               type="button"
-              class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]"
-              title="刷新"
-              onclick={() => selectedRepo && loadGraph(selectedRepo)}
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-50 disabled:cursor-not-allowed"
+              title="刷新（git pull --ff-only 后重载图谱；pull 失败仍刷新）"
+              disabled={graphRefreshing || graphLoading}
+              onclick={() => selectedRepo && void refreshGraphWithPull(selectedRepo)}
             >
-              <RefreshCw class="h-3 w-3 {graphLoading ? 'animate-spin' : ''}" />
+              <RefreshCw class="h-3 w-3 {(graphRefreshing || graphLoading) ? 'animate-spin' : ''}" />
             </button>
           {/if}
         </div>

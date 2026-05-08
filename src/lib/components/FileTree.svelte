@@ -36,6 +36,20 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		selectedPaths?: Set<string>;
 		/** Cut clipboard paths — receive a dimmed opacity until paste consumes. */
 		cutPaths?: Set<string>;
+		/**
+		 * 父级 loadTree 完成时由 ExplorerColumn 单调递增的计数器。每次 bump 触发
+		 * 本组件 reset 分页状态 + 若已展开则重新拉首页 —— 因为 depth=1 树仅刷新
+		 * cwd 直系子节点，孙子目录的分页内容完全活在本组件的 component-local
+		 * state 里，store 那次 update 看不到也碰不到，必须靠这个 nonce 单向通知。
+		 */
+		refreshNonce?: number;
+		/**
+		 * 任一祖先目录命中 .gitignore 时为 true。后端 `is_ignored` 是逐项独立计算
+		 * 的，但 ignored 视觉应该向下继承到所有子孙节点（VS Code 行为：
+		 * `node_modules/` 灰，里面所有内容也灰）。父组件递归把自己的 `isIgnored`
+		 * 通过这个 prop 下传，子组件 OR 自己的 `node.is_ignored` 即可。
+		 */
+		inheritedIgnored?: boolean;
 		onSelect?: (
 			path: string,
 			isDir: boolean,
@@ -51,6 +65,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		selectedPath = null,
 		selectedPaths = new Set(),
 		cutPaths,
+		refreshNonce = 0,
+		inheritedIgnored = false,
 		onSelect,
 	}: Props = $props();
 
@@ -76,11 +92,15 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	/**
 	 * Backend marks `is_ignored = true` on entries matched by the cwd's
 	 * `.gitignore` chain (or `false` otherwise; `undefined` outside any
-	 * git repo). We render those rows with reduced opacity + italic to
-	 * match VS Code's gitignored treatment, but they remain fully
-	 * interactive — click to open, F2 to rename, Delete to remove.
+	 * git repo). We render those rows with reduced opacity / muted color
+	 * — no italic — to match VS Code's gitignored treatment. Visual state
+	 * cascades to descendants via `inheritedIgnored`, so once a folder is
+	 * ignored the entire subtree under it stays grayed regardless of what
+	 * the per-entry backend flag reports for individual children. Rows
+	 * remain fully interactive — click to open, F2 to rename, Delete to
+	 * remove.
 	 */
-	let isIgnored = $derived(node.is_ignored === true);
+	let isIgnored = $derived(inheritedIgnored || node.is_ignored === true);
 
 	/**
 	 * Inline edit state. VS Code-style: the node's name swaps to an <input>
@@ -115,6 +135,23 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			childrenHasMore = false;
 			hasLoaded = true;
 		}
+	});
+
+	// 列级 refreshNonce bump 处理：
+	//   • depth=1 直系子（node.children 有值）已经被上面的 $effect 接管成「最新
+	//     一页」，无需额外动作；
+	//   • 孙子级目录（node.children 为 None）的分页结果只在本组件 state 里，
+	//     bump 后必须 reset，已展开则立刻重拉首页让用户看到最新内容。
+	let prevRefreshNonce = $state<number | undefined>(undefined);
+	$effect(() => {
+		const nonce = refreshNonce;
+		if (prevRefreshNonce !== undefined && prevRefreshNonce !== nonce && !node.children) {
+			resetChildrenState();
+			if (isExpanded && node.is_dir) {
+				void loadNextChildrenPage();
+			}
+		}
+		prevRefreshNonce = nonce;
 	});
 
 	// First expand → fetch page 0. Subsequent pages load via the
@@ -691,6 +728,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 						{selectedPath}
 						{selectedPaths}
 						{cutPaths}
+						{refreshNonce}
+						inheritedIgnored={isIgnored}
 						{onSelect}
 					/>
 				{/each}
@@ -741,14 +780,13 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	}
 
 	/*
-	 * Gitignored row treatment — VS Code parity. Italic + 50% opacity
-	 * + muted foreground; selection highlight still wins because the
-	 * selected-row class is applied alongside `rg-tree-ignored` and
-	 * raises foreground/background to the accent palette.
+	 * Gitignored row treatment — 50% opacity + muted foreground, no italic.
+	 * Selection highlight still wins because the selected-row class is
+	 * applied alongside `rg-tree-ignored` and raises foreground/background
+	 * to the accent palette.
 	 */
 	.file-tree-node :global(.rg-tree-ignored) {
 		opacity: 0.5;
-		font-style: italic;
 		color: var(--rg-fg-muted);
 	}
 </style>
