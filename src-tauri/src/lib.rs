@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tauri::Emitter;
 use tokio::sync::mpsc;
-use crate::commands::{fs_watch, git, pane, process, project, terminal, watch, ridge_file, workspace};
+use crate::commands::{fs_watch, git, pane, process, project, settings, terminal, watch, ridge_file, workspace};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
@@ -361,6 +361,7 @@ pub fn run() {
             ridge_file::browse_directory,
             ridge_file::list_recent_workspaces,
             ridge_file::clear_recent_workspaces,
+            settings::set_user_default_cwd,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
         ])

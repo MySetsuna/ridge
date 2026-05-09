@@ -48,6 +48,12 @@ export interface UserSettings {
    */
   defaultShell: string;
   /**
+   * 默认工作目录绝对路径。空串 = 未设置；启动时按 cli > user > home 优先级
+   * 解析（utils/cwd.rs::resolve_default_cwd）。新建 pane（无父 pane 继承时）
+   * 与首个 pane 都用此目录，不再回退到 ridge.exe 安装目录。
+   */
+  defaultCwd: string;
+  /**
    * 终端 pane 内边距（px），把 wasm 渲染的 canvas 从 pane 边框向内推。
    * 0 = 紧贴边框（早期默认）。建议 4-12 之间，避免字符被滚动条 / 分隔线擦边。
    */
@@ -75,6 +81,7 @@ const DEFAULTS: UserSettings = {
   searchIncludeGlobs: '',
   searchExcludeGlobs: '',
   defaultShell: '',
+  defaultCwd: '',
   terminalPaddingPx: 6,
   terminalScrollbackLines: 2000,
 };
@@ -130,6 +137,8 @@ function load(): UserSettings {
         : DEFAULTS.searchExcludeGlobs,
     defaultShell:
       typeof obj.defaultShell === 'string' ? obj.defaultShell : DEFAULTS.defaultShell,
+    defaultCwd:
+      typeof obj.defaultCwd === 'string' ? obj.defaultCwd : DEFAULTS.defaultCwd,
     terminalPaddingPx:
       typeof obj.terminalPaddingPx === 'number' &&
       Number.isFinite(obj.terminalPaddingPx) &&

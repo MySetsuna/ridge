@@ -155,8 +155,15 @@ fn create_pane_inner(
 		let entry = map.get(&workspace_id).and_then(|ws| ws.pane_tree.panes.get(&pane_id));
 		let cwd = entry.and_then(|p| p.cwd.clone());
 		let sk = entry.and_then(|p| p.shell_kind.clone());
+		drop(map);
+		let user_cwd = state.user_default_cwd.read().clone();
 		(
-			cwd.unwrap_or_else(|| resolve_default_cwd(state.startup_cli_cwd.as_deref(), None)),
+			cwd.unwrap_or_else(|| {
+				resolve_default_cwd(
+					state.startup_cli_cwd.as_deref(),
+					user_cwd.as_deref(),
+				)
+			}),
 			sk,
 		)
 	};
