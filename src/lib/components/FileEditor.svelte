@@ -63,6 +63,7 @@
   });
 
   let mountPoint: HTMLDivElement | undefined;
+  let panelRootEl: HTMLDivElement | undefined = $state();
   let editor: monaco.editor.IStandaloneCodeEditor | null = null;
   let currentModelPath: string | null = null;
   // 搜索命中高亮装饰句柄。tied to editorState.searchHighlight：搜索点击时
@@ -916,6 +917,33 @@
     return () => document.removeEventListener('mousedown', onDocClick, true);
   });
 
+  // ─── ESC 双击隐藏面板 ──────────────────────────────────────────────────────
+  // 第一次 ESC：让 Monaco 自己处理（关 find widget / autocomplete / hover）；
+  // 500 ms 内的第二次 ESC（焦点仍在面板内）才隐藏整个面板。capture-phase
+  // 监听确保我们先于 Monaco 看到事件，但仅在第二次时 stopPropagation —— 第一次
+  // 不阻断让 Monaco 正常清场。焦点不在面板内时不响应（避免在终端等场景把
+  // 用户的 ESC 键序列吃掉）。
+  let lastEscAt: number | null = null;
+  function onWindowKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return;
+    if (!editorState.isVisible) return;
+    const ae = document.activeElement as Node | null;
+    if (!panelRootEl || !ae || !panelRootEl.contains(ae)) return;
+    const now = performance.now();
+    if (lastEscAt !== null && now - lastEscAt < 500) {
+      e.preventDefault();
+      e.stopPropagation();
+      lastEscAt = null;
+      fileEditorStore.hide();
+      return;
+    }
+    lastEscAt = now;
+  }
+  onMount(() => {
+    window.addEventListener('keydown', onWindowKeyDown, true);
+    return () => window.removeEventListener('keydown', onWindowKeyDown, true);
+  });
+
   // ─── Style computations ────────────────────────────────────────────────────
   const containerStyle = $derived.by(() => {
     if (!editorState.isVisible || editorState.openFiles.length === 0)
@@ -937,6 +965,7 @@
 </script>
 
 <div
+  bind:this={panelRootEl}
   class="rg-file-editor flex flex-col bg-[var(--rg-surface-2)]/98 backdrop-blur-xl border border-[var(--rg-border)] shadow-2xl {editorState.displayMode === 'floating'
     ? 'rounded-lg overflow-hidden'
     : editorState.displayMode === 'drawer'
