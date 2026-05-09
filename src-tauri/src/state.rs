@@ -15,6 +15,7 @@ use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::types::GlobalEvent;
+use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
 /// Two-stage PTY spawn record.
 ///
@@ -230,6 +231,15 @@ pub struct AppState {
     /// 通用文件系统 watcher：覆盖 Explorer 列出的 cwd 和编辑器打开的外部文件，
     /// emit `fs-changed` 事件供前端文件树/编辑器订阅。
     pub fs_watcher: Arc<FsWatcher>,
+    /// 启动方式：cli（终端调用 `ridge`）/ menu（资源管理器、开始菜单双击 ridge.exe）。
+    /// 关键差异：menu 模式下进程的 `current_dir()` 等于 ridge.exe 所在目录，**不**应作为
+    /// 默认工作目录；cli 模式下它是用户期望的工作目录。
+    /// §4 启动恢复时读取此字段（cli 模式下跳过工作区恢复，让 cwd 接管首个工作区）。
+    #[allow(dead_code)]
+    pub startup_cwd_kind: StartupCwdKind,
+    /// cli 模式下捕获的启动 cwd；menu 模式为 None。后续 §2 用户配置 defaultCwd
+    /// 时按 cli > user > home 的优先级合并（utils::cwd::resolve_default_cwd）。
+    pub startup_cli_cwd: Option<PathBuf>,
 }
 
 impl AppState {
@@ -237,10 +247,10 @@ impl AppState {
         let id = Uuid::new_v4();
         let mut map = HashMap::new();
         let mut pane_tree = PaneTree::new();
-        // 将启动 cwd 种入默认 pane：从命令行 / 资源管理器启动时，用户期望默认终端
-        // 落在他们当前所在的目录，而不是 HOME 兜底。若无 .ridge 工作区覆盖这颗默认树，
-        // 这个 cwd 将直接被 create_pane 采用。
-        if let Ok(cwd) = std::env::current_dir() {
+        let (startup_cwd_kind, startup_cli_cwd) = detect_startup_cwd_kind();
+        // 仅 cli 启动时把 cwd 种入默认 pane；menu 启动时让 create_pane_inner 走
+        // HOME / 用户配置的 fallback，避免默认终端落到 ridge.exe 安装目录。
+        if let Some(cwd) = startup_cli_cwd.clone() {
             if let Some(&root_id) = pane_tree.panes.keys().next() {
                 if let Some(pane) = pane_tree.panes.get_mut(&root_id) {
                     pane.cwd = Some(cwd);
@@ -278,6 +288,8 @@ impl AppState {
             current_project: Arc::new(RwLock::new(None)),
             git_watcher: Arc::new(GitWatcher::new()),
             fs_watcher: Arc::new(FsWatcher::new()),
+            startup_cwd_kind,
+            startup_cli_cwd,
         }
     }
 

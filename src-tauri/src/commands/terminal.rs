@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
 use crate::state::AppState;
+use crate::utils::cwd::resolve_default_cwd;
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
 use crate::utils::pty_log;
@@ -146,15 +147,16 @@ fn create_pane_inner(
 
 	// 优先使用 pane tree 中已记录的 CWD（分屏时由 split_pane 从父 pane 继承），
 	// 若已保存过 shell_kind（来自 .ridge 文件恢复）也一并取出。
+	// pane.cwd 缺失时（首个 pane 在 menu 启动模式下）走 resolve_default_cwd：
+	//   cli_cwd > user_cwd（§2 接入）> home > "." —— 不再回退到 std::env::current_dir()，
+	//   因为 menu 启动时 current_dir 是 ridge.exe 所在目录。
 	let (cwd, persisted_shell): (PathBuf, Option<String>) = {
 		let map = state.workspaces.read();
 		let entry = map.get(&workspace_id).and_then(|ws| ws.pane_tree.panes.get(&pane_id));
 		let cwd = entry.and_then(|p| p.cwd.clone());
 		let sk = entry.and_then(|p| p.shell_kind.clone());
 		(
-			cwd.or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
-				.or_else(|| std::env::current_dir().ok())
-				.unwrap_or_else(|| PathBuf::from(".")),
+			cwd.unwrap_or_else(|| resolve_default_cwd(state.startup_cli_cwd.as_deref(), None)),
 			sk,
 		)
 	};
