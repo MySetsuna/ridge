@@ -83,11 +83,19 @@
   let isResizingFloating = $state(false);
 
   // ─── Diff editor state ─────────────────────────────────────────────────────
+  // Keep-alive 模式（与主 source editor 对齐）：单一 diffEditor 实例 + 按 path
+  // 缓存的 (originalModel, modifiedModel) pair 与 view state。切走 diff tab 时
+  // 仅 saveViewState；切回时 setModel + restoreViewState，scroll/折叠/光标全部
+  // 还原。tab 真正关闭（在 openFiles 中消失）才在 GC effect 里 dispose models。
   let diffMountPoint: HTMLDivElement | undefined;
   let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
-  let diffOriginalModel: monaco.editor.ITextModel | null = null;
-  let diffModifiedModel: monaco.editor.ITextModel | null = null;
-  let diffLoadedTabPath: string | null = null;
+  type DiffPair = {
+    original: monaco.editor.ITextModel;
+    modified: monaco.editor.ITextModel;
+  };
+  const diffModelCache = new Map<string, DiffPair>();
+  const diffViewStateCache = new Map<string, monaco.editor.IDiffEditorViewState>();
+  let diffCurrentPath: string | null = null;
   let diffLoading = $state(false);
   let diffError = $state('');
   let diffRenderSideBySide = $state(typeof window !== 'undefined' ? window.innerWidth >= 900 : true);
@@ -204,24 +212,68 @@
     };
   }
 
+  /** 仅在整个 FileEditor 卸载时调用：彻底销毁 diff editor 实例 + 全部缓存的
+   *  models / view states。切 tab 时不要调这个，用 saveAndDetachDiff() 代替。 */
   function disposeDiffEditor(): void {
     diffEditor?.dispose();
     diffEditor = null;
-    diffOriginalModel?.dispose();
-    diffModifiedModel?.dispose();
-    diffOriginalModel = null;
-    diffModifiedModel = null;
-    diffLoadedTabPath = null;
+    for (const pair of diffModelCache.values()) {
+      pair.original.dispose();
+      pair.modified.dispose();
+    }
+    diffModelCache.clear();
+    diffViewStateCache.clear();
+    diffCurrentPath = null;
+  }
+
+  /** 切走 diff tab 时调用：保留实例 + cache，仅保存 view state。 */
+  function saveDiffViewState(): void {
+    if (!diffEditor || !diffCurrentPath) return;
+    const vs = diffEditor.saveViewState();
+    if (vs) diffViewStateCache.set(diffCurrentPath, vs);
+  }
+
+  function ensureDiffEditor(): monaco.editor.IStandaloneDiffEditor | null {
+    if (diffEditor) return diffEditor;
+    if (!diffMountPoint) return null;
+    diffEditor = monaco.editor.createDiffEditor(diffMountPoint, {
+      theme: monacoTheme,
+      automaticLayout: true,
+      readOnly: true,
+      renderOverviewRuler: false,
+      minimap: { enabled: false },
+      fontFamily: editorFontFamily,
+      fontSize: editorFontSize,
+      renderWhitespace: 'boundary',
+      scrollBeyondLastLine: false,
+    });
+    diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    return diffEditor;
   }
 
   async function loadDiff(
     args: { repoRoot: string; path: string; cached: boolean; commit?: string },
     tabPath: string
   ): Promise<void> {
+    // 命中缓存：跳过 IPC 直接切模型 + 还原 view state（与主 source editor 一致）。
+    const cached = diffModelCache.get(tabPath);
+    if (cached) {
+      const ed = ensureDiffEditor();
+      if (!ed) return;
+      // 切走当前 path 前先存 view state。
+      if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
+      ed.setModel({ original: cached.original, modified: cached.modified });
+      diffCurrentPath = tabPath;
+      const vs = diffViewStateCache.get(tabPath);
+      if (vs) ed.restoreViewState(vs);
+      diffError = '';
+      return;
+    }
     const myId = ++diffReqId;
     diffLoading = true;
     diffError = '';
-    disposeDiffEditor();
+    // 切走当前正在显示的 path 之前先存 view state，避免被新加载覆盖。
+    if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
     try {
       if (!isTauri()) throw new Error('需要 Tauri 环境');
       const v = args.commit
@@ -239,26 +291,18 @@
       await tick();
       if (myId !== diffReqId) return;
       const lang = langFromPath(args.path);
-      diffOriginalModel = monaco.editor.createModel(v.original, lang);
-      diffModifiedModel = monaco.editor.createModel(v.modified, lang);
-      diffEditor = monaco.editor.createDiffEditor(diffMountPoint, {
-        theme: monacoTheme,
-        automaticLayout: true,
-        readOnly: true,
-        renderOverviewRuler: false,
-        minimap: { enabled: false },
-        fontFamily: editorFontFamily,
-        fontSize: editorFontSize,
-        renderWhitespace: 'boundary',
-        scrollBeyondLastLine: false,
-      });
-      diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
-      diffEditor.setModel({ original: diffOriginalModel, modified: diffModifiedModel });
-      diffLoadedTabPath = tabPath;
+      const original = monaco.editor.createModel(v.original, lang);
+      const modified = monaco.editor.createModel(v.modified, lang);
+      diffModelCache.set(tabPath, { original, modified });
+      const ed = ensureDiffEditor();
+      if (!ed) return;
+      ed.setModel({ original, modified });
+      diffCurrentPath = tabPath;
+      const vs = diffViewStateCache.get(tabPath);
+      if (vs) ed.restoreViewState(vs);
     } catch (e) {
       if (myId !== diffReqId) return;
       diffError = e instanceof Error ? e.message : String(e);
-      disposeDiffEditor();
     } finally {
       if (myId === diffReqId) diffLoading = false;
     }
@@ -413,8 +457,8 @@
   });
 
   // —— GC：openFiles 中已经不再存在的 path，对应的 model / view state /
-  //    markdown 滚动位置一并释放。Tab 关闭走的是 fileEditorStore.closeFile →
-  //    openFiles 移除该项 → 这里命中。
+  //    markdown 滚动位置 / diff pair 一并释放。Tab 关闭走的是
+  //    fileEditorStore.closeFile → openFiles 移除该项 → 这里命中。
   $effect(() => {
     const openPaths = new Set(editorState.openFiles.map((f) => f.path));
     for (const [path, model] of modelCache) {
@@ -434,20 +478,38 @@
     for (const path of markdownScrollCache.keys()) {
       if (!openPaths.has(path)) markdownScrollCache.delete(path);
     }
+    // diff tab 关闭：dispose models + 删 view state。守卫 active diff
+    // 不做 dispose（与主 model GC 同思路），由后续 setModel 切走后自然释放。
+    const activeDiffModels = diffEditor?.getModel();
+    for (const [path, pair] of diffModelCache) {
+      if (!openPaths.has(path)) {
+        diffModelCache.delete(path);
+        diffViewStateCache.delete(path);
+        if (
+          !activeDiffModels ||
+          (pair.original !== activeDiffModels.original &&
+            pair.modified !== activeDiffModels.modified)
+        ) {
+          pair.original.dispose();
+          pair.modified.dispose();
+        }
+        if (path === diffCurrentPath) diffCurrentPath = null;
+      }
+    }
   });
 
   // ─── Diff editor lifecycle ────────────────────────────────────────────────
-  // Load or reload when the active tab is (or changes to) a diff tab.
-  // Uses diffReqId to discard stale async results on rapid switching.
+  // Keep-alive：切走 diff tab 仅保存 view state；切回 / 切换到不同 diff path
+  // 走 loadDiff（命中缓存即跳 IPC）。diffReqId 防止快速切换时 stale 异步覆盖。
   $effect(() => {
     const c = current;
     if (!c?.diffArgs) {
-      // Switched away from diff tab — dispose
-      if (diffLoadedTabPath !== null) disposeDiffEditor();
+      // Switched away from diff tab — keep instance alive; just save scroll/cursor.
+      if (diffCurrentPath !== null) saveDiffViewState();
       return;
     }
     if (!diffMountPoint) return;
-    if (c.path === diffLoadedTabPath) return; // same diff already shown
+    if (c.path === diffCurrentPath) return; // same diff already shown
     void loadDiff(c.diffArgs, c.path);
   });
 
@@ -463,14 +525,16 @@
   // Monaco 在 inline ↔ sideBySide 切换时，仅 updateOptions 不会重建右侧 diff
   // widget（表面上选项已改但视觉仍是旧模式）。setModel(null) → setModel(real)
   // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
+  // 重建后再 restoreViewState 防止 toggle 时 scroll/折叠位置丢失。
   $effect(() => {
     if (!diffEditor) return;
     diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
-    const orig = diffOriginalModel;
-    const mod = diffModifiedModel;
-    if (orig && mod) {
+    const cur = diffCurrentPath ? diffModelCache.get(diffCurrentPath) : null;
+    if (cur) {
+      const vs = diffEditor.saveViewState();
       diffEditor.setModel(null);
-      diffEditor.setModel({ original: orig, modified: mod });
+      diffEditor.setModel({ original: cur.original, modified: cur.modified });
+      if (vs) diffEditor.restoreViewState(vs);
     }
     diffEditor.layout();
   });
