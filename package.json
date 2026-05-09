@@ -17,8 +17,7 @@
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
-    "clean-vite": "rimraf node_modules/.vite",
-    "clean": "rimraf node_modules/.vite build"
+    "clean": "rimraf node_modules/.vite build src-tauri/target/release"
   },
   "license": "MIT",
   "dependencies": {
