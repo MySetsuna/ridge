@@ -205,6 +205,55 @@ fn load_restore_set(app: &tauri::AppHandle) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Debug, Serialize)]
+pub struct SavedWorkspaceEntry {
+    pub name: String,
+    pub path: String,
+    /// Modification time in seconds since unix epoch (0 if not retrievable).
+    pub mtime_secs: u64,
+}
+
+/// Scan the default save directory (`<home>/ridge-workspaces/`) for `.ridge`
+/// files and return the entries newest-first. Used by the Explorer's
+/// "已保存工作区" secondary button.
+#[tauri::command]
+pub fn list_saved_workspace_files() -> Result<Vec<SavedWorkspaceEntry>, String> {
+    let dir = default_save_dir();
+    let mut out: Vec<SavedWorkspaceEntry> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ridge") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        let mtime_secs = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        out.push(SavedWorkspaceEntry {
+            name,
+            path: path.to_string_lossy().to_string(),
+            mtime_secs,
+        });
+    }
+    out.sort_by(|a, b| b.mtime_secs.cmp(&a.mtime_secs));
+    Ok(out)
+}
+
 /// Tauri command — front-end calls on startup (after deciding it's not a cli launch
 /// with a cwd-resident .ridge) to fetch the workspaces it should auto-open.
 /// Stale entries (file deleted) are filtered out and the on-disk list is rewritten.
