@@ -29,6 +29,14 @@
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+/// Returns true if the character is a Unicode box-drawing character.
+/// These characters (U+2500 to U+257F) should be stretched to fill
+/// the cell width for continuous line rendering.
+#[inline]
+fn is_box_drawing_char(c: char) -> bool {
+    matches!(c, '\u{2500}'..='\u{257F}')
+}
+
 use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
@@ -289,7 +297,15 @@ impl RenderBackend for Canvas2dBackend {
             // The user explicitly prefers natural-shape glyphs over
             // cursor-aligned visuals — same call as Windows Terminal /
             // iTerm2 / Apple Terminal.
-            let _ = self.ctx.fill_text(glyph_str, x, y_top);
+            // Box-drawing characters (─, │, ┌, etc.) need to stretch to
+            // fill the cell width for continuous line rendering. Use
+            // fill_text_with_max_width to stretch them.
+            let first_char = glyph_str.chars().next();
+            if first_char.map_or(false, is_box_drawing_char) {
+                let _ = self.ctx.fill_text_with_max_width(glyph_str, x, y_top, cell_w);
+            } else {
+                let _ = self.ctx.fill_text(glyph_str, x, y_top);
+            }
 
             // Underline / strikethrough as separate strokes after the glyph.
             if attrs.flags.contains(Flags::UNDERLINE) {

@@ -1784,6 +1784,17 @@ export class TerminalManager {
 	 *  Canvas2D row-hash snapshot so the next frame re-rasterizes from
 	 *  scratch against the new font stack. Parked panes are skipped (their
 	 *  handles have been freed); they pick up the new font on unpark. */
+	/** Invalidate all panes in a specific workspace. Called after split
+	 *  resize drag completes to refresh all affected panes. */
+	invalidateWorkspace(workspaceId: string): void {
+		for (const entry of this.panes.values()) {
+			if (entry.parked) continue;
+			if (entry.workspaceId !== workspaceId) continue;
+			entry.handle.invalidateAll();
+		}
+		this.wake();
+	}
+
 	invalidateAllPanes(): void {
 		for (const entry of this.panes.values()) {
 			if (entry.parked) continue;
@@ -1981,6 +1992,30 @@ export class TerminalManager {
 		const isAlt = entry.kernel.isAltScreen();
 		const isInlineTui = !isAlt && entry.kernel.isInlineTuiMode();
 		const wipeBeforePty = isAlt || isInlineTui;
+
+		// §pane-resize-reflow (2026-05-09): Enhanced diagnostic for resize
+		// behavior debugging. Logs the key decision factors so we can
+		// correlate visible symptoms (truncation, cursor drift) with the
+		// internal state at resize time.
+		if (import.meta.env?.DEV && typeof console.debug === 'function') {
+			const lastAbsCsiPos = entry.kernel.lastAbsCsiPosition();
+			const diag = {
+				paneId: entry.paneId,
+				old: { rows: entry.lastReportedRows, cols: entry.lastReportedCols },
+				new: { rows, cols },
+				isAlt,
+				isInlineTui,
+				wipeBeforePty,
+				cursorVisible: entry.kernel.isCursorVisible(),
+				heuristic: lastAbsCsiPos ? {
+					absCsiRow: lastAbsCsiPos.row,
+					absCsiCol: lastAbsCsiPos.col,
+					absCsiAt: lastAbsCsiPos.atMs,
+				} : null,
+			};
+			console.debug('[ridge-term] resize decision', diag);
+		}
+
 		if (wipeBeforePty) {
 			entry.kernel.resize(rows, cols);
 			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
@@ -2004,26 +2039,22 @@ export class TerminalManager {
 		} catch (err) {
 			console.error('[ridge-term] post-resize render error', entry.paneId, err);
 		}
-		// §3 (2026-05-08) — TUI resize follow-up redraw. The synchronous
-		// inline render above paints with whatever kernel state existed
-		// at the moment of the resize, but ConPTY's SIGWINCH delivery
-		// to the foreground TUI is async on Windows: the app's own
-		// redraw bytes typically land 30-100 ms after `resize_pane`
-		// returns. By the time the rAF tick runs after the resize,
-		// those bytes may or may not have arrived; per-row dirty diff
-		// can leave Canvas2D rows that "happen to match" the wiped
-		// state showing blank instead of the new TUI frame. Schedule a
-		// forceFullRedraw 120 ms out (proven §1.27-tail interval for
-		// IME echo-lag) so any late-arriving redraw bytes definitely
-		// land in painted pixels. `alive`-guarded against the pane
-		// being closed during the wait.
-		if (isAlt || isInlineTui) {
+		// §pane-resize-reflow (2026-05-09): ALL resize paths need a delayed
+		// refresh, not just TUI. The synchronous inline render above paints
+		// with whatever kernel state existed at the moment of resize, but
+		// ConPTY's SIGWINCH delivery is async on Windows: both TUI apps
+		// AND normal shells (PSReadLine, zsh, fish) emit prompt redraws
+		// 30-100 ms after resize_pane returns. Without a delayed refresh,
+		// Canvas2D's per-row dirty diff may show stale content.
+		// 150ms covers both TUI redraws and shell prompt repaints.
+		// `alive`-guarded against the pane being closed during the wait.
+		{
 			const targetPaneId = entry.paneId;
 			setTimeout(() => {
 				const e = this.panes.get(targetPaneId);
 				if (!e || e.parked) return;
 				this.forceFullRedraw(targetPaneId);
-			}, 120);
+			}, 150);
 		}
 		// Resize may have fired while the loop was sleeping; even though
 		// we drew one frame inline, subsequent SIGWINCH-driven redraw
