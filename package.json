@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "build:release": "node scripts/build-ridge.mjs",
     "build:teammate-shim": "cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml && node scripts/copy-teammate-shim.mjs",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
