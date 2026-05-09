@@ -89,14 +89,19 @@ export function setupTerminalThemeBridge(): () => void {
 	const manager = TerminalManager.instance();
 
 	const push = () => {
-		const theme = readRidgeTheme();
-		// Skip if nothing changed since the last push — avoids walking
-		// every pane's handle on unrelated settings updates (font size,
-		// shell selection, …) that share the same store.
-		const fingerprint = JSON.stringify(theme);
-		if (fingerprint === _lastApplied) return;
-		_lastApplied = fingerprint;
-		manager.setTheme(theme);
+		// Delay reading CSS vars by one frame — the browser needs a
+		// paint cycle to compute new values after `data-rg-theme` changes.
+		// Without this delay, getComputedStyle returns stale values.
+		requestAnimationFrame(() => {
+			const theme = readRidgeTheme();
+			// Skip if nothing changed since the last push — avoids walking
+			// every pane's handle on unrelated settings updates (font size,
+			// shell selection, …) that share the same store.
+			const fingerprint = JSON.stringify(theme);
+			if (fingerprint === _lastApplied) return;
+			_lastApplied = fingerprint;
+			manager.setTheme(theme);
+		});
 	};
 
 	// Initial push: the store fires immediately on subscribe. settings.ts's

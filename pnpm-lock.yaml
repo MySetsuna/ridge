@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@fontsource/noto-color-emoji':
-        specifier: ^5.2.12
-        version: 5.2.12
       '@gitgraph/js':
         specifier: ^1.4.0
         version: 1.4.0
@@ -308,9 +305,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-
-  '@fontsource/noto-color-emoji@5.2.12':
-    resolution: {integrity: sha512-UVOh4qxD/y42mcB4XvEdpV1WE01zn7O4+4tAWwzp5QAd4JY5jWPHu3/3T1kQoD04oYbQ5cJ9SI12IfcCKaS8aw==}
 
   '@gitgraph/core@1.5.0':
     resolution: {integrity: sha512-8CeeHbkKoFHM1y9vfjYiHyEpzl1mEhVrg5c/eFgDBsntOYswoDKU2yOf6DjtVINcE60wmcuynBSJqjMkQo07Ww==}
@@ -1971,8 +1965,6 @@ snapshots:
 
   '@esbuild/win32-x64@0.25.12':
     optional: true
-
-  '@fontsource/noto-color-emoji@5.2.12': {}
 
   '@gitgraph/core@1.5.0': {}
 

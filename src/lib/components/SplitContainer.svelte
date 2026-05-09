@@ -10,6 +10,7 @@
   // 通过 class prop forward，沿用 findSameAxisRefs 等查询逻辑。
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
   import { isTauri } from '@tauri-apps/api/core';
+  import { TerminalManager } from '$lib/terminal/manager';
   import { Bot, History } from 'lucide-svelte';
   import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
   import { alertDialog } from './RidgeDialog.svelte';
@@ -322,7 +323,13 @@
       latestPointer = null;
       const updates = finishSplitResizeDrag();
       unbindDragListeners();
-      if (updates.length) await persistSplitRatiosBatch(updates);
+      if (updates.length) {
+        await persistSplitRatiosBatch(updates);
+        // §pane-resize-reflow (2026-05-09): refresh ALL panes after split
+        // resize completes. This ensures both TUI and non-TUI panes across
+        // all workspaces redraw with the new dimensions.
+        TerminalManager.instance().invalidateAllPanes();
+      }
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp, { once: true });
