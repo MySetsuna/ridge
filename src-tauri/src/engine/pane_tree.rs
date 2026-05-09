@@ -458,6 +458,63 @@ impl PaneTree {
         }
     }
 
+    /// 跨工作区拖拽时的「外部 leaf 注入」：source 还不在 self 中，target 在。
+    /// 把 source 作为一个新 Leaf，按 region 与 target 拼成一个 Split 子树替换掉 target。
+    /// Center 退化为 Right（dock 中心 = 互换，但 source 不在树里没法换；语义上等同放右侧）。
+    /// 调用方必须在调用前把 source 的 `Pane` 元数据 / PTY 插入 target workspace。
+    pub fn attach_external_leaf(
+        &mut self,
+        source_id: Uuid,
+        target_id: Uuid,
+        region: DockRegion,
+    ) -> Result<(), AppError> {
+        if !self.panes.contains_key(&target_id) {
+            return Err(AppError::PaneNotFound(target_id));
+        }
+        let new_subtree = match region {
+            DockRegion::Left => PaneNode::Split {
+                direction: SplitDirection::Horizontal,
+                children: vec![PaneNode::Leaf(source_id), PaneNode::Leaf(target_id)],
+                ratios: vec![50.0, 50.0],
+            },
+            DockRegion::Right | DockRegion::Center => PaneNode::Split {
+                direction: SplitDirection::Horizontal,
+                children: vec![PaneNode::Leaf(target_id), PaneNode::Leaf(source_id)],
+                ratios: vec![50.0, 50.0],
+            },
+            DockRegion::Top => PaneNode::Split {
+                direction: SplitDirection::Vertical,
+                children: vec![PaneNode::Leaf(source_id), PaneNode::Leaf(target_id)],
+                ratios: vec![50.0, 50.0],
+            },
+            DockRegion::Bottom => PaneNode::Split {
+                direction: SplitDirection::Vertical,
+                children: vec![PaneNode::Leaf(target_id), PaneNode::Leaf(source_id)],
+                ratios: vec![50.0, 50.0],
+            },
+        };
+        if !Self::replace_leaf_with_subtree(&mut self.root, target_id, new_subtree) {
+            return Err(AppError::PtyError(
+                "attach_external_leaf: target leaf missing".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 跨工作区拖拽源端：从布局结构中摘掉 leaf，但**保留** `panes` 元数据。
+    /// 与 `detach_leaf` 不同：允许 leaf 是树中唯一节点（调用方负责后续关闭整个工作区）。
+    /// 返回值 = 是否摘除（false = pane_id 不在树里）。
+    pub fn detach_external_leaf(&mut self, pane_id: Uuid) -> bool {
+        if let PaneNode::Leaf(id) = &self.root {
+            if *id == pane_id {
+                // 唯一节点：保留 root 占位（指向同 id），调用方应整体关闭工作区。
+                return true;
+            }
+            return false;
+        }
+        Self::remove_leaf_from_structure(&mut self.root, pane_id)
+    }
+
     /// 获取当前布局（供前端递归渲染 SplitContainer 使用）
     #[allow(dead_code)] // exposed API; today the layout flows through commands/pane.rs::get_pane_layout instead
     pub fn get_layout(&self) -> PaneNode {

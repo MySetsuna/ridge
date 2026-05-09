@@ -214,16 +214,101 @@ pub async fn dock_pane(
     };
     let source = parse_pane_id(&source_pane_id).map_err(|e| e.to_string())?;
     let target = parse_pane_id(&target_pane_id).map_err(|e| e.to_string())?;
-    let wid = state.active_workspace_id();
+
+    // 找到 source / target 各自所属的 workspace（pane id 全局唯一，扫一遍即可）。
+    // 同 workspace → 走原有 PaneTree::dock_pane；跨 workspace → 走迁移路径。
+    let (source_wid, target_wid) = {
+        let map = state.workspaces.read();
+        let mut s = None;
+        let mut t = None;
+        for (wid, ws) in map.iter() {
+            if ws.pane_tree.panes.contains_key(&source) {
+                s = Some(*wid);
+            }
+            if ws.pane_tree.panes.contains_key(&target) {
+                t = Some(*wid);
+            }
+        }
+        (
+            s.ok_or_else(|| "source pane 不在任何工作区".to_string())?,
+            t.ok_or_else(|| "target pane 不在任何工作区".to_string())?,
+        )
+    };
+
+    if source_wid == target_wid {
+        let mut map = state.workspaces.write();
+        let ws = map.get_mut(&source_wid).ok_or_else(|| "工作区已消失".to_string())?;
+        ws.pane_tree
+            .dock_pane(source, target, region)
+            .map_err(|e| e.to_string())?;
+        drop(map);
+        crate::commands::ridge_file::schedule_auto_save(&*state, source_wid);
+        return Ok(());
+    }
+
+    // 跨工作区路径：搬节点 + PTY，不重启 shell。
     let mut map = state.workspaces.write();
-    let ws = map
-        .get_mut(&wid)
-        .ok_or_else(|| "无活动工作区".to_string())?;
-    ws.pane_tree
-        .dock_pane(source, target, region)
-        .map_err(|e| e.to_string())?;
-    drop(map);
-    crate::commands::ridge_file::schedule_auto_save(&*state, wid);
+
+    // 1. 从 source workspace 摘下 leaf + 取走 pane 元数据 / PTY / 标题。
+    let (pane_meta, pty_handle, pane_size, teammate_title, source_now_empty) = {
+        let src_ws = map.get_mut(&source_wid).ok_or_else(|| "source 工作区已消失".to_string())?;
+        let leaves = src_ws.pane_tree.get_all_leaves();
+        if !leaves.contains(&source) {
+            return Err("source pane 不是叶子节点".into());
+        }
+        let was_only = leaves.len() == 1;
+        if !src_ws.pane_tree.detach_external_leaf(source) {
+            return Err("从 source 摘除节点失败".into());
+        }
+        let meta = src_ws.pane_tree.panes.remove(&source);
+        let pty = src_ws.terminals.remove(&source);
+        let size = src_ws.pane_sizes.remove(&source);
+        let title = src_ws.teammate_pane_titles.remove(&source);
+        (meta, pty, size, title, was_only)
+    };
+
+    // 2. 注入 target workspace：先放元数据 / PTY，再把 leaf 拼到 target 节点边上。
+    {
+        let tgt_ws = map.get_mut(&target_wid).ok_or_else(|| "target 工作区已消失".to_string())?;
+        if let Some(meta) = pane_meta {
+            tgt_ws.pane_tree.panes.insert(source, meta);
+        }
+        if let Some(pty) = pty_handle {
+            tgt_ws.terminals.insert(source, pty);
+        }
+        if let Some(size) = pane_size {
+            tgt_ws.pane_sizes.insert(source, size);
+        }
+        if let Some(title) = teammate_title {
+            tgt_ws.teammate_pane_titles.insert(source, title);
+        }
+        tgt_ws
+            .pane_tree
+            .attach_external_leaf(source, target, region)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // 3. source workspace 若被掏空（仅一个 leaf 时），整体关闭，避免留下空 tab。
+    if source_now_empty {
+        map.remove(&source_wid);
+        drop(map);
+        let mut order = state.workspace_order.write();
+        order.retain(|id| id != &source_wid);
+        drop(order);
+        let mut names = state.workspace_names.write();
+        names.remove(&source_wid);
+        drop(names);
+        // active_workspace 指向被关闭的 ws → 切到 target，保证前端切到迁入处。
+        let mut active = state.active_workspace.write();
+        if *active == source_wid {
+            *active = target_wid;
+        }
+    } else {
+        drop(map);
+        crate::commands::ridge_file::schedule_auto_save(&*state, source_wid);
+    }
+
+    crate::commands::ridge_file::schedule_auto_save(&*state, target_wid);
     Ok(())
 }
 
