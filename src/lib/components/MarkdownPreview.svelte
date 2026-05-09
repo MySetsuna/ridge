@@ -22,7 +22,7 @@
     toggleTaskAtLine,
   } from '$lib/utils/markdown';
   import { fileEditorStore } from '$lib/stores/fileEditor';
-  import { isTauri } from '@tauri-apps/api/core';
+  import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
   import {
     hostKeyFromUrl,
     isTrustedUrl,
@@ -77,14 +77,74 @@
     void (async () => {
       await tick();
       if (!container) return;
-      // Mermaid 与代码高亮独立运行；mermaid 走 `rg-md-mermaid` 占位 div，
-      // 高亮走 `pre.rg-md-pre`，不重叠。两者并发即可。
+      // Mermaid 与代码高亮、图片 src 改写独立运行；三者无重叠并发即可。
+      // - mermaid 走 `rg-md-mermaid` 占位 div
+      // - 高亮走 `pre.rg-md-pre`
+      // - 图片 src 改写：相对/绝对路径 → asset:// 协议（Tauri convertFileSrc）
       await Promise.all([
         highlightCodeBlocks(container),
         renderMermaidBlocks(container),
+        rewriteImageSrcs(container, basePath),
       ]);
     })();
   });
+
+  /**
+   * 把 markdown 渲染出来的 `<img src="...">` 中的本地路径改写为 Tauri 的
+   * `asset://` 协议 URL（通过 convertFileSrc）。Marked 的 image renderer
+   * 直接吐 raw href，不经过 basePath 解析也不走 asset 协议，所以中文路径 /
+   * 相对路径 / 绝对路径都加载不了。这里在异步 enhance 阶段统一兜底。
+   *
+   * 跳过：http(s):、data:、blob:、asset:、已经改写过的（标 data-rg-rewritten）。
+   * 处理：file:// → 剥 scheme；C:\ 或 / → 视为绝对；其它 + basePath → 相对。
+   * 失败兜底：保留原 src + console.warn，不抛。
+   */
+  async function rewriteImageSrcs(
+    root: HTMLElement,
+    base?: string,
+  ): Promise<void> {
+    if (!isTauri()) return; // 浏览器 dev 服务器走原 src 即可
+    const imgs = root.querySelectorAll<HTMLImageElement>('img:not([data-rg-rewritten])');
+    for (const img of imgs) {
+      const raw = img.getAttribute('src') ?? '';
+      img.dataset.rgRewritten = '1';
+      if (!raw) continue;
+      if (/^(https?|data|blob|asset):/i.test(raw)) continue;
+      let abs: string | null = null;
+      try {
+        if (raw.startsWith('file://')) {
+          const u = new URL(raw);
+          abs = decodeURIComponent(u.pathname.replace(/^\/(\w:)/, '$1'));
+        } else if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('/')) {
+          try {
+            abs = decodeURIComponent(raw);
+          } catch {
+            abs = raw;
+          }
+        } else if (base) {
+          let decoded: string;
+          try {
+            decoded = decodeURIComponent(raw);
+          } catch {
+            decoded = raw;
+          }
+          abs = joinPath(base, decoded);
+        }
+      } catch (err) {
+        console.warn('[md-preview] rewrite image src failed (parse)', raw, err);
+        continue;
+      }
+      if (!abs) continue;
+      try {
+        // Windows 下 convertFileSrc 接受混合分隔符；统一成 / 避免某些 webview
+        // 把 `\` 当转义符吃掉。
+        const normalized = abs.replace(/\\/g, '/');
+        img.src = convertFileSrc(normalized);
+      } catch (err) {
+        console.warn('[md-preview] convertFileSrc failed', abs, err);
+      }
+    }
+  }
 
   /**
    * Scroll to the preview block whose `data-rg-md-src-line` is the largest

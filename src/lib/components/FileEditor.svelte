@@ -1385,6 +1385,10 @@
     src={current.imageUrl}
     alt={current.name}
     class="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+    onerror={(e) => {
+      const img = e.currentTarget as HTMLImageElement;
+      console.warn('[FileEditor] image failed to load', current!.path, img.src);
+    }}
   />
 </div>
 {/if}
