@@ -1231,12 +1231,12 @@ function expandSidebar() {
               <button
                 bind:this={recentBtn}
                 type="button"
-                class="flex items-center justify-center h-7 w-7 rounded text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/15 transition-colors ring-1 ring-[var(--rg-accent)]/30 hover:ring-[var(--rg-accent)]/60"
+                class="flex items-center justify-center h-7 rounded text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/15 transition-colors ring-1 ring-[var(--rg-accent)]/30 hover:ring-[var(--rg-accent)]/60 px-2"
                 title="最近打开的工作区"
                 aria-label="最近打开的工作区"
                 onclick={() => void loadRecentAndToggle()}
               >
-                <History class="h-3.5 w-3.5" />
+                <span>最近的工作区</span>
               </button>
               <button
                 bind:this={savedBtn}
@@ -1246,7 +1246,7 @@ function expandSidebar() {
                 aria-label="已保存工作区"
                 onclick={() => void loadSavedAndToggle()}
               >
-                <Bookmark class="h-3 w-3" />
+                <History class="h-3 w-3" />
               </button>
             </div>
 
