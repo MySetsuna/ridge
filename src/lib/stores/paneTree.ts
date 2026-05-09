@@ -1103,6 +1103,32 @@ export function getAllPaneIds(node: PaneNode): string[] {
   return ids;
 }
 
+/** 从 SplitRatioUpdate[] 中提取所有受影响的 leaf pane ids。
+ *  每个 update 的 path 指向一个 Split 节点，该 Split 下的所有
+ *  leaf panes 在 resize 后尺寸都发生了变化。 */
+export function paneIdsFromRatioUpdates(
+  root: PaneNode,
+  updates: SplitRatioUpdate[]
+): string[] {
+  const set = new Set<string>();
+  for (const update of updates) {
+    // Navigate to the split node at the given path
+    let node: PaneNode = root;
+    for (const idx of update.path) {
+      if (node.type !== 'split' || idx < 0 || idx >= node.children.length) {
+        node = root; // path misaligned — fall back to root
+        break;
+      }
+      node = node.children[idx];
+    }
+    // Collect all leaf panes under the reached node
+    for (const id of getAllPaneIds(node)) {
+      set.add(id);
+    }
+  }
+  return [...set];
+}
+
 /** 当前 activePaneId 若不在树内（切换工作区等），回退到第一个 leaf。 */
 function reconcileActivePaneId(layout: PaneNode) {
   const ids = getAllPaneIds(layout);

@@ -1770,6 +1770,17 @@ export class TerminalManager {
 	 *  pixels were smeared by the opaque `.is-composing` overlay. WebGPU
 	 *  already redraws every row per tick, so this is a no-op there
 	 *  beyond a single extra wake. */
+	/** Refresh specific panes by id — invalidates render cache and wakes
+	 *  the rAF loop. Used after split resize to redraw affected panes. */
+	forceFullRedrawFor(ids: string[]): void {
+		for (const id of ids) {
+			const entry = this.panes.get(id);
+			if (!entry || entry.parked) continue;
+			entry.handle.invalidateAll();
+		}
+		if (ids.length) this.wake();
+	}
+
 	forceFullRedraw(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;

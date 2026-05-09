@@ -44,6 +44,7 @@
     startSplitResizeDrag,
     updateSplitResizeDrag,
     finishSplitResizeDrag,
+    paneIdsFromRatioUpdates,
     SAME_AXIS_ATTRACT_PX,
     pointerInCoupleZone,
     findJunctionsNearPosition,
@@ -325,10 +326,11 @@
       unbindDragListeners();
       if (updates.length) {
         await persistSplitRatiosBatch(updates);
-        // §pane-resize-reflow (2026-05-09): refresh ALL panes after split
-        // resize completes. This ensures both TUI and non-TUI panes across
-        // all workspaces redraw with the new dimensions.
-        TerminalManager.instance().invalidateAllPanes();
+        // §pane-resize-reflow (2026-05-09): refresh only the panes
+        // affected by this split resize drag.
+        const tree = $workspacePaneTrees.get(workspaceId) ?? $paneTreeStore;
+        const affectedIds = paneIdsFromRatioUpdates(tree, updates);
+        TerminalManager.instance().forceFullRedrawFor(affectedIds);
       }
     };
     window.addEventListener('mousemove', onMove);
