@@ -124,10 +124,17 @@ function rewriteWxs(originalText, slug, guid) {
 }
 
 function buildTauriConfigOverride(version, slug) {
+  // identifier must not contain underscores: replace with hyphens
+  const identifierSlug = slug.replace(/_/g, '-');
   return {
     productName: `ridge ${version}`,
     version,
-    identifier: `com.tauri-app.ridge.v${slug}`,
+    identifier: `com.tauri-app.ridge.v${identifierSlug}`,
+    // Prevent circular build: pass an env flag so beforeBuildCommand can skip
+    // when called from this script.
+    build: {
+      beforeBuildCommand: 'node -e "process.exit(process.env.RIDGE_BUILD_SKIP ? 0 : 1)"',
+    },
     bundle: {
       windows: {
         wix: {
@@ -153,6 +160,7 @@ function spawnTauriBuild(configPath, extraArgs) {
       cwd: repoRoot,
       stdio: 'inherit',
       shell: isWin,
+      env: { ...process.env, RIDGE_BUILD_SKIP: '1' },
     });
     child.on('error', rejectSpawn);
     child.on('exit', (code) => {
@@ -170,7 +178,8 @@ async function main() {
 
   console.log(`[build-ridge] target version = ${version} (slug=${slug})`);
   console.log(`[build-ridge] productName = "ridge ${version}"`);
-  console.log(`[build-ridge] identifier  = com.tauri-app.ridge.v${slug}`);
+  const identifierSlug = slug.replace(/_/g, '-');
+  console.log(`[build-ridge] identifier  = com.tauri-app.ridge.v${identifierSlug}`);
 
   const cargoOriginal = readText(cargoTomlPath);
   const wxsOriginal = readText(wxsPath);
