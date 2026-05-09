@@ -292,9 +292,13 @@ function createStore() {
       let content = '';
       let isBinary = false;
       if (isImage) {
-        // 图片文件：使用 Tauri 的 convertFileSrc 生成 asset URL
+        // 图片文件：使用 Tauri 的 convertFileSrc 生成 asset URL。
+        // Windows 路径统一成正斜杠后再传，避免某些 webview 把混合分隔符
+        // 解析成 `https://asset.localhost//C%3A%2Fxxx` 这种双斜杠形式
+        // 导致中文 / 含空格 / 含特殊字符的文件名加载失败。
         if (isTauri()) {
-          imageUrl = convertFileSrc(path);
+          const normalized = path.replace(/\\/g, '/');
+          imageUrl = convertFileSrc(normalized);
         } else {
           // 非 Tauri 环境（开发模式）使用 file:// 协议
           imageUrl = path.replace(/\\/g, '/');
