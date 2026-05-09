@@ -234,8 +234,7 @@ pub struct AppState {
     /// 启动方式：cli（终端调用 `ridge`）/ menu（资源管理器、开始菜单双击 ridge.exe）。
     /// 关键差异：menu 模式下进程的 `current_dir()` 等于 ridge.exe 所在目录，**不**应作为
     /// 默认工作目录；cli 模式下它是用户期望的工作目录。
-    /// §4 启动恢复时读取此字段（cli 模式下跳过工作区恢复，让 cwd 接管首个工作区）。
-    #[allow(dead_code)]
+    /// §4 启动恢复读它：cli 模式下跳过 restore set，让 cwd 接管首个工作区。
     pub startup_cwd_kind: StartupCwdKind,
     /// cli 模式下捕获的启动 cwd；menu 模式为 None。后续 §2 用户配置 defaultCwd
     /// 时按 cli > user > home 的优先级合并（utils::cwd::resolve_default_cwd）。

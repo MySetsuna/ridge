@@ -10,7 +10,7 @@ mod utils;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager, WindowEvent};
 use tokio::sync::mpsc;
 use crate::commands::{fs_watch, git, pane, process, project, settings, terminal, watch, ridge_file, workspace};
 use crate::db::ProjectStore;
@@ -44,6 +44,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_dialog::init())
+        // §4 关闭即将退出 → 同步把当前所有已保存（`associated_file_path != None`）
+        // 工作区路径写到 `restore_workspaces.json`，下次非 cli 启动时由前端
+        // `get_restore_set` 取回并自动 reopen。这里必须同步：spawn 异步任务在
+        // 进程退出前可能跑不完。
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                let app = window.app_handle();
+                let state = app.state::<AppState>();
+                ridge_file::save_restore_set(app, &state);
+            }
+        })
         .manage(app_state)
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -361,6 +372,7 @@ pub fn run() {
             ridge_file::browse_directory,
             ridge_file::list_recent_workspaces,
             ridge_file::clear_recent_workspaces,
+            ridge_file::get_restore_set,
             settings::set_user_default_cwd,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
