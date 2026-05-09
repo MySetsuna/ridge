@@ -435,12 +435,32 @@ export interface SameAxisCandidate {
   distance: number;
 }
 
+/** 在 DOM 里按 splitPath + axis 查 .rg-split。
+ *  Keep-alive 工作区架构下，所有 workspace 的 SplitContainer 同时挂在 DOM 中，
+ *  非活动工作区被 `display:none` 隐藏。多个 workspace 的 root split 都用
+ *  `data-split-path=""`，querySelector 只会返回 DOM 顺序里**第一个**——也就是
+ *  tab index 0 的 splitRoot。当用户在非 tab-0 的工作区拖拽 splitter 时，
+ *  这里若不挑可见的，就会拿到 tab-0 那个 display:none 的 root，clientWidth=0
+ *  → basisPx 退化为 1 → drag 立刻把 ratios 推到极端，splitter 看似"不能拖动"。
+ *
+ *  优先取 `offsetParent !== null` 的（display:none 时 offsetParent 为 null），
+ *  没有时退回第一个匹配，保留 SSR / 测试场景的旧行为。 */
+function findVisibleSplitRoot(splitPath: number[], axis: SplitterAxis): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const matches = document.querySelectorAll<HTMLElement>(
+    `.rg-split[data-split-path="${pathKey(splitPath)}"][data-split-axis="${axis}"]`
+  );
+  if (matches.length === 0) return null;
+  for (const el of matches) {
+    if (el.offsetParent !== null) return el;
+  }
+  return matches[0] ?? null;
+}
+
 /** 通过 DOM 查询获取分割条在屏幕上的中线坐标（无 DOM 时返回 null）。 */
 export function getSplitterScreenCenter(ref: SplitterRef): number | null {
   if (typeof document === 'undefined') return null;
-  const splitRoot = document.querySelector<HTMLElement>(
-    `.rg-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
-  );
+  const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
   if (!splitRoot) return null;
   const splitters = Array.from(
     splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
@@ -464,9 +484,7 @@ export function getSplitterLineEndpoints(
   ref: SplitterRef
 ): { start: number; end: number } | null {
   if (typeof document === 'undefined') return null;
-  const splitRoot = document.querySelector<HTMLElement>(
-    `.rg-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
-  );
+  const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
   if (!splitRoot) return null;
   const splitters = Array.from(
     splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
@@ -906,11 +924,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     if (!split) continue;
     let basisPx = ref.basisPx;
     if (typeof document !== 'undefined') {
-      const splitRoot = document.querySelector(
-        `.rg-split[data-split-path="${pathKey(
-          ref.splitPath
-        )}"][data-split-axis="${ref.axis}"]`
-      ) as HTMLElement;
+      const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
       if (splitRoot) {
         basisPx = Math.max(
           1,
