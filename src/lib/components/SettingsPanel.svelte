@@ -6,7 +6,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw } from 'lucide-svelte';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw, FolderOpen } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
@@ -347,6 +348,36 @@
                   {/each}
                 </select>
               {/if}
+            </div>
+
+            <div class="pt-4">
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-default-cwd">默认工作目录</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
+                未从终端用 <code class="font-mono">ridge</code> 命令启动时，新建工作区/首个 pane 使用的目录。空 = 使用系统用户 home。
+              </div>
+              <div class="flex gap-2">
+                <input
+                  id="set-default-cwd"
+                  type="text"
+                  value={$settingsStore.defaultCwd}
+                  oninput={(e) => setSetting('defaultCwd', (e.currentTarget as HTMLInputElement).value)}
+                  placeholder="(未设置 — 使用 home)"
+                  class="flex-1 px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)]"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 px-2 py-1.5 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)] hover:bg-[var(--rg-surface-2)] text-[12px] text-[var(--rg-fg)] flex items-center gap-1"
+                  onclick={async () => {
+                    if (!isTauri()) return;
+                    const picked = await openDialog({ directory: true, multiple: false, defaultPath: $settingsStore.defaultCwd || undefined });
+                    if (typeof picked === 'string') setSetting('defaultCwd', picked);
+                  }}
+                  title="浏览选择目录"
+                >
+                  <FolderOpen size={14} />
+                  浏览
+                </button>
+              </div>
             </div>
 
           {:else if activeSection === 'extensions'}

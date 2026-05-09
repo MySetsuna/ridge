@@ -240,6 +240,10 @@ pub struct AppState {
     /// cli 模式下捕获的启动 cwd；menu 模式为 None。后续 §2 用户配置 defaultCwd
     /// 时按 cli > user > home 的优先级合并（utils::cwd::resolve_default_cwd）。
     pub startup_cli_cwd: Option<PathBuf>,
+    /// 用户在设置面板配置的默认工作目录（front-end localStorage `defaultCwd` 字段
+    /// 在启动时通过 `set_user_default_cwd` 命令同步到这里）。menu 启动模式下，
+    /// 这是首个 pane 的 cwd 来源（cli 启动时被 startup_cli_cwd 覆盖，仍然优先）。
+    pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
 }
 
 impl AppState {
@@ -290,6 +294,7 @@ impl AppState {
             fs_watcher: Arc::new(FsWatcher::new()),
             startup_cwd_kind,
             startup_cli_cwd,
+            user_default_cwd: Arc::new(RwLock::new(None)),
         }
     }
 

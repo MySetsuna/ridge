@@ -976,6 +976,15 @@ function expandSidebar() {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
+    // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
+    // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
+    // 优先级（home）而不是用户配置。Svelte writable 的 subscribe 立即用当前值
+    // 触发一次，所以无需另写初始 push 路径。
+    const unsubDefaultCwd = settingsStore.subscribe((s) => {
+      void invoke('set_user_default_cwd', { path: s.defaultCwd || null }).catch((err) => {
+        console.warn('set_user_default_cwd failed', err);
+      });
+    });
     void (async () => {
       await refreshWorkspaces();
       // 启动策略：从命令行 / 资源管理器启动时，以进程 cwd 为决策依据。
@@ -1045,6 +1054,7 @@ function expandSidebar() {
     return () => {
       unlisten?.();
       unlistenResized?.();
+      unsubDefaultCwd();
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
