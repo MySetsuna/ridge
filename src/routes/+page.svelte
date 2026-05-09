@@ -93,6 +93,7 @@ self.MonacoEnvironment = {
     saveCurrentWorkspace,
     loadSavedWorkspaces,
     getStartupContext,
+    getRestoreSet,
     openWorkspaceFromFile,
     refreshWorkspaceSaveInfo,
     listRecentWorkspaces,
@@ -987,22 +988,36 @@ function expandSidebar() {
     });
     void (async () => {
       await refreshWorkspaces();
-      // 启动策略：从命令行 / 资源管理器启动时，以进程 cwd 为决策依据。
-      // - cwd 顶层有 .ridge 文件：打开该工作区，并关掉默认空工作区（用户没交互过）；
-      // - cwd 无 .ridge：默认工作区的根 pane 已在后端 `AppState::new` 中把 cwd 种为启动 cwd，
-      //   这里不需要再做任何事，默认终端会自然落在启动目录。
+      // 启动策略：
+      // 1. cli 启动（终端里 `ridge`）：cwd 是用户工作目录。
+      //    - cwd 顶层有 .ridge → 打开它，关默认；否则保留默认（cwd 已种入根 pane）。
+      //    - 不读取 restore set，避免覆盖用户用 cwd 表达的意图。
+      // 2. menu 启动（双击 / 开始菜单）：cwd 是 ridge.exe 目录，无意义。
+      //    - 优先读 restore set（上次关闭时已保存的工作区）；非空 → 全部 reopen，
+      //      关掉默认空工作区，切到第一个；空 → 保留默认。
       try {
         const ctx = await getStartupContext();
-        if (ctx && ctx.wind_file_in_cwd) {
-          const priorDefaultId = get(activeWorkspaceId);
-          await openWorkspaceFromFile(ctx.wind_file_in_cwd);
-          const nowActive = get(activeWorkspaceId);
-          if (priorDefaultId && priorDefaultId !== nowActive) {
+        const priorDefaultId = get(activeWorkspaceId);
+        const cwdRidge = ctx?.wind_file_in_cwd ?? null;
+        if (cwdRidge) {
+          await openWorkspaceFromFile(cwdRidge);
+        } else if (ctx?.kind === 'menu') {
+          const restorePaths = await getRestoreSet();
+          for (const p of restorePaths) {
             try {
-              await closeWorkspace(priorDefaultId);
+              await openWorkspaceFromFile(p);
             } catch (e) {
-              console.warn('close default workspace after auto-open failed', e);
+              console.warn('restore workspace failed', p, e);
             }
+          }
+        }
+        // 默认空工作区如果不再是活动项（已被覆盖打开），关掉它，避免顶部多出空 tab。
+        const nowActive = get(activeWorkspaceId);
+        if (priorDefaultId && priorDefaultId !== nowActive) {
+          try {
+            await closeWorkspace(priorDefaultId);
+          } catch (e) {
+            console.warn('close default workspace after auto-open failed', e);
           }
         }
       } catch (err) {

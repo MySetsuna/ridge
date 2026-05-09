@@ -1672,9 +1672,14 @@ export async function getLastOpenedWorkspacePath(): Promise<string | null> {
 export interface StartupContext {
   cwd: string;
   wind_file_in_cwd: string | null;
+  /** "cli" — process inherited a real working dir from a terminal.
+   *  "menu" — process current_dir equals ridge.exe parent (双击 / 开始菜单).
+   *  Used to gate auto-restore: cli launch should NOT auto-open the saved
+   *  workspace set, since the user signalled intent via the cwd. */
+  kind: 'cli' | 'menu';
 }
 
-/** 启动上下文：进程 cwd + cwd 顶层第一个 .ridge 文件（若存在）。 */
+/** 启动上下文：进程 cwd + cwd 顶层第一个 .ridge 文件（若存在）+ 启动模式。 */
 export async function getStartupContext(): Promise<StartupContext | null> {
   if (!isTauri()) return null;
   try {
@@ -1688,6 +1693,17 @@ export async function listRecentWorkspaces(): Promise<string[]> {
   if (!isTauri()) return [];
   try {
     return await invoke<string[]>('list_recent_workspaces');
+  } catch {
+    return [];
+  }
+}
+
+/** 关闭时被后端写下的「下次启动应自动恢复的已保存工作区路径」列表。
+ *  非 cli 启动 + 列表非空 → 前端依次 openWorkspaceFromFile，再关掉默认空 workspace。 */
+export async function getRestoreSet(): Promise<string[]> {
+  if (!isTauri()) return [];
+  try {
+    return await invoke<string[]>('get_restore_set');
   } catch {
     return [];
   }
