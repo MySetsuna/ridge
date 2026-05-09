@@ -373,6 +373,7 @@ pub fn run() {
             ridge_file::list_recent_workspaces,
             ridge_file::clear_recent_workspaces,
             ridge_file::get_restore_set,
+            ridge_file::list_saved_workspace_files,
             settings::set_user_default_cwd,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,

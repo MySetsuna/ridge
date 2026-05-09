@@ -1709,6 +1709,22 @@ export async function getRestoreSet(): Promise<string[]> {
   }
 }
 
+export interface SavedWorkspaceEntry {
+  name: string;
+  path: string;
+  mtime_secs: number;
+}
+
+/** 默认 ~/ridge-workspaces/ 下的所有 .ridge 文件，按 mtime 倒序。 */
+export async function listSavedWorkspaceFiles(): Promise<SavedWorkspaceEntry[]> {
+  if (!isTauri()) return [];
+  try {
+    return await invoke<SavedWorkspaceEntry[]>('list_saved_workspace_files');
+  } catch {
+    return [];
+  }
+}
+
 export async function clearRecentWorkspaces(): Promise<void> {
   if (!isTauri()) return;
   try {
