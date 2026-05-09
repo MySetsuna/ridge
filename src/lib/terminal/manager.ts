@@ -45,6 +45,9 @@ import { settingsStore } from '../stores/settings';
 // in node_modules/.vite/deps/, and 404s when init() tries to fetch the
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
+import { LinkSpanIndex } from '$lib/terminal/linkSpans';
+import { resolveLink, executeAction } from '$lib/utils/linkResolver';
+import { paneCwdStore } from '$lib/stores/paneTree';
 
 /** §A.4 — concatenate two Uint8Arrays without allocating a JS array. Used
  *  by the inline-TUI feed coalescer to grow `entry.feedBuffer` across
@@ -247,6 +250,11 @@ interface PaneEntry {
 	 *  (some browsers don't fire RO for display:none → display:flex
 	 *  transitions reliably). */
 	wasHiddenLastTick?: boolean;
+	/** 终端纯文本链接 / 路径检测器。OSC 8 hyperlinkAt 之外的兜底：识别
+	 *  https://、file://、绝对 / 相对路径，配合 Ctrl+click 路由到 ridge
+	 *  编辑器或系统资源管理器。lazy 重建：feed / scroll / resize 后置 dirty
+	 *  标志，仅在 ctrl+pointermove 或 ctrl+pointerdown 时同步扫一次。 */
+	linkSpans: LinkSpanIndex;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -332,6 +340,19 @@ export class TerminalManager {
 	 *  next attach starts with a fresh atlas anyway. */
 	static tryInstance(): TerminalManager | null {
 		return TerminalManager._instance;
+	}
+
+	/** 终端链接路由器需要的 ctx：当前 pane 的 cwd（OSC 7 报告值）。 */
+	static _currentPaneCwd(entry: PaneEntry): string | undefined {
+		const map = get(paneCwdStore);
+		return map[`${entry.workspaceId}:${entry.paneId}`];
+	}
+
+	/** 终端链接路由器需要的 ctx：所有 pane 当前 cwd 集合，用于"是否属于
+	 *  任意 cwd 树"判断（多 workspace 多 pane 同时活跃时，落在任一 pane
+	 *  CWD 内的文件都视为可在 ridge 编辑器打开）。 */
+	static _knownCwds(): string[] {
+		return Object.values(get(paneCwdStore)).filter((s): s is string => !!s);
 	}
 
 	static instance(opts?: ManagerOptions): TerminalManager {
@@ -922,6 +943,19 @@ export class TerminalManager {
 					e.preventDefault();
 					return;
 				}
+				// 纯文本路径 / URL 兜底（OSC 8 没标记的情况）：linkSpans
+				// 命中即用统一的 resolveLink → executeAction 路由（CWD 内
+				// 文件 → ridge 编辑器；外链 → 系统浏览器；外部路径/目录
+				// → 系统资源管理器）。
+				const span = ent.linkSpans.hitTest(ent.kernel, cell.row, cell.col);
+				if (span) {
+					const cwd = TerminalManager._currentPaneCwd(ent);
+					const known = TerminalManager._knownCwds();
+					const action = resolveLink(span.text, { cwd, knownCwds: known });
+					void executeAction(action);
+					e.preventDefault();
+					return;
+				}
 				// Modifier-click without a link → fall through to normal
 				// selection logic (respects Shift below).
 			}
@@ -977,7 +1011,10 @@ export class TerminalManager {
 			const mod = e.ctrlKey || (isMacUA && e.metaKey);
 			if (hoverCell && mod) {
 				const link = ent.kernel.hyperlinkAt(hoverCell.row, hoverCell.col);
-				ent.container.style.cursor = link ? 'pointer' : '';
+				const span = link
+					? null
+					: ent.linkSpans.hitTest(ent.kernel, hoverCell.row, hoverCell.col);
+				ent.container.style.cursor = link || span ? 'pointer' : '';
 			} else if (ent.container.style.cursor === 'pointer') {
 				ent.container.style.cursor = '';
 			}
@@ -1029,6 +1066,7 @@ export class TerminalManager {
 			imeAnchorRaf: null,
 			feedBuffer: null,
 			feedFlushTimer: null,
+			linkSpans: new LinkSpanIndex(),
 		};
 		entry.resizeObserver.observe(container);
 
@@ -1377,6 +1415,8 @@ export class TerminalManager {
 			console.debug(`[pty-trace][${ts}ms][${id}][${bytes.length}B] ${hex}${more}`);
 		}
 		entry.kernel.feed(bytes);
+		// 屏幕内容变化 → 链接索引失效，下次 ctrl+hover/click 时再 lazy 重建。
+		entry.linkSpans.markDirty();
 		// PTY bytes mutated kernel state — wake the RAF loop if it was
 		// sleeping. No-op when already running.
 		this.wake();
@@ -1632,15 +1672,24 @@ export class TerminalManager {
 
 	/** Snap viewport to bottom (live grid). */
 	scrollToBottom(paneId: string): void {
-		this.panes.get(paneId)?.kernel.scrollToBottom();
+		const e = this.panes.get(paneId);
+		if (!e) return;
+		e.kernel.scrollToBottom();
+		e.linkSpans.markDirty();
 	}
 
 	scrollUp(paneId: string, lines: number): void {
-		this.panes.get(paneId)?.kernel.scrollUp(lines);
+		const e = this.panes.get(paneId);
+		if (!e) return;
+		e.kernel.scrollUp(lines);
+		e.linkSpans.markDirty();
 	}
 
 	scrollDown(paneId: string, lines: number): void {
-		this.panes.get(paneId)?.kernel.scrollDown(lines);
+		const e = this.panes.get(paneId);
+		if (!e) return;
+		e.kernel.scrollDown(lines);
+		e.linkSpans.markDirty();
 	}
 
 	/** Returns scroll offset (0 = at bottom) and scrollback length, for UI hints. */
@@ -2034,6 +2083,7 @@ export class TerminalManager {
 			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
 			entry.kernel.resize(rows, cols);
 		}
+		entry.linkSpans.markDirty();
 
 		// Synchronous first frame after resize. The next rAF tick is
 		// up to ~16ms away, and a TUI like `claude` that's continuously
