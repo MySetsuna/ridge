@@ -375,6 +375,13 @@ impl<B: RenderBackend> Renderer<B> {
 
         let do_full = self.first_frame || self.full_redraw_pending;
         let sel_rects = selection_to_rects(selection, terminal.cols(), terminal.rows());
+        // Potentially set tui_mode on the metrics so backends can avoid
+        // forcing the theme background onto cells whose background hasn't
+        // been explicitly set by the foreground program.
+        let tui_mode = terminal.grid().is_alt_screen() || terminal
+            .grid()
+            .is_inline_tui_active_at(crate::term::clock::now_ms(), terminal.modes().cursor_visible);
+        let tui_metrics = FrameMetrics { tui_mode, ..self.metrics };
         // Collect hyperlink rects from every visible row. Most rows have
         // empty `hyperlinks` so this is cheap. We always re-emit on full
         // redraw; partial draws still emit them so the underlines aren't
@@ -390,7 +397,7 @@ impl<B: RenderBackend> Renderer<B> {
         }
         draw_frame(
             &mut self.backend,
-            self.metrics,
+            tui_metrics,
             &self.theme,
             &rows,
             self.last_cursor.as_ref(),

@@ -81,6 +81,7 @@ impl Canvas2dBackend {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
             },
             theme: Theme::default_dark(),
             font_css: String::from("15px monospace"),
@@ -204,8 +205,9 @@ impl RenderBackend for Canvas2dBackend {
         // scale uniformly to both calls).
         self.ctx
             .clear_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
+        let clear_bg = if self.metrics.tui_mode { self.theme.tui_bg } else { self.theme.bg };
         self.ctx
-            .set_fill_style_str(&Self::rgba_to_css(self.theme.bg));
+            .set_fill_style_str(&Self::rgba_to_css(clear_bg));
         self.ctx
             .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
     }
@@ -224,7 +226,7 @@ impl RenderBackend for Canvas2dBackend {
         for (col, cell) in row.cells.iter().enumerate() {
             // Wide-cell continuation halves carry the same bg as the
             // first half — paint them too so the bg spans both cells.
-            let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme);
+            let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
             self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
             let x = (col as f64 * cell_w).round();
             self.ctx.fill_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
@@ -240,7 +242,7 @@ impl RenderBackend for Canvas2dBackend {
             if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
                 continue;
             }
-            let (attrs, fg, _bg) = resolve_cell_colors(cell, attrs_table, &self.theme);
+            let (attrs, fg, _bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
             self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
 
             // Bold: rebuild the font string with `bold` weight prefix.

@@ -28,6 +28,7 @@
   --rg-accent: #36c26e;
   --rg-accent-glow: rgba(54, 194, 110, 0.28);
   --rg-term-bg: #071009;
+  --rg-tui-bg: #0a0a0a;
   --rg-scrollbar: rgba(120, 210, 150, 0.11);
   --rg-scrollbar-hover: rgba(54, 194, 110, 0.50);
   /* Both stacks end with system color-emoji families so HTML/canvas can fall
@@ -58,6 +59,7 @@ html[data-rg-theme="sand"] {
   --rg-accent: #c69a4f;
   --rg-accent-glow: rgba(198, 154, 79, 0.32);
   --rg-term-bg: #faf6ef;
+  --rg-tui-bg: #0a0a0a;
   --rg-scrollbar: rgba(74, 60, 42, 0.18);
   --rg-scrollbar-hover: rgba(198, 154, 79, 0.55);
   --rg-title-proc: #b8862c;
@@ -79,6 +81,7 @@ html[data-rg-theme="grass"] {
   --rg-accent: #6c9a3d;
   --rg-accent-glow: rgba(108, 154, 61, 0.32);
   --rg-term-bg: #f3f8ee;
+  --rg-tui-bg: #0a0a0a;
   --rg-scrollbar: rgba(44, 58, 37, 0.18);
   --rg-scrollbar-hover: rgba(108, 154, 61, 0.55);
   --rg-title-proc: #4f7a26;
@@ -100,6 +103,7 @@ html[data-rg-theme="soil"] {
   --rg-accent: #d97757;
   --rg-accent-glow: rgba(217, 119, 87, 0.35);
   --rg-term-bg: #1c1410;
+  --rg-tui-bg: #0a0a0a;
   --rg-scrollbar: rgba(232, 217, 196, 0.12);
   --rg-scrollbar-hover: rgba(217, 119, 87, 0.5);
   --rg-title-proc: #d97757;
@@ -121,6 +125,7 @@ html[data-rg-theme="wheat"] {
   --rg-accent: #c8860c;
   --rg-accent-glow: rgba(200, 134, 12, 0.30);
   --rg-term-bg: #fdf8e8;
+  --rg-tui-bg: #0a0a0a;
   --rg-scrollbar: rgba(90, 58, 10, 0.16);
   --rg-scrollbar-hover: rgba(200, 134, 12, 0.50);
   --rg-title-proc: #b87808;
@@ -142,6 +147,7 @@ html[data-rg-theme="starsky"] {
   --rg-accent: #4899ff;
   --rg-accent-glow: rgba(72, 153, 255, 0.28);
   --rg-term-bg: #040810;
+  --rg-tui-bg: #0a0a0a;
   --rg-scrollbar: rgba(90, 150, 255, 0.10);
   --rg-scrollbar-hover: rgba(72, 153, 255, 0.46);
   --rg-title-proc: #58a8ff;

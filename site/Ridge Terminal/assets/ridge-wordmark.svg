@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 56" role="img" aria-label="Ridge">
+  
+
+  
+  
+
+  
+  <g transform="translate(0, 0) scale(5.6)">
+    <g class="ridge-glyph">
+      <polyline points="1,8 1,0 5,0 6,1 6,3 5,4 1,4"></polyline>
+      <polyline points="3.5,4 6,8"></polyline>
+    </g>
+  </g>
+  <line class="ridge-link" x1="44" y1="28" x2="64" y2="28"></line>
+
+  
+  <g transform="translate(64, 0) scale(5.6)">
+    <g class="ridge-glyph">
+      <polyline points="2,0 6,0"></polyline>
+      <polyline points="4,0 4,8"></polyline>
+      <polyline points="2,8 6,8"></polyline>
+    </g>
+  </g>
+  <line class="ridge-link" x1="108" y1="28" x2="128" y2="28"></line>
+
+  
+  <g transform="translate(128, 0) scale(5.6)">
+    <g class="ridge-glyph">
+      <polyline points="1,0 1,8"></polyline>
+      <polyline points="1,0 5,0 6,1 6,7 5,8 1,8"></polyline>
+    </g>
+  </g>
+  <line class="ridge-link" x1="172" y1="28" x2="192" y2="28"></line>
+
+  
+  <g transform="translate(192, 0) scale(5.6)">
+    <g class="ridge-glyph">
+      <polyline points="6,1 5,0 2,0 1,1 1,7 2,8 5,8 6,7 6,4 4,4"></polyline>
+    </g>
+  </g>
+  <line class="ridge-link ridge-mark" x1="236" y1="28" x2="256" y2="28"></line>
+
+  
+  <g transform="translate(256, 0) scale(5.6)">
+    <g class="ridge-glyph">
+      <polyline points="6,0 1,0 1,8 6,8"></polyline>
+      <polyline points="1,4 5,4"></polyline>
+    </g>
+  </g>
+</svg>

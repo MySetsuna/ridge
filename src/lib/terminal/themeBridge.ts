@@ -48,10 +48,12 @@ function readRidgeTheme(): Record<string, string> {
 	const bg = v('--rg-term-bg');
 	const fg = v('--rg-fg');
 	const accent = v('--rg-accent');
+	const tuiBg = v('--rg-tui-bg');
 
 	const out: Record<string, string> = {};
 	if (bg) out.background = bg;
 	if (fg) out.foreground = fg;
+	if (tuiBg) out.tuiBackground = tuiBg;
 	if (accent) {
 		out.cursor = accent;
 		// Cursor-text-color (the glyph drawn ON TOP of the cursor block)

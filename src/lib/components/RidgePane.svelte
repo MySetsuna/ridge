@@ -631,46 +631,36 @@ function onContainerKeyDown(e: KeyboardEvent) {
 	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 	const mod = e.ctrlKey || (isMac && e.metaKey);
 
-	// App-level keys that should NOT be consumed by the terminal —
+	// App-override keys that should NOT be consumed by the terminal —
 	// the OS/Tauri window or another part of the app handles them.
-	// Add to this list as needed; xterm uses attachCustomKeyEventHandler
-	// for the same purpose.
-	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;        // fullscreen
-	if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;            // settings panel
-	if (mod && e.shiftKey && !e.altKey && (e.key === 'P' || e.key === 'p')) return; // command palette
+	// F11 fullscreen and Ctrl+, settings are OS/app-level; pass through.
+	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;
+	if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;
 
-	// Ctrl+F — open in-pane search bar.
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+	// Ctrl+Shift+F — open in-pane search bar (uses Shift so it doesn't
+	// conflict with the terminal's Ctrl+F / ^F key binding).
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
 		openSearchBar();
 		e.preventDefault();
 		return;
 	}
 
-	// Ctrl+C with selection: copy. Without selection: fall through to
-	// kernel encoder which produces 0x03 (SIGINT).
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+	// Ctrl+Shift+C with selection: copy.  Ctrl+C alone flows to the
+	// terminal for SIGINT (^C).
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
 		const sel = manager.getSelectionText(paneId);
 		if (sel) {
 			void writeText(sel);
 			e.preventDefault();
 			return;
 		}
-		// Fall through to encoder for SIGINT.
 	}
 
-	// Ctrl+V — paste (manager handles bracketed paste).
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+	// Ctrl+Shift+V — paste (manager handles bracketed paste).
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => {
 			if (text) manager.paste(paneId, text);
 		});
-		e.preventDefault();
-		return;
-	}
-
-	// Ctrl+A — select all (overrides shell ^A jump-to-start; if user
-	// wants ^A they can use Ctrl+Home or similar; revisit if complaints).
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'a' || e.key === 'A')) {
-		manager.selectAll(paneId);
 		e.preventDefault();
 		return;
 	}
@@ -705,6 +695,13 @@ function onContainerKeyDown(e: KeyboardEvent) {
 
 function onContainerWheel(e: WheelEvent) {
 	if (!alive || !attached) return;
+
+	// When a TUI app owns the terminal (alt-screen or inline-TUI),
+	// forward wheel events to the PTY as mouse escape sequences so the
+	// TUI can handle its own scrolling (e.g. opencode's internal scroll).
+	// We never intercept wheel events on alt screens or inline TUIs.
+	if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId)) return;
+
 	// Only intercept when there's actually scrollback to scroll through.
 	const { total } = manager.scrollState(paneId);
 	if (total === 0) return;

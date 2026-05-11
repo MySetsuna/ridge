@@ -257,6 +257,7 @@ impl WebGpuPaneBackend {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
             },
             theme: Theme::default_dark(),
             // First frame must re-encode every row — viewport rect just
@@ -438,21 +439,35 @@ impl RenderBackend for WebGpuPaneBackend {
     }
 
     fn clear(&mut self) {
-        // Records intent only — actual GPU work happens in `end_frame`
-        // so a single RenderPass can include both the LoadOp::Clear AND
-        // the cell instance draw. We always clear with theme.bg.
+        // Draw a full-viewport opaque background quad so the pane
+        // controls its own clear colour independently of the shared
+        // SurfaceHost's LoadOp::Clear.  When `tui_mode` is active the
+        // quad uses `theme.tui_bg` instead of `theme.bg`, preventing
+        // the theme accent background from polluting TUI apps.
+        let bg_color = if self.metrics.tui_mode { self.theme.tui_bg } else { self.theme.bg };
+        self.pending_instances.push(CellInstance {
+            cell_xy: [0.0, 0.0],
+            cell_size: [self.viewport.w as f32, self.viewport.h as f32],
+            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+            atlas_layer: 0,
+            fg_rgba: rgba_u8_to_f32(bg_color),
+            bg_rgba: rgba_u8_to_f32(bg_color),
+            is_color: 0,
+        });
     }
 
     fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let tui_mode = self.metrics.tui_mode;
         let theme = self.theme.clone();
-        // Integer-align row top + bottom so adjacent rows share an exact
-        // pixel boundary with no fractional gap or overlap.
-        let row_top = ((row_idx as f32) * cell_h).floor();
-        let row_bot = (((row_idx + 1) as f32) * cell_h).floor();
-        let row_h_int = (row_bot - row_top).max(1.0);
+        // Round-to-nearest pixel alignment prevents sub-pixel gaps
+        // between adjacent cells (floor() drifts left over time).
+        // ceil() on size creates a <1px overlap so the GPU rasteriser
+        // never leaves a gap between neighbouring bg quads.
+        let row_top = ((row_idx as f32) * cell_h).round();
+        let row_h_int = cell_h.ceil().max(1.0);
 
         // Pre-compute font-key state with a short borrow — released
         // before the per-cell loop so the miss path's `borrow_mut` can
@@ -502,7 +517,7 @@ impl RenderBackend for WebGpuPaneBackend {
             }
             let attrs = attrs_table.get(cell.attr);
             let (_attrs, fg, bg) =
-                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme);
+                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
             // §A.6 (2026-05-08) — visual-wide narrow: same conservative
@@ -514,8 +529,8 @@ impl RenderBackend for WebGpuPaneBackend {
             // we know `leading_cp` (after the cluster lookup below); we
             // first lock down `pixel_x` / `cell_w_px` against `cell_span`
             // to keep the bg quad faithful to the logical layout.
-            let pixel_x = ((col as f32) * cell_w).floor();
-            let pixel_x_right = (((col + cell_span) as f32) * cell_w).floor();
+            let pixel_x = ((col as f32) * cell_w).round();
+            let pixel_x_right = (((col + cell_span) as f32) * cell_w).round();
             let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
             let pixel_y = row_top;
 
@@ -657,14 +672,14 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
-        let pixel_x = ((cursor.col as f32) * cell_w).floor();
+        let pixel_x = ((cursor.col as f32) * cell_w).round();
         let cursor_span = cursor.width.max(1) as usize;
-        let pixel_x_right = (((cursor.col + cursor_span) as f32) * cell_w).floor();
+        let pixel_x_right = (((cursor.col + cursor_span) as f32) * cell_w).round();
         let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
-        let pixel_y = ((cursor.row as f32) * cell_h).floor();
-        let pixel_y_bot = (((cursor.row + 1) as f32) * cell_h).floor();
+        let pixel_y = ((cursor.row as f32) * cell_h).round();
+        let pixel_y_bot = (((cursor.row + 1) as f32) * cell_h).round();
         let cell_h_int = (pixel_y_bot - pixel_y).max(1.0);
-        let bar_thickness = (2.0 * self.metrics.dpr).floor().max(1.0);
+        let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
 
         // 1) Cursor block (colored rectangle at the appropriate
         //    style-specific size).
@@ -739,11 +754,11 @@ impl RenderBackend for WebGpuPaneBackend {
             if col_end <= col_start {
                 continue;
             }
-            let pixel_x = ((col_start as f32) * cell_w).floor();
-            let pixel_x_right = ((col_end as f32) * cell_w).floor();
+            let pixel_x = ((col_start as f32) * cell_w).round();
+            let pixel_x_right = ((col_end as f32) * cell_w).round();
             let width = (pixel_x_right - pixel_x).max(1.0);
-            let pixel_y = ((row as f32) * cell_h).floor();
-            let pixel_y_bot = (((row + 1) as f32) * cell_h).floor();
+            let pixel_y = ((row as f32) * cell_h).round();
+            let pixel_y_bot = (((row + 1) as f32) * cell_h).round();
             let height = (pixel_y_bot - pixel_y).max(1.0);
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
@@ -763,16 +778,16 @@ impl RenderBackend for WebGpuPaneBackend {
         }
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
-        let thickness = (2.0 * self.metrics.dpr).floor().max(1.0);
+        let thickness = (2.0 * self.metrics.dpr).round().max(1.0);
         let link_color = rgba_u8_to_f32(self.theme.hyperlink_color);
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
                 continue;
             }
-            let pixel_x = ((col_start as f32) * cell_w).floor();
-            let pixel_x_right = ((col_end as f32) * cell_w).floor();
+            let pixel_x = ((col_start as f32) * cell_w).round();
+            let pixel_x_right = ((col_end as f32) * cell_w).round();
             let width = (pixel_x_right - pixel_x).max(1.0);
-            let pixel_y_bot = (((row + 1) as f32) * cell_h).floor();
+            let pixel_y_bot = (((row + 1) as f32) * cell_h).round();
             let pixel_y = pixel_y_bot - thickness;
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],

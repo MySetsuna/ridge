@@ -826,7 +826,7 @@ export class TerminalManager {
 			container.style.background = 'transparent';
 		} else {
 			canvas = document.createElement('canvas');
-			canvas.style.cssText = 'display:block; width:100%; height:100%;';
+			canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
 			canvas.setAttribute('aria-hidden', 'true');
 			container.appendChild(canvas);
 		}
@@ -1238,7 +1238,7 @@ export class TerminalManager {
 			container.style.background = 'transparent';
 		} else {
 			canvas = document.createElement('canvas');
-			canvas.style.cssText = 'display:block; width:100%; height:100%;';
+			canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
 			canvas.setAttribute('aria-hidden', 'true');
 			container.appendChild(canvas);
 		}
@@ -1701,6 +1701,22 @@ export class TerminalManager {
 
 	rows(paneId: string): number { return this.panes.get(paneId)?.kernel.rows() ?? 0; }
 	cols(paneId: string): number { return this.panes.get(paneId)?.kernel.cols() ?? 0; }
+
+	/** Whether the pane is currently in alt-screen mode (TUI app active). */
+	isAltScreen(paneId: string): boolean { return this.panes.get(paneId)?.kernel.isAltScreen() ?? false; }
+
+	/** Whether the pane is in inline-TUI mode (Ink-style app on primary screen,
+	 *  e.g. opencode). Like alt-screen mode, wheel events should pass through to
+	 *  the PTY so the TUI can handle its own scrolling. */
+	isInlineTuiActive(paneId: string): boolean {
+		const e = this.panes.get(paneId);
+		if (!e) return false;
+		try {
+			return (e.kernel as unknown as { isInlineTuiMode?: () => boolean }).isInlineTuiMode?.() ?? false;
+		} catch {
+			return false;
+		}
+	}
 
 	/** Schedule a single rAF that snapshots the kernel cursor as the new
 	 *  IME anchor. Coalesces rapid writes — at most one outstanding rAF

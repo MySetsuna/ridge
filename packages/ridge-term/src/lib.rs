@@ -641,6 +641,7 @@ mod renderer_js {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
             };
             let renderer = Renderer::new(
                 AnyBackend::Canvas2d(backend),
@@ -687,6 +688,7 @@ mod renderer_js {
                         cell_w: 8.0,
                         cell_h: 16.0,
                         dpr: 1.0,
+                        tui_mode: false,
                     };
                     let renderer =
                         Renderer::new(AnyBackend::Webgpu(b), metrics, Theme::default_dark());
@@ -699,6 +701,7 @@ mod renderer_js {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
             };
             let renderer = Renderer::new(
                 AnyBackend::Canvas2d(backend),
@@ -734,6 +737,7 @@ mod renderer_js {
                 cell_w: w,
                 cell_h: h,
                 dpr,
+                tui_mode: false,
             });
             Ok(vec![w, h])
         }
