@@ -21,7 +21,7 @@
 // `C:\Program Files\ridge 0.1.4\`. Version slug `0_1_4` is used for identifier
 // suffix and WiX Component Id (Wix identifiers can't contain `.`).
 
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -133,7 +133,7 @@ function buildTauriConfigOverride(version, slug) {
     // Prevent circular build: pass an env flag so beforeBuildCommand can skip
     // when called from this script.
     build: {
-      beforeBuildCommand: 'node -e "process.exit(process.env.RIDGE_BUILD_SKIP ? 0 : 1)"',
+      beforeBuildCommand: 'node -e process.exit(Number(!process.env.RIDGE_BUILD_SKIP))',
     },
     bundle: {
       windows: {
@@ -180,6 +180,15 @@ async function main() {
   console.log(`[build-ridge] productName = "ridge ${version}"`);
   const identifierSlug = slug.replace(/_/g, '-');
   console.log(`[build-ridge] identifier  = com.tauri-app.ridge.v${identifierSlug}`);
+
+  // Build frontend first — tauri needs ../build to exist.
+  // Set RIDGE_BUILD_SKIP to avoid circular re-entry if vite triggers npm run build.
+  console.log('[build-ridge] Building frontend (vite build)...');
+  execSync('npx vite build', {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: { ...process.env, RIDGE_BUILD_SKIP: '1' },
+  });
 
   const cargoOriginal = readText(cargoTomlPath);
   const wxsOriginal = readText(wxsPath);

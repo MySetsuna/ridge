@@ -91,6 +91,11 @@ pub struct Theme {
     /// Override via theme key `hyperlinkColor`. Solid by default — links
     /// should be obviously different from regular underlined text.
     pub hyperlink_color: [u8; 4],
+    /// Background color used when a TUI app (alt-screen / inline-tui)
+    /// owns the terminal. Default cells resolve to this instead of `bg`
+    /// so the terminal theme doesn't pollute the TUI's color scheme.
+    /// Override via theme key `tuiBackground`.
+    pub tui_bg: [u8; 4],
     /// 256-entry palette: ANSI 0..15 + 6×6×6 cube + 24-step gray ramp.
     pub palette: [[u8; 4]; 256],
 }
@@ -105,6 +110,7 @@ impl Theme {
             cursor_text_color: [0x07, 0x10, 0x09, 0xff],
             selection_bg: [0x55, 0xaa, 0xff, 0x60],
             hyperlink_color: [0x66, 0xb3, 0xff, 0xff],
+            tui_bg: [0x0a, 0x0a, 0x0a, 0xff],
             palette: build_xterm_palette(),
         }
     }
@@ -141,6 +147,9 @@ impl Theme {
         }
         if let Some(c) = get("hyperlinkColor").and_then(|s| parse_hex_color(&s)) {
             self.hyperlink_color = c;
+        }
+        if let Some(c) = get("tuiBackground").and_then(|s| parse_hex_color(&s)) {
+            self.tui_bg = c;
         }
 
         // ANSI 16 — order matches palette indices.
@@ -250,6 +259,10 @@ pub struct FrameMetrics {
     /// Pixel ratio (device_pixel_ratio). Backend multiplies internally
     /// when writing to the actual surface.
     pub dpr: f32,
+    /// When true the renderer is in alt-screen or inline-tui mode.
+    /// Backends use this to avoid forcing the theme background onto
+    /// cells that haven't explicitly set a background color.
+    pub tui_mode: bool,
 }
 
 /// What a backend must implement. Methods are called in this order each frame:
@@ -389,10 +402,21 @@ pub fn resolve_cell_colors(
     cell: &Cell,
     attrs_table: &crate::term::attr_table::AttrTable,
     theme: &Theme,
+    tui_mode: bool,
 ) -> (Attrs, [u8; 4], [u8; 4]) {
     let attrs = attrs_table.get(cell.attr);
     let mut fg = theme.resolve(attrs.fg, true);
     let mut bg = theme.resolve(attrs.bg, false);
+
+    // In TUI mode (alt-screen / inline-tui), cells with Default
+    // background resolve to tui_bg instead of theme.bg.  This
+    // prevents the terminal theme's accent background from
+    // polluting the TUI app's colour scheme — only cells with an
+    // explicitly-set background colour (indexed or RGB) paint a
+    // coloured bg quad.
+    if tui_mode && matches!(attrs.bg.kind(), crate::term::attrs::ColorKind::Default) {
+        bg = theme.tui_bg;
+    }
 
     use crate::term::attrs::Flags;
 
