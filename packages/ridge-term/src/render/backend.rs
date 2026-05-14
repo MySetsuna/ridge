@@ -411,11 +411,15 @@ pub fn resolve_cell_colors(
     // In TUI mode (alt-screen / inline-tui), cells with Default
     // background resolve to tui_bg instead of theme.bg.  This
     // prevents the terminal theme's accent background from
-    // polluting the TUI app's colour scheme — only cells with an
-    // explicitly-set background colour (indexed or RGB) paint a
-    // coloured bg quad.
-    if tui_mode && matches!(attrs.bg.kind(), crate::term::attrs::ColorKind::Default) {
-        bg = theme.tui_bg;
+    // polluting the TUI app's colour scheme.
+    // In normal shell mode, Default background resolves to transparent,
+    // so the container's CSS background (e.g. glass effect) shows through.
+    if matches!(attrs.bg.kind(), crate::term::attrs::ColorKind::Default) {
+        if tui_mode {
+            bg = theme.tui_bg;
+        } else {
+            bg = [0, 0, 0, 0];
+        }
     }
 
     use crate::term::attrs::Flags;

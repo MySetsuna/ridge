@@ -48,9 +48,11 @@ export interface UserSettings {
    */
   defaultShell: string;
   /**
-   * 默认工作目录绝对路径。空串 = 未设置；启动时按 cli > user > home 优先级
-   * 解析（utils/cwd.rs::resolve_default_cwd）。新建 pane（无父 pane 继承时）
-   * 与首个 pane 都用此目录，不再回退到 ridge.exe 安装目录。
+   * 终端字体族，逗号分隔。空串表示走默认 fallback chain。
+   */
+  terminalFontFamily: string;
+  /**
+   * 终端初始工作目录绝对路径。空串 = 跟随系统默认（通常是用户 home 目录）。
    */
   defaultCwd: string;
   /**
@@ -76,11 +78,12 @@ export interface UserSettings {
 const DEFAULTS: UserSettings = {
   claudeExtensionEnabled: true,
   theme: 'dark',
-  editorFontSize: 13,
+  editorFontSize: 14,
   editorFontFamily: '',
   searchIncludeGlobs: '',
   searchExcludeGlobs: '',
   defaultShell: '',
+  terminalFontFamily: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace',
   defaultCwd: '',
   terminalPaddingPx: 6,
   terminalScrollbackLines: 2000,
@@ -137,6 +140,8 @@ function load(): UserSettings {
         : DEFAULTS.searchExcludeGlobs,
     defaultShell:
       typeof obj.defaultShell === 'string' ? obj.defaultShell : DEFAULTS.defaultShell,
+    terminalFontFamily:
+      typeof obj.terminalFontFamily === 'string' ? obj.terminalFontFamily : DEFAULTS.terminalFontFamily,
     defaultCwd:
       typeof obj.defaultCwd === 'string' ? obj.defaultCwd : DEFAULTS.defaultCwd,
     terminalPaddingPx:

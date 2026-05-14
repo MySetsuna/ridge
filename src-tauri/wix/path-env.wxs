@@ -11,14 +11,14 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
     <Fragment>
         <DirectoryRef Id="INSTALLDIR">
-            <Component Id="RidgePathEnvVar" Guid="A4970075-EECD-520B-6EF3-590E5B33506E">
+            <Component Id="RidgePathEnvVar_0_1_0" Guid="A4970075-EECD-520B-6EF3-590E5B33506E">
                 <RegistryValue Root="HKCU"
                                Key="Software\tauri-app\ridge_0_1_0"
-                               Name="RidgePathEnv"
+                               Name="RidgePathEnv_0_1_0"
                                Type="integer"
                                Value="1"
                                KeyPath="yes" />
-                <Environment Id="RidgePathEnv"
+                <Environment Id="RidgePathEnv_0_1_0"
                              Name="PATH"
                              Value="[INSTALLDIR]"
                              Permanent="no"

@@ -214,30 +214,52 @@ function onCompositionStart() {
 	diagLogIme('start');
 }
 
-function onCompositionUpdate(e: CompositionEvent) {
-	// Re-anchor on every keystroke during composition: the user may
-	// scroll the canvas (e.g. PageUp closes the IME on most systems
-	// but defensive); also lets the candidate-window popup track if
-	// the cursor row shifts while composing.
-	repositionImeHelper();
-	diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
-}
-
-function onImeHelperFocus() {
-	// Anchor on focus too, in case the user clicked into the pane and
-	// expects the next IME composition to appear near the current cursor.
-	repositionImeHelper();
-}
-function onCompositionEnd(e: CompositionEvent) {
-	isComposing = false;
-	const data = e.data;
-	if (data && data.length > 0) {
-		manager.write(paneId, data);
+	function onCompositionUpdate(e: CompositionEvent) {
+		// Re-anchor on every keystroke during composition: the user may
+		// scroll the canvas (e.g. PageUp closes the IME on most systems
+		// but defensive); also lets the candidate-window popup track if
+		// the cursor row shifts while composing.
+		repositionImeHelper();
+		
+		// 动态调整 IME 辅助输入框宽度，防止长拼音截断
+		if (imeHelper && e.data) {
+			const pos = manager.inputAnchorPixelPosition(paneId);
+			if (pos) {
+				const charCount = e.data.length;
+				// +1 cell 缓冲余量以容纳光标
+				imeHelper.style.width = `${(charCount + 1) * pos.cellW}px`;
+			}
+		}
+		
+		diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
 	}
-	// Clear the helper textarea so the next composition starts at length 0.
-	if (imeHelper) imeHelper.value = '';
 
-	// §1.27 fix: force a full-frame redraw so any canvas pixels that
+	function onImeHelperFocus() {
+		// Anchor on focus too, in case the user clicked into the pane and
+		// expects the next IME composition to appear near the current cursor.
+		repositionImeHelper();
+	}
+
+	function onImeHelperPaste(e: ClipboardEvent) {
+		const text = e.clipboardData?.getData('text');
+		if (text) {
+			manager.paste(paneId, text);
+			e.preventDefault();
+		}
+	}
+	function onCompositionEnd(e: CompositionEvent) {
+		isComposing = false;
+		const data = e.data;
+		if (data && data.length > 0) {
+			manager.write(paneId, data);
+		}
+		// Clear the helper textarea so the next composition starts at length 0.
+		if (imeHelper) {
+			imeHelper.value = '';
+			imeHelper.style.width = 'auto'; // 恢复 auto
+		}
+
+		// §1.27 fix: force a full-frame redraw so any canvas pixels that
 	// were under the now-shrunk `.is-composing` overlay are repainted
 	// from kernel cell state. Without this, Canvas2D's per-row hash diff
 	// can skip rows whose CELLS are unchanged but whose PIXELS were
@@ -697,10 +719,20 @@ function onContainerWheel(e: WheelEvent) {
 	if (!alive || !attached) return;
 
 	// When a TUI app owns the terminal (alt-screen or inline-TUI),
-	// forward wheel events to the PTY as mouse escape sequences so the
-	// TUI can handle its own scrolling (e.g. opencode's internal scroll).
-	// We never intercept wheel events on alt screens or inline TUIs.
-	if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId)) return;
+	// we want to allow scrolling. Since proper SGR 1006 mouse tracking
+	// is deferred to round 4, we fallback to sending standard ArrowUp /
+	// ArrowDown key sequences to let TUI apps (like less, htop, opencode)
+	// scroll naturally without intercepting the canvas.
+	if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId)) {
+		const lines = Math.max(1, Math.round(Math.abs(e.deltaY) / 30));
+		const key = e.deltaY < 0 ? 'ArrowUp' : 'ArrowDown';
+		// Send multiple arrow keys for one wheel notch
+		for (let i = 0; i < lines; i++) {
+			manager.handleKeyDown(paneId, new KeyboardEvent('keydown', { key }));
+		}
+		e.preventDefault();
+		return;
+	}
 
 	// Only intercept when there's actually scrollback to scroll through.
 	const { total } = manager.scrollState(paneId);
@@ -963,6 +995,7 @@ function onContainerMouseDown(e: MouseEvent) {
 		oncompositionupdate={onCompositionUpdate}
 		oncompositionend={onCompositionEnd}
 		onfocus={onImeHelperFocus}
+		onpaste={onImeHelperPaste}
 	></textarea>
 
 	<!-- §1.23 (2026-05-05): floating scroll-to-bottom button.

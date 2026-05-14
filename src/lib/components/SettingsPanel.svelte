@@ -233,6 +233,18 @@
 
           {:else if activeSection === 'font'}
             <div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-font-family">终端字体族</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">终端字体族。空串使用默认黑体/表情回退链。</div>
+              <input
+                id="set-term-font-family"
+                type="text"
+                value={$settingsStore.terminalFontFamily}
+                onchange={(e) => setSetting('terminalFontFamily', (e.currentTarget as HTMLInputElement).value)}
+                class="w-full bg-transparent border border-[var(--rg-border)] rounded px-2 py-1.5 text-[12px] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]"
+                placeholder="例如: Consolas, monospace"
+              />
+            </div>
+            <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-font">终端字号</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">8 – 32 px。也可在终端内 Ctrl + + / Ctrl + - 调整。</div>
               <div class="flex items-center gap-3">

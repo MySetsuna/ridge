@@ -408,7 +408,7 @@ export class TerminalManager {
 					// just falls through), helpful on Linux distros
 					// that ship it.
 					fontFamily:
-						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace',
+						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace',
 					fontSizePx: 15,
 					scrollbackLines: 2000,
 					preferWebgpu,
@@ -693,35 +693,13 @@ export class TerminalManager {
 	 * opaque black on missing / unparseable input — matches how
 	 * `Theme::default_dark` initialises `bg` in Rust.
 	 *
-	 * Accepts `#rgb`, `#rrggbb`, `#rrggbbaa`. Whitespace + casing
-	 * tolerated. Anything else falls back to `[0, 0, 0, 255]`.
+	 * [Update] Best Practice: To support transparent backgrounds for Shell
+	 * mode while keeping TUI enclosed, the global clear color is now forced
+	 * to transparent `[0, 0, 0, 0]`. TUI panes paint their own opaque bg
+	 * directly from Rust.
 	 */
-	private _currentThemeBgRgba(): Uint8Array {
-		const out = new Uint8Array([0, 0, 0, 255]);
-		const raw = this.opts.theme?.background;
-		if (typeof raw !== 'string') return out;
-		const hex = raw.trim().replace(/^#/, '');
-		const parseByte = (s: string) => {
-			const n = parseInt(s, 16);
-			return Number.isFinite(n) ? n & 0xff : 0;
-		};
-		if (hex.length === 3) {
-			out[0] = parseByte(hex[0] + hex[0]);
-			out[1] = parseByte(hex[1] + hex[1]);
-			out[2] = parseByte(hex[2] + hex[2]);
-			out[3] = 255;
-		} else if (hex.length === 6) {
-			out[0] = parseByte(hex.slice(0, 2));
-			out[1] = parseByte(hex.slice(2, 4));
-			out[2] = parseByte(hex.slice(4, 6));
-			out[3] = 255;
-		} else if (hex.length === 8) {
-			out[0] = parseByte(hex.slice(0, 2));
-			out[1] = parseByte(hex.slice(2, 4));
-			out[2] = parseByte(hex.slice(4, 6));
-			out[3] = parseByte(hex.slice(6, 8));
-		}
-		return out;
+	private _getThemeBg(): Uint8Array {
+		return new Uint8Array([0, 0, 0, 0]);
 	}
 
 	/**
@@ -1552,6 +1530,18 @@ export class TerminalManager {
 		// macOS: treat Cmd as Ctrl for terminal apps.
 		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 		const ctrl = ev.ctrlKey || (isMac && ev.metaKey);
+
+		// Handle OS native Copy on Ctrl+C / Cmd+C when text is selected.
+		if (ctrl && ev.key.toLowerCase() === 'c') {
+			const sel = entry.kernel.getSelectionText();
+			if (sel && sel.length > 0) {
+				// Don't encode \x03, instead copy and clear selection
+				void navigator.clipboard.writeText(sel);
+				entry.kernel.clearSelection();
+				this.wake();
+				return true;
+			}
+		}
 
 		const bytes = entry.kernel.encodeKey(ev.key, ctrl, ev.altKey, ev.shiftKey, ev.metaKey);
 		if (bytes.length === 0) return false;

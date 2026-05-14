@@ -27,6 +27,7 @@
 //     already active.
 
 import { settingsStore } from '$lib/stores/settings';
+import { termFontSize } from '$lib/stores/termSettings';
 import { hex8 } from '$lib/utils/cssColor';
 import { TerminalManager } from './manager';
 
@@ -100,25 +101,63 @@ export function setupTerminalThemeBridge(): () => void {
 			// every pane's handle on unrelated settings updates (font size,
 			// shell selection, …) that share the same store.
 			const fingerprint = JSON.stringify(theme);
-			if (fingerprint === _lastApplied) return;
-			_lastApplied = fingerprint;
-			manager.setTheme(theme);
+			if (fingerprint !== _lastApplied) {
+				_lastApplied = fingerprint;
+				manager.setTheme(theme);
+			}
 		});
+	};
+
+	let _lastFontFamily: string | null = null;
+	let _lastFontSize: number | null = null;
+
+	const pushFont = (family: string, size: number) => {
+		if (family === _lastFontFamily && size === _lastFontSize) return;
+		_lastFontFamily = family;
+		_lastFontSize = size;
+		
+		// Fallback to default stack if family is empty
+		const resolvedFamily = family.trim() !== '' 
+			? family 
+			: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace';
+		
+		manager.setFont(resolvedFamily, size);
 	};
 
 	// Initial push: the store fires immediately on subscribe. settings.ts's
 	// `applyTheme` runs synchronously during `initSettingsBoot` so by the
 	// time +page.svelte onMount fires the CSS vars are already correct.
-	const unsubscribe = settingsStore.subscribe(() => {
+	const unsubscribeTheme = settingsStore.subscribe((settings) => {
 		// settings.ts's setTheme calls applyTheme BEFORE persisting + fanning
 		// the store update, so by the time the subscriber fires, the
 		// `<html data-rg-theme>` attribute (and thus computed CSS vars)
 		// reflect the new theme. Push synchronously.
 		push();
+		
+		// Also sync font-family updates
+		let size = _lastFontSize;
+		// If termFontSize hasn't fired yet, try to read it now or fallback to 15
+		if (size === null) {
+			let currentSize = 15;
+			termFontSize.subscribe(v => { currentSize = v; })();
+			size = currentSize;
+		}
+		pushFont(settings.terminalFontFamily, size);
+	});
+
+	const unsubscribeFont = termFontSize.subscribe((size) => {
+		let family = _lastFontFamily;
+		if (family === null) {
+			let currentSettings = { terminalFontFamily: '' };
+			settingsStore.subscribe(v => { currentSettings = v; })();
+			family = currentSettings.terminalFontFamily;
+		}
+		pushFont(family, size);
 	});
 
 	return () => {
-		unsubscribe();
+		unsubscribeTheme();
+		unsubscribeFont();
 		_subscribed = false;
 	};
 }

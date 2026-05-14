@@ -29,17 +29,10 @@
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-/// Returns true if the character is a Unicode box-drawing character.
-/// These characters (U+2500 to U+257F) should be stretched to fill
-/// the cell width for continuous line rendering.
-#[inline]
-fn is_box_drawing_char(c: char) -> bool {
-    matches!(c, '\u{2500}'..='\u{257F}')
-}
-
 use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
+use crate::render::procedural_box;
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
 // §B.8 (2026-05-08) — `is_color_emoji_codepoint` and
@@ -205,11 +198,14 @@ impl RenderBackend for Canvas2dBackend {
         // scale uniformly to both calls).
         self.ctx
             .clear_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
-        let clear_bg = if self.metrics.tui_mode { self.theme.tui_bg } else { self.theme.bg };
-        self.ctx
-            .set_fill_style_str(&Self::rgba_to_css(clear_bg));
-        self.ctx
-            .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
+        
+        let clear_bg = if self.metrics.tui_mode { self.theme.tui_bg } else { [0, 0, 0, 0] };
+        if clear_bg[3] != 0 {
+            self.ctx
+                .set_fill_style_str(&Self::rgba_to_css(clear_bg));
+            self.ctx
+                .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
+        }
     }
 
     fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
@@ -227,9 +223,14 @@ impl RenderBackend for Canvas2dBackend {
             // Wide-cell continuation halves carry the same bg as the
             // first half — paint them too so the bg spans both cells.
             let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
-            self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
             let x = (col as f64 * cell_w).round();
-            self.ctx.fill_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
+            
+            if bg[3] == 0 {
+                self.ctx.clear_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
+            } else {
+                self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
+                self.ctx.fill_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
+            }
         }
 
         // Pass 2: glyphs. Skip width-0 (continuation halves of wide
@@ -299,13 +300,22 @@ impl RenderBackend for Canvas2dBackend {
             // The user explicitly prefers natural-shape glyphs over
             // cursor-aligned visuals — same call as Windows Terminal /
             // iTerm2 / Apple Terminal.
-            // Box-drawing characters (─, │, ┌, etc.) need to stretch to
-            // fill the cell width for continuous line rendering. Use
-            // fill_text_with_max_width to stretch them.
+            
+            // Box-drawing and block characters are drawn procedurally to ensure
+            // pixel-perfect alignment and no gaps between cells.
             let first_char = glyph_str.chars().next();
-            if first_char.map_or(false, is_box_drawing_char) {
-                let _ = self.ctx.fill_text_with_max_width(glyph_str, x, y_top, cell_w);
-            } else {
+            let mut drawn_procedurally = false;
+            
+            if let Some(ch) = first_char {
+                if let Some(rects) = procedural_box(ch, x as f32, y_top as f32, cell_w as f32, cell_h as f32) {
+                    for r in rects {
+                        self.ctx.fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
+                    }
+                    drawn_procedurally = true;
+                }
+            }
+            
+            if !drawn_procedurally {
                 let _ = self.ctx.fill_text(glyph_str, x, y_top);
             }
 
