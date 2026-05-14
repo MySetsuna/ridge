@@ -457,65 +457,174 @@ impl RenderBackend for WebGpuPaneBackend {
         });
     }
 
-    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
         let cell_w = self.metrics.cell_w * self.metrics.dpr;
         let cell_h = self.metrics.cell_h * self.metrics.dpr;
         let tui_mode = self.metrics.tui_mode;
         let theme = self.theme.clone();
-        // Round-to-nearest pixel alignment prevents sub-pixel gaps
-        // between adjacent cells (floor() drifts left over time).
-        // ceil() on size creates a <1px overlap so the GPU rasteriser
-        // never leaves a gap between neighbouring bg quads.
-        let row_top = ((row_idx as f32) * cell_h).round();
-        let row_h_int = cell_h.ceil().max(1.0);
 
-        // Pre-compute font-key state with a short borrow — released
-        // before the per-cell loop so the miss path's `borrow_mut` can
-        // run without panicking.
-        let (font_family_hash, font_size_q) = {
-            let ctx = self.ctx.borrow();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&ctx.font_family, &mut h);
-            let font_family_hash = std::hash::Hasher::finish(&h);
-            let font_size_q = (ctx.font_size_px * 100.0).round() as u16;
-            (font_family_hash, font_size_q)
-        };
-        let dpr = self.metrics.dpr;
-
-        // §B.11 (2026-05-08) — Windows Terminal model: NATURAL-size
-        // glyph rendering with layer ordering. Reverts §B.10's
-        // rescaleGlyphs (which distorted aspect ratios). The user
-        // explicitly prefers natural-shape glyphs over cursor-aligned
-        // visuals, matching what Windows Terminal / iTerm2 / Apple
-        // Terminal do — emoji and CJK render at their natural advance,
-        // possibly leaving a gap on the right (when natural < cell
-        // box) or overflowing into the next cell (when natural >
-        // cell box). Cursor still advances by `wcwidth` (logical),
-        // so visual ≠ cursor is normal.
-        //
-        // Two passes per row (xterm.js layer ordering):
-        //   * BG pass — every cell's bg quad first.
-        //   * GLYPH pass — every cell's glyph quad in cell order. A
-        //     wide glyph in cell N paints its overflow ON TOP of cell
-        //     N+1's already-painted bg, then cell N+1's glyph paints
-        //     ON TOP of cell N's overflow at the intersection only.
-        //     Both glyphs visible at correct proportions; bg gaps
-        //     show through.
-        //
-        // The §B.10 slot-width bump (3.0× cell_w_dev in
-        // slot_dims_for) ensures the rasteriser captures the full
-        // natural advance even for non-monospace emoji fonts at high
-        // DPR — load-bearing here because we now render at natural
-        // (not stretched), so a clipped bitmap would directly show as
-        // a half-drawn glyph.
         let mut row_bg_instances: Vec<CellInstance> = Vec::new();
+
+        for (col, cell) in row.cells.iter().enumerate() {
+            if cell.width == 0 {
+                continue;
+            }
+            let (_attrs, fg, bg) =
+                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
+
+            let cell_span = cell.width.max(1) as usize;
+            let pixel_x = (col as f32 * cell_w).round();
+            let pixel_x_right = ((col + cell_span) as f32 * cell_w).round();
+            let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
+
+            let pixel_y = (row_idx as f32 * self.metrics.cell_h * self.metrics.dpr).round();
+            let pixel_y_bot = ((row_idx + 1) as f32 * self.metrics.cell_h * self.metrics.dpr).round();
+            let row_h_int = (pixel_y_bot - pixel_y).max(1.0);
+
+            // Bg quad: full cell_span × cell_w rectangle.
+            row_bg_instances.push(CellInstance {
+                cell_xy: [pixel_x, pixel_y],
+                cell_size: [cell_w_px, row_h_int],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: rgba_u8_to_f32(fg),
+                bg_rgba: rgba_u8_to_f32(bg),
+                is_color: 0,
+            });
+        }
+        self.pending_instances.append(&mut row_bg_instances);
+    }
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        let row_idx = row.row_index;
+        let cell_w = self.metrics.cell_w * self.metrics.dpr;
+        let tui_mode = self.metrics.tui_mode;
+        let theme = self.theme.clone();
+
         let mut row_glyph_instances: Vec<CellInstance> = Vec::new();
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
             }
+            let attrs = attrs_table.get(cell.attr);
+            let (_attrs, fg, _bg) =
+                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
+
+            let cell_span = cell.width.max(1) as usize;
+            let pixel_x = (col as f32 * cell_w).round();
+            let pixel_x_right = ((col + cell_span) as f32 * cell_w).round();
+            let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
+
+            let pixel_y = (row_idx as f32 * self.metrics.cell_h * self.metrics.dpr).round();
+            let pixel_y_bot = ((row_idx + 1) as f32 * self.metrics.cell_h * self.metrics.dpr).round();
+            let row_h_int = (pixel_y_bot - pixel_y).max(1.0);
+
+            if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
+                continue;
+            }
+
+            let cluster_text = if !row.clusters.is_empty() {
+                let target = col.min(u16::MAX as usize) as u16;
+                row.clusters.iter().find(|c| c.col == target).map(|c| c.text.as_str())
+            } else {
+                None
+            };
+            let mut ch_buf = [0u8; 4];
+            let glyph_text: &str = match cluster_text {
+                Some(text) => text,
+                None => cell.ch.encode_utf8(&mut ch_buf),
+            };
+
+            let entry: Option<GlyphEntry> = {
+                let mut ctx = self.ctx.borrow_mut();
+                let font_family_hash = ctx.get_font_family_hash(&self.metrics.font_family);
+                let font_size_q = (self.metrics.font_size_px * 100.0).round() as u16;
+
+                let mut style_flags = 0;
+                if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
+                    style_flags |= GlyphKey::STYLE_BOLD;
+                }
+                if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
+                    style_flags |= GlyphKey::STYLE_ITALIC;
+                }
+
+                let glyph_id = match cluster_text {
+                    Some(text) => {
+                        use std::hash::Hasher;
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        h.write(text.as_bytes());
+                        let raw = std::hash::Hasher::finish(&h) as u32;
+                        super::glyph_atlas::CLUSTER_TAG | (raw & !super::glyph_atlas::CLUSTER_TAG)
+                    }
+                    None => cell.ch as u32,
+                };
+                let key = GlyphKey {
+                    font_family_hash,
+                    font_size_q,
+                    glyph_id,
+                    style_flags,
+                };
+
+                let res = ctx.rasterize_and_admit(
+                    key,
+                    &self.metrics.font_family,
+                    self.metrics.font_size_px,
+                    self.metrics.dpr,
+                    glyph_text,
+                    &self.frame_pinned,
+                );
+                if let Ok(entry) = res {
+                    self.frame_pinned[entry.layer as usize] = true;
+                    Some(entry)
+                } else {
+                    None
+                }
+            };
+
+            let is_color_flag: u32 =
+                if entry.map(|e| e.is_color).unwrap_or(false) { 1 } else { 0 };
+
+            // Procedural block/box-drawing chars 
+            let first_char = glyph_text.chars().next();
+            let mut drawn_procedurally = false;
+
+            if let Some(ch) = first_char {
+                if let Some(rects) = procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int) {
+                    for r in rects {
+                        row_glyph_instances.push(CellInstance {
+                            cell_xy: [r.x, r.y],
+                            cell_size: [r.w, r.h],
+                            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                            atlas_layer: 0,
+                            fg_rgba: rgba_u8_to_f32(fg),
+                            bg_rgba: [0.0, 0.0, 0.0, 0.0], // Background already painted
+                            is_color: 0,
+                        });
+                    }
+                    drawn_procedurally = true;
+                }
+            }
+
+            if !drawn_procedurally {
+                // Glyph quad: at natural advance, anchored at cell left.
+                if let Some(e) = entry {
+                    let natural_w = (e.px_w as f32).max(1.0);
+                    row_glyph_instances.push(CellInstance {
+                        cell_xy: [pixel_x, pixel_y],
+                        cell_size: [natural_w, row_h_int],
+                        atlas_uv: e.uv,
+                        atlas_layer: e.layer as u32,
+                        fg_rgba: rgba_u8_to_f32(fg),
+                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                        is_color: is_color_flag,
+                    });
+                }
+            }
+        }
+        self.pending_instances.append(&mut row_glyph_instances);
+    }
             let attrs = attrs_table.get(cell.attr);
             let (_attrs, fg, bg) =
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
