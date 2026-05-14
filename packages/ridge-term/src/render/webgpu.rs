@@ -54,6 +54,7 @@ use std::rc::Rc;
 use super::glyph_atlas::{GlyphEntry, GlyphKey};
 use super::gpu_context::GpuContext;
 use super::surface_host::{ScissorRect, SurfaceHost};
+use crate::render::procedural_box;
 // §B.8 (2026-05-08) — `is_visual_wide_codepoint` no longer consulted
 // by the renderer; runtime measurement of the rasterized glyph's
 // natural advance drives the overflow decision per `draw_row`'s §B.8
@@ -631,6 +632,7 @@ impl RenderBackend for WebGpuPaneBackend {
             // intersection — both glyphs visible).
             let is_color_flag: u32 =
                 if entry.map(|e| e.is_color).unwrap_or(false) { 1 } else { 0 };
+
             // Bg quad: full cell_span × cell_w rectangle.
             row_bg_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
@@ -641,18 +643,42 @@ impl RenderBackend for WebGpuPaneBackend {
                 bg_rgba: rgba_u8_to_f32(bg),
                 is_color: 0,
             });
-            // Glyph quad: at natural advance, anchored at cell left.
-            if let Some(e) = entry {
-                let natural_w = (e.px_w as f32).max(1.0);
-                row_glyph_instances.push(CellInstance {
-                    cell_xy: [pixel_x, pixel_y],
-                    cell_size: [natural_w, row_h_int],
-                    atlas_uv: e.uv,
-                    atlas_layer: e.layer as u32,
-                    fg_rgba: rgba_u8_to_f32(fg),
-                    bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                    is_color: is_color_flag,
-                });
+
+            // Procedural block/box-drawing chars 
+            let first_char = glyph_text.chars().next();
+            let mut drawn_procedurally = false;
+
+            if let Some(ch) = first_char {
+                if let Some(rects) = procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int) {
+                    for r in rects {
+                        row_glyph_instances.push(CellInstance {
+                            cell_xy: [r.x, r.y],
+                            cell_size: [r.w, r.h],
+                            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                            atlas_layer: 0,
+                            fg_rgba: rgba_u8_to_f32(fg),
+                            bg_rgba: [0.0, 0.0, 0.0, 0.0], // Background already painted
+                            is_color: 0,
+                        });
+                    }
+                    drawn_procedurally = true;
+                }
+            }
+
+            if !drawn_procedurally {
+                // Glyph quad: at natural advance, anchored at cell left.
+                if let Some(e) = entry {
+                    let natural_w = (e.px_w as f32).max(1.0);
+                    row_glyph_instances.push(CellInstance {
+                        cell_xy: [pixel_x, pixel_y],
+                        cell_size: [natural_w, row_h_int],
+                        atlas_uv: e.uv,
+                        atlas_layer: e.layer as u32,
+                        fg_rgba: rgba_u8_to_f32(fg),
+                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                        is_color: is_color_flag,
+                    });
+                }
             }
         }
         // §B.11 — flush bg pass first, then glyph pass. Within each
