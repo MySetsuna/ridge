@@ -208,20 +208,13 @@ impl RenderBackend for Canvas2dBackend {
         }
     }
 
-    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
         let y_top = (row.row_index as f64 * cell_h).round();
 
-        // Pass 1: backgrounds. Skip cells whose bg matches theme bg
-        // (they were already painted by `clear()`, or by the previous
-        // frame's content that didn't change). For partial draws (no
-        // clear), we MUST paint bg to overwrite the previous frame.
-        // Conservative: always paint, accept the perf hit. Canvas2D
-        // is the oracle, not the fast path.
+        // Pass 1: backgrounds.
         for (col, cell) in row.cells.iter().enumerate() {
-            // Wide-cell continuation halves carry the same bg as the
-            // first half — paint them too so the bg spans both cells.
             let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
             let x = (col as f64 * cell_w).round();
             
@@ -232,6 +225,12 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.fill_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
             }
         }
+    }
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        let cell_w = self.metrics.cell_w as f64;
+        let cell_h = self.metrics.cell_h as f64;
+        let y_top = (row.row_index as f64 * cell_h).round();
 
         // Pass 2: glyphs. Skip width-0 (continuation halves of wide
         // cells — the wide cell's own draw already covers both halves)

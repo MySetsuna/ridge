@@ -293,15 +293,31 @@ impl<B: RenderBackend> Renderer<B> {
         // mutations is cheap (most rows have 0 spans). URI/id are NOT
         // hashed — the underline overlay only varies spatially, so
         // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
-        let mut dirty_rows: Vec<usize> = Vec::with_capacity(rows_n);
+        let mut any_dirty = false;
+        let mut dirty_rows = Vec::with_capacity(rows_n);
+        let mut dirty_flags = vec![false; rows_n];
+
         for r in 0..rows_n {
             let Some(row) = terminal.viewport_row(r) else {
                 continue;
             };
             let h = compute_row_hash(row);
-            if self.full_redraw_pending || h != self.snapshot[r] {
-                self.snapshot[r] = h;
+            if self.full_redraw_pending || r >= self.snapshot.len() || h != self.snapshot[r] {
+                if r < self.snapshot.len() {
+                    self.snapshot[r] = h;
+                } else {
+                    self.snapshot.push(h);
+                }
                 dirty_rows.push(r);
+                dirty_flags[r] = true;
+            }
+        }
+
+        // Expand dirty rows upwards to fix descender cutoff (Row N's background covers Row N-1's descenders).
+        for r in (1..rows_n).rev() {
+            if dirty_flags[r] && !dirty_flags[r - 1] {
+                dirty_rows.push(r - 1);
+                dirty_flags[r - 1] = true;
             }
         }
 

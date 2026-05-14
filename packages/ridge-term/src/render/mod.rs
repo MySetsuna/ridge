@@ -331,11 +331,19 @@ impl RenderBackend for AnyBackend {
         }
     }
 
-    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable) {
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable) {
         match self {
-            AnyBackend::Canvas2d(b) => b.draw_row(row, attrs_table),
+            AnyBackend::Canvas2d(b) => b.draw_row_backgrounds(row, attrs_table),
             #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_row(row, attrs_table),
+            AnyBackend::Webgpu(b) => b.draw_row_backgrounds(row, attrs_table),
+        }
+    }
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_row_texts(row, attrs_table),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_row_texts(row, attrs_table),
         }
     }
 

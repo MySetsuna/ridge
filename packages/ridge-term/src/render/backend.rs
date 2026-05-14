@@ -332,7 +332,9 @@ pub trait RenderBackend {
     ///      to save fill calls — caller doesn't optimize this).
     ///   2. Paint each cell's glyph.
     /// `attrs_table` resolves `AttrId` to colors and flags.
-    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
 
     /// Draw the cursor on top of any existing cell content. Coordinates
     /// are in cell units (0..cols, 0..rows).
@@ -376,23 +378,35 @@ pub fn draw_frame<B: RenderBackend>(
     if full_redraw {
         backend.clear();
     }
+    
+    // Pass 1: Backgrounds
     for row in rows {
-        backend.draw_row(row, attrs_table);
+        backend.draw_row_backgrounds(row, attrs_table);
     }
-    // Hyperlink underlines under row content but above row bg — drawn
-    // first so the selection overlay (next) can dim them slightly.
-    if !hyperlink_rects.is_empty() {
-        backend.draw_hyperlink_underlines(hyperlink_rects);
-    }
+    
     // Selection overlay sits between row content and cursor — translucent
     // so glyphs underneath remain readable; cursor on top so it's still
     // distinguishable inside a selected region.
+    // However, if we put it BEFORE texts, the text won't be washed out!
     if !selection_rects.is_empty() {
         backend.draw_selection_overlay(selection_rects);
     }
-    if let Some(cur) = cursor {
-        backend.draw_cursor(cur, attrs_table);
+    
+    // Pass 2: Texts
+    for row in rows {
+        backend.draw_row_texts(row, attrs_table);
     }
+
+    // Hyperlink underlines
+    if !hyperlink_rects.is_empty() {
+        backend.draw_hyperlink_underlines(hyperlink_rects);
+    }
+    
+    // Pass 3: Cursor
+    if let Some(c) = cursor {
+        backend.draw_cursor(c, attrs_table);
+    }
+
     backend.end_frame();
 }
 
