@@ -296,16 +296,12 @@ body.rg-os-dragging * {
 /* T16：侧边栏 resize handle，与 SplitContainer 终端 splitter 视觉对齐。
    常态：1px 中线 var(--rg-border)；hover / dragging：scaleX(4) + accent + glow。
    外层 `.rg-sidebar-resize` 是 8px 透明命中区，::before 画中线。 */
-.rg-sidebar-resize {
-  position: absolute;
-  left: 99%;
-}
 .rg-sidebar-resize::before {
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 30%;
+  left: 50%;
   width: 1px;
   transform: translateX(-50%) scaleX(1);
   transform-origin: center;

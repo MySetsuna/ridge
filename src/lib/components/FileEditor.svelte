@@ -253,8 +253,18 @@
 
   async function loadDiff(
     args: { repoRoot: string; path: string; cached: boolean; commit?: string },
-    tabPath: string
+    tabPath: string,
+    forceReload: boolean = false
   ): Promise<void> {
+    if (forceReload) {
+      const existing = diffModelCache.get(tabPath);
+      if (existing) {
+        existing.original.dispose();
+        existing.modified.dispose();
+        diffModelCache.delete(tabPath);
+      }
+    }
+
     // 命中缓存：跳过 IPC 直接切模型 + 还原 view state（与主 source editor 一致）。
     const cached = diffModelCache.get(tabPath);
     if (cached) {
@@ -395,8 +405,7 @@
   $effect(() => {
     const c = current; // 先读 current 建立响应式订阅
     if (!editor) return;
-    // Image and diff tabs don't use the regular Monaco editor.
-    if (c?.isImage || c?.diffArgs) return;
+
     try {
       // —— 0) 保存上一个 model 的 view state（仅当 path 变化时才存，避免
       //        相同 path 自我覆盖）。
@@ -405,8 +414,9 @@
         viewStateCache.set(currentModelPath, vs);
       }
 
-      if (!c) {
-        // 没有活动文件：指向空白单例，不动 modelCache。
+      // Image and diff tabs don't use the regular Monaco editor.
+      if (!c || c.isImage || c.diffArgs) {
+        // 没有活动文件，或者正在显示 Image / Diff：指向空白单例，不动 modelCache。
         if (!emptyModel) emptyModel = monaco.editor.createModel('', 'plaintext');
         currentModelPath = null;
         editor.setModel(emptyModel);
@@ -505,7 +515,11 @@
     const c = current;
     if (!c?.diffArgs) {
       // Switched away from diff tab — keep instance alive; just save scroll/cursor.
-      if (diffCurrentPath !== null) saveDiffViewState();
+      if (diffCurrentPath !== null) {
+        saveDiffViewState();
+        diffCurrentPath = null;
+        if (diffEditor) diffEditor.setModel(null);
+      }
       return;
     }
     if (!diffMountPoint) return;
@@ -543,8 +557,17 @@
   // Because visibility:hidden doesn't affect element size, automaticLayout
   // doesn't detect the change. Force layout after the DOM settles.
   $effect(() => {
-    if (isDiffTab && diffEditor) {
+    if (isDiffTab && !diffError && diffEditor) {
       void tick().then(() => diffEditor?.layout());
+    }
+  });
+
+  // When switching back to a regular editor from a diff tab or preview, 
+  // visibility changes from hidden→visible. Force layout similarly.
+  $effect(() => {
+    const hidden = inPreviewMode || isDiffTab;
+    if (!hidden && editor) {
+      void tick().then(() => editor?.layout());
     }
   });
 
@@ -1107,12 +1130,12 @@
             <AlignLeft class="h-3.5 w-3.5" />
           </button>
         </div>
-        <button
-          type="button"
-          class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
-          title="重新加载 diff"
-          onclick={() => { if (current?.diffArgs) void loadDiff(current.diffArgs, current.path); }}
-        >
+          <button
+            type="button"
+            class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
+            title="重新加载 diff"
+            onclick={() => { if (current?.diffArgs) void loadDiff(current.diffArgs, current.path, true); }}
+          >
           <RotateCw class="h-3.5 w-3.5 {diffLoading ? 'animate-spin' : ''}" />
         </button>
       {:else}
