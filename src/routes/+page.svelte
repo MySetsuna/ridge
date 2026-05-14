@@ -1354,12 +1354,12 @@ function expandSidebar() {
      wrapper 有 z-10 + overflow:visible，保证此元素即使在 collapsed 状态下也能响应点击。 -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- T16：与 SplitContainer 终端 splitter 视觉对齐 —— 8px 命中区透明，
-     ::before 画 1px var(--rg-border) 中线；hover/drag 时 scaleX(4) 变粗
-     并切到 var(--rg-accent) + accent-glow 阴影。 -->
-<div
-  class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : 'right-0'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
-  role="separator"
+  <!-- T16：与 SplitContainer 终端 splitter 视觉对齐 —— 8px 命中区透明，
+       ::before 画 1px var(--rg-border) 中线；hover/drag 时 scaleX(4) 变粗
+       并切到 var(--rg-accent) + accent-glow 阴影。 -->
+  <div
+    class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : '-right-1'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
+    role="separator"
   aria-orientation="vertical"
   aria-label={sidebarCollapsed ? '拖动展开侧边栏' : '拖动调整侧边栏宽度'}
   tabindex="0"
