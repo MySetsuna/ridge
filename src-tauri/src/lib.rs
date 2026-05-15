@@ -65,6 +65,11 @@ pub fn run() {
                 Some(teammate_ready_tx),
             );
             let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+
+            // Show window after initialization
+            let window = app.get_webview_window("main").unwrap();
+            window.show()?;
+
             tauri::async_runtime::spawn(async move {
                 use std::collections::HashMap;
                 // Adaptive coalesce window. A fixed 4ms window was fine for
