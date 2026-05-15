@@ -357,6 +357,7 @@ pub fn run() {
             project::copy_path,
             project::move_path,
             project::read_claude_history,
+            project::read_opencode_history,
             process::get_pane_foreground_process,
             process::get_pane_cwd,
             // .ridge file commands

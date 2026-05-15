@@ -28,7 +28,7 @@
     JunctionRef,
     JunctionSnapState,
   } from '$lib/stores/paneTree';
-  import {
+import {
     paneTreeStore,
     workspacePaneTrees,
     getAllPaneIds,
@@ -36,6 +36,10 @@
     activePaneId,
     paneDragSourceId,
     dockPane,
+    activeWorkspaceId,
+    paneCwdStore,
+    terminalTitles,
+    paneForegroundProcessStore,
     persistSplitRatios,
     persistSplitRatiosBatch,
     splitResizeUiState,
@@ -48,14 +52,9 @@
     SAME_AXIS_ATTRACT_PX,
     pointerInCoupleZone,
     findJunctionsNearPosition,
-    registerJunction,
-    clearJunctionRegistry,
-    findSameAxisRefs,
-    terminalTitles,
-    paneCwdStore,
-    paneForegroundProcessStore,
     collapseCwd,
   } from '$lib/stores/paneTree';
+
 
   interface Props {
     node: PaneNode;
@@ -91,6 +90,25 @@
 
   /** 当前叶节点上的停靠预览（仅拖拽他格悬停时）。 */
   let dockHover: DockRegion | null = $state(null);
+
+  function getDockRegion(e: DragEvent): DockRegion | null {
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const w = rect.width;
+    const h = rect.height;
+
+    const threshold = 0.25;
+
+    if (x < w * threshold) return 'left';
+    if (x > w * (1 - threshold)) return 'right';
+    if (y < h * threshold) return 'top';
+    if (y > h * (1 - threshold)) return 'bottom';
+    if (x > w * 0.3 && x < w * 0.7 && y > h * 0.3 && y < h * 0.7) return 'center';
+    
+    return null;
+  }
 
   /**
    * svelte-splitpanes: horizontal=true → flex 纵向 → 上下分屏（横条分割）；
@@ -563,7 +581,7 @@
             class="rg-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
           >
             <div
-              class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 -my-1 select-none"
+              class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
               draggable="true"
               title="拖拽到其它窗格：靠边分屏，靠中间与目标互换"
               onclick={() => activePaneId.set(node.id)}
@@ -712,9 +730,27 @@
              链路问题。inline style 直接挂 SplitContainer 内联表达式，paneTreeStore
              更新后 svelte 一定立刻重写 style。 -->
         <div
-          class="rg-pane splitpanes__pane"
+          class="rg-pane splitpanes__pane relative"
+          ondragover={(e) => {
+            e.preventDefault();
+            dockHover = getDockRegion(e);
+          }}
+          ondragleave={() => (dockHover = null)}
+          ondrop={async (e) => {
+            e.preventDefault();
+            const sourceId = e.dataTransfer?.getData('text/plain');
+            if (sourceId && node.id && sourceId !== node.id && dockHover) {
+              await dockPane(sourceId, node.id, dockHover);
+            }
+            dockHover = null;
+          }}
           style="{dim}: {ratio}%; flex-grow: 0; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden;"
         >
+          {#if dockHover}
+            <div
+              class="absolute inset-0 z-50 bg-[var(--rg-accent)]/20 border-2 border-[var(--rg-accent)] pointer-events-none"
+            ></div>
+          {/if}
           <SplitLayout
             node={child}
             {workspaceId}
