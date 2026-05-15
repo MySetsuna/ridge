@@ -36,7 +36,7 @@ self.MonacoEnvironment = {
   // DiffEditorModal removed — diff view integrated into FileEditor tabs
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
-  import ClaudeCodePanel from '$lib/components/ClaudeCodePanel.svelte';
+  import AgentHistoryPanel from '$lib/components/AgentHistoryPanel.svelte';
   import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import { Bot } from 'lucide-svelte';
@@ -1168,7 +1168,7 @@ function expandSidebar() {
       <button
         type="button"
         class="{actBtn}{sidebarTab === 'claude' ? actBtnOn : ''}"
-        title="Claude Code"
+        title="历史会话"
         onclick={() => { sidebarTab = 'claude'; expandSidebar(); }}
       >
         <Bot class="h-5 w-5" />
@@ -1216,7 +1216,7 @@ function expandSidebar() {
             <SearchSidebar active={sidebarTab === 'search'} />
           </div>
         {:else if sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled}
-          <ClaudeCodePanel />
+          <AgentHistoryPanel />
         {:else}
           <div
             data-tauri-drag-region

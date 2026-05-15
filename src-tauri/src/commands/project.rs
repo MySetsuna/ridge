@@ -563,9 +563,68 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ─── Opencode history ────────────────────────────────────────────────────────
+
+/// Single entry for Opencode session
+#[derive(Debug, Serialize, Clone)]
+pub struct OpencodeHistoryEntry {
+    pub session_id: String,
+    pub title: String,
+    pub updated_at: u64,
+    pub files: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn read_opencode_history() -> Vec<OpencodeHistoryEntry> {
+    tokio::task::spawn_blocking(move || {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        let session_dir = home.join(".local").join("share").join("opencode").join("storage").join("session_diff");
+        
+        let mut entries = Vec::new();
+        if let Ok(paths) = std::fs::read_dir(session_dir) {
+            for path in paths.filter_map(|p| p.ok()) {
+                if path.path().extension().and_then(|s| s.to_str()) == Some("json") {
+                    let session_id = path.path().file_stem().unwrap().to_string_lossy().to_string();
+                    let metadata = std::fs::metadata(path.path()).ok();
+                    let updated_at = metadata.and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    
+                    // Try to parse files
+                    let mut files = Vec::new();
+                    if let Ok(file) = std::fs::File::open(path.path()) {
+                        if let Ok(json) = serde_json::from_reader::<_, serde_json::Value>(file) {
+                            if let Some(changes) = json.get("file_changes").and_then(|c| c.as_array()) {
+                                for change in changes {
+                                    if let Some(f) = change.get("path").and_then(|p| p.as_str()) {
+                                        files.push(f.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    entries.push(OpencodeHistoryEntry { 
+                        session_id, 
+                        title: "New Session".to_string(), 
+                        updated_at,
+                        files 
+                    });
+                }
+            }
+        }
+        entries
+    }).await.unwrap_or_default()
+}
+
 // ─── Claude Code history ─────────────────────────────────────────────────────
 
 /// Single entry from `~/.claude/history.jsonl`.
+
 #[derive(Debug, Serialize, Clone)]
 pub struct ClaudeHistoryEntry {
     pub display: String,

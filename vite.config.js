@@ -37,6 +37,18 @@ export default defineConfig({
   // 构建配置
   build: {
     target: 'esnext',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/monaco-editor')) {
+            return 'monaco-editor';
+          }
+          if (id.includes('node_modules/mermaid')) {
+            return 'mermaid';
+          }
+        }
+      }
+    }
   },
 
   // 优化依赖预构建

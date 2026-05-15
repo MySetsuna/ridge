@@ -167,8 +167,12 @@ interface PaneEntry {
 	blurListener: (e: FocusEvent) => void;
 	/** Mouse-drag selection state. `selecting` is true between pointerdown
 	 *  and pointerup; `selectionStart` is the (row,col) where drag began. */
-	selecting: boolean;
-	selectionStart: { row: number; col: number } | null;
+	/** 鼠标拖拽选择的绝对坐标 (缓冲区行号). 
+     * 在拖拽期间持续更新。 */
+	selectionStartAbs: { row: number; col: number } | null;
+	selectionEndAbs: { row: number; col: number } | null;
+    /** 自动滚动边缘检测定时器 */
+    autoScrollTimer: ReturnType<typeof setInterval> | null;
 	pointerDownListener: (e: PointerEvent) => void;
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
@@ -968,10 +972,8 @@ export class TerminalManager {
 			}
 			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 			ent.selecting = true;
-			ent.selectionStart = cell;
-			// Empty range → kernel.setSelection.set treats as clear, which
-			// is exactly what a single click should do (clear any prior
-			// selection until the user actually drags).
+			ent.selectionStartAbs = { row: cell.row + ent.kernel.scrollOffset(), col: cell.col };
+			ent.selectionEndAbs = { row: cell.row + ent.kernel.scrollOffset(), col: cell.col };
 			ent.kernel.setSelection(cell.row, cell.col, cell.row, cell.col);
 			this.wake();
 		};
@@ -998,14 +1000,9 @@ export class TerminalManager {
 			}
 
 			// Continue with selection drag logic.
-			if (!ent.selecting || !ent.selectionStart || !hoverCell) return;
-			ent.kernel.setSelection(
-				ent.selectionStart.row,
-				ent.selectionStart.col,
-				hoverCell.row,
-				hoverCell.col,
-			);
-			this.wake();
+			if (!ent.selecting || !ent.selectionStartAbs || !hoverCell) return;
+            ent.selectionEndAbs = { row: hoverCell.row + ent.kernel.scrollOffset(), col: hoverCell.col };
+            this._syncSelection(ent);
 		};
 		const pointerUpListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
@@ -1035,7 +1032,9 @@ export class TerminalManager {
 			focusListener,
 			blurListener,
 			selecting: false,
-			selectionStart: null,
+			selectionStartAbs: null,
+			selectionEndAbs: null,
+            autoScrollTimer: null,
 			pointerDownListener,
 			pointerMoveListener,
 			pointerUpListener,
@@ -1572,6 +1571,14 @@ export class TerminalManager {
 	getSelectionText(paneId: string): string {
 		return this.panes.get(paneId)?.kernel.getSelectionText() ?? '';
 	}
+
+    /** 滚动时扩展选择 */
+    updateSelection(paneId: string, endAbs: { row: number, col: number }) {
+        const ent = this.panes.get(paneId);
+        if (!ent || !ent.selectionStartAbs) return;
+        ent.selectionEndAbs = endAbs;
+        this._syncSelection(ent);
+    }
 
 	clearSelection(paneId: string): void {
 		this.panes.get(paneId)?.kernel.clearSelection();

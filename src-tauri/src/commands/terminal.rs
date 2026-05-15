@@ -738,6 +738,43 @@ pub async fn get_teammate_metrics(
 }
 
 #[tauri::command]
+pub async fn get_shell_history(shell_kind: String) -> Result<Vec<String>, String> {
+    let home_dir = dirs::home_dir().ok_or("无法获取 home 目录")?;
+    let history_file = match shell_kind.to_lowercase().as_str() {
+        "powershell" | "pwsh" => {
+            let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
+            app_data.join("Microsoft").join("Windows").join("PowerShell").join("PSReadLine").join("ConsoleHost_history.txt")
+        }
+        "bash" => home_dir.join(".bash_history"),
+        "zsh" => home_dir.join(".zsh_history"),
+        _ => return Ok(vec![]),
+    };
+
+    if !history_file.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(&history_file).map_err(|e| e.to_string())?;
+    let lines: Vec<String> = content
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            // Bash 历史文件可能包含 `#<timestamp>` 格式，去除它
+            if line.starts_with('#') && line.len() > 1 && line[1..].chars().all(|c| c.is_digit(10)) {
+                "".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .rev()
+        .take(1000)
+        .collect();
+
+    Ok(lines)
+}
+
+#[tauri::command]
 pub async fn write_to_pty(
 	state: State<'_, AppState>,
 	pane_id: String,

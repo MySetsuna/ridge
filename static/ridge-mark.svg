@@ -1,0 +1,7 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ridge mark">
+  <rect x="2.5" y="2.5" width="27" height="27" rx="6" stroke="#7fb069" stroke-width="2"></rect>
+  <line x1="16" y1="3.5" x2="16" y2="28.5" stroke="#7fb069" stroke-width="2"></line>
+  <line x1="3.5" y1="16" x2="28.5" y2="16" stroke="#7fb069" stroke-width="2"></line>
+  <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="#7fb069" fill-opacity="0.18"></rect>
+  <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"></rect>
+</svg>

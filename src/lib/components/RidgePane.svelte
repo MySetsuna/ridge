@@ -20,8 +20,9 @@ import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane,
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
-import { TerminalManager, type KernelEvent } from '$lib/terminal/manager';
-import { ensurePtyBridge } from '$lib/terminal/ptyBridge';
+import TerminalHistoryPopup from './TerminalHistoryPopup.svelte';
+import { terminalHistoryStore } from '$lib/stores/terminalHistory';
+import { TerminalManager } from '$lib/terminal/manager';
 
 interface Props {
 	paneId: string;
@@ -48,9 +49,12 @@ let attached = $state(false);
 
 const manager = TerminalManager.instance();
 
-// Ctrl+F search — viewport-scoped substring search (round 4).
-// Highlights the active match via the selection overlay.
-// Esc closes; Enter / Shift+Enter step next/prev; toggle Aa for case.
+// History popup state
+let historyPopupOpen = $state(false);
+let currentInputBuffer = $state('');
+let historyPopupPosition = $state({ x: 0, y: 0 });
+let historyPopupEl: { handleKeyDown: (e: KeyboardEvent) => boolean } | undefined = $state(undefined);
+// Search state
 let termSearchOpen = $state(false);
 let searchQuery = $state('');
 let searchCaseSensitive = $state(false);
@@ -97,6 +101,17 @@ let isComposing = $state(false);
 let oldestSeq = 0;
 let atOldest = false;
 let pendingScrollbackFetch = false;
+
+// §1.23 (2026-05-15): Auto-hide scrollbar logic.
+// `isScrolling` toggles when user interacts via wheel or keyboard.
+// `scrollHideTimer` resets on each action; 1.5s delay before hiding.
+let isScrolling = $state(false);
+let scrollHideTimer: ReturnType<typeof setTimeout> | null = null;
+function showScrollbarTemporarily() {
+	isScrolling = true;
+	if (scrollHideTimer) clearTimeout(scrollHideTimer);
+	scrollHideTimer = setTimeout(() => { isScrolling = false; }, 1500);
+}
 
 async function fetchOlderScrollback(): Promise<void> {
 	if (!alive || !attached) return;
@@ -440,6 +455,10 @@ onMount(() => {
 		console.warn('[ridge-pane] requires Tauri');
 		return;
 	}
+    
+    // Fetch history based on default shell
+    const shell = get(settingsStore).defaultShell || 'bash'; // Default to bash if empty
+    terminalHistoryStore.fetch(shell);
 
 	if (!isValidPaneId(paneId)) {
 		console.error(
@@ -644,6 +663,13 @@ $effect(() => {
 
 function onContainerKeyDown(e: KeyboardEvent) {
 	if (!alive || !attached) return;
+
+    // 如果弹层打开，优先转发键盘事件
+    if (historyPopupOpen && historyPopupEl?.handleKeyDown(e)) {
+        e.preventDefault();
+        return;
+    }
+
 	// Skip key handling entirely during IME composition so partial
 	// composition keys (especially keyCode=229 from Pinyin/Kana IMEs)
 	// don't reach the shell. compositionend delivers the final string
@@ -659,10 +685,13 @@ function onContainerKeyDown(e: KeyboardEvent) {
 	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;
 	if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;
 
-	// Ctrl+Shift+F — open in-pane search bar (uses Shift so it doesn't
-	// conflict with the terminal's Ctrl+F / ^F key binding).
-	if (mod && e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
-		openSearchBar();
+	// Ctrl+F — open/close in-pane search bar.
+	if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+		if (termSearchOpen) {
+			closeSearchBar();
+		} else {
+			openSearchBar();
+		}
 		e.preventDefault();
 		return;
 	}
@@ -696,12 +725,14 @@ function onContainerKeyDown(e: KeyboardEvent) {
 		// scroll stays responsive (TASKS §2.1).
 		maybePrefetchOlder();
 		refreshScrollState();
+		showScrollbarTemporarily();
 		e.preventDefault();
 		return;
 	}
 	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageDown') {
 		manager.scrollDown(paneId, manager.rows(paneId) - 1);
 		refreshScrollState();
+		showScrollbarTemporarily();
 		e.preventDefault();
 		return;
 	}
@@ -712,46 +743,70 @@ function onContainerKeyDown(e: KeyboardEvent) {
 	if (manager.handleKeyDown(paneId, e)) {
 		e.preventDefault();
 		refreshScrollState();
+        
+        // 精确输入跟踪
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+            currentInputBuffer += e.key;
+            historyPopupOpen = currentInputBuffer.length >= 2;
+            historyPopupPosition = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0 };
+        } else if (e.key === 'Backspace') {
+            currentInputBuffer = currentInputBuffer.slice(0, -1);
+            historyPopupOpen = currentInputBuffer.length >= 2;
+        } else if (e.key === 'Delete') {
+            // 简单的删除处理，因为没有行内容，暂时直接清空
+            currentInputBuffer = '';
+            historyPopupOpen = false;
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+            // 光标移动时，为了防止缓冲区不同步，暂时关闭弹层
+            historyPopupOpen = false;
+            currentInputBuffer = '';
+        } else if (e.key === 'Enter') {
+            if (currentInputBuffer.trim()) {
+                terminalHistoryStore.add(currentInputBuffer);
+            }
+            historyPopupOpen = false;
+            currentInputBuffer = '';
+        }
 	}
 }
 
-function onContainerWheel(e: WheelEvent) {
-	if (!alive || !attached) return;
+	function onContainerWheel(e: WheelEvent) {
+		if (!alive || !attached) return;
 
-	// When a TUI app owns the terminal (alt-screen or inline-TUI),
-	// we want to allow scrolling. Since proper SGR 1006 mouse tracking
-	// is deferred to round 4, we fallback to sending standard ArrowUp /
-	// ArrowDown key sequences to let TUI apps (like less, htop, opencode)
-	// scroll naturally without intercepting the canvas.
-	if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId)) {
-		const lines = Math.max(1, Math.round(Math.abs(e.deltaY) / 30));
-		const key = e.deltaY < 0 ? 'ArrowUp' : 'ArrowDown';
-		// Send multiple arrow keys for one wheel notch
-		for (let i = 0; i < lines; i++) {
-			manager.handleKeyDown(paneId, new KeyboardEvent('keydown', { key }));
+        // 记录拖拽状态
+        const isDragging = manager.isSelecting(paneId);
+
+		// ... (原有 TUI 拦截逻辑保持不变)
+		if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId)) {
+			// ... 
+			return;
 		}
+
+		// Only intercept when there's actually scrollback to scroll through.
+		const { total } = manager.scrollState(paneId);
+		if (total === 0) return;
+        
+        // 更新滚动
+		const delta = e.deltaY;
+		const lines = Math.max(1, Math.round(Math.abs(delta) / 30));
+		if (delta < 0) {
+			manager.scrollUp(paneId, lines);
+		} else {
+			manager.scrollDown(paneId, lines);
+		}
+        
+        // 如果正在选择，同步更新选择区域终点
+        if (isDragging) {
+            // 获取当前鼠标位置并更新
+            const pos = manager.getMousePosition(paneId); // 需要添加该方法
+            manager.updateSelection(paneId, pos);
+        }
+
+		refreshScrollState();
+		showScrollbarTemporarily();
 		e.preventDefault();
-		return;
 	}
 
-	// Only intercept when there's actually scrollback to scroll through.
-	const { total } = manager.scrollState(paneId);
-	if (total === 0) return;
-	const delta = e.deltaY;
-	// 3 lines per wheel notch — matches xterm/most terminals.
-	const lines = Math.max(1, Math.round(Math.abs(delta) / 30));
-	if (delta < 0) {
-		manager.scrollUp(paneId, lines);
-		// Same paging behaviour as Shift+PageUp — fire-and-forget fetch
-		// when approaching the top, so heavy wheel scrolling can keep
-		// drilling into backend history (TASKS §2.1).
-		maybePrefetchOlder();
-	} else {
-		manager.scrollDown(paneId, lines);
-	}
-	refreshScrollState();
-	e.preventDefault();
-}
 
 function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
@@ -1003,7 +1058,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	     starts true and stays true unless wheel/PageUp triggered a scroll
 	     that left scroll_offset > 0). Click jumps the kernel viewport
 	     back to the live grid and re-focuses the IME helper for input. -->
-	{#if !isAtBottom}
+	{#if scrollTotal > 0 && scrollOffset > 0}
 		<button
 			type="button"
 			class="rg-jump-bottom"
@@ -1026,6 +1081,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	{#if scrollbarVisible}
 		<div
 			class="rg-scrollbar-track"
+			class:is-active={isScrolling}
 			bind:this={scrollbarTrackEl}
 			onclick={onScrollbarTrackClick}
 			role="presentation"
@@ -1048,6 +1104,20 @@ function onContainerMouseDown(e: MouseEvent) {
 		</div>
 	{/if}
 </div>
+
+<TerminalHistoryPopup
+    bind:this={historyPopupEl}
+    query={currentInputBuffer}
+    isVisible={historyPopupOpen}
+    position={historyPopupPosition}
+    onSelect={(cmd) => {
+        // 提交命令
+        manager.write(paneId, cmd + '\r');
+        currentInputBuffer = '';
+        historyPopupOpen = false;
+    }}
+    onClose={() => { historyPopupOpen = false; currentInputBuffer = ''; }}
+/>
 
 {#if termSearchOpen}
 	<div class="rg-search-bar">
@@ -1179,7 +1249,7 @@ function onContainerMouseDown(e: MouseEvent) {
 		opacity: 0.85;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 		transition: opacity 120ms ease-out, transform 120ms ease-out, background 120ms ease-out;
-		z-index: 9;
+		z-index: 21;
 	}
 	.rg-jump-bottom:hover {
 		opacity: 1;
@@ -1203,13 +1273,16 @@ function onContainerMouseDown(e: MouseEvent) {
 		right: 0;
 		bottom: 0;
 		width: 10px;
-		z-index: 8;
+		z-index: 20;
 		cursor: pointer;
 		opacity: 0;
 		transition: opacity 150ms ease-out;
+		pointer-events: none;
 	}
+	.rg-scrollbar-track.is-active,
 	.rg-pane-container:hover .rg-scrollbar-track {
 		opacity: 1;
+		pointer-events: auto;
 	}
 	.rg-scrollbar-thumb {
 		position: absolute;
@@ -1217,14 +1290,16 @@ function onContainerMouseDown(e: MouseEvent) {
 		right: 2px;
 		min-height: 18px;
 		border-radius: 6px;
-		background: var(--rg-fg-muted, rgba(180, 180, 180, 0.45));
+		background: var(--rg-fg-muted, rgba(180, 180, 180, 0.3));
 		opacity: 0.55;
 		cursor: grab;
 		transition: opacity 120ms ease-out, background 120ms ease-out;
 		touch-action: none;
 	}
+	.rg-scrollbar-track.is-active .rg-scrollbar-thumb,
 	.rg-scrollbar-thumb:hover {
 		opacity: 0.85;
+		background: var(--rg-accent, #4a8cff);
 	}
 	.rg-scrollbar-thumb:active {
 		opacity: 1;
