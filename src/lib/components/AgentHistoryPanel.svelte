@@ -60,13 +60,15 @@
 
   async function fetchGitFilesForSession(entry: OpencodeHistoryEntry) {
     if (entry.files.length > 0 || entry.loadingFiles) return;
+    if (!entry.project) return;
     entry.loadingFiles = true;
     try {
-        // Assume session duration for Git lookup is 1 hour before update
         const end = Math.floor(entry.updated_at / 1000);
         const start = end - 3600;
         const files = await invoke<string[]>('get_git_changed_files', { cwd: entry.project, since: start, until: end });
         entry.files = files;
+    } catch {
+        // Not a git repo or invalid path — silently skip
     } finally {
         entry.loadingFiles = false;
     }
@@ -128,6 +130,7 @@
     }
 
     for (const entry of opencodeHistory) {
+      if (!entry.project) continue;
       const cwd = entry.project.replace(/\\/g, '/');
       const sid = entry.session_id;
       const s = getSession('opencode', cwd, sid);
