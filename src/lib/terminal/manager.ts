@@ -166,9 +166,8 @@ interface PaneEntry {
 	/** focusout listener; emits `\x1b[O`. */
 	blurListener: (e: FocusEvent) => void;
 	/** Mouse-drag selection state. `selecting` is true between pointerdown
-	 *  and pointerup; `selectionStart` is the (row,col) where drag began. */
-	/** 鼠标拖拽选择的绝对坐标 (缓冲区行号). 
-     * 在拖拽期间持续更新。 */
+	 *  and pointerup; `selectionStartAbs` is the (row,col) where drag began. */
+	selecting: boolean;
 	selectionStartAbs: { row: number; col: number } | null;
 	selectionEndAbs: { row: number; col: number } | null;
     /** 自动滚动边缘检测定时器 */
@@ -697,12 +696,29 @@ export class TerminalManager {
 	 * opaque black on missing / unparseable input — matches how
 	 * `Theme::default_dark` initialises `bg` in Rust.
 	 *
-	 * [Update] Best Practice: To support transparent backgrounds for Shell
-	 * mode while keeping TUI enclosed, the global clear color is now forced
-	 * to transparent `[0, 0, 0, 0]`. TUI panes paint their own opaque bg
-	 * directly from Rust.
+	 * When the theme bridge has pushed a background via `setTheme`,
+	 * `opts.theme.background` carries the `--rg-term-bg` value in
+	 * `#RRGGBBAA` format (from `cssColor.ts::hex8`). By using it as
+	 * the WebGPU clear color instead of transparent `[0,0,0,0]`, we
+	 * ensure the global canvas always matches the terminal background.
+	 * This prevents the page body's `--rg-bg` from showing through
+	 * semi-transparent shell cells, which would appear as "unexpected
+	 * black" when `--rg-bg` and `--rg-term-bg` visually differ.
+	 *
+	 * TUI panes paint their own opaque bg from Rust on top of this
+	 * clear color, so TUI output is unaffected.
 	 */
-	private _getThemeBg(): Uint8Array {
+	private _currentThemeBgRgba(): Uint8Array {
+		const bg = this.opts.theme?.background;
+		if (bg && bg.length >= 7 && bg.startsWith('#')) {
+			const r = parseInt(bg.slice(1, 3), 16);
+			const g = parseInt(bg.slice(3, 5), 16);
+			const b = parseInt(bg.slice(5, 7), 16);
+			const a = bg.length >= 9 ? parseInt(bg.slice(7, 9), 16) : 255;
+			if (!isNaN(r) && !isNaN(g) && !isNaN(b) && !isNaN(a)) {
+				return new Uint8Array([r, g, b, a]);
+			}
+		}
 		return new Uint8Array([0, 0, 0, 0]);
 	}
 
@@ -945,11 +961,11 @@ export class TerminalManager {
 			// (last drag's start) to the clicked cell. If there's no
 			// anchor yet, treat it as a normal click. Continues into drag
 			// mode so subsequent move keeps extending — same as xterm.
-			if (e.shiftKey && ent.selectionStart) {
+			if (e.shiftKey && ent.selectionStartAbs) {
 				try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 				ent.selecting = true;
 				ent.kernel.setSelection(
-					ent.selectionStart.row, ent.selectionStart.col,
+					ent.selectionStartAbs.row, ent.selectionStartAbs.col,
 					cell.row, cell.col,
 				);
 				this.wake();
@@ -1155,7 +1171,8 @@ export class TerminalManager {
 		// Clear transient pointer drag state — if the user was mid-drag
 		// when the unmount fired, the next attach should start fresh.
 		entry.selecting = false;
-		entry.selectionStart = null;
+		entry.selectionStartAbs = null;
+		entry.selectionEndAbs = null;
 
 		// §A.9: host-mode panes share the global canvas; just mark for
 		// clear so departed pixels don't linger. Canvas2D mode owns its
@@ -1571,6 +1588,23 @@ export class TerminalManager {
 	getSelectionText(paneId: string): string {
 		return this.panes.get(paneId)?.kernel.getSelectionText() ?? '';
 	}
+
+    isSelecting(paneId: string): boolean {
+        return this.panes.get(paneId)?.selecting ?? false;
+    }
+
+    getMousePosition(paneId: string): { row: number, col: number } {
+        return this.panes.get(paneId)?.selectionEndAbs ?? { row: 0, col: 0 };
+    }
+
+    private _syncSelection(ent: PaneEntry): void {
+        if (!ent.selectionStartAbs || !ent.selectionEndAbs) return;
+        ent.kernel.setSelection(
+            ent.selectionStartAbs.row, ent.selectionStartAbs.col,
+            ent.selectionEndAbs.row, ent.selectionEndAbs.col
+        );
+        this.wake();
+    }
 
     /** 滚动时扩展选择 */
     updateSelection(paneId: string, endAbs: { row: number, col: number }) {

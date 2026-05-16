@@ -17,14 +17,15 @@
 
 import * as monaco from 'monaco-editor';
 import { hex8, hex8WithAlpha } from '$lib/utils/cssColor';
-import type { ThemeId } from '$lib/stores/settings';
+// ThemeId is now a plain string — themes are loaded dynamically from ridge.theme
 
 /**
  * Ridge themes whose `--rg-bg` is dark enough that Monaco's `vs-dark`
  * base produces better syntax-token contrast. Light Ridge themes use
  * `vs`. Authoritative source: `src/app.css:17-150` palette blocks.
  */
-export const THEMES_DARK: ReadonlySet<ThemeId> = new Set<ThemeId>([
+export const THEMES_DARK: ReadonlySet<string> = new Set<string>([
+	'endless-dark',
 	'dark',
 	'soil',
 	'starsky',
@@ -36,7 +37,7 @@ const FALLBACK_FG_DARK = '#d4d4d4';
 const FALLBACK_FG_LIGHT = '#000000';
 
 /** Build the Monaco theme id used when registering / setting a theme. */
-export function ridgeMonacoThemeId(themeId: ThemeId): string {
+export function ridgeMonacoThemeId(themeId: string): string {
 	return `ridge-${themeId}`;
 }
 
@@ -52,7 +53,7 @@ export function ridgeMonacoThemeId(themeId: ThemeId): string {
  * unavailable, falls back to plain `vs` / `vs-dark` so the editor
  * still renders something reasonable until the next theme application.
  */
-export function applyRidgeMonacoTheme(themeId: ThemeId): void {
+export function applyRidgeMonacoTheme(themeId: string): void {
 	const isDark = THEMES_DARK.has(themeId);
 	const monacoId = ridgeMonacoThemeId(themeId);
 
