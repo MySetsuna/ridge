@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronRight, ChevronDown, Bot, Play, FolderOpen, FileDiff, MessageSquare } from 'lucide-svelte';
+  import { ChevronRight, ChevronDown, Bot, Play, Folder, FileDiff, MessageSquare } from 'lucide-svelte';
   import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
   import {
     workspacesList,
@@ -29,7 +29,6 @@
     updated_at: number;
     project: string;
     files: string[];
-    loadingFiles?: boolean;
   }
 
   let fileHistory = $state<ClaudeHistoryEntry[]>([]);
@@ -55,22 +54,6 @@
       await loadOpencodeHistory(opencodeOffset);
     } finally {
       loadingMore = false;
-    }
-  }
-
-  async function fetchGitFilesForSession(entry: OpencodeHistoryEntry) {
-    if (entry.files.length > 0 || entry.loadingFiles) return;
-    if (!entry.project) return;
-    entry.loadingFiles = true;
-    try {
-        const end = Math.floor(entry.updated_at / 1000);
-        const start = end - 3600;
-        const files = await invoke<string[]>('get_git_changed_files', { cwd: entry.project, since: start, until: end });
-        entry.files = files;
-    } catch {
-        // Not a git repo or invalid path — silently skip
-    } finally {
-        entry.loadingFiles = false;
     }
   }
 
@@ -252,12 +235,12 @@
                           <button class="mr-1 text-[var(--rg-fg-muted)]">
                               {#if cwdExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
                           </button>
-                          <FolderOpen class="h-3.5 w-3.5 text-amber-400/80 mr-2 shrink-0" />
+                           <Folder class="h-3.5 w-3.5 text-amber-400/80 mr-2 shrink-0" fill="currentColor" />
                           <div class="text-[11px] text-[var(--rg-fg)] truncate font-semibold">{cwd.split('/').pop()}</div>
-                          <button class="ml-auto p-0.5 hover:bg-[var(--rg-surface)] rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]" 
-                                  onclick={(e) => { e.stopPropagation(); launchAgent(cwd, provider as 'claude' | 'opencode'); }}>
-                              <Play class="h-3 w-3" />
-                          </button>
+                           <button class="ml-auto flex items-center justify-center h-4 w-4 rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]" 
+                                   onclick={(e) => { e.stopPropagation(); launchAgent(cwd, provider as 'claude' | 'opencode'); }}>
+                               <Play class="h-3 w-3" />
+                           </button>
                       </div>
 
                   
@@ -270,10 +253,7 @@
                                 const next = new Set(expandedSessions);
                                 if (next.has(sidKey)) { next.delete(sidKey); } else { 
                                     next.add(sidKey);
-                                    if (data.provider === 'opencode') {
-                                        const entry = opencodeHistory.find(e => e.session_id === sid);
-                                        if (entry) await fetchGitFilesForSession(entry);
-                                    }
+                                    // Files are loaded from session data directly; no separate fetch needed
                                 }
                                 expandedSessions = next;
                             }}>
@@ -284,14 +264,11 @@
                                 <div class="text-[10px] truncate font-medium text-[var(--rg-fg)]">
                                     {data.title} <span class="text-[var(--rg-fg-muted)]">({sid.slice(4, 12)})</span>
                                 </div>
-                                <button class="ml-auto p-0.5 hover:bg-[var(--rg-surface)] rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]" 
-                                        onclick={(e) => { e.stopPropagation(); launchAgent(cwd, data.provider, sid === 'claude-default' ? undefined : sid); }}>
-                                    <Play class="h-3 w-3" />
-                                </button>
-                                {#if data.provider === 'opencode' && opencodeHistory.find(e => e.session_id === sid)?.loadingFiles}
-                                    <div class="ml-2 h-2 w-2 rounded-full bg-blue-500 animate-pulse"></div>
-                                {/if}
-                            </div>
+                                 <button class="ml-auto flex items-center justify-center h-4 w-4 rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]" 
+                                         onclick={(e) => { e.stopPropagation(); launchAgent(cwd, data.provider, sid === 'claude-default' ? undefined : sid); }}>
+                                     <Play class="h-3 w-3" />
+                                 </button>
+                             </div>
 
                             {#if sessionExpanded}
                                 <div class="ml-6 pb-1">
