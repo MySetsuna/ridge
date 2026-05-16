@@ -13,14 +13,14 @@
 //        - WiX Component Id / Guid / registry key are unique per version,
 //          so MSIs of different versions don't collide.
 //   3. Spawns `tauri build --config '{...}'` with productName / identifier /
-//      version overrides so install dir, app identifier and bundle filenames
-//      carry the version. Each version installs side-by-side.
+//      version overrides so NSIS/MSI install dir, app identifier and bundle
+//      filenames carry the version. Each version installs side-by-side.
 //   4. Restores Cargo.toml and path-env.wxs on exit (success or failure).
 //
-// productName: `ridge` (without version). Install dir uses nsis.installDir:
-// `ridge\0.1.4\` → `C:\Program Files\ridge\0.1.4\`. Version slug `0_1_4`
-// is used for identifier suffix and WiX Component Id (Wix identifiers
-// can't contain `.`).
+// productName format: `ridge <version>` (e.g. `ridge 0.1.4`) — the NSIS
+// hooks rewrite $INSTDIR so the actual install path becomes
+// `C:\Program Files\ridge\0.1.4\`. Version slug `0_1_4` is used for identifier
+// suffix and WiX Component Id (Wix identifiers can't contain `.`).
 
 import { execSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -128,7 +128,7 @@ function buildTauriConfigOverride(version, slug) {
   // identifier must not contain underscores: replace with hyphens
   const identifierSlug = slug.replace(/_/g, '-');
   return {
-    productName: 'ridge',
+    productName: `ridge ${version}`,
     version,
     identifier: `com.tauri-app.ridge.v${identifierSlug}`,
     // Prevent circular build: pass an env flag so beforeBuildCommand can skip
@@ -139,9 +139,6 @@ function buildTauriConfigOverride(version, slug) {
     bundle: {
       targets: ['nsis'],
       windows: {
-        nsis: {
-          installDir: `ridge\\${version}`,
-        },
         wix: {
           componentRefs: [`RidgePathEnvVar_${slug}`],
         },
@@ -182,8 +179,7 @@ async function main() {
   const guid = deterministicGuid(`ridge-path-env:${version}`);
 
   console.log(`[build-ridge] target version = ${version} (slug=${slug})`);
-  console.log(`[build-ridge] productName = "ridge"`);
-  console.log(`[build-ridge] installDir  = ridge\\${version}`);
+  console.log(`[build-ridge] productName = "ridge ${version}"`);
   const identifierSlug = slug.replace(/_/g, '-');
   console.log(`[build-ridge] identifier  = com.tauri-app.ridge.v${identifierSlug}`);
 

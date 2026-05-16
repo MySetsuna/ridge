@@ -96,7 +96,7 @@
         var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
         if (s.theme) themeId = s.theme;
       } catch(e) {}
-      var primary = '#6eb0ff';
+      var primary = '#eeeeee';
       var secondary = '#888888';
       var bg = '#000000';
       try {
@@ -122,7 +122,7 @@
 </head>
 
 <body data-sveltekit-preload-data="hover">
-  <div id="brand-loader">
+  <div id="brand-loader" data-tauri-drag-region>
     <svg viewBox="-8 -8 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect class="animate-rect" x="2.5" y="2.5" width="27" height="27" rx="6" stroke="var(--startup-accent)"
         stroke-width="2"></rect>

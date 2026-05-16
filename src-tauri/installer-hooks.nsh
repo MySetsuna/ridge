@@ -8,6 +8,17 @@
 ; `!include`s WordFunc.nsh) for safe removal on uninstall.
 
 !include "WinMessages.nsh"
+!include "FileFunc.nsh"
+
+; Override INSTDIR so install path becomes ...\ridge\<version>
+; instead of Tauri's default ...\ridge <version> (with a space).
+; Example: C:\Program Files\ridge\0.1.0\  instead of  C:\Program Files\ridge 0.1.0\
+!macro NSIS_HOOK_INIT
+  Push $0
+  ${GetParent} $INSTDIR $0
+  StrCpy $INSTDIR "$0\ridge\${VERSION}"
+  Pop $0
+!macroend
 
 !macro NSIS_HOOK_POSTINSTALL
   Push $0

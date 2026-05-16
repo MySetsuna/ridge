@@ -54,7 +54,7 @@ const manager = TerminalManager.instance();
 // History popup state
 let historyPopupOpen = $state(false);
 let currentInputBuffer = $state('');
-let historyPopupPosition = $state({ x: 0, y: 0 });
+let historyPopupPosition = $state({ x: 0, y: 0, inputH: 20 });
 let historyPopupEl: { handleKeyDown: (e: KeyboardEvent) => boolean } | undefined = $state(undefined);
 // Search state
 let termSearchOpen = $state(false);
@@ -425,6 +425,8 @@ function onPtyResize(
 	);
 }
 
+function onPtyNewline() { historyPopupOpen = false; }
+
 function onKernelEvent(ev: KernelEvent) {
 	switch (ev.type) {
 		case 'CwdChanged':
@@ -458,9 +460,11 @@ onMount(() => {
 		return;
 	}
     
-    // Fetch history based on default shell
-    const shell = get(settingsStore).defaultShell || 'bash'; // Default to bash if empty
-    terminalHistoryStore.fetch(shell);
+    // 获取所有可用 shell 的历史记录（Rust 端自动合并多个历史文件）
+    terminalHistoryStore.fetch();
+
+    // 终端换行时自动关闭历史弹层
+    window.addEventListener('ridge:pty-newline', onPtyNewline);
 
 	if (!isValidPaneId(paneId)) {
 		console.error(
@@ -613,7 +617,8 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
-	// Cancel pending Bell flash so the timer can't fire after unmount.
+	// 取消终端换行监听
+	window.removeEventListener('ridge:pty-newline', onPtyNewline);
 	// Without this, a Bell received within 120ms of pane close leaves a
 	// dangling setTimeout that writes `bellFlash` on a torn-down component.
 	if (bellFlashTimer !== null) {
@@ -679,6 +684,16 @@ function onContainerKeyDown(e: KeyboardEvent) {
 	// don't reach the shell. compositionend delivers the final string
 	// via manager.write.
 	if (isComposing || e.isComposing) return;
+
+	// ArrowUp/ArrowDown → 唤起历史弹窗，保留当前输入文本作为实时筛选
+	if (!historyPopupOpen && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+		e.preventDefault();
+		historyPopupOpen = true;
+		const anchor = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0, cellH: 20 };
+		const rect = container.getBoundingClientRect();
+		historyPopupPosition = { x: rect.left + anchor.x, y: rect.top + anchor.y, inputH: anchor.cellH };
+		return;
+	}
 
 	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 	const mod = e.ctrlKey || (isMac && e.metaKey);
@@ -748,27 +763,12 @@ function onContainerKeyDown(e: KeyboardEvent) {
 		e.preventDefault();
 		refreshScrollState();
         
-        // 精确输入跟踪
+        // 只跟踪输入缓冲区（用于 ArrowUp 清除 shell 行），不再自动弹出历史弹层
         if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
             currentInputBuffer += e.key;
-            historyPopupOpen = currentInputBuffer.length >= 2;
-            historyPopupPosition = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0 };
         } else if (e.key === 'Backspace') {
             currentInputBuffer = currentInputBuffer.slice(0, -1);
-            historyPopupOpen = currentInputBuffer.length >= 2;
-        } else if (e.key === 'Delete') {
-            // 简单的删除处理，因为没有行内容，暂时直接清空
-            currentInputBuffer = '';
-            historyPopupOpen = false;
-        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
-            // 光标移动时，为了防止缓冲区不同步，暂时关闭弹层
-            historyPopupOpen = false;
-            currentInputBuffer = '';
-        } else if (e.key === 'Enter') {
-            if (currentInputBuffer.trim()) {
-                terminalHistoryStore.add(currentInputBuffer);
-            }
-            historyPopupOpen = false;
+        } else if (e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
             currentInputBuffer = '';
         }
 	}
@@ -1115,12 +1115,19 @@ function onContainerMouseDown(e: MouseEvent) {
     isVisible={historyPopupOpen}
     position={historyPopupPosition}
     onSelect={(cmd) => {
-        // 提交命令
+        // 加入前端历史库，供后续弹窗使用
+        terminalHistoryStore.add(cmd);
+        // 清除 shell 中已键入的筛选文本，然后用选中命令替换
+        if (currentInputBuffer.length > 0) {
+            manager.write(paneId, '\x08'.repeat(currentInputBuffer.length));
+        }
+        // 写入选中命令 + 回车执行
         manager.write(paneId, cmd + '\r');
         currentInputBuffer = '';
         historyPopupOpen = false;
+        imeHelper?.focus();
     }}
-    onClose={() => { historyPopupOpen = false; currentInputBuffer = ''; }}
+    onClose={() => { historyPopupOpen = false; imeHelper?.focus(); }}
 />
 
 {#if termSearchOpen}

@@ -738,40 +738,51 @@ pub async fn get_teammate_metrics(
 }
 
 #[tauri::command]
-pub async fn get_shell_history(shell_kind: String) -> Result<Vec<String>, String> {
+pub async fn get_shell_history(_shell_kind: String) -> Result<Vec<String>, String> {
     let home_dir = dirs::home_dir().ok_or("无法获取 home 目录")?;
-    let history_file = match shell_kind.to_lowercase().as_str() {
-        "powershell" | "pwsh" => {
-            let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
-            app_data.join("Microsoft").join("Windows").join("PowerShell").join("PSReadLine").join("ConsoleHost_history.txt")
-        }
-        "bash" => home_dir.join(".bash_history"),
-        "zsh" => home_dir.join(".zsh_history"),
-        _ => return Ok(vec![]),
-    };
+    let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
 
-    if !history_file.exists() {
-        return Ok(vec![]);
+    // 收集所有可能的 shell 历史文件路径
+    let history_files = vec![
+        // PowerShell
+        app_data.join("Microsoft").join("Windows").join("PowerShell").join("PSReadLine").join("ConsoleHost_history.txt"),
+        // Bash（含 Git Bash）
+        home_dir.join(".bash_history"),
+        // Zsh
+        home_dir.join(".zsh_history"),
+    ];
+
+    let mut all_lines: Vec<String> = Vec::new();
+    for file in &history_files {
+        if !file.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Bash 时间戳行过滤
+            if trimmed.starts_with('#') && trimmed.len() > 1
+                && trimmed[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            all_lines.push(trimmed.to_string());
+        }
     }
 
-    let content = std::fs::read_to_string(&history_file).map_err(|e| e.to_string())?;
-    let lines: Vec<String> = content
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            // Bash 历史文件可能包含 `#<timestamp>` 格式，去除它
-            if line.starts_with('#') && line.len() > 1 && line[1..].chars().all(|c| c.is_digit(10)) {
-                "".to_string()
-            } else {
-                line.to_string()
-            }
-        })
-        .filter(|line| !line.is_empty())
-        .rev()
-        .take(1000)
-        .collect();
+    // 按出现顺序去重（保留最靠后的 = 最近使用）
+    all_lines.reverse();
+    let mut seen = std::collections::HashSet::new();
+    all_lines.retain(|line| seen.insert(line.clone()));
 
-    Ok(lines)
+    all_lines.truncate(1000);
+    Ok(all_lines)
 }
 
 #[tauri::command]

@@ -4,9 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
 const _store = writable<string[]>([]);
 export const terminalHistoryStore = {
     subscribe: _store.subscribe,
-    fetch: async (shellKind: string) => {
+    fetch: async () => {
         try {
-            const history: string[] = await invoke('get_shell_history', { shellKind });
+            const history: string[] = await invoke<string[]>('get_shell_history', { shellKind: '' });
             _store.set(history);
         } catch (e) {
             console.error('Failed to fetch shell history', e);
