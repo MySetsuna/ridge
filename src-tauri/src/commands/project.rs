@@ -660,12 +660,14 @@ fn infer_project_from_files(files: &[String]) -> String {
         }
     }
 
-    // Fallback: longest common prefix
-    let mut prefix = files[0].clone();
-    for f in &files[1..] {
+    // Fallback: longest common prefix of all file paths
+    // Normalize separators first
+    let normalized: Vec<String> = files.iter().map(|f| f.replace('\\', "/")).collect();
+    let mut prefix = normalized[0].clone();
+    for f in &normalized[1..] {
         while !f.starts_with(&prefix) {
-            let trunc = prefix.trim_end_matches(&['/', '\\'][..]);
-            if let Some(pos) = trunc.rfind(|c: char| c == '/' || c == '\\') {
+            let trunc = prefix.trim_end_matches('/');
+            if let Some(pos) = trunc.rfind('/') {
                 prefix = trunc[..=pos].to_string();
             } else {
                 prefix = String::new();
@@ -676,7 +678,14 @@ fn infer_project_from_files(files: &[String]) -> String {
             break;
         }
     }
-    prefix.trim_end_matches(&['/', '\\'][..]).to_string()
+    // If prefix looks like a file path (not ending in /), get its parent
+    if !prefix.is_empty() && !prefix.ends_with('/') {
+        if let Some(pos) = prefix.rfind('/') {
+            prefix = prefix[..=pos].to_string();
+        }
+    }
+    // Convert back to native path format
+    prefix.trim_end_matches('/').replace('/', "\\")
 }
 
 /// Get files changed in a git repository between two points in time
@@ -689,11 +698,17 @@ pub async fn get_git_changed_files(
     use std::process::Command;
     
     tokio::task::spawn_blocking(move || {
+        // Validate CWD exists and is a directory
+        let cwd_path = std::path::Path::new(&cwd);
+        if !cwd_path.exists() || !cwd_path.is_dir() {
+            return Ok(Vec::new());
+        }
+
         let since_str = format!("{}", since);
         let until_str = format!("{}", until);
         
         // Use git log to find changed files in the time range
-        let output = Command::new("git")
+        let output = match Command::new("git")
             .current_dir(&cwd)
             .args(&[
                 "log", 
@@ -704,10 +719,13 @@ pub async fn get_git_changed_files(
                 "--diff-filter=ACMRT"
             ])
             .output()
-            .map_err(|e| format!("Failed to execute git: {}", e))?;
+        {
+            Ok(o) => o,
+            Err(_) => return Ok(Vec::new()),
+        };
 
         if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            return Ok(Vec::new());
         }
 
         let content = String::from_utf8_lossy(&output.stdout);
