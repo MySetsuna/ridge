@@ -215,10 +215,10 @@
       {#each Array.from(historyTree.entries()) as [provider, cwds]}
         {@const providerExpanded = expandedProviders.has(provider)}
         <div class="group/provider border-b border-[var(--rg-border)]/30">
-          <div class="flex items-center px-2 py-2 hover:bg-[var(--rg-surface)]/50 cursor-pointer" onclick={() => toggleProvider(provider)}>
-            <button class="mr-1 text-[var(--rg-fg-muted)]">
+          <div class="flex items-center px-2 py-2 hover:bg-[var(--rg-surface)]/50 cursor-pointer" role="button" tabindex="0" onclick={() => toggleProvider(provider)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleProvider(provider); } }}>
+            <span class="mr-1 text-[var(--rg-fg-muted)]">
                 {#if providerExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
-            </button>
+            </span>
             <span class="text-[11px] font-bold uppercase text-[var(--rg-fg-muted)] tracking-wider">{provider}</span>
           </div>
 
@@ -227,14 +227,16 @@
               {@const cwdKey = `${provider}:${cwd}`}
               {@const cwdExpanded = expandedCwds.has(cwdKey)}
               <div class="ml-4 border-l border-[var(--rg-border)]/50">
-                      <div class="flex items-center px-3 py-1.5 hover:bg-[var(--rg-surface)]/50 cursor-pointer" onclick={() => {
-                          const next = new Set(expandedCwds);
-                          if (next.has(cwdKey)) next.delete(cwdKey); else next.add(cwdKey);
-                          expandedCwds = next;
-                      }}>
-                          <button class="mr-1 text-[var(--rg-fg-muted)]">
-                              {#if cwdExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
-                          </button>
+                      <div class="flex items-center px-3 py-1.5 hover:bg-[var(--rg-surface)]/50 cursor-pointer" role="button" tabindex="0"
+                           onclick={() => {
+                               const next = new Set(expandedCwds);
+                               if (next.has(cwdKey)) next.delete(cwdKey); else next.add(cwdKey);
+                               expandedCwds = next;
+                           }}
+                           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const next = new Set(expandedCwds); if (next.has(cwdKey)) next.delete(cwdKey); else next.add(cwdKey); expandedCwds = next; } }}>
+                           <span class="mr-1 text-[var(--rg-fg-muted)]">
+                               {#if cwdExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
+                           </span>
                            <Folder class="h-3.5 w-3.5 text-amber-400/80 mr-2 shrink-0" fill="currentColor" />
                           <div class="text-[11px] text-[var(--rg-fg)] truncate font-semibold">{cwd.split('/').pop()}</div>
                            <button class="ml-auto flex items-center justify-center h-4 w-4 rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]" 
@@ -249,17 +251,18 @@
                         {@const sidKey = `${cwdKey}:${sid}`}
                         {@const sessionExpanded = expandedSessions.has(sidKey)}
                         <div class="ml-6">
-                            <div class="flex items-center px-2 py-1 hover:bg-[var(--rg-surface)]/40 cursor-pointer" onclick={async () => {
+                            <div class="flex items-center px-2 py-1 hover:bg-[var(--rg-surface)]/40 cursor-pointer" role="button" tabindex="0" onclick={async () => {
                                 const next = new Set(expandedSessions);
                                 if (next.has(sidKey)) { next.delete(sidKey); } else { 
                                     next.add(sidKey);
                                     // Files are loaded from session data directly; no separate fetch needed
                                 }
                                 expandedSessions = next;
-                            }}>
-                                <button class="mr-1 text-[var(--rg-fg-muted)]">
+                            }}
+                            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const next = new Set(expandedSessions); if (next.has(sidKey)) next.delete(sidKey); else { next.add(sidKey); } expandedSessions = next; } }}>
+                                <span class="mr-1 text-[var(--rg-fg-muted)]">
                                     {#if sessionExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
-                                </button>
+                                </span>
                                 <MessageSquare class="h-3 w-3 mr-1.5 text-blue-400/80" />
                                 <div class="text-[10px] truncate font-medium text-[var(--rg-fg)]">
                                     {data.title} <span class="text-[var(--rg-fg-muted)]">({sid.slice(4, 12)})</span>
@@ -273,11 +276,12 @@
                             {#if sessionExpanded}
                                 <div class="ml-6 pb-1">
                                     {#each data.files as file}
-                                        <div class="flex items-center px-2 py-0.5 text-[9px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] cursor-pointer rounded"
+                                        <button type="button"
+                                             class="flex items-center w-full px-2 py-0.5 text-[9px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] cursor-pointer rounded"
                                              onclick={() => openDiff(cwd, file)}>
                                              <FileDiff class="h-3 w-3 mr-1.5 text-emerald-500/80" />
                                              {file.split('/').pop()}
-                                        </div>
+                                        </button>
                                     {/each}
                                 </div>
                             {/if}
