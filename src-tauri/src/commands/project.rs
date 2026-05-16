@@ -622,9 +622,8 @@ pub async fn read_opencode_history(
                                         files.push(f.to_string());
                                     }
                                 }
-                                // Try to find a common project root from the files or metadata if available
-                                // For now we assume the session file itself might have some clues or we use a default
-                                project = "Opencode Project".to_string(); 
+                                // Infer project CWD from file paths
+                                project = infer_project_from_files(&files);
                             }
                         }
                     }
@@ -641,6 +640,43 @@ pub async fn read_opencode_history(
         }
         entries
     }).await.unwrap_or_default()
+}
+
+// ─── OpenCode history ─────────────────────────────────────────────────────
+
+/// Infer the project working directory from a list of absolute file paths.
+/// Walks up each file's directory tree looking for a `.git` folder; if found,
+/// returns that repo root. Otherwise falls back to the longest common prefix.
+fn infer_project_from_files(files: &[String]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+
+    // Try to find a git repo root from any file
+    for f in files {
+        let path = std::path::Path::new(f);
+        if let Some(ancestor) = path.ancestors().skip(1).find(|a| a.join(".git").exists()) {
+            return ancestor.to_string_lossy().to_string();
+        }
+    }
+
+    // Fallback: longest common prefix
+    let mut prefix = files[0].clone();
+    for f in &files[1..] {
+        while !f.starts_with(&prefix) {
+            let trunc = prefix.trim_end_matches(&['/', '\\'][..]);
+            if let Some(pos) = trunc.rfind(|c: char| c == '/' || c == '\\') {
+                prefix = trunc[..=pos].to_string();
+            } else {
+                prefix = String::new();
+                break;
+            }
+        }
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    prefix.trim_end_matches(&['/', '\\'][..]).to_string()
 }
 
 /// Get files changed in a git repository between two points in time
