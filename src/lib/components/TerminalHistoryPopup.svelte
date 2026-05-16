@@ -43,13 +43,13 @@
         style="left: {position.x}px; top: {position.y}px;"
     >
         {#each filteredHistory as command, index}
-            <div 
-                class="rg-history-item" 
+            <button type="button"
+                class="rg-history-item"
                 class:selected={index === selectedIndex}
                 onclick={() => onSelect(command)}
             >
                 {command}
-            </div>
+            </button>
         {/each}
     </div>
 {/if}

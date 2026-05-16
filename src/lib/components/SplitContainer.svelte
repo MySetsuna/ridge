@@ -732,6 +732,7 @@ import {
              更新后 svelte 一定立刻重写 style。 -->
         <div
           class="rg-pane splitpanes__pane relative"
+          role="region"
           ondragover={(e) => {
             e.preventDefault();
             dockHover = getDockRegion(e);
