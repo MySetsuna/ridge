@@ -77,9 +77,12 @@ self.MonacoEnvironment = {
     PanelRightOpen,
     RefreshCw,
   } from 'lucide-svelte';
+// 删除相关的最近工作区定义和函数
+  // ... (Keep existing imports)
   import {
     paneTreeStore,
     workspacePaneTrees,
+    workspaceSaveInfoStore,
     activePaneId,
     splitActivePane,
     syncPaneLayoutFromBackend,
@@ -97,10 +100,9 @@ self.MonacoEnvironment = {
     getStartupContext,
     getRestoreSet,
     openWorkspaceFromFile,
-    refreshWorkspaceSaveInfo,
-    listRecentWorkspaces,
     listSavedWorkspaceFiles,
-    clearRecentWorkspaces,
+    refreshWorkspaceSaveInfo,
+    deleteWorkspaceFile, // 添加此导入
     closePane,
     paneCwdStore,
   } from '$lib/stores/paneTree';
@@ -113,29 +115,15 @@ self.MonacoEnvironment = {
     promptDialog,
   } from '$lib/components/RidgeDialog.svelte';
 
-  // ─── 打开 .ridge 入口（双下拉）───
-  // 主按钮 = 最近打开（History 图标）；副按钮 = 已保存工作区（Bookmark 图标，
-  // 列出 ~/ridge-workspaces/*.ridge）。点击主按钮里的项目 = openWorkspaceFromFile；
-  // 副按钮里点项目同理。两个面板互斥（打开一个会关另一个）。
-  let recentOpen = $state(false);
-  let recentList = $state<string[]>([]);
-  let recentBtn: HTMLButtonElement | undefined = $state();
-  let recentPopupStyle = $state('');
+// ─── 打开 .ridge 入口（双下拉）───
+  // 副按钮 = 已保存工作区（Bookmark 图标，列出 ~/ridge-workspaces/*.ridge）。
+  // 点击 = openWorkspaceFromFile。
   let savedOpen = $state(false);
   let savedList = $state<{ name: string; path: string; mtime_secs: number }[]>([]);
   let savedBtn: HTMLButtonElement | undefined = $state();
   let savedPopupStyle = $state('');
-  async function loadRecentAndToggle() {
-    savedOpen = false;
-    recentList = await listRecentWorkspaces();
-    if (!recentOpen && recentBtn) {
-      const r = recentBtn.getBoundingClientRect();
-      recentPopupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
-    }
-    recentOpen = !recentOpen;
-  }
+
   async function loadSavedAndToggle() {
-    recentOpen = false;
     savedList = await listSavedWorkspaceFiles();
     if (!savedOpen && savedBtn) {
       const r = savedBtn.getBoundingClientRect();
@@ -151,29 +139,9 @@ self.MonacoEnvironment = {
       await alertDialog({ title: '打开失败', message: String(err), danger: true });
     }
   }
-  function basenameOf(p: string): string {
-    return p.split(/[/\\]/).filter(Boolean).pop() || p;
-  }
-  function dirnameOf(p: string): string {
-    const parts = p.split(/[/\\]/).filter(Boolean);
-    if (parts.length <= 1) return '';
-    return parts.slice(0, -1).join('/');
-  }
-  async function openRecent(path: string) {
-    recentOpen = false;
-    try {
-      await openWorkspaceFromFile(path);
-    } catch (err) {
-      await alertDialog({ title: '打开失败', message: String(err), danger: true });
-    }
-  }
-  async function handleClearRecent() {
-    await clearRecentWorkspaces();
-    recentList = [];
-    recentOpen = false;
-  }
+
   async function pickAndOpenWorkspace() {
-    recentOpen = false;
+    savedOpen = false;
     try {
       const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
       const picked = await openDialog({
@@ -188,6 +156,7 @@ self.MonacoEnvironment = {
       await alertDialog({ title: '打开失败', message: String(err), danger: true });
     }
   }
+
   import {
     hideContextMenu,
     showContextMenu,
@@ -964,8 +933,11 @@ function expandSidebar() {
     document.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
 
-    // 启动时把当前主题写到 <html data-rg-theme>，避免首帧短暂闪默认色。
-    initSettingsBoot();
+    // 初始化主题系统：从后端获取主题数据
+    import('$lib/stores/themes').then((m) => m.initThemeSystem()).then(() => {
+      // 主题数据就绪后，把当前主题写到 CSS 变量
+      initSettingsBoot();
+    });
 
     // 终端主题桥：把 Ridge 的 CSS 变量（--rg-term-bg / --rg-fg /
     // --rg-accent / --rg-selection-bg）映射到 wasm 内核的 Theme，
@@ -1052,6 +1024,16 @@ function expandSidebar() {
         console.warn('startup workspace resolution failed', err);
       }
       await refreshWorkspaceSaveInfo();
+
+      // 等待首个终端面板就绪后关闭 loader
+      window.addEventListener('ridge:pane-attached', () => {
+        window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+      }, { once: true });
+      // 兜底：5秒后无论如何关闭 loader，避免异常阻塞
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+      }, 5000);
+
       // 检查初始最大化状态
       const win = getCurrentWindow();
       isMaximized = await win.isMaximized();
@@ -1229,65 +1211,16 @@ function expandSidebar() {
                  第三个按钮，避免视觉拥挤（VS Code 风格）。 -->
             <div class="flex items-center gap-1">
               <button
-                bind:this={recentBtn}
-                type="button"
-                class="flex items-center justify-center h-7 rounded text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/15 transition-colors ring-1 ring-[var(--rg-accent)]/30 hover:ring-[var(--rg-accent)]/60 px-2"
-                title="最近打开的工作区"
-                aria-label="最近打开的工作区"
-                onclick={() => void loadRecentAndToggle()}
-              >
-                <span>最近的工作区</span>
-              </button>
-              <button
                 bind:this={savedBtn}
                 type="button"
-                class="flex items-center justify-center h-6 w-6 rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
+                class="flex items-center justify-center h-7 rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors px-2"
                 title="已保存工作区"
                 aria-label="已保存工作区"
                 onclick={() => void loadSavedAndToggle()}
               >
-                <History class="h-3 w-3" />
+                <Bookmark class="h-4 w-4" />
               </button>
             </div>
-
-            {#if recentOpen}
-              <div
-                style={recentPopupStyle}
-                class="rg-popup w-[300px] max-w-[90vw]"
-                role="menu"
-                use:portal={{ id: 'recent-workspaces' }}
-              >
-                <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-                  <span>最近的工作区</span>
-                  {#if recentList.length > 0}
-                    <button
-                      type="button"
-                      class="text-[10px] normal-case tracking-normal hover:text-[var(--rg-fg)]"
-                      onclick={handleClearRecent}
-                    >
-                      清空
-                    </button>
-                  {/if}
-                </div>
-                <div class="max-h-[260px] overflow-y-auto">
-                  {#if recentList.length === 0}
-                    <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无历史记录</div>
-                  {:else}
-                    {#each recentList as p (p)}
-                      <button
-                        type="button"
-                        class="group flex flex-col items-start w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal"
-                        onclick={() => void openRecent(p)}
-                        title={p}
-                      >
-                        <span class="text-[12px] text-[var(--rg-fg)] truncate max-w-full">{basenameOf(p)}</span>
-                        <span class="text-[10px] text-[var(--rg-fg-muted)] truncate max-w-full font-mono">{dirnameOf(p)}</span>
-                      </button>
-                    {/each}
-                  {/if}
-                </div>
-              </div>
-            {/if}
 
             {#if savedOpen}
               <div
@@ -1312,15 +1245,37 @@ function expandSidebar() {
                     <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">~/ridge-workspaces 下暂无 .ridge 文件</div>
                   {:else}
                     {#each savedList as s (s.path)}
-                      <button
-                        type="button"
-                        class="group flex flex-col items-start w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal"
-                        onclick={() => void openSaved(s.path)}
-                        title={s.path}
-                      >
-                        <span class="text-[12px] text-[var(--rg-fg)] truncate max-w-full">{s.name}</span>
-                        <span class="text-[10px] text-[var(--rg-fg-muted)] truncate max-w-full font-mono">{s.path}</span>
-                      </button>
+                      <div class="group flex items-center justify-between w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal">
+                        <button
+                          type="button"
+                          class="flex-1 flex flex-col items-start min-w-0"
+                          onclick={() => void openSaved(s.path)}
+                          title={s.path}
+                        >
+                          <span class="text-[12px] text-[var(--rg-fg)] truncate max-w-full">{s.name}</span>
+                          <span class="text-[10px] text-[var(--rg-fg-muted)] truncate max-w-full font-mono">{s.path}</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--rg-surface)] hover:text-red-500 transition-colors"
+                          title="删除工作区"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            // 通过 path 查找对应的 workspaceId
+                            const info = Object.values($workspaceSaveInfoStore).find(
+                              (i) => i.file_path === s.path
+                            );
+                            if (info) {
+                              deleteWorkspaceFile(info.workspace_id);
+                            } else {
+                              // Fallback: 如果未关联，直接从文件系统移除（此分支仅在非活动关联文件时触发）
+                              console.warn('Workspace file not associated with active workspace, direct deletion not implemented');
+                            }
+                          }}
+                        >
+                          <Trash2 class="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     {/each}
                   {/if}
                 </div>
@@ -1586,11 +1541,7 @@ function expandSidebar() {
             {/if}
           {/each}
         {:else}
-          <div
-            class="flex flex-1 items-center justify-center text-[13px] text-[var(--rg-fg-muted)]"
-          >
-            正在加载工作区…
-          </div>
+          <div style="display:none"></div>
         {/if}
 
         <!-- §A.9 (2026-05-08 follow-up) — single global canvas. ONE

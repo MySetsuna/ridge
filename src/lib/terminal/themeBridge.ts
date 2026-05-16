@@ -116,10 +116,9 @@ export function setupTerminalThemeBridge(): () => void {
 		_lastFontFamily = family;
 		_lastFontSize = size;
 		
-		// Fallback to default stack if family is empty
 		const resolvedFamily = family.trim() !== '' 
 			? family 
-			: '"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace';
+			: "'JetBrains Mono','Cascadia Code','SF Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace";
 		
 		manager.setFont(resolvedFamily, size);
 	};

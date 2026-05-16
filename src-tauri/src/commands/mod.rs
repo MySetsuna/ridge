@@ -5,6 +5,7 @@ pub mod process;
 pub mod project;
 pub mod settings;
 pub mod terminal;
+pub mod theme;
 pub mod watch;
 pub mod ridge_file;
 pub mod workspace;

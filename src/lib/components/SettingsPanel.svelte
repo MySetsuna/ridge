@@ -13,10 +13,8 @@
     setSetting,
     setTheme,
     setClaudeExtensionEnabled,
-    THEME_IDS,
-    THEME_LABELS,
-    type ThemeId,
   } from '$lib/stores/settings';
+  import { themeData, getThemeIds, getThemeLabels } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
   import { activeWorkspaceId } from '$lib/stores/paneTree';
 
@@ -120,15 +118,35 @@
     }
   }
 
-  /** 主题选择器小卡片：实时预览的色块。与 app.css 色值同步。 */
-  const THEME_PREVIEW: Record<ThemeId, { bg: string; surface: string; accent: string; fg: string }> = {
-    dark:    { bg: '#071009', surface: '#111e14', accent: '#36c26e', fg: '#c8e8d4' },
-    sand:    { bg: '#faf6ef', surface: '#ede5d2', accent: '#c69a4f', fg: '#4a3c2a' },
-    grass:   { bg: '#f3f8ee', surface: '#d9e9c9', accent: '#6c9a3d', fg: '#2c3a25' },
-    soil:    { bg: '#1c1410', surface: '#2d201a', accent: '#d97757', fg: '#e8d9c4' },
-    wheat:   { bg: '#fdf8e8', surface: '#f0e0b0', accent: '#c8860c', fg: '#3a2204' },
-    starsky: { bg: '#040810', surface: '#0c1428', accent: '#4899ff', fg: '#c4d8f8' },
-  };
+  const themeIds = $derived(getThemeIds());
+  const themeLabels = $derived(getThemeLabels());
+
+  const themePreview = $derived.by(() => {
+    const out: Record<string, { bg: string; surface: string; accent: string; fg: string }> = {};
+    for (const id of themeIds) {
+      const t = $themeData.themes.find(x => x.id === id);
+      if (t) {
+        out[id] = {
+          bg: t.colors['bg'] ?? '#000',
+          surface: t.colors['surface'] ?? '#111',
+          accent: t.colors['accent'] ?? '#fff',
+          fg: t.colors['fg'] ?? '#ccc',
+        };
+      }
+    }
+    return out;
+  });
+
+  const TERMINAL_FONT_OPTIONS = [
+    { value: '', label: '默认（JetBrains Mono → Cascadia Code → SF Mono → Consolas）' },
+    { value: "'JetBrains Mono','Cascadia Code','SF Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'JetBrains Mono' },
+    { value: "'Cascadia Code','Cascadia Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'Cascadia Code' },
+    { value: "'Fira Code',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'Fira Code' },
+    { value: "'Source Code Pro',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'Source Code Pro' },
+    { value: "'Hack',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'Hack' },
+    { value: "'Iosevka',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'Iosevka' },
+    { value: "'Noto Sans Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace", label: 'Noto Sans Mono' },
+  ];
 
   const SECTIONS: { id: SectionId; label: string; icon: typeof Palette }[] = [
     { id: 'appearance',  label: '外观',     icon: Palette },
@@ -203,8 +221,8 @@
               <div class="text-[12px] text-[var(--rg-fg)] mb-1">主题</div>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">选择整体配色方案。立即生效，自动保存。</div>
               <div class="grid grid-cols-2 gap-3">
-                {#each THEME_IDS as id (id)}
-                  {@const p = THEME_PREVIEW[id]}
+                {#each themeIds as id (id)}
+                  {@const p = themePreview[id]}
                   {@const selected = $settingsStore.theme === id}
                   <button
                     type="button"
@@ -221,7 +239,7 @@
                       </div>
                     </div>
                     <div class="px-3 py-2 bg-[var(--rg-surface)]/60 flex items-center justify-between">
-                      <span class="text-[12px] font-medium text-[var(--rg-fg)]">{THEME_LABELS[id]}</span>
+                      <span class="text-[12px] font-medium text-[var(--rg-fg)]">{themeLabels[id]}</span>
                       {#if selected}
                         <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/20 text-[var(--rg-accent)] font-mono uppercase">使用中</span>
                       {/if}
@@ -234,15 +252,17 @@
           {:else if activeSection === 'font'}
             <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-font-family">终端字体族</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">终端字体族。空串使用默认黑体/表情回退链。</div>
-              <input
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">选择预设免费商用字体。修改后立即生效。</div>
+              <select
                 id="set-term-font-family"
-                type="text"
                 value={$settingsStore.terminalFontFamily}
-                onchange={(e) => setSetting('terminalFontFamily', (e.currentTarget as HTMLInputElement).value)}
-                class="w-full bg-transparent border border-[var(--rg-border)] rounded px-2 py-1.5 text-[12px] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]"
-                placeholder="例如: Consolas, monospace"
-              />
+                onchange={(e) => setSetting('terminalFontFamily', (e.currentTarget as HTMLSelectElement).value)}
+                class="w-full px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)] cursor-pointer"
+              >
+                {#each TERMINAL_FONT_OPTIONS as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
             </div>
             <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-font">终端字号</label>

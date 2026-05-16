@@ -19,8 +19,8 @@
       left: 0;
       width: 100vw;
       height: 100vh;
-      background: var(--rg-bg, #071009);
-      /* 动态使用主题色变量 */
+      background: var(--rg-loader-bg, #071009);
+      /* 独立使用加载器背景变量，避免污染全局 bg */
       display: flex;
       justify-content: center;
       align-items: center;
@@ -90,21 +90,33 @@
     }
   </style>
   <script>
-    // 预先应用主题配色
     (function() {
-      const theme = localStorage.getItem('ridge-theme') || 'dark';
-      const themes = {
-        'sand': { accent: '#c69a4f', bg: '#1a1814' },
-        'grass': { accent: '#6c9a3d', bg: '#0e120d' },
-        'soil': { accent: '#d97757', bg: '#16110f' },
-        'wheat': { accent: '#c8860c', bg: '#1a1711' },
-        'starsky': { accent: '#4899ff', bg: '#0b1019' },
-        'dark': { accent: '#7fb069', bg: '#071009' }
-      };
-      const config = themes[theme] || themes['dark'];
-      const root = document.documentElement;
-      root.style.setProperty('--startup-accent', config.accent);
-      root.style.setProperty('--rg-bg', config.bg);
+      var themeId = 'endless-dark';
+      try {
+        var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
+        if (s.theme) themeId = s.theme;
+      } catch(e) {}
+      var primary = '#6eb0ff';
+      var secondary = '#888888';
+      var bg = '#000000';
+      try {
+        var cache = JSON.parse(localStorage.getItem('ridge-theme-data') || '{}');
+        if (cache.themes) {
+          for (var i = 0; i < cache.themes.length; i++) {
+            if (cache.themes[i].id === themeId) {
+              var t = cache.themes[i];
+              primary = t.loader.primary;
+              secondary = t.loader.secondary;
+              bg = t.colors.bg;
+              break;
+            }
+          }
+        }
+      } catch(e) {}
+      var root = document.documentElement;
+      root.style.setProperty('--startup-accent', primary);
+      root.style.setProperty('--startup-secondary', secondary);
+      root.style.setProperty('--rg-loader-bg', bg);
     })();
   </script>
 </head>
@@ -119,17 +131,16 @@
       <line class="animate-cross" x1="28.5" y1="16" x2="3.5" y2="16" stroke="var(--startup-accent)" stroke-width="2">
       </line>
       <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="var(--startup-accent)" fill-opacity="0.18"></rect>
-      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="var(--startup-accent)" fill-opacity="0.22"></rect>
+      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="var(--startup-secondary)" fill-opacity="0.30"></rect>
     </svg>
   </div>
 
   <div style="display: contents">%sveltekit.body%</div>
   <script>
-    window.addEventListener('load', () => {
-        setTimeout(() => {
-          document.getElementById('brand-loader').classList.add('fade-out');
-        }, 1000); // 至少展示1秒
-      });
+    window.addEventListener('ridge:app-ready', () => {
+      const el = document.getElementById('brand-loader');
+      if (el) el.classList.add('fade-out');
+    }, { once: true });
   </script>
 </body>
 

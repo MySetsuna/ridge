@@ -17,6 +17,8 @@ import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
+import type { KernelEvent } from '$lib/terminal/manager';
+import { ensurePtyBridge } from '$lib/terminal/ptyBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
@@ -487,6 +489,7 @@ onMount(() => {
 			await manager.unpark(paneId, container);
 			if (!alive) return;
 			attached = true;
+			window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
 			manager.setFocused(paneId, get(activePaneId) === paneId);
 			manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
 			// Re-register handlers so this fresh component owns the
@@ -507,6 +510,7 @@ onMount(() => {
 		await manager.attach(paneId, container, workspaceId);
 		if (!alive) return;
 		attached = true;
+		window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
 
 		// Sync focus state immediately so a freshly-split pane doesn't draw
 		// a phantom cursor between attach and the next $effect tick. The

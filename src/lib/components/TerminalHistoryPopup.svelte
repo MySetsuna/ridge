@@ -26,8 +26,9 @@
         } else if (e.key === 'Enter') {
             if (filteredHistory[selectedIndex]) {
                 onSelect(filteredHistory[selectedIndex]);
+                return true;
             }
-            return true;
+            return false;
         } else if (e.key === 'Escape') {
             onClose();
             return true;

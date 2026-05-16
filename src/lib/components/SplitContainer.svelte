@@ -52,6 +52,7 @@ import {
     SAME_AXIS_ATTRACT_PX,
     pointerInCoupleZone,
     findJunctionsNearPosition,
+    findSameAxisRefs,
     collapseCwd,
   } from '$lib/stores/paneTree';
 
@@ -401,7 +402,7 @@ import {
     const sameAxisCandidates = findSameAxisRefs(
       primary,
       SAME_AXIS_ATTRACT_PX
-    ).map((c) => c.ref);
+    ).map((c: any) => c.ref);
     if (!orthogonals.length && !sameAxisCandidates.length) {
       if (splitEngaged(splitPath, $splitResizeUiState)) clearSplitResizeUi();
       return;
@@ -455,7 +456,7 @@ import {
       const sameAxisCandidates = findSameAxisRefs(
         primary,
         SAME_AXIS_ATTRACT_PX
-      ).map((c) => c.ref);
+      ).map((c: any) => c.ref);
       splitResizeUiState.set({
         phase: 'junction',
         primary,
