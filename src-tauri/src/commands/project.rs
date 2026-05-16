@@ -571,11 +571,15 @@ pub struct OpencodeHistoryEntry {
     pub session_id: String,
     pub title: String,
     pub updated_at: u64,
+    pub project: String,
     pub files: Vec<String>,
 }
 
 #[tauri::command]
-pub async fn read_opencode_history() -> Vec<OpencodeHistoryEntry> {
+pub async fn read_opencode_history(
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Vec<OpencodeHistoryEntry> {
     tokio::task::spawn_blocking(move || {
         let home = match dirs::home_dir() {
             Some(h) => h,
@@ -585,7 +589,18 @@ pub async fn read_opencode_history() -> Vec<OpencodeHistoryEntry> {
         
         let mut entries = Vec::new();
         if let Ok(paths) = std::fs::read_dir(session_dir) {
-            for path in paths.filter_map(|p| p.ok()) {
+            let mut file_paths: Vec<_> = paths.filter_map(|p| p.ok()).collect();
+            // Sort by modification time descending
+            file_paths.sort_by(|a, b| {
+                let a_meta = a.metadata().ok().and_then(|m| m.modified().ok());
+                let b_meta = b.metadata().ok().and_then(|m| m.modified().ok());
+                b_meta.cmp(&a_meta)
+            });
+
+            let offset = offset.unwrap_or(0);
+            let limit = limit.unwrap_or(50);
+            
+            for path in file_paths.into_iter().skip(offset).take(limit) {
                 if path.path().extension().and_then(|s| s.to_str()) == Some("json") {
                     let session_id = path.path().file_stem().unwrap().to_string_lossy().to_string();
                     let metadata = std::fs::metadata(path.path()).ok();
@@ -594,24 +609,31 @@ pub async fn read_opencode_history() -> Vec<OpencodeHistoryEntry> {
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
                     
-                    // Try to parse files
                     let mut files = Vec::new();
+                    let mut project = String::new();
+                    let mut title = "New Session".to_string();
+
                     if let Ok(file) = std::fs::File::open(path.path()) {
                         if let Ok(json) = serde_json::from_reader::<_, serde_json::Value>(file) {
-                            if let Some(changes) = json.get("file_changes").and_then(|c| c.as_array()) {
-                                for change in changes {
-                                    if let Some(f) = change.get("path").and_then(|p| p.as_str()) {
+                            // Opencode session format: it's an array of change objects
+                            if let Some(arr) = json.as_array() {
+                                for item in arr {
+                                    if let Some(f) = item.get("file").and_then(|p| p.as_str()) {
                                         files.push(f.to_string());
                                     }
                                 }
+                                // Try to find a common project root from the files or metadata if available
+                                // For now we assume the session file itself might have some clues or we use a default
+                                project = "Opencode Project".to_string(); 
                             }
                         }
                     }
                     
                     entries.push(OpencodeHistoryEntry { 
                         session_id, 
-                        title: "New Session".to_string(), 
+                        title, 
                         updated_at,
+                        project,
                         files 
                     });
                 }
@@ -619,6 +641,52 @@ pub async fn read_opencode_history() -> Vec<OpencodeHistoryEntry> {
         }
         entries
     }).await.unwrap_or_default()
+}
+
+/// Get files changed in a git repository between two points in time
+#[tauri::command]
+pub async fn get_git_changed_files(
+    cwd: String,
+    since: u64,
+    until: u64,
+) -> Result<Vec<String>, String> {
+    use std::process::Command;
+    
+    tokio::task::spawn_blocking(move || {
+        let since_str = format!("{}", since);
+        let until_str = format!("{}", until);
+        
+        // Use git log to find changed files in the time range
+        let output = Command::new("git")
+            .current_dir(&cwd)
+            .args(&[
+                "log", 
+                "--since", &since_str, 
+                "--until", &until_str, 
+                "--name-only", 
+                "--pretty=format:",
+                "--diff-filter=ACMRT"
+            ])
+            .output()
+            .map_err(|e| format!("Failed to execute git: {}", e))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        let content = String::from_utf8_lossy(&output.stdout);
+        let mut files: Vec<String> = content
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        files.sort();
+        files.dedup();
+        Ok(files)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 // ─── Claude Code history ─────────────────────────────────────────────────────

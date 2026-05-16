@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ChevronRight, ChevronDown, Bot, Trash2, Play, Settings, FolderOpen, GitBranch, FileText, FileDiff, MessageSquare, Clock, Terminal } from 'lucide-svelte';
+  import { ChevronRight, ChevronDown, Bot, Play, FolderOpen, FileDiff, MessageSquare } from 'lucide-svelte';
+  import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
   import {
     workspacesList,
     activeWorkspaceId,
@@ -10,12 +11,9 @@
     type PaneNode,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
-  import { settingsStore, setClaudeExtensionEnabled } from '$lib/stores/settings';
   import { overlayScroll } from '$lib/actions/overlayScroll';
-  import { portal } from '$lib/actions/portal';
-  import { popupStyleFor } from '$lib/utils/anchorRect';
   import { isTauri, invoke } from '@tauri-apps/api/core';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { get } from 'svelte/store';
 
   interface ClaudeHistoryEntry {
@@ -29,24 +27,62 @@
     session_id: string;
     title: string;
     updated_at: number;
-    project?: string; 
+    project: string;
     files: string[];
+    loadingFiles?: boolean;
   }
 
   let fileHistory = $state<ClaudeHistoryEntry[]>([]);
   let opencodeHistory = $state<OpencodeHistoryEntry[]>([]);
   let loading = $state(false);
+  let loadingMore = $state(false);
+  let opencodeOffset = $state(0);
+  const PAGE_SIZE = 10;
+
+  async function loadOpencodeHistory(offset: number = 0) {
+    if (!isTauri()) return [];
+    const entries = await invoke<OpencodeHistoryEntry[]>('read_opencode_history', { limit: PAGE_SIZE, offset });
+    opencodeHistory = [...opencodeHistory, ...entries];
+    opencodeOffset = offset + entries.length;
+    lastLoadCount = entries.length;
+    return entries;
+  }
+
+  async function loadMoreOpencode() {
+    if (loadingMore) return;
+    loadingMore = true;
+    try {
+      await loadOpencodeHistory(opencodeOffset);
+    } finally {
+      loadingMore = false;
+    }
+  }
+
+  async function fetchGitFilesForSession(entry: OpencodeHistoryEntry) {
+    if (entry.files.length > 0 || entry.loadingFiles) return;
+    entry.loadingFiles = true;
+    try {
+        // Assume session duration for Git lookup is 1 hour before update
+        const end = Math.floor(entry.updated_at / 1000);
+        const start = end - 3600;
+        const files = await invoke<string[]>('get_git_changed_files', { cwd: entry.project, since: start, until: end });
+        entry.files = files;
+    } finally {
+        entry.loadingFiles = false;
+    }
+  }
 
   async function loadAllHistory() {
     if (!isTauri()) return;
     loading = true;
     try {
       const [claude, opencode] = await Promise.all([
-        invoke<ClaudeHistoryEntry[]>('read_claude_history', { projectPaths: [], limit: 200 }),
-        invoke<OpencodeHistoryEntry[]>('read_opencode_history')
+        invoke<ClaudeHistoryEntry[]>('read_claude_history', { projectPaths: [], limit: 50 }),
+        invoke<OpencodeHistoryEntry[]>('read_opencode_history', { limit: PAGE_SIZE, offset: 0 })
       ]);
       fileHistory = claude;
       opencodeHistory = opencode;
+      opencodeOffset = opencode.length;
     } catch (e) {
       console.error('Failed to load history', e);
     } finally {
@@ -92,7 +128,7 @@
     }
 
     for (const entry of opencodeHistory) {
-      const cwd = (entry.project || 'unknown').replace(/\\/g, '/');
+      const cwd = entry.project.replace(/\\/g, '/');
       const sid = entry.session_id;
       const s = getSession('opencode', cwd, sid);
       s.title = entry.title;
@@ -129,7 +165,38 @@
   }
 
   async function launchAgent(cwd: string, provider: 'claude' | 'opencode', sessionId?: string) {
-    // Implementation kept from previous version
+    if (!isTauri()) return;
+
+    // 1. Find existing pane in target CWD, or split to create one
+    const wsId = get(activeWorkspaceId);
+    const cwdStore = get(paneCwdStore);
+    const prefix = `${wsId}:`;
+    let targetPaneId: string | null = null;
+
+    for (const [key, val] of Object.entries(cwdStore)) {
+      if (key.startsWith(prefix) && val === cwd) {
+        targetPaneId = key.slice(prefix.length);
+        break;
+      }
+    }
+
+    if (!targetPaneId) {
+      // No existing pane in this CWD — split active pane
+      const newPaneId = await splitActivePane('vertical');
+      if (!newPaneId) return;
+      targetPaneId = newPaneId;
+    }
+
+    await invoke('set_pane_workdir', { paneId: targetPaneId, path: cwd });
+
+    if (provider === 'claude') {
+        openClaudeAgentLauncher(targetPaneId, true);
+    } else {
+        const command = sessionId 
+            ? `opencode resume ${sessionId} --dangerously-skip-permissions\r` 
+            : `opencode --dangerously-skip-permissions\r`;
+        await invoke('write_to_pty', { paneId: targetPaneId, data: command });
+    }
   }
 
   onMount(() => {
@@ -142,20 +209,14 @@
     return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
-  let settingsOpen = $state(false);
-  let settingsAnchor: HTMLElement | undefined = $state();
+  // Check if there might be more opencode entries to load
+  let lastLoadCount = $state(PAGE_SIZE);
+  const hasMore = $derived(lastLoadCount >= PAGE_SIZE);
+
 </script>
 
 <div data-tauri-drag-region class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] relative">
   <span class="flex items-center gap-1.5"><Bot class="h-3.5 w-3.5 text-emerald-400" /> AGENTS SESSIONS</span>
-  <div class="flex items-center gap-0.5" bind:this={settingsAnchor}>
-    <button class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]" onclick={() => (settingsOpen = !settingsOpen)}><Settings class="h-3.5 w-3.5" /></button>
-    {#if settingsOpen && settingsAnchor}
-      <div class="z-[9990] min-w-[220px] rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg-raised)] shadow-xl py-1 text-[12px]" style={popupStyleFor(settingsAnchor, 'bottom-end')} use:portal>
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]" onclick={() => { settingsOpen = false; void loadAllHistory(); }}>刷新历史</button>
-      </div>
-    {/if}
-  </div>
 </div>
 
 <div class="flex-1 min-h-0 flex flex-col overflow-hidden" use:overlayScroll>
@@ -180,33 +241,53 @@
               {@const cwdKey = `${provider}:${cwd}`}
               {@const cwdExpanded = expandedCwds.has(cwdKey)}
               <div class="ml-4 border-l border-[var(--rg-border)]/50">
-                  <div class="flex items-center px-3 py-1.5 hover:bg-[var(--rg-surface)]/50 cursor-pointer" onclick={() => {
-                      const next = new Set(expandedCwds);
-                      if (next.has(cwdKey)) next.delete(cwdKey); else next.add(cwdKey);
-                      expandedCwds = next;
-                  }}>
-                      <button class="mr-1 text-[var(--rg-fg-muted)]">
-                          {#if cwdExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
-                      </button>
-                      <FolderOpen class="h-3.5 w-3.5 text-amber-400/80 mr-2 shrink-0" />
-                      <div class="text-[11px] text-[var(--rg-fg)] truncate font-semibold">{cwd.split('/').pop()}</div>
-                  </div>
+                      <div class="flex items-center px-3 py-1.5 hover:bg-[var(--rg-surface)]/50 cursor-pointer" onclick={() => {
+                          const next = new Set(expandedCwds);
+                          if (next.has(cwdKey)) next.delete(cwdKey); else next.add(cwdKey);
+                          expandedCwds = next;
+                      }}>
+                          <button class="mr-1 text-[var(--rg-fg-muted)]">
+                              {#if cwdExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
+                          </button>
+                          <FolderOpen class="h-3.5 w-3.5 text-amber-400/80 mr-2 shrink-0" />
+                          <div class="text-[11px] text-[var(--rg-fg)] truncate font-semibold">{cwd.split('/').pop()}</div>
+                          <button class="ml-auto p-0.5 hover:bg-[var(--rg-surface)] rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]" 
+                                  onclick={(e) => { e.stopPropagation(); launchAgent(cwd, provider as 'claude' | 'opencode'); }}>
+                              <Play class="h-3 w-3" />
+                          </button>
+                      </div>
+
                   
                   {#if cwdExpanded}
                     {#each Array.from(sessions.entries()) as [sid, data]}
                         {@const sidKey = `${cwdKey}:${sid}`}
                         {@const sessionExpanded = expandedSessions.has(sidKey)}
                         <div class="ml-6">
-                            <div class="flex items-center px-2 py-1 hover:bg-[var(--rg-surface)]/40 cursor-pointer" onclick={() => {
+                            <div class="flex items-center px-2 py-1 hover:bg-[var(--rg-surface)]/40 cursor-pointer" onclick={async () => {
                                 const next = new Set(expandedSessions);
-                                if (next.has(sidKey)) next.delete(sidKey); else next.add(sidKey);
+                                if (next.has(sidKey)) { next.delete(sidKey); } else { 
+                                    next.add(sidKey);
+                                    if (data.provider === 'opencode') {
+                                        const entry = opencodeHistory.find(e => e.session_id === sid);
+                                        if (entry) await fetchGitFilesForSession(entry);
+                                    }
+                                }
                                 expandedSessions = next;
                             }}>
                                 <button class="mr-1 text-[var(--rg-fg-muted)]">
                                     {#if sessionExpanded} <ChevronDown class="h-3.5 w-3.5" /> {:else} <ChevronRight class="h-3.5 w-3.5" /> {/if}
                                 </button>
                                 <MessageSquare class="h-3 w-3 mr-1.5 text-blue-400/80" />
-                                <div class="text-[10px] truncate font-medium text-[var(--rg-fg)]">{data.title}</div>
+                                <div class="text-[10px] truncate font-medium text-[var(--rg-fg)]">
+                                    {data.title} <span class="text-[var(--rg-fg-muted)]">({sid.slice(4, 12)})</span>
+                                </div>
+                                <button class="ml-auto p-0.5 hover:bg-[var(--rg-surface)] rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]" 
+                                        onclick={(e) => { e.stopPropagation(); launchAgent(cwd, data.provider, sid === 'claude-default' ? undefined : sid); }}>
+                                    <Play class="h-3 w-3" />
+                                </button>
+                                {#if data.provider === 'opencode' && opencodeHistory.find(e => e.session_id === sid)?.loadingFiles}
+                                    <div class="ml-2 h-2 w-2 rounded-full bg-blue-500 animate-pulse"></div>
+                                {/if}
                             </div>
 
                             {#if sessionExpanded}
@@ -229,5 +310,14 @@
         </div>
       {/each}
     </div>
+    {#if hasMore}
+      <button
+        class="flex items-center justify-center w-full py-2 text-[11px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]/40 border-t border-[var(--rg-border)]/30 disabled:opacity-40"
+        onclick={loadMoreOpencode}
+        disabled={loadingMore}
+      >
+        {loadingMore ? '加载中...' : '加载更多 OpenCode 会话'}
+      </button>
+    {/if}
   {/if}
 </div>
