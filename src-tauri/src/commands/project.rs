@@ -1,5 +1,6 @@
 use crate::fs::{DirectoryPage, FileNode, FileTree, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
 use crate::state::AppState;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::State;
@@ -579,6 +580,7 @@ pub struct OpencodeHistoryEntry {
 pub async fn read_opencode_history(
     limit: Option<usize>,
     offset: Option<usize>,
+    workspace_cwds: Option<Vec<String>>,
 ) -> Vec<OpencodeHistoryEntry> {
     tokio::task::spawn_blocking(move || {
         let home = match dirs::home_dir() {
@@ -586,9 +588,18 @@ pub async fn read_opencode_history(
             None => return Vec::new(),
         };
         let session_dir = home.join(".local").join("share").join("opencode").join("storage").join("session_diff");
-        
+        let db_path = home.join(".local").join("share").join("opencode").join("storage").join("opencode.db");
+
+        // Try to open the opencode SQLite database for session metadata
+        let conn = Connection::open(&db_path).ok();
+
+        // Normalise workspace CWDs for matching
+        let ws_cwds: Vec<String> = workspace_cwds.unwrap_or_default().into_iter()
+            .map(|c| c.replace('\\', "/"))
+            .collect();
+
         let mut entries = Vec::new();
-        if let Ok(paths) = std::fs::read_dir(session_dir) {
+        if let Ok(paths) = std::fs::read_dir(&session_dir) {
             let mut file_paths: Vec<_> = paths.filter_map(|p| p.ok()).collect();
             // Sort by modification time descending
             file_paths.sort_by(|a, b| {
@@ -613,19 +624,37 @@ pub async fn read_opencode_history(
                     let mut project = String::new();
                     let mut title = "New Session".to_string();
 
+                    // Read session metadata from opencode SQLite database
+                    if let Some(ref conn) = conn {
+                        if let Ok(mut stmt) = conn.prepare("SELECT s.title, s.directory FROM session s WHERE s.id = ?1") {
+                            if let Ok(row) = stmt.query_row(rusqlite::params![session_id], |row| {
+                                let db_title: String = row.get(0)?;
+                                let directory: String = row.get(1)?;
+                                Ok((db_title, directory))
+                            }) {
+                                title = row.0;
+                                project = row.1.replace('\\', "/");
+                            }
+                        }
+                    }
+
+                    // Read files from session_diff JSON
                     if let Ok(file) = std::fs::File::open(path.path()) {
                         if let Ok(json) = serde_json::from_reader::<_, serde_json::Value>(file) {
-                            // Opencode session format: it's an array of change objects
                             if let Some(arr) = json.as_array() {
                                 for item in arr {
                                     if let Some(f) = item.get("file").and_then(|p| p.as_str()) {
                                         files.push(f.to_string());
                                     }
                                 }
-                                // Infer project CWD from file paths
-                                project = infer_project_from_files(&files);
                             }
                         }
+                    }
+
+                    // Fallback: infer project CWD by matching relative file paths
+                    // against known workspace directories
+                    if project.is_empty() && !ws_cwds.is_empty() && !files.is_empty() {
+                        project = infer_project_from_workspace(&files, &ws_cwds);
                     }
                     
                     entries.push(OpencodeHistoryEntry { 
@@ -686,6 +715,40 @@ fn infer_project_from_files(files: &[String]) -> String {
     }
     // Convert back to native path format
     prefix.trim_end_matches('/').replace('/', "\\")
+}
+
+/// Infer the best-matching workspace CWD from a list of file paths.
+/// Counts how many files live under each workspace directory and returns
+/// the one with the most matches (deepest prefix wins on ties).
+fn infer_project_from_workspace(files: &[String], ws_cwds: &[String]) -> String {
+    if files.is_empty() || ws_cwds.is_empty() {
+        return String::new();
+    }
+
+    let mut best: (&str, usize) = ("", 0);
+
+    for ws in ws_cwds {
+        let ws_norm = ws.trim_end_matches('/');
+        let mut count = 0;
+        for f in files {
+            let f_norm = f.replace('\\', "/");
+            if f_norm.starts_with(ws_norm) {
+                count += 1;
+            }
+        }
+        // Prefer the workspace that matches more files; on a tie,
+        // keep the first one encountered (which corresponds to the
+        // order returned by the package manager / workspace config).
+        if count > best.1 {
+            best = (ws, count);
+        }
+    }
+
+    if best.1 > 0 {
+        best.0.to_string()
+    } else {
+        infer_project_from_files(files)
+    }
 }
 
 /// Get files changed in a git repository between two points in time

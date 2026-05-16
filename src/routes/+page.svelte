@@ -937,13 +937,11 @@ function expandSidebar() {
     import('$lib/stores/themes').then((m) => m.initThemeSystem()).then(() => {
       // 主题数据就绪后，把当前主题写到 CSS 变量
       initSettingsBoot();
-    });
-
-    // 终端主题桥：把 Ridge 的 CSS 变量（--rg-term-bg / --rg-fg /
-    // --rg-accent / --rg-selection-bg）映射到 wasm 内核的 Theme，
-    // 订阅 settingsStore 让暗/亮主题切换跟随。否则 wasm 永远用编译期
-    // 默认蓝色 selection bg，与 Ridge 绿色 accent 不搭。详见 TASKS Bug A。
-    void import('$lib/terminal/themeBridge').then((m) => {
+      // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
+      // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
+      // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
+      return import('$lib/terminal/themeBridge');
+    }).then((m) => {
       m.setupTerminalThemeBridge();
     });
 
@@ -1179,11 +1177,12 @@ function expandSidebar() {
     class="relative shrink-0 z-10"
     style="width: {sidebarCollapsed ? 0 : sidebarWidth}px; overflow: visible"
   >
-    {#if !sidebarCollapsed}
+      {#if !sidebarCollapsed}
       <aside
-        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 rg-scroll overflow-y-auto"
+        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 rg-scroll overflow-y-auto relative"
       >
-        {#if sidebarTab === 'git'}
+        <!-- Git tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'git' ? '' : 'hidden'}">
           <div
             data-tauri-drag-region
             class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]"
@@ -1193,13 +1192,22 @@ function expandSidebar() {
           <div class="flex-1 min-h-0 overflow-hidden">
             <SourceControl />
           </div>
-        {:else if sidebarTab === 'search'}
+        </div>
+
+        <!-- Search tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'search' ? '' : 'hidden'}">
           <div class="flex-1 min-h-0 overflow-hidden">
             <SearchSidebar active={sidebarTab === 'search'} />
           </div>
-        {:else if sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled}
+        </div>
+
+        <!-- Claude tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled ? '' : 'hidden'}">
           <AgentHistoryPanel />
-        {:else}
+        </div>
+
+        <!-- Files tab (default) -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'files' || (sidebarTab === 'claude' && !$settingsStore.claudeExtensionEnabled) ? '' : 'hidden'}">
           <div
             data-tauri-drag-region
             class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] relative"
@@ -1293,7 +1301,7 @@ function expandSidebar() {
               </div>
             {/if}
           </div>
-        {/if}
+        </div>
 
         <!-- Global-scope plugin region — mounted once at the sidebar footer,
              visible across every tab. Keep it compact; plugins are expected

@@ -35,6 +35,26 @@ import { TerminalManager } from './manager';
 // $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the
 // same way against the same `--rg-*` CSS-variable values.
 
+/** Map a Ridge `--rg-ansi-*` CSS var name to its xterm.js key. */
+const ANSI_CSS_TO_KEY: Record<string, string> = {
+	'--rg-ansi-black': 'black',
+	'--rg-ansi-red': 'red',
+	'--rg-ansi-green': 'green',
+	'--rg-ansi-yellow': 'yellow',
+	'--rg-ansi-blue': 'blue',
+	'--rg-ansi-magenta': 'magenta',
+	'--rg-ansi-cyan': 'cyan',
+	'--rg-ansi-white': 'white',
+	'--rg-ansi-brightBlack': 'brightBlack',
+	'--rg-ansi-brightRed': 'brightRed',
+	'--rg-ansi-brightGreen': 'brightGreen',
+	'--rg-ansi-brightYellow': 'brightYellow',
+	'--rg-ansi-brightBlue': 'brightBlue',
+	'--rg-ansi-brightMagenta': 'brightMagenta',
+	'--rg-ansi-brightCyan': 'brightCyan',
+	'--rg-ansi-brightWhite': 'brightWhite',
+};
+
 /**
  * Read Ridge's terminal-relevant CSS variables and project them onto the
  * xterm.js-shaped key set the wasm kernel's `Theme::apply_partial` reads.
@@ -72,6 +92,16 @@ function readRidgeTheme(): Record<string, string> {
 			out.selectionBackground = `${accent.slice(0, 7)}3d`;
 		}
 	}
+
+	// ANSI 16 colors: read `--rg-ansi-*` CSS vars set by the theme.
+	// When a theme doesn't define ANSI overrides (dark themes keep their
+	// wasm defaults), these CSS vars won't exist and hex8 returns null —
+	// apply_partial simply leaves those palette entries untouched.
+	for (const [cssVar, key] of Object.entries(ANSI_CSS_TO_KEY)) {
+		const color = v(cssVar);
+		if (color) out[key] = color;
+	}
+
 	return out;
 }
 

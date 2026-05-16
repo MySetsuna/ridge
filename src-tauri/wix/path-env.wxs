@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
-    <Component Id="RidgePathEnvVar" Guid="B4D5E6F7-A8B9-C0D1-E2F3-A4B5C6D7E8F9" Directory="INSTALLDIR">
-      <RegistryValue Root="HKLM" Key="Software\tauri-app\ridge" Name="RidgePathEnv" Type="string" Value="1" />
-      <Environment Id="RidgePathEnv" Name="PATH" Value="[INSTALLDIR]" Permanent="no" Part="last" Action="set" System="yes" />
+    <Component Id="RidgePathEnvVar_0_0_2" Guid="DA46AA9C-B62F-5D2D-BE7A-3D080348EA8E" Directory="INSTALLDIR">
+      <RegistryValue Root="HKLM" Key="Software\tauri-app\ridge_0_0_2" Name="RidgePathEnv_0_0_2" Type="string" Value="1" />
+      <Environment Id="RidgePathEnv_0_0_2" Name="PATH" Value="[INSTALLDIR]" Permanent="no" Part="last" Action="set" System="yes" />
     </Component>
   </Fragment>
 </Wix>

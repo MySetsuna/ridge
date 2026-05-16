@@ -317,6 +317,7 @@ pub fn run() {
             terminal::activate_pane_pty,
             terminal::get_teammate_metrics,
             terminal::detect_available_shells,
+            terminal::get_shell_history,
             terminal::write_to_pty,
             terminal::resize_pane,
             terminal::kill_pane,
