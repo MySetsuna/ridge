@@ -211,18 +211,27 @@ impl RenderBackend for Canvas2dBackend {
     fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        let y_top = (row.row_index as f64 * cell_h).round();
 
-        // Pass 1: backgrounds.
+        let y_top = (row.row_index as f64 * cell_h).round();
+        let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
+        let h = y_bottom - y_top;
+
         for (col, cell) in row.cells.iter().enumerate() {
             let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
-            let x = (col as f64 * cell_w).round();
-            
+
+            let x_left = (col as f64 * cell_w).round();
+            let x_right = ((col + cell.width as usize) as f64 * cell_w).round();
+            let w = x_right - x_left;
+
+            if w <= 0.0 {
+                continue;
+            }
+
             if bg[3] == 0 {
-                self.ctx.clear_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
+                self.ctx.clear_rect(x_left, y_top, w, h);
             } else {
                 self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
-                self.ctx.fill_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
+                self.ctx.fill_rect(x_left, y_top, w, h);
             }
         }
     }
@@ -230,11 +239,11 @@ impl RenderBackend for Canvas2dBackend {
     fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        let y_top = (row.row_index as f64 * cell_h).round();
 
-        // Pass 2: glyphs. Skip width-0 (continuation halves of wide
-        // cells — the wide cell's own draw already covers both halves)
-        // and blanks (space at default attrs).
+        let y_top = (row.row_index as f64 * cell_h).round();
+        let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
+        let h = y_bottom - y_top;
+
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
@@ -245,9 +254,6 @@ impl RenderBackend for Canvas2dBackend {
             let (attrs, fg, _bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
             self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
 
-            // Bold: rebuild the font string with `bold` weight prefix.
-            // Italic: same with `italic` style. We only do this when needed
-            // — most cells stay on the base font.
             if attrs.flags.contains(Flags::BOLD) || attrs.flags.contains(Flags::ITALIC) {
                 let mut font = String::new();
                 if attrs.flags.contains(Flags::ITALIC) {
@@ -262,15 +268,10 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.set_font(&self.font_css);
             }
 
-            let x = (col as f64 * cell_w).round();
-            // §4.7: if a multi-codepoint grapheme cluster was registered
-            // at this column, paint the full cluster string via
-            // `fill_text` (browsers handle ZWJ + variation selectors
-            // natively when the font stack includes color-emoji fonts).
-            // Otherwise fall back to the single codepoint stored in
-            // `cell.ch`. Linear scan over `row.clusters` is cheap because
-            // most rows have 0 clusters and emoji-heavy rows still have
-            // <10.
+            let x_left = (col as f64 * cell_w).round();
+            let x_right = ((col + cell.width as usize) as f64 * cell_w).round();
+            let w = x_right - x_left;
+
             let cluster = if !row.clusters.is_empty() {
                 let target = col.min(u16::MAX as usize) as u16;
                 row.clusters.iter().find(|c| c.col == target)
@@ -283,30 +284,12 @@ impl RenderBackend for Canvas2dBackend {
                 Some(cspan) => glyph_str = &cspan.text,
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
-            // §B.11 (2026-05-08) — natural-size rendering. Plain
-            // `fill_text` paints the glyph at its natural advance
-            // anchored at cell left. If natural > cell_w, the glyph
-            // visually overflows into the next cell. Layer-rendering
-            // semantics naturally hold here because draw_row already
-            // does TWO passes (Pass 1: backgrounds for ALL cells in
-            // the row; Pass 2: glyphs for ALL cells in cell-index
-            // order). So cell N's overflow glyph paints OVER cell
-            // N+1's already-painted bg, then cell N+1's glyph paints
-            // OVER cell N's overflow at intersection only — both
-            // glyphs visible at correct proportions.
-            //
-            // Reverts §B.10's bidirectional rescale + scale_x trick.
-            // The user explicitly prefers natural-shape glyphs over
-            // cursor-aligned visuals — same call as Windows Terminal /
-            // iTerm2 / Apple Terminal.
             
-            // Box-drawing and block characters are drawn procedurally to ensure
-            // pixel-perfect alignment and no gaps between cells.
             let first_char = glyph_str.chars().next();
             let mut drawn_procedurally = false;
             
             if let Some(ch) = first_char {
-                if let Some(rects) = procedural_box(ch, x as f32, y_top as f32, cell_w as f32, cell_h as f32) {
+                if let Some(rects) = procedural_box(ch, x_left as f32, y_top as f32, w as f32, h as f32) {
                     for r in rects {
                         self.ctx.fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
                     }
@@ -315,17 +298,16 @@ impl RenderBackend for Canvas2dBackend {
             }
             
             if !drawn_procedurally {
-                let _ = self.ctx.fill_text(glyph_str, x, y_top);
+                let _ = self.ctx.fill_text(glyph_str, x_left, y_top);
             }
 
-            // Underline / strikethrough as separate strokes after the glyph.
             if attrs.flags.contains(Flags::UNDERLINE) {
-                let y = y_top + cell_h - 2.0;
-                self.ctx.fill_rect(x, y, cell_w, 1.0);
+                let y = y_top + h - 2.0;
+                self.ctx.fill_rect(x_left, y, w, 1.0);
             }
             if attrs.flags.contains(Flags::STRIKETHROUGH) {
-                let y = y_top + cell_h * 0.5;
-                self.ctx.fill_rect(x, y, cell_w, 1.0);
+                let y = y_top + h * 0.5;
+                self.ctx.fill_rect(x_left, y, w, 1.0);
             }
         }
     }
@@ -335,20 +317,17 @@ impl RenderBackend for Canvas2dBackend {
         let cell_h = self.metrics.cell_h as f64;
         let x = (cursor.col as f64 * cell_w).round();
         let y = (cursor.row as f64 * cell_h).round();
+        let y_bottom = ((cursor.row + 1) as f64 * cell_h).round();
+        let cell_h_int = y_bottom - y;
+        let cursor_span = cursor.width.max(1) as usize;
+        let x_right = ((cursor.col + cursor_span) as f64 * cell_w).round();
+        let w = x_right - x;
 
-        // Cursor color (theme override) — paint the shape first.
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_color));
         match cursor.style {
             CursorStyle::Block => {
-                let w = if cursor.width == 2 {
-                    cell_w * 2.0
-                } else {
-                    cell_w
-                };
-                self.ctx.fill_rect(x, y, w.ceil(), cell_h.ceil());
-                // Repaint the glyph in cursor_text_color on top, so the
-                // character under the cursor stays legible.
+                self.ctx.fill_rect(x, y, w, cell_h_int);
                 if cursor.ch != ' ' && cursor.ch != '\0' {
                     self.ctx
                         .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_text_color));
@@ -357,15 +336,14 @@ impl RenderBackend for Canvas2dBackend {
                     let s = cursor.ch.encode_utf8(&mut buf);
                     let _ = self.ctx.fill_text(s, x, y);
                 }
-                // Silence unused on attrs_table for this style.
                 let _ = attrs_table;
             }
             CursorStyle::Bar => {
-                self.ctx.fill_rect(x, y, 2.0, cell_h.ceil());
+                self.ctx.fill_rect(x, y, 2.0, cell_h_int);
                 let _ = attrs_table;
             }
             CursorStyle::Underline => {
-                self.ctx.fill_rect(x, y + cell_h - 2.0, cell_w.ceil(), 2.0);
+                self.ctx.fill_rect(x, y + cell_h_int - 2.0, w, 2.0);
                 let _ = attrs_table;
             }
         }
@@ -380,29 +358,30 @@ impl RenderBackend for Canvas2dBackend {
             if col_end <= col_start {
                 continue;
             }
-            let x = (col_start as f64 * cell_w).round();
-            let y = (row as f64 * cell_h).round();
-            let w = ((col_end - col_start) as f64 * cell_w).ceil();
-            self.ctx.fill_rect(x, y, w, cell_h.ceil());
+            let x_left = (col_start as f64 * cell_w).round();
+            let x_right = (col_end as f64 * cell_w).round();
+            let w = x_right - x_left;
+            let y_top = (row as f64 * cell_h).round();
+            let y_bottom = ((row + 1) as f64 * cell_h).round();
+            let h = y_bottom - y_top;
+            self.ctx.fill_rect(x_left, y_top, w, h);
         }
     }
 
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
         let cell_w = self.metrics.cell_w as f64;
-        let cell_h = self.metrics.cell_h as f64;
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.hyperlink_color));
-        // 1px tall underline at the bottom of the cell row. The DPR
-        // transform applied in begin_frame means 1.0 here = 1 CSS px,
-        // not 1 device px — visible on hi-DPI without manual scaling.
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
                 continue;
             }
-            let x = (col_start as f64 * cell_w).round();
-            let y = (row as f64 * cell_h + cell_h - 1.0).round();
-            let w = ((col_end - col_start) as f64 * cell_w).ceil();
-            self.ctx.fill_rect(x, y, w, 1.0);
+            let x_left = (col_start as f64 * cell_w).round();
+            let x_right = (col_end as f64 * cell_w).round();
+            let w = x_right - x_left;
+            let y_bottom = ((row + 1) as f64 * self.metrics.cell_h as f64).round();
+            let y = y_bottom - 1.0;
+            self.ctx.fill_rect(x_left, y, w, 1.0);
         }
     }
 

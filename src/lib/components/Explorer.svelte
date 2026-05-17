@@ -31,6 +31,7 @@
 	import { fileEditorStore, activeFile } from '$lib/stores/fileEditor';
 	import { get } from 'svelte/store';
 	import { tick } from 'svelte';
+	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
@@ -461,7 +462,6 @@
 				if (mode === 'copy' && isTauri()) {
 					void (async () => {
 						try {
-							const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
 							await writeText(paths.join('\n'));
 						} catch (err) {
 							console.warn('[explorer] clipboard writeText failed', err);

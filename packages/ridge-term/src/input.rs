@@ -335,6 +335,35 @@ pub fn wrap_paste(text: &str, bracketed_paste: bool) -> Vec<u8> {
     }
 }
 
+/// Encode a mouse event as an SGR-format terminal sequence.
+///
+/// `btn`: 0=left, 1=middle, 2=right, 3=release, 64=scroll-up, 65=scroll-down
+/// `action`: 0=press, 1=release, 2=motion (drag)
+/// `row`/`col`: 0-based viewport cell coordinates
+///
+/// SGR format: `ESC [ < btn+mods > ; < row+1 > ; < col+1 > M/m`
+///   - `M` for press/motion, `m` for release
+///   - Modifier flags: +4 shift, +8 alt, +16 ctrl
+///   - Motion flag: +32 (0x20) when `action == 2`
+pub fn encode_mouse(btn: u8, row: usize, col: usize, action: u8, shift: bool, ctrl: bool, alt: bool, _modes: &Modes) -> Vec<u8> {
+    let mut b = btn;
+    if shift {
+        b |= 4;
+    }
+    if alt {
+        b |= 8;
+    }
+    if ctrl {
+        b |= 16;
+    }
+    if action == 2 {
+        b |= 32; // motion flag
+    }
+    // SGR: ESC [ < b > ; < row+1 > ; < col+1 > M (press/motion) / m (release)
+    let suffix = if action == 1 { 'm' } else { 'M' };
+    format!("\x1b[<{};{};{}{}", b, row + 1, col + 1, suffix).into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,8 +526,8 @@ mod tests {
         assert_eq!(encode(&key("Escape"), &modes()).bytes, vec![0x1b]);
     }
 
-    #[test]
-    fn unknown_key_returns_ignored() {
+#[test]
+fn unknown_key_returns_ignored() {
         let r = encode(&key("Process"), &modes()); // IME placeholder
         assert!(!r.consumed);
         assert!(r.bytes.is_empty());
@@ -513,5 +542,69 @@ mod tests {
     #[test]
     fn paste_passthrough_when_bracketed_off() {
         assert_eq!(wrap_paste("hi", false), b"hi");
+    }
+
+    // ---- mouse encoding tests ----------------------------------------
+
+    #[test]
+    fn mouse_left_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 2, 5, 0, false, false, false, &m);
+        // btn=0, row=3, col=6 → ESC [ < 0 ; 3 ; 6 M
+        assert_eq!(bytes, b"\x1b[<0;3;6M");
+    }
+
+    #[test]
+    fn mouse_right_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(2, 10, 20, 0, false, false, false, &m);
+        assert_eq!(bytes, b"\x1b[<2;11;21M");
+    }
+
+    #[test]
+    fn mouse_release_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(3, 5, 8, 1, false, false, false, &m);
+        // release → suffix 'm'
+        assert_eq!(bytes, b"\x1b[<3;6;9m");
+    }
+
+    #[test]
+    fn mouse_motion_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 3, 7, 2, false, false, false, &m);
+        // motion → +32 flag → btn 32
+        assert_eq!(bytes, b"\x1b[<32;4;8M");
+    }
+
+    #[test]
+    fn mouse_shift_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 1, 1, 0, true, false, false, &m);
+        // shift → +4 → btn 4
+        assert_eq!(bytes, b"\x1b[<4;2;2M");
+    }
+
+    #[test]
+    fn mouse_ctrl_alt_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 0, 0, 0, false, true, true, &m);
+        // ctrl=16 + alt=8 → btn 24
+        assert_eq!(bytes, b"\x1b[<24;1;1M");
+    }
+
+    #[test]
+    fn mouse_scroll_up_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(64, 5, 10, 0, false, false, false, &m);
+        assert_eq!(bytes, b"\x1b[<64;6;11M");
+    }
+
+    #[test]
+    fn mouse_all_modifiers_motion_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 4, 9, 2, true, true, true, &m);
+        // shift(4) + alt(8) + ctrl(16) + motion(32) = 60
+        assert_eq!(bytes, b"\x1b[<60;5;10M");
     }
 }

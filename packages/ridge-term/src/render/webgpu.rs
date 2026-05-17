@@ -63,6 +63,10 @@ use crate::render::procedural_box;
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
 use crate::term::attr_table::AttrTable;
 
+/// High bit tag for grapheme-cluster glyph IDs so they cannot collide
+/// with any Unicode codepoint (max 0x10FFFF).
+const CLUSTER_TAG: u32 = 0x8000_0000;
+
 /// Convert an `[u8; 4]` byte color into the f32 form CellInstance
 /// fields use. Vertex stage shaders can multiply linearly without
 /// re-normalizing.
@@ -459,8 +463,8 @@ impl RenderBackend for WebGpuPaneBackend {
 
     fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
-        let cell_w = self.metrics.cell_w * self.metrics.dpr;
-        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let tui_mode = self.metrics.tui_mode;
         let theme = self.theme.clone();
 
@@ -474,13 +478,13 @@ impl RenderBackend for WebGpuPaneBackend {
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
-            let pixel_x = (col as f32 * cell_w).round();
-            let pixel_x_right = ((col + cell_span) as f32 * cell_w).round();
-            let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
+            let pixel_x = col as f32 * cell_w;
+            let pixel_x_right = (col + cell_span) as f32 * cell_w;
+            let cell_w_px = pixel_x_right - pixel_x;
 
-            let pixel_y = (row_idx as f32 * self.metrics.cell_h * self.metrics.dpr).round();
-            let pixel_y_bot = ((row_idx + 1) as f32 * self.metrics.cell_h * self.metrics.dpr).round();
-            let row_h_int = (pixel_y_bot - pixel_y).max(1.0);
+            let pixel_y = row_idx as f32 * cell_h;
+            let pixel_y_bot = (row_idx + 1) as f32 * cell_h;
+            let row_h_int = pixel_y_bot - pixel_y;
 
             // Bg quad: full cell_span × cell_w rectangle.
             row_bg_instances.push(CellInstance {
@@ -498,7 +502,8 @@ impl RenderBackend for WebGpuPaneBackend {
 
     fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
-        let cell_w = self.metrics.cell_w * self.metrics.dpr;
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let tui_mode = self.metrics.tui_mode;
         let theme = self.theme.clone();
 
@@ -513,13 +518,13 @@ impl RenderBackend for WebGpuPaneBackend {
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
-            let pixel_x = (col as f32 * cell_w).round();
-            let pixel_x_right = ((col + cell_span) as f32 * cell_w).round();
-            let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
+            let pixel_x = col as f32 * cell_w;
+            let pixel_x_right = (col + cell_span) as f32 * cell_w;
+            let cell_w_px = pixel_x_right - pixel_x;
 
-            let pixel_y = (row_idx as f32 * self.metrics.cell_h * self.metrics.dpr).round();
-            let pixel_y_bot = ((row_idx + 1) as f32 * self.metrics.cell_h * self.metrics.dpr).round();
-            let row_h_int = (pixel_y_bot - pixel_y).max(1.0);
+            let pixel_y = row_idx as f32 * cell_h;
+            let pixel_y_bot = (row_idx + 1) as f32 * cell_h;
+            let row_h_int = pixel_y_bot - pixel_y;
 
             if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
                 continue;
@@ -527,7 +532,7 @@ impl RenderBackend for WebGpuPaneBackend {
 
             let cluster_text = if !row.clusters.is_empty() {
                 let target = col.min(u16::MAX as usize) as u16;
-                row.clusters.iter().find(|c| c.col == target).map(|c| c.text.as_str())
+                row.clusters.iter().find(|c| c.col == target).map(|c| c.text.as_ref())
             } else {
                 None
             };
@@ -537,10 +542,14 @@ impl RenderBackend for WebGpuPaneBackend {
                 None => cell.ch.encode_utf8(&mut ch_buf),
             };
 
+            let (font_family_hash, font_size_q) = {
+                let ctx = self.ctx.borrow();
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&ctx.font_family, &mut h);
+                (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
+            };
             let entry: Option<GlyphEntry> = {
                 let mut ctx = self.ctx.borrow_mut();
-                let font_family_hash = ctx.get_font_family_hash(&self.metrics.font_family);
-                let font_size_q = (self.metrics.font_size_px * 100.0).round() as u16;
 
                 let mut style_flags = 0;
                 if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
@@ -556,7 +565,7 @@ impl RenderBackend for WebGpuPaneBackend {
                         let mut h = std::collections::hash_map::DefaultHasher::new();
                         h.write(text.as_bytes());
                         let raw = std::hash::Hasher::finish(&h) as u32;
-                        super::glyph_atlas::CLUSTER_TAG | (raw & !super::glyph_atlas::CLUSTER_TAG)
+                        CLUSTER_TAG | (raw & !CLUSTER_TAG)
                     }
                     None => cell.ch as u32,
                 };
@@ -569,10 +578,9 @@ impl RenderBackend for WebGpuPaneBackend {
 
                 let res = ctx.rasterize_and_admit(
                     key,
-                    &self.metrics.font_family,
-                    self.metrics.font_size_px,
-                    self.metrics.dpr,
                     glyph_text,
+                    self.metrics.dpr,
+                    style_flags,
                     &self.frame_pinned,
                 );
                 if let Ok(entry) = res {
@@ -625,195 +633,21 @@ impl RenderBackend for WebGpuPaneBackend {
         }
         self.pending_instances.append(&mut row_glyph_instances);
     }
-            let attrs = attrs_table.get(cell.attr);
-            let (_attrs, fg, bg) =
-                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
-
-            let cell_span = cell.width.max(1) as usize;
-            // §A.6 (2026-05-08) — visual-wide narrow: same conservative
-            // gate as Canvas2D. cell_span stays 1 (logical layout / cursor
-            // accounting); visual_span becomes 2 only when the next cell
-            // is BLANK so the overflowing glyph half can't visually
-            // collide with a real neighbour glyph.
-            // The exact `is_visual_wide_codepoint` check is deferred until
-            // we know `leading_cp` (after the cluster lookup below); we
-            // first lock down `pixel_x` / `cell_w_px` against `cell_span`
-            // to keep the bg quad faithful to the logical layout.
-            let pixel_x = ((col as f32) * cell_w).round();
-            let pixel_x_right = (((col + cell_span) as f32) * cell_w).round();
-            let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
-            let pixel_y = row_top;
-
-            // Style flags pack BOLD + ITALIC bits per GlyphKey docstring.
-            let mut style_flags: u8 = 0;
-            if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
-                style_flags |= GlyphKey::STYLE_BOLD;
-            }
-            if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
-                style_flags |= GlyphKey::STYLE_ITALIC;
-            }
-
-            // §4.7 (2026-05-07): if the row sidecar registered a multi-
-            // codepoint grapheme cluster at this column, atlas-key it by
-            // a cluster hash with the high bit set so it can't collide
-            // with any Unicode codepoint (max 0x10FFFF, well below the
-            // tag bit). The rasterizer receives the full cluster string
-            // so the browser paints ZWJ / RIS / VS clusters as a single
-            // visual unit. Non-cluster cells take the existing codepoint
-            // path — zero overhead for ASCII / CJK output.
-            const CLUSTER_TAG: u32 = 0x8000_0000;
-            let cluster_text: Option<&str> = if !row.clusters.is_empty() {
-                let target = col.min(u16::MAX as usize) as u16;
-                row.clusters
-                    .iter()
-                    .find(|c| c.col == target)
-                    .map(|c| c.text.as_ref())
-            } else {
-                None
-            };
-            let glyph_id: u32 = match cluster_text {
-                Some(text) => {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    std::hash::Hash::hash(text, &mut h);
-                    let raw = std::hash::Hasher::finish(&h) as u32;
-                    CLUSTER_TAG | (raw & !CLUSTER_TAG)
-                }
-                None => cell.ch as u32,
-            };
-            let key = GlyphKey {
-                font_family_hash,
-                font_size_q,
-                glyph_id,
-                style_flags,
-            };
-
-            // ── Single `borrow_mut` for both lookup and (on miss)
-            //    admit. `GlyphAtlas::lookup` requires `&mut self` because
-            //    it bumps the LRU on hit; `rasterize_and_admit` is also
-            //    `&mut self`. Sequential mutations inside one borrow are
-            //    safe; we just have to make sure the borrow ends BEFORE
-            //    the post-loop frame_pinned write so a later iteration's
-            //    borrow_mut doesn't nest.
-            //    §4.7: pass cluster string when present, otherwise the
-            //    single codepoint as a one-char string slice.
-            let mut ch_buf = [0u8; 4];
-            let glyph_text: &str = match cluster_text {
-                Some(text) => text,
-                None => cell.ch.encode_utf8(&mut ch_buf),
-            };
-            let entry: Option<GlyphEntry> = {
-                let mut ctx = self.ctx.borrow_mut();
-                match ctx.atlas.lookup(&key) {
-                    Some(e) => Some(e),
-                    None => ctx
-                        .rasterize_and_admit(key, glyph_text, dpr, style_flags, &self.frame_pinned)
-                        .ok(),
-                }
-            };
-
-            // ── Pin the layer (hit OR fresh insert) so a subsequent
-            //    miss in this same frame can't evict + overwrite it
-            //    before `end_frame` submits. Critical: must run AFTER
-            //    the admit above so the pin guards the just-uploaded
-            //    layer too.
-            if let Some(e) = entry {
-                if (e.layer as usize) < self.frame_pinned.len() {
-                    self.frame_pinned[e.layer as usize] = true;
-                }
-            }
-
-            let (atlas_uv, atlas_layer) = match entry {
-                Some(e) => (e.uv, e.layer as u32),
-                None => ([0.0, 0.0, 0.0, 0.0], 0),
-            };
-
-            // §B.11 — natural-size glyph + layer ordering. Push bg
-            // quad at exactly `cell_span * cell_w` (preserves bg
-            // colour for the whole logical cell). Push glyph quad at
-            // the rasteriser's measured natural advance (`e.px_w`),
-            // floored at 1 device px so degenerate sub-pixel glyphs
-            // still draw something. No max cap — natural-wider
-            // glyphs OVERFLOW into the next cell, where layer
-            // ordering ensures cell N+1's bg has been painted FIRST
-            // (so the overflow paints on top of it, visible) and
-            // cell N+1's glyph paints AFTER (so cell N+1's actual
-            // glyph pixels overpaint the overflow only at their
-            // intersection — both glyphs visible).
-            let is_color_flag: u32 =
-                if entry.map(|e| e.is_color).unwrap_or(false) { 1 } else { 0 };
-
-            // Bg quad: full cell_span × cell_w rectangle.
-            row_bg_instances.push(CellInstance {
-                cell_xy: [pixel_x, pixel_y],
-                cell_size: [cell_w_px, row_h_int],
-                atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                atlas_layer: 0,
-                fg_rgba: rgba_u8_to_f32(fg),
-                bg_rgba: rgba_u8_to_f32(bg),
-                is_color: 0,
-            });
-
-            // Procedural block/box-drawing chars 
-            let first_char = glyph_text.chars().next();
-            let mut drawn_procedurally = false;
-
-            if let Some(ch) = first_char {
-                if let Some(rects) = procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int) {
-                    for r in rects {
-                        row_glyph_instances.push(CellInstance {
-                            cell_xy: [r.x, r.y],
-                            cell_size: [r.w, r.h],
-                            atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                            atlas_layer: 0,
-                            fg_rgba: rgba_u8_to_f32(fg),
-                            bg_rgba: [0.0, 0.0, 0.0, 0.0], // Background already painted
-                            is_color: 0,
-                        });
-                    }
-                    drawn_procedurally = true;
-                }
-            }
-
-            if !drawn_procedurally {
-                // Glyph quad: at natural advance, anchored at cell left.
-                if let Some(e) = entry {
-                    let natural_w = (e.px_w as f32).max(1.0);
-                    row_glyph_instances.push(CellInstance {
-                        cell_xy: [pixel_x, pixel_y],
-                        cell_size: [natural_w, row_h_int],
-                        atlas_uv: e.uv,
-                        atlas_layer: e.layer as u32,
-                        fg_rgba: rgba_u8_to_f32(fg),
-                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                        is_color: is_color_flag,
-                    });
-                }
-            }
-        }
-        // §B.11 — flush bg pass first, then glyph pass. Within each
-        // pass cells are in left-to-right order, so cell N's overflow
-        // glyph (in glyph pass) paints over cell N+1's bg (in bg pass)
-        // BEFORE cell N+1's own glyph paints. This is the layer-
-        // rendering invariant that makes natural-size overflow
-        // visible.
-        self.pending_instances.append(&mut row_bg_instances);
-        self.pending_instances.append(&mut row_glyph_instances);
-    }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
         // Cursor reuses the cell pipeline — geometrically just another
         // colored quad, drawn OVER the row instances pushed earlier.
         use crate::render::backend::CursorStyle;
 
-        let cell_w = self.metrics.cell_w * self.metrics.dpr;
-        let cell_h = self.metrics.cell_h * self.metrics.dpr;
-        let pixel_x = ((cursor.col as f32) * cell_w).round();
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+        let pixel_x = (cursor.col as f32) * cell_w;
         let cursor_span = cursor.width.max(1) as usize;
-        let pixel_x_right = (((cursor.col + cursor_span) as f32) * cell_w).round();
-        let cell_w_px = (pixel_x_right - pixel_x).max(1.0);
-        let pixel_y = ((cursor.row as f32) * cell_h).round();
-        let pixel_y_bot = (((cursor.row + 1) as f32) * cell_h).round();
-        let cell_h_int = (pixel_y_bot - pixel_y).max(1.0);
+        let pixel_x_right = (cursor.col + cursor_span) as f32 * cell_w;
+        let cell_w_px = pixel_x_right - pixel_x;
+        let pixel_y = (cursor.row as f32) * cell_h;
+        let pixel_y_bot = (cursor.row + 1) as f32 * cell_h;
+        let cell_h_int = pixel_y_bot - pixel_y;
         let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
 
         // 1) Cursor block (colored rectangle at the appropriate
@@ -882,19 +716,19 @@ impl RenderBackend for WebGpuPaneBackend {
         if rects.is_empty() {
             return;
         }
-        let cell_w = self.metrics.cell_w * self.metrics.dpr;
-        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let sel_color = rgba_u8_to_f32(self.theme.selection_bg);
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
                 continue;
             }
-            let pixel_x = ((col_start as f32) * cell_w).round();
-            let pixel_x_right = ((col_end as f32) * cell_w).round();
-            let width = (pixel_x_right - pixel_x).max(1.0);
-            let pixel_y = ((row as f32) * cell_h).round();
-            let pixel_y_bot = (((row + 1) as f32) * cell_h).round();
-            let height = (pixel_y_bot - pixel_y).max(1.0);
+            let pixel_x = (col_start as f32) * cell_w;
+            let pixel_x_right = (col_end as f32) * cell_w;
+            let width = pixel_x_right - pixel_x;
+            let pixel_y = (row as f32) * cell_h;
+            let pixel_y_bot = (row + 1) as f32 * cell_h;
+            let height = pixel_y_bot - pixel_y;
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
                 cell_size: [width, height],
@@ -911,18 +745,18 @@ impl RenderBackend for WebGpuPaneBackend {
         if rects.is_empty() {
             return;
         }
-        let cell_w = self.metrics.cell_w * self.metrics.dpr;
-        let cell_h = self.metrics.cell_h * self.metrics.dpr;
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let thickness = (2.0 * self.metrics.dpr).round().max(1.0);
         let link_color = rgba_u8_to_f32(self.theme.hyperlink_color);
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
                 continue;
             }
-            let pixel_x = ((col_start as f32) * cell_w).round();
-            let pixel_x_right = ((col_end as f32) * cell_w).round();
-            let width = (pixel_x_right - pixel_x).max(1.0);
-            let pixel_y_bot = (((row + 1) as f32) * cell_h).round();
+            let pixel_x = (col_start as f32) * cell_w;
+            let pixel_x_right = (col_end as f32) * cell_w;
+            let width = pixel_x_right - pixel_x;
+            let pixel_y_bot = (row + 1) as f32 * cell_h;
             let pixel_y = pixel_y_bot - thickness;
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],

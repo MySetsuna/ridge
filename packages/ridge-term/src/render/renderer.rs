@@ -293,7 +293,6 @@ impl<B: RenderBackend> Renderer<B> {
         // mutations is cheap (most rows have 0 spans). URI/id are NOT
         // hashed — the underline overlay only varies spatially, so
         // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
-        let mut any_dirty = false;
         let mut dirty_rows = Vec::with_capacity(rows_n);
         let mut dirty_flags = vec![false; rows_n];
 

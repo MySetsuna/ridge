@@ -6,8 +6,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw, FolderOpen } from 'lucide-svelte';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw, FolderOpen, Bug } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
@@ -34,7 +35,7 @@
 
   let { open, onClose }: Props = $props();
 
-  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions' | 'agent';
+  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions' | 'agent' | 'debug';
   let activeSection = $state<SectionId>('appearance');
 
   // ── Agent 统计 ────────────────────────────────────────────────────────────
@@ -154,6 +155,7 @@
     { id: 'terminal',    label: '终端',     icon: TerminalIcon },
     { id: 'extensions',  label: '扩展',     icon: Puzzle },
     { id: 'agent',       label: 'Agent 统计', icon: Activity },
+    { id: 'debug',       label: '调试应用',   icon: Bug },
   ];
 </script>
 
@@ -506,6 +508,24 @@
                 </div>
               {/if}
             {/if}
+
+          {:else if activeSection === 'debug'}
+            <div>
+              <div class="text-[12px] text-[var(--rg-fg)] mb-1">调试工具</div>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">
+                打开 Chromium DevTools 检查应用布局、网络请求和终端渲染状态。
+              </div>
+              <button
+                type="button"
+                class="px-4 py-2 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)] hover:bg-[var(--rg-surface-2)] text-[12px] text-[var(--rg-fg)] transition-colors"
+                onclick={async () => {
+                  const win = getCurrentWindow();
+                  await win.openDevTools();
+                }}
+              >
+                打开 DevTools
+              </button>
+            </div>
           {/if}
         </div>
       </section>

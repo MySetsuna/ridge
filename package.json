@@ -1,22 +1,23 @@
 {
   "name": "ridge",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "description": "",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "node scripts/build-ridge.mjs",
+    "build": "vite build",
     "build:teammate-shim": "cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml && node scripts/copy-teammate-shim.mjs",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
+    "tauri:build": "pnpm tauri build && node scripts/post-build-rename.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
-    "clean": "rimraf node_modules/.vite build src-tauri/target/release"
+    "clean": "rimraf node_modules/.vite build src-tauri/target"
   },
   "license": "MIT",
   "dependencies": {

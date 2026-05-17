@@ -9,6 +9,8 @@ import type { PaneNode } from '$lib/types';
 export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
+import { TerminalManager } from '$lib/terminal/manager';
+import { teardownPtyBridge } from '$lib/terminal/ptyBridge';
 
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
@@ -1453,11 +1455,7 @@ export async function closePane(paneId: string) {
   //   2. Manager.detach → frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  // Lazy-import to keep paneTree.ts independent of the terminal layer
-  // for non-Tauri / SSR / test contexts (paneTree.test.ts mocks only
-  // its own surface).
-  const { TerminalManager } = await import('$lib/terminal/manager');
-  const { teardownPtyBridge } = await import('$lib/terminal/ptyBridge');
+  // 拆除 PTY 连接 → 不再投递 pty-output 事件到即将释放的 kernel
   teardownPtyBridge(paneId);
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {

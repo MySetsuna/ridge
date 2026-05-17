@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import { themeData, getTheme, isThemeSystemResolved } from './themes';
+import { getTheme } from './themes';
 
 export interface UserSettings {
   claudeExtensionEnabled: boolean;
