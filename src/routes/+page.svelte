@@ -46,6 +46,9 @@ self.MonacoEnvironment = {
   // Side-effect import: each built-in plugin auto-registers via its module
   // script. Must land once, at app chrome level.
   import '$lib/plugins';
+  import { initThemeSystem } from '$lib/stores/themes';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { setupTerminalThemeBridge } from '$lib/terminal/themeBridge';
   import {
     Terminal,
     FolderOpen,
@@ -78,7 +81,6 @@ self.MonacoEnvironment = {
     RefreshCw,
   } from 'lucide-svelte';
 // 删除相关的最近工作区定义和函数
-  // ... (Keep existing imports)
   import {
     paneTreeStore,
     workspacePaneTrees,
@@ -143,7 +145,6 @@ self.MonacoEnvironment = {
   async function pickAndOpenWorkspace() {
     savedOpen = false;
     try {
-      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
       const picked = await openDialog({
         multiple: false,
         filters: [{ name: 'Ridge Workspace', extensions: ['ridge'] }],
@@ -928,22 +929,19 @@ function expandSidebar() {
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     // 全局屏蔽默认右键菜单，显示自定义菜单
     document.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
 
     // 初始化主题系统：从后端获取主题数据
-    import('$lib/stores/themes').then((m) => m.initThemeSystem()).then(() => {
-      // 主题数据就绪后，把当前主题写到 CSS 变量
-      initSettingsBoot();
-      // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
-      // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
-      // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
-      return import('$lib/terminal/themeBridge');
-    }).then((m) => {
-      m.setupTerminalThemeBridge();
-    });
+    await initThemeSystem();
+    // 主题数据就绪后，把当前主题写到 CSS 变量
+    initSettingsBoot();
+    // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
+    // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
+    // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
+    setupTerminalThemeBridge();
 
     // §A.9 (2026-05-08 follow-up) — single global host canvas. The
     // canvas itself is mounted by `globalHostCanvas` action on the
@@ -1306,7 +1304,7 @@ function expandSidebar() {
         <!-- Global-scope plugin region — mounted once at the sidebar footer,
              visible across every tab. Keep it compact; plugins are expected
              to collapse their own heavy UI. -->
-        <div class="shrink-0 border-t border-[var(--rg-border)]/40">
+        <div class="shrink-0 border-t border-[var(--rg-border)]/40 mt-auto">
           <SidebarPluginRegion scope="global" />
         </div>
 

@@ -60,6 +60,8 @@
   const monacoTheme = $derived(ridgeMonacoThemeId($settingsStore.theme));
   $effect(() => {
     applyRidgeMonacoTheme($settingsStore.theme);
+    editor?.updateOptions({ theme: monacoTheme });
+    diffEditor?.updateOptions({ theme: monacoTheme });
   });
 
   let mountPoint: HTMLDivElement | undefined;
@@ -345,6 +347,10 @@
     if (!mountPoint || !editorState.isVisible) return;
     if (editor) return;
     if (current?.isImage || current?.diffArgs) return;
+    
+    // Ensure theme is applied before creating editor
+    applyRidgeMonacoTheme($settingsStore.theme);
+
     // 显式构造初始 model 并塞进 modelCache，后续切回这个 path 才能复用 undo/redo 栈。
     let initialModel: monaco.editor.ITextModel;
     if (current) {
@@ -396,6 +402,9 @@
   });
 
   // Swap editor model when active tab changes —— **keep-alive 模式**：
+
+
+
   //   • 切到另一个 tab 时不 dispose 旧 model；先把当前的 view state（滚动、
   //     光标、selection、折叠等）按 path 存到 viewStateCache。
   //   • 切到目标 tab 时优先复用 modelCache 里已有的 model（含 undo/redo 栈），

@@ -416,7 +416,7 @@
 
   <!-- ── 命令行历史：来自 ~/.claude/history.jsonl ── -->
   {#if fileHistory.length > 0 || fileHistoryLoading}
-    <div class="border-t border-[var(--rg-border)] mt-auto">
+    <div class="border-t border-[var(--rg-border)] mt-auto min-h-0 flex flex-col">
       <!-- Section header -->
       <div
         class="sticky top-0 z-10 w-full px-3 h-7 flex items-center gap-1.5 bg-[var(--rg-surface-2)]/92 backdrop-blur-md text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] cursor-pointer select-none hover:bg-[var(--rg-surface)] transition-colors"
@@ -468,6 +468,7 @@
       </div>
 
       {#if !fileHistoryCollapsed}
+        <div class="flex-1 min-h-0 overflow-y-auto" use:overlayScroll>
         {#if fileHistoryView === 'flat'}
           <!-- Flat view: all entries sorted by time -->
           {#each fileHistory as entry (historyKey(entry))}
@@ -581,6 +582,7 @@
             </div>
           {/each}
         {/if}
+        </div>
       {/if}
     </div>
   {/if}

@@ -670,127 +670,137 @@ $effect(() => {
 	manager.setPadding(paneId, px);
 });
 
-function onContainerKeyDown(e: KeyboardEvent) {
-	if (!alive || !attached) return;
+	function onContainerKeyDown(e: KeyboardEvent) {
+		if (!alive || !attached) return;
 
-    // 如果弹层打开，优先转发键盘事件
-    if (historyPopupOpen && historyPopupEl?.handleKeyDown(e)) {
-        e.preventDefault();
-        return;
-    }
-
-	// Skip key handling entirely during IME composition so partial
-	// composition keys (especially keyCode=229 from Pinyin/Kana IMEs)
-	// don't reach the shell. compositionend delivers the final string
-	// via manager.write.
-	if (isComposing || e.isComposing) return;
-
-	// ArrowUp/ArrowDown → 唤起历史弹窗，保留当前输入文本作为实时筛选
-	if (!historyPopupOpen && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-		e.preventDefault();
-		historyPopupOpen = true;
-		const anchor = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0, cellH: 20 };
-		const rect = container.getBoundingClientRect();
-		historyPopupPosition = { x: rect.left + anchor.x, y: rect.top + anchor.y, inputH: anchor.cellH };
-		return;
-	}
-
-	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-	const mod = e.ctrlKey || (isMac && e.metaKey);
-
-	// App-override keys that should NOT be consumed by the terminal —
-	// the OS/Tauri window or another part of the app handles them.
-	// F11 fullscreen and Ctrl+, settings are OS/app-level; pass through.
-	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;
-	if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;
-
-	// Ctrl+F — open/close in-pane search bar.
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
-		if (termSearchOpen) {
-			closeSearchBar();
-		} else {
-			openSearchBar();
-		}
-		e.preventDefault();
-		return;
-	}
-
-	// Ctrl+Shift+C with selection: copy.  Ctrl+C alone flows to the
-	// terminal for SIGINT (^C).
-	if (mod && e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
-		const sel = manager.getSelectionText(paneId);
-		if (sel) {
-			void writeText(sel);
+		// 1. 先处理弹层和 IME（这些是高优先级的应用逻辑，不是系统快捷键）
+		if (historyPopupOpen && historyPopupEl?.handleKeyDown(e)) {
 			e.preventDefault();
 			return;
 		}
-	}
+		if (isComposing || e.isComposing) return;
 
-	// Ctrl+Shift+V — paste (manager handles bracketed paste).
-	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => {
-			if (text) manager.paste(paneId, text);
-		});
-		e.preventDefault();
-		return;
-	}
+		// 2. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
+		// 注意: TUI 启用鼠标模式 (isMouseReporting) 也意味着键盘应优先给 TUI
+		const isTui = manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId) || manager.isMouseReporting(paneId);
+		if (isTui) {
+			if (manager.handleKeyDown(paneId, e)) {
+				e.preventDefault();
+				return;
+			}
+		}
 
-	// PageUp/Down for scrollback navigation. Modifier required so we don't
-	// hijack programs like less that use bare PageUp.
-	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageUp') {
-		manager.scrollUp(paneId, manager.rows(paneId) - 1);
-		// Pull older history from the backend if we're approaching the
-		// top of the kernel buffer; fire-and-forget so the immediate
-		// scroll stays responsive (TASKS §2.1).
-		maybePrefetchOlder();
-		refreshScrollState();
-		showScrollbarTemporarily();
-		e.preventDefault();
-		return;
-	}
-	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageDown') {
-		manager.scrollDown(paneId, manager.rows(paneId) - 1);
-		refreshScrollState();
-		showScrollbarTemporarily();
-		e.preventDefault();
-		return;
-	}
+		// 3. ArrowUp/ArrowDown → 唤起历史弹窗，非 TUI 模式下才处理
+		if (!isTui && !historyPopupOpen && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+			e.preventDefault();
+			historyPopupOpen = true;
+			const anchor = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0, cellH: 20 };
+			const rect = container.getBoundingClientRect();
+			historyPopupPosition = { x: rect.left + anchor.x, y: rect.top + anchor.y, inputH: anchor.cellH };
+			return;
+		}
 
-	// Default: pass through to kernel's key encoder.
-	// User typing usually causes the kernel to auto-scroll to bottom; refresh
-	// the local mirror so the scroll-to-bottom button re-hides.
-	if (manager.handleKeyDown(paneId, e)) {
-		e.preventDefault();
-		refreshScrollState();
-        
-        // 只跟踪输入缓冲区（用于 ArrowUp 清除 shell 行），不再自动弹出历史弹层
-        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-            currentInputBuffer += e.key;
-        } else if (e.key === 'Backspace') {
-            currentInputBuffer = currentInputBuffer.slice(0, -1);
-        } else if (e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
-            currentInputBuffer = '';
-        }
+		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const mod = e.ctrlKey || (isMac && e.metaKey);
+
+		// 4. 系统/RidgePane 快捷键拦截，非 TUI 模式下处理
+		// F11 fullscreen and Ctrl+, settings are OS/app-level; pass through.
+		if (!isTui) {
+			if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;
+			if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;
+
+			// Ctrl+F — open/close in-pane search bar.
+			if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+				if (termSearchOpen) {
+					closeSearchBar();
+				} else {
+					openSearchBar();
+				}
+				e.preventDefault();
+				return;
+			}
+
+			// Ctrl+Shift+C with selection: copy.  Ctrl+C alone flows to the
+			// terminal for SIGINT (^C).
+			if (mod && e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+				const sel = manager.getSelectionText(paneId);
+				if (sel) {
+					void writeText(sel);
+					e.preventDefault();
+					return;
+				}
+			}
+
+			// Ctrl+Shift+V — paste (manager handles bracketed paste).
+			if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+				void readText().then((text) => {
+					if (text) manager.paste(paneId, text);
+				});
+				e.preventDefault();
+				return;
+			}
+
+			// PageUp/Down for scrollback navigation. Modifier required so we don't
+			// hijack programs like less that use bare PageUp.
+			if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageUp') {
+				manager.scrollUp(paneId, manager.rows(paneId) - 1);
+				maybePrefetchOlder();
+				refreshScrollState();
+				showScrollbarTemporarily();
+				e.preventDefault();
+				return;
+			}
+			if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageDown') {
+				manager.scrollDown(paneId, manager.rows(paneId) - 1);
+				refreshScrollState();
+				showScrollbarTemporarily();
+				e.preventDefault();
+				return;
+			}
+		}
+
+		// 5. Default: pass through to kernel's key encoder (非 TUI 下)
+		if (!isTui && manager.handleKeyDown(paneId, e)) {
+			e.preventDefault();
+			refreshScrollState();
+
+			// 只跟踪输入缓冲区（用于 ArrowUp 清除 shell 行），不再自动弹出历史弹层
+			if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+				currentInputBuffer += e.key;
+			} else if (e.key === 'Backspace') {
+				currentInputBuffer = currentInputBuffer.slice(0, -1);
+			} else if (e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+				currentInputBuffer = '';
+			}
+		}
 	}
-}
 
 	function onContainerWheel(e: WheelEvent) {
 		if (!alive || !attached) return;
 
-        // 记录拖拽状态
-        const isDragging = manager.isSelecting(paneId);
-
-		// ... (原有 TUI 拦截逻辑保持不变)
-		if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId)) {
-			// ... 
+		// ★ TUI 模式下: 将滚轮编码为 SGR 鼠标滚动事件转发给 PTY
+		if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId) || manager.isMouseReporting(paneId)) {
+			const delta = e.deltaY;
+			if (delta !== 0) {
+				const btn = delta < 0 ? 64 : 65; // 64=scroll-up, 65=scroll-down
+				const cell = manager.cellFromEvent(paneId, e);
+				if (cell) {
+					const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+					const mod = e.ctrlKey || (isMac && e.metaKey);
+					const bytes = manager.getKernel(paneId).encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
+					if (bytes.length > 0) {
+						manager.sendData(paneId, bytes);
+					}
+				}
+			}
+			e.preventDefault();
 			return;
 		}
 
 		// Only intercept when there's actually scrollback to scroll through.
 		const { total } = manager.scrollState(paneId);
 		if (total === 0) return;
-        
-        // 更新滚动
+
 		const delta = e.deltaY;
 		const lines = Math.max(1, Math.round(Math.abs(delta) / 30));
 		if (delta < 0) {
@@ -798,13 +808,6 @@ function onContainerKeyDown(e: KeyboardEvent) {
 		} else {
 			manager.scrollDown(paneId, lines);
 		}
-        
-        // 如果正在选择，同步更新选择区域终点
-        if (isDragging) {
-            // 获取当前鼠标位置并更新
-            const pos = manager.getMousePosition(paneId); // 需要添加该方法
-            manager.updateSelection(paneId, pos);
-        }
 
 		refreshScrollState();
 		showScrollbarTemporarily();

@@ -440,6 +440,26 @@ export class TerminalKernel {
         return v2;
     }
     /**
+     * Encode a mouse event as an SGR terminal sequence. Delegates to
+     * `input::encode_mouse` which generates `ESC [ < btn ; row ; col [Mm]`.
+     * Always uses SGR format regardless of ?1006 state — the terminal
+     * decodes both; SGR is simpler and doesn't overflow at high row/col.
+     * @param {number} row
+     * @param {number} col
+     * @param {number} button
+     * @param {number} action
+     * @param {boolean} shift
+     * @param {boolean} ctrl
+     * @param {boolean} alt
+     * @returns {Uint8Array}
+     */
+    encodeMouse(row, col, button, action, shift, ctrl, alt) {
+        const ret = wasm.terminalkernel_encodeMouse(this.__wbg_ptr, row, col, button, action, shift, ctrl, alt);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * Wrap a paste string for the PTY, applying bracketed-paste
      * markers when DEC mode 2004 is active.
      * @param {string} text
@@ -540,10 +560,45 @@ export class TerminalKernel {
      * within the decay window) and the kernel is NOT on alt screen.
      * Read by `manager.ts::fitPane` to decide whether to wipe primary
      * before resizing the PTY (mirrors the existing alt-screen branch).
+     * Also read by `manager.ts::isInlineTuiActive` for keyboard/mouse
+     * priority routing — see also `isMouseReporting`.
      * @returns {boolean}
      */
     isInlineTuiMode() {
         const ret = wasm.terminalkernel_isInlineTuiMode(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when ?1003 (any-event / motion tracking) is active.
+     * @returns {boolean}
+     */
+    isMouseAnyEvent() {
+        const ret = wasm.terminalkernel_isMouseAnyEvent(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when ?1002 (button-event / drag tracking) is active.
+     * @returns {boolean}
+     */
+    isMouseButtonEvent() {
+        const ret = wasm.terminalkernel_isMouseButtonEvent(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when any DEC mouse reporting mode is active
+     * (?1000 normal, ?1002 button-event, or ?1003 any-event).
+     * @returns {boolean}
+     */
+    isMouseReporting() {
+        const ret = wasm.terminalkernel_isMouseReporting(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when ?1006 (SGR mouse encoding) is active.
+     * @returns {boolean}
+     */
+    isMouseSgr() {
+        const ret = wasm.terminalkernel_isMouseSgr(this.__wbg_ptr);
         return ret !== 0;
     }
     /**
@@ -1042,9 +1097,6 @@ function __wbg_get_imports() {
         __wbg_fillRect_9219f775d7e8e73e: function(arg0, arg1, arg2, arg3, arg4) {
             arg0.fillRect(arg1, arg2, arg3, arg4);
         },
-        __wbg_fillText_98d725af065a75a4: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4, arg5) {
-            arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4, arg5);
-        }, arguments); },
         __wbg_fillText_9fbea3af94326c74: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4);
         }, arguments); },

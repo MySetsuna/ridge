@@ -97,14 +97,7 @@ fn vs_main(
 ) -> VertexOut {
     let corner = corner_for(vid);
 
-    // Expand each quad corner outward by 0.5 device pixel so adjacent
-    // quads always overlap by ≥1 px regardless of GPU rasterisation
-    // floating-point precision. Without this, cells sharing an NDC edge
-    // can produce a 1-pixel gap that leaks the clear colour (theme_bg)
-    // — visible as thin horizontal or vertical lines between coloured
-    // cells in character art / block fills.
-    let expand = (corner * 2.0 - 1.0) * 0.5;
-    let pixel_pos = instance.cell_xy + corner * instance.cell_size + expand;
+    let pixel_pos = instance.cell_xy + corner * instance.cell_size;
 
     // Pixel → NDC. Top-left origin (y flipped).
     let clip_xy = vec2<f32>(

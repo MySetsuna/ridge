@@ -246,6 +246,13 @@ export class TerminalKernel {
      */
     encodeKey(key: string, ctrl: boolean, alt: boolean, shift: boolean, meta: boolean): Uint8Array;
     /**
+     * Encode a mouse event as an SGR terminal sequence. Delegates to
+     * `input::encode_mouse` which generates `ESC [ < btn ; row ; col [Mm]`.
+     * Always uses SGR format regardless of ?1006 state — the terminal
+     * decodes both; SGR is simpler and doesn't overflow at high row/col.
+     */
+    encodeMouse(row: number, col: number, button: number, action: number, shift: boolean, ctrl: boolean, alt: boolean): Uint8Array;
+    /**
      * Wrap a paste string for the PTY, applying bracketed-paste
      * markers when DEC mode 2004 is active.
      */
@@ -276,8 +283,27 @@ export class TerminalKernel {
      * within the decay window) and the kernel is NOT on alt screen.
      * Read by `manager.ts::fitPane` to decide whether to wipe primary
      * before resizing the PTY (mirrors the existing alt-screen branch).
+     * Also read by `manager.ts::isInlineTuiActive` for keyboard/mouse
+     * priority routing — see also `isMouseReporting`.
      */
     isInlineTuiMode(): boolean;
+    /**
+     * Returns true when ?1003 (any-event / motion tracking) is active.
+     */
+    isMouseAnyEvent(): boolean;
+    /**
+     * Returns true when ?1002 (button-event / drag tracking) is active.
+     */
+    isMouseButtonEvent(): boolean;
+    /**
+     * Returns true when any DEC mouse reporting mode is active
+     * (?1000 normal, ?1002 button-event, or ?1003 any-event).
+     */
+    isMouseReporting(): boolean;
+    /**
+     * Returns true when ?1006 (SGR mouse encoding) is active.
+     */
+    isMouseSgr(): boolean;
     /**
      * Synchronous output mode `?2026`. While `true`, the manager should
      * hold off rendering frames so the user doesn't see torn intermediate
@@ -436,6 +462,7 @@ export interface InitOutput {
     readonly terminalkernel_cursorRow: (a: number) => number;
     readonly terminalkernel_dumpVisibleText: (a: number) => [number, number];
     readonly terminalkernel_encodeKey: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly terminalkernel_encodeMouse: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly terminalkernel_encodePaste: (a: number, b: number, c: number) => [number, number];
     readonly terminalkernel_feed: (a: number, b: number, c: number) => void;
     readonly terminalkernel_getSelectionText: (a: number) => [number, number];
@@ -447,6 +474,10 @@ export interface InitOutput {
     readonly terminalkernel_isCursorVisible: (a: number) => number;
     readonly terminalkernel_isFocusReporting: (a: number) => number;
     readonly terminalkernel_isInlineTuiMode: (a: number) => number;
+    readonly terminalkernel_isMouseAnyEvent: (a: number) => number;
+    readonly terminalkernel_isMouseButtonEvent: (a: number) => number;
+    readonly terminalkernel_isMouseReporting: (a: number) => number;
+    readonly terminalkernel_isMouseSgr: (a: number) => number;
     readonly terminalkernel_isSyncOutput: (a: number) => number;
     readonly terminalkernel_isUserScrollLocked: (a: number) => number;
     readonly terminalkernel_lastAbsCsiPosition: (a: number) => any;

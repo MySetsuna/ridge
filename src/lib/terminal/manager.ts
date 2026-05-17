@@ -919,12 +919,30 @@ export class TerminalManager {
 			if (!cell) return;
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
+
+			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+			const mod = e.ctrlKey || (isMac && e.metaKey);
+
+			// ★ TUI mouse reporting priority: when the TUI app has enabled
+			// DEC mouse mode (?1000/?1002/?1003), forward the click to the
+			// application instead of starting selection — unless the user
+			// holds Alt as an escape hatch for text selection.
+			// Matches iTerm2/VSCode terminal behaviour (Alt+drag = select).
+			if (!e.altKey && ent.kernel.isMouseReporting()) {
+				const btn = 0; // left button
+				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
+				if (bytes.length > 0) {
+					ent.dataHandler(bytes);
+					ent.selecting = false;
+					try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
+					return;
+				}
+			}
+
 			// Ctrl/Cmd+click → if cell is inside an OSC 8 hyperlink span,
 			// open it via the Tauri opener (or window.open as fallback).
 			// Goes BEFORE selection branches so links beat selection on
 			// modifier-click, matching iTerm/VSCode behaviour.
-			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-			const mod = e.ctrlKey || (isMac && e.metaKey);
 			if (mod) {
 				const link = ent.kernel.hyperlinkAt(cell.row, cell.col) as
 					| { uri: string; id: string | null }
@@ -996,13 +1014,27 @@ export class TerminalManager {
 		const pointerMoveListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
+			const hoverCell = computeCell(e);
+
+			// ★ TUI mouse motion forwarding: when ?1002 (button-event /
+			// drag) is active and we're in a drag, encode and send each
+			// move to the application. Only applies when NOT in Alt-select
+			// escape hatch mode.
+			if (!e.altKey && ent.kernel.isMouseButtonEvent() && ent.selecting && hoverCell) {
+				const btn = 0; // left button; motion flag +32 is set by encodeMouse
+				const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, 2, e.shiftKey, e.ctrlKey || (/Mac|iPhone|iPod|iPad/.test(navigator.platform || '') && e.metaKey), e.altKey);
+				if (bytes.length > 0) {
+					ent.dataHandler(bytes);
+					return;
+				}
+			}
+
 			// Ctrl-hover over an OSC 8 hyperlink → pointer cursor as
 			// affordance. Any other state resets cursor (when ctrl is
 			// released or pointer moves off a link). Round-trips don't
 			// fire on bare key events so the user must wiggle the mouse
 			// once after releasing/pressing Ctrl — minor; round 5 can
 			// add keydown/keyup hooks if needed.
-			const hoverCell = computeCell(e);
 			const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod = e.ctrlKey || (isMacUA && e.metaKey);
 			if (hoverCell && mod) {
@@ -1023,6 +1055,23 @@ export class TerminalManager {
 		const pointerUpListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
+
+			// ★ TUI mouse release forwarding: send button release event
+			// when mouse reporting is active, so the TUI app doesn't
+			// get stuck in a pressed state.
+			if (ent.kernel.isMouseReporting()) {
+				const cell = computeCell(e);
+				if (cell) {
+					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+					const ctrl = e.ctrlKey || (isMacUA && e.metaKey);
+					const bytes = ent.kernel.encodeMouse(cell.row, cell.col, 3, 1, e.shiftKey, ctrl, e.altKey);
+					// btn=3=release, action=1=release → ESC [ <3 ; row ; col m
+					if (bytes.length > 0) {
+						ent.dataHandler(bytes);
+					}
+				}
+			}
+
 			ent.selecting = false;
 			try { (e.target as Element | null)?.releasePointerCapture?.(e.pointerId); } catch {}
 		};
@@ -1331,9 +1380,9 @@ export class TerminalManager {
 			const buffered = entry.feedBuffer ? entry.feedBuffer.length : 0;
 			const pending = entry.feedFlushTimer !== null ? 'pending' : 'idle';
 			// eslint-disable-next-line no-console
-			console.debug(
-				`[tick-trace][${ts}ms][${id}][feed +${bytes.length}B inlineTui=${inlineTui} buffered=${buffered}B flush=${pending}]`,
-			);
+			// console.debug(
+			// 	`[tick-trace][${ts}ms][${id}][feed +${bytes.length}B inlineTui=${inlineTui} buffered=${buffered}B flush=${pending}]`,
+			// );
 		}
 		if (inlineTui) {
 			// §4c (2026-05-08) — burst-only coalescing. The §A.4 8 ms
@@ -1589,6 +1638,35 @@ export class TerminalManager {
 		return this.panes.get(paneId)?.kernel.getSelectionText() ?? '';
 	}
 
+	/** Compute viewport cell coordinates from a mouse/pointer event.
+	 *  Returns null if the pane is unknown or cell metrics aren't ready. */
+	cellFromEvent(paneId: string, e: { clientX: number; clientY: number }): { row: number; col: number } | null {
+		const ent = this.panes.get(paneId);
+		if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
+		const rect = ent.container.getBoundingClientRect();
+		const x = e.clientX - rect.left;
+		const y = e.clientY - rect.top;
+		const cols = ent.kernel.cols();
+		const rows = ent.kernel.rows();
+		if (cols === 0 || rows === 0) return null;
+		const col = Math.max(0, Math.min(cols - 1, Math.floor(x / ent.cellW)));
+		const row = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
+		return { row, col };
+	}
+
+	/** Write raw bytes to the pane's PTY via dataHandler. */
+	sendData(paneId: string, data: Uint8Array): void {
+		const ent = this.panes.get(paneId);
+		if (!ent || !ent.dataHandler) return;
+		ent.dataHandler(data);
+	}
+
+	/** Get the wasm kernel for a pane. Used for direct kernel method calls
+	 *  (e.g. encodeMouse) from component event handlers. */
+	getKernel(paneId: string): TerminalKernel | null {
+		return this.panes.get(paneId)?.kernel ?? null;
+	}
+
     isSelecting(paneId: string): boolean {
         return this.panes.get(paneId)?.selecting ?? false;
     }
@@ -1735,6 +1813,19 @@ export class TerminalManager {
 
 	/** Whether the pane is currently in alt-screen mode (TUI app active). */
 	isAltScreen(paneId: string): boolean { return this.panes.get(paneId)?.kernel.isAltScreen() ?? false; }
+
+	/** Whether the pane has DEC mouse reporting enabled (?1000/?1002/?1003).
+	 *  When true, pointer events should be forwarded to the TUI instead of
+	 *  being consumed by ridge's selection/link handlers. */
+	isMouseReporting(paneId: string): boolean {
+		const e = this.panes.get(paneId);
+		if (!e) return false;
+		try {
+			return (e.kernel as unknown as { isMouseReporting?: () => boolean }).isMouseReporting?.() ?? false;
+		} catch {
+			return false;
+		}
+	}
 
 	/** Whether the pane is in inline-TUI mode (Ink-style app on primary screen,
 	 *  e.g. opencode). Like alt-screen mode, wheel events should pass through to
@@ -2405,9 +2496,9 @@ export class TerminalManager {
 						const ts = performance.now().toFixed(1);
 						const id = entry.paneId.slice(0, 8);
 						// eslint-disable-next-line no-console
-						console.debug(
-							`[tick-trace][${ts}ms][${id}][cur=(${cr},${cc}) inlineTui=${inTui} dirty=${dirty} render=${shouldRender}] row${cr}="${rowDump}"`,
-						);
+						// console.debug(
+						// 	`[tick-trace][${ts}ms][${id}][cur=(${cr},${cc}) inlineTui=${inTui} dirty=${dirty} render=${shouldRender}] row${cr}="${rowDump}"`,
+						// );
 					} catch {
 						/* missing wasm export → skip the trace silently */
 					}

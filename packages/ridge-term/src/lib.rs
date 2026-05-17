@@ -17,6 +17,8 @@
 //!     - getSelectionText()
 //!     - hasSelection()
 //!     - isAltScreen() / isCursorVisible() / isBracketedPaste() / isAppCursorKeys()
+//!     - isMouseReporting() / isMouseButtonEvent() / isMouseAnyEvent() / isMouseSgr()
+//!     - encodeMouse(row, col, button, action, shift, ctrl, alt) → Uint8Array
 //!     - dumpVisibleText()  (debug)
 //!
 //!   class RenderHandle (wasm32-only)
@@ -542,6 +544,8 @@ impl JsTerminal {
     /// within the decay window) and the kernel is NOT on alt screen.
     /// Read by `manager.ts::fitPane` to decide whether to wipe primary
     /// before resizing the PTY (mirrors the existing alt-screen branch).
+    /// Also read by `manager.ts::isInlineTuiActive` for keyboard/mouse
+    /// priority routing — see also `isMouseReporting`.
     #[wasm_bindgen(js_name = isInlineTuiMode)]
     pub fn is_inline_tui_mode(&self) -> bool {
         self.inner.is_inline_tui_mode_at(js_sys::Date::now() as i64)
@@ -574,6 +578,52 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = isFocusReporting)]
     pub fn is_focus_reporting(&self) -> bool {
         self.inner.modes().mouse_focus
+    }
+
+    // ---- mouse mode queries -----------------------------------------
+
+    /// Returns true when any DEC mouse reporting mode is active
+    /// (?1000 normal, ?1002 button-event, or ?1003 any-event).
+    #[wasm_bindgen(js_name = isMouseReporting)]
+    pub fn is_mouse_reporting(&self) -> bool {
+        let m = self.inner.modes();
+        m.mouse_normal || m.mouse_button_event || m.mouse_any_event
+    }
+
+    /// Returns true when ?1002 (button-event / drag tracking) is active.
+    #[wasm_bindgen(js_name = isMouseButtonEvent)]
+    pub fn is_mouse_button_event(&self) -> bool {
+        self.inner.modes().mouse_button_event
+    }
+
+    /// Returns true when ?1003 (any-event / motion tracking) is active.
+    #[wasm_bindgen(js_name = isMouseAnyEvent)]
+    pub fn is_mouse_any_event(&self) -> bool {
+        self.inner.modes().mouse_any_event
+    }
+
+    /// Returns true when ?1006 (SGR mouse encoding) is active.
+    #[wasm_bindgen(js_name = isMouseSgr)]
+    pub fn is_mouse_sgr(&self) -> bool {
+        self.inner.modes().mouse_sgr
+    }
+
+    /// Encode a mouse event as an SGR terminal sequence. Delegates to
+    /// `input::encode_mouse` which generates `ESC [ < btn ; row ; col [Mm]`.
+    /// Always uses SGR format regardless of ?1006 state — the terminal
+    /// decodes both; SGR is simpler and doesn't overflow at high row/col.
+    #[wasm_bindgen(js_name = encodeMouse)]
+    pub fn encode_mouse(
+        &self,
+        row: usize,
+        col: usize,
+        button: u8,
+        action: u8,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) -> Vec<u8> {
+        crate::input::encode_mouse(button, row, col, action, shift, ctrl, alt, self.inner.modes())
     }
 
     #[wasm_bindgen(js_name = dumpVisibleText)]

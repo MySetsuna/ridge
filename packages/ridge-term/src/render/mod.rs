@@ -31,34 +31,34 @@ pub struct Rect {
 pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32) -> Option<Vec<Rect>> {
     let mut rects = Vec::with_capacity(2);
 
-    let lw = (cell_w * 0.15).max(1.0).round();
-    let lh = (cell_h * 0.1).max(1.0).round();
+    // Procedural drawing: use the exact provided bounds. 
+    // Rounding and snapping happen in the renderer's pixel-coordinate space,
+    // not here, to avoid double-rounding artifacts.
+    let lw = cell_w * 0.15;
+    let lh = cell_h * 0.1;
     
     // Centers for line drawing
-    let cx = cell_x + (cell_w / 2.0).floor() - (lw / 2.0).floor();
-    let cy = cell_y + (cell_h / 2.0).floor() - (lh / 2.0).floor();
+    let cx = cell_x + (cell_w - lw) / 2.0;
+    let cy = cell_y + (cell_h - lh) / 2.0;
 
     match c {
         // --- Block Elements (U+2580 - U+259F) ---
         '\u{2588}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: cell_h }), // Full block
-        '\u{2580}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: (cell_h / 2.0).ceil() }), // Upper half block
-        '\u{2584}' => rects.push(Rect { x: cell_x, y: cell_y + (cell_h / 2.0).floor(), w: cell_w, h: (cell_h / 2.0).ceil() }), // Lower half block
-        '\u{258C}' => rects.push(Rect { x: cell_x, y: cell_y, w: (cell_w / 2.0).ceil(), h: cell_h }), // Left half block
-        '\u{2590}' => rects.push(Rect { x: cell_x + (cell_w / 2.0).floor(), y: cell_y, w: (cell_w / 2.0).ceil(), h: cell_h }), // Right half block
-        '\u{2581}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h - (cell_h * 0.125).ceil(), w: cell_w, h: (cell_h * 0.125).ceil() }), // Lower one eighth
-        '\u{2582}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h - (cell_h * 0.25).ceil(), w: cell_w, h: (cell_h * 0.25).ceil() }), // Lower one quarter
-        '\u{2583}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h - (cell_h * 0.375).ceil(), w: cell_w, h: (cell_h * 0.375).ceil() }), // Lower three eighths
-        '\u{2585}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h - (cell_h * 0.625).ceil(), w: cell_w, h: (cell_h * 0.625).ceil() }), // Lower five eighths
-        '\u{2586}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h - (cell_h * 0.75).ceil(), w: cell_w, h: (cell_h * 0.75).ceil() }), // Lower three quarters
-        '\u{2587}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h - (cell_h * 0.875).ceil(), w: cell_w, h: (cell_h * 0.875).ceil() }), // Lower seven eighths
-
+        '\u{2580}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: cell_h / 2.0 }), // Upper half block
+        '\u{2584}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h / 2.0, w: cell_w, h: cell_h / 2.0 }), // Lower half block
+        '\u{258C}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w / 2.0, h: cell_h }), // Left half block
+        '\u{2590}' => rects.push(Rect { x: cell_x + cell_w / 2.0, y: cell_y, w: cell_w / 2.0, h: cell_h }), // Right half block
+        '\u{2581}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.875, w: cell_w, h: cell_h * 0.125 }), // Lower one eighth
+        '\u{2582}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.75, w: cell_w, h: cell_h * 0.25 }), // Lower one quarter
+        '\u{2583}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.625, w: cell_w, h: cell_h * 0.375 }), // Lower three eighths
+        '\u{2585}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.375, w: cell_w, h: cell_h * 0.625 }), // Lower five eighths
+        '\u{2586}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.25, w: cell_w, h: cell_h * 0.75 }), // Lower three quarters
+        '\u{2587}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.125, w: cell_w, h: cell_h * 0.875 }), // Lower seven eighths
+        
         // --- Box Drawing (U+2500 - U+257F) Core set ---
-        // Horizontal
         '\u{2500}' | '\u{2501}' => rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }),
-        // Vertical
         '\u{2502}' | '\u{2503}' => rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }),
         
-        // Corners
         '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => { // Top-left
             rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh }); 
             rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
@@ -76,7 +76,6 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
         }
         
-        // T-shapes
         '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}' | '\u{2522}' | '\u{2523}' => { // Vertical-right
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }); 
             rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
@@ -94,7 +93,6 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
         }
         
-        // Cross
         '\u{253C}' | '\u{253D}' | '\u{253E}' | '\u{253F}' | '\u{2540}' | '\u{2541}' | '\u{2542}' | '\u{2543}' | '\u{2544}' | '\u{2545}' | '\u{2546}' | '\u{2547}' | '\u{2548}' | '\u{2549}' | '\u{254A}' | '\u{254B}' => {
             rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }); 
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h });

@@ -10,6 +10,7 @@
 
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { fileEditorStore } from '$lib/stores/fileEditor';
+import { choiceDialog } from '$lib/components/RidgeDialog.svelte';
 import {
   hostKeyFromUrl,
   isTrustedUrl,
@@ -191,7 +192,6 @@ async function openExternalWithTrust(href: string, trustBase?: string): Promise<
   }
   if (!isTrustedUrl(href, trustBase)) {
     const host = hostKeyFromUrl(href) ?? href;
-    const { choiceDialog } = await import('$lib/components/RidgeDialog.svelte');
     const choice = await choiceDialog({
       title: '打开外部链接',
       message: `${host}\n${href}`,
