@@ -18,7 +18,7 @@ pub mod surface_host;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod webgpu;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -26,20 +26,42 @@ pub struct Rect {
     pub h: f32,
 }
 
-/// Generates procedural rectangles for Box Drawing (U+2500..=U+257F) and 
+/// Generates procedural rectangles for Box Drawing (U+2500..=U+257F) and
 /// Block Elements (U+2580..=U+259F). Returns None if the character is not supported.
+///
+/// Coverage of the Block Elements range (U+2580..=U+259F):
+///   - Half blocks (▀ ▄ ▌ ▐) + full block (█)
+///   - Lower N/8 blocks (▁ ▂ ▃ ▅ ▆ ▇)
+///   - Left N/8 blocks (▉ ▊ ▋ ▍ ▎ ▏)
+///   - Upper 1/8 (▔) + right 1/8 (▕)
+///   - Quadrants (▖ ▗ ▘ ▙ ▚ ▛ ▜ ▝ ▞ ▟)
+///
+/// Shade characters (U+2591..=U+2593) are intentionally NOT handled here —
+/// they need an alpha-modulated full-cell quad rather than opaque
+/// rectangles, so the caller (`webgpu::draw_row_texts`) special-cases them
+/// with a scaled fg alpha before falling through to this lookup.
 pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32) -> Option<Vec<Rect>> {
     let mut rects = Vec::with_capacity(2);
 
-    // Procedural drawing: use the exact provided bounds. 
+    // Procedural drawing: use the exact provided bounds.
     // Rounding and snapping happen in the renderer's pixel-coordinate space,
     // not here, to avoid double-rounding artifacts.
     let lw = cell_w * 0.15;
     let lh = cell_h * 0.1;
-    
+
     // Centers for line drawing
     let cx = cell_x + (cell_w - lw) / 2.0;
     let cy = cell_y + (cell_h - lh) / 2.0;
+
+    // Half-cell helpers for the quadrant block characters (U+2596..=U+259F).
+    // A quadrant is `cell_w/2 × cell_h/2` anchored at one of the four
+    // corners of the cell.
+    let hw = cell_w * 0.5;
+    let hh = cell_h * 0.5;
+    let q_tl = Rect { x: cell_x,      y: cell_y,      w: hw, h: hh }; // top-left
+    let q_tr = Rect { x: cell_x + hw, y: cell_y,      w: hw, h: hh }; // top-right
+    let q_bl = Rect { x: cell_x,      y: cell_y + hh, w: hw, h: hh }; // bottom-left
+    let q_br = Rect { x: cell_x + hw, y: cell_y + hh, w: hw, h: hh }; // bottom-right
 
     match c {
         // --- Block Elements (U+2580 - U+259F) ---
@@ -54,7 +76,33 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
         '\u{2585}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.375, w: cell_w, h: cell_h * 0.625 }), // Lower five eighths
         '\u{2586}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.25, w: cell_w, h: cell_h * 0.75 }), // Lower three quarters
         '\u{2587}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.125, w: cell_w, h: cell_h * 0.875 }), // Lower seven eighths
-        
+
+        // Left N/8 blocks — grow leftward as N increases. ▉ is 7/8 wide
+        // (mirror of ▁), ▏ is 1/8 wide (mirror of ▔).
+        '\u{2589}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.875, h: cell_h }),
+        '\u{258A}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.75,  h: cell_h }),
+        '\u{258B}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.625, h: cell_h }),
+        '\u{258D}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.375, h: cell_h }),
+        '\u{258E}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.25,  h: cell_h }),
+        '\u{258F}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.125, h: cell_h }),
+
+        // Upper 1/8 (▔) and right 1/8 (▕).
+        '\u{2594}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: cell_h * 0.125 }),
+        '\u{2595}' => rects.push(Rect { x: cell_x + cell_w * 0.875, y: cell_y, w: cell_w * 0.125, h: cell_h }),
+
+        // Quadrant blocks (U+2596..=U+259F) — 1, 2 or 3 quarter-cell rects.
+        '\u{2596}' => rects.push(q_bl),                              // ▖ lower-left
+        '\u{2597}' => rects.push(q_br),                              // ▗ lower-right
+        '\u{2598}' => rects.push(q_tl),                              // ▘ upper-left
+        '\u{2599}' => { rects.push(q_tl); rects.push(q_bl); rects.push(q_br); } // ▙ all except upper-right
+        '\u{259A}' => { rects.push(q_tl); rects.push(q_br); }        // ▚ diagonal (TL+BR)
+        '\u{259B}' => { rects.push(q_tl); rects.push(q_tr); rects.push(q_bl); } // ▛ all except lower-right
+        '\u{259C}' => { rects.push(q_tl); rects.push(q_tr); rects.push(q_br); } // ▜ all except lower-left
+        '\u{259D}' => rects.push(q_tr),                              // ▝ upper-right
+        '\u{259E}' => { rects.push(q_tr); rects.push(q_bl); }        // ▞ diagonal (TR+BL)
+        '\u{259F}' => { rects.push(q_tr); rects.push(q_bl); rects.push(q_br); } // ▟ all except upper-left
+
+
         // --- Box Drawing (U+2500 - U+257F) Core set ---
         '\u{2500}' | '\u{2501}' => rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }),
         '\u{2502}' | '\u{2503}' => rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }),
@@ -379,5 +427,153 @@ impl RenderBackend for AnyBackend {
             #[cfg(feature = "webgpu")]
             AnyBackend::Webgpu(b) => b.end_frame(),
         }
+    }
+}
+
+#[cfg(test)]
+mod procedural_box_tests {
+    use super::{procedural_box, Rect};
+
+    // Unit-cell bounds keep the assertions simple: every fraction maps to
+    // an exact f32 with no rounding required.
+    const CX: f32 = 0.0;
+    const CY: f32 = 0.0;
+    const CW: f32 = 8.0;
+    const CH: f32 = 16.0;
+
+    fn box_for(c: char) -> Vec<Rect> {
+        procedural_box(c, CX, CY, CW, CH).unwrap_or_else(|| panic!("char {:?} should be procedurally drawn", c))
+    }
+
+    /// Full block must paint a single cell-sized rect — the renderer
+    /// relies on this for solid-block run-length output (btop CPU bars
+    /// at 100%, `printf "█"` smoke tests).
+    #[test]
+    fn full_block_covers_entire_cell() {
+        let rects = box_for('\u{2588}');
+        assert_eq!(rects.len(), 1);
+        let r = rects[0];
+        assert_eq!((r.x, r.y, r.w, r.h), (CX, CY, CW, CH));
+    }
+
+    /// Left N/8 blocks: ▉ (7/8) ▊ (6/8) ▋ (5/8) ▍ (3/8) ▎ (2/8) ▏ (1/8).
+    /// All anchor at the cell's left edge and extend rightward; height
+    /// is the full cell. Regression guard for the 2026-05 procedural_box
+    /// gap that left these characters falling through to atlas / font
+    /// glyphs and rendering at the wrong size in btop / mc.
+    #[test]
+    fn left_eighth_blocks_anchor_left_and_scale_width() {
+        for (ch, fraction) in [
+            ('\u{2589}', 0.875),
+            ('\u{258A}', 0.75),
+            ('\u{258B}', 0.625),
+            ('\u{258D}', 0.375),
+            ('\u{258E}', 0.25),
+            ('\u{258F}', 0.125),
+        ] {
+            let rects = box_for(ch);
+            assert_eq!(rects.len(), 1, "{:?} should be one rect", ch);
+            let r = rects[0];
+            assert_eq!(r.x, CX, "{:?} x", ch);
+            assert_eq!(r.y, CY, "{:?} y", ch);
+            assert!((r.w - CW * fraction).abs() < 1e-3, "{:?} w expected {} got {}", ch, CW * fraction, r.w);
+            assert_eq!(r.h, CH, "{:?} h", ch);
+        }
+    }
+
+    /// ▔ upper 1/8 — top strip; ▕ right 1/8 — right strip. Symmetric
+    /// counterparts to the existing ▁ and ▏.
+    #[test]
+    fn upper_and_right_one_eighth_blocks() {
+        let upper = box_for('\u{2594}');
+        assert_eq!(upper.len(), 1);
+        assert!((upper[0].h - CH * 0.125).abs() < 1e-3);
+        assert_eq!(upper[0].y, CY);
+        assert_eq!(upper[0].w, CW);
+
+        let right = box_for('\u{2595}');
+        assert_eq!(right.len(), 1);
+        assert!((right[0].w - CW * 0.125).abs() < 1e-3);
+        assert!((right[0].x - (CX + CW * 0.875)).abs() < 1e-3);
+        assert_eq!(right[0].h, CH);
+    }
+
+    /// Single-quadrant blocks: ▖ ▗ ▘ ▝ — exactly one half-cell rect,
+    /// positioned at one of the four corners.
+    #[test]
+    fn single_quadrant_blocks_use_half_cell_corner() {
+        let hw = CW * 0.5;
+        let hh = CH * 0.5;
+        // ▘ top-left
+        let r = box_for('\u{2598}');
+        assert_eq!(r, vec![Rect { x: CX, y: CY, w: hw, h: hh }]);
+        // ▝ top-right
+        let r = box_for('\u{259D}');
+        assert_eq!(r, vec![Rect { x: CX + hw, y: CY, w: hw, h: hh }]);
+        // ▖ bottom-left
+        let r = box_for('\u{2596}');
+        assert_eq!(r, vec![Rect { x: CX, y: CY + hh, w: hw, h: hh }]);
+        // ▗ bottom-right
+        let r = box_for('\u{2597}');
+        assert_eq!(r, vec![Rect { x: CX + hw, y: CY + hh, w: hw, h: hh }]);
+    }
+
+    /// Diagonal quadrants (▚ TL+BR, ▞ TR+BL) emit exactly two rects
+    /// covering opposite corners — they must NOT overlap.
+    #[test]
+    fn diagonal_quadrant_blocks_emit_two_opposite_corners() {
+        let r = box_for('\u{259A}'); // ▚
+        assert_eq!(r.len(), 2);
+        // Either ordering is fine; sort by x for stability.
+        let mut xs: Vec<f32> = r.iter().map(|q| q.x).collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(xs, vec![CX, CX + CW * 0.5]);
+
+        let r = box_for('\u{259E}'); // ▞
+        assert_eq!(r.len(), 2);
+    }
+
+    /// Three-quadrant blocks (▙ ▛ ▜ ▟) — exactly three half-cell rects
+    /// covering all corners except one.
+    #[test]
+    fn three_quadrant_blocks_emit_three_rects() {
+        for ch in ['\u{2599}', '\u{259B}', '\u{259C}', '\u{259F}'] {
+            assert_eq!(box_for(ch).len(), 3, "{:?}", ch);
+        }
+    }
+
+    /// Half blocks: ▀ (upper) and ▄ (lower) cover half the cell height.
+    #[test]
+    fn half_blocks_cover_half_cell_height() {
+        let upper = box_for('\u{2580}');
+        assert_eq!(upper.len(), 1);
+        assert_eq!(upper[0].h, CH * 0.5);
+        assert_eq!(upper[0].y, CY);
+
+        let lower = box_for('\u{2584}');
+        assert_eq!(lower.len(), 1);
+        assert_eq!(lower[0].h, CH * 0.5);
+        assert_eq!(lower[0].y, CY + CH * 0.5);
+    }
+
+    /// Shade characters (U+2591..=U+2593) are intentionally returned as
+    /// `None` so the renderer's alpha-modulated path takes over —
+    /// otherwise we'd over-paint with opaque rectangles and lose the
+    /// shading effect entirely. Regression guard.
+    #[test]
+    fn shade_chars_return_none() {
+        assert!(procedural_box('\u{2591}', CX, CY, CW, CH).is_none());
+        assert!(procedural_box('\u{2592}', CX, CY, CW, CH).is_none());
+        assert!(procedural_box('\u{2593}', CX, CY, CW, CH).is_none());
+    }
+
+    /// Out-of-coverage chars (regular ASCII, CJK, emoji) must fall back
+    /// to the atlas path — i.e. `procedural_box` returns `None` so the
+    /// caller's `if let Some(rects) = …` branch is skipped.
+    #[test]
+    fn non_block_chars_return_none() {
+        assert!(procedural_box('a', CX, CY, CW, CH).is_none());
+        assert!(procedural_box('中', CX, CY, CW, CH).is_none());
+        assert!(procedural_box('😀', CX, CY, CW, CH).is_none());
     }
 }
