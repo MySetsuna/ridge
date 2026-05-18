@@ -759,17 +759,20 @@ export class TerminalManager {
 		const padR = parseFloat(cs.paddingRight) || 0;
 		const padB = parseFloat(cs.paddingBottom) || 0;
 		const dpr = window.devicePixelRatio || 1;
+		const hostWDev = Math.round(hr.width * dpr);
+		const hostHDev = Math.round(hr.height * dpr);
 		const cssX = cr.left - hr.left + padL;
 		const cssY = cr.top - hr.top + padT;
 		const cssW = Math.max(0, cr.width - padL - padR);
 		const cssH = Math.max(0, cr.height - padT - padB);
-		const xDev = Math.max(0, Math.round(cssX * dpr));
-		const yDev = Math.max(0, Math.round(cssY * dpr));
-		const hostWDev = hostCanvas.width;
-		const hostHDev = hostCanvas.height;
-		const wDev = Math.max(0, Math.min(hostWDev - xDev, Math.round(cssW * dpr)));
-		const hDev = Math.max(0, Math.min(hostHDev - yDev, Math.round(cssH * dpr)));
+		// Add small epsilon to device-pixel width/height to avoid 1px
+		// clipping on right/bottom edges due to sub-pixel rounding.
+		const xDev = Math.max(0, Math.floor(cssX * dpr));
+		const yDev = Math.max(0, Math.floor(cssY * dpr));
+		const wDev = Math.max(0, Math.min(hostWDev - xDev, Math.ceil((cssX + cssW) * dpr) - xDev));
+		const hDev = Math.max(0, Math.min(hostHDev - yDev, Math.ceil((cssY + cssH) * dpr) - yDev));
 		entry.viewport = { x: xDev, y: yDev, w: wDev, h: hDev };
+
 		// Push offset (x, y) and size (w, h) separately. `setViewportOffset`
 		// is cheap (just updates two u32 fields); `resize` triggers
 		// kernel grid resize + force redraw, so we only call it when
@@ -920,12 +923,18 @@ export class TerminalManager {
 			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod = e.ctrlKey || (isMac && e.metaKey);
 
-			// ★ TUI mouse reporting priority: when the TUI app has enabled
-			// DEC mouse mode (?1000/?1002/?1003), forward ALL button clicks
-			// (left, middle, right) to the application — unless the user
-			// holds Alt as an escape hatch for text selection.
-			// Matches iTerm2/VSCode terminal behaviour (Alt+drag = select).
-			if (!e.altKey && ent.kernel.isMouseReporting()) {
+			// ★ TUI mouse reporting takes absolute priority: when the
+			// TUI app has enabled DEC mouse mode (?1000/?1002/?1003),
+			// forward ALL button clicks (left, middle, right) to the
+			// application. No modifier-key escape hatch — the user's
+			// stated intent ("以 TUI 设置为准") is that an app which
+			// asked for mouse events keeps them. To use host text
+			// selection inside a TUI, the user disables mouse reporting
+			// in the app (vim: `:set mouse=`, tmux: enter copy mode)
+			// — the standard xterm contract. The Alt modifier is still
+			// encoded into the SGR sequence (input.rs `encode_mouse` |8)
+			// so the TUI can react to Alt+click in its own bindings.
+			if (ent.kernel.isMouseReporting()) {
 				const btn = e.button; // 0=left, 1=middle, 2=right
 				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
 				if (bytes.length > 0) {
@@ -1019,9 +1028,10 @@ export class TerminalManager {
 
 			// ★ TUI mouse motion forwarding: when ?1002 (button-event /
 			// drag) or ?1003 (any-event / all motion) is active, encode
-			// and send each move to the application. Only applies when
-			// NOT in Alt-select escape hatch mode.
-			const isMouseMotion = !e.altKey && (ent.kernel.isMouseButtonEvent() || ent.kernel.isMouseAnyEvent());
+			// and send each move to the application. No Alt escape hatch
+			// — symmetric with pointerdown above (TUI takes priority for
+			// every event, modifier-aware encoding still flows through).
+			const isMouseMotion = ent.kernel.isMouseButtonEvent() || ent.kernel.isMouseAnyEvent();
 			if (isMouseMotion && hoverCell) {
 				// ?1003: forward ALL motion (no drag required)
 				// ?1002: only forward during drag (selecting=true)
