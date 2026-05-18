@@ -428,6 +428,15 @@ pub fn resolve_cell_colors(
     // polluting the TUI app's colour scheme.
     // In normal shell mode, Default background resolves to transparent,
     // so the container's CSS background (e.g. glass effect) shows through.
+    //
+    // Note: with BCE (Background Color Erase) in the grid, cells that
+    // were explicitly cleared while a coloured SGR pen was active
+    // already carry a non-Default bg → this fallback never runs for
+    // them, so a coloured status-bar / preview-pane background isn't
+    // overwritten by tui_bg. The fallback now only fires for cells
+    // that were never touched (alt-screen initial fill before the TUI
+    // app drew anything) — exactly the case where tui_bg IS the right
+    // answer.
     if matches!(attrs.bg.kind(), crate::term::attrs::ColorKind::Default) {
         if tui_mode {
             bg = theme.tui_bg;

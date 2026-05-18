@@ -141,8 +141,18 @@ impl Row {
     /// + drop cluster overrides. Used by ED (erase display) and when
     /// scrollback ejects a row back into the grid.
     pub fn clear(&mut self) {
+        self.fill_blank(Cell::EMPTY);
+    }
+
+    /// Like `clear()` but fills every cell with the provided blank cell
+    /// instead of `Cell::EMPTY`. Used by BCE (Background Color Erase):
+    /// erase / scroll / IL / DL paths build a `Cell { ch: ' ', attr:
+    /// <SGR bg attrs> }` and fill rows with it so xterm-compatible
+    /// "colour-fill on erase" works without each call site duplicating
+    /// the wrap/hyperlink/cluster reset.
+    pub fn fill_blank(&mut self, blank: Cell) {
         for c in &mut self.cells {
-            *c = Cell::EMPTY;
+            *c = blank;
         }
         self.wrapped = false;
         self.hyperlinks.clear();
