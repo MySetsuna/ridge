@@ -203,6 +203,12 @@ pub struct WebGpuPaneBackend {
     ///   - cross-pane atlas-generation bump (same reason, detected in begin_frame)
     /// Updated by end_frame after a successful upload + record.
     cached_n_cells: u32,
+    /// Snapshot of `ctx.atlas_eviction_count` at the last successful
+    /// `end_frame`. If the count advanced, another pane evicted a layer
+    /// that our cached instance buffer references — `record_cached_only`
+    /// must fall back to full render to rebuild instances with correct
+    /// atlas UV/layer data.
+    cached_evictions_seen: u64,
 }
 
 impl WebGpuPaneBackend {
@@ -269,6 +275,7 @@ impl WebGpuPaneBackend {
             // assigned by JS is fresh and the pane has never drawn.
             needs_initial_clear: true,
             cached_n_cells: 0,
+            cached_evictions_seen: 0,
         })
     }
 
@@ -876,6 +883,7 @@ impl RenderBackend for WebGpuPaneBackend {
         // `record_cached_only` can re-issue this exact draw without
         // walking the kernel grid.
         self.cached_n_cells = n_cells;
+        self.cached_evictions_seen = ctx.atlas_eviction_count;
     }
 }
 
@@ -921,11 +929,21 @@ impl WebGpuPaneBackend {
         // UVs. Catch the case where invalidation happened between
         // begin_frame's check and this call (e.g., another pane in the
         // same RAF tick triggered atlas rebuild).
-        let ctx_gen = self.ctx.borrow().atlas_generation;
-        if ctx_gen != self.atlas_generation_seen {
+        let ctx = self.ctx.borrow();
+        if ctx.atlas_generation != self.atlas_generation_seen {
             self.cached_n_cells = 0;
             return false;
         }
+        // Cross-pane atlas eviction guard: if another pane evicted a
+        // layer since our last `end_frame`, our cached instance buffer
+        // may reference stale atlas data. Fall back to full render so
+        // `draw_row_texts` re-rasterizes and re-uploads with correct
+        // layer assignments.
+        if ctx.atlas_eviction_count != self.cached_evictions_seen {
+            self.cached_n_cells = 0;
+            return false;
+        }
+        drop(ctx);
 
         // Re-upload the frame uniform — cheap (16 bytes) and guards
         // against any out-of-band viewport change since last frame.

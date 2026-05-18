@@ -780,19 +780,7 @@ $effect(() => {
 
 		// ★ TUI 模式下: 将滚轮编码为 SGR 鼠标滚动事件转发给 PTY
 		if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId) || manager.isMouseReporting(paneId)) {
-			const delta = e.deltaY;
-			if (delta !== 0) {
-				const btn = delta < 0 ? 64 : 65; // 64=scroll-up, 65=scroll-down
-				const cell = manager.cellFromEvent(paneId, e);
-				if (cell) {
-					const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-					const mod = e.ctrlKey || (isMac && e.metaKey);
-					const bytes = manager.getKernel(paneId).encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
-					if (bytes.length > 0) {
-						manager.sendData(paneId, bytes);
-					}
-				}
-			}
+			manager.handleWheel(paneId, e);
 			e.preventDefault();
 			return;
 		}
@@ -817,6 +805,8 @@ $effect(() => {
 
 function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
+	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
+	if (manager.isMouseReporting(paneId)) return;
 	e.preventDefault();
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [

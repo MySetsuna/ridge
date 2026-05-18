@@ -6,7 +6,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw, FolderOpen, Bug } from 'lucide-svelte';
   import {
@@ -510,6 +509,7 @@
             {/if}
 
           {:else if activeSection === 'debug'}
+            {#if import.meta.env.DEV}
             <div>
               <div class="text-[12px] text-[var(--rg-fg)] mb-1">调试工具</div>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">
@@ -519,13 +519,17 @@
                 type="button"
                 class="px-4 py-2 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)] hover:bg-[var(--rg-surface-2)] text-[12px] text-[var(--rg-fg)] transition-colors"
                 onclick={async () => {
-                  const win = getCurrentWindow();
-                  await win.openDevTools();
+                  try {
+                    await invoke('plugin:webview|internal_toggle_devtools');
+                  } catch (e) {
+                    console.error('toggle devtools failed:', e);
+                  }
                 }}
               >
                 打开 DevTools
               </button>
             </div>
+            {/if}
           {/if}
         </div>
       </section>
