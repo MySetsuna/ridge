@@ -506,6 +506,8 @@ impl<'a> Perform for Performer<'a> {
                 self.grid.set_scroll_region(None, None);
                 *self.grid.saved_cursor_mut() = None;
                 *self.current_attrs = Attrs::DEFAULT;
+                // BCE: pen tracks current_attrs.
+                self.grid.set_pen(*self.current_attrs);
                 self.grid.cursor_to(0, 0);
             }
             'q' if intermediates.first() == Some(&b' ') => {
@@ -553,7 +555,13 @@ impl<'a> Perform for Performer<'a> {
                 let bottom = nth_param_opt(params, 1);
                 self.grid.set_scroll_region(top, bottom);
             }
-            'm' => apply_sgr(self.current_attrs, params),
+            'm' => {
+                apply_sgr(self.current_attrs, params);
+                // BCE: sync SGR pen to the grid so subsequent erase /
+                // scroll / IL / DL paths fill blanks with the active
+                // background colour.
+                self.grid.set_pen(*self.current_attrs);
+            }
             'n' => {
                 // Device Status Report.
                 //   CSI 5 n   → terminal status request → reply CSI 0 n (OK)
@@ -642,6 +650,7 @@ impl<'a> Perform for Performer<'a> {
                 // TUIs that need a clean screen send ED 2 explicitly).
                 *self.modes = Modes::default(); // autowrap, cursor, mouse, etc.
                 *self.current_attrs = Attrs::DEFAULT; // SGR back to default fg/bg
+                self.grid.set_pen(*self.current_attrs); // BCE: pen tracks current_attrs.
                 *self.current_link = None; // close any open OSC 8 span
                 *self.last_printed = None; // REP has nothing to repeat
                                            // Order matters: leave alt screen FIRST so the subsequent
