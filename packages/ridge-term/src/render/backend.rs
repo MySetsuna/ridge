@@ -396,7 +396,7 @@ pub fn draw_frame<B: RenderBackend>(
     for row in rows {
         backend.draw_row_texts(row, attrs_table);
     }
-
+    
     // Hyperlink underlines
     if !hyperlink_rects.is_empty() {
         backend.draw_hyperlink_underlines(hyperlink_rects);

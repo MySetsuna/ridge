@@ -731,19 +731,32 @@ mod renderer_js {
             // — they go through the per-workspace `<canvas data-rg-ws-host>`
             // bound to the workspace's SurfaceHost.
             if let Some(handle) = surface_host {
-                if let Ok(b) =
-                    crate::render::webgpu::WebGpuPaneBackend::new(handle.host_rc()).await
-                {
-                    let metrics = FrameMetrics {
-                        cell_w: 8.0,
-                        cell_h: 16.0,
-                        dpr: 1.0,
-                        tui_mode: false,
-                    };
-                    let renderer =
-                        Renderer::new(AnyBackend::Webgpu(b), metrics, Theme::default_dark());
-                    return Ok(RenderHandle { renderer });
+                match crate::render::webgpu::WebGpuPaneBackend::new(handle.host_rc()).await {
+                    Ok(b) => {
+                        web_sys::console::log_1(&"[ridge] WebGPU backend OK".into());
+                        let metrics = FrameMetrics {
+                            cell_w: 8.0,
+                            cell_h: 16.0,
+                            dpr: 1.0,
+                            tui_mode: false,
+                        };
+                        let renderer = Renderer::new(
+                            AnyBackend::Webgpu(b),
+                            metrics,
+                            Theme::default_dark(),
+                        );
+                        return Ok(RenderHandle { renderer });
+                    }
+                    Err(e) => {
+                        web_sys::console::log_1(
+                            &format!("[ridge] WebGPU backend failed: {e:?}").into(),
+                        );
+                    }
                 }
+            } else {
+                web_sys::console::log_1(
+                    &"[ridge] surface_host is None — attachHost never completed".into(),
+                );
             }
             // No host available or WebGPU adapter missed — Canvas2D.
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;

@@ -248,6 +248,10 @@ impl SurfaceHost {
         // pane-A's draws survive pane-B's pass.
         self.needs_initial_clear = true;
 
+        // Reset the global frame-written mask so all atlas layers are
+        // available for writing in this new frame.
+        self.ctx.borrow_mut().reset_frame_written();
+
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(_e) => {

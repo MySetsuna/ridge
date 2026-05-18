@@ -912,9 +912,6 @@ export class TerminalManager {
 			return { row, col };
 		};
 		const pointerDownListener = (e: PointerEvent) => {
-			// Only primary button (left). Right-click / middle should not
-			// hijack selection — context menu handler in RidgePane owns those.
-			if (e.button !== 0) return;
 			const cell = computeCell(e);
 			if (!cell) return;
 			const ent = this.panes.get(paneId);
@@ -924,20 +921,24 @@ export class TerminalManager {
 			const mod = e.ctrlKey || (isMac && e.metaKey);
 
 			// ★ TUI mouse reporting priority: when the TUI app has enabled
-			// DEC mouse mode (?1000/?1002/?1003), forward the click to the
-			// application instead of starting selection — unless the user
+			// DEC mouse mode (?1000/?1002/?1003), forward ALL button clicks
+			// (left, middle, right) to the application — unless the user
 			// holds Alt as an escape hatch for text selection.
 			// Matches iTerm2/VSCode terminal behaviour (Alt+drag = select).
 			if (!e.altKey && ent.kernel.isMouseReporting()) {
-				const btn = 0; // left button
+				const btn = e.button; // 0=left, 1=middle, 2=right
 				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
 				if (bytes.length > 0) {
 					ent.dataHandler(bytes);
-					ent.selecting = false;
+					ent.selecting = true; // 保持 selecting=true 以便后续 motion 事件继续转发给 TUI
 					try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 					return;
 				}
 			}
+
+			// Only primary button (left) for selection. Right-click /
+			// middle-click handled by context menu in RidgePane.
+			if (e.button !== 0) return;
 
 			// Ctrl/Cmd+click → if cell is inside an OSC 8 hyperlink span,
 			// open it via the Tauri opener (or window.open as fallback).
@@ -1017,15 +1018,22 @@ export class TerminalManager {
 			const hoverCell = computeCell(e);
 
 			// ★ TUI mouse motion forwarding: when ?1002 (button-event /
-			// drag) is active and we're in a drag, encode and send each
-			// move to the application. Only applies when NOT in Alt-select
-			// escape hatch mode.
-			if (!e.altKey && ent.kernel.isMouseButtonEvent() && ent.selecting && hoverCell) {
-				const btn = 0; // left button; motion flag +32 is set by encodeMouse
-				const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, 2, e.shiftKey, e.ctrlKey || (/Mac|iPhone|iPod|iPad/.test(navigator.platform || '') && e.metaKey), e.altKey);
-				if (bytes.length > 0) {
-					ent.dataHandler(bytes);
-					return;
+			// drag) or ?1003 (any-event / all motion) is active, encode
+			// and send each move to the application. Only applies when
+			// NOT in Alt-select escape hatch mode.
+			const isMouseMotion = !e.altKey && (ent.kernel.isMouseButtonEvent() || ent.kernel.isMouseAnyEvent());
+			if (isMouseMotion && hoverCell) {
+				// ?1003: forward ALL motion (no drag required)
+				// ?1002: only forward during drag (selecting=true)
+				if (ent.kernel.isMouseAnyEvent() || ent.selecting) {
+					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+					const mod = e.ctrlKey || (isMacUA && e.metaKey);
+					const btn = e.buttons & 1 ? 0 : e.buttons & 2 ? 2 : e.buttons & 4 ? 1 : 0;
+					const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, 2, e.shiftKey, mod, e.altKey);
+					if (bytes.length > 0) {
+						ent.dataHandler(bytes);
+						return;
+					}
 				}
 			}
 
@@ -1613,6 +1621,40 @@ export class TerminalManager {
 		entry.dataHandler(bytes);
 		this.scheduleImeAnchorCapture(entry);
 		return true;
+	}
+
+	/**
+	 * Forward a wheel event to the TUI application when DEC mouse reporting
+	 * is active. Encodes the scroll as an SGR mouse sequence (button 64/65
+	 * for up/down) and sends it through the data handler.
+	 */
+	handleWheel(paneId: string, ev: WheelEvent): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry || !entry.dataHandler) return false;
+		if (!entry.kernel.isMouseReporting()) return false;
+
+		const rect = entry.container.getBoundingClientRect();
+		const x = ev.clientX - rect.left;
+		const y = ev.clientY - rect.top;
+		if (entry.cellW <= 0 || entry.cellH <= 0) return false;
+		const cols = entry.kernel.cols();
+		const rows = entry.kernel.rows();
+		if (cols === 0 || rows === 0) return false;
+		const col = Math.max(0, Math.min(cols - 1, Math.floor(x / entry.cellW)));
+		const row = Math.max(0, Math.min(rows - 1, Math.floor(y / entry.cellH)));
+
+		const delta = ev.deltaY;
+		if (delta === 0) return false;
+
+		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const ctrl = ev.ctrlKey || (isMac && ev.metaKey);
+		const btn = delta < 0 ? 64 : 65; // 64=up, 65=down
+		const bytes = entry.kernel.encodeMouse(row, col, btn, 0, ev.shiftKey, ctrl, ev.altKey);
+		if (bytes.length > 0) {
+			entry.dataHandler(bytes);
+			return true;
+		}
+		return false;
 	}
 
 	/**

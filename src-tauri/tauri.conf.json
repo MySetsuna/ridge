@@ -4,7 +4,7 @@
   "version": "0.0.2",
   "identifier": "com.tauri-app.ridge",
   "build": {
-    "beforeDevCommand": "node scripts/ensure-teammate-shim.mjs && npm run dev",
+    "beforeDevCommand": "node packages/ridge-term/build.mjs --dev && node scripts/ensure-teammate-shim.mjs && npm run dev",
     "devUrl": "http://127.0.0.1:5173",
     "beforeBuildCommand": "node packages/ridge-term/build.mjs && npm run build",
     "beforeBundleCommand": "cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml",

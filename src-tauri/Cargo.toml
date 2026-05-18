@@ -6,6 +6,10 @@ authors = ["you"]
 edition = "2021"
 default-run = "ridge"
 
+[features]
+# 对于自定义构建，启用 "devtools" 这个特性
+devtools = ["tauri/devtools"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
