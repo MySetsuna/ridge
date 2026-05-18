@@ -211,6 +211,14 @@ pub struct WebGpuPaneBackend {
     cached_evictions_seen: u64,
 }
 
+impl Drop for WebGpuPaneBackend {
+    fn drop(&mut self) {
+        // Drop bind_group, frame_uniform, and instance_buffer explicitly
+        // (if wgpu needs it) or just let them drop naturally.
+        // In wgpu-rs, buffers/bindgroups drop automatically on scope exit.
+    }
+}
+
 impl WebGpuPaneBackend {
     /// Acquire (or reuse) the shared `GpuContext` + `SurfaceHost`, then
     /// allocate this pane's per-pane buffers + bind group. Async
@@ -583,16 +591,42 @@ impl RenderBackend for WebGpuPaneBackend {
                     style_flags,
                 };
 
-                let res = ctx.rasterize_and_admit(
-                    key,
-                    glyph_text,
-                    self.metrics.dpr,
-                    style_flags,
-                    &self.frame_pinned,
-                );
-                if let Ok(entry) = res {
-                    self.frame_pinned[entry.layer as usize] = true;
-                    Some(entry)
+                // Lookup-first: `rasterize_and_admit` is the miss path
+                // — its docstring says so, and every call advances
+                // `next_free_layer` (or evicts). Without this fast path
+                // every visible-non-space cell rasterizes + writes
+                // texture every frame; `next_free_layer` saturates
+                // within a few frames and `pick_evictable_layer` returns
+                // None (every layer pinned/written this frame) →
+                // `rasterize_and_admit` Err → cell silently skipped →
+                // user sees characters disappear.
+                //
+                // Hit branch also sets `ctx.frame_written[layer]` so
+                // another pane's miss in the same frame can't evict +
+                // overwrite our hit layer via `queue.write_texture`
+                // before this pane's deferred draw samples it (same
+                // cross-pane race the miss path already guards against).
+                let lookup_hit = ctx.atlas.lookup(&key);
+                let entry_opt: Option<GlyphEntry> = match lookup_hit {
+                    Some(e) => {
+                        if (e.layer as usize) < ctx.frame_written.len() {
+                            ctx.frame_written[e.layer as usize] = true;
+                        }
+                        Some(e)
+                    }
+                    None => ctx
+                        .rasterize_and_admit(
+                            key,
+                            glyph_text,
+                            self.metrics.dpr,
+                            style_flags,
+                            &self.frame_pinned,
+                        )
+                        .ok(),
+                };
+                if let Some(e) = entry_opt {
+                    self.frame_pinned[e.layer as usize] = true;
+                    Some(e)
                 } else {
                     None
                 }
@@ -601,12 +635,40 @@ impl RenderBackend for WebGpuPaneBackend {
             let is_color_flag: u32 =
                 if entry.map(|e| e.is_color).unwrap_or(false) { 1 } else { 0 };
 
-            // Procedural block/box-drawing chars 
+            // Procedural block/box-drawing chars
             let first_char = glyph_text.chars().next();
             let mut drawn_procedurally = false;
 
             if let Some(ch) = first_char {
-                if let Some(rects) = procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int) {
+                // Shade characters (U+2591..=U+2593) — full-cell quad
+                // with the fg alpha scaled by 25 / 50 / 75 percent so
+                // the rasterizer's antialiased glyph is replaced by a
+                // resolution-independent shade that aligns to the cell
+                // grid (btop / mc / shading-based gauges depend on
+                // this). Handled here (not in `procedural_box`) so the
+                // function signature stays opaque-rect-only.
+                let shade_alpha: Option<f32> = match ch {
+                    '\u{2591}' => Some(0.25), // ░ light
+                    '\u{2592}' => Some(0.50), // ▒ medium
+                    '\u{2593}' => Some(0.75), // ▓ dark
+                    _ => None,
+                };
+                if let Some(alpha) = shade_alpha {
+                    let mut fg_scaled = rgba_u8_to_f32(fg);
+                    fg_scaled[3] *= alpha;
+                    row_glyph_instances.push(CellInstance {
+                        cell_xy: [pixel_x, pixel_y],
+                        cell_size: [cell_w_px, row_h_int],
+                        atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                        atlas_layer: 0,
+                        fg_rgba: fg_scaled,
+                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                        is_color: 0,
+                    });
+                    drawn_procedurally = true;
+                } else if let Some(rects) =
+                    procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int)
+                {
                     for r in rects {
                         row_glyph_instances.push(CellInstance {
                             cell_xy: [r.x, r.y],
