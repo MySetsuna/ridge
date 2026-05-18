@@ -23,11 +23,11 @@
 //!
 //! ## LoadOp protocol
 //!
-//! The first `record_pane` in a frame uses `LoadOp::Clear(theme_bg)` to
-//! seed the swap-chain texture with background color across the whole
-//! canvas. Subsequent panes' passes within the same frame use
-//! `LoadOp::Load` so prior panes' pixels survive. `needs_initial_clear`
-//! also re-asserts after detach / park / theme change so the host canvas
+//! [`begin_frame`] issues a dedicated full-surface clear pass when
+//! `needs_initial_clear` is true (every frame). All [`record_pane`]
+//! calls within the same frame use `LoadOp::Load` so earlier panes'
+//! pixels survive. `needs_initial_clear` also re-asserts after resize /
+//! detach / park / theme change / surface-recovery so the host canvas
 //! never accumulates ghost pixels from departed panes.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
@@ -91,10 +91,11 @@ pub struct SurfaceHost {
     ctx: Rc<RefCell<GpuContext>>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    /// `true` until the next `record_pane` in this frame consumes the
-    /// `LoadOp::Clear`. Set true on construct, on `resize`, on
+    /// `true` until the next `begin_frame` issues the dedicated clear
+    /// render pass. Set true on construct, on `resize`, on
     /// `invalidate`, and on `surface.get_current_texture` recovery.
-    /// Reset to false at the bottom of `end_frame`.
+    /// Set unconditionally by `begin_frame` each frame, then
+    /// consumed (set false) after the clear pass is recorded.
     needs_initial_clear: bool,
     /// Background color used by the seed-clear pass. Updated by
     /// `begin_frame` so theme changes propagate across all panes
@@ -234,18 +235,13 @@ impl SurfaceHost {
         }
         self.frame_clear_color = rgba_to_wgpu_color(theme_bg);
 
-        // §4.3 Phase B: always Clear at the start of each frame.
-        // Reasoning is next to `WebGpuPaneBackend::requires_full_frame`
-        // — multi-buffered swap chains (`desired_maximum_frame_latency:
-        // 2`) may hand us a texture from N-2 frames ago, so
-        // `LoadOp::Load` would surface stale pixels in pane regions
-        // that don't draw this tick. Pairing always-Clear here with
-        // always-true `requires_full_frame` there means every pane
-        // re-encodes its full content every tick, and the swap-chain
-        // texture is fully consistent each present. Subsequent
-        // `record_pane` calls within the same frame use `LoadOp::Load`
-        // (set by `record_pane` after consuming the seed flag), so
-        // pane-A's draws survive pane-B's pass.
+        // Every frame starts with a full-surface clear so multi-buffered
+        // swap-chain textures (desired_maximum_frame_latency: 2) don't
+        // surface stale pixels from N-2 frames ago in gap regions not
+        // covered by any pane's scissor rect (padding, splitter gaps).
+        // The clear is a dedicated render pass issued inside begin_frame,
+        // not piggybacked on a random pane's record_pane — this eliminates
+        // the race where the first pane to draw erased other panes' regions.
         self.needs_initial_clear = true;
 
         // Reset the global frame-written mask so all atlas layers are
@@ -265,13 +261,34 @@ impl SurfaceHost {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let encoder =
+        let mut encoder =
             self.ctx
                 .borrow()
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("ridge-host-frame-encoder"),
                 });
+
+        // Perform a single global clear pass if needed
+        if self.needs_initial_clear {
+            let mut _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ridge-host-clear-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.frame_clear_color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            // Pass dropped here
+        }
+        self.needs_initial_clear = false;
+
         self.current_frame = Some(frame);
         self.current_view = Some(view);
         self.current_encoder = Some(encoder);
@@ -284,8 +301,8 @@ impl SurfaceHost {
     /// the end of the closure so the encoder can accept the next pane's
     /// pass.
     ///
-    /// First call in a frame uses `LoadOp::Clear(theme_bg)`; subsequent
-    /// calls use `LoadOp::Load` to preserve earlier panes' pixels.
+    /// Always uses `LoadOp::Load` — the full-surface clear was already
+    /// issued by [`begin_frame`] as a dedicated render pass.
     /// Empty / out-of-bounds scissors are no-ops — wgpu validation
     /// rejects zero-extent viewports.
     pub fn record_pane<F>(
@@ -297,29 +314,20 @@ impl SurfaceHost {
         F: FnOnce(&mut wgpu::RenderPass<'_>),
     {
         if scissor.is_empty() {
+            println!("[ridge-term] Scissor empty, clipping: {:?}", scissor);
             return;
         }
-        // Clamp to current swap-chain dimensions — `set_viewport` /
-        // `set_scissor_rect` reject `(x + w) > config.width` etc. JS
-        // already clamps on its side but defensively re-check here so
-        // a stale `entry.viewport` from a delayed `_recomputeViewport`
-        // never produces a validation panic mid-frame.
-        if scissor.x >= self.config.width || scissor.y >= self.config.height {
-            return;
-        }
-        let max_w = self.config.width - scissor.x;
-        let max_h = self.config.height - scissor.y;
-        let w = scissor.w.min(max_w);
-        let h = scissor.h.min(max_h);
+        // Clamp scissor to swap-chain dimensions to avoid wgpu validation errors
+        let x = scissor.x.min(self.config.width);
+        let y = scissor.y.min(self.config.height);
+        let w = scissor.w.min(self.config.width - x);
+        let h = scissor.h.min(self.config.height - y);
+
         if w == 0 || h == 0 {
             return;
         }
 
-        let load = if self.needs_initial_clear {
-            wgpu::LoadOp::Clear(self.frame_clear_color)
-        } else {
-            wgpu::LoadOp::Load
-        };
+        let load = wgpu::LoadOp::Load;
 
         let view = match self.current_view.as_ref() {
             Some(v) => v,
@@ -362,8 +370,6 @@ impl SurfaceHost {
             record(&mut pass);
         }
 
-        // Seed clear consumed.
-        self.needs_initial_clear = false;
     }
 
     /// Finish the encoder, submit, present. Resets transients so the
@@ -382,10 +388,9 @@ impl SurfaceHost {
 
         self.ctx.borrow().queue.submit(Some(encoder.finish()));
         frame.present();
-        // `record_pane` already cleared `needs_initial_clear` if any
-        // pane drew this frame; if no pane drew (e.g. all panes idle
-        // and `RenderHandle::render` short-circuited at the renderer's
-        // dirty diff), we leave the flag untouched so the next frame
-        // still seeds bg correctly.
+        // `needs_initial_clear` was already consumed in `begin_frame`
+        // after issuing the dedicated clear pass. If no pane drew this
+        // frame (all idle), the encoder merely contains that clear —
+        // harmless. Next frame's `begin_frame` will set the flag again.
     }
 }
