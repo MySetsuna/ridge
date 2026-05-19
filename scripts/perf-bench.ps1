@@ -20,7 +20,26 @@ param(
   [int]$DurationSec = 60,
   [int]$IntervalSec = 1,
   [string]$Label = 'idle',
-  [string[]]$ProcessFilter = @('wind', 'ridge', 'msedgewebview2', 'node'),
+  # Names of the actual Wind binary to use as the process-tree root.
+  # `ridge` is the published debug+release name; `wind` is the in-flight
+  # rebrand. Either matches the launcher process; the script then walks
+  # ParentProcessId backwards from every running process and keeps only
+  # those whose tree root is in this list — so unrelated webview2 / node
+  # processes (other Electron apps, dev tools, Claude Code MCP servers)
+  # don't pollute the CPU sum.
+  [string[]]$RootProcessNames = @('ridge', 'wind'),
+  # Substring filter on `Win32_Process.ExecutablePath` for the root match.
+  # Defaults to the in-tree `src-tauri\target\` so a developer running
+  # the installed v0.0.2 release IN PARALLEL with `pnpm tauri dev` doesn't
+  # accidentally include the installed instance in the sample. Pass an
+  # empty string to disable (count every ridge/wind regardless of where
+  # it lives).
+  [string]$RootPathSubstring = 'src-tauri\target\',
+  # Explicit PID(s) to exclude from the sample tree even if their name
+  # matches. Belt-and-suspenders against `RootPathSubstring` missing an
+  # edge case. Mostly useful when both the installed and the dev binary
+  # live under similar paths.
+  [int[]]$ExcludePids = @(),
   [string]$OutputDir = $null
 )
 
@@ -39,19 +58,79 @@ $csvPath = Join-Path $OutputDir ("$Label-$timestamp.csv")
 $summaryPath = Join-Path $OutputDir ("$Label-$timestamp.summary.txt")
 
 # --- discover target processes ---
+#
+# Walk the process tree: find every process whose ancestor chain
+# reaches a root in `$RootProcessNames` (default ridge/wind). Excludes
+# unrelated `node` / `msedgewebview2` / dev-tool processes that share
+# the substring but live under another parent. CIM is preferred over
+# `Get-WmiObject` (deprecated, slow on PS 7).
 function Get-TargetProcs {
-  param([string[]]$filter)
-  Get-Process | Where-Object {
-    $name = $_.ProcessName.ToLower()
-    $hit = $false
-    foreach ($f in $filter) { if ($name -like "*$f*") { $hit = $true; break } }
-    $hit
+  param(
+    [string[]]$rootNames,
+    [string]$pathSubstring,
+    [int[]]$excludePids
+  )
+  $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+  if (-not $all) { return @() }
+  # Index by PID for fast parent lookup.
+  $byPid = @{}
+  foreach ($p in $all) { $byPid[[int]$p.ProcessId] = $p }
+  # Identify roots: any process whose own name (without `.exe`) matches
+  # AND whose ExecutablePath contains `pathSubstring` (when set). The
+  # path filter is what keeps the installed v0.0.2 release out of a dev
+  # sample — its ExecutablePath lives under Program Files / AppData, not
+  # under `src-tauri\target\`.
+  $excludeSet = @{}
+  foreach ($pid_ in $excludePids) { $excludeSet[[int]$pid_] = $true }
+  $roots = @{}
+  foreach ($p in $all) {
+    $bare = ($p.Name -replace '\.exe$','').ToLower()
+    $matchedName = $false
+    foreach ($r in $rootNames) {
+      if ($bare -eq $r.ToLower()) { $matchedName = $true; break }
+    }
+    if (-not $matchedName) { continue }
+    if ($excludeSet.ContainsKey([int]$p.ProcessId)) { continue }
+    if ($pathSubstring) {
+      $execPath = $p.ExecutablePath
+      if (-not $execPath -or ($execPath.IndexOf($pathSubstring, [System.StringComparison]::OrdinalIgnoreCase) -lt 0)) {
+        continue
+      }
+    }
+    $roots[[int]$p.ProcessId] = $true
   }
+  if ($roots.Count -eq 0) { return @() }
+  # For every process, walk up the parent chain (capped) and keep it
+  # iff a root sits in the chain. Cap = 20 levels to break any cycle
+  # caused by PID reuse mid-walk.
+  $keep = @{}
+  foreach ($p in $all) {
+    $cur = [int]$p.ProcessId
+    for ($i = 0; $i -lt 20 -and $cur; $i++) {
+      if ($roots.ContainsKey($cur)) { $keep[[int]$p.ProcessId] = $true; break }
+      $parent = $byPid[$cur]
+      if (-not $parent) { break }
+      $next = [int]$parent.ParentProcessId
+      if ($next -eq $cur -or $next -eq 0) { break }
+      $cur = $next
+    }
+  }
+  # Promote to System.Diagnostics.Process so we get CPU + WorkingSet64.
+  $result = New-Object System.Collections.Generic.List[object]
+  foreach ($pid_ in $keep.Keys) {
+    try { $result.Add((Get-Process -Id $pid_ -ErrorAction Stop)) } catch { }
+  }
+  $result
 }
 
-$initialProcs = Get-TargetProcs -filter $ProcessFilter
+$initialProcs = Get-TargetProcs -rootNames $RootProcessNames -pathSubstring $RootPathSubstring -excludePids $ExcludePids
 if (-not $initialProcs -or $initialProcs.Count -eq 0) {
-  Write-Error "No target processes found. Start Wind first (pnpm tauri dev or installed app)."
+  $hint = "No matching root processes found."
+  if ($RootPathSubstring) {
+    $hint += " Looking for {$($RootProcessNames -join '|')}.exe whose path contains '$RootPathSubstring'."
+    $hint += " Start a dev/debug Wind (`pnpm tauri dev`) or pass `-RootPathSubstring ''` to count any ridge/wind."
+  }
+  Write-Error $hint
   exit 1
 }
 
@@ -82,7 +161,7 @@ while ((Get-Date) -lt $endTs) {
   Start-Sleep -Seconds $IntervalSec
   $tick++
   $now = Get-Date
-  $procs = Get-TargetProcs -filter $ProcessFilter
+  $procs = Get-TargetProcs -rootNames $RootProcessNames -pathSubstring $RootPathSubstring -excludePids $ExcludePids
   $cpuSum = 0.0
   $memSum = 0.0
   foreach ($p in $procs) {
