@@ -938,6 +938,19 @@ export class TerminalManager {
 		// completely broken").
 		const vpToAbsRow = (vpRow: number, kernel: TerminalKernel): number =>
 			kernel.scrollbackLen() + vpRow - kernel.scrollOffset();
+		// The custom scrollbar (RidgePane.svelte) renders as a sibling DOM
+		// overlay on top of the canvas. Pointerdown on the track's empty
+		// space has no element-local handler, so it bubbles into the
+		// container and kicks off terminal selection — the user sees a
+		// stray drag-select fire whenever they grab the scrollbar near
+		// (but not on) the thumb. The thumb itself calls stopPropagation,
+		// but a belt-and-suspenders target check at the listener entry
+		// keeps thumb / track / and any future child of the scrollbar
+		// fully isolated from selection/hover logic.
+		const isInScrollbar = (e: PointerEvent): boolean => {
+			const tgt = e.target as Element | null;
+			return !!tgt?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb');
+		};
 		// Mouse mode bitmask (kernel.mouseReportingModes()):
 		//   bit 0 = ?1000 (normal), bit 1 = ?1002 (button-event / drag),
 		//   bit 2 = ?1003 (any-event / motion), bit 3 = ?1006 (SGR).
@@ -1027,6 +1040,7 @@ export class TerminalManager {
 			this._syncSelection(ent);
 		};
 		const pointerDownListener = (e: PointerEvent) => {
+			if (isInScrollbar(e)) return;
 			const cell = computeCell(e);
 			if (!cell) return;
 			const ent = this.panes.get(paneId);
@@ -1225,6 +1239,7 @@ export class TerminalManager {
 			}, AUTO_SCROLL_INTERVAL_MS);
 		};
 		const pointerMoveListener = (e: PointerEvent) => {
+			if (isInScrollbar(e)) return;
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
 			ent.pendingMouseMove = e;
@@ -1237,6 +1252,7 @@ export class TerminalManager {
 			updateAutoScrollFromEdge(ent, e);
 		};
 		const pointerUpListener = (e: PointerEvent) => {
+			if (isInScrollbar(e)) return;
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
 
