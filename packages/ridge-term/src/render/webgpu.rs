@@ -796,9 +796,21 @@ impl RenderBackend for WebGpuPaneBackend {
             };
             if let Some(entry) = entry {
                 let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
+                // Draw the inverted glyph at its natural advance, NOT
+                // at the full `cell_w_px` (= 2 × cell_w on wide cells).
+                // draw_row_texts (line ~690) uses `natural_w` for the
+                // glyph quad and `bg_rgba = (0,0,0,0)` for the gap on
+                // the right of a wide cell. Using `cell_w_px` here was
+                // stretching the cached CJK / emoji bitmap to 2 cells
+                // wide the moment the cursor landed on a CJK character,
+                // so the user saw the glyph "grow" under the cursor.
+                // The cursor block quad pushed above already paints the
+                // full 2-cell cursor_color region; the inverted glyph
+                // only needs to overlay the actual glyph footprint.
+                let natural_w = (entry.px_w as f32).max(1.0);
                 self.pending_instances.push(CellInstance {
                     cell_xy: [pixel_x, pixel_y],
-                    cell_size: [cell_w_px, cell_h_int],
+                    cell_size: [natural_w, cell_h_int],
                     atlas_uv: entry.uv,
                     atlas_layer: entry.layer as u32,
                     fg_rgba: cursor_text_color,
