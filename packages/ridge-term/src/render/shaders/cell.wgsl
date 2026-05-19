@@ -121,6 +121,20 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    // §B.5 — procedural rect short-circuit.
+    //
+    // Box-drawing / block-element / shade quads (webgpu.rs::draw_row_texts
+    // procedural path) set is_color = 2 as a sentinel. They MUST bypass
+    // atlas sampling: their atlas_uv = (0,0,0,0) and atlas_layer = 0 would
+    // otherwise read the unreliable corner of layer 0 (unwritten or the
+    // edge of an evicted glyph fragment), pulling coverage to ~0 and
+    // making the entire procedural rect invisible. Output is premultiplied
+    // to match the (src=One, dst=OneMinusSrcAlpha) BlendState configured
+    // in gpu_context.rs.
+    if (in.is_color > 1.5) {
+        return vec4<f32>(in.fg.rgb * in.fg.a, in.fg.a);
+    }
+
     // Sample the atlas at level 0 (no mipmaps; cell glyphs are 1:1).
     // §B.4 (2026-05-08) — atlas storage is now PREMULTIPLIED: the
     // rasterizer multiplies rgb by alpha/255 before write_texture so
