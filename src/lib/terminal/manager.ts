@@ -2416,15 +2416,29 @@ export class TerminalManager {
 		// equivalent to the content-box).
 		let wCss: number;
 		let hCss: number;
+		// Track the container rect (host mode only) so we can later
+		// redistribute the rounding leftover into symmetric padding —
+		// see the "center cells in content-box" step below.
+		let containerWCss = 0;
+		let containerHCss = 0;
 		if (this._isHostMode(entry)) {
 			const cr = entry.container.getBoundingClientRect();
-			const cs = window.getComputedStyle(entry.container);
-			const padL = parseFloat(cs.paddingLeft) || 0;
-			const padT = parseFloat(cs.paddingTop) || 0;
-			const padR = parseFloat(cs.paddingRight) || 0;
-			const padB = parseFloat(cs.paddingBottom) || 0;
-			wCss = Math.max(0, Math.floor(cr.width - padL - padR));
-			hCss = Math.max(0, Math.floor(cr.height - padT - padB));
+			containerWCss = cr.width;
+			containerHCss = cr.height;
+			// Use the user-configured base padding as a floor — never read
+			// the live CSS padding here. The live value gets rewritten at
+			// the end of fitPane to absorb the cell rounding leftover, and
+			// reading it back would feed a slightly inflated padding into
+			// the next col/row computation, slowly drifting the grid size
+			// on every fit. opts.paddingPx is the single source of truth
+			// for "how much margin should we *at least* leave around the
+			// grid"; the actual on-screen padding ends up >= that.
+			const basePad = Math.max(
+				0,
+				Math.min(64, Math.round((entry.lastAppliedPaddingPx ?? this.opts.paddingPx) || 0)),
+			);
+			wCss = Math.max(0, Math.floor(cr.width - 2 * basePad));
+			hCss = Math.max(0, Math.floor(cr.height - 2 * basePad));
 		} else {
 			const rect = entry.canvas.getBoundingClientRect();
 			wCss = Math.floor(rect.width);
@@ -2466,12 +2480,22 @@ export class TerminalManager {
 		const cols = Math.max(1, Math.floor(wCss / entry.cellW));
 		const rows = Math.max(1, Math.floor(hCss / entry.cellH));
 
-		// Resize the render target. In host mode, _recomputeViewport
-		// recomputes the host-canvas-relative scissor (which depends on
-		// container x/y as well as w/h) AND calls entry.handle.resize
-		// internally, so we dispatch to it. In Canvas2D mode, the per-
-		// pane canvas owns its own size and handle.resize is sufficient.
+		// Center the cell grid inside its content-box. In host mode the
+		// container is sized by the outer layout; `cols * cellW` rarely
+		// equals the available width exactly, so the leftover pixels (up
+		// to one cell minus 1px) would always pile up on the right/bottom
+		// while the user-configured `paddingPx` only insets the
+		// top/left. Splitting the leftover symmetrically across the four
+		// sides makes the cell grid look centered inside its pane,
+		// matching the visual symmetry of single-pane editors like VS
+		// Code. Canvas2D mode skips this — its canvas is sized to the
+		// container directly with no padding budget to redistribute.
 		if (this._isHostMode(entry)) {
+			const cellsW = cols * entry.cellW;
+			const cellsH = rows * entry.cellH;
+			const padH = Math.max(0, (containerWCss - cellsW) / 2);
+			const padV = Math.max(0, (containerHCss - cellsH) / 2);
+			entry.container.style.padding = `${padV}px ${padH}px`;
 			this._recomputeViewport(entry);
 		} else {
 			entry.handle.resize(wCss, hCss, dpr);
