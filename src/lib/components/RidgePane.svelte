@@ -25,6 +25,7 @@ import { get } from 'svelte/store';
 import TerminalHistoryPopup from './TerminalHistoryPopup.svelte';
 import { terminalHistoryStore } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
+import { isTuiActive } from '$lib/terminal/tuiGate';
 
 interface Props {
 	paneId: string;
@@ -114,22 +115,29 @@ let composingAnchor: ImeAnchor | null = null;
 // longer apply and host shortcuts re-enable as before.
 const TUI_STICKY_MS = 60_000;
 let lastTuiActiveTs = 0;
+// §1.31 (2026-05-19): delegate the decision logic to the pure helper in
+// `$lib/terminal/tuiGate` so it can be unit-tested as a truth table.
+// We retain the stateful `lastTuiActiveTs` refresh here because the
+// gate function is intentionally stateless. The new DECCKM branch
+// (`isAppCursorKeys`) lives inside `isTuiActive` and dominates every
+// other signal — once an app sets DECCKM the shell-history popup is
+// unreachable, which is exactly what the user asked for.
 function isTuiSticky(): boolean {
 	const live = manager.isAltScreen(paneId)
 		|| manager.isInlineTuiActive(paneId)
 		|| manager.isMouseReporting(paneId);
 	const now = performance.now();
-	if (live) {
-		lastTuiActiveTs = now;
-		return true;
-	}
-	if (now - lastTuiActiveTs < TUI_STICKY_MS) {
-		const kernel = manager.getKernel(paneId);
-		if (kernel && !kernel.isCursorVisible()) {
-			return true;
-		}
-	}
-	return false;
+	if (live) lastTuiActiveTs = now;
+	return isTuiActive({
+		isAltScreen: manager.isAltScreen(paneId),
+		isInlineTuiActive: manager.isInlineTuiActive(paneId),
+		isMouseReporting: manager.isMouseReporting(paneId),
+		isAppCursorKeys: manager.isAppCursorKeys(paneId),
+		cursorVisible: manager.isCursorVisible(paneId),
+		lastTuiActiveTs,
+		now,
+		stickyMs: TUI_STICKY_MS,
+	});
 }
 
 // Host-priority shortcuts that should fire BEFORE TUI key forwarding.
@@ -820,8 +828,16 @@ $effect(() => {
 			}
 		}
 
-		// 3. ArrowUp/ArrowDown → 唤起历史弹窗，非 TUI 模式下才处理
-		if (!isTui && !historyPopupOpen && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+		// 3. ArrowUp/ArrowDown → 唤起历史弹窗，非 TUI 模式下才处理。
+		// §1.31 (2026-05-19): belt-and-suspenders DECCKM check. `isTui`
+		// already factors in `isAppCursorKeys` via tuiGate, but a separate
+		// direct gate here guarantees that if `isTuiSticky` is ever
+		// refactored away from DECCKM the popup STILL can't hijack arrow
+		// keys from a program that explicitly owns them. Cheap query;
+		// worth the defense-in-depth.
+		if (!isTui && !manager.isAppCursorKeys(paneId)
+			&& !historyPopupOpen && (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
 			e.preventDefault();
 			historyPopupOpen = true;
 			const anchor = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0, cellH: 20 };
