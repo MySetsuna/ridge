@@ -661,6 +661,24 @@ export class TerminalKernel {
         return v1;
     }
     /**
+     * Single-call bitmask of every DEC mouse mode the caller cares
+     * about. Eliminates the 3-4 separate wasm boundary crossings the
+     * JS pointer handlers used to make per pointermove event:
+     *
+     *   bit 0 (0x1) = ?1000 (mouse_normal)
+     *   bit 1 (0x2) = ?1002 (button_event / drag tracking)
+     *   bit 2 (0x4) = ?1003 (any_event / all motion)
+     *   bit 3 (0x8) = ?1006 (SGR encoding)
+     *
+     * `bits != 0` <=> `isMouseReporting() == true`. The individual
+     * boolean getters above are kept for non-hot-path callers.
+     * @returns {number}
+     */
+    mouseReportingModes() {
+        const ret = wasm.terminalkernel_mouseReportingModes(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * @param {number} rows
      * @param {number} cols
      * @param {number} scrollback

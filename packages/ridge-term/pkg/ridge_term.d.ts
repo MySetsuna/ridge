@@ -343,6 +343,20 @@ export class TerminalKernel {
      */
     lastAbsCsiPosition(): any;
     lastResizeDiags(): any[];
+    /**
+     * Single-call bitmask of every DEC mouse mode the caller cares
+     * about. Eliminates the 3-4 separate wasm boundary crossings the
+     * JS pointer handlers used to make per pointermove event:
+     *
+     *   bit 0 (0x1) = ?1000 (mouse_normal)
+     *   bit 1 (0x2) = ?1002 (button_event / drag tracking)
+     *   bit 2 (0x4) = ?1003 (any_event / all motion)
+     *   bit 3 (0x8) = ?1006 (SGR encoding)
+     *
+     * `bits != 0` <=> `isMouseReporting() == true`. The individual
+     * boolean getters above are kept for non-hot-path callers.
+     */
+    mouseReportingModes(): number;
     constructor(rows: number, cols: number, scrollback: number);
     /**
      * Prepend older history at the OLDEST end of the scrollback ring.
@@ -482,6 +496,7 @@ export interface InitOutput {
     readonly terminalkernel_isUserScrollLocked: (a: number) => number;
     readonly terminalkernel_lastAbsCsiPosition: (a: number) => any;
     readonly terminalkernel_lastResizeDiags: (a: number) => [number, number];
+    readonly terminalkernel_mouseReportingModes: (a: number) => number;
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
     readonly terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;
     readonly terminalkernel_resize: (a: number, b: number, c: number) => void;
