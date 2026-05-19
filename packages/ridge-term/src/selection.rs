@@ -244,6 +244,18 @@ impl Selection {
     /// `row` is viewport-relative (manager.ts speaks vp coords); we
     /// resolve the cell content via `viewport_row` and store the
     /// resulting span in abs coords.
+    ///
+    /// Note on scrollback: `viewport_row` already transparently routes
+    /// `vp_row < scroll_offset` to the matching scrollback entry (see
+    /// `Terminal::viewport_row`). Double-clicking a line that's currently
+    /// shown but pulled from history therefore works without any extra
+    /// dispatch — `vp_to_abs` rewrites the stored row into the same
+    /// absolute index the resolved row came from, so a later
+    /// `range_in_viewport` translation lands on the right cells across
+    /// further scrolls. Selecting cells that are NOT in the current
+    /// viewport (e.g. a future "context-menu select word at abs row N"
+    /// feature) is a separate code path; the pointer-driven case here
+    /// can't reach those cells by construction.
     pub fn select_word(&mut self, terminal: &Terminal, row: usize, col: usize) {
         let Some(r) = terminal.viewport_row(row) else {
             self.range_abs = None;
@@ -277,6 +289,12 @@ impl Selection {
     }
 
     /// Triple-click line selection. Selects the entire row.
+    ///
+    /// Same scrollback note as `select_word`: `vp_to_abs` maps the
+    /// viewport row to its underlying abs index, which works uniformly
+    /// for live-grid rows and scrollback rows currently displayed in
+    /// the viewport. No `_at_abs` variant is needed for the
+    /// pointer-driven path.
     pub fn select_line(&mut self, terminal: &Terminal, row: usize) {
         let cols = terminal.cols();
         if row >= terminal.rows() || cols == 0 {
