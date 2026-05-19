@@ -2575,6 +2575,17 @@ export class TerminalManager {
 			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
 			entry.kernel.resize(rows, cols);
 		}
+		// Drop the renderer's per-row hash snapshot the instant the kernel
+		// grid changed shape. `entry.handle.resize(wCss,hCss,dpr)` above
+		// only invalidates when the CSS surface dimensions changed; a
+		// rows/cols change that doesn't move pixels (e.g. font drift
+		// changes cell metrics without changing container px) would leave
+		// stale row hashes and produce the "色块错位" symptom on a TUI
+		// resize. Calling invalidateAll unconditionally here makes the
+		// next sync render below — and the 150ms forceFullRedraw — both
+		// start from a clean snapshot regardless of which path got us
+		// here.
+		entry.handle.invalidateAll();
 		entry.linkSpans.markDirty();
 
 		// Synchronous first frame after resize. The next rAF tick is
