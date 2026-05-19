@@ -107,20 +107,31 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
         '\u{2500}' | '\u{2501}' => rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }),
         '\u{2502}' | '\u{2503}' => rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }),
         
-        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => { // Top-left
-            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh }); 
+        // Sharp top-left (U+250C..U+250F) AND rounded top-left ╭ (U+256D).
+        // Rounded corners are visually distinct from sharp ones, but
+        // procedural rects can't draw a true radius — and the practical
+        // alternative (atlas glyph) leaves a multi-pixel gap where the
+        // glyph's design padding meets the adjacent vertical stroke
+        // (opencode's input-box border draws ╭│╰ as a 3-row outline;
+        // without this branch the corner chars fall through to the atlas
+        // and the box renders as three disconnected segments). Mapping to
+        // the sharp-corner geometry trades the radius for pixel-perfect
+        // continuity at the cell boundary. wezterm / kitty take the same
+        // shortcut for the same reason.
+        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' | '\u{256D}' => { // Top-left
+            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
             rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
         }
-        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' => { // Top-right
-            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh }); 
+        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' | '\u{256E}' => { // Top-right
+            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
             rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
         }
-        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' => { // Bottom-left
-            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh }); 
+        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' | '\u{2570}' => { // Bottom-left
+            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
         }
-        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' => { // Bottom-right
-            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh }); 
+        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' | '\u{256F}' => { // Bottom-right
+            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
         }
         
@@ -575,5 +586,36 @@ mod procedural_box_tests {
         assert!(procedural_box('a', CX, CY, CW, CH).is_none());
         assert!(procedural_box('中', CX, CY, CW, CH).is_none());
         assert!(procedural_box('😀', CX, CY, CW, CH).is_none());
+    }
+
+    /// Rounded corners (U+256D ╭, U+256E ╮, U+256F ╯, U+2570 ╰) must emit
+    /// the SAME geometry as their sharp counterparts ┌ ┐ ┘ └. opencode and
+    /// other modern TUIs draw their input-box frames with rounded corners
+    /// connected to U+2502 │ — a previous version of this function
+    /// returned None for the rounded glyphs, so they fell through to the
+    /// font atlas where the rasterised stroke didn't reach the cell edge,
+    /// producing visible gaps between the corner cell and the adjacent
+    /// vertical run. Regression guard: every rounded corner must produce
+    /// rects identical to its sharp twin so the procedural strokes line
+    /// up pixel-for-pixel.
+    #[test]
+    fn rounded_corners_match_sharp_geometry() {
+        for (rounded, sharp) in [
+            ('\u{256D}', '\u{250C}'),
+            ('\u{256E}', '\u{2510}'),
+            ('\u{256F}', '\u{2518}'),
+            ('\u{2570}', '\u{2514}'),
+        ] {
+            let r_rounded = box_for(rounded);
+            let r_sharp = box_for(sharp);
+            assert_eq!(
+                r_rounded.len(), r_sharp.len(),
+                "{:?} vs {:?}: rect count differs", rounded, sharp,
+            );
+            for (a, b) in r_rounded.iter().zip(r_sharp.iter()) {
+                assert_eq!((a.x, a.y, a.w, a.h), (b.x, b.y, b.w, b.h),
+                    "{:?} vs {:?}: rect geometry differs", rounded, sharp);
+            }
+        }
     }
 }
