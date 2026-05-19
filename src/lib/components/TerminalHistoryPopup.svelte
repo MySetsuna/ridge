@@ -10,23 +10,12 @@
 
     let { query, isVisible, onSelect, onClose, position }: Props = $props();
 
-    let filteredHistory = $derived(
-        (() => {
-            const q = query.toLowerCase();
-            const seen = new Set<string>();
-            // 保留首次出现的命令（靠后的记为新条目，视为最近使用）
-            const deduped = $terminalHistoryStore.filter(cmd => {
-                const key = cmd.toLowerCase();
-                if (seen.has(key)) return false;
-                seen.add(key);
-                return true;
-            });
-            if (!q) return deduped;
-            return deduped
-                .filter(cmd => cmd.toLowerCase().startsWith(q))
-                .sort((a, b) => a.length - b.length || $terminalHistoryStore.indexOf(a) - $terminalHistoryStore.indexOf(b));
-        })()
-    );
+    // §1.31 (2026-05-20): filter / dedup logic extracted to
+    // `$lib/stores/terminalHistory` so it can be unit-tested in Vitest.
+    // Store invariant: newest-first (see `terminalHistoryStore.add`
+    // and the matching backend dedup in `commands/terminal.rs`), so
+    // `dedupKeepFirst` keeps the most-recent occurrence of each command.
+    let filteredHistory = $derived(filterByPrefix(dedupKeepFirst($terminalHistoryStore), query));
     let selectedIndex = $state(-1);
     let popupEl: HTMLDivElement | undefined = $state();
     let showAbove = $state(true);
@@ -116,9 +105,15 @@
         <button type="button"
             class="rg-history-item"
             class:selected={index === selectedIndex}
+            title={command}
             onclick={() => onSelect(command)}
         >
-            {command}
+            <!-- §1.31 (2026-05-20): collapse embedded newlines to a single
+                 visual marker so multi-line history entries (heredocs,
+                 explicit `\n` inside quotes) don't break the row layout.
+                 The full original command is preserved in `title=` for
+                 hover-reveal and is what gets sent back to onSelect. -->
+            {command.replace(/[\r\n]+/g, ' ↵ ')}
         </button>
     {/each}
 </div>
