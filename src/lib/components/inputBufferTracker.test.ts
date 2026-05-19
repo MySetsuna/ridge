@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
+	computeReplaySequence,
 	EMPTY_INPUT_BUFFER,
 	type InputBufferEvent,
 	type InputBufferState,
@@ -437,11 +438,47 @@ describe('deriveBufferEvent ∘ updateInputBuffer — realistic typing scenarios
 	});
 });
 
+describe('computeReplaySequence — clearing the shell line before history pick (Bug #11 / #12)', () => {
+	it('returns empty string when buffer is empty (nothing to clear)', () => {
+		expect(computeReplaySequence(EMPTY_INPUT_BUFFER)).toBe('');
+	});
+
+	it('returns N backspaces when cursor is at end of buffer', () => {
+		// Universal case: works in any shell incl. cmd.exe.
+		expect(computeReplaySequence({ text: 'echo', cursorCol: 4 })).toBe('\x08\x08\x08\x08');
+	});
+
+	it('emits Ctrl+E (\\x05) + N backspaces when cursor is mid-line (Bug #3 × Bug #11)', () => {
+		// Mid-line means cursor is BEFORE the end. We move to end via
+		// Ctrl+E first so the subsequent backspaces wipe the whole
+		// line, not just the prefix.
+		expect(computeReplaySequence({ text: 'echo foo', cursorCol: 4 }))
+			.toBe('\x05\x08\x08\x08\x08\x08\x08\x08\x08');
+	});
+
+	it('emits Ctrl+E + backspaces when cursor is at column 0', () => {
+		// Same shape — cursor < text.length triggers the Ctrl+E path.
+		expect(computeReplaySequence({ text: 'ls', cursorCol: 0 })).toBe('\x05\x08\x08');
+	});
+
+	it('treats out-of-range cursorCol >= text.length as "at end" (no Ctrl+E needed)', () => {
+		// Defensive: a future bug could leave cursorCol > text.length;
+		// we still want the cheap end-of-line replay rather than an
+		// unnecessary Ctrl+E that might confuse cmd.exe.
+		expect(computeReplaySequence({ text: 'ab', cursorCol: 99 })).toBe('\x08\x08');
+	});
+
+	it('scales linearly with buffer length (1000-char buffer at end)', () => {
+		const longText = 'x'.repeat(1000);
+		expect(computeReplaySequence({ text: longText, cursorCol: 1000 }).length).toBe(1000);
+	});
+});
+
 /**
  * `it.todo` markers — bugs deferred to later waves.
  */
 describe('inputBufferTracker — deferred behaviours', () => {
 	it.todo('syncs buffer to shell echo after Tab completion (Wave E — Bug #5)');
-	it.todo('verifies shell line length matches buffer before sending \\x08 replay (Wave D — Bug #11/#12)');
+	it.todo('cross-checks computed replay against kernel cursor column to detect mirror drift (Wave F — design TODO)');
 	it.todo('snapshots PTY-derived shell prompt suffix as a buffer source-of-truth (Wave F — design TODO)');
 });
