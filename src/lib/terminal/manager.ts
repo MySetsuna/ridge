@@ -794,10 +794,30 @@ export class TerminalManager {
 		const dpr = window.devicePixelRatio || 1;
 		const hostWDev = Math.round(hr.width * dpr);
 		const hostHDev = Math.round(hr.height * dpr);
-		const cssX = cr.left - hr.left + padL;
-		const cssY = cr.top - hr.top + padT;
-		const cssW = Math.max(0, cr.width - padL - padR);
-		const cssH = Math.max(0, cr.height - padT - padB);
+		let cssX = cr.left - hr.left + padL;
+		let cssY = cr.top - hr.top + padT;
+		let cssW = Math.max(0, cr.width - padL - padR);
+		let cssH = Math.max(0, cr.height - padT - padB);
+		// Shrink the scissor to cells-exact dimensions and re-center it
+		// inside the content-box. Without this, `floor(cssH / cellH)`
+		// leaves up to `cellH - 1` px of `term-bg` painted *below* the
+		// last row inside the scissor — the user sees that as
+		// "底部还有很多空余" because the renderer's bg fill is wider
+		// than the actual rows. By collapsing the scissor to
+		// `cellW*cols × cellH*rows`, the unused content-box area
+		// reverts to whatever the host canvas was on (workspace bg,
+		// since the canvas itself is transparent there), giving a tight
+		// inset that visually matches the user's `paddingPx` setting.
+		if (entry.cellW > 0 && entry.cellH > 0) {
+			const cols = Math.max(1, Math.floor(cssW / entry.cellW));
+			const rows = Math.max(1, Math.floor(cssH / entry.cellH));
+			const cellsW = cols * entry.cellW;
+			const cellsH = rows * entry.cellH;
+			cssX += (cssW - cellsW) / 2;
+			cssY += (cssH - cellsH) / 2;
+			cssW = cellsW;
+			cssH = cellsH;
+		}
 		// Add small epsilon to device-pixel width/height to avoid 1px
 		// clipping on right/bottom edges due to sub-pixel rounding.
 		const xDev = Math.max(0, Math.floor(cssX * dpr));
