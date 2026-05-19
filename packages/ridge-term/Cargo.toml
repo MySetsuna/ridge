@@ -5,6 +5,24 @@ edition = "2021"
 description = "A Rust terminal kernel (VT parser + grid + render backends) compiled to WebAssembly"
 license = "MIT"
 
+# Two-target crate. The `term` / `input` / `selection` / `search` modules
+# are pure Rust (vte + unicode-segmentation) and compile cleanly on the
+# host — `cargo check --lib` on x86_64-pc-windows-msvc passes today.
+# The `render` module's submodules that actually touch web-sys / wgpu
+# are gated with `#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]`
+# in `src/render/mod.rs`, so a native consumer never reaches them.
+#
+# P3 (2026-05-20): src-tauri/Cargo.toml will pick this crate up as
+#   ridge-term = { path = "../packages/ridge-term", default-features = false }
+# to get the parser + grid + modes without dragging wgpu / wasm-bindgen-
+# futures / bytemuck into the Tauri binary. `default-features = false`
+# strips the `webgpu` default feature (whose deps are all `optional =
+# true` below); the remaining base dependencies (wasm-bindgen, js-sys,
+# serde, serde-wasm-bindgen) compile to native no-ops via their wasm32
+# cfg checks. Once the Tauri-side parser engine (P3.3) is wired the
+# wasm bundle still gets its `feed(bytes)` entry point unchanged — the
+# native consumer just imports the underlying `Terminal` directly.
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
