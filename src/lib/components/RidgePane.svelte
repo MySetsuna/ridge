@@ -131,11 +131,12 @@ function isTuiSticky(): boolean {
 // Returns true when the host claimed the event.
 function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+	const isWin = /Win/i.test(navigator.platform || '');
 	const mod = e.ctrlKey || (isMac && e.metaKey);
 
-	// Ctrl+Shift+V / Cmd+Shift+V — host paste, always wins. Plain Ctrl+V
-	// (no Shift) is left for the TUI as the SYN byte readline uses for
-	// "literal next character."
+	// Ctrl+Shift+V / Cmd+Shift+V — host paste, always wins on every
+	// platform. Conservative POSIX users can reach the TUI's SYN byte
+	// ("literal next" in readline) via Ctrl+Q instead.
 	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) manager.paste(paneId, text); });
 		e.preventDefault();
@@ -144,6 +145,19 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 
 	// macOS Cmd+V (no Shift) — host paste, matches every other macOS app.
 	if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+			&& (e.key === 'v' || e.key === 'V')) {
+		void readText().then((text) => { if (text) manager.paste(paneId, text); });
+		e.preventDefault();
+		return true;
+	}
+
+	// Windows plain Ctrl+V — host paste, matches the default Windows
+	// Terminal / PowerShell / ConHost behaviour where users expect
+	// Ctrl+V to insert clipboard contents into stdin (the host pastes
+	// before the byte ever reaches the running process). POSIX
+	// platforms still send SYN to the TUI on plain Ctrl+V; that's the
+	// xterm / gnome-terminal / iTerm2 convention.
+	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) manager.paste(paneId, text); });
 		e.preventDefault();
