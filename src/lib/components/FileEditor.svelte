@@ -60,8 +60,12 @@
   const monacoTheme = $derived(ridgeMonacoThemeId($settingsStore.theme));
   $effect(() => {
     applyRidgeMonacoTheme($settingsStore.theme);
-    editor?.updateOptions({ theme: monacoTheme });
-    diffEditor?.updateOptions({ theme: monacoTheme });
+    // `monaco.editor.setTheme` is the global retint — it switches the
+    // active registered theme for every Monaco editor instance at once,
+    // including diff editors whose `IDiffEditorOptions` doesn't accept
+    // `theme` via `updateOptions`. Using setTheme here both unifies the
+    // code path and fixes the type error on the diff branch.
+    monaco.editor.setTheme(monacoTheme);
   });
 
   let mountPoint: HTMLDivElement | undefined;
