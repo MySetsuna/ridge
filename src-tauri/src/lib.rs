@@ -10,7 +10,7 @@ mod utils;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::mpsc;
 use crate::commands::{fs_watch, git, pane, process, project, settings, terminal, theme, watch, ridge_file, workspace};
 use crate::db::ProjectStore;
@@ -26,6 +26,13 @@ pub fn run() {
         .join("ridge");
     std::fs::create_dir_all(&app_data_dir).ok();
     utils::logging::init_once(&app_data_dir);
+
+    // Bootstrap a `ridge.theme` if none exists in any search location
+    // (exe-dir, cwd, or app_data_dir). Writes the single "无尽深色"
+    // default theme so the splash + UI have something to render. All
+    // other themes must live in the on-disk file — no multi-theme
+    // catalog is embedded in the binary.
+    theme::ensure_theme_file_exists(&app_data_dir);
 
     // 事件通道容量从 256 提到 1024，减少 `cat` 大文件等高吞吐场景下
     // `event_tx.send().await` 被 backpressure 阻塞的概率。
@@ -56,19 +63,37 @@ pub fn run() {
             }
         })
         .manage(app_state)
-        .setup(move |app| {
-            let handle = app.handle().clone();
-            let (teammate_ready_tx, teammate_ready_rx) = std::sync::mpsc::channel();
-            teammate::spawn_teammate_server(
-                handle.clone(),
-                teammate_state.clone(),
-                Some(teammate_ready_tx),
-            );
-            let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+        .setup({
+            let app_data_dir = app_data_dir.clone();
+            move |app| {
+                let handle = app.handle().clone();
+                let (teammate_ready_tx, teammate_ready_rx) = std::sync::mpsc::channel();
+                teammate::spawn_teammate_server(
+                    handle.clone(),
+                    teammate_state.clone(),
+                    Some(teammate_ready_tx),
+                );
+                let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
 
-            // Show window after initialization
-            let window = app.get_webview_window("main").unwrap();
-            window.show()?;
+                // Build the main window programmatically (rather than declaring
+                // it in `tauri.conf.json`) so we can attach an
+                // `initialization_script` that runs BEFORE the page's inline
+                // splash bootstrap. That script pushes the persisted theme's
+                // loader config onto `window.__RIDGE_BOOT_*` globals; without it
+                // the very first frame would render with the hardcoded fallback
+                // colors because `localStorage.ridge-theme-data` is empty until
+                // SvelteKit hydrates. See `src/app.html` for the consumer end.
+                let splash_init_script = theme::build_splash_init_script(&app_data_dir);
+                let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+                    .title("ridge")
+                    .inner_size(800.0, 600.0)
+                    .decorations(false)
+                    .transparent(false)
+                    .visible(false)
+                    .devtools(true)
+                    .initialization_script(&splash_init_script)
+                    .build()?;
+                window.show()?;
 
             tauri::async_runtime::spawn(async move {
                 use std::collections::HashMap;
@@ -268,7 +293,8 @@ pub fn run() {
                     }
                 }
             });
-            Ok(())
+                Ok(())
+            }
         })
         .invoke_handler(tauri::generate_handler![
             git::get_git_graph,
@@ -384,6 +410,7 @@ pub fn run() {
             ridge_file::list_saved_workspace_files,
             settings::set_user_default_cwd,
             theme::get_theme_data,
+            theme::set_active_theme,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
         ])

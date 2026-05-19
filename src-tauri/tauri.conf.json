@@ -12,19 +12,8 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "title": "ridge",
-        "width": 800,
-        "height": 600,
-        "decorations": false,
-        "transparent": false,
-        "visible": false,
-        "devtools": true
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' asset: https://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: https://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -36,9 +25,6 @@
     "targets": ["nsis", "msi"],
     "icon": [
       "icons/icon.ico"
-    ],
-    "resources": [
-      "../ridge.theme"
     ],
     "windows": {
       "nsis": {
