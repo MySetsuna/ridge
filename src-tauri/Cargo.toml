@@ -54,6 +54,20 @@ base64 = "0.22"
 notify = { version = "6", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.4"
 
+# P3.1 (2026-05-20): pull the ridge-term parser + grid + modes into
+# the Tauri binary. `default-features = false` skips the `webgpu`
+# default (whose deps are gated `optional = true` in ridge-term's
+# Cargo.toml + `cfg(target_arch = "wasm32")` blocks). The native
+# build only ends up with vte / unicode-segmentation / serde / the
+# wasm-bindgen no-op stubs, so no wgpu / web-sys / bytemuck creeps
+# into the desktop binary.
+#
+# Not consumed yet — P3.3 wires the per-pane parser task in
+# src-tauri/src/engine/parser.rs. Adding the dep now (zero-import)
+# so a fresh `cargo build` confirms the dependency graph resolves
+# without surprise rebuilds when P3.3 lands.
+ridge-term = { path = "../packages/ridge-term", default-features = false }
+
 [[bin]]
 name = "tmux"
 path = "src/bin/tmux.rs"
