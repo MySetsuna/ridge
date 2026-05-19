@@ -678,9 +678,29 @@ impl RenderBackend for WebGpuPaneBackend {
                     procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int)
                 {
                     for r in rects {
+                        // Pixel-snap to integer boundaries. When cell_w
+                        // or cell_h is odd (which is common after the
+                        // (px * dpr).round() step in line 520-521), the
+                        // half/quarter expressions in procedural_box
+                        // (cell_w * 0.5, cell_h * 0.125, …) land on
+                        // half-pixel coordinates. The GPU then alpha-
+                        // blends the rect's edge across two pixels,
+                        // making the same character look thicker or
+                        // thinner depending on whether its cell happens
+                        // to sit on an even/odd row or column. Snapping
+                        // each edge independently (NOT left + width)
+                        // means ▀ and ▄ in the same column stay flush,
+                        // and every ▀ on the screen renders at the
+                        // identical integer height.
+                        let r_x = r.x.round();
+                        let r_y = r.y.round();
+                        let r_right = (r.x + r.w).round();
+                        let r_bot = (r.y + r.h).round();
+                        let r_w = (r_right - r_x).max(1.0);
+                        let r_h = (r_bot - r_y).max(1.0);
                         row_glyph_instances.push(CellInstance {
-                            cell_xy: [r.x, r.y],
-                            cell_size: [r.w, r.h],
+                            cell_xy: [r_x, r_y],
+                            cell_size: [r_w, r_h],
                             atlas_uv: [0.0, 0.0, 0.0, 0.0],
                             atlas_layer: 0,
                             fg_rgba: rgba_u8_to_f32(fg),
