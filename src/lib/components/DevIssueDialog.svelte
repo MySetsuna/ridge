@@ -27,6 +27,18 @@
 
   onMount(() => {
     if (import.meta.env.PROD) return;
+    // P1.4 (2026-05-19): E2E smoke runs against the Vite dev server, so
+    // `import.meta.env.DEV` is true and this overlay normally activates.
+    // Tauri plugin bootstrap rejects repeatedly in browser-only mode
+    // (no `window.__TAURI__`), which retriggers the modal even after a
+    // user (or the test) dismisses it. Skip the listeners when the
+    // page is launched with `?e2e=1` — `tests/e2e/smoke.spec.ts::bootSpa`
+    // navigates with this flag so the smoke tier doesn't fight the
+    // overlay. Other dev workflows are unaffected.
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('e2e')) return;
+    }
 
     const onError = (event: Event) => {
       const ev = event as ErrorEvent;
