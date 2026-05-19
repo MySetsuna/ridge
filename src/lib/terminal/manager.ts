@@ -952,9 +952,19 @@ export class TerminalManager {
 			// every event, modifier-aware encoding still flows through).
 			const isMouseMotion = (modes & (MOUSE_BTN_EVT | MOUSE_ANY_EVT)) !== 0;
 			if (isMouseMotion && hoverCell) {
-				// ?1003: forward ALL motion (no drag required)
-				// ?1002: only forward during drag (selecting=true)
-				if ((modes & MOUSE_ANY_EVT) !== 0 || ent.selecting) {
+				// ?1003: forward ALL motion (no drag required).
+				// ?1002: only forward while a mouse button is held —
+				// read PointerEvent.buttons directly instead of relying
+				// on `ent.selecting`, which is the host drag-select
+				// flag. Conflating the two used to leak stale host
+				// selection: a TUI mouse-mode pointerdown set
+				// selecting=true to gate ?1002 motion, and if the TUI
+				// then disabled mouse reporting (or exited back to
+				// shell) mid-press, the next move would fall into the
+				// host selection block with selecting still true and
+				// `selectionStartAbs` carrying residue from a prior
+				// host drag, silently extending that selection.
+				if ((modes & MOUSE_ANY_EVT) !== 0 || pending.buttons !== 0) {
 					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 					const mod = pending.ctrlKey || (isMacUA && pending.metaKey);
 					const btn = pending.buttons & 1 ? 0 : pending.buttons & 2 ? 2 : pending.buttons & 4 ? 1 : 0;
@@ -1043,7 +1053,12 @@ export class TerminalManager {
 				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
 				if (bytes.length > 0) {
 					ent.dataHandler?.(bytes);
-					ent.selecting = true; // 保持 selecting=true 以便后续 motion 事件继续转发给 TUI
+					// Deliberately do NOT set ent.selecting = true here.
+					// `selecting` is the host drag-select state machine;
+					// the ?1002 motion gate now reads PointerEvent.buttons
+					// instead so this branch stays fully isolated from
+					// host selection state — preventing residue leakage
+					// across mid-press mouse-reporting changes.
 					// Seed dedup baseline so the first motion in this cell is
 					// suppressed (the TUI already knows the button is down here).
 					ent.lastMouseSent = { row: cell.row, col: cell.col, buttons: e.buttons, action: 0 };
