@@ -87,6 +87,17 @@ function triggerBellFlash() {
 let imeHelper: HTMLTextAreaElement | undefined = $state(undefined);
 let isComposing = $state(false);
 
+// §1.28 (2026-05-19): anchor LOCKED at compositionstart and held for the
+// entire composition session. The previous design re-resolved the anchor
+// on every `compositionupdate`, which let PTY-driven cursor moves (Ink /
+// log-update spinner walks, async tool output, background watchers) drag
+// the visible preedit textarea across the pane mid-input — the "IME
+// 输入域到处乱跑" symptom. With the snapshot frozen, preedit text stays
+// at the cell where the user started composing, just like a normal ASCII
+// caret would. Cleared on compositionend.
+type ImeAnchor = { x: number; y: number; cellW: number; cellH: number; fontSizePx: number };
+let composingAnchor: ImeAnchor | null = null;
+
 // Sticky inline-TUI gate. The kernel's inline-TUI heuristic
 // (grid.rs::INLINE_TUI_DECAY_MS) decays after 2 s without abs/redraw
 // CSI activity so that returning to a normal shell prompt immediately
@@ -267,15 +278,16 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	// §1.27 fix: use the stable user-input anchor instead of the live
-	// kernel cursor. Ink/log-update walks the kernel cursor up through
-	// every previously-rendered row each spinner tick; reading the live
-	// position during compositionupdate would teleport the helper to the
-	// spinner row mid-walk, where its opaque background covers the
-	// loading area. `inputAnchorPixelPosition` snapshots after each user
-	// keystroke and stays put across PTY-driven cursor moves. Falls back
-	// to the live cursor when no keystroke has happened yet.
-	const pos = manager.inputAnchorPixelPosition(paneId);
+	// §1.28 (2026-05-19): during active composition, ALWAYS use the
+	// locked snapshot captured at compositionstart. This stops PTY-driven
+	// cursor moves (Ink spinner walks, async output, file-watcher echoes)
+	// from teleporting the preedit textarea mid-input.
+	// Outside composition, fall back to the manager's stable input anchor
+	// (which itself decays to live cursor / lastAbsCsiPosition — see
+	// manager.ts::inputAnchorPixelPosition for the resolution chain).
+	const pos = isComposing && composingAnchor
+		? composingAnchor
+		: manager.inputAnchorPixelPosition(paneId);
 	if (!pos) return;
 	// Anchor the helper AT the cursor cell so the visible preedit text
 	// (set by `.is-composing` CSS) overlays the canvas cursor exactly.
@@ -327,29 +339,32 @@ function diagLogIme(event: string, extra?: Record<string, unknown>) {
 }
 
 function onCompositionStart() {
+	// §1.28: take ONE snapshot of the anchor at composition start and
+	// lock it for the entire composition. `inputAnchorPixelPosition`
+	// applies the full TUI/Ink fallback chain (stable user-input anchor
+	// → recent lastAbsCsiPosition → live cursor), so this captures the
+	// best-effort "where the user is typing" cell. After this, the
+	// textarea position is fixed until compositionend — PTY redraws
+	// can't shift it, exactly matching how a normal ASCII caret behaves.
+	composingAnchor = manager.inputAnchorPixelPosition(paneId);
 	isComposing = true;
-	// Re-anchor right before the candidate window appears.
 	repositionImeHelper();
 	diagLogIme('start');
 }
 
 	function onCompositionUpdate(e: CompositionEvent) {
-		// Re-anchor on every keystroke during composition: the user may
-		// scroll the canvas (e.g. PageUp closes the IME on most systems
-		// but defensive); also lets the candidate-window popup track if
-		// the cursor row shifts while composing.
-		repositionImeHelper();
-		
-		// 动态调整 IME 辅助输入框宽度，防止长拼音截断
-		if (imeHelper && e.data) {
-			const pos = manager.inputAnchorPixelPosition(paneId);
-			if (pos) {
-				const charCount = e.data.length;
-				// +1 cell 缓冲余量以容纳光标
-				imeHelper.style.width = `${(charCount + 1) * pos.cellW}px`;
-			}
+		// §1.28: do NOT re-anchor here. The position was locked at
+		// compositionstart; calling repositionImeHelper() per keystroke
+		// was the source of the "IME 输入域到处乱跑" bug because the
+		// underlying input anchor can shift between keys when a TUI
+		// redraws (Claude Code spinner, Ink log-update). Only grow the
+		// textarea width so long preedit strings stay readable.
+		if (imeHelper && composingAnchor && e.data) {
+			const charCount = e.data.length;
+			// +1 cell of trailing room for the IME caret glyph itself.
+			imeHelper.style.width = `${(charCount + 1) * composingAnchor.cellW}px`;
 		}
-		
+
 		diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
 	}
 
@@ -368,6 +383,10 @@ function onCompositionStart() {
 	}
 	function onCompositionEnd(e: CompositionEvent) {
 		isComposing = false;
+		// §1.28: release the locked anchor so subsequent focus / live
+		// anchor reads resume normal behaviour. The next compositionstart
+		// will snapshot a fresh anchor from `inputAnchorPixelPosition`.
+		composingAnchor = null;
 		const data = e.data;
 		if (data && data.length > 0) {
 			manager.write(paneId, data);
