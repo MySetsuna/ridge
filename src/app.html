@@ -177,10 +177,36 @@
 
   <div style="display: contents">%sveltekit.body%</div>
   <script>
-    window.addEventListener('ridge:app-ready', () => {
+    function dismissBrandLoader() {
       const el = document.getElementById('brand-loader');
-      if (el) el.classList.add('fade-out');
-    }, { once: true });
+      if (!el || el.classList.contains('fade-out')) return;
+      el.classList.add('fade-out');
+      // Once the opacity transition lands the splash is invisible AND
+      // `pointer-events: none`, but it still occupies its 100vw×100vh
+      // box in the layout flow. Take it out of layout so the underlying
+      // chrome is truly unobstructed — Playwright's click-actionability
+      // check (and any host shortcut probing element-from-point) would
+      // otherwise still treat the loader's box as a candidate.
+      const onDone = () => { el.style.display = 'none'; };
+      el.addEventListener('transitionend', onDone, { once: true });
+      // Belt + suspenders: if the transitionend never fires (animation
+      // disabled, reduced-motion, browser quirk) drop the box after a
+      // generous animation budget so the SPA isn't permanently blocked.
+      setTimeout(onDone, 800);
+    }
+    // Primary signal: the SvelteKit page dispatches `ridge:app-ready` after
+    // it has either (a) attached its first pane via Tauri PTY or (b) hit
+    // the 5 s fallback inside its own async IIFE. Either way dismiss.
+    window.addEventListener('ridge:app-ready', dismissBrandLoader, { once: true });
+    // Fallback for non-Tauri contexts (Playwright smoke tests against the
+    // raw Vite dev server, future web preview, broken Tauri IPC). The
+    // primary dispatcher lives inside the `if (!isTauri()) return;` branch
+    // of +page.svelte's onMount, so without this 3 s safety net the
+    // splash would stay full-viewport forever in browser mode and
+    // intercept every click. 3 s gives the SPA hydration enough time to
+    // mount the page chrome behind the loader before we fade — earlier
+    // and the user catches a flash of un-styled content.
+    setTimeout(dismissBrandLoader, 3000);
   </script>
 </body>
 
