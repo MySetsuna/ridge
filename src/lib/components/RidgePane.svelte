@@ -27,7 +27,7 @@ import { terminalHistoryStore } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
 import { isTuiActive } from '$lib/terminal/tuiGate';
 import { computePopupPosition } from './historyPopupPosition';
-import { deriveBufferEvent, updateInputBuffer } from './inputBufferTracker';
+import { deriveBufferEvent, updateInputBuffer, EMPTY_INPUT_BUFFER, type InputBufferState } from './inputBufferTracker';
 
 interface Props {
 	paneId: string;
@@ -56,7 +56,10 @@ const manager = TerminalManager.instance();
 
 // History popup state
 let historyPopupOpen = $state(false);
-let currentInputBuffer = $state('');
+// §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
+// ArrowLeft / Home / Delete / mid-line edits preserve the buffer
+// instead of clearing it. See `inputBufferTracker.ts` for the rules.
+let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
 let historyPopupPosition = $state({ x: 0, y: 0, inputH: 20 });
 let historyPopupEl: { handleKeyDown: (e: KeyboardEvent) => boolean } | undefined = $state(undefined);
 
@@ -1281,19 +1284,23 @@ function onContainerMouseDown(e: MouseEvent) {
 
 <TerminalHistoryPopup
     bind:this={historyPopupEl}
-    query={currentInputBuffer}
+    query={currentInputBuffer.text}
     isVisible={historyPopupOpen}
     position={historyPopupPosition}
     onSelect={(cmd) => {
         // 加入前端历史库，供后续弹窗使用
         terminalHistoryStore.add(cmd);
         // 清除 shell 中已键入的筛选文本，然后用选中命令替换
-        if (currentInputBuffer.length > 0) {
-            manager.write(paneId, '\x08'.repeat(currentInputBuffer.length));
+        // §1.32 Wave C: until Wave D adds cursor-aware replay
+        // (Ctrl+E + \x08 * N, etc.), the naive end-of-line replay still
+        // applies when cursor is at end. For mid-line cases the
+        // replay may overshoot — that's the Wave D scope.
+        if (currentInputBuffer.text.length > 0) {
+            manager.write(paneId, '\x08'.repeat(currentInputBuffer.text.length));
         }
         // 写入选中命令 + 回车执行
         manager.write(paneId, cmd + '\r');
-        currentInputBuffer = '';
+        currentInputBuffer = EMPTY_INPUT_BUFFER;
         historyPopupOpen = false;
         imeHelper?.focus();
     }}
