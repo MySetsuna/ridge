@@ -608,6 +608,36 @@ impl JsTerminal {
         self.inner.modes().mouse_sgr
     }
 
+    /// Single-call bitmask of every DEC mouse mode the caller cares
+    /// about. Eliminates the 3-4 separate wasm boundary crossings the
+    /// JS pointer handlers used to make per pointermove event:
+    ///
+    ///   bit 0 (0x1) = ?1000 (mouse_normal)
+    ///   bit 1 (0x2) = ?1002 (button_event / drag tracking)
+    ///   bit 2 (0x4) = ?1003 (any_event / all motion)
+    ///   bit 3 (0x8) = ?1006 (SGR encoding)
+    ///
+    /// `bits != 0` <=> `isMouseReporting() == true`. The individual
+    /// boolean getters above are kept for non-hot-path callers.
+    #[wasm_bindgen(js_name = mouseReportingModes)]
+    pub fn mouse_reporting_modes(&self) -> u32 {
+        let m = self.inner.modes();
+        let mut bits = 0u32;
+        if m.mouse_normal {
+            bits |= 1;
+        }
+        if m.mouse_button_event {
+            bits |= 2;
+        }
+        if m.mouse_any_event {
+            bits |= 4;
+        }
+        if m.mouse_sgr {
+            bits |= 8;
+        }
+        bits
+    }
+
     /// Encode a mouse event as an SGR terminal sequence. Delegates to
     /// `input::encode_mouse` which generates `ESC [ < btn ; row ; col [Mm]`.
     /// Always uses SGR format regardless of ?1006 state — the terminal
