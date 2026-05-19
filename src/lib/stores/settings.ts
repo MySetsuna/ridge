@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
 import { getTheme } from './themes';
 
 export interface UserSettings {
@@ -139,6 +140,14 @@ export function applyTheme(themeId: string): void {
 export function setTheme(themeId: string): void {
   applyTheme(themeId);
   setSetting('theme', themeId);
+  // Persist to disk so the next launch's splash can render with the
+  // correct loader colors BEFORE any JS has run. Without this the
+  // first-frame splash would always fall back to the bootstrap theme.
+  // Fire-and-forget — failure to persist only affects the next-launch
+  // splash, never the current session.
+  invoke('set_active_theme', { themeId }).catch((e) => {
+    console.warn('[settings] set_active_theme persistence failed', e);
+  });
 }
 
 export function initSettingsBoot(): void {

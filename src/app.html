@@ -66,33 +66,53 @@
   <script>
     // Splash theming bootstrap.
     //
-    // Reads the active theme from localStorage and pushes its `loader`
-    // block (plus selected `colors`) into CSS custom properties. The
-    // animation styles above are entirely fallback-driven so any field
-    // missing from a theme silently uses the current default. New
+    // Source of truth ordering:
+    //   1) `window.__RIDGE_BOOT_LOADER__` — injected by Rust via
+    //      `WebviewWindowBuilder::initialization_script` (see
+    //      `src-tauri/src/commands/theme.rs::build_splash_init_script`).
+    //      This is the ONLY source that's guaranteed to be correct on
+    //      the FIRST launch — `localStorage.ridge-theme-data` is only
+    //      populated by `initThemeSystem` after SvelteKit hydrates.
+    //   2) `localStorage.ridge-theme-data` + `localStorage.ridge-settings`
+    //      — fallback for the (unlikely) case where Rust failed to read
+    //      `ridge.theme` or persist the active id.
+    //   3) Hardcoded defaults baked into the CSS variable fallbacks.
+    //
+    // The animation styles above are entirely fallback-driven so any
+    // field missing from a theme silently uses the current default. New
     // themes can override animation timing, stroke, fill opacities, etc.
     // without touching this file.
     (function() {
-      var themeId = 'endless-dark';
-      try {
-        var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
-        if (s.theme) themeId = s.theme;
-      } catch(e) {}
-      var loader = {};
+      var loader = null;
       var bg = null;
-      try {
-        var cache = JSON.parse(localStorage.getItem('ridge-theme-data') || '{}');
-        if (cache.themes) {
-          for (var i = 0; i < cache.themes.length; i++) {
-            if (cache.themes[i].id === themeId) {
-              var t = cache.themes[i];
-              loader = t.loader || {};
-              bg = t.colors && t.colors.bg;
-              break;
+      // Path 1: Rust-injected boot snapshot.
+      if (window.__RIDGE_BOOT_LOADER__) {
+        loader = window.__RIDGE_BOOT_LOADER__;
+        bg = window.__RIDGE_BOOT_THEME_BG__ || null;
+      }
+      // Path 2: localStorage cache (populated by initThemeSystem in
+      // src/lib/stores/themes.ts on every page load).
+      if (!loader) {
+        var themeId = 'endless-dark';
+        try {
+          var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
+          if (s.theme) themeId = s.theme;
+        } catch(e) {}
+        try {
+          var cache = JSON.parse(localStorage.getItem('ridge-theme-data') || '{}');
+          if (cache.themes) {
+            for (var i = 0; i < cache.themes.length; i++) {
+              if (cache.themes[i].id === themeId) {
+                var t = cache.themes[i];
+                loader = t.loader || {};
+                bg = t.colors && t.colors.bg;
+                break;
+              }
             }
           }
-        }
-      } catch(e) {}
+        } catch(e) {}
+      }
+      loader = loader || {};
       var root = document.documentElement;
       function setColor(name, value) {
         if (typeof value === 'string' && value.length > 0) {
