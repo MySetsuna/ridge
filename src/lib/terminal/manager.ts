@@ -2478,24 +2478,27 @@ export class TerminalManager {
 		// Cells fit into the container; round DOWN to avoid drawing past
 		// the right/bottom edge.
 		const cols = Math.max(1, Math.floor(wCss / entry.cellW));
-		const rows = Math.max(1, Math.floor(hCss / entry.cellH));
+		let rows = Math.max(1, Math.floor(hCss / entry.cellH));
 
-		// Center the cell grid inside its content-box. In host mode the
-		// container is sized by the outer layout; `cols * cellW` rarely
-		// equals the available width exactly, so the leftover pixels (up
-		// to one cell minus 1px) would always pile up on the right/bottom
-		// while the user-configured `paddingPx` only insets the
-		// top/left. Splitting the leftover symmetrically across the four
-		// sides makes the cell grid look centered inside its pane,
-		// matching the visual symmetry of single-pane editors like VS
-		// Code. Canvas2D mode skips this — its canvas is sized to the
-		// container directly with no padding budget to redistribute.
+		// Equal padding on all four sides, using the horizontal-center
+		// value as the canonical inset. Splitting horizontal and
+		// vertical leftover independently made the vertical padding
+		// visibly thicker than the horizontal one (cellH > cellW means
+		// a larger vertical rounding remainder). For a single-pane
+		// terminal we want symmetric top/bottom/left/right insets, so
+		// the horizontal-centered pad is reused for the vertical sides
+		// and `rows` is re-floored to fit inside the now-shrunk
+		// content-box. Any residual vertical leftover (< cellH px) sits
+		// below the cells and gets painted as bg by the scissor —
+		// visually the bottom padding is at most one half-cell taller
+		// than the top, well below the perceptual threshold the user
+		// flagged. Canvas2D mode skips this — its canvas is sized to
+		// the container directly with no padding budget to redistribute.
 		if (this._isHostMode(entry)) {
 			const cellsW = cols * entry.cellW;
-			const cellsH = rows * entry.cellH;
-			const padH = Math.max(0, (containerWCss - cellsW) / 2);
-			const padV = Math.max(0, (containerHCss - cellsH) / 2);
-			entry.container.style.padding = `${padV}px ${padH}px`;
+			const padAll = Math.max(0, (containerWCss - cellsW) / 2);
+			rows = Math.max(1, Math.floor((containerHCss - 2 * padAll) / entry.cellH));
+			entry.container.style.padding = `${padAll}px`;
 			this._recomputeViewport(entry);
 		} else {
 			entry.handle.resize(wCss, hCss, dpr);
