@@ -927,6 +927,17 @@ export class TerminalManager {
 			const row = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
 			return { row, col };
 		};
+		// JS-side mirror of selection.rs:22 — the abs-row encoding wasm
+		// Selection uses is `0..sb_len` for scrollback rows and
+		// `sb_len..sb_len+rows` for live grid rows, so the correct vp→abs
+		// formula is `sb_len + vp - off`. A previous round of this code
+		// used `vp + off`, which is only correct when sb_len = 0 — the
+		// moment a pane accumulates any history (claude on first run),
+		// stored abs landed below vp_first_abs and range_in_viewport
+		// clipped the entire selection to None ("mouse selection
+		// completely broken").
+		const vpToAbsRow = (vpRow: number, kernel: TerminalKernel): number =>
+			kernel.scrollbackLen() + vpRow - kernel.scrollOffset();
 		// Mouse mode bitmask (kernel.mouseReportingModes()):
 		//   bit 0 = ?1000 (normal), bit 1 = ?1002 (button-event / drag),
 		//   bit 2 = ?1003 (any-event / motion), bit 3 = ?1006 (SGR).
@@ -1012,7 +1023,7 @@ export class TerminalManager {
 
 			// Continue with selection drag logic.
 			if (!ent.selecting || !ent.selectionStartAbs || !hoverCell) return;
-			ent.selectionEndAbs = { row: hoverCell.row + ent.kernel.scrollOffset(), col: hoverCell.col };
+			ent.selectionEndAbs = { row: vpToAbsRow(hoverCell.row, ent.kernel), col: hoverCell.col };
 			this._syncSelection(ent);
 		};
 		const pointerDownListener = (e: PointerEvent) => {
@@ -1114,7 +1125,7 @@ export class TerminalManager {
 			if (e.shiftKey && ent.selectionStartAbs) {
 				try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 				ent.selecting = true;
-				const absEndRow = cell.row + ent.kernel.scrollOffset();
+				const absEndRow = vpToAbsRow(cell.row, ent.kernel);
 				ent.selectionEndAbs = { row: absEndRow, col: cell.col };
 				ent.kernel.setSelectionAbs(
 					ent.selectionStartAbs.row, ent.selectionStartAbs.col,
@@ -1140,7 +1151,7 @@ export class TerminalManager {
 			}
 			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 			ent.selecting = true;
-			const absRow = cell.row + ent.kernel.scrollOffset();
+			const absRow = vpToAbsRow(cell.row, ent.kernel);
 			ent.selectionStartAbs = { row: absRow, col: cell.col };
 			ent.selectionEndAbs = { row: absRow, col: cell.col };
 			ent.kernel.setSelectionAbs(absRow, cell.col, absRow, cell.col);
@@ -1208,7 +1219,7 @@ export class TerminalManager {
 				const xCol = Math.max(0, Math.min(colsCount - 1,
 					Math.floor((lastEvt.clientX - r2.left) / cur.cellW)));
 				const vpRow = dir === 'up' ? 0 : rowsCount - 1;
-				const absRow = vpRow + cur.kernel.scrollOffset();
+				const absRow = vpToAbsRow(vpRow, cur.kernel);
 				cur.selectionEndAbs = { row: absRow, col: xCol };
 				this._syncSelection(cur);
 			}, AUTO_SCROLL_INTERVAL_MS);
