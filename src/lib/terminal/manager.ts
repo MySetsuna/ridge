@@ -958,8 +958,12 @@ export class TerminalManager {
 			const ent = this.panes.get(paneId);
 			if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
 			const rect = ent.container.getBoundingClientRect();
-			const x = e.clientX - rect.left;
-			const y = e.clientY - rect.top;
+			// §1.30: subtract container padding — canvas content starts at
+			// `rect.top/left + pad`, not at the rect edge. See cellFromEvent
+			// docstring for the full bug write-up.
+			const pad = ent.lastAppliedPaddingPx ?? 0;
+			const x = e.clientX - rect.left - pad;
+			const y = e.clientY - rect.top - pad;
 			const cols = ent.kernel.cols();
 			const rows = ent.kernel.rows();
 			if (cols === 0 || rows === 0) return null;
@@ -1943,8 +1947,13 @@ export class TerminalManager {
 		if (entry.kernel.mouseReportingModes() === 0) return false;
 
 		const rect = entry.container.getBoundingClientRect();
-		const x = ev.clientX - rect.left;
-		const y = ev.clientY - rect.top;
+		// §1.30: subtract container padding before dividing — TUIs that
+		// receive a wheel-as-mouse SGR report deserve the same accurate
+		// row/col as click handlers. Otherwise wheel-over-cell-N gets
+		// reported as cell-N+1 once `pad > 0`.
+		const pad = entry.lastAppliedPaddingPx ?? 0;
+		const x = ev.clientX - rect.left - pad;
+		const y = ev.clientY - rect.top - pad;
 		if (entry.cellW <= 0 || entry.cellH <= 0) return false;
 		const cols = entry.kernel.cols();
 		const rows = entry.kernel.rows();
@@ -2032,13 +2041,24 @@ export class TerminalManager {
 	}
 
 	/** Compute viewport cell coordinates from a mouse/pointer event.
-	 *  Returns null if the pane is unknown or cell metrics aren't ready. */
+	 *  Returns null if the pane is unknown or cell metrics aren't ready.
+	 *
+	 *  §1.30 (2026-05-19): the pane container has CSS `padding` (set by
+	 *  `setPadding`) and the canvas paints inside the content-box, so the
+	 *  drawn rows start at `rect.top + pad`. Without subtracting pad,
+	 *  every click further than `cellH - pad` from the canvas top maps
+	 *  to the row BELOW its visual cell, producing the "mouse appears
+	 *  higher than the selection start" symptom. Symmetric pad subtraction
+	 *  on x fixes the same off-by-one on the column axis.
+	 *  `inputAnchorPixelPosition` (this file, ~line 2286) already applies
+	 *  the same pad correction in the opposite direction. */
 	cellFromEvent(paneId: string, e: { clientX: number; clientY: number }): { row: number; col: number } | null {
 		const ent = this.panes.get(paneId);
 		if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
 		const rect = ent.container.getBoundingClientRect();
-		const x = e.clientX - rect.left;
-		const y = e.clientY - rect.top;
+		const pad = ent.lastAppliedPaddingPx ?? 0;
+		const x = e.clientX - rect.left - pad;
+		const y = e.clientY - rect.top - pad;
 		const cols = ent.kernel.cols();
 		const rows = ent.kernel.rows();
 		if (cols === 0 || rows === 0) return null;
