@@ -26,6 +26,7 @@ import TerminalHistoryPopup from './TerminalHistoryPopup.svelte';
 import { terminalHistoryStore } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
 import { isTuiActive } from '$lib/terminal/tuiGate';
+import { computePopupPosition } from './historyPopupPosition';
 
 interface Props {
 	paneId: string;
@@ -57,6 +58,44 @@ let historyPopupOpen = $state(false);
 let currentInputBuffer = $state('');
 let historyPopupPosition = $state({ x: 0, y: 0, inputH: 20 });
 let historyPopupEl: { handleKeyDown: (e: KeyboardEvent) => boolean } | undefined = $state(undefined);
+
+// §1.32 (2026-05-20): popup placement helper + live resize tracking.
+// Three previously-deferred lifecycle bugs collapse into this:
+//   - Bug #2: when `manager.inputAnchorPixelPosition` returns null
+//     (cell metrics not ready, pane unknown, alt-screen race) the old
+//     code fell back to `{ x: 0, y: 0, cellH: 20 }` and stranded the
+//     popup at the viewport corner. `computePopupPosition` now
+//     returns null and we flip `historyPopupOpen` back to false.
+//   - Bug #13: ArrowUp → Esc → ArrowUp must re-anchor on each open;
+//     every popup-open path calls this function so the anchor is
+//     always fresh.
+//   - Bug #1: while the popup is open, a pane resize re-runs this
+//     function via the ResizeObserver $effect below so the popup
+//     tracks the new cell origin.
+function repositionPopup(): boolean {
+	if (!container) return false;
+	const pos = computePopupPosition(
+		manager.inputAnchorPixelPosition(paneId),
+		container.getBoundingClientRect(),
+	);
+	if (!pos) {
+		historyPopupOpen = false;
+		return false;
+	}
+	historyPopupPosition = pos;
+	return true;
+}
+
+// Observe the pane container while the popup is open. The effect's
+// cleanup auto-disconnects the observer when the popup closes or the
+// component unmounts; no leak even if multiple popup-open/close
+// cycles happen during the component's lifetime.
+$effect(() => {
+	if (!historyPopupOpen || !container) return;
+	const ro = new ResizeObserver(() => { repositionPopup(); });
+	ro.observe(container);
+	return () => ro.disconnect();
+});
 // Search state
 let termSearchOpen = $state(false);
 let searchQuery = $state('');
@@ -833,9 +872,10 @@ $effect(() => {
 			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
 			e.preventDefault();
 			historyPopupOpen = true;
-			const anchor = manager.inputAnchorPixelPosition(paneId) || { x: 0, y: 0, cellH: 20 };
-			const rect = container.getBoundingClientRect();
-			historyPopupPosition = { x: rect.left + anchor.x, y: rect.top + anchor.y, inputH: anchor.cellH };
+			// §1.32: `repositionPopup()` flips `historyPopupOpen` back to
+			// false on null anchor (Bug #2) — return early in that case
+			// instead of leaving a popup-open state with no valid position.
+			if (!repositionPopup()) return;
 			return;
 		}
 

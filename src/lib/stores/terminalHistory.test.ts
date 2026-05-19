@@ -213,16 +213,8 @@ describe('terminalHistoryStore', () => {
 	});
 });
 
-/**
- * `it.todo` markers — deferred bugs documented in
- * `~/.claude/plans/tui-shell-tui-shell-bug-lively-walrus.md`.
- * These appear in `pnpm test` output as "todo" so the work is
- * visible without blocking the build. Promote each to `it(...)`
- * when the corresponding bug is fixed.
- */
-describe('TerminalHistoryPopup — deferred lifecycle bugs', () => {
-	it.todo('repositions popup on pane resize (Bug #1)');
-	it.todo('recomputes anchor position on rapid re-invoke after Esc (Bug #13)');
-	it.todo('falls back to actual cellH instead of hardcoded 20px when inputAnchorPixelPosition returns null (Bug #2)');
-	it.todo('shows a visible ellipsis indicator on long truncated commands (Bug #10)');
-});
+// §1.32 (2026-05-20): the 4 popup-lifecycle todos that used to live
+// here have been promoted to real tests in `historyPopupPosition.test.ts`
+// (Bugs #1 / #2 / #13) or locked at the source level via
+// `<button title={command}>` + CSS `text-overflow: ellipsis`
+// (Bug #10 — visual-only, no logic to unit-test).
