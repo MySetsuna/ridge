@@ -59,7 +59,13 @@ function quantizeCellSize(raw: number, dpr: number): number {
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 import { LinkSpanIndex } from '$lib/terminal/linkSpans';
-import { resolveLink, executeAction } from '$lib/utils/linkResolver';
+// §1.32 (2026-05-20): `linkResolver` transitively imports `monaco-editor`
+// via `$lib/stores/fileEditor → $lib/utils/markdown`. Keeping it as a
+// static top-level import drags monaco into every consumer of `manager.ts`,
+// which made `paneTree.test.ts` crash on the `window` reference inside
+// monaco's `window.js` when running in Vitest's node env. The functions
+// are only needed inside a click handler — lazy-import them at the use
+// site (around line 1185 below) instead.
 import { paneCwdStore } from '$lib/stores/paneTree';
 
 /** §A.4 — concatenate two Uint8Arrays without allocating a JS array. Used
@@ -1182,8 +1188,15 @@ export class TerminalManager {
 				if (span) {
 					const cwd = TerminalManager._currentPaneCwd(ent);
 					const known = TerminalManager._knownCwds();
-					const action = resolveLink(span.text, { cwd, knownCwds: known });
-					void executeAction(action);
+					const spanText = span.text;
+					// §1.32: dynamic import keeps linkResolver (and its
+					// transitive monaco-editor dependency) out of this
+					// module's load graph. Click handlers tolerate the
+					// extra microtask; tests in node env no longer crash.
+					void import('$lib/utils/linkResolver').then(({ resolveLink, executeAction }) => {
+						const action = resolveLink(spanText, { cwd, knownCwds: known });
+						void executeAction(action);
+					});
 					e.preventDefault();
 					return;
 				}
