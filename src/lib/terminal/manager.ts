@@ -1957,6 +1957,12 @@ export class TerminalManager {
 		if (!e) return;
 		e.kernel.scrollUp(lines);
 		e.linkSpans.markDirty();
+		// Every other state-mutating manager method ends with wake(); these
+		// two were the only holes. Without it the rAF loop stays idle after
+		// the viewport offset moves, so the screen sits on the pre-scroll
+		// frame until some unrelated event (next PTY byte, keystroke, …)
+		// happens to wake it. User-perceptible symptom: "wheel feels laggy."
+		this.wake();
 	}
 
 	scrollDown(paneId: string, lines: number): void {
@@ -1964,6 +1970,7 @@ export class TerminalManager {
 		if (!e) return;
 		e.kernel.scrollDown(lines);
 		e.linkSpans.markDirty();
+		this.wake();
 	}
 
 	/** Returns scroll offset (0 = at bottom) and scrollback length, for UI hints. */
