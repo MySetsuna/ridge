@@ -121,6 +121,60 @@ function isTuiSticky(): boolean {
 	return false;
 }
 
+// Host-priority shortcuts that should fire BEFORE TUI key forwarding.
+// Convention shared by gnome-terminal / kitty / iTerm2 / wezterm /
+// Windows Terminal: a small fixed set of modifier+Shift or platform-
+// native combinations is always handled by the host so users can
+// paste / copy / fullscreen even inside a TUI that captures everything
+// else (claude code, opencode, etc.). Plain Ctrl+V / Ctrl+C still flow
+// through to the TUI as bytes — those are TUI semantics (SYN / SIGINT).
+// Returns true when the host claimed the event.
+function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
+	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+	const mod = e.ctrlKey || (isMac && e.metaKey);
+
+	// Ctrl+Shift+V / Cmd+Shift+V — host paste, always wins. Plain Ctrl+V
+	// (no Shift) is left for the TUI as the SYN byte readline uses for
+	// "literal next character."
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+		void readText().then((text) => { if (text) manager.paste(paneId, text); });
+		e.preventDefault();
+		return true;
+	}
+
+	// macOS Cmd+V (no Shift) — host paste, matches every other macOS app.
+	if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+			&& (e.key === 'v' || e.key === 'V')) {
+		void readText().then((text) => { if (text) manager.paste(paneId, text); });
+		e.preventDefault();
+		return true;
+	}
+
+	// Ctrl+Shift+C — host copy when a selection exists. Falls through
+	// otherwise so a TUI that wants Ctrl+Shift+C as its own hotkey can
+	// still receive it.
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+		const sel = manager.getSelectionText(paneId);
+		if (sel) {
+			void writeText(sel);
+			e.preventDefault();
+			return true;
+		}
+	}
+
+	// F11 fullscreen / Ctrl+, settings — OS / app-shell concerns, let
+	// the browser handle them regardless of TUI state. Returning true
+	// without preventDefault lets the event bubble up to the document.
+	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) {
+		return true;
+	}
+	if (mod && !e.shiftKey && !e.altKey && e.key === ',') {
+		return true;
+	}
+
+	return false;
+}
+
 // Reverse-scrollback bridge state (TASKS §2.1).
 //
 // `oldestSeq` is the backend `seq` (monotonic byte counter) of the first
@@ -714,7 +768,14 @@ $effect(() => {
 		}
 		if (isComposing || e.isComposing) return;
 
-		// 2. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
+		// 2. Host-priority shortcuts (paste / copy-with-selection /
+		// fullscreen / settings). These bypass TUI key forwarding so
+		// users can always paste into claude / opencode / vim — the
+		// TUI never sees Ctrl+Shift+V because the host intercepts
+		// first. See handleHostPriorityShortcut for the full table.
+		if (handleHostPriorityShortcut(e)) return;
+
+		// 3. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
 		// 注意: TUI 启用鼠标模式 (isMouseReporting) 也意味着键盘应优先给 TUI
 		// 使用 isTuiSticky() 而非直接 OR，避免 claude /theme 这类静态
 		// 菜单在 inline-TUI 2s decay 过期后误判出 TUI 模式。
@@ -739,39 +800,18 @@ $effect(() => {
 		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 		const mod = e.ctrlKey || (isMac && e.metaKey);
 
-		// 4. 系统/RidgePane 快捷键拦截，非 TUI 模式下处理
-		// F11 fullscreen and Ctrl+, settings are OS/app-level; pass through.
+		// 4. Non-TUI-only 快捷键。Host-priority 集合（粘贴 / 复制选中 /
+		// F11 / Ctrl+,）已在 step 2 提前处理；这里只剩下与 TUI 行为冲突、
+		// 必须避让 TUI 的 host 快捷键（in-pane 搜索、scrollback 翻页）。
 		if (!isTui) {
-			if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;
-			if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;
-
-			// Ctrl+F — open/close in-pane search bar.
+			// Ctrl+F — open/close in-pane search bar. TUI 里 Ctrl+F 通常
+			// 是 page down (vim/less)，所以非 TUI 才拦截。
 			if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
 				if (termSearchOpen) {
 					closeSearchBar();
 				} else {
 					openSearchBar();
 				}
-				e.preventDefault();
-				return;
-			}
-
-			// Ctrl+Shift+C with selection: copy.  Ctrl+C alone flows to the
-			// terminal for SIGINT (^C).
-			if (mod && e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
-				const sel = manager.getSelectionText(paneId);
-				if (sel) {
-					void writeText(sel);
-					e.preventDefault();
-					return;
-				}
-			}
-
-			// Ctrl+Shift+V — paste (manager handles bracketed paste).
-			if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-				void readText().then((text) => {
-					if (text) manager.paste(paneId, text);
-				});
 				e.preventDefault();
 				return;
 			}
@@ -815,10 +855,11 @@ $effect(() => {
 		if (!alive || !attached) return;
 
 		// ★ TUI 模式下: 将滚轮编码为 SGR 鼠标滚动事件转发给 PTY
-		// 同样走 sticky gate，否则 claude /theme 的滚轮会落到 scrollback
-		// 分支而不是转给 TUI（即便 TUI 启用了 mouse reporting）。
-		if (isTuiSticky()) {
-			manager.handleWheel(paneId, e);
+		// 利用 handleWheel 的返回值——只有 TUI 启用了 mouse reporting
+		// 且字节真的发出去时才 preventDefault。否则（如 claude code 这
+		// 类启用了 cursor hidden 让 sticky=true 但不接管鼠标的 inline-TUI）
+		// 落到下方的 scrollback 分支，用户仍能向上翻页 host 历史。
+		if (isTuiSticky() && manager.handleWheel(paneId, e)) {
 			e.preventDefault();
 			return;
 		}
