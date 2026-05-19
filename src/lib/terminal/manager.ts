@@ -1006,6 +1006,19 @@ export class TerminalManager {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
 
+			// Drop any pointermove that's still queued for the next rAF —
+			// otherwise it fires AFTER this pointerdown's encoded press
+			// reaches the TUI, and the TUI reads it as "the user pressed
+			// at A then immediately dragged to A_prev", extending the
+			// selection / visual range backwards by one frame's worth of
+			// cursor history. Symptom: "selection starts from where the
+			// cursor was a moment ago, not where I clicked."
+			if (ent.mouseMoveRaf !== null) {
+				cancelAnimationFrame(ent.mouseMoveRaf);
+				ent.mouseMoveRaf = null;
+			}
+			ent.pendingMouseMove = null;
+
 			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod = e.ctrlKey || (isMac && e.metaKey);
 
