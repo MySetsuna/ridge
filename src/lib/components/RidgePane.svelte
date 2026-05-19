@@ -725,23 +725,18 @@ onMount(() => {
 	})();
 });
 
-// §1.23 (2026-05-05): low-frequency poll so the side scrollbar's thumb
-// position stays in sync as new PTY output arrives (scrollback grows
-// asynchronously; the keystroke / wheel handlers alone miss it). 250 ms
-// = 4Hz which is plenty for visual feedback and costs ~0.05% CPU on the
-// O(1) `manager.scrollState` read. Stops on detach (the !alive guard
-// inside refreshScrollState makes it a no-op even if the timer ticks
-// once after onDestroy).
-let scrollStatePollTimer: ReturnType<typeof setInterval> | null = null;
+// §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
+// used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`
+// per attached pane — pure polling so that async PTY-driven scrollback
+// growth was reflected even when no keystroke / wheel handler fired.
+// Multiplied across panes it was a measurable chunk of the idle CPU
+// floor. The manager now diffs `kernel.scrollOffset` / `scrollbackLen`
+// on the RAF tick and notifies subscribers only on change (and fires
+// an immediate baseline emit on subscription), so we get strictly
+// better latency (16 ms worst-case vs 250 ms) at zero idle cost.
 $effect(() => {
 	if (!attached) return;
-	scrollStatePollTimer = setInterval(refreshScrollState, 250);
-	return () => {
-		if (scrollStatePollTimer !== null) {
-			clearInterval(scrollStatePollTimer);
-			scrollStatePollTimer = null;
-		}
-	};
+	return manager.onScrollState(paneId, refreshScrollState);
 });
 
 onDestroy(() => {
@@ -754,12 +749,10 @@ onDestroy(() => {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
 	}
-	// Defensive scrollbar poll cleanup; the $effect cleanup handles the
-	// usual case but onDestroy is the last-line guard.
-	if (scrollStatePollTimer !== null) {
-		clearInterval(scrollStatePollTimer);
-		scrollStatePollTimer = null;
-	}
+	// P1.3 (2026-05-19): no scrollbar poll timer to tear down — the
+	// $effect that wired `manager.onScrollState` handles unsubscription
+	// via its cleanup return, and `manager.park` clears the handler
+	// slot on the pane entry below.
 	// Park instead of detach (TASKS §5.1). We don't know in onDestroy
 	// whether this is a transient unmount (split / reparent) or a real
 	// close — parking is cheap to reverse via unpark, and the PTY bridge

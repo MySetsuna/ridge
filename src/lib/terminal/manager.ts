@@ -291,6 +291,20 @@ interface PaneEntry {
 	 *  编辑器或系统资源管理器。lazy 重建：feed / scroll / resize 后置 dirty
 	 *  标志，仅在 ctrl+pointermove 或 ctrl+pointerdown 时同步扫一次。 */
 	linkSpans: LinkSpanIndex;
+	/** P1.3 (2026-05-19): last (offset, total) pair we surfaced via
+	 *  `scrollStateHandler`. The RAF tick diffs against this and emits
+	 *  only on change, so an idle pane never wakes the subscriber.
+	 *  Initialised to `-1` so the first registration / first RAF tick
+	 *  always emits a baseline event. Replaces the per-pane 250ms
+	 *  `setInterval` poll RidgePane was running (§1.23). */
+	lastScrollOffset: number;
+	lastScrollTotal: number;
+	/** P1.3: optional callback fired (at most once per RAF tick) when
+	 *  `kernel.scrollOffset()` or `kernel.scrollbackLen()` differ from
+	 *  the cached pair above. Single-consumer like `eventHandler` /
+	 *  `dataHandler`; a fresh `onScrollState` registration replaces
+	 *  the previous one. Cleared on detach. */
+	scrollStateHandler: ((state: { offset: number; total: number }) => void) | null;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -1366,6 +1380,9 @@ export class TerminalManager {
 			feedBuffer: null,
 			feedFlushTimer: null,
 			linkSpans: new LinkSpanIndex(),
+			lastScrollOffset: -1,
+			lastScrollTotal: -1,
+			scrollStateHandler: null,
 		};
 		entry.resizeObserver.observe(container);
 
@@ -2235,6 +2252,73 @@ export class TerminalManager {
 		return { offset: e.kernel.scrollOffset(), total: e.kernel.scrollbackLen() };
 	}
 
+	/** P1.3 (2026-05-19): subscribe to scroll-state changes for one pane.
+	 *  The handler fires at most once per RAF tick when `kernel.scrollOffset`
+	 *  or `kernel.scrollbackLen` differ from the previous emit, and once
+	 *  immediately with the current snapshot so the subscriber doesn't
+	 *  also need an initial read.
+	 *
+	 *  Replaces the 250ms `setInterval(refreshScrollState, …)` RidgePane
+	 *  used to run per pane (§1.23). Sleeping panes pay nothing — emits
+	 *  ride on the existing RAF loop that PTY feed / scrollUp / scrollDown
+	 *  already wake.
+	 *
+	 *  Single-consumer: a fresh registration replaces the previous one,
+	 *  matching `eventHandler` / `dataHandler` semantics. Returns an
+	 *  unsubscribe that no-ops if the pane has been detached. */
+	onScrollState(
+		paneId: string,
+		handler: (state: { offset: number; total: number }) => void,
+	): () => void {
+		const e = this.panes.get(paneId);
+		if (!e) return () => {};
+		e.scrollStateHandler = handler;
+		// Baseline emit so the subscriber's UI doesn't sit on its initial
+		// `$state` default until the next PTY byte / scroll event.
+		try {
+			const off = e.kernel.scrollOffset();
+			const tot = e.kernel.scrollbackLen();
+			e.lastScrollOffset = off;
+			e.lastScrollTotal = tot;
+			handler({ offset: off, total: tot });
+		} catch {
+			// kernel may have been freed between get() and the call; the
+			// next RAF tick will pick the subscriber up.
+		}
+		return () => {
+			const cur = this.panes.get(paneId);
+			if (cur && cur.scrollStateHandler === handler) cur.scrollStateHandler = null;
+		};
+	}
+
+	/** P1.3: diff each subscribed pane's scroll state against its cached
+	 *  pair and fire the handler when it changed. Called from the RAF tick
+	 *  after the per-pane render loop so the emit reflects the same
+	 *  kernel state the user just saw painted. */
+	private _emitScrollStateChanges(): void {
+		for (const entry of this.panes.values()) {
+			if (entry.parked) continue;
+			const h = entry.scrollStateHandler;
+			if (!h) continue;
+			let off: number;
+			let tot: number;
+			try {
+				off = entry.kernel.scrollOffset();
+				tot = entry.kernel.scrollbackLen();
+			} catch {
+				continue; // kernel freed mid-tick — skip this pane
+			}
+			if (off === entry.lastScrollOffset && tot === entry.lastScrollTotal) continue;
+			entry.lastScrollOffset = off;
+			entry.lastScrollTotal = tot;
+			try {
+				h({ offset: off, total: tot });
+			} catch (err) {
+				console.error('[ridge-term] scrollStateHandler error', entry.paneId, err);
+			}
+		}
+	}
+
 	rows(paneId: string): number { return this.panes.get(paneId)?.kernel.rows() ?? 0; }
 	cols(paneId: string): number { return this.panes.get(paneId)?.kernel.cols() ?? 0; }
 
@@ -3074,6 +3158,12 @@ export class TerminalManager {
 					console.error('[ridge-term] surfaceHost.endFrame error', err);
 				}
 			}
+			// P1.3 (2026-05-19): surface scroll-state diffs to RidgePane
+			// subscribers AFTER the render is committed, so the scrollbar
+			// thumb position the user reads matches the kernel state that
+			// just painted. Sleeping panes pay nothing — emits only run on
+			// ticks the RAF loop is already executing.
+			this._emitScrollStateChanges();
 			if (this.panes.size === 0) return;
 			if (anyRendered) {
 				// Likely more work soon — stay on RAF cadence.
