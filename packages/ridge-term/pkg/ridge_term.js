@@ -837,6 +837,23 @@ export class TerminalKernel {
         wasm.terminalkernel_setSelection(this.__wbg_ptr, start_row, start_col, end_row, end_col);
     }
     /**
+     * Programmatically set a selection range in **absolute-row coords**
+     * (see `selection.rs` module docstring). The JS-side drag state
+     * machine in `manager.ts` stores its anchor / focus as `abs_row =
+     * vp_row + scroll_offset` so the selection survives scroll without
+     * the caller having to re-translate every sync — this entry point
+     * lets it forward those abs values directly. Skips the vp→abs
+     * conversion that `set_selection` does internally, so it's safe to
+     * call repeatedly during a drag that scrolls the viewport.
+     * @param {number} start_abs_row
+     * @param {number} start_col
+     * @param {number} end_abs_row
+     * @param {number} end_col
+     */
+    setSelectionAbs(start_abs_row, start_col, end_abs_row, end_col) {
+        wasm.terminalkernel_setSelectionAbs(this.__wbg_ptr, start_abs_row, start_col, end_abs_row, end_col);
+    }
+    /**
      * Drain semantic events (title, cwd, hyperlinks, bell) produced by
      * the parser during the most recent `feed` calls. Returns a JS
      * array of tagged objects: `{ type: "TitleChanged", value: "..." }`

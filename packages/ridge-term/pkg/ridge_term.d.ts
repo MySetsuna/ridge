@@ -422,6 +422,17 @@ export class TerminalKernel {
      */
     setSelection(start_row: number, start_col: number, end_row: number, end_col: number): void;
     /**
+     * Programmatically set a selection range in **absolute-row coords**
+     * (see `selection.rs` module docstring). The JS-side drag state
+     * machine in `manager.ts` stores its anchor / focus as `abs_row =
+     * vp_row + scroll_offset` so the selection survives scroll without
+     * the caller having to re-translate every sync — this entry point
+     * lets it forward those abs values directly. Skips the vp→abs
+     * conversion that `set_selection` does internally, so it's safe to
+     * call repeatedly during a drag that scrolls the viewport.
+     */
+    setSelectionAbs(start_abs_row: number, start_col: number, end_abs_row: number, end_col: number): void;
+    /**
      * Drain semantic events (title, cwd, hyperlinks, bell) produced by
      * the parser during the most recent `feed` calls. Returns a JS
      * array of tagged objects: `{ type: "TitleChanged", value: "..." }`
@@ -517,6 +528,7 @@ export interface InitOutput {
     readonly terminalkernel_selectLineAt: (a: number, b: number) => void;
     readonly terminalkernel_selectWordAt: (a: number, b: number, c: number) => void;
     readonly terminalkernel_setSelection: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly terminalkernel_setSelectionAbs: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];

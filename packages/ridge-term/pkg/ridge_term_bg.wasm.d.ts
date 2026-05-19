@@ -72,6 +72,7 @@ export const terminalkernel_selectAll: (a: number) => void;
 export const terminalkernel_selectLineAt: (a: number, b: number) => void;
 export const terminalkernel_selectWordAt: (a: number, b: number, c: number) => void;
 export const terminalkernel_setSelection: (a: number, b: number, c: number, d: number, e: number) => void;
+export const terminalkernel_setSelectionAbs: (a: number, b: number, c: number, d: number, e: number) => void;
 export const terminalkernel_takePendingEvents: (a: number) => [number, number];
 export const terminalkernel_takePendingResponse: (a: number) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];

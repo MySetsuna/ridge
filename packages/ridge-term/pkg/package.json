@@ -1,7 +1,7 @@
 {
-  "name": "@ridge/term-wasm",
+  "name": "ridge-term",
   "type": "module",
-  "description": "Ridge terminal: VT kernel + Canvas2D renderer (WASM)",
+  "description": "A Rust terminal kernel (VT parser + grid + render backends) compiled to WebAssembly",
   "version": "0.1.0",
   "license": "MIT",
   "files": [
@@ -10,9 +10,8 @@
     "ridge_term.d.ts"
   ],
   "main": "ridge_term.js",
-  "types": "./ridge_term.d.ts",
+  "types": "ridge_term.d.ts",
   "sideEffects": [
-    "./ridge_term.js",
     "./snippets/*"
   ]
 }

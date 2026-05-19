@@ -44,7 +44,7 @@ pub mod term;
 
 use crate::input::KeyEvent;
 use crate::search::SearchState;
-use crate::selection::{Pos, Range, Selection};
+use crate::selection::{Pos, Range, RangeAbs, Selection};
 use crate::term::Terminal;
 
 #[wasm_bindgen(start)]
@@ -434,6 +434,30 @@ impl JsTerminal {
                 },
             },
         );
+    }
+
+    /// Programmatically set a selection range in **absolute-row coords**
+    /// (see `selection.rs` module docstring). The JS-side drag state
+    /// machine in `manager.ts` stores its anchor / focus as `abs_row =
+    /// vp_row + scroll_offset` so the selection survives scroll without
+    /// the caller having to re-translate every sync — this entry point
+    /// lets it forward those abs values directly. Skips the vp→abs
+    /// conversion that `set_selection` does internally, so it's safe to
+    /// call repeatedly during a drag that scrolls the viewport.
+    #[wasm_bindgen(js_name = setSelectionAbs)]
+    pub fn set_selection_abs(
+        &mut self,
+        start_abs_row: usize,
+        start_col: usize,
+        end_abs_row: usize,
+        end_col: usize,
+    ) {
+        self.selection.set_abs(RangeAbs {
+            start_abs_row,
+            start_col,
+            end_abs_row,
+            end_col,
+        });
     }
 
     #[wasm_bindgen(js_name = getSelectionText)]

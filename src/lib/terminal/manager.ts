@@ -1094,9 +1094,11 @@ export class TerminalManager {
 			if (e.shiftKey && ent.selectionStartAbs) {
 				try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 				ent.selecting = true;
-				ent.kernel.setSelection(
+				const absEndRow = cell.row + ent.kernel.scrollOffset();
+				ent.selectionEndAbs = { row: absEndRow, col: cell.col };
+				ent.kernel.setSelectionAbs(
 					ent.selectionStartAbs.row, ent.selectionStartAbs.col,
-					cell.row, cell.col,
+					absEndRow, cell.col,
 				);
 				this.wake();
 				return;
@@ -1118,9 +1120,10 @@ export class TerminalManager {
 			}
 			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 			ent.selecting = true;
-			ent.selectionStartAbs = { row: cell.row + ent.kernel.scrollOffset(), col: cell.col };
-			ent.selectionEndAbs = { row: cell.row + ent.kernel.scrollOffset(), col: cell.col };
-			ent.kernel.setSelection(cell.row, cell.col, cell.row, cell.col);
+			const absRow = cell.row + ent.kernel.scrollOffset();
+			ent.selectionStartAbs = { row: absRow, col: cell.col };
+			ent.selectionEndAbs = { row: absRow, col: cell.col };
+			ent.kernel.setSelectionAbs(absRow, cell.col, absRow, cell.col);
 			this.wake();
 		};
 		// pointermove is batched on requestAnimationFrame so a single
@@ -1842,7 +1845,14 @@ export class TerminalManager {
 
     private _syncSelection(ent: PaneEntry): void {
         if (!ent.selectionStartAbs || !ent.selectionEndAbs) return;
-        ent.kernel.setSelection(
+        // selectionStart/EndAbs are stored in **absolute-row coords**
+        // (vp_row + scroll_offset captured at point of input). Forward
+        // them through the abs entry point so the wasm side doesn't
+        // re-translate vp→abs against the current — possibly different —
+        // scroll_offset (the bug that made highlights drift after every
+        // scroll: vp→abs ran in JS and again in wasm, so the stored
+        // abs_row landed at vp_row + 2*scroll_offset).
+        ent.kernel.setSelectionAbs(
             ent.selectionStartAbs.row, ent.selectionStartAbs.col,
             ent.selectionEndAbs.row, ent.selectionEndAbs.col
         );
