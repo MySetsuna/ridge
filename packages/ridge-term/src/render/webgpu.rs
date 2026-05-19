@@ -67,6 +67,14 @@ use crate::term::attr_table::AttrTable;
 /// with any Unicode codepoint (max 0x10FFFF).
 const CLUSTER_TAG: u32 = 0x8000_0000;
 
+/// CellInstance `is_color` sentinel for procedural rects (block-element /
+/// box-drawing / shade chars). `cell.wgsl::fs_main` short-circuits this
+/// value and returns the premultiplied fg directly, bypassing atlas
+/// sampling — the procedural path's `atlas_uv = (0,0,0,0)` would otherwise
+/// read the unreliable corner of layer 0 and pull coverage to ~0, making
+/// the rect invisible. 0 = mono atlas glyph, 1 = color emoji, 2 = procedural.
+const INSTANCE_MODE_PROCEDURAL: u32 = 2;
+
 /// Convert an `[u8; 4]` byte color into the f32 form CellInstance
 /// fields use. Vertex stage shaders can multiply linearly without
 /// re-normalizing.
@@ -114,7 +122,7 @@ struct CellInstance {
     atlas_layer: u32,    // 32..36
     fg_rgba: [f32; 4],   // 36..52
     bg_rgba: [f32; 4],   // 52..68
-    is_color: u32,       // 68..72  — 1 = color emoji bitmap, 0 = monochrome / overlay
+    is_color: u32,       // 68..72  — 0 = mono atlas glyph, 1 = color emoji bitmap, 2 = procedural rect (cell.wgsl short-circuits to premultiplied fg, skipping atlas sampling)
 }
 
 /// Re-exported so `gpu_context.rs` can wire the shared `cell_pipeline`'s
@@ -663,7 +671,7 @@ impl RenderBackend for WebGpuPaneBackend {
                         atlas_layer: 0,
                         fg_rgba: fg_scaled,
                         bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                        is_color: 0,
+                        is_color: INSTANCE_MODE_PROCEDURAL,
                     });
                     drawn_procedurally = true;
                 } else if let Some(rects) =
@@ -677,7 +685,7 @@ impl RenderBackend for WebGpuPaneBackend {
                             atlas_layer: 0,
                             fg_rgba: rgba_u8_to_f32(fg),
                             bg_rgba: [0.0, 0.0, 0.0, 0.0], // Background already painted
-                            is_color: 0,
+                            is_color: INSTANCE_MODE_PROCEDURAL,
                         });
                     }
                     drawn_procedurally = true;
