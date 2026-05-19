@@ -348,7 +348,7 @@ describe('deriveBufferEvent — Backspace / Delete / cursor moves (Bug #3)', () 
 });
 
 describe('deriveBufferEvent — function & modifier-only keys are ignored', () => {
-	it.each(['F1', 'F12', 'Escape', 'Tab', 'PageUp', 'PageDown', 'Insert', 'Meta', 'Shift', 'Control', 'Alt'])(
+	it.each(['F1', 'F12', 'Escape', 'PageUp', 'PageDown', 'Insert', 'Meta', 'Shift', 'Control', 'Alt'])(
 		'returns null for %s',
 		(keyName) => {
 			expect(deriveBufferEvent(key({ key: keyName }))).toBeNull();
@@ -438,6 +438,76 @@ describe('deriveBufferEvent ∘ updateInputBuffer — realistic typing scenarios
 	});
 });
 
+describe('updateInputBuffer — Tab completion dirty bit (Bug #5)', () => {
+	it('sets dirty=true on tab event without changing text/cursor', () => {
+		const state: InputBufferState = { text: 'ec', cursorCol: 2 };
+		expect(updateInputBuffer(state, { type: 'tab' }))
+			.toEqual({ text: 'ec', cursorCol: 2, dirty: true });
+	});
+
+	it('preserves dirty across char insertion (continues to type after Tab)', () => {
+		// User: type "ec", Tab (shell echoes "echo "), type "foo".
+		// Our mirror has "ec" then becomes "ecfoo" (cursor 5, dirty=true).
+		// Shell line shows "echo foo".
+		const after = (
+			[
+				{ type: 'char', char: 'e' },
+				{ type: 'char', char: 'c' },
+				{ type: 'tab' },
+				{ type: 'char', char: 'f' },
+				{ type: 'char', char: 'o' },
+				{ type: 'char', char: 'o' },
+			] as const
+		).reduce<InputBufferState>(updateInputBuffer, EMPTY_INPUT_BUFFER);
+		expect(after).toEqual({ text: 'ecfoo', cursorCol: 5, dirty: true });
+	});
+
+	it('preserves dirty through backspace / delete / cursor moves', () => {
+		const dirty: InputBufferState = { text: 'abc', cursorCol: 3, dirty: true };
+		expect(updateInputBuffer(dirty, { type: 'backspace' }))
+			.toEqual({ text: 'ab', cursorCol: 2, dirty: true });
+		expect(updateInputBuffer(dirty, { type: 'arrowLeft' }))
+			.toEqual({ text: 'abc', cursorCol: 2, dirty: true });
+		expect(updateInputBuffer(dirty, { type: 'home' }))
+			.toEqual({ text: 'abc', cursorCol: 0, dirty: true });
+	});
+
+	it('clears dirty on Ctrl+U kill-line (shell line also fully cleared)', () => {
+		const dirty: InputBufferState = { text: 'abc', cursorCol: 3, dirty: true };
+		expect(updateInputBuffer(dirty, { type: 'killLine' })).toEqual(EMPTY_INPUT_BUFFER);
+		expect(updateInputBuffer(dirty, { type: 'killLine' })).not.toHaveProperty('dirty');
+	});
+
+	it('clears dirty on Enter / clear (line submitted, fresh prompt)', () => {
+		const dirty: InputBufferState = { text: 'abc', cursorCol: 3, dirty: true };
+		expect(updateInputBuffer(dirty, { type: 'clear' })).toEqual(EMPTY_INPUT_BUFFER);
+	});
+
+	it('Ctrl+W kill-word preserves dirty (line is still in unknown shell-completion state)', () => {
+		const dirty: InputBufferState = { text: 'ls -la', cursorCol: 6, dirty: true };
+		expect(updateInputBuffer(dirty, { type: 'killWord' }))
+			.toEqual({ text: 'ls ', cursorCol: 3, dirty: true });
+	});
+});
+
+describe('deriveBufferEvent — Tab (Bug #5)', () => {
+	it('maps bare Tab to tab event', () => {
+		expect(deriveBufferEvent(key({ key: 'Tab' }))).toEqual({ type: 'tab' });
+	});
+
+	it('does NOT map Shift+Tab (reverse completion — different shell binding)', () => {
+		// Shift+Tab cycles backward through completions in many shells
+		// but the completion-output effect is the same, so arguably we
+		// should still mark dirty. For now we conservatively ignore it
+		// — easy to extend later if needed.
+		expect(deriveBufferEvent(key({ key: 'Tab', shiftKey: true }))).toBeNull();
+	});
+
+	it('does NOT map Ctrl+Tab (window switching / different binding)', () => {
+		expect(deriveBufferEvent(key({ key: 'Tab', ctrlKey: true }))).toBeNull();
+	});
+});
+
 describe('computeReplaySequence — clearing the shell line before history pick (Bug #11 / #12)', () => {
 	it('returns empty string when buffer is empty (nothing to clear)', () => {
 		expect(computeReplaySequence(EMPTY_INPUT_BUFFER)).toBe('');
@@ -472,13 +542,46 @@ describe('computeReplaySequence — clearing the shell line before history pick 
 		const longText = 'x'.repeat(1000);
 		expect(computeReplaySequence({ text: longText, cursorCol: 1000 }).length).toBe(1000);
 	});
+
+	it('emits Ctrl+E + Ctrl+U (\\x05\\x15) when buffer is dirty after Tab completion (Bug #5)', () => {
+		// Dirty path is length-agnostic: we don't trust our mirror, so
+		// instead of counting backspaces we send "move to end" +
+		// "kill from cursor to start of line" — wipes the shell line
+		// regardless of how much it actually grew during completion.
+		expect(computeReplaySequence({ text: 'ec', cursorCol: 2, dirty: true }))
+			.toBe('\x05\x15');
+	});
+
+	it('dirty + empty text still emits the kill sequence (defensive)', () => {
+		// Shouldn't happen in practice (Tab on empty line doesn't
+		// usually complete), but if it does we still wipe.
+		expect(computeReplaySequence({ text: '', cursorCol: 0, dirty: true }))
+			.toBe('\x05\x15');
+	});
+
+	it('non-dirty long buffer at end falls through to backspace replay', () => {
+		// Regression lock: dirty bit is the only way to enter the
+		// \x05\x15 path; absence falls through to Wave D's logic.
+		const longText = 'x'.repeat(10);
+		expect(computeReplaySequence({ text: longText, cursorCol: 10 })).toBe('\x08'.repeat(10));
+	});
 });
 
 /**
- * `it.todo` markers — bugs deferred to later waves.
+ * `it.todo` markers — bugs deferred to Wave F.
+ *
+ * Wave E (Tab completion sync) landed as the `dirty` flag + `\x05\x15`
+ * replay sequence: rather than tracking what completion text the shell
+ * inserted (which would require parsing PTY output), we accept the
+ * mirror is dirty after Tab and use a kill-line shortcut on replay.
+ * That handles every shell completion scenario uniformly.
+ *
+ * Wave F is the more ambitious refactor — making the buffer track the
+ * actual shell line via a PTY-prompt-suffix snapshot rather than via
+ * keystroke event mirroring. That replaces the dirty flag with real
+ * source-of-truth and removes a whole class of "mirror drift" risk.
  */
 describe('inputBufferTracker — deferred behaviours', () => {
-	it.todo('syncs buffer to shell echo after Tab completion (Wave E — Bug #5)');
 	it.todo('cross-checks computed replay against kernel cursor column to detect mirror drift (Wave F — design TODO)');
 	it.todo('snapshots PTY-derived shell prompt suffix as a buffer source-of-truth (Wave F — design TODO)');
 });
