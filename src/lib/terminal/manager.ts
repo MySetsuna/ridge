@@ -1512,18 +1512,41 @@ export class TerminalManager {
 			// fed in-order when the buffer flushes.
 			const hasEsc = bytes.indexOf(0x1b) !== -1;
 			if (hasEsc) {
+				// §4d (2026-05-19) — first-chunk-fast-path.
+				//
+				// §4c above always buffered every ESC-bearing chunk for
+				// 8 ms so ConPTY's split-writes coalesce into one feed.
+				// That added 8 ms (plus up to one rAF) to every user-
+				// input response in TUI apps: an ArrowUp inside vim
+				// only echoes `\x1b[A`, a single chunk that never
+				// needed coalescing, yet the buffer held it back.
+				// Symptom in claude code TUI: rapid arrow keys feel
+				// like they only register every other press because
+				// two adjacent responses collapse into one frame.
+				//
+				// Fix: feed the FIRST esc chunk immediately, then open
+				// the 8 ms coalesce window so any FOLLOW-UP fragments
+				// from a ConPTY split-write still rejoin the same
+				// frame. ConPTY's split always arrives as
+				// (head chunk now) + (tail chunk a few ms later), so
+				// catching only the tail is sufficient — single-chunk
+				// responses (the vast majority of user-input echoes)
+				// pay zero added latency.
+				if (entry.feedBuffer === null && entry.feedFlushTimer === null) {
+					this._feedNow(entry, bytes);
+					entry.feedFlushTimer = setTimeout(() => {
+						entry.feedFlushTimer = null;
+						this._flushFeedBuffer(entry);
+					}, 8);
+					return;
+				}
+				// Inside a coalesce window — append for the tail of a
+				// split-write. Same back-pressure cap as before.
 				entry.feedBuffer = entry.feedBuffer
 					? concatU8(entry.feedBuffer, bytes)
 					: bytes;
 				if (entry.feedBuffer.length >= 8192) {
 					this._flushFeedBuffer(entry);
-					return;
-				}
-				if (entry.feedFlushTimer === null) {
-					entry.feedFlushTimer = setTimeout(() => {
-						entry.feedFlushTimer = null;
-						this._flushFeedBuffer(entry);
-					}, 8);
 				}
 				return;
 			}
