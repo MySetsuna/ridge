@@ -27,13 +27,6 @@ pub fn run() {
     std::fs::create_dir_all(&app_data_dir).ok();
     utils::logging::init_once(&app_data_dir);
 
-    // Bootstrap a `ridge.theme` if none exists in any search location
-    // (exe-dir, cwd, or app_data_dir). Writes the single "无尽深色"
-    // default theme so the splash + UI have something to render. All
-    // other themes must live in the on-disk file — no multi-theme
-    // catalog is embedded in the binary.
-    theme::ensure_theme_file_exists(&app_data_dir);
-
     // 事件通道容量从 256 提到 1024，减少 `cat` 大文件等高吞吐场景下
     // `event_tx.send().await` 被 backpressure 阻塞的概率。
     let (event_tx, mut event_rx) = mpsc::channel::<GlobalEvent>(1024);
