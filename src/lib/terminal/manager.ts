@@ -34,6 +34,19 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import { get } from 'svelte/store';
 import { settingsStore } from '../stores/settings';
+
+// Quantize a CSS-px cell dimension to match the renderer's device-px
+// rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
+//   cell_dev = round(cell_css * dpr)
+// so the renderer's effective per-column width in CSS px is `cell_dev /
+// dpr`. JS-side hover (computeCell) and grid fit (fitPane) must use the
+// same effective value — otherwise the sub-pixel error per column
+// accumulates and the rightmost cell ends up outside the JS coordinate
+// range. With dpr=1 this is a no-op. (Bug: "resize 后无法选中最右一列".)
+function quantizeCellSize(raw: number, dpr: number): number {
+    if (!Number.isFinite(raw) || raw <= 0 || !Number.isFinite(dpr) || dpr <= 0) return raw;
+    return Math.round(raw * dpr) / dpr;
+}
 // Vite-native asset URL: this returns the bundled / dev-served path of
 // the .wasm file at build time. Bypasses the "auto-locate next to .js"
 // path that breaks under vite's pre-bundle (the cause of the
@@ -111,6 +124,13 @@ interface PaneEntry {
 	handle: RenderHandle;
 	cellW: number;
 	cellH: number;
+	/** dpr that was passed into the most recent `handle.configure()` call.
+	 *  fitPane re-configures whenever this drifts from the live
+	 *  window.devicePixelRatio — covers user dragging the window between
+	 *  monitors of different DPI without resizing the pane otherwise.
+	 *  Without this, cellW/cellH would keep their old-DPR quantisation
+	 *  while the renderer silently re-rounds against the new DPR. */
+	lastConfiguredDpr: number;
 	dataHandler?: (bytes: Uint8Array) => void;
 	resizeObserver: ResizeObserver;
 	/** Last reported (rows, cols) — used to debounce IPC resize calls. */
@@ -860,8 +880,8 @@ export class TerminalManager {
 		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
 			| [number, number]
 			| Float32Array;
-		const cellWnum = Number(cellW);
-		const cellHnum = Number(cellH);
+		const cellWnum = quantizeCellSize(Number(cellW), dpr);
+		const cellHnum = quantizeCellSize(Number(cellH), dpr);
 
 		// §B.2 (2026-05-08) — read scrollback capacity from settings at
 		// pane-attach time so the user's "终端 scrollback 行数" preference
@@ -1296,6 +1316,7 @@ export class TerminalManager {
 			handle,
 			cellW: cellWnum,
 			cellH: cellHnum,
+			lastConfiguredDpr: dpr,
 			resizeObserver: new ResizeObserver(() => this.viewportChanged(paneId)),
 			lastReportedRows: -1,
 			lastReportedCols: -1,
@@ -1551,8 +1572,9 @@ export class TerminalManager {
 		if (useHost && hostHandle) {
 			hostHandle.invalidate();
 		}
-		entry.cellW = Number(cellW);
-		entry.cellH = Number(cellH);
+		entry.cellW = quantizeCellSize(Number(cellW), dpr);
+		entry.cellH = quantizeCellSize(Number(cellH), dpr);
+		entry.lastConfiguredDpr = dpr;
 		// Force a resize-handler emit on the next fit so PTY rows/cols
 		// resync — in particular if the new container has different
 		// dimensions from the parked one.
@@ -2332,8 +2354,9 @@ export class TerminalManager {
 			const [w, h] = entry.handle.configure(family, sizePx, dpr) as
 				| [number, number]
 				| Float32Array;
-			entry.cellW = Number(w);
-			entry.cellH = Number(h);
+			entry.cellW = quantizeCellSize(Number(w), dpr);
+			entry.cellH = quantizeCellSize(Number(h), dpr);
+			entry.lastConfiguredDpr = dpr;
 			entry.handle.invalidateAll();
 			void this.fitPane(entry);
 		}
@@ -2420,12 +2443,28 @@ export class TerminalManager {
 		if (wCss <= 0 || hCss <= 0) return;
 		if (entry.cellW <= 0 || entry.cellH <= 0) return;
 
+		const dpr = window.devicePixelRatio || 1;
+
+		// DPR drift since the last configure() (typical cause: user dragged
+		// the window across monitors of different DPI). The renderer
+		// rounds `cell_css * dpr` to a whole device-px every frame against
+		// the *new* dpr, so the JS-side cellW/cellH would silently
+		// disagree — `Math.floor(x / oldCellW)` then snaps the rightmost
+		// hover column out of range. Re-configure so both sides stay in
+		// lock-step.
+		if (entry.lastConfiguredDpr !== dpr) {
+			const [w, h] = entry.handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
+				| [number, number]
+				| Float32Array;
+			entry.cellW = quantizeCellSize(Number(w), dpr);
+			entry.cellH = quantizeCellSize(Number(h), dpr);
+			entry.lastConfiguredDpr = dpr;
+		}
+
 		// Cells fit into the container; round DOWN to avoid drawing past
 		// the right/bottom edge.
 		const cols = Math.max(1, Math.floor(wCss / entry.cellW));
 		const rows = Math.max(1, Math.floor(hCss / entry.cellH));
-
-		const dpr = window.devicePixelRatio || 1;
 
 		// Resize the render target. In host mode, _recomputeViewport
 		// recomputes the host-canvas-relative scissor (which depends on
