@@ -311,6 +311,16 @@ interface PaneEntry {
 	 *  `dataHandler`; a fresh `onScrollState` registration replaces
 	 *  the previous one. Cleared on detach. */
 	scrollStateHandler: ((state: { offset: number; total: number }) => void) | null;
+	/** P2.1 (2026-05-20): bytes that `_feedNow` chunked-and-yielded
+	 *  out of when the per-call time budget was exhausted, plus any
+	 *  later arrivals that landed while this queue was non-empty (so
+	 *  byte order is preserved). The RAF tick drains this at the
+	 *  start of each frame before invoking the renderer. Heavy output
+	 *  on one pane (think `pnpm tauri dev` compile waterfall) can no
+	 *  longer block input echo / render on its sibling panes for tens
+	 *  of milliseconds. `null` when no bytes are deferred — the steady
+	 *  state for an idle pane. */
+	feedDeferred: Uint8Array | null;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -1396,6 +1406,7 @@ export class TerminalManager {
 			lastScrollOffset: -1,
 			lastScrollTotal: -1,
 			scrollStateHandler: null,
+			feedDeferred: null,
 		};
 		entry.resizeObserver.observe(container);
 
@@ -1495,6 +1506,15 @@ export class TerminalManager {
 			try { entry.kernel.feed(entry.feedBuffer); } catch { /* kernel already freed elsewhere */ }
 		}
 		entry.feedBuffer = null;
+		// P2.1 (2026-05-20): also drain any time-budget-deferred bytes
+		// into the kernel before it's freed, so a tab-close that races
+		// a high-output burst doesn't drop the trailing chunk. Best-
+		// effort: the kernel may already be wedged if free() was called
+		// elsewhere — swallow to keep the close path idempotent.
+		if (entry.feedDeferred !== null && entry.feedDeferred.length > 0) {
+			try { entry.kernel.feed(entry.feedDeferred); } catch { /* kernel already freed elsewhere */ }
+		}
+		entry.feedDeferred = null;
 		// Kernel always alive while in the map (parked or not).
 		try { entry.kernel.free(); } catch { /* ignore */ }
 		this.panes.delete(paneId);
@@ -1792,7 +1812,18 @@ export class TerminalManager {
 	/** §A.4 — feed bytes to the kernel synchronously, including PTY trace,
 	 *  reply / event drain, and rAF wake. Extracted from `feed()` so the
 	 *  inline-TUI coalescer can call it once per flush instead of once per
-	 *  PTY event. Always feeds — does NOT consult the inline-TUI gate. */
+	 *  PTY event. Always feeds — does NOT consult the inline-TUI gate.
+	 *
+	 *  P2.1 (2026-05-20): the wasm `kernel.feed(bytes)` call is synchronous
+	 *  and runs the VTE state machine byte-by-byte; on a 200 KB compile
+	 *  burst from a single pane it would block the JS main thread for
+	 *  ~50 ms, starving keystrokes on every other pane plus the RAF loop
+	 *  itself. We now chunk the input into ~16 KB pieces and stop after
+	 *  `FEED_PER_CALL_BUDGET_MS` of wall-clock; leftover bytes spill into
+	 *  `entry.feedDeferred` and the RAF tick drains them at the top of
+	 *  the next frame (after preserving order with any later arrivals).
+	 *  vte::Parser carries its own state across feed calls so byte-level
+	 *  chunking is safe — even mid-CSI / mid-OSC. */
 	private _feedNow(entry: PaneEntry, bytes: Uint8Array): void {
 		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
 		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
@@ -1808,7 +1839,41 @@ export class TerminalManager {
 			// eslint-disable-next-line no-console
 			console.debug(`[pty-trace][${ts}ms][${id}][${bytes.length}B] ${hex}${more}`);
 		}
-		entry.kernel.feed(bytes);
+
+		// P2.1: if a previous _feedNow already deferred bytes for this
+		// pane, the new arrivals MUST queue behind them — otherwise vte
+		// would see them in shuffled order and emit garbage. Append and
+		// let the next RAF tick drain (which calls _feedNow with the
+		// whole queue, no overflow check needed for the queued half).
+		if (entry.feedDeferred) {
+			entry.feedDeferred = concatU8(entry.feedDeferred, bytes);
+			this.wake();
+			return;
+		}
+
+		// P2.1: budget-aware chunked feed. Each call gets at most
+		// FEED_PER_CALL_BUDGET_MS of wall-clock to push into the kernel
+		// before yielding. 4 ms ≈ a quarter of one 60 fps frame — plenty
+		// for typical PTY arrivals, generous enough that small bursts
+		// (the common case) finish in one chunk, strict enough that a
+		// 200 KB compile waterfall doesn't freeze the main thread.
+		const FEED_PER_CALL_BUDGET_MS = 4;
+		const FEED_CHUNK_BYTES = 16 * 1024;
+		let offset = 0;
+		const start = performance.now();
+		while (offset < bytes.length) {
+			const end = Math.min(offset + FEED_CHUNK_BYTES, bytes.length);
+			entry.kernel.feed(bytes.subarray(offset, end));
+			offset = end;
+			if (performance.now() - start >= FEED_PER_CALL_BUDGET_MS) break;
+		}
+		if (offset < bytes.length) {
+			// Copy via `slice` so the deferred queue doesn't pin the
+			// possibly-much-larger original ArrayBuffer through its
+			// subarray view (would waste memory on every spill).
+			entry.feedDeferred = bytes.slice(offset);
+		}
+
 		// 屏幕内容变化 → 链接索引失效，下次 ctrl+hover/click 时再 lazy 重建。
 		entry.linkSpans.markDirty();
 		// PTY bytes mutated kernel state — wake the RAF loop if it was
@@ -1839,6 +1904,26 @@ export class TerminalManager {
 				entry.paneId,
 				'— events discarded; check onEvent() registration order',
 			);
+		}
+	}
+
+	/** P2.1 (2026-05-20): drain any per-pane bytes that prior `_feedNow`
+	 *  calls spilled out of when their time budget ran out. Called at
+	 *  the top of every RAF tick BEFORE the dirty-detection pre-pass,
+	 *  so the next frame sees whatever the kernel ends up consuming on
+	 *  this tick. The drain itself re-enters `_feedNow` which applies
+	 *  its own budget — so a perpetually-bursting pane consumes one
+	 *  chunk per frame and never blocks the loop for more than ~4 ms,
+	 *  while other panes keep their own budget intact. */
+	private _drainDeferredFeeds(): void {
+		for (const entry of this.panes.values()) {
+			if (entry.parked) continue;
+			if (!entry.feedDeferred) continue;
+			const buf = entry.feedDeferred;
+			// Clear BEFORE _feedNow — the call will re-set it if the new
+			// budget runs out before consuming the whole queue.
+			entry.feedDeferred = null;
+			this._feedNow(entry, buf);
 		}
 	}
 
@@ -2894,6 +2979,14 @@ export class TerminalManager {
 			// reads `js_sys::Date::now()` internally, so the renderer's blink
 			// phase and our pre-render `isDirty` must use the same epoch.
 			const dateNow = Date.now();
+			// P2.1 (2026-05-20): drain bytes that prior `_feedNow` calls
+			// spilled out of when their per-call time budget ran out. The
+			// drain itself re-enters `_feedNow` with its own budget, so a
+			// pane bursting 200 KB/sec consumes one ~16 KB chunk per frame
+			// instead of monopolising the main thread for tens of ms. Run
+			// BEFORE the dirty pre-pass so the kernel state the pre-pass
+			// hashes against reflects this frame's freshly-fed bytes.
+			this._drainDeferredFeeds();
 			let anyRendered = false;
 			let minDeadlineMs = Infinity;
 			// §4b per-pane increment cache (2026-05-08): this pre-pass
