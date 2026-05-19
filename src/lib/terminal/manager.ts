@@ -2267,6 +2267,40 @@ export class TerminalManager {
 		}
 	}
 
+	/** §1.31 (2026-05-19): DECCKM application-cursor-keys mode (`?1`).
+	 *  When true, the running program has explicitly declared "I own the
+	 *  arrow keys" — Ink, vim, less, GNU readline-with-vi-mode, PSReadLine
+	 *  all set this when their line editor is active. Unlike the inline-TUI
+	 *  heuristic this signal has NO time decay; it stays on until the app
+	 *  resets it (or the terminal is reset). Used by tuiGate.isTuiActive
+	 *  as the protocol-level dominant signal for arrow-key ownership. */
+	isAppCursorKeys(paneId: string): boolean {
+		const e = this.panes.get(paneId);
+		if (!e) return false;
+		try {
+			return (e.kernel as unknown as { isAppCursorKeys?: () => boolean }).isAppCursorKeys?.() ?? false;
+		} catch {
+			return false;
+		}
+	}
+
+	/** §1.31 (2026-05-19): DEC text-cursor-enable mode (`?25`).
+	 *  Returns true when the cursor is visible (the default). A hidden
+	 *  cursor (`?25l`) is a strong "app is doing custom rendering" hint
+	 *  used by the sticky branch of tuiGate.isTuiActive to decide whether
+	 *  the user is still inside a TUI or genuinely back at a shell prompt.
+	 *  Defaults to true on a missing pane so attach races don't false-
+	 *  positive as TUI. */
+	isCursorVisible(paneId: string): boolean {
+		const e = this.panes.get(paneId);
+		if (!e) return true;
+		try {
+			return (e.kernel as unknown as { isCursorVisible?: () => boolean }).isCursorVisible?.() ?? true;
+		} catch {
+			return true;
+		}
+	}
+
 	/** Schedule a single rAF that snapshots the kernel cursor as the new
 	 *  IME anchor. Coalesces rapid writes — at most one outstanding rAF
 	 *  per pane (`imeAnchorRaf` guard). The rAF gives the shell echo time

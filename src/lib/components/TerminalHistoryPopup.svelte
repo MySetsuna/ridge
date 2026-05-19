@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { terminalHistoryStore } from '$lib/stores/terminalHistory';
+    import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
     interface Props {
         query: string;
         isVisible: boolean;
