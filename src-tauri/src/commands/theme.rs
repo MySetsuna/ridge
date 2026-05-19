@@ -53,51 +53,18 @@ pub struct ThemeFile {
     pub themes: Vec<ThemeEntry>,
 }
 
-/// Bootstrap content used ONLY when no `ridge.theme` exists in any of
-/// the search locations (exe-dir / cwd / app_data_dir). Contains a single
-/// "无尽深色" theme — every other theme the user wants must be added to
-/// the on-disk file. No multi-theme catalog is ever embedded in the
-/// binary, so the file is the sole source of truth for the available
-/// themes.
-const BOOTSTRAP_THEME_JSON: &str = r##"{
-  "version": 1,
-  "themes": [
-    {
-      "id": "endless-dark",
-      "label": "无尽深色",
-      "type": "dark",
-      "loader": { "primary": "#eeeeee", "secondary": "#888888" },
-      "colors": {
-        "bg": "#000000",
-        "bg-raised": "#0a0a0a",
-        "surface": "#141414",
-        "surface-2": "#1e1e1e",
-        "glass": "rgba(20,20,20,0.72)",
-        "border": "rgba(255,255,255,0.06)",
-        "border-bright": "rgba(255,255,255,0.12)",
-        "fg": "#e0e0e0",
-        "fg-muted": "#666666",
-        "accent": "#eeeeee",
-        "accent-glow": "rgba(238,238,238,0.18)",
-        "term-bg": "#000000",
-        "tui-bg": "#000000",
-        "scrollbar": "rgba(255,255,255,0.08)",
-        "scrollbar-hover": "rgba(238,238,238,0.40)",
-        "title-proc": "#eeeeee",
-        "title-sep": "#2a2a2a",
-        "title-cwd": "#888888"
-      }
-    }
-  ]
-}
-"##;
-
 /// Find an existing `ridge.theme` file. Search order:
-///   1. Next to the running executable (production install).
-///   2. The current working directory (dev: project root).
-///   3. `<app_data_dir>/ridge.theme` (per-user fallback /
-///      bootstrap target).
+///   1. `<app_data_dir>/ridge.theme` — the per-user editable copy
+///      (preferred so user edits stick across upgrades).
+///   2. Next to the running executable — the bundled file the installer
+///      placed there (production seed).
+///   3. The current working directory — only useful in `cargo run` /
+///      dev, where the project root contains `ridge.theme`.
 fn find_theme_path(app_data_dir: &Path) -> Option<PathBuf> {
+    let user_path = app_data_dir.join("ridge.theme");
+    if user_path.exists() {
+        return Some(user_path);
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let path = parent.join("ridge.theme");
@@ -112,51 +79,60 @@ fn find_theme_path(app_data_dir: &Path) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let user_path = app_data_dir.join("ridge.theme");
-    if user_path.exists() {
-        return Some(user_path);
-    }
     None
 }
 
-/// First-launch bootstrap: write `BOOTSTRAP_THEME_JSON` to
-/// `<app_data_dir>/ridge.theme`. Idempotent — only runs when no
-/// theme file exists in any of the search locations.
-fn bootstrap_theme_file(app_data_dir: &Path) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(app_data_dir)?;
-    let path = app_data_dir.join("ridge.theme");
-    std::fs::write(&path, BOOTSTRAP_THEME_JSON)?;
-    Ok(path)
-}
-
-/// Public entry point used by `lib.rs` at startup: ensure a usable
-/// `ridge.theme` exists before any frontend code runs. If a file is
-/// already present somewhere in the search path this is a no-op; if
-/// nothing is found, the bootstrap content is materialized into
-/// `<app_data_dir>/ridge.theme`. Errors are logged but never propagate —
-/// `get_theme_data` itself has a final in-memory fallback to the same
-/// bootstrap content if writing failed.
+/// First-launch bootstrap: copy the bundled `ridge.theme` into the
+/// per-user editable location so future user edits survive upgrades.
+/// Idempotent — does nothing once `<app_data_dir>/ridge.theme` exists.
+///
+/// Source picked in order: exe-dir → cwd. If neither is available we
+/// just log and bail — `get_theme_data` still walks the search path on
+/// every call so a later `ridge.theme` showing up in any location will
+/// be picked up without restart.
 pub fn ensure_theme_file_exists(app_data_dir: &Path) {
-    if find_theme_path(app_data_dir).is_some() {
+    let user_path = app_data_dir.join("ridge.theme");
+    if user_path.exists() {
         return;
     }
-    match bootstrap_theme_file(app_data_dir) {
-        Ok(p) => tracing::info!(
+    let source = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("ridge.theme")))
+        .filter(|p| p.exists())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join("ridge.theme"))
+                .filter(|p| p.exists())
+        });
+    let Some(src) = source else {
+        tracing::warn!(
             target: "ridge::theme",
-            path = %p.display(),
-            "bootstrapped ridge.theme with default 无尽深色 theme"
+            "no ridge.theme found to bootstrap from — splash will use CSS fallbacks until one appears"
+        );
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(app_data_dir) {
+        tracing::error!(
+            target: "ridge::theme",
+            error = %e,
+            "failed to create app_data_dir for ridge.theme bootstrap"
+        );
+        return;
+    }
+    match std::fs::copy(&src, &user_path) {
+        Ok(_) => tracing::info!(
+            target: "ridge::theme",
+            src = %src.display(),
+            dst = %user_path.display(),
+            "copied ridge.theme into per-user editable location"
         ),
         Err(e) => tracing::error!(
             target: "ridge::theme",
             error = %e,
-            "failed to bootstrap ridge.theme — splash will use in-memory default"
+            "failed to copy ridge.theme — splash will read directly from bundle"
         ),
     }
-}
-
-fn default_theme_file() -> ThemeFile {
-    serde_json::from_str(BOOTSTRAP_THEME_JSON)
-        .expect("BOOTSTRAP_THEME_JSON must be valid JSON")
 }
 
 fn app_data_dir() -> PathBuf {
@@ -287,27 +263,35 @@ pub fn get_theme_data() -> ThemeFile {
                     tracing::warn!(
                         target: "ridge::theme",
                         path = %path.display(),
-                        "ridge.theme has no themes or invalid version, using bootstrap default"
+                        "ridge.theme has no themes or invalid version"
                     );
                 }
-                Err(e) => {
-                    tracing::error!(
-                        target: "ridge::theme",
-                        path = %path.display(),
-                        error = %e,
-                        "failed to parse ridge.theme, using bootstrap default"
-                    );
-                }
-            },
-            Err(e) => {
-                tracing::error!(
+                Err(e) => tracing::error!(
                     target: "ridge::theme",
                     path = %path.display(),
                     error = %e,
-                    "failed to read ridge.theme, using bootstrap default"
-                );
-            }
+                    "failed to parse ridge.theme"
+                ),
+            },
+            Err(e) => tracing::error!(
+                target: "ridge::theme",
+                path = %path.display(),
+                error = %e,
+                "failed to read ridge.theme"
+            ),
         }
+    } else {
+        tracing::warn!(
+            target: "ridge::theme",
+            "no ridge.theme found in any search location"
+        );
     }
-    default_theme_file()
+    // No usable file: return an empty catalog. Frontend gracefully
+    // applies no CSS overrides; splash falls through to its CSS-variable
+    // defaults. Putting any theme dictionary here would re-introduce the
+    // hardcoded fallback we just removed.
+    ThemeFile {
+        version: 1,
+        themes: Vec::new(),
+    }
 }
