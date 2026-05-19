@@ -1177,8 +1177,15 @@ function expandSidebar() {
   >
       {#if !sidebarCollapsed}
       <aside
-        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 rg-scroll overflow-y-auto relative"
+        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0"
       >
+        <!-- Tab content container: holds the four absolutely-positioned
+             tab panels (git / search / claude / files) inside a relative
+             box. Anchoring `absolute inset-0` to this flex-1 box (instead
+             of the whole aside) keeps the global SidebarPluginRegion
+             footer below from being overlapped — the footer sits in the
+             flex flow after this container, not underneath it. -->
+        <div class="relative flex-1 min-h-0 rg-scroll overflow-y-auto">
         <!-- Git tab -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'git' ? '' : 'hidden'}">
           <div
@@ -1301,10 +1308,12 @@ function expandSidebar() {
           </div>
         </div>
 
+        </div>
         <!-- Global-scope plugin region — mounted once at the sidebar footer,
-             visible across every tab. Keep it compact; plugins are expected
-             to collapse their own heavy UI. -->
-        <div class="shrink-0 border-t border-[var(--rg-border)]/40 mt-auto">
+             visible across every tab. Sits OUTSIDE the absolute tab container
+             above so the four tab panels can use `absolute inset-0` without
+             overlaying it. -->
+        <div class="shrink-0 border-t border-[var(--rg-border)]/40">
           <SidebarPluginRegion scope="global" />
         </div>
 
