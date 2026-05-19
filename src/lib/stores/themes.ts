@@ -1,16 +1,34 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
-export interface LoaderColors {
+// Splash loader contract. `primary` / `secondary` are required and feed
+// the SVG stroke and accent fill. Everything else is optional — fields
+// missing from a theme fall back to the hardcoded defaults baked into
+// `src/app.html`'s CSS variables (no per-theme value = current visual).
+//
+// Numbers are interpreted as: pixel lengths for *Width / *Radius,
+// milliseconds for *DurationMs / *DelayMs, raw scalars for opacities and
+// the breathe-scale knob.
+export interface LoaderConfig {
   primary: string;
   secondary: string;
+  bg?: string;
+  accentGlow?: string;
+  strokeWidth?: number;
+  cornerRadius?: number;
+  drawDurationMs?: number;
+  breatheDurationMs?: number;
+  crossDelayMs?: number;
+  fadeOutDurationMs?: number;
+  fillOpacityPrimary?: number;
+  fillOpacitySecondary?: number;
 }
 
 export interface ThemeEntry {
   id: string;
   label: string;
   type: 'dark' | 'light';
-  loader: LoaderColors;
+  loader: LoaderConfig;
   colors: Record<string, string>;
 }
 

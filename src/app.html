@@ -6,6 +6,7 @@
   <link rel="icon" href="%sveltekit.assets%/favicon.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ridge</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' asset: https://asset.localhost data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost ws://localhost:* ws://127.0.0.1:*;">
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -20,43 +21,16 @@
       width: 100vw;
       height: 100vh;
       background: var(--rg-loader-bg, #071009);
-      /* Independent loader background variable to avoid polluting global bg */
       display: flex;
       justify-content: center;
       align-items: center;
       z-index: 9999;
-      transition: opacity 0.5s ease-out;
+      transition: opacity var(--startup-fadeout-dur, 0.5s) ease-out;
     }
 
     #brand-loader.fade-out {
       opacity: 0;
       pointer-events: none;
-    }
-
-    .animate-draw {
-      stroke-dasharray: 100;
-      stroke-dashoffset: 100;
-      animation: draw 2s ease-out forwards, breathe 2s ease-in-out infinite alternate;
-    }
-
-    @keyframes draw {
-      to {
-        stroke-dashoffset: 0;
-      }
-    }
-
-    @keyframes breathe {
-
-      0%,
-      100% {
-        transform: scale(1);
-        opacity: 0.8;
-      }
-
-      50% {
-        transform: scale(1.1);
-        opacity: 1;
-      }
     }
 
     #brand-loader svg {
@@ -67,14 +41,14 @@
     .animate-rect {
       stroke-dasharray: 108;
       stroke-dashoffset: 108;
-      animation: draw-rect 0.6s ease-out forwards;
+      animation: draw-rect var(--startup-draw-dur, 0.6s) ease-out forwards;
     }
 
     .animate-cross {
       stroke-dasharray: 25;
       stroke-dashoffset: 25;
-      animation: draw-cross 0.6s ease-out forwards;
-      animation-delay: 0.4s;
+      animation: draw-cross var(--startup-draw-dur, 0.6s) ease-out forwards;
+      animation-delay: var(--startup-cross-delay, 0.4s);
     }
 
     @keyframes draw-rect {
@@ -90,33 +64,71 @@
     }
   </style>
   <script>
+    // Splash theming bootstrap.
+    //
+    // Reads the active theme from localStorage and pushes its `loader`
+    // block (plus selected `colors`) into CSS custom properties. The
+    // animation styles above are entirely fallback-driven so any field
+    // missing from a theme silently uses the current default. New
+    // themes can override animation timing, stroke, fill opacities, etc.
+    // without touching this file.
     (function() {
       var themeId = 'endless-dark';
       try {
         var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
         if (s.theme) themeId = s.theme;
       } catch(e) {}
-      var primary = '#eeeeee';
-      var secondary = '#888888';
-      var bg = '#000000';
+      var loader = {};
+      var bg = null;
       try {
         var cache = JSON.parse(localStorage.getItem('ridge-theme-data') || '{}');
         if (cache.themes) {
           for (var i = 0; i < cache.themes.length; i++) {
             if (cache.themes[i].id === themeId) {
               var t = cache.themes[i];
-              primary = t.loader.primary;
-              secondary = t.loader.secondary;
-              bg = t.colors.bg;
+              loader = t.loader || {};
+              bg = t.colors && t.colors.bg;
               break;
             }
           }
         }
       } catch(e) {}
       var root = document.documentElement;
-      root.style.setProperty('--startup-accent', primary);
-      root.style.setProperty('--startup-secondary', secondary);
-      root.style.setProperty('--rg-loader-bg', bg);
+      function setColor(name, value) {
+        if (typeof value === 'string' && value.length > 0) {
+          root.style.setProperty(name, value);
+        }
+      }
+      function setLen(name, value, suffix) {
+        if (typeof value === 'number' && isFinite(value)) {
+          root.style.setProperty(name, value + suffix);
+        } else if (typeof value === 'string' && value.length > 0) {
+          root.style.setProperty(name, value);
+        }
+      }
+      function setNum(name, value) {
+        if (typeof value === 'number' && isFinite(value)) {
+          root.style.setProperty(name, String(value));
+        }
+      }
+      // Required: primary / secondary fall back to hardcoded greys so a
+      // theme file with neither still renders something visible.
+      setColor('--startup-accent', loader.primary || '#eeeeee');
+      setColor('--startup-secondary', loader.secondary || '#888888');
+      // Background: explicit loader.bg wins; else theme bg; else black.
+      setColor('--rg-loader-bg', loader.bg || bg || '#000000');
+      // Optional knobs — only written when the theme provides them, so
+      // the @keyframes / .animate-* fallback values stay authoritative
+      // for themes that don't opt in.
+      setColor('--startup-accent-glow', loader.accentGlow);
+      setLen('--startup-stroke', loader.strokeWidth, 'px');
+      setLen('--startup-radius', loader.cornerRadius, 'px');
+      setLen('--startup-draw-dur', loader.drawDurationMs, 'ms');
+      setLen('--startup-breathe-dur', loader.breatheDurationMs, 'ms');
+      setLen('--startup-cross-delay', loader.crossDelayMs, 'ms');
+      setLen('--startup-fadeout-dur', loader.fadeOutDurationMs, 'ms');
+      setNum('--startup-fill-opacity-primary', loader.fillOpacityPrimary);
+      setNum('--startup-fill-opacity-secondary', loader.fillOpacitySecondary);
     })();
   </script>
 </head>
@@ -124,14 +136,16 @@
 <body data-sveltekit-preload-data="hover">
   <div id="brand-loader" data-tauri-drag-region>
     <svg viewBox="-8 -8 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect class="animate-rect" x="2.5" y="2.5" width="27" height="27" rx="6" stroke="var(--startup-accent)"
-        stroke-width="2"></rect>
-      <line class="animate-cross" x1="16" y1="28.5" x2="16" y2="3.5" stroke="var(--startup-accent)" stroke-width="2">
-      </line>
-      <line class="animate-cross" x1="28.5" y1="16" x2="3.5" y2="16" stroke="var(--startup-accent)" stroke-width="2">
-      </line>
-      <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="var(--startup-accent)" fill-opacity="0.18"></rect>
-      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="var(--startup-secondary)" fill-opacity="0.30"></rect>
+      <rect class="animate-rect" x="2.5" y="2.5" width="27" height="27" rx="var(--startup-radius, 6)"
+        stroke="var(--startup-accent)" stroke-width="var(--startup-stroke, 2)"></rect>
+      <line class="animate-cross" x1="16" y1="28.5" x2="16" y2="3.5" stroke="var(--startup-accent)"
+        stroke-width="var(--startup-stroke, 2)"></line>
+      <line class="animate-cross" x1="28.5" y1="16" x2="3.5" y2="16" stroke="var(--startup-accent)"
+        stroke-width="var(--startup-stroke, 2)"></line>
+      <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="var(--startup-accent)"
+        fill-opacity="var(--startup-fill-opacity-primary, 0.18)"></rect>
+      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="var(--startup-secondary)"
+        fill-opacity="var(--startup-fill-opacity-secondary, 0.30)"></rect>
     </svg>
   </div>
 

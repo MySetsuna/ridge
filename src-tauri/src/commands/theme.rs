@@ -3,10 +3,38 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Splash loader contract. `primary` / `secondary` are required and feed
+/// the SVG stroke and accent fill in `src/app.html`. The remaining
+/// fields are optional knobs themes may set to override the hardcoded
+/// CSS-variable fallbacks (animation timing, stroke width, opacities,
+/// etc.). Numbers are interpreted on the JS side: `*Width` / `*Radius`
+/// as CSS px, `*DurationMs` / `*DelayMs` as milliseconds, opacities as
+/// raw 0..1 scalars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoaderColors {
+#[serde(rename_all = "camelCase")]
+pub struct LoaderConfig {
     pub primary: String,
     pub secondary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_glow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_radius: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_duration_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breathe_duration_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_delay_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_out_duration_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_opacity_primary: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_opacity_secondary: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,7 +43,7 @@ pub struct ThemeEntry {
     pub label: String,
     #[serde(rename = "type")]
     pub theme_type: String,
-    pub loader: LoaderColors,
+    pub loader: LoaderConfig,
     pub colors: HashMap<String, String>,
 }
 
