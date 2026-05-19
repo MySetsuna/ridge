@@ -87,6 +87,40 @@ function triggerBellFlash() {
 let imeHelper: HTMLTextAreaElement | undefined = $state(undefined);
 let isComposing = $state(false);
 
+// Sticky inline-TUI gate. The kernel's inline-TUI heuristic
+// (grid.rs::INLINE_TUI_DECAY_MS) decays after 2 s without abs/redraw
+// CSI activity so that returning to a normal shell prompt immediately
+// re-enables host shortcuts. The trade-off bites in TUIs that draw
+// once and then idle waiting for input — claude code's `/theme`
+// menu is exactly that. After a wheel scroll the TUI consumes no
+// fresh CSI, the 2 s window expires, and the next ArrowUp suddenly
+// pops the shell-history overlay instead of navigating the menu.
+//
+// Sticky: once we see any live TUI signal, treat the pane as TUI
+// for up to TUI_STICKY_MS — but only while the cursor stays hidden.
+// Shell prompts always run with the cursor visible, so the moment
+// the user is actually back at a prompt the sticky bit can no
+// longer apply and host shortcuts re-enable as before.
+const TUI_STICKY_MS = 60_000;
+let lastTuiActiveTs = 0;
+function isTuiSticky(): boolean {
+	const live = manager.isAltScreen(paneId)
+		|| manager.isInlineTuiActive(paneId)
+		|| manager.isMouseReporting(paneId);
+	const now = performance.now();
+	if (live) {
+		lastTuiActiveTs = now;
+		return true;
+	}
+	if (now - lastTuiActiveTs < TUI_STICKY_MS) {
+		const kernel = manager.getKernel(paneId);
+		if (kernel && !kernel.isCursorVisible()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Reverse-scrollback bridge state (TASKS §2.1).
 //
 // `oldestSeq` is the backend `seq` (monotonic byte counter) of the first
@@ -682,7 +716,9 @@ $effect(() => {
 
 		// 2. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
 		// 注意: TUI 启用鼠标模式 (isMouseReporting) 也意味着键盘应优先给 TUI
-		const isTui = manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId) || manager.isMouseReporting(paneId);
+		// 使用 isTuiSticky() 而非直接 OR，避免 claude /theme 这类静态
+		// 菜单在 inline-TUI 2s decay 过期后误判出 TUI 模式。
+		const isTui = isTuiSticky();
 		if (isTui) {
 			if (manager.handleKeyDown(paneId, e)) {
 				e.preventDefault();
@@ -779,7 +815,9 @@ $effect(() => {
 		if (!alive || !attached) return;
 
 		// ★ TUI 模式下: 将滚轮编码为 SGR 鼠标滚动事件转发给 PTY
-		if (manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId) || manager.isMouseReporting(paneId)) {
+		// 同样走 sticky gate，否则 claude /theme 的滚轮会落到 scrollback
+		// 分支而不是转给 TUI（即便 TUI 启用了 mouse reporting）。
+		if (isTuiSticky()) {
 			manager.handleWheel(paneId, e);
 			e.preventDefault();
 			return;
