@@ -27,7 +27,13 @@ import { terminalHistoryStore } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
 import { isTuiActive } from '$lib/terminal/tuiGate';
 import { computePopupPosition } from './historyPopupPosition';
-import { deriveBufferEvent, updateInputBuffer, EMPTY_INPUT_BUFFER, type InputBufferState } from './inputBufferTracker';
+import {
+	deriveBufferEvent,
+	updateInputBuffer,
+	computeReplaySequence,
+	EMPTY_INPUT_BUFFER,
+	type InputBufferState,
+} from './inputBufferTracker';
 
 interface Props {
 	paneId: string;
@@ -1291,13 +1297,16 @@ function onContainerMouseDown(e: MouseEvent) {
         // 加入前端历史库，供后续弹窗使用
         terminalHistoryStore.add(cmd);
         // 清除 shell 中已键入的筛选文本，然后用选中命令替换
-        // §1.32 Wave C: until Wave D adds cursor-aware replay
-        // (Ctrl+E + \x08 * N, etc.), the naive end-of-line replay still
-        // applies when cursor is at end. For mid-line cases the
-        // replay may overshoot — that's the Wave D scope.
-        if (currentInputBuffer.text.length > 0) {
-            manager.write(paneId, '\x08'.repeat(currentInputBuffer.text.length));
-        }
+        // §1.32 Wave D: cursor-aware replay. computeReplaySequence
+        // returns the bytes to send before writing the picked command:
+        //   - empty buffer       → ""
+        //   - cursor at end      → "\x08" × len  (universal, works in cmd.exe)
+        //   - cursor mid-line    → "\x05" + "\x08" × len  (Ctrl+E + backspaces;
+        //                            readline shells only — cmd.exe falls back
+        //                            to leaving trailing garbage, still less
+        //                            wrong than overshoot).
+        const replay = computeReplaySequence(currentInputBuffer);
+        if (replay) manager.write(paneId, replay);
         // 写入选中命令 + 回车执行
         manager.write(paneId, cmd + '\r');
         currentInputBuffer = EMPTY_INPUT_BUFFER;
