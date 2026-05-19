@@ -53,92 +53,42 @@ pub struct ThemeFile {
     pub themes: Vec<ThemeEntry>,
 }
 
-/// Find an existing `ridge.theme` file. Search order:
-///   1. `<app_data_dir>/ridge.theme` — the per-user editable copy
-///      (preferred so user edits stick across upgrades).
-///   2. Next to the running executable — the bundled file the installer
-///      placed there (production seed).
-///   3. The current working directory — only useful in `cargo run` /
-///      dev, where the project root contains `ridge.theme`.
-fn find_theme_path(app_data_dir: &Path) -> Option<PathBuf> {
-    let user_path = app_data_dir.join("ridge.theme");
-    if user_path.exists() {
-        return Some(user_path);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let path = parent.join("ridge.theme");
-            if path.exists() {
-                return Some(path);
-            }
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        let path = cwd.join("ridge.theme");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-/// First-launch bootstrap: copy the bundled `ridge.theme` into the
-/// per-user editable location so future user edits survive upgrades.
-/// Idempotent — does nothing once `<app_data_dir>/ridge.theme` exists.
+/// Find `ridge.theme` anchored to the directory containing the running
+/// `ridge.exe` (NOT the CWD the user launched from — the two diverge
+/// e.g. when double-clicking the binary from any folder).
 ///
-/// Source picked in order: exe-dir → cwd. If neither is available we
-/// just log and bail — `get_theme_data` still walks the search path on
-/// every call so a later `ridge.theme` showing up in any location will
-/// be picked up without restart.
-pub fn ensure_theme_file_exists(app_data_dir: &Path) {
-    let user_path = app_data_dir.join("ridge.theme");
-    if user_path.exists() {
-        return;
-    }
-    let source = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("ridge.theme")))
-        .filter(|p| p.exists())
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join("ridge.theme"))
-                .filter(|p| p.exists())
-        });
-    let Some(src) = source else {
-        tracing::warn!(
-            target: "ridge::theme",
-            "no ridge.theme found to bootstrap from — splash will use CSS fallbacks until one appears"
-        );
-        return;
-    };
-    if let Err(e) = std::fs::create_dir_all(app_data_dir) {
-        tracing::error!(
-            target: "ridge::theme",
-            error = %e,
-            "failed to create app_data_dir for ridge.theme bootstrap"
-        );
-        return;
-    }
-    match std::fs::copy(&src, &user_path) {
-        Ok(_) => tracing::info!(
-            target: "ridge::theme",
-            src = %src.display(),
-            dst = %user_path.display(),
-            "copied ridge.theme into per-user editable location"
-        ),
-        Err(e) => tracing::error!(
-            target: "ridge::theme",
-            error = %e,
-            "failed to copy ridge.theme — splash will read directly from bundle"
-        ),
-    }
-}
+/// In a packaged build the installer drops `ridge.theme` next to the
+/// executable via `tauri.conf.json::bundle.resources`, so the exe-dir
+/// check succeeds directly.
+///
+/// In a dev build (`cargo run` / `pnpm tauri dev`), the exe lives at
+/// `<repo>/src-tauri/target/<profile>/ridge.exe` where no theme file
+/// exists. To still make `ridge.theme` editing live without an extra
+/// copy step, the function walks ancestors of the exe directory until
+/// it finds the project-root `ridge.theme`. The walk is gated on
+/// `cfg!(debug_assertions)` so a release exe in an unfamiliar layout
+/// never accidentally pulls in a `ridge.theme` from a parent directory.
+fn find_theme_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
 
-fn app_data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ridge")
+    let direct = exe_dir.join("ridge.theme");
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    if cfg!(debug_assertions) {
+        let mut dir = exe_dir;
+        while let Some(parent) = dir.parent() {
+            let candidate = parent.join("ridge.theme");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            dir = parent;
+        }
+    }
+
+    None
 }
 
 /// Filename used inside `<app_data_dir>` to record the currently selected
@@ -252,8 +202,7 @@ pub fn set_active_theme(theme_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_theme_data() -> ThemeFile {
-    let data_dir = app_data_dir();
-    if let Some(path) = find_theme_path(&data_dir) {
+    if let Some(path) = find_theme_path() {
         match std::fs::read_to_string(&path) {
             Ok(content) => match serde_json::from_str::<ThemeFile>(&content) {
                 Ok(tf) => {
