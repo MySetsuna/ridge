@@ -170,6 +170,14 @@ interface PaneEntry {
 	selecting: boolean;
 	selectionStartAbs: { row: number; col: number } | null;
 	selectionEndAbs: { row: number; col: number } | null;
+	/** TUI mouse forwarding hot-path state — rAF batching + (row, col,
+	 *  buttons, action) dedup so a single drag doesn't fire 60-120 wasm
+	 *  encodeMouse calls per second. xterm.js / kitty / wezterm all use
+	 *  this pattern; without it, hover / drag / wheel feel laggy in TUIs
+	 *  because the kernel can't drain PTY writes fast enough. */
+	lastMouseSent: { row: number; col: number; buttons: number; action: number } | null;
+	pendingMouseMove: PointerEvent | null;
+	mouseMoveRaf: number | null;
     /** 自动滚动边缘检测定时器 */
     autoScrollTimer: ReturnType<typeof setInterval> | null;
 	pointerDownListener: (e: PointerEvent) => void;
@@ -914,6 +922,84 @@ export class TerminalManager {
 			const row = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
 			return { row, col };
 		};
+		// Mouse mode bitmask (kernel.mouseReportingModes()):
+		//   bit 0 = ?1000 (normal), bit 1 = ?1002 (button-event / drag),
+		//   bit 2 = ?1003 (any-event / motion), bit 3 = ?1006 (SGR).
+		// One wasm call replaces 3 separate boolean getters on every
+		// pointer event — a measurable saving at 60-120 Hz pointermove.
+		const MOUSE_BTN_EVT = 0x2;
+		const MOUSE_ANY_EVT = 0x4;
+		const flushPointerMove = () => {
+			const ent = this.panes.get(paneId);
+			if (!ent) return;
+			const pending = ent.pendingMouseMove;
+			ent.pendingMouseMove = null;
+			ent.mouseMoveRaf = null;
+			if (!pending) return;
+
+			const hoverCell = computeCell(pending);
+			const modes = ent.kernel.mouseReportingModes();
+
+			// ★ TUI mouse motion forwarding: when ?1002 (button-event /
+			// drag) or ?1003 (any-event / all motion) is active, encode
+			// and send each move to the application. No Alt escape hatch
+			// — symmetric with pointerdown above (TUI takes priority for
+			// every event, modifier-aware encoding still flows through).
+			const isMouseMotion = (modes & (MOUSE_BTN_EVT | MOUSE_ANY_EVT)) !== 0;
+			if (isMouseMotion && hoverCell) {
+				// ?1003: forward ALL motion (no drag required)
+				// ?1002: only forward during drag (selecting=true)
+				if ((modes & MOUSE_ANY_EVT) !== 0 || ent.selecting) {
+					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+					const mod = pending.ctrlKey || (isMacUA && pending.metaKey);
+					const btn = pending.buttons & 1 ? 0 : pending.buttons & 2 ? 2 : pending.buttons & 4 ? 1 : 0;
+					const buttons = pending.buttons;
+					const action = 2; // motion
+					// Dedup: same cell + same buttons + same action → skip
+					// the wasm encode + dataHandler. A single slow drag can
+					// fire thousands of pointermoves within one cell; the
+					// TUI only needs one motion per cell transition.
+					const last = ent.lastMouseSent;
+					if (
+						!last ||
+						last.row !== hoverCell.row ||
+						last.col !== hoverCell.col ||
+						last.buttons !== buttons ||
+						last.action !== action
+					) {
+						const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, action, pending.shiftKey, mod, pending.altKey);
+						if (bytes.length > 0) {
+							ent.dataHandler?.(bytes);
+							ent.lastMouseSent = { row: hoverCell.row, col: hoverCell.col, buttons, action };
+						}
+					}
+					return;
+				}
+			}
+
+			// Ctrl-hover over an OSC 8 hyperlink → pointer cursor as
+			// affordance. Any other state resets cursor (when ctrl is
+			// released or pointer moves off a link). Round-trips don't
+			// fire on bare key events so the user must wiggle the mouse
+			// once after releasing/pressing Ctrl — minor; round 5 can
+			// add keydown/keyup hooks if needed.
+			const isMacUA2 = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+			const mod2 = pending.ctrlKey || (isMacUA2 && pending.metaKey);
+			if (hoverCell && mod2) {
+				const link = ent.kernel.hyperlinkAt(hoverCell.row, hoverCell.col);
+				const span = link
+					? null
+					: ent.linkSpans.hitTest(ent.kernel, hoverCell.row, hoverCell.col);
+				ent.container.style.cursor = link || span ? 'pointer' : '';
+			} else if (ent.container.style.cursor === 'pointer') {
+				ent.container.style.cursor = '';
+			}
+
+			// Continue with selection drag logic.
+			if (!ent.selecting || !ent.selectionStartAbs || !hoverCell) return;
+			ent.selectionEndAbs = { row: hoverCell.row + ent.kernel.scrollOffset(), col: hoverCell.col };
+			this._syncSelection(ent);
+		};
 		const pointerDownListener = (e: PointerEvent) => {
 			const cell = computeCell(e);
 			if (!cell) return;
@@ -934,12 +1020,15 @@ export class TerminalManager {
 			// — the standard xterm contract. The Alt modifier is still
 			// encoded into the SGR sequence (input.rs `encode_mouse` |8)
 			// so the TUI can react to Alt+click in its own bindings.
-			if (ent.kernel.isMouseReporting()) {
+			if (ent.kernel.mouseReportingModes() !== 0) {
 				const btn = e.button; // 0=left, 1=middle, 2=right
 				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
 				if (bytes.length > 0) {
-					ent.dataHandler(bytes);
+					ent.dataHandler?.(bytes);
 					ent.selecting = true; // 保持 selecting=true 以便后续 motion 事件继续转发给 TUI
+					// Seed dedup baseline so the first motion in this cell is
+					// suppressed (the TUI already knows the button is down here).
+					ent.lastMouseSent = { row: cell.row, col: cell.col, buttons: e.buttons, action: 0 };
 					try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 					return;
 				}
@@ -1021,54 +1110,20 @@ export class TerminalManager {
 			ent.kernel.setSelection(cell.row, cell.col, cell.row, cell.col);
 			this.wake();
 		};
+		// pointermove is batched on requestAnimationFrame so a single
+		// drag can't fire 60-120 wasm encodeMouse calls per second. The
+		// flushPointerMove helper above does the actual work + cell-dedup
+		// when the rAF tick runs; here we just record the latest event
+		// and schedule one tick if none is queued. Last-event-wins is fine
+		// (TUIs only react to the current cursor position, not
+		// intermediate samples).
 		const pointerMoveListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
-			const hoverCell = computeCell(e);
-
-			// ★ TUI mouse motion forwarding: when ?1002 (button-event /
-			// drag) or ?1003 (any-event / all motion) is active, encode
-			// and send each move to the application. No Alt escape hatch
-			// — symmetric with pointerdown above (TUI takes priority for
-			// every event, modifier-aware encoding still flows through).
-			const isMouseMotion = ent.kernel.isMouseButtonEvent() || ent.kernel.isMouseAnyEvent();
-			if (isMouseMotion && hoverCell) {
-				// ?1003: forward ALL motion (no drag required)
-				// ?1002: only forward during drag (selecting=true)
-				if (ent.kernel.isMouseAnyEvent() || ent.selecting) {
-					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-					const mod = e.ctrlKey || (isMacUA && e.metaKey);
-					const btn = e.buttons & 1 ? 0 : e.buttons & 2 ? 2 : e.buttons & 4 ? 1 : 0;
-					const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, 2, e.shiftKey, mod, e.altKey);
-					if (bytes.length > 0) {
-						ent.dataHandler(bytes);
-						return;
-					}
-				}
+			ent.pendingMouseMove = e;
+			if (ent.mouseMoveRaf == null) {
+				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
 			}
-
-			// Ctrl-hover over an OSC 8 hyperlink → pointer cursor as
-			// affordance. Any other state resets cursor (when ctrl is
-			// released or pointer moves off a link). Round-trips don't
-			// fire on bare key events so the user must wiggle the mouse
-			// once after releasing/pressing Ctrl — minor; round 5 can
-			// add keydown/keyup hooks if needed.
-			const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-			const mod = e.ctrlKey || (isMacUA && e.metaKey);
-			if (hoverCell && mod) {
-				const link = ent.kernel.hyperlinkAt(hoverCell.row, hoverCell.col);
-				const span = link
-					? null
-					: ent.linkSpans.hitTest(ent.kernel, hoverCell.row, hoverCell.col);
-				ent.container.style.cursor = link || span ? 'pointer' : '';
-			} else if (ent.container.style.cursor === 'pointer') {
-				ent.container.style.cursor = '';
-			}
-
-			// Continue with selection drag logic.
-			if (!ent.selecting || !ent.selectionStartAbs || !hoverCell) return;
-            ent.selectionEndAbs = { row: hoverCell.row + ent.kernel.scrollOffset(), col: hoverCell.col };
-            this._syncSelection(ent);
 		};
 		const pointerUpListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
@@ -1077,7 +1132,7 @@ export class TerminalManager {
 			// ★ TUI mouse release forwarding: send button release event
 			// when mouse reporting is active, so the TUI app doesn't
 			// get stuck in a pressed state.
-			if (ent.kernel.isMouseReporting()) {
+			if (ent.kernel.mouseReportingModes() !== 0) {
 				const cell = computeCell(e);
 				if (cell) {
 					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
@@ -1085,12 +1140,16 @@ export class TerminalManager {
 					const bytes = ent.kernel.encodeMouse(cell.row, cell.col, 3, 1, e.shiftKey, ctrl, e.altKey);
 					// btn=3=release, action=1=release → ESC [ <3 ; row ; col m
 					if (bytes.length > 0) {
-						ent.dataHandler(bytes);
+						ent.dataHandler?.(bytes);
 					}
 				}
 			}
 
 			ent.selecting = false;
+			// Release ends the press; the next motion may come with no
+			// button held → reset dedup baseline so the first such motion
+			// (button=0) is not suppressed against the press baseline.
+			ent.lastMouseSent = null;
 			try { (e.target as Element | null)?.releasePointerCapture?.(e.pointerId); } catch {}
 		};
 		container.addEventListener('pointerdown', pointerDownListener);
@@ -1117,6 +1176,9 @@ export class TerminalManager {
 			selecting: false,
 			selectionStartAbs: null,
 			selectionEndAbs: null,
+			lastMouseSent: null,
+			pendingMouseMove: null,
+			mouseMoveRaf: null,
             autoScrollTimer: null,
 			pointerDownListener,
 			pointerMoveListener,
@@ -1162,6 +1224,15 @@ export class TerminalManager {
 			entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
 			entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 			entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+			// pointermove batches on rAF; cancel any in-flight tick so the
+			// flush callback doesn't reach into a freed kernel via
+			// kernel.encodeMouse / dataHandler.
+			if (entry.mouseMoveRaf !== null) {
+				cancelAnimationFrame(entry.mouseMoveRaf);
+				entry.mouseMoveRaf = null;
+			}
+			entry.pendingMouseMove = null;
+			entry.lastMouseSent = null;
 			if (entry.pendingFitTimer !== null) {
 				clearTimeout(entry.pendingFitTimer);
 				entry.pendingFitTimer = null;
@@ -1240,6 +1311,12 @@ export class TerminalManager {
 		entry.selecting = false;
 		entry.selectionStartAbs = null;
 		entry.selectionEndAbs = null;
+		if (entry.mouseMoveRaf !== null) {
+			cancelAnimationFrame(entry.mouseMoveRaf);
+			entry.mouseMoveRaf = null;
+		}
+		entry.pendingMouseMove = null;
+		entry.lastMouseSent = null;
 
 		// §A.9: host-mode panes share the global canvas; just mark for
 		// clear so departed pixels don't linger. Canvas2D mode owns its
@@ -1641,7 +1718,7 @@ export class TerminalManager {
 	handleWheel(paneId: string, ev: WheelEvent): boolean {
 		const entry = this.panes.get(paneId);
 		if (!entry || !entry.dataHandler) return false;
-		if (!entry.kernel.isMouseReporting()) return false;
+		if (entry.kernel.mouseReportingModes() === 0) return false;
 
 		const rect = entry.container.getBoundingClientRect();
 		const x = ev.clientX - rect.left;
