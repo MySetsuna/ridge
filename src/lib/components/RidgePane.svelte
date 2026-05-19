@@ -27,6 +27,7 @@ import { terminalHistoryStore } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
 import { isTuiActive } from '$lib/terminal/tuiGate';
 import { computePopupPosition } from './historyPopupPosition';
+import { deriveBufferEvent, updateInputBuffer } from './inputBufferTracker';
 
 interface Props {
 	paneId: string;
@@ -96,6 +97,21 @@ $effect(() => {
 	ro.observe(container);
 	return () => ro.disconnect();
 });
+
+// §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
+// path that mutates the shell line through the unit-tested
+// `inputBufferTracker` state machine so `currentInputBuffer` stays in
+// sync with the real shell line for all common operations
+// (Ctrl+U / Ctrl+W / Ctrl+K kills, paste, printable chars, backspace).
+function pasteIntoPane(text: string): void {
+	manager.paste(paneId, text);
+	currentInputBuffer = updateInputBuffer(currentInputBuffer, { type: 'paste', text });
+}
+
+function dispatchBufferEvent(e: KeyboardEvent): void {
+	const ev = deriveBufferEvent(e);
+	if (ev) currentInputBuffer = updateInputBuffer(currentInputBuffer, ev);
+}
 // Search state
 let termSearchOpen = $state(false);
 let searchQuery = $state('');
@@ -196,7 +212,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	// platform. Conservative POSIX users can reach the TUI's SYN byte
 	// ("literal next" in readline) via Ctrl+Q instead.
 	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) manager.paste(paneId, text); });
+		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
 		return true;
 	}
@@ -204,7 +220,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	// macOS Cmd+V (no Shift) — host paste, matches every other macOS app.
 	if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) manager.paste(paneId, text); });
+		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
 		return true;
 	}
@@ -217,7 +233,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	// xterm / gnome-terminal / iTerm2 convention.
 	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) manager.paste(paneId, text); });
+		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
 		return true;
 	}
@@ -424,7 +440,7 @@ function onCompositionStart() {
 	function onImeHelperPaste(e: ClipboardEvent) {
 		const text = e.clipboardData?.getData('text');
 		if (text) {
-			manager.paste(paneId, text);
+			pasteIntoPane(text);
 			e.preventDefault();
 		}
 	}
@@ -922,14 +938,14 @@ $effect(() => {
 			e.preventDefault();
 			refreshScrollState();
 
-			// 只跟踪输入缓冲区（用于 ArrowUp 清除 shell 行），不再自动弹出历史弹层
-			if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-				currentInputBuffer += e.key;
-			} else if (e.key === 'Backspace') {
-				currentInputBuffer = currentInputBuffer.slice(0, -1);
-			} else if (e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
-				currentInputBuffer = '';
-			}
+			// §1.32 (2026-05-20) Wave B: route every buffer-affecting key
+			// through the unit-tested `inputBufferTracker` state machine.
+			// Adds Ctrl+U / Ctrl+W / Ctrl+K (readline kills, Bug #4) on
+			// top of the original char-append / backspace / cursor-clear
+			// behaviour. Enter is now treated as `clear` too (was
+			// previously not handled, leaving a stale buffer after each
+			// command).
+			dispatchBufferEvent(e);
 		}
 	}
 
@@ -975,7 +991,7 @@ function onContextMenu(e: MouseEvent) {
 			? [{ id: 'term-copy', label: '复制', action: () => { void writeText(sel); } }]
 			: []),
 		{ id: 'term-paste', label: '粘贴', action: () => {
-			void readText().then((t) => { if (t) manager.paste(paneId, t); });
+			void readText().then((t) => { if (t) pasteIntoPane(t); });
 		}},
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: '全选', action: () => manager.selectAll(paneId) },
