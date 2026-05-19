@@ -59,6 +59,15 @@ pub struct Renderer<B: RenderBackend> {
     /// Whether a full redraw is needed next frame (theme change, font
     /// change, resize). Cleared after the next tick.
     full_redraw_pending: bool,
+    /// Last-seen `Grid::is_alt_screen()` value. On any flip
+    /// (primary→alt, alt→primary) the snapshot tracks rows from the
+    /// *other* screen and would produce stale dirty-row decisions —
+    /// most visibly, exiting a TUI (e.g. `vim`, `htop`) appeared to
+    /// blank the primary scrollback because per-row hashes happened to
+    /// match between alt and primary content. We compare here and force
+    /// `invalidate_all` on transitions so the next frame redraws
+    /// against the currently-active screen from scratch.
+    last_is_alt: bool,
 }
 
 impl<B: RenderBackend> Renderer<B> {
@@ -75,6 +84,7 @@ impl<B: RenderBackend> Renderer<B> {
             theme,
             first_frame: true,
             full_redraw_pending: true,
+            last_is_alt: false,
         }
     }
 
@@ -176,6 +186,23 @@ impl<B: RenderBackend> Renderer<B> {
     /// blink is also gated on `Modes::cursor_blink`.
     pub fn tick(&mut self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         let rows_n = terminal.rows();
+
+        // Screen-switch invalidation: when the active screen flips
+        // (DECSET/DECRST ?1049 / ?47 / ?1047), the snapshot was built
+        // against the *previous* screen's rows. Without clearing it,
+        // exiting a fullscreen TUI like `vim` or `htop` could leave the
+        // primary scrollback blank — alt-screen rows and the now-active
+        // primary rows would hash-collide on common blank patterns and
+        // the renderer would skip those rows entirely. Force a full
+        // reset on every transition so the next frame redraws the
+        // currently-active screen against an empty snapshot. The check
+        // happens before sel/blink/resize so the post-invalidate state
+        // captured below already reflects the post-switch screen.
+        let cur_is_alt = terminal.is_alt_screen();
+        if cur_is_alt != self.last_is_alt {
+            self.last_is_alt = cur_is_alt;
+            self.invalidate_all();
+        }
 
         // Selection changed → force redraw so old translucent overlay
         // doesn't linger on rows that left the selection.
