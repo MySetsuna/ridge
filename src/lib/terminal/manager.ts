@@ -178,8 +178,13 @@ interface PaneEntry {
 	lastMouseSent: { row: number; col: number; buttons: number; action: number } | null;
 	pendingMouseMove: PointerEvent | null;
 	mouseMoveRaf: number | null;
-    /** 自动滚动边缘检测定时器 */
+    /** Drag-selection auto-scroll timer. Non-null while the pointer is
+     *  parked in the top/bottom edge band during a drag — the tick
+     *  scrolls one row in `autoScrollDirection` and re-anchors the
+     *  selection's far end to the new edge row so the highlight grows
+     *  with the revealed content (xterm.js / iTerm2 / kitty contract). */
     autoScrollTimer: ReturnType<typeof setInterval> | null;
+    autoScrollDirection: 'up' | 'down' | null;
 	pointerDownListener: (e: PointerEvent) => void;
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
@@ -1133,6 +1138,66 @@ export class TerminalManager {
 		// and schedule one tick if none is queued. Last-event-wins is fine
 		// (TUIs only react to the current cursor position, not
 		// intermediate samples).
+		// Drag-selection auto-scroll: when the user holds the left button
+		// and drags past the viewport's top/bottom edge during a host
+		// selection, scroll one row in that direction at a fixed rate
+		// and re-pin the selection's moving end to the freshly-revealed
+		// edge row. Without this the drag stalls at the viewport limit
+		// even though the scrollback content the user wants to select
+		// sits one row away. Same contract as xterm.js / iTerm2 / kitty.
+		const AUTO_SCROLL_EDGE_PX = 24;
+		const AUTO_SCROLL_INTERVAL_MS = 30;
+		const stopAutoScroll = (ent: PaneEntry) => {
+			if (ent.autoScrollTimer !== null) {
+				clearInterval(ent.autoScrollTimer);
+				ent.autoScrollTimer = null;
+			}
+			ent.autoScrollDirection = null;
+		};
+		const updateAutoScrollFromEdge = (ent: PaneEntry, e: PointerEvent) => {
+			// Only auto-scroll during an active host drag-select. TUI
+			// mouse-reporting paths and idle hover don't trigger it.
+			if (!ent.selecting || !ent.selectionStartAbs) { stopAutoScroll(ent); return; }
+			const rect = ent.container.getBoundingClientRect();
+			const y = e.clientY - rect.top;
+			const dir: 'up' | 'down' | null =
+				y < AUTO_SCROLL_EDGE_PX ? 'up'
+				: y > rect.height - AUTO_SCROLL_EDGE_PX ? 'down'
+				: null;
+			if (dir === null) { stopAutoScroll(ent); return; }
+			// Same direction already ticking → keep going. Direction
+			// flipped → reset so the new tick fires immediately rather
+			// than waiting out the old interval.
+			if (ent.autoScrollTimer !== null && ent.autoScrollDirection === dir) return;
+			if (ent.autoScrollTimer !== null) clearInterval(ent.autoScrollTimer);
+			ent.autoScrollDirection = dir;
+			ent.autoScrollTimer = setInterval(() => {
+				const cur = this.panes.get(paneId);
+				if (!cur || !cur.selecting || !cur.selectionStartAbs) {
+					if (cur) stopAutoScroll(cur);
+					return;
+				}
+				if (dir === 'up') this.scrollUp(paneId, 1);
+				else this.scrollDown(paneId, 1);
+				const rowsCount = cur.kernel.rows();
+				const colsCount = cur.kernel.cols();
+				if (rowsCount === 0 || colsCount === 0) return;
+				// Re-pin selection end to the new edge row. Use the last
+				// pending pointer event's X for the column (the user's
+				// hand may still be hovering off-edge after the initial
+				// crossing) and the just-revealed top/bottom row in vp
+				// coords. Convert to abs via *current* scroll_offset —
+				// already shifted by the scrollUp/Down call above.
+				const lastEvt = cur.pendingMouseMove ?? e;
+				const r2 = cur.container.getBoundingClientRect();
+				const xCol = Math.max(0, Math.min(colsCount - 1,
+					Math.floor((lastEvt.clientX - r2.left) / cur.cellW)));
+				const vpRow = dir === 'up' ? 0 : rowsCount - 1;
+				const absRow = vpRow + cur.kernel.scrollOffset();
+				cur.selectionEndAbs = { row: absRow, col: xCol };
+				this._syncSelection(cur);
+			}, AUTO_SCROLL_INTERVAL_MS);
+		};
 		const pointerMoveListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
@@ -1140,6 +1205,10 @@ export class TerminalManager {
 			if (ent.mouseMoveRaf == null) {
 				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
 			}
+			// Edge auto-scroll runs synchronously off the raw move event
+			// — coupling it to the rAF tick would make the initial
+			// cross-into-edge feel laggy by up to 16ms.
+			updateAutoScrollFromEdge(ent, e);
 		};
 		const pointerUpListener = (e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
@@ -1166,6 +1235,10 @@ export class TerminalManager {
 			// button held → reset dedup baseline so the first such motion
 			// (button=0) is not suppressed against the press baseline.
 			ent.lastMouseSent = null;
+			// Drag is done — kill any auto-scroll ticker that may be
+			// running because pointer-up arrived while the cursor still
+			// sat in the edge band.
+			stopAutoScroll(ent);
 			try { (e.target as Element | null)?.releasePointerCapture?.(e.pointerId); } catch {}
 		};
 		container.addEventListener('pointerdown', pointerDownListener);
@@ -1195,7 +1268,8 @@ export class TerminalManager {
 			lastMouseSent: null,
 			pendingMouseMove: null,
 			mouseMoveRaf: null,
-            autoScrollTimer: null,
+			autoScrollTimer: null,
+			autoScrollDirection: null,
 			pointerDownListener,
 			pointerMoveListener,
 			pointerUpListener,
@@ -1249,6 +1323,14 @@ export class TerminalManager {
 			}
 			entry.pendingMouseMove = null;
 			entry.lastMouseSent = null;
+			// Auto-scroll ticker holds a closure over the pane id; once
+			// the pane is torn down its setInterval callback would call
+			// scrollUp/Down against a freed kernel. Stop it here.
+			if (entry.autoScrollTimer !== null) {
+				clearInterval(entry.autoScrollTimer);
+				entry.autoScrollTimer = null;
+			}
+			entry.autoScrollDirection = null;
 			if (entry.pendingFitTimer !== null) {
 				clearTimeout(entry.pendingFitTimer);
 				entry.pendingFitTimer = null;
@@ -1333,6 +1415,15 @@ export class TerminalManager {
 		}
 		entry.pendingMouseMove = null;
 		entry.lastMouseSent = null;
+		// Same reason as in detach — kill the auto-scroll ticker so its
+		// next tick doesn't fire against a parked pane (kernel still
+		// alive but UI bindings are gone, and re-attach should resume
+		// from a clean slate anyway).
+		if (entry.autoScrollTimer !== null) {
+			clearInterval(entry.autoScrollTimer);
+			entry.autoScrollTimer = null;
+		}
+		entry.autoScrollDirection = null;
 
 		// §A.9: host-mode panes share the global canvas; just mark for
 		// clear so departed pixels don't linger. Canvas2D mode owns its
