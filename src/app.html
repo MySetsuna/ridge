@@ -157,15 +157,21 @@
   <div id="brand-loader" data-tauri-drag-region>
     <svg viewBox="-8 -8 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect class="animate-rect" x="2.5" y="2.5" width="27" height="27" rx="var(--startup-radius, 6)"
-        stroke="var(--startup-accent)" stroke-width="var(--startup-stroke, 2)"></rect>
+        stroke="var(--startup-accent)" stroke-width="var(--startup-stroke, 2)"
+        fill="none" stroke-linecap="square" stroke-linejoin="miter"
+        paint-order="stroke" style="filter: none"></rect>
       <line class="animate-cross" x1="16" y1="28.5" x2="16" y2="3.5" stroke="var(--startup-accent)"
-        stroke-width="var(--startup-stroke, 2)"></line>
+        stroke-width="var(--startup-stroke, 2)" stroke-linecap="square" style="filter: none"></line>
       <line class="animate-cross" x1="28.5" y1="16" x2="3.5" y2="16" stroke="var(--startup-accent)"
-        stroke-width="var(--startup-stroke, 2)"></line>
+        stroke-width="var(--startup-stroke, 2)" stroke-linecap="square" style="filter: none"></line>
       <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="var(--startup-accent)"
         fill-opacity="var(--startup-fill-opacity-primary, 0.18)"></rect>
-      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="var(--startup-secondary)"
-        fill-opacity="var(--startup-fill-opacity-secondary, 0.30)"></rect>
+      <!-- Second filled block is intentionally pinned to a fixed
+           "field emerald" green regardless of theme — gives the splash a
+           consistent identity color even when the user is on a warm or
+           neutral theme. -->
+      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#36c26e"
+        fill-opacity="var(--startup-fill-opacity-secondary, 0.9)"></rect>
     </svg>
   </div>
 
