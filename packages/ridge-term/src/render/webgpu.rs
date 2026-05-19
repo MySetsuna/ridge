@@ -333,24 +333,30 @@ impl RenderBackend for WebGpuPaneBackend {
     }
 
     fn requires_full_frame(&self) -> bool {
-        // §4.3 Phase B: always true. The host's multi-buffered swap
-        // chain (`desired_maximum_frame_latency: 2`) makes
-        // `LoadOp::Load` cross-frame semantics unreliable — the
-        // texture acquired this frame may hold frame N-2's content,
-        // not frame N-1's. To guarantee every visible pixel is freshly
-        // drawn each present, every visible row of every host-mode
-        // pane re-encodes every tick. Combined with
-        // `SurfaceHost::begin_frame` re-asserting its own
-        // `needs_initial_clear` so the first pane's pass starts with
-        // `LoadOp::Clear`, this gives a deterministic full repaint per
-        // frame regardless of which pane is "dirty".
+        // P1.1 (2026-05-19): flag-driven. Previously this returned `true`
+        // unconditionally because the host's swap chain had
+        // `desired_maximum_frame_latency: 2`, which made
+        // `get_current_texture` return frame N-2's pixels (sometimes
+        // N-1's, never deterministically) — so `LoadOp::Load` couldn't
+        // be trusted to preserve last-frame content and every visible
+        // row had to be re-encoded every tick. The host's swap chain is
+        // now configured with latency 1 so LoadOp::Load reliably
+        // restores the just-presented N-1 frame.
         //
-        // The cost is ~80 cells × 24 rows × pane-count of cell
-        // instance encoding per frame — well under 1 ms even on a
-        // dozen panes. The dirty-row optimisation re-emerges at the
-        // FRAME level: when no pane has new content, JS skips the
-        // entire `beginFrame` / `endFrame` round trip.
-        true
+        // With that fix in place, the renderer's row-hash dirty diff is
+        // sufficient on its own: when content / cursor / selection /
+        // scroll-offset / snapshot-size change, the renderer's
+        // `tick()` already calls `on_full_invalidate()` which sets
+        // `needs_initial_clear = true` on this struct — and we honour
+        // it here for exactly one frame, then `end_frame` clears the
+        // flag. Cursor blink, idle frames, and "only the cursor row
+        // changed" frames now redraw just the dirty rows, leaving the
+        // rest of the pane's pixels untouched via LoadOp::Load.
+        //
+        // The cost saved is real: a 24×80 grid drops from ~1920
+        // cell-instance encodes per pane per blink tick to ~80 for the
+        // cursor row, which is the bulk of the previous idle CPU floor.
+        self.needs_initial_clear
     }
 
     fn on_full_invalidate(&mut self) {

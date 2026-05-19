@@ -147,7 +147,20 @@ impl SurfaceHost {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // P1.1 (2026-05-19): lat=1 so `get_current_texture` deterministically
+            // returns the just-presented frame N-1, not frame N-2. That makes
+            // `LoadOp::Load` actually preserve last-frame content, which is
+            // the entire point of the per-pane LoadOp::Load record path. With
+            // the prior lat=2 the swap chain returned an N-2 texture whose
+            // content could be anything (including the very first cleared
+            // frame), forcing `requires_full_frame()` to be hard-coded `true`
+            // and burning O(rows × cols) cell encodes per pane per tick. The
+            // throughput cost of lat=1 (CPU may stall ~1 frame waiting for
+            // GPU to release the buffer) is invisible for an idle terminal
+            // — typical wgpu submit + present is well under 16.6 ms even on
+            // an integrated GPU, and the saved encode cost dwarfs it under
+            // load anyway.
+            desired_maximum_frame_latency: 1,
         };
         {
             let ctx_b = ctx.borrow();
@@ -235,14 +248,18 @@ impl SurfaceHost {
         }
         self.frame_clear_color = rgba_to_wgpu_color(theme_bg);
 
-        // Every frame starts with a full-surface clear so multi-buffered
-        // swap-chain textures (desired_maximum_frame_latency: 2) don't
-        // surface stale pixels from N-2 frames ago in gap regions not
-        // covered by any pane's scissor rect (padding, splitter gaps).
-        // The clear is a dedicated render pass issued inside begin_frame,
-        // not piggybacked on a random pane's record_pane — this eliminates
-        // the race where the first pane to draw erased other panes' regions.
-        self.needs_initial_clear = true;
+        // P1.1 (2026-05-19): no longer unconditionally clearing every frame.
+        // With swap chain `desired_maximum_frame_latency: 1`, the texture
+        // returned by `get_current_texture` deterministically contains the
+        // pixels we presented as frame N-1; pane render passes use
+        // `LoadOp::Load` so non-dirty pane regions visually persist. The
+        // host's `needs_initial_clear` flag is now only set by external
+        // structural events: `invalidate()` (theme change, pane add /
+        // park / unpark, splitter settle), `resize()` (swap-chain
+        // dimensions changed), and the surface-lost recovery branch
+        // below. In every other case we keep the prior frame's pixels in
+        // gap regions (padding, splitter gutters) — they're stable across
+        // frames anyway, so leaving them untouched is correct.
 
         // Reset the global frame-written mask so all atlas layers are
         // available for writing in this new frame.
