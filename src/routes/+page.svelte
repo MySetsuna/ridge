@@ -929,31 +929,18 @@ function expandSidebar() {
     }
   }
 
-  onMount(async () => {
+  onMount(() => {
+    // Sync onMount — Svelte's `onMount(async () => …)` returns a Promise
+    // and the framework silently DROPS any cleanup function resolved from
+    // it. With `async`, every listener / subscription registered below
+    // would have leaked on every component unmount and HMR reload. We
+    // keep the outer handler sync (so the returned cleanup actually runs)
+    // and move the single `await initThemeSystem()` plus all dependent
+    // setup into an inner `void (async () => …)()` IIFE.
+
     // 全局屏蔽默认右键菜单，显示自定义菜单
     document.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
-
-    // 初始化主题系统：从后端获取主题数据
-    await initThemeSystem();
-    // 主题数据就绪后，把当前主题写到 CSS 变量
-    initSettingsBoot();
-    // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
-    // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
-    // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
-    setupTerminalThemeBridge();
-
-    // §A.9 (2026-05-08 follow-up) — single global host canvas. The
-    // canvas itself is mounted by `globalHostCanvas` action on the
-    // pane-area wrapper (just outside the workspace `{#each}` loop);
-    // see the markup section below. No per-workspace canvas, no
-    // per-workspace attachHost — switching workspaces is a pure DOM
-    // toggle on the SplitContainer side, the canvas/swap-chain stays
-    // alive across switches.
-
-    // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
-    // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
-    initFileWatcherSync();
 
     // Track viewport width so `sidebarMaxPx` (80% cap) recomputes when
     // the user resizes the window — otherwise a 2000px-wide sidebar
@@ -970,19 +957,47 @@ function expandSidebar() {
     window.addEventListener('resize', onResize);
 
     loadSidebarSettings();
-    if (!isTauri()) return;
+
+    // Hoisted cleanup handles so the sync `return` below can dispose them
+    // even if the async IIFE hasn't yet assigned them (`?.()` guards undef).
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
-    // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
-    // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
-    // 优先级（home）而不是用户配置。Svelte writable 的 subscribe 立即用当前值
-    // 触发一次，所以无需另写初始 push 路径。
-    const unsubDefaultCwd = settingsStore.subscribe((s) => {
-      void invoke('set_user_default_cwd', { path: s.defaultCwd || null }).catch((err) => {
-        console.warn('set_user_default_cwd failed', err);
-      });
-    });
+    let unsubDefaultCwd: (() => void) | undefined;
+
     void (async () => {
+      // 初始化主题系统：从后端获取主题数据
+      await initThemeSystem();
+      // 主题数据就绪后，把当前主题写到 CSS 变量
+      initSettingsBoot();
+      // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
+      // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
+      // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
+      setupTerminalThemeBridge();
+
+      // §A.9 (2026-05-08 follow-up) — single global host canvas. The
+      // canvas itself is mounted by `globalHostCanvas` action on the
+      // pane-area wrapper (just outside the workspace `{#each}` loop);
+      // see the markup section below. No per-workspace canvas, no
+      // per-workspace attachHost — switching workspaces is a pure DOM
+      // toggle on the SplitContainer side, the canvas/swap-chain stays
+      // alive across switches.
+
+      // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
+      // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
+      initFileWatcherSync();
+
+      if (!isTauri()) return;
+
+      // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
+      // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
+      // 优先级（home）而不是用户配置。Svelte writable 的 subscribe 立即用当前值
+      // 触发一次，所以无需另写初始 push 路径。
+      unsubDefaultCwd = settingsStore.subscribe((s) => {
+        void invoke('set_user_default_cwd', { path: s.defaultCwd || null }).catch((err) => {
+          console.warn('set_user_default_cwd failed', err);
+        });
+      });
+
       await refreshWorkspaces();
       // 启动策略：
       // 1. cli 启动（终端里 `ridge`）：cwd 是用户工作目录。
@@ -1072,10 +1087,11 @@ function expandSidebar() {
         unlistenActive();
       };
     })();
+
     return () => {
       unlisten?.();
       unlistenResized?.();
-      unsubDefaultCwd();
+      unsubDefaultCwd?.();
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
