@@ -1172,7 +1172,7 @@ function expandSidebar() {
 
   <!-- 侧边栏区域：wrapper 始终渲染，toggle 按钮始终可见 -->
   <div
-    class="relative shrink-0 z-10"
+    class="relative shrink-0 z-11"
     style="width: {sidebarCollapsed ? 0 : sidebarWidth}px; overflow: visible"
   >
       {#if !sidebarCollapsed}
@@ -1579,7 +1579,7 @@ function expandSidebar() {
           use:globalHostCanvas
           data-rg-host
           aria-hidden="true"
-          style="position:absolute; inset:0; pointer-events:none; z-index:0;"
+          style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0; display:block;"
         ></canvas>
       </div>
       <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流 -->

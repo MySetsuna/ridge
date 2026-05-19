@@ -1373,6 +1373,14 @@ export class TerminalManager {
 		requestAnimationFrame(() => {
 			if (this.panes.has(paneId)) void this.fitPane(entry);
 		});
+		// Expose a debug-dump entry point on `window` so we can inspect
+		// what characters a TUI actually wrote into a row from DevTools
+		// console — no module import required. Read-only beyond a brief
+		// selection state mutation that the dump path itself clears.
+		if (typeof window !== 'undefined') {
+			(window as unknown as { __windDumpRows?: TerminalManager['debugDumpRows'] }).__windDumpRows =
+				(pId: string, from: number, to: number) => this.debugDumpRows(pId, from, to);
+		}
 		this.startRafLoop();
 	}
 
@@ -1979,6 +1987,48 @@ export class TerminalManager {
 	/** Get currently selected text (empty string if no selection). */
 	getSelectionText(paneId: string): string {
 		return this.panes.get(paneId)?.kernel.getSelectionText() ?? '';
+	}
+
+	/** Dev-only: dump cell characters + Unicode codepoints for a range of
+	 *  viewport rows. Used to diagnose which characters / attributes a TUI
+	 *  is actually drawing when procedural / atlas rendering produces
+	 *  visible artefacts. Exposed as `window.__windDumpRows(paneId, from,
+	 *  to)` at attach time. Returns `[]` for unknown pane. */
+	debugDumpRows(paneId: string, fromVpRow: number, toVpRow: number): Array<{
+		row: number;
+		nonSpace: Array<{ col: number; ch: string; hex: string; attrId: number; fg: string; bg: string; dim: boolean; bold: boolean; inverse: boolean }>;
+	}> {
+		const ent = this.panes.get(paneId);
+		if (!ent) return [];
+		const cols = ent.kernel.cols();
+		const rows = ent.kernel.rows();
+		if (cols === 0 || rows === 0) return [];
+		const lo = Math.max(0, Math.min(rows - 1, Math.floor(fromVpRow)));
+		const hi = Math.max(0, Math.min(rows - 1, Math.floor(toVpRow)));
+		const out: Array<{ row: number; nonSpace: Array<{ col: number; ch: string; hex: string; attrId: number; fg: string; bg: string; dim: boolean; bold: boolean; inverse: boolean }> }> = [];
+		for (let r = lo; r <= hi; r++) {
+			const cells = ent.kernel.cellsAt(r, 0, cols) as Array<{
+				col: number; ch: string; codepoint: number; width: number;
+				attrId: number; dim: boolean; bold: boolean; italic: boolean;
+				underline: boolean; inverse: boolean; hidden: boolean;
+				fg: string; bg: string;
+			}>;
+			const nonSpace = cells
+				.filter((c) => c.ch !== ' ' || c.fg !== 'default' || c.bg !== 'default')
+				.map((c) => ({
+					col: c.col,
+					ch: c.ch,
+					hex: 'U+' + c.codepoint.toString(16).toUpperCase().padStart(4, '0'),
+					attrId: c.attrId,
+					fg: c.fg,
+					bg: c.bg,
+					dim: c.dim,
+					bold: c.bold,
+					inverse: c.inverse,
+				}));
+			out.push({ row: r, nonSpace });
+		}
+		return out;
 	}
 
 	/** Compute viewport cell coordinates from a mouse/pointer event.

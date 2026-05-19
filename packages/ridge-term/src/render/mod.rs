@@ -46,12 +46,30 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
     // Procedural drawing: use the exact provided bounds.
     // Rounding and snapping happen in the renderer's pixel-coordinate space,
     // not here, to avoid double-rounding artifacts.
+    //
+    // LIGHT vs HEAVY stroke widths. Unicode separates U+2500-U+250B/2502-3
+    // (light) from U+2501/2503 (heavy) plus the heavy stub set
+    // (U+2578..U+257B) — they're meant to render visibly thicker. Earlier
+    // versions of this function collapsed both weights onto the same `lw`
+    // and `lh`, so opencode's ThickBorder (┃ ╹) drew at the same hairline
+    // weight as a normal │ vt100 box. The thicker stroke is what users
+    // notice on PowerShell / Windows Terminal too.
     let lw = cell_w * 0.15;
     let lh = cell_h * 0.1;
+    let lw_heavy = cell_w * 0.38;
+    let lh_heavy = cell_h * 0.28;
 
     // Centers for line drawing
     let cx = cell_x + (cell_w - lw) / 2.0;
     let cy = cell_y + (cell_h - lh) / 2.0;
+    let cy_heavy = cell_y + (cell_h - lh_heavy) / 2.0;
+    // HEAVY vertical strokes ┃ ╹ ╻ shift right of the cell centre by the
+    // "extra weight" the stroke carries over LIGHT (`lw_heavy - lw`). This
+    // partially closes the seam against the cell-right neighbour (opencode
+    // ThickBorder's input-box interior) without going all the way to a
+    // flush-right placement — which would make `┃` look conspicuously
+    // off-centre when used as a plain text character (rare but valid).
+    let cx_heavy = cell_x + (cell_w - lw_heavy) / 2.0 + (lw_heavy - lw);
 
     // Half-cell helpers for the quadrant block characters (U+2596..=U+259F).
     // A quadrant is `cell_w/2 × cell_h/2` anchored at one of the four
@@ -104,36 +122,67 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
 
 
         // --- Box Drawing (U+2500 - U+257F) Core set ---
-        '\u{2500}' | '\u{2501}' => rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }),
-        '\u{2502}' | '\u{2503}' => rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }),
+        // For straight horizontal / vertical lines we extend the rect by
+        // 1 procedural-px past the cell boundary on the "outgoing" side.
+        // webgpu.rs::draw_row_texts pixel-snaps these to device-px integer
+        // bounds, so the +1 lands as a 1 device-px overlap with the next
+        // cell's rect. Without it, opencode-style multi-row ┃ stacks
+        // (gocui / charmbracelet ThickBorder = ┃ left + ╹ bottom-left)
+        // showed a visible gap between cells on a subset of GPUs — the
+        // mathematically-exact tile boundary at `(N+1) * cell_h_dev`
+        // rasterised to no pixel coverage on neither row's quad. The
+        // overlap is invisible (both quads paint the same fg color) and
+        // restores seam-free vertical / horizontal runs.
+        '\u{2500}' => rects.push(Rect { x: cell_x, y: cy,       w: cell_w + 1.0, h: lh }),       // ─ LIGHT
+        '\u{2501}' => rects.push(Rect { x: cell_x, y: cy_heavy, w: cell_w + 1.0, h: lh_heavy }), // ━ HEAVY
+        '\u{2502}' => rects.push(Rect { x: cx,             y: cell_y, w: lw,           h: cell_h + 1.0 }), // │ LIGHT (centred)
+        '\u{2503}' => rects.push(Rect { x: cx_heavy, y: cell_y, w: lw_heavy, h: cell_h + 1.0 }), // ┃ HEAVY (centred)
+
+        // Stub-ends (U+2574..U+257B) — single-direction half-cell lines.
+        // LIGHT variants (╴╵╶╷) use the thin stroke, HEAVY variants
+        // (╸╹╺╻) the thick one. Each stub extends by 1 procedural-px
+        // toward the adjacent cell to overlap with whatever continues
+        // the line (matches the ─/│ overlap).
+        // LIGHT left/right (horizontal stub, thin)
+        '\u{2574}' => rects.push(Rect { x: cell_x,                 y: cy, w: cell_w / 2.0 + 1.0, h: lh }), // ╴
+        '\u{2576}' => rects.push(Rect { x: cell_x + cell_w / 2.0,  y: cy, w: cell_w / 2.0 + 1.0, h: lh }), // ╶
+        // HEAVY left/right (horizontal stub, thick)
+        '\u{2578}' => rects.push(Rect { x: cell_x,                 y: cy_heavy, w: cell_w / 2.0 + 1.0, h: lh_heavy }), // ╸
+        '\u{257A}' => rects.push(Rect { x: cell_x + cell_w / 2.0,  y: cy_heavy, w: cell_w / 2.0 + 1.0, h: lh_heavy }), // ╺
+        // LIGHT up/down (vertical stub, thin)
+        '\u{2575}' => rects.push(Rect { x: cx, y: cell_y,                 w: lw, h: cell_h / 2.0 + 1.0 }), // ╵
+        '\u{2577}' => rects.push(Rect { x: cx, y: cell_y + cell_h / 2.0,  w: lw, h: cell_h / 2.0 + 1.0 }), // ╷
+        // HEAVY up/down (vertical stub, thick) — centred like ┃ so they
+        // align with ┃ above/below in a vertical chain (opencode's
+        // L-shape input box draws ╹ as the bottom-left corner attached
+        // to a column of ┃; centred ╹ keeps the column straight).
+        '\u{2579}' => rects.push(Rect { x: cx_heavy, y: cell_y,                 w: lw_heavy, h: cell_h / 2.0 + 1.0 }), // ╹
+        '\u{257B}' => rects.push(Rect { x: cx_heavy, y: cell_y + cell_h / 2.0,  w: lw_heavy, h: cell_h / 2.0 + 1.0 }), // ╻
         
-        // Sharp top-left (U+250C..U+250F) AND rounded top-left ╭ (U+256D).
-        // Rounded corners are visually distinct from sharp ones, but
-        // procedural rects can't draw a true radius — and the practical
-        // alternative (atlas glyph) leaves a multi-pixel gap where the
-        // glyph's design padding meets the adjacent vertical stroke
-        // (opencode's input-box border draws ╭│╰ as a 3-row outline;
-        // without this branch the corner chars fall through to the atlas
-        // and the box renders as three disconnected segments). Mapping to
-        // the sharp-corner geometry trades the radius for pixel-perfect
-        // continuity at the cell boundary. wezterm / kitty take the same
-        // shortcut for the same reason.
-        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' | '\u{256D}' => { // Top-left
+        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => { // Top-left
             rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
             rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
         }
-        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' | '\u{256E}' => { // Top-right
+        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' => { // Top-right
             rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
             rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
         }
-        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' | '\u{2570}' => { // Bottom-left
+        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' => { // Bottom-left
             rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
         }
-        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' | '\u{256F}' => { // Bottom-right
+        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' => { // Bottom-right
             rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
         }
+        // Rounded corners ╭ ╮ ╯ ╰ (U+256D..U+2570) intentionally fall
+        // through to atlas rendering: a procedural rect can't draw a true
+        // radius, and forcing them to share sharp-corner geometry visibly
+        // degraded every TUI that uses lipgloss/bubbletea defaults
+        // (lazygit, gh, opencode) where the rounded edge is part of the
+        // design language. Atlas rendering preserves the radius; the
+        // matching ┃/│ run terminates at the rounded corner with a +1 px
+        // overlap (see 2500..2503 above) so the seam stays gap-free.
         
         '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}' | '\u{2522}' | '\u{2523}' => { // Vertical-right
             rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }); 
@@ -588,34 +637,97 @@ mod procedural_box_tests {
         assert!(procedural_box('😀', CX, CY, CW, CH).is_none());
     }
 
-    /// Rounded corners (U+256D ╭, U+256E ╮, U+256F ╯, U+2570 ╰) must emit
-    /// the SAME geometry as their sharp counterparts ┌ ┐ ┘ └. opencode and
-    /// other modern TUIs draw their input-box frames with rounded corners
-    /// connected to U+2502 │ — a previous version of this function
-    /// returned None for the rounded glyphs, so they fell through to the
-    /// font atlas where the rasterised stroke didn't reach the cell edge,
-    /// producing visible gaps between the corner cell and the adjacent
-    /// vertical run. Regression guard: every rounded corner must produce
-    /// rects identical to its sharp twin so the procedural strokes line
-    /// up pixel-for-pixel.
+    /// Rounded corners ╭ ╮ ╯ ╰ (U+256D..U+2570) MUST fall through to atlas
+    /// rendering — procedural sharp-rect approximation discards the radius
+    /// and is a visible regression for lipgloss/bubbletea/lazygit/gh UIs.
+    /// Regression guard against re-introducing the procedural mapping.
     #[test]
-    fn rounded_corners_match_sharp_geometry() {
-        for (rounded, sharp) in [
-            ('\u{256D}', '\u{250C}'),
-            ('\u{256E}', '\u{2510}'),
-            ('\u{256F}', '\u{2518}'),
-            ('\u{2570}', '\u{2514}'),
-        ] {
-            let r_rounded = box_for(rounded);
-            let r_sharp = box_for(sharp);
-            assert_eq!(
-                r_rounded.len(), r_sharp.len(),
-                "{:?} vs {:?}: rect count differs", rounded, sharp,
+    fn rounded_corners_fall_through_to_atlas() {
+        for ch in ['\u{256D}', '\u{256E}', '\u{256F}', '\u{2570}'] {
+            assert!(
+                procedural_box(ch, CX, CY, CW, CH).is_none(),
+                "{:?} must return None so the atlas path renders the radius",
+                ch
             );
-            for (a, b) in r_rounded.iter().zip(r_sharp.iter()) {
-                assert_eq!((a.x, a.y, a.w, a.h), (b.x, b.y, b.w, b.h),
-                    "{:?} vs {:?}: rect geometry differs", rounded, sharp);
-            }
+        }
+    }
+
+    /// Straight ─/━/│/┃ runs must overlap their neighbour cell by 1
+    /// procedural-px on the continuation axis. opencode draws a ThickBorder
+    /// frame as a vertical stack of ┃ cells finishing at a ╹ stub; without
+    /// the overlap the device-px tile boundary at `(N+1) * cell_h_dev`
+    /// rasterised to zero coverage on a subset of GPUs, producing the
+    /// visible gap users reported between adjacent ┃ cells. Regression
+    /// guard so a future refactor doesn't drop the +1.
+    #[test]
+    fn straight_lines_extend_past_cell_boundary_by_one_px() {
+        for ch in ['\u{2500}', '\u{2501}'] {
+            let h = box_for(ch);
+            assert_eq!(h.len(), 1, "{:?}", ch);
+            assert_eq!(h[0].w, CW + 1.0, "{:?} must extend +1px rightward", ch);
+        }
+        for ch in ['\u{2502}', '\u{2503}'] {
+            let v = box_for(ch);
+            assert_eq!(v.len(), 1, "{:?}", ch);
+            assert_eq!(v[0].h, CH + 1.0, "{:?} must extend +1px downward", ch);
+        }
+    }
+
+    /// HEAVY variants ━/┃ and the HEAVY stub set ╸╹╺╻ must render with
+    /// a visibly thicker stroke than their LIGHT counterparts ─/│/╴╵╶╷.
+    /// Earlier this function collapsed both weights onto the same `lw`/`lh`,
+    /// so opencode's ThickBorder looked identical to a vt100 │ — the user
+    /// expected the heavier line they get in PowerShell / Windows Terminal.
+    #[test]
+    fn heavy_strokes_are_thicker_than_light() {
+        let light_h = box_for('\u{2500}')[0].h; // ─
+        let heavy_h = box_for('\u{2501}')[0].h; // ━
+        assert!(heavy_h > light_h, "━ ({}) must be thicker than ─ ({})", heavy_h, light_h);
+
+        let light_w = box_for('\u{2502}')[0].w; // │
+        let heavy_w = box_for('\u{2503}')[0].w; // ┃
+        assert!(heavy_w > light_w, "┃ ({}) must be thicker than │ ({})", heavy_w, light_w);
+
+        // Heavy vertical stubs (╹╻) thicker than light (╵╷).
+        assert!(box_for('\u{2579}')[0].w > box_for('\u{2575}')[0].w, "╹ vs ╵");
+        assert!(box_for('\u{257B}')[0].w > box_for('\u{2577}')[0].w, "╻ vs ╷");
+        // Heavy horizontal stubs (╸╺) thicker than light (╴╶).
+        assert!(box_for('\u{2578}')[0].h > box_for('\u{2574}')[0].h, "╸ vs ╴");
+        assert!(box_for('\u{257A}')[0].h > box_for('\u{2576}')[0].h, "╺ vs ╶");
+    }
+
+    /// Stub characters (U+2574..U+257B) — ╴╵╶╷╸╹╺╻ — must produce
+    /// procedural rects (not None / atlas fallback) anchored at the
+    /// correct half-cell edge with +1 px overlap toward the line they
+    /// terminate. Stroke-thickness vs light/heavy separation is covered
+    /// by `heavy_strokes_are_thicker_than_light`; this test just checks
+    /// position/anchor.
+    #[test]
+    fn stub_chars_have_procedural_half_cell_geometry() {
+        // Point UP — anchored at cell top, half-cell height + 1 overlap.
+        for ch in ['\u{2575}', '\u{2579}'] {
+            let r = box_for(ch);
+            assert_eq!(r.len(), 1, "{:?}", ch);
+            assert_eq!(r[0].y, CY, "{:?} y", ch);
+            assert_eq!(r[0].h, CH / 2.0 + 1.0, "{:?} h", ch);
+        }
+        // Point DOWN — anchored at cell midline.
+        for ch in ['\u{2577}', '\u{257B}'] {
+            let r = box_for(ch);
+            assert_eq!(r[0].y, CY + CH / 2.0, "{:?} y", ch);
+            assert_eq!(r[0].h, CH / 2.0 + 1.0, "{:?} h", ch);
+        }
+        // Point LEFT — anchored at cell-left.
+        for ch in ['\u{2574}', '\u{2578}'] {
+            let r = box_for(ch);
+            assert_eq!(r[0].x, CX, "{:?} x", ch);
+            assert_eq!(r[0].w, CW / 2.0 + 1.0, "{:?} w", ch);
+        }
+        // Point RIGHT — anchored at cell midline.
+        for ch in ['\u{2576}', '\u{257A}'] {
+            let r = box_for(ch);
+            assert_eq!(r[0].x, CX + CW / 2.0, "{:?} x", ch);
+            assert_eq!(r[0].w, CW / 2.0 + 1.0, "{:?} w", ch);
         }
     }
 }
