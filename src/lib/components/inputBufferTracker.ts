@@ -38,16 +38,25 @@
 
 /** Mirror of the shell input line. `cursorCol` is a UTF-16 code-unit
  *  offset into `text`, in the range `[0, text.length]` inclusive
- *  (= text.length means "cursor is at end of line"). Treat this
- *  struct as immutable — every event returns a fresh value. */
+ *  (= text.length means "cursor is at end of line"). `dirty` is set
+ *  when we know the shell line diverged from our mirror — currently
+ *  Tab completion is the only trigger (the PTY echoes completed
+ *  text that our keystroke-driven mirror can't see). `dirty` is
+ *  optional for ergonomic state-literal construction; `undefined`
+ *  is treated as `false`. Treat this struct as immutable — every
+ *  event returns a fresh value. */
 export interface InputBufferState {
 	readonly text: string;
 	readonly cursorCol: number;
+	readonly dirty?: boolean;
 }
 
 /** Initial / reset state. Same reference is reused for `clear` /
  *  `killLine`; identity comparison is safe for "is this empty?". */
-export const EMPTY_INPUT_BUFFER: InputBufferState = Object.freeze({ text: '', cursorCol: 0 });
+export const EMPTY_INPUT_BUFFER: InputBufferState = Object.freeze({
+	text: '',
+	cursorCol: 0,
+});
 
 /** Events the buffer state machine understands. */
 export type InputBufferEvent =
@@ -62,6 +71,7 @@ export type InputBufferEvent =
 	| { type: 'killWord' }
 	| { type: 'killToEol' }
 	| { type: 'paste'; text: string }
+	| { type: 'tab' }
 	| { type: 'clear' };
 
 /** Structural subset of `KeyboardEvent` — the only fields
@@ -100,6 +110,13 @@ export function deriveBufferEvent(spec: KeySpec): InputBufferEvent | null {
 	if (spec.key === 'Home') return { type: 'home' };
 	if (spec.key === 'End') return { type: 'end' };
 	if (spec.key === 'Enter') return { type: 'clear' };
+	// §1.32 Wave E: Tab triggers shell-side completion that echoes
+	// text we never see as keystrokes. Mark the mirror dirty so the
+	// `\x08` replay uses the kill-line shortcut (`\x05\x15`) instead
+	// of relying on a stale length count.
+	if (spec.key === 'Tab' && !spec.ctrlKey && !spec.metaKey && !spec.altKey && !spec.shiftKey) {
+		return { type: 'tab' };
+	}
 	return null;
 }
 
@@ -117,50 +134,70 @@ export function updateInputBuffer(
 ): InputBufferState {
 	const { text } = state;
 	const col = clamp(state.cursorCol, 0, text.length);
+	const dirty = state.dirty === true;
 	switch (ev.type) {
 		case 'char': {
 			const newText = text.slice(0, col) + ev.char + text.slice(col);
-			return { text: newText, cursorCol: col + ev.char.length };
+			return mkState(newText, col + ev.char.length, dirty);
 		}
 		case 'backspace': {
-			if (col === 0) return col === state.cursorCol ? state : { text, cursorCol: col };
-			return { text: text.slice(0, col - 1) + text.slice(col), cursorCol: col - 1 };
+			if (col === 0) return mkState(text, col, dirty);
+			return mkState(text.slice(0, col - 1) + text.slice(col), col - 1, dirty);
 		}
 		case 'delete': {
-			if (col >= text.length) return col === state.cursorCol ? state : { text, cursorCol: col };
-			return { text: text.slice(0, col) + text.slice(col + 1), cursorCol: col };
+			if (col >= text.length) return mkState(text, col, dirty);
+			return mkState(text.slice(0, col) + text.slice(col + 1), col, dirty);
 		}
 		case 'arrowLeft':
-			if (col === 0) return col === state.cursorCol ? state : { text, cursorCol: col };
-			return { text, cursorCol: col - 1 };
+			return mkState(text, col === 0 ? 0 : col - 1, dirty);
 		case 'arrowRight':
-			if (col >= text.length) return col === state.cursorCol ? state : { text, cursorCol: col };
-			return { text, cursorCol: col + 1 };
+			return mkState(text, col >= text.length ? text.length : col + 1, dirty);
 		case 'home':
-			return col === 0 && col === state.cursorCol ? state : { text, cursorCol: 0 };
+			return mkState(text, 0, dirty);
 		case 'end':
-			return col === text.length && col === state.cursorCol ? state : { text, cursorCol: text.length };
+			return mkState(text, text.length, dirty);
 		case 'killLine':
+			// Ctrl+U fully clears the shell line on its end too — so the
+			// dirty bit can come off.
 			return EMPTY_INPUT_BUFFER;
-		case 'killWord':
-			return killWordAtCursor(text, col);
+		case 'killWord': {
+			const next = killWordAtCursor(text, col);
+			return mkState(next.text, next.cursorCol, dirty);
+		}
 		case 'killToEol':
-			return { text: text.slice(0, col), cursorCol: col };
+			return mkState(text.slice(0, col), col, dirty);
 		case 'paste': {
 			const newText = text.slice(0, col) + ev.text + text.slice(col);
-			return { text: newText, cursorCol: col + ev.text.length };
+			return mkState(newText, col + ev.text.length, dirty);
 		}
+		case 'tab':
+			// Tab makes the shell echo completed text our mirror can't
+			// see. Keep `text` and `cursorCol` (they're our best guess
+			// for the user's typed prefix and what filter to apply in
+			// the history popup) but mark the mirror dirty so the
+			// `\x08` replay switches to `\x05\x15` (kill-line) which
+			// works regardless of how much the shell completion added.
+			return mkState(text, col, true);
 		case 'clear':
 			return EMPTY_INPUT_BUFFER;
 	}
 }
 
+/** Build an `InputBufferState`. `dirty: true` is materialised only
+ *  when actually dirty so test fixtures that omit `dirty` from their
+ *  expected literals still match via Vitest's `toEqual`. */
+function mkState(text: string, cursorCol: number, dirty: boolean): InputBufferState {
+	return dirty ? { text, cursorCol, dirty: true } : { text, cursorCol };
+}
+
 /**
  * Drop the trailing word *before the cursor* (matching GNU readline's
  * `unix-word-rubout` Ctrl+W), preserving whatever text was already
- * past the cursor. Cursor lands where the kill left off.
+ * past the cursor. Cursor lands where the kill left off. The caller
+ * stitches the `dirty` bit back on — this helper only computes
+ * `text` and `cursorCol`.
  */
-function killWordAtCursor(text: string, col: number): InputBufferState {
+function killWordAtCursor(text: string, col: number): { text: string; cursorCol: number } {
 	const before = text.slice(0, col);
 	const after = text.slice(col);
 	if (!before) return { text: after, cursorCol: 0 };
@@ -202,6 +239,13 @@ function clamp(n: number, lo: number, hi: number): number {
  * too many backspaces.
  */
 export function computeReplaySequence(state: InputBufferState): string {
+	// Wave E: when the mirror is dirty (e.g. Tab completion echoed
+	// text we can't see) the byte-count length is unreliable. Fall
+	// back to `\x05\x15` — Ctrl+E (move to end) + Ctrl+U (kill from
+	// cursor to start). Readline shells wipe the line cleanly in two
+	// bytes regardless of length. cmd.exe doesn't honour these but
+	// users hitting Tab at a cmd.exe prompt is rare.
+	if (state.dirty) return '\x05\x15';
 	if (state.text.length === 0) return '';
 	const cursorAtEnd = state.cursorCol >= state.text.length;
 	const backspaces = '\x08'.repeat(state.text.length);
