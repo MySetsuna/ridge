@@ -441,7 +441,8 @@ export class TerminalKernel {
     }
     /**
      * Encode a mouse event as an SGR terminal sequence. Delegates to
-     * `input::encode_mouse` which generates `ESC [ < btn ; row ; col [Mm]`.
+     * `input::encode_mouse` which generates `ESC [ < btn ; col ; row [Mm]`
+     * per xterm SGR spec (column first, then row).
      * Always uses SGR format regardless of ?1006 state — the terminal
      * decodes both; SGR is simpler and doesn't overflow at high row/col.
      * @param {number} row
