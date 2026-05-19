@@ -340,6 +340,19 @@ export class TerminalManager {
 	private opts: ManagerOptions;
 	private panes = new Map<string, PaneEntry>();
 	private rafHandle: number | null = null;
+	/** P2.2 (2026-05-20): id of the pane currently marked focused via
+	 *  `setFocused(paneId, true)`. Used by the RAF tick to render the
+	 *  focused pane FIRST each frame so its keystrokes / cursor blink
+	 *  beat sibling panes' draws when the frame budget is tight. `null`
+	 *  when no pane is focused (rare — usually one of the visible panes
+	 *  carries the input focus). */
+	private _focusedPaneId: string | null = null;
+	/** P2.2: monotonic counter, bumped at the bottom of every RAF tick.
+	 *  Used to rotate the order in which NON-focused panes are visited
+	 *  for render so no single non-focused pane gets perpetually
+	 *  starved at the tail of the order. `>>> 0` wrap keeps it bounded
+	 *  to a u32 for the modulo arithmetic. */
+	private _rafRotationIndex = 0;
 	/** When set, the RAF loop is asleep; this timer is the next scheduled
 	 *  wake-up (cursor-blink boundary or a 1s watchdog). Cleared and
 	 *  fired by `wake()`. Independent of `rafHandle` — at any moment at
@@ -1914,10 +1927,14 @@ export class TerminalManager {
 	 *  this tick. The drain itself re-enters `_feedNow` which applies
 	 *  its own budget — so a perpetually-bursting pane consumes one
 	 *  chunk per frame and never blocks the loop for more than ~4 ms,
-	 *  while other panes keep their own budget intact. */
-	private _drainDeferredFeeds(): void {
-		for (const entry of this.panes.values()) {
-			if (entry.parked) continue;
+	 *  while other panes keep their own budget intact.
+	 *
+	 *  P2.2: takes the same focus-first + rotated-others order as the
+	 *  render pass so the focused pane recovers from a burst fastest,
+	 *  while non-focused panes still see progress every frame via
+	 *  the rotation. */
+	private _drainDeferredFeeds(order: readonly PaneEntry[]): void {
+		for (const entry of order) {
 			if (!entry.feedDeferred) continue;
 			const buf = entry.feedDeferred;
 			// Clear BEFORE _feedNow — the call will re-set it if the new
@@ -2257,8 +2274,54 @@ export class TerminalManager {
 	 *  switching panes flips the cursor visibility on both sides instantly. */
 	setFocused(paneId: string, focused: boolean): void {
 		this.panes.get(paneId)?.handle.setFocused(focused);
+		// P2.2 (2026-05-20): also mirror the focus bit at the manager
+		// level so the RAF tick can order the focused pane FIRST each
+		// frame. Without this the renderer-side `set_focused` is the
+		// only signal, and the tick has no way to peek at it from
+		// outside the wasm bridge. Clear when the currently-tracked
+		// pane loses focus and nothing else has claimed it yet —
+		// otherwise the stale id would push a parked / departing pane
+		// to the head of the order.
+		if (focused) {
+			this._focusedPaneId = paneId;
+		} else if (this._focusedPaneId === paneId) {
+			this._focusedPaneId = null;
+		}
 		// Cursor visibility changed → cursor row dirties → wake.
 		this.wake();
+	}
+
+	/** P2.2 (2026-05-20): build the per-frame pane visit order for the
+	 *  RAF tick — focused pane first, then non-focused entries rotated
+	 *  by `_rafRotationIndex` so over many frames every non-focused
+	 *  pane gets first-of-the-rest treatment in turn. Parked entries
+	 *  are filtered out (the render loop already skips them, but
+	 *  excluding here keeps the rotation index meaningful — otherwise
+	 *  a parked pane's slot would shift the cadence). Workspace
+	 *  visibility is handled later (the existing `_isContainerHidden`
+	 *  check) — this helper just orders the candidates. */
+	private _renderOrder(): PaneEntry[] {
+		const live: PaneEntry[] = [];
+		for (const entry of this.panes.values()) {
+			if (!entry.parked) live.push(entry);
+		}
+		if (live.length <= 1) return live;
+		const focusedId = this._focusedPaneId;
+		let focused: PaneEntry | undefined;
+		const others: PaneEntry[] = [];
+		for (const e of live) {
+			if (e.paneId === focusedId) focused = e;
+			else others.push(e);
+		}
+		if (others.length > 1) {
+			const rot = this._rafRotationIndex % others.length;
+			if (rot > 0) {
+				const rotated = others.slice(rot).concat(others.slice(0, rot));
+				others.length = 0;
+				others.push(...rotated);
+			}
+		}
+		return focused ? [focused, ...others] : others;
 	}
 
 	/** Apply CSS padding (px) to a pane's container. Pushes the canvas inward
@@ -2979,6 +3042,12 @@ export class TerminalManager {
 			// reads `js_sys::Date::now()` internally, so the renderer's blink
 			// phase and our pre-render `isDirty` must use the same epoch.
 			const dateNow = Date.now();
+			// P2.2 (2026-05-20): compute the per-frame order ONCE here so
+			// the deferred-feed drain and the main render loop agree on
+			// who goes first. Focused pane heads the list; remaining
+			// panes rotate by `_rafRotationIndex` so no non-focused pane
+			// gets perpetually starved at the tail.
+			const frameOrder = this._renderOrder();
 			// P2.1 (2026-05-20): drain bytes that prior `_feedNow` calls
 			// spilled out of when their per-call time budget ran out. The
 			// drain itself re-enters `_feedNow` with its own budget, so a
@@ -2986,7 +3055,7 @@ export class TerminalManager {
 			// instead of monopolising the main thread for tens of ms. Run
 			// BEFORE the dirty pre-pass so the kernel state the pre-pass
 			// hashes against reflects this frame's freshly-fed bytes.
-			this._drainDeferredFeeds();
+			this._drainDeferredFeeds(frameOrder);
 			let anyRendered = false;
 			let minDeadlineMs = Infinity;
 			// §4b per-pane increment cache (2026-05-08): this pre-pass
@@ -3075,9 +3144,15 @@ export class TerminalManager {
 				hostFrameOpen = activeHost.beginFrame(themeBg);
 				return hostFrameOpen;
 			};
-			for (const entry of this.panes.values()) {
-				// Skip parked entries — kernel is alive but handle was
-				// freed by park(); render would dereference a dead pointer.
+			// P2.2 (2026-05-20): use the frame's ordered list (focused
+			// pane first, then rotated non-focused) so the focused pane's
+			// dirty rows get encoded + presented before any sibling pane
+			// — visible win when the frame budget is tight (the focused
+			// cursor doesn't stutter behind a busy non-focused pane).
+			for (const entry of frameOrder) {
+				// `frameOrder` already filtered parked entries, but the
+				// kernel-freed dereference would crash hard so keep the
+				// belt-and-suspenders guard.
 				if (entry.parked) continue;
 				// §4a workspace keep-alive: skip panes whose container has
 				// 0 bbox (display:none on hidden workspace's wrapper).
@@ -3270,6 +3345,11 @@ export class TerminalManager {
 			// just painted. Sleeping panes pay nothing — emits only run on
 			// ticks the RAF loop is already executing.
 			this._emitScrollStateChanges();
+			// P2.2 (2026-05-20): advance the rotation cursor so the next
+			// frame visits non-focused panes in a different order. `>>> 0`
+			// wraps to u32 so the counter never grows unbounded across a
+			// long-running session.
+			this._rafRotationIndex = (this._rafRotationIndex + 1) >>> 0;
 			if (this.panes.size === 0) return;
 			if (anyRendered) {
 				// Likely more work soon — stay on RAF cadence.
