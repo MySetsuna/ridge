@@ -338,6 +338,32 @@ export class TerminalKernel {
         wasm.__wbg_terminalkernel_free(ptr, 0);
     }
     /**
+     * P3.6 (2026-05-20) — apply one postcard-encoded `DeltaFrame` (produced
+     * by the Rust-side `engine::parser::PaneParser`) to the mirror grid.
+     *
+     * Counterpart to `feed()` for the `Settings.parserBackend = 'rust'`
+     * path: PTY bytes are parsed once by the native PaneParser, the
+     * resulting frame is postcard-encoded and emitted as a Tauri event,
+     * and the wasm consumer applies the diff here instead of running its
+     * own vte parse on the JS main thread.
+     *
+     * Returns `Err(JsValue)` with a human-readable string on decode
+     * failure OR protocol-version mismatch — caller is expected to log
+     * and trigger a `force_full_reframe` self-heal (manager.ts P3.9
+     * wiring). Selection / search anchors are cleared on every applied
+     * frame because the mirror's grid mutates without going through
+     * `feed()` (which has its own eviction-counter-based clear).
+     * @param {Uint8Array} bytes
+     */
+    applyDeltaFrame(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.terminalkernel_applyDeltaFrame(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
      * residue investigation. Returns up to `len` cells starting at
      * (row, col) on the active screen as a JS array of plain objects
@@ -1535,7 +1561,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f(a, state0.b, arg0, arg1);
+                        return wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -1803,17 +1829,17 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 282, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 63, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 64, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 63, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e_2);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 64, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -1852,23 +1878,23 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e_2(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e_2(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f(arg0, arg1, arg2, arg3);
+function wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69(arg0, arg1, arg2, arg3);
 }
 
 

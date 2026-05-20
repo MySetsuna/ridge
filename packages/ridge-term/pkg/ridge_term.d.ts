@@ -192,6 +192,24 @@ export class TerminalKernel {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * P3.6 (2026-05-20) — apply one postcard-encoded `DeltaFrame` (produced
+     * by the Rust-side `engine::parser::PaneParser`) to the mirror grid.
+     *
+     * Counterpart to `feed()` for the `Settings.parserBackend = 'rust'`
+     * path: PTY bytes are parsed once by the native PaneParser, the
+     * resulting frame is postcard-encoded and emitted as a Tauri event,
+     * and the wasm consumer applies the diff here instead of running its
+     * own vte parse on the JS main thread.
+     *
+     * Returns `Err(JsValue)` with a human-readable string on decode
+     * failure OR protocol-version mismatch — caller is expected to log
+     * and trigger a `force_full_reframe` self-heal (manager.ts P3.9
+     * wiring). Selection / search anchors are cleared on every applied
+     * frame because the mirror's grid mutates without going through
+     * `feed()` (which has its own eviction-counter-based clear).
+     */
+    applyDeltaFrame(bytes: Uint8Array): void;
+    /**
      * §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
      * residue investigation. Returns up to `len` cells starting at
      * (row, col) on the active screen as a JS array of plain objects
@@ -480,6 +498,7 @@ export interface InitOutput {
     readonly surfacehosthandle_init: (a: any) => any;
     readonly surfacehosthandle_invalidate: (a: number) => void;
     readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
+    readonly terminalkernel_applyDeltaFrame: (a: number, b: number, c: number) => [number, number];
     readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_clearScrollback: (a: number) => void;
     readonly terminalkernel_clearSelection: (a: number) => void;
@@ -531,10 +550,10 @@ export interface InitOutput {
     readonly terminalkernel_setSelectionAbs: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hd662d7ae11924a6e_2: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
