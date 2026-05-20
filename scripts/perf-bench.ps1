@@ -56,6 +56,16 @@ param(
   # edge case. Mostly useful when both the installed and the dev binary
   # live under similar paths.
   [int[]]$ExcludePids = @(),
+  # P3.14.r3 (2026-05-20) — include `msedgewebview2.exe` children of
+  # the test ridge.exe OR (under tauri-driver e2e) of `msedgedriver.exe`
+  # in the sample. Off by default because the standard ridge.exe owns
+  # its WebView2 children directly — so the existing ancestor walk
+  # picks them up. The flag matters for the tauri-driver harness,
+  # where msedgewebview2.exe is parented to msedgedriver, NOT to
+  # ridge.exe, and would otherwise be missed entirely — making the
+  # wasm parser path (whose VTE parsing happens in WebView2's JS
+  # thread) look ~5-15 percentage points cheaper than reality.
+  [switch]$IncludeWebView2,
   [string]$OutputDir = $null
 )
 
@@ -84,7 +94,8 @@ function Get-TargetProcs {
   param(
     [string[]]$rootNames,
     [string]$pathSubstring,
-    [int[]]$excludePids
+    [int[]]$excludePids,
+    [bool]$includeWebView2
   )
   $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
   if (-not $all) { return @() }
@@ -131,6 +142,48 @@ function Get-TargetProcs {
       $cur = $next
     }
   }
+  # P3.14.r3 — pick up msedgewebview2.exe spawned by the tauri-driver
+  # e2e harness. Without this, wasm-mode VTE parsing (which runs on
+  # the JS thread inside WebView2) is invisible to the sampler — the
+  # rust-vs-wasm CPU comparison then under-counts wasm.
+  #
+  # Why ancestor walk doesn't work here: WebView2 host processes are
+  # NOT parented to the ridge.exe that spawned them. The Windows
+  # process tree has them as siblings of explorer.exe (parent points
+  # to a short-lived launcher / svchost). Empirically: under
+  # tauri-driver, test ridge.exe at PID X had ZERO WebView2 children;
+  # the matching WebView2 root was several PIDs higher with parent =
+  # explorer (PID 12332 on this box).
+  #
+  # The reliable disambiguator is the command line. Every WebView2
+  # host process embeds two markers:
+  #   --webview-exe-name=ridge.exe          (Tauri sets this to its
+  #                                          binary's filename)
+  #   --user-data-dir="<path>\EBWebView"    (where localStorage lives)
+  #
+  # Host ridge.exe (the installed v0.0.2) gets:
+  #   user-data-dir = %LOCALAPPDATA%\com.tauri-app.ridge\EBWebView
+  # Test ridge.exe (spawned by tauri-driver) gets:
+  #   user-data-dir = %LOCALAPPDATA%\Temp\scoped_dir*\EBWebView
+  # The `scoped_dir` segment is the key — tauri-driver always
+  # isolates the test instance into a per-launch temp dir, so this
+  # substring is a perfect filter for "WebView2 belonging to a
+  # tauri-driver-spawned ridge.exe".
+  if ($includeWebView2) {
+    foreach ($p in $all) {
+      if ($p.Name -ne 'msedgewebview2.exe') { continue }
+      if ($keep.ContainsKey([int]$p.ProcessId)) { continue }
+      $cl = $p.CommandLine
+      if (-not $cl) { continue }
+      if ($cl -notmatch 'webview-exe-name=ridge\.exe') { continue }
+      # `scoped_dir` is what tauri-driver appends to %TEMP%. Matching
+      # on the literal substring (not full path) keeps this robust
+      # against Windows TEMP path variations.
+      if ($cl -match 'user-data-dir="[^"]*scoped_dir') {
+        $keep[[int]$p.ProcessId] = $true
+      }
+    }
+  }
   # Promote to System.Diagnostics.Process so we get CPU + WorkingSet64.
   $result = New-Object System.Collections.Generic.List[object]
   foreach ($pid_ in $keep.Keys) {
@@ -139,7 +192,7 @@ function Get-TargetProcs {
   $result
 }
 
-$initialProcs = Get-TargetProcs -rootNames $RootProcessNames -pathSubstring $RootPathSubstring -excludePids $ExcludePids
+$initialProcs = Get-TargetProcs -rootNames $RootProcessNames -pathSubstring $RootPathSubstring -excludePids $ExcludePids -includeWebView2 $IncludeWebView2.IsPresent
 if (-not $initialProcs -or $initialProcs.Count -eq 0) {
   $hint = "No matching root processes found."
   if ($RootPathSubstring) {
@@ -177,7 +230,7 @@ while ((Get-Date) -lt $endTs) {
   Start-Sleep -Seconds $IntervalSec
   $tick++
   $now = Get-Date
-  $procs = Get-TargetProcs -rootNames $RootProcessNames -pathSubstring $RootPathSubstring -excludePids $ExcludePids
+  $procs = Get-TargetProcs -rootNames $RootProcessNames -pathSubstring $RootPathSubstring -excludePids $ExcludePids -includeWebView2 $IncludeWebView2.IsPresent
   $cpuSum = 0.0
   $memSum = 0.0
   foreach ($p in $procs) {
