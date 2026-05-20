@@ -131,7 +131,18 @@ export function setupTerminalThemeBridge(): () => void {
 			// every pane's handle on unrelated settings updates (font size,
 			// shell selection, …) that share the same store.
 			const fingerprint = JSON.stringify(theme);
-			if (fingerprint !== _lastApplied) {
+			const changed = fingerprint !== _lastApplied;
+			if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
+				const ts = performance.now().toFixed(1);
+				const bg = theme.background ?? '∅';
+				const fg = theme.foreground ?? '∅';
+				const cur = theme.cursor ?? '∅';
+				const sel = theme.selectionBackground ?? '∅';
+				const ansiCount = Object.keys(theme).filter((k) => k.startsWith('bright') || ['black','red','green','yellow','blue','magenta','cyan','white'].includes(k)).length;
+				// eslint-disable-next-line no-console
+				console.debug(`[theme-trace][${ts}ms] push${changed ? '' : '/skip-unchanged'} bg=${bg} fg=${fg} cursor=${cur} sel=${sel} ansi=${ansiCount}/16`);
+			}
+			if (changed) {
 				_lastApplied = fingerprint;
 				manager.setTheme(theme);
 			}
