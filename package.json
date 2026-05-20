@@ -17,6 +17,8 @@
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
+    "e2e:shell": "wdio run wdio.conf.ts",
+    "perf-bench": "pwsh scripts/perf-bench.ps1",
     "clean": "rimraf node_modules/.vite build src-tauri/target"
   },
   "license": "MIT",
