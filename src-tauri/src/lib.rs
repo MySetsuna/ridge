@@ -78,7 +78,7 @@ pub fn run() {
                 // the very first frame would render with the hardcoded fallback
                 // colors because `localStorage.ridge-theme-data` is empty until
                 // SvelteKit hydrates. See `src/app.html` for the consumer end.
-                let splash_init_script = theme::build_splash_init_script(&app_data_dir);
+                let splash_init_script = theme::build_splash_init_script(app.handle(), &app_data_dir);
                 let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                     .title("ridge")
                     .inner_size(800.0, 600.0)
