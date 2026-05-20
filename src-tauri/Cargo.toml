@@ -68,6 +68,15 @@ notify-debouncer-mini = "0.4"
 # without surprise rebuilds when P3.3 lands.
 ridge-term = { path = "../packages/ridge-term", default-features = false }
 
+# P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
+# the GridDelta wire format. The native PaneParser (`engine::parser`)
+# encodes frames to Vec<u8>, emits via Tauri events; the wasm consumer
+# decodes the same bytes back into DeltaFrame in JsTerminal. Keeping
+# the dep version aligned (both at "1") guarantees the same postcard
+# encoding rules — protocol stability is enforced by DeltaFrame::version,
+# not by source-level postcard compatibility.
+postcard = { version = "1", features = ["alloc"] }
+
 [[bin]]
 name = "tmux"
 path = "src/bin/tmux.rs"
