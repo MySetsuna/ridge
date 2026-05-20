@@ -3085,7 +3085,20 @@ export class TerminalManager {
 			console.debug('[ridge-term] resize decision', diag);
 		}
 
-		if (wipeBeforePty) {
+		// P3.9.r (2026-05-20) — in 'rust' parser mode the mirror's kernel
+		// resize is driven by apply_delta(Resize) after the Rust-side
+		// PaneParser emits the Resize delta. We must NOT call
+		// `entry.kernel.resize` here directly — that would race the
+		// frame and risk Cells deltas referencing the old/new grid mix.
+		// `entry.resizeHandler` (resize_pane Tauri command) takes care
+		// of PTY master.resize + PaneParser.resize + delta emit in one
+		// atomic sequence.
+		const useRustParser = get(settingsStore).parserBackend === 'rust';
+		if (useRustParser) {
+			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
+			// Mirror resize will follow via apply_delta(Resize) in the
+			// next pty-delta event — handler emits it synchronously.
+		} else if (wipeBeforePty) {
 			entry.kernel.resize(rows, cols);
 			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
 		} else {

@@ -835,6 +835,7 @@ fn write_to_pty_inner(
 #[tauri::command]
 pub async fn resize_pane(
 	state: State<'_, AppState>,
+	app: tauri::AppHandle,
 	pane_id: String,
 	rows: u16,
 	cols: u16,
@@ -843,6 +844,7 @@ pub async fn resize_pane(
 ) -> Result<(), String> {
 	resize_pane_inner(
 		state,
+		app,
 		pane_id,
 		rows,
 		cols,
@@ -854,6 +856,7 @@ pub async fn resize_pane(
 
 fn resize_pane_inner(
 	state: State<'_, AppState>,
+	app: tauri::AppHandle,
 	pane_id: String,
 	rows: u16,
 	cols: u16,
@@ -948,9 +951,54 @@ fn resize_pane_inner(
         Ok(()) => {
             pty_log::resize_ok(wid, pane_id, rows, cols);
             // Now we can safely acquire a write lock to update pane_sizes
-            let mut map = state.workspaces.write();
-            if let Some(ws) = map.get_mut(&wid) {
-                ws.pane_sizes.insert(pane_id, (rows, cols));
+            {
+                let mut map = state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.pane_sizes.insert(pane_id, (rows, cols));
+                }
+            }
+
+            // P3.9.r (2026-05-20) — keep PaneParser in lock-step with PTY
+            // native resize when delta_mode is on. The mirror grid follows
+            // via apply_delta(Resize) inside the emitted frame, so this
+            // path is the canonical "parser resizes FIRST, mirror catches
+            // up via the next delta frame" — fitPane in the front-end is
+            // told to skip its own `kernel.resize(...)` in rust mode so
+            // we never break the invariant.
+            let parser_for_delta = {
+                let map = state.workspaces.read();
+                map.get(&wid)
+                    .and_then(|ws| ws.terminals.get(&pane_id))
+                    .and_then(|h| {
+                        if h.delta_mode.load(Ordering::Acquire) {
+                            Some(h.parser.clone())
+                        } else {
+                            None
+                        }
+                    })
+            };
+            if let Some(parser) = parser_for_delta {
+                use ridge_term::term::delta::encode_frame;
+                use tauri::Emitter;
+                let frame = {
+                    let mut p = parser.lock();
+                    p.resize(rows, cols)
+                };
+                match encode_frame(&frame) {
+                    Ok(bytes) => {
+                        let label = pane_id.to_string();
+                        let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ridge::pty_delta",
+                            error = %e,
+                            ws = %wid,
+                            pane = %pane_id,
+                            "resize delta encode failed; mirror may briefly desync until next chunk",
+                        );
+                    }
+                }
             }
             Ok(())
         }
