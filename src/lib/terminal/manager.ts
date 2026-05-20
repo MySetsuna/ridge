@@ -985,9 +985,24 @@ export class TerminalManager {
 		// Seed kernel with default 24×80 — we'll resize to actual size right away.
 		const kernel = new TerminalKernel(24, 80, scrollbackLines);
 
-		// Apply theme if provided.
+		// Apply theme if provided. Mirror the setTheme() pattern of
+		// `applyDefaultTheme()` first so the kernel starts from a known
+		// baseline before partial overrides land — otherwise any palette
+		// entries not present in `opts.theme` retain whatever bits the
+		// brand-new `Renderer::theme` ended up with, which has bitten us
+		// when the wasm-side default doesn't match the bundled
+		// `endless-dark` defaults (e.g. cursor color).
 		if (this.opts.theme) {
+			handle.applyDefaultTheme();
 			handle.applyTheme(this.opts.theme);
+			if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
+				const t = this.opts.theme;
+				// eslint-disable-next-line no-console
+				console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} bg=${t.background ?? '∅'} fg=${t.foreground ?? '∅'} cursor=${t.cursor ?? '∅'}`);
+			}
+		} else if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
+			// eslint-disable-next-line no-console
+			console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} NO_THEME (opts.theme is null — bridge hasn't fired yet)`);
 		}
 
 		// Focus reporting (`?1004`) — emit `\x1b[I` / `\x1b[O` to PTY when
@@ -1479,6 +1494,8 @@ export class TerminalManager {
 					rows: (paneId: string) => number;
 					cols: (paneId: string) => number;
 					scrollbackLen: (paneId: string) => number;
+					themeSnapshot: () => Record<string, string> | null;
+					kernelCursor: (paneId: string) => { row: number; col: number } | null;
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -1502,6 +1519,25 @@ export class TerminalManager {
 				scrollbackLen: (paneId) => {
 					const e = this.panes.get(paneId);
 					return e ? e.kernel.scrollbackLen() : 0;
+				},
+				// Theme bridge regression guard: the bridge pushes a Record
+				// of xterm.js-shape keys (background / foreground / cursor /
+				// ANSI 16 / …) into `opts.theme`. If the boot order is
+				// broken so `setupTerminalThemeBridge`'s RAF runs before the
+				// first pane attaches AND attach() doesn't see opts.theme
+				// either, the snapshot stays null and the kernel keeps its
+				// compile-time defaults — that's the bug this hook surfaces.
+				themeSnapshot: () => this.opts.theme ?? null,
+				// Cursor probe for input-echo regression specs. The kernel's
+				// `cursorRow / cursorCol` track the VT cursor; comparing
+				// before / after a typed sequence catches any flicker /
+				// misalignment in the delta path (P3.x rust parser) that
+				// would otherwise only show up as a visual artefact.
+				kernelCursor: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const k = e.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+					return { row: k.cursorRow(), col: k.cursorCol() };
 				},
 			};
 		}
@@ -1940,11 +1976,19 @@ export class TerminalManager {
 		const FEED_CHUNK_BYTES = 16 * 1024;
 		let offset = 0;
 		const start = performance.now();
+		const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
+		const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+		const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
 		while (offset < bytes.length) {
 			const end = Math.min(offset + FEED_CHUNK_BYTES, bytes.length);
 			entry.kernel.feed(bytes.subarray(offset, end));
 			offset = end;
 			if (performance.now() - start >= FEED_PER_CALL_BUDGET_MS) break;
+		}
+		if (traceCursor) {
+			const ts = performance.now().toFixed(1);
+			// eslint-disable-next-line no-console
+			console.debug(`[cursor-trace][${ts}ms] feed paneId=${entry.paneId.slice(0,8)} bytes=${bytes.length} consumed=${offset} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
 		}
 		if (offset < bytes.length) {
 			// Copy via `slice` so the deferred queue doesn't pin the
@@ -2006,7 +2050,15 @@ export class TerminalManager {
 		// self-heal `set_pane_delta_mode(false)` invoke. manager is host-
 		// agnostic (no Tauri imports) — recovery routing lives in
 		// ptyBridge where the invoke surface is available.
+		const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
+		const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+		const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
 		entry.kernel.applyDeltaFrame(bytes);
+		if (traceCursor) {
+			const ts = performance.now().toFixed(1);
+			// eslint-disable-next-line no-console
+			console.debug(`[cursor-trace][${ts}ms] applyDeltaFrame paneId=${paneId.slice(0,8)} bytes=${bytes.length} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
+		}
 		// Pump DSR/DA replies the mirror produced via apply_delta back to
 		// the PTY. Symmetric with feed()'s take_pending_response drain.
 		const reply = entry.kernel.takePendingResponse();
@@ -2167,6 +2219,13 @@ export class TerminalManager {
 
 		const bytes = entry.kernel.encodeKey(ev.key, ctrl, ev.altKey, ev.shiftKey, ev.metaKey);
 		if (bytes.length === 0) return false;
+		if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1') {
+			const ts = performance.now().toFixed(1);
+			const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+			const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+			// eslint-disable-next-line no-console
+			console.debug(`[cursor-trace][${ts}ms] keydown key=${JSON.stringify(ev.key)} → bytes(${bytes.length})=${hex} kernel-cursor(pre)=(${k.cursorRow()},${k.cursorCol()})`);
+		}
 		entry.dataHandler(bytes);
 		this.scheduleImeAnchorCapture(entry);
 		return true;
@@ -2904,11 +2963,18 @@ export class TerminalManager {
 	/** Apply theme overrides to all panes. */
 	setTheme(theme: Record<string, string>): void {
 		this.opts.theme = theme;
+		let applied = 0;
+		let parked = 0;
 		for (const entry of this.panes.values()) {
 			// Parked panes pick up the theme on the next unpark via this.opts.
-			if (entry.parked) continue;
+			if (entry.parked) { parked++; continue; }
 			entry.handle.applyDefaultTheme();
 			entry.handle.applyTheme(theme);
+			applied++;
+		}
+		if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
+			// eslint-disable-next-line no-console
+			console.debug(`[theme-trace] setTheme applied=${applied} parked=${parked} totalKeys=${Object.keys(theme).length} bg=${theme.background ?? '∅'}`);
 		}
 		this.wake();
 	}
