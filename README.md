@@ -56,6 +56,28 @@ pnpm tauri build       # 安装包（Windows: NSIS / MSI）
 
 下一个版本（**v0.0.3**）聚焦两条主线：**远程控制能力**与**次世代渲染管线**。两者均以"零服务器依赖、纯客户端、开箱即用"为设计原则。
 
+### ⚙️ 共同基础：Rust 侧 GridDelta 解析管线（P3 ladder）
+
+为两条主线奠基的 11 步重构。已完成 ✅：
+
+- **p3.1** 把 `ridge-term` 作为 native dep 接入 src-tauri
+- **p3.2** GridDelta wire format 数据类型 (`packages/ridge-term/src/term/delta.rs`)
+- **p3.3** `engine::parser::PaneParser` producer
+- **p3.4** `Terminal::apply_delta` / `apply_frame` consumer + round-trip
+- **p3.5** postcard codec (`encode_frame` / `decode_frame`)
+- **p3.6** wasm-bindgen `applyDeltaFrame(bytes)` entry
+- **p3.7** `Settings.parserBackend = 'wasm' | 'rust'`（默认 `'rust'`）
+- **p3.8** main loop 消费侧接 PaneParser + emit `pty-delta-*`
+- **p3.9** `set_pane_delta_mode` 命令 + manager switch + 200ms fade mask
+- **p3.9.r** rust 模式下 fitPane 走单向 resize
+- **p3.10** `GridDelta::Reset` producer + apply（RIS）
+- **p3.11** `GridDelta::ScrollbackAppend` producer + apply
+- **p3.12** `GridDelta::ModeChange` producer + apply
+- **p3.13** col-range diff（per-row payload 收缩 5-20×）
+- **p3.14** 真桌面 e2e (`tauri-driver` + WebdriverIO) + perf-bench backend 比较
+
+P3 让 VT 解析从 wasm 主线程搬到 Rust tokio 任务，主线程 CPU 占用显著下降；同时为远程控制（主线一）准备好"只接收 delta 不跑解析器"的轻量客户端协议。
+
 ### 🛰️ 主线一：远程控制 · Remote Control
 
 为 Ridge 增加跨设备远程控制能力，定位为纯 P2P 开源工具——不引入中心化信令、不依赖公网中继。

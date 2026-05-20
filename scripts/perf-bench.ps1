@@ -4,6 +4,14 @@
 #   pwsh scripts/perf-bench.ps1 -Label before-p1 -DurationSec 60
 #   pwsh scripts/perf-bench.ps1 -Label after-p1  -DurationSec 60
 #
+# P3 backend comparison:
+#   1. Open Settings → set parserBackend = 'wasm'.
+#   2. pwsh scripts/perf-bench.ps1 -Label p3-baseline -Backend wasm -DurationSec 30
+#   3. Open Settings → set parserBackend = 'rust'.
+#   4. pwsh scripts/perf-bench.ps1 -Label p3-rust     -Backend rust -DurationSec 30
+#   Compare the summary CPU means; rust mode is expected to drop the
+#   JS main-thread share materially since vte parsing moved to Rust.
+#
 # Samples CPU% and RSS of Wind-related processes once per `IntervalSec`,
 # reports mean / p50 / p95 / max over the run, and writes a CSV + summary
 # into `scripts/perf-runs/` (gitignored). Pair before/after labels to
@@ -20,6 +28,14 @@ param(
   [int]$DurationSec = 60,
   [int]$IntervalSec = 1,
   [string]$Label = 'idle',
+  # P3.14 (2026-05-20) — record which `Settings.parserBackend` was
+  # active during the run so before/after comparisons are unambiguous
+  # in the summary report. Tag-only: the script does NOT flip the
+  # backend (no IPC channel into the running app); the caller is
+  # expected to set Settings.parserBackend manually in the UI before
+  # starting the sampler. Acceptable values: 'wasm' | 'rust' | 'unknown'.
+  [ValidateSet('wasm', 'rust', 'unknown')]
+  [string]$Backend = 'unknown',
   # Names of the actual Wind binary to use as the process-tree root.
   # `ridge` is the published debug+release name; `wind` is the in-flight
   # rebrand. Either matches the launcher process; the script then walks
@@ -207,6 +223,7 @@ $max = ($cpus | Measure-Object -Maximum).Maximum
 
 $summary = @"
 perf-bench label='$Label'
+  backend  : $Backend
   duration : ${DurationSec}s
   interval : ${IntervalSec}s
   cores    : $cores

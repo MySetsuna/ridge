@@ -1456,6 +1456,43 @@ export class TerminalManager {
 		if (typeof window !== 'undefined') {
 			(window as unknown as { __windDumpRows?: TerminalManager['debugDumpRows'] }).__windDumpRows =
 				(pId: string, from: number, to: number) => this.debugDumpRows(pId, from, to);
+			// P3.14 (2026-05-20) — e2e harness hook. The tauri-driver +
+			// WebdriverIO suite (tests/e2e-shell/) needs an in-process
+			// way to (a) feed PTY bytes into a pane and (b) inspect the
+			// resulting visible grid without going through a real shell
+			// (which would be flaky and platform-specific). Expose two
+			// small helpers on window so the WebDriver client can
+			// `executeAsync` them.
+			//
+			// Pure read-only / pass-through over the public manager API;
+			// no production code path consults `__windE2E`. Gating on a
+			// URL flag (`?e2e=1`) here is unnecessary because both
+			// helpers are no-ops when called against a non-existent
+			// paneId. The names follow the existing `__windDumpRows`
+			// convention to keep the dev surface coherent.
+			(window as unknown as {
+				__windE2E?: {
+					feedPty: (paneId: string, data: string) => void;
+					visibleText: (paneId: string) => string[];
+					rows: (paneId: string) => number;
+					cols: (paneId: string) => number;
+					scrollbackLen: (paneId: string) => number;
+				};
+			}).__windE2E = {
+				feedPty: (paneId, data) => this.feed(paneId, data),
+				visibleText: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return [];
+					// kernel.dumpVisibleText returns Vec<String> as JsValue[]
+					return (e.kernel.dumpVisibleText() as string[]).map((s) => String(s));
+				},
+				rows: (paneId) => this.rows(paneId) ?? 0,
+				cols: (paneId) => this.cols(paneId) ?? 0,
+				scrollbackLen: (paneId) => {
+					const e = this.panes.get(paneId);
+					return e ? e.kernel.scrollbackLen() : 0;
+				},
+			};
 		}
 		this.startRafLoop();
 	}
