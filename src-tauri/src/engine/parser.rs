@@ -131,6 +131,26 @@ impl PaneParser {
         self.terminal.take_pending_response()
     }
 
+    /// P3.9 (2026-05-20) — clear the diff baseline so the next
+    /// `feed_and_diff` call emits a complete reframe (ScreenSwitch +
+    /// Cursor + every dirty row as Cells). Used by
+    /// `set_pane_delta_mode` when flipping false → true: the front-end
+    /// mirror just enabled rust-parser mode and may have arbitrary
+    /// stale state from an earlier wasm-parser session; sending a full
+    /// reframe immediately bootstraps it to a known-good state without
+    /// requiring the user to scrollback or re-input.
+    ///
+    /// Does NOT touch the underlying `Terminal` state — just the diff
+    /// snapshot. The next visible frame is identical content-wise to
+    /// what was on screen before; only the wire payload is larger.
+    pub fn force_full_reframe(&mut self) {
+        let rows = self.terminal.rows();
+        let cols = self.terminal.cols();
+        self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+        self.cursor = None;
+        self.is_alt = None;
+    }
+
     /// Resize the underlying grid and re-allocate the snapshot. Returns
     /// a delta frame that surfaces the `Resize` event AND any cell
     /// changes the resize itself caused (reflow can fill new rows or

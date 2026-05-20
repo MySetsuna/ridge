@@ -411,6 +411,7 @@ pub fn run() {
             terminal::get_shell_history,
             terminal::write_to_pty,
             terminal::resize_pane,
+            terminal::set_pane_delta_mode,
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,

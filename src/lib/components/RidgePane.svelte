@@ -18,7 +18,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
-import { ensurePtyBridge } from '$lib/terminal/ptyBridge';
+import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
@@ -50,6 +50,12 @@ let alive = true;
 // pane's wasm renderer at its default `focused=true` → both panes blink
 // after a split until the next activePaneId change.
 let attached = $state(false);
+
+// P3.9 (2026-05-20) — parserBackend live switch with a 200ms fade so
+// the user never sees a partial-mirror flash. Initial sync happens in
+// ensurePtyBridge; this effect only fires on subsequent changes.
+let prevParserBackend = $state<'wasm' | 'rust' | null>(null);
+let backendSwitching = $state(false);
 
 // PTY listener subscriptions used to live here as ptyUnlisten /
 // ptyClosedUnlisten. Both moved to `$lib/terminal/ptyBridge` (TASKS §5.1)
@@ -814,6 +820,35 @@ onMount(() => {
 	})();
 });
 
+// P3.9 — parserBackend live switch. Initial value is synced by
+// ensurePtyBridge (so the pane comes up in the user's preferred
+// backend on attach). Subsequent runs of this effect detect a real
+// change in `$settingsStore.parserBackend` and flip backends on the
+// fly, with a 200ms opacity mask to hide the brief mirror transition.
+$effect(() => {
+	const backend = $settingsStore.parserBackend;
+	if (!attached) {
+		prevParserBackend = backend;
+		return;
+	}
+	if (prevParserBackend === backend) return;
+	prevParserBackend = backend;
+	backendSwitching = true;
+	(async () => {
+		try {
+			await setPaneDeltaMode(paneId, backend === 'rust');
+		} finally {
+			// Hold the mask for ~200ms so the first frame after the
+			// switch arrives before the fade-out. This is the
+			// architecture-level mitigation for R4 — the user sees a
+			// smooth transition rather than a partial mirror flash.
+			setTimeout(() => {
+				if (alive) backendSwitching = false;
+			}, 200);
+		}
+	})();
+});
+
 // §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
 // used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`
 // per attached pane — pure polling so that async PTY-driven scrollback
@@ -1234,6 +1269,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	bind:this={container}
 	class="rg-pane-container h-full w-full min-h-0 min-w-0 outline-none relative"
 	class:bell-flash={bellFlash}
+	class:rg-backend-switching={backendSwitching}
 	style="background: var(--rg-term-bg); contain: strict;"
 	role="application"
 	aria-label="终端"
@@ -1389,6 +1425,17 @@ function onContainerMouseDown(e: MouseEvent) {
 	 * empty rulesets. The strict containment lets the browser skip
 	 * layout/paint on unrelated mutations elsewhere — small win in
 	 * multi-pane setups. */
+	/* P3.9 — backend switch fade. 200ms opacity transition hides the
+	 * brief moment between issuing set_pane_delta_mode and the first
+	 * frame arriving from the new backend. R4 architectural mitigation. */
+	.rg-pane-container {
+		transition: opacity 200ms ease-out;
+	}
+	.rg-pane-container.rg-backend-switching {
+		opacity: 0.45;
+		pointer-events: none;
+	}
+
 	.rg-pane-container.bell-flash {
 		/* Brief inset highlight to draw the eye on BEL (0x07). 120ms is
 		 * long enough to register, short enough not to be annoying. */

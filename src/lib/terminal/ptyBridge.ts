@@ -35,6 +35,13 @@ import { settingsStore } from '$lib/stores/settings';
 interface Bridge {
 	outUnlisten: UnlistenFn;
 	closedUnlisten: UnlistenFn;
+	/// P3.9 — `pty-delta-{ws}-{pane}` subscription. Always set; whether
+	/// it actually fires depends on the backend `delta_mode` flag. When
+	/// `delta_mode = false`, the backend emits `pty-output-*` instead and
+	/// this listener stays silent. Toggling backend modes does NOT need
+	/// to detach this listener — saves a round-trip per backend switch.
+	deltaUnlisten: UnlistenFn;
+	workspaceId: string;
 }
 
 const bridges = new Map<string, Bridge>();
@@ -130,7 +137,63 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 		},
 	);
 
-	bridges.set(paneId, { outUnlisten, closedUnlisten });
+	// P3.9 — pty-delta subscription. Postcard payload comes through as a
+	// JS `number[]` (Tauri serializes Vec<u8> over IPC); convert to
+	// Uint8Array for the wasm bridge. The backend gates emission on
+	// `delta_mode`, so this listener stays dormant in 'wasm' mode.
+	const deltaUnlisten = await listen<number[]>(
+		`pty-delta-${workspaceId}-${paneId}`,
+		(e) => {
+			const bytes = e.payload instanceof Uint8Array
+				? (e.payload as Uint8Array)
+				: new Uint8Array(e.payload);
+			try {
+				manager.applyDeltaFrame(paneId, bytes);
+			} catch (err) {
+				// R5 self-heal: protocol / decode error → fall back to
+				// wasm path so the pane stays usable. Best-effort; the
+				// invoke uses fire-and-forget semantics.
+				console.warn(
+					'[ridge-term] pty-delta apply failed; falling back to wasm parser',
+					{ paneId, error: String(err) },
+				);
+				void invoke('set_pane_delta_mode', {
+					workspaceId,
+					paneId,
+					enabled: false,
+				}).catch(() => {});
+			}
+		},
+	);
+
+	bridges.set(paneId, { outUnlisten, closedUnlisten, deltaUnlisten, workspaceId });
+
+	// Sync the backend delta_mode to the user's current Settings
+	// preference. Fire-and-forget — failure (e.g. pane already gone)
+	// shouldn't block bridge install; the pty-output path still works.
+	const desired = get(settingsStore).parserBackend === 'rust';
+	try {
+		await invoke('set_pane_delta_mode', { workspaceId, paneId, enabled: desired });
+	} catch (e) {
+		console.warn('[ridge-term] initial set_pane_delta_mode failed', { paneId, error: String(e) });
+	}
+}
+
+/**
+ * Switch this pane's backend delta_mode at runtime. Called by RidgePane
+ * (or anywhere watching the `settingsStore.parserBackend` value) when
+ * the user flips the parserBackend toggle. The backend implementation
+ * forces a full reframe on enable so the mirror catches up without
+ * a visible blank — see `set_pane_delta_mode` in src-tauri.
+ */
+export async function setPaneDeltaMode(paneId: string, enabled: boolean): Promise<void> {
+	const bridge = bridges.get(paneId);
+	if (!bridge) return;
+	try {
+		await invoke('set_pane_delta_mode', { workspaceId: bridge.workspaceId, paneId, enabled });
+	} catch (e) {
+		console.warn('[ridge-term] set_pane_delta_mode runtime switch failed', { paneId, enabled, error: String(e) });
+	}
 }
 
 /**
@@ -144,6 +207,7 @@ export function teardownPtyBridge(paneId: string): void {
 	if (!b) return;
 	try { b.outUnlisten(); } catch { /* already unsubscribed */ }
 	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
+	try { b.deltaUnlisten(); } catch { /* already unsubscribed */ }
 	bridges.delete(paneId);
 }
 
