@@ -13,33 +13,16 @@
  * svelte-check happy on machines that haven't installed WebdriverIO.
  */
 // @ts-nocheck
-import { browser, expect, $ } from '@wdio/globals';
+import { browser, expect } from '@wdio/globals';
+import { waitForAppReady, firstPaneId } from './helpers';
 
 describe('parserBackend = rust (default)', () => {
   before(async () => {
-    // Wait for the splash to clear: app.html ships an inline splash
-    // that fades out on the `ridge:app-ready` event. The DOM element
-    // is `#brand-loader` and becomes `display: none` once fade-out
-    // completes. 6 s ceiling is twice the splash's 3 s fallback timer.
-    await browser.waitUntil(
-      async () => {
-        return browser.execute(() => {
-          const el = document.getElementById('brand-loader');
-          if (!el) return true;
-          return getComputedStyle(el).display === 'none';
-        });
-      },
-      { timeout: 6_000, timeoutMsg: 'splash never cleared' },
-    );
+    await waitForAppReady();
   });
 
   it('feeds PTY bytes and the mirror reflects them', async () => {
-    // The first pane's id lives on the [data-rg-pane-id] container.
-    const paneId = await browser.execute(() => {
-      const el = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
-      return el?.dataset.rgPaneId ?? null;
-    });
-    expect(paneId).toBeTruthy();
+    const paneId = await firstPaneId();
 
     // Feed a short ASCII string through the dev hook. No real shell
     // is invoked — the manager pushes the bytes straight to the wasm

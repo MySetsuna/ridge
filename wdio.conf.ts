@@ -24,7 +24,19 @@
 
 // @ts-nocheck — depends on optional dev deps (see prerequisites above)
 import { spawn, ChildProcess } from 'node:child_process';
+import { openSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+
+// Mirrors playwright.config.ts: a developer's HTTP_PROXY (Clash /
+// v2ray / corporate gateway) routed loopback through localhost:1080
+// and made every WebDriver session POST fail with the generic
+// "please make sure you have a WebDriver compatible server running"
+// error. Adding loopback to NO_PROXY fixes that without touching
+// the user's shell config. Idempotent — appends to any existing value.
+process.env.NO_PROXY = [process.env.NO_PROXY, 'localhost,127.0.0.1,::1']
+  .filter(Boolean)
+  .join(',');
 
 const DRIVER_PORT = 4444;
 let driverProc: ChildProcess | null = null;
@@ -60,18 +72,80 @@ export const config: WebdriverIO.Config = {
    *  Idempotent — re-running with a driver already on the port falls
    *  through to the connect attempt and surfaces a clearer error than
    *  the address-in-use one wdio would otherwise show. */
-  onPrepare() {
-    return new Promise<void>((resolve, reject) => {
-      driverProc = spawn('tauri-driver', [`--port`, `${DRIVER_PORT}`], {
-        stdio: 'inherit',
-        shell: true,
-      });
-      driverProc.on('error', reject);
-      // Driver needs ~1 s to bind the WebDriver port.
-      setTimeout(resolve, 1_500);
+  async onPrepare() {
+    // Absolute path to tauri-driver.exe — `spawn` without `shell:true`
+    // on Windows does NOT resolve PATH for bare executable names, so
+    // a literal "tauri-driver" silently fails the way we saw with
+    // ENOENT swallowed by the inherited stdio. Cargo install always
+    // lands the binary at %USERPROFILE%\.cargo\bin\tauri-driver.exe;
+    // override via TAURI_DRIVER_BIN env if a developer has it elsewhere.
+    const driverBin =
+      process.env.TAURI_DRIVER_BIN ||
+      path.join(
+        process.env.USERPROFILE || process.env.HOME || '',
+        '.cargo',
+        'bin',
+        process.platform === 'win32' ? 'tauri-driver.exe' : 'tauri-driver',
+      );
+    const logFile = path.join(os.tmpdir(), 'tauri-driver.log');
+    const out = openSync(logFile, 'a');
+    const err = openSync(logFile, 'a');
+    driverProc = spawn(driverBin, ['--port', String(DRIVER_PORT)], {
+      stdio: ['ignore', out, err],
+      shell: false,
+      windowsHide: true,
+      detached: true,
     });
+    // Detach so the driver outlives any accidental SIGTERM cascading
+    // from a worker fork's exit. onComplete still kills it explicitly.
+    driverProc.unref();
+    // eslint-disable-next-line no-console
+    console.log(`tauri-driver pid=${driverProc.pid}, log=${logFile}`);
+    driverProc.on('error', (e) => {
+      // eslint-disable-next-line no-console
+      console.error(`tauri-driver spawn error (${driverBin}):`, e);
+    });
+    driverProc.on('exit', (code) => {
+      if (code !== null && code !== 0) {
+        // eslint-disable-next-line no-console
+        console.error(`tauri-driver exited unexpectedly with code ${code}`);
+      }
+    });
+    // Poll /status until the driver reports msedgedriver is ready —
+    // a fixed setTimeout produced races where workers tried to POST
+    // /session before the underlying msedgedriver had spawned. 15 s
+    // ceiling is overkill on dev boxes (real wait is <1 s) but covers
+    // CI cold-start.
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${DRIVER_PORT}/status`);
+        if (res.ok) {
+          const body = (await res.json()) as { value?: { ready?: boolean } };
+          if (body?.value?.ready) return;
+        }
+      } catch {
+        /* not listening yet */
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    throw new Error('tauri-driver /status never returned ready=true');
   },
   onComplete() {
-    if (driverProc && !driverProc.killed) driverProc.kill();
+    if (driverProc && driverProc.pid && !driverProc.killed) {
+      // Best-effort. On Windows + detached the tree-kill is needed to
+      // also reap the child msedgedriver process — `taskkill /T` does
+      // both. Falls back to plain kill on non-Windows.
+      try {
+        if (process.platform === 'win32') {
+          spawn('taskkill', ['/PID', String(driverProc.pid), '/T', '/F'], {
+            shell: false,
+            stdio: 'ignore',
+          });
+        } else {
+          driverProc.kill();
+        }
+      } catch { /* already gone */ }
+    }
   },
 };

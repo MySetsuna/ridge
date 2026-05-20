@@ -17,26 +17,15 @@
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
+import { waitForAppReady, firstPaneId } from './helpers';
 
 describe('resize stays in sync (R3)', () => {
   before(async () => {
-    await browser.waitUntil(
-      async () =>
-        browser.execute(() => {
-          const el = document.getElementById('brand-loader');
-          if (!el) return true;
-          return getComputedStyle(el).display === 'none';
-        }),
-      { timeout: 6_000 },
-    );
+    await waitForAppReady();
   });
 
   it('mirror rows/cols match after a programmatic window resize', async () => {
-    const paneId = await browser.execute(() => {
-      const el = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
-      return el?.dataset.rgPaneId ?? null;
-    });
-    expect(paneId).toBeTruthy();
+    const paneId = await firstPaneId();
 
     const before = await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

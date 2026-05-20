@@ -12,6 +12,7 @@
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
+import { waitForAppReady, firstPaneId } from './helpers';
 
 async function switchTo(backend: 'wasm' | 'rust') {
   await browser.execute((b) => {
@@ -27,23 +28,11 @@ async function switchTo(backend: 'wasm' | 'rust') {
 
 describe('parserBackend live switch', () => {
   before(async () => {
-    await browser.waitUntil(
-      async () =>
-        browser.execute(() => {
-          const el = document.getElementById('brand-loader');
-          if (!el) return true;
-          return getComputedStyle(el).display === 'none';
-        }),
-      { timeout: 6_000 },
-    );
+    await waitForAppReady();
   });
 
   it('survives five wasm↔rust toggles without visible state corruption', async () => {
-    const paneId = await browser.execute(() => {
-      const el = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
-      return el?.dataset.rgPaneId ?? null;
-    });
-    expect(paneId).toBeTruthy();
+    const paneId = await firstPaneId();
 
     const sequence: Array<'wasm' | 'rust'> = ['wasm', 'rust', 'wasm', 'rust', 'wasm'];
     for (let i = 0; i < sequence.length; i++) {
