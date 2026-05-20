@@ -59,6 +59,10 @@ function quantizeCellSize(raw: number, dpr: number): number {
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 import { LinkSpanIndex } from '$lib/terminal/linkSpans';
+// §1.32 Wave F: PTY-prompt suffix snapshot — reads shell-input from
+// kernel cells instead of mirroring keystrokes. See module docstring.
+import { reconstructInputSnapshot } from '$lib/terminal/shellInputSnapshot';
+import type { InputBufferState } from '$lib/components/inputBufferTracker';
 // §1.32 (2026-05-20): `linkResolver` transitively imports `monaco-editor`
 // via `$lib/stores/fileEditor → $lib/utils/markdown`. Keeping it as a
 // static top-level import drags monaco into every consumer of `manager.ts`,
@@ -321,6 +325,18 @@ interface PaneEntry {
 	 *  of milliseconds. `null` when no bytes are deferred — the steady
 	 *  state for an idle pane. */
 	feedDeferred: Uint8Array | null;
+	/** §1.32 Wave F (2026-05-20): row/col where the user's current
+	 *  shell input started. Captured the first time the user types a
+	 *  printable / paste / Tab event after a fresh prompt, cleared on
+	 *  Enter (the shell submits and prints a new prompt next).
+	 *  `readShellInputSnapshot` reads the kernel cells from this
+	 *  point to `cursorRow / cursorCol` to reconstruct the actual
+	 *  shell-input string — bypassing the keystroke mirror entirely
+	 *  and so immune to Tab completion / $VAR expansion / Ctrl+R /
+	 *  vi-mode drift.
+	 *  `null` means "no input observed yet at the current prompt". */
+	inputStartRow: number | null;
+	inputStartCol: number | null;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -1420,6 +1436,8 @@ export class TerminalManager {
 			lastScrollTotal: -1,
 			scrollStateHandler: null,
 			feedDeferred: null,
+			inputStartRow: null,
+			inputStartCol: null,
 		};
 		entry.resizeObserver.observe(container);
 
@@ -2544,6 +2562,71 @@ export class TerminalManager {
 		} catch {
 			return true;
 		}
+	}
+
+	/** §1.32 Wave F (2026-05-20): mark the start of the user's current
+	 *  shell-input line by capturing the kernel cursor position. Called
+	 *  by `RidgePane` the first time the user types a printable / paste
+	 *  / Tab event after the previous line was submitted. Idempotent:
+	 *  subsequent calls while `inputStartRow` is already set are no-ops,
+	 *  so spamming this from every keystroke is safe. */
+	markInputStart(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		if (entry.inputStartRow != null) return;
+		entry.inputStartRow = entry.kernel.cursorRow();
+		entry.inputStartCol = entry.kernel.cursorCol();
+	}
+
+	/** §1.32 Wave F: clear the input-start marker. Called on Enter
+	 *  (line submitted; the shell will print a new prompt and the
+	 *  next typing will re-mark). Also safe to call defensively
+	 *  whenever the pane state is reset. */
+	clearInputStart(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		entry.inputStartRow = null;
+		entry.inputStartCol = null;
+	}
+
+	/** §1.32 Wave F: read the actual shell-input string from the
+	 *  kernel grid — the ground truth that the keystroke mirror can
+	 *  only approximate. Returns null when no input has been observed
+	 *  yet at the current prompt, when the cursor has moved to a row
+	 *  other than the input-start row (multi-row input / wrap not
+	 *  modelled), or when the cursor jumped behind the input start
+	 *  (prompt redrew, e.g. Ctrl+L clear).
+	 *
+	 *  Callers (notably the history-pick replay path) should fall back
+	 *  to the keystroke mirror when this returns null. */
+	readShellInputSnapshot(paneId: string): InputBufferState | null {
+		const entry = this.panes.get(paneId);
+		if (!entry) return null;
+		const startRow = entry.inputStartRow;
+		const startCol = entry.inputStartCol;
+		if (startRow == null || startCol == null) return null;
+
+		const k = entry.kernel as unknown as {
+			cursorRow: () => number;
+			cursorCol: () => number;
+			cols: () => number;
+			cellsAt: (row: number, col: number, len: number) => Array<{ ch: string; width: number }>;
+		};
+		const cursorRow = k.cursorRow();
+		const cursorCol = k.cursorCol();
+		// Multi-row input (long command that wrapped, or cursor moved
+		// to another row via PageUp etc.) — not handled. Caller falls
+		// back to keystroke mirror.
+		if (cursorRow !== startRow) return null;
+		// Cursor jumped behind input start — prompt was redrawn under
+		// us (Ctrl+L, screen clear). Snapshot is invalid.
+		if (cursorCol < startCol) return null;
+
+		const totalCols = k.cols();
+		const preCells = k.cellsAt(startRow, startCol, cursorCol - startCol);
+		const postCells = k.cellsAt(startRow, cursorCol, totalCols - cursorCol);
+		const snap = reconstructInputSnapshot(preCells, postCells);
+		return { text: snap.text, cursorCol: snap.cursorCol };
 	}
 
 	/** Schedule a single rAF that snapshots the kernel cursor as the new
