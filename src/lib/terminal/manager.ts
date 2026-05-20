@@ -33,6 +33,7 @@
 
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import { get } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
 import { settingsStore } from '../stores/settings';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
@@ -1473,6 +1474,7 @@ export class TerminalManager {
 			(window as unknown as {
 				__windE2E?: {
 					feedPty: (paneId: string, data: string) => void;
+					writePty: (paneId: string, data: string) => Promise<void>;
 					visibleText: (paneId: string) => string[];
 					rows: (paneId: string) => number;
 					cols: (paneId: string) => number;
@@ -1480,6 +1482,15 @@ export class TerminalManager {
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
+				// P3.14 perf harness (2026-05-20) — writePty drives bytes
+				// INTO the real PTY (same Tauri command the pane's key
+				// encoder uses), so shell output flows back through
+				// whichever parserBackend is active. Use this — not
+				// feedPty — when the test needs to exercise the actual
+				// Rust producer vs wasm consumer pipeline end-to-end.
+				// feedPty short-circuits to kernel.feed and is therefore
+				// useless for backend comparison.
+				writePty: (paneId, data) => invoke('write_to_pty', { paneId, data }),
 				visibleText: (paneId) => {
 					const e = this.panes.get(paneId);
 					if (!e) return [];
