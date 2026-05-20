@@ -10,18 +10,14 @@
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
+import { waitForAppReady, firstPaneId } from './helpers';
 
 describe('parserBackend = wasm', () => {
   before(async () => {
-    await browser.waitUntil(
-      async () =>
-        browser.execute(() => {
-          const el = document.getElementById('brand-loader');
-          if (!el) return true;
-          return getComputedStyle(el).display === 'none';
-        }),
-      { timeout: 6_000, timeoutMsg: 'splash never cleared' },
-    );
+    // Wait for the app to reach a usable state FIRST — `localStorage`
+    // is denied on `about:blank` (no origin), so the previous "flip
+    // first, wait second" ordering threw SecurityError immediately.
+    await waitForAppReady();
     // Flip to wasm via localStorage + reload — Settings.parserBackend
     // is persisted to `ridge-settings`. The svelte store reads it on
     // load; a reload picks up the new value before any pane attaches.
@@ -32,23 +28,11 @@ describe('parserBackend = wasm', () => {
       localStorage.setItem('ridge-settings', JSON.stringify(obj));
     });
     await browser.refresh();
-    await browser.waitUntil(
-      async () =>
-        browser.execute(() => {
-          const el = document.getElementById('brand-loader');
-          if (!el) return true;
-          return getComputedStyle(el).display === 'none';
-        }),
-      { timeout: 6_000 },
-    );
+    await waitForAppReady();
   });
 
   it('produces the same visible grid as rust mode for the same bytes', async () => {
-    const paneId = await browser.execute(() => {
-      const el = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
-      return el?.dataset.rgPaneId ?? null;
-    });
-    expect(paneId).toBeTruthy();
+    const paneId = await firstPaneId();
 
     await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
