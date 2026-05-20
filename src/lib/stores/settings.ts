@@ -2,6 +2,8 @@ import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { getTheme } from './themes';
 
+export type ParserBackend = 'wasm' | 'rust';
+
 export interface UserSettings {
   claudeExtensionEnabled: boolean;
   theme: string;
@@ -14,6 +16,15 @@ export interface UserSettings {
   defaultCwd: string;
   terminalPaddingPx: number;
   terminalScrollbackLines: number;
+  /// P3.7 (2026-05-20) — which VT parser runs PTY bytes:
+  /// 'rust': src-tauri/src/engine/parser.rs::PaneParser produces GridDelta
+  ///   frames; wasm consumer applies them via `kernel.applyDeltaFrame`.
+  ///   Main-thread CPU drops because the JS thread no longer runs vte.
+  /// 'wasm': legacy path — JS thread calls `kernel.feed(bytes)` and the
+  ///   wasm parser walks the state machine on the main thread.
+  /// Default: 'rust'. Switching takes effect next pane attach (manager.ts
+  ///   handles detach/reattach with a 200ms fade mask, see P3.9).
+  parserBackend: ParserBackend;
 }
 
 const DEFAULTS: UserSettings = {
@@ -28,6 +39,7 @@ const DEFAULTS: UserSettings = {
   defaultCwd: '',
   terminalPaddingPx: 6,
   terminalScrollbackLines: 2000,
+  parserBackend: 'rust',
 };
 
 const LS_KEY = 'ridge-settings';
@@ -98,6 +110,10 @@ function load(): UserSettings {
       obj.terminalScrollbackLines <= 10000
         ? Math.round(obj.terminalScrollbackLines)
         : DEFAULTS.terminalScrollbackLines,
+    parserBackend:
+      obj.parserBackend === 'wasm' || obj.parserBackend === 'rust'
+        ? obj.parserBackend
+        : DEFAULTS.parserBackend,
   };
 }
 

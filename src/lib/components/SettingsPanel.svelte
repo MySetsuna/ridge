@@ -320,6 +320,30 @@
             </div>
 
             <div>
+              <span class="block text-[12px] text-[var(--rg-fg)] mb-1">终端解析后端</span>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
+                <b>Rust</b>（推荐）：VT 解析跑在 Rust tokio 任务里，前端只 apply GridDelta，主线程零阻塞、大流量 TUI 不卡顿。<br/>
+                <b>WASM</b>：传统路径，JS 主线程跑 wasm 解析器，作为 fallback。切换在下次 pane attach 后生效。
+              </div>
+              <div class="inline-flex rounded-md border border-[var(--rg-border)] overflow-hidden" role="radiogroup" aria-label="parserBackend">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$settingsStore.parserBackend === 'rust'}
+                  class="px-3 py-1 text-[12px] {$settingsStore.parserBackend === 'rust' ? 'bg-[var(--rg-accent)] text-[var(--rg-bg)]' : 'bg-transparent text-[var(--rg-fg)] hover:bg-[var(--rg-hover)]'}"
+                  onclick={() => setSetting('parserBackend', 'rust')}
+                >Rust</button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$settingsStore.parserBackend === 'wasm'}
+                  class="px-3 py-1 text-[12px] border-l border-[var(--rg-border)] {$settingsStore.parserBackend === 'wasm' ? 'bg-[var(--rg-accent)] text-[var(--rg-bg)]' : 'bg-transparent text-[var(--rg-fg)] hover:bg-[var(--rg-hover)]'}"
+                  onclick={() => setSetting('parserBackend', 'wasm')}
+                >WASM</button>
+              </div>
+            </div>
+
+            <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-font">编辑器字号</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图共享。8 – 32 px。</div>
               <div class="flex items-center gap-3">
