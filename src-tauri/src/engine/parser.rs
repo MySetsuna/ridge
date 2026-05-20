@@ -331,13 +331,40 @@ impl PaneParser {
                 if snap_row.len() != cols {
                     snap_row.resize(cols, DeltaCell::blank());
                 }
-                if *snap_row != now_row {
+                // P3.13 — col-range diff. Find the smallest contiguous
+                // span that contains every changed cell, and emit only
+                // that slice. For the common "one new char at the
+                // cursor" case the wire payload drops from `cols`
+                // DeltaCells (~80 × 17 B = 1.3 KB raw → ~200 B postcard)
+                // to a single DeltaCell (~17 B raw → ~10 B postcard).
+                // Identical rows skip the emit entirely (first_diff is
+                // None). Bookended changes still emit a single span
+                // covering both — that's a feature, not a bug: a
+                // tighter "two-span" diff would double the per-row
+                // encoding overhead with diminishing returns.
+                let mut first_diff: Option<usize> = None;
+                let mut last_diff: usize = 0;
+                for c in 0..cols {
+                    if snap_row[c] != now_row[c] {
+                        if first_diff.is_none() {
+                            first_diff = Some(c);
+                        }
+                        last_diff = c;
+                    }
+                }
+                if let Some(first) = first_diff {
+                    let slice = now_row[first..=last_diff].to_vec();
                     deltas.push(GridDelta::Cells {
                         row: r as u16,
-                        col: 0,
-                        cells: now_row.clone(),
+                        col: first as u16,
+                        cells: slice,
                     });
-                    *snap_row = now_row;
+                    // Write the new state into the snapshot for the
+                    // changed range only — unchanged cells already
+                    // match.
+                    for c in first..=last_diff {
+                        snap_row[c] = now_row[c].clone();
+                    }
                 }
             }
         }
@@ -480,6 +507,60 @@ mod tests {
             )
         });
         assert!(advanced, "cursor should have advanced to col 1");
+    }
+
+    #[test]
+    fn single_char_change_emits_one_cell_range() {
+        // P3.13 — col-range diff. Print one char, then overwrite one
+        // mid-row cell with a different char. The resulting Cells
+        // delta must cover ONLY that cell (col + 1-element cells),
+        // not the whole row.
+        let mut p = make_parser(2, 10);
+        let _ = p.feed_and_diff(b"hello");
+        // Cursor is now at col 5. Move it back to col 2 and overwrite
+        // the 'l' with 'X'. The diff should target col=2, len=1.
+        let frame = p.feed_and_diff(b"\x1b[1;3HX");
+        let cell_deltas: Vec<&GridDelta> = frame
+            .deltas
+            .iter()
+            .filter(|d| matches!(d, GridDelta::Cells { .. }))
+            .collect();
+        assert_eq!(cell_deltas.len(), 1, "exactly one Cells delta expected; got {:?}", frame.deltas);
+        match cell_deltas[0] {
+            GridDelta::Cells { row, col, cells } => {
+                assert_eq!(*row, 0);
+                assert_eq!(*col, 2, "diff must start at the column of the changed cell");
+                assert_eq!(cells.len(), 1, "diff must contain ONE cell, not the whole row");
+                assert_eq!(cells[0].ch, 'X');
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mid_line_change_emits_narrow_range_not_whole_row() {
+        // Bookended change: write 'A' at col 2 and 'B' at col 5 on
+        // an otherwise unchanged row. The single-range diff must
+        // span col 2..=5 (4 cells), not the whole 10-cell row.
+        let mut p = make_parser(2, 10);
+        let _ = p.feed_and_diff(b"          "); // 10 spaces, prime snapshot
+        // Move to (1,3) write 'A', move to (1,6) write 'B'.
+        let frame = p.feed_and_diff(b"\x1b[1;3HA\x1b[1;6HB");
+        let cell_deltas: Vec<&GridDelta> = frame
+            .deltas
+            .iter()
+            .filter(|d| matches!(d, GridDelta::Cells { .. }))
+            .collect();
+        assert_eq!(cell_deltas.len(), 1, "single contiguous span expected; got {:?}", frame.deltas);
+        match cell_deltas[0] {
+            GridDelta::Cells { row: _, col, cells } => {
+                assert_eq!(*col, 2, "span starts at first changed col");
+                assert_eq!(cells.len(), 4, "span ends at last changed col (3+1+1+1 = 4)");
+                assert_eq!(cells[0].ch, 'A');
+                assert_eq!(cells[3].ch, 'B');
+            }
+            _ => unreachable!(),
+        }
     }
 
     #[test]
