@@ -7,7 +7,9 @@ mod teammate;
 mod types;
 mod utils;
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -166,6 +168,76 @@ pub fn run() {
                             pane_id,
                             data,
                         }) => {
+                            // P3.8 — per-pane delta_mode gate. When the front-end
+                            // has opted into the rust parser path (via the
+                            // `set_pane_delta_mode` command, P3.9), bypass the
+                            // text coalescer entirely: feed bytes to PaneParser,
+                            // postcard-encode the resulting DeltaFrame, emit
+                            // `pty-delta-*` to the frontend, and pump DSR/DA
+                            // query responses back into the PTY writer.
+                            //
+                            // The flag, parser handle, and writer handle are all
+                            // pulled under a single `workspaces` read-lock, then
+                            // the lock drops before the per-chunk work runs. The
+                            // read-lock is shared with other map readers (resize,
+                            // scrollback, etc.) so PTY throughput isn't gated on
+                            // any one path holding a write-lock.
+                            let mode_handles = {
+                                let st = handle.state::<AppState>();
+                                let map = st.workspaces.read();
+                                map.get(&workspace_id)
+                                    .and_then(|ws| ws.terminals.get(&pane_id))
+                                    .map(|h| {
+                                        (
+                                            h.delta_mode.load(Ordering::Acquire),
+                                            h.parser.clone(),
+                                            h.writer.clone(),
+                                        )
+                                    })
+                            };
+                            if let Some((true, parser, writer)) = mode_handles {
+                                let frame = {
+                                    let mut p = parser.lock();
+                                    p.feed_and_diff(data.as_bytes())
+                                };
+                                // Pump DSR/DA replies back into the PTY so
+                                // PSReadLine + ConPTY can anchor the prompt
+                                // after child process exits. Mirrors what the
+                                // wasm `take_pending_response` path does on the
+                                // front-end side of the wasm bridge.
+                                let response = {
+                                    let mut p = parser.lock();
+                                    p.take_pending_response()
+                                };
+                                if !response.is_empty() {
+                                    let mut w = writer.lock();
+                                    let _ = w.write_all(&response);
+                                    let _ = w.flush();
+                                }
+                                if !frame.deltas.is_empty() {
+                                    match ridge_term::term::delta::encode_frame(&frame) {
+                                        Ok(bytes) => {
+                                            let label = pane_id.to_string();
+                                            let _ = handle.emit(
+                                                &format!("pty-delta-{workspace_id}-{label}"),
+                                                bytes,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                target: "ridge::pty_delta",
+                                                error = %e,
+                                                ws = %workspace_id,
+                                                pane = %pane_id,
+                                                "delta encode failed; skipping frame",
+                                            );
+                                        }
+                                    }
+                                }
+                                // Bypass the coalescer entirely — delta mode
+                                // owns the frontend's view of this pane.
+                                continue;
+                            }
                             let entry = pending_output
                                 .entry((workspace_id, pane_id))
                                 .or_insert_with(String::new);
