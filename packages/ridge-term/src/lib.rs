@@ -140,6 +140,36 @@ impl JsTerminal {
             .collect()
     }
 
+    /// P3.6 (2026-05-20) — apply one postcard-encoded `DeltaFrame` (produced
+    /// by the Rust-side `engine::parser::PaneParser`) to the mirror grid.
+    ///
+    /// Counterpart to `feed()` for the `Settings.parserBackend = 'rust'`
+    /// path: PTY bytes are parsed once by the native PaneParser, the
+    /// resulting frame is postcard-encoded and emitted as a Tauri event,
+    /// and the wasm consumer applies the diff here instead of running its
+    /// own vte parse on the JS main thread.
+    ///
+    /// Returns `Err(JsValue)` with a human-readable string on decode
+    /// failure OR protocol-version mismatch — caller is expected to log
+    /// and trigger a `force_full_reframe` self-heal (manager.ts P3.9
+    /// wiring). Selection / search anchors are cleared on every applied
+    /// frame because the mirror's grid mutates without going through
+    /// `feed()` (which has its own eviction-counter-based clear).
+    #[wasm_bindgen(js_name = applyDeltaFrame)]
+    pub fn apply_delta_frame(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        let frame = crate::term::delta::decode_frame(bytes)
+            .map_err(|e| JsValue::from_str(&format!("delta decode: {e}")))?;
+        self.inner
+            .apply_frame(&frame)
+            .map_err(|v| JsValue::from_str(&format!("protocol version {v} not supported")))?;
+        // Mirror mutated outside the feed() path's eviction-counter
+        // guard. Selection / search anchors can't survive an arbitrary
+        // grid mutation, so drop them; user re-issues the query.
+        self.selection.clear();
+        self.search.clear();
+        Ok(())
+    }
+
     pub fn resize(&mut self, rows: usize, cols: usize) {
         self.inner.resize(rows.max(1), cols.max(1));
         self.selection.clear();
