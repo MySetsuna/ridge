@@ -113,13 +113,38 @@ $effect(() => {
 // sync with the real shell line for all common operations
 // (Ctrl+U / Ctrl+W / Ctrl+K kills, paste, printable chars, backspace).
 function pasteIntoPane(text: string): void {
+	// §1.32 Wave F: paste is "input started" too — mark before writing
+	// so the snapshot has a valid baseline. markInputStart is idempotent.
+	manager.markInputStart(paneId);
 	manager.paste(paneId, text);
 	currentInputBuffer = updateInputBuffer(currentInputBuffer, { type: 'paste', text });
 }
 
 function dispatchBufferEvent(e: KeyboardEvent): void {
 	const ev = deriveBufferEvent(e);
-	if (ev) currentInputBuffer = updateInputBuffer(currentInputBuffer, ev);
+	if (!ev) return;
+	// §1.32 Wave F: keep the keystroke mirror updated for the popup's
+	// live filter, AND drive the snapshot's input-start lifecycle so
+	// `readShellInputSnapshot` can read the actual shell line at
+	// history-pick time.
+	currentInputBuffer = updateInputBuffer(currentInputBuffer, ev);
+	switch (ev.type) {
+		case 'char':
+		case 'paste':
+		case 'tab':
+			// First content-producing event after a fresh prompt:
+			// remember WHERE on the grid the input begins.
+			manager.markInputStart(paneId);
+			break;
+		case 'clear':
+		case 'killLine':
+			// Enter / Ctrl+U: shell line ends or fully clears; the
+			// next input is a fresh start.
+			manager.clearInputStart(paneId);
+			break;
+		// Other events (backspace / cursor moves / killWord / killToEol)
+		// don't change the input's start position — leave the marker.
+	}
 }
 // Search state
 let termSearchOpen = $state(false);
@@ -1297,15 +1322,13 @@ function onContainerMouseDown(e: MouseEvent) {
         // 加入前端历史库，供后续弹窗使用
         terminalHistoryStore.add(cmd);
         // 清除 shell 中已键入的筛选文本，然后用选中命令替换
-        // §1.32 Wave D: cursor-aware replay. computeReplaySequence
-        // returns the bytes to send before writing the picked command:
-        //   - empty buffer       → ""
-        //   - cursor at end      → "\x08" × len  (universal, works in cmd.exe)
-        //   - cursor mid-line    → "\x05" + "\x08" × len  (Ctrl+E + backspaces;
-        //                            readline shells only — cmd.exe falls back
-        //                            to leaving trailing garbage, still less
-        //                            wrong than overshoot).
-        const replay = computeReplaySequence(currentInputBuffer);
+        // §1.32 Wave F: prefer the PTY-derived snapshot for the replay
+        // length so completion echoes / $VAR expansion / Ctrl+R redraws
+        // don't leave garbage on the line. Fall back to the keystroke
+        // mirror if the snapshot is unavailable (no input observed
+        // yet, multi-row wrap, prompt redrew underneath).
+        const snapshot = manager.readShellInputSnapshot(paneId);
+        const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
         if (replay) manager.write(paneId, replay);
         // 写入选中命令 + 回车执行
         manager.write(paneId, cmd + '\r');

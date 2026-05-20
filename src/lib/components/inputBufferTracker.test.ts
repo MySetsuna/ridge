@@ -567,21 +567,11 @@ describe('computeReplaySequence — clearing the shell line before history pick 
 	});
 });
 
-/**
- * `it.todo` markers — bugs deferred to Wave F.
- *
- * Wave E (Tab completion sync) landed as the `dirty` flag + `\x05\x15`
- * replay sequence: rather than tracking what completion text the shell
- * inserted (which would require parsing PTY output), we accept the
- * mirror is dirty after Tab and use a kill-line shortcut on replay.
- * That handles every shell completion scenario uniformly.
- *
- * Wave F is the more ambitious refactor — making the buffer track the
- * actual shell line via a PTY-prompt-suffix snapshot rather than via
- * keystroke event mirroring. That replaces the dirty flag with real
- * source-of-truth and removes a whole class of "mirror drift" risk.
- */
-describe('inputBufferTracker — deferred behaviours', () => {
-	it.todo('cross-checks computed replay against kernel cursor column to detect mirror drift (Wave F — design TODO)');
-	it.todo('snapshots PTY-derived shell prompt suffix as a buffer source-of-truth (Wave F — design TODO)');
-});
+// §1.32 (2026-05-20): Wave F's 2 `it.todo` markers that used to live
+// here have been promoted to real tests in
+// `src/lib/terminal/shellInputSnapshot.test.ts` (the PTY-prompt-suffix
+// snapshot is the source-of-truth that subsumes both "cross-check
+// against kernel cursor" and "snapshot replaces mirror"). The
+// keystroke mirror in this file remains as a fast-path / fallback
+// for the popup's live-filter query — see RidgePane.svelte's
+// onSelect handler for the snapshot-first / mirror-fallback wiring.
