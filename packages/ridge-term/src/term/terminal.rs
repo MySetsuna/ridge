@@ -326,11 +326,17 @@ impl Terminal {
                     let _ = self.grid.scrollback.push(row);
                 }
             }
-            GridDelta::ModeChange { .. } => {
-                // Still accepted-but-ignored in v1. P3.12 fills it in.
-                // The arm stays present so the postcard codec doesn't
-                // reject the bytes when an older mirror sees a newer
-                // producer's frame.
+            GridDelta::ModeChange { mode, on } => {
+                // P3.12 — symmetric counterpart to PaneParser's
+                // `Modes::diff` emission. The mode codes are the same
+                // numeric ids an application would use to flip the
+                // mode via `CSI ? <n> h/l`, so the apply step is a
+                // direct lookup. Unknown codes silently ignored
+                // (forward compat — a newer producer ships a mode
+                // an older mirror doesn't recognise). Cursor mode
+                // bits are NOT routed here because GridDelta::Cursor
+                // already carries them.
+                self.modes.apply_mode_change(*mode, *on);
             }
         }
     }

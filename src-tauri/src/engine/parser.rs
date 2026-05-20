@@ -50,7 +50,7 @@
 // #[allow] annotations at their definition site.
 
 use ridge_term::term::delta::{CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta};
-use ridge_term::term::modes::CursorShape as KernelCursorShape;
+use ridge_term::term::modes::{CursorShape as KernelCursorShape, Modes};
 use ridge_term::term::terminal::{KernelEvent, Terminal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +86,12 @@ pub struct PaneParser {
     /// "scrollback grew by N" from "scrollback grew but K oldest rows
     /// got evicted" (capacity rollover).
     last_scrollback_evictions: u64,
+    /// P3.12 — `Terminal::modes()` snapshot from the previous diff.
+    /// `None` only before the first frame; once set, `Modes::diff` runs
+    /// against it on every frame and emits one `GridDelta::ModeChange`
+    /// per flipped field. Excludes cursor visibility / blink / shape
+    /// because those flow through `GridDelta::Cursor` already.
+    last_modes: Option<Modes>,
     /// Monotonic per-pane sequence; bumped on every emitted frame.
     /// Frontend logs a warning on gaps. Resets to 0 on `new`.
     pane_seq: u64,
@@ -104,6 +110,7 @@ impl PaneParser {
             is_alt: None,
             last_scrollback_len: 0,
             last_scrollback_evictions: 0,
+            last_modes: None,
             pane_seq: 0,
         }
     }
@@ -168,6 +175,12 @@ impl PaneParser {
         // now on emits ScrollbackAppend.
         self.last_scrollback_len = self.terminal.scrollback_len();
         self.last_scrollback_evictions = self.terminal.scrollback_eviction_count();
+        // P3.12 — drop the mode snapshot so the next frame re-emits
+        // every non-default mode. mirror's wasm Terminal already
+        // tracks them from the wasm-mode session, so the resulting
+        // ModeChange deltas are idempotent (rewriting the same value);
+        // for a brand-new mirror they bootstrap from default → current.
+        self.last_modes = None;
     }
 
     /// Resize the underlying grid and re-allocate the snapshot. Returns
@@ -226,6 +239,12 @@ impl PaneParser {
             self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
             self.cursor = None;
             self.is_alt = None;
+            // P3.12 — the parser's RIS handler set modes back to default;
+            // the mirror's `apply_delta(Reset)` does the same. Drop the
+            // mode snapshot so the next diff doesn't think a real flip
+            // happened (kernel.modes went from "current" → "default" in
+            // ONE step; last_modes carried the pre-RIS value).
+            self.last_modes = Some(Modes::default());
         }
 
         // 1. Screen-switch (alt ↔ primary) — emit FIRST because the
@@ -322,6 +341,17 @@ impl PaneParser {
                 }
             }
         }
+
+        // 2b. Mode diff. Compare current `Modes` against the snapshot
+        //     from the last frame and emit one ModeChange per flipped
+        //     field. Cursor visibility / blink / shape are excluded
+        //     here — the `Cursor` delta below carries those.
+        let modes_now = *self.terminal.modes();
+        let modes_prev = self.last_modes.unwrap_or_else(Modes::default);
+        for (code, on) in modes_now.diff(&modes_prev) {
+            deltas.push(GridDelta::ModeChange { mode: code, on });
+        }
+        self.last_modes = Some(modes_now);
 
         // 3. Cursor diff. Visibility / blink / shape live on `Modes`;
         //    position lives on `Grid::cursor()`. Composite into one
@@ -518,6 +548,51 @@ mod tests {
             "expected Cursor(visible=false) on DECRST 25; got {:?}",
             hidden.deltas
         );
+    }
+
+    #[test]
+    fn bracketed_paste_toggle_emits_modechange() {
+        // `CSI ? 2004 h` enables bracketed paste; the producer must
+        // emit a ModeChange so the mirror's Modes flags follow.
+        let mut p = make_parser(2, 5);
+        let _ = p.feed_and_diff(b"");
+        // After first feed bracketed_paste was OFF (default).
+        let frame = p.feed_and_diff(b"\x1b[?2004h");
+        let saw_paste_on = frame
+            .deltas
+            .iter()
+            .any(|d| matches!(d, GridDelta::ModeChange { mode: 2004, on: true }));
+        assert!(
+            saw_paste_on,
+            "expected ModeChange(2004, on=true) on ?2004h; got {:?}",
+            frame.deltas,
+        );
+        let off_frame = p.feed_and_diff(b"\x1b[?2004l");
+        assert!(
+            off_frame
+                .deltas
+                .iter()
+                .any(|d| matches!(d, GridDelta::ModeChange { mode: 2004, on: false })),
+            "expected ModeChange(2004, on=false) on ?2004l; got {:?}",
+            off_frame.deltas,
+        );
+    }
+
+    #[test]
+    fn mouse_mode_toggle_round_trip_through_apply_delta() {
+        // Producer emits ModeChange for mouse modes; running the same
+        // delta through a mirror Terminal must drive its Modes flags
+        // to the same value.
+        use ridge_term::term::terminal::Terminal;
+        let mut producer = make_parser(2, 5);
+        let mut mirror = Terminal::new(2, 5, 100);
+        let _ = producer.feed_and_diff(b"");
+        let frame = producer.feed_and_diff(b"\x1b[?1006h\x1b[?1000h"); // SGR + normal mouse
+        for d in &frame.deltas {
+            mirror.apply_delta(d);
+        }
+        assert!(mirror.modes().mouse_sgr, "mirror must have mouse_sgr=true");
+        assert!(mirror.modes().mouse_normal, "mirror must have mouse_normal=true");
     }
 
     #[test]
