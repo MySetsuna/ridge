@@ -184,6 +184,22 @@ impl PaneParser {
     fn diff_into_frame(&mut self) -> DeltaFrame {
         let mut deltas: Vec<GridDelta> = Vec::new();
 
+        // P3.10 — RIS observed since the last frame. Reset the mirror
+        // first, then drop our diff baseline so the rest of this method
+        // emits a full reframe (ScreenSwitch + Cursor + every dirty
+        // row). The mirror's `apply_delta(Reset)` is symmetric — it
+        // applies the same reset the kernel just applied inline. We
+        // preserve scrollback on both sides (matches the kernel's RIS
+        // semantics: Alacritty-style "keep history through stray RIS").
+        if self.terminal.take_pending_reset() {
+            deltas.push(GridDelta::Reset);
+            let cols = self.terminal.cols();
+            let rows = self.terminal.rows();
+            self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+            self.cursor = None;
+            self.is_alt = None;
+        }
+
         // 1. Screen-switch (alt ↔ primary) — emit FIRST because the
         //    cells deltas that follow describe the now-active screen.
         let alt_now = self.terminal.grid().is_alt_screen();
@@ -460,6 +476,45 @@ mod tests {
             ),
             "expected first delta to be Resize{{rows:3,cols:6}}; got {:?}",
             first
+        );
+    }
+
+    #[test]
+    fn ris_emits_reset_then_reframes() {
+        // RIS (`ESC c`) at the kernel level wipes everything; the
+        // producer must flag it so the mirror gets a `GridDelta::Reset`
+        // ahead of the post-reset Cells deltas. After the reset the
+        // producer's snapshot is blank, so the next visible content
+        // emits a full reframe rather than a no-op diff.
+        let mut p = make_parser(3, 5);
+        // Prime the snapshot with some content so the next reset has
+        // something to "diff away from".
+        let _ = p.feed_and_diff(b"AB");
+        let frame = p.feed_and_diff(b"\x1bc");
+        // Reset must be the first delta — the mirror needs to apply
+        // it before any subsequent Cells that describe the now-blank
+        // post-reset grid.
+        assert!(
+            matches!(frame.deltas.first(), Some(GridDelta::Reset)),
+            "expected Reset to lead post-RIS frame; got {:?}",
+            frame.deltas,
+        );
+        // The reset is the BEGINNING of a full reframe — ScreenSwitch
+        // and Cursor should follow because the snapshot got cleared.
+        assert!(
+            frame
+                .deltas
+                .iter()
+                .any(|d| matches!(d, GridDelta::ScreenSwitch { is_alt: false })),
+            "post-Reset frame must include ScreenSwitch reframe; got {:?}",
+            frame.deltas,
+        );
+        // A second feed with no input produces no further Reset.
+        let next = p.feed_and_diff(b"");
+        assert!(
+            !next.deltas.iter().any(|d| matches!(d, GridDelta::Reset)),
+            "Reset must not repeat after take_pending_reset drained it; got {:?}",
+            next.deltas,
         );
     }
 

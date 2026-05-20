@@ -66,6 +66,13 @@ pub struct Performer<'a> {
     /// cluster boundary is reached, then emits each completed cluster as
     /// a single unit via `emit_grapheme`.
     pub grapheme_buf: &'a mut String,
+    /// P3.10 — set when `esc_dispatch` handles RIS (`ESC c`). Drained
+    /// by `Terminal::take_pending_reset`; `PaneParser` peeks it before
+    /// diffing the next frame and prefixes a `GridDelta::Reset`. The
+    /// flag is purely an out-of-band signal for the delta producer;
+    /// RIS still applies its full reset inline so the wasm path
+    /// remains correct without consulting the flag.
+    pub pending_reset: &'a mut bool,
 }
 
 impl<'a> Performer<'a> {
@@ -662,6 +669,13 @@ impl<'a> Perform for Performer<'a> {
                 *self.grid.saved_cursor_mut() = None; // discard any DECSC slot
                 self.grid.cursor_to(0, 0);
                 self.grid.erase_in_display(EraseMode::All);
+                // P3.10 — let `PaneParser` emit a `GridDelta::Reset`
+                // ahead of the post-reset Cells deltas so the mirror
+                // can apply the matching reset on its side before
+                // ingesting the new grid. The wasm Terminal already
+                // applied the reset above — this flag is only for the
+                // delta pipeline; it self-clears on `take_pending_reset`.
+                *self.pending_reset = true;
             }
             _ => {}
         }
