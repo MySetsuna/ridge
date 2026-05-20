@@ -98,6 +98,14 @@ pub struct Terminal {
     /// finish it in the next chunk ("👩"). Flushed (a) on every
     /// non-print Perform event and (b) at the end of `feed()`.
     grapheme_buf: String,
+    /// P3.10 (2026-05-20) — RIS observed since the last drain. Set by
+    /// the parser's `esc_dispatch` arm for `ESC c`; drained via
+    /// `take_pending_reset` so the producer side (`PaneParser`) can
+    /// emit `GridDelta::Reset` ahead of the next frame's diff. Wasm
+    /// callers can ignore this — the RIS handler already applies the
+    /// full reset inline during `feed`, so the wasm Terminal stays
+    /// consistent without consulting the flag.
+    pending_reset: bool,
 }
 
 impl Terminal {
@@ -114,7 +122,17 @@ impl Terminal {
             last_printed: None,
             current_link: None,
             grapheme_buf: String::new(),
+            pending_reset: false,
         }
+    }
+
+    /// P3.10 — drain the RIS-observed flag. Used by `PaneParser` to
+    /// decide whether the next frame should be prefixed with a
+    /// `GridDelta::Reset` so the mirror can clear its state before
+    /// applying the post-reset Cells deltas. Returns `false` when
+    /// no RIS has happened since the last drain.
+    pub fn take_pending_reset(&mut self) -> bool {
+        std::mem::replace(&mut self.pending_reset, false)
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -140,6 +158,7 @@ impl Terminal {
             last_printed: &mut self.last_printed,
             current_link: &mut self.current_link,
             grapheme_buf: &mut self.grapheme_buf,
+            pending_reset: &mut self.pending_reset,
         };
         for &b in bytes {
             self.parser.advance(&mut perf, b);
@@ -255,13 +274,35 @@ impl Terminal {
             GridDelta::Bell => {
                 self.pending_events.push(KernelEvent::Bell);
             }
-            GridDelta::ScrollbackAppend { .. }
-            | GridDelta::ModeChange { .. }
-            | GridDelta::Reset => {
-                // v1 producer doesn't emit these; consumer accepts the
-                // wire variant for protocol stability but takes no
-                // action. When the producer learns to emit them the
-                // arms here will fill in.
+            GridDelta::Reset => {
+                // P3.10 — symmetric counterpart to the parser's RIS
+                // handler. Matches `esc_dispatch b'c'` in `parser.rs`:
+                // restore all app-controllable state to power-on
+                // defaults, clear the visible primary grid, but
+                // preserve scrollback (Alacritty-style — see RIS
+                // comment in parser.rs:644). The producer always emits
+                // Reset BEFORE the post-reset Cells deltas, so by the
+                // time those land the mirror is ready to ingest them.
+                use super::modes::Modes;
+                self.modes = Modes::default();
+                self.current_attrs = Attrs::DEFAULT;
+                self.grid.set_pen(self.current_attrs);
+                self.current_link = None;
+                self.last_printed = None;
+                self.grid.leave_alt_screen();
+                self.grid.set_scroll_region(None, None);
+                *self.grid.saved_cursor_mut() = None;
+                self.grid.cursor_to(0, 0);
+                self.grid.erase_in_display(super::grid::EraseMode::All);
+                self.scroll_offset = 0;
+                self.user_scroll_locked = false;
+                self.pending_reset = false;
+            }
+            GridDelta::ScrollbackAppend { .. } | GridDelta::ModeChange { .. } => {
+                // Still accepted-but-ignored in v1. P3.11 (ScrollbackAppend)
+                // and P3.12 (ModeChange) fill these in. Keeping the arms
+                // present means the postcard codec doesn't reject the
+                // bytes when an older mirror sees a newer producer's frame.
             }
         }
     }
@@ -563,6 +604,51 @@ impl Terminal {
 mod tests {
     use super::*;
     use crate::term::attrs::{Color, Flags};
+
+    #[test]
+    fn apply_delta_reset_clears_visible_grid_and_modes_but_keeps_scrollback() {
+        // P3.10 — `Terminal::apply_delta(Reset)` must mirror the
+        // parser's RIS handler exactly: wipe visible grid + reset
+        // modes + reset cursor + close any hyperlink span, but
+        // PRESERVE scrollback (Alacritty-style retention).
+        let mut t = Terminal::new(2, 5, 100);
+        // Push enough content to land some rows in scrollback.
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        // Tweak modes so we can confirm they reset (cursor blink off
+        // is a non-default state).
+        t.feed(b"\x1b[?25l"); // cursor invisible
+        t.feed(b"\x1b[?2004h"); // bracketed paste on
+        assert!(!t.modes().cursor_visible);
+        assert!(t.modes().bracketed_paste);
+        let sb_before = t.scrollback_len();
+        assert!(sb_before > 0, "expected non-zero scrollback");
+
+        // Apply Reset directly (simulates a producer-emitted frame).
+        t.apply_delta(&crate::term::delta::GridDelta::Reset);
+
+        // Modes back to default.
+        assert!(t.modes().cursor_visible, "cursor visibility should be reset to default");
+        assert!(!t.modes().bracketed_paste, "bracketed paste should be reset to default");
+        // Cursor home.
+        assert_eq!(t.grid().cursor().row, 0);
+        assert_eq!(t.grid().cursor().col, 0);
+        // Visible primary grid wiped — every cell on every row blank.
+        for r in 0..2 {
+            let row = t.grid().row(r).unwrap();
+            for cell in &row.cells {
+                assert!(cell.is_blank(), "row {r} cell must be blank after Reset");
+            }
+        }
+        // Scrollback preserved.
+        assert_eq!(
+            t.scrollback_len(),
+            sb_before,
+            "Reset must NOT touch scrollback (Alacritty-style retention)",
+        );
+        // Viewport snaps to live grid (Reset wipes any user-scroll lock).
+        assert_eq!(t.scroll_offset(), 0);
+        assert!(!t.is_user_scroll_locked());
+    }
 
     #[test]
     fn plain_text_lands_on_first_row() {
