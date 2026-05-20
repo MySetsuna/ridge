@@ -124,6 +124,70 @@ impl Default for Modes {
     }
 }
 
+impl Modes {
+    /// P3.12 (2026-05-20) — diff against `prev` and return a list of
+    /// `(mode_code, on)` pairs covering every field that changed. The
+    /// codes are the DEC-private numbers an application would write
+    /// to flip the mode (e.g. `?1049` is reported as `1049`, mode 4
+    /// IRM as `4`). Cursor visibility / blink / shape are NOT in the
+    /// output — those flow through `GridDelta::Cursor` and would
+    /// double up here.
+    ///
+    /// Synthetic code `1066` is used for `app_keypad` (xterm's
+    /// "alternate keypad" — DECPAM / DECPNM are ESC = / ESC > escape
+    /// sequences, no DEC private number, so we pick 1066 by analogy
+    /// with the way some xterm forks identify the bit).
+    pub fn diff(&self, prev: &Self) -> Vec<(u32, bool)> {
+        let mut out: Vec<(u32, bool)> = Vec::new();
+        if self.autowrap != prev.autowrap { out.push((7, self.autowrap)); }
+        if self.origin != prev.origin { out.push((6, self.origin)); }
+        if self.insert != prev.insert { out.push((4, self.insert)); }
+        if self.linefeed_newline != prev.linefeed_newline { out.push((20, self.linefeed_newline)); }
+        if self.mouse_x10 != prev.mouse_x10 { out.push((9, self.mouse_x10)); }
+        if self.mouse_normal != prev.mouse_normal { out.push((1000, self.mouse_normal)); }
+        if self.mouse_button_event != prev.mouse_button_event { out.push((1002, self.mouse_button_event)); }
+        if self.mouse_any_event != prev.mouse_any_event { out.push((1003, self.mouse_any_event)); }
+        if self.mouse_sgr != prev.mouse_sgr { out.push((1006, self.mouse_sgr)); }
+        if self.mouse_focus != prev.mouse_focus { out.push((1004, self.mouse_focus)); }
+        if self.bracketed_paste != prev.bracketed_paste { out.push((2004, self.bracketed_paste)); }
+        if self.app_cursor_keys != prev.app_cursor_keys { out.push((1, self.app_cursor_keys)); }
+        if self.app_keypad != prev.app_keypad { out.push((1066, self.app_keypad)); }
+        if self.sync_output != prev.sync_output { out.push((2026, self.sync_output)); }
+        if self.unicode_core_2027 != prev.unicode_core_2027 { out.push((2027, self.unicode_core_2027)); }
+        out
+    }
+
+    /// P3.12 — apply a single mode change. Routes the numeric code
+    /// (from `GridDelta::ModeChange`) to the matching `Modes` field.
+    /// Unknown codes are silently ignored so a newer producer can ship
+    /// modes an older mirror doesn't yet recognise without breaking
+    /// the rest of the frame.
+    ///
+    /// Cursor visibility / blink / shape are intentionally NOT routed
+    /// here — those changes flow through `GridDelta::Cursor` and
+    /// applying them via two paths would risk drift.
+    pub fn apply_mode_change(&mut self, code: u32, on: bool) {
+        match code {
+            1 => self.app_cursor_keys = on,
+            4 => self.insert = on,
+            6 => self.origin = on,
+            7 => self.autowrap = on,
+            9 => self.mouse_x10 = on,
+            20 => self.linefeed_newline = on,
+            1000 => self.mouse_normal = on,
+            1002 => self.mouse_button_event = on,
+            1003 => self.mouse_any_event = on,
+            1004 => self.mouse_focus = on,
+            1006 => self.mouse_sgr = on,
+            1066 => self.app_keypad = on,
+            2004 => self.bracketed_paste = on,
+            2026 => self.sync_output = on,
+            2027 => self.unicode_core_2027 = on,
+            _ => {}
+        }
+    }
+}
+
 /// Result of `set_mode(num, value, is_private)`. The terminal facade may
 /// need to react to certain mode changes (e.g. ?1049 toggles alt screen),
 /// so the parser bridge returns a side-effect tag rather than executing
