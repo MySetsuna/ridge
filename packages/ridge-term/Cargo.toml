@@ -70,14 +70,12 @@ js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 
-# P3.2 (2026-05-20): binary serde codec for the GridDelta wire format
-# is intended to be `postcard` (target-agnostic, ~5-15× smaller than
-# JSON, symmetrical for src-tauri ↔ wasm). The dep is deferred until
-# the next cargo network refresh — the data types in `src/term/delta.rs`
-# already carry `Serialize`/`Deserialize` derives so the codec drops in
-# with a one-line dependency add + the `encode` / `decode` helpers.
-# Tracked alongside P3.3 (parser engine) which is the first consumer.
-# postcard = { version = "1", default-features = false, features = ["alloc"] }
+# P3.5 (2026-05-20): binary serde codec for the GridDelta wire format.
+# Target-agnostic (no_std + alloc), symmetric for src-tauri ↔ wasm.
+# `default-features = false, features = ["alloc"]` keeps it wasm-friendly
+# (no std::time / std::io). Typical 80×24 cursor-blink frame ~10 B on
+# the wire vs ~3 KB JSON — drives most of the IPC bandwidth win.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 console_error_panic_hook = "0.1"
 

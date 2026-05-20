@@ -153,13 +153,26 @@ impl DeltaFrame {
     }
 }
 
-// NOTE (P3.2, 2026-05-20): `encode` / `decode` helpers + round-trip
-// tests land in the follow-up sub-step once the `postcard` dep is
-// resolvable from the cargo registry — see Cargo.toml's commented
-// `postcard = ...` line and the module-level comment above. The
-// Serialize/Deserialize derives below are already in place so the
-// next commit only adds the two methods + the test module without
-// touching the type definitions.
+/// Serialize a `DeltaFrame` into the on-wire postcard byte stream.
+///
+/// Postcard's varint + tag-byte encoding compresses a typical 80×24
+/// cursor-blink frame (one `Cursor` delta, four-byte cursor coords +
+/// flags) to ~10 bytes vs ~3 KB for the same shape serialized as JSON.
+/// Errors are propagated from postcard verbatim so the caller can log
+/// the underlying serde violation rather than a stringified summary.
+pub fn encode_frame(frame: &DeltaFrame) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(frame)
+}
+
+/// Decode an on-wire postcard byte stream back into a `DeltaFrame`.
+///
+/// The protocol-version word inside the frame is NOT validated here;
+/// the caller (`Terminal::apply_frame`) checks it after decode so a
+/// version mismatch produces a structured `Err(u16)` instead of a
+/// generic postcard decode error.
+pub fn decode_frame(bytes: &[u8]) -> Result<DeltaFrame, postcard::Error> {
+    postcard::from_bytes(bytes)
+}
 
 #[cfg(test)]
 mod tests {
@@ -180,6 +193,77 @@ mod tests {
         assert_eq!(frame.version, DeltaFrame::PROTOCOL_VERSION);
         assert_eq!(frame.pane_seq, 0);
         assert_eq!(frame.deltas.len(), 1);
+    }
+
+    #[test]
+    fn encode_decode_round_trip_preserves_all_variants() {
+        // Cover every GridDelta variant in one frame so a refactor that
+        // breaks one variant's serde shape fails this test, not a
+        // production decode.
+        let frame = DeltaFrame::new(
+            42,
+            vec![
+                GridDelta::Cells {
+                    row: 3,
+                    col: 7,
+                    cells: vec![DeltaCell::blank(), DeltaCell {
+                        ch: 'X',
+                        fg: Color::DEFAULT,
+                        bg: Color::DEFAULT,
+                        flags: Flags::empty(),
+                        width: 1,
+                    }],
+                },
+                GridDelta::Cursor {
+                    row: 5,
+                    col: 11,
+                    visible: false,
+                    blink: true,
+                    shape: CursorShape::Bar,
+                },
+                GridDelta::ScrollbackAppend {
+                    lines: vec![vec![DeltaCell::blank()]],
+                },
+                GridDelta::ModeChange { mode: 1049, on: true },
+                GridDelta::Resize { rows: 24, cols: 80 },
+                GridDelta::ScreenSwitch { is_alt: true },
+                GridDelta::Title("hello".into()),
+                GridDelta::Cwd("/tmp".into()),
+                GridDelta::Bell,
+                GridDelta::Reset,
+            ],
+        );
+        let bytes = encode_frame(&frame).expect("encode must succeed");
+        let decoded = decode_frame(&bytes).expect("decode must succeed");
+        assert_eq!(decoded, frame, "round-trip must preserve every variant");
+    }
+
+    #[test]
+    fn decode_corrupt_bytes_returns_postcard_error() {
+        // Garbage bytes must not panic; postcard surfaces a structured
+        // error the wasm boundary forwards to JS as a JsValue string.
+        let bad = [0xff_u8; 3];
+        assert!(
+            decode_frame(&bad).is_err(),
+            "decoding random bytes must produce Err, not panic"
+        );
+    }
+
+    #[test]
+    fn empty_frame_round_trip_under_ten_bytes() {
+        // Sanity that the wire format actually delivers the compactness
+        // the design relies on. A no-deltas frame is `version (u16) +
+        // pane_seq (u64 varint) + len (varint 0)` ≈ 4-6 bytes. Setting
+        // the ceiling at 10 catches any accidental dense encoding change.
+        let frame = DeltaFrame::new(0, Vec::new());
+        let bytes = encode_frame(&frame).expect("encode");
+        assert!(
+            bytes.len() <= 10,
+            "empty frame must postcard-encode to ≤10 bytes; got {} bytes",
+            bytes.len()
+        );
+        let decoded = decode_frame(&bytes).expect("decode");
+        assert_eq!(decoded, frame);
     }
 
     #[test]
