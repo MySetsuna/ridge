@@ -78,6 +78,44 @@ pnpm tauri build       # 安装包（Windows: NSIS / MSI）
 
 P3 让 VT 解析从 wasm 主线程搬到 Rust tokio 任务，主线程 CPU 占用显著下降；同时为远程控制（主线一）准备好"只接收 delta 不跑解析器"的轻量客户端协议。
 
+### ⚙️ 共同基础：IPC + 渲染线程解耦（P4 ladder · 规划中）
+
+P3 把解析搬到 Rust 之后，perf-bench 暴露剩下两个瓶颈：**Tauri event 序列化开销**（每帧 base64 + JSON-wrap + 事件名路由）与 **渲染挤占主线程**（canvas paint 占用 frame budget）。P4 两档一起做，目标把 perf-bench 帧 p95 从 50ms 压到 20-25ms，逼近 webview 终端的现实天花板。
+
+Baseline（P3.14, 2026-05-20）：FPS 32.8 · 帧 p95 50.1ms · 帧 p99 66.8ms · CPU 21.3%
+
+<details open>
+<summary><b>🎯 第一档 · Tauri Channel + 单一 Rust 解析路径</b></summary>
+
+> 砍掉 emit 的 base64 + JSON 包裹和事件名路由，并取消 wasm 端的 parser 冗余。期望：CPU −4%，帧 p95 −10ms，到 ≤ 40ms。
+
+- **p4.1** AppState 维护 per-pane `Channel<Vec<u8>>`，在 `activate_pane_pty` / `set_pane_delta_mode` 注册句柄
+- **p4.2** main loop 的 `pty-delta-*` emit 替换为 `channel.send(bytes)`；非流式事件（`pane-pty-closed`、`pane-mode-changed-*`、`pane-cwd-changed-*`、`pane-prompt-*`）保留 emit
+- **p4.3** 前端 `ptyBridge.ts` 用 `new Channel<Uint8Array>()` 注册接收端，落点 `kernel.applyDeltaFrame`；删掉 `pty-delta-*` 的 `listen()` 分支
+- **p4.4** 删除 `Settings.parserBackend` 开关与 JS 端 wasm parser 入口（保留 `ridge-term` crate 的 wgpu renderer），perf-bench 跑 `p4.1-rust` 对比 baseline → 验收 p95 ≤ 40ms 且 CPU 均值 ≤ 17%
+
+</details>
+
+<details open>
+<summary><b>🎯 第二档 · OffscreenCanvas + Render Worker</b></summary>
+
+> 渲染从主线程搬到专属 Worker，主线程只剩输入采集和布局。期望：主线程 frame budget 释放 10-15ms，帧 p95 落入 20-25ms 区间。
+
+- **p4.5** 新建 `src/lib/terminal/renderWorker.ts`，把 `TerminalManager` 的 kernel apply + canvas 绘制整体搬过去；主线程只剩 `feed()`/`onResize()` 桥接
+- **p4.6** `RidgePane.svelte` 的 `<canvas>` 调 `transferControlToOffscreen()` 把控制权移交给 worker；保留主线程的 `pointer-events` 透明覆盖层负责选区/拖拽 hit-test
+- **p4.7** 字体度量：主线程启动时用 `OffscreenCanvas.measureText` 预算 char→advance 表，postMessage 给 worker；cluster width / Emoji ZWJ 在 worker 内复用同表，主线程不再参与 layout
+- **p4.8** 输入路径：键盘 / 鼠标 / 选区主线程 capture 后 `worker.postMessage({type:'input', ...})`；resize 走 `ResizeObserver` → postMessage；停止使用主线程 RAF
+- **p4.9** Channel 接收端直接迁到 worker（PTY 字节通路完全绕开主线程），perf-bench 跑 `p4.2-rust` → 验收 p95 ≤ 25ms 且 FPS ≥ 50
+
+</details>
+
+<details>
+<summary><b>📊 验证流程</b></summary>
+
+每个子任务完成后跑 `pwsh scripts/perf-frame-compare.ps1 -StressSec 25` 与 `pwsh scripts/perf-bench.ps1 -Label p4.x -Backend rust -DurationSec 30`，CSV/JSON 落 `scripts/perf-runs/`。两档全部完成后将 baseline → P4 final 的对比表写入 CHANGELOG。
+
+</details>
+
 ### 🛰️ 主线一：远程控制 · Remote Control
 
 为 Ridge 增加跨设备远程控制能力，定位为纯 P2P 开源工具——不引入中心化信令、不依赖公网中继。
