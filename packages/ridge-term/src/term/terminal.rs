@@ -298,11 +298,39 @@ impl Terminal {
                 self.user_scroll_locked = false;
                 self.pending_reset = false;
             }
-            GridDelta::ScrollbackAppend { .. } | GridDelta::ModeChange { .. } => {
-                // Still accepted-but-ignored in v1. P3.11 (ScrollbackAppend)
-                // and P3.12 (ModeChange) fill these in. Keeping the arms
-                // present means the postcard codec doesn't reject the
-                // bytes when an older mirror sees a newer producer's frame.
+            GridDelta::ScrollbackAppend { lines } => {
+                // P3.11 — push each line onto the scrollback ring's
+                // newest end. Mirror's capacity matches the producer's
+                // (both sides see Terminal::new with the same
+                // scrollback_lines argument), so when the producer hit
+                // an eviction the mirror's `Scrollback::push` hits the
+                // same eviction here — no separate eviction signal
+                // required on the wire. Attrs get re-interned into the
+                // mirror's own AttrTable so the rows are usable through
+                // the rest of the grid API (row_at_abs, dump_visible_text,
+                // selection text extraction). The intern call dedupes
+                // default attrs to AttrId::DEFAULT internally so the
+                // ring of blank rows doesn't fragment the table.
+                use super::cell::{Cell, Row};
+                let cols = self.grid.cols();
+                for line in lines {
+                    let mut row = Row::new(cols);
+                    for (i, dc) in line.iter().take(cols).enumerate() {
+                        let attr_id = self.grid.attrs.intern(Attrs {
+                            fg: dc.fg,
+                            bg: dc.bg,
+                            flags: dc.flags,
+                        });
+                        row.cells[i] = Cell::new(dc.ch, attr_id, dc.width);
+                    }
+                    let _ = self.grid.scrollback.push(row);
+                }
+            }
+            GridDelta::ModeChange { .. } => {
+                // Still accepted-but-ignored in v1. P3.12 fills it in.
+                // The arm stays present so the postcard codec doesn't
+                // reject the bytes when an older mirror sees a newer
+                // producer's frame.
             }
         }
     }
@@ -604,6 +632,54 @@ impl Terminal {
 mod tests {
     use super::*;
     use crate::term::attrs::{Color, Flags};
+
+    #[test]
+    fn apply_delta_scrollback_append_pushes_lines_and_preserves_visible_grid() {
+        use crate::term::attrs::{Color, Flags};
+        use crate::term::delta::{DeltaCell, GridDelta};
+        let mut t = Terminal::new(2, 5, 100);
+        // Establish some visible-grid content to make sure apply doesn't
+        // disturb it. 'XX' lives on row 0; row 1 is blank.
+        t.feed(b"XX");
+        let visible_before: Vec<String> = t.dump_visible_text();
+        let sb_before = t.scrollback_len();
+        // Apply two new scrollback rows. Default attrs everywhere so
+        // the intern call hits AttrId::DEFAULT.
+        let line_a: Vec<DeltaCell> = "ALPHA"
+            .chars()
+            .map(|ch| DeltaCell {
+                ch,
+                fg: Color::DEFAULT,
+                bg: Color::DEFAULT,
+                flags: Flags::empty(),
+                width: 1,
+            })
+            .collect();
+        let line_b: Vec<DeltaCell> = "BETA "
+            .chars()
+            .map(|ch| DeltaCell {
+                ch,
+                fg: Color::DEFAULT,
+                bg: Color::DEFAULT,
+                flags: Flags::empty(),
+                width: 1,
+            })
+            .collect();
+        t.apply_delta(&GridDelta::ScrollbackAppend {
+            lines: vec![line_a, line_b],
+        });
+        assert_eq!(
+            t.scrollback_len(),
+            sb_before + 2,
+            "scrollback length must grow by exactly the number of applied lines",
+        );
+        // Live grid untouched.
+        assert_eq!(t.dump_visible_text(), visible_before);
+        // Most-recent applied line lands at the newest scrollback end.
+        let newest = t.grid().scrollback.get(t.scrollback_len() - 1).unwrap();
+        let newest_text: String = newest.cells.iter().map(|c| c.ch).collect();
+        assert_eq!(newest_text, "BETA ");
+    }
 
     #[test]
     fn apply_delta_reset_clears_visible_grid_and_modes_but_keeps_scrollback() {
