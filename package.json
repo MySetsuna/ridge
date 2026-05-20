@@ -22,6 +22,7 @@
     "e2e:reset": "wdio run wdio.reset.conf.ts",
     "perf-bench": "pwsh scripts/perf-bench.ps1",
     "perf:compare": "pwsh scripts/perf-compare.ps1",
+    "perf:frame": "pwsh scripts/perf-frame-compare.ps1",
     "clean": "rimraf node_modules/.vite build src-tauri/target"
   },
   "license": "MIT",
