@@ -122,8 +122,11 @@ function Invoke-PerfRound {
 
   # Sample. The script's default RootPathSubstring filter keeps the
   # installed host at C:\Program Files\ridge\ out of the sample.
+  # -IncludeWebView2 picks up msedgewebview2.exe under tauri-driver
+  # (otherwise wasm-mode VTE parsing — running on JS thread inside
+  # WebView2 — would be invisible and the comparison would skew).
   Write-Host "[$Backend] Sampling for ${SampleSec}s..."
-  & "$PSScriptRoot/perf-bench.ps1" -Label "p3-$Backend" -Backend $Backend -DurationSec $SampleSec -IntervalSec 1
+  & "$PSScriptRoot/perf-bench.ps1" -Label "p3-$Backend" -Backend $Backend -DurationSec $SampleSec -IntervalSec 1 -IncludeWebView2
 
   Write-Host "[$Backend] Waiting for wdio job to finish (up to 60s)..."
   $finished = Wait-Job -Job $wdioJob -Timeout 60
