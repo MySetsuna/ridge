@@ -441,4 +441,89 @@ mod tests {
             frame.deltas
         );
     }
+
+    /// P3.4 round-trip: prove producer (`PaneParser`) + consumer
+    /// (`Terminal::apply_delta`) are symmetric. Feed identical byte
+    /// streams through (a) a baseline Terminal that runs vte locally
+    /// — the existing wasm path — and (b) a PaneParser whose frames
+    /// are applied to a fresh "mirror" Terminal. After every chunk,
+    /// the mirror's visible grid must match the baseline's.
+    #[test]
+    fn round_trip_matches_direct_feed() {
+        use ridge_term::term::terminal::Terminal;
+
+        let chunks: &[&[u8]] = &[
+            b"hello world\r\n",
+            b"line two\r\n",
+            b"\x1b[1;31mRED\x1b[0m bold reset\r\n",
+            // Switch to alt screen, draw something, switch back.
+            b"\x1b[?1049h\x1b[2J\x1b[Halt screen content\r\n",
+            b"\x1b[?1049l",
+            // Move cursor + overwrite a cell.
+            b"\x1b[1;1H@",
+        ];
+
+        let rows: u16 = 6;
+        let cols: u16 = 30;
+        let scrollback = 1_000;
+
+        let mut baseline = Terminal::new(rows as usize, cols as usize, scrollback);
+        let mut mirror = Terminal::new(rows as usize, cols as usize, scrollback);
+        let mut producer = PaneParser::new(rows, cols, scrollback);
+
+        for chunk in chunks {
+            baseline.feed(chunk);
+            let frame = producer.feed_and_diff(chunk);
+            mirror
+                .apply_frame(&frame)
+                .expect("mirror must accept producer-emitted frame");
+            // Drain query responses so they don't bleed into the next
+            // chunk's diff comparison (baseline keeps them too;
+            // identical churn cancels).
+            let _ = baseline.take_pending_response();
+            let _ = mirror.take_pending_response();
+
+            // Visible-grid equality: walk row-by-row and compare
+            // resolved DeltaCells (char + concrete attrs + width).
+            // Comparing raw `Cell` would require AttrId stability
+            // across two grids, which isn't guaranteed.
+            for r in 0..rows as usize {
+                let base_row = baseline.grid().row(r).expect("baseline row");
+                let mir_row = mirror.grid().row(r).expect("mirror row");
+                for c in 0..cols as usize {
+                    let b_cell = base_row.cells.get(c).copied().unwrap_or_default();
+                    let m_cell = mir_row.cells.get(c).copied().unwrap_or_default();
+                    let b_attrs = baseline.grid().attrs.get(b_cell.attr);
+                    let m_attrs = mirror.grid().attrs.get(m_cell.attr);
+                    assert_eq!(
+                        (b_cell.ch, b_attrs.fg, b_attrs.bg, b_attrs.flags, b_cell.width),
+                        (m_cell.ch, m_attrs.fg, m_attrs.bg, m_attrs.flags, m_cell.width),
+                        "cell mismatch at row={} col={} after chunk {:?}",
+                        r,
+                        c,
+                        std::str::from_utf8(chunk).unwrap_or("<non-utf8>"),
+                    );
+                }
+            }
+            // Cursor + alt-screen also must match.
+            assert_eq!(
+                baseline.grid().cursor().row,
+                mirror.grid().cursor().row,
+                "cursor row mismatch after chunk {:?}",
+                std::str::from_utf8(chunk).unwrap_or("<non-utf8>")
+            );
+            assert_eq!(
+                baseline.grid().cursor().col,
+                mirror.grid().cursor().col,
+                "cursor col mismatch after chunk {:?}",
+                std::str::from_utf8(chunk).unwrap_or("<non-utf8>")
+            );
+            assert_eq!(
+                baseline.grid().is_alt_screen(),
+                mirror.grid().is_alt_screen(),
+                "alt-screen mismatch after chunk {:?}",
+                std::str::from_utf8(chunk).unwrap_or("<non-utf8>")
+            );
+        }
+    }
 }

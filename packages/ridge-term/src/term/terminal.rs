@@ -172,6 +172,118 @@ impl Terminal {
         std::mem::take(&mut self.pending_response)
     }
 
+    /// P3.4 (2026-05-20) — apply one `GridDelta` produced by a remote
+    /// parser to this terminal's state. Counterpart to `feed()` for the
+    /// frontend mirror, which receives a stream of deltas from the
+    /// Rust-side `PaneParser` over Tauri events instead of running its
+    /// own vte parse.
+    ///
+    /// Variants that affect viewport content (`Cells`, `Cursor`,
+    /// `ScreenSwitch`, `Resize`) mutate the grid / cursor / modes
+    /// directly. Semantic events (`Title`, `Cwd`, `Bell`) are pushed
+    /// into `pending_events` so the JS layer's existing
+    /// `take_pending_events` drain wires them to the title/cwd/bell
+    /// stores without needing a parallel event channel.
+    ///
+    /// `ScrollbackAppend`, `ModeChange`, `Reset` are accepted but
+    /// only partially applied in v1 — see inline notes. The producer
+    /// (`engine::parser::PaneParser`) does not emit those variants yet
+    /// either, so the gap is symmetric.
+    pub fn apply_delta(&mut self, delta: &crate::term::delta::GridDelta) {
+        use super::attrs::Attrs;
+        use super::modes::CursorShape as KernelCursorShape;
+        use crate::term::delta::{CursorShape as DeltaCursorShape, GridDelta};
+        match delta {
+            GridDelta::Cells { row, col, cells } => {
+                let triples: Vec<(char, Attrs, u8)> = cells
+                    .iter()
+                    .map(|dc| {
+                        (
+                            dc.ch,
+                            Attrs {
+                                fg: dc.fg,
+                                bg: dc.bg,
+                                flags: dc.flags,
+                            },
+                            dc.width,
+                        )
+                    })
+                    .collect();
+                self.grid
+                    .write_delta_cells(*row as usize, *col as usize, &triples);
+            }
+            GridDelta::Cursor {
+                row,
+                col,
+                visible,
+                blink,
+                shape,
+            } => {
+                let cur = self.grid.cursor_mut();
+                cur.row = *row as usize;
+                cur.col = *col as usize;
+                self.modes.cursor_visible = *visible;
+                self.modes.cursor_blink = *blink;
+                self.modes.cursor_shape = match shape {
+                    DeltaCursorShape::Block => KernelCursorShape::Block,
+                    DeltaCursorShape::Bar => KernelCursorShape::Bar,
+                    DeltaCursorShape::Underline => KernelCursorShape::Underline,
+                };
+            }
+            GridDelta::ScreenSwitch { is_alt } => {
+                if *is_alt {
+                    // `clear_on_enter = false`: the producer is going
+                    // to send Cells deltas describing the alt-screen
+                    // contents next. Clearing here would just be
+                    // overwritten immediately and waste cycles.
+                    self.grid.enter_alt_screen(false);
+                } else {
+                    self.grid.leave_alt_screen();
+                }
+            }
+            GridDelta::Resize { rows, cols } => {
+                self.resize(*rows as usize, *cols as usize);
+            }
+            GridDelta::Title(t) => {
+                self.pending_events
+                    .push(KernelEvent::TitleChanged(t.clone()));
+            }
+            GridDelta::Cwd(p) => {
+                self.pending_events
+                    .push(KernelEvent::CwdChanged(p.clone()));
+            }
+            GridDelta::Bell => {
+                self.pending_events.push(KernelEvent::Bell);
+            }
+            GridDelta::ScrollbackAppend { .. }
+            | GridDelta::ModeChange { .. }
+            | GridDelta::Reset => {
+                // v1 producer doesn't emit these; consumer accepts the
+                // wire variant for protocol stability but takes no
+                // action. When the producer learns to emit them the
+                // arms here will fill in.
+            }
+        }
+    }
+
+    /// Apply every delta in a `DeltaFrame` in order. Convenience
+    /// wrapper for the wasm entry point; the version word is checked
+    /// against `DeltaFrame::PROTOCOL_VERSION` and a mismatch returns
+    /// the encountered version so the caller can log a warning and
+    /// skip the frame instead of corrupting the mirror.
+    pub fn apply_frame(
+        &mut self,
+        frame: &crate::term::delta::DeltaFrame,
+    ) -> Result<(), u16> {
+        if frame.version != crate::term::delta::DeltaFrame::PROTOCOL_VERSION {
+            return Err(frame.version);
+        }
+        for d in &frame.deltas {
+            self.apply_delta(d);
+        }
+        Ok(())
+    }
+
     /// Drain structured semantic events (title / cwd / hyperlinks / bell)
     /// the parser produced. JS layer routes each event to the relevant
     /// Svelte store (paneTitleStore, paneCwdStore, etc.).

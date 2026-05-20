@@ -378,6 +378,54 @@ impl Grid {
         self.screen().rows.get(idx)
     }
 
+    /// Mutable row access on the active screen. Added for the P3.4
+    /// delta-apply path so `Terminal::apply_delta` can overwrite cell
+    /// contents from a `GridDelta::Cells` payload without having to
+    /// re-feed the change through the vte parser (which would defeat
+    /// the entire point of having the parser run on the Rust side).
+    /// Returns `None` past the last live row; callers should ignore
+    /// such writes rather than treat them as errors — the producer
+    /// (`PaneParser`) only emits in-bounds rows.
+    pub fn row_mut(&mut self, idx: usize) -> Option<&mut Row> {
+        self.screen_mut().rows.get_mut(idx)
+    }
+
+    /// Write a span of `(ch, attrs, width)` cells starting at
+    /// `(row, col)`. Used by the P3.4 delta-apply path; the AttrTable
+    /// re-interns each cell's attrs to a local AttrId before writing
+    /// so the resulting cell is comparable with the rest of this
+    /// grid's cells (interned ids are per-AttrTable, not portable).
+    ///
+    /// Out-of-bounds writes are silently ignored — see `row_mut`.
+    pub fn write_delta_cells(
+        &mut self,
+        row: usize,
+        col: usize,
+        cells: &[(char, Attrs, u8)],
+    ) {
+        // Intern attrs in a first pass so we don't hold &mut self.attrs
+        // and &mut self.screen at the same time (the borrow checker
+        // would reject it even though the fields are disjoint).
+        let attr_ids: Vec<crate::term::attr_table::AttrId> = cells
+            .iter()
+            .map(|(_, attrs, _)| self.attrs.intern(*attrs))
+            .collect();
+        let target = match self.screen_mut().rows.get_mut(row) {
+            Some(r) => r,
+            None => return,
+        };
+        for (i, (ch, _attrs, width)) in cells.iter().enumerate() {
+            let target_col = col + i;
+            let grid_cell = match target.cells.get_mut(target_col) {
+                Some(c) => c,
+                None => break,
+            };
+            grid_cell.ch = *ch;
+            grid_cell.attr = attr_ids[i];
+            grid_cell.width = *width;
+        }
+    }
+
     /// Switch to alt screen (DECSET 1049 / 47 / 1047). Idempotent.
     /// `clear_on_enter` corresponds to the `1049` variant: clear the alt
     /// screen on entry so we get a fresh blank canvas for fullscreen apps.
