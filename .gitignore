@@ -2,6 +2,7 @@
 node_modules
 /build
 /dist
+/release
 /.svelte-kit
 /package
 !.env.example
