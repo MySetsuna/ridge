@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager};
 
 /// Splash loader contract. `primary` / `secondary` are required and feed
 /// the SVG stroke and accent fill in `src/app.html`. The remaining
@@ -53,32 +55,27 @@ pub struct ThemeFile {
     pub themes: Vec<ThemeEntry>,
 }
 
-/// Find `ridge.theme` anchored to the directory containing the running
-/// `ridge.exe` (NOT the CWD the user launched from — the two diverge
-/// e.g. when double-clicking the binary from any folder).
+/// Resolve `ridge.theme` via Tauri's `BaseDirectory::Resource`. The
+/// `bundle.resources` map in `tauri.conf.json` declares `ridge.theme`
+/// as a resource that lands at the resource root in both modes:
+///   - dev (`pnpm tauri dev`): `<repo>/src-tauri/target/<profile>/ridge.theme`
+///   - packaged: `<install-dir>/ridge.theme` (next to `ridge.exe`)
 ///
-/// In a packaged build the installer drops `ridge.theme` next to the
-/// executable via `tauri.conf.json::bundle.resources`, so the exe-dir
-/// check succeeds directly.
-///
-/// In a dev build (`cargo run` / `pnpm tauri dev`), the exe lives at
-/// `<repo>/src-tauri/target/<profile>/ridge.exe` where no theme file
-/// exists. To still make `ridge.theme` editing live without an extra
-/// copy step, the function walks ancestors of the exe directory until
-/// it finds the project-root `ridge.theme`. The walk is gated on
+/// Falls back (debug-only) to walking ancestors of the running exe so
+/// editing the repo-root `ridge.theme` takes effect without waiting for
+/// cargo to re-stage the resource. The walk is gated on
 /// `cfg!(debug_assertions)` so a release exe in an unfamiliar layout
 /// never accidentally pulls in a `ridge.theme` from a parent directory.
-fn find_theme_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-
-    let direct = exe_dir.join("ridge.theme");
-    if direct.exists() {
-        return Some(direct);
+fn find_theme_path(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(p) = app.path().resolve("ridge.theme", BaseDirectory::Resource) {
+        if p.exists() {
+            return Some(p);
+        }
     }
 
     if cfg!(debug_assertions) {
-        let mut dir = exe_dir;
+        let exe = std::env::current_exe().ok()?;
+        let mut dir = exe.parent()?;
         while let Some(parent) = dir.parent() {
             let candidate = parent.join("ridge.theme");
             if candidate.exists() {
@@ -140,9 +137,9 @@ fn write_active_theme_id(app_data_dir: &Path, id: &str) -> std::io::Result<()> {
 ///
 /// Falls back to an empty object on disk-read failure so the splash
 /// still renders (using its own CSS fallbacks).
-pub fn build_splash_init_script(app_data_dir: &Path) -> String {
+pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String {
     let theme_id = read_active_theme_id(app_data_dir);
-    let tf = get_theme_data();
+    let tf = get_theme_data(app.clone());
     let entry = tf
         .themes
         .iter()
@@ -201,8 +198,8 @@ pub fn set_active_theme(theme_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_theme_data() -> ThemeFile {
-    if let Some(path) = find_theme_path() {
+pub fn get_theme_data(app: AppHandle) -> ThemeFile {
+    if let Some(path) = find_theme_path(&app) {
         match std::fs::read_to_string(&path) {
             Ok(content) => match serde_json::from_str::<ThemeFile>(&content) {
                 Ok(tf) => {

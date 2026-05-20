@@ -26,9 +26,9 @@
     "icon": [
       "icons/icon.ico"
     ],
-    "resources": [
-      "../ridge.theme"
-    ],
+    "resources": {
+      "../ridge.theme": "ridge.theme"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "installer-hooks.nsh"
