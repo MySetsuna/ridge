@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 use uuid::Uuid;
 
+use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
 use crate::state::AppState;
 use crate::utils::cwd::resolve_default_cwd;
@@ -699,11 +700,26 @@ fn activate_pane_pty_inner(
 		}
 	};
 
+	// P3.8 — initialize the native VT parser at PtyHandle creation time so
+	// the main event loop can take a parser lock the moment it sees the
+	// first PtyOutput chunk. Dimensions match the front-end's initial fit
+	// (24×80 placeholder until the rAF "兜底 fit" catches up); a soon-
+	// after resize via `resize_pane` (P3.9.r) will sync both PTY native
+	// resize and `parser.resize(...)` so the mirror stays in lock-step.
+	// `delta_mode` starts disabled — front-end opts in via the per-pane
+	// `set_pane_delta_mode` command (P3.9). This makes `cargo build`
+	// safe even before any front-end work lands.
+	let initial_rows = rows.unwrap_or(24).max(1);
+	let initial_cols = cols.unwrap_or(80).max(1);
+	let parser = Arc::new(Mutex::new(PaneParser::new(initial_rows, initial_cols, 2000)));
+
 	let handle = PtyHandle {
 		master: pending.master.clone(),
 		writer: pending.writer.clone(),
 		_child: child,
 		resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+		parser,
+		delta_mode: Arc::new(AtomicBool::new(false)),
 	};
 
 	{

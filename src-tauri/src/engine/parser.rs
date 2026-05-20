@@ -43,11 +43,11 @@
 //! small and lets the diff logic ship + accrete tests independently of
 //! the IPC plumbing.
 
-// P3.3 (2026-05-20): `PaneParser` is intentionally unused at build time
-// — the production path still routes PTY bytes through wasm. The
-// `dead_code` allow stays until P3.4 wires this into `engine::pty` and
-// the global event loop; revisit then.
-#![allow(dead_code)]
+// P3.8 (2026-05-20): `PaneParser` is now wired into the main event loop
+// — `lib.rs` calls `feed_and_diff` for every `GlobalEvent::PtyOutput`
+// when the per-pane `delta_mode` AtomicBool is set. Methods that
+// remain dead-code (e.g. resize until P3.9.r wires it) keep targeted
+// #[allow] annotations at their definition site.
 
 use ridge_term::term::delta::{CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta};
 use ridge_term::term::modes::CursorShape as KernelCursorShape;
@@ -97,10 +97,17 @@ impl PaneParser {
         }
     }
 
+    /// P3.9.r will use this to report current dimensions back to the
+    /// `resize_pane_parser` Tauri command for the idempotent guard
+    /// (skip work if the requested size matches). Test-only consumer
+    /// keeps the symbol live for now.
+    #[allow(dead_code)]
     pub fn rows(&self) -> u16 {
         self.terminal.rows() as u16
     }
 
+    /// See `rows()` — P3.9.r idempotent guard counterpart.
+    #[allow(dead_code)]
     pub fn cols(&self) -> u16 {
         self.terminal.cols() as u16
     }
@@ -128,6 +135,12 @@ impl PaneParser {
     /// a delta frame that surfaces the `Resize` event AND any cell
     /// changes the resize itself caused (reflow can fill new rows or
     /// drop the right margin).
+    ///
+    /// Called by the `resize_pane_parser` Tauri command (P3.9.r) which
+    /// routes fitPane through Rust in 'rust' mode to preserve the
+    /// "parser resizes first, mirror follows via apply_delta(Resize)"
+    /// invariant. No other call site today; tests keep the symbol live.
+    #[allow(dead_code)]
     pub fn resize(&mut self, rows: u16, cols: u16) -> DeltaFrame {
         self.terminal.resize(rows as usize, cols as usize);
         // Snapshot must match the new grid dimensions BEFORE we diff —
