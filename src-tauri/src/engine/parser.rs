@@ -77,6 +77,15 @@ pub struct PaneParser {
     /// alt-screen flag as we last reported it. Matches
     /// `Terminal::grid().is_alt_screen()`. None on first feed.
     is_alt: Option<bool>,
+    /// P3.11 — `Terminal::scrollback_len()` at the time of the last
+    /// diff. Used together with `last_scrollback_evictions` to compute
+    /// how many fresh rows entered scrollback since the last frame.
+    last_scrollback_len: usize,
+    /// P3.11 — `Terminal::scrollback_eviction_count()` at the time of
+    /// the last diff. Combined with `last_scrollback_len` we can tell
+    /// "scrollback grew by N" from "scrollback grew but K oldest rows
+    /// got evicted" (capacity rollover).
+    last_scrollback_evictions: u64,
     /// Monotonic per-pane sequence; bumped on every emitted frame.
     /// Frontend logs a warning on gaps. Resets to 0 on `new`.
     pane_seq: u64,
@@ -93,6 +102,8 @@ impl PaneParser {
             snapshot,
             cursor: None,
             is_alt: None,
+            last_scrollback_len: 0,
+            last_scrollback_evictions: 0,
             pane_seq: 0,
         }
     }
@@ -149,6 +160,14 @@ impl PaneParser {
         self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
         self.cursor = None;
         self.is_alt = None;
+        // P3.11 — scrollback growth baseline. The mirror's wasm
+        // Terminal already has its current scrollback (the wasm-mode
+        // feed loop maintained it); we MUST NOT re-emit those rows on
+        // backend switch because the mirror would then double-push
+        // them. Snap baseline to the current values; only growth from
+        // now on emits ScrollbackAppend.
+        self.last_scrollback_len = self.terminal.scrollback_len();
+        self.last_scrollback_evictions = self.terminal.scrollback_eviction_count();
     }
 
     /// Resize the underlying grid and re-allocate the snapshot. Returns
@@ -172,6 +191,15 @@ impl PaneParser {
         // frontend's mirror just resized too.
         self.cursor = None;
         self.is_alt = None;
+        // P3.11 — `Grid::resize` runs reflow on primary which may
+        // reshape scrollback (rows can shrink-with-wrap on column
+        // change). The mirror's `Terminal::resize` runs the same
+        // reflow against its own scrollback, so both sides end up at
+        // an equivalent shape post-resize. We snap the baseline to
+        // post-resize values so the next diff doesn't re-emit existing
+        // scrollback rows as if they were freshly appended.
+        self.last_scrollback_len = self.terminal.scrollback_len();
+        self.last_scrollback_evictions = self.terminal.scrollback_eviction_count();
 
         let mut frame = self.diff_into_frame();
         // Prepend the explicit Resize so the frontend resizes its mirror
@@ -207,6 +235,50 @@ impl PaneParser {
             deltas.push(GridDelta::ScreenSwitch { is_alt: alt_now });
             self.is_alt = Some(alt_now);
         }
+
+        // 1b. Scrollback growth. Compare today's `scrollback_len()` +
+        //     `scrollback_eviction_count()` to the snapshot from the
+        //     last frame to compute how many fresh rows entered
+        //     scrollback. The eviction counter advances when capacity
+        //     rolls over (the oldest row gets dropped to make room),
+        //     so a stable len plus a positive eviction delta still
+        //     means "new rows came in" — they just displaced equal
+        //     numbers of oldest ones. Mirror naturally evicts the
+        //     equivalent rows on push because both sides have matched
+        //     scrollback capacities (set by `Terminal::new`).
+        let now_len = self.terminal.scrollback_len();
+        let now_evictions = self.terminal.scrollback_eviction_count();
+        let evicted_since = now_evictions.saturating_sub(self.last_scrollback_evictions);
+        // After K evictions, the previously-counted rows shifted down
+        // by K. last_logical_len is what scrollback_len() would have
+        // been now if nothing new were added.
+        let last_logical_len = self.last_scrollback_len.saturating_sub(evicted_since as usize);
+        if now_len > last_logical_len {
+            let new_n = now_len - last_logical_len;
+            let mut lines: Vec<Vec<DeltaCell>> = Vec::with_capacity(new_n);
+            let start = now_len - new_n;
+            for i in start..now_len {
+                if let Some(row) = self.terminal.grid().scrollback.get(i) {
+                    let mut row_cells: Vec<DeltaCell> = Vec::with_capacity(row.cells.len());
+                    for cell in &row.cells {
+                        let attrs = self.terminal.grid().attrs.get(cell.attr);
+                        row_cells.push(DeltaCell {
+                            ch: cell.ch,
+                            fg: attrs.fg,
+                            bg: attrs.bg,
+                            flags: attrs.flags,
+                            width: cell.width,
+                        });
+                    }
+                    lines.push(row_cells);
+                }
+            }
+            if !lines.is_empty() {
+                deltas.push(GridDelta::ScrollbackAppend { lines });
+            }
+        }
+        self.last_scrollback_len = now_len;
+        self.last_scrollback_evictions = now_evictions;
 
         // 2. Per-row diff. Resolve each cell via the live AttrTable so
         //    the comparison is stable across feed batches (an interned
@@ -476,6 +548,52 @@ mod tests {
             ),
             "expected first delta to be Resize{{rows:3,cols:6}}; got {:?}",
             first
+        );
+    }
+
+    #[test]
+    fn scrollback_growth_emits_scrollback_append() {
+        // Push 3 lines into a 2-row viewport so one row spills into
+        // scrollback. The producer must emit `ScrollbackAppend` with
+        // exactly that one new line.
+        let mut p = make_parser(2, 5);
+        let _ = p.feed_and_diff(b"");
+        let frame = p.feed_and_diff(b"AB\r\nCD\r\nEF");
+        let appends: Vec<&Vec<Vec<DeltaCell>>> = frame
+            .deltas
+            .iter()
+            .filter_map(|d| match d {
+                GridDelta::ScrollbackAppend { lines } => Some(lines),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            appends.len(),
+            1,
+            "expected exactly one ScrollbackAppend, got {:?}",
+            frame.deltas,
+        );
+        let lines = appends[0];
+        // 'AB' is the first row pushed into scrollback.
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].ch, 'A');
+        assert_eq!(lines[0][1].ch, 'B');
+    }
+
+    #[test]
+    fn no_growth_emits_no_scrollback_append() {
+        // Feed that produces no scrollback push (in-viewport edits)
+        // must NOT include ScrollbackAppend.
+        let mut p = make_parser(3, 5);
+        let _ = p.feed_and_diff(b"hi");
+        let frame = p.feed_and_diff(b"!");
+        assert!(
+            !frame
+                .deltas
+                .iter()
+                .any(|d| matches!(d, GridDelta::ScrollbackAppend { .. })),
+            "in-viewport edit must not emit ScrollbackAppend; got {:?}",
+            frame.deltas,
         );
     }
 
