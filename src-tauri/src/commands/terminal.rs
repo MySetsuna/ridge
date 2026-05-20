@@ -994,6 +994,109 @@ pub async fn kill_pane(state: State<'_, AppState>, pane_id: String) -> Result<()
 	kill_pane_inner(state, pane_id).await.map_err(|e| e.to_string())
 }
 
+/// P3.9 (2026-05-20) — flip the per-pane PaneParser path on or off.
+///
+/// On enable (false → true): force a full reframe so the next emitted
+/// frame is a complete ScreenSwitch + Cursor + Cells snapshot. The
+/// front-end mirror catches up in one round-trip without any
+/// transient blank state. The atomic flag is set *after* the first
+/// frame goes out so a racing PtyOutput chunk can't slip through with
+/// the old (stale) snapshot.
+///
+/// On disable (true → false): just flip the flag; the next PtyOutput
+/// chunk lands in the legacy coalescer, emitting `pty-output-*` to
+/// the front-end. Scrollback that accumulated during the rust-parser
+/// session is NOT replayed to the wasm parser — accepted regression
+/// for the rare backend-switch case. ScrollbackAppend deltas (P3.11)
+/// keep the mirror's scrollback in sync while rust mode is on.
+#[tauri::command]
+pub async fn set_pane_delta_mode(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    workspace_id: String,
+    pane_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    use ridge_term::term::delta::encode_frame;
+    use tauri::Emitter;
+
+    let workspace_id = Uuid::parse_str(&workspace_id)
+        .map_err(|_| "invalid workspace_id".to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+
+    // Snapshot the handles we need under a single workspace read-lock,
+    // then drop the lock before any I/O — feed_and_diff / encode_frame
+    // shouldn't gate other map readers.
+    let (parser, writer, delta_mode_flag) = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        let handle = ws
+            .terminals
+            .get(&pane_id)
+            .ok_or_else(|| "pane not found".to_string())?;
+        (
+            handle.parser.clone(),
+            handle.writer.clone(),
+            handle.delta_mode.clone(),
+        )
+    };
+
+    let was_enabled = delta_mode_flag.load(Ordering::Acquire);
+    if was_enabled == enabled {
+        return Ok(());
+    }
+
+    if enabled {
+        // Build the full reframe BEFORE flipping the gate so a racing
+        // PtyOutput chunk can't slip past with the snapshot already
+        // cleared but the flag still off.
+        let frame = {
+            let mut p = parser.lock();
+            p.force_full_reframe();
+            // feed_and_diff(b"") doesn't consume bytes but does run the
+            // diff, producing the ScreenSwitch + Cursor + Cells reframe
+            // against the now-empty snapshot.
+            p.feed_and_diff(b"")
+        };
+        // DSR/DA replies from the kernel during reframe (rare; usually
+        // empty) still need to flow back to the PTY for symmetry.
+        let response = {
+            let mut p = parser.lock();
+            p.take_pending_response()
+        };
+        if !response.is_empty() {
+            let mut w = writer.lock();
+            let _ = w.write_all(&response);
+            let _ = w.flush();
+        }
+        let bytes = encode_frame(&frame).map_err(|e| format!("delta encode failed: {e}"))?;
+        let label = pane_id.to_string();
+        let _ = app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
+        // Flip the gate AFTER the reframe goes out — main-loop sees
+        // it on the next chunk.
+        delta_mode_flag.store(true, Ordering::Release);
+    } else {
+        // Drain any in-flight pending_response so the PTY writer
+        // doesn't lose the queue when the rust path stops draining.
+        // The text path doesn't run the parser, so anything still
+        // sitting in pending_response would be silently dropped.
+        let response = {
+            let mut p = parser.lock();
+            p.take_pending_response()
+        };
+        if !response.is_empty() {
+            let mut w = writer.lock();
+            let _ = w.write_all(&response);
+            let _ = w.flush();
+        }
+        delta_mode_flag.store(false, Ordering::Release);
+    }
+
+    Ok(())
+}
+
 /// 供 teammate HTTP 面向指定 workspace 写字节（不依赖当前 active 以外的逻辑）。
 pub fn write_pty_bytes_workspace(
 	app: &AppState,

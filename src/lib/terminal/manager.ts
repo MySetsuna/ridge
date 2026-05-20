@@ -1938,6 +1938,44 @@ export class TerminalManager {
 		}
 	}
 
+	/** P3.9 (2026-05-20) — apply one postcard-encoded `DeltaFrame` from the
+	 *  Rust-side `engine::parser::PaneParser` (produced when this pane's
+	 *  backend `delta_mode` is on). Mirror counterpart to `feed()`:
+	 *  apply diff → drain pending_response back to PTY → drain
+	 *  pending_events → wake render loop.
+	 *
+	 *  Designed to be called by `ptyBridge.ts`'s `pty-delta-{ws}-{pane}`
+	 *  listener; never invoked directly by RidgePane. Bytes is the raw
+	 *  postcard payload; the wasm bridge decodes + applies in one shot.
+	 *  Throws (JsValue → JS Error) on decode failure or protocol-version
+	 *  mismatch; caller logs and triggers a `set_pane_delta_mode(false)`
+	 *  fallback as the self-heal path (P3 R5 mitigation).
+	 */
+	applyDeltaFrame(paneId: string, bytes: Uint8Array): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		// Re-throw decode / version errors so ptyBridge can trigger the
+		// self-heal `set_pane_delta_mode(false)` invoke. manager is host-
+		// agnostic (no Tauri imports) — recovery routing lives in
+		// ptyBridge where the invoke surface is available.
+		entry.kernel.applyDeltaFrame(bytes);
+		// Pump DSR/DA replies the mirror produced via apply_delta back to
+		// the PTY. Symmetric with feed()'s take_pending_response drain.
+		const reply = entry.kernel.takePendingResponse();
+		if (reply.length > 0 && entry.dataHandler) {
+			entry.dataHandler(reply);
+		}
+		// Drain semantic events (title / cwd / bell). apply_delta pushes
+		// them onto the same pending_events queue feed() uses so the
+		// existing eventHandler routing applies unchanged.
+		const events = entry.kernel.takePendingEvents() as KernelEvent[];
+		if (entry.eventHandler) {
+			for (const ev of events) entry.eventHandler(ev);
+		}
+		entry.linkSpans.markDirty();
+		this.wake();
+	}
+
 	/** P2.1 (2026-05-20): drain any per-pane bytes that prior `_feedNow`
 	 *  calls spilled out of when their time budget ran out. Called at
 	 *  the top of every RAF tick BEFORE the dirty-detection pre-pass,
