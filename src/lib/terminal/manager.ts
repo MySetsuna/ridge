@@ -226,6 +226,20 @@ interface PaneEntry {
 	 *  fitPane on every pane just to re-set padding to its current value).
 	 *  `undefined` means "not yet set" — first call applies regardless. */
 	lastAppliedPaddingPx?: number;
+	/** Actual CSS `padding` value (px) most recently written to the pane
+	 *  container by `fitPane` — distinct from `lastAppliedPaddingPx`
+	 *  which is the user's base preference set via `setPadding`. fitPane
+	 *  reads the user preference as `basePad` (a floor), then computes
+	 *  `padAll = (container - cells × cellW) / 2` and writes that to
+	 *  CSS so the cell grid sits centred inside the content box. Pixel
+	 *  position calculations (`pickAt`, `computeCell`,
+	 *  `inputAnchorPixelPosition`) MUST read `lastFitPaddingPx` to
+	 *  align with the visible cursor — using `lastAppliedPaddingPx`
+	 *  (the user's basePad) would be off by `padAll - basePad`,
+	 *  visible as e.g. the IME helper textarea anchored a few px to
+	 *  the left of the cursor. `undefined` until the first fitPane
+	 *  runs. */
+	lastFitPaddingPx?: number;
 	/** Parking state (TASKS §5.1, Round 6).
 	 *
 	 *  When `parked = true`:
@@ -344,6 +358,16 @@ interface PaneEntry {
  *  matching keeps Ink/lazygit/bottom behaviour consistent across terminals. */
 const SYNC_OUTPUT_TIMEOUT_MS = 150;
 
+/** Trailing-edge debounce window for container resize. The pane only
+ *  re-fits (scissor + kernel grid + PTY SIGWINCH) after the user has
+ *  paused this long without sending a new `viewportChanged` event,
+ *  OR after a global `pointerup` fires (whichever comes first).
+ *  500 ms — short enough that mouse-paused-mid-drag settles feel
+ *  responsive, long enough that incidental layout twitches don't
+ *  trip a mid-drag re-fit. `pointerup` is the dominant trigger; this
+ *  is just the safety net when the release is missed. */
+const RESIZE_SETTLE_MS = 500;
+
 /**
  * Singleton. Created lazily on first `instance()` call. Held by the
  * `<RidgeTerminalRoot>` Svelte component for the entire app lifetime.
@@ -364,6 +388,23 @@ export class TerminalManager {
 	 *  when no pane is focused (rare — usually one of the visible panes
 	 *  carries the input focus). */
 	private _focusedPaneId: string | null = null;
+	/** Workspace id whose SplitContainer is currently `display:flex` (vs
+	 *  `display:none`). Set by `onActiveWorkspaceChanged` whenever the UI
+	 *  flips between workspace tabs. Used by `_isContainerHidden` to
+	 *  short-circuit the per-RAF-tick `getBoundingClientRect()` call —
+	 *  reading a DOM rect every tick was triggering ~63 ms of forced
+	 *  reflows over a 5 s window in the perf trace, because Svelte
+	 *  re-emits style updates on PTY output (cursor blink, scroll diff)
+	 *  and the next layout query has to flush a fresh layout pass.
+	 *
+	 *  Comparing `entry.workspaceId === this._activeWorkspaceId` is a
+	 *  plain string compare — no layout cost. `null` means "no workspace
+	 *  has been declared active yet" (initial bootstrap window between
+	 *  manager construction and the first `onActiveWorkspaceChanged`
+	 *  call from +page.svelte); during that window
+	 *  `_isContainerHidden` falls back to the bbox path so the very
+	 *  first pane attach still renders. */
+	private _activeWorkspaceId: string | null = null;
 	/** P2.2: monotonic counter, bumped at the bottom of every RAF tick.
 	 *  Used to rotate the order in which NON-focused panes are visited
 	 *  for render so no single non-focused pane gets perpetually
@@ -393,6 +434,18 @@ export class TerminalManager {
 	 *  canvas/host pair is reused for the app lifetime. `detachHost()` is
 	 *  only meaningful at shutdown / SSR teardown. */
 	private globalHost: { canvas: HTMLCanvasElement; host: SurfaceHostHandle } | null = null;
+	/** True between an `_invalidateHost()` call and the next RAF tick that
+	 *  consumes it. The RAF idle-sleep gate uses this to decide whether
+	 *  the upcoming tick is "real work" (a cache-replay pass over every
+	 *  pane is required to refill the just-cleared swap chain) or "the
+	 *  swap chain still holds the last presented frame, RAF can sleep
+	 *  without painting anything". Without this flag, the loop opens a
+	 *  host frame, runs `recordCachedOnly` for every visible pane, sets
+	 *  `anyRendered = true`, and re-arms RAF — burning 60 fps of GPU
+	 *  draw calls to repaint pixels identical to the last frame. With it,
+	 *  steady-idle taps zero per-tick CPU and zero per-tick GPU work
+	 *  between cursor-blink boundaries. */
+	private _hostInvalidatePending: boolean = false;
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
 	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
@@ -404,6 +457,14 @@ export class TerminalManager {
 	 *  but waking on visibility-restore avoids a lag the first time the
 	 *  user comes back. */
 	private visibilityListener: (() => void) | null = null;
+	/** Document-level `pointerup` / `pointercancel` listener installed
+	 *  lazily on first viewportChanged (= start of any drag session).
+	 *  Triggers `_flushPendingFits`, so the moment the user releases the
+	 *  mouse button the pending pane re-fits land immediately rather
+	 *  than waiting out the trailing-edge `RESIZE_SETTLE_MS` window.
+	 *  Removed in `stopRafLoop` to keep the singleton listener-clean
+	 *  across detach-all → re-attach cycles. */
+	private _resizeReleaseListener: (() => void) | null = null;
 
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
@@ -660,6 +721,18 @@ export class TerminalManager {
 		return this.globalHost?.host ?? null;
 	}
 
+	/** Call `surfaceHost.invalidate()` AND mark `_hostInvalidatePending`
+	 *  so the next RAF tick treats cache-replay passes as real work
+	 *  (rather than letting the idle-sleep gate skip them and leave the
+	 *  freshly-cleared swap chain blank). Every site that wipes the
+	 *  shared canvas must go through here — direct
+	 *  `_globalHostHandle()?.invalidate()` calls bypass the flag and
+	 *  resurrect the "blank pane until next dirty event" symptom. */
+	private _invalidateHost(): void {
+		this._globalHostHandle()?.invalidate();
+		this._hostInvalidatePending = true;
+	}
+
 	/** §A.9 — internal: global canvas lookup. */
 	private _globalHostCanvas(): HTMLCanvasElement | null {
 		return this.globalHost?.canvas ?? null;
@@ -677,23 +750,37 @@ export class TerminalManager {
 	 *
 	 * No-op when `surfaceHost` is null (Canvas2D-only deployment).
 	 */
-	public resizeHost(): void {
+	public resizeHost(dims?: { wCss: number; hCss: number }): void {
 		const entry = this.globalHost;
 		if (!entry) return;
 		const { canvas, host } = entry;
-		const parent = canvas.parentElement;
-		if (!parent) return;
-		const rect = parent.getBoundingClientRect();
-		// Defensive: parent may briefly measure 0×0 during initial mount
-		// or while `display:none` is held by an ancestor. wgpu rejects
-		// surface.configure(0, 0); skip and retry on the next observer
-		// fire. With §A.9's single canvas this only happens at boot —
-		// workspace switches don't reach here at all (the canvas's
-		// parent is always-mounted and sized).
-		if (rect.width <= 0 || rect.height <= 0) return;
+		// Prefer dims passed in by a ResizeObserver callback (computed
+		// from `entry.contentRect` — no layout query) over re-reading
+		// `parent.getBoundingClientRect()`. The latter forces a sync
+		// layout pass that the perf trace flagged at ~21 ms over a 5 s
+		// window even though resizeHost itself only fires at most once
+		// per RAF tick; Svelte's reactive style writes (cursor blink,
+		// scroll diffs) invalidate layout between observer fires, so
+		// each rect read pays the full reflow cost.
+		let wCss: number;
+		let hCss: number;
+		if (dims) {
+			if (dims.wCss <= 0 || dims.hCss <= 0) return;
+			wCss = Math.max(1, Math.floor(dims.wCss));
+			hCss = Math.max(1, Math.floor(dims.hCss));
+		} else {
+			const parent = canvas.parentElement;
+			if (!parent) return;
+			const rect = parent.getBoundingClientRect();
+			// Defensive: parent may briefly measure 0×0 during initial mount
+			// or while `display:none` is held by an ancestor. wgpu rejects
+			// surface.configure(0, 0); skip and retry on the next observer
+			// fire.
+			if (rect.width <= 0 || rect.height <= 0) return;
+			wCss = Math.max(1, Math.floor(rect.width));
+			hCss = Math.max(1, Math.floor(rect.height));
+		}
 		const dpr = window.devicePixelRatio || 1;
-		const wCss = Math.max(1, Math.floor(rect.width));
-		const hCss = Math.max(1, Math.floor(rect.height));
 		const wDev = Math.max(1, Math.round(wCss * dpr));
 		const hDev = Math.max(1, Math.round(hCss * dpr));
 		if (canvas.width === wDev && canvas.height === hDev) return;
@@ -706,7 +793,7 @@ export class TerminalManager {
 			if (e.parked) continue;
 			this._recomputeViewport(e);
 		}
-		host.invalidate();
+		this._invalidateHost();
 		this.wake();
 	}
 
@@ -725,6 +812,7 @@ export class TerminalManager {
 	 * has no shared surface).
 	 */
 	public onActiveWorkspaceChanged(workspaceId: string): void {
+		this._activeWorkspaceId = workspaceId;
 		if (!this.globalHost) return;
 		for (const e of this.panes.values()) {
 			if (e.parked) continue;
@@ -738,7 +826,7 @@ export class TerminalManager {
 			// renders this tick — no black flash, no missed kernel resize.
 			this._recomputeViewport(e);
 		}
-		this.globalHost.host.invalidate();
+		this._invalidateHost();
 		this.wake();
 	}
 
@@ -775,6 +863,19 @@ export class TerminalManager {
 	 * (~µs / pane / frame).
 	 */
 	private _isContainerHidden(entry: PaneEntry): boolean {
+		// Fast path: when we know which workspace is active, a plain
+		// string compare tells us if this pane lives under the visible
+		// SplitContainer. Avoids the per-RAF-tick getBoundingClientRect
+		// call that was burning ~63 ms of forced-reflow time over a
+		// 5 s trace window (the worst hotspot in the perf insight).
+		if (this._activeWorkspaceId !== null) {
+			return entry.workspaceId !== this._activeWorkspaceId;
+		}
+		// Bootstrap fallback: no active workspace declared yet — fall
+		// back to the layout-reading path so a pane attached before
+		// the first `onActiveWorkspaceChanged` call still renders. This
+		// branch is rare (only fires until +page.svelte's first reactive
+		// dispatch lands, typically within one RAF after app mount).
 		try {
 			const rect = entry.container.getBoundingClientRect();
 			return rect.width <= 0 || rect.height <= 0;
@@ -1036,7 +1137,7 @@ export class TerminalManager {
 			// §1.30: subtract container padding — canvas content starts at
 			// `rect.top/left + pad`, not at the rect edge. See cellFromEvent
 			// docstring for the full bug write-up.
-			const pad = ent.lastAppliedPaddingPx ?? 0;
+			const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
 			const x = e.clientX - rect.left - pad;
 			const y = e.clientY - rect.top - pad;
 			const cols = ent.kernel.cols();
@@ -1500,6 +1601,11 @@ export class TerminalManager {
 						| { bg: string; fg: string; cursor: string; tuiBg: string }
 						| { error: string }
 						| null;
+					setTheme: (theme: Record<string, string>) => void;
+					sampleHostPixel: (
+						relX?: number,
+						relY?: number,
+					) => { r: number; g: number; b: number; a: number } | null;
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -1543,6 +1649,30 @@ export class TerminalManager {
 					const k = e.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 					return { row: k.cursorRow(), col: k.cursorCol() };
 				},
+				/** Diagnostic: dump every DEC-mode/inline-TUI signal that
+				 *  drives keyboard / mouse / wheel routing in RidgePane.
+				 *  Useful for answering "is the TUI declaring mouse
+				 *  reporting?" without exposing the kernel directly. */
+				kernelDecState: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const k = e.kernel as unknown as {
+						mouseReportingModes?: () => number;
+						isAltScreen?: () => boolean;
+						isInlineTuiMode?: () => boolean;
+						isAppCursorKeys?: () => boolean;
+						isCursorVisible?: () => boolean;
+						isBracketedPaste?: () => boolean;
+					};
+					return {
+						mouseReportingModes: k.mouseReportingModes?.() ?? null,
+						isAltScreen: k.isAltScreen?.() ?? null,
+						isInlineTuiMode: k.isInlineTuiMode?.() ?? null,
+						isAppCursorKeys: k.isAppCursorKeys?.() ?? null,
+						isCursorVisible: k.isCursorVisible?.() ?? null,
+						isBracketedPaste: k.isBracketedPaste?.() ?? null,
+					};
+				},
 				// Wasm-side theme probe — returns the renderer's currently
 				// active `Theme::{bg, fg, cursor_color, tui_bg}` as four
 				// `#rrggbbaa` hex strings. Lets JS verify the kernel-side
@@ -1569,6 +1699,35 @@ export class TerminalManager {
 						cursor: toHex(8),
 						tuiBg: toHex(12),
 					};
+				},
+				// Theme-rotation regression probe: drive `setTheme` from a
+				// spec without needing dev-server module imports (release
+				// bundle hides /src/* URLs). Pairs with `sampleHostPixel`
+				// to verify GPU output, not just the kernel Theme struct.
+				setTheme: (theme) => this.setTheme(theme),
+				// Read one device pixel from the global host canvas via
+				// drawImage + getImageData. `relX / relY` are 0..1
+				// fractions of the canvas backing size (default 0.5,0.85
+				// = bottom-mid, almost always empty bg below the PS
+				// prompt). Returns null if no host canvas or the
+				// drawImage path can't sample the WebGPU swap chain.
+				sampleHostPixel: (relX = 0.5, relY = 0.85) => {
+					const host = this.globalHost?.canvas ?? null;
+					if (!host) return null;
+					const x = Math.max(0, Math.min(host.width - 1, Math.floor(host.width * relX)));
+					const y = Math.max(0, Math.min(host.height - 1, Math.floor(host.height * relY)));
+					const tmp = document.createElement('canvas');
+					tmp.width = 1;
+					tmp.height = 1;
+					const ctx = tmp.getContext('2d', { willReadFrequently: true });
+					if (!ctx) return null;
+					try {
+						ctx.drawImage(host, x, y, 1, 1, 0, 0, 1, 1);
+					} catch {
+						return null;
+					}
+					const d = ctx.getImageData(0, 0, 1, 1).data;
+					return { r: d[0], g: d[1], b: d[2], a: d[3] };
 				},
 			};
 		}
@@ -1623,7 +1782,7 @@ export class TerminalManager {
 			// alive but we ask the host to clear next frame so the
 			// pane's last pixels don't outlive its slot.
 			if (this._isHostMode(entry)) {
-				this._globalHostHandle()?.invalidate();
+				this._invalidateHost();
 			} else {
 				try {
 					entry.canvas.remove();
@@ -1720,7 +1879,7 @@ export class TerminalManager {
 		// clear so departed pixels don't linger. Canvas2D mode owns its
 		// per-pane DOM canvas — clean up.
 		if (this._isHostMode(entry)) {
-			this._globalHostHandle()?.invalidate();
+			this._invalidateHost();
 		} else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
@@ -1798,7 +1957,7 @@ export class TerminalManager {
 		// Force a Clear on this workspace's surface so any pre-park
 		// pixels in this slot don't bleed through during the first fit.
 		if (useHost && hostHandle) {
-			hostHandle.invalidate();
+			this._invalidateHost();
 		}
 		entry.cellW = quantizeCellSize(Number(cellW), dpr);
 		entry.cellH = quantizeCellSize(Number(cellH), dpr);
@@ -2237,7 +2396,8 @@ export class TerminalManager {
 		const ctrl = ev.ctrlKey || (isMac && ev.metaKey);
 
 		// Handle OS native Copy on Ctrl+C / Cmd+C when text is selected.
-		if (ctrl && ev.key.toLowerCase() === 'c') {
+		const isCtrlC = ctrl && ev.key.toLowerCase() === 'c';
+		if (isCtrlC) {
 			const sel = entry.kernel.getSelectionText();
 			if (sel && sel.length > 0) {
 				// Don't encode \x03, instead copy and clear selection
@@ -2250,6 +2410,16 @@ export class TerminalManager {
 
 		const bytes = entry.kernel.encodeKey(ev.key, ctrl, ev.altKey, ev.shiftKey, ev.metaKey);
 		if (bytes.length === 0) return false;
+		// Real Ctrl+C (no selection → falling through to ETX `\x03`):
+		// arm the kernel's inline-TUI grace window so the IME helper /
+		// shell-history popup can re-enable after the foreground TUI
+		// dies. Without this, PSReadLine's per-keystroke CHA `\x1b[G`
+		// keeps the inline-TUI heuristic stuck on forever (cursor
+		// stayed hidden because the killed TUI never got to emit ?25h).
+		if (isCtrlC) {
+			const k = entry.kernel as unknown as { noteCtrlCSent?: () => void };
+			k.noteCtrlCSent?.();
+		}
 		if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1') {
 			const ts = performance.now().toFixed(1);
 			const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
@@ -2277,7 +2447,7 @@ export class TerminalManager {
 		// receive a wheel-as-mouse SGR report deserve the same accurate
 		// row/col as click handlers. Otherwise wheel-over-cell-N gets
 		// reported as cell-N+1 once `pad > 0`.
-		const pad = entry.lastAppliedPaddingPx ?? 0;
+		const pad = entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0;
 		const x = ev.clientX - rect.left - pad;
 		const y = ev.clientY - rect.top - pad;
 		if (entry.cellW <= 0 || entry.cellH <= 0) return false;
@@ -2382,7 +2552,7 @@ export class TerminalManager {
 		const ent = this.panes.get(paneId);
 		if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
 		const rect = ent.container.getBoundingClientRect();
-		const pad = ent.lastAppliedPaddingPx ?? 0;
+		const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
 		const x = e.clientX - rect.left - pad;
 		const y = e.clientY - rect.top - pad;
 		const cols = ent.kernel.cols();
@@ -2680,6 +2850,31 @@ export class TerminalManager {
 	/** Whether the pane is currently in alt-screen mode (TUI app active). */
 	isAltScreen(paneId: string): boolean { return this.panes.get(paneId)?.kernel.isAltScreen() ?? false; }
 
+	/** Install an IME preedit overlay on the pane's renderer (a layer
+	 *  painted on top of the cell grid each frame, NOT a feed into the
+	 *  kernel cells). RidgePane calls this on `compositionupdate` so
+	 *  CJK preedit text appears inline at the cursor without disturbing
+	 *  any underlying TUI content — Ink redraws can't clobber preedit,
+	 *  preedit can't clobber Ink's frame. Empty `text` is treated as
+	 *  `clearPreedit`. */
+	setPreedit(paneId: string, text: string, row: number, col: number): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const h = entry.handle as unknown as { setPreedit?: (t: string, r: number, c: number) => void };
+		h.setPreedit?.(text, row, col);
+		this.wake();
+	}
+
+	/** Remove the IME preedit overlay. Called on `compositionend` after
+	 *  the committed string has been shipped to the PTY. */
+	clearPreedit(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const h = entry.handle as unknown as { clearPreedit?: () => void };
+		h.clearPreedit?.();
+		this.wake();
+	}
+
 	/** Whether the pane has DEC mouse reporting enabled (?1000/?1002/?1003).
 	 *  When true, pointer events should be forwarded to the TUI instead of
 	 *  being consumed by ridge's selection/link handlers. */
@@ -2841,7 +3036,7 @@ export class TerminalManager {
 		// positioned IME helper measures `left/top` from the padding-box
 		// while the canvas lays out inside the content-box. Add `pad` so
 		// (col=0, row=0) returns the canvas top-left, not N px above-left.
-		const pad = e.lastAppliedPaddingPx ?? 0;
+		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
 		return {
 			x: Math.round(col * e.cellW) + pad,
 			y: Math.round(row * e.cellH) + pad,
@@ -2884,7 +3079,7 @@ export class TerminalManager {
 		// `left/top` from the padding-box edge. Compensate by adding pad
 		// to both axes so the returned coords land over the canvas cursor
 		// instead of N px above-left of it.
-		const pad = e.lastAppliedPaddingPx ?? 0;
+		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
 		const pickAt = (row: number, col: number) => {
 			const r = Math.min(row, Math.max(0, rows - 1));
 			const c = Math.min(col, Math.max(0, cols - 1));
@@ -2897,15 +3092,39 @@ export class TerminalManager {
 			};
 		};
 
+		const k = e.kernel as unknown as {
+			lastAbsCsiPosition?: () => { row: number; col: number; atMs: number } | null;
+			isAltScreen?: () => boolean;
+			isInlineTuiMode?: () => boolean;
+		};
+		const isAlt = k.isAltScreen?.() === true;
+		const isInlineTui = k.isInlineTuiMode?.() === true;
+
+		// Priority for TUI scenarios (alt-screen / inline-TUI like Ink
+		// based apps — opencode, claude code): `lastAbsCsiPosition`
+		// wins over `imeAnchor`. Ink's frame ends with a CHA `\x1b[G`
+		// or CUP that parks the cursor at the user's input column;
+		// that's the stable "where the next character lands" signal.
+		// `imeAnchor` reads `kernel.cursor{Row,Col}` after a RAF, but
+		// in Ink the live cursor may have walked through a spinner /
+		// hint row mid-frame and the RAF picked up the wrong cell —
+		// so the preedit textarea anchored on `imeAnchor` no longer
+		// tracks the visible input position. Fall back to `imeAnchor`
+		// (post-PSReadLine-echo cursor) only when we're NOT inside a
+		// TUI, where it correctly tracks shell typing.
+		if ((isAlt || isInlineTui) && typeof k.lastAbsCsiPosition === 'function') {
+			const csi = k.lastAbsCsiPosition();
+			if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
+				return pickAt(csi.row, csi.col);
+			}
+		}
+
 		const anchor = e.imeAnchor;
 		if (anchor) return pickAt(anchor.row, anchor.col);
 
-		// Try lastAbsCsiPosition for inline-TUI scenarios where the live
-		// cursor is unreliable. Defensive feature-detection so an older
-		// wasm bundle without the method still falls through cleanly.
-		const k = e.kernel as unknown as {
-			lastAbsCsiPosition?: () => { row: number; col: number; atMs: number } | null;
-		};
+		// Non-TUI fallback: try lastAbsCsiPosition even outside the
+		// TUI gate, then live cursor. Older wasm bundles without
+		// `lastAbsCsiPosition` fall through cleanly.
 		if (typeof k.lastAbsCsiPosition === 'function') {
 			const csi = k.lastAbsCsiPosition();
 			if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
@@ -2913,6 +3132,51 @@ export class TerminalManager {
 			}
 		}
 		return this.cursorPixelPosition(paneId);
+	}
+
+	/** Row/col version of `inputAnchorPixelPosition`. Resolved with the
+	 *  SAME fallback chain (alt-screen / inline-TUI → recent
+	 *  `lastAbsCsiPosition` → `imeAnchor` → live cursor) so the IME
+	 *  preedit-overlay code in RidgePane lands its CUP at the exact
+	 *  cell the user is "really" typing at — not wherever a mid-frame
+	 *  Ink spinner has parked the kernel cursor for the moment. */
+	inputAnchorCell(paneId: string): { row: number; col: number } | null {
+		const e = this.panes.get(paneId);
+		if (!e) return null;
+		const ABS_CSI_DECAY_MS = 2_000;
+		const k = e.kernel as unknown as {
+			cursorRow: () => number;
+			cursorCol: () => number;
+			lastAbsCsiPosition?: () => { row: number; col: number; atMs: number } | null;
+			isAltScreen?: () => boolean;
+			isInlineTuiMode?: () => boolean;
+		};
+		const isAlt = k.isAltScreen?.() === true;
+		const isInlineTui = k.isInlineTuiMode?.() === true;
+		// Alt-screen / inline-TUI: the LAST absolute-positioning CSI is
+		// the most reliable input-cell signal, even if it's "old". Ink /
+		// claude / opencode park the cursor at the user's input column
+		// at the end of every render frame; when the app goes idle (no
+		// spinner, no animation), it stops emitting CSI but the cursor
+		// stays exactly where the last frame left it — at the input
+		// cell. The 2 s decay used to demote a stale CSI in favour of
+		// the live `kernel.cursor*()`, but in alt-screen the live
+		// cursor and the last CSI position are the SAME thing (no
+		// other writes happen between user keystrokes), so age doesn't
+		// matter. Skip the decay so a quiet Ink TUI still gets the
+		// right anchor.
+		if ((isAlt || isInlineTui) && typeof k.lastAbsCsiPosition === 'function') {
+			const csi = k.lastAbsCsiPosition();
+			if (csi) return { row: csi.row, col: csi.col };
+		}
+		if (e.imeAnchor) return { row: e.imeAnchor.row, col: e.imeAnchor.col };
+		if (typeof k.lastAbsCsiPosition === 'function') {
+			const csi = k.lastAbsCsiPosition();
+			if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
+				return { row: csi.row, col: csi.col };
+			}
+		}
+		return { row: k.cursorRow(), col: k.cursorCol() };
 	}
 
 	/** Force a full-frame redraw on the next rAF tick (§1.27 fix). Used
@@ -2974,6 +3238,19 @@ export class TerminalManager {
 	setFont(family: string, sizePx: number): void {
 		this.opts.fontFamily = family;
 		this.opts.fontSizePx = sizePx;
+		// Expose the terminal's actual font stack as a CSS custom
+		// property so DOM overlays positioned over the canvas (the IME
+		// helper textarea, in particular) can render their text in the
+		// same typeface as the canvas glyphs. Without this the
+		// preedit text sits in the page's default Inter sans-serif
+		// while the surrounding terminal cells are JetBrains Mono /
+		// Cascadia Code etc., so the in-progress IME text looks
+		// nothing like an inline input field — visibly mismatched
+		// character widths, weights, and baselines.
+		if (typeof document !== 'undefined') {
+			document.documentElement.style.setProperty('--rg-term-font-family', family);
+			document.documentElement.style.setProperty('--rg-term-font-size', `${sizePx}px`);
+		}
 		const dpr = window.devicePixelRatio || 1;
 		for (const entry of this.panes.values()) {
 			// Skip parked entries — their handle has been freed. They'll
@@ -3001,8 +3278,20 @@ export class TerminalManager {
 			if (entry.parked) { parked++; continue; }
 			entry.handle.applyDefaultTheme();
 			entry.handle.applyTheme(theme);
+			// Theme change doesn't bump kernel dirty, so the next frame's
+			// `dirty=false` branch would call `recordCachedOnly()` which
+			// replays the previous frame's CellInstance buffer — that
+			// buffer has the OLD theme's bg/fg baked into every quad.
+			// Drop the cache so the next frame goes through full render
+			// and re-reads `theme.bg` for the clear quad and per-cell bgs.
+			entry.handle.invalidateAll();
 			applied++;
 		}
+		// Surface-host LoadOp::Clear color is sampled from JS `themeBg`
+		// every begin_frame, but only painted when `needs_initial_clear`.
+		// Force one initial-clear so the gutter pixels around per-pane
+		// scissors also get repainted with the new bg.
+		this._invalidateHost();
 		if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
 			// eslint-disable-next-line no-console
 			console.debug(`[theme-trace] setTheme applied=${applied} parked=${parked} totalKeys=${Object.keys(theme).length} bg=${theme.background ?? '∅'}`);
@@ -3011,23 +3300,40 @@ export class TerminalManager {
 	}
 
 	/**
-	 * Container-size changed. Trailing-edge debounce 120ms: while
-	 * splitpanes is being dragged (or any continuous container resize is
-	 * happening), `viewportChanged` may fire dozens of times per second.
-	 * Each call would resize the kernel AND fire an async PTY resize.
-	 * If kernel size oscillates faster than the PTY catches up, in-flight
-	 * shell bytes (which were emitted under the OLD viewport) land on
-	 * a smaller grid and PSReadLine's absolute-cursor positioning (e.g.
-	 * `CSI 39;18 H`) clamps to the new last row → "everything on bottom
-	 * row" bug.
+	 * Container-size changed. Trailing-edge debounce: hold the actual
+	 * fit until the user stops resizing.
 	 *
-	 * 120ms is short enough to feel instant after drag ends, long enough
-	 * to skip continuous drag frames. Initial fit at attach() bypasses
-	 * the debounce.
+	 * Trigger to "settle now" is either of:
+	 *   a. `RESIZE_SETTLE_MS` (1000 ms) elapses with no further
+	 *      viewportChanged events — user paused mid-drag.
+	 *   b. A global `pointerup` lands — user released the splitter /
+	 *      window-edge handle (see `_ensureResizeReleaseListener`).
+	 *
+	 * Until one of those fires we do NOTHING — no scissor update, no
+	 * kernel grid resize, no PTY SIGWINCH. The visual terminal stays
+	 * exactly where it was at drag start while CSS reflows the
+	 * container around it. This matches the explicit UX ask: "during
+	 * resize the terminal content should not follow in real time; only
+	 * when the mouse pauses for 1 s OR the user releases the button
+	 * should the content snap into place against the divider".
+	 *
+	 * The previous 120 ms debounce eagerly fit on every brief pause
+	 * mid-drag, producing the "TUI drawing 错位 / 不完整" symptom: a
+	 * partial re-fit landed during continuous motion, then drift
+	 * accumulated as the user kept dragging.
+	 *
+	 * Kernel + PTY race-correctness still applies: in-flight bytes
+	 * carry absolute cursor positions valid only under one given grid,
+	 * so collapsing the whole drag into a single end-of-drag fit is
+	 * strictly safer than the prior behaviour.
+	 *
+	 * Initial fit at attach() bypasses the debounce — synchronous
+	 * resize, no concurrent in-flight bytes.
 	 */
 	viewportChanged(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
+		this._ensureResizeReleaseListener();
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 		}
@@ -3035,10 +3341,57 @@ export class TerminalManager {
 			entry.pendingFitTimer = null;
 			const e = this.panes.get(paneId);
 			// Re-check parked: a park() call could have come in during
-			// the 120 ms debounce window, freeing entry.handle.
+			// the debounce window, freeing entry.handle.
 			if (!e || e.parked) return;
 			void this.fitPane(e);
-		}, 120);
+		}, RESIZE_SETTLE_MS);
+	}
+
+	/** Install a document-level `pointerup` listener (once) that flushes
+	 *  every pane's pending fit timer the moment the user releases the
+	 *  mouse button — so drag-end snaps immediately without waiting out
+	 *  the full `RESIZE_SETTLE_MS`. Idempotent; teardown happens in
+	 *  `stopRafLoop` so the singleton doesn't leak listeners between
+	 *  detach-all → re-attach cycles.
+	 *
+	 *  Critical: the listener MUST NOT flush when the pointerup is the
+	 *  release end of a click inside a pane. Flushing there fires
+	 *  `kernel.resize` + PTY SIGWINCH between the pane's own pointerdown
+	 *  and pointerup handlers — which delivers the TUI mouse-release
+	 *  byte against a freshly-resized grid, so the release cell snaps
+	 *  to wrong coordinates. In opencode / Claude Code / other Ink TUIs
+	 *  the symptom is "TUI mouse capture is broken: clicks land in the
+	 *  wrong place, or selection menus react oddly". We gate via
+	 *  `e.target.closest('[data-rg-pane-id]')`: pane-internal pointerups
+	 *  belong to the pane's own handler chain; only splitter / window-
+	 *  edge / sidebar releases (DOM outside any pane) drive the flush. */
+	private _ensureResizeReleaseListener(): void {
+		if (this._resizeReleaseListener !== null) return;
+		if (typeof document === 'undefined') return;
+		this._resizeReleaseListener = (e?: Event) => {
+			const tgt = (e as PointerEvent | undefined)?.target as Element | null | undefined;
+			if (tgt && tgt.closest && tgt.closest('[data-rg-pane-id]')) {
+				// Pane-internal release — leave the pane's own pointerup
+				// handler to do its TUI mouse-release forwarding without
+				// a concurrent grid resize racing it.
+				return;
+			}
+			this._flushPendingFits();
+		};
+		document.addEventListener('pointerup', this._resizeReleaseListener, { passive: true });
+		document.addEventListener('pointercancel', this._resizeReleaseListener, { passive: true });
+	}
+
+	/** Run any pane's pending fit immediately, clearing its timer.
+	 *  Called from the `pointerup` listener and from `stopRafLoop`. */
+	private _flushPendingFits(): void {
+		for (const entry of this.panes.values()) {
+			if (entry.pendingFitTimer === null) continue;
+			clearTimeout(entry.pendingFitTimer);
+			entry.pendingFitTimer = null;
+			if (entry.parked) continue;
+			void this.fitPane(entry);
+		}
 	}
 
 	private async fitPane(entry: PaneEntry): Promise<void> {
@@ -3134,6 +3487,14 @@ export class TerminalManager {
 			const padAll = Math.max(0, (containerWCss - cellsW) / 2);
 			rows = Math.max(1, Math.floor((containerHCss - 2 * padAll) / entry.cellH));
 			entry.container.style.padding = `${padAll}px`;
+			// Record the ACTUAL written CSS padding separately from the
+			// user-preference value. `pickAt` etc. need the on-screen
+			// value to align overlays with the visible cursor, while
+			// the NEXT fitPane needs the user's basePad as a floor
+			// (otherwise basePad drifts toward padAll on every fit and
+			// the container shifts a few px each run — visible as the
+			// "shell prompt loads then nudges downward" jolt at startup).
+			entry.lastFitPaddingPx = padAll;
 			this._recomputeViewport(entry);
 		} else {
 			entry.handle.resize(wCss, hCss, dpr);
@@ -3310,7 +3671,18 @@ export class TerminalManager {
 		// detach-all → re-attach cycles.
 		if (this.visibilityListener === null && typeof document !== 'undefined') {
 			this.visibilityListener = () => {
-				if (!document.hidden) this.wake();
+				if (!document.hidden) {
+					// On visibility-restore the swap chain may have been
+					// recycled by Chromium / WebView2 while we were
+					// hidden — force a full cache replay on the next
+					// tick so the user doesn't briefly see fresh-zero
+					// pixels (transparent → DOM parent) where rendered
+					// terminal content was. Pairs with the idle-watchdog
+					// invalidate so any code path that suspends the loop
+					// repaints on resume.
+					this._hostInvalidatePending = true;
+					this.wake();
+				}
 			};
 			document.addEventListener('visibilitychange', this.visibilityListener);
 		}
@@ -3321,6 +3693,14 @@ export class TerminalManager {
 			// reads `js_sys::Date::now()` internally, so the renderer's blink
 			// phase and our pre-render `isDirty` must use the same epoch.
 			const dateNow = Date.now();
+			// Consume the host-invalidate flag at the start of the tick so
+			// the upcoming cache-replay pass over every visible pane counts
+			// as "real work" (the swap chain was wiped by LoadOp::Clear in
+			// SurfaceHost::begin_frame; without per-pane repaints those
+			// regions stay blank). Cleared so the next tick sleeps if no
+			// new invalidate / dirty event lands in the meantime.
+			const surfaceJustWiped = this._hostInvalidatePending;
+			this._hostInvalidatePending = false;
 			// P2.2 (2026-05-20): compute the per-frame order ONCE here so
 			// the deferred-feed drain and the main render loop agree on
 			// who goes first. Focused pane heads the list; remaining
@@ -3513,14 +3893,27 @@ export class TerminalManager {
 					}
 				}
 				// §4.3 Phase B + §4b: host-mode panes participate in the
-				// frame whenever a global host is alive (so the
-				// `LoadOp::Clear`-wiped scissor region gets repainted on
-				// every tick the active workspace is rendering).
+				// frame whenever ANY visible host pane needs to draw —
+				// not just this one. WebView2's LoadOp::Load is not
+				// reliable enough to preserve neighbour-pane pixels
+				// across a present: when pane A renders (cursor blink,
+				// PTY input, focus change), pane B's scissor region
+				// frequently comes back as fresh-zero in the next
+				// presented texture. So whenever the host frame opens
+				// at all, every visible pane re-records its content —
+				// dirty panes via full `render()`, others via the
+				// cheap `recordCachedOnly()` path (one buffered GPU
+				// draw call, no kernel grid sweep, sub-100μs each).
+				// `surfaceJustWiped` covers the case where ALL panes
+				// are non-dirty but a manual invalidate (theme change,
+				// resize, park/unpark) wiped the canvas.
 				// Canvas2D-mode panes still gate on per-pane `dirty`.
 				// §A.9: `hostFrameOpen` is no longer the gate — the
 				// frame is opened lazily inside the render path so we
 				// don't submit a clear-only frame when nothing draws.
-				const shouldRender = isHost ? activeHost !== null : dirty;
+				const shouldRender = isHost
+					? (activeHost !== null && (dirty || anyDirty || surfaceJustWiped))
+					: dirty;
 				// §A.4 — tick trace: dump cursor row's cells per frame. Lets us
 				// answer "what does the kernel grid hold at the moment Canvas2D
 				// samples it" — if the cells are right but render is wrong, it's
@@ -3638,10 +4031,30 @@ export class TerminalManager {
 			// All idle. Sleep until the next blink boundary (or a 1s
 			// watchdog so a missed wake-up path can't hang a pane longer
 			// than that). Min 1ms keeps `setTimeout(0)` semantics off the
-			// hot path.
+			// hot path. When `document.visibilityState === 'hidden'`
+			// (window minimised or another tab active) we don't even
+			// arm the watchdog — the OS won't show our pixels until
+			// visibility flips back, and that fires the
+			// `visibilitychange` listener which wakes us via
+			// `this.wake()`. Skipping the watchdog here is the
+			// "彻底停 RAF" idle-optimisation pass: it brings hidden-
+			// state CPU down to literal zero.
+			if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+				return;
+			}
 			const sleepMs = Math.min(Math.max(minDeadlineMs, 1), 1000);
 			this.idleTimer = setTimeout(() => {
 				this.idleTimer = null;
+				// Defensive repaint on every idle-watchdog wake. WebView2
+				// occasionally returns a fresh-zero swap-chain texture
+				// after extended idle — under the previous "wake +
+				// nothing dirty → skip draws" path, the user saw stale
+				// or torn content (TUI rendering 错位) until the next
+				// real dirty event landed. Marking the host invalidated
+				// here forces a full cache replay across every pane on
+				// the upcoming tick at the cost of one GPU draw per
+				// second; sub-millisecond GPU work, invisible to CPU.
+				this._hostInvalidatePending = true;
 				this.startRafLoop();
 			}, sleepMs);
 		};
@@ -3660,6 +4073,11 @@ export class TerminalManager {
 		if (this.visibilityListener !== null && typeof document !== 'undefined') {
 			document.removeEventListener('visibilitychange', this.visibilityListener);
 			this.visibilityListener = null;
+		}
+		if (this._resizeReleaseListener !== null && typeof document !== 'undefined') {
+			document.removeEventListener('pointerup', this._resizeReleaseListener);
+			document.removeEventListener('pointercancel', this._resizeReleaseListener);
+			this._resizeReleaseListener = null;
 		}
 	}
 

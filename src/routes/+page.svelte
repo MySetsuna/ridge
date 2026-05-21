@@ -205,12 +205,24 @@ self.MonacoEnvironment = {
     const parent = node.parentElement;
     let observer: ResizeObserver | undefined;
     let pendingRaf = 0;
+    let pendingDims: { wCss: number; hCss: number } | null = null;
     if (parent) {
-      observer = new ResizeObserver(() => {
+      observer = new ResizeObserver((entries) => {
+        // Capture dims from the ResizeObserver entry (no layout query).
+        // Stash on outer scope so the RAF callback below uses the LATEST
+        // observed dims even when several observer fires coalesce into
+        // one RAF tick.
+        const e = entries[entries.length - 1];
+        if (e) pendingDims = { wCss: e.contentRect.width, hCss: e.contentRect.height };
         if (pendingRaf !== 0) return;
         pendingRaf = requestAnimationFrame(() => {
           pendingRaf = 0;
-          manager.resizeHost();
+          if (pendingDims) {
+            manager.resizeHost(pendingDims);
+            pendingDims = null;
+          } else {
+            manager.resizeHost();
+          }
         });
       });
       observer.observe(parent);
