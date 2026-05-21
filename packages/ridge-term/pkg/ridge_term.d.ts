@@ -28,6 +28,16 @@ export class RenderHandle {
      */
     configure(font_family: string, font_size_px: number, dpr: number): Float32Array;
     /**
+     * Diagnostic: return the kernel-side renderer.theme.{bg, fg,
+     * cursor_color, tui_bg} as a Uint8Array of 16 bytes (4×RGBA).
+     * Lets JS confirm whether `applyTheme` actually propagated into
+     * the renderer state — the JS-side `opts.theme` snapshot only
+     * proves the manager *received* the theme, not that the
+     * wasm renderer accepted it. Cheap (one Theme clone, 16 bytes
+     * copied) so callers may poll without harm.
+     */
+    currentThemeProbe(): Uint8Array;
+    /**
      * Force a full redraw on the next render() — useful after
      * invalidating external state without using the dedicated setters.
      */
@@ -475,29 +485,8 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly __wbg_renderhandle_free: (a: number, b: number) => void;
-    readonly __wbg_surfacehosthandle_free: (a: number, b: number) => void;
     readonly __wbg_terminalkernel_free: (a: number, b: number) => void;
     readonly _init: () => void;
-    readonly renderhandle_applyDefaultTheme: (a: number) => void;
-    readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
-    readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly renderhandle_invalidateAll: (a: number) => void;
-    readonly renderhandle_isDirty: (a: number, b: number, c: number) => number;
-    readonly renderhandle_new: (a: any) => [number, number, number];
-    readonly renderhandle_newWithWebgpuFirst: (a: any, b: number) => any;
-    readonly renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number) => number;
-    readonly renderhandle_recordCachedOnly: (a: number) => number;
-    readonly renderhandle_render: (a: number, b: number) => number;
-    readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly renderhandle_setFocused: (a: number, b: number) => void;
-    readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
-    readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
-    readonly surfacehosthandle_clone: (a: number) => number;
-    readonly surfacehosthandle_endFrame: (a: number) => void;
-    readonly surfacehosthandle_init: (a: any) => any;
-    readonly surfacehosthandle_invalidate: (a: number) => void;
-    readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
     readonly terminalkernel_applyDeltaFrame: (a: number, b: number, c: number) => [number, number];
     readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_clearScrollback: (a: number) => void;
@@ -550,10 +539,33 @@ export interface InitOutput {
     readonly terminalkernel_setSelectionAbs: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2: (a: number, b: number, c: any) => void;
+    readonly __wbg_renderhandle_free: (a: number, b: number) => void;
+    readonly __wbg_surfacehosthandle_free: (a: number, b: number) => void;
+    readonly renderhandle_applyDefaultTheme: (a: number) => void;
+    readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
+    readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly renderhandle_currentThemeProbe: (a: number) => [number, number];
+    readonly renderhandle_invalidateAll: (a: number) => void;
+    readonly renderhandle_isDirty: (a: number, b: number, c: number) => number;
+    readonly renderhandle_new: (a: any) => [number, number, number];
+    readonly renderhandle_newWithWebgpuFirst: (a: any, b: number) => any;
+    readonly renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number) => number;
+    readonly renderhandle_recordCachedOnly: (a: number) => number;
+    readonly renderhandle_render: (a: number, b: number) => number;
+    readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
+    readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
+    readonly surfacehosthandle_clone: (a: number) => number;
+    readonly surfacehosthandle_endFrame: (a: number) => void;
+    readonly surfacehosthandle_init: (a: any) => any;
+    readonly surfacehosthandle_invalidate: (a: number) => void;
+    readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hb9b2628a6f28b20e: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h8146b976d3444cd3: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h6d9ba260bb3306dc: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h5d643d96cae4f886: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hde54ef055b7489c1: (a: number, b: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
