@@ -145,7 +145,7 @@ pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String 
         .iter()
         .find(|t| t.id == theme_id)
         .or_else(|| tf.themes.first());
-    let (loader_json, bg_json, id_json) = match entry {
+    let (loader_json, bg_json, colors_json, id_json) = match entry {
         Some(t) => {
             let loader = serde_json::to_string(&t.loader)
                 .unwrap_or_else(|_| "null".to_string());
@@ -154,10 +154,24 @@ pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String 
                 .get("bg")
                 .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()))
                 .unwrap_or_else(|| "null".to_string());
+            // Full colour palette — every `--rg-*` CSS var the app reads,
+            // so `app.html`'s inline bootstrap script can paint chrome
+            // (sidebar, body, file editor, etc.) with the active theme's
+            // bg/fg/accent BEFORE SvelteKit hydrates. Without this the
+            // first launch (no localStorage cache) shows a flash of
+            // browser-default white between splash dismiss and the
+            // async `initThemeSystem → initSettingsBoot` chain landing.
+            let colors = serde_json::to_string(&t.colors)
+                .unwrap_or_else(|_| "null".to_string());
             let id = serde_json::to_string(&t.id).unwrap_or_else(|_| "null".to_string());
-            (loader, bg, id)
+            (loader, bg, colors, id)
         }
-        None => ("null".to_string(), "null".to_string(), "null".to_string()),
+        None => (
+            "null".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+        ),
     };
     // `Object.freeze` so a hot-reloaded module can't silently rewrite the
     // boot snapshot — debugging splash regressions is easier when these
@@ -165,9 +179,11 @@ pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String 
     format!(
         "Object.defineProperty(window,'__RIDGE_BOOT_LOADER__',{{value:Object.freeze({loader}),writable:false,configurable:false}});\
          Object.defineProperty(window,'__RIDGE_BOOT_THEME_BG__',{{value:{bg},writable:false,configurable:false}});\
+         Object.defineProperty(window,'__RIDGE_BOOT_THEME_COLORS__',{{value:Object.freeze({colors}),writable:false,configurable:false}});\
          Object.defineProperty(window,'__RIDGE_BOOT_THEME_ID__',{{value:{id},writable:false,configurable:false}});",
         loader = loader_json,
         bg = bg_json,
+        colors = colors_json,
         id = id_json,
     )
 }

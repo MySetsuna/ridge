@@ -85,32 +85,42 @@
     (function() {
       var loader = null;
       var bg = null;
-      // Path 1: Rust-injected boot snapshot.
-      if (window.__RIDGE_BOOT_LOADER__) {
-        loader = window.__RIDGE_BOOT_LOADER__;
-        bg = window.__RIDGE_BOOT_THEME_BG__ || null;
-      }
-      // Path 2: localStorage cache (populated by initThemeSystem in
-      // src/lib/stores/themes.ts on every page load).
-      if (!loader) {
-        var themeId = 'endless-dark';
-        try {
-          var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
-          if (s.theme) themeId = s.theme;
-        } catch(e) {}
-        try {
+      var colors = null;
+      // Priority order:
+      //   1) localStorage `ridge-settings.theme` + `ridge-theme-data`
+      //      — the user's MOST RECENT theme choice. `setTheme` writes
+      //      these synchronously before kicking off the async Rust
+      //      persistence, so they're always at least as fresh as the
+      //      Rust-side `active_theme.json`. Prefer them whenever the
+      //      cache contains the matching theme entry.
+      //   2) Rust-injected `window.__RIDGE_BOOT_*` — set by
+      //      `WebviewWindowBuilder::initialization_script` BEFORE any
+      //      page script runs. Authoritative on FIRST launch (no
+      //      localStorage yet) and a safety net when the localStorage
+      //      cache is stale / partial.
+      //   3) Hardcoded fallbacks below.
+      try {
+        var s = JSON.parse(localStorage.getItem('ridge-settings') || '{}');
+        var themeId = (s && s.theme) || null;
+        if (themeId) {
           var cache = JSON.parse(localStorage.getItem('ridge-theme-data') || '{}');
-          if (cache.themes) {
+          if (cache && cache.themes) {
             for (var i = 0; i < cache.themes.length; i++) {
               if (cache.themes[i].id === themeId) {
                 var t = cache.themes[i];
                 loader = t.loader || {};
-                bg = t.colors && t.colors.bg;
+                colors = t.colors || null;
+                bg = colors && colors.bg;
                 break;
               }
             }
           }
-        } catch(e) {}
+        }
+      } catch(e) {}
+      if (!loader && window.__RIDGE_BOOT_LOADER__) {
+        loader = window.__RIDGE_BOOT_LOADER__;
+        bg = window.__RIDGE_BOOT_THEME_BG__ || null;
+        colors = window.__RIDGE_BOOT_THEME_COLORS__ || null;
       }
       loader = loader || {};
       var root = document.documentElement;
@@ -149,6 +159,24 @@
       setLen('--startup-fadeout-dur', loader.fadeOutDurationMs, 'ms');
       setNum('--startup-fill-opacity-primary', loader.fillOpacityPrimary);
       setNum('--startup-fill-opacity-secondary', loader.fillOpacitySecondary);
+      // Apply the FULL theme palette (`--rg-bg`, `--rg-fg`, `--rg-accent`,
+      // every `--rg-ansi-*`, etc.) to `:root` right here — before SvelteKit
+      // hydrates, before any `<body>` paint, before the splash even starts
+      // fading. Without this the chrome behind the splash sits at browser
+      // defaults (white) until the SvelteKit onMount → initThemeSystem →
+      // initSettingsBoot chain finishes; users see a flash of white when
+      // the splash fades out faster than the SPA boot, especially in dev
+      // mode where vite's module loading adds 100-300 ms of latency.
+      // `settings.ts::applyTheme` writes the same vars later; this is the
+      // first-write that the SPA may overwrite once it confirms the user's
+      // theme choice — identical write is a no-op.
+      if (colors && typeof colors === 'object') {
+        for (var key in colors) {
+          if (Object.prototype.hasOwnProperty.call(colors, key)) {
+            setColor('--rg-' + key, colors[key]);
+          }
+        }
+      }
     })();
   </script>
 </head>
