@@ -203,11 +203,32 @@ export function setupTerminalThemeBridge(): () => void {
 }
 
 /** Force-push the current theme to the wasm kernel right now. Useful from
- *  test setups or after a manual CSS-var override. The store subscription
- *  in `setupTerminalThemeBridge` covers all normal paths. */
+ *  test setups, after a manual CSS-var override, or from a freshly-attached
+ *  pane that wants the kernel rebased on the current theme without
+ *  waiting for the bridge's next RAF.
+ *
+ *  Important: bails out silently when `readRidgeTheme()` returns an empty
+ *  object — that happens before `initSettingsBoot()` writes any `--rg-*`
+ *  CSS vars onto documentElement, e.g. when a pane's onMount finishes
+ *  ahead of `+page.svelte`'s async theme-bootstrap IIFE. Pushing the
+ *  empty theme would `setTheme({})` → manager.setTheme calls
+ *  `handle.applyDefaultTheme()` on every pane, which rebases the wasm
+ *  kernel's `Theme::bg` back to `default_dark` (`#071009`, "near-black
+ *  dark green"). The kernel would then visibly flash to the default-dark
+ *  palette and only recover on the bridge's next RAF — exactly the
+ *  "background should be theme color but is black" symptom. Leaving the
+ *  existing `opts.theme` intact lets the bridge's pending RAF (already
+ *  scheduled at boot via `setupTerminalThemeBridge` subscribing to
+ *  settingsStore) apply the right theme as soon as CSS vars land. */
 export function pushTerminalThemeNow(): void {
 	const manager = TerminalManager.instance();
 	const theme = readRidgeTheme();
+	// `background` is the only field always set when CSS vars are
+	// populated (everything else may be absent if a theme didn't
+	// declare e.g. `selectionBackground`). If `background` is empty,
+	// the whole probe missed — defer to the bridge's RAF rather than
+	// blow away an already-applied theme.
+	if (!theme.background) return;
 	_lastApplied = JSON.stringify(theme);
 	manager.setTheme(theme);
 }
