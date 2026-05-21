@@ -1496,6 +1496,10 @@ export class TerminalManager {
 					scrollbackLen: (paneId: string) => number;
 					themeSnapshot: () => Record<string, string> | null;
 					kernelCursor: (paneId: string) => { row: number; col: number } | null;
+					kernelThemeProbe: (paneId: string) =>
+						| { bg: string; fg: string; cursor: string; tuiBg: string }
+						| { error: string }
+						| null;
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -1538,6 +1542,33 @@ export class TerminalManager {
 					if (!e) return null;
 					const k = e.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 					return { row: k.cursorRow(), col: k.cursorCol() };
+				},
+				// Wasm-side theme probe — returns the renderer's currently
+				// active `Theme::{bg, fg, cursor_color, tui_bg}` as four
+				// `#rrggbbaa` hex strings. Lets JS verify the kernel-side
+				// state independently of `opts.theme`, which only reflects
+				// what the manager *sent*, not what the wasm renderer
+				// actually accepted. The hex strings are reconstructed
+				// from a 16-byte Uint8Array the wasm export returns.
+				kernelThemeProbe: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const h = e.handle as unknown as { currentThemeProbe?: () => Uint8Array };
+					if (typeof h.currentThemeProbe !== 'function') {
+						return { error: 'currentThemeProbe not exported — rebuild wasm pkg' };
+					}
+					const bytes = h.currentThemeProbe();
+					if (!bytes || bytes.length < 16) return { error: 'short probe response' };
+					const toHex = (off: number) => {
+						const hex = (n: number) => n.toString(16).padStart(2, '0');
+						return `#${hex(bytes[off])}${hex(bytes[off+1])}${hex(bytes[off+2])}${hex(bytes[off+3])}`;
+					};
+					return {
+						bg: toHex(0),
+						fg: toHex(4),
+						cursor: toHex(8),
+						tuiBg: toHex(12),
+					};
 				},
 			};
 		}

@@ -1037,6 +1037,24 @@ mod renderer_js {
         fn current_theme(&self) -> Theme {
             self.renderer.theme().clone()
         }
+
+        /// Diagnostic: return the kernel-side renderer.theme.{bg, fg,
+        /// cursor_color, tui_bg} as a Uint8Array of 16 bytes (4×RGBA).
+        /// Lets JS confirm whether `applyTheme` actually propagated into
+        /// the renderer state — the JS-side `opts.theme` snapshot only
+        /// proves the manager *received* the theme, not that the
+        /// wasm renderer accepted it. Cheap (one Theme clone, 16 bytes
+        /// copied) so callers may poll without harm.
+        #[wasm_bindgen(js_name = currentThemeProbe)]
+        pub fn current_theme_probe(&self) -> Box<[u8]> {
+            let t = self.current_theme();
+            let mut out = Vec::with_capacity(16);
+            out.extend_from_slice(&t.bg);
+            out.extend_from_slice(&t.fg);
+            out.extend_from_slice(&t.cursor_color);
+            out.extend_from_slice(&t.tui_bg);
+            out.into_boxed_slice()
+        }
     }
 
     // ──────────────────────────────────────────────────────────────
