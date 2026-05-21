@@ -19,6 +19,7 @@ import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
+import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
@@ -738,6 +739,16 @@ onMount(() => {
 		await manager.attach(paneId, container, workspaceId);
 		if (!alive) return;
 		attached = true;
+		// Force-push the current CSS-derived theme onto the fresh kernel.
+		// `setupTerminalThemeBridge` runs once at app boot and only
+		// re-pushes when the settings store changes, so the very first
+		// pane to attach AFTER bootup races the bridge's initial RAF —
+		// if attach wins, `opts.theme` is null and the kernel keeps its
+		// compile-time defaults until the next settings tick (which may
+		// never come). This force-push closes that window: every attach
+		// sees the live `--rg-*` CSS vars on documentElement and applies
+		// them synchronously.
+		pushTerminalThemeNow();
 		window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
 
 		// Sync focus state immediately so a freshly-split pane doesn't draw
