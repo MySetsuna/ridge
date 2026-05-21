@@ -145,7 +145,18 @@ impl SurfaceHost {
             width: 1,
             height: 1,
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            // PreMultiplied (not Auto) — on WebView2/Chromium, `Auto`
+            // resolves to `Opaque`, which makes the compositor ignore
+            // the swap-chain alpha entirely: idle frames (or zero-init
+            // textures after WebView2 recycles the swap chain in idle
+            // periods) display as RGB=(0,0,0) opaque black, regardless
+            // of what the DOM parent stack looks like. Explicit
+            // `PreMultiplied` makes transparent pixels actually
+            // transparent at composite time, so splitter strips show
+            // their SplitContainer DOM bg and idle/recycled regions
+            // fall through to the canvas's CSS parents instead of
+            // turning black.
+            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
             view_formats: vec![],
             // P1.1 (2026-05-19): lat=1 so `get_current_texture` deterministically
             // returns the just-presented frame N-1, not frame N-2. That makes

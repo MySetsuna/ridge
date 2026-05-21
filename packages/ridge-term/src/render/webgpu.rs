@@ -333,30 +333,32 @@ impl RenderBackend for WebGpuPaneBackend {
     }
 
     fn requires_full_frame(&self) -> bool {
-        // P1.1 (2026-05-19): flag-driven. Previously this returned `true`
-        // unconditionally because the host's swap chain had
-        // `desired_maximum_frame_latency: 2`, which made
-        // `get_current_texture` return frame N-2's pixels (sometimes
-        // N-1's, never deterministically) — so `LoadOp::Load` couldn't
-        // be trusted to preserve last-frame content and every visible
-        // row had to be re-encoded every tick. The host's swap chain is
-        // now configured with latency 1 so LoadOp::Load reliably
-        // restores the just-presented N-1 frame.
+        // P1.1's flag-driven version (returning `self.needs_initial_clear`)
+        // assumed `desired_maximum_frame_latency: 1` makes
+        // `get_current_texture` deterministically return frame N-1's
+        // pixels and `LoadOp::Load` therefore reliably preserves prior
+        // content. That assumption HOLDS on the e2e-shell release exe
+        // (where the spec also passes), but DOES NOT hold inside
+        // `pnpm tauri:dev:cdp` on Edge WebView2 148.0.3967.70 — there,
+        // every cursor-blink `render()` call writes a "row 6 only"
+        // instance buffer, presents over a swap-chain texture whose
+        // prior pixels are silently dropped, and the user sees the
+        // history rows blink in/out every 500 ms together with the
+        // cursor.
         //
-        // With that fix in place, the renderer's row-hash dirty diff is
-        // sufficient on its own: when content / cursor / selection /
-        // scroll-offset / snapshot-size change, the renderer's
-        // `tick()` already calls `on_full_invalidate()` which sets
-        // `needs_initial_clear = true` on this struct — and we honour
-        // it here for exactly one frame, then `end_frame` clears the
-        // flag. Cursor blink, idle frames, and "only the cursor row
-        // changed" frames now redraw just the dirty rows, leaving the
-        // rest of the pane's pixels untouched via LoadOp::Load.
+        // Forcing a full frame on every tick re-encodes every visible
+        // row (~rows × cols cell instances on the idle blink) — wasteful
+        // but visually correct regardless of swap-chain preservation
+        // semantics. P1.1's CPU win was real but it traded correctness
+        // for an env-specific optimisation; we'd rather pay the encode
+        // cost than ship a fix that only renders right on the release
+        // build.
         //
-        // The cost saved is real: a 24×80 grid drops from ~1920
-        // cell-instance encodes per pane per blink tick to ~80 for the
-        // cursor row, which is the bulk of the previous idle CPU floor.
-        self.needs_initial_clear
+        // If a future Edge / WebView2 update makes LoadOp::Load reliable
+        // again (e.g. via DXGI flip-discard with explicit retain), we
+        // can re-introduce the flag-driven fast path behind a runtime
+        // capability probe.
+        true
     }
 
     fn on_full_invalidate(&mut self) {
@@ -854,6 +856,122 @@ impl RenderBackend for WebGpuPaneBackend {
                 is_color: 0,
             });
         }
+    }
+
+    fn draw_preedit_overlay(
+        &mut self,
+        text: &str,
+        row: usize,
+        col: usize,
+        theme: &crate::render::backend::Theme,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+        let pixel_y = row as f32 * cell_h;
+        // CJK chars from candidate previews can be wide; ASCII pinyin is
+        // narrow. Cheap heuristic: codepoint < 0x80 → 1 cell, otherwise
+        // 2 cells. Correct for the IME-preedit use case (pinyin + Chinese
+        // candidates); doesn't try to handle every CJK / emoji edge.
+        let char_widths: Vec<(char, u8)> = text
+            .chars()
+            .map(|c| (c, if (c as u32) < 0x80 { 1u8 } else { 2u8 }))
+            .collect();
+        let total_cells: usize = char_widths.iter().map(|(_, w)| *w as usize).sum();
+        if total_cells == 0 {
+            return;
+        }
+        let pixel_x_start = col as f32 * cell_w;
+        let total_width = total_cells as f32 * cell_w;
+
+        // 1) Opaque background quad to cover the cells we're overlaying.
+        //    Uses theme.bg so the preedit looks like fresh blank cells
+        //    even though the underlying kernel cells are unchanged.
+        let bg_color = rgba_u8_to_f32(theme.bg);
+        self.pending_instances.push(CellInstance {
+            cell_xy: [pixel_x_start, pixel_y],
+            cell_size: [total_width, cell_h],
+            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+            atlas_layer: 0,
+            fg_rgba: bg_color,
+            bg_rgba: bg_color,
+            is_color: 0,
+        });
+
+        // 2) Glyphs. Reuse the standard atlas / rasterize path.
+        let fg_color = rgba_u8_to_f32(theme.fg);
+        let (font_family_hash, font_size_q) = {
+            let ctx = self.ctx.borrow();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&ctx.font_family, &mut h);
+            (
+                std::hash::Hasher::finish(&h),
+                (ctx.font_size_px * 100.0).round() as u16,
+            )
+        };
+        let mut cell_offset = 0usize;
+        for (ch, width) in &char_widths {
+            let key = GlyphKey {
+                font_family_hash,
+                font_size_q,
+                glyph_id: *ch as u32,
+                style_flags: 0,
+            };
+            let entry: Option<GlyphEntry> = {
+                let mut ctx = self.ctx.borrow_mut();
+                let glyph_str = ch.to_string();
+                match ctx.atlas.lookup(&key) {
+                    Some(e) => {
+                        if (e.layer as usize) < ctx.frame_written.len() {
+                            ctx.frame_written[e.layer as usize] = true;
+                        }
+                        Some(e)
+                    }
+                    None => ctx
+                        .rasterize_and_admit(
+                            key,
+                            &glyph_str,
+                            self.metrics.dpr,
+                            0,
+                            &self.frame_pinned,
+                        )
+                        .ok(),
+                }
+            };
+            if let Some(e) = entry {
+                if (e.layer as usize) < self.frame_pinned.len() {
+                    self.frame_pinned[e.layer as usize] = true;
+                }
+                let pixel_x = (col + cell_offset) as f32 * cell_w;
+                let natural_w = (e.px_w as f32).max(1.0);
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [pixel_x, pixel_y],
+                    cell_size: [natural_w, cell_h],
+                    atlas_uv: e.uv,
+                    atlas_layer: e.layer as u32,
+                    fg_rgba: fg_color,
+                    bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                    is_color: if e.is_color { 1 } else { 0 },
+                });
+            }
+            cell_offset += *width as usize;
+        }
+
+        // 3) Underline — IME preedit convention. 1 device-px tall, bottom
+        //    of the cell row.
+        let underline_thickness = (1.0 * self.metrics.dpr).round().max(1.0);
+        let underline_y = pixel_y + cell_h - underline_thickness;
+        self.pending_instances.push(CellInstance {
+            cell_xy: [pixel_x_start, underline_y],
+            cell_size: [total_width, underline_thickness],
+            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+            atlas_layer: 0,
+            fg_rgba: fg_color,
+            bg_rgba: fg_color,
+            is_color: 0,
+        });
     }
 
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
