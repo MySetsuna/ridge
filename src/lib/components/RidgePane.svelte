@@ -183,35 +183,42 @@ function triggerBellFlash() {
 // so partial composition keys don't reach the shell.
 let imeHelper: HTMLTextAreaElement | undefined = $state(undefined);
 let isComposing = $state(false);
-/** Cumulative preedit text written to the wasm KERNEL (NOT the PTY)
- *  for this composition session. compositionupdate computes the diff
- *  vs this value, CUPs back to `preeditStartCell`, and overwrites the
- *  preedit cells with the new text — so the screen always shows the
- *  current full preedit at the locked input cell, regardless of how
- *  much the user typed/deleted via the IME. Reset on
- *  compositionstart / compositionend. */
+/** Latest preedit string handed to the wasm renderer for this
+ *  composition session. Sent verbatim to `manager.setPreedit`; the
+ *  renderer paints it on top of the cell grid at
+ *  `composingAnchor.{row,col}` as the last pass each frame, leaving
+ *  kernel cells untouched. Reset on compositionstart / compositionend. */
 let preeditSentToPty = '';
-/** Cell (row, col) where the user's preedit starts, snapshotted at
- *  compositionstart. Captures the "real input position" via the same
- *  `inputAnchorPixelPosition` chain the IME helper uses — for
- *  alt-screen Ink TUIs (claude code, opencode) this resolves to the
- *  last absolute-positioning CSI, which Ink emits at the end of each
- *  render frame to park the cursor at the user's input column. Without
- *  this snapshot, `manager.feed` lands pinyin wherever the live kernel
- *  cursor happens to be at the moment a key fires — often mid-spinner
- *  or mid-hint-row during an active TUI frame — corrupting the TUI's
- *  rendered cells. Reset on compositionend. */
-let preeditStartCell: { row: number; col: number } | null = null;
+// §P5.IME (2026-05-21): preeditStartCell removed — the cell coordinates
+// for the wasm preedit overlay now live on `composingAnchor.{row,col}`,
+// the SAME object that drives the textarea pixel rect. Read each on
+// `compositionupdate`; never let them disagree.
 
-// §1.28 (2026-05-19): anchor LOCKED at compositionstart and held for the
-// entire composition session. The previous design re-resolved the anchor
-// on every `compositionupdate`, which let PTY-driven cursor moves (Ink /
-// log-update spinner walks, async tool output, background watchers) drag
-// the visible preedit textarea across the pane mid-input — the "IME
-// 输入域到处乱跑" symptom. With the snapshot frozen, preedit text stays
-// at the cell where the user started composing, just like a normal ASCII
-// caret would. Cleared on compositionend.
-type ImeAnchor = { x: number; y: number; cellW: number; cellH: number; fontSizePx: number };
+// §1.28 (2026-05-19) + §P5.IME (2026-05-21): anchor snapshot used by
+// BOTH the textarea DOM rect AND the wasm preedit overlay, so they can
+// never drift apart by even a cell (single source via
+// `manager.inputAnchorResolved`).
+//
+// Lock policy:
+//   - Alt-screen / inline-TUI: snapshot frozen at compositionstart and
+//     held for the whole session. Re-resolving mid-update lets Ink-style
+//     log-update spinner walks (claude code, opencode) drag the preedit
+//     across the pane — the original "IME 输入域到处乱跑" symptom.
+//   - Plain shell (cmd / PowerShell / bash / zsh / fish): re-resolve on
+//     every compositionupdate. The resolver chain in shell mode is
+//     stable (imeAnchor reflects post-keystroke cursor; no spinner to
+//     drag it) so following genuine input movement — line wrap, async
+//     prompt re-emit — keeps preedit + textarea pinned to the visible
+//     input cell.
+type ImeAnchor = {
+	row: number;
+	col: number;
+	x: number;
+	y: number;
+	cellW: number;
+	cellH: number;
+	fontSizePx: number;
+};
 let composingAnchor: ImeAnchor | null = null;
 
 // Sticky inline-TUI gate. The kernel's inline-TUI heuristic
@@ -401,16 +408,15 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	// §1.28 (2026-05-19): during active composition, ALWAYS use the
-	// locked snapshot captured at compositionstart. This stops PTY-driven
-	// cursor moves (Ink spinner walks, async output, file-watcher echoes)
-	// from teleporting the preedit textarea mid-input.
-	// Outside composition, fall back to the manager's stable input anchor
-	// (which itself decays to live cursor / lastAbsCsiPosition — see
-	// manager.ts::inputAnchorPixelPosition for the resolution chain).
-	const pos = isComposing && composingAnchor
-		? composingAnchor
-		: manager.inputAnchorPixelPosition(paneId);
+	// §1.28 + §P5.IME: during active composition use the snapshot
+	// `composingAnchor` (already maintained by the lock-or-follow rule
+	// in `onCompositionUpdate` — see below). Outside composition pull
+	// directly from the unified resolver so the textarea, the history
+	// popup, and the wasm overlay all see the same cell.
+	const pos: { x: number; y: number; cellW: number; cellH: number } | null =
+		isComposing && composingAnchor
+			? composingAnchor
+			: (manager.inputAnchorResolved?.(paneId) ?? manager.inputAnchorPixelPosition(paneId));
 	if (!pos) return;
 	// Anchor the (invisible) IME textarea exactly on the cursor cell.
 	// The OS IME's candidate-popup will dock below this rect — same
@@ -456,44 +462,18 @@ function diagLogIme(event: string, extra?: Record<string, unknown>) {
 }
 
 function onCompositionStart() {
-	composingAnchor = manager.inputAnchorPixelPosition(paneId);
 	isComposing = true;
 	preeditSentToPty = '';
-	// Resolve the visual input cell where the preedit overlay should
-	// land. For alt-screen Ink TUIs (claude code, opencode) the wasm
-	// kernel cursor / last-CSI position is often NOT the user's
-	// input cell — Ink parks it on the status bar at frame end —
-	// so we sniff the alt buffer's visible text first to find the
-	// last "❯ " prompt row + its continuation lines, then place the
-	// preedit at the end of the visible input text.
-	// Generic: anchor at the kernel cursor (manager.inputAnchorCell
-	// falls back through lastAbsCsiPosition / imeAnchor / live cursor).
-	// Some TUIs park cursor at input cell (correct), others park
-	// elsewhere — but the overlay never mutates cells, so worst case
-	// is a slightly off visual placement, not corruption.
-	preeditStartCell = manager.inputAnchorCell?.(paneId) ?? null;
+	// §P5.IME: single-source anchor. Same `(row, col)` powers the
+	// wasm preedit overlay AND the textarea pixel rect — they cannot
+	// disagree about where the user's caret is.
+	composingAnchor = manager.inputAnchorResolved?.(paneId) ?? null;
 	repositionImeHelper();
 	diagLogIme('start');
 }
 
 
 	function onCompositionUpdate(e: CompositionEvent) {
-		// Render the preedit by feeding pinyin chars directly into the
-		// wasm KERNEL (`manager.feed`, NOT `manager.write`). The kernel
-		// paints them into its cell grid at the current cursor so the
-		// canvas shows the typed letters in real time — but the bytes
-		// never reach the PTY, so the shell (PSReadLine / bash readline /
-		// fish) doesn't see a stream of characters that would trigger
-		// predictive-completion / history-suggestion / auto-correct
-		// behaviour (the bug where "stuff outside the pinyin got
-		// replaced" came from PSReadLine's suggestion preview inserting
-		// extra chars that our BS×N undo then over-deleted).
-		//
-		// On compositionend we erase the local preedit cells from the
-		// kernel via CSI DCH and ship the committed string to the PTY
-		// the normal way — PSReadLine sees ONE write of the chosen
-		// Chinese character, nothing else.
-		//
 		// Renderer-side preedit overlay: the wasm renderer paints the
 		// preedit text on top of the cell grid as a final pass each
 		// frame. Cells are NOT modified, so a TUI redrawing its frame
@@ -501,8 +481,30 @@ function onCompositionStart() {
 		// can't corrupt the TUI's cells. Works identically in shell
 		// mode and alt-screen TUIs (vim, less, claude code, opencode).
 		const next = e.data ?? '';
-		if (preeditStartCell) {
-			manager.setPreedit?.(paneId, next, preeditStartCell.row, preeditStartCell.col);
+
+		// §P5.IME (2026-05-21): re-resolve the anchor INSIDE shell mode
+		// so the preedit + textarea follow genuine input movement
+		// (line wrap, async prompt re-emit). In alt-screen / inline-TUI
+		// keep §1.28 lock — the resolver can hop to spinner / status-bar
+		// rows mid-frame, which dragged the preedit before the lock
+		// existed. Re-resolve happens SAME-FRAME (no RAF) so the OS IME
+		// candidate popup tracks the cursor without a one-frame lag.
+		if (composingAnchor) {
+			const inTui = manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId);
+			if (!inTui) {
+				const fresh = manager.inputAnchorResolved?.(paneId);
+				if (
+					fresh &&
+					(fresh.row !== composingAnchor.row || fresh.col !== composingAnchor.col)
+				) {
+					composingAnchor = fresh;
+					repositionImeHelper();
+				}
+			}
+		}
+
+		if (composingAnchor) {
+			manager.setPreedit?.(paneId, next, composingAnchor.row, composingAnchor.col);
 			preeditSentToPty = next;
 		}
 		if (imeHelper && composingAnchor && e.data) {
@@ -536,7 +538,6 @@ function onCompositionStart() {
 		// the right cell because we didn't disturb anything.
 		manager.clearPreedit?.(paneId);
 		preeditSentToPty = '';
-		preeditStartCell = null;
 		if (data.length > 0) {
 			manager.write(paneId, data);
 		}
