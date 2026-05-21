@@ -183,6 +183,25 @@ function triggerBellFlash() {
 // so partial composition keys don't reach the shell.
 let imeHelper: HTMLTextAreaElement | undefined = $state(undefined);
 let isComposing = $state(false);
+/** Cumulative preedit text written to the wasm KERNEL (NOT the PTY)
+ *  for this composition session. compositionupdate computes the diff
+ *  vs this value, CUPs back to `preeditStartCell`, and overwrites the
+ *  preedit cells with the new text — so the screen always shows the
+ *  current full preedit at the locked input cell, regardless of how
+ *  much the user typed/deleted via the IME. Reset on
+ *  compositionstart / compositionend. */
+let preeditSentToPty = '';
+/** Cell (row, col) where the user's preedit starts, snapshotted at
+ *  compositionstart. Captures the "real input position" via the same
+ *  `inputAnchorPixelPosition` chain the IME helper uses — for
+ *  alt-screen Ink TUIs (claude code, opencode) this resolves to the
+ *  last absolute-positioning CSI, which Ink emits at the end of each
+ *  render frame to park the cursor at the user's input column. Without
+ *  this snapshot, `manager.feed` lands pinyin wherever the live kernel
+ *  cursor happens to be at the moment a key fires — often mid-spinner
+ *  or mid-hint-row during an active TUI frame — corrupting the TUI's
+ *  rendered cells. Reset on compositionend. */
+let preeditStartCell: { row: number; col: number } | null = null;
 
 // §1.28 (2026-05-19): anchor LOCKED at compositionstart and held for the
 // entire composition session. The previous design re-resolved the anchor
@@ -393,26 +412,20 @@ function repositionImeHelper() {
 		? composingAnchor
 		: manager.inputAnchorPixelPosition(paneId);
 	if (!pos) return;
-	// Anchor the helper AT the cursor cell so the visible preedit text
-	// (set by `.is-composing` CSS) overlays the canvas cursor exactly.
-	// Earlier we anchored one row below to keep the candidate popup
-	// "out of the way", but that left the typed pinyin invisible AND
-	// the underlying canvas cursor kept blinking through, producing the
-	// flicker users reported. With the textarea at the cursor cell, the
-	// canvas cursor sits underneath the opaque textarea (no flicker)
-	// and the IME candidate popup naturally opens below the textarea
-	// caret in every browser we've tested.
+	// Anchor the (invisible) IME textarea exactly on the cursor cell.
+	// The OS IME's candidate-popup will dock below this rect — same
+	// place a native input field surfaces its candidates, which is the
+	// familiar interaction model for every CJK / IBus / IME user. No
+	// font / baseline / preedit rendering on our side; the OS handles
+	// it. Standard pattern across xterm.js, VS Code terminal, wezterm-web.
 	imeHelper.style.left = `${pos.x}px`;
 	imeHelper.style.top = `${pos.y}px`;
 	imeHelper.style.bottom = 'auto';
-	// Drive the visible-during-composition styles via CSS custom
-	// properties so the textarea matches the wasm renderer's metrics
-	// (cellW for min-width, cellH for line-height, fontSizePx for font
-	// size). Set unconditionally — the styles only apply when the
-	// `.is-composing` class is also present.
+	// Cell dimensions drive the textarea's own `width / height` (set
+	// in CSS via `var(--rg-ime-cell-w)`), so the OS IME has a real
+	// cell-sized rect to anchor its candidate window against.
 	imeHelper.style.setProperty('--rg-ime-cell-w', `${pos.cellW}px`);
 	imeHelper.style.setProperty('--rg-ime-cell-h', `${pos.cellH}px`);
-	imeHelper.style.setProperty('--rg-ime-font-size', `${pos.fontSizePx}px`);
 }
 
 // §1.27 (2026-05-07): RIDGE_DIAG-gated IME composition trace. The dim/IME
@@ -443,32 +456,59 @@ function diagLogIme(event: string, extra?: Record<string, unknown>) {
 }
 
 function onCompositionStart() {
-	// §1.28: take ONE snapshot of the anchor at composition start and
-	// lock it for the entire composition. `inputAnchorPixelPosition`
-	// applies the full TUI/Ink fallback chain (stable user-input anchor
-	// → recent lastAbsCsiPosition → live cursor), so this captures the
-	// best-effort "where the user is typing" cell. After this, the
-	// textarea position is fixed until compositionend — PTY redraws
-	// can't shift it, exactly matching how a normal ASCII caret behaves.
 	composingAnchor = manager.inputAnchorPixelPosition(paneId);
 	isComposing = true;
+	preeditSentToPty = '';
+	// Resolve the visual input cell where the preedit overlay should
+	// land. For alt-screen Ink TUIs (claude code, opencode) the wasm
+	// kernel cursor / last-CSI position is often NOT the user's
+	// input cell — Ink parks it on the status bar at frame end —
+	// so we sniff the alt buffer's visible text first to find the
+	// last "❯ " prompt row + its continuation lines, then place the
+	// preedit at the end of the visible input text.
+	// Generic: anchor at the kernel cursor (manager.inputAnchorCell
+	// falls back through lastAbsCsiPosition / imeAnchor / live cursor).
+	// Some TUIs park cursor at input cell (correct), others park
+	// elsewhere — but the overlay never mutates cells, so worst case
+	// is a slightly off visual placement, not corruption.
+	preeditStartCell = manager.inputAnchorCell?.(paneId) ?? null;
 	repositionImeHelper();
 	diagLogIme('start');
 }
 
+
 	function onCompositionUpdate(e: CompositionEvent) {
-		// §1.28: do NOT re-anchor here. The position was locked at
-		// compositionstart; calling repositionImeHelper() per keystroke
-		// was the source of the "IME 输入域到处乱跑" bug because the
-		// underlying input anchor can shift between keys when a TUI
-		// redraws (Claude Code spinner, Ink log-update). Only grow the
-		// textarea width so long preedit strings stay readable.
+		// Render the preedit by feeding pinyin chars directly into the
+		// wasm KERNEL (`manager.feed`, NOT `manager.write`). The kernel
+		// paints them into its cell grid at the current cursor so the
+		// canvas shows the typed letters in real time — but the bytes
+		// never reach the PTY, so the shell (PSReadLine / bash readline /
+		// fish) doesn't see a stream of characters that would trigger
+		// predictive-completion / history-suggestion / auto-correct
+		// behaviour (the bug where "stuff outside the pinyin got
+		// replaced" came from PSReadLine's suggestion preview inserting
+		// extra chars that our BS×N undo then over-deleted).
+		//
+		// On compositionend we erase the local preedit cells from the
+		// kernel via CSI DCH and ship the committed string to the PTY
+		// the normal way — PSReadLine sees ONE write of the chosen
+		// Chinese character, nothing else.
+		//
+		// Renderer-side preedit overlay: the wasm renderer paints the
+		// preedit text on top of the cell grid as a final pass each
+		// frame. Cells are NOT modified, so a TUI redrawing its frame
+		// mid-composition can't corrupt the preedit, AND the preedit
+		// can't corrupt the TUI's cells. Works identically in shell
+		// mode and alt-screen TUIs (vim, less, claude code, opencode).
+		const next = e.data ?? '';
+		if (preeditStartCell) {
+			manager.setPreedit?.(paneId, next, preeditStartCell.row, preeditStartCell.col);
+			preeditSentToPty = next;
+		}
 		if (imeHelper && composingAnchor && e.data) {
 			const charCount = e.data.length;
-			// +1 cell of trailing room for the IME caret glyph itself.
 			imeHelper.style.width = `${(charCount + 1) * composingAnchor.cellW}px`;
 		}
-
 		diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
 	}
 
@@ -487,18 +527,22 @@ function onCompositionStart() {
 	}
 	function onCompositionEnd(e: CompositionEvent) {
 		isComposing = false;
-		// §1.28: release the locked anchor so subsequent focus / live
-		// anchor reads resume normal behaviour. The next compositionstart
-		// will snapshot a fresh anchor from `inputAnchorPixelPosition`.
 		composingAnchor = null;
-		const data = e.data;
-		if (data && data.length > 0) {
+		const data = e.data ?? '';
+		// Clear the renderer-side preedit overlay (kernel cells were
+		// never touched, no erase needed). Then ship the committed
+		// string through the normal PTY write path; the shell / TUI
+		// echoes it back at its OWN tracked cursor — which lands in
+		// the right cell because we didn't disturb anything.
+		manager.clearPreedit?.(paneId);
+		preeditSentToPty = '';
+		preeditStartCell = null;
+		if (data.length > 0) {
 			manager.write(paneId, data);
 		}
-		// Clear the helper textarea so the next composition starts at length 0.
 		if (imeHelper) {
 			imeHelper.value = '';
-			imeHelper.style.width = 'auto'; // 恢复 auto
+			imeHelper.style.width = 'auto';
 		}
 
 		// §1.27 fix: force a full-frame redraw so any canvas pixels that
@@ -1487,56 +1531,58 @@ function onContainerMouseDown(e: MouseEvent) {
 		transition: box-shadow 60ms ease-out;
 	}
 	.rg-ime-helper {
-		/* IME helper textarea — invisible but focusable so the browser
-		 * shows the IME candidate window near it. Position is set by
-		 * `repositionImeHelper()` (left/top in pixels relative to the
-		 * pane container) so the candidate window anchors to the actual
-		 * terminal cursor. The default `bottom: 0` is the v1 fallback
-		 * if JS hasn't repositioned yet (e.g. before first focus).
-		 * `caret-color: transparent` hides the textarea's own blinking
-		 * cursor; the actual terminal cursor is drawn by the wasm renderer. */
+		/* IME anchor textarea. The OS IME treats this as a visible
+		 * focused input field and renders the preedit INSIDE it —
+		 * so it does NOT also pop up a separate preedit display that
+		 * would cover the canvas overlay we paint ourselves. The
+		 * candidate-list popup (你/妳/呢/...) still appears as a
+		 * separate OS window — that's the part the user needs to
+		 * read and choose from.
+		 *
+		 * The textarea itself is invisible to the user: `color:
+		 * transparent` hides the preedit char glyphs the OS draws
+		 * into it; `background: transparent` and `caret-color:
+		 * transparent` keep the rest clean. We can NOT use
+		 * `opacity: 0` because some OS IMEs (Microsoft Pinyin
+		 * notably) treat an opacity:0 input as "hidden" and switch
+		 * back to popup-rendered preedit — undoing the whole point.
+		 * Pixel rect is one cell-sized box at the kernel cursor so
+		 * the OS positions the candidate popup correctly below it. */
 		position: absolute;
-		left: 1px;
-		bottom: 0;
-		width: 1px;
-		height: 1px;
-		opacity: 0;
+		left: 0;
+		top: 0;
+		width: var(--rg-ime-cell-w, 8px);
+		height: var(--rg-ime-cell-h, 18px);
+		opacity: 1;
 		pointer-events: none;
 		caret-color: transparent;
+		background: transparent;
+		color: transparent;
 		border: none;
 		outline: none;
 		padding: 0;
 		margin: 0;
 		resize: none;
 		overflow: hidden;
-		background: transparent;
+		font-family: var(--rg-term-font-family, ui-monospace, 'Cascadia Code', Consolas, monospace);
+		font-size: var(--rg-term-font-size, 14px);
+		line-height: var(--rg-ime-cell-h, 18px);
 	}
 	.rg-ime-helper.is-composing {
-		/* While the user is mid-composition (CJK pinyin / kana), make
-		 * the textarea visible at the cursor cell so the typed preedit
-		 * letters are readable, AND so the textarea's opaque background
-		 * covers the canvas cursor underneath (otherwise the canvas
-		 * cursor keeps blinking through, producing flicker). The
-		 * underline mirrors the OS convention for inline preedit text.
-		 * Width grows with content; min-width = one cell so the candidate
-		 * popup anchors correctly even on the first keystroke before
-		 * `compositionupdate` writes anything. Font + line metrics come
-		 * from CSS custom props set by repositionImeHelper(). */
-		width: auto;
-		min-width: var(--rg-ime-cell-w, 8px);
+		/* During composition we stream the preedit text directly through
+		 * the PTY (see `onCompositionUpdate` in this file) so the shell
+		 * echoes it back and the user sees pinyin/kana letters appear
+		 * at the cursor cell — drawn by the wasm canvas renderer, not
+		 * by an overlay. The textarea itself stays invisible; we only
+		 * resize its width slightly so the OS candidate popup anchors
+		 * close to the user's typed letters. */
+		width: var(--rg-ime-cell-w, 8px);
 		height: var(--rg-ime-cell-h, 18px);
-		opacity: 1;
-		pointer-events: auto;
-		background: var(--rg-bg, #1e1e2e);
-		color: var(--rg-fg, #cdd6f4);
-		font-family: var(--rg-font-family, ui-monospace, monospace);
-		font-size: var(--rg-ime-font-size, 14px);
-		line-height: var(--rg-ime-cell-h, 18px);
-		white-space: pre;
-		overflow: visible;
-		text-decoration: underline;
-		caret-color: var(--rg-fg, #cdd6f4);
-		z-index: 5;
+		opacity: 0;
+		pointer-events: none;
+		caret-color: transparent;
+		color: transparent;
+		background: transparent;
 	}
 	.rg-jump-bottom {
 		/* §1.23 — floating scroll-to-bottom shortcut. Anchored to the
