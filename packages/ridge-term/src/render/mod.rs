@@ -481,6 +481,20 @@ impl RenderBackend for AnyBackend {
         }
     }
 
+    fn draw_preedit_overlay(
+        &mut self,
+        text: &str,
+        row: usize,
+        col: usize,
+        theme: &Theme,
+    ) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_preedit_overlay(text, row, col, theme),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_preedit_overlay(text, row, col, theme),
+        }
+    }
+
     fn end_frame(&mut self) {
         match self {
             AnyBackend::Canvas2d(b) => b.end_frame(),

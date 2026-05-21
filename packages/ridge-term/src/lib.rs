@@ -605,6 +605,17 @@ impl JsTerminal {
         self.inner.is_inline_tui_mode_at(js_sys::Date::now() as i64)
     }
 
+    /// Called from `manager.ts::handleKeyDown` immediately after the
+    /// user sends Ctrl+C (ETX `\x03`) through the data handler. Arms
+    /// the inline-TUI heuristic's grace window so subsequent PSReadLine
+    /// CHA `\x1b[G` emits don't keep the pane stuck in "inline TUI
+    /// mode" forever after the user killed the foreground TUI. See
+    /// `Grid::is_inline_tui_active_at` for the full rationale.
+    #[wasm_bindgen(js_name = noteCtrlCSent)]
+    pub fn note_ctrl_c_sent(&mut self) {
+        self.inner.note_ctrl_c_sent(js_sys::Date::now() as i64);
+    }
+
     #[wasm_bindgen(js_name = isBracketedPaste)]
     pub fn is_bracketed_paste(&self) -> bool {
         self.inner.modes().bracketed_paste
@@ -997,6 +1008,24 @@ mod renderer_js {
         #[wasm_bindgen(js_name = setFocused)]
         pub fn set_focused(&mut self, focused: bool) {
             self.renderer.set_focused(focused);
+        }
+
+        /// Install an IME preedit overlay at the given cell. The renderer
+        /// will paint `text` on top of the cell grid each frame until
+        /// `clearPreedit` is called. Cells themselves are NOT modified,
+        /// so a TUI re-rendering into the overlay's row mid-composition
+        /// can't corrupt the preedit, and the preedit can't corrupt the
+        /// TUI's rendered cells. JS calls this on `compositionupdate`.
+        #[wasm_bindgen(js_name = setPreedit)]
+        pub fn set_preedit(&mut self, text: &str, row: usize, col: usize) {
+            self.renderer.set_preedit(text.to_string(), row, col);
+        }
+
+        /// Remove the preedit overlay (JS calls on `compositionend` after
+        /// shipping the committed string to the PTY).
+        #[wasm_bindgen(js_name = clearPreedit)]
+        pub fn clear_preedit(&mut self) {
+            self.renderer.clear_preedit();
         }
 
         /// Non-mutating mirror of `render`'s early-exit conditions:

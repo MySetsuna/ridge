@@ -354,6 +354,27 @@ pub trait RenderBackend {
     /// hyperlink range using `theme.hyperlink_color`. No-op when empty.
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]);
 
+    /// Paint the IME preedit text on top of the cell grid as the final
+    /// pass. `text` is the composition's current preedit string;
+    /// `(row, col)` is the cell at which the preedit starts. The
+    /// backend should:
+    ///   1. Cover the preedit's cell range with an opaque bg matching
+    ///      `theme.bg` (so the underlying cell content doesn't bleed
+    ///      through).
+    ///   2. Rasterize and paint each preedit glyph in `theme.fg`.
+    ///   3. Draw a 1-px underline beneath the preedit cells — the
+    ///      standard convention for in-progress IME text on every OS.
+    /// Cell content is NOT modified. Default no-op so backends can
+    /// add this incrementally.
+    fn draw_preedit_overlay(
+        &mut self,
+        _text: &str,
+        _row: usize,
+        _col: usize,
+        _theme: &Theme,
+    ) {
+    }
+
     /// Commit the frame to the surface. For Canvas2D this is a no-op
     /// (drawing was already direct); for WebGPU this submits the command
     /// encoder.
@@ -373,6 +394,7 @@ pub fn draw_frame<B: RenderBackend>(
     full_redraw: bool,
     selection_rects: &[(usize, usize, usize)],
     hyperlink_rects: &[(usize, usize, usize)],
+    preedit: Option<&crate::render::renderer::Preedit>,
 ) {
     backend.begin_frame(metrics, theme);
     if full_redraw {
@@ -405,6 +427,13 @@ pub fn draw_frame<B: RenderBackend>(
     // Pass 3: Cursor
     if let Some(c) = cursor {
         backend.draw_cursor(c, attrs_table);
+    }
+
+    // Pass 4: IME preedit overlay (drawn LAST so it sits on top of
+    // everything, including the cursor — the user is actively typing
+    // into the preedit so it must be visible above any frame element).
+    if let Some(p) = preedit {
+        backend.draw_preedit_overlay(&p.text, p.row, p.col, theme);
     }
 
     backend.end_frame();

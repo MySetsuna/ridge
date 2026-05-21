@@ -22,6 +22,11 @@ export class RenderHandle {
      */
     applyTheme(theme_obj: any): void;
     /**
+     * Remove the preedit overlay (JS calls on `compositionend` after
+     * shipping the committed string to the PTY).
+     */
+    clearPreedit(): void;
+    /**
      * Configure font + measure cell dimensions. Returns [cell_w, cell_h]
      * in CSS pixels so JS can calculate cols/rows for a target
      * container size.
@@ -120,6 +125,15 @@ export class RenderHandle {
      * only the truly active terminal blinks. Idempotent.
      */
     setFocused(focused: boolean): void;
+    /**
+     * Install an IME preedit overlay at the given cell. The renderer
+     * will paint `text` on top of the cell grid each frame until
+     * `clearPreedit` is called. Cells themselves are NOT modified,
+     * so a TUI re-rendering into the overlay's row mid-composition
+     * can't corrupt the preedit, and the preedit can't corrupt the
+     * TUI's rendered cells. JS calls this on `compositionupdate`.
+     */
+    setPreedit(text: string, row: number, col: number): void;
     /**
      * Phase B: record the pane's `(x, y)` position on the host
      * canvas in **device pixels**. JS calls this from
@@ -388,6 +402,15 @@ export class TerminalKernel {
     mouseReportingModes(): number;
     constructor(rows: number, cols: number, scrollback: number);
     /**
+     * Called from `manager.ts::handleKeyDown` immediately after the
+     * user sends Ctrl+C (ETX `\x03`) through the data handler. Arms
+     * the inline-TUI heuristic's grace window so subsequent PSReadLine
+     * CHA `\x1b[G` emits don't keep the pane stuck in "inline TUI
+     * mode" forever after the user killed the foreground TUI. See
+     * `Grid::is_inline_tui_active_at` for the full rationale.
+     */
+    noteCtrlCSent(): void;
+    /**
      * Prepend older history at the OLDEST end of the scrollback ring.
      *
      * Used by `manager.fetchOlderScrollback`: when the user pages up past
@@ -518,6 +541,7 @@ export interface InitOutput {
     readonly terminalkernel_lastResizeDiags: (a: number) => [number, number];
     readonly terminalkernel_mouseReportingModes: (a: number) => number;
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
+    readonly terminalkernel_noteCtrlCSent: (a: number) => void;
     readonly terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;
     readonly terminalkernel_resize: (a: number, b: number, c: number) => void;
     readonly terminalkernel_rows: (a: number) => number;
@@ -543,6 +567,7 @@ export interface InitOutput {
     readonly __wbg_surfacehosthandle_free: (a: number, b: number) => void;
     readonly renderhandle_applyDefaultTheme: (a: number) => void;
     readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
+    readonly renderhandle_clearPreedit: (a: number) => void;
     readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly renderhandle_currentThemeProbe: (a: number) => [number, number];
     readonly renderhandle_invalidateAll: (a: number) => void;
@@ -554,6 +579,7 @@ export interface InitOutput {
     readonly renderhandle_render: (a: number, b: number) => number;
     readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
     readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly renderhandle_setPreedit: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
     readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
     readonly surfacehosthandle_clone: (a: number) => number;

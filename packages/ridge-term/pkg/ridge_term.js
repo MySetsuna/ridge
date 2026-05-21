@@ -49,6 +49,15 @@ export class RenderHandle {
         }
     }
     /**
+     * Remove the preedit overlay (JS calls on `compositionend` after
+     * shipping the committed string to the PTY).
+     */
+    clearPreedit() {
+        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
+        _assertNum(this.__wbg_ptr);
+        wasm.renderhandle_clearPreedit(this.__wbg_ptr);
+    }
+    /**
      * Configure font + measure cell dimensions. Returns [cell_w, cell_h]
      * in CSS pixels so JS can calculate cols/rows for a target
      * container size.
@@ -258,6 +267,26 @@ export class RenderHandle {
         _assertNum(this.__wbg_ptr);
         _assertBoolean(focused);
         wasm.renderhandle_setFocused(this.__wbg_ptr, focused);
+    }
+    /**
+     * Install an IME preedit overlay at the given cell. The renderer
+     * will paint `text` on top of the cell grid each frame until
+     * `clearPreedit` is called. Cells themselves are NOT modified,
+     * so a TUI re-rendering into the overlay's row mid-composition
+     * can't corrupt the preedit, and the preedit can't corrupt the
+     * TUI's rendered cells. JS calls this on `compositionupdate`.
+     * @param {string} text
+     * @param {number} row
+     * @param {number} col
+     */
+    setPreedit(text, row, col) {
+        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
+        _assertNum(this.__wbg_ptr);
+        const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        _assertNum(row);
+        _assertNum(col);
+        wasm.renderhandle_setPreedit(this.__wbg_ptr, ptr0, len0, row, col);
     }
     /**
      * Phase B: record the pane's `(x, y)` position on the host
@@ -868,6 +897,19 @@ export class TerminalKernel {
         this.__wbg_ptr = ret;
         TerminalKernelFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * Called from `manager.ts::handleKeyDown` immediately after the
+     * user sends Ctrl+C (ETX `\x03`) through the data handler. Arms
+     * the inline-TUI heuristic's grace window so subsequent PSReadLine
+     * CHA `\x1b[G` emits don't keep the pane stuck in "inline TUI
+     * mode" forever after the user killed the foreground TUI. See
+     * `Grid::is_inline_tui_active_at` for the full rationale.
+     */
+    noteCtrlCSent() {
+        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
+        _assertNum(this.__wbg_ptr);
+        wasm.terminalkernel_noteCtrlCSent(this.__wbg_ptr);
     }
     /**
      * Prepend older history at the OLDEST end of the scrollback ring.

@@ -557,6 +557,13 @@ impl Terminal {
             .is_inline_tui_active_at(now_ms, self.modes.cursor_visible)
     }
 
+    /// JS-side hook: caller (manager.ts) just wrote ETX `\x03` to the
+    /// PTY in response to a user Ctrl+C. Forwards to
+    /// `Grid::note_ctrl_c_sent` which arms the inline-TUI grace window.
+    pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
+        self.grid.note_ctrl_c_sent(now_ms);
+    }
+
     /// Diagnostic accessor — returns the most recent `Grid::resize` calls.
     /// Used by `JsTerminal::lastResizeDiags` to surface live-repro evidence
     /// to frontend devtools, and by integration tests to verify which

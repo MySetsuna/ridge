@@ -140,6 +140,15 @@ const RESIZE_DIAG_RING_CAP: usize = 32;
 /// rest of the session.
 const INLINE_TUI_DECAY_MS: i64 = 2_000;
 
+/// Grace window after the user sends Ctrl+C during which the inline-TUI
+/// heuristic is force-disabled. 3 s covers: (a) the SIGINT delivery
+/// roundtrip through ConPTY, (b) the shell's prompt repaint
+/// (`PS C:\...> `), and (c) a couple of PSReadLine keystroke-driven
+/// CHA emits that would otherwise immediately re-arm the heuristic.
+/// Past 3 s, real surviving TUIs (those that trapped SIGINT) get
+/// re-classified normally on their next abs-positioning CSI.
+const CTRL_C_GRACE_MS: i64 = 3_000;
+
 pub struct Grid {
     rows: usize,
     cols: usize,
@@ -184,6 +193,26 @@ pub struct Grid {
     /// helper anchor) keeps its "last absolute LANDING" semantics — adding
     /// redraw CSIs there would corrupt the anchor.
     last_redraw_csi_at_ms: i64,
+    /// Timestamp of the most recent Ctrl+C the user sent to this pane.
+    /// Within `CTRL_C_GRACE_MS` of this timestamp,
+    /// `is_inline_tui_active_at` returns false unconditionally — even
+    /// if cursor-hidden + recent abs-CSI would normally classify the
+    /// pane as inline-TUI mode.
+    ///
+    /// Why: when a user kills an Ink-style TUI with Ctrl+C, the TUI
+    /// has no chance to emit `?25h` (show cursor), so `cursor_visible`
+    /// stays `false`. PSReadLine then emits `CHA \x1b[G` on every
+    /// keystroke of the user's next command — an absolute-positioning
+    /// CSI that keeps `last_abs_csi_at_ms` perpetually fresh. The
+    /// three heuristic conditions stay satisfied forever and the
+    /// shell-history IME helper / popup never re-enables.
+    ///
+    /// Grace window short-circuits this: for a few seconds post-Ctrl+C
+    /// we assume any TUI we were running has been killed. If it
+    /// trapped SIGINT and is still running, it'll re-emit CSIs and
+    /// the heuristic re-engages cleanly once the grace expires.
+    /// Sentinel 0 = no Ctrl+C ever observed.
+    last_ctrl_c_at_ms: i64,
     /// SGR "pen" mirrored from the parser's `current_attrs` for BCE
     /// (Background Color Erase). Erase / scroll / IL / DL paths fill
     /// blanked cells with `Cell { ch: ' ', attr: <pen.bg> }` so a TUI
@@ -209,6 +238,7 @@ impl Grid {
             last_abs_csi_row: 0,
             last_abs_csi_col: 0,
             last_redraw_csi_at_ms: 0,
+            last_ctrl_c_at_ms: 0,
             pen: Attrs::DEFAULT,
         }
     }
@@ -274,6 +304,14 @@ impl Grid {
         self.last_redraw_csi_at_ms = now_ms;
     }
 
+    /// Record that the user just sent Ctrl+C (ETX `\x03`) to this pane.
+    /// Within `CTRL_C_GRACE_MS` of this timestamp, the inline-TUI
+    /// heuristic is force-disabled — see `last_ctrl_c_at_ms` doc for
+    /// motivation. Caller passes wall-clock ms.
+    pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
+        self.last_ctrl_c_at_ms = now_ms;
+    }
+
     /// Most recent absolute-positioning timestamp. 0 = never observed.
     /// Exposed for tests and for `Terminal::is_inline_tui_mode_at`.
     pub fn last_abs_csi_at_ms(&self) -> i64 {
@@ -313,6 +351,17 @@ impl Grid {
             return false;
         }
         if cursor_visible {
+            return false;
+        }
+        // Ctrl+C grace window: caller sent SIGINT recently. Assume any
+        // inline-TUI we were tracking is now dead (or about to be). If
+        // a surviving TUI keeps re-emitting CSIs, the next check after
+        // the grace expires will re-engage the heuristic naturally.
+        // See `last_ctrl_c_at_ms` doc for the PSReadLine-keeps-it-stuck
+        // bug this fixes.
+        if self.last_ctrl_c_at_ms > 0
+            && now_ms.saturating_sub(self.last_ctrl_c_at_ms) < CTRL_C_GRACE_MS
+        {
             return false;
         }
         // §A.4 — accept either an absolute-positioning CSI (CUP/HVP/CHA/VPA)
@@ -2386,6 +2435,45 @@ mod tests {
         // Even a fresh `note` followed by cursor-visible should be off.
         g2.note_absolute_positioning(50_000);
         assert!(!g2.is_inline_tui_active_at(50_500, true));
+    }
+
+    #[test]
+    fn ctrl_c_grace_window_disables_inline_tui_heuristic() {
+        // Scenario: Ink-style TUI hides cursor (`?25l`) and keeps
+        // re-emitting absolute-positioning CSIs as the user types. User
+        // hits Ctrl+C; TUI dies without sending `?25h` so
+        // `cursor_visible` stays false. PSReadLine then writes
+        // `\x1b[G` on every keystroke, keeping the abs-CSI timestamp
+        // fresh — without the grace window, the heuristic would stay
+        // wedged "on" forever and the shell-history IME helper
+        // wouldn't re-enable. Verify the grace window short-circuits
+        // the heuristic for exactly CTRL_C_GRACE_MS.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+
+        // Set up the "wedged" state: cursor hidden, abs-CSI fresh.
+        g.note_absolute_positioning(now);
+        assert!(g.is_inline_tui_active_at(now + 500, false), "heuristic on pre-Ctrl+C");
+
+        // User sends Ctrl+C.
+        g.note_ctrl_c_sent(now + 500);
+
+        // Within grace window → heuristic forced off even though
+        // PSReadLine keeps emitting abs-CSIs.
+        g.note_absolute_positioning(now + 1_000);
+        assert!(!g.is_inline_tui_active_at(now + 1_500, false), "grace window suppresses heuristic");
+        g.note_absolute_positioning(now + 3_000);
+        assert!(!g.is_inline_tui_active_at(now + 3_400, false), "still suppressed near grace boundary");
+
+        // Past grace window (3 s) AND fresh abs-CSI → heuristic re-engages.
+        g.note_absolute_positioning(now + 4_000);
+        assert!(g.is_inline_tui_active_at(now + 4_100, false), "heuristic re-engages after grace expires");
+
+        // Cursor visible during grace → off regardless (no regression).
+        let mut g2 = Grid::new(5, 20, 0);
+        g2.note_absolute_positioning(now);
+        g2.note_ctrl_c_sent(now);
+        assert!(!g2.is_inline_tui_active_at(now + 500, true), "visible cursor still wins");
     }
 
     #[test]

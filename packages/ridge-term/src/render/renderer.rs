@@ -68,6 +68,21 @@ pub struct Renderer<B: RenderBackend> {
     /// `invalidate_all` on transitions so the next frame redraws
     /// against the currently-active screen from scratch.
     last_is_alt: bool,
+    /// IME preedit overlay (CJK composition in progress). When `Some`,
+    /// the renderer paints the preedit text on top of the cell grid at
+    /// `row, col` as a final pass — the cells themselves are NOT
+    /// modified, so a TUI redrawing into the same row mid-composition
+    /// can't corrupt the preedit AND the preedit can't corrupt the TUI's
+    /// rendered cells. Cleared via `clear_preedit` from JS on
+    /// `compositionend`.
+    preedit: Option<Preedit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Preedit {
+    pub text: String,
+    pub row: usize,
+    pub col: usize,
 }
 
 impl<B: RenderBackend> Renderer<B> {
@@ -85,6 +100,32 @@ impl<B: RenderBackend> Renderer<B> {
             first_frame: true,
             full_redraw_pending: true,
             last_is_alt: false,
+            preedit: None,
+        }
+    }
+
+    /// Install an IME preedit overlay at the given cell. The renderer
+    /// paints the text on top of the cell grid as a final pass each
+    /// frame — non-destructive (cells unchanged). Replaces any prior
+    /// preedit. Empty `text` is treated the same as `clear_preedit`.
+    pub fn set_preedit(&mut self, text: String, row: usize, col: usize) {
+        if text.is_empty() {
+            self.preedit = None;
+        } else {
+            self.preedit = Some(Preedit { text, row, col });
+        }
+        // Force the next frame to repaint so the overlay (or its
+        // removal) is visible immediately. Without this an idle
+        // renderer might skip the next tick entirely.
+        self.full_redraw_pending = true;
+    }
+
+    /// Remove the preedit overlay (called on `compositionend` after the
+    /// committed string has been shipped to the PTY).
+    pub fn clear_preedit(&mut self) {
+        if self.preedit.is_some() {
+            self.preedit = None;
+            self.full_redraw_pending = true;
         }
     }
 
@@ -447,6 +488,7 @@ impl<B: RenderBackend> Renderer<B> {
             do_full,
             &sel_rects,
             &hl_rects,
+            self.preedit.as_ref(),
         );
         self.first_frame = false;
         self.full_redraw_pending = false;
@@ -530,6 +572,17 @@ impl<B: RenderBackend> Renderer<B> {
     /// `tick` uses. Caller is responsible for the lower bound (e.g.
     /// `Math.max(deadline, 1)` to avoid 0-ms timers).
     pub fn next_blink_deadline_ms(&self, terminal: &Terminal, now_ms: f64) -> f64 {
+        // `self.focused` gates cursor rendering at compute_cursor_draw
+        // (line 355): when the pane isn't focused, `new_cursor` is
+        // always None, `last_cursor` quickly settles to None, and no
+        // further blink-driven dirty events fire. Returning a finite
+        // deadline here would still wake the RAF loop every 500 ms to
+        // run a no-op tick — burning the whole point of letting the
+        // loop sleep through unfocused idle. Cap to Infinity so the
+        // loop falls through to its 1 s watchdog (caller clamps).
+        if !self.focused {
+            return f64::INFINITY;
+        }
         let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         if !blink_active {
             return f64::INFINITY;
