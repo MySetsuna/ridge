@@ -3,6 +3,7 @@ node_modules
 /build
 /dist
 /release
+/.webview2-dev-cdp
 /.svelte-kit
 /package
 !.env.example
