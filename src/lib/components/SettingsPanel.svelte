@@ -344,6 +344,30 @@
             </div>
 
             <div>
+              <span class="block text-[12px] text-[var(--rg-fg)] mb-1">终端输入法</span>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
+                <b>IME</b>（默认）：点击 pane 后聚焦不可见的辅助输入框，OS 输入法可以挂载，支持中日韩组合输入。<br/>
+                <b>直通</b>：跳过辅助输入框，键盘按键直接送 PTY；ASCII 不会被未切英文的中文输入法当成拼音吃掉。下次 pane 重建生效。
+              </div>
+              <div class="inline-flex rounded-md border border-[var(--rg-border)] overflow-hidden" role="radiogroup" aria-label="terminalImeMode">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$settingsStore.terminalImeMode === 'ime'}
+                  class="px-3 py-1 text-[12px] {$settingsStore.terminalImeMode === 'ime' ? 'bg-[var(--rg-accent)] text-[var(--rg-bg)]' : 'bg-transparent text-[var(--rg-fg)] hover:bg-[var(--rg-hover)]'}"
+                  onclick={() => setSetting('terminalImeMode', 'ime')}
+                >IME</button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$settingsStore.terminalImeMode === 'direct'}
+                  class="px-3 py-1 text-[12px] border-l border-[var(--rg-border)] {$settingsStore.terminalImeMode === 'direct' ? 'bg-[var(--rg-accent)] text-[var(--rg-bg)]' : 'bg-transparent text-[var(--rg-fg)] hover:bg-[var(--rg-hover)]'}"
+                  onclick={() => setSetting('terminalImeMode', 'direct')}
+                >直通</button>
+              </div>
+            </div>
+
+            <div>
               <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-font">编辑器字号</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图共享。8 – 32 px。</div>
               <div class="flex items-center gap-3">

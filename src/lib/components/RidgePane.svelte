@@ -1265,6 +1265,13 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown() {
 	activePaneId.set(paneId);
+	// In 'direct' mode the IME helper isn't rendered at all (see below),
+	// so focus the container directly — its keydown handler still
+	// services every printable key without IME composition.
+	if ($settingsStore.terminalImeMode === 'direct') {
+		container?.focus();
+		return;
+	}
 	// Focus the IME helper textarea so keystrokes (including IME
 	// composition) flow to us. Falling back to container focus if the
 	// helper isn't mounted yet (early HMR / SSR edge case).
@@ -1309,20 +1316,30 @@ function onContainerMouseDown(e: MouseEvent) {
 	onpointerdown={onContainerPointerDown}
 	onkeydown={onContainerKeyDown}
 >
-	<textarea
-		bind:this={imeHelper}
-		class="rg-ime-helper"
-		class:is-composing={isComposing}
-		aria-label="终端输入"
-		autocomplete="off"
-		autocapitalize="off"
-		spellcheck="false"
-		oncompositionstart={onCompositionStart}
-		oncompositionupdate={onCompositionUpdate}
-		oncompositionend={onCompositionEnd}
-		onfocus={onImeHelperFocus}
-		onpaste={onImeHelperPaste}
-	></textarea>
+	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
+	     so users who only type ASCII can flip to 'direct' mode and the
+	     textarea never enters the DOM — OS IME has no focusable input
+	     to attach to, and `onContainerKeyDown` services every keystroke
+	     directly with no compositionstart/update/end round-trip. The
+	     "history input flickers with cursor" symptom (Microsoft Pinyin /
+	     Sogou intercepting plain ASCII as a pinyin composition) goes
+	     away in 'direct' mode. -->
+	{#if $settingsStore.terminalImeMode === 'ime'}
+		<textarea
+			bind:this={imeHelper}
+			class="rg-ime-helper"
+			class:is-composing={isComposing}
+			aria-label="终端输入"
+			autocomplete="off"
+			autocapitalize="off"
+			spellcheck="false"
+			oncompositionstart={onCompositionStart}
+			oncompositionupdate={onCompositionUpdate}
+			oncompositionend={onCompositionEnd}
+			onfocus={onImeHelperFocus}
+			onpaste={onImeHelperPaste}
+		></textarea>
+	{/if}
 
 	<!-- §1.23 (2026-05-05): floating scroll-to-bottom button.
 	     Only shown when the user has paged into history (`isAtBottom`

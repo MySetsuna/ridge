@@ -25,6 +25,17 @@ export interface UserSettings {
   /// Default: 'rust'. Switching takes effect next pane attach (manager.ts
   ///   handles detach/reattach with a 200ms fade mask, see P3.9).
   parserBackend: ParserBackend;
+  /// 2026-05-21 — terminal IME helper textarea gate.
+  /// 'ime': click → focus invisible IME helper textarea so OS IME
+  ///   composition events (CJK input methods) can attach. Each
+  ///   keystroke routes through compositionstart/update/end. Default
+  ///   for users who type Chinese / Japanese / Korean into shells.
+  /// 'direct': skip the IME helper, container takes keydown directly.
+  ///   ASCII characters go straight to PTY with no composition
+  ///   buffering. Pick this when you only type English to shells and
+  ///   don't want a half-toggled CJK IME to swallow plain ASCII
+  ///   keystrokes (the "history input flickers with cursor" symptom).
+  terminalImeMode: 'ime' | 'direct';
 }
 
 const DEFAULTS: UserSettings = {
@@ -40,6 +51,7 @@ const DEFAULTS: UserSettings = {
   terminalPaddingPx: 6,
   terminalScrollbackLines: 2000,
   parserBackend: 'rust',
+  terminalImeMode: 'ime',
 };
 
 const LS_KEY = 'ridge-settings';
@@ -114,6 +126,10 @@ function load(): UserSettings {
       obj.parserBackend === 'wasm' || obj.parserBackend === 'rust'
         ? obj.parserBackend
         : DEFAULTS.parserBackend,
+    terminalImeMode:
+      obj.terminalImeMode === 'ime' || obj.terminalImeMode === 'direct'
+        ? obj.terminalImeMode
+        : DEFAULTS.terminalImeMode,
   };
 }
 
