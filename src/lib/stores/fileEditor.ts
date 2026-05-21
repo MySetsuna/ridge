@@ -276,6 +276,51 @@ function createStore() {
       const state = get({ subscribe });
       const existing = state.openFiles.find((f) => f.path === path);
       if (existing) {
+        // Already-open tab: re-read from disk so the editor reflects
+        // any external mutations that happened while the tab was
+        // hidden / inactive (terminal commands, git pull, another
+        // editor, AI agent writes). Skip the re-read when:
+        //   - the tab has unsaved edits (isDirty) — overwriting would
+        //     silently destroy the user's work; the existing
+        //     file-watcher prompt path handles that case.
+        //   - the tab is a diff view (handled separately via its own
+        //     reload control in the toolbar).
+        //   - the file is an image / binary (no in-place reload path).
+        //   - we're outside Tauri (no `read_file_for_editor`).
+        const canReload =
+          !existing.isDirty &&
+          !existing.diffArgs &&
+          !existing.isImage &&
+          isTauri();
+        if (canReload) {
+          try {
+            const result = await invoke<{ content: string; is_binary: boolean; size: number }>(
+              'read_file_for_editor',
+              { path }
+            );
+            if (!result.is_binary) {
+              update((s) => ({
+                ...s,
+                openFiles: s.openFiles.map((f) =>
+                  f.path === path
+                    ? { ...f, content: result.content, originalContent: result.content, isDirty: false }
+                    : f
+                ),
+                activePath: path,
+                isVisible: true,
+                pendingReveal: reveal ?? s.pendingReveal,
+              }));
+              return;
+            }
+            // Binary now where it was text before — fall through to the
+            // simple activate path; we don't try to switch view mode.
+          } catch (e) {
+            // Read failed (deleted, permission lost, etc.) — keep the
+            // last known content visible; the user can react via the
+            // existing fs-event prompt or a manual reload.
+            console.warn('[fileEditor] re-read on focus failed', path, e);
+          }
+        }
         update((s) => ({
           ...s,
           activePath: path,

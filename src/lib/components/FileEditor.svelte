@@ -459,6 +459,17 @@
           model = monaco.editor.createModel(c.content, 'plaintext');
         }
         modelCache.set(c.path, model);
+      } else if (model.getValue() !== c.content) {
+        // Cached model exists but its text drifted from the store.
+        // Happens when `fileEditor.openFile` re-reads from disk on
+        // re-activation (the bug where reopening a tab showed the
+        // stale content from when it was first opened, even after the
+        // file changed on disk in the background). Push the fresh
+        // content into the model so the next `setModel` swap shows
+        // the current bytes. Resets undo, which is the right call
+        // here — the prior undo stack was relative to a pre-refresh
+        // snapshot that no longer represents anything on disk.
+        model.setValue(c.content);
       }
 
       // —— 2) 切模型 + 还原 view state。
