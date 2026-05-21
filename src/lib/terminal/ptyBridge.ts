@@ -167,16 +167,6 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 	);
 
 	bridges.set(paneId, { outUnlisten, closedUnlisten, deltaUnlisten, workspaceId });
-
-	// Sync the backend delta_mode to the user's current Settings
-	// preference. Fire-and-forget — failure (e.g. pane already gone)
-	// shouldn't block bridge install; the pty-output path still works.
-	const desired = get(settingsStore).parserBackend === 'rust';
-	try {
-		await invoke('set_pane_delta_mode', { workspaceId, paneId, enabled: desired });
-	} catch (e) {
-		console.warn('[ridge-term] initial set_pane_delta_mode failed', { paneId, error: String(e) });
-	}
 }
 
 /**
