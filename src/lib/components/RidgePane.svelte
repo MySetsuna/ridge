@@ -814,17 +814,33 @@ onMount(() => {
 			}
 		}
 
+		// 7) Sync the backend delta_mode to the user's current Settings
+		// preference. MUST come after `activate_pane_pty` — `create_pane`
+		// only registers a `PendingSpawn`, the live pane handle that
+		// `set_pane_delta_mode` looks up in `ws.terminals` doesn't land
+		// until `activate_pane_pty` runs. Pre-fix, this call was inside
+		// `ensurePtyBridge` and fired before activation → "pane not found"
+		// warning on every cold boot. Fire-and-forget here is safe; if it
+		// fails the user just stays on whatever the backend's default
+		// delta_mode is.
+		if (alive) {
+			const backend = get(settingsStore).parserBackend;
+			void setPaneDeltaMode(paneId, backend === 'rust');
+		}
+
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
 		// across this component's mount cycle, so we don't subscribe
 		// here. See ptyBridge.ts.
 	})();
 });
 
-// P3.9 — parserBackend live switch. Initial value is synced by
-// ensurePtyBridge (so the pane comes up in the user's preferred
-// backend on attach). Subsequent runs of this effect detect a real
-// change in `$settingsStore.parserBackend` and flip backends on the
-// fly, with a 200ms opacity mask to hide the brief mirror transition.
+// P3.9 — parserBackend live switch. Initial value is synced by the
+// onMount IIFE right after `activate_pane_pty` returns (the pane
+// handle must be in `ws.terminals` for `set_pane_delta_mode` to
+// resolve, otherwise it errors with "pane not found"). Subsequent
+// runs of this effect detect a real change in
+// `$settingsStore.parserBackend` and flip backends on the fly, with
+// a 200ms opacity mask to hide the brief mirror transition.
 $effect(() => {
 	const backend = $settingsStore.parserBackend;
 	if (!attached) {
