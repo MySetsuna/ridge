@@ -446,6 +446,13 @@ export class TerminalManager {
 	 *  steady-idle taps zero per-tick CPU and zero per-tick GPU work
 	 *  between cursor-blink boundaries. */
 	private _hostInvalidatePending: boolean = false;
+	/** Mirror of the most recent `setPreedit` call per pane. RidgePane
+	 *  writes the preedit overlay via `setPreedit(paneId, text, row, col)`;
+	 *  the wasm side stores it but does not expose a getter, so we keep
+	 *  this small JS-side mirror for E2E specs to assert that the overlay
+	 *  cell matches the textarea cell + the kernel cursor. Cleared by
+	 *  `clearPreedit`. */
+	private _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
 	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
@@ -1597,6 +1604,16 @@ export class TerminalManager {
 					scrollbackLen: (paneId: string) => number;
 					themeSnapshot: () => Record<string, string> | null;
 					kernelCursor: (paneId: string) => { row: number; col: number } | null;
+					kernelDecState: (paneId: string) =>
+						| {
+								mouseReportingModes: number | null;
+								isAltScreen: boolean | null;
+								isInlineTuiMode: boolean | null;
+								isAppCursorKeys: boolean | null;
+								isCursorVisible: boolean | null;
+								isBracketedPaste: boolean | null;
+						  }
+						| null;
 					kernelThemeProbe: (paneId: string) =>
 						| { bg: string; fg: string; cursor: string; tuiBg: string }
 						| { error: string }
@@ -1606,6 +1623,12 @@ export class TerminalManager {
 						relX?: number,
 						relY?: number,
 					) => { r: number; g: number; b: number; a: number } | null;
+					inputAnchorResolved: (paneId: string) =>
+						| { row: number; col: number; x: number; y: number; cellW: number; cellH: number; fontSizePx: number }
+						| null;
+					lastPreeditCall: (paneId: string) =>
+						| { row: number; col: number; text: string }
+						| null;
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -1711,6 +1734,12 @@ export class TerminalManager {
 				// = bottom-mid, almost always empty bg below the PS
 				// prompt). Returns null if no host canvas or the
 				// drawImage path can't sample the WebGPU swap chain.
+				// IME alignment regression probes (P5.IME): expose the unified
+				// anchor resolver + the JS-side mirror of the last setPreedit
+				// call so specs can verify textarea cell == overlay cell ==
+				// kernel cursor for shell/TUI/wrap scenarios.
+				inputAnchorResolved: (paneId) => this.inputAnchorResolved(paneId),
+				lastPreeditCall: (paneId) => this.lastPreeditCall(paneId),
 				sampleHostPixel: (relX = 0.5, relY = 0.85) => {
 					const host = this.globalHost?.canvas ?? null;
 					if (!host) return null;
@@ -2862,6 +2891,7 @@ export class TerminalManager {
 		if (!entry || entry.parked) return;
 		const h = entry.handle as unknown as { setPreedit?: (t: string, r: number, c: number) => void };
 		h.setPreedit?.(text, row, col);
+		this._lastPreeditCall.set(paneId, { row, col, text });
 		this.wake();
 	}
 
@@ -2872,7 +2902,15 @@ export class TerminalManager {
 		if (!entry || entry.parked) return;
 		const h = entry.handle as unknown as { clearPreedit?: () => void };
 		h.clearPreedit?.();
+		this._lastPreeditCall.delete(paneId);
 		this.wake();
+	}
+
+	/** E2E probe — last `setPreedit` call for the given pane, or `null`
+	 *  if `clearPreedit` was the most recent call (or no preedit yet).
+	 *  Specs use this to assert overlay-cell == textarea-cell == anchor. */
+	lastPreeditCall(paneId: string): { row: number; col: number; text: string } | null {
+		return this._lastPreeditCall.get(paneId) ?? null;
 	}
 
 	/** Whether the pane has DEC mouse reporting enabled (?1000/?1002/?1003).
@@ -3177,6 +3215,43 @@ export class TerminalManager {
 			}
 		}
 		return { row: k.cursorRow(), col: k.cursorCol() };
+	}
+
+	/** Unified IME anchor — single source for textarea position AND
+	 *  preedit overlay cell. Returns the resolved (row, col) from
+	 *  `inputAnchorCell` together with the matching pixel rect computed
+	 *  with the same `lastFitPaddingPx` compensation the pixel resolver
+	 *  uses. Both consumers (DOM textarea, wasm preedit overlay) must
+	 *  read from this so they can't drift apart by even a cell. */
+	inputAnchorResolved(
+		paneId: string,
+	): {
+		row: number;
+		col: number;
+		x: number;
+		y: number;
+		cellW: number;
+		cellH: number;
+		fontSizePx: number;
+	} | null {
+		const e = this.panes.get(paneId);
+		if (!e || e.cellW <= 0 || e.cellH <= 0) return null;
+		const cell = this.inputAnchorCell(paneId);
+		if (!cell) return null;
+		const rows = e.kernel.rows();
+		const cols = e.kernel.cols();
+		const r = Math.min(cell.row, Math.max(0, rows - 1));
+		const c = Math.min(cell.col, Math.max(0, cols - 1));
+		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
+		return {
+			row: r,
+			col: c,
+			x: Math.round(c * e.cellW) + pad,
+			y: Math.round(r * e.cellH) + pad,
+			cellW: e.cellW,
+			cellH: e.cellH,
+			fontSizePx: this.opts.fontSizePx,
+		};
 	}
 
 	/** Force a full-frame redraw on the next rAF tick (§1.27 fix). Used
