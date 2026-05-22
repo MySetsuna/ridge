@@ -68,6 +68,23 @@ export class RenderHandle {
      */
     constructor(canvas: HTMLCanvasElement);
     /**
+     * §p4.9 (2026-05-22) — worker-thread constructor.
+     *
+     * JS bridge: `RenderHandle.newFromOffscreen(offscreenCanvas)`.
+     * Called from `renderWorker.ts::loadKernelAdapter` after the
+     * host transferred a canvas via
+     * `canvas.transferControlToOffscreen()` + postMessage. The
+     * `OffscreenCanvas` here is the same object the worker side
+     * receives in the `bindCanvas` request.
+     *
+     * Canvas2D-only — the WebGPU-first branch is reserved for the
+     * main-thread `newWithWebgpuFirst` because the WebGPU surface
+     * host needs DOM access (window-level GPU adapter / device).
+     * On the worker path we paint via Canvas2D, which is fully
+     * available inside a DedicatedWorker since 2018.
+     */
+    static newFromOffscreen(canvas: OffscreenCanvas): RenderHandle;
+    /**
      * Async constructor — try WebGPU first, fall back to Canvas2D
      * on adapter miss / device-creation failure. Always succeeds
      * when `Canvas2dBackend::new` succeeds; returns Err only if
@@ -576,6 +593,8 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_renderhandle_free: (a: number, b: number) => void;
     readonly __wbg_surfacehosthandle_free: (a: number, b: number) => void;
+    readonly __wbg_terminalkernel_free: (a: number, b: number) => void;
+    readonly _init: () => void;
     readonly renderhandle_applyDefaultTheme: (a: number) => void;
     readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
     readonly renderhandle_clearPreedit: (a: number) => void;
@@ -584,6 +603,7 @@ export interface InitOutput {
     readonly renderhandle_invalidateAll: (a: number) => void;
     readonly renderhandle_isDirty: (a: number, b: number, c: number) => number;
     readonly renderhandle_new: (a: any) => [number, number, number];
+    readonly renderhandle_newFromOffscreen: (a: any) => [number, number, number];
     readonly renderhandle_newWithWebgpuFirst: (a: any, b: number) => any;
     readonly renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number) => number;
     readonly renderhandle_recordCachedOnly: (a: number) => number;
@@ -598,8 +618,6 @@ export interface InitOutput {
     readonly surfacehosthandle_init: (a: any) => any;
     readonly surfacehosthandle_invalidate: (a: number) => void;
     readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
-    readonly __wbg_terminalkernel_free: (a: number, b: number) => void;
-    readonly _init: () => void;
     readonly terminalkernel_applyDeltaFrame: (a: number, b: number, c: number) => [number, number];
     readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_clearScrollback: (a: number) => void;
@@ -655,11 +673,10 @@ export interface InitOutput {
     readonly terminalkernel_shouldAllowShellHistory: (a: number) => number;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h5968675fac51274d: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h689694e9f145c849: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h7172cff4aaa5401b: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h4ac4bf87b6adbefe: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h9527eaf8caca52ee: (a: number, b: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h86171e4727f69f8c: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h86171e4727f69f8c_2: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

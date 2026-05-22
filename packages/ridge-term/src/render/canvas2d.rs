@@ -27,7 +27,11 @@
 //! be 1px narrower than the others.
 
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use wasm_bindgen::JsValue;
+use web_sys::{
+    CanvasRenderingContext2d, HtmlCanvasElement, OffscreenCanvas,
+    OffscreenCanvasRenderingContext2d, TextMetrics,
+};
 
 use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
@@ -42,9 +46,168 @@ use crate::term::attrs::Flags;
 // agnostic. Imports removed; the helpers themselves are still in
 // `wcwidth.rs` for completeness / external consumers.
 
+/// §p4.9 (2026-05-22) — abstraction over the 2D drawing context so the
+/// same `Canvas2dBackend` body works on both `CanvasRenderingContext2d`
+/// (DOM canvas, main thread) and `OffscreenCanvasRenderingContext2d`
+/// (worker thread, OffscreenCanvas). Each method is a one-liner that
+/// delegates to the underlying inherent web-sys method; the only
+/// non-trivial part is `measure_text`, whose return type is the same
+/// `web_sys::TextMetrics` for both contexts.
+pub trait Canvas2dCtxLike {
+    fn save(&self);
+    fn restore(&self);
+    fn set_font(&self, font: &str);
+    fn set_text_baseline(&self, value: &str);
+    fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue>;
+    fn set_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> Result<(), JsValue>;
+    fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64);
+    fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64);
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue>;
+    fn set_fill_style_str(&self, value: &str);
+}
+
+impl Canvas2dCtxLike for CanvasRenderingContext2d {
+    fn save(&self) {
+        CanvasRenderingContext2d::save(self);
+    }
+    fn restore(&self) {
+        CanvasRenderingContext2d::restore(self);
+    }
+    fn set_font(&self, font: &str) {
+        CanvasRenderingContext2d::set_font(self, font);
+    }
+    fn set_text_baseline(&self, value: &str) {
+        CanvasRenderingContext2d::set_text_baseline(self, value);
+    }
+    fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue> {
+        CanvasRenderingContext2d::measure_text(self, text)
+    }
+    fn set_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> Result<(), JsValue> {
+        CanvasRenderingContext2d::set_transform(self, a, b, c, d, e, f)
+    }
+    fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        CanvasRenderingContext2d::clear_rect(self, x, y, w, h);
+    }
+    fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        CanvasRenderingContext2d::fill_rect(self, x, y, w, h);
+    }
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue> {
+        CanvasRenderingContext2d::fill_text(self, text, x, y)
+    }
+    fn set_fill_style_str(&self, value: &str) {
+        CanvasRenderingContext2d::set_fill_style_str(self, value);
+    }
+}
+
+impl Canvas2dCtxLike for OffscreenCanvasRenderingContext2d {
+    fn save(&self) {
+        OffscreenCanvasRenderingContext2d::save(self);
+    }
+    fn restore(&self) {
+        OffscreenCanvasRenderingContext2d::restore(self);
+    }
+    fn set_font(&self, font: &str) {
+        OffscreenCanvasRenderingContext2d::set_font(self, font);
+    }
+    fn set_text_baseline(&self, value: &str) {
+        OffscreenCanvasRenderingContext2d::set_text_baseline(self, value);
+    }
+    fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue> {
+        OffscreenCanvasRenderingContext2d::measure_text(self, text)
+    }
+    fn set_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> Result<(), JsValue> {
+        OffscreenCanvasRenderingContext2d::set_transform(self, a, b, c, d, e, f)
+    }
+    fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        OffscreenCanvasRenderingContext2d::clear_rect(self, x, y, w, h);
+    }
+    fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        OffscreenCanvasRenderingContext2d::fill_rect(self, x, y, w, h);
+    }
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue> {
+        OffscreenCanvasRenderingContext2d::fill_text(self, text, x, y)
+    }
+    fn set_fill_style_str(&self, value: &str) {
+        OffscreenCanvasRenderingContext2d::set_fill_style_str(self, value);
+    }
+}
+
+/// §p4.9 (2026-05-22) — abstraction over the canvas surface. Both
+/// `HtmlCanvasElement` and `OffscreenCanvas` accept `set_width` /
+/// `set_height` to size the backing buffer, but only `HtmlCanvasElement`
+/// has a `.style` CSS property — for the worker path, the host owns
+/// the layout (it transferred a pre-sized canvas) so `lock_css_size`
+/// is a documented no-op.
+pub trait Canvas2dSurfaceLike {
+    fn set_width(&self, value: u32);
+    fn set_height(&self, value: u32);
+    /// On the main thread, lock the canvas CSS size to `width: 100%`
+    /// / `height: 100%` so it tracks subsequent container resizes
+    /// (see TASKS §1.9 — earlier code froze it at first-fit pixel
+    /// size, blocking later fitPane calls). On the worker thread,
+    /// the host owns layout, so this is a no-op.
+    fn lock_css_size_to_100_percent(&self) -> Result<(), String>;
+}
+
+impl Canvas2dSurfaceLike for HtmlCanvasElement {
+    fn set_width(&self, value: u32) {
+        HtmlCanvasElement::set_width(self, value);
+    }
+    fn set_height(&self, value: u32) {
+        HtmlCanvasElement::set_height(self, value);
+    }
+    fn lock_css_size_to_100_percent(&self) -> Result<(), String> {
+        let style = self.style();
+        style
+            .set_property("width", "100%")
+            .map_err(|e| format!("style.width: {:?}", e))?;
+        style
+            .set_property("height", "100%")
+            .map_err(|e| format!("style.height: {:?}", e))?;
+        Ok(())
+    }
+}
+
+impl Canvas2dSurfaceLike for OffscreenCanvas {
+    fn set_width(&self, value: u32) {
+        OffscreenCanvas::set_width(self, value);
+    }
+    fn set_height(&self, value: u32) {
+        OffscreenCanvas::set_height(self, value);
+    }
+    fn lock_css_size_to_100_percent(&self) -> Result<(), String> {
+        // OffscreenCanvas has no DOM presence — host owns layout.
+        Ok(())
+    }
+}
+
 pub struct Canvas2dBackend {
-    canvas: HtmlCanvasElement,
-    ctx: CanvasRenderingContext2d,
+    canvas: Box<dyn Canvas2dSurfaceLike>,
+    ctx: Box<dyn Canvas2dCtxLike>,
     /// Saved per begin_frame so draw_row / draw_cursor can read them.
     metrics: FrameMetrics,
     /// `Theme` is cloned each frame because it holds 256 colors (~1KB).
@@ -58,6 +221,7 @@ pub struct Canvas2dBackend {
 }
 
 impl Canvas2dBackend {
+    /// Main-thread constructor — `HtmlCanvasElement` from the DOM.
     pub fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
         let ctx_obj = canvas
             .get_context("2d")
@@ -66,8 +230,36 @@ impl Canvas2dBackend {
         let ctx: CanvasRenderingContext2d = ctx_obj
             .dyn_into()
             .map_err(|_| "context is not Canvas2D".to_string())?;
+        Ok(Self::from_handles(Box::new(canvas), Box::new(ctx)))
+    }
 
-        Ok(Self {
+    /// §p4.9 (2026-05-22) — worker-thread constructor.
+    ///
+    /// `OffscreenCanvas` is the only canvas type a DedicatedWorker can
+    /// own (you can't ship a `HtmlCanvasElement` cross-realm; you call
+    /// `canvas.transferControlToOffscreen()` on the main thread, then
+    /// postMessage the resulting `OffscreenCanvas` via `transferList`).
+    /// The 2D context surface this gives us back is fully symmetric
+    /// with `CanvasRenderingContext2d` for everything this backend uses
+    /// — see `Canvas2dCtxLike`.
+    pub fn new_from_offscreen(canvas: OffscreenCanvas) -> Result<Self, String> {
+        let ctx_obj = canvas
+            .get_context("2d")
+            .map_err(|e| format!("getContext('2d') failed: {:?}", e))?
+            .ok_or_else(|| "getContext('2d') returned null".to_string())?;
+        let ctx: OffscreenCanvasRenderingContext2d = ctx_obj
+            .dyn_into()
+            .map_err(|_| "context is not OffscreenCanvas2D".to_string())?;
+        Ok(Self::from_handles(Box::new(canvas), Box::new(ctx)))
+    }
+
+    /// Shared post-context init. Both constructors funnel here so the
+    /// default metrics / theme / font_css live in one place.
+    fn from_handles(
+        canvas: Box<dyn Canvas2dSurfaceLike>,
+        ctx: Box<dyn Canvas2dCtxLike>,
+    ) -> Self {
+        Self {
             canvas,
             ctx,
             metrics: FrameMetrics {
@@ -80,7 +272,7 @@ impl Canvas2dBackend {
             font_css: String::from("15px monospace"),
             css_w: 0,
             css_h: 0,
-        })
+        }
     }
 
     /// Set the font CSS used for `fillText`. Must include size, e.g.
@@ -160,13 +352,7 @@ impl RenderBackend for Canvas2dBackend {
         // `set_height` above) control the device-pixel backing buffer
         // and are independent of CSS — DPR changes update the buffer
         // without touching CSS layout.
-        let style = self.canvas.style();
-        style
-            .set_property("width", "100%")
-            .map_err(|e| format!("style.width: {:?}", e))?;
-        style
-            .set_property("height", "100%")
-            .map_err(|e| format!("style.height: {:?}", e))?;
+        self.canvas.lock_css_size_to_100_percent()?;
         // Reset transform — setting width/height clears the transform
         // matrix automatically, but we'll re-apply scale in begin_frame.
         Ok(())

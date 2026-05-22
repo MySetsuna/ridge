@@ -1613,16 +1613,6 @@ export class TerminalManager {
 					scrollbackLen: (paneId: string) => number;
 					themeSnapshot: () => Record<string, string> | null;
 					kernelCursor: (paneId: string) => { row: number; col: number } | null;
-					kernelDecState: (paneId: string) =>
-						| {
-								mouseReportingModes: number | null;
-								isAltScreen: boolean | null;
-								isInlineTuiMode: boolean | null;
-								isAppCursorKeys: boolean | null;
-								isCursorVisible: boolean | null;
-								isBracketedPaste: boolean | null;
-						  }
-						| null;
 					kernelThemeProbe: (paneId: string) =>
 						| { bg: string; fg: string; cursor: string; tuiBg: string }
 						| { error: string }
@@ -3722,7 +3712,22 @@ export class TerminalManager {
 			entry.handle.resize(wCss, hCss, dpr);
 		}
 
-		const sizeChanged = rows !== entry.lastReportedRows || cols !== entry.lastReportedCols;
+		// Self-healing: also compare against the kernel's actual grid. If a
+		// prior fitPane ran while the pty-delta Channel wasn't wired up yet
+		// (race: attach() schedules rAF fit BEFORE RidgePane's ensurePtyBridge
+		// + setPaneDeltaMode complete), the backend's Resize delta was dropped
+		// and the kernel stays at its compile-time default (80×24) while
+		// lastReportedRows/Cols already cached the intended size. Without this
+		// extra guard, sizeChanged stays false on every subsequent fit and
+		// the new pane never reaches the correct grid → visible as the
+		// "split 后新终端不填满分区" bug.
+		const kernelRows = entry.kernel.rows();
+		const kernelCols = entry.kernel.cols();
+		const sizeChanged =
+			rows !== entry.lastReportedRows ||
+			cols !== entry.lastReportedCols ||
+			rows !== kernelRows ||
+			cols !== kernelCols;
 		if (!sizeChanged) {
 			// Surface size changed (different DPR or container dimensions
 			// that don't translate to a different cell grid) but cells stay

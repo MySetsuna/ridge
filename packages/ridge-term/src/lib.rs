@@ -1052,7 +1052,7 @@ mod renderer_js {
     use super::*;
     use crate::render::backend::RenderBackend;
     use crate::render::{AnyBackend, Canvas2dBackend, FrameMetrics, Renderer, Theme};
-    use web_sys::HtmlCanvasElement;
+    use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
     #[wasm_bindgen]
     pub struct RenderHandle {
@@ -1068,6 +1068,37 @@ mod renderer_js {
         #[wasm_bindgen(constructor)]
         pub fn new(canvas: HtmlCanvasElement) -> Result<RenderHandle, JsValue> {
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
+            let metrics = FrameMetrics {
+                cell_w: 8.0,
+                cell_h: 16.0,
+                dpr: 1.0,
+                tui_mode: false,
+            };
+            let renderer = Renderer::new(
+                AnyBackend::Canvas2d(backend),
+                metrics,
+                Theme::default_dark(),
+            );
+            Ok(RenderHandle { renderer })
+        }
+
+        /// §p4.9 (2026-05-22) — worker-thread constructor.
+        ///
+        /// JS bridge: `RenderHandle.newFromOffscreen(offscreenCanvas)`.
+        /// Called from `renderWorker.ts::loadKernelAdapter` after the
+        /// host transferred a canvas via
+        /// `canvas.transferControlToOffscreen()` + postMessage. The
+        /// `OffscreenCanvas` here is the same object the worker side
+        /// receives in the `bindCanvas` request.
+        ///
+        /// Canvas2D-only — the WebGPU-first branch is reserved for the
+        /// main-thread `newWithWebgpuFirst` because the WebGPU surface
+        /// host needs DOM access (window-level GPU adapter / device).
+        /// On the worker path we paint via Canvas2D, which is fully
+        /// available inside a DedicatedWorker since 2018.
+        #[wasm_bindgen(js_name = newFromOffscreen)]
+        pub fn new_from_offscreen(canvas: OffscreenCanvas) -> Result<RenderHandle, JsValue> {
+            let backend = Canvas2dBackend::new_from_offscreen(canvas).map_err(JsValue::from)?;
             let metrics = FrameMetrics {
                 cell_w: 8.0,
                 cell_h: 16.0,
