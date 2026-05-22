@@ -7,12 +7,13 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::ipc::Channel;
 use tauri::State;
 use uuid::Uuid;
 
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
-use crate::state::AppState;
+use crate::state::{AppState, PaneDeltaSender};
 use crate::utils::cwd::resolve_default_cwd;
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
@@ -986,8 +987,15 @@ fn resize_pane_inner(
                 };
                 match encode_frame(&frame) {
                     Ok(bytes) => {
-                        let label = pane_id.to_string();
-                        let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+                        // P4.2 — prefer the Tauri Channel; fall back to
+                        // app.emit when the frontend hasn't registered a
+                        // channel yet for this pane.
+                        if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
+                            sender(bytes);
+                        } else {
+                            let label = pane_id.to_string();
+                            let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -1011,8 +1019,52 @@ fn resize_pane_inner(
 
 }
 
+/// P4.1 (2026-05-21) — store the frontend's Tauri Channel as the delta-byte
+/// sink for `(workspace_id, pane_id)`. After this command returns, the three
+/// `pty-delta-*` emit sites (`lib.rs` main loop, `resize_pane`,
+/// `set_pane_delta_mode`) prefer `channel.send(bytes)` over `app.emit`,
+/// skipping JSON wrap + event-name routing.
+///
+/// Idempotent: a second register for the same pane replaces the first. The
+/// channel is unregistered automatically in `kill_pty_if_present`, so the
+/// frontend doesn't need to clean up on pane close.
+///
+/// The Channel is wrapped in a closure so `AppState` stays Tauri-runtime
+/// agnostic (lets `state.rs` host unit tests without spinning up Tauri).
+/// Closure send errors are logged at `warn` so a missing/closed frontend
+/// surfaces in tracing but doesn't take down the PTY pump.
+#[tauri::command]
+pub async fn register_pane_delta_channel(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+    channel: Channel<Vec<u8>>,
+) -> Result<(), String> {
+    let workspace_id = Uuid::parse_str(&workspace_id)
+        .map_err(|_| "invalid workspace_id".to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+
+    let sender: PaneDeltaSender = Arc::new(move |bytes: Vec<u8>| {
+        if let Err(e) = channel.send(bytes) {
+            tracing::warn!(
+                target: "ridge::pty_delta",
+                ws = %workspace_id,
+                pane = %pane_id,
+                error = %e,
+                "pty-delta channel send failed (frontend likely disconnected)",
+            );
+        }
+    });
+    state.register_pane_delta_channel(workspace_id, pane_id, sender);
+    Ok(())
+}
+
 /// 在指定工作区内移除并结束 PTY（若存在）。
 pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
+	// P4.1 — drop the delta sender first so a racing `pty-delta-*` emit
+	// from the parser tail can't enqueue against a freshly-dead frontend
+	// handle. Safe to call when no channel is registered.
+	state.unregister_pane_delta_channel(workspace_id, pane_id);
 	state.clear_pty_scrollback(workspace_id, pane_id);
 	// Drain both the live terminal AND any unconsumed PendingSpawn under a
 	// single write lock. The `_pending` binding's drop releases its master /
@@ -1120,8 +1172,15 @@ pub async fn set_pane_delta_mode(
             let _ = w.flush();
         }
         let bytes = encode_frame(&frame).map_err(|e| format!("delta encode failed: {e}"))?;
-        let label = pane_id.to_string();
-        let _ = app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
+        // P4.2 — prefer the Tauri Channel; fall back to app.emit when no
+        // channel is registered yet (in particular: tests, or a frontend
+        // that opted into rust mode before its ptyBridge registered).
+        if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
+            sender(bytes);
+        } else {
+            let label = pane_id.to_string();
+            let _ = app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
+        }
         // Flip the gate AFTER the reframe goes out — main-loop sees
         // it on the next chunk.
         delta_mode_flag.store(true, Ordering::Release);
