@@ -453,9 +453,18 @@ export class TerminalKernel {
      * Returns `Err(JsValue)` with a human-readable string on decode
      * failure OR protocol-version mismatch — caller is expected to log
      * and trigger a `force_full_reframe` self-heal (manager.ts P3.9
-     * wiring). Selection / search anchors are cleared on every applied
-     * frame because the mirror's grid mutates without going through
-     * `feed()` (which has its own eviction-counter-based clear).
+     * wiring).
+     *
+     * Selection / search invalidation: only on the same two conditions
+     * `feed()` uses — scrollback eviction (capacity rollover) or a hard
+     * `Reset` delta. Every other delta variant (`Cells`, `Cursor`,
+     * `ScreenSwitch`, `Resize`, semantic events, `ModeChange`,
+     * `ScrollbackAppend` below capacity) leaves abs-row anchors valid,
+     * so the user's drag-selection survives the high-frequency TUI
+     * redraws Claude Code / htop / vim / less emit (the same
+     * "TUI 一直刷新无法选中复制" symptom the feed() path fixed in §B.2,
+     * rebroken by the unconditional clear that originally lived here
+     * when the rust-parser backend landed in P3.6).
      * @param {Uint8Array} bytes
      */
     applyDeltaFrame(bytes) {
@@ -563,6 +572,35 @@ export class TerminalKernel {
         const ret = wasm.terminalkernel_dumpVisibleText(this.__wbg_ptr);
         var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * E2E-only — build a postcard-encoded `DeltaFrame` carrying a single
+     * `Cursor` delta with the supplied coordinates and a default block
+     * shape. Lets `tests/e2e-shell/` exercise the `applyDeltaFrame` path
+     * without spinning up a real shell or hand-rolling the postcard
+     * schema. No state mutation; returns bytes ready to feed back into
+     * `applyDeltaFrame`.
+     *
+     * `pane_seq` is opaque to the mirror (used only for diagnostics) —
+     * callers can pass any monotonically increasing u32. We accept a
+     * narrower `u32` than the field's underlying `u64` because JS
+     * numbers lose precision past 2^53 and tests never need values
+     * anywhere near that range.
+     * @param {number} pane_seq
+     * @param {number} row
+     * @param {number} col
+     * @returns {Uint8Array}
+     */
+    e2eEncodeCursorDeltaFrame(pane_seq, row, col) {
+        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
+        _assertNum(this.__wbg_ptr);
+        _assertNum(pane_seq);
+        _assertNum(row);
+        _assertNum(col);
+        const ret = wasm.terminalkernel_e2eEncodeCursorDeltaFrame(this.__wbg_ptr, pane_seq, row, col);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
     }
     /**
@@ -1127,6 +1165,54 @@ export class TerminalKernel {
         _assertNum(end_abs_row);
         _assertNum(end_col);
         wasm.terminalkernel_setSelectionAbs(this.__wbg_ptr, start_abs_row, start_col, end_abs_row, end_col);
+    }
+    /**
+     * §1.33 (2026-05-22) — hard gate for the shell-history popup
+     * feature. Returns `true` ONLY when the kernel is confident a
+     * normal shell prompt owns the input line on this pane; every
+     * known TUI signal short-circuits to `false`.
+     *
+     * Why this lives in WASM instead of the Svelte layer it used to
+     * be in (`src/lib/terminal/tuiGate.ts`):
+     *   - The JS `tuiGate` honoured the sticky window only while the
+     *     cursor was hidden. Claude Code's input prompt flips the
+     *     cursor visible BEFORE the inline-TUI heuristic decays, so
+     *     the user saw the popup hijack ArrowUp inside Claude.
+     *   - With the gate inside the kernel, we own a sticky timestamp
+     *     that bumps on every signal observation, independent of
+     *     cursor visibility — the JS layer can no longer race the
+     *     popup open between TUI frames.
+     *
+     * Decision order (any `false` wins immediately):
+     *   1. DECCKM `?1` (app_cursor_keys) — protocol-level "the app
+     *      owns the arrow keys" declaration. zsh+zle, bash+readline-
+     *      vi-mode, PSReadLine, Ink TUIs all set this.
+     *   2. Alt screen `?1049` / `?47` — full-screen TUI (vim, less,
+     *      htop) actively rendering.
+     *   3. Mouse reporting `?1000` / `?1002` / `?1003` — TUI tracks
+     *      mouse input, keyboard ownership goes with it.
+     *   4. Inline-TUI heuristic — Ink / log-update style apps that
+     *      hide the cursor + emit absolute-positioning CSIs within
+     *      the kernel's `INLINE_TUI_DECAY_MS` window.
+     *   5. Cursor hidden `?25l` — shell prompts always run with the
+     *      cursor visible; a hidden cursor is strong evidence a TUI
+     *      is mid-render or holding the screen between frames.
+     *   6. Sticky window — if any signal above was observed true
+     *      within `SHELL_HISTORY_STICKY_MS`, stay closed. Catches
+     *      the brief intra-frame "all signals false" windows that
+     *      let the JS-side gate leak before this method existed.
+     *
+     * Side effect: takes `&mut self` because the sticky timestamp is
+     * refreshed on every live-signal observation. Callers must hold
+     * a mutable handle to the kernel (they always do — wasm-bindgen
+     * generates `&mut self` on the JS side too).
+     * @returns {boolean}
+     */
+    shouldAllowShellHistory() {
+        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
+        _assertNum(this.__wbg_ptr);
+        const ret = wasm.terminalkernel_shouldAllowShellHistory(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * Drain semantic events (title, cwd, hyperlinks, bell) produced by
@@ -1860,7 +1946,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen__convert__closures_____invoke__h8146b976d3444cd3(a, state0.b, arg0, arg1);
+                        return wasm_bindgen__convert__closures_____invoke__h689694e9f145c849(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -1946,7 +2032,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen__convert__closures_____invoke__hde54ef055b7489c1(a, state0.b, );
+                        return wasm_bindgen__convert__closures_____invoke__h9527eaf8caca52ee(a, state0.b, );
                     } finally {
                         state0.a = a;
                     }
@@ -2153,18 +2239,18 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function() { return logError(function (arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 330, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h6d9ba260bb3306dc);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 343, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h7172cff4aaa5401b);
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000002: function() { return logError(function (arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 380, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hb9b2628a6f28b20e);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 374, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h5968675fac51274d);
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000003: function() { return logError(function (arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 329, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h5d643d96cae4f886);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 344, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4ac4bf87b6adbefe);
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000004: function() { return logError(function (arg0) {
@@ -2205,38 +2291,38 @@ function __wbg_get_imports() {
 
 
 //#endregion
-function wasm_bindgen__convert__closures_____invoke__hde54ef055b7489c1(arg0, arg1) {
+function wasm_bindgen__convert__closures_____invoke__h9527eaf8caca52ee(arg0, arg1) {
     _assertNum(arg0);
     _assertNum(arg1);
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hde54ef055b7489c1(arg0, arg1);
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h9527eaf8caca52ee(arg0, arg1);
     return ret !== 0;
 }
 
-function wasm_bindgen__convert__closures_____invoke__h6d9ba260bb3306dc(arg0, arg1, arg2) {
+function wasm_bindgen__convert__closures_____invoke__h7172cff4aaa5401b(arg0, arg1, arg2) {
     _assertNum(arg0);
     _assertNum(arg1);
-    wasm.wasm_bindgen__convert__closures_____invoke__h6d9ba260bb3306dc(arg0, arg1, arg2);
+    wasm.wasm_bindgen__convert__closures_____invoke__h7172cff4aaa5401b(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h5d643d96cae4f886(arg0, arg1, arg2) {
+function wasm_bindgen__convert__closures_____invoke__h4ac4bf87b6adbefe(arg0, arg1, arg2) {
     _assertNum(arg0);
     _assertNum(arg1);
-    wasm.wasm_bindgen__convert__closures_____invoke__h5d643d96cae4f886(arg0, arg1, arg2);
+    wasm.wasm_bindgen__convert__closures_____invoke__h4ac4bf87b6adbefe(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hb9b2628a6f28b20e(arg0, arg1, arg2) {
+function wasm_bindgen__convert__closures_____invoke__h5968675fac51274d(arg0, arg1, arg2) {
     _assertNum(arg0);
     _assertNum(arg1);
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hb9b2628a6f28b20e(arg0, arg1, arg2);
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h5968675fac51274d(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h8146b976d3444cd3(arg0, arg1, arg2, arg3) {
+function wasm_bindgen__convert__closures_____invoke__h689694e9f145c849(arg0, arg1, arg2, arg3) {
     _assertNum(arg0);
     _assertNum(arg1);
-    wasm.wasm_bindgen__convert__closures_____invoke__h8146b976d3444cd3(arg0, arg1, arg2, arg3);
+    wasm.wasm_bindgen__convert__closures_____invoke__h689694e9f145c849(arg0, arg1, arg2, arg3);
 }
 
 

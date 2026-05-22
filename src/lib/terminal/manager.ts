@@ -1629,6 +1629,25 @@ export class TerminalManager {
 					lastPreeditCall: (paneId: string) =>
 						| { row: number; col: number; text: string }
 						| null;
+					setSelectionAbs: (
+						paneId: string,
+						startAbsRow: number,
+						startCol: number,
+						endAbsRow: number,
+						endCol: number,
+					) => void;
+					getSelectionText: (paneId: string) => string;
+					hasSelection: (paneId: string) => boolean;
+					applyDeltaFrameRaw: (paneId: string, bytes: Uint8Array) => void;
+					encodeCursorDeltaFrame: (
+						paneId: string,
+						seq: number,
+						row: number,
+						col: number,
+					) => Uint8Array | null;
+					installPtyWriteSpy: (paneId: string) => void;
+					ptyWriteLog: (paneId: string) => Array<{ data: string; at: number }>;
+					clearPtyWriteLog: (paneId: string) => void;
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -1757,6 +1776,76 @@ export class TerminalManager {
 					}
 					const d = ctx.getImageData(0, 0, 1, 1).data;
 					return { r: d[0], g: d[1], b: d[2], a: d[3] };
+				},
+				// Selection regression hooks. These are thin pass-throughs to
+				// the wasm kernel; the active spec is
+				// `tests/e2e-shell/selection-tui-refresh.spec.ts`, which
+				// drives the same code path the user hit when reporting
+				// "selection flashes / can't copy text from claude TUI"
+				// — see lib.rs::apply_delta_frame docstring for the §B.2
+				// follow-up that locks down the invariant.
+				setSelectionAbs: (paneId, startAbsRow, startCol, endAbsRow, endCol) => {
+					const e = this.panes.get(paneId);
+					if (!e) return;
+					e.kernel.setSelectionAbs(startAbsRow, startCol, endAbsRow, endCol);
+					this.wake();
+				},
+				getSelectionText: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return '';
+					const k = e.kernel as unknown as { getSelectionText?: () => string };
+					return k.getSelectionText?.() ?? '';
+				},
+				hasSelection: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return false;
+					const k = e.kernel as unknown as { hasSelection?: () => boolean };
+					return !!k.hasSelection?.();
+				},
+				applyDeltaFrameRaw: (paneId, bytes) => this.applyDeltaFrame(paneId, bytes),
+				encodeCursorDeltaFrame: (paneId, seq, row, col) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const k = e.kernel as unknown as {
+						e2eEncodeCursorDeltaFrame?: (seq: number, row: number, col: number) => Uint8Array;
+					};
+					return k.e2eEncodeCursorDeltaFrame?.(seq, row, col) ?? null;
+				},
+				// §1.33 (2026-05-22) — PTY write spy used by the shell-
+				// history-gate / ArrowRight e2e specs to assert the
+				// exact bytes the popup-onSelect path produced (e.g.
+				// "command without trailing '\r' on ArrowRight"). The
+				// spy wraps the entry's dataHandler in place; calling
+				// `installPtyWriteSpy` is idempotent per pane.
+				installPtyWriteSpy: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e || !e.dataHandler) return;
+					const ent = e as unknown as { _e2ePtyWriteLog?: Array<{ data: string; at: number }> };
+					if (ent._e2ePtyWriteLog) return;
+					const log: Array<{ data: string; at: number }> = [];
+					ent._e2ePtyWriteLog = log;
+					const original = e.dataHandler;
+					const decoder = new TextDecoder();
+					e.dataHandler = (bytes: Uint8Array) => {
+						try {
+							log.push({ data: decoder.decode(bytes), at: performance.now() });
+						} catch {
+							// Decoder errors must NOT block the real write — spy is observation-only.
+						}
+						original(bytes);
+					};
+				},
+				ptyWriteLog: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return [];
+					const ent = e as unknown as { _e2ePtyWriteLog?: Array<{ data: string; at: number }> };
+					return ent._e2ePtyWriteLog ? [...ent._e2ePtyWriteLog] : [];
+				},
+				clearPtyWriteLog: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return;
+					const ent = e as unknown as { _e2ePtyWriteLog?: Array<{ data: string; at: number }> };
+					if (ent._e2ePtyWriteLog) ent._e2ePtyWriteLog.length = 0;
 				},
 			};
 		}
@@ -2973,6 +3062,28 @@ export class TerminalManager {
 		}
 	}
 
+	/** §1.33 (2026-05-22): kernel-side gate for the shell-history popup.
+	 *  Returns true ONLY when the wasm kernel is confident a normal shell
+	 *  prompt owns the input line on this pane — every known TUI signal
+	 *  short-circuits to false, AND a 2-second sticky window holds the
+	 *  gate closed after any signal clears so the popup can't race in
+	 *  between TUI repaints (the original Claude-Code-arrow-key-hijack
+	 *  symptom). Replaces the JS-side `tuiGate` for the popup decision;
+	 *  the wheel handler still uses `tuiGate` because its semantics
+	 *  (mouse reporting forwarding) differ. Defaults to `false` on a
+	 *  missing pane so attach races never open the popup. */
+	shouldAllowShellHistory(paneId: string): boolean {
+		const e = this.panes.get(paneId);
+		if (!e) return false;
+		try {
+			return (
+				e.kernel as unknown as { shouldAllowShellHistory?: () => boolean }
+			).shouldAllowShellHistory?.() ?? false;
+		} catch {
+			return false;
+		}
+	}
+
 	/** §1.32 Wave F (2026-05-20): mark the start of the user's current
 	 *  shell-input line by capturing the kernel cursor position. Called
 	 *  by `RidgePane` the first time the user types a printable / paste
@@ -3372,6 +3483,31 @@ export class TerminalManager {
 			console.debug(`[theme-trace] setTheme applied=${applied} parked=${parked} totalKeys=${Object.keys(theme).length} bg=${theme.background ?? '∅'}`);
 		}
 		this.wake();
+	}
+
+	/**
+	 * Bypass the trailing-edge debounce and run a fit synchronously.
+	 *
+	 * Used after a discrete layout-changing operation (split / dock /
+	 * close) where the caller already knows the container's new size is
+	 * what the kernel grid must match — there's no further `viewportChanged`
+	 * coming, so waiting out `RESIZE_SETTLE_MS` only delays the right
+	 * answer. Cancels any pending debounced fit so we don't run twice.
+	 *
+	 * No-op when the pane is unknown or parked; the next attach/unpark
+	 * will fire its own initial fit. Fire-and-forget: the underlying
+	 * `fitPane` is async (awaits backend `resize_pane`) but callers
+	 * generally don't need to await — the kernel + PTY sync happens on
+	 * the same frame the next render reads from.
+	 */
+	fitPaneNow(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		if (entry.pendingFitTimer !== null) {
+			clearTimeout(entry.pendingFitTimer);
+			entry.pendingFitTimer = null;
+		}
+		void this.fitPane(entry);
 	}
 
 	/**

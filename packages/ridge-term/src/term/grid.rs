@@ -213,6 +213,19 @@ pub struct Grid {
     /// the heuristic re-engages cleanly once the grace expires.
     /// Sentinel 0 = no Ctrl+C ever observed.
     last_ctrl_c_at_ms: i64,
+    /// §1.33 (2026-05-22) — wall-clock ms (unix epoch) of the most
+    /// recent observation that ANY TUI-relevant mode signal became
+    /// active. Bumped from the parser as soon as `?1h` (DECCKM),
+    /// `?47h` / `?1049h` (alt screen), `?1000h` / `?1002h` / `?1003h`
+    /// (mouse reporting), or `?25l` (cursor hidden) is processed —
+    /// so the timestamp captures the signal even when a single feed
+    /// chunk both activates AND deactivates the signal (e.g. an
+    /// Ink-style TUI emitting `\x1b[?25l...\x1b[?25h` for one frame).
+    /// The shell-history popup gate uses this for its sticky-window
+    /// branch; the old JS-side `tuiGate` leaked because it could only
+    /// observe signals at gate-query time, missing the brief window.
+    /// Sentinel 0 = no TUI signal ever observed.
+    last_tui_signal_at_ms: i64,
     /// SGR "pen" mirrored from the parser's `current_attrs` for BCE
     /// (Background Color Erase). Erase / scroll / IL / DL paths fill
     /// blanked cells with `Cell { ch: ' ', attr: <pen.bg> }` so a TUI
@@ -239,6 +252,7 @@ impl Grid {
             last_abs_csi_col: 0,
             last_redraw_csi_at_ms: 0,
             last_ctrl_c_at_ms: 0,
+            last_tui_signal_at_ms: 0,
             pen: Attrs::DEFAULT,
         }
     }
@@ -310,6 +324,26 @@ impl Grid {
     /// motivation. Caller passes wall-clock ms.
     pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
         self.last_ctrl_c_at_ms = now_ms;
+    }
+
+    /// §1.33 (2026-05-22) — record that the parser just observed a
+    /// TUI-active mode signal (DECCKM on, alt screen on, mouse
+    /// reporting on, cursor hidden, etc.). Only stores `now_ms` if
+    /// strictly larger than the existing value so out-of-order or
+    /// stale wall-clock samples never roll the timestamp backwards.
+    /// See `JsTerminal::should_allow_shell_history_at` for how the
+    /// timestamp feeds the popup gate's sticky-window branch.
+    pub fn note_tui_signal_at(&mut self, now_ms: i64) {
+        if now_ms > self.last_tui_signal_at_ms {
+            self.last_tui_signal_at_ms = now_ms;
+        }
+    }
+
+    /// §1.33 — most-recent TUI-signal observation timestamp, or 0
+    /// when no TUI signal has ever been observed. Read by the
+    /// shell-history popup gate.
+    pub fn last_tui_signal_at_ms(&self) -> i64 {
+        self.last_tui_signal_at_ms
     }
 
     /// Most recent absolute-positioning timestamp. 0 = never observed.
