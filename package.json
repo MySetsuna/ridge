@@ -13,6 +13,7 @@
     "tauri": "tauri",
     "tauri:build": "pnpm tauri build && node scripts/post-build-rename.mjs",
     "tauri:dev:cdp": "node scripts/tauri-dev-cdp.mjs",
+    "cdp:smoke": "node scripts/cdp-smoke.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
