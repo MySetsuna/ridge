@@ -1383,8 +1383,53 @@ export async function splitPane(
     }
   }
   await syncPaneLayoutFromBackend();
+  // §split-fit (2026-05-21): after the layout sync, the source pane has
+  // shrunk from filling its parent to ~50 %, and Svelte will mount the
+  // new pane on the next microtask. attach() (new pane) and unpark()
+  // (source pane, re-mounted at the new tree position) each schedule
+  // their own initial fitPane on the next animation frame, but that
+  // single RAF races SvelteKit's component mount and the wasm
+  // `manager.ready()` await — when the race goes the wrong way the
+  // kernel grid stays at its attach-time 24×80 default while the
+  // container is already 50 % wide, leaving the visible "黑边/空行"
+  // the user sees as "拆出来的终端不是占满的". Queue a second forced fit
+  // two animation frames out so the new RidgePane has reliably finished
+  // its async attach pipeline before we ask the manager to size against
+  // the settled DOM.
+  scheduleForceFitAfterSplit(paneId, result.pane_id);
   return result.pane_id;
 }
+
+/**
+ * Belt-and-suspenders fit after a split.
+ *
+ * Two-RAF delay rationale:
+ *   - Frame 1: Svelte reconciles the store update and mounts the new
+ *     RidgePane component. onMount fires; the async `manager.ready()`
+ *     await begins.
+ *   - Frame 2: `manager.attach(paneId, container, workspaceId)` has
+ *     finished, the new entry is in `manager.panes`, and the container
+ *     has its post-split bounding rect. `fitPaneNow` runs against the
+ *     correct state.
+ *
+ * Exported (re-exported below) so unit tests can mock TerminalManager
+ * and assert on the per-pane call without going through the full
+ * `splitPane` IPC dance.
+ */
+function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): void {
+  if (typeof requestAnimationFrame === 'undefined') return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const mgr = TerminalManager.instance();
+      mgr.fitPaneNow(sourcePaneId);
+      mgr.fitPaneNow(newPaneId);
+    });
+  });
+}
+
+/** Test-only: exported so paneTree.test.ts can drive the post-split fit
+ *  scheduling against a mocked TerminalManager. Not for production use. */
+export const __test_scheduleForceFitAfterSplit = scheduleForceFitAfterSplit;
 
 /** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置。 */
 export async function dockPane(
