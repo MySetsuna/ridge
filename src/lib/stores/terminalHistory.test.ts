@@ -23,7 +23,7 @@ const { invoke } = await import('@tauri-apps/api/core');
 const mockInvoke = vi.mocked(invoke);
 
 const mod = await import('./terminalHistory');
-const { dedupKeepFirst, filterByPrefix, terminalHistoryStore } = mod;
+const { dedupKeepFirst, filterByPrefix, terminalHistoryStore, terminalHistoryLoadedStore } = mod;
 
 beforeEach(async () => {
 	mockInvoke.mockReset();
@@ -218,3 +218,35 @@ describe('terminalHistoryStore', () => {
 // (Bugs #1 / #2 / #13) or locked at the source level via
 // `<button title={command}>` + CSS `text-overflow: ellipsis`
 // (Bug #10 — visual-only, no logic to unit-test).
+
+describe('terminalHistoryLoadedStore', () => {
+	// The `loaded` flag is consumed by `TerminalHistoryPopup`'s
+	// "no matches → auto-close" effect: that effect must NOT fire
+	// while the popup is mounted and `fetch()` is still in flight,
+	// or the initial empty store will dismiss the popup before its
+	// real contents arrive a few ms later.
+	it('flips to true after a successful fetch (beforeEach exercises this path)', () => {
+		// The shared `beforeEach` calls fetch with a mocked [] response,
+		// so by the time any test body runs, loaded should already be true.
+		expect(get(terminalHistoryLoadedStore)).toBe(true);
+	});
+
+	it('stays true (sticky) when a later fetch fails', async () => {
+		// loaded is already true from beforeEach. A subsequent error
+		// must NOT flip it back — otherwise a transient backend hiccup
+		// would re-enable the auto-close path and dismiss the popup
+		// on the next empty-filter render.
+		mockInvoke.mockRejectedValueOnce(new Error('backend offline'));
+		await terminalHistoryStore.fetch();
+		expect(get(terminalHistoryLoadedStore)).toBe(true);
+	});
+
+	it('stays true across multiple successful fetches', async () => {
+		mockInvoke.mockResolvedValueOnce(['cmd-X']);
+		await terminalHistoryStore.fetch();
+		expect(get(terminalHistoryLoadedStore)).toBe(true);
+		mockInvoke.mockResolvedValueOnce(['cmd-Y']);
+		await terminalHistoryStore.fetch();
+		expect(get(terminalHistoryLoadedStore)).toBe(true);
+	});
+});

@@ -1,9 +1,14 @@
 <script lang="ts">
-    import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
+    import { terminalHistoryStore, terminalHistoryLoadedStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
     interface Props {
         query: string;
         isVisible: boolean;
-        onSelect: (command: string) => void;
+        /** Pick a history entry. `execute=true` (Enter) sends the command
+         *  followed by '\r' so the shell executes it immediately;
+         *  `execute=false` (ArrowRight, Warp-style) inserts the command
+         *  into the current shell line WITHOUT '\r' so the user can edit
+         *  before pressing Enter themselves. */
+        onSelect: (command: string, execute: boolean) => void;
         onClose: () => void;
         position: { x: number; y: number; inputH: number };
     }
@@ -28,9 +33,14 @@
         if (isVisible) selectedIndex = -1;
     });
 
-    // 匹配项消失时自动关闭弹层，避免再次匹配时自动出现
+    // 匹配项消失时自动关闭弹层，避免再次匹配时自动出现。
+    // 但必须满足两个前置条件：
+    //   1. 历史已加载完成（terminalHistoryLoadedStore=true）—— 否则
+    //      首次按 ArrowUp 时 fetch 还没回来，空数组会让弹窗一开就关。
+    //   2. 用户敲过字（query 非空）—— 否则用户只想浏览全部历史时
+    //      若 store 暂时为空也会被秒关。
     $effect(() => {
-        if (isVisible && filteredHistory.length === 0) {
+        if (isVisible && $terminalHistoryLoadedStore && query.length > 0 && filteredHistory.length === 0) {
             onClose();
         }
     });
@@ -76,9 +86,20 @@
             if (selectedIndex === -1) {
                 onClose();
             } else if (filteredHistory[selectedIndex]) {
-                onSelect(filteredHistory[selectedIndex]);
+                onSelect(filteredHistory[selectedIndex], true);
             }
             return true;
+        } else if (e.key === 'ArrowRight') {
+            // §1.33 (2026-05-22) — Warp-style: insert the selected command
+            // into the shell line WITHOUT '\r' so the user can edit
+            // before executing. If no row is selected, fall through
+            // (returning false) so ArrowRight still behaves as a normal
+            // cursor-right keystroke in the underlying shell.
+            if (selectedIndex >= 0 && filteredHistory[selectedIndex]) {
+                onSelect(filteredHistory[selectedIndex], false);
+                return true;
+            }
+            return false;
         } else if (e.key === 'Escape') {
             onClose();
             return true;
@@ -106,7 +127,7 @@
             class="rg-history-item"
             class:selected={index === selectedIndex}
             title={command}
-            onclick={() => onSelect(command)}
+            onclick={() => onSelect(command, true)}
         >
             <!-- §1.31 (2026-05-20): collapse embedded newlines to a single
                  visual marker so multi-line history entries (heredocs,

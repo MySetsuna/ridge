@@ -94,11 +94,12 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 				}
 			}
 			manager.feed(paneId, e.payload.data);
-
-			// 终端有换行（Enter/命令输出）时通知 RidgePane 关闭历史弹层
-			if (e.payload.data.includes('\n') || e.payload.data.includes('\r')) {
-				window.dispatchEvent(new CustomEvent('ridge:pty-newline', { detail: paneId }));
-			}
+			// History popup close is driven by the user's Enter keystroke
+			// inside the active pane (RidgePane.dispatchBufferEvent 'clear'
+			// case) — NOT by `\n`/`\r` in PTY output. Per-byte detection
+			// here used to fire a window event that closed popups across
+			// every pane whenever any pane echoed a newline, including
+			// every shell prompt redraw and async background output.
 		},
 	);
 

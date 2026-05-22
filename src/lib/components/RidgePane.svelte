@@ -103,15 +103,23 @@ function repositionPopup(): boolean {
 	return true;
 }
 
-// Observe the pane container while the popup is open. The effect's
-// cleanup auto-disconnects the observer when the popup closes or the
-// component unmounts; no leak even if multiple popup-open/close
-// cycles happen during the component's lifetime.
+// Observe the pane container AND window viewport while the popup is
+// open. The effect's cleanup auto-disconnects the observer / listener
+// when the popup closes or the component unmounts; no leak even if
+// multiple popup-open/close cycles happen during the component's
+// lifetime. Window resize matters when a splitter drag changes the
+// pane's viewport-absolute position without resizing the container
+// itself (sibling pane shrunk, this pane translated).
 $effect(() => {
 	if (!historyPopupOpen || !container) return;
-	const ro = new ResizeObserver(() => { repositionPopup(); });
+	const onWindowResize = () => { repositionPopup(); };
+	const ro = new ResizeObserver(onWindowResize);
 	ro.observe(container);
-	return () => ro.disconnect();
+	window.addEventListener('resize', onWindowResize);
+	return () => {
+		ro.disconnect();
+		window.removeEventListener('resize', onWindowResize);
+	};
 });
 
 // §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
@@ -148,6 +156,14 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			// Enter / Ctrl+U: shell line ends or fully clears; the
 			// next input is a fresh start.
 			manager.clearInputStart(paneId);
+			// Close the history popup on Enter / Ctrl+U — this is the
+			// real "user intent to submit / abandon" signal. Previously
+			// we relied on a global `ridge:pty-newline` window event
+			// emitted from ptyBridge whenever any `\n`/`\r` showed up
+			// in PTY output, which closed popups across panes on every
+			// prompt redraw. Driving close from the keystroke side is
+			// per-pane by construction.
+			historyPopupOpen = false;
 			break;
 		// Other events (backspace / cursor moves / killWord / killToEol)
 		// don't change the input's start position — leave the marker.
@@ -579,6 +595,14 @@ function onCompositionStart() {
 	// kernel handle from devtools is sufficient evidence to drive
 	// the §1.27 fix.
 	diagLogIme('end', { committed: data });
+
+	// If the popup happens to be open across an IME session (rare — the
+	// keydown guard at the top of `onContainerKeyDown` blocks ArrowUp
+	// while composing — but possible if it was opened via click before
+	// composition began), the kernel cursor may have moved during the
+	// commit redraw. Re-anchor to the live position so the next
+	// keystroke sees a fresh `historyPopupPosition`.
+	if (historyPopupOpen) repositionPopup();
 }
 
 function refreshSearch() {
@@ -695,8 +719,6 @@ function onPtyResize(
 	);
 }
 
-function onPtyNewline() { historyPopupOpen = false; }
-
 function onKernelEvent(ev: KernelEvent) {
 	switch (ev.type) {
 		case 'CwdChanged':
@@ -732,9 +754,6 @@ onMount(() => {
     
     // 获取所有可用 shell 的历史记录（Rust 端自动合并多个历史文件）
     terminalHistoryStore.fetch();
-
-    // 终端换行时自动关闭历史弹层
-    window.addEventListener('ridge:pty-newline', onPtyNewline);
 
 	if (!isValidPaneId(paneId)) {
 		console.error(
@@ -937,8 +956,6 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
-	// 取消终端换行监听
-	window.removeEventListener('ridge:pty-newline', onPtyNewline);
 	// Without this, a Bell received within 120ms of pane close leaves a
 	// dangling setTimeout that writes `bellFlash` on a torn-down component.
 	if (bellFlashTimer !== null) {
@@ -976,6 +993,12 @@ $effect(() => {
 	if (attached) {
 		manager.setFocused(paneId, isActive);
 	}
+	// Close the history popup when this pane loses focus — otherwise the
+	// popup of an inactive pane lingers on screen after the user clicks
+	// into another pane. Keystrokes already can't reach the popup of an
+	// inactive pane (its container isn't focused), but the visual
+	// residue is confusing.
+	if (!isActive && historyPopupOpen) historyPopupOpen = false;
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -1017,16 +1040,26 @@ $effect(() => {
 			}
 		}
 
-		// 3. ArrowUp/ArrowDown → 唤起历史弹窗，非 TUI 模式下才处理。
-		// §1.31 (2026-05-19): belt-and-suspenders DECCKM check. `isTui`
-		// already factors in `isAppCursorKeys` via tuiGate, but a separate
-		// direct gate here guarantees that if `isTuiSticky` is ever
-		// refactored away from DECCKM the popup STILL can't hijack arrow
-		// keys from a program that explicitly owns them. Cheap query;
-		// worth the defense-in-depth.
-		if (!isTui && !manager.isAppCursorKeys(paneId)
-			&& !historyPopupOpen && (e.key === 'ArrowUp' || e.key === 'ArrowDown')
-			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+		// 3. ArrowUp/ArrowDown → 唤起历史弹窗。
+		// §1.33 (2026-05-22): the entire "is this a shell prompt vs a TUI"
+		// decision now lives in the wasm kernel (see
+		// `JsTerminal::should_allow_shell_history`). The previous JS-side
+		// `isTuiSticky() && !isAppCursorKeys` defense leaked into Claude
+		// Code because the sticky branch was gated on `!cursorVisible` —
+		// Claude flashes the cursor visible between menu frames, opening
+		// the gate before the next TUI signal landed. The kernel-side gate
+		// blocks on any of DECCKM / alt screen / mouse reporting / inline-
+		// TUI / cursor-hidden AND holds sticky for 2 s regardless of
+		// cursor visibility, so the popup can never race in between
+		// repaints. Returning false means "pass through to the TUI" — the
+		// arrow key falls all the way through to `manager.handleKeyDown`
+		// below (encoded via DECCKM-aware key encoder).
+		if (
+			!historyPopupOpen
+			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+			&& manager.shouldAllowShellHistory(paneId)
+		) {
 			e.preventDefault();
 			historyPopupOpen = true;
 			// §1.32: `repositionPopup()` flips `historyPopupOpen` back to
@@ -1443,8 +1476,13 @@ function onContainerMouseDown(e: MouseEvent) {
     query={currentInputBuffer.text}
     isVisible={historyPopupOpen}
     position={historyPopupPosition}
-    onSelect={(cmd) => {
-        // 加入前端历史库，供后续弹窗使用
+    onSelect={(cmd, execute) => {
+        // §1.33 (2026-05-22) — Warp-style two-mode select:
+        //   execute=true  (Enter / click)  → 写入并直接换行执行
+        //   execute=false (ArrowRight)     → 仅写入命令文本，光标停在末尾
+        //                                    让用户继续编辑后自行回车
+        // History store dedup-add fires regardless so the next popup
+        // ranks this command first whether or not it was executed now.
         terminalHistoryStore.add(cmd);
         // 清除 shell 中已键入的筛选文本，然后用选中命令替换
         // §1.32 Wave F: prefer the PTY-derived snapshot for the replay
@@ -1455,8 +1493,7 @@ function onContainerMouseDown(e: MouseEvent) {
         const snapshot = manager.readShellInputSnapshot(paneId);
         const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
         if (replay) manager.write(paneId, replay);
-        // 写入选中命令 + 回车执行
-        manager.write(paneId, cmd + '\r');
+        manager.write(paneId, execute ? cmd + '\r' : cmd);
         currentInputBuffer = EMPTY_INPUT_BUFFER;
         historyPopupOpen = false;
         imeHelper?.focus();
