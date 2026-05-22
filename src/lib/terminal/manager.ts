@@ -35,6 +35,7 @@ import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/te
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsStore } from '../stores/settings';
+import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -380,6 +381,14 @@ export class TerminalManager {
 
 	private opts: ManagerOptions;
 	private panes = new Map<string, PaneEntry>();
+	/** P4.6 Part B (2026-05-22) — paneIds that have been mirrored into
+	 *  the render worker via `workerRendererBridge.attach(...)`. Only
+	 *  populated when `window.__RIDGE_USE_WORKER` was on at the first
+	 *  successful `fitPane` for the pane. Used to decide attach-vs-resize
+	 *  on subsequent fits and to gate the per-frame delta mirror so we
+	 *  don't spam `pane_not_initialized` errors after a mid-session
+	 *  flag toggle. Cleared on `detach`. */
+	private workerAttached = new Set<string>();
 	private rafHandle: number | null = null;
 	/** P2.2 (2026-05-20): id of the pane currently marked focused via
 	 *  `setFocused(paneId, true)`. Used by the RAF tick to render the
@@ -1606,6 +1615,14 @@ export class TerminalManager {
 						relX?: number,
 						relY?: number,
 					) => { r: number; g: number; b: number; a: number } | null;
+					/** P4.6 Part B (Iter 17, 2026-05-22) — diagnostic
+					 *  surface for the render-worker mirror. Lets e2e
+					 *  specs verify the worker actually spun up and is
+					 *  keeping up with messages. `active` reflects
+					 *  whether `getWorkerRenderer()` returned non-null at
+					 *  call time. `pending` is the in-flight request
+					 *  count (0 when not active). */
+					workerBridge: () => { active: boolean; pending: number };
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -1648,30 +1665,6 @@ export class TerminalManager {
 					if (!e) return null;
 					const k = e.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 					return { row: k.cursorRow(), col: k.cursorCol() };
-				},
-				/** Diagnostic: dump every DEC-mode/inline-TUI signal that
-				 *  drives keyboard / mouse / wheel routing in RidgePane.
-				 *  Useful for answering "is the TUI declaring mouse
-				 *  reporting?" without exposing the kernel directly. */
-				kernelDecState: (paneId) => {
-					const e = this.panes.get(paneId);
-					if (!e) return null;
-					const k = e.kernel as unknown as {
-						mouseReportingModes?: () => number;
-						isAltScreen?: () => boolean;
-						isInlineTuiMode?: () => boolean;
-						isAppCursorKeys?: () => boolean;
-						isCursorVisible?: () => boolean;
-						isBracketedPaste?: () => boolean;
-					};
-					return {
-						mouseReportingModes: k.mouseReportingModes?.() ?? null,
-						isAltScreen: k.isAltScreen?.() ?? null,
-						isInlineTuiMode: k.isInlineTuiMode?.() ?? null,
-						isAppCursorKeys: k.isAppCursorKeys?.() ?? null,
-						isCursorVisible: k.isCursorVisible?.() ?? null,
-						isBracketedPaste: k.isBracketedPaste?.() ?? null,
-					};
 				},
 				// Wasm-side theme probe — returns the renderer's currently
 				// active `Theme::{bg, fg, cursor_color, tui_bg}` as four
@@ -1729,6 +1722,10 @@ export class TerminalManager {
 					const d = ctx.getImageData(0, 0, 1, 1).data;
 					return { r: d[0], g: d[1], b: d[2], a: d[3] };
 				},
+				workerBridge: () => ({
+					active: workerRendererBridge.isActive(),
+					pending: workerRendererBridge.pendingCount(),
+				}),
 			};
 		}
 		this.startRafLoop();
@@ -1822,6 +1819,13 @@ export class TerminalManager {
 		entry.feedDeferred = null;
 		// Kernel always alive while in the map (parked or not).
 		try { entry.kernel.free(); } catch { /* ignore */ }
+		// P4.6 Part B (2026-05-22) — mirror teardown into the render
+		// worker. `destroy` is idempotent on the worker side: an unknown
+		// paneId just deletes nothing. Skip the Set lookup; we want the
+		// destroy to fire even when the attached-set is empty (e.g.
+		// flag flipped off mid-session).
+		workerRendererBridge.destroy(paneId);
+		this.workerAttached.delete(paneId);
 		this.panes.delete(paneId);
 		if (this.panes.size === 0) {
 			this.stopRafLoop();
@@ -2248,6 +2252,13 @@ export class TerminalManager {
 			const ts = performance.now().toFixed(1);
 			// eslint-disable-next-line no-console
 			console.debug(`[cursor-trace][${ts}ms] applyDeltaFrame paneId=${paneId.slice(0,8)} bytes=${bytes.length} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
+		}
+		// P4.6 Part B (2026-05-22) — shadow-mirror the delta into the
+		// render worker when the feature flag is on AND this pane has
+		// been attached over there. Bridge handles the .slice() copy so
+		// the kernel call above still owns the original bytes.
+		if (this.workerAttached.has(paneId)) {
+			workerRendererBridge.applyDelta(paneId, bytes);
 		}
 		// Pump DSR/DA replies the mirror produced via apply_delta back to
 		// the PTY. Symmetric with feed()'s take_pending_response drain.
@@ -3526,6 +3537,40 @@ export class TerminalManager {
 		entry.lastReportedRows = rows;
 		entry.lastReportedCols = cols;
 
+		// P4.6 Part B (2026-05-22) — mirror sizing into the render worker.
+		// First fit: attach (init). Subsequent fits: resize. The decision
+		// is delegated to a pure helper so it is independently
+		// unit-testable (see `workerRendererBridge.test.ts` — Iter 14).
+		const workerAction = workerLifecycleOnFit({
+			paneId: entry.paneId,
+			rows,
+			cols,
+			dpr: entry.lastConfiguredDpr,
+			attached: this.workerAttached,
+			isActive: workerRendererBridge.isActive(),
+		});
+		switch (workerAction.kind) {
+			case 'attach':
+				workerRendererBridge.attach(
+					entry.paneId,
+					workerAction.rows,
+					workerAction.cols,
+					workerAction.dpr,
+				);
+				this.workerAttached.add(entry.paneId);
+				break;
+			case 'resize':
+				workerRendererBridge.resize(
+					entry.paneId,
+					workerAction.rows,
+					workerAction.cols,
+					workerAction.dpr,
+				);
+				break;
+			case 'noop':
+				break;
+		}
+
 		// Critical ordering — depends on which screen is active.
 		//
 		// PRIMARY screen WITHOUT inline TUI (shell prompt at PSReadLine /
@@ -3591,26 +3636,22 @@ export class TerminalManager {
 			console.debug('[ridge-term] resize decision', diag);
 		}
 
-		// P3.9.r (2026-05-20) — in 'rust' parser mode the mirror's kernel
-		// resize is driven by apply_delta(Resize) after the Rust-side
-		// PaneParser emits the Resize delta. We must NOT call
-		// `entry.kernel.resize` here directly — that would race the
-		// frame and risk Cells deltas referencing the old/new grid mix.
-		// `entry.resizeHandler` (resize_pane Tauri command) takes care
-		// of PTY master.resize + PaneParser.resize + delta emit in one
-		// atomic sequence.
-		const useRustParser = get(settingsStore).parserBackend === 'rust';
-		if (useRustParser) {
-			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
-			// Mirror resize will follow via apply_delta(Resize) in the
-			// next pty-delta event — handler emits it synchronously.
-		} else if (wipeBeforePty) {
-			entry.kernel.resize(rows, cols);
-			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
-		} else {
-			await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
-			entry.kernel.resize(rows, cols);
-		}
+		// P3.9.r (2026-05-20) → P4.4 (2026-05-21) — Rust parser is the
+		// only mode now, so the mirror's kernel resize is always driven
+		// by apply_delta(Resize) after the Rust-side PaneParser emits
+		// the Resize delta. We must NOT call `entry.kernel.resize` here
+		// directly — that would race the frame and risk Cells deltas
+		// referencing the old/new grid mix. `entry.resizeHandler`
+		// (resize_pane Tauri command) takes care of PTY master.resize +
+		// PaneParser.resize + delta emit in one atomic sequence. The
+		// `wipeBeforePty` knob from the WASM path is no longer
+		// reachable; the Rust path's `set_pane_delta_mode` already
+		// covers the equivalent "clean snapshot on resize" scenario via
+		// force_full_reframe.
+		void wipeBeforePty;
+		await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
+		// Mirror resize will follow via apply_delta(Resize) in the
+		// next pty-delta frame — handler emits it synchronously.
 		// Drop the renderer's per-row hash snapshot the instant the kernel
 		// grid changed shape. `entry.handle.resize(wCss,hCss,dpr)` above
 		// only invalidates when the CSS surface dimensions changed; a

@@ -33,16 +33,10 @@ directory, and tears the driver back down on completion.
 
 ## Specs
 
-- `parserBackend.rust.spec.ts` — default 'rust' mode: feed PTY bytes
-  via `window.__windE2E.feedPty`, assert mirror `visibleText` reflects
-  the input.
-- `parserBackend.wasm.spec.ts` — flip Settings.parserBackend to 'wasm'
-  and repeat. Asserts both backends produce identical visible grids
-  for the same byte stream.
-- `parserBackend.switch.spec.ts` — toggle wasm ↔ rust five times with
-  PTY traffic between each switch. Asserts the 200 ms fade mask
-  appears + clears, and the mirror stays consistent across every
-  switch (R4 verification).
+- `parserBackend.rust.spec.ts` — feed PTY bytes via
+  `window.__windE2E.feedPty`, assert mirror `visibleText` reflects the
+  input. (Originally the "default rust mode" smoke; after P4.4 the
+  WASM/switch counterparts are gone — rust is the only path.)
 - `resize.spec.ts` — programmatic window resize triggers `fitPane`;
   assert mirror grid dims match the PaneParser-driven Resize delta
   (R3 verification).

@@ -78,11 +78,13 @@ pnpm tauri build       # 安装包（Windows: NSIS / MSI）
 
 P3 让 VT 解析从 wasm 主线程搬到 Rust tokio 任务，主线程 CPU 占用显著下降；同时为远程控制（主线一）准备好"只接收 delta 不跑解析器"的轻量客户端协议。
 
-### ⚙️ 共同基础：IPC + 渲染线程解耦（P4 ladder · 规划中）
+### ⚙️ 共同基础：IPC + 渲染线程解耦（P4 ladder · 实施中）
 
 P3 把解析搬到 Rust 之后，perf-bench 暴露剩下两个瓶颈：**Tauri event 序列化开销**（每帧 base64 + JSON-wrap + 事件名路由）与 **渲染挤占主线程**（canvas paint 占用 frame budget）。P4 两档一起做，目标把 perf-bench 帧 p95 从 50ms 压到 20-25ms，逼近 webview 终端的现实天花板。
 
 Baseline（P3.14, 2026-05-20）：FPS 32.8 · 帧 p95 50.1ms · 帧 p99 66.8ms · CPU 21.3%
+
+**当前进度（2026-05-22）**：第一档 p4.1-p4.4 全部完成（unit 测试覆盖）；第二档 worker 端 scaffolding 落地 — 渲染 worker 协议、host-side wrapper、manager 镜像桥、wasm-kernel-in-worker 适配器、OffscreenCanvas hand-off 协议层均已就位（+44 测试，pnpm check 全绿）。**剩余阻塞点**：wasm `RenderHandle` 构造器只接受 `HtmlCanvasElement`，需要 Rust 侧加 `OffscreenCanvas` 入口才能真正把绘图搬进 worker。Perf-bench 验收门需要交互式 Tauri build，无法在 CI / autonomous loop 内跑。详见 `.claude/worktrees/p4-ipc-render-decouple/` worktree 与项目 memory 中的进度日志。
 
 <details open>
 <summary><b>🎯 第一档 · Tauri Channel + 单一 Rust 解析路径</b></summary>
