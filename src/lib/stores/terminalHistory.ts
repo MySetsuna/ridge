@@ -1,13 +1,21 @@
-import { writable, get } from 'svelte/store';
+import { writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
 const _store = writable<string[]>([]);
+// `loaded` flips to true only after the first successful `fetch()` call.
+// The popup uses this to suppress the "no matches → auto-close" branch
+// during the initial Tauri IPC window: at app boot the user can hit
+// ArrowUp before `get_shell_history` returns, and an empty `_store`
+// would otherwise immediately dismiss the popup before its contents
+// arrive a few ms later.
+const _loaded = writable<boolean>(false);
 export const terminalHistoryStore = {
     subscribe: _store.subscribe,
     fetch: async () => {
         try {
             const history: string[] = await invoke<string[]>('get_shell_history', { shellKind: '' });
             _store.set(history);
+            _loaded.set(true);
         } catch (e) {
             console.error('Failed to fetch shell history', e);
         }
@@ -20,6 +28,7 @@ export const terminalHistoryStore = {
         });
     }
 };
+export const terminalHistoryLoadedStore = { subscribe: _loaded.subscribe };
 
 // §1.31 (2026-05-19): pure helpers extracted from the inline IIFE that
 // used to live in `TerminalHistoryPopup.svelte` (lines 13-29 of the old
