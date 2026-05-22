@@ -718,7 +718,7 @@ import {
               ×
             </button>
           </header>
-          <div class="flex-1 min-h-0 min-w-0 z-50">
+          <div class="flex-1 min-h-0 min-w-0 z-79">
             <Pane paneId={node.id} {workspaceId} />
           </div>
         </div>
@@ -794,7 +794,7 @@ import {
    */
   :global(.splitpanes__splitter),
   :global(.rg-split > .rg-splitter) {
-    z-index: 30;
+    z-index: 80;
   }
 
   /* 业务高亮：rg-split--junction (4-way orthogonal hover) 和 rg-split--aligned
