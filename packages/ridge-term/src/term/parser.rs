@@ -275,10 +275,33 @@ impl<'a> Perform for Performer<'a> {
         // Private CSI ? h / l — DEC mode set/reset.
         if is_private && (action == 'h' || action == 'l') {
             let value = action == 'h';
+            // §1.33 (2026-05-22): every TUI-signal-affecting mode
+            // change bumps `grid.last_tui_signal_at_ms` while the
+            // resulting state is "TUI active", so the shell-history
+            // popup gate's sticky window catches the activation
+            // even when a single feed chunk both turns the signal
+            // ON and back OFF (Ink-style `\x1b[?25l...\x1b[?25h`
+            // frame). We snapshot now ONCE per dispatch and apply
+            // every sub-parameter under the same timestamp —
+            // sub-millisecond ordering between sub-params does not
+            // matter for a 2 s sticky window.
+            let now = clock::now_ms();
             for sub in params.iter() {
                 if let Some(&code) = sub.first() {
                     let effect = self.modes.set(code, value, true);
                     self.apply_mode_effect(effect);
+                    // After the mode + side-effect is applied, sample
+                    // every persistent TUI signal. Any one true → bump.
+                    let m = &self.modes;
+                    let tui_active = m.app_cursor_keys
+                        || m.mouse_normal
+                        || m.mouse_button_event
+                        || m.mouse_any_event
+                        || !m.cursor_visible
+                        || self.grid.is_alt_screen();
+                    if tui_active {
+                        self.grid.note_tui_signal_at(now);
+                    }
                 }
             }
             return;
