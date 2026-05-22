@@ -52,11 +52,12 @@ let alive = true;
 // after a split until the next activePaneId change.
 let attached = $state(false);
 
-// P3.9 (2026-05-20) — parserBackend live switch with a 200ms fade so
-// the user never sees a partial-mirror flash. Initial sync happens in
-// ensurePtyBridge; this effect only fires on subsequent changes.
-let prevParserBackend = $state<'wasm' | 'rust' | null>(null);
-let backendSwitching = $state(false);
+// P4.4 (2026-05-21) — removed the parserBackend live-switch state.
+// The Rust path is now unconditional; `set_pane_delta_mode(true)` is
+// still called on attach (see onMount IIFE below) so the backend
+// `delta_mode` AtomicBool is in the expected state for the channel
+// path. No more `backendSwitching` fade — there is no other backend
+// to switch to.
 
 // PTY listener subscriptions used to live here as ptyUnlisten /
 // ptyClosedUnlisten. Both moved to `$lib/terminal/ptyBridge` (TASKS §5.1)
@@ -898,9 +899,14 @@ onMount(() => {
 		// warning on every cold boot. Fire-and-forget here is safe; if it
 		// fails the user just stays on whatever the backend's default
 		// delta_mode is.
+		// P4.4 — Rust path is the only path; unconditionally enable
+		// delta_mode on attach. The backend defaults `delta_mode` to
+		// false so the initial bytes use the legacy text path; this
+		// call flips the gate after the pane has activated, at which
+		// point the channel (registered by ptyBridge) starts
+		// receiving delta frames.
 		if (alive) {
-			const backend = get(settingsStore).parserBackend;
-			void setPaneDeltaMode(paneId, backend === 'rust');
+			void setPaneDeltaMode(paneId, true);
 		}
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
@@ -909,36 +915,10 @@ onMount(() => {
 	})();
 });
 
-// P3.9 — parserBackend live switch. Initial value is synced by the
-// onMount IIFE right after `activate_pane_pty` returns (the pane
-// handle must be in `ws.terminals` for `set_pane_delta_mode` to
-// resolve, otherwise it errors with "pane not found"). Subsequent
-// runs of this effect detect a real change in
-// `$settingsStore.parserBackend` and flip backends on the fly, with
-// a 200ms opacity mask to hide the brief mirror transition.
-$effect(() => {
-	const backend = $settingsStore.parserBackend;
-	if (!attached) {
-		prevParserBackend = backend;
-		return;
-	}
-	if (prevParserBackend === backend) return;
-	prevParserBackend = backend;
-	backendSwitching = true;
-	(async () => {
-		try {
-			await setPaneDeltaMode(paneId, backend === 'rust');
-		} finally {
-			// Hold the mask for ~200ms so the first frame after the
-			// switch arrives before the fade-out. This is the
-			// architecture-level mitigation for R4 — the user sees a
-			// smooth transition rather than a partial mirror flash.
-			setTimeout(() => {
-				if (alive) backendSwitching = false;
-			}, 200);
-		}
-	})();
-});
+// P4.4 (2026-05-21) — removed the parserBackend live-switch effect.
+// With Rust path unconditional, the initial `setPaneDeltaMode(paneId, true)`
+// in the onMount IIFE is the only call site needed. No more 200ms fade
+// mask — there is no backend to switch to.
 
 // §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
 // used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`
@@ -1381,7 +1361,6 @@ function onContainerMouseDown(e: MouseEvent) {
 	bind:this={container}
 	class="rg-pane-container h-full w-full min-h-0 min-w-0 outline-none relative"
 	class:bell-flash={bellFlash}
-	class:rg-backend-switching={backendSwitching}
 	style="background: var(--rg-term-bg); contain: strict;"
 	role="application"
 	aria-label="终端"
@@ -1551,16 +1530,8 @@ function onContainerMouseDown(e: MouseEvent) {
 	 * empty rulesets. The strict containment lets the browser skip
 	 * layout/paint on unrelated mutations elsewhere — small win in
 	 * multi-pane setups. */
-	/* P3.9 — backend switch fade. 200ms opacity transition hides the
-	 * brief moment between issuing set_pane_delta_mode and the first
-	 * frame arriving from the new backend. R4 architectural mitigation. */
-	.rg-pane-container {
-		transition: opacity 200ms ease-out;
-	}
-	.rg-pane-container.rg-backend-switching {
-		opacity: 0.45;
-		pointer-events: none;
-	}
+	/* P4.4 (2026-05-21) — removed the `.rg-backend-switching` fade rule.
+	 * With Rust path unconditional, there is no backend switch to mask. */
 
 	.rg-pane-container.bell-flash {
 		/* Brief inset highlight to draw the eye on BEL (0x07). 120ms is

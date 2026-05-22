@@ -26,22 +26,32 @@
 //     `ensurePtyBridge` is a no-op (idempotent).
 //   - Real pane close (paneTree.closePane) → `teardownPtyBridge(paneId)`.
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
 import { TerminalManager } from './manager';
 import { settingsStore } from '$lib/stores/settings';
 
+/**
+ * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
+ * `Channel<Vec<u8>>` (Rust side) dispatches through the IPC binary path,
+ * which the JS layer may surface as an `ArrayBuffer`, a `Uint8Array`, or —
+ * for older runtime configurations — a plain `number[]`. The handler
+ * normalizes all three into `Uint8Array` before feeding the kernel.
+ */
+type DeltaPayload = ArrayBuffer | Uint8Array | number[];
+
 interface Bridge {
 	outUnlisten: UnlistenFn;
 	closedUnlisten: UnlistenFn;
-	/// P3.9 — `pty-delta-{ws}-{pane}` subscription. Always set; whether
-	/// it actually fires depends on the backend `delta_mode` flag. When
-	/// `delta_mode = false`, the backend emits `pty-output-*` instead and
-	/// this listener stays silent. Toggling backend modes does NOT need
-	/// to detach this listener — saves a round-trip per backend switch.
-	deltaUnlisten: UnlistenFn;
 	workspaceId: string;
+	/// P4.3 — strong reference to the Tauri Channel for delta bytes.
+	/// Replaces the P3.9 `pty-delta-*` event listener: deltas now arrive
+	/// via `Channel.onmessage` (skipping the JSON-wrap / base64 / event
+	/// dispatch overhead). The backend unregisters the channel in
+	/// `kill_pty_if_present`; keeping this field rooted prevents JS GC
+	/// from collecting the Channel while the bridge is alive.
+	deltaChannel: Channel<DeltaPayload>;
 }
 
 const bridges = new Map<string, Bridge>();
@@ -138,36 +148,67 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 		},
 	);
 
-	// P3.9 — pty-delta subscription. Postcard payload comes through as a
-	// JS `number[]` (Tauri serializes Vec<u8> over IPC); convert to
-	// Uint8Array for the wasm bridge. The backend gates emission on
-	// `delta_mode`, so this listener stays dormant in 'wasm' mode.
-	const deltaUnlisten = await listen<number[]>(
-		`pty-delta-${workspaceId}-${paneId}`,
-		(e) => {
-			const bytes = e.payload instanceof Uint8Array
-				? (e.payload as Uint8Array)
-				: new Uint8Array(e.payload);
-			try {
-				manager.applyDeltaFrame(paneId, bytes);
-			} catch (err) {
-				// R5 self-heal: protocol / decode error → fall back to
-				// wasm path so the pane stays usable. Best-effort; the
-				// invoke uses fire-and-forget semantics.
-				console.warn(
-					'[ridge-term] pty-delta apply failed; falling back to wasm parser',
-					{ paneId, error: String(err) },
-				);
-				void invoke('set_pane_delta_mode', {
-					workspaceId,
-					paneId,
-					enabled: false,
-				}).catch(() => {});
-			}
-		},
-	);
+	// P4.3 — pty-delta channel. Replaces the P3.9 `listen('pty-delta-...')`
+	// path. The Rust backend (P4.1 `register_pane_delta_channel`) wraps the
+	// Channel into a closure inside `AppState.pty_delta_channels`; the three
+	// emit sites (lib.rs main loop, resize_pane, set_pane_delta_mode) call
+	// the closure with the postcard-encoded bytes. The IPC binary path skips
+	// the base64 + JSON-wrap + event-name routing the listen() path required.
+	//
+	// `delta_mode` on the backend still gates whether the channel fires at
+	// all, so registering here is safe even before `set_pane_delta_mode`
+	// flips the gate — the channel simply stays quiet until then.
+	const deltaChannel = new Channel<DeltaPayload>();
+	deltaChannel.onmessage = (payload) => {
+		// Normalize whatever the runtime hands us into a Uint8Array view.
+		// `Uint8Array` instances pass through; ArrayBuffer is wrapped; a
+		// plain number[] gets copied into a fresh array (the slow path —
+		// happens only on older Tauri runtime configurations).
+		const bytes =
+			payload instanceof Uint8Array
+				? payload
+				: payload instanceof ArrayBuffer
+				? new Uint8Array(payload)
+				: new Uint8Array(payload);
+		try {
+			manager.applyDeltaFrame(paneId, bytes);
+		} catch (err) {
+			// R5 self-heal: protocol / decode error → fall back to
+			// the text path so the pane stays usable. Best-effort;
+			// the invoke uses fire-and-forget semantics.
+			console.warn(
+				'[ridge-term] pty-delta apply failed; falling back to wasm parser',
+				{ paneId, error: String(err) },
+			);
+			void invoke('set_pane_delta_mode', {
+				workspaceId,
+				paneId,
+				enabled: false,
+			}).catch(() => {});
+		}
+	};
 
-	bridges.set(paneId, { outUnlisten, closedUnlisten, deltaUnlisten, workspaceId });
+	// Hand the Channel to the backend BEFORE inserting the bridge entry —
+	// if registration fails (e.g. backend not ready) we don't end up with
+	// a half-wired bridge whose Channel never gets fed.
+	try {
+		await invoke('register_pane_delta_channel', {
+			workspaceId,
+			paneId,
+			channel: deltaChannel,
+		});
+	} catch (err) {
+		// Backend not ready or pane vanished mid-registration. Surface to
+		// console for diagnostics but don't tear down the other listeners
+		// — the `pty-output-*` path keeps the pane usable until the next
+		// reconnect attempt.
+		console.warn(
+			'[ridge-term] register_pane_delta_channel failed; pane will use legacy pty-output path',
+			{ paneId, workspaceId, error: String(err) },
+		);
+	}
+
+	bridges.set(paneId, { outUnlisten, closedUnlisten, workspaceId, deltaChannel });
 }
 
 /**
@@ -198,7 +239,9 @@ export function teardownPtyBridge(paneId: string): void {
 	if (!b) return;
 	try { b.outUnlisten(); } catch { /* already unsubscribed */ }
 	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
-	try { b.deltaUnlisten(); } catch { /* already unsubscribed */ }
+	// P4.3 — the Channel has no explicit unlisten; dropping the bridge
+	// reference releases JS ownership and the backend already unregistered
+	// the channel in `kill_pty_if_present` before this teardown runs.
 	bridges.delete(paneId);
 }
 

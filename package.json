@@ -21,7 +21,6 @@
     "e2e:install": "playwright install chromium",
     "e2e:shell": "wdio run wdio.conf.ts",
     "e2e:perf": "wdio run wdio.perf.conf.ts",
-    "e2e:reset": "wdio run wdio.reset.conf.ts",
     "perf-bench": "pwsh scripts/perf-bench.ps1",
     "perf:compare": "pwsh scripts/perf-compare.ps1",
     "perf:frame": "pwsh scripts/perf-frame-compare.ps1",

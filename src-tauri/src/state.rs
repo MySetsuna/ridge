@@ -204,6 +204,18 @@ impl PaneScrollback {
     }
 }
 
+/// P4.1 (2026-05-21) — per-pane delta-byte sender. Wraps a Tauri
+/// `Channel<Vec<u8>>::send` (or any other sink — e.g. a postMessage shim
+/// to a render worker in P4.9) so the `pty-delta-*` emit sites in `lib.rs`
+/// and `commands/terminal.rs` can stay agnostic of *how* bytes reach the
+/// frontend. `Arc` so the main loop can clone out of the RwLock and call
+/// `send` without holding any state lock.
+///
+/// Returning `()` is intentional: send failures are best-effort (the
+/// frontend has gone away if they fail, and the next pane-close cleanup
+/// will drop the sender). Callers log errors inside the closure.
+pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
@@ -243,6 +255,14 @@ pub struct AppState {
     /// 在启动时通过 `set_user_default_cwd` 命令同步到这里）。menu 启动模式下，
     /// 这是首个 pane 的 cwd 来源（cli 启动时被 startup_cli_cwd 覆盖，仍然优先）。
     pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
+    /// P4.1 — per-pane delta-byte senders, keyed by `(workspace_id, pane_id)`.
+    /// Registered by the frontend (via `register_pane_delta_channel`) when the
+    /// pane's `ptyBridge` mounts; unregistered when the PTY tears down in
+    /// `kill_pty_if_present`. The streaming emit sites in `lib.rs` and
+    /// `commands/terminal.rs::set_pane_delta_mode/resize_pane` look up the
+    /// sender for the active pane and call it instead of `app.emit`, skipping
+    /// the base64 + JSON-wrap + event-name routing of Tauri events.
+    pub pty_delta_channels: Arc<RwLock<HashMap<(Uuid, Uuid), PaneDeltaSender>>>,
 }
 
 impl AppState {
@@ -294,6 +314,7 @@ impl AppState {
             startup_cwd_kind,
             startup_cli_cwd,
             user_default_cwd: Arc::new(RwLock::new(None)),
+            pty_delta_channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -503,6 +524,48 @@ impl AppState {
             at_oldest: start_seq <= oldest_seq,
         }
     }
+
+    /// P4.1 — install (or replace) the delta-byte sender for `(ws, pane)`.
+    /// Subsequent `pty-delta-*` emit sites route bytes through this sender
+    /// instead of `app.emit`. Idempotent — a second register for the same
+    /// pane replaces the previous sender (the old `Arc` is dropped).
+    pub fn register_pane_delta_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        sender: PaneDeltaSender,
+    ) {
+        self.pty_delta_channels
+            .write()
+            .insert((workspace_id, pane_id), sender);
+    }
+
+    /// P4.1 — drop the sender for `(ws, pane)`. Safe to call when no sender
+    /// is registered (returns silently). Called from `kill_pty_if_present`
+    /// to keep the channel map in lock-step with the live `terminals` map.
+    pub fn unregister_pane_delta_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
+        self.pty_delta_channels
+            .write()
+            .remove(&(workspace_id, pane_id));
+    }
+
+    /// P4.1 — clone out the sender for `(ws, pane)`, if any. The clone is
+    /// cheap (Arc bump) and lets callers drop the map's read lock before
+    /// invoking the sender. Returns `None` when no channel is registered;
+    /// callers fall back to `app.emit` so frontends without a channel still
+    /// receive deltas. Read by the three P4.2 emit sites: `lib.rs` main
+    /// loop, `commands/terminal.rs::resize_pane`, and
+    /// `commands/terminal.rs::set_pane_delta_mode`.
+    pub fn get_pane_delta_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Option<PaneDeltaSender> {
+        self.pty_delta_channels
+            .read()
+            .get(&(workspace_id, pane_id))
+            .cloned()
+    }
 }
 
 /// Same semantics as `str::is_char_boundary` but on a raw `&[u8]`. Returns
@@ -649,5 +712,218 @@ mod scrollback_tests {
         state.clear_pty_scrollback(ws, pane);
         let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
         assert!(chunk.bytes.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pty_delta_channel_tests {
+    //! P4.1 unit tests — verify the `(ws, pane)` keyed delta-sender
+    //! registry: registration/lookup, idempotent replace, key isolation
+    //! across panes and across workspaces, and removal on unregister.
+    //! The senders are plain closures so these tests do NOT need a Tauri
+    //! runtime — that boundary lives in `commands/terminal.rs`.
+
+    use super::*;
+    use parking_lot::Mutex as PMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::mpsc;
+
+    fn make_state() -> AppState {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        AppState::new(tx)
+    }
+
+    /// Build a counting sender: each call increments `count` and records the
+    /// payload length. Returns `(sender, count, last_len)` so the test can
+    /// assert how many bytes the channel was asked to send.
+    fn counting_sender() -> (PaneDeltaSender, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let last_len = Arc::new(AtomicUsize::new(0));
+        let count_clone = Arc::clone(&count);
+        let last_len_clone = Arc::clone(&last_len);
+        let sender: PaneDeltaSender = Arc::new(move |bytes: Vec<u8>| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+            last_len_clone.store(bytes.len(), Ordering::SeqCst);
+        });
+        (sender, count, last_len)
+    }
+
+    #[test]
+    fn get_returns_none_when_unregistered() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn register_then_get_returns_same_sender() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, last_len) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane, sender);
+        let fetched = state
+            .get_pane_delta_channel(ws, pane)
+            .expect("registered sender must be retrievable");
+        fetched(vec![1, 2, 3, 4]);
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last_len.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn register_is_idempotent_replace() {
+        // Second register on the same key replaces the first sender; the
+        // old Arc is dropped (which we verify via a sentinel flag).
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let drop_flag = Arc::clone(&dropped);
+        struct DropFlag(Arc<AtomicUsize>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let first_flag = PMutex::new(Some(DropFlag(drop_flag)));
+        let first: PaneDeltaSender = Arc::new(move |_| {
+            // Touch the flag so the closure owns it.
+            let _ = first_flag.lock().is_some();
+        });
+        state.register_pane_delta_channel(ws, pane, first);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        let (second, count, _) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, second);
+
+        // After replacement, the first sender's Arc count reached zero and
+        // the embedded DropFlag fired exactly once.
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        // The new sender is the one we retrieve.
+        let fetched = state.get_pane_delta_channel(ws, pane).expect("present");
+        fetched(vec![0]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn different_panes_in_same_workspace_are_isolated() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane_a = Uuid::new_v4();
+        let pane_b = Uuid::new_v4();
+        let (sender_a, count_a, _) = counting_sender();
+        let (sender_b, count_b, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane_a, sender_a);
+        state.register_pane_delta_channel(ws, pane_b, sender_b);
+
+        state
+            .get_pane_delta_channel(ws, pane_a)
+            .expect("pane_a")(vec![0]);
+        state
+            .get_pane_delta_channel(ws, pane_a)
+            .expect("pane_a")(vec![0, 0]);
+        state
+            .get_pane_delta_channel(ws, pane_b)
+            .expect("pane_b")(vec![0]);
+
+        assert_eq!(count_a.load(Ordering::SeqCst), 2);
+        assert_eq!(count_b.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn same_pane_id_in_different_workspaces_is_isolated() {
+        // Tauri pane UUIDs are globally unique in practice, but the map key
+        // is (workspace, pane) so even a colliding pane uuid across two
+        // workspaces must dispatch to the correct sender.
+        let state = make_state();
+        let ws_a = Uuid::new_v4();
+        let ws_b = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender_a, count_a, _) = counting_sender();
+        let (sender_b, count_b, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws_a, pane, sender_a);
+        state.register_pane_delta_channel(ws_b, pane, sender_b);
+
+        state.get_pane_delta_channel(ws_a, pane).expect("a")(vec![1]);
+        state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![2]);
+        state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![3]);
+
+        assert_eq!(count_a.load(Ordering::SeqCst), 1);
+        assert_eq!(count_b.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unregister_drops_the_sender() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane, sender);
+        assert!(state.get_pane_delta_channel(ws, pane).is_some());
+
+        state.unregister_pane_delta_channel(ws, pane);
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+
+        // Cleanup must NOT increment the counter — nothing was sent.
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unregister_unknown_pane_is_silent() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        // No panic / no observable side effect on an unknown key.
+        state.unregister_pane_delta_channel(ws, pane);
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn unregister_only_affects_matching_key() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane_keep = Uuid::new_v4();
+        let pane_drop = Uuid::new_v4();
+        let (keep, _, _) = counting_sender();
+        let (drop_it, _, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane_keep, keep);
+        state.register_pane_delta_channel(ws, pane_drop, drop_it);
+        state.unregister_pane_delta_channel(ws, pane_drop);
+
+        assert!(state.get_pane_delta_channel(ws, pane_keep).is_some());
+        assert!(state.get_pane_delta_channel(ws, pane_drop).is_none());
+    }
+
+    #[test]
+    fn cloned_appstate_shares_channel_registry() {
+        // AppState is `#[derive(Clone)]` and the registry is wrapped in
+        // `Arc<RwLock<...>>`. Cloning the state must NOT fork the registry
+        // — both clones see the same registrations. Otherwise the emit-site
+        // clone in `lib.rs` would see an empty registry and silently fall
+        // back to app.emit for every pane.
+        let state_a = make_state();
+        let state_b = state_a.clone();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+
+        state_a.register_pane_delta_channel(ws, pane, sender);
+        let from_b = state_b
+            .get_pane_delta_channel(ws, pane)
+            .expect("clone must see registrations made on the original");
+        from_b(vec![9]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unregister via clone B; clone A should see the empty slot too.
+        state_b.unregister_pane_delta_channel(ws, pane);
+        assert!(state_a.get_pane_delta_channel(ws, pane).is_none());
     }
 }
