@@ -25,39 +25,17 @@
 import { browser, expect } from '@wdio/globals';
 import { waitForAppReady, firstPaneId } from '../e2e-shell/helpers';
 
+// P4.4 (2026-05-21) — `RIDGE_PERF_BACKEND` was an env knob the perf
+// orchestrator used to A/B compare 'rust' vs 'wasm'. Rust is now the
+// only path; the env var is still read so old `perf-compare.ps1`
+// invocations don't crash, but it no longer triggers a localStorage
+// flip + refresh.
 const BACKEND = (process.env.RIDGE_PERF_BACKEND || 'rust') as 'rust' | 'wasm';
 const STRESS_SEC = parseInt(process.env.RIDGE_PERF_STRESS_SEC || '35', 10);
 
 describe(`perf stress (${BACKEND})`, () => {
   before(async () => {
     await waitForAppReady();
-    // Flip backend if needed. Reading localStorage is safe here — the
-    // appReady gate guarantees we're past about:blank.
-    const current: string = await browser.execute(() => {
-      const raw = localStorage.getItem('ridge-settings');
-      if (!raw) return 'rust';
-      try {
-        const obj = JSON.parse(raw);
-        return obj.parserBackend || 'rust';
-      } catch {
-        return 'rust';
-      }
-    });
-    if (current !== BACKEND) {
-      // eslint-disable-next-line no-console
-      console.log(`[perf-stress] flipping backend from ${current} to ${BACKEND}`);
-      await browser.execute((b) => {
-        const raw = localStorage.getItem('ridge-settings');
-        const obj = raw ? JSON.parse(raw) : {};
-        obj.parserBackend = b;
-        localStorage.setItem('ridge-settings', JSON.stringify(obj));
-      }, BACKEND);
-      await browser.refresh();
-      await waitForAppReady();
-    } else {
-      // eslint-disable-next-line no-console
-      console.log(`[perf-stress] backend already ${current}, no reload`);
-    }
   });
 
   it(`writes a ${STRESS_SEC}s PowerShell stress stream to PTY`, async () => {

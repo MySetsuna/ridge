@@ -33,6 +33,11 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { waitForAppReady, firstPaneId } from '../e2e-shell/helpers';
 
+// P4.4 (2026-05-21) — `RIDGE_PERF_BACKEND` was an env knob that the
+// orchestrator (`scripts/perf-compare.ps1`) flipped between 'rust' and
+// 'wasm' to A/B compare backends. With the WASM parser entry deleted,
+// the rust path is the only path; the env var is still read for log
+// compatibility but its value no longer triggers a localStorage flip.
 const BACKEND = (process.env.RIDGE_PERF_BACKEND || 'rust') as 'rust' | 'wasm';
 const STRESS_SEC = parseInt(process.env.RIDGE_PERF_STRESS_SEC || '25', 10);
 
@@ -43,28 +48,6 @@ describe(`frame-time (${BACKEND})`, () => {
     // runs for STRESS_SEC + a few ms of post-processing, so bump it
     // generously above 30 s for any STRESS_SEC ≥ ~25 s.
     await browser.setTimeout({ script: (STRESS_SEC + 30) * 1000 });
-    const current: string = await browser.execute(() => {
-      const raw = localStorage.getItem('ridge-settings');
-      if (!raw) return 'rust';
-      try {
-        return JSON.parse(raw).parserBackend || 'rust';
-      } catch {
-        return 'rust';
-      }
-    });
-    if (current !== BACKEND) {
-      // eslint-disable-next-line no-console
-      console.log(`[frame-time] flipping backend ${current} → ${BACKEND}`);
-      await browser.execute((b) => {
-        const raw = localStorage.getItem('ridge-settings');
-        const obj = raw ? JSON.parse(raw) : {};
-        obj.parserBackend = b;
-        localStorage.setItem('ridge-settings', JSON.stringify(obj));
-      }, BACKEND);
-      await browser.refresh();
-      await waitForAppReady();
-      await browser.setTimeout({ script: (STRESS_SEC + 30) * 1000 });
-    }
   });
 
   it(`samples rAF intervals during ${STRESS_SEC}s of PTY stress`, async () => {

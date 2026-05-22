@@ -217,11 +217,24 @@ pub fn run() {
                                 if !frame.deltas.is_empty() {
                                     match ridge_term::term::delta::encode_frame(&frame) {
                                         Ok(bytes) => {
-                                            let label = pane_id.to_string();
-                                            let _ = handle.emit(
-                                                &format!("pty-delta-{workspace_id}-{label}"),
-                                                bytes,
-                                            );
+                                            // P4.2 — prefer the Tauri Channel
+                                            // (zero JSON wrap / zero base64 /
+                                            // zero event-name routing); fall
+                                            // back to app.emit when no channel
+                                            // is registered yet (frontend not
+                                            // mounted, or tests).
+                                            let st = handle.state::<AppState>();
+                                            if let Some(sender) =
+                                                st.get_pane_delta_channel(workspace_id, pane_id)
+                                            {
+                                                sender(bytes);
+                                            } else {
+                                                let label = pane_id.to_string();
+                                                let _ = handle.emit(
+                                                    &format!("pty-delta-{workspace_id}-{label}"),
+                                                    bytes,
+                                                );
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -412,6 +425,7 @@ pub fn run() {
             terminal::write_to_pty,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
+            terminal::register_pane_delta_channel,
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
