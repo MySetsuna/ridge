@@ -404,6 +404,30 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 			create({ rows, cols, scrollback }) {
 				return new wasm.TerminalKernel(rows, cols, scrollback);
 			},
+			// §p4.9 (2026-05-22) — worker-side renderer factory. Now
+			// that the Rust `RenderHandle::new_from_offscreen` exists
+			// (built into the wasm pkg as `newFromOffscreen`), the
+			// worker can paint directly onto the transferred canvas
+			// without going back to the main thread.
+			//
+			// The wasm `RenderHandle.render(kernel)` takes the per-pane
+			// kernel as an argument (so the rust renderer can read the
+			// grid + cursor state). We capture the same kernel the
+			// `create` method just minted in a closure so the worker's
+			// `pane.renderer.render()` call site stays argument-free.
+			// `kernel` here is structurally typed as `KernelHandle` —
+			// in production it's always the `wasm.TerminalKernel` we
+			// just constructed, so the cast is sound.
+			createRenderer({ canvas, kernel }) {
+				const handle = wasm.RenderHandle.newFromOffscreen(canvas);
+				const wasmKernel = kernel as unknown as InstanceType<typeof wasm.TerminalKernel>;
+				return {
+					render: () => {
+						handle.render(wasmKernel);
+					},
+					free: () => handle.free(),
+				};
+			},
 		};
 	} catch (err) {
 		// eslint-disable-next-line no-console
