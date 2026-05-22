@@ -1071,7 +1071,7 @@
     // drawer: anchored to the right, **below the 44px header bar** so the
     // titlebar + workspace tabs remain visible/interactive (用户反馈：抽屉不能遮挡顶部 header)。
     const TOP_OFFSET = 44;
-    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 40;`;
+    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 90;`;
   });
 </script>
 
