@@ -23,11 +23,9 @@ import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
-import TerminalHistoryPopup from './TerminalHistoryPopup.svelte';
-import { terminalHistoryStore } from '$lib/stores/terminalHistory';
+import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
 import { isTuiActive } from '$lib/terminal/tuiGate';
-import { computePopupPosition } from './historyPopupPosition';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
@@ -68,60 +66,102 @@ let attached = $state(false);
 
 const manager = TerminalManager.instance();
 
-// History popup state
-let historyPopupOpen = $state(false);
 // §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
 // ArrowLeft / Home / Delete / mid-line edits preserve the buffer
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
 let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
-let historyPopupPosition = $state({ x: 0, y: 0, inputH: 20 });
-let historyPopupEl: { handleKeyDown: (e: KeyboardEvent) => boolean } | undefined = $state(undefined);
 
-// §1.32 (2026-05-20): popup placement helper + live resize tracking.
-// Three previously-deferred lifecycle bugs collapse into this:
-//   - Bug #2: when `manager.inputAnchorPixelPosition` returns null
-//     (cell metrics not ready, pane unknown, alt-screen race) the old
-//     code fell back to `{ x: 0, y: 0, cellH: 20 }` and stranded the
-//     popup at the viewport corner. `computePopupPosition` now
-//     returns null and we flip `historyPopupOpen` back to false.
-//   - Bug #13: ArrowUp → Esc → ArrowUp must re-anchor on each open;
-//     every popup-open path calls this function so the anchor is
-//     always fresh.
-//   - Bug #1: while the popup is open, a pane resize re-runs this
-//     function via the ResizeObserver $effect below so the popup
-//     tracks the new cell origin.
-function repositionPopup(): boolean {
-	if (!container) return false;
-	const pos = computePopupPosition(
-		manager.inputAnchorPixelPosition(paneId),
-		container.getBoundingClientRect(),
+// §1.34 (2026-05-22) — shell-history overlay state. The popup used to
+// be a Svelte `<TerminalHistoryPopup>` DOM element positioned via
+// `computePopupPosition`. We now render it directly on the wasm canvas
+// via `manager.setHistoryOverlay(...)` so it inherits pane focus,
+// theme, cell metrics, and DPR for free. See
+// `packages/ridge-term/src/render/renderer.rs::HistoryOverlay` for the
+// renderer state and `webgpu.rs::draw_history_overlay` for the paint.
+let historyOverlayOpen = $state(false);
+let historyOverlayItems = $state<string[]>([]);
+let historyOverlaySelected = $state(-1);
+let historyOverlayAbove = $state(true);
+let historyOverlayAnchor = $state<{ row: number; col: number } | null>(null);
+
+const HISTORY_OVERLAY_MAX_ROWS = 10;
+
+function snapshotHistoryItems(query: string): string[] {
+	const all = dedupKeepFirst(get(terminalHistoryStore));
+	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ROWS);
+}
+
+function pushHistoryOverlay(): void {
+	if (!historyOverlayOpen || !historyOverlayAnchor) return;
+	manager.setHistoryOverlay(
+		paneId,
+		historyOverlayItems,
+		historyOverlaySelected,
+		historyOverlayAnchor.row,
+		historyOverlayAnchor.col,
+		historyOverlayAbove,
 	);
-	if (!pos) {
-		historyPopupOpen = false;
-		return false;
-	}
-	historyPopupPosition = pos;
+}
+
+function openHistoryOverlay(): boolean {
+	const anchor = manager.inputAnchorResolved?.(paneId);
+	if (!anchor) return false;
+	const items = snapshotHistoryItems(currentInputBuffer.text);
+	if (items.length === 0) return false;
+	historyOverlayItems = items;
+	historyOverlaySelected = -1;
+	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
+	const rows = manager.rows(paneId);
+	historyOverlayAbove = anchor.row >= rows / 2;
+	historyOverlayOpen = true;
+	pushHistoryOverlay();
 	return true;
 }
 
-// Observe the pane container AND window viewport while the popup is
-// open. The effect's cleanup auto-disconnects the observer / listener
-// when the popup closes or the component unmounts; no leak even if
-// multiple popup-open/close cycles happen during the component's
-// lifetime. Window resize matters when a splitter drag changes the
-// pane's viewport-absolute position without resizing the container
-// itself (sibling pane shrunk, this pane translated).
-$effect(() => {
-	if (!historyPopupOpen || !container) return;
-	const onWindowResize = () => { repositionPopup(); };
-	const ro = new ResizeObserver(onWindowResize);
-	ro.observe(container);
-	window.addEventListener('resize', onWindowResize);
-	return () => {
-		ro.disconnect();
-		window.removeEventListener('resize', onWindowResize);
-	};
-});
+function closeHistoryOverlay(): void {
+	if (!historyOverlayOpen) return;
+	historyOverlayOpen = false;
+	historyOverlaySelected = -1;
+	historyOverlayItems = [];
+	historyOverlayAnchor = null;
+	manager.clearHistoryOverlay(paneId);
+}
+
+function commitHistorySelection(execute: boolean): void {
+	if (historyOverlaySelected < 0
+		|| historyOverlaySelected >= historyOverlayItems.length) {
+		closeHistoryOverlay();
+		return;
+	}
+	const cmd = historyOverlayItems[historyOverlaySelected];
+	terminalHistoryStore.add(cmd);
+	const snapshot = manager.readShellInputSnapshot(paneId);
+	const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
+	if (replay) manager.write(paneId, replay);
+	manager.write(paneId, execute ? cmd + '\r' : cmd);
+	currentInputBuffer = EMPTY_INPUT_BUFFER;
+	closeHistoryOverlay();
+	imeHelper?.focus();
+}
+
+function moveHistorySelection(delta: number): void {
+	if (!historyOverlayOpen) return;
+	const n = historyOverlayItems.length;
+	if (n === 0) {
+		closeHistoryOverlay();
+		return;
+	}
+	if (delta < 0) {
+		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
+		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
+		else historyOverlaySelected -= 1;
+	} else {
+		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
+		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
+		else historyOverlaySelected += 1;
+	}
+	pushHistoryOverlay();
+}
 
 // §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
 // path that mutates the shell line through the unit-tested
@@ -164,7 +204,7 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			// in PTY output, which closed popups across panes on every
 			// prompt redraw. Driving close from the keystroke side is
 			// per-pane by construction.
-			historyPopupOpen = false;
+			closeHistoryOverlay();
 			break;
 		// Other events (backspace / cursor moves / killWord / killToEol)
 		// don't change the input's start position — leave the marker.
@@ -597,13 +637,9 @@ function onCompositionStart() {
 	// the §1.27 fix.
 	diagLogIme('end', { committed: data });
 
-	// If the popup happens to be open across an IME session (rare — the
-	// keydown guard at the top of `onContainerKeyDown` blocks ArrowUp
-	// while composing — but possible if it was opened via click before
-	// composition began), the kernel cursor may have moved during the
-	// commit redraw. Re-anchor to the live position so the next
-	// keystroke sees a fresh `historyPopupPosition`.
-	if (historyPopupOpen) repositionPopup();
+	// §1.34 — the wasm overlay tracks its own anchor cell; no JS
+	// repositioning needed across IME commits. Anchor was captured
+	// at open time and stays put through the kernel rasterizer.
 }
 
 function refreshSearch() {
@@ -978,7 +1014,7 @@ $effect(() => {
 	// into another pane. Keystrokes already can't reach the popup of an
 	// inactive pane (its container isn't focused), but the visual
 	// residue is confusing.
-	if (!isActive && historyPopupOpen) historyPopupOpen = false;
+	if (!isActive && historyOverlayOpen) closeHistoryOverlay();
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -994,11 +1030,53 @@ $effect(() => {
 	function onContainerKeyDown(e: KeyboardEvent) {
 		if (!alive || !attached) return;
 
-		// 1. 先处理弹层和 IME（这些是高优先级的应用逻辑，不是系统快捷键）
-		if (historyPopupOpen && historyPopupEl?.handleKeyDown(e)) {
-			e.preventDefault();
-			return;
+		// 1. §1.34 — shell-history overlay (wasm canvas) takes the
+		// highest priority while open. Modifier-free ↑↓ Enter →
+		// Esc are consumed; any other key closes the overlay and
+		// falls through so the user's typing still flows.
+		if (historyOverlayOpen) {
+			if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+				if (e.key === 'ArrowUp') {
+					moveHistorySelection(-1);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'ArrowDown') {
+					moveHistorySelection(1);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'Enter') {
+					commitHistorySelection(true);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'ArrowRight') {
+					if (historyOverlaySelected >= 0) {
+						commitHistorySelection(false);
+						e.preventDefault();
+						return;
+					}
+					closeHistoryOverlay();
+					// Fall through so the shell sees ArrowRight.
+				}
+				if (e.key === 'ArrowLeft') {
+					closeHistoryOverlay();
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'Escape') {
+					closeHistoryOverlay();
+					e.preventDefault();
+					return;
+				} else if (e.key.length === 1
+					|| e.key === 'Backspace'
+					|| e.key === 'Tab') {
+					closeHistoryOverlay();
+				}
+			}
 		}
+
 		if (isComposing || e.isComposing) return;
 
 		// 2. Host-priority shortcuts (paste / copy-with-selection /
@@ -1020,33 +1098,23 @@ $effect(() => {
 			}
 		}
 
-		// 3. ArrowUp/ArrowDown → 唤起历史弹窗。
-		// §1.33 (2026-05-22): the entire "is this a shell prompt vs a TUI"
-		// decision now lives in the wasm kernel (see
-		// `JsTerminal::should_allow_shell_history`). The previous JS-side
-		// `isTuiSticky() && !isAppCursorKeys` defense leaked into Claude
-		// Code because the sticky branch was gated on `!cursorVisible` —
-		// Claude flashes the cursor visible between menu frames, opening
-		// the gate before the next TUI signal landed. The kernel-side gate
-		// blocks on any of DECCKM / alt screen / mouse reporting / inline-
-		// TUI / cursor-hidden AND holds sticky for 2 s regardless of
-		// cursor visibility, so the popup can never race in between
-		// repaints. Returning false means "pass through to the TUI" — the
-		// arrow key falls all the way through to `manager.handleKeyDown`
-		// below (encoded via DECCKM-aware key encoder).
+		// 4. §1.34: ArrowUp/ArrowDown → open shell-history overlay
+		// (rendered on wasm canvas). Gate decision lives in the wasm
+		// kernel via `JsTerminal::should_allow_shell_history` so any
+		// TUI signal — DECCKM / alt screen / mouse reporting / inline
+		// TUI heuristic / hidden cursor / 2 s sticky after any of
+		// those — short-circuits to false and the arrow key falls
+		// through to the kernel encoder below.
 		if (
-			!historyPopupOpen
+			!historyOverlayOpen
 			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
 			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
 			&& manager.shouldAllowShellHistory(paneId)
 		) {
-			e.preventDefault();
-			historyPopupOpen = true;
-			// §1.32: `repositionPopup()` flips `historyPopupOpen` back to
-			// false on null anchor (Bug #2) — return early in that case
-			// instead of leaving a popup-open state with no valid position.
-			if (!repositionPopup()) return;
-			return;
+			if (openHistoryOverlay()) {
+				e.preventDefault();
+				return;
+			}
 		}
 
 		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
@@ -1450,35 +1518,9 @@ function onContainerMouseDown(e: MouseEvent) {
 	{/if}
 </div>
 
-<TerminalHistoryPopup
-    bind:this={historyPopupEl}
-    query={currentInputBuffer.text}
-    isVisible={historyPopupOpen}
-    position={historyPopupPosition}
-    onSelect={(cmd, execute) => {
-        // §1.33 (2026-05-22) — Warp-style two-mode select:
-        //   execute=true  (Enter / click)  → 写入并直接换行执行
-        //   execute=false (ArrowRight)     → 仅写入命令文本，光标停在末尾
-        //                                    让用户继续编辑后自行回车
-        // History store dedup-add fires regardless so the next popup
-        // ranks this command first whether or not it was executed now.
-        terminalHistoryStore.add(cmd);
-        // 清除 shell 中已键入的筛选文本，然后用选中命令替换
-        // §1.32 Wave F: prefer the PTY-derived snapshot for the replay
-        // length so completion echoes / $VAR expansion / Ctrl+R redraws
-        // don't leave garbage on the line. Fall back to the keystroke
-        // mirror if the snapshot is unavailable (no input observed
-        // yet, multi-row wrap, prompt redrew underneath).
-        const snapshot = manager.readShellInputSnapshot(paneId);
-        const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
-        if (replay) manager.write(paneId, replay);
-        manager.write(paneId, execute ? cmd + '\r' : cmd);
-        currentInputBuffer = EMPTY_INPUT_BUFFER;
-        historyPopupOpen = false;
-        imeHelper?.focus();
-    }}
-    onClose={() => { historyPopupOpen = false; imeHelper?.focus(); }}
-/>
+<!-- §1.34 (2026-05-22) — shell-history popup moved to wasm canvas
+     overlay; driver fns: openHistoryOverlay / closeHistoryOverlay /
+     moveHistorySelection / commitHistorySelection live in <script>. -->
 
 {#if termSearchOpen}
 	<div class="rg-search-bar">

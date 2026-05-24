@@ -43,6 +43,12 @@ export class RenderHandle {
         }
     }
     /**
+     * §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+     */
+    clearHistoryOverlay() {
+        wasm.renderhandle_clearHistoryOverlay(this.__wbg_ptr);
+    }
+    /**
      * Remove the preedit overlay (JS calls on `compositionend` after
      * shipping the committed string to the PTY).
      */
@@ -251,6 +257,24 @@ export class RenderHandle {
      */
     setFocused(focused) {
         wasm.renderhandle_setFocused(this.__wbg_ptr, focused);
+    }
+    /**
+     * §1.34 (2026-05-22) — install the shell-history popup overlay.
+     * `items` is a JS array of strings (filtered, newest first).
+     * `selected_index` is `-1` for "no row picked" or
+     * `0..items.len()-1` for a selected row. `(anchor_row,
+     * anchor_col)` is the input anchor in viewport cell coords;
+     * `place_above` chooses growth direction. The 10-row visible
+     * cap is hard-coded inside the kernel so the JS caller can't
+     * request a floor-to-ceiling panel.
+     * @param {Array<any>} items
+     * @param {number} selected_index
+     * @param {number} anchor_row
+     * @param {number} anchor_col
+     * @param {boolean} place_above
+     */
+    setHistoryOverlay(items, selected_index, anchor_row, anchor_col, place_above) {
+        wasm.renderhandle_setHistoryOverlay(this.__wbg_ptr, items, selected_index, anchor_row, anchor_col, place_above);
     }
     /**
      * Install an IME preedit overlay at the given cell. The renderer
@@ -783,6 +807,15 @@ export class TerminalKernel {
         var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
+    }
+    /**
+     * §1.35 — force-leave alt screen on the kernel side when the PTY
+     * process exits while a TUI is still in alt screen mode. Without
+     * this the new shell spawned by `pane-pty-closed` would write into
+     * the alt buffer, hiding the primary screen content from the user.
+     */
+    leaveAltScreen() {
+        wasm.terminalkernel_leaveAltScreen(this.__wbg_ptr);
     }
     /**
      * Single-call bitmask of every DEC mouse mode the caller cares
@@ -1403,6 +1436,10 @@ function __wbg_get_imports() {
         __wbg_get_a6a7ef761f5bd232: function(arg0, arg1) {
             const ret = arg0[arg1 >>> 0];
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_get_unchecked_be562b1421656321: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
         },
         __wbg_gpu_c773d7932dc745d7: function(arg0) {
             const ret = arg0.gpu;

@@ -30,12 +30,12 @@ export const terminalHistoryStore = {
 };
 export const terminalHistoryLoadedStore = { subscribe: _loaded.subscribe };
 
-// §1.31 (2026-05-19): pure helpers extracted from the inline IIFE that
-// used to live in `TerminalHistoryPopup.svelte` (lines 13-29 of the old
-// version). Extracted so the popup's filter/dedup behaviour can be
-// truth-tested in Vitest — the previous inline form shipped untested
-// and accumulated a handful of subtle bugs (case sensitivity, multi-
-// line entries, sort tiebreakers).
+// §1.31 (2026-05-19): pure filter / dedup helpers, originally extracted
+// from the inline IIFE in the old DOM popup (`TerminalHistoryPopup.svelte`,
+// retired by §1.34 wasm overlay). Now consumed by `RidgePane.svelte`'s
+// `snapshotHistoryItems` which feeds `manager.setHistoryOverlay`.
+// Tested in Vitest — previously accumulated a handful of subtle bugs
+// (case sensitivity, multi-line entries, sort tiebreakers).
 
 /**
  * Case-insensitive dedup that keeps the FIRST occurrence in `items`.

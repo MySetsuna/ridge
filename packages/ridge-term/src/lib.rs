@@ -74,7 +74,7 @@ pub struct JsTerminal {
 /// this many milliseconds even after the signal clears. Matches the
 /// kernel's existing `INLINE_TUI_DECAY_MS` so a TUI's intra-frame
 /// "all-signals-false" gap can't race the popup open between repaints.
-const SHELL_HISTORY_STICKY_MS: i64 = 2_000;
+const SHELL_HISTORY_STICKY_MS: i64 = 0;
 
 #[wasm_bindgen(js_class = TerminalKernel)]
 impl JsTerminal {
@@ -648,6 +648,15 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = isAltScreen)]
     pub fn is_alt_screen(&self) -> bool {
         self.inner.is_alt_screen()
+    }
+
+    /// §1.35 — force-leave alt screen on the kernel side when the PTY
+    /// process exits while a TUI is still in alt screen mode. Without
+    /// this the new shell spawned by `pane-pty-closed` would write into
+    /// the alt buffer, hiding the primary screen content from the user.
+    #[wasm_bindgen(js_name = leaveAltScreen)]
+    pub fn leave_alt_screen(&mut self) {
+        self.inner.leave_alt_screen();
     }
 
     #[wasm_bindgen(js_name = isCursorVisible)]
@@ -1344,6 +1353,41 @@ mod renderer_js {
             self.renderer.clear_preedit();
         }
 
+        /// §1.34 (2026-05-22) — install the shell-history popup overlay.
+        /// `items` is a JS array of strings (filtered, newest first).
+        /// `selected_index` is `-1` for "no row picked" or
+        /// `0..items.len()-1` for a selected row. `(anchor_row,
+        /// anchor_col)` is the input anchor in viewport cell coords;
+        /// `place_above` chooses growth direction. The 10-row visible
+        /// cap is hard-coded inside the kernel so the JS caller can't
+        /// request a floor-to-ceiling panel.
+        #[wasm_bindgen(js_name = setHistoryOverlay)]
+        pub fn set_history_overlay(
+            &mut self,
+            items: js_sys::Array,
+            selected_index: i32,
+            anchor_row: u32,
+            anchor_col: u32,
+            place_above: bool,
+        ) {
+            let items: Vec<String> = items.iter().filter_map(|v| v.as_string()).collect();
+            self.renderer
+                .set_history_overlay(crate::render::renderer::HistoryOverlay {
+                    items,
+                    selected_index,
+                    anchor_row: anchor_row as usize,
+                    anchor_col: anchor_col as usize,
+                    place_above,
+                    max_visible_rows: 10,
+                });
+        }
+
+        /// §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+        #[wasm_bindgen(js_name = clearHistoryOverlay)]
+        pub fn clear_history_overlay(&mut self) {
+            self.renderer.clear_history_overlay();
+        }
+
         /// Non-mutating mirror of `render`'s early-exit conditions:
         /// returns `true` when the next `render` call would do any
         /// drawing work, `false` when the renderer has nothing to
@@ -1607,71 +1651,42 @@ mod shell_history_gate_tests {
     }
 
     #[test]
-    fn sticky_holds_after_signal_clears() {
-        // The regression case — a TUI flipped a signal on for one
-        // frame then back off. The parser-side `last_tui_signal_at_ms`
-        // captures the transient activation; the gate's sticky window
-        // keeps it closed for SHELL_HISTORY_STICKY_MS afterwards even
-        // though every live signal is now false.
+    fn opens_immediately_after_tui_signal_clears() {
+        // §1.35 — SHELL_HISTORY_STICKY_MS = 0, so the gate opens
+        // immediately as soon as every live signal is false. A TUI
+        // that flickered a signal on/off (e.g. `?25l?25h`) must NOT
+        // gate the popup once the cursor is visible again.
         let mut t = JsTerminal::new(24, 80, 200);
         t.feed(b"\x1b[?25l\x1b[?25h"); // hide and re-show in one chunk
         let baseline = clock_baseline();
-        // 100ms after the parser saw `?25l` — well inside sticky.
+        // With sticky=0 the gate must open immediately — no extra
+        // buffer after the last signal clears.
         assert!(
-            !t.should_allow_shell_history_at(baseline + 100),
-            "sticky window must keep gate closed across an intra-feed TUI flicker",
+            t.should_allow_shell_history_at(baseline + 100),
+            "gate must open immediately after TUI signal clears (sticky=0)",
         );
     }
 
     #[test]
-    fn sticky_releases_after_window_expires() {
-        // Counterpart to the previous test: once SHELL_HISTORY_STICKY_MS
-        // elapses with no new TUI signal, the gate opens again. Verifies
-        // we don't lock users out of shell-history permanently after
-        // any incidental TUI use.
+    fn gate_stays_closed_while_live_signal_holds() {
+        // Even with sticky=0, the gate must stay closed while a live
+        // signal is still asserted. This was previously covered by
+        // the sticky-refresh test — now we verify the live-signal
+        // branch directly with repeated queries.
         let mut t = JsTerminal::new(24, 80, 200);
         t.feed(b"\x1b[?25l");
         let baseline = clock_baseline();
         assert!(!t.should_allow_shell_history_at(baseline));
-        t.feed(b"\x1b[?25h");
-        // Step past the sticky window from the baseline. The parser's
-        // bump happened slightly BEFORE baseline (during feed); padding
-        // by +200 ms covers any wall-clock skew on slow CI.
-        let after = baseline + SHELL_HISTORY_STICKY_MS + 200;
+        // Still hidden 5 s later — still blocked (live signal).
         assert!(
-            t.should_allow_shell_history_at(after),
-            "gate must re-open after sticky window expires",
+            !t.should_allow_shell_history_at(baseline + 5_000),
+            "live cursor-hidden must block regardless of sticky window",
         );
-    }
-
-    #[test]
-    fn sticky_refreshes_on_repeated_signal() {
-        // A TUI continuously emitting hide/show pairs keeps the sticky
-        // timestamp climbing — the gate must not let the window run
-        // out underneath a still-running TUI.
-        let mut t = JsTerminal::new(24, 80, 200);
-        t.feed(b"\x1b[?25l");
-        let first = clock_baseline();
-        assert!(!t.should_allow_shell_history_at(first));
-        // ~1 ms gap (real clock advances). Bump again via another
-        // hide; clock_baseline() now sits BEYOND the first bump.
-        t.feed(b"\x1b[?25h\x1b[?25l");
-        let refreshed = clock_baseline();
-        // Test at first + STICKY + 200 — would be expired against the
-        // FIRST bump but NOT against the refreshed one.
-        let probe = first + SHELL_HISTORY_STICKY_MS + 200;
-        // `refreshed` must be >= `first`, so `probe - refreshed`
-        // is bounded by `(SHELL_HISTORY_STICKY_MS + 200) - (refreshed - first)`.
-        // As long as refreshed - first < 200ms (true for a single
-        // feed), probe - refreshed > SHELL_HISTORY_STICKY_MS, so the
-        // gate would be OPEN. The point of THIS test is the inverse:
-        // probe is inside the sticky window of the REFRESHED bump.
-        // Use a tighter probe relative to `refreshed`.
-        let _ = probe;
-        let probe2 = refreshed + 500;
+        // Show cursor → gate opens immediately.
+        t.feed(b"\x1b[?25h");
         assert!(
-            !t.should_allow_shell_history_at(probe2),
-            "sticky must engage relative to the LATEST bump, not the first",
+            t.should_allow_shell_history_at(baseline + 5_100),
+            "gate must open immediately once cursor is visible",
         );
     }
 

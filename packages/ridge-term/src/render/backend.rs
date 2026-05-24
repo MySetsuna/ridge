@@ -375,6 +375,28 @@ pub trait RenderBackend {
     ) {
     }
 
+    /// §1.34 (2026-05-22) — paint the shell-history popup on top of
+    /// the cell grid as a final pass. The backend should:
+    ///   1. Compute pixel rect from `overlay.anchor_row`,
+    ///      `overlay.anchor_col`, `overlay.place_above`, and the
+    ///      capped item count (`min(items.len(), max_visible_rows)`).
+    ///   2. Paint an opaque background panel using `theme.bg`.
+    ///   3. Paint a 1-device-pixel border using `theme.fg` so the
+    ///      panel is visually distinct from the underlying cells.
+    ///   4. Paint each item's text in `theme.fg`; the row at
+    ///      `overlay.selected_index` (when >= 0) gets an inverse
+    ///      treatment: bg = `theme.fg`, fg = `theme.bg`.
+    ///   5. Truncate per-row text that exceeds the panel width.
+    /// Cells underneath the popup are NOT modified — the overlay is
+    /// a top-layer paint only, matching the preedit pattern. Default
+    /// no-op so backends can add this incrementally.
+    fn draw_history_overlay(
+        &mut self,
+        _overlay: &crate::render::renderer::HistoryOverlay,
+        _theme: &Theme,
+    ) {
+    }
+
     /// Commit the frame to the surface. For Canvas2D this is a no-op
     /// (drawing was already direct); for WebGPU this submits the command
     /// encoder.
@@ -395,6 +417,7 @@ pub fn draw_frame<B: RenderBackend>(
     selection_rects: &[(usize, usize, usize)],
     hyperlink_rects: &[(usize, usize, usize)],
     preedit: Option<&crate::render::renderer::Preedit>,
+    history_overlay: Option<&crate::render::renderer::HistoryOverlay>,
 ) {
     backend.begin_frame(metrics, theme);
     if full_redraw {
@@ -434,6 +457,14 @@ pub fn draw_frame<B: RenderBackend>(
     // into the preedit so it must be visible above any frame element).
     if let Some(p) = preedit {
         backend.draw_preedit_overlay(&p.text, p.row, p.col, theme);
+    }
+
+    // Pass 5: shell-history popup overlay (§1.34). Drawn LAST after
+    // preedit so the popup always sits on top — the user explicitly
+    // opened it with ArrowUp/Down and expects it to obscure the
+    // prompt area until they pick, dismiss, or commit.
+    if let Some(h) = history_overlay {
+        backend.draw_history_overlay(h, theme);
     }
 
     backend.end_frame();

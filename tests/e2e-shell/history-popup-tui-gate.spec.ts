@@ -1,6 +1,6 @@
 /**
  * Regression guard for the kernel-side shell-history popup gate
- * (§1.33, 2026-05-22).
+ * (§1.33, 2026-05-22; updated §1.35 for sticky=0).
  *
  * The bug this locks down: ArrowUp / ArrowDown inside a TUI such as
  * Claude Code OR vim OR htop was opening the host shell-history popup
@@ -16,10 +16,8 @@
  *   1. ANY of `app_cursor_keys` (DECCKM `?1`), `alt_screen` (`?1049`
  *      / `?47`), mouse reporting, the inline-TUI heuristic, OR a
  *      hidden cursor (`?25l`) blocks immediately.
- *   2. After any of those signals is observed true, a 2-second sticky
- *      window holds the gate closed REGARDLESS of current cursor
- *      visibility — closing the "cursor toggled visible mid-frame"
- *      escape hatch the old gate had.
+ *   2. §1.35: SHELL_HISTORY_STICKY_MS = 0 — the gate opens immediately
+ *      once every live signal clears. No extra buffer after TUI exit.
  *
  * Spec strategy: drive the kernel into each known-TUI mode via raw
  * CSI bytes (the same way Claude Code / vim / htop would), then
@@ -55,35 +53,29 @@ async function settle(ms = 60): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function popupVisible(): Promise<boolean> {
-  return (await browser.execute(() => {
-    const el = document.querySelector('.rg-history-popup');
-    if (!el) return false;
-    return !el.classList.contains('rg-hidden');
-  })) as boolean;
+async function popupVisible(paneId: string): Promise<boolean> {
+  return (await browser.execute((id: string) => {
+    const w = window as { __windE2E?: { historyOverlayState: (p: string) => { open: boolean } } };
+    return w.__windE2E?.historyOverlayState(id).open ?? false;
+  }, paneId)) as boolean;
 }
 
 /** Force the kernel back into a "fresh shell prompt" state between
  *  specs: clear alt screen, drop DECCKM, drop mouse reporting, show
- *  the cursor, exit bracketed paste. Then sleep past the 2 s sticky
- *  window so the previous test's TUI signal can no longer block the
- *  next one. Without the sleep, the FIRST positive-case test that
- *  runs after a negative one would flake. */
+ *  the cursor, exit bracketed paste. §1.35: sticky=0, so the gate
+ *  opens immediately — no extra sleep needed. The small settle here
+ *  is only for DOM/paint timing, not for sticky decay. */
 async function resetToShellPrompt(paneId: string): Promise<void> {
   await browser.execute((id: string) => {
     const w = window as { __windE2E?: { feedPty: (p: string, d: string) => void } };
     w.__windE2E!.feedPty(
       id,
-      // Reset every signal the gate reads. `?25h` (cursor visible)
-      // is the only one that matters for sticky decay but resetting
-      // all of them keeps the kernel in a deterministic state.
+      // Reset every signal the gate reads. With sticky=0 the gate
+      // re-opens immediately after all signals clear.
       '\x1b[?1049l\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?25h',
     );
   }, paneId);
-  // SHELL_HISTORY_STICKY_MS = 2 s. Pad by 200 ms so the
-  // strictly-less-than comparison inside the kernel definitely
-  // releases the gate before the next assertion fires.
-  await settle(2_200);
+  await settle(60);
 }
 
 describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
@@ -102,12 +94,12 @@ describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
     await settle();
   });
 
-  it('alt-screen (?1049h) blocks ArrowUp popup; gate releases after sticky', async () => {
+  it('alt-screen (?1049h) blocks ArrowUp popup; gate re-opens immediately on exit', async () => {
     // Sanity precondition.
     await resetToShellPrompt(paneId);
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
     await pressKey(paneId, 'Escape');
     await settle();
 
@@ -124,22 +116,17 @@ describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
 
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
 
-    // Leave alt screen and verify sticky window still blocks for ~2 s.
+    // Leave alt screen — §1.35: with sticky=0 the gate re-opens
+    // immediately. No extra buffer window.
     await browser.execute((id: string) => {
       const w = window as { __windE2E?: { feedPty: (p: string, d: string) => void } };
       w.__windE2E!.feedPty(id, '\x1b[?1049l');
     }, paneId);
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(false);
-
-    // Then once the sticky window expires the gate must reopen.
-    await resetToShellPrompt(paneId);
-    await pressKey(paneId, 'ArrowUp');
-    await settle();
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
   });
 
   it('DECCKM (?1h) blocks ArrowUp popup', async () => {
@@ -156,7 +143,7 @@ describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
 
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
   });
 
   it('mouse reporting (?1000h) blocks ArrowUp popup', async () => {
@@ -173,7 +160,7 @@ describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
 
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
   });
 
   it('hidden cursor (?25l) blocks ArrowUp popup — the Claude-Code regression case', async () => {
@@ -194,15 +181,13 @@ describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
 
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
   });
 
-  it('sticky window keeps gate closed even after cursor becomes visible again', async () => {
-    // Locks down the JS-tuiGate-leak that motivated moving the gate
-    // into wasm. The pre-fix behaviour: cursor hidden → cursor
-    // shown → ArrowUp → popup OPENS even though sticky timer says
-    // "we just saw a TUI signal". Post-fix: stays closed for
-    // SHELL_HISTORY_STICKY_MS regardless of current cursor state.
+  it('gate opens immediately once cursor is visible again (sticky=0)', async () => {
+    // §1.35: SHELL_HISTORY_STICKY_MS = 0, so the gate re-opens
+    // as soon as every live signal clears. A TUI that flickered
+    // cursor hidden→visible must NOT gate the popup afterwards.
     await resetToShellPrompt(paneId);
     await browser.execute((id: string) => {
       const w = window as { __windE2E?: { feedPty: (p: string, d: string) => void } };
@@ -212,12 +197,10 @@ describe('shell-history popup — TUI gate (kernel-side, §1.33)', () => {
       const w = window as { __windE2E?: { kernelDecState: (p: string) => unknown } };
       return w.__windE2E!.kernelDecState(id);
     }, paneId);
-    // Cursor is visible NOW — but the kernel bumped its sticky
-    // timestamp when it saw `?25l` just before.
     expect((dec as { isCursorVisible: boolean }).isCursorVisible).toBe(true);
 
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(true);
   });
 });

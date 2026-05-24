@@ -41,6 +41,26 @@ import { waitForAppReady, firstPaneId } from '../e2e-shell/helpers';
 const BACKEND = (process.env.RIDGE_PERF_BACKEND || 'rust') as 'rust' | 'wasm';
 const STRESS_SEC = parseInt(process.env.RIDGE_PERF_STRESS_SEC || '25', 10);
 
+/** §P4 (2026-05-24): frame-time targets the rAF interval distribution
+ *  under PTY stress. Two known bottlenecks gate the headline number:
+ *  (1) per-frame Tauri event marshaling (base64 + JSON-wrap + event-
+ *      name routing) — see ptyBridge.ts.
+ *  (2) main-thread canvas paint occupying frame budget — see
+ *      renderer.ts.
+ *  P4 plan: drive p95 from ~50 ms → 20–25 ms by addressing both.
+ *
+ *  Thresholds below are env-overridable so:
+ *   - locally we can tighten the gate to chase the P4 target
+ *     (`$env:RIDGE_PERF_P95_MAX_MS=25`)
+ *   - CI can keep a generous ceiling that still catches flat-line
+ *     regressions (default = current pre-P4 safe ceiling)
+ *   - the no-assert / data-only mode is still available via
+ *     `RIDGE_PERF_ASSERT=0` (matches the original P3.14 invocation). */
+const ASSERT_ENABLED = process.env.RIDGE_PERF_ASSERT !== '0';
+const P95_MAX_MS = Number(process.env.RIDGE_PERF_P95_MAX_MS ?? 50);
+const P99_MAX_MS = Number(process.env.RIDGE_PERF_P99_MAX_MS ?? 120);
+const JANK100_MAX = Number(process.env.RIDGE_PERF_JANK100_MAX ?? 5);
+
 describe(`frame-time (${BACKEND})`, () => {
   before(async () => {
     await waitForAppReady();
@@ -134,5 +154,17 @@ describe(`frame-time (${BACKEND})`, () => {
     console.log(`[frame-time ${BACKEND}] wrote ${file}`);
 
     expect(stats.frames).toBeGreaterThan(0);
+
+    // §P4 regression gate. Disabled with RIDGE_PERF_ASSERT=0 so the
+    // original P3.14 collection-only invocation still works.
+    if (ASSERT_ENABLED) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[frame-time ${BACKEND}] gate: p95<=${P95_MAX_MS} p99<=${P99_MAX_MS} jank100<=${JANK100_MAX}`,
+      );
+      expect(stats.p95Ms).toBeLessThanOrEqual(P95_MAX_MS);
+      expect(stats.p99Ms).toBeLessThanOrEqual(P99_MAX_MS);
+      expect(stats.jank100).toBeLessThanOrEqual(JANK100_MAX);
+    }
   });
 });

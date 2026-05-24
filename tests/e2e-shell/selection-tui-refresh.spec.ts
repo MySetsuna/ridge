@@ -35,7 +35,7 @@
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
-import { waitForAppReady, firstPaneId } from './helpers';
+import { waitForAppReady, firstPaneId, clearVisibleGrid, waitForVisibleText } from './helpers';
 
 describe('host selection survives delta-frame redraw storm (claude TUI regression)', () => {
   before(async () => {
@@ -45,13 +45,17 @@ describe('host selection survives delta-frame redraw storm (claude TUI regressio
   it('preserves a 5-char selection across 30 applyDeltaFrame calls', async () => {
     const paneId = await firstPaneId();
 
+    // §1.35: wipe the visible grid to lock the `sbAbs = scrollbackLen()`
+    // invariant. Without this the async PowerShell prompt can clobber
+    // row 0 between feedPty and setSelectionAbs.
+    await clearVisibleGrid(paneId);
     // Seed deterministic content into the live grid. The CR+LF puts
     // the cursor on a fresh row so anchor math below stays simple.
     await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__windE2E.feedPty(id, 'hello world\n');
     }, paneId);
-    await browser.pause(30);
+    await waitForVisibleText(paneId, 'hello world');
 
     // Compute the abs row of "hello" (live-grid row 0 is at
     // abs = scrollbackLen()). End-col is exclusive (selection range
@@ -100,32 +104,27 @@ describe('host selection survives delta-frame redraw storm (claude TUI regressio
   it('feed()-path selection also survives a redraw storm (locks §B.2 too)', async () => {
     const paneId = await firstPaneId();
 
-    // Fresh feed for an isolated assertion.
+    // §1.35: wipe between specs so the prior `it`'s "hello world" +
+    // cursor-home storm doesn't taint PROBE-XYZ's row indexing. After
+    // the clear, PROBE-XYZ lands at visible row 0 — same convention
+    // as it-1, so `sbAbs = scrollbackLen()` selects it directly.
+    await clearVisibleGrid(paneId);
     await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__windE2E.feedPty(id, 'PROBE-XYZ\n');
     }, paneId);
-    await browser.pause(30);
+    await waitForVisibleText(paneId, 'PROBE-XYZ');
 
+    // With the screen freshly cleared, PROBE-XYZ lands at visible row 0
+    // — same anchoring convention as the first `it`. `sbAbs =
+    // scrollbackLen()` selects the row containing PROBE-XYZ directly.
     const setup = await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const e2e = (window as any).__windE2E;
-      // Find the row containing 'PROBE-XYZ' (most-recent feed lives
-      // close to the cursor, which is one row below).
-      const rows: string[] = e2e.visibleText(id);
-      let probeRow = -1;
-      for (let r = 0; r < rows.length; r++) {
-        if (rows[r].includes('PROBE-XYZ')) {
-          probeRow = r;
-          break;
-        }
-      }
-      if (probeRow < 0) return null;
-      const sbAbs = e2e.scrollbackLen(id) + probeRow;
+      const sbAbs = e2e.scrollbackLen(id);
       e2e.setSelectionAbs(id, sbAbs, 0, sbAbs, 9);
-      return { text: e2e.getSelectionText(id), probeRow };
+      return { text: e2e.getSelectionText(id) };
     }, paneId);
-    expect(setup).not.toBeNull();
     expect(setup.text).toContain('PROBE-XYZ');
 
     // Repeated cursor-home escape sequence through the wasm feed()

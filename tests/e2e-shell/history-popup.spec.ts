@@ -25,8 +25,9 @@
  * helper textarea sometimes swallows ArrowUp before the container's
  * onkeydown fires). The dispatchEvent route lands directly on the
  * same listener the production code path uses, so the assertions
- * still cover the real `onContainerKeyDown` → `repositionPopup` →
- * `<TerminalHistoryPopup isVisible>` chain.
+ * still cover the real `onContainerKeyDown` → `openHistoryOverlay`
+ * → wasm-side `setHistoryOverlay` chain (§1.34, 2026-05-22 — popup
+ * migrated from Svelte DOM to wasm canvas overlay).
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
@@ -55,15 +56,16 @@ async function settle(ms = 60): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-/** True if the popup is in the DOM AND not hidden. The component
- *  toggles `.rg-hidden` rather than unmounting, so an existence check
- *  alone is not enough. */
-async function popupVisible(): Promise<boolean> {
-  return (await browser.execute(() => {
-    const el = document.querySelector('.rg-history-popup');
-    if (!el) return false;
-    return !el.classList.contains('rg-hidden');
-  })) as boolean;
+/** True iff the wasm shell-history overlay is currently being painted
+ *  for the given pane. Reads `__windE2E.historyOverlayState(paneId).open`,
+ *  which mirrors the most-recent `manager.setHistoryOverlay` call
+ *  (§1.34, 2026-05-22 — popup moved from Svelte DOM to wasm canvas
+ *  overlay; the prior `.rg-history-popup` element no longer exists). */
+async function popupVisible(paneId: string): Promise<boolean> {
+  return (await browser.execute((id: string) => {
+    const w = window as { __windE2E?: { historyOverlayState: (p: string) => { open: boolean } } };
+    return w.__windE2E?.historyOverlayState(id).open ?? false;
+  }, paneId)) as boolean;
 }
 
 describe('shell-history popup — show / hide reliability', () => {
@@ -88,14 +90,14 @@ describe('shell-history popup — show / hide reliability', () => {
   it('ArrowUp at the fresh prompt opens the popup', async () => {
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
   });
 
   it('PTY output containing newlines does NOT close the popup', async () => {
     // Open the popup first.
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
 
     // Feed PTY bytes that simulate a noisy prompt redraw / background
     // log line. `feedPty` short-circuits the Rust producer and pushes
@@ -110,23 +112,23 @@ describe('shell-history popup — show / hide reliability', () => {
     // closes inside the same microtask the feed fires on.
     await settle(150);
 
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
   });
 
   it('Escape closes the popup', async () => {
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
 
     await pressKey(paneId, 'Escape');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
   });
 
   it('Enter keystroke closes the popup (user-intent signal)', async () => {
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    expect(await popupVisible()).toBe(true);
+    expect(await popupVisible(paneId)).toBe(true);
 
     // Enter goes through the same `onContainerKeyDown` path. The popup
     // first consumes it via `historyPopupEl.handleKeyDown` (which
@@ -135,6 +137,6 @@ describe('shell-history popup — show / hide reliability', () => {
     // ends with the popup closed.
     await pressKey(paneId, 'Enter');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
   });
 });

@@ -73,3 +73,47 @@ export async function firstPaneId(): Promise<string> {
   if (!id) throw new Error('no [data-rg-pane-id] in DOM — call waitForAppReady first');
   return id;
 }
+
+/** Wipe the visible grid + home the cursor by feeding CSI 2J + CSI H
+ *  directly to the kernel. Use this BEFORE any spec that calls
+ *  `feedPty` and then asserts on `visibleText` / `setSelectionAbs`.
+ *
+ *  Why this exists: `waitForAppReady` only proves the pane mounted —
+ *  the PowerShell prompt arrives async via the real PTY a few ms
+ *  later. If your `feedPty('hello\\n')` lands BEFORE the prompt, your
+ *  content is at row 0; if AFTER, the prompt clobbered row 0 and your
+ *  content is on a different row (or partially overwritten). The race
+ *  is unpredictable across cold / warm runs. CSI 2J wipes the grid,
+ *  CSI H homes the cursor — neither scrolls anything into scrollback,
+ *  so `scrollbackLen()` stays stable and visible row 0 is guaranteed
+ *  empty for the next feedPty. Specs that previously inline-fixed
+ *  this: selection-tui-refresh, worker-path-shadow, parserBackend.rust. */
+export async function clearVisibleGrid(paneId: string): Promise<void> {
+  await browser.execute((id: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__windE2E.feedPty(id, '\x1b[2J\x1b[H');
+  }, paneId);
+}
+
+/** Poll `__windE2E.visibleText(paneId)` until any row contains
+ *  `needle`, or fail loudly. Replaces the brittle `browser.pause(N)`
+ *  pattern that races the wasm feed pipeline on cold ridge.exe
+ *  starts. 4 s is well over the worst-case observed latency on this
+ *  harness (~150 ms on a warm box, ~700 ms cold). */
+export async function waitForVisibleText(
+  paneId: string,
+  needle: string,
+  timeoutMs = 4_000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const found = (await browser.execute((id: string, n: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = (window as any).__windE2E.visibleText(id) as string[];
+      return rows.some((r) => r.includes(n));
+    }, paneId, needle)) as boolean;
+    if (found) return;
+    await browser.pause(60);
+  }
+  throw new Error(`waitForVisibleText: "${needle}" never appeared in ${timeoutMs}ms`);
+}

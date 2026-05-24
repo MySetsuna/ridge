@@ -22,6 +22,10 @@ export class RenderHandle {
      */
     applyTheme(theme_obj: any): void;
     /**
+     * §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+     */
+    clearHistoryOverlay(): void;
+    /**
      * Remove the preedit overlay (JS calls on `compositionend` after
      * shipping the committed string to the PTY).
      */
@@ -142,6 +146,17 @@ export class RenderHandle {
      * only the truly active terminal blinks. Idempotent.
      */
     setFocused(focused: boolean): void;
+    /**
+     * §1.34 (2026-05-22) — install the shell-history popup overlay.
+     * `items` is a JS array of strings (filtered, newest first).
+     * `selected_index` is `-1` for "no row picked" or
+     * `0..items.len()-1` for a selected row. `(anchor_row,
+     * anchor_col)` is the input anchor in viewport cell coords;
+     * `place_above` chooses growth direction. The 10-row visible
+     * cap is hard-coded inside the kernel so the JS caller can't
+     * request a floor-to-ceiling panel.
+     */
+    setHistoryOverlay(items: Array<any>, selected_index: number, anchor_row: number, anchor_col: number, place_above: boolean): void;
     /**
      * Install an IME preedit overlay at the given cell. The renderer
      * will paint `text` on top of the cell grid each frame until
@@ -428,6 +443,13 @@ export class TerminalKernel {
     lastAbsCsiPosition(): any;
     lastResizeDiags(): any[];
     /**
+     * §1.35 — force-leave alt screen on the kernel side when the PTY
+     * process exits while a TUI is still in alt screen mode. Without
+     * this the new shell spawned by `pane-pty-closed` would write into
+     * the alt buffer, hiding the primary screen content from the user.
+     */
+    leaveAltScreen(): void;
+    /**
      * Single-call bitmask of every DEC mouse mode the caller cares
      * about. Eliminates the 3-4 separate wasm boundary crossings the
      * JS pointer handlers used to make per pointermove event:
@@ -597,6 +619,7 @@ export interface InitOutput {
     readonly _init: () => void;
     readonly renderhandle_applyDefaultTheme: (a: number) => void;
     readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
+    readonly renderhandle_clearHistoryOverlay: (a: number) => void;
     readonly renderhandle_clearPreedit: (a: number) => void;
     readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly renderhandle_currentThemeProbe: (a: number) => [number, number];
@@ -610,6 +633,7 @@ export interface InitOutput {
     readonly renderhandle_render: (a: number, b: number) => number;
     readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
     readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly renderhandle_setHistoryOverlay: (a: number, b: any, c: number, d: number, e: number, f: number) => void;
     readonly renderhandle_setPreedit: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
     readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
@@ -648,6 +672,7 @@ export interface InitOutput {
     readonly terminalkernel_isUserScrollLocked: (a: number) => number;
     readonly terminalkernel_lastAbsCsiPosition: (a: number) => any;
     readonly terminalkernel_lastResizeDiags: (a: number) => [number, number];
+    readonly terminalkernel_leaveAltScreen: (a: number) => void;
     readonly terminalkernel_mouseReportingModes: (a: number) => number;
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
     readonly terminalkernel_noteCtrlCSent: (a: number) => void;

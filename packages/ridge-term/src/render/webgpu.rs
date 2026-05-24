@@ -1003,6 +1003,178 @@ impl RenderBackend for WebGpuPaneBackend {
         }
     }
 
+    fn draw_history_overlay(
+        &mut self,
+        overlay: &crate::render::renderer::HistoryOverlay,
+        theme: &crate::render::backend::Theme,
+    ) {
+        // §1.34 — wasm-side shell-history popup. Mirror of preedit:
+        // one cell row per item; panel width = widest item (capped);
+        // selected row inverts bg/fg; 1-device-px border.
+        // §1.35 — added cell padding (H_PAD_CELLS / V_PAD_CELLS) for
+        // visual breathing room around content and selection highlight.
+        let visible_count = overlay.items.len().min(overlay.max_visible_rows);
+        if visible_count == 0 {
+            return;
+        }
+        let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+
+        const H_PAD_CELLS: f32 = 0.6;
+        const V_PAD_CELLS: f32 = 0.35;
+        let pad_w = H_PAD_CELLS * cell_w;
+        let pad_h = V_PAD_CELLS * cell_h;
+
+        const COL_CAP: usize = 80;
+        let normalised: Vec<String> = overlay
+            .items
+            .iter()
+            .take(visible_count)
+            .map(|s| s.replace(['\r', '\n'], " ↵ "))
+            .collect();
+        let row_widths_cells: Vec<usize> = normalised
+            .iter()
+            .map(|s| {
+                let mut w = 0usize;
+                for c in s.chars() {
+                    w += if (c as u32) < 0x80 { 1 } else { 2 };
+                    if w >= COL_CAP {
+                        break;
+                    }
+                }
+                w.min(COL_CAP)
+            })
+            .collect();
+        let panel_cells_w = row_widths_cells.iter().copied().max().unwrap_or(0).max(8);
+        let panel_w = panel_cells_w as f32 * cell_w + 2.0 * pad_w;
+        let panel_h = visible_count as f32 * cell_h + 2.0 * pad_h;
+
+        let panel_x = (overlay.anchor_col as f32 * cell_w).max(0.0);
+        let panel_y_top = if overlay.place_above {
+            ((overlay.anchor_row as f32) * cell_h - panel_h).max(0.0)
+        } else {
+            (overlay.anchor_row as f32 + 1.0) * cell_h
+        };
+
+        let inner_x = panel_x + pad_w;
+        let inner_y = panel_y_top + pad_h;
+
+        let bg = rgba_u8_to_f32(theme.bg);
+        let fg = rgba_u8_to_f32(theme.fg);
+
+        // 1) Panel background.
+        self.pending_instances.push(CellInstance {
+            cell_xy: [panel_x, panel_y_top],
+            cell_size: [panel_w, panel_h],
+            atlas_uv: [0.0, 0.0, 0.0, 0.0],
+            atlas_layer: 0,
+            fg_rgba: bg,
+            bg_rgba: bg,
+            is_color: 0,
+        });
+
+        // 2) Selected-row highlight (inverse).
+        if overlay.selected_index >= 0 && (overlay.selected_index as usize) < visible_count {
+            let sel_y = inner_y + (overlay.selected_index as f32) * cell_h;
+            self.pending_instances.push(CellInstance {
+                cell_xy: [inner_x, sel_y],
+                cell_size: [panel_w - 2.0 * pad_w, cell_h],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: fg,
+                bg_rgba: fg,
+                is_color: 0,
+            });
+        }
+
+        // 3) Glyphs.
+        let (font_family_hash, font_size_q) = {
+            let ctx = self.ctx.borrow();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&ctx.font_family, &mut h);
+            (
+                std::hash::Hasher::finish(&h),
+                (ctx.font_size_px * 100.0).round() as u16,
+            )
+        };
+        for (row_i, text) in normalised.iter().enumerate() {
+            let row_y = inner_y + row_i as f32 * cell_h;
+            let selected =
+                overlay.selected_index >= 0 && row_i == overlay.selected_index as usize;
+            let glyph_color = if selected { bg } else { fg };
+            let mut cell_offset = 0usize;
+            for ch in text.chars() {
+                let ch_w_cells = if (ch as u32) < 0x80 { 1usize } else { 2usize };
+                if cell_offset + ch_w_cells > panel_cells_w {
+                    break;
+                }
+                let key = GlyphKey {
+                    font_family_hash,
+                    font_size_q,
+                    glyph_id: ch as u32,
+                    style_flags: 0,
+                };
+                let entry: Option<GlyphEntry> = {
+                    let mut ctx = self.ctx.borrow_mut();
+                    let glyph_str = ch.to_string();
+                    match ctx.atlas.lookup(&key) {
+                        Some(e) => {
+                            if (e.layer as usize) < ctx.frame_written.len() {
+                                ctx.frame_written[e.layer as usize] = true;
+                            }
+                            Some(e)
+                        }
+                        None => ctx
+                            .rasterize_and_admit(
+                                key,
+                                &glyph_str,
+                                self.metrics.dpr,
+                                0,
+                                &self.frame_pinned,
+                            )
+                            .ok(),
+                    }
+                };
+                if let Some(e) = entry {
+                    if (e.layer as usize) < self.frame_pinned.len() {
+                        self.frame_pinned[e.layer as usize] = true;
+                    }
+                    let pixel_x = inner_x + (cell_offset as f32) * cell_w;
+                    let natural_w = (e.px_w as f32).max(1.0);
+                    self.pending_instances.push(CellInstance {
+                        cell_xy: [pixel_x, row_y],
+                        cell_size: [natural_w, cell_h],
+                        atlas_uv: e.uv,
+                        atlas_layer: e.layer as u32,
+                        fg_rgba: glyph_color,
+                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                        is_color: if e.is_color { 1 } else { 0 },
+                    });
+                }
+                cell_offset += ch_w_cells;
+            }
+        }
+
+        // 4) 1-device-px border.
+        let bw = 1.0_f32.max(self.metrics.dpr.round());
+        for (x, y, w, h) in [
+            (panel_x, panel_y_top, panel_w, bw),
+            (panel_x, panel_y_top + panel_h - bw, panel_w, bw),
+            (panel_x, panel_y_top, bw, panel_h),
+            (panel_x + panel_w - bw, panel_y_top, bw, panel_h),
+        ] {
+            self.pending_instances.push(CellInstance {
+                cell_xy: [x, y],
+                cell_size: [w, h],
+                atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                atlas_layer: 0,
+                fg_rgba: fg,
+                bg_rgba: fg,
+                is_color: 0,
+            });
+        }
+    }
+
     fn end_frame(&mut self) {
         // Phase B per-frame protocol. Steps:
         //   1. Upload frame uniform (pane-local viewport size in pixels).
