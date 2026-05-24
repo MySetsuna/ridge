@@ -31,6 +31,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
 import { TerminalManager } from './manager';
 import { settingsStore } from '$lib/stores/settings';
+import { perfMark } from './perfTrace';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
@@ -103,7 +104,11 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 					/* localStorage denied / SSR — silently skip */
 				}
 			}
-			manager.feed(paneId, e.payload.data);
+			// §P4 attribution — wrap the JSON-event-path feed so the
+			// `frame-time-attribution` spec can measure how much of a
+			// stressed frame the base64 + JSON-wrap path costs vs the
+			// binary Channel path below.
+			perfMark('rg.ptyText.feed', () => manager.feed(paneId, e.payload.data));
 			// History popup close is driven by the user's Enter keystroke
 			// inside the active pane (RidgePane.dispatchBufferEvent 'clear'
 			// case) — NOT by `\n`/`\r` in PTY output. Per-byte detection
@@ -121,6 +126,13 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 			// our handler running, bail out — the pane is being closed
 			// for real and we shouldn't resurrect the PTY.
 			if (!bridges.has(paneId)) return;
+
+			// §1.35 — force-leave alt screen before spawning a new shell.
+			// If the previous process was in alt screen mode (TUI crashed
+			// or exited without sending ?1049l), the new shell's output
+			// would go into the alt buffer, hiding primary screen content
+			// and giving the user the impression the screen was cleared.
+			manager.leaveAltScreen(paneId);
 
 			try {
 				await invoke('create_pane', {
@@ -171,7 +183,10 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 				? new Uint8Array(payload)
 				: new Uint8Array(payload);
 		try {
-			manager.applyDeltaFrame(paneId, bytes);
+			// §P4 attribution — the binary Channel path is the optimized
+			// path; this measure proves how much cheaper it is per frame
+			// vs `rg.ptyText.feed` (above).
+			perfMark('rg.ptyDelta.apply', () => manager.applyDeltaFrame(paneId, bytes));
 		} catch (err) {
 			// R5 self-heal: protocol / decode error → fall back to
 			// the text path so the pane stays usable. Best-effort;

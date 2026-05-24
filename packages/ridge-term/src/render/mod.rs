@@ -495,6 +495,18 @@ impl RenderBackend for AnyBackend {
         }
     }
 
+    fn draw_history_overlay(
+        &mut self,
+        overlay: &crate::render::renderer::HistoryOverlay,
+        theme: &Theme,
+    ) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.draw_history_overlay(overlay, theme),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.draw_history_overlay(overlay, theme),
+        }
+    }
+
     fn end_frame(&mut self) {
         match self {
             AnyBackend::Canvas2d(b) => b.end_frame(),

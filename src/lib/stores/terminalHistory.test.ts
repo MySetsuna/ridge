@@ -2,16 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
 /**
- * Lock the contract for the shell-history popup's filter / dedup logic
- * and the underlying store invariants. Extracted from the inline IIFE
- * that used to live in `TerminalHistoryPopup.svelte` so the rules can
- * be unit-tested independently of Svelte / DOM.
- *
- * The popup itself has additional rendering / lifecycle bugs not fixed
- * in this round (multi-line layout is partially addressed; cursor-pos
- * tracking, paste sync, Ctrl+U handling all deferred). Those are
- * captured as `it.todo` markers at the bottom so they remain tracked
- * in `pnpm test` output without blocking the build.
+ * Lock the contract for the shell-history overlay's filter / dedup
+ * logic and the underlying store invariants. The popup itself moved
+ * from a Svelte DOM component to a wasm canvas overlay (§1.34,
+ * 2026-05-22 — see `RidgePane.svelte::openHistoryOverlay` and
+ * `packages/ridge-term/src/render/renderer.rs::HistoryOverlay`), but
+ * the filter / dedup helpers stayed in JS because they consume the
+ * `terminalHistoryStore` and produce the `string[]` the overlay
+ * paints. Unit-tested here independently of Svelte / wasm.
  */
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -142,7 +140,8 @@ describe('filterByPrefix', () => {
 
 describe('dedupKeepFirst ∘ filterByPrefix composition', () => {
 	it("matches the popup's actual usage: dedup first, then filter", () => {
-		// Mirrors the `$derived` expression in TerminalHistoryPopup.svelte.
+		// Mirrors RidgePane.svelte's `snapshotHistoryItems` derivation that
+		// feeds `manager.setHistoryOverlay` (§1.34 wasm overlay).
 		const store = ['ls', 'ls -la', 'ls', 'echo foo', 'echo foo', 'pwd'];
 		const out = filterByPrefix(dedupKeepFirst(store), 'ls');
 		expect(out).toEqual(['ls', 'ls -la']);
@@ -214,17 +213,19 @@ describe('terminalHistoryStore', () => {
 });
 
 // §1.32 (2026-05-20): the 4 popup-lifecycle todos that used to live
-// here have been promoted to real tests in `historyPopupPosition.test.ts`
-// (Bugs #1 / #2 / #13) or locked at the source level via
-// `<button title={command}>` + CSS `text-overflow: ellipsis`
-// (Bug #10 — visual-only, no logic to unit-test).
+// here were promoted to real tests in the old `historyPopupPosition`
+// helper. §1.34 (2026-05-22) then moved the popup to a wasm canvas
+// overlay, retiring the JS-side positioning helper entirely — its
+// invariants are now enforced inside `HistoryOverlay::layout` in
+// `packages/ridge-term/src/render/renderer.rs`. The dedup / filter
+// rules above still apply unchanged.
 
 describe('terminalHistoryLoadedStore', () => {
-	// The `loaded` flag is consumed by `TerminalHistoryPopup`'s
-	// "no matches → auto-close" effect: that effect must NOT fire
-	// while the popup is mounted and `fetch()` is still in flight,
-	// or the initial empty store will dismiss the popup before its
-	// real contents arrive a few ms later.
+	// The `loaded` flag is consumed by RidgePane's overlay open path's
+	// "no matches" early-return: openHistoryOverlay() must not open
+	// the overlay while `fetch()` is still in flight, or the initial
+	// empty store will collapse the open intent before its real
+	// contents arrive a few ms later.
 	it('flips to true after a successful fetch (beforeEach exercises this path)', () => {
 		// The shared `beforeEach` calls fetch with a mocked [] response,
 		// so by the time any test body runs, loaded should already be true.

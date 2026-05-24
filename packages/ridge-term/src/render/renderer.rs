@@ -76,6 +76,19 @@ pub struct Renderer<B: RenderBackend> {
     /// rendered cells. Cleared via `clear_preedit` from JS on
     /// `compositionend`.
     preedit: Option<Preedit>,
+    /// §1.34 (2026-05-22) — shell-history popup overlay. When `Some`,
+    /// the renderer paints a panel of history rows on top of the cell
+    /// grid as the final pass each frame, anchored at
+    /// `(anchor_row, anchor_col)` and growing either upward
+    /// (`place_above=true`) or downward (`place_above=false`).
+    /// The Svelte/DOM `<TerminalHistoryPopup>` component was replaced
+    /// by this overlay so the popup lives on the SAME canvas as the
+    /// terminal cells — no separate DOM element, no z-index battles
+    /// with split-container CSS, no font-metric drift between DOM
+    /// renderer and wasm renderer. Mirror of `preedit` in lifecycle:
+    /// JS installs via `setHistoryOverlay`, every frame paints, JS
+    /// clears via `clearHistoryOverlay`.
+    history_overlay: Option<HistoryOverlay>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +96,39 @@ pub struct Preedit {
     pub text: String,
     pub row: usize,
     pub col: usize,
+}
+
+/// §1.34 (2026-05-22) — descriptor for the shell-history popup overlay
+/// rendered directly on the wasm canvas (replacing the prior Svelte
+/// `<TerminalHistoryPopup>` DOM element). The JS layer owns the
+/// filter / dedup logic and pushes a snapshot every time the user
+/// changes selection or the filter narrows; the renderer just paints.
+#[derive(Debug, Clone)]
+pub struct HistoryOverlay {
+    /// Filtered history entries, newest first. The renderer paints
+    /// items[0..min(items.len(), max_visible_rows)] in order.
+    /// Empty `items` is allowed (renderer no-ops) but the caller
+    /// should prefer `clear_history_overlay` in that case.
+    pub items: Vec<String>,
+    /// Currently selected row index, or `-1` for "no selection".
+    /// `-1` is rendered without the inverse-color highlight so the
+    /// popup-open state is visually distinct from a row-picked state.
+    pub selected_index: i32,
+    /// Cell row of the input anchor on the active screen (viewport
+    /// coords). The overlay is positioned to abut this row — above
+    /// when `place_above=true`, below otherwise.
+    pub anchor_row: usize,
+    /// Cell column of the input anchor.
+    pub anchor_col: usize,
+    /// Place the popup ABOVE the anchor (overflowing upward) when
+    /// `true`. Used when the prompt sits in the bottom half of the
+    /// viewport so the popup doesn't get clipped by the bottom edge.
+    pub place_above: bool,
+    /// Maximum number of history rows to paint. Items beyond this
+    /// cap are dropped at render time (the JS caller is expected to
+    /// pre-cap to a sensible value like 10). Acts as a hard floor on
+    /// popup height regardless of how much history the shell has.
+    pub max_visible_rows: usize,
 }
 
 impl<B: RenderBackend> Renderer<B> {
@@ -101,6 +147,29 @@ impl<B: RenderBackend> Renderer<B> {
             full_redraw_pending: true,
             last_is_alt: false,
             preedit: None,
+            history_overlay: None,
+        }
+    }
+
+    /// §1.34 (2026-05-22) — install the shell-history popup overlay.
+    /// Replaces any prior overlay state in place; the next frame
+    /// repaints with the new items / selected_index / anchor.
+    /// `full_redraw_pending = true` so the overlay (and any cells it
+    /// just covered) are painted on the very next tick instead of
+    /// waiting for an unrelated dirty signal.
+    pub fn set_history_overlay(&mut self, overlay: HistoryOverlay) {
+        self.history_overlay = Some(overlay);
+        self.full_redraw_pending = true;
+    }
+
+    /// §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+    /// No-op when no overlay is installed. Forces a full redraw so
+    /// the cells underneath the prior overlay region repaint from
+    /// kernel state.
+    pub fn clear_history_overlay(&mut self) {
+        if self.history_overlay.is_some() {
+            self.history_overlay = None;
+            self.full_redraw_pending = true;
         }
     }
 
@@ -489,6 +558,7 @@ impl<B: RenderBackend> Renderer<B> {
             &sel_rects,
             &hl_rects,
             self.preedit.as_ref(),
+            self.history_overlay.as_ref(),
         );
         self.first_frame = false;
         self.full_redraw_pending = false;

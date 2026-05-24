@@ -42,47 +42,65 @@ async function settle(ms = 60): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function popupVisible(): Promise<boolean> {
-  return (await browser.execute(() => {
-    const el = document.querySelector('.rg-history-popup');
-    if (!el) return false;
-    return !el.classList.contains('rg-hidden');
-  })) as boolean;
+/** Strip focus-event housekeeping bytes (`\x1b[I` / `\x1b[O`) from the
+ *  spy log. RidgePane's `commitHistorySelection` ends with
+ *  `imeHelper?.focus()`, which triggers `manager.setFocused(true)` and
+ *  writes `\x1b[I` (CSI I, focus-in per `?1004h`) to the PTY. That byte
+ *  always lands AFTER the cmd write, so a naive `log[log.length-1]`
+ *  catches the focus event instead of the command. These bytes are
+ *  protocol housekeeping, not the popup-commit emission the spec is
+ *  asserting on, so they must be filtered out before "last write"
+ *  checks. */
+function nonFocusEntries(log: Array<{ data: string }>): Array<{ data: string }> {
+  return log.filter((e) => e.data !== '\x1b[I' && e.data !== '\x1b[O');
 }
 
-/** Read which row index (if any) currently carries the `.selected`
- *  class. Returns -1 when only the dismiss row is selected, the row's
- *  zero-based index (matching the popup's `selectedIndex`) when a
- *  history row is selected, or null when no row carries `.selected`
- *  at all. Skips the dismiss row when counting. */
-async function selectedRowIndex(): Promise<number | null> {
-  return (await browser.execute(() => {
-    const popup = document.querySelector('.rg-history-popup');
-    if (!popup) return null;
-    const items = Array.from(popup.querySelectorAll('.rg-history-item'));
-    // First item is `.rg-history-dismiss`; the history rows follow.
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].classList.contains('selected')) {
-        return i === 0 ? -1 : i - 1; // -1 = dismiss, otherwise row idx
-      }
-    }
-    return null;
-  })) as number | null;
+/** All three helpers read the wasm-side overlay state mirror exposed
+ *  via `__windE2E.historyOverlayState(paneId)` (§1.34, 2026-05-22 —
+ *  popup migrated from Svelte DOM to wasm canvas overlay, so DOM
+ *  selectors like `.rg-history-popup` no longer exist). The mirror
+ *  reflects the most-recent `setHistoryOverlay` call: `open`, `items`,
+ *  `selectedIndex`. The dismiss row is represented as
+ *  `selectedIndex === -1` — same convention the popup logic uses. */
+async function popupVisible(paneId: string): Promise<boolean> {
+  return (await browser.execute((id: string) => {
+    const w = window as { __windE2E?: { historyOverlayState: (p: string) => { open: boolean } } };
+    return w.__windE2E?.historyOverlayState(id).open ?? false;
+  }, paneId)) as boolean;
 }
 
-/** Read the text content of the currently-selected history row (the
- *  command the popup would emit on Enter / ArrowRight). Returns null
- *  when no history row is selected. Matches the popup's `title=`
- *  attribute because the visible text collapses newlines to `↵`. */
-async function selectedRowText(): Promise<string | null> {
-  return (await browser.execute(() => {
-    const popup = document.querySelector('.rg-history-popup');
-    if (!popup) return null;
-    const sel = popup.querySelector(
-      '.rg-history-item.selected:not(.rg-history-dismiss)',
-    ) as HTMLElement | null;
-    return sel ? (sel.getAttribute('title') ?? sel.textContent ?? '').trim() : null;
-  })) as string | null;
+/** Selected row index. Returns `-1` for the dismiss row, the row's
+ *  zero-based index when a real history row is selected, or `null`
+ *  when the overlay is closed. */
+async function selectedRowIndex(paneId: string): Promise<number | null> {
+  return (await browser.execute((id: string) => {
+    const w = window as {
+      __windE2E?: {
+        historyOverlayState: (p: string) => { open: boolean; selectedIndex: number };
+      };
+    };
+    const s = w.__windE2E?.historyOverlayState(id);
+    if (!s || !s.open) return null;
+    return s.selectedIndex;
+  }, paneId)) as number | null;
+}
+
+/** Selected row's command text (what `commitHistorySelection` would
+ *  emit). Returns null when the overlay is closed OR only the dismiss
+ *  row is selected. */
+async function selectedRowText(paneId: string): Promise<string | null> {
+  return (await browser.execute((id: string) => {
+    const w = window as {
+      __windE2E?: {
+        historyOverlayState: (
+          p: string,
+        ) => { open: boolean; items: string[]; selectedIndex: number };
+      };
+    };
+    const s = w.__windE2E?.historyOverlayState(id);
+    if (!s || !s.open || s.selectedIndex < 0) return null;
+    return s.items[s.selectedIndex] ?? null;
+  }, paneId)) as string | null;
 }
 
 describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §1.33)', () => {
@@ -115,7 +133,7 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
     //    popup's bash-like wraparound and is enough for the test.
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    if (!(await popupVisible())) {
+    if (!(await popupVisible(paneId))) {
       // Some CI shells launch without any history; the popup's auto-
       // close-when-filtered-empty effect closes it instantly. Skip
       // the spec instead of asserting on environment we don't own.
@@ -127,8 +145,8 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
     await settle();
 
     // Sanity: a real history row is selected.
-    const idx = await selectedRowIndex();
-    const cmd = await selectedRowText();
+    const idx = await selectedRowIndex(paneId);
+    const cmd = await selectedRowText(paneId);
     if (idx === null || idx < 0 || !cmd) {
       // Same env-empty escape hatch as above — there were no rows
       // to select after all.
@@ -143,7 +161,7 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
     await settle();
 
     // Popup closed.
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
 
     // 3. Byte-level proof: the spy recorded the command WITHOUT a
     //    trailing '\r'. There may be a preceding replay sequence
@@ -154,8 +172,9 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
       return w.__windE2E!.ptyWriteLog(id);
     }, paneId)) as Array<{ data: string }>;
 
-    expect(log.length).toBeGreaterThan(0);
-    const last = log[log.length - 1].data;
+    const userWrites = nonFocusEntries(log);
+    expect(userWrites.length).toBeGreaterThan(0);
+    const last = userWrites[userWrites.length - 1].data;
     expect(last).toBe(cmd);
     expect(last.endsWith('\r')).toBe(false);
     expect(last.endsWith('\n')).toBe(false);
@@ -164,7 +183,7 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
   it('Enter on a selected row writes the command WITH trailing \\r (execute)', async () => {
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    if (!(await popupVisible())) {
+    if (!(await popupVisible(paneId))) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (this as any).skip?.();
       return;
@@ -172,8 +191,8 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
     await pressKey(paneId, 'ArrowUp');
     await settle();
 
-    const idx = await selectedRowIndex();
-    const cmd = await selectedRowText();
+    const idx = await selectedRowIndex(paneId);
+    const cmd = await selectedRowText(paneId);
     if (idx === null || idx < 0 || !cmd) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (this as any).skip?.();
@@ -182,14 +201,15 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
 
     await pressKey(paneId, 'Enter');
     await settle();
-    expect(await popupVisible()).toBe(false);
+    expect(await popupVisible(paneId)).toBe(false);
 
     const log = (await browser.execute((id: string) => {
       const w = window as { __windE2E?: { ptyWriteLog: (p: string) => Array<{ data: string }> } };
       return w.__windE2E!.ptyWriteLog(id);
     }, paneId)) as Array<{ data: string }>;
-    expect(log.length).toBeGreaterThan(0);
-    const last = log[log.length - 1].data;
+    const userWrites = nonFocusEntries(log);
+    expect(userWrites.length).toBeGreaterThan(0);
+    const last = userWrites[userWrites.length - 1].data;
     expect(last).toBe(cmd + '\r');
   });
 
@@ -202,14 +222,14 @@ describe('shell-history popup — ArrowRight = insert-no-execute (Warp-style, §
     // encoder.
     await pressKey(paneId, 'ArrowUp');
     await settle();
-    if (!(await popupVisible())) {
+    if (!(await popupVisible(paneId))) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (this as any).skip?.();
       return;
     }
     // selectedIndex is -1 (dismiss row) right after the first
     // ArrowUp open — perfect for this case.
-    expect(await selectedRowIndex()).toBe(-1);
+    expect(await selectedRowIndex(paneId)).toBe(-1);
 
     await pressKey(paneId, 'ArrowRight');
     await settle();

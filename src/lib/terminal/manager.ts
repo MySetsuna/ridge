@@ -36,6 +36,8 @@ import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsStore } from '../stores/settings';
 import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
+import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
+import { perfMark } from './perfTrace';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -133,7 +135,11 @@ interface PaneEntry {
 	container: HTMLElement;
 	canvas: HTMLCanvasElement;
 	kernel: TerminalKernel;
-	handle: RenderHandle;
+	/** §p4 ITER 1c (2026-05-22) — null when the worker-renderer path
+	 *  owns the canvas (worker has its own RenderHandle inside the
+	 *  DedicatedWorker after `transferControlToOffscreen`). Read sites
+	 *  must use optional chaining or an explicit null guard. */
+	handle: RenderHandle | null;
 	cellW: number;
 	cellH: number;
 	/** dpr that was passed into the most recent `handle.configure()` call.
@@ -462,6 +468,18 @@ export class TerminalManager {
 	 *  cell matches the textarea cell + the kernel cursor. Cleared by
 	 *  `clearPreedit`. */
 	private _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
+	/** §1.34 — JS-side mirror of the last `setHistoryOverlay` call per pane.
+	 *  The wasm overlay state lives in `HistoryOverlay` (renderer.rs) and is
+	 *  not exposed back to JS, so we keep this mirror purely for E2E specs
+	 *  that previously inspected the (now-removed) DOM popup. Cleared by
+	 *  `clearHistoryOverlay`. */
+	private _lastHistoryOverlayCall: Map<string, {
+		items: string[];
+		selectedIndex: number;
+		anchorRow: number;
+		anchorCol: number;
+		placeAbove: boolean;
+	}> = new Map();
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
 	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
@@ -1013,7 +1031,7 @@ export class TerminalManager {
 		if (typeof handle.setViewportOffset === 'function') {
 			handle.setViewportOffset(xDev, yDev);
 		}
-		entry.handle.resize(Math.round(cssW), Math.round(cssH), dpr);
+		entry.handle?.resize(Math.round(cssW), Math.round(cssH), dpr);
 	}
 
 	/**
@@ -1070,13 +1088,39 @@ export class TerminalManager {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
 
-		const handle = await this._makeHandle(canvas, hostHandle);
+		// §p4 ITER 1c-2 (2026-05-22) — when the worker-renderer path
+		// owns the canvas, the main-thread `_makeHandle` is a no-op:
+		// the worker has its own `RenderHandle::newFromOffscreen`
+		// after the `transferControlToOffscreen` step below, and the
+		// main thread never needs to call `render(...)` for this pane
+		// again. Setting `handle = null` here makes the per-frame rAF
+		// loop's `entry.handle?.render(...)` no-op and frees the main
+		// thread from per-frame draw work entirely (the actual win of
+		// the P4 ladder).
+		//
+		// Cell metrics fallback: without a main-thread handle we
+		// cannot run `configure(...)` here, so we seed `entry.cellW /
+		// cellH` from the wasm kernel's default 8 / 16 (matching the
+		// `TerminalKernel::new(24, 80, ...)` seed below). The first
+		// `fitPane` driven by the rAF after this attach will compute
+		// real grid dimensions based on the container — slightly
+		// wrong for one frame, then correct. Mouse-cell lookups
+		// before that first fit briefly resolve to row 0 / col 0,
+		// which is acceptable for an opt-in flag-gated path.
+		const usingWorker = this.usingWorkerRenderer();
+		const handle: RenderHandle | null = usingWorker
+			? null
+			: await this._makeHandle(canvas, hostHandle);
 		const dpr = window.devicePixelRatio || 1;
 
 		// configure() returns [cellW, cellH] in CSS pixels at the supplied DPR.
-		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
-			| [number, number]
-			| Float32Array;
+		// In worker-path mode `handle` is null — fall back to the kernel
+		// seed dims (8 × 16); the first fitPane re-resolves real metrics.
+		const [cellW, cellH] = handle
+			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
+					| [number, number]
+					| Float32Array)
+			: ([8, 16] as [number, number]);
 		const cellWnum = quantizeCellSize(Number(cellW), dpr);
 		const cellHnum = quantizeCellSize(Number(cellH), dpr);
 
@@ -1109,7 +1153,7 @@ export class TerminalManager {
 		// brand-new `Renderer::theme` ended up with, which has bitten us
 		// when the wasm-side default doesn't match the bundled
 		// `endless-dark` defaults (e.g. cursor color).
-		if (this.opts.theme) {
+		if (this.opts.theme && handle) {
 			handle.applyDefaultTheme();
 			handle.applyTheme(this.opts.theme);
 			if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
@@ -1119,7 +1163,7 @@ export class TerminalManager {
 			}
 		} else if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
 			// eslint-disable-next-line no-console
-			console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} NO_THEME (opts.theme is null — bridge hasn't fired yet)`);
+			console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} ${handle ? 'NO_THEME (opts.theme is null — bridge hasn\'t fired yet)' : 'WORKER_PATH (theme applied by render worker)'}`);
 		}
 
 		// Focus reporting (`?1004`) — emit `\x1b[I` / `\x1b[O` to PTY when
@@ -1575,6 +1619,72 @@ export class TerminalManager {
 		entry.resizeObserver.observe(container);
 
 		this.panes.set(paneId, entry);
+
+		// §p4 ITER 1b/1d (2026-05-22) — worker-renderer hand-off.
+		// When the worker-renderer flag is on AND the worker singleton
+		// is alive, transfer the canvas to the worker via
+		// `transferControlToOffscreen()` and post `bindCanvas` so the
+		// worker's per-pane `RenderHandle` (newFromOffscreen) can paint
+		// it directly. After ITER 1c-2 the main-thread `_makeHandle`
+		// is skipped (entry.handle === null) when this branch fires,
+		// so there's no detached-canvas render attempt. Fire-and-forget
+		// bindCanvas — a worker hiccup must not block pane attach.
+		//
+		// ITER 1d: also set `pointerEvents: 'none'` on the (now
+		// transferred) canvas so the pane container's existing
+		// pointer/keyboard handlers continue to receive events even
+		// after the canvas detaches. Without this, browsers can
+		// route pointer events to the canvas element first; once
+		// detached its event behavior is undefined and we'd lose
+		// pointer capture during mouse-mode TUI rendering.
+		if (usingWorker && typeof canvas.transferControlToOffscreen === 'function') {
+			try {
+				canvas.style.pointerEvents = 'none';
+				const offscreen = canvas.transferControlToOffscreen();
+				const wr = getWorkerRenderer();
+				if (wr) {
+					// §p4 ITER 5 (2026-05-22) — pass measure args so the
+					// worker can `configure()` the new RenderHandle and
+					// return real cell metrics in the `ready` response.
+					// On success we update `entry.cellW / cellH` (still
+					// quantized to dev-pixel grid) and trigger a fit so
+					// the first visible frame sees the right rows/cols.
+					wr.bindCanvas(paneId, offscreen, {
+						font: this.opts.fontFamily,
+						fontSizePx: this.opts.fontSizePx,
+						dpr,
+					})
+						.then((response) => {
+							if (
+								response.type === 'ready' &&
+								typeof response.cellW === 'number' &&
+								typeof response.cellH === 'number' &&
+								response.cellW > 0 &&
+								response.cellH > 0
+							) {
+								const ent = this.panes.get(paneId);
+								if (!ent) return;
+								ent.cellW = quantizeCellSize(response.cellW, dpr);
+								ent.cellH = quantizeCellSize(response.cellH, dpr);
+								ent.lastConfiguredDpr = dpr;
+								this.fitPaneNow(paneId);
+							}
+						})
+						.catch((err) => {
+							if (import.meta.env?.DEV) {
+								// eslint-disable-next-line no-console
+								console.warn('[ridge-term] worker bindCanvas rejected', err);
+							}
+						});
+				}
+			} catch (err) {
+				if (import.meta.env?.DEV) {
+					// eslint-disable-next-line no-console
+					console.warn('[ridge-term] transferControlToOffscreen failed', err);
+				}
+			}
+		}
+
 		// Initial fit: do it once synchronously after layout settles. We
 		// wait one rAF (so SvelteKit hydration finishes), then fit
 		// directly without debounce so the PTY gets sized before any
@@ -1628,6 +1738,43 @@ export class TerminalManager {
 					lastPreeditCall: (paneId: string) =>
 						| { row: number; col: number; text: string }
 						| null;
+					/** §1.33 / §P5.IME — snapshot the kernel's live DEC-private
+					 *  mode bits so e2e specs can prove they landed where
+					 *  intended (`?1049h`/`?1h`/`?1000h`/`?25l` etc.) before
+					 *  asserting on the popup gate or the IME-anchor follow.
+					 *  Pure read of wasm-side getters; never touches state. */
+					kernelDecState: (paneId: string) =>
+						| {
+								isAltScreen: boolean;
+								isAppCursorKeys: boolean;
+								isCursorVisible: boolean;
+								isInlineTuiMode: boolean;
+								mouseReportingModes: number;
+						  }
+						| null;
+					/** §1.34 — wasm shell-history overlay state. Mirror of the
+					 *  most-recent `setHistoryOverlay` call. Replaces DOM
+					 *  `.rg-history-popup` querying after the wasm migration. */
+					historyOverlayState: (paneId: string) => {
+						open: boolean;
+						items: string[];
+						selectedIndex: number;
+						anchorRow: number;
+						anchorCol: number;
+						placeAbove: boolean;
+					};
+					/** §1.34 perf harness — drive the overlay directly from a
+					 *  spec without going through Svelte's onkeydown chain, so
+					 *  the timing reflects ONLY the wasm + JS-mirror cost. */
+					setHistoryOverlay: (
+						paneId: string,
+						items: string[],
+						selectedIndex: number,
+						anchorRow: number,
+						anchorCol: number,
+						placeAbove: boolean,
+					) => void;
+					clearHistoryOverlay: (paneId: string) => void;
 					setSelectionAbs: (
 						paneId: string,
 						startAbsRow: number,
@@ -1742,6 +1889,28 @@ export class TerminalManager {
 				// kernel cursor for shell/TUI/wrap scenarios.
 				inputAnchorResolved: (paneId) => this.inputAnchorResolved(paneId),
 				lastPreeditCall: (paneId) => this.lastPreeditCall(paneId),
+				kernelDecState: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const k = e.kernel as unknown as {
+						isAltScreen: () => boolean;
+						isAppCursorKeys: () => boolean;
+						isCursorVisible: () => boolean;
+						isInlineTuiMode: () => boolean;
+						mouseReportingModes: () => number;
+					};
+					return {
+						isAltScreen: k.isAltScreen(),
+						isAppCursorKeys: k.isAppCursorKeys(),
+						isCursorVisible: k.isCursorVisible(),
+						isInlineTuiMode: k.isInlineTuiMode(),
+						mouseReportingModes: k.mouseReportingModes(),
+					};
+				},
+				historyOverlayState: (paneId) => this.historyOverlayState(paneId),
+				setHistoryOverlay: (paneId, items, selectedIndex, anchorRow, anchorCol, placeAbove) =>
+					this.setHistoryOverlay(paneId, items, selectedIndex, anchorRow, anchorCol, placeAbove),
+				clearHistoryOverlay: (paneId) => this.clearHistoryOverlay(paneId),
 				sampleHostPixel: (relX = 0.5, relY = 0.85) => {
 					const host = this.globalHost?.canvas ?? null;
 					if (!host) return null;
@@ -1895,7 +2064,7 @@ export class TerminalManager {
 					/* canvas already detached */
 				}
 			}
-			try { entry.handle.free(); } catch { /* ignore */ }
+			try { entry.handle?.free(); } catch { /* ignore */ }
 		}
 		// §1.27: cancel any pending IME-anchor rAF before freeing the
 		// kernel — the rAF body would otherwise call cursorRow() on a
@@ -1995,7 +2164,7 @@ export class TerminalManager {
 		} else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
-		try { entry.handle.free(); } catch { /* ignore */ }
+		try { entry.handle?.free(); } catch { /* ignore */ }
 
 		// §A.4: kernel stays alive while parked, but the flush timer is
 		// tied to setTimeout — cancel it and replay any buffered bytes
@@ -2756,7 +2925,7 @@ export class TerminalManager {
 	 *  entirely. RidgePane wires this to the global `activePaneId` store so
 	 *  switching panes flips the cursor visibility on both sides instantly. */
 	setFocused(paneId: string, focused: boolean): void {
-		this.panes.get(paneId)?.handle.setFocused(focused);
+		this.panes.get(paneId)?.handle?.setFocused(focused);
 		// P2.2 (2026-05-20): also mirror the focus bit at the manager
 		// level so the RAF tick can order the focused pane FIRST each
 		// frame. Without this the renderer-side `set_focused` is the
@@ -2996,6 +3165,89 @@ export class TerminalManager {
 		this.wake();
 	}
 
+	/** §1.34 (2026-05-22): install the shell-history popup overlay on
+	 *  this pane's canvas. Replaces any prior overlay state. JS owns
+	 *  the filter / dedup logic; this just ships the snapshot to the
+	 *  wasm renderer which paints it on top of the cell grid every
+	 *  frame. `items` is shipped as a JS array directly — the wasm
+	 *  side calls `js_sys::Array::iter().filter_map(as_string)` so
+	 *  non-string entries are silently dropped (a defence in depth
+	 *  for filter/dedup bugs upstream). */
+	setHistoryOverlay(
+		paneId: string,
+		items: string[],
+		selectedIndex: number,
+		anchorRow: number,
+		anchorCol: number,
+		placeAbove: boolean,
+	): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const h = entry.handle as unknown as {
+			setHistoryOverlay?: (
+				items: string[],
+				selectedIndex: number,
+				anchorRow: number,
+				anchorCol: number,
+				placeAbove: boolean,
+			) => void;
+		};
+		h.setHistoryOverlay?.(items, selectedIndex, anchorRow, anchorCol, placeAbove);
+		this._lastHistoryOverlayCall.set(paneId, {
+			items: [...items],
+			selectedIndex,
+			anchorRow,
+			anchorCol,
+			placeAbove,
+		});
+		this.wake();
+	}
+
+	/** §1.34 — remove the shell-history overlay. Called from RidgePane
+	 *  on Enter / ArrowRight / Escape / focus loss. */
+	clearHistoryOverlay(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const h = entry.handle as unknown as { clearHistoryOverlay?: () => void };
+		h.clearHistoryOverlay?.();
+		this._lastHistoryOverlayCall.delete(paneId);
+		this.wake();
+	}
+
+	/** E2E probe — current wasm shell-history overlay state (mirror of the
+	 *  most-recent `setHistoryOverlay` call). Returns `open: false` and
+	 *  empty items when the overlay isn't visible. Replaces the prior
+	 *  DOM-querySelector approach used while the popup was a Svelte
+	 *  `<TerminalHistoryPopup>` element. */
+	historyOverlayState(paneId: string): {
+		open: boolean;
+		items: string[];
+		selectedIndex: number;
+		anchorRow: number;
+		anchorCol: number;
+		placeAbove: boolean;
+	} {
+		const last = this._lastHistoryOverlayCall.get(paneId);
+		if (!last) {
+			return {
+				open: false,
+				items: [],
+				selectedIndex: -1,
+				anchorRow: 0,
+				anchorCol: 0,
+				placeAbove: true,
+			};
+		}
+		return {
+			open: true,
+			items: [...last.items],
+			selectedIndex: last.selectedIndex,
+			anchorRow: last.anchorRow,
+			anchorCol: last.anchorCol,
+			placeAbove: last.placeAbove,
+		};
+	}
+
 	/** E2E probe — last `setPreedit` call for the given pane, or `null`
 	 *  if `clearPreedit` was the most recent call (or no preedit yet).
 	 *  Specs use this to assert overlay-cell == textarea-cell == anchor. */
@@ -3026,6 +3278,20 @@ export class TerminalManager {
 			return (e.kernel as unknown as { isInlineTuiMode?: () => boolean }).isInlineTuiMode?.() ?? false;
 		} catch {
 			return false;
+		}
+	}
+
+	/** §1.35 — force-leave alt screen on the kernel when the PTY process
+	 *  exits while a TUI is still in alt screen mode. Called from the
+	 *  `pane-pty-closed` handler before spawning a new shell so the new
+	 *  shell's output goes to the primary screen, not the alt buffer. */
+	leaveAltScreen(paneId: string): void {
+		const e = this.panes.get(paneId);
+		if (!e || e.parked) return;
+		try {
+			(e.kernel as unknown as { leaveAltScreen?: () => void }).leaveAltScreen?.();
+		} catch {
+			// kernel gone — nothing to clear
 		}
 	}
 
@@ -3061,6 +3327,19 @@ export class TerminalManager {
 		} catch {
 			return true;
 		}
+	}
+
+	/** §p4 (2026-05-22): does the worker-renderer path own panes' canvases
+	 *  on this app instance? When true, RidgePane should call
+	 *  `canvas.transferControlToOffscreen()` + `WorkerHostedRenderer.bindCanvas`
+	 *  at mount instead of letting `attach()` construct (and the rAF loop
+	 *  drive) a main-thread `RenderHandle`. The decision is process-wide
+	 *  for now — the flag and the singleton are both global — so callers
+	 *  can query without a `paneId`. Mid-session flag toggles take effect
+	 *  on the next pane attach; already-attached panes keep their initial
+	 *  decision until detach. */
+	usingWorkerRenderer(): boolean {
+		return isWorkerRenderingEnabled() && getWorkerRenderer() !== null;
 	}
 
 	/** §1.33 (2026-05-22): kernel-side gate for the shell-history popup.
@@ -3379,7 +3658,7 @@ export class TerminalManager {
 		for (const id of ids) {
 			const entry = this.panes.get(id);
 			if (!entry || entry.parked) continue;
-			entry.handle.invalidateAll();
+			entry.handle?.invalidateAll();
 		}
 		if (ids.length) this.wake();
 	}
@@ -3387,7 +3666,7 @@ export class TerminalManager {
 	forceFullRedraw(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
-		entry.handle.invalidateAll();
+		entry.handle?.invalidateAll();
 		this.wake();
 	}
 
@@ -3404,7 +3683,7 @@ export class TerminalManager {
 		for (const entry of this.panes.values()) {
 			if (entry.parked) continue;
 			if (entry.workspaceId !== workspaceId) continue;
-			entry.handle.invalidateAll();
+			entry.handle?.invalidateAll();
 		}
 		this.wake();
 	}
@@ -3412,7 +3691,7 @@ export class TerminalManager {
 	invalidateAllPanes(): void {
 		for (const entry of this.panes.values()) {
 			if (entry.parked) continue;
-			entry.handle.invalidateAll();
+			entry.handle?.invalidateAll();
 		}
 		this.wake();
 	}
@@ -3443,6 +3722,24 @@ export class TerminalManager {
 			// Skip parked entries — their handle has been freed. They'll
 			// pick up the new font on the next unpark via this.opts.
 			if (entry.parked) continue;
+			// §p4 ITER 1c / ITER 8 — when the worker-renderer owns this
+			// pane's canvas, the main-thread handle is null. Push the
+			// font into the worker so its `RenderHandle.configure`
+			// re-measures, and re-seed entry.cellW / cellH from the
+			// metrics it returns (then refit so the new column count
+			// reaches the kernel + PTY).
+			if (!entry.handle) {
+				const paneId = entry.paneId;
+				workerRendererBridge.setFont(paneId, family, sizePx, dpr, (cellW, cellH) => {
+					const ent = this.panes.get(paneId);
+					if (!ent) return;
+					ent.cellW = quantizeCellSize(cellW, dpr);
+					ent.cellH = quantizeCellSize(cellH, dpr);
+					ent.lastConfiguredDpr = dpr;
+					void this.fitPane(ent);
+				});
+				continue;
+			}
 			const [w, h] = entry.handle.configure(family, sizePx, dpr) as
 				| [number, number]
 				| Float32Array;
@@ -3463,15 +3760,15 @@ export class TerminalManager {
 		for (const entry of this.panes.values()) {
 			// Parked panes pick up the theme on the next unpark via this.opts.
 			if (entry.parked) { parked++; continue; }
-			entry.handle.applyDefaultTheme();
-			entry.handle.applyTheme(theme);
+			entry.handle?.applyDefaultTheme();
+			entry.handle?.applyTheme(theme);
 			// Theme change doesn't bump kernel dirty, so the next frame's
 			// `dirty=false` branch would call `recordCachedOnly()` which
 			// replays the previous frame's CellInstance buffer — that
 			// buffer has the OLD theme's bg/fg baked into every quad.
 			// Drop the cache so the next frame goes through full render
 			// and re-reads `theme.bg` for the clear quad and per-cell bgs.
-			entry.handle.invalidateAll();
+			entry.handle?.invalidateAll();
 			applied++;
 		}
 		// Surface-host LoadOp::Clear color is sampled from JS `themeBg`
@@ -3666,7 +3963,7 @@ export class TerminalManager {
 		// disagree — `Math.floor(x / oldCellW)` then snaps the rightmost
 		// hover column out of range. Re-configure so both sides stay in
 		// lock-step.
-		if (entry.lastConfiguredDpr !== dpr) {
+		if (entry.lastConfiguredDpr !== dpr && entry.handle) {
 			const [w, h] = entry.handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
 				| [number, number]
 				| Float32Array;
@@ -3709,7 +4006,7 @@ export class TerminalManager {
 			entry.lastFitPaddingPx = padAll;
 			this._recomputeViewport(entry);
 		} else {
-			entry.handle.resize(wCss, hCss, dpr);
+			entry.handle?.resize(wCss, hCss, dpr);
 		}
 
 		// Self-healing: also compare against the kernel's actual grid. If a
@@ -3776,11 +4073,18 @@ export class TerminalManager {
 				this.workerAttached.add(entry.paneId);
 				break;
 			case 'resize':
+				// §p4 ITER 7 (2026-05-22) — also pass CSS dims so the
+				// worker can resize its `RenderHandle` backing buffer.
+				// fitPane's local `wCss` / `hCss` (computed above from
+				// the container's bounding rect minus padding) are the
+				// right values.
 				workerRendererBridge.resize(
 					entry.paneId,
 					workerAction.rows,
 					workerAction.cols,
 					workerAction.dpr,
+					wCss,
+					hCss,
 				);
 				break;
 			case 'noop':
@@ -3878,7 +4182,7 @@ export class TerminalManager {
 		// next sync render below — and the 150ms forceFullRedraw — both
 		// start from a clean snapshot regardless of which path got us
 		// here.
-		entry.handle.invalidateAll();
+		entry.handle?.invalidateAll();
 		entry.linkSpans.markDirty();
 
 		// Synchronous first frame after resize. The next rAF tick is
@@ -3892,7 +4196,7 @@ export class TerminalManager {
 		// transient render error never blocks the resize from
 		// completing — the rAF loop will pick it up next tick.
 		try {
-			entry.handle.render(entry.kernel);
+			entry.handle?.render(entry.kernel);
 		} catch (err) {
 			console.error('[ridge-term] post-resize render error', entry.paneId, err);
 		}
@@ -3944,6 +4248,13 @@ export class TerminalManager {
 			document.addEventListener('visibilitychange', this.visibilityListener);
 		}
 		const tick = () => {
+			// §P4 attribution — wrap the per-frame render body so the
+			// `frame-time-attribution` spec can measure how much of the
+			// rAF interval is paint (this measure) vs PTY event handlers
+			// (rg.ptyText.feed / rg.ptyDelta.apply in ptyBridge.ts).
+			// `perfMark` is a no-op unless `window.__RIDGE_PERF_TRACE`
+			// is true, so production / dev pays one branch.
+			perfMark('rg.frame.tick', () => {
 			this.rafHandle = null;
 			const perfNow = performance.now();
 			// Use Date.now() for the dirty / blink queries: `RenderHandle.render`
@@ -4243,7 +4554,7 @@ export class TerminalManager {
 							}
 						}
 						if (!usedCache) {
-							entry.handle.render(entry.kernel);
+							entry.handle?.render(entry.kernel);
 						}
 						anyRendered = true;
 					} catch (err) {
@@ -4314,6 +4625,7 @@ export class TerminalManager {
 				this._hostInvalidatePending = true;
 				this.startRafLoop();
 			}, sleepMs);
+			}); // §P4 close perfMark('rg.frame.tick', ...)
 		};
 		this.rafHandle = requestAnimationFrame(tick);
 	}

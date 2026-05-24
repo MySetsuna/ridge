@@ -14,7 +14,7 @@
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
-import { waitForAppReady, firstPaneId } from './helpers';
+import { waitForAppReady, firstPaneId, clearVisibleGrid, waitForVisibleText } from './helpers';
 
 describe('parserBackend = rust (default)', () => {
   before(async () => {
@@ -24,6 +24,10 @@ describe('parserBackend = rust (default)', () => {
   it('feeds PTY bytes and the mirror reflects them', async () => {
     const paneId = await firstPaneId();
 
+    // §1.35 (2026-05-24): clear screen first so the async shell prompt
+    // doesn't clobber the feed (see clearVisibleGrid docs).
+    await clearVisibleGrid(paneId);
+
     // Feed a short ASCII string through the dev hook. No real shell
     // is invoked — the manager pushes the bytes straight to the wasm
     // kernel (or, in rust mode, to whichever path is active).
@@ -32,8 +36,9 @@ describe('parserBackend = rust (default)', () => {
       (window as any).__windE2E.feedPty(id, 'hello world\\n');
     }, paneId!);
 
-    // Give one RAF tick for the feed to reach kernel + delta path.
-    await browser.pause(50);
+    // Poll until the bytes surface — replaces the bare 50 ms pause
+    // that raced the wasm + delta-frame pipeline on cold starts.
+    await waitForVisibleText(paneId, 'hello world');
 
     const text: string[] = await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
