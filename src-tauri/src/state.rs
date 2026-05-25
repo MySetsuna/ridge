@@ -14,6 +14,7 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
+use crate::remote::auth::RemoteAuth;
 use crate::types::GlobalEvent;
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
@@ -256,13 +257,13 @@ pub struct AppState {
     /// 这是首个 pane 的 cwd 来源（cli 启动时被 startup_cli_cwd 覆盖，仍然优先）。
     pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
     /// P4.1 — per-pane delta-byte senders, keyed by `(workspace_id, pane_id)`.
-    /// Registered by the frontend (via `register_pane_delta_channel`) when the
-    /// pane's `ptyBridge` mounts; unregistered when the PTY tears down in
-    /// `kill_pty_if_present`. The streaming emit sites in `lib.rs` and
-    /// `commands/terminal.rs::set_pane_delta_mode/resize_pane` look up the
-    /// sender for the active pane and call it instead of `app.emit`, skipping
-    /// the base64 + JSON-wrap + event-name routing of Tauri events.
     pub pty_delta_channels: Arc<RwLock<HashMap<(Uuid, Uuid), PaneDeltaSender>>>,
+    /// Remote Control (主线一): the port the WebSocket server is listening on.
+    /// 0 means the server is not running (failed to bind or disabled).
+    pub remote_port: Arc<RwLock<u16>>,
+    /// Remote Control auth — shared TOTP generator. Created on app startup;
+    /// the same secret persists for the process lifetime.
+    pub remote_auth: Arc<RemoteAuth>,
 }
 
 impl AppState {
@@ -315,6 +316,8 @@ impl AppState {
             startup_cli_cwd,
             user_default_cwd: Arc::new(RwLock::new(None)),
             pty_delta_channels: Arc::new(RwLock::new(HashMap::new())),
+            remote_port: Arc::new(RwLock::new(0)),
+            remote_auth: Arc::new(RemoteAuth::new()),
         }
     }
 

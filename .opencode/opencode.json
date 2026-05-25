@@ -1,0 +1,39 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "gemma4:31b": {
+          "name": "Gemma 4 31B (local)"
+        }
+      }
+    }
+  },
+  "command": {
+    "ralph-loop": {
+      "template": "You are entering a Ralph Loop. Follow the ralph-loop skill (auto-loaded from ~/.claude/skills/ralph-loop/). Parse the user's arguments: first parts are the task description, --max-iterations N (integer), --completion-promise \"TEXT\". Initialize .opencode/ralph-loop.state.md and begin iteration 1.",
+      "description": "Start a Ralph loop: iterative self-correction loop until task completion"
+    },
+    "cancel-ralph": {
+      "template": "The user wants to cancel the active Ralph loop. Remove .opencode/ralph-loop.state.md if it exists. Report cancellation to the user.",
+      "description": "Cancel the active Ralph loop"
+    },
+    "tauri:dev": {
+      "template": "Launch Tauri dev with WebView2 CDP remote debugging. Run `pnpm tauri:dev:cdp` from the project root in a background process (Start-Process). Wait 15 seconds for the dev server to initialize, then run `pnpm cdp:smoke` to verify the CDP endpoint at http://127.0.0.1:9222 is reachable. Report the result.",
+      "description": "Launch Tauri dev with WebView2 CDP remote debugging (port 9222)"
+    },
+    "cdp:smoke": {
+      "template": "Run `pnpm cdp:smoke` from the project root to probe the WebView2 CDP endpoint at http://127.0.0.1:9222. Report the version, protocol, WebSocket endpoint, and target list. If the Ridge page target is found, highlight it.",
+      "description": "Probe WebView2 CDP endpoint and list debuggable targets"
+    },
+    "cdp:target": {
+      "template": "List the debuggable targets from the WebView2 CDP endpoint at http://127.0.0.1:9222/json/list. Report the type, title, and URL of each target. Use the chrome-devtools MCP server tools to interact with the Ridge webview if it's running.",
+      "description": "List debuggable targets from WebView2 CDP endpoint"
+    }
+  }
+}

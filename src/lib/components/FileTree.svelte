@@ -81,6 +81,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	let childrenHasMore = $state(false);
 	let childrenLoading = $state(false);
 	let hasLoaded = $state(false);
+	let childrenError = $state<string | null>(null);
 
 	let isExpanded = $derived(expandedPaths.has(node.path));
 	/** Primary (cursor) node — single, keyboard-focused. */
@@ -121,14 +122,18 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		childrenTotalCount = 0;
 		childrenHasMore = false;
 		hasLoaded = false;
+		childrenError = null;
 	}
 
 	// 当父级 loadTree 返回新树后（needsRefresh / 用户刷新 / drop after-effect），
 	// node.children 是最新的"完整一页"。直接接管：把它当作 page 0 已加载，
 	// hasMore=false（depth=1 下只有 root 自己有 children；其它节点 children
 	// 总是 None，走下方懒加载分支）。
+	// 使用 Array.isArray 且长度 > 0 判断：Rust 端空目录返回 Some([]) 而非 None，
+	// 空数组 [] 在 JS 中 truthy，若仅用 `if (node.children)` 会错误地锁定
+	// hasLoaded=true 阻止懒加载。
 	$effect(() => {
-		if (node.children) {
+		if (Array.isArray(node.children) && node.children.length > 0) {
 			childrenPage = node.children;
 			childrenLoadedTotal = node.children.length;
 			childrenTotalCount = node.children.length;
@@ -145,7 +150,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	let prevRefreshNonce = $state<number | undefined>(undefined);
 	$effect(() => {
 		const nonce = refreshNonce;
-		if (prevRefreshNonce !== undefined && prevRefreshNonce !== nonce && !node.children) {
+		if (prevRefreshNonce !== undefined && prevRefreshNonce !== nonce && !Array.isArray(node.children)) {
 			resetChildrenState();
 			if (isExpanded && node.is_dir) {
 				void loadNextChildrenPage();
@@ -156,6 +161,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 
 	// First expand → fetch page 0. Subsequent pages load via the
 	// "加载更多" button, not implicit on expand.
+	// 错误时 hasLoaded=true，不会重复触发；用户可点击错误文本重试。
 	$effect(() => {
 		if (isExpanded && node.is_dir && !hasLoaded && !childrenLoading) {
 			void loadNextChildrenPage();
@@ -166,6 +172,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		if (!node.is_dir) return;
 		if (childrenLoading) return;
 		if (hasLoaded && !childrenHasMore) return;
+		if (childrenError) childrenError = null;
 		childrenLoading = true;
 		try {
 			const page = await fileExplorerStore.loadChildrenPage(
@@ -177,9 +184,12 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			childrenLoadedTotal += page.entries.length;
 			childrenTotalCount = page.total;
 			childrenHasMore = page.has_more;
+			childrenError = null;
 			hasLoaded = true;
 		} catch (e) {
 			console.error('Failed to load children page:', e);
+			childrenError = '加载失败，请重试';
+			hasLoaded = true;
 		} finally {
 			childrenLoading = false;
 		}
@@ -734,12 +744,25 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					/>
 				{/each}
 			{:else if hasLoaded && childrenPage.length === 0 && !editing}
-				<div
-					class="px-2 py-1 text-[12px] text-[var(--rg-fg-muted)]"
-					style="padding-left: {(depth + 1) * 8}px"
-				>
-					空目录
-				</div>
+				{#if childrenError}
+					<div
+						class="px-2 py-1 text-[12px] text-[var(--rg-accent)] cursor-pointer hover:underline"
+						style="padding-left: {(depth + 1) * 8}px"
+						onclick={() => void loadNextChildrenPage()}
+						role="button"
+						tabindex="0"
+						onkeydown={(e) => e.key === 'Enter' && loadNextChildrenPage()}
+					>
+						{childrenError}
+					</div>
+				{:else}
+					<div
+						class="px-2 py-1 text-[12px] text-[var(--rg-fg-muted)]"
+						style="padding-left: {(depth + 1) * 8}px"
+					>
+						空目录
+					</div>
+				{/if}
 			{/if}
 			{#if childrenHasMore}
 				<!--

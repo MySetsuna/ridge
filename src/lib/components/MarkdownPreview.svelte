@@ -84,62 +84,78 @@
     })();
   });
 
-  /**
-   * 把 markdown 渲染出来的 `<img src="...">` 中的本地路径改写为 Tauri 的
-   * `asset://` 协议 URL（通过 convertFileSrc）。Marked 的 image renderer
-   * 直接吐 raw href，不经过 basePath 解析也不走 asset 协议，所以中文路径 /
-   * 相对路径 / 绝对路径都加载不了。这里在异步 enhance 阶段统一兜底。
-   *
-   * 跳过：http(s):、data:、blob:、asset:、已经改写过的（标 data-rg-rewritten）。
-   * 处理：file:// → 剥 scheme；C:\ 或 / → 视为绝对；其它 + basePath → 相对。
-   * 失败兜底：保留原 src + console.warn，不抛。
-   */
-  async function rewriteImageSrcs(
-    root: HTMLElement,
-    base?: string,
-  ): Promise<void> {
-    if (!isTauri()) return; // 浏览器 dev 服务器走原 src 即可
-    const imgs = root.querySelectorAll<HTMLImageElement>('img:not([data-rg-rewritten])');
-    for (const img of imgs) {
-      const raw = img.getAttribute('src') ?? '';
-      img.dataset.rgRewritten = '1';
-      if (!raw) continue;
-      if (/^(https?|data|blob|asset):/i.test(raw)) continue;
-      let abs: string | null = null;
-      try {
-        if (raw.startsWith('file://')) {
-          const u = new URL(raw);
-          abs = decodeURIComponent(u.pathname.replace(/^\/(\w:)/, '$1'));
-        } else if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('/')) {
-          try {
-            abs = decodeURIComponent(raw);
-          } catch {
-            abs = raw;
-          }
-        } else if (base) {
-          let decoded: string;
-          try {
-            decoded = decodeURIComponent(raw);
-          } catch {
-            decoded = raw;
-          }
-          abs = joinPath(base, decoded);
-        }
-      } catch (err) {
-        console.warn('[md-preview] rewrite image src failed (parse)', raw, err);
-        continue;
-      }
-      if (!abs) continue;
-      try {
-        // Windows 下 convertFileSrc 接受混合分隔符；统一成 / 避免某些 webview
-        // 把 `\` 当转义符吃掉。
-        const normalized = abs.replace(/\\/g, '/');
-        img.src = convertFileSrc(normalized);
-      } catch (err) {
-        console.warn('[md-preview] convertFileSrc failed', abs, err);
-      }
-    }
-  }
+	/**
+	 * 把 markdown 渲染出来的 `<img src="...">` 中的本地路径改写为 Tauri 的
+	 * `asset://` 协议 URL（通过 convertFileSrc）。Marked 的 image renderer
+	 * 直接吐 raw href，不经过 basePath 解析也不走 asset 协议，所以中文路径 /
+	 * 相对路径 / 绝对路径都加载不了。这里在异步 enhance 阶段统一兜底。
+	 *
+	 * 跳过：http(s):、data:、blob:、asset:、已经改写过的（标 data-rg-rewritten）。
+	 * 处理：file:// → 剥 scheme；C:\ 或 / → 视为绝对；其它 + basePath → 相对。
+	 * 失败兜底：保留原 src + console.warn，不抛。
+	 *
+	 * 非 Tauri 环境（dev server）：改用 file:// URL 做最佳努力，不保证 CORS 通过。
+	 */
+	async function rewriteImageSrcs(
+		root: HTMLElement,
+		base?: string,
+	): Promise<void> {
+		const isTauriEnv = isTauri();
+		const imgs = root.querySelectorAll<HTMLImageElement>('img:not([data-rg-rewritten])');
+		for (const img of imgs) {
+			const raw = img.getAttribute('src') ?? '';
+			img.dataset.rgRewritten = '1';
+			if (!raw) continue;
+			if (/^(https?|data|blob|asset):/i.test(raw)) continue;
+			let abs: string | null = null;
+			try {
+				if (raw.startsWith('file://')) {
+					// Windows 下 file://C:/path（双斜杠）被 new URL 把 C: 当 hostname，
+					// pathname 变成 /path  丢了盘符。统一补成 file:///C:/path（三斜杠）。
+					const normalizedFileUrl = raw.startsWith('file:///')
+						? raw
+						: raw.replace(/^file:\/\//, 'file:///');
+					const u = new URL(normalizedFileUrl);
+					abs = decodeURIComponent(u.pathname.replace(/^\/(\w:)/, '$1'));
+				} else if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('/')) {
+					try {
+						abs = decodeURIComponent(raw);
+					} catch {
+						abs = raw;
+					}
+				} else if (base) {
+					let decoded: string;
+					try {
+						decoded = decodeURIComponent(raw);
+					} catch {
+						decoded = raw;
+					}
+					abs = joinPath(base, decoded);
+				}
+			} catch (err) {
+				console.warn('[md-preview] rewrite image src failed (parse)', raw, err);
+				continue;
+			}
+			if (!abs) continue;
+			if (isTauriEnv) {
+				try {
+					const normalized = abs.replace(/\\/g, '/');
+					img.src = convertFileSrc(normalized);
+				} catch (err) {
+					console.warn('[md-preview] convertFileSrc failed', abs, err);
+				}
+			} else {
+				// 非 Tauri 环境：构造 file:// URL（最佳努力，dev server 下可能跨域）
+				try {
+					const normalized = abs.replace(/\\/g, '/');
+					const fileUrl = normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`;
+					img.src = fileUrl;
+				} catch (err) {
+					console.warn('[md-preview] file:// URL construction failed', abs, err);
+				}
+			}
+		}
+	}
 
   /**
    * Scroll to the preview block whose `data-rg-md-src-line` is the largest

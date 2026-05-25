@@ -452,6 +452,7 @@ function createFileExplorerStore() {
 				return await invoke<DirectoryPage>('get_directory_children', args);
 			} catch (e) {
 				reportDevIssue({ message: `Failed to load directory children: ${e}` });
+				console.error(`[fileExplorer] loadChildrenPage failed for "${dirPath}":`, e);
 				return { entries: [], total: 0, offset, has_more: false };
 			}
 		},
