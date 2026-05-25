@@ -4,6 +4,7 @@ use tauri::State;
 use crate::state::AppState;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteInfo {
     pub port: u16,
     pub totp_code: String,

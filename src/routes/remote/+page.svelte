@@ -21,7 +21,8 @@
 
   // ── State ──
   let remoteInfo = $state<{ port: number; totpCode: string; otpauthUri: string; ready: boolean } | null>(null);
-  let hostInput = $state('192.168.');
+  let hostInput = $state('localhost');
+  let portInput = $state('');
   let manualCode = $state('');
   let draftInput = $state('');
   let screen: 'remote' | 'tools' = $state('remote');
@@ -29,6 +30,7 @@
   let activeTerminalTab = $state(0);
   let connected = $state(false);
   let terminalLines = $state<string[]>(['C:\\workcode\\myproject>']);
+  let connectError = $state('');
 
   let conn = createRemoteConnection();
 
@@ -36,17 +38,38 @@
     try {
       const info = await invoke<{ port: number; totpCode: string; otpauthUri: string; ready: boolean }>('get_remote_info');
       remoteInfo = info;
+      portInput = String(info.port);
     } catch {
-      // not in Tauri or not ready
+      // Not in Tauri — will discover via HTTP or manual input
     }
   });
+
+  /** Fetch remote info from the Axum HTTP `/info` endpoint. */
+  async function fetchRemoteInfo() {
+    connectError = '';
+    try {
+      const host = hostInput || 'localhost';
+      const port = parseInt(portInput) || 0;
+      if (!port) { connectError = '请输入端口号'; return; }
+      const res = await fetch(`http://${host}:${port}/info`);
+      if (!res.ok) { connectError = `服务器返回 ${res.status}`; return; }
+      const data = await res.json();
+      remoteInfo = {
+        port: data.port || port,
+        totpCode: data.totpCode ?? data.totp_code,
+        otpauthUri: data.otpauthUri ?? data.otpauth_uri,
+        ready: true,
+      };
+    } catch (e: unknown) {
+      connectError = e instanceof Error ? e.message : '连接失败';
+    }
+  }
 
   // ── Connection helpers ──
   function connectViaQR() {
     if (!remoteInfo?.ready) return;
-    hostInput = '192.168.';
     connected = true;
-    conn.connect(hostInput, remoteInfo.port, remoteInfo.totpCode);
+    conn.connect(hostInput || 'localhost', remoteInfo.port, remoteInfo.totpCode);
   }
 
   function connectManually() {
@@ -123,28 +146,6 @@
     fileTreeExpanded[name] = !fileTreeExpanded[name];
   }
 
-  interface TreeNode {
-    name: string;
-    type: 'dir' | 'file';
-    children: TreeNode[];
-  }
-
-  function renderTree(nodes: TreeNode[], depth: number = 0): string {
-    let result = '';
-    const prefix = '  '.repeat(depth);
-    for (const node of nodes) {
-      if (node.type === 'dir') {
-        result += `${prefix}${fileTreeExpanded[node.name] ? '├' : '└'} ${node.name}/\n`;
-        if (fileTreeExpanded[node.name]) {
-          result += renderTree(node.children, depth + 1);
-        }
-      } else {
-        result += `${prefix}├ ${node.name}\n`;
-      }
-    }
-    return result;
-  }
-
   const fileCount = $derived.by(() => {
     const files: string[] = [];
     function walk(nodes: TreeNode[]) {
@@ -184,32 +185,50 @@
         {/if}
 
         <div class="w-full max-w-xs space-y-3">
-          <input
-            bind:value={hostInput}
-            placeholder="192.168.x.x"
-            class="w-full h-10 px-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
-          />
-          {#if !remoteInfo?.ready}
+          <div class="flex gap-2">
             <input
-              bind:value={manualCode}
-              placeholder="TOTP 验证码"
-              maxlength={6}
-              class="w-full h-10 px-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
+              bind:value={hostInput}
+              placeholder="localhost"
+              class="flex-1 h-10 px-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
             />
-            <button
-              onclick={connectManually}
-              disabled={!hostInput || manualCode.length < 6}
-              class="w-full h-10 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium disabled:opacity-40 transition-opacity"
-            >
-              连接
-            </button>
-          {:else}
+            <input
+              bind:value={portInput}
+              placeholder="端口"
+              class="w-24 h-10 px-3 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
+            />
+          </div>
+          {#if remoteInfo?.ready}
             <button
               onclick={connectViaQR}
               class="w-full h-10 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium transition-opacity"
             >
               {remoteInfo.totpCode}
             </button>
+          {:else}
+            <div class="flex gap-2">
+              <input
+                bind:value={manualCode}
+                placeholder="TOTP 验证码"
+                maxlength={6}
+                class="flex-1 h-10 px-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
+              />
+              <button
+                onclick={connectManually}
+                disabled={!hostInput || manualCode.length < 6}
+                class="shrink-0 h-10 px-4 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium disabled:opacity-40 transition-opacity"
+              >
+                连接
+              </button>
+            </div>
+            <button
+              onclick={fetchRemoteInfo}
+              class="w-full h-10 rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] text-sm hover:bg-[var(--rg-surface)] transition-colors"
+            >
+              获取服务器信息
+            </button>
+          {/if}
+          {#if connectError}
+            <p class="text-xs text-red-400">{connectError}</p>
           {/if}
         </div>
       </div>

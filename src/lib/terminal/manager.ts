@@ -1025,11 +1025,12 @@ export class TerminalManager {
 		// is cheap (just updates two u32 fields); `resize` triggers
 		// kernel grid resize + force redraw, so we only call it when
 		// dims actually changed (it short-circuits internally).
-		const handle = entry.handle as unknown as {
+		const handle = entry.handle;
+		const handleVp = handle as unknown as {
 			setViewportOffset?: (x: number, y: number) => void;
-		};
-		if (typeof handle.setViewportOffset === 'function') {
-			handle.setViewportOffset(xDev, yDev);
+		} | null;
+		if (handleVp !== null && typeof handleVp.setViewportOffset === 'function') {
+			handleVp.setViewportOffset(xDev, yDev);
 		}
 		entry.handle?.resize(Math.round(cssW), Math.round(cssH), dpr);
 	}
@@ -4448,22 +4449,22 @@ export class TerminalManager {
 			// §P4.9 — worker-owned panes have `handle === null`; skip dirty
 			// check and inline render — the worker's `createRenderer` handles
 			// per-frame paint inside its own `applyDelta` handler.
-			const hasHandle = entry.handle !== null;
-			const handleAny = entry.handle as unknown as {
-				isDirty?: (k: TerminalKernel, t: number) => boolean;
-				nextBlinkDeadlineMs?: (k: TerminalKernel, t: number) => number;
-				recordCachedOnly?: () => boolean;
-			} | null;
-			let dirty = true;
-			if (isHost) {
-				dirty = dirtyByPane.get(entry.paneId) ?? true;
-			} else if (hasHandle && typeof handleAny!.isDirty === 'function') {
-				try {
-					dirty = handleAny!.isDirty(entry.kernel, dateNow);
-				} catch {
-					dirty = true;
-				}
+		const hasHandle = entry.handle !== null;
+		const handleAny = entry.handle as unknown as {
+			isDirty?: (k: TerminalKernel, t: number) => boolean;
+			nextBlinkDeadlineMs?: (k: TerminalKernel, t: number) => number;
+			recordCachedOnly?: () => boolean;
+		} | null;
+		let dirty = true;
+		if (isHost) {
+			dirty = dirtyByPane.get(entry.paneId) ?? true;
+		} else if (hasHandle && handleAny !== null && typeof handleAny.isDirty === 'function') {
+			try {
+				dirty = handleAny.isDirty(entry.kernel, dateNow);
+			} catch {
+				dirty = true;
 			}
+		}
 				// §4.3 Phase B + §4b: host-mode panes participate in the
 				// frame whenever ANY visible host pane needs to draw —
 				// not just this one. WebView2's LoadOp::Load is not
@@ -4549,6 +4550,7 @@ export class TerminalManager {
 						if (
 							isHost &&
 							!dirty &&
+							handleAny !== null &&
 							typeof handleAny.recordCachedOnly === 'function'
 						) {
 							try {
@@ -4566,7 +4568,7 @@ export class TerminalManager {
 						console.error('[ridge-term] render error', entry.paneId, err);
 					}
 				}
-				if (hasHandle && typeof handleAny!.nextBlinkDeadlineMs === 'function') {
+				if (hasHandle && handleAny !== null && typeof handleAny.nextBlinkDeadlineMs === 'function') {
 					try {
 						const d = handleAny.nextBlinkDeadlineMs(entry.kernel, dateNow);
 						if (Number.isFinite(d) && d < minDeadlineMs) minDeadlineMs = d;
