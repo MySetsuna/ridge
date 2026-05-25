@@ -4444,22 +4444,26 @@ export class TerminalManager {
 				// compute dirty inline below — they don't participate in
 				// the cache path (Canvas2D's per-row diff is already the
 				// equivalent fast-path).
-				const handleAny = entry.handle as unknown as {
-					isDirty?: (k: TerminalKernel, t: number) => boolean;
-					nextBlinkDeadlineMs?: (k: TerminalKernel, t: number) => number;
-					recordCachedOnly?: () => boolean;
-				};
-				const isHost = this._isHostMode(entry);
-				let dirty = true;
-				if (isHost) {
-					dirty = dirtyByPane.get(entry.paneId) ?? true;
-				} else if (typeof handleAny.isDirty === 'function') {
-					try {
-						dirty = handleAny.isDirty(entry.kernel, dateNow);
-					} catch {
-						dirty = true;
-					}
+			const isHost = this._isHostMode(entry);
+			// §P4.9 — worker-owned panes have `handle === null`; skip dirty
+			// check and inline render — the worker's `createRenderer` handles
+			// per-frame paint inside its own `applyDelta` handler.
+			const hasHandle = entry.handle !== null;
+			const handleAny = entry.handle as unknown as {
+				isDirty?: (k: TerminalKernel, t: number) => boolean;
+				nextBlinkDeadlineMs?: (k: TerminalKernel, t: number) => number;
+				recordCachedOnly?: () => boolean;
+			} | null;
+			let dirty = true;
+			if (isHost) {
+				dirty = dirtyByPane.get(entry.paneId) ?? true;
+			} else if (hasHandle && typeof handleAny!.isDirty === 'function') {
+				try {
+					dirty = handleAny!.isDirty(entry.kernel, dateNow);
+				} catch {
+					dirty = true;
 				}
+			}
 				// §4.3 Phase B + §4b: host-mode panes participate in the
 				// frame whenever ANY visible host pane needs to draw —
 				// not just this one. WebView2's LoadOp::Load is not
@@ -4562,7 +4566,7 @@ export class TerminalManager {
 						console.error('[ridge-term] render error', entry.paneId, err);
 					}
 				}
-				if (typeof handleAny.nextBlinkDeadlineMs === 'function') {
+				if (hasHandle && typeof handleAny!.nextBlinkDeadlineMs === 'function') {
 					try {
 						const d = handleAny.nextBlinkDeadlineMs(entry.kernel, dateNow);
 						if (Number.isFinite(d) && d < minDeadlineMs) minDeadlineMs = d;

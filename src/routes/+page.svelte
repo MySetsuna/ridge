@@ -39,7 +39,7 @@ self.MonacoEnvironment = {
   import AgentHistoryPanel from '$lib/components/AgentHistoryPanel.svelte';
   import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
-  import { Bot } from 'lucide-svelte';
+  import { Bot, Smartphone } from 'lucide-svelte';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
@@ -169,6 +169,7 @@ self.MonacoEnvironment = {
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
   import { get } from 'svelte/store';
+  import { goto } from '$app/navigation';
   import { onMount, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -1187,6 +1188,14 @@ function expandSidebar() {
          and accent/Bot when on, giving a single button that both tells the
          user the current state and lets them flip it without spelunking
          through nested settings. -->
+    <button
+      type="button"
+      class="{actBtn}"
+      title="远程控制"
+      onclick={() => goto('/remote')}
+    >
+      <Smartphone class="h-5 w-5" />
+    </button>
     <button
       type="button"
       class="{actBtn} mt-auto"
