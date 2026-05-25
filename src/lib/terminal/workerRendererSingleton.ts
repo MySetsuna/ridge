@@ -32,21 +32,25 @@
 import { WorkerHostedRenderer, type WorkerLike } from './workerHostedRenderer';
 
 /** Read the opt-in flag in a type-safe way. Checks (in order):
- *    1. `globalThis.__RIDGE_USE_WORKER === true` — easiest at the JS console.
- *    2. `localStorage.RIDGE_USE_WORKER === '1' | 'true'` — survives reloads,
- *       and (most importantly) is settable BEFORE app boot by an e2e harness.
- *  Returns false otherwise. localStorage access is wrapped in try/catch
- *  because workers and SSR may not expose it. */
+ *    1. `globalThis.__RIDGE_USE_WORKER === true` — explicit opt-in.
+ *    2. `globalThis.__RIDGE_USE_WORKER === false` — explicit opt-out.
+ *    3. `localStorage.RIDGE_USE_WORKER === '0'` — persistent opt-out.
+ *  Returns true otherwise (P4.9: enabled by default). localStorage access
+ *  is wrapped in try/catch because workers and SSR may not expose it. */
 export function isWorkerRenderingEnabled(): boolean {
 	const g = globalThis as unknown as { __RIDGE_USE_WORKER?: unknown };
 	if (g.__RIDGE_USE_WORKER === true) return true;
+	if (g.__RIDGE_USE_WORKER === false) return false;
 	try {
 		const v = globalThis.localStorage?.getItem('RIDGE_USE_WORKER');
-		if (v === '1' || v === 'true') return true;
+		if (v === '0') return false;
 	} catch {
 		/* SSR / worker / sandboxed origin — localStorage unavailable */
 	}
-	return false;
+	// P4.9: enabled by default. Users who hit performance issues before
+	// the worker path was stable can still opt out via the global or
+	// localStorage.
+	return true;
 }
 
 /** Returns true when the runtime exposes a real `Worker` constructor.

@@ -4,6 +4,8 @@ node_modules
 /dist
 /release
 /.webview2-*
+*.log
+*.patch
 /.svelte-kit
 /package
 !.env.example
