@@ -34,7 +34,8 @@ parking_lot = "0.12"
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "1"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -76,6 +77,12 @@ ridge-term = { path = "../packages/ridge-term", default-features = false }
 # encoding rules — protocol stability is enforced by DeltaFrame::version,
 # not by source-level postcard compatibility.
 postcard = { version = "1", features = ["alloc"] }
+
+# Remote Control (主线一, 2026-05-24): LAN-First remote access.
+# TOTP for one-time password authentication (RFC 6238).
+# Using manual implementation to avoid new dep downloads.
+# mDNS uses raw UDP multicast — no extra crate needed.
+# WebSocket is built into axum 0.7 — no extra dep needed.
 
 [[bin]]
 name = "tmux"

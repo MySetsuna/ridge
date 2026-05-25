@@ -587,6 +587,14 @@ impl Terminal {
     pub fn is_alt_screen(&self) -> bool {
         self.grid.is_alt_screen()
     }
+    /// §1.35 — force-leave alt screen without going through CSI dispatch.
+    /// Used when the PTY process exits while the kernel is still in alt
+    /// screen mode (e.g. TUI crash or pane kill). Without this the new
+    /// shell's output would go into the alt buffer, hiding the primary
+    /// screen content.
+    pub fn leave_alt_screen(&mut self) {
+        self.grid.leave_alt_screen();
+    }
 
     /// Renderer entry point: returns the row at viewport-relative index
     /// `vp_row` (0..rows), accounting for `scroll_offset`. When the user

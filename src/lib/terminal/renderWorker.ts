@@ -47,6 +47,17 @@ export interface KernelHandle {
 export interface RendererHandle {
 	render(): void;
 	free(): void;
+	/** §p4 ITER 5 (2026-05-22) — measure cell metrics for `font` /
+	 *  `sizePx` at `dpr`. Returns `[cellW, cellH]` in CSS pixels.
+	 *  Optional so mock handles in tests don't have to stub it; the
+	 *  bindCanvas handler skips the measure step when this method
+	 *  isn't present. */
+	configure?(font: string, sizePx: number, dpr: number): readonly [number, number];
+	/** §p4 ITER 7 (2026-05-22) — resize the renderer's backing
+	 *  surface. `wCss` / `hCss` are CSS pixels at `dpr`. Optional —
+	 *  mock handles in tests can skip it and the resize handler
+	 *  treats the call as a wasm-kernel-only resize. */
+	resize?(wCss: number, hCss: number, dpr: number): void;
 }
 
 /** Dependency-injection seam for the wasm kernel and (optionally) the
@@ -210,10 +221,40 @@ export function handleRequest(
 					};
 				}
 			}
+			// §p4 ITER 5 (2026-05-22) — measure cell metrics inside
+			// the worker so the host can seed `entry.cellW / cellH`
+			// from real font metrics instead of the 8 × 16 placeholder.
+			// Only fires when the host supplied font/size/dpr AND the
+			// renderer exposes `configure`. Failures here are
+			// non-fatal — the bindCanvas ack still goes through
+			// without cell metrics; the next host-side fitPane will
+			// recover via the worker's own `resize` accounting.
+			let cellW: number | undefined;
+			let cellH: number | undefined;
+			if (
+				pane.renderer?.configure &&
+				request.font !== undefined &&
+				request.fontSizePx !== undefined &&
+				request.dpr !== undefined
+			) {
+				try {
+					const [w, h] = pane.renderer.configure(
+						request.font,
+						request.fontSizePx,
+						request.dpr,
+					);
+					cellW = Number(w);
+					cellH = Number(h);
+				} catch {
+					// Swallow — fall through with undefined metrics.
+				}
+			}
 			return {
 				type: 'ready',
 				paneId: request.paneId,
 				backend: pane.backend,
+				cellW,
+				cellH,
 			};
 		}
 
@@ -304,10 +345,66 @@ export function handleRequest(
 			pane.rows = request.rows;
 			pane.cols = request.cols;
 			pane.dpr = request.dpr;
+			// §p4 ITER 7 (2026-05-22) — when the host supplied CSS dims
+			// AND a renderer is bound AND it exposes `resize`, drive the
+			// wasm RenderHandle resize so its backing buffer + atlas
+			// re-quantize against the new DPR / cell box. Failures are
+			// non-fatal; the wasm kernel grid mutation above always
+			// happens so subsequent applyDelta frames still land.
+			if (
+				pane.renderer?.resize &&
+				typeof request.cssW === 'number' &&
+				typeof request.cssH === 'number'
+			) {
+				try {
+					pane.renderer.resize(request.cssW, request.cssH, request.dpr);
+				} catch {
+					// Swallow — wasm-kernel side already resized.
+				}
+			}
 			return {
 				type: 'ready',
 				paneId: request.paneId,
 				backend: pane.backend,
+			};
+		}
+
+		case 'setFont': {
+			// §p4 ITER 8 (2026-05-22) — propagate a font/size change
+			// to the worker-owned RenderHandle. Re-measures cell
+			// metrics via `configure` and returns them in `ready`
+			// so the host can re-seed entry.cellW / cellH and refit.
+			const pane = state.get(request.paneId);
+			if (!pane) {
+				return {
+					type: 'error',
+					paneId: request.paneId,
+					code: 'pane_not_initialized',
+					message: `setFont before init for pane ${request.paneId}`,
+				};
+			}
+			let cellW: number | undefined;
+			let cellH: number | undefined;
+			if (pane.renderer?.configure) {
+				try {
+					const [w, h] = pane.renderer.configure(
+						request.font,
+						request.fontSizePx,
+						request.dpr,
+					);
+					cellW = Number(w);
+					cellH = Number(h);
+				} catch {
+					// Swallow — wasm-side configure failed; host falls
+					// back to its current metrics.
+				}
+			}
+			return {
+				type: 'ready',
+				paneId: request.paneId,
+				backend: pane.backend,
+				cellW,
+				cellH,
 			};
 		}
 
@@ -426,6 +523,26 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 						handle.render(wasmKernel);
 					},
 					free: () => handle.free(),
+					// §p4 ITER 5 (2026-05-22) — surface the wasm-side
+					// configure so the worker can measure cell metrics
+					// during bindCanvas. The wasm method returns either
+					// a `[number, number]` tuple OR a `Float32Array`
+					// depending on the wasm-bindgen variant; normalize
+					// to a tuple here so callers can destructure
+					// uniformly.
+					configure: (font, sizePx, dpr) => {
+						const raw = handle.configure(font, sizePx, dpr) as
+							| [number, number]
+							| Float32Array;
+						return [Number(raw[0]), Number(raw[1])] as const;
+					},
+					// §p4 ITER 7 (2026-05-22) — surface wasm-side
+					// resize so the worker's resize handler can keep
+					// the OffscreenCanvas backing buffer + atlas in
+					// sync when the host pane shrinks / grows.
+					resize: (wCss, hCss, dpr) => {
+						handle.resize(wCss, hCss, dpr);
+					},
 				};
 			},
 		};

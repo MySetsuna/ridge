@@ -137,7 +137,8 @@ function buildTauriConfigOverride(version, slug) {
       beforeBuildCommand: 'node -e process.exit(Number(!process.env.RIDGE_BUILD_SKIP))',
     },
     bundle: {
-      targets: ['nsis'],
+      targets: ['nsis', 'msi', 'dmg', 'appimage', 'deb'],
+      resources: { '../ridge.theme': 'ridge.theme' },
       windows: {
         wix: {
           componentRefs: [`RidgePathEnvVar_${slug}`],

@@ -23,8 +23,8 @@
  */
 
 // @ts-nocheck — depends on optional dev deps (see prerequisites above)
-import { spawn, ChildProcess } from 'node:child_process';
-import { openSync } from 'node:fs';
+import { spawn, spawnSync, ChildProcess } from 'node:child_process';
+import { openSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -37,6 +37,27 @@ import os from 'node:os';
 process.env.NO_PROXY = [process.env.NO_PROXY, 'localhost,127.0.0.1,::1']
   .filter(Boolean)
   .join(',');
+
+// §1.35 (2026-05-24) — isolate the test ridge's WebView2 user-data-dir
+// from the installed `C:\Program Files\ridge\ridge.exe` host. Both
+// binaries share `identifier: "com.tauri-app.ridge"` (see
+// `src-tauri/tauri.conf.json`), so by default both resolve the
+// SAME WebView2 user-data folder
+// (`%LOCALAPPDATA%\com.tauri-app.ridge\EBWebView`). WebView2 enforces
+// an exclusive lock per data dir — when the host ridge is already
+// running, the test ridge spawned by tauri-driver hangs at boot
+// with HRESULT 0x8007139F (ERROR_INVALID_STATE), surfaced to wdio
+// as "app never reached pane-attached state" after the 30 s
+// `waitForAppReady` timeout.
+//
+// Same pattern as `scripts/tauri-dev-cdp.mjs` for the dev launcher.
+// The dir is project-local + .gitignored via the catch-all
+// `.webview2-*` entry that ships with the repo. Set BEFORE
+// `tauri-driver` spawns so the var lands in the inherited env of
+// every msedgedriver / ridge.exe child.
+// (WEBVIEW2_USER_DATA_FOLDER override temporarily removed while
+// debugging about:blank navigation hang. The test ridge now relies on
+// its identifier-scoped default path.)
 
 const DRIVER_PORT = 4444;
 let driverProc: ChildProcess | null = null;
@@ -73,20 +94,48 @@ export const config: WebdriverIO.Config = {
    *  through to the connect attempt and surfaces a clearer error than
    *  the address-in-use one wdio would otherwise show. */
   async onPrepare() {
-    // Absolute path to tauri-driver.exe — `spawn` without `shell:true`
-    // on Windows does NOT resolve PATH for bare executable names, so
-    // a literal "tauri-driver" silently fails the way we saw with
-    // ENOENT swallowed by the inherited stdio. Cargo install always
-    // lands the binary at %USERPROFILE%\.cargo\bin\tauri-driver.exe;
-    // override via TAURI_DRIVER_BIN env if a developer has it elsewhere.
-    const driverBin =
-      process.env.TAURI_DRIVER_BIN ||
+    // Absolute path to tauri-driver — `spawn` without `shell:true` on
+    // Windows does NOT resolve PATH for bare executable names, so a
+    // literal "tauri-driver" silently fails with ENOENT swallowed by
+    // the inherited stdio. We need a concrete, existing path.
+    //
+    // Resolution order (most → least specific):
+    //   1. `TAURI_DRIVER_BIN` — explicit override.
+    //   2. `CARGO_HOME/bin/tauri-driver(.exe)` — honours dev boxes whose
+    //      cargo is relocated (`C:\DevKit\Rust\.cargo`, `/opt/cargo`,
+    //      etc.). cargo itself follows this env var, so trusting it
+    //      here matches the install contract.
+    //   3. PATH lookup via `where` / `which` — recovers when the driver
+    //      lives somewhere unusual but is reachable on PATH.
+    //   4. `~/.cargo/bin/tauri-driver(.exe)` — stock cargo layout.
+    //
+    // (2026-05-22) — the prior USERPROFILE-only lookup left this dev
+    // box at ENOENT every run because CARGO_HOME is overridden to
+    // `C:\DevKit\Rust\.cargo`. Surfaces as wdio sessions silently
+    // hitting an already-leaked tauri-driver on :4444 from a previous
+    // run — when that gets cleaned up, every spec times out 30 s in
+    // `waitForAppReady` with a misleading "never reached pane-attached
+    // state" message. Keep this resolution chain intact.
+    const driverExeName = process.platform === 'win32' ? 'tauri-driver.exe' : 'tauri-driver';
+    const pathLookup = (() => {
+      const cmd = process.platform === 'win32' ? 'where' : 'which';
+      const r = spawnSync(cmd, [driverExeName], { encoding: 'utf8', shell: false });
+      if (r.status !== 0 || !r.stdout) return null;
+      const first = r.stdout.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+      return first && existsSync(first) ? first : null;
+    })();
+    const candidates = [
+      process.env.TAURI_DRIVER_BIN,
+      process.env.CARGO_HOME && path.join(process.env.CARGO_HOME, 'bin', driverExeName),
+      pathLookup,
       path.join(
         process.env.USERPROFILE || process.env.HOME || '',
         '.cargo',
         'bin',
-        process.platform === 'win32' ? 'tauri-driver.exe' : 'tauri-driver',
-      );
+        driverExeName,
+      ),
+    ].filter(Boolean) as string[];
+    const driverBin = candidates.find((p) => existsSync(p)) ?? candidates[0];
     const logFile = path.join(os.tmpdir(), 'tauri-driver.log');
     const out = openSync(logFile, 'a');
     const err = openSync(logFile, 'a');

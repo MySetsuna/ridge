@@ -1077,6 +1077,16 @@ pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: 
 			.unwrap_or((None, None))
 	};
 	if let Some(mut handle) = handle {
+		// §1.35 — gracefully exit TUI modes before killing. A stuck or
+		// foreground TUI may still hold alt screen / DECCKM / mouse /
+		// cursor-hidden, causing the shell to receive "exit\n" inside
+		// the alt buffer. The new shell spawned by pane-pty-closed
+		// would then write into the alt screen, hiding the primary
+		// screen content and giving the user the impression of a
+		// cleared screen.
+		let _ = handle.writer.lock().write_all(
+			b"\x1b[?1049l\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?25h",
+		);
 		let _ = handle.writer.lock().write_all(b"exit\n");
 		let _ = handle._child.kill();
 		let _ = state

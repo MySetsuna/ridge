@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod engine;
 mod fs;
+mod remote;
 mod state;
 mod teammate;
 mod types;
@@ -69,6 +70,15 @@ pub fn run() {
                     Some(teammate_ready_tx),
                 );
                 let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+
+                // Phase 1 (LAN-First): start the remote-control server.
+                // Non-fatal — the app continues without it if binding fails.
+                let remote_port = remote::spawn_remote_control(handle.clone(), teammate_state.clone());
+                if let Some(p) = remote_port {
+                    tracing::info!(target: "ridge::remote", port = p, "Remote control server ready");
+                    let st = handle.state::<AppState>();
+                    *st.remote_port.write() = p;
+                }
 
                 // Build the main window programmatically (rather than declaring
                 // it in `tauri.conf.json`) so we can attach an
@@ -493,6 +503,7 @@ pub fn run() {
             theme::set_active_theme,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
+            commands::remote::get_remote_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

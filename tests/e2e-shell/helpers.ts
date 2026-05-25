@@ -29,37 +29,47 @@
 // @ts-nocheck
 import { browser } from '@wdio/globals';
 
-export async function waitForAppReady(timeoutMs = 30_000): Promise<void> {
-  await browser.waitUntil(
-    async () =>
-      browser.execute(() => {
-        try {
-          if (location.protocol === 'about:') return false;
-        } catch {
-          return false;
-        }
-        const splash = document.getElementById('brand-loader');
-        // Require the splash to have been rendered AND dismissed. The
-        // dismiss path sets `display: none` after the fade transition.
-        // (If splash is absent entirely we're on about:blank, not the
-        // app — return false.)
-        if (!splash) return false;
-        if (getComputedStyle(splash).display !== 'none') return false;
-        const e2e = (window as { __windE2E?: unknown }).__windE2E;
-        if (!e2e) return false;
-        const pane = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
-        if (!pane) return false;
-        return true;
-      }),
-    {
-      timeout: timeoutMs,
-      timeoutMsg:
-        'app never reached pane-attached state — check that __windE2E is ' +
-        'installed during pane attach and that the default workspace ' +
-        'auto-creates a pane on first launch',
-      interval: 250,
-    },
-  );
+export async function waitForAppReady(timeoutMs = 60_000): Promise<void> {
+  // Capture WHICH predicate stalled so the thrown error points at the
+  // actual stuck stage (origin not navigated / splash not hidden / no
+  // __windE2E / no pane DOM) instead of the catch-all "never reached"
+  // text. `timeoutMsg` is captured at waitUntil-call time, so it can't
+  // see the running closure's `lastFailReason` — we re-throw manually
+  // with the dynamic message in the catch.
+  let lastFailReason = 'pre-flight (no checks ran yet)';
+  try {
+    await browser.waitUntil(
+      async () => {
+        const reason = (await browser.execute(() => {
+          try {
+            if (location.protocol === 'about:') return 'still on about:blank';
+          } catch {
+            return 'location.protocol read threw';
+          }
+          const splash = document.getElementById('brand-loader');
+          if (!splash) return 'no #brand-loader (page may not have hydrated)';
+          if (getComputedStyle(splash).display !== 'none') {
+            return 'splash still visible (SvelteKit hydration in progress)';
+          }
+          const e2e = (window as { __windE2E?: unknown }).__windE2E;
+          if (!e2e) return 'window.__windE2E not installed (manager.attach not run)';
+          const pane = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
+          if (!pane) return 'no [data-rg-pane-id] in DOM (no pane mounted yet)';
+          return '__ready__';
+        })) as string;
+        if (reason === '__ready__') return true;
+        lastFailReason = reason;
+        return false;
+      },
+      { timeout: timeoutMs, interval: 250 },
+    );
+  } catch (e) {
+    const baseMsg = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `app never reached pane-attached state — last stall: ${lastFailReason}` +
+        ` (waitUntil: ${baseMsg})`,
+    );
+  }
 }
 
 /** Convenience: read the first pane id from the DOM. Returns the

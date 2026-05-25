@@ -20,15 +20,13 @@
  * The factory itself is small enough to keep all production logic here
  * without introducing yet another abstraction.
  *
- * Integration plan (still TODO, see project memo):
- *   1. `TerminalManager` reads `isWorkerRenderingEnabled()` on pane attach.
- *   2. When enabled, the manager calls `getWorkerRenderer()` and proxies
- *      `applyDeltaFrame()`/`resize()` through it instead of running the
- *      kernel on the main thread.
- *   3. `RidgePane.svelte` calls `canvas.transferControlToOffscreen()` and
- *      ships the OffscreenCanvas to the renderer via `bindCanvas`.
- *   4. The legacy main-thread path stays as the fallback for the period
- *      while the feature flag is opt-in.
+ * Integration status (2026-05-24) — ALL four steps implemented:
+ *   1. ✅ `TerminalManager` reads `isWorkerRenderingEnabled()` on pane attach.
+ *   2. ✅ When enabled, manager proxies through `workerRendererBridge`.
+ *   3. ✅ `manager.attach` calls `canvas.transferControlToOffscreen()`
+ *      and ships the OffscreenCanvas to the worker via `bindCanvas`.
+ *   4. ✅ Legacy main-thread path stays as fallback when flag is off
+ *      or worker fails to spin up.
  */
 
 import { WorkerHostedRenderer, type WorkerLike } from './workerHostedRenderer';
