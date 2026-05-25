@@ -39,6 +39,7 @@ self.MonacoEnvironment = {
   import AgentHistoryPanel from '$lib/components/AgentHistoryPanel.svelte';
   import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+  import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import { Bot, Smartphone } from 'lucide-svelte';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
@@ -169,7 +170,7 @@ self.MonacoEnvironment = {
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
   import { get } from 'svelte/store';
-  import { goto } from '$app/navigation';
+
   import { onMount, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -267,7 +268,7 @@ self.MonacoEnvironment = {
     });
   });
 
-  type SidebarTab = 'git' | 'files' | 'search' | 'claude';
+  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote';
   let sidebarTab = $state<SidebarTab>('files');
 
   // If the Claude extension toggle flips to false while we're on the
@@ -1190,9 +1191,9 @@ function expandSidebar() {
          through nested settings. -->
     <button
       type="button"
-      class="{actBtn}"
+      class="{actBtn}{sidebarTab === 'remote' ? actBtnOn : ''}"
       title="远程控制"
-      onclick={() => goto('/remote')}
+      onclick={() => { sidebarTab = 'remote'; expandSidebar(); }}
     >
       <Smartphone class="h-5 w-5" />
     </button>
@@ -1246,6 +1247,11 @@ function expandSidebar() {
         <!-- Claude tab -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled ? '' : 'hidden'}">
           <AgentHistoryPanel />
+        </div>
+
+        <!-- Remote tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'remote' ? '' : 'hidden'}">
+          <RemotePanel />
         </div>
 
         <!-- Files tab (default) -->

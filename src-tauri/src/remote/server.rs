@@ -20,6 +20,7 @@ use super::auth::RemoteAuth;
 
 #[derive(Clone)]
 struct RemoteCtx {
+    port: u16,
     state: AppState,
     handle: tauri::AppHandle,
     auth: Arc<RemoteAuth>,
@@ -36,14 +37,26 @@ struct StatusResponse {
     ready: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InfoResponse {
+    port: u16,
+    totp_code: String,
+    otpauth_uri: String,
+    ready: bool,
+}
+
 /// Spawn the remote-control WebSocket server on a background thread.
 /// Listens on `0.0.0.0:0` (OS-assigned port) and returns the allocated
 /// port, or `None` if binding failed.
+///
+/// Uses the existing `auth` from AppState so the TOTP secret is shared
+/// between the HTTP server and the Tauri command `get_remote_info`.
 pub fn spawn_remote_server(
     handle: tauri::AppHandle,
     state: AppState,
+    auth: Arc<RemoteAuth>,
 ) -> Option<u16> {
-    let auth = Arc::new(RemoteAuth::new());
 
     let handle_for_thread = handle.clone();
     let state_for_thread = state.clone();
@@ -96,6 +109,7 @@ async fn run_remote_server(
     tracing::info!(target: "ridge::remote", port, "Remote control server listening");
 
     let ctx = RemoteCtx {
+        port,
         state,
         handle,
         auth,
@@ -103,6 +117,7 @@ async fn run_remote_server(
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/info", get(info_handler))
         .route("/status", get(status_handler))
         .route("/ws", get(ws_handler))
         .with_state(ctx);
@@ -115,9 +130,19 @@ async fn run_remote_server(
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-async fn status_handler(State(_ctx): State<RemoteCtx>) -> Json<StatusResponse> {
+async fn info_handler(State(ctx): State<RemoteCtx>) -> Json<InfoResponse> {
+    let (code, uri) = ctx.auth.code_and_uri();
+    Json(InfoResponse {
+        port: ctx.port,
+        totp_code: code,
+        otpauth_uri: uri,
+        ready: true,
+    })
+}
+
+async fn status_handler(State(ctx): State<RemoteCtx>) -> Json<StatusResponse> {
     Json(StatusResponse {
-        port: 0, // caller knows the port from the connect URL
+        port: ctx.port,
         ready: true,
     })
 }

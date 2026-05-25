@@ -46,6 +46,12 @@ impl RemoteAuth {
         false
     }
 
+    /// Return current code + otpauth URI in one call (avoids race
+    /// if the time step ticks between two separate calls).
+    pub fn code_and_uri(&self) -> (String, String) {
+        (self.current_code(), self.otpauth_uri())
+    }
+
     /// Return an `otpauth://` URI suitable for QR-code generation.
     /// Uses RFC 4648 base32 (no padding) for the secret.
     pub fn otpauth_uri(&self) -> String {
