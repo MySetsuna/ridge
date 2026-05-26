@@ -466,6 +466,40 @@
               </button>
             </div>
 
+            <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
+              <div class="min-w-0 flex-1">
+                <div class="text-[12px] text-[var(--rg-fg)]">远程控制</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">启动远程控制服务器，手机浏览器扫码或手动连接后可从移动端操作终端和文件。</div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={$settingsStore.remoteEnabled}
+                aria-label="切换远程控制"
+                title={$settingsStore.remoteEnabled ? '点击关闭远程控制' : '点击启动远程控制'}
+                class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.remoteEnabled
+                  ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
+                  : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
+                onclick={async () => {
+                  const next = !$settingsStore.remoteEnabled;
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke('set_remote_enabled', { enabled: next });
+                  } catch (e) {
+                    console.warn('远程控制切换失败', e);
+                    return;
+                  }
+                  setSetting('remoteEnabled', next);
+                }}
+              >
+                <span
+                  class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.remoteEnabled
+                    ? 'translate-x-[18px]'
+                    : 'translate-x-0.5'}"
+                ></span>
+              </button>
+            </div>
+
             <div class="text-[11px] text-[var(--rg-fg-muted)] leading-relaxed pt-2">
               更多扩展（侧栏插件管理、外部主题包等）将在后续版本加入。当前已通过
               <code class="font-mono">$lib/stores/sidebarPlugins</code>

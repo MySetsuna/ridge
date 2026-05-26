@@ -55,6 +55,8 @@ pub fn run() {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let app = window.app_handle();
                 let state = app.state::<AppState>();
+                // 确保远程服务器被停止
+                crate::commands::remote::stop_remote_server(&state);
                 ridge_file::save_restore_set(app, &state);
             }
         })
@@ -70,15 +72,6 @@ pub fn run() {
                     Some(teammate_ready_tx),
                 );
                 let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
-
-                // Phase 1 (LAN-First): start the remote-control server.
-                // Non-fatal — the app continues without it if binding fails.
-                let remote_port = remote::spawn_remote_control(handle.clone(), teammate_state.clone());
-                if let Some(p) = remote_port {
-                    tracing::info!(target: "ridge::remote", port = p, "Remote control server ready");
-                    let st = handle.state::<AppState>();
-                    *st.remote_port.write() = p;
-                }
 
                 // Build the main window programmatically (rather than declaring
                 // it in `tauri.conf.json`) so we can attach an
@@ -178,6 +171,17 @@ pub fn run() {
                             pane_id,
                             data,
                         }) => {
+                            // Broadcast to remote WebSocket clients (best-effort).
+                            let app_state = handle.state::<AppState>();
+                            let _ = app_state.pty_output_tx.send(
+                                crate::types::PtyOutputEvent {
+                                    workspace_id,
+                                    pane_id,
+                                    data: data.clone(),
+                                }
+                            );
+                            drop(app_state);
+
                             // P3.8 — per-pane delta_mode gate. When the front-end
                             // has opted into the rust parser path (via the
                             // `set_pane_delta_mode` command, P3.9), bypass the
@@ -504,6 +508,8 @@ pub fn run() {
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
             commands::remote::get_remote_info,
+            commands::remote::set_remote_enabled,
+            commands::remote::get_remote_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

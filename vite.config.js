@@ -56,9 +56,13 @@ export default defineConfig({
     include: [
       'monaco-editor',
       'svelte-splitpanes',
-      '@tauri-apps/api'
+      '@tauri-apps/api',
+      'qrcode',
     ],
     exclude: ['@ridge/term-wasm'],
+  },
+  ssr: {
+    noExternal: ['qrcode'],
   },
   assetsInclude: ['**/*.wasm'],
 

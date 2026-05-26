@@ -4341,7 +4341,7 @@ export class TerminalManager {
 					isDirty?: (k: TerminalKernel, t: number) => boolean;
 				};
 				let d = true;
-				if (typeof handleAny.isDirty === 'function') {
+				if (entry.handle !== null && typeof handleAny.isDirty === 'function') {
 					try {
 						d = handleAny.isDirty(entry.kernel, dateNow);
 					} catch {

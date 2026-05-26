@@ -1455,6 +1455,19 @@ function expandSidebar() {
           </button>
         {/if}
 
+        <!-- 手机远程入口：在开发模式下连接到 Vite dev server，构建模式下显示嵌入式远程服务器信息 -->
+        <button
+          type="button"
+          class="rg-no-drag {toolBtn}{sidebarTab === 'remote' ? ' bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
+          title="手机远程控制"
+          onclick={() => {
+            sidebarTab = 'remote';
+            expandSidebar();
+          }}
+        >
+          <Smartphone class="h-4 w-4" />
+        </button>
+
         <!-- 编辑器抽屉开关：放在分屏按钮左侧，给"打开文件编辑器"一个常驻入口；
              toggle 行为——已显示时点一下隐藏，已隐藏时再点一下显示，与
              FileEditor 头部的左侧收起按钮形成开/关对偶。$fileEditorStore

@@ -20,7 +20,7 @@
   } from 'lucide-svelte';
 
   // ── State ──
-  let remoteInfo = $state<{ port: number; totpCode: string; otpauthUri: string; ready: boolean } | null>(null);
+  let remoteInfo = $state<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean } | null>(null);
   let hostInput = $state('localhost');
   let portInput = $state('');
   let manualCode = $state('');
@@ -31,17 +31,43 @@
   let connected = $state(false);
   let terminalLines = $state<string[]>(['C:\\workcode\\myproject>']);
   let connectError = $state('');
+  let totpTimer: ReturnType<typeof setInterval> | null = null;
 
   let conn = createRemoteConnection();
 
-  onMount(async () => {
+  function buildLinkUri(lanIp: string, port: number): string {
+    return `http://${lanIp}:${port}/`;
+  }
+
+  async function refreshRemoteInfo(host: string, port: number) {
     try {
-      const info = await invoke<{ port: number; totpCode: string; otpauthUri: string; ready: boolean }>('get_remote_info');
+      const res = await fetch(`http://${host}:${port}/info`);
+      if (!res.ok) return;
+      const data = await res.json();
+      remoteInfo = {
+        port: data.port || port,
+        lanIp: data.lanIp ?? data.lan_ip ?? host,
+        totpCode: data.totpCode ?? data.totp_code,
+        otpauthUri: data.otpauthUri ?? data.otpauth_uri,
+        ready: true,
+      };
+    } catch { /* ignore */ }
+  }
+
+  onMount(() => {
+    invoke<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean }>('get_remote_info').then(info => {
       remoteInfo = info;
       portInput = String(info.port);
-    } catch {
+      hostInput = info.lanIp || 'localhost';
+    }).catch(() => {
       // Not in Tauri — will discover via HTTP or manual input
-    }
+    });
+    totpTimer = setInterval(async () => {
+      if (remoteInfo?.ready && hostInput && portInput) {
+        await refreshRemoteInfo(hostInput, parseInt(portInput) || 0);
+      }
+    }, 5000);
+    return () => { if (totpTimer) clearInterval(totpTimer); };
   });
 
   /** Fetch remote info from the Axum HTTP `/info` endpoint. */
@@ -56,18 +82,23 @@
       const data = await res.json();
       remoteInfo = {
         port: data.port || port,
+        lanIp: data.lanIp ?? data.lan_ip ?? host,
         totpCode: data.totpCode ?? data.totp_code,
         otpauthUri: data.otpauthUri ?? data.otpauth_uri,
         ready: true,
       };
+      hostInput = remoteInfo.lanIp;
     } catch (e: unknown) {
       connectError = e instanceof Error ? e.message : '连接失败';
     }
   }
 
   // ── Connection helpers ──
-  function connectViaQR() {
+  async function connectViaQR() {
     if (!remoteInfo?.ready) return;
+    // Refresh the TOTP code before connecting (avoid stale code).
+    await refreshRemoteInfo(hostInput || 'localhost', remoteInfo.port);
+    if (!remoteInfo?.totpCode) return;
     connected = true;
     conn.connect(hostInput || 'localhost', remoteInfo.port, remoteInfo.totpCode);
   }
@@ -172,9 +203,14 @@
         </p>
 
         {#if remoteInfo?.ready}
-          <div class="flex flex-col items-center gap-3">
-            <QrCode value={remoteInfo.otpauthUri} size={180} />
-            <p class="text-xs text-[var(--rg-fg-muted)]">打开 Ridge 移动端扫码连接</p>
+          <div class="flex flex-col items-center gap-2">
+            <p class="text-xs text-[var(--rg-fg-muted)]">① 扫码绑定身份验证器</p>
+            <QrCode value={remoteInfo.otpauthUri} size={140} />
+          </div>
+          <div class="flex flex-col items-center gap-2">
+            <p class="text-xs text-[var(--rg-fg-muted)]">② 扫码打开远程页面</p>
+            <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={140} />
+            <p class="text-[10px] text-[var(--rg-fg-muted)]">手机浏览器扫码 → 输入验证码 → 连接</p>
           </div>
 
           <div class="flex items-center gap-3 w-full max-w-xs my-2">
@@ -197,36 +233,33 @@
               class="w-24 h-10 px-3 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
             />
           </div>
-          {#if remoteInfo?.ready}
+          <button
+            onclick={connectViaQR}
+            class="w-full h-10 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium transition-opacity"
+          >
+            {remoteInfo?.totpCode ?? '------'}
+          </button>
+          <div class="flex gap-2">
+            <input
+              bind:value={manualCode}
+              placeholder="TOTP 验证码"
+              maxlength={6}
+              class="flex-1 h-10 px-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
+            />
             <button
-              onclick={connectViaQR}
-              class="w-full h-10 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium transition-opacity"
+              onclick={connectManually}
+              disabled={!hostInput || manualCode.length < 6}
+              class="shrink-0 h-10 px-4 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium disabled:opacity-40 transition-opacity"
             >
-              {remoteInfo.totpCode}
+              连接
             </button>
-          {:else}
-            <div class="flex gap-2">
-              <input
-                bind:value={manualCode}
-                placeholder="TOTP 验证码"
-                maxlength={6}
-                class="flex-1 h-10 px-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
-              />
-              <button
-                onclick={connectManually}
-                disabled={!hostInput || manualCode.length < 6}
-                class="shrink-0 h-10 px-4 rounded-lg bg-[var(--rg-accent)] text-white text-sm font-medium disabled:opacity-40 transition-opacity"
-              >
-                连接
-              </button>
-            </div>
-            <button
-              onclick={fetchRemoteInfo}
-              class="w-full h-10 rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] text-sm hover:bg-[var(--rg-surface)] transition-colors"
-            >
-              获取服务器信息
-            </button>
-          {/if}
+          </div>
+          <button
+            onclick={fetchRemoteInfo}
+            class="w-full h-10 rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] text-sm hover:bg-[var(--rg-surface)] transition-colors"
+          >
+            获取服务器信息
+          </button>
           {#if connectError}
             <p class="text-xs text-red-400">{connectError}</p>
           {/if}

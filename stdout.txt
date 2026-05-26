@@ -1,0 +1,9 @@
+Ridge Remote Server v0.0.2
+Starting...
+  Static dir: static\mobile
+  Port: 61730
+  LAN IP: 100.64.138.113
+
+Open http://localhost:61730/ in your browser
+Or scan the QR code from the Ridge PC app (Remote sidebar)
+

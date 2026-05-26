@@ -29,6 +29,9 @@ export interface UserSettings {
   ///   don't want a half-toggled CJK IME to swallow plain ASCII
   ///   keystrokes (the "history input flickers with cursor" symptom).
   terminalImeMode: 'ime' | 'direct';
+  /// Remote control server enabled on last session. Restored on boot to
+  /// automatically start the remote server if the user left it on.
+  remoteEnabled: boolean;
 }
 
 const DEFAULTS: UserSettings = {
@@ -44,6 +47,7 @@ const DEFAULTS: UserSettings = {
   terminalPaddingPx: 6,
   terminalScrollbackLines: 2000,
   terminalImeMode: 'ime',
+  remoteEnabled: false,
 };
 
 const LS_KEY = 'ridge-settings';
@@ -118,6 +122,10 @@ function load(): UserSettings {
       obj.terminalImeMode === 'ime' || obj.terminalImeMode === 'direct'
         ? obj.terminalImeMode
         : DEFAULTS.terminalImeMode,
+    remoteEnabled:
+      typeof obj.remoteEnabled === 'boolean'
+        ? obj.remoteEnabled
+        : DEFAULTS.remoteEnabled,
   };
 }
 
@@ -171,5 +179,12 @@ export function setTheme(themeId: string): void {
 }
 
 export function initSettingsBoot(): void {
-  applyTheme(get(store).theme);
+  const s = get(store);
+  applyTheme(s.theme);
+  // Restore remote control server state if it was enabled on last session.
+  if (s.remoteEnabled) {
+    invoke('set_remote_enabled', { enabled: true }).catch((e) => {
+      console.warn('[settings] remote server auto-start failed', e);
+    });
+  }
 }

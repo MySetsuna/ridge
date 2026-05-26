@@ -3,129 +3,171 @@
   import { invoke } from '@tauri-apps/api/core';
   import { createRemoteConnection, type RemoteConnectionApi } from './wsClient';
   import QrCode from './QrCode.svelte';
-  import { Smartphone, Link, Unlink, RefreshCw } from 'lucide-svelte';
+  import { Smartphone, Link, Unlink, RefreshCw, Power, PowerOff, ExternalLink } from 'lucide-svelte';
+  import { dev } from '$app/environment';
 
-  let remoteInfo = $state<{ port: number; totpCode: string; otpauthUri: string; ready: boolean } | null>(null);
+  let remoteEnabled = $state(false);
+  let remoteInfo = $state<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
   let hostInput = $state('localhost');
   let portInput = $state('');
-  let manualCode = $state('');
   let connectError = $state('');
+  let totpTimer: ReturnType<typeof setInterval> | null = null;
+  let machineName = $state('Ridge');
 
   let conn = createRemoteConnection();
   let connected = $state(false);
 
-  onMount(async () => {
-    try {
-      const info = await invoke<{ port: number; totpCode: string; otpauthUri: string; ready: boolean }>('get_remote_info');
-      remoteInfo = info;
-      portInput = String(info.port);
-    } catch {
-      // Not in Tauri
-    }
-  });
+  function buildLinkUri(lanIp: string, port: number): string {
+    if (dev) return `http://${lanIp}:5174/`;
+    return `http://${lanIp}:${port}/`;
+  }
 
-  async function fetchRemoteInfo() {
-    connectError = '';
+  async function refreshRemoteInfo() {
     try {
-      const host = hostInput || 'localhost';
-      const port = parseInt(portInput) || 0;
-      if (!port) { connectError = '请输入端口号'; return; }
-      const res = await fetch(`http://${host}:${port}/info`);
-      if (!res.ok) { connectError = `服务器返回 ${res.status}`; return; }
-      const data = await res.json();
-      remoteInfo = {
-        port: data.port || port,
-        totpCode: data.totpCode ?? data.totp_code,
-        otpauthUri: data.otpauthUri ?? data.otpauth_uri,
-        ready: true,
-      };
+      const info = await invoke<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string }>('get_remote_info');
+      remoteInfo = info;
+      machineName = info.machineName;
+      portInput = String(info.port);
+      hostInput = info.lanIp || 'localhost';
     } catch (e: unknown) {
-      connectError = e instanceof Error ? e.message : '连接失败';
+      console.error('Failed to refresh remote info', e);
     }
   }
 
-  function connectViaQR() {
+  import { settingsStore, setSetting } from '$lib/stores/settings';
+
+  async function toggleRemoteEnabled() {
+    try {
+      const newState = !remoteEnabled;
+      await invoke('set_remote_enabled', { enabled: newState });
+      remoteEnabled = newState;
+      setSetting('remoteEnabled', newState);
+      if (newState) {
+        await refreshRemoteInfo();
+      }
+    } catch (e: unknown) {
+      connectError = e instanceof Error ? e.message : '切换失败';
+    }
+  }
+
+  async function connectViaQR() {
     if (!remoteInfo?.ready) return;
+    await refreshRemoteInfo();
+    if (!remoteInfo?.totpCode) return;
     connected = true;
     conn.connect(hostInput || 'localhost', remoteInfo.port, remoteInfo.totpCode);
-  }
-
-  function connectManually() {
-    if (!remoteInfo?.ready || !hostInput || !manualCode) return;
-    connected = true;
-    conn.connect(hostInput, remoteInfo.port, manualCode);
   }
 
   function disconnect() {
     conn.disconnect();
     connected = false;
   }
+
+  onMount(() => {
+    refreshRemoteInfo();
+
+    totpTimer = setInterval(async () => {
+      if (remoteEnabled) {
+        await refreshRemoteInfo();
+      }
+    }, 5000);
+    return () => { if (totpTimer) clearInterval(totpTimer); };
+  });
+
 </script>
 
 <div class="flex flex-col h-full">
-  <!-- Header -->
+  <!-- Header with toggle -->
   <div class="flex items-center justify-between px-3 h-10 border-b border-[var(--rg-border)] shrink-0">
     <h2 class="text-xs font-semibold text-[var(--rg-fg)] uppercase tracking-wider flex items-center gap-1.5">
       <Smartphone class="w-3.5 h-3.5" />
-      远程控制
+      远程控制 ({machineName})
     </h2>
-    {#if connected}
-      <button onclick={disconnect} class="p-1 rounded hover:bg-[var(--rg-surface)] transition-colors">
-        <Unlink class="w-3.5 h-3.5 text-red-400" />
-      </button>
-    {/if}
+    <div class="flex items-center gap-1">
+      {#if connected}
+        <button onclick={disconnect} class="p-1 rounded hover:bg-[var(--rg-surface)] transition-colors" title="断开连接">
+          <Unlink class="w-3.5 h-3.5 text-red-400" />
+        </button>
+      {/if}
+    </div>
   </div>
 
   <div class="flex-1 overflow-auto p-3 space-y-4">
-    {#if connected}
-      <div class="flex flex-col items-center gap-3 py-8">
-        <div class="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center">
-          <Link class="w-6 h-6 text-green-400" />
-        </div>
-        <p class="text-sm text-[var(--rg-fg)]">已连接到 {hostInput}:{portInput}</p>
-        <p class="text-xs text-[var(--rg-fg-muted)]">远程终端会话活跃中</p>
-      </div>
-    {:else if remoteInfo?.ready}
-      <!-- QR Code -->
-      <div class="flex flex-col items-center gap-2 py-2">
-        <QrCode value={remoteInfo.otpauthUri} size={160} />
-        <p class="text-[10px] text-[var(--rg-fg-muted)]">扫码连接此桌面</p>
-      </div>
+    <!-- 启动/停止远程控制 -->
+    <div class="flex flex-col items-center gap-2 pt-2 pb-1">
+      <button
+        onclick={toggleRemoteEnabled}
+        class="w-full h-10 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-all duration-200 {remoteEnabled
+          ? 'bg-green-500/15 text-green-400 border border-green-500/30 hover:bg-green-500/25'
+          : 'bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] border border-[var(--rg-border)] hover:border-[var(--rg-accent)]/30 hover:text-[var(--rg-fg)]'}"
+      >
+        {#if remoteEnabled}
+          <Power class="w-4 h-4" />
+          远程控制已启用
+          <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+        {:else}
+          <PowerOff class="w-4 h-4" />
+          启动远程控制
+        {/if}
+      </button>
+      {#if remoteEnabled}
+        <p class="text-[10px] text-[var(--rg-fg-muted)] text-center">
+          {#if dev}
+            开发模式 · 运行 <code class="bg-[var(--rg-surface)] px-1 rounded">pnpm dev:remote</code> 启动手机端
+          {:else}
+            手机浏览器扫码或访问 <code class="bg-[var(--rg-surface)] px-1 rounded">{buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0)}</code>
+          {/if}
+        </p>
+      {/if}
+    </div>
 
-      <div class="flex items-center gap-2">
-        <div class="flex-1 h-px bg-[var(--rg-border)]"></div>
-        <span class="text-[10px] text-[var(--rg-fg-muted)]">或</span>
-        <div class="flex-1 h-px bg-[var(--rg-border)]"></div>
-      </div>
+    {#if remoteEnabled}
+      {#if connected}
+        <div class="flex flex-col items-center gap-3 py-4">
+          <div class="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center">
+            <Link class="w-6 h-6 text-green-400" />
+          </div>
+          <p class="text-sm text-[var(--rg-fg)]">已连接到 {hostInput}:{portInput}</p>
+          <p class="text-xs text-[var(--rg-fg-muted)]">远程终端会话活跃中</p>
+        </div>
+      {:else if remoteInfo?.ready}
+        <!-- QR Code: TOTP authenticator setup -->
+        <div class="flex flex-col items-center gap-1 py-1">
+          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">① 扫码绑定身份验证器</p>
+          <QrCode value={remoteInfo.otpauthUri} size={140} />
+        </div>
 
-      <div class="space-y-2">
-        <div class="flex gap-2">
-          <input bind:value={hostInput} placeholder="主机" class="flex-1 h-8 px-3 rounded-md bg-[var(--rg-surface)] border border-[var(--rg-border)] text-xs text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors" />
-          <input bind:value={portInput} placeholder="端口" class="w-20 h-8 px-2 rounded-md bg-[var(--rg-surface)] border border-[var(--rg-border)] text-xs text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors" />
+        <!-- QR Code: Link to mobile web page -->
+        <div class="flex flex-col items-center gap-1 py-1">
+          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">② 扫码打开远程页面</p>
+          <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={140} />
+          <p class="text-[9px] text-[var(--rg-fg-muted)]">手机浏览器扫码 → 输入验证码 → 连接</p>
         </div>
-        <button onclick={connectViaQR} class="w-full h-8 rounded-md bg-[var(--rg-accent)] text-white text-xs font-medium transition-opacity flex items-center justify-center gap-1.5">
-          <Smartphone class="w-3.5 h-3.5" />
-          {remoteInfo.totpCode}
-        </button>
-      </div>
-    {:else}
-      <!-- Manual connect -->
-      <div class="space-y-2">
-        <div class="flex gap-2">
-          <input bind:value={hostInput} placeholder="主机地址" class="flex-1 h-8 px-3 rounded-md bg-[var(--rg-surface)] border border-[var(--rg-border)] text-xs text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors" />
-          <input bind:value={portInput} placeholder="端口" class="w-20 h-8 px-2 rounded-md bg-[var(--rg-surface)] border border-[var(--rg-border)] text-xs text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors" />
+
+        <!-- Connection info -->
+        <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
+          <div class="flex justify-between text-xs">
+            <span class="text-[var(--rg-fg-muted)]">移动端访问入口</span>
+            <span class="text-[var(--rg-accent)] font-mono">{remoteInfo.lanIp}:{dev ? '5174' : remoteInfo.port}</span>
+          </div>
+          <div class="flex justify-between text-xs">
+            <span class="text-[var(--rg-fg-muted)]">后端 WebSocket 端口</span>
+            <span class="text-[var(--rg-fg)] font-mono">{remoteInfo.port}</span>
+          </div>
+          <div class="flex justify-between text-xs">
+            <span class="text-[var(--rg-fg-muted)]">TOTP 验证码</span>
+            <span class="text-[var(--rg-fg)] font-mono font-bold tracking-wider text-base">{remoteInfo.totpCode}</span>
+          </div>
         </div>
-        <div class="flex gap-2">
-          <input bind:value={manualCode} placeholder="TOTP 验证码" maxlength={6} class="flex-1 h-8 px-3 rounded-md bg-[var(--rg-surface)] border border-[var(--rg-border)] text-xs text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors" />
-          <button onclick={connectManually} disabled={!hostInput || manualCode.length < 6} class="shrink-0 h-8 px-3 rounded-md bg-[var(--rg-accent)] text-white text-xs font-medium disabled:opacity-40 transition-opacity">
-            连接
-          </button>
+      {:else}
+        <!-- 正在启动... -->
+        <div class="flex flex-col items-center gap-3 py-8 text-center">
+          <div class="w-12 h-12 rounded-full bg-[var(--rg-accent)]/10 flex items-center justify-center">
+            <RefreshCw class="w-6 h-6 text-[var(--rg-accent)] animate-spin" />
+          </div>
+          <p class="text-sm text-[var(--rg-fg-muted)]">正在获取远程服务器信息...</p>
         </div>
-        <button onclick={fetchRemoteInfo} class="w-full h-8 rounded-md border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] text-xs hover:bg-[var(--rg-surface)] transition-colors flex items-center justify-center gap-1">
-          <RefreshCw class="w-3 h-3" />
-          获取服务器信息
-        </button>
-      </div>
+      {/if}
     {/if}
 
     {#if connectError}
@@ -134,6 +176,4 @@
   </div>
 </div>
 
-<style>
-  input::placeholder { color: var(--rg-fg-muted); opacity: 0.5; }
-</style>
+
