@@ -15,3 +15,4 @@ vite.config.ts.timestamp-*
 .aider*
 scripts/perf-runs/
 bash.exe.stackdump
+.ridge-remote-port

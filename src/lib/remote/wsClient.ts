@@ -36,13 +36,17 @@ export function createRemoteConnection(): RemoteConnectionApi {
     doConnect();
   }
 
+  let intentionalDisconnect = false;
+
   function doConnect() {
     if (ws) {
       ws.onclose = null;
+      ws.onerror = null;
       ws.close();
     }
     state.set('connecting');
     error.set(null);
+    intentionalDisconnect = false;
 
     const url = `ws://${host}:${port}/ws?code=${encodeURIComponent(code)}`;
     ws = new WebSocket(url);
@@ -62,19 +66,21 @@ export function createRemoteConnection(): RemoteConnectionApi {
             error.set(msg.message ?? 'unknown error');
             break;
         }
-      } catch {
-        // ignore unparseable messages
-      }
+      } catch { /* ignore */ }
     };
 
     ws.onclose = () => {
-      state.set('disconnected');
-      ws = null;
-      scheduleReconnect();
+      if (!intentionalDisconnect) {
+        state.set('disconnected');
+        ws = null;
+        scheduleReconnect();
+      } else {
+        state.set('disconnected');
+        ws = null;
+      }
     };
 
     ws.onerror = () => {
-      state.set('error');
       error.set('WebSocket connection failed');
       ws?.close();
     };
@@ -101,12 +107,14 @@ export function createRemoteConnection(): RemoteConnectionApi {
   function listPanes() { send({ type: 'list-panes' }); }
 
   function disconnect() {
+    intentionalDisconnect = true;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
     if (ws) {
       ws.onclose = null;
+      ws.onerror = null;
       ws.close();
       ws = null;
     }

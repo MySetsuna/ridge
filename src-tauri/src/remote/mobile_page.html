@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ridge Remote</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        surface: '#f8f9fa',
+        border: '#e9ecef',
+        muted: '#868e96',
+        accent: '#4263eb',
+        'accent-light': '#dbe4ff',
+      }
+    }
+  }
+}
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.fade-enter-active,.fade-leave-active{transition:opacity .2s ease}
+.fade-enter-from,.fade-leave-to{opacity:0}
+.slide-up-enter-active,.slide-up-leave-active{transition:all .2s ease}
+.slide-up-enter-from,.slide-up-leave-to{opacity:0;transform:translateY(8px)}
+input{outline:none}
+input:focus{border-color:#4263eb!important}
+button{cursor:pointer;-webkit-tap-highlight-color:transparent}
+button:active{opacity:.7}
+.scrollbar-thin::-webkit-scrollbar{width:3px;height:3px}
+.scrollbar-thin::-webkit-scrollbar-thumb{background:#dee2e6;border-radius:4px}
+.scrollbar-thin::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div id="app">
+  <auth-screen v-if="!auth.verified" @verify="auth.verified=true" />
+  <main-app v-else />
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
+
+// ── Utils ──
+function api(path) {
+  const base = location.pathname.replace(/\/+$/,'') || '';
+  return location.origin + base + path;
+}
+
+// ── Auth Screen ──
+const AuthScreen = {
+  template: `
+    <div class="fixed inset-0 bg-white flex flex-col items-center justify-center px-6" style="min-height:100dvh">
+      <div class="w-14 h-14 rounded-2xl bg-[#4263eb] flex items-center justify-center text-white text-2xl font-bold mb-4">R</div>
+      <h1 class="text-xl font-semibold text-gray-900 mb-1">Ridge Remote</h1>
+      <p class="text-sm text-gray-500 mb-8 text-center">输入身份验证器中的 6 位动态验证码<br>以连接到远程桌面</p>
+      <div class="w-full max-w-xs">
+        <div class="text-center mb-4">
+          <div class="text-3xl font-bold tracking-[.25em] text-[#4263eb] font-mono">{{ displayCode || '------' }}</div>
+          <p class="text-xs text-gray-400 mt-1">当前验证码（每 30 秒刷新）</p>
+        </div>
+        <input ref="codeInput"
+          v-model="code"
+          type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+          placeholder="输入 6 位验证码" autocomplete="one-time-code"
+          class="w-full h-12 px-4 rounded-xl border-2 border-gray-200 text-center text-xl font-bold tracking-[.3em] text-gray-900 transition-colors"
+          :class="{'border-red-400': error}"
+          @input="onInput"
+          @keydown.enter="verify"
+        />
+        <p v-if="error" class="text-xs text-red-500 mt-2 text-center">{{ error }}</p>
+        <button @click="verify"
+          :disabled="code.length<6||loading"
+          class="w-full h-12 mt-4 rounded-xl bg-[#238636] text-white text-sm font-semibold disabled:opacity-40 transition-opacity flex items-center justify-center gap-2"
+        >
+          <svg v-if="loading" class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+          {{ loading ? '验证中...' : '验证并连接' }}
+        </button>
+      </div>
+    </div>
+  `,
+  emits: ['verify'],
+  setup(_props, { emit }) {
+    const code = ref('');
+    const displayCode = ref('');
+    const error = ref('');
+    const loading = ref(false);
+    const codeInput = ref(null);
+
+    let ws = null;
+    let totpTimer = null;
+
+    async function fetchTotp() {
+      try {
+        const r = await fetch(api('/info'));
+        if (r.ok) { const d = await r.json(); displayCode.value = d.totpCode || d.totp_code || '------'; }
+      } catch {}
+    }
+    function onInput() { code.value = code.value.replace(/\D/g,'').slice(0,6); error.value = ''; }
+    function verify() {
+      if (code.value.length < 6 || loading.value) return;
+      loading.value = true; error.value = '';
+      const wsUrl = `ws://${location.host}/ws?code=${encodeURIComponent(code.value)}`;
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => { loading.value = false; if (totpTimer) clearInterval(totpTimer); emit('verify'); };
+      ws.onerror = ws.onclose = () => { loading.value = false; error.value = '验证失败：验证码无效或服务器拒绝连接'; ws = null; };
+    }
+    onMounted(() => { fetchTotp(); totpTimer = setInterval(fetchTotp, 5000); setTimeout(() => codeInput.value?.focus(), 300); });
+    onUnmounted(() => { if (totpTimer) clearInterval(totpTimer); });
+    return { code, displayCode, error, loading, codeInput, onInput, verify };
+  }
+};
+
+// ── Main App ──
+const MainApp = {
+  template: `
+    <div class="fixed inset-0 bg-white flex flex-col" style="min-height:100dvh">
+      <screen1 v-if="screen==='terminal'" :workspaces="workspaces" :activeWs="activeWs"
+        @switch-screen="screen='ide'"
+        @add-ws="addWs" @remove-ws="removeWs" @select-ws="selectWs" />
+      <screen2 v-else @switch-screen="screen='terminal'" />
+    </div>
+  `,
+  setup() {
+    const screen = ref('terminal');
+    const workspaces = reactive([
+      { id: 1, name: '工作区 1', terminals: ['终端 1', '终端 2', '终端 3'].map((n,i)=>({id:i,name:n})) }
+    ]);
+    let nextWsId = ref(2);
+    let nextTermId = ref(4);
+    const activeWs = reactive(workspaces[0]);
+
+    function addWs() {
+      const ws = { id: nextWsId.value++, name: '工作区 ' + nextWsId.value, terminals: [{id:nextTermId.value++,name:'终端 1'}] };
+      workspaces.push(ws);
+    }
+    function removeWs(ws) {
+      if (workspaces.length <= 1) return;
+      const idx = workspaces.indexOf(ws);
+      workspaces.splice(idx, 1);
+      if (activeWs === ws) Object.assign(activeWs, workspaces[Math.min(idx, workspaces.length-1)]);
+    }
+    function selectWs(ws) {
+      Object.assign(activeWs, ws);
+    }
+
+    return { screen, workspaces, activeWs, addWs, removeWs, selectWs };
+  }
+};
+
+// ── Screen 1: Terminal ──
+const Screen1 = {
+  template: `
+    <div class="flex flex-col flex-1 min-h-0">
+      <!-- Terminal output area -->
+      <div class="flex-1 overflow-auto p-4 bg-gray-50 scrollbar-thin" ref="termArea">
+        <div v-for="(line,i) in terminalLines" :key="i" class="text-sm font-mono text-gray-800 leading-relaxed whitespace-pre-wrap py-0.5">{{ line }}</div>
+      </div>
+      <!-- Draft input -->
+      <div class="shrink-0 px-3 pb-2 pt-1">
+        <div class="relative">
+          <input v-model="draft" @keydown.enter="sendCmd"
+            placeholder="文本输入...(回车发送)"
+            class="w-full h-11 pl-4 pr-12 rounded-xl bg-gray-100 border border-gray-200 text-sm text-gray-800 transition-colors placeholder-gray-400"
+          />
+          <button @click="sendCmd" :disabled="!draft.trim()"
+            class="absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-lg bg-[#4263eb] text-white disabled:opacity-30 transition-opacity"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
+          </button>
+        </div>
+      </div>
+      <!-- Bottom tab bar -->
+      <bottom-tab-bar :terminals="activeWs.terminals" :wsName="activeWs.name"
+        :workspaces="workspaces"
+        @switch-screen="$emit('switch-screen')"
+        @add-ws="$emit('add-ws')"
+        @remove-ws="$emit('remove-ws', activeWs)"
+        @select-ws="$emit('select-ws', $event)"
+        @select-term="activeTerm=$event" />
+    </div>
+  `,
+  props: ['workspaces','activeWs'],
+  emits: ['switch-screen','add-ws','remove-ws','select-ws'],
+  setup() {
+    const terminalLines = ref([
+      'C:\\workcode\\myproject>',
+    ]);
+    const draft = ref('');
+    const activeTerm = ref(0);
+    const termArea = ref(null);
+
+    function sendCmd() {
+      if (!draft.value.trim()) return;
+      terminalLines.value.push('C:\\workcode\\myproject> ' + draft.value);
+      draft.value = '';
+      nextTick(() => { if (termArea.value) termArea.value.scrollTop = termArea.value.scrollHeight; });
+    }
+
+    return { terminalLines, draft, activeTerm, termArea, sendCmd };
+  }
+};
+
+// ── Bottom Tab Bar ──
+const BottomTabBar = {
+  template: `
+    <div class="shrink-0 flex items-center border-t border-gray-200 bg-white relative">
+      <!-- Terminal Tabs (scrollable) -->
+      <div class="flex-1 flex overflow-x-auto scrollbar-thin" ref="tabContainer">
+        <button v-for="(tab,i) in terminals" :key="i"
+          @click="$emit('select-term', i)"
+          class="shrink-0 h-11 px-4 text-xs font-medium transition-colors relative"
+          :class="activeTerm===i ? 'text-[#4263eb]' : 'text-gray-500'"
+        >
+          {{ tab.name }}
+          <div v-if="activeTerm===i" class="absolute bottom-0 left-2 right-2 h-0.5 bg-[#4263eb] rounded-full"></div>
+        </button>
+      </div>
+      <!-- Workspace Switcher -->
+      <div class="relative shrink-0" ref="wsContainer">
+        <button @click="wsMenuOpen=!wsMenuOpen"
+          class="h-11 px-3 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors flex items-center gap-1 border-l border-gray-200"
+        >
+          {{ wsName }}
+          <svg class="w-3.5 h-3.5" :class="{'rotate-180':wsMenuOpen}" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <!-- Workspace Menu -->
+        <div v-if="wsMenuOpen" class="fixed inset-0 z-50" @click.self="wsMenuOpen=false">
+          <div class="absolute bottom-12 right-2 w-56 bg-white rounded-xl shadow-lg border border-gray-200 py-1 slide-up-enter-active z-50"
+            style="box-shadow:0 8px 30px rgba(0,0,0,.12)">
+            <div class="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">工作区</div>
+            <button v-for="ws in workspaces" :key="ws.id"
+              @click="$emit('select-ws', ws); wsMenuOpen=false"
+              class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+              :class="{'bg-[#dbe4ff] text-[#4263eb]': ws.id===activeWsId}"
+            >
+              <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+              <span class="truncate">{{ ws.name }}</span>
+              <span v-if="ws.id===activeWsId" class="ml-auto text-[#4263eb]">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+              </span>
+            </button>
+            <div class="border-t border-gray-100 my-1"></div>
+            <button @click="$emit('add-ws'); wsMenuOpen=false"
+              class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <svg class="w-4 h-4 shrink-0 text-[#4263eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              <span>新建工作区</span>
+            </button>
+            <button @click="confirmRemove"
+              class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-500 hover:bg-red-50 transition-colors"
+            >
+              <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+              <span>移除当前工作区</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+  props: ['terminals','wsName','workspaces','activeTerm'],
+  emits: ['switch-screen','add-ws','remove-ws','select-ws','select-term'],
+  setup(props, { emit }) {
+    const wsMenuOpen = ref(false);
+    const tabContainer = ref(null);
+    const activeWsId = computed(() => props.workspaces.find(ws => ws.name === props.wsName)?.id);
+    function confirmRemove() {
+      if (props.workspaces.length <= 1) return;
+      wsMenuOpen.value = false;
+      emit('remove-ws');
+    }
+    return { wsMenuOpen, tabContainer, activeWsId, confirmRemove };
+  }
+};
+
+// ── Screen 2: IDE Mode ──
+const Screen2 = {
+  template: `
+    <div class="flex flex-col flex-1 min-h-0">
+      <!-- Header -->
+      <div class="flex items-center justify-between h-11 px-3 border-b border-gray-200 shrink-0 bg-white">
+        <button @click="$emit('switch-screen')" class="flex items-center gap-1 p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+          <svg class="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        </button>
+        <span class="text-sm font-medium text-gray-800">移动终端线稿</span>
+        <button class="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+          <svg class="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
+        </button>
+      </div>
+      <!-- Body: sidebar + content -->
+      <div class="flex-1 flex min-h-0">
+        <!-- Sidebar -->
+        <div class="w-16 shrink-0 flex flex-col items-center gap-2 pt-3 border-r border-gray-200 bg-gray-50/50">
+          <button v-for="tab in tabs" :key="tab.id"
+            @click="activeTab=tab.id"
+            class="w-12 h-12 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors"
+            :class="activeTab===tab.id ? 'bg-[#dbe4ff] text-[#4263eb]' : 'text-gray-500 hover:bg-gray-100'"
+          >
+            <span v-html="tab.icon" class="w-5 h-5"></span>
+            <span class="text-[9px]">{{ tab.label }}</span>
+          </button>
+        </div>
+        <!-- Content -->
+        <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <!-- Main content area -->
+          <div class="flex-1 overflow-auto p-3 scrollbar-thin">
+            <!-- Files -->
+            <div v-if="activeTab==='files'">
+              <div class="flex items-center justify-between mb-3">
+                <h2 class="text-sm font-medium text-gray-800">文件树</h2>
+                <div class="flex items-center gap-2 text-gray-400">
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                </div>
+              </div>
+              <file-tree :nodes="fileTree" />
+              <div class="mt-4 text-[10px] text-gray-400">{{ fileCount }} 个文件，{{ fileTree.filter(n=>n.type==='dir').length }} 个文件夹</div>
+            </div>
+            <!-- Search -->
+            <div v-if="activeTab==='search'">
+              <div class="relative mb-4">
+                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <input placeholder="搜索文件内容..." class="w-full h-10 pl-10 pr-4 rounded-lg bg-gray-100 border border-gray-200 text-sm text-gray-800 transition-colors placeholder-gray-400" />
+              </div>
+              <div class="space-y-2">
+                <div v-for="r in searchResults" :key="r.file" class="p-2 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer">
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm font-medium text-gray-800">{{ r.file }}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#dbe4ff] text-[#4263eb]">{{ r.matches }} 行匹配</span>
+                  </div>
+                  <p class="text-[11px] text-gray-500 mt-0.5">{{ r.path }}</p>
+                </div>
+              </div>
+            </div>
+            <!-- Git -->
+            <div v-if="activeTab==='git'" class="space-y-4">
+              <div>
+                <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">已 staged ②</h3>
+                <div v-for="item in stagedFiles" :key="item" class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-gray-50 text-sm text-gray-700">
+                  <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m-7 4h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                  <span class="truncate">{{ item }}</span>
+                </div>
+              </div>
+              <div>
+                <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">未 staged ③</h3>
+                <div v-for="item in unstagedFiles" :key="item.n" class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-gray-50 text-sm text-gray-700">
+                  <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m-7 4h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                  <span class="truncate">{{ item.n }}</span>
+                  <span class="text-[10px] px-1 rounded bg-gray-100 text-gray-500 ml-auto">{{ item.s }}</span>
+                </div>
+              </div>
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Git Graph</h3>
+                  <div class="flex items-center gap-2 text-gray-400">
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">main ▼</span>
+                    <span class="text-xs cursor-pointer">🔍+</span>
+                    <span class="text-xs cursor-pointer">⤢</span>
+                  </div>
+                </div>
+                <div class="space-y-1">
+                  <div v-for="(c,i) in gitCommits" :key="i" class="flex items-start gap-2 py-1">
+                    <div class="flex flex-col items-center shrink-0">
+                      <div class="w-2.5 h-2.5 rounded-full bg-[#4263eb] mt-1.5"></div>
+                      <div v-if="i<gitCommits.length-1" class="w-px h-5 bg-gray-200"></div>
+                    </div>
+                    <div class="min-w-0">
+                      <p class="text-sm text-gray-800 truncate">{{ c.msg }}</p>
+                      <p class="text-[10px] text-gray-400 space-x-2"><span>{{ c.hash }}</span><span>{{ c.time }}</span></p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+  emits: ['switch-screen'],
+  setup() {
+    const activeTab = ref('files');
+    const tabs = [
+      { id:'files', label:'文件', icon:'<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m-7 4h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>' },
+      { id:'search', label:'搜索', icon:'<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>' },
+      { id:'git', label:'Git', icon:'<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
+    ];
+    const fileTree = [
+      { name:'.git', type:'dir', children:[] },
+      { name:'src', type:'dir', children:[
+        { name:'components', type:'dir', children:[{ name:'Button.vue', type:'file', children:[] },{ name:'Input.vue', type:'file', children:[] }] },
+        { name:'utils', type:'dir', children:[{ name:'request.js', type:'file', children:[] }] },
+        { name:'App.vue', type:'file', children:[] },
+        { name:'main.js', type:'file', children:[] },
+      ]},
+      { name:'public', type:'dir', children:[] },
+      { name:'package.json', type:'file', children:[] },
+      { name:'README.md', type:'file', children:[] },
+    ];
+    const fileCount = computed(() => { let c=0; function w(n){n.forEach(x=>{if(x.type==='file')c++;w(x.children)})} w(fileTree); return c; });
+    const searchResults = [
+      { file:'Button.vue', path:'../src/components/Button.vue', matches:12 },
+      { file:'Input.vue', path:'../src/components/Input.vue', matches:8 },
+      { file:'request.js', path:'../src/utils/request.js', matches:5 },
+    ];
+    const stagedFiles = ['src/components/Button.vue · M', 'package.json · M'];
+    const unstagedFiles = [{ n:'src/utils/request.js', s:'M' },{ n:'README.md', s:'A' }];
+    const gitCommits = [
+      { msg:'feat: 添加登录功能', hash:'a1b2c3d', time:'2 小时前' },
+      { msg:'fix: 修复按钮样式问题', hash:'e4f5g6h', time:'5 小时前' },
+      { msg:'docs: 更新 README', hash:'i7j8k9l', time:'1 天前' },
+    ];
+
+    return { activeTab, tabs, fileTree, fileCount, searchResults, stagedFiles, unstagedFiles, gitCommits };
+  }
+};
+
+// ── File Tree Component ──
+const FileTree = {
+  template: `
+    <div class="space-y-0.5">
+      <div v-for="node in nodes" :key="node.name">
+        <div @click="toggle(node)" class="flex items-center gap-1.5 py-1 px-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer">
+          <span v-if="node.type==='dir'" class="shrink-0 text-xs text-gray-400 w-3">{{ expanded[node.name] ? '▼' : '▶' }}</span>
+          <span v-else class="w-3"></span>
+          <svg v-if="node.type==='dir'" class="w-4 h-4 shrink-0 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+          <svg v-else class="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+          <span class="text-sm truncate text-gray-700">{{ node.name }}{{ node.type==='dir' ? '/' : '' }}</span>
+        </div>
+        <div v-if="node.type==='dir' && expanded[node.name]" class="ml-4">
+          <file-tree :nodes="node.children" />
+        </div>
+      </div>
+    </div>
+  `,
+  props: { nodes: { type: Array, default: () => [] } },
+  setup(props) {
+    const expanded = reactive({});
+    function toggle(node) {
+      if (node.type === 'dir') expanded[node.name] = !expanded[node.name];
+    }
+    return { expanded, toggle };
+  }
+};
+
+// ── Register components & mount ──
+const app = createApp({
+  setup() {
+    const auth = reactive({ verified: false });
+    return { auth };
+  }
+});
+app.component('auth-screen', AuthScreen);
+app.component('main-app', MainApp);
+app.component('screen1', Screen1);
+app.component('screen2', Screen2);
+app.component('bottom-tab-bar', BottomTabBar);
+app.component('file-tree', FileTree);
+app.mount('#app');
+</script>
+</body>
+</html>

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use parking_lot::{Mutex, RwLock};
 use portable_pty::{CommandBuilder, MasterPty, SlavePty};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::commands::fs_watch::FsWatcher;
@@ -15,7 +16,7 @@ use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::remote::auth::RemoteAuth;
-use crate::types::GlobalEvent;
+use crate::types::{GlobalEvent, PtyOutputEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
 /// Two-stage PTY spawn record.
@@ -264,10 +265,28 @@ pub struct AppState {
     /// Remote Control auth — shared TOTP generator. Created on app startup;
     /// the same secret persists for the process lifetime.
     pub remote_auth: Arc<RemoteAuth>,
+    /// Broadcast channel for PTY output events. The main event loop feeds
+    /// every `PtyOutput` event into this channel; remote WebSocket clients
+    /// subscribe to receive terminal output in real time.
+    pub pty_output_tx: broadcast::Sender<PtyOutputEvent>,
+    /// Global remote control toggle. When `false`, the remote server handlers
+    /// return 503 and the WebSocket upgrade is refused. Set via the settings
+    /// panel's "Remote Control" switch.
+    pub remote_enabled: Arc<AtomicBool>,
+    /// Handle to the remote server background thread. `None` when the server
+    /// is not running. Used to join the thread on shutdown / restart.
+    pub remote_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// One-shot sender to signal the remote server to gracefully shut down.
+    /// Drained (taken) after each start/stop cycle.
+    pub remote_shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    /// Handle to the remote server dev-mode process (`pnpm dev:remote`).
+    /// `None` when not in dev mode or server not running.
+    pub remote_dev_process: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 impl AppState {
     pub fn new(event_tx: mpsc::Sender<GlobalEvent>) -> Self {
+        let (pty_output_tx, _) = broadcast::channel::<PtyOutputEvent>(256);
         let id = Uuid::new_v4();
         let mut map = HashMap::new();
         let mut pane_tree = PaneTree::new();
@@ -318,6 +337,11 @@ impl AppState {
             pty_delta_channels: Arc::new(RwLock::new(HashMap::new())),
             remote_port: Arc::new(RwLock::new(0)),
             remote_auth: Arc::new(RemoteAuth::new()),
+            pty_output_tx,
+            remote_enabled: Arc::new(AtomicBool::new(false)),
+            remote_thread: Arc::new(Mutex::new(None)),
+            remote_shutdown: Arc::new(Mutex::new(None)),
+            remote_dev_process: Arc::new(Mutex::new(None)),
         }
     }
 

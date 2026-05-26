@@ -11,7 +11,7 @@ export interface PortalOptions {
 	id?: string;
 }
 
-export const portal: Action<HTMLElement, PortalOptions | undefined> = (node, options) => {
+export const portal: Action<HTMLElement, PortalOptions | undefined> = (node, options: PortalOptions | undefined) => {
 	if (typeof document === 'undefined') return { destroy() {} };
 
 	function resolveTarget(opt: PortalOptions | undefined): HTMLElement {

@@ -114,7 +114,16 @@ export interface PaneWorkerState {
  *  can stub it. */
 export type WorkerState = Map<string, PaneWorkerState>;
 
+/** Per-pane queue of `applyDelta` bytes that arrived before `init`.
+ *  Drained by `init` handler so early delta frames are replayed in
+ *  order after the pane state is set up. */
+export type PendingDeltaQueue = Map<string, Uint8Array[]>;
+
 export function makeWorkerState(): WorkerState {
+	return new Map();
+}
+
+export function makePendingDeltaQueue(): PendingDeltaQueue {
 	return new Map();
 }
 
@@ -132,6 +141,7 @@ export function handleRequest(
 	state: WorkerState,
 	request: RenderWorkerRequest,
 	adapter?: KernelAdapter | null,
+	pendingDeltas?: PendingDeltaQueue,
 ): RenderWorkerResponse {
 	switch (request.type) {
 		case 'ping':
@@ -155,9 +165,6 @@ export function handleRequest(
 						scrollback: request.scrollbackLines,
 					});
 				} catch (err) {
-					// Kernel construction failed (wasm OOM, bad args, etc.).
-					// Surface as a structured error so the host can decide
-					// whether to retry or fall back to the legacy path.
 					return {
 						type: 'error',
 						paneId: request.paneId,
@@ -175,12 +182,33 @@ export function handleRequest(
 				canvasBound: false,
 				kernel,
 			});
+			// Drain any applyDelta frames that arrived before init.
+			if (pendingDeltas) {
+				const queued = pendingDeltas.get(request.paneId);
+				if (queued) {
+					pendingDeltas.delete(request.paneId);
+					const pane = state.get(request.paneId)!;
+					for (const bytes of queued) {
+						if (pane.kernel) {
+							try {
+								pane.kernel.applyDeltaFrame(bytes);
+							} catch {
+								// skip failed delta
+							}
+						}
+						if (pane.renderer) {
+							try {
+								pane.renderer.render();
+							} catch {
+								// skip failed render
+							}
+						}
+					}
+				}
+			}
 			return {
 				type: 'ready',
 				paneId: request.paneId,
-				// P4.5 doesn't actually load WebGPU yet, so we honor the
-				// requested backend in the ack. P4.9 swaps this for the
-				// real `try webgpu else canvas2d` probe.
 				backend: request.backend,
 			};
 		}
@@ -261,11 +289,22 @@ export function handleRequest(
 		case 'applyDelta': {
 			const pane = state.get(request.paneId);
 			if (!pane) {
+				// Queue the delta so when `init` arrives later it will be
+				// replayed in order. Prevents `pane_not_initialized` errors
+				// in the (common) race where applyDelta fires before the
+				// worker has processed init.
+				if (pendingDeltas) {
+					const list = pendingDeltas.get(request.paneId);
+					if (list) {
+						list.push(request.bytes);
+					} else {
+						pendingDeltas.set(request.paneId, [request.bytes]);
+					}
+				}
 				return {
-					type: 'error',
+					type: 'ready',
 					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `applyDelta before init for pane ${request.paneId}`,
+					backend: 'canvas2d',
 				};
 			}
 			// P4.7 (2026-05-22): when the wasm kernel adapter loaded
@@ -558,6 +597,7 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 
 if (isInWorkerScope()) {
 	const state = makeWorkerState();
+	const pendingDeltas = makePendingDeltaQueue();
 	const scope = self as unknown as WorkerScopeLike;
 	// The browser queues incoming `message` events on the worker's
 	// internal port until we install a listener. We finish wasm load
@@ -584,7 +624,7 @@ if (isInWorkerScope()) {
 				scope.postMessage({ ...response, __reqId: id });
 				return;
 			}
-			const response = handleRequest(state, event.data, adapter);
+			const response = handleRequest(state, event.data, adapter, pendingDeltas);
 			scope.postMessage({ ...response, __reqId: id });
 		});
 	}
