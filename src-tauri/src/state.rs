@@ -15,7 +15,7 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
-use crate::remote::auth::RemoteAuth;
+use crate::remote::auth::{RemoteAuth, SessionStore};
 use crate::types::{GlobalEvent, PtyOutputEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
@@ -282,6 +282,10 @@ pub struct AppState {
     /// Handle to the remote server dev-mode process (`pnpm dev:remote`).
     /// `None` when not in dev mode or server not running.
     pub remote_dev_process: Arc<Mutex<Option<std::process::Child>>>,
+    /// Session token store for mobile client authentication.
+    /// Tokens are created via POST /verify and validated via WS ?token=.
+    /// Each token expires after 3 days of inactivity.
+    pub remote_session_store: Arc<SessionStore>,
 }
 
 impl AppState {
@@ -342,6 +346,7 @@ impl AppState {
             remote_thread: Arc::new(Mutex::new(None)),
             remote_shutdown: Arc::new(Mutex::new(None)),
             remote_dev_process: Arc::new(Mutex::new(None)),
+            remote_session_store: Arc::new(SessionStore::new()),
         }
     }
 

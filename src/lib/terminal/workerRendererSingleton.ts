@@ -47,10 +47,11 @@ export function isWorkerRenderingEnabled(): boolean {
 	} catch {
 		/* SSR / worker / sandboxed origin — localStorage unavailable */
 	}
-	// P4.9: enabled by default. Users who hit performance issues before
-	// the worker path was stable can still opt out via the global or
-	// localStorage.
-	return true;
+	// P4.9 NOTE: worker rendering is disabled by default until the
+	// render worker has its own wasm kernel and can produce real pixels.
+	// Enable via `window.__RIDGE_USE_WORKER = true` or
+	// `localStorage.RIDGE_USE_WORKER = '1'` for development.
+	return false;
 }
 
 /** Returns true when the runtime exposes a real `Worker` constructor.

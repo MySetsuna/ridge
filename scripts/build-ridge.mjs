@@ -186,8 +186,15 @@ async function main() {
 
   // Build frontend first — tauri needs ../build to exist.
   // Set RIDGE_BUILD_SKIP to avoid circular re-entry if vite triggers npm run build.
-  console.log('[build-ridge] Building frontend (vite build)...');
+  console.log('[build-ridge] Building desktop frontend (vite build)...');
   execSync('npx vite build', {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: { ...process.env, RIDGE_BUILD_SKIP: '1' },
+  });
+  // Also build the mobile frontend so tauri's resource glob picks it up.
+  console.log('[build-ridge] Building mobile frontend (vite build --config vite.mobile.config.js)...');
+  execSync('npx vite build --config vite.mobile.config.js', {
     cwd: repoRoot,
     stdio: 'inherit',
     env: { ...process.env, RIDGE_BUILD_SKIP: '1' },

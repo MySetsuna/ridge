@@ -825,7 +825,7 @@
     // 必须高于 pin (floating) 模式编辑器面板的 z-index:60，否则在 pin 模式下
     // 拖拽 tab 时浮动副本会被面板自身遮住，看起来像"消失了"。仍然低于 9990
     // 起跳的 modal 层（见 CLAUDE.md 的 z-index 注册表）。
-    el.style.zIndex = '100';
+    el.style.zIndex = '300';
 
     let lockedY: number | null = null;
     const observer = new MutationObserver(() => {
@@ -1061,7 +1061,7 @@
       return 'display: none;';
     if (editorState.displayMode === 'floating') {
       const r = editorState.floatingRect;
-      return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 60;`;
+      return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 200;`;
     }
     if (editorState.displayMode === 'embedded') {
       // Embedded: part of the normal flex layout — no position:fixed.
@@ -1071,7 +1071,7 @@
     // drawer: anchored to the right, **below the 44px header bar** so the
     // titlebar + workspace tabs remain visible/interactive (用户反馈：抽屉不能遮挡顶部 header)。
     const TOP_OFFSET = 44;
-    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 90;`;
+    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 200;`;
   });
 </script>
 
