@@ -16,3 +16,7 @@ vite.config.ts.timestamp-*
 scripts/perf-runs/
 bash.exe.stackdump
 .ridge-remote-port
+/coverage
+/test-results
+/static/mobile
+/packages/ridge-term/pkg

@@ -1,5 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 const TOTP_PERIOD: u64 = 30;
@@ -153,6 +155,45 @@ fn base32_encode(input: &[u8]) -> String {
     result
 }
 
+const SESSION_TTL: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+pub struct SessionStore {
+    tokens: Mutex<HashMap<String, Instant>>,
+}
+
+impl SessionStore {
+    pub fn new() -> Self {
+        Self {
+            tokens: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn create_session(&self) -> String {
+        let mut rng = SimpleRng::from_entropy();
+        let token: String = (0..32)
+            .map(|_| format!("{:02x}", rng.next_u64() as u8))
+            .collect();
+        self.tokens.lock().insert(token.clone(), Instant::now());
+        self.cleanup_expired();
+        token
+    }
+
+    pub fn validate_token(&self, token: &str) -> bool {
+        let mut map = self.tokens.lock();
+        if let Some(&created) = map.get(token) {
+            if created.elapsed() < SESSION_TTL {
+                return true;
+            }
+            map.remove(token);
+        }
+        false
+    }
+
+    fn cleanup_expired(&self) {
+        self.tokens.lock().retain(|_, created| created.elapsed() < SESSION_TTL);
+    }
+}
+
 /// Minimal non-cryptographic PRNG for secret generation.
 struct SimpleRng {
     state: u64,
@@ -163,6 +204,13 @@ impl SimpleRng {
         Self {
             state: seed.wrapping_add(0x9e3779b97f4a7c15),
         }
+    }
+    fn from_entropy() -> Self {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        Self::new(seed as u64 ^ std::process::id() as u64)
     }
     fn next_u64(&mut self) -> u64 {
         let mut x = self.state;

@@ -37,7 +37,8 @@ struct RemoteCtx {
 
 #[derive(Deserialize)]
 struct ConnectQuery {
-    code: String,
+    code: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +57,6 @@ struct StatusResponse {
 struct InfoResponse {
     port: u16,
     lan_ip: String,
-    totp_code: String,
     otpauth_uri: String,
     ready: bool,
     machine_name: String,
@@ -66,6 +66,13 @@ struct InfoResponse {
 struct VerifyResponse {
     success: bool,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SessionQuery {
+    token: String,
 }
 
 /// Handle returned by `spawn_remote_server` — the caller receives the
@@ -144,15 +151,27 @@ async fn run_remote_server(
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
-    // Resolve the static files directory.
-    let static_dir_cwd = PathBuf::from("static").join("mobile");
-    let static_dir = if static_dir_cwd.exists() {
-        static_dir_cwd
-    } else {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("static").join("mobile")))
-            .unwrap_or(static_dir_cwd)
+    // Resolve the static files directory. Try in order:
+    // 1. CWD/static/mobile — works in dev (`cargo tauri dev`) when CWD is project root.
+    // 2. exe_dir/static/mobile — works in production (NSIS install copies resources next to exe).
+    // 3. exe_dir/../../../static/mobile — works when running the exe directly from
+    //    target/release/ (parent→target→src-tauri→project-root/static/mobile).
+    let static_dir = {
+        let candidates: Vec<PathBuf> = vec![
+            PathBuf::from("static").join("mobile"),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("static").join("mobile")))
+                .unwrap_or_default(),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| {
+                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("mobile").into()
+                })
+                .unwrap_or_default(),
+        ];
+        candidates.into_iter().find(|p| p.join("index.html").exists())
+            .unwrap_or_else(|| PathBuf::from("static").join("mobile"))
     };
 
     let ctx = RemoteCtx {
@@ -170,6 +189,7 @@ async fn run_remote_server(
         .route("/status", get(status_handler))
         .route("/verify", get(verify_handler_get).post(verify_handler_post))
         .route("/ws", get(ws_handler))
+        .route("/session", get(session_handler))
         .route("/assets/*path", get(assets_handler))
         .with_state(ctx);
 
@@ -234,11 +254,10 @@ async fn assets_handler(
 async fn info_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     let enabled = ctx.state.remote_enabled.load(Ordering::Relaxed);
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
-    let (code, uri) = ctx.auth.code_and_uri(&machine_name);
+    let uri = ctx.auth.otpauth_uri(&machine_name);
     Json(InfoResponse {
         port: ctx.port,
         lan_ip: ctx.lan_ip.clone(),
-        totp_code: code,
         otpauth_uri: uri,
         ready: enabled,
         machine_name,
@@ -262,6 +281,11 @@ async fn verify_handler_post(
     Form(form): Form<VerifyForm>,
 ) -> Json<VerifyResponse> {
     let valid = ctx.auth.verify(&form.code);
+    let token = if valid {
+        Some(ctx.state.remote_session_store.create_session())
+    } else {
+        None
+    };
     Json(VerifyResponse {
         success: valid,
         message: if valid {
@@ -269,12 +293,12 @@ async fn verify_handler_post(
         } else {
             "Invalid TOTP code".to_string()
         },
+        token,
     })
 }
 
-/// WebSocket upgrade handler. Requires a `?code=XXXXXX` query parameter
-/// containing a valid TOTP 6-digit code. Returns 401 if the code is missing
-/// or invalid, and 503 if remote control is globally disabled.
+/// WebSocket upgrade handler. Accepts `?code=XXXXXX` (TOTP) or `?token=XXX` (session token).
+/// Returns 401 if authentication fails, 503 if remote control is globally disabled.
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<ConnectQuery>,
@@ -283,10 +307,26 @@ async fn ws_handler(
     if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
         return (StatusCode::SERVICE_UNAVAILABLE, "remote control disabled").into_response();
     }
-    if !ctx.auth.verify(&query.code) {
-        return (StatusCode::UNAUTHORIZED, "invalid TOTP code").into_response();
+    let valid = if let Some(ref t) = query.token {
+        ctx.state.remote_session_store.validate_token(t)
+    } else if let Some(ref c) = query.code {
+        ctx.auth.verify(c)
+    } else {
+        false
+    };
+    if !valid {
+        return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
     }
     ws.on_upgrade(move |socket| handle_ws(socket, ctx)).into_response()
+}
+
+/// Check if a session token is still valid.
+async fn session_handler(
+    Query(query): Query<SessionQuery>,
+    State(ctx): State<RemoteCtx>,
+) -> impl IntoResponse {
+    let valid = ctx.state.remote_session_store.validate_token(&query.token);
+    Json(serde_json::json!({ "valid": valid }))
 }
 
 async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {

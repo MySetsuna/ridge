@@ -60,10 +60,17 @@ export class RemoteConnection {
     return () => this.messageListeners.delete(fn);
   }
 
-  connect(host: string, port: number, code: string) {
+  connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
     if (this.ws) this.ws.close();
     this.setState('connecting');
-    const url = `ws://${host}:${port}/ws?code=${encodeURIComponent(code)}`;
+    let url: string;
+    if (auth) {
+      const param = authType === 'token' ? 'token' : 'code';
+      url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}`;
+    } else {
+      this.setState('error');
+      return;
+    }
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => this.setState('connected');
