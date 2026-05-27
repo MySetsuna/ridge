@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use parking_lot::{Mutex, RwLock};
 use portable_pty::{CommandBuilder, MasterPty, SlavePty};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::commands::fs_watch::FsWatcher;
@@ -16,7 +16,7 @@ use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::remote::auth::{RemoteAuth, SessionStore};
-use crate::types::{GlobalEvent, PtyOutputEvent};
+use crate::types::{GlobalEvent, PtyDeltaEvent, PtyOutputEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
 /// Two-stage PTY spawn record.
@@ -216,7 +216,32 @@ impl PaneScrollback {
 /// Returning `()` is intentional: send failures are best-effort (the
 /// frontend has gone away if they fail, and the next pane-close cleanup
 /// will drop the sender). Callers log errors inside the closure.
+pub type PaneOutputSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
+pub struct RemotePaneSub {
+    pub id: u64,
+    pub output_tx: mpsc::Sender<PtyOutputEvent>,
+    pub delta_tx: mpsc::Sender<PtyDeltaEvent>,
+}
+
+#[derive(Default)]
+pub struct PaneRegistry {
+    pub output_cb: Option<PaneOutputSender>,
+    pub delta_cb: Option<PaneDeltaSender>,
+    pub remote_subs: Vec<RemotePaneSub>,
+}
+
+/// Monotonic remote subscriber ID counter. Each `handle_ws` invocation
+/// grabs a unique id for registration/deregistration.
+pub struct RemoteSubId;
+
+impl RemoteSubId {
+    pub fn next() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -257,18 +282,18 @@ pub struct AppState {
     /// 在启动时通过 `set_user_default_cwd` 命令同步到这里）。menu 启动模式下，
     /// 这是首个 pane 的 cwd 来源（cli 启动时被 startup_cli_cwd 覆盖，仍然优先）。
     pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
-    /// P4.1 — per-pane delta-byte senders, keyed by `(workspace_id, pane_id)`.
-    pub pty_delta_channels: Arc<RwLock<HashMap<(Uuid, Uuid), PaneDeltaSender>>>,
+    /// Unified per-pane registry for desktop callbacks and remote WS subscribers.
+    /// Keyed by (workspace_id, pane_id). Each entry can hold:
+    ///   - output_cb: desktop Tauri Channel for coalesced pty-output
+    ///   - delta_cb:  desktop Tauri Channel for delta frames (replaces pty_delta_channels)
+    ///   - remote_subs: mobile WS client subscribers with per-client mpsc channels
+    pub pty_pane_registry: Arc<RwLock<HashMap<(Uuid, Uuid), PaneRegistry>>>,
     /// Remote Control (主线一): the port the WebSocket server is listening on.
     /// 0 means the server is not running (failed to bind or disabled).
     pub remote_port: Arc<RwLock<u16>>,
     /// Remote Control auth — shared TOTP generator. Created on app startup;
     /// the same secret persists for the process lifetime.
     pub remote_auth: Arc<RemoteAuth>,
-    /// Broadcast channel for PTY output events. The main event loop feeds
-    /// every `PtyOutput` event into this channel; remote WebSocket clients
-    /// subscribe to receive terminal output in real time.
-    pub pty_output_tx: broadcast::Sender<PtyOutputEvent>,
     /// Global remote control toggle. When `false`, the remote server handlers
     /// return 503 and the WebSocket upgrade is refused. Set via the settings
     /// panel's "Remote Control" switch.
@@ -286,11 +311,13 @@ pub struct AppState {
     /// Tokens are created via POST /verify and validated via WS ?token=.
     /// Each token expires after 3 days of inactivity.
     pub remote_session_store: Arc<SessionStore>,
+    /// mDNS broadcast thread handle + stop flag. `None` when the server
+    /// is not running. Set the flag and join the handle to stop.
+    pub remote_mdns: Arc<Mutex<Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>>>,
 }
 
 impl AppState {
     pub fn new(event_tx: mpsc::Sender<GlobalEvent>) -> Self {
-        let (pty_output_tx, _) = broadcast::channel::<PtyOutputEvent>(256);
         let id = Uuid::new_v4();
         let mut map = HashMap::new();
         let mut pane_tree = PaneTree::new();
@@ -338,15 +365,15 @@ impl AppState {
             startup_cwd_kind,
             startup_cli_cwd,
             user_default_cwd: Arc::new(RwLock::new(None)),
-            pty_delta_channels: Arc::new(RwLock::new(HashMap::new())),
+            pty_pane_registry: Arc::new(RwLock::new(HashMap::new())),
             remote_port: Arc::new(RwLock::new(0)),
             remote_auth: Arc::new(RemoteAuth::new()),
-            pty_output_tx,
             remote_enabled: Arc::new(AtomicBool::new(false)),
             remote_thread: Arc::new(Mutex::new(None)),
             remote_shutdown: Arc::new(Mutex::new(None)),
             remote_dev_process: Arc::new(Mutex::new(None)),
             remote_session_store: Arc::new(SessionStore::new()),
+            remote_mdns: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -567,36 +594,94 @@ impl AppState {
         pane_id: Uuid,
         sender: PaneDeltaSender,
     ) {
-        self.pty_delta_channels
+        self.pty_pane_registry
             .write()
-            .insert((workspace_id, pane_id), sender);
+            .entry((workspace_id, pane_id))
+            .or_default()
+            .delta_cb = Some(sender);
     }
 
-    /// P4.1 — drop the sender for `(ws, pane)`. Safe to call when no sender
-    /// is registered (returns silently). Called from `kill_pty_if_present`
-    /// to keep the channel map in lock-step with the live `terminals` map.
     pub fn unregister_pane_delta_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
-        self.pty_delta_channels
-            .write()
-            .remove(&(workspace_id, pane_id));
+        let mut reg = self.pty_pane_registry.write();
+        let key = (workspace_id, pane_id);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.delta_cb = None;
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
     }
 
-    /// P4.1 — clone out the sender for `(ws, pane)`, if any. The clone is
-    /// cheap (Arc bump) and lets callers drop the map's read lock before
-    /// invoking the sender. Returns `None` when no channel is registered;
-    /// callers fall back to `app.emit` so frontends without a channel still
-    /// receive deltas. Read by the three P4.2 emit sites: `lib.rs` main
-    /// loop, `commands/terminal.rs::resize_pane`, and
-    /// `commands/terminal.rs::set_pane_delta_mode`.
     pub fn get_pane_delta_channel(
         &self,
         workspace_id: Uuid,
         pane_id: Uuid,
     ) -> Option<PaneDeltaSender> {
-        self.pty_delta_channels
+        self.pty_pane_registry
             .read()
             .get(&(workspace_id, pane_id))
-            .cloned()
+            .and_then(|e| e.delta_cb.clone())
+    }
+
+    pub fn register_pane_output_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        sender: PaneOutputSender,
+    ) {
+        self.pty_pane_registry
+            .write()
+            .entry((workspace_id, pane_id))
+            .or_default()
+            .output_cb = Some(sender);
+    }
+
+    pub fn unregister_pane_output_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (workspace_id, pane_id);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.output_cb = None;
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+
+    pub fn get_pane_output_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Option<PaneOutputSender> {
+        self.pty_pane_registry
+            .read()
+            .get(&(workspace_id, pane_id))
+            .and_then(|e| e.output_cb.clone())
+    }
+
+    pub fn register_remote_sub(&self, ws: Uuid, pane: Uuid, sub: RemotePaneSub) {
+        self.pty_pane_registry
+            .write()
+            .entry((ws, pane))
+            .or_default()
+            .remote_subs
+            .push(sub);
+    }
+
+    pub fn unregister_remote_sub(&self, ws: Uuid, pane: Uuid, sub_id: u64) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (ws, pane);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.remote_subs.retain(|s| s.id != sub_id);
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+}
+
+impl PaneRegistry {
+    fn is_empty(&self) -> bool {
+        self.output_cb.is_none() && self.delta_cb.is_none() && self.remote_subs.is_empty()
     }
 }
 

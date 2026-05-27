@@ -145,15 +145,22 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	// 列级 refreshNonce bump 处理：
 	//   • depth=1 直系子（node.children 有值）已经被上面的 $effect 接管成「最新
 	//     一页」，无需额外动作；
-	//   • 孙子级目录（node.children 为 None）的分页结果只在本组件 state 里，
-	//     bump 后必须 reset，已展开则立刻重拉首页让用户看到最新内容。
+	//   • 孙子级目录（node.children 为 None）的分页结果只在本组件 state 里。
+	//     bump 后：
+	//       - 若当前已展开且有旧数据：保留旧 childrenPage 避免闪白，后台拉新页后原子替换
+	//       - 否则：reset + 拉首页
 	let prevRefreshNonce = $state<number | undefined>(undefined);
 	$effect(() => {
 		const nonce = refreshNonce;
 		if (prevRefreshNonce !== undefined && prevRefreshNonce !== nonce && !Array.isArray(node.children)) {
-			resetChildrenState();
-			if (isExpanded && node.is_dir) {
-				void loadNextChildrenPage();
+			if (isExpanded && node.is_dir && childrenPage.length > 0) {
+				childrenLoading = true;
+				void loadNextChildrenPage(true);
+			} else {
+				resetChildrenState();
+				if (isExpanded && node.is_dir) {
+					void loadNextChildrenPage();
+				}
 			}
 		}
 		prevRefreshNonce = nonce;
@@ -168,20 +175,25 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		}
 	});
 
-	async function loadNextChildrenPage(): Promise<void> {
+	async function loadNextChildrenPage(replace = false): Promise<void> {
 		if (!node.is_dir) return;
-		if (childrenLoading) return;
-		if (hasLoaded && !childrenHasMore) return;
+		if (!replace && childrenLoading) return;
+		if (!replace && hasLoaded && !childrenHasMore) return;
 		if (childrenError) childrenError = null;
 		childrenLoading = true;
 		try {
 			const page = await fileExplorerStore.loadChildrenPage(
 				columnId,
 				node.path,
-				childrenLoadedTotal,
+				replace ? 0 : childrenLoadedTotal,
 			);
-			childrenPage = [...childrenPage, ...page.entries];
-			childrenLoadedTotal += page.entries.length;
+			if (replace) {
+				childrenPage = page.entries;
+				childrenLoadedTotal = page.entries.length;
+			} else {
+				childrenPage = [...childrenPage, ...page.entries];
+				childrenLoadedTotal += page.entries.length;
+			}
 			childrenTotalCount = page.total;
 			childrenHasMore = page.has_more;
 			childrenError = null;
@@ -728,7 +740,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					</div>
 				</div>
 			{/if}
-			{#if hasLoaded && childrenPage.length > 0}
+			{#if childrenPage.length > 0}
 				{#each childrenPage as child (child.path)}
 					<FileTree
 						{columnId}
@@ -743,7 +755,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 						{onSelect}
 					/>
 				{/each}
-			{:else if hasLoaded && childrenPage.length === 0 && !editing}
+			{:else if hasLoaded && !editing}
 				{#if childrenError}
 					<div
 						class="px-2 py-1 text-[12px] text-[var(--rg-accent)] cursor-pointer hover:underline"

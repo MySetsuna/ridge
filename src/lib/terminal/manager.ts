@@ -65,7 +65,7 @@ import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 import { LinkSpanIndex } from '$lib/terminal/linkSpans';
 // §1.32 Wave F: PTY-prompt suffix snapshot — reads shell-input from
 // kernel cells instead of mirroring keystrokes. See module docstring.
-import { reconstructInputSnapshot } from '$lib/terminal/shellInputSnapshot';
+
 import type { InputBufferState } from '$lib/components/inputBufferTracker';
 // §1.32 (2026-05-20): `linkResolver` transitively imports `monaco-editor`
 // via `$lib/stores/fileEditor → $lib/utils/markdown`. Keeping it as a
@@ -468,18 +468,6 @@ export class TerminalManager {
 	 *  cell matches the textarea cell + the kernel cursor. Cleared by
 	 *  `clearPreedit`. */
 	private _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
-	/** §1.34 — JS-side mirror of the last `setHistoryOverlay` call per pane.
-	 *  The wasm overlay state lives in `HistoryOverlay` (renderer.rs) and is
-	 *  not exposed back to JS, so we keep this mirror purely for E2E specs
-	 *  that previously inspected the (now-removed) DOM popup. Cleared by
-	 *  `clearHistoryOverlay`. */
-	private _lastHistoryOverlayCall: Map<string, {
-		items: string[];
-		selectedIndex: number;
-		anchorRow: number;
-		anchorCol: number;
-		placeAbove: boolean;
-	}> = new Map();
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
 	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
@@ -1704,17 +1692,15 @@ export class TerminalManager {
 			// WebdriverIO suite (tests/e2e-shell/) needs an in-process
 			// way to (a) feed PTY bytes into a pane and (b) inspect the
 			// resulting visible grid without going through a real shell
-			// (which would be flaky and platform-specific). Expose two
-			// small helpers on window so the WebDriver client can
+			// (which would be flaky and platform-specific). Expose small
+			// helpers on window so the WebDriver client can
 			// `executeAsync` them.
 			//
-			// Pure read-only / pass-through over the public manager API;
-			// no production code path consults `__windE2E`. Gating on a
-			// URL flag (`?e2e=1`) here is unnecessary because both
-			// helpers are no-ops when called against a non-existent
-			// paneId. The names follow the existing `__windDumpRows`
-			// convention to keep the dev surface coherent.
-			(window as unknown as {
+			// Gated behind import.meta.env.DEV so writePty / feedPty /
+			// installPtyWriteSpy are not accessible from production
+			// DevTools or in the case of an XSS.
+			if (import.meta.env.DEV) {
+				(window as unknown as {
 				__windE2E?: {
 					feedPty: (paneId: string, data: string) => void;
 					writePty: (paneId: string, data: string) => Promise<void>;
@@ -1753,29 +1739,6 @@ export class TerminalManager {
 								mouseReportingModes: number;
 						  }
 						| null;
-					/** §1.34 — wasm shell-history overlay state. Mirror of the
-					 *  most-recent `setHistoryOverlay` call. Replaces DOM
-					 *  `.rg-history-popup` querying after the wasm migration. */
-					historyOverlayState: (paneId: string) => {
-						open: boolean;
-						items: string[];
-						selectedIndex: number;
-						anchorRow: number;
-						anchorCol: number;
-						placeAbove: boolean;
-					};
-					/** §1.34 perf harness — drive the overlay directly from a
-					 *  spec without going through Svelte's onkeydown chain, so
-					 *  the timing reflects ONLY the wasm + JS-mirror cost. */
-					setHistoryOverlay: (
-						paneId: string,
-						items: string[],
-						selectedIndex: number,
-						anchorRow: number,
-						anchorCol: number,
-						placeAbove: boolean,
-					) => void;
-					clearHistoryOverlay: (paneId: string) => void;
 					setSelectionAbs: (
 						paneId: string,
 						startAbsRow: number,
@@ -1908,10 +1871,7 @@ export class TerminalManager {
 						mouseReportingModes: k.mouseReportingModes(),
 					};
 				},
-				historyOverlayState: (paneId) => this.historyOverlayState(paneId),
-				setHistoryOverlay: (paneId, items, selectedIndex, anchorRow, anchorCol, placeAbove) =>
-					this.setHistoryOverlay(paneId, items, selectedIndex, anchorRow, anchorCol, placeAbove),
-				clearHistoryOverlay: (paneId) => this.clearHistoryOverlay(paneId),
+	
 				sampleHostPixel: (relX = 0.5, relY = 0.85) => {
 					const host = this.globalHost?.canvas ?? null;
 					if (!host) return null;
@@ -2005,6 +1965,7 @@ export class TerminalManager {
 					pending: workerRendererBridge.pendingCount(),
 				}),
 			};
+			}
 		}
 		this.startRafLoop();
 	}
@@ -3166,89 +3127,6 @@ export class TerminalManager {
 		this.wake();
 	}
 
-	/** §1.34 (2026-05-22): install the shell-history popup overlay on
-	 *  this pane's canvas. Replaces any prior overlay state. JS owns
-	 *  the filter / dedup logic; this just ships the snapshot to the
-	 *  wasm renderer which paints it on top of the cell grid every
-	 *  frame. `items` is shipped as a JS array directly — the wasm
-	 *  side calls `js_sys::Array::iter().filter_map(as_string)` so
-	 *  non-string entries are silently dropped (a defence in depth
-	 *  for filter/dedup bugs upstream). */
-	setHistoryOverlay(
-		paneId: string,
-		items: string[],
-		selectedIndex: number,
-		anchorRow: number,
-		anchorCol: number,
-		placeAbove: boolean,
-	): void {
-		const entry = this.panes.get(paneId);
-		if (!entry || entry.parked) return;
-		const h = entry.handle as unknown as {
-			setHistoryOverlay?: (
-				items: string[],
-				selectedIndex: number,
-				anchorRow: number,
-				anchorCol: number,
-				placeAbove: boolean,
-			) => void;
-		};
-		h.setHistoryOverlay?.(items, selectedIndex, anchorRow, anchorCol, placeAbove);
-		this._lastHistoryOverlayCall.set(paneId, {
-			items: [...items],
-			selectedIndex,
-			anchorRow,
-			anchorCol,
-			placeAbove,
-		});
-		this.wake();
-	}
-
-	/** §1.34 — remove the shell-history overlay. Called from RidgePane
-	 *  on Enter / ArrowRight / Escape / focus loss. */
-	clearHistoryOverlay(paneId: string): void {
-		const entry = this.panes.get(paneId);
-		if (!entry || entry.parked) return;
-		const h = entry.handle as unknown as { clearHistoryOverlay?: () => void };
-		h.clearHistoryOverlay?.();
-		this._lastHistoryOverlayCall.delete(paneId);
-		this.wake();
-	}
-
-	/** E2E probe — current wasm shell-history overlay state (mirror of the
-	 *  most-recent `setHistoryOverlay` call). Returns `open: false` and
-	 *  empty items when the overlay isn't visible. Replaces the prior
-	 *  DOM-querySelector approach used while the popup was a Svelte
-	 *  `<TerminalHistoryPopup>` element. */
-	historyOverlayState(paneId: string): {
-		open: boolean;
-		items: string[];
-		selectedIndex: number;
-		anchorRow: number;
-		anchorCol: number;
-		placeAbove: boolean;
-	} {
-		const last = this._lastHistoryOverlayCall.get(paneId);
-		if (!last) {
-			return {
-				open: false,
-				items: [],
-				selectedIndex: -1,
-				anchorRow: 0,
-				anchorCol: 0,
-				placeAbove: true,
-			};
-		}
-		return {
-			open: true,
-			items: [...last.items],
-			selectedIndex: last.selectedIndex,
-			anchorRow: last.anchorRow,
-			anchorCol: last.anchorCol,
-			placeAbove: last.placeAbove,
-		};
-	}
-
 	/** E2E probe — last `setPreedit` call for the given pane, or `null`
 	 *  if `clearPreedit` was the most recent call (or no preedit yet).
 	 *  Specs use this to assert overlay-cell == textarea-cell == anchor. */
@@ -3347,24 +3225,6 @@ export class TerminalManager {
 	 *  Returns true ONLY when the wasm kernel is confident a normal shell
 	 *  prompt owns the input line on this pane — every known TUI signal
 	 *  short-circuits to false, AND a 2-second sticky window holds the
-	 *  gate closed after any signal clears so the popup can't race in
-	 *  between TUI repaints (the original Claude-Code-arrow-key-hijack
-	 *  symptom). Replaces the JS-side `tuiGate` for the popup decision;
-	 *  the wheel handler still uses `tuiGate` because its semantics
-	 *  (mouse reporting forwarding) differ. Defaults to `false` on a
-	 *  missing pane so attach races never open the popup. */
-	shouldAllowShellHistory(paneId: string): boolean {
-		const e = this.panes.get(paneId);
-		if (!e) return false;
-		try {
-			return (
-				e.kernel as unknown as { shouldAllowShellHistory?: () => boolean }
-			).shouldAllowShellHistory?.() ?? false;
-		} catch {
-			return false;
-		}
-	}
-
 	/** §1.32 Wave F (2026-05-20): mark the start of the user's current
 	 *  shell-input line by capturing the kernel cursor position. Called
 	 *  by `RidgePane` the first time the user types a printable / paste
@@ -3388,46 +3248,6 @@ export class TerminalManager {
 		if (!entry) return;
 		entry.inputStartRow = null;
 		entry.inputStartCol = null;
-	}
-
-	/** §1.32 Wave F: read the actual shell-input string from the
-	 *  kernel grid — the ground truth that the keystroke mirror can
-	 *  only approximate. Returns null when no input has been observed
-	 *  yet at the current prompt, when the cursor has moved to a row
-	 *  other than the input-start row (multi-row input / wrap not
-	 *  modelled), or when the cursor jumped behind the input start
-	 *  (prompt redrew, e.g. Ctrl+L clear).
-	 *
-	 *  Callers (notably the history-pick replay path) should fall back
-	 *  to the keystroke mirror when this returns null. */
-	readShellInputSnapshot(paneId: string): InputBufferState | null {
-		const entry = this.panes.get(paneId);
-		if (!entry) return null;
-		const startRow = entry.inputStartRow;
-		const startCol = entry.inputStartCol;
-		if (startRow == null || startCol == null) return null;
-
-		const k = entry.kernel as unknown as {
-			cursorRow: () => number;
-			cursorCol: () => number;
-			cols: () => number;
-			cellsAt: (row: number, col: number, len: number) => Array<{ ch: string; width: number }>;
-		};
-		const cursorRow = k.cursorRow();
-		const cursorCol = k.cursorCol();
-		// Multi-row input (long command that wrapped, or cursor moved
-		// to another row via PageUp etc.) — not handled. Caller falls
-		// back to keystroke mirror.
-		if (cursorRow !== startRow) return null;
-		// Cursor jumped behind input start — prompt was redrawn under
-		// us (Ctrl+L, screen clear). Snapshot is invalid.
-		if (cursorCol < startCol) return null;
-
-		const totalCols = k.cols();
-		const preCells = k.cellsAt(startRow, startCol, cursorCol - startCol);
-		const postCells = k.cellsAt(startRow, cursorCol, totalCols - cursorCol);
-		const snap = reconstructInputSnapshot(preCells, postCells);
-		return { text: snap.text, cursorCol: snap.cursorCol };
 	}
 
 	/** Schedule a single rAF that snapshots the kernel cursor as the new

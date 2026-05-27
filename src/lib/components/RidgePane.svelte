@@ -23,13 +23,11 @@ import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
-import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
 import { TerminalManager } from '$lib/terminal/manager';
 import { isTuiActive } from '$lib/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
-	computeReplaySequence,
 	EMPTY_INPUT_BUFFER,
 	type InputBufferState,
 } from './inputBufferTracker';
@@ -71,98 +69,6 @@ const manager = TerminalManager.instance();
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
 let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
 
-// §1.34 (2026-05-22) — shell-history overlay state. The popup used to
-// be a Svelte `<TerminalHistoryPopup>` DOM element positioned via
-// `computePopupPosition`. We now render it directly on the wasm canvas
-// via `manager.setHistoryOverlay(...)` so it inherits pane focus,
-// theme, cell metrics, and DPR for free. See
-// `packages/ridge-term/src/render/renderer.rs::HistoryOverlay` for the
-// renderer state and `webgpu.rs::draw_history_overlay` for the paint.
-let historyOverlayOpen = $state(false);
-let historyOverlayItems = $state<string[]>([]);
-let historyOverlaySelected = $state(-1);
-let historyOverlayAbove = $state(true);
-let historyOverlayAnchor = $state<{ row: number; col: number } | null>(null);
-
-const HISTORY_OVERLAY_MAX_ROWS = 10;
-
-function snapshotHistoryItems(query: string): string[] {
-	const all = dedupKeepFirst(get(terminalHistoryStore));
-	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ROWS);
-}
-
-function pushHistoryOverlay(): void {
-	if (!historyOverlayOpen || !historyOverlayAnchor) return;
-	manager.setHistoryOverlay(
-		paneId,
-		historyOverlayItems,
-		historyOverlaySelected,
-		historyOverlayAnchor.row,
-		historyOverlayAnchor.col,
-		historyOverlayAbove,
-	);
-}
-
-function openHistoryOverlay(): boolean {
-	const anchor = manager.inputAnchorResolved?.(paneId);
-	if (!anchor) return false;
-	const items = snapshotHistoryItems(currentInputBuffer.text);
-	if (items.length === 0) return false;
-	historyOverlayItems = items;
-	historyOverlaySelected = -1;
-	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
-	const rows = manager.rows(paneId);
-	historyOverlayAbove = anchor.row >= rows / 2;
-	historyOverlayOpen = true;
-	pushHistoryOverlay();
-	return true;
-}
-
-function closeHistoryOverlay(): void {
-	if (!historyOverlayOpen) return;
-	historyOverlayOpen = false;
-	historyOverlaySelected = -1;
-	historyOverlayItems = [];
-	historyOverlayAnchor = null;
-	manager.clearHistoryOverlay(paneId);
-}
-
-function commitHistorySelection(execute: boolean): void {
-	if (historyOverlaySelected < 0
-		|| historyOverlaySelected >= historyOverlayItems.length) {
-		closeHistoryOverlay();
-		return;
-	}
-	const cmd = historyOverlayItems[historyOverlaySelected];
-	terminalHistoryStore.add(cmd);
-	const snapshot = manager.readShellInputSnapshot(paneId);
-	const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
-	if (replay) manager.write(paneId, replay);
-	manager.write(paneId, execute ? cmd + '\r' : cmd);
-	currentInputBuffer = EMPTY_INPUT_BUFFER;
-	closeHistoryOverlay();
-	imeHelper?.focus();
-}
-
-function moveHistorySelection(delta: number): void {
-	if (!historyOverlayOpen) return;
-	const n = historyOverlayItems.length;
-	if (n === 0) {
-		closeHistoryOverlay();
-		return;
-	}
-	if (delta < 0) {
-		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
-		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
-		else historyOverlaySelected -= 1;
-	} else {
-		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
-		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
-		else historyOverlaySelected += 1;
-	}
-	pushHistoryOverlay();
-}
-
 // §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
 // path that mutates the shell line through the unit-tested
 // `inputBufferTracker` state machine so `currentInputBuffer` stays in
@@ -197,14 +103,6 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			// Enter / Ctrl+U: shell line ends or fully clears; the
 			// next input is a fresh start.
 			manager.clearInputStart(paneId);
-			// Close the history popup on Enter / Ctrl+U — this is the
-			// real "user intent to submit / abandon" signal. Previously
-			// we relied on a global `ridge:pty-newline` window event
-			// emitted from ptyBridge whenever any `\n`/`\r` showed up
-			// in PTY output, which closed popups across panes on every
-			// prompt redraw. Driving close from the keystroke side is
-			// per-pane by construction.
-			closeHistoryOverlay();
 			break;
 		// Other events (backspace / cursor moves / killWord / killToEol)
 		// don't change the input's start position — leave the marker.
@@ -223,6 +121,7 @@ let searchInputEl: HTMLInputElement | undefined = $state(undefined);
 // && tput bel`). 120ms is short enough not to be annoying.
 let bellFlash = $state(false);
 let bellFlashTimer: ReturnType<typeof setTimeout> | null = null;
+let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
 function triggerBellFlash() {
 	bellFlash = true;
 	if (bellFlashTimer !== null) clearTimeout(bellFlashTimer);
@@ -622,7 +521,7 @@ function onCompositionStart() {
 	// just collapsed. A 120 ms follow-up redraw catches the echoed
 	// cells and refreshes the canvas. `alive` guards against the
 	// component unmounting (split / close) before the timer fires.
-	setTimeout(() => {
+	compositionEndTimer = setTimeout(() => {
 		if (!alive) return;
 		manager.forceFullRedraw(paneId);
 	}, 120);
@@ -788,9 +687,6 @@ onMount(() => {
 		console.warn('[ridge-pane] requires Tauri');
 		return;
 	}
-    
-    // 获取所有可用 shell 的历史记录（Rust 端自动合并多个历史文件）
-    terminalHistoryStore.fetch();
 
 	if (!isValidPaneId(paneId)) {
 		console.error(
@@ -972,11 +868,13 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
-	// Without this, a Bell received within 120ms of pane close leaves a
-	// dangling setTimeout that writes `bellFlash` on a torn-down component.
 	if (bellFlashTimer !== null) {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
+	}
+	if (compositionEndTimer !== null) {
+		clearTimeout(compositionEndTimer);
+		compositionEndTimer = null;
 	}
 	// P1.3 (2026-05-19): no scrollbar poll timer to tear down — the
 	// $effect that wired `manager.onScrollState` handles unsubscription
@@ -1009,12 +907,6 @@ $effect(() => {
 	if (attached) {
 		manager.setFocused(paneId, isActive);
 	}
-	// Close the history popup when this pane loses focus — otherwise the
-	// popup of an inactive pane lingers on screen after the user clicks
-	// into another pane. Keystrokes already can't reach the popup of an
-	// inactive pane (its container isn't focused), but the visual
-	// residue is confusing.
-	if (!isActive && historyOverlayOpen) closeHistoryOverlay();
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -1029,53 +921,6 @@ $effect(() => {
 
 	function onContainerKeyDown(e: KeyboardEvent) {
 		if (!alive || !attached) return;
-
-		// 1. §1.34 — shell-history overlay (wasm canvas) takes the
-		// highest priority while open. Modifier-free ↑↓ Enter →
-		// Esc are consumed; any other key closes the overlay and
-		// falls through so the user's typing still flows.
-		if (historyOverlayOpen) {
-			if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-				if (e.key === 'ArrowUp') {
-					moveHistorySelection(-1);
-					e.preventDefault();
-					return;
-				}
-				if (e.key === 'ArrowDown') {
-					moveHistorySelection(1);
-					e.preventDefault();
-					return;
-				}
-				if (e.key === 'Enter') {
-					commitHistorySelection(true);
-					e.preventDefault();
-					return;
-				}
-				if (e.key === 'ArrowRight') {
-					if (historyOverlaySelected >= 0) {
-						commitHistorySelection(false);
-						e.preventDefault();
-						return;
-					}
-					closeHistoryOverlay();
-					// Fall through so the shell sees ArrowRight.
-				}
-				if (e.key === 'ArrowLeft') {
-					closeHistoryOverlay();
-					e.preventDefault();
-					return;
-				}
-				if (e.key === 'Escape') {
-					closeHistoryOverlay();
-					e.preventDefault();
-					return;
-				} else if (e.key.length === 1
-					|| e.key === 'Backspace'
-					|| e.key === 'Tab') {
-					closeHistoryOverlay();
-				}
-			}
-		}
 
 		if (isComposing || e.isComposing) return;
 
@@ -1093,25 +938,6 @@ $effect(() => {
 		const isTui = isTuiSticky();
 		if (isTui) {
 			if (manager.handleKeyDown(paneId, e)) {
-				e.preventDefault();
-				return;
-			}
-		}
-
-		// 4. §1.34: ArrowUp/ArrowDown → open shell-history overlay
-		// (rendered on wasm canvas). Gate decision lives in the wasm
-		// kernel via `JsTerminal::should_allow_shell_history` so any
-		// TUI signal — DECCKM / alt screen / mouse reporting / inline
-		// TUI heuristic / hidden cursor / 2 s sticky after any of
-		// those — short-circuits to false and the arrow key falls
-		// through to the kernel encoder below.
-		if (
-			!historyOverlayOpen
-			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
-			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
-			&& manager.shouldAllowShellHistory(paneId)
-		) {
-			if (openHistoryOverlay()) {
 				e.preventDefault();
 				return;
 			}

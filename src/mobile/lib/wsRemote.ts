@@ -1,15 +1,34 @@
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
+  const hex: string[] = [];
+  for (let i = offset; i < offset + 16; i++) {
+    hex.push(bytes[i].toString(16).padStart(2, '0'));
+  }
+  const h = hex.join('');
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+
+export type BinaryDeltaListener = (paneId: string, data: Uint8Array) => void;
+
 export interface PaneInfo {
   id: string;
   title?: string;
   cwd?: string;
 }
 
+export interface WorkspaceInfo {
+  id: string;
+  name?: string;
+  active: boolean;
+}
+
 export interface FileEntry {
   name: string;
-  type: 'file' | 'dir';
   path: string;
+  is_dir: boolean;
+  is_ignored?: boolean | null;
+  child_count?: number;
 }
 
 export interface GitStatus {
@@ -26,6 +45,10 @@ export type WsMessage = {
   paneId: string;
   data: string;
 } | {
+  type: 'delta';
+  paneId: string;
+  data: string;  // base64-encoded postcard delta frame
+} | {
   type: 'files';
   path: string;
   entries: FileEntry[];
@@ -37,6 +60,9 @@ export type WsMessage = {
 } | {
   type: 'error';
   message: string;
+} | {
+  type: 'workspaces';
+  workspaces: WorkspaceInfo[];
 };
 
 type Listener = (msg: WsMessage) => void;
@@ -45,10 +71,14 @@ export class RemoteConnection {
   private ws: WebSocket | null = null;
   private stateListeners: Set<(s: ConnectionState) => void> = new Set();
   private messageListeners: Set<Listener> = new Set();
+  private binaryDeltaListeners: Set<BinaryDeltaListener> = new Set();
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
+  private _host: string = '';
+  private _port: number = 0;
+  private _token: string = '';
 
-  get state() { return this._state; }
+  state() { return this._state; }
 
   onStateChange(fn: (s: ConnectionState) => void) {
     this.stateListeners.add(fn);
@@ -60,24 +90,40 @@ export class RemoteConnection {
     return () => this.messageListeners.delete(fn);
   }
 
+  onBinaryDelta(fn: BinaryDeltaListener) {
+    this.binaryDeltaListeners.add(fn);
+    return () => this.binaryDeltaListeners.delete(fn);
+  }
+
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
     if (this.ws) this.ws.close();
+    this._host = host;
+    this._port = port;
     this.setState('connecting');
     let url: string;
     if (auth) {
       const param = authType === 'token' ? 'token' : 'code';
       url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}`;
+      if (authType === 'token') this._token = auth;
     } else {
       this.setState('error');
       return;
     }
     this.ws = new WebSocket(url);
+    this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = () => this.setState('connected');
     this.ws.onclose = () => this.setState('disconnected');
     this.ws.onerror = () => this.setState('error');
 
     this.ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        const buf = new Uint8Array(event.data);
+        const paneId = uuidFromBytes(buf, 0);
+        const deltaBytes = buf.slice(16);
+        this.binaryDeltaListeners.forEach(fn => fn(paneId, deltaBytes));
+        return;
+      }
       try {
         const msg = JSON.parse(event.data) as WsMessage;
         if (msg.type === 'output') {
@@ -102,10 +148,49 @@ export class RemoteConnection {
   }
 
   listPanes() { this.send({ type: 'list-panes' }); }
+  subscribePane(paneId: string) { this.send({ type: 'subscribe-pane', paneId }); }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
   listGitStatus() { this.send({ type: 'list-git-status' }); }
   sendStdin(paneId: string, data: string) { this.send({ type: 'stdin', paneId, data }); }
-  resizePane(paneId: string, rows: number, cols: number) { this.send({ type: 'resize', paneId, rows, cols }); }
+  resizePane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
+    this.send({ type: 'resize', paneId, rows, cols, pixelWidth, pixelHeight });
+  }
+
+  // ── Workspace operations via HTTP ─────────────────────────────────
+  private async httpPost(path: string, body: unknown): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://${this._host}:${this._port}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json() as Promise<Record<string, unknown>>;
+  }
+
+  private async httpGet(path: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://${this._host}:${this._port}${path}`);
+    return res.json() as Promise<Record<string, unknown>>;
+  }
+
+  async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
+    const data = await this.httpGet('/workspace/list') as { workspaces: WorkspaceInfo[] };
+    return data;
+  }
+
+  async switchWorkspace(workspaceId: string): Promise<boolean> {
+    const data = await this.httpPost('/workspace/switch', { workspace_id: workspaceId });
+    return (data as Record<string, unknown>).success === true;
+  }
+
+  async createWorkspace(name?: string): Promise<string | null> {
+    const data = await this.httpPost('/workspace/create', { name: name || '' }) as Record<string, unknown>;
+    return (data.success && data.workspaceId) ? String(data.workspaceId) : null;
+  }
+
+  async closeWorkspace(workspaceId: string): Promise<boolean> {
+    const data = await this.httpPost('/workspace/close', { workspace_id: workspaceId });
+    return (data as Record<string, unknown>).success === true;
+  }
+  // ───────────────────────────────────────────────────────────────────
 
   disconnect() {
     if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }

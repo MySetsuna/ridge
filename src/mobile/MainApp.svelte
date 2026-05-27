@@ -2,13 +2,24 @@
   import { onMount } from 'svelte';
   import TerminalScreen from './TerminalScreen.svelte';
   import IdeScreen from './IdeScreen.svelte';
-  import { RemoteConnection, type PaneInfo, type ConnectionState } from './lib/wsRemote';
+  import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
 
   let { ws }: { ws: RemoteConnection } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
   let wsState = $state<ConnectionState>('disconnected');
   let mode: 'terminal' | 'ide' = $state('terminal');
+  let workspaces = $state<WorkspaceInfo[]>([]);
+  let activeWorkspaceId = $state<string>('');
+
+  async function refreshWorkspaces() {
+    try {
+      const data = await ws.listWorkspaces();
+      workspaces = data.workspaces || [];
+      const active = workspaces.find(w => w.active);
+      if (active) activeWorkspaceId = active.id;
+    } catch { /* ignore */ }
+  }
 
   onMount(() => {
     ws.onStateChange((s) => wsState = s);
@@ -21,8 +32,17 @@
       }
     });
     ws.listPanes();
-    const timer = setInterval(() => ws.listPanes(), 5000);
-    return () => { ws.disconnect(); clearInterval(timer); };
+    refreshWorkspaces();
+    const wsTimer = setInterval(() => {
+      refreshWorkspaces();
+    }, 10000);
+    return () => { ws.disconnect(); clearInterval(wsTimer); };
+  });
+
+  $effect(() => {
+    if (activePaneId) {
+      ws.subscribePane(activePaneId);
+    }
   });
 </script>
 
@@ -38,12 +58,12 @@
     </div>
     <div class="top-right">
       <span class="badge" class:connected={wsState === 'connected'}>{wsState}</span>
-      <button class="refresh-btn" onclick={() => ws.listPanes()}>↻</button>
+      <button class="refresh-btn" onclick={() => { ws.listPanes(); refreshWorkspaces(); }}>↻</button>
     </div>
   </div>
 
   {#if mode === 'terminal'}
-    <TerminalScreen {ws} {panes} bind:activePaneId />
+    <TerminalScreen {ws} {panes} bind:activePaneId {workspaces} {activeWorkspaceId} />
   {:else}
     <IdeScreen {ws} {panes} bind:activePaneId />
   {/if}

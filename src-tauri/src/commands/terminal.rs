@@ -109,14 +109,14 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
 
 	#[cfg(target_os = "windows")]
 	{
-		try_add(&mut found, "pwsh", "PowerShell 7", &["pwsh.exe", "pwsh"]);
+		try_add(&mut found, "pwsh", "PowerShell 7+ (pwsh)", &["pwsh.exe", "pwsh"]);
 		try_add(
 			&mut found,
 			"powershell",
-			"Windows PowerShell",
+			"Windows PowerShell 5.1",
 			&["powershell.exe", "powershell"],
 		);
-		try_add(&mut found, "cmd", "命令提示符", &["cmd.exe", "cmd"]);
+		try_add(&mut found, "cmd", "命令提示符 (CMD)", &["cmd.exe", "cmd"]);
 		try_add(
 			&mut found,
 			"git-bash",
@@ -127,16 +127,59 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
 				"C:\\Program Files\\Git\\usr\\bin\\bash.exe",
 			],
 		);
-		try_add(&mut found, "wsl", "WSL", &["wsl.exe", "wsl"]);
+		try_add(&mut found, "wsl", "WSL (Ubuntu)", &["wsl.exe", "wsl"]);
+		try_add(&mut found, "nu", "Nushell", &["nu.exe", "nu"]);
+		try_add(
+			&mut found,
+			"clink",
+			"Clink (CMD 增强)",
+			&["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
+		);
 	}
 	#[cfg(not(target_os = "windows"))]
 	{
 		try_add(&mut found, "zsh", "Zsh", &["zsh", "/bin/zsh", "/usr/bin/zsh"]);
 		try_add(&mut found, "bash", "Bash", &["bash", "/bin/bash", "/usr/bin/bash"]);
 		try_add(&mut found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
-		try_add(&mut found, "sh", "sh", &["sh", "/bin/sh"]);
+		try_add(&mut found, "sh", "POSIX sh", &["sh", "/bin/sh", "/usr/bin/sh"]);
+		try_add(&mut found, "dash", "Dash", &["dash", "/bin/dash", "/usr/bin/dash"]);
+		try_add(&mut found, "nu", "Nushell", &["nu", "/bin/nu", "/usr/bin/nu"]);
+		try_add(&mut found, "elvish", "Elvish", &["elvish", "/bin/elvish", "/usr/local/bin/elvish"]);
 	}
 	found
+}
+
+#[tauri::command]
+pub async fn change_pane_shell(
+	state: State<'_, AppState>,
+	pane_id: String,
+	shell: String,
+) -> Result<(), String> {
+	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+	let workspace_id = state.active_workspace_id();
+	let cwd = {
+		let map = state.workspaces.read();
+		map.get(&workspace_id)
+			.and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+			.and_then(|p| p.cwd.clone())
+	};
+
+	teardown_pane_pty_if_present(&state, workspace_id, pane_id);
+	state.clear_pty_scrollback(workspace_id, pane_id);
+
+	ensure_pane_pty_workspace(
+		&*state,
+		workspace_id,
+		pane_id,
+		Some(shell),
+		cwd.as_deref(),
+		None,
+		None,
+		None,
+		None,
+		None,
+	)
+	.map_err(|e| e.to_string())
 }
 
 fn create_pane_inner(

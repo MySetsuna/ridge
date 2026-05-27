@@ -1,21 +1,18 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
-  import type { RemoteConnection, PaneInfo } from './lib/wsRemote';
+  import type { RemoteConnection, PaneInfo, WorkspaceInfo } from './lib/wsRemote';
 
-  let { ws, panes, activePaneId = $bindable() }: {
+  let { ws, panes, activePaneId = $bindable(), workspaces = [], activeWorkspaceId = '' }: {
     ws: RemoteConnection;
     panes: PaneInfo[];
     activePaneId?: string | null;
+    workspaces?: WorkspaceInfo[];
+    activeWorkspaceId?: string;
   } = $props();
 
   let canvasRef: TerminalCanvas | undefined = $state();
-  let unsub: (() => void) | undefined;
-
-  function onStdin(data: string) {
-    if (activePaneId) ws.sendStdin(activePaneId, data);
-  }
 
   function showKeyboard() {
     const el = document.createElement('input');
@@ -24,24 +21,31 @@
     el.style.left = '0';
     el.style.opacity = '0';
     el.style.pointerEvents = 'none';
-    el.style.fontSize = '16px'; // prevent iOS zoom
+    el.style.fontSize = '16px';
     document.body.appendChild(el);
     el.focus();
   }
 
-  // Subscribe to WS output for the active pane
-  function subscribe() {
-    unsub?.();
-    unsub = ws.onMessage((msg) => {
-      if (msg.type === 'output' && msg.paneId === activePaneId && canvasRef) {
-        canvasRef.feed(msg.data);
-      }
-    });
+  function onStdin(data: string) {
+    if (activePaneId) ws.sendStdin(activePaneId, data);
+  }
+
+  function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+    ws.resizePane(paneId, rows, cols, pixelWidth, pixelHeight);
   }
 
   onMount(() => {
-    subscribe();
-    return () => unsub?.();
+    const msgUnsub = ws.onMessage((msg) => {
+      if (msg.type === 'output' && canvasRef) {
+        canvasRef.feed(msg.data);
+      }
+    });
+    const deltaUnsub = ws.onBinaryDelta((_paneId, data) => {
+      if (canvasRef) {
+        canvasRef.applyDelta(data);
+      }
+    });
+    return () => { msgUnsub(); deltaUnsub(); };
   });
 </script>
 
@@ -53,6 +57,7 @@
       bind:this={canvasRef}
       paneId={activePaneId ?? null}
       {onStdin}
+      {onResize}
     />
   {/if}
 
@@ -63,7 +68,13 @@
   {/if}
 </div>
 
-<BottomTabBar {panes} bind:activePaneId />
+<BottomTabBar
+  {panes}
+  bind:activePaneId
+  {workspaces}
+  {activeWorkspaceId}
+  {ws}
+/>
 
 <style>
   .screen-layout{display:flex;flex-direction:column;flex:1;overflow:hidden}

@@ -3,7 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { getTheme } from './themes';
 
 export interface UserSettings {
-  claudeExtensionEnabled: boolean;
   theme: string;
   editorFontSize: number;
   editorFontFamily: string;
@@ -35,7 +34,6 @@ export interface UserSettings {
 }
 
 const DEFAULTS: UserSettings = {
-  claudeExtensionEnabled: true,
   theme: 'endless-dark',
   editorFontSize: 14,
   editorFontFamily: '',
@@ -44,7 +42,7 @@ const DEFAULTS: UserSettings = {
   defaultShell: '',
   terminalFontFamily: '',
   defaultCwd: '',
-  terminalPaddingPx: 6,
+  terminalPaddingPx: 2,
   terminalScrollbackLines: 2000,
   terminalImeMode: 'ime',
   remoteEnabled: false,
@@ -71,10 +69,6 @@ function load(): UserSettings {
   if (!parsed || typeof parsed !== 'object') return { ...DEFAULTS };
   const obj = parsed as Record<string, unknown>;
   return {
-    claudeExtensionEnabled:
-      typeof obj.claudeExtensionEnabled === 'boolean'
-        ? obj.claudeExtensionEnabled
-        : DEFAULTS.claudeExtensionEnabled,
     theme:
       typeof obj.theme === 'string' && obj.theme.length > 0
         ? obj.theme
@@ -150,10 +144,6 @@ export function setSetting<K extends keyof UserSettings>(
     persist(next);
     return next;
   });
-}
-
-export function setClaudeExtensionEnabled(enabled: boolean): void {
-  setSetting('claudeExtensionEnabled', enabled);
 }
 
 export function applyTheme(themeId: string): void {

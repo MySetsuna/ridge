@@ -55,11 +55,12 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
         .ok_or_else(|| "Failed to bind remote server port".to_string())?;
 
     // Start mDNS broadcast so mobile clients can discover the server.
-    mdns::spawn_mdns_broadcast(handle.port);
+    let (mdns_handle, mdns_stop) = mdns::spawn_mdns_broadcast(handle.port);
 
     *state.remote_port.write() = handle.port;
     *state.remote_thread.lock() = Some(handle.thread);
     *state.remote_shutdown.lock() = Some(shutdown_tx);
+    *state.remote_mdns.lock() = Some((mdns_handle, mdns_stop));
 
     // In dev mode, spawn Vite dev server for the mobile app
     if cfg!(debug_assertions) {
@@ -101,6 +102,11 @@ pub fn stop_remote_server(state: &AppState) {
     }
     if let Some(thread) = state.remote_thread.lock().take() {
         let _ = thread.join();
+    }
+    // Stop mDNS broadcast.
+    if let Some((handle, stop_flag)) = state.remote_mdns.lock().take() {
+        stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = handle.join();
     }
     // Clean up dev process.
     if cfg!(debug_assertions) {

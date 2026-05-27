@@ -159,7 +159,7 @@ export function setupTerminalThemeBridge(): () => void {
 		
 		const resolvedFamily = family.trim() !== '' 
 			? family 
-			: "'JetBrains Mono','Cascadia Code','SF Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace";
+			: "'Cascadia Code','Cascadia Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace";
 		
 		manager.setFont(resolvedFamily, size);
 	};
