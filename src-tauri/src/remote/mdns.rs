@@ -1,9 +1,8 @@
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-
-static MDNS_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// RFC 6762 multicast DNS responder for `_ridge._tcp.local.`
 ///
@@ -13,12 +12,11 @@ static MDNS_STARTED: AtomicBool = AtomicBool::new(false);
 ///
 /// Uses raw UDP multicast on 224.0.0.1:5353 (the mDNS well-known
 /// address). No external crate needed.
-pub fn spawn_mdns_broadcast(port: u16) {
-    if MDNS_STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
+pub fn spawn_mdns_broadcast(port: u16) -> (thread::JoinHandle<()>, Arc<AtomicBool>) {
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let flag = stop_flag.clone();
 
-    thread::Builder::new()
+    let handle = thread::Builder::new()
         .name("ridge-mdns".into())
         .spawn(move || {
             let socket = match UdpSocket::bind("0.0.0.0:0") {
@@ -29,23 +27,25 @@ pub fn spawn_mdns_broadcast(port: u16) {
                 }
             };
             socket.set_broadcast(true).ok();
-            // mDNS multicast address + port
             let mdns_addr = "224.0.0.1:5353";
-
-            // Build the DNS-SD advertisement packet once, reuse it.
             let packet = build_mdns_packet(port);
 
             tracing::info!(target: "ridge::remote", port, "mDNS broadcast started");
 
-            // Announce immediately, then every 60 seconds.
+            // Announce immediately, then every 60 seconds (with 1s
+            // granularity so stop signal is respected promptly).
             loop {
-                if socket.send_to(&packet, mdns_addr).is_err() {
-                    // Network may be unavailable — keep trying.
+                if flag.load(Ordering::Relaxed) { break; }
+                let _ = socket.send_to(&packet, mdns_addr);
+                for _ in 0..60 {
+                    if flag.load(Ordering::Relaxed) { return; }
+                    thread::sleep(Duration::from_secs(1));
                 }
-                thread::sleep(Duration::from_secs(60));
             }
         })
         .expect("ridge-mdns thread spawn");
+
+    (handle, stop_flag)
 }
 
 /// Build a DNS-SD announcement packet for `_ridge._tcp.local.`

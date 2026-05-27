@@ -54,7 +54,7 @@ pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Res
 
 /// 新建根工作区：独立分屏树与终端表，并切换为当前活动区。
 #[tauri::command]
-pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
+pub fn create_workspace(state: State<'_, AppState>, name: Option<String>) -> Result<String, String> {
     let id = Uuid::new_v4();
     let seq = state.allocate_workspace_seq();
     {
@@ -80,6 +80,9 @@ pub fn create_workspace(state: State<'_, AppState>) -> Result<String, String> {
     }
     state.workspace_order.write().push(id);
     *state.active_workspace.write() = id;
+    if let Some(name) = name.filter(|n| !n.is_empty()) {
+        state.workspace_names.write().insert(id, name);
+    }
     Ok(id.to_string())
 }
 

@@ -11,15 +11,12 @@
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
   import { isTauri } from '@tauri-apps/api/core';
   import { TerminalManager } from '$lib/terminal/manager';
-  import { Bot, History } from 'lucide-svelte';
-  import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
   import { alertDialog } from './RidgeDialog.svelte';
-  import { openScrollbackHistory } from './ScrollbackHistoryModal.svelte';
   import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
   import PaneGitPill from './PaneGitPill.svelte';
   import PaneDiffPill from './PaneDiffPill.svelte';
   import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
-  import { settingsStore } from '$lib/stores/settings';
+  import PaneShellSwitcher from './PaneShellSwitcher.svelte';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -658,7 +655,7 @@ import {
               {/if}
             </div>
             {#if node.type === 'leaf'}
-              {@const leafAgentState = node.agent_state}
+              <PaneShellSwitcher paneId={node.id} />
               <!-- Repo switcher (renders only when cwd hosts >1 git repo);
                    then Branch pill (picker + ahead/behind + upstream warn);
                    then Diff pill (working-tree changed-file count + +N -N).
@@ -669,44 +666,6 @@ import {
               <PaneRepoSwitcher paneId={node.id} />
               <PaneGitPill paneId={node.id} />
               <PaneDiffPill paneId={node.id} />
-              <!-- "Run Claude Code here" button — seeds a teammate agent on this
-                   pane and kicks `claude` in the PTY. Busy panes hide the button
-                   so users don't stack agents; click again releases + relaunches
-                   only via the backend release_teammate_agent path.
-                   Hidden entirely when the Claude Code extension is disabled —
-                   the user gets a clean header without the Bot affordance. -->
-              {#if $settingsStore.claudeExtensionEnabled}
-              <button
-                type="button"
-                title={leafAgentState === 'busy'
-                  ? '此窗格已有 agent 运行'
-                  : '在此窗格启动 Claude Code agent（Shift-Click 直接启动）'}
-                disabled={leafAgentState === 'busy' || !isTauri()}
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 disabled:opacity-25 disabled:pointer-events-none"
-                onclick={(e) => {
-                  if (!isTauri()) return;
-                  // Shift / Alt-Click skips the prompt modal and launches bare
-                  // `claude` directly — matches the round-10 behaviour for
-                  // users who've already memorised the shortcut.
-                  openClaudeAgentLauncher(node.id, e.shiftKey || e.altKey);
-                }}
-              >
-                <Bot class="h-3.5 w-3.5" />
-              </button>
-              {/if}
-              <!-- History browser — read-only viewer for bytes that scrolled past
-                   the live pane viewport (backend keeps 4 MiB of block-paged
-                   scrollback per pane). Lives in a modal because the pane
-                   header is already busy with branch / agent affordances. -->
-              <button
-                type="button"
-                title="查看终端历史记录（包含已滚出视窗的早期输出）"
-                disabled={!isTauri()}
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-[var(--rg-accent)]/10 hover:text-[var(--rg-accent)] disabled:opacity-25 disabled:pointer-events-none"
-                onclick={() => openScrollbackHistory(node.id)}
-              >
-                <History class="h-3.5 w-3.5" />
-              </button>
             {/if}
             <button
               type="button"
@@ -741,8 +700,8 @@ import {
           ondrop={async (e) => {
             e.preventDefault();
             const sourceId = e.dataTransfer?.getData('text/plain');
-            if (sourceId && node.id && sourceId !== node.id && dockHover) {
-              await dockPane(sourceId, node.id, dockHover);
+            if (sourceId && child.id && sourceId !== child.id && dockHover) {
+              await dockPane(sourceId, child.id, dockHover);
             }
             dockHover = null;
           }}

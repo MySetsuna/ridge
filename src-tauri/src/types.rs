@@ -11,6 +11,13 @@ pub struct PtyOutputEvent {
     pub data: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct PtyDeltaEvent {
+    pub workspace_id: Uuid,
+    pub pane_id: Uuid,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PaneMode {
     Terminal,

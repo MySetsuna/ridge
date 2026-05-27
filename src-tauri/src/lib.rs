@@ -2,7 +2,7 @@ mod commands;
 mod db;
 mod engine;
 mod fs;
-mod remote;
+pub mod remote;
 mod state;
 mod teammate;
 mod types;
@@ -171,15 +171,22 @@ pub fn run() {
                             pane_id,
                             data,
                         }) => {
-                            // Broadcast to remote WebSocket clients (best-effort).
+                            // Fan-out to remote WS clients via per-pane registry.
                             let app_state = handle.state::<AppState>();
-                            let _ = app_state.pty_output_tx.send(
-                                crate::types::PtyOutputEvent {
-                                    workspace_id,
-                                    pane_id,
-                                    data: data.clone(),
+                            if app_state.remote_enabled.load(Ordering::Relaxed) {
+                                let reg = app_state.pty_pane_registry.read();
+                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
+                                    for sub in &entry.remote_subs {
+                                        let _ = sub.output_tx.try_send(
+                                            crate::types::PtyOutputEvent {
+                                                workspace_id,
+                                                pane_id,
+                                                data: data.clone(),
+                                            }
+                                        );
+                                    }
                                 }
-                            );
+                            }
                             drop(app_state);
 
                             // P3.8 — per-pane delta_mode gate. When the front-end
@@ -238,6 +245,7 @@ pub fn run() {
                                             // is registered yet (frontend not
                                             // mounted, or tests).
                                             let st = handle.state::<AppState>();
+                                            let delta_for_remote = bytes.clone();
                                             if let Some(sender) =
                                                 st.get_pane_delta_channel(workspace_id, pane_id)
                                             {
@@ -249,6 +257,21 @@ pub fn run() {
                                                     bytes,
                                                 );
                                             }
+                                            if st.remote_enabled.load(Ordering::Relaxed) {
+                                                let reg = st.pty_pane_registry.read();
+                                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
+                                                    for sub in &entry.remote_subs {
+                                                        let _ = sub.delta_tx.try_send(
+                                                            crate::types::PtyDeltaEvent {
+                                                                workspace_id,
+                                                                pane_id,
+                                                                bytes: delta_for_remote.clone(),
+                                                            }
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            drop(st);
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -434,6 +457,7 @@ pub fn run() {
             terminal::create_pane,
             terminal::activate_pane_pty,
             terminal::get_teammate_metrics,
+            terminal::change_pane_shell,
             terminal::detect_available_shells,
             terminal::get_shell_history,
             terminal::write_to_pty,

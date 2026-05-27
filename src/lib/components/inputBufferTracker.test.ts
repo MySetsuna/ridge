@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
-	computeReplaySequence,
 	EMPTY_INPUT_BUFFER,
 	type InputBufferEvent,
 	type InputBufferState,
@@ -508,70 +507,5 @@ describe('deriveBufferEvent — Tab (Bug #5)', () => {
 	});
 });
 
-describe('computeReplaySequence — clearing the shell line before history pick (Bug #11 / #12)', () => {
-	it('returns empty string when buffer is empty (nothing to clear)', () => {
-		expect(computeReplaySequence(EMPTY_INPUT_BUFFER)).toBe('');
-	});
 
-	it('returns N backspaces when cursor is at end of buffer', () => {
-		// Universal case: works in any shell incl. cmd.exe.
-		expect(computeReplaySequence({ text: 'echo', cursorCol: 4 })).toBe('\x08\x08\x08\x08');
-	});
 
-	it('emits Ctrl+E (\\x05) + N backspaces when cursor is mid-line (Bug #3 × Bug #11)', () => {
-		// Mid-line means cursor is BEFORE the end. We move to end via
-		// Ctrl+E first so the subsequent backspaces wipe the whole
-		// line, not just the prefix.
-		expect(computeReplaySequence({ text: 'echo foo', cursorCol: 4 }))
-			.toBe('\x05\x08\x08\x08\x08\x08\x08\x08\x08');
-	});
-
-	it('emits Ctrl+E + backspaces when cursor is at column 0', () => {
-		// Same shape — cursor < text.length triggers the Ctrl+E path.
-		expect(computeReplaySequence({ text: 'ls', cursorCol: 0 })).toBe('\x05\x08\x08');
-	});
-
-	it('treats out-of-range cursorCol >= text.length as "at end" (no Ctrl+E needed)', () => {
-		// Defensive: a future bug could leave cursorCol > text.length;
-		// we still want the cheap end-of-line replay rather than an
-		// unnecessary Ctrl+E that might confuse cmd.exe.
-		expect(computeReplaySequence({ text: 'ab', cursorCol: 99 })).toBe('\x08\x08');
-	});
-
-	it('scales linearly with buffer length (1000-char buffer at end)', () => {
-		const longText = 'x'.repeat(1000);
-		expect(computeReplaySequence({ text: longText, cursorCol: 1000 }).length).toBe(1000);
-	});
-
-	it('emits Ctrl+E + Ctrl+U (\\x05\\x15) when buffer is dirty after Tab completion (Bug #5)', () => {
-		// Dirty path is length-agnostic: we don't trust our mirror, so
-		// instead of counting backspaces we send "move to end" +
-		// "kill from cursor to start of line" — wipes the shell line
-		// regardless of how much it actually grew during completion.
-		expect(computeReplaySequence({ text: 'ec', cursorCol: 2, dirty: true }))
-			.toBe('\x05\x15');
-	});
-
-	it('dirty + empty text still emits the kill sequence (defensive)', () => {
-		// Shouldn't happen in practice (Tab on empty line doesn't
-		// usually complete), but if it does we still wipe.
-		expect(computeReplaySequence({ text: '', cursorCol: 0, dirty: true }))
-			.toBe('\x05\x15');
-	});
-
-	it('non-dirty long buffer at end falls through to backspace replay', () => {
-		// Regression lock: dirty bit is the only way to enter the
-		// \x05\x15 path; absence falls through to Wave D's logic.
-		const longText = 'x'.repeat(10);
-		expect(computeReplaySequence({ text: longText, cursorCol: 10 })).toBe('\x08'.repeat(10));
-	});
-});
-
-// §1.32 (2026-05-20): Wave F's 2 `it.todo` markers that used to live
-// here have been promoted to real tests in
-// `src/lib/terminal/shellInputSnapshot.test.ts` (the PTY-prompt-suffix
-// snapshot is the source-of-truth that subsumes both "cross-check
-// against kernel cursor" and "snapshot replaces mirror"). The
-// keystroke mirror in this file remains as a fast-path / fallback
-// for the popup's live-filter query — see RidgePane.svelte's
-// onSelect handler for the snapshot-first / mirror-fallback wiring.

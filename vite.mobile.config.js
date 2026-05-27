@@ -31,13 +31,14 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/ws': {
-        target: 'ws://127.0.0.1:5175',
+        target: 'ws://127.0.0.1:9527',
         ws: true,
       },
-      '/info': { target: 'http://127.0.0.1:5175' },
-      '/verify': { target: 'http://127.0.0.1:5175' },
-      '/health': { target: 'http://127.0.0.1:5175' },
-      '/status': { target: 'http://127.0.0.1:5175' },
+      '/info': { target: 'http://127.0.0.1:9527' },
+      '/verify': { target: 'http://127.0.0.1:9527' },
+      '/health': { target: 'http://127.0.0.1:9527' },
+      '/status': { target: 'http://127.0.0.1:9527' },
+      '/workspace': { target: 'http://127.0.0.1:9527' },
     },
   },
 });

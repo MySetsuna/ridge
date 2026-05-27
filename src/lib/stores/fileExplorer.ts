@@ -624,16 +624,20 @@ function createFileExplorerStore() {
 		 * Clear all columns for a workspace.
 		 */
 		clearWorkspace(workspaceId: string): void {
-			update((state) => ({
-				...state,
-				columns: state.columns.filter((c) => c.workspaceId !== workspaceId),
-				columnOrder: state.columnOrder.filter(
-					(id) => !state.columns.find((c) => c.id === id && c.workspaceId === workspaceId)
-				),
-				activeColumnId: state.columns.find((c) => c.workspaceId === workspaceId)
-					? state.activeColumnId
-					: null,
-			}));
+			update((state) => {
+				const remaining = state.columns.filter((c) => c.workspaceId !== workspaceId);
+				const removedIds = new Set(
+					state.columns.filter((c) => c.workspaceId === workspaceId).map((c) => c.id)
+				);
+				return {
+					...state,
+					columns: remaining,
+					columnOrder: state.columnOrder.filter((id) => !removedIds.has(id)),
+					activeColumnId: remaining.some((c) => c.id === state.activeColumnId)
+						? state.activeColumnId
+						: remaining[0]?.id ?? null,
+				};
+			});
 		},
 
 		/**

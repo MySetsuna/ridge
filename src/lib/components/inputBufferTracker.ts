@@ -1,7 +1,6 @@
 /**
  * §1.32 (2026-05-20) — pure state machine for the shell-input mirror
- * that the history-popup uses as its `query` and as the `\x08` replay
- * count when the user picks a history entry.
+ * used as a fast-path for terminal input.
  *
  * Wave C upgrade: state is now `{ text, cursorCol }`, not a flat
  * string, so ArrowLeft / ArrowRight / Home / End / Delete each map
@@ -216,38 +215,3 @@ function clamp(n: number, lo: number, hi: number): number {
 	return n;
 }
 
-/**
- * §1.32 (2026-05-20) Wave D — compute the byte sequence to send to
- * the PTY before writing the picked history command, so the shell's
- * current input line is wiped out cleanly even when the cursor was
- * mid-line.
- *
- *   - Empty buffer → nothing to clear, return "".
- *   - Cursor at end → `\x08` × text.length (universal backspace,
- *     works in cmd.exe too).
- *   - Cursor mid-line → `\x05` (Ctrl+E, move to end of line) +
- *     `\x08` × text.length. Readline shells (zsh, bash, PSReadLine)
- *     all support `\x05`; cmd.exe does not, but cmd.exe users rarely
- *     navigate mid-line anyway, and the fallback degradation is just
- *     "some trailing garbage on the line" — strictly less wrong than
- *     the pre-Wave-D naive backspace-only which left the suffix
- *     intact regardless of cursor position.
- *
- * Wave F (PTY-prompt suffix snapshot) will add a cross-check against
- * the kernel's actual cursor column before the replay so we can
- * detect mirror drift and bail out instead of sending too few /
- * too many backspaces.
- */
-export function computeReplaySequence(state: InputBufferState): string {
-	// Wave E: when the mirror is dirty (e.g. Tab completion echoed
-	// text we can't see) the byte-count length is unreliable. Fall
-	// back to `\x05\x15` — Ctrl+E (move to end) + Ctrl+U (kill from
-	// cursor to start). Readline shells wipe the line cleanly in two
-	// bytes regardless of length. cmd.exe doesn't honour these but
-	// users hitting Tab at a cmd.exe prompt is rare.
-	if (state.dirty) return '\x05\x15';
-	if (state.text.length === 0) return '';
-	const cursorAtEnd = state.cursorCol >= state.text.length;
-	const backspaces = '\x08'.repeat(state.text.length);
-	return cursorAtEnd ? backspaces : '\x05' + backspaces;
-}

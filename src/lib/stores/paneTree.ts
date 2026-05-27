@@ -454,7 +454,7 @@ function findVisibleSplitRoot(splitPath: number[], axis: SplitterAxis): HTMLElem
   );
   if (matches.length === 0) return null;
   for (const el of matches) {
-    if (el.offsetParent !== null) return el;
+    if (el.checkVisibility()) return el;
   }
   return matches[0] ?? null;
 }
@@ -1584,7 +1584,7 @@ export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
   workspacesList.update((list) => {
     if (
       fromIndex < 0 || toIndex < 0 ||
-      fromIndex >= list.length || toIndex >= list.length ||
+      fromIndex >= list.length || toIndex > list.length ||
       fromIndex === toIndex
     ) return list;
     rolledBack = list;

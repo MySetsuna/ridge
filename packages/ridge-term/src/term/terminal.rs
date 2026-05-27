@@ -559,9 +559,12 @@ impl Terminal {
 
     /// JS-side hook: caller (manager.ts) just wrote ETX `\x03` to the
     /// PTY in response to a user Ctrl+C. Forwards to
-    /// `Grid::note_ctrl_c_sent` which arms the inline-TUI grace window.
+    /// `Grid::note_ctrl_c_sent` which arms the inline-TUI grace window,
+    /// and resets all modes to default so mouse reporting / DECCKM /
+    /// bracketed paste left on by the killed TUI don't leak to the shell.
     pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
         self.grid.note_ctrl_c_sent(now_ms);
+        self.modes = Modes::default();
     }
 
     /// Diagnostic accessor — returns the most recent `Grid::resize` calls.
@@ -592,8 +595,13 @@ impl Terminal {
     /// screen mode (e.g. TUI crash or pane kill). Without this the new
     /// shell's output would go into the alt buffer, hiding the primary
     /// screen content.
+    ///
+    /// Also resets all modes to default — a killed/exited TUI may have
+    /// left mouse reporting, DECCKM, bracketed paste, or other modes
+    /// active, and the new shell shouldn't inherit them.
     pub fn leave_alt_screen(&mut self) {
         self.grid.leave_alt_screen();
+        self.modes = Modes::default();
     }
 
     /// Renderer entry point: returns the row at viewport-relative index
