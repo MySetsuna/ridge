@@ -13,18 +13,7 @@
   } = $props();
 
   let canvasRef: TerminalCanvas | undefined = $state();
-
-  function showKeyboard() {
-    const el = document.createElement('input');
-    el.style.position = 'fixed';
-    el.style.top = '-100px';
-    el.style.left = '0';
-    el.style.opacity = '0';
-    el.style.pointerEvents = 'none';
-    el.style.fontSize = '16px';
-    document.body.appendChild(el);
-    el.focus();
-  }
+  let showKeyboard = $state(false);
 
   function onStdin(data: string) {
     if (activePaneId) ws.sendStdin(activePaneId, data);
@@ -33,6 +22,30 @@
   function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
     ws.resizePane(paneId, rows, cols, pixelWidth, pixelHeight);
   }
+
+  let hiddenInput: HTMLInputElement | undefined;
+
+  $effect(() => {
+    if (showKeyboard) {
+      if (hiddenInput) hiddenInput.remove();
+      const el = document.createElement('input');
+      el.style.position = 'fixed';
+      el.style.top = '-100px';
+      el.style.left = '0';
+      el.style.opacity = '0';
+      el.style.pointerEvents = 'none';
+      el.style.fontSize = '16px';
+      el.setAttribute('inputmode', 'text');
+      el.setAttribute('autocomplete', 'off');
+      el.setAttribute('autocorrect', 'off');
+      el.spellcheck = false;
+      document.body.appendChild(el);
+      hiddenInput = el;
+      el.focus();
+    } else {
+      if (hiddenInput) { hiddenInput.remove(); hiddenInput = undefined; }
+    }
+  });
 
   onMount(() => {
     const msgUnsub = ws.onMessage((msg) => {
@@ -58,12 +71,13 @@
       paneId={activePaneId ?? null}
       {onStdin}
       {onResize}
+      {showKeyboard}
     />
   {/if}
 
   {#if panes.length > 0}
     <div class="input-bar">
-      <button class="keyboard-btn" onclick={showKeyboard}>⌨ 键盘输入</button>
+      <button class="keyboard-btn" onclick={() => showKeyboard = !showKeyboard}>⌨ {showKeyboard ? '隐藏键盘' : '键盘输入'}</button>
     </div>
   {/if}
 </div>

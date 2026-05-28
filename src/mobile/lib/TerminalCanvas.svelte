@@ -2,11 +2,13 @@
   import { onMount, onDestroy } from 'svelte';
   import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
   import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
+  import VirtualKeyboard from './VirtualKeyboard.svelte';
 
-  let { paneId, onStdin, onResize }: {
+  let { paneId, onStdin, onResize, showKeyboard = false }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    showKeyboard?: boolean;
   } = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -23,6 +25,10 @@
   let fontSize = $state(12);
   let cols = $state(80);
   let rows = $state(24);
+  let cellW = $state(8);
+  let cellH = $state(16);
+
+  let copySuccess = $state(false);
 
   function calcFontSize(): number {
     const w = window.innerWidth;
@@ -31,10 +37,6 @@
     if (w < 540) return 12;
     if (w < 720) return 13;
     return 14;
-  }
-
-  function calcThemeBg(): string {
-    return '#0d1117';
   }
 
   onMount(async () => {
@@ -84,11 +86,15 @@
     canvasEl.style.width = w + 'px';
     canvasEl.style.height = h + 'px';
     renderHandle.resize(w, h, dpr);
-    const [cellW, cellH] = renderHandle.configure(
+    const dims = renderHandle.configure(
       '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
       fontSize,
       dpr,
     );
+    if (dims.length >= 2) {
+      cellW = dims[0];
+      cellH = dims[1];
+    }
     if (cellW > 0 && cellH > 0) {
       cols = Math.max(1, Math.floor(w / cellW));
       rows = Math.max(1, Math.floor(h / cellH));
@@ -144,11 +150,49 @@
     pendingData.length = 0;
   }
 
-  // ─── Touch support: scroll with two-finger drag ──────────────────────
+  // ─── Virtual Keyboard integration ──────────────────────────────────
+  function handleVirtualKey(key: string, ctrl: boolean, alt: boolean, shift: boolean) {
+    if (!paneId || !kernel) return;
+    const bytes = kernel.encodeKey(key, ctrl, alt, shift, false);
+    if (bytes.length > 0) {
+      onStdin(new TextDecoder().decode(bytes));
+    } else if (key === 'Tab') {
+      onStdin('\t');
+    } else if (key === 'Escape') {
+      onStdin('\x1b');
+    } else if (key === 'Enter') {
+      onStdin('\r');
+    } else if (key.startsWith('Arrow')) {
+      const map: Record<string, string> = {
+        ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
+        ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
+      };
+      onStdin(map[key] || '');
+    }
+  }
+
+  // ─── Touch support: scroll + selection + mouse ─────────────────────
   let touchStartY = 0;
+  let touchStartX = 0;
   let touchScrollAccum = 0;
   let lastTouchDistance = 0;
   let isTwoFinger = false;
+  let touchStartTime = 0;
+  let isSelecting = false;
+  let selAnchorRow = 0;
+  let selAnchorCol = 0;
+  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  let didLongPress = false;
+
+  function touchToCell(clientX: number, clientY: number): { row: number; col: number } | null {
+    if (!canvasEl || cellW <= 0 || cellH <= 0) return null;
+    const rect = canvasEl.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const col = Math.max(0, Math.floor(x / cellW));
+    const row = Math.max(0, Math.floor(y / cellH));
+    return { row, col };
+  }
 
   function handleTouchStart(e: TouchEvent) {
     if (e.touches.length === 2) {
@@ -157,14 +201,35 @@
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       lastTouchDistance = Math.sqrt(dx * dx + dy * dy);
       e.preventDefault();
-    } else if (e.touches.length === 1 && !isTwoFinger) {
-      touchStartY = e.touches[0].clientY;
-      touchScrollAccum = 0;
+      return;
     }
+    if (e.touches.length !== 1) return;
+    touchStartY = e.touches[0].clientY;
+    touchStartX = e.touches[0].clientX;
+    touchScrollAccum = 0;
+    touchStartTime = Date.now();
+    isSelecting = false;
+    didLongPress = false;
+
+    const touch = e.touches[0];
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+      if (!kernel || isTwoFinger) return;
+      didLongPress = true;
+      const cell = touchToCell(touch.clientX, touch.clientY);
+      if (cell) {
+        isSelecting = true;
+        selAnchorRow = cell.row;
+        selAnchorCol = cell.col;
+        kernel.clearSelection();
+        try { navigator.vibrate(15); } catch {}
+      }
+    }, 400);
   }
 
   function handleTouchMove(e: TouchEvent) {
     if (e.touches.length === 2 && isTwoFinger) {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -178,10 +243,28 @@
         lastTouchDistance = dist;
       }
       e.preventDefault();
-    } else if (e.touches.length === 1 && isTwoFinger) {
-      // transition from 2-finger back to 1-finger — ignore
-    } else if (e.touches.length === 1 && !isTwoFinger) {
+      return;
+    }
+    if (e.touches.length === 1 && isTwoFinger) return;
+
+    if (e.touches.length === 1 && !isTwoFinger) {
+      if (isSelecting && kernel) {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        e.preventDefault();
+        const cell = touchToCell(e.touches[0].clientX, e.touches[0].clientY);
+        if (cell) {
+          const absRow = kernel.scrollbackLen() > 0
+            ? cell.row + (kernel.scrollOffset() > 0 ? kernel.scrollOffset() : 0)
+            : cell.row;
+          kernel.setSelectionAbs(selAnchorRow, selAnchorCol, absRow, cell.col);
+        }
+        return;
+      }
+      if (didLongPress) return;
       const dy = e.touches[0].clientY - touchStartY;
+      if (Math.abs(dy) > 10) {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      }
       touchScrollAccum += dy;
       if (Math.abs(touchScrollAccum) > 30) {
         const lines = touchScrollAccum > 0 ? -3 : 3;
@@ -195,9 +278,70 @@
     }
   }
 
-  function handleTouchEnd(_e: TouchEvent) {
+  function handleTouchEnd(e: TouchEvent) {
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    if (isTwoFinger) {
+      isTwoFinger = false;
+      touchScrollAccum = 0;
+      isSelecting = false;
+      return;
+    }
+
+    if (isSelecting) {
+      isSelecting = false;
+      touchScrollAccum = 0;
+      return;
+    }
+
+    if (didLongPress) {
+      didLongPress = false;
+      touchScrollAccum = 0;
+      return;
+    }
+
+    // Quick tap: forward as mouse click if terminal is in mouse reporting mode
+    const elapsed = Date.now() - touchStartTime;
+    if (elapsed < 250 && kernel && cellW > 0 && cellH > 0) {
+      const touch = e.changedTouches[0];
+      if (touch) {
+        const cell = touchToCell(touch.clientX, touch.clientY);
+        if (cell && kernel.isMouseReporting()) {
+          const bytes = kernel.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
+          if (bytes.length > 0) {
+            onStdin(new TextDecoder().decode(bytes));
+          }
+
+          // Send mouse release
+          requestAnimationFrame(() => {
+            if (kernel) {
+              const releaseBytes = kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
+              if (releaseBytes.length > 0) {
+                onStdin(new TextDecoder().decode(releaseBytes));
+              }
+            }
+          });
+        }
+      }
+    }
+
     isTwoFinger = false;
     touchScrollAccum = 0;
+  }
+
+  // ─── Copy handler ──────────────────────────────────────────────────
+  async function handleCopy() {
+    if (!kernel || !kernel.hasSelection()) return;
+    const text = kernel.getSelectionText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      copySuccess = true;
+      setTimeout(() => copySuccess = false, 1500);
+    } catch {}
+  }
+
+  function handleDismissSelection() {
+    kernel?.clearSelection();
   }
 
   // ─── Keyboard handling ────────────────────────────────────────────
@@ -250,11 +394,31 @@
     <div class="loading">初始化终端引擎…</div>
   {/if}
   <canvas bind:this={canvasEl} class="term-canvas" class:hidden={!ready}></canvas>
+
+  {#if ready && kernel?.hasSelection()}
+    <div class="selection-actions">
+      <button class="copy-btn" onclick={handleCopy}>
+        {copySuccess ? '✓ 已复制' : '复制'}
+      </button>
+      <button class="dismiss-btn" onclick={handleDismissSelection}>✕</button>
+    </div>
+  {/if}
 </div>
+
+{#if showKeyboard}
+  <VirtualKeyboard onKey={handleVirtualKey} />
+{/if}
 
 <style>
   .container{position:relative;flex:1;overflow:hidden;background:#0d1117;touch-action:manipulation}
   .term-canvas{display:block;touch-action:none}
   .term-canvas.hidden{opacity:0}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8b949e;font-size:14px}
+
+  .selection-actions{position:absolute;bottom:12px;right:12px;display:flex;gap:6px;z-index:10}
+  .copy-btn,.dismiss-btn{display:flex;align-items:center;justify-content:center;height:36px;padding:0 14px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s;touch-action:manipulation}
+  .copy-btn{background:#238636;color:#fff}
+  .copy-btn:active{background:#2ea043}
+  .dismiss-btn{background:#21262d;color:#8b949e;min-width:36px}
+  .dismiss-btn:active{background:#30363d}
 </style>

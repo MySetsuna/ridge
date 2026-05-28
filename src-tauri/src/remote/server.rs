@@ -479,10 +479,16 @@ async fn workspace_close_handler(
 }
 
 async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
-    tracing::info!(target: "ridge::remote", "WebSocket client connected");
-
     use futures::{SinkExt, StreamExt};
     let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Register this client in the remote client registry so the desktop
+    // RemotePanel can list and optionally disconnect it.
+    let (client_id, kill_flag) = ctx.state.remote_client_registry.register(
+        "unknown".to_string(),
+        String::new(), // user-agent not available from axum WS directly
+    );
+    tracing::info!(target: "ridge::remote", client_id, "WebSocket client connected");
 
     // Per-client mpsc channels — isolated from other WS clients.
     let (output_tx, mut output_rx) = mpsc::channel::<PtyOutputEvent>(128);
@@ -830,6 +836,33 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             }
                         }
                     }
+                    Some("list-remote-clients") => {
+                        let clients = ctx.state.remote_client_registry.list();
+                        let list: Vec<serde_json::Value> = clients.iter().map(|c| {
+                            let elapsed = c.connected_at.elapsed()
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            serde_json::json!({
+                                "id": c.id,
+                                "connectedAt": elapsed,
+                                "remoteAddr": c.remote_addr,
+                                "userAgent": c.user_agent,
+                            })
+                        }).collect();
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "remote-clients",
+                            "clients": list,
+                        }).to_string())).await
+                    }
+                    Some("kick-remote-client") => {
+                        let target_id = parsed["id"].as_u64().unwrap_or(0);
+                        let kicked = ctx.state.remote_client_registry.kick(target_id);
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "kick-remote-client-result",
+                            "success": kicked,
+                            "clientId": target_id,
+                        }).to_string())).await
+                    }
                     Some("list-git-status") => {
                         let workspace_dir = ctx.state.current_project.read().clone()
                             .or_else(|| dirs::home_dir())
@@ -908,10 +941,20 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                 }
             }
             _ = health_interval.tick() => {
-                // If remote control was toggled off after this WS
-                // connection was established, close the socket.
-                if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
-                    let _ = ws_tx.send(Message::Close(None)).await;
+                if !ctx.state.remote_enabled.load(Ordering::Relaxed)
+                    || kill_flag.load(Ordering::Relaxed)
+                {
+                    let reason = if kill_flag.load(Ordering::Relaxed) {
+                        "Disconnected by admin"
+                    } else {
+                        "Remote control disabled"
+                    };
+                    let _ = ws_tx.send(Message::Close(Some(
+                        axum::extract::ws::CloseFrame {
+                            code: 1000,
+                            reason: std::borrow::Cow::Borrowed(reason),
+                        }
+                    ))).await;
                     break;
                 }
             }
@@ -922,6 +965,7 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     if let Some((ws, pane)) = current_pane.take() {
         ctx.state.unregister_remote_sub(ws, pane, sub_id);
     }
+    ctx.state.remote_client_registry.unregister(client_id);
 
-    tracing::info!(target: "ridge::remote", "WebSocket client disconnected");
+    tracing::info!(target: "ridge::remote", client_id, "WebSocket client disconnected");
 }
