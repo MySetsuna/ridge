@@ -63,6 +63,22 @@ export type WsMessage = {
 } | {
   type: 'workspaces';
   workspaces: WorkspaceInfo[];
+} | {
+  type: 'current-project';
+  path: string;
+} | {
+  type: 'switch-workspace-result';
+  success: boolean;
+  workspaceId?: string;
+  error?: string;
+} | {
+  type: 'create-workspace-result';
+  success: boolean;
+  workspaceId?: string;
+} | {
+  type: 'close-workspace-result';
+  success: boolean;
+  error?: string;
 };
 
 type Listener = (msg: WsMessage) => void;
@@ -74,6 +90,8 @@ export class RemoteConnection {
   private binaryDeltaListeners: Set<BinaryDeltaListener> = new Set();
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
+  private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
+  private _reqCounter = 0;
   private _host: string = '';
   private _port: number = 0;
   private _token: string = '';
@@ -126,6 +144,19 @@ export class RemoteConnection {
       }
       try {
         const msg = JSON.parse(event.data) as WsMessage;
+        // Route result-type responses to pending request promises.
+        if (typeof msg === 'object' && msg !== null) {
+          const type = (msg as Record<string, unknown>).type as string;
+          const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project';
+          if (isResult) {
+            const pending = this._pendingRequests.get(type);
+            if (pending) {
+              this._pendingRequests.delete(type);
+              pending.resolve(msg);
+              return;
+            }
+          }
+        }
         if (msg.type === 'output') {
           const lines = msg.data.split('\n');
           const existing = this.paneOutputs.get(msg.paneId) || [];
@@ -147,6 +178,20 @@ export class RemoteConnection {
     }
   }
 
+  private async _sendAndWait(request: Record<string, unknown>, responseType: string, timeoutMs = 5000): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingRequests.delete(responseType);
+        reject(new Error(`WS request ${responseType} timed out`));
+      }, timeoutMs);
+      this._pendingRequests.set(responseType, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      this.send(request);
+    });
+  }
+
   listPanes() { this.send({ type: 'list-panes' }); }
   subscribePane(paneId: string) { this.send({ type: 'subscribe-pane', paneId }); }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
@@ -156,39 +201,30 @@ export class RemoteConnection {
     this.send({ type: 'resize', paneId, rows, cols, pixelWidth, pixelHeight });
   }
 
-  // ── Workspace operations via HTTP ─────────────────────────────────
-  private async httpPost(path: string, body: unknown): Promise<Record<string, unknown>> {
-    const res = await fetch(`http://${this._host}:${this._port}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return res.json() as Promise<Record<string, unknown>>;
-  }
-
-  private async httpGet(path: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`http://${this._host}:${this._port}${path}`);
-    return res.json() as Promise<Record<string, unknown>>;
-  }
-
+  // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
-    const data = await this.httpGet('/workspace/list') as { workspaces: WorkspaceInfo[] };
-    return data;
+    const data = await this._sendAndWait({ type: 'list-workspaces' }, 'workspaces') as Record<string, unknown>;
+    return { workspaces: (data as { workspaces: WorkspaceInfo[] }).workspaces || [] };
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {
-    const data = await this.httpPost('/workspace/switch', { workspace_id: workspaceId });
+    const data = await this._sendAndWait({ type: 'switch-workspace', workspaceId }, 'switch-workspace-result') as Record<string, unknown>;
     return (data as Record<string, unknown>).success === true;
   }
 
   async createWorkspace(name?: string): Promise<string | null> {
-    const data = await this.httpPost('/workspace/create', { name: name || '' }) as Record<string, unknown>;
+    const data = await this._sendAndWait({ type: 'create-workspace', name: name || '' }, 'create-workspace-result') as Record<string, unknown>;
     return (data.success && data.workspaceId) ? String(data.workspaceId) : null;
   }
 
   async closeWorkspace(workspaceId: string): Promise<boolean> {
-    const data = await this.httpPost('/workspace/close', { workspace_id: workspaceId });
+    const data = await this._sendAndWait({ type: 'close-workspace', workspaceId }, 'close-workspace-result') as Record<string, unknown>;
     return (data as Record<string, unknown>).success === true;
+  }
+
+  async requestCurrentProject(): Promise<string> {
+    const data = await this._sendAndWait({ type: 'current-project' }, 'current-project') as Record<string, unknown>;
+    return (data as { path: string }).path || '';
   }
   // ───────────────────────────────────────────────────────────────────
 

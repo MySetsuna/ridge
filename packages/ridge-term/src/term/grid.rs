@@ -2132,6 +2132,7 @@ mod tests {
             attr: AttrId::DEFAULT,
             origin: false,
             pending_wrap: false,
+            app_cursor_keys: false,
         });
         g.enter_alt_screen(true);
         assert!(g.is_alt_screen());
@@ -2154,6 +2155,7 @@ mod tests {
             attr: AttrId::DEFAULT,
             origin: false,
             pending_wrap: false,
+            app_cursor_keys: false,
         });
 
         g.resize(3, 3);

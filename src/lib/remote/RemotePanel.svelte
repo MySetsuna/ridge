@@ -16,6 +16,7 @@
 
   let conn = createRemoteConnection();
   let connected = $state(false);
+  let copySuccess = $state(false);
 
   function buildLinkUri(lanIp: string, port: number): string {
     if (dev) return `http://${lanIp}:5174/`;
@@ -61,6 +62,15 @@
   function disconnect() {
     conn.disconnect();
     connected = false;
+  }
+
+  async function copyLink() {
+    const uri = buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0);
+    try {
+      await navigator.clipboard.writeText(uri);
+      copySuccess = true;
+      setTimeout(() => copySuccess = false, 2000);
+    } catch { /* clipbord not available */ }
   }
 
   onMount(() => {
@@ -115,7 +125,21 @@
           {#if dev}
             开发模式 · 运行 <code class="bg-[var(--rg-surface)] px-1 rounded">pnpm dev:remote</code> 启动手机端
           {:else}
-            手机浏览器扫码或访问 <code class="bg-[var(--rg-surface)] px-1 rounded">{buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0)}</code>
+            手机浏览器扫码或访问
+            <button
+              onclick={copyLink}
+              class="inline bg-transparent border-none p-0 cursor-pointer"
+              title="点击复制链接"
+            >
+              <code class="bg-[var(--rg-surface)] px-1 rounded hover:bg-[var(--rg-accent)]/10 transition-colors">{buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0)}</code>
+            </button>
+            <button
+              onclick={copyLink}
+              class="ml-1 text-[var(--rg-accent)] hover:underline text-[10px]"
+              title="复制链接"
+            >
+              {copySuccess ? '已复制' : '复制'}
+            </button>
           {/if}
         </p>
       {/if}
@@ -142,13 +166,22 @@
           <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">② 扫码打开远程页面</p>
           <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={140} />
           <p class="text-[9px] text-[var(--rg-fg-muted)]">手机浏览器扫码 → 输入验证码 → 连接</p>
+          <button
+            onclick={copyLink}
+            class="text-[10px] text-[var(--rg-accent)] hover:underline"
+            title="复制链接"
+          >
+            {copySuccess ? '链接已复制 ✓' : '复制链接'}
+          </button>
         </div>
 
         <!-- Connection info -->
         <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
           <div class="flex justify-between text-xs">
             <span class="text-[var(--rg-fg-muted)]">移动端访问入口</span>
-            <span class="text-[var(--rg-accent)] font-mono">{remoteInfo.lanIp}:{dev ? '5174' : remoteInfo.port}</span>
+            <button onclick={copyLink} class="text-[var(--rg-accent)] font-mono hover:underline cursor-pointer bg-transparent border-none p-0">
+              {remoteInfo.lanIp}:{dev ? '5174' : remoteInfo.port}
+            </button>
           </div>
           <div class="flex justify-between text-xs">
             <span class="text-[var(--rg-fg-muted)]">后端 WebSocket 端口</span>

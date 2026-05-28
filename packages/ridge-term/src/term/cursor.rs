@@ -38,6 +38,10 @@ impl Default for Cursor {
 /// edit and resume cleanly even when the cursor is parked at the right
 /// margin or origin mode is active.
 ///
+/// Also used by ?1049h/?1049l alt-screen entry/exit to save and restore
+/// DECCKM (?1) application-cursor-keys mode — otherwise vim and similar
+/// TUIs that set DECCKM inside the alt screen leave it stuck after exit.
+///
 /// Not modelled (yet): selected character set (we don't model charsets),
 /// selective erase attribute (we don't model selective erase).
 #[derive(Debug, Clone, Copy, Default)]
@@ -52,4 +56,8 @@ pub struct SavedCursor {
     /// the cursor at cols-1 with pending_wrap=true; without restoring
     /// this, DECRC would resume printing at cols-1 instead of wrapping.
     pub pending_wrap: bool,
+    /// DECCKM (?1) application-cursor-keys mode at the moment of save.
+    /// Saved on ?1049h alt-screen entry, restored on ?1049l exit to
+    /// prevent DECCKM leaking into the primary screen after a TUI exits.
+    pub app_cursor_keys: bool,
 }

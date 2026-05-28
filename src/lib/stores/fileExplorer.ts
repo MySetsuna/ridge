@@ -129,6 +129,7 @@ function savePersistedColumn(col: ExplorerColumn): void {
 
 function createFileExplorerStore() {
 	const { subscribe, set, update } = writable<FileExplorerState>(initialState);
+	const loadTreeInFlight = new Map<string, Promise<void>>();
 
 	return {
 		subscribe,
@@ -310,6 +311,21 @@ function createFileExplorerStore() {
 		 * but the body render path avoids a "加载中..." placeholder.
 		 */
 		async loadTree(columnId: string, depth = 1): Promise<void> {
+			// Per-column concurrency guard: if a loadTree for this column is
+			// already in-flight, discard the new call and return the existing
+			// promise. The latest result is always authoritative — no need to
+			// queue.
+			if (loadTreeInFlight.has(columnId)) {
+				return loadTreeInFlight.get(columnId)!;
+			}
+			const promise = this._loadTreeImpl(columnId, depth).finally(() => {
+				loadTreeInFlight.delete(columnId);
+			});
+			loadTreeInFlight.set(columnId, promise);
+			return promise;
+		},
+
+		async _loadTreeImpl(columnId: string, depth = 1): Promise<void> {
 			const state = get({ subscribe });
 			const column = state.columns.find((c) => c.id === columnId);
 			if (!column || column.loading) return;
@@ -363,12 +379,30 @@ function createFileExplorerStore() {
 					if (n.children) for (const c of n.children) walk(c);
 				};
 				walk(tree);
+
+				// Depth-aware pruning: only prune depth-1 paths (direct children
+				// of cwd) that the fresh tree doesn't contain — those are truly
+				// deleted directories. Deeper paths (> level 1) are kept even if
+				// absent from the depth-1 tree: they may still exist, we just
+				// didn't fetch that deep. Stale deep paths are cleaned up by the
+				// separate `pruneStaleExpandedPaths` idle task (which calls the
+				// lightweight `path_exists` IPC).
+				const cwdPrefix = column.cwd.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
 				update((s) => ({
 					...s,
 					columns: s.columns.map((c) => {
 						if (c.id !== columnId) return c;
 						const pruned = new Set<string>();
-						for (const p of c.expandedPaths) if (seen.has(p)) pruned.add(p);
+						for (const p of c.expandedPaths) {
+							if (seen.has(p)) { pruned.add(p); continue; }
+							const normalized = p.replace(/\\/g, '/');
+							if (normalized.startsWith(cwdPrefix)) {
+								const relative = normalized.slice(cwdPrefix.length);
+								const depth = relative.split('/').filter(Boolean).length;
+								if (depth <= 1) continue; // not in seen + depth-1 → truly gone
+							}
+							pruned.add(p); // depth > 1 — keep, let pruneStaleExpandedPaths verify
+						}
 						const nextCol = {
 							...c,
 							tree,
@@ -524,6 +558,49 @@ function createFileExplorerStore() {
 					const next = { ...c, expandedPaths: newExpanded };
 					savePersistedColumn(next);
 					return next;
+				}),
+			}));
+		},
+
+		/**
+		 * Batch-remove multiple expanded paths from a column. Used by the
+		 * idle `pruneStaleExpandedPaths` task after verifying paths are gone.
+		 */
+		removeExpandedPaths(columnId: string, paths: string[]): void {
+			if (paths.length === 0) return;
+			update((state) => ({
+				...state,
+				columns: state.columns.map((c) => {
+					if (c.id !== columnId) return c;
+					let changed = false;
+					const next = new Set(c.expandedPaths);
+					for (const p of paths) {
+						if (next.delete(p)) changed = true;
+					}
+					if (!changed) return c;
+					const updated = { ...c, expandedPaths: next };
+					savePersistedColumn(updated);
+					return updated;
+				}),
+			}));
+		},
+
+		/**
+		 * Called by FileTree when `loadChildrenPage` returns a "path does not
+		 * exist" error. Removes the path from expandedPaths and persists,
+		 * so the user sees a clean collapse instead of a "加载失败" message.
+		 */
+		collapseOnLoadError(columnId: string, dirPath: string): void {
+			update((state) => ({
+				...state,
+				columns: state.columns.map((c) => {
+					if (c.id !== columnId) return c;
+					if (!c.expandedPaths.has(dirPath)) return c;
+					const next = new Set(c.expandedPaths);
+					next.delete(dirPath);
+					const updated = { ...c, expandedPaths: next };
+					savePersistedColumn(updated);
+					return updated;
 				}),
 			}));
 		},
@@ -871,5 +948,47 @@ export function initFileExplorer(
 		if (!col.tree && !col.loading) {
 			void fileExplorerStore.loadTree(col.id);
 		}
+	}
+}
+
+// ─── Stale expanded-path pruning ────────────────────────────────────────────
+// Called periodically (every ~5 min) from fileWatcherSync's idle scheduler.
+// Verifies depth>1 expanded paths against the filesystem with a lightweight
+// `path_exists` IPC and removes those that no longer exist. Runs in batches
+// of 20 parallel checks to limit IPC burst.
+
+const PRUNE_BATCH_SIZE = 20;
+
+export async function pruneStaleExpandedPaths(): Promise<void> {
+	if (!isTauri()) return;
+	const state = get(fileExplorerStore);
+	for (const col of state.columns) {
+		const toCheck: string[] = [];
+		const cwdPrefix = col.cwd.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+		for (const p of col.expandedPaths) {
+			const normalized = p.replace(/\\/g, '/');
+			if (normalized.startsWith(cwdPrefix)) {
+				const relative = normalized.slice(cwdPrefix.length);
+				const depth = relative.split('/').filter(Boolean).length;
+				if (depth > 1) toCheck.push(p);
+			}
+		}
+		if (toCheck.length === 0) continue;
+
+		// Batch-parallel verification — each IPC is a single metadata call (~50μs).
+		const gone: string[] = [];
+		for (let i = 0; i < toCheck.length; i += PRUNE_BATCH_SIZE) {
+			const batch = toCheck.slice(i, i + PRUNE_BATCH_SIZE);
+			const results = await Promise.all(
+				batch.map((p) =>
+					invoke<boolean>('path_exists', { path: p }).catch(() => true)
+				)
+			);
+			for (let j = 0; j < batch.length; j++) {
+				if (!results[j]) gone.push(batch[j]);
+			}
+		}
+		if (gone.length === 0) continue;
+		fileExplorerStore.removeExpandedPaths(col.id, gone);
 	}
 }

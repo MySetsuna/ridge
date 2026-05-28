@@ -3191,6 +3191,50 @@ export class TerminalManager {
 		}
 	}
 
+	/** Forward a pointerdown event to the TUI application when DEC mouse
+	 *  reporting is active. Encodes the click as an SGR mouse sequence
+	 *  and sends it through the data handler. This is the public entry
+	 *  point called from RidgePane's onContainerPointerDown, separate
+	 *  from the internal pointerDownListener closure which handles the
+	 *  container's addEventListener path. */
+	handlePointerDown(paneId: string, e: PointerEvent): boolean {
+		const ent = this.panes.get(paneId);
+		if (!ent || !ent.dataHandler) return false;
+		const modes = ent.kernel.mouseReportingModes();
+		if (modes === 0) return false;
+		if (ent.cellW <= 0 || ent.cellH <= 0) return false;
+		// Check scrollbar target — same as internal isInScrollbar.
+		const tgt = e.target as Element | null;
+		if (tgt?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb')) return false;
+		// Compute cell coordinates from the pointer position.
+		const rect = ent.container.getBoundingClientRect();
+		const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
+		const x = e.clientX - rect.left - pad;
+		const y = e.clientY - rect.top - pad;
+		const cols = ent.kernel.cols();
+		const rows = ent.kernel.rows();
+		if (cols === 0 || rows === 0) return false;
+		const col = Math.max(0, Math.min(cols - 1, Math.floor(x / ent.cellW)));
+		const cellRow = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
+		// Cancel any queued mouse move to prevent stale motion events.
+		if (ent.mouseMoveRaf !== null) {
+			cancelAnimationFrame(ent.mouseMoveRaf);
+			ent.mouseMoveRaf = null;
+		}
+		ent.pendingMouseMove = null;
+		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const mod = e.ctrlKey || (isMac && e.metaKey);
+		const btn = e.button;
+		const bytes = ent.kernel.encodeMouse(cellRow, col, btn, 0, e.shiftKey, mod, e.altKey);
+		if (bytes.length > 0) {
+			ent.dataHandler(bytes);
+			ent.lastMouseSent = { row: cellRow, col, buttons: e.buttons, action: 0 };
+			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
+			return true;
+		}
+		return false;
+	}
+
 	/** §1.31 (2026-05-19): DEC text-cursor-enable mode (`?25`).
 	 *  Returns true when the cursor is visible (the default). A hidden
 	 *  cursor (`?25l`) is a strong "app is doing custom rendering" hint

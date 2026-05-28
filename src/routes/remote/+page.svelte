@@ -3,7 +3,6 @@
   import { invoke } from '@tauri-apps/api/core';
   import { createRemoteConnection, type RemoteConnectionApi } from '$lib/remote/wsClient';
   import QrCode from '$lib/remote/QrCode.svelte';
-  import TreeNodeRow from '$lib/remote/TreeNodeRow.svelte';
   import {
     Terminal,
     Menu,
@@ -15,7 +14,6 @@
     Search,
     GitBranch,
     RefreshCw,
-    FoldHorizontal,
     FileCode,
   } from 'lucide-svelte';
 
@@ -34,6 +32,7 @@
   let totpTimer: ReturnType<typeof setInterval> | null = null;
 
   let conn = createRemoteConnection();
+  let currentProjectPath = $state('');
 
   function buildLinkUri(lanIp: string, port: number): string {
     return `http://${lanIp}:${port}/`;
@@ -109,6 +108,17 @@
     conn.connect(hostInput, remoteInfo.port, manualCode);
   }
 
+  $effect(() => {
+    const unsub = conn.currentProject.subscribe(v => currentProjectPath = v);
+    return unsub;
+  });
+
+  $effect(() => {
+    if (connected) {
+      conn.requestCurrentProject();
+    }
+  });
+
   function sendCommand() {
     if (!draftInput.trim()) return;
     terminalLines = [...terminalLines, `C:\\workcode\\myproject> ${draftInput}`];
@@ -131,63 +141,37 @@
     now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
   );
 
-  interface TreeNode {
-    name: string;
-    type: 'dir' | 'file';
-    children: TreeNode[];
-  }
+  // WS-driven data stores
+  let fileEntries = $state<{ name: string; path: string; is_dir: boolean; is_ignored?: boolean | null }[]>([]);
+  let gitWorkspace = $state<{ staged: string[]; unstaged: { name: string; status: string }[]; commits: { msg: string; hash: string; time: string }[] }>({ staged: [], unstaged: [], commits: [] });
+  let fileCurrentPath = $state('');
 
-  // Mock file tree
-  const fileTree: TreeNode[] = [
-    { name: '.git', type: 'dir', children: [] },
-    { name: 'src', type: 'dir', children: [
-      { name: 'components', type: 'dir', children: [
-        { name: 'Button.vue', type: 'file', children: [] },
-        { name: 'Input.vue', type: 'file', children: [] },
-      ]},
-      { name: 'utils', type: 'dir', children: [
-        { name: 'request.js', type: 'file', children: [] },
-      ]},
-      { name: 'App.vue', type: 'file', children: [] },
-      { name: 'main.js', type: 'file', children: [] },
-    ]},
-    { name: 'public', type: 'dir', children: [] },
-    { name: 'package.json', type: 'file', children: [] },
-    { name: 'README.md', type: 'file', children: [] },
-  ];
-
-  const searchResults = [
-    { file: 'Button.vue', path: '../src/components/Button.vue', matches: 12 },
-    { file: 'Input.vue', path: '../src/components/Input.vue', matches: 8 },
-    { file: 'request.js', path: '../src/utils/request.js', matches: 5 },
-    { file: 'App.vue', path: '../src/App.vue', matches: 3 },
-    { file: 'README.md', path: '../README.md', matches: 1 },
-  ];
-
-  const gitCommits = [
-    { msg: 'feat: 添加登录功能', hash: 'a1b2c3d', time: '2 小时前' },
-    { msg: 'fix: 修复按钮样式问题', hash: 'e4f5g6h', time: '5 小时前' },
-    { msg: 'docs: 更新 README', hash: 'i7j8k9l', time: '1 天前' },
-    { msg: 'feat: 初始化项目', hash: 'm0n1o2p', time: '2 天前' },
-  ];
-
-  let fileTreeExpanded = $state<Record<string, boolean>>({ '.git': true, 'src': true, 'components': true, 'utils': true, 'public': true });
-
-  function toggleDir(name: string) {
-    fileTreeExpanded[name] = !fileTreeExpanded[name];
-  }
-
-  const fileCount = $derived.by(() => {
-    const files: string[] = [];
-    function walk(nodes: TreeNode[]) {
-      for (const n of nodes) {
-        if (n.type === 'file') files.push(n.name);
-        walk(n.children);
-      }
-    }
-    walk(fileTree);
-    return files.length;
+  $effect(() => {
+    const unsub = conn.fileEntries.subscribe(v => fileEntries = v);
+    return unsub;
   });
+
+  $effect(() => {
+    const unsub = conn.gitStatus.subscribe(v => gitWorkspace = v);
+    return unsub;
+  });
+
+  $effect(() => {
+    if (connected) {
+      conn.listFiles();
+      conn.listGitStatus();
+    }
+  });
+
+  function refreshFileTree() {
+    conn.requestCurrentProject();
+    conn.listFiles(fileCurrentPath);
+  }
+
+  function navigateDir(path: string) {
+    fileCurrentPath = path;
+    conn.listFiles(path);
+  }
 </script>
 
 <div class="fixed inset-0 bg-[var(--rg-bg)] flex flex-col overflow-hidden">
@@ -392,20 +376,48 @@
       <div class="flex-1 overflow-auto">
         {#if activeTab === 'files'}
           <div class="p-3">
-            <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center justify-between mb-1">
               <h2 class="text-sm font-medium text-[var(--rg-fg)]">文件树</h2>
               <div class="flex items-center gap-1">
-                <FoldHorizontal class="w-4 h-4 text-[var(--rg-fg-muted)]" />
-                <RefreshCw class="w-4 h-4 text-[var(--rg-fg-muted)]" />
+                <button
+                  onclick={() => { const parts = fileCurrentPath.split('/').filter(Boolean); parts.pop(); navigateDir(parts.join('/') || ''); }}
+                  class="p-1 rounded hover:bg-[var(--rg-surface)] transition-colors"
+                  title="上级目录"
+                >
+                  <ArrowUp class="w-4 h-4 text-[var(--rg-fg-muted)]" />
+                </button>
+                <button
+                  onclick={refreshFileTree}
+                  class="p-1 rounded hover:bg-[var(--rg-surface)] transition-colors"
+                  title="刷新文件树"
+                >
+                  <RefreshCw class="w-4 h-4 text-[var(--rg-fg-muted)]" />
+                </button>
               </div>
             </div>
+            {#if currentProjectPath}
+              <p class="text-[11px] text-[var(--rg-fg-muted)] mb-2 truncate font-mono">{currentProjectPath}/{fileCurrentPath}</p>
+            {/if}
             <div class="space-y-0.5">
-              {#each fileTree as node}
-                <TreeNodeRow {node} expanded={fileTreeExpanded} onToggle={toggleDir} depth={0} />
+              {#each fileEntries as entry}
+                <button
+                  class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-[var(--rg-surface)] cursor-pointer transition-colors text-sm w-full text-left"
+                  onclick={() => entry.is_dir ? navigateDir(entry.path) : null}
+                >
+                  {#if entry.is_dir}
+                    <span class="text-[var(--rg-fg-muted)]">📁</span>
+                  {:else}
+                    <File class="w-4 h-4 shrink-0 text-[var(--rg-fg-muted)]" />
+                  {/if}
+                  <span class="truncate text-[var(--rg-fg)]">{entry.name}</span>
+                  {#if entry.is_ignored}
+                    <span class="text-[10px] px-1 rounded bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] ml-auto">ignored</span>
+                  {/if}
+                </button>
               {/each}
             </div>
             <div class="mt-4 text-[10px] text-[var(--rg-fg-muted)]">
-              共 {fileCount} 个文件，{fileTree.filter(n => n.type === 'dir').length} 个文件夹
+              共 {fileEntries.length} 个条目
             </div>
           </div>
         {:else if activeTab === 'search'}
@@ -417,42 +429,39 @@
                 class="w-full h-10 pl-10 pr-4 rounded-lg bg-[var(--rg-surface)] border border-[var(--rg-border)] text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)] transition-colors"
               />
             </div>
-            <div class="space-y-2">
-              {#each searchResults as r}
-                <div class="p-2 rounded-lg hover:bg-[var(--rg-surface)] transition-colors cursor-pointer">
-                  <div class="flex items-center justify-between">
-                    <span class="text-sm font-medium text-[var(--rg-fg)]">{r.file}</span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/10 text-[var(--rg-accent)]">{r.matches} 行匹配</span>
-                  </div>
-                  <p class="text-[11px] text-[var(--rg-fg-muted)] mt-0.5">{r.path}</p>
-                </div>
-              {/each}
-            </div>
-            <div class="mt-4 text-[10px] text-[var(--rg-fg-muted)]">
-              共找到 {searchResults.length} 个结果
+            <div class="text-sm text-[var(--rg-fg-muted)] text-center py-8">
+              搜索功能即将推出
             </div>
           </div>
         {:else if activeTab === 'git'}
           <div class="p-3 space-y-4">
             <!-- Staged / Unstaged -->
             <div>
-              <h3 class="text-xs font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider mb-2">已 staged ②</h3>
-              {#each ['src/components/Button.vue · M', 'package.json · M'] as item}
-                <div class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-[var(--rg-surface)] text-sm text-[var(--rg-fg)]">
-                  <FileCode class="w-4 h-4 text-green-400 shrink-0" />
-                  <span class="truncate">{item}</span>
-                </div>
-              {/each}
+              <h3 class="text-xs font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider mb-2">已 staged ({gitWorkspace.staged.length})</h3>
+              {#if gitWorkspace.staged.length === 0}
+                <p class="text-sm text-[var(--rg-fg-muted)] py-2">暂无</p>
+              {:else}
+                {#each gitWorkspace.staged as item}
+                  <div class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-[var(--rg-surface)] text-sm text-[var(--rg-fg)]">
+                    <FileCode class="w-4 h-4 text-green-400 shrink-0" />
+                    <span class="truncate">{item}</span>
+                  </div>
+                {/each}
+              {/if}
             </div>
             <div>
-              <h3 class="text-xs font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider mb-2">未 staged ③</h3>
-              {#each [{ n: 'src/utils/request.js', s: 'M' }, { n: 'README.md', s: 'A' }, { n: 'public/logo.png', s: 'D' }] as item}
-                <div class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-[var(--rg-surface)] text-sm text-[var(--rg-fg)]">
-                  <FileCode class="w-4 h-4 text-[var(--rg-fg-muted)] shrink-0" />
-                  <span class="truncate">{item.n}</span>
-                  <span class="text-[10px] px-1 rounded bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] ml-auto">{item.s}</span>
-                </div>
-              {/each}
+              <h3 class="text-xs font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider mb-2">未 staged ({gitWorkspace.unstaged.length})</h3>
+              {#if gitWorkspace.unstaged.length === 0}
+                <p class="text-sm text-[var(--rg-fg-muted)] py-2">暂无</p>
+              {:else}
+                {#each gitWorkspace.unstaged as item}
+                  <div class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-[var(--rg-surface)] text-sm text-[var(--rg-fg)]">
+                    <FileCode class="w-4 h-4 text-[var(--rg-fg-muted)] shrink-0" />
+                    <span class="truncate">{item.name}</span>
+                    <span class="text-[10px] px-1 rounded bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] ml-auto">{item.status}</span>
+                  </div>
+                {/each}
+              {/if}
             </div>
 
             <!-- Git Graph -->
@@ -465,25 +474,29 @@
                   <span class="text-[var(--rg-fg-muted)] cursor-pointer">⤢</span>
                 </div>
               </div>
-              <div class="space-y-1">
-                {#each gitCommits as c, i}
-                  <div class="flex items-start gap-2 py-1">
-                    <div class="flex flex-col items-center shrink-0">
-                      <div class="w-2.5 h-2.5 rounded-full bg-[var(--rg-accent)] mt-1.5"></div>
-                      {#if i < gitCommits.length - 1}
-                        <div class="w-px h-5 bg-[var(--rg-border)]"></div>
-                      {/if}
+              {#if gitWorkspace.commits.length === 0}
+                <p class="text-sm text-[var(--rg-fg-muted)] text-center py-4">暂无提交记录</p>
+              {:else}
+                <div class="space-y-1">
+                  {#each gitWorkspace.commits as c, i}
+                    <div class="flex items-start gap-2 py-1">
+                      <div class="flex flex-col items-center shrink-0">
+                        <div class="w-2.5 h-2.5 rounded-full bg-[var(--rg-accent)] mt-1.5"></div>
+                        {#if i < gitWorkspace.commits.length - 1}
+                          <div class="w-px h-5 bg-[var(--rg-border)]"></div>
+                        {/if}
+                      </div>
+                      <div class="min-w-0">
+                        <p class="text-sm text-[var(--rg-fg)] truncate">{c.msg}</p>
+                        <p class="text-[10px] text-[var(--rg-fg-muted)] space-x-2">
+                          <span>{c.hash}</span>
+                          <span>{c.time}</span>
+                        </p>
+                      </div>
                     </div>
-                    <div class="min-w-0">
-                      <p class="text-sm text-[var(--rg-fg)] truncate">{c.msg}</p>
-                      <p class="text-[10px] text-[var(--rg-fg-muted)] space-x-2">
-                        <span>{c.hash}</span>
-                        <span>{c.time}</span>
-                      </p>
-                    </div>
-                  </div>
-                {/each}
-              </div>
+                  {/each}
+                </div>
+              {/if}
             </div>
           </div>
         {/if}

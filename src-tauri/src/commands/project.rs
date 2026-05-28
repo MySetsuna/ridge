@@ -878,6 +878,12 @@ fn read_claude_history_sync(project_paths: Vec<String>, limit: Option<usize>) ->
     entries
 }
 
+#[tauri::command]
+pub async fn path_exists(path: String) -> Result<bool, String> {
+    let p = normalize_path_input(&path);
+    Ok(p.exists())
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Tests for the pure-filesystem commands. We avoid Tauri `#[tauri::command]`
 // surface by calling the underlying fn directly — their signatures are plain
