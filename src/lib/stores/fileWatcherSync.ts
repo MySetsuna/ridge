@@ -22,6 +22,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
 	fileExplorerStore,
 	refreshColumnsCovering,
+	pruneStaleExpandedPaths,
 } from './fileExplorer';
 import { fileEditorStore } from './fileEditor';
 import { onFsChange, isRecentlyWritten, type FsChangedPayload } from './fsEvents';
@@ -107,6 +108,12 @@ const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingPaths = new Map<string, Set<string>>();
 const COALESCED_TOKEN = '__coalesced__';
 
+// Global debounce: when many fs events arrive in a short window (e.g. git
+// checkout), the global timer accumulates all pending roots and flushes them
+// in one batch after activity settles.
+const GLOBAL_REFRESH_DEBOUNCE_MS = 300;
+let globalRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
 function parentDirOf(p: string): string {
 	const norm = normalize(p);
 	const idx = norm.lastIndexOf('/');
@@ -148,6 +155,19 @@ function handleFsChange(payload: FsChangedPayload): void {
 		root,
 		setTimeout(() => runRefresh(root), REFRESH_DEBOUNCE_MS)
 	);
+
+	// Global debounce: reset on every event; only fires after activity
+	// settles for GLOBAL_REFRESH_DEBOUNCE_MS. When it fires, cancel all
+	// per-root timers and flush their roots in one batch.
+	if (globalRefreshTimer) clearTimeout(globalRefreshTimer);
+	globalRefreshTimer = setTimeout(() => {
+		globalRefreshTimer = null;
+		for (const [r, timer] of refreshTimers) {
+			clearTimeout(timer);
+			runRefresh(r);
+		}
+		refreshTimers.clear();
+	}, GLOBAL_REFRESH_DEBOUNCE_MS);
 }
 
 function runRefresh(root: string): void {
@@ -188,4 +208,24 @@ export function initFileWatcherSync(): void {
 	fileExplorerStore.subscribe(() => scheduleSync());
 	fileEditorStore.subscribe(() => scheduleSync());
 	onFsChange(handleFsChange);
+
+	// ─── Periodic stale expanded-path pruning ───────────────────────────
+	// Every 5 minutes during idle, verify depth>1 expanded paths against
+	// the filesystem and remove those that no longer exist. This is a
+	// safety net — the primary cleanup path is collapseOnLoadError in
+	// FileTree (triggered when a user tries to expand a deleted directory).
+	const STALE_PRUNE_INTERVAL_MS = 300_000;
+	let pruneTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function schedulePrune(): void {
+		pruneTimer = setTimeout(() => {
+			pruneTimer = null;
+			idleRun(() => {
+				void pruneStaleExpandedPaths();
+				schedulePrune();
+			});
+		}, STALE_PRUNE_INTERVAL_MS);
+	}
+
+	schedulePrune();
 }

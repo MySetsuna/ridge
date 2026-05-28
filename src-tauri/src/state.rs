@@ -10,6 +10,8 @@ use portable_pty::{CommandBuilder, MasterPty, SlavePty};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::engine::parser::PaneParser;
+
 use crate::commands::fs_watch::FsWatcher;
 use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
@@ -223,6 +225,17 @@ pub struct RemotePaneSub {
     pub id: u64,
     pub output_tx: mpsc::Sender<PtyOutputEvent>,
     pub delta_tx: mpsc::Sender<PtyDeltaEvent>,
+    /// Per-subscriber dedicated `PaneParser` initialised at the mobile
+    /// client's grid dimensions. When `Some`, PTY output is fed through
+    /// this parser and the resulting (mobile-sized) deltas are sent to
+    /// `delta_tx` instead of the desktop parser's deltas. `None` falls
+    /// back to the legacy behaviour (desktop deltas broadcast).
+    pub parser: Option<Arc<Mutex<PaneParser>>>,
+    /// Mobile client's last-reported grid rows. Captured from `resize`
+    /// WS messages and used to initialise `parser` on subscribe.
+    pub rows: u16,
+    /// Mobile client's last-reported grid cols.
+    pub cols: u16,
 }
 
 #[derive(Default)]
@@ -658,6 +671,45 @@ impl AppState {
             .and_then(|e| e.output_cb.clone())
     }
 
+    /// Retrieve the most recent PTY scrollback bytes for a pane, up to
+    /// `max_bytes`. Used to seed a newly-created mobile `PaneParser` so its
+    /// state mirrors the desktop parser before the first delta frame is sent.
+    pub fn get_recent_scrollback_for(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        max_bytes: usize,
+    ) -> Vec<u8> {
+        let sb = self.pty_scrollback.read();
+        let Some(scrollback) = sb.get(&(ws, pane)) else {
+            return Vec::new();
+        };
+        let blocks = scrollback.snapshot_blocks();
+        let mut total: usize = 0;
+        // Walk most-recent block first.
+        let mut recent: Vec<Vec<u8>> = Vec::new();
+        for (_, bytes) in blocks.into_iter().rev() {
+            if total + bytes.len() <= max_bytes {
+                recent.push((*bytes).clone());
+                total += bytes.len();
+            } else if total < max_bytes {
+                let remaining = max_bytes - total;
+                let start = bytes.len().saturating_sub(remaining);
+                recent.push(bytes[start..].to_vec());
+                total = max_bytes;
+                break;
+            } else {
+                break;
+            }
+        }
+        recent.reverse(); // restore chronological order
+        let mut result = Vec::with_capacity(total);
+        for block in recent {
+            result.extend_from_slice(&block);
+        }
+        result
+    }
+
     pub fn register_remote_sub(&self, ws: Uuid, pane: Uuid, sub: RemotePaneSub) {
         self.pty_pane_registry
             .write()
@@ -675,6 +727,38 @@ impl AppState {
             if entry.is_empty() {
                 reg.remove(&key);
             }
+        }
+    }
+
+    /// §5 — update the grid dimensions of a remote subscriber's dedicated
+    /// `PaneParser` (if one exists). Called from the WS resize handler so
+    /// that subsequent delta frames match the mobile client's new viewport.
+    /// If no parser exists yet for this sub, this is a no-op (the parser
+    /// will be created with the correct dimensions on the next
+    /// `subscribe-pane`).
+    pub fn resize_remote_parser(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        sub_id: u64,
+        rows: u16,
+        cols: u16,
+    ) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (ws, pane);
+        let Some(entry) = reg.get_mut(&key) else {
+            return;
+        };
+        let Some(sub) = entry.remote_subs.iter_mut().find(|s| s.id == sub_id) else {
+            return;
+        };
+        sub.rows = rows;
+        sub.cols = cols;
+        if let Some(ref mp) = sub.parser {
+            let mut p = mp.lock();
+            // resize returns a frame that we must drop — the mobile client
+            // will request the right-size frame via its next output delta.
+            let _ = p.resize(rows, cols);
         }
     }
 }

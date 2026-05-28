@@ -200,7 +200,14 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			hasLoaded = true;
 		} catch (e) {
 			console.error('Failed to load children page:', e);
-			childrenError = '加载失败，请重试';
+			const msg = String(e);
+			if (/not exist|No such file/i.test(msg)) {
+				// Directory was deleted while expanded — clean collapse,
+				// no error message shown.
+				fileExplorerStore.collapseOnLoadError(columnId, node.path);
+			} else {
+				childrenError = '加载失败，请重试';
+			}
 			hasLoaded = true;
 		} finally {
 			childrenLoading = false;

@@ -7,13 +7,33 @@ export interface PaneInfo {
   title?: string;
 }
 
+export interface FileEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_ignored?: boolean | null;
+  child_count?: number;
+}
+
+export interface GitStatusData {
+  staged: string[];
+  unstaged: { name: string; status: string }[];
+  commits: { msg: string; hash: string; time: string }[];
+}
+
 export interface RemoteConnectionApi {
   state: Writable<ConnectionState>;
   error: Writable<string | null>;
   panes: Writable<PaneInfo[]>;
+  currentProject: Writable<string>;
+  fileEntries: Writable<FileEntry[]>;
+  gitStatus: Writable<GitStatusData>;
   connect: (host: string, port: number, code: string) => void;
   ping: () => void;
   listPanes: () => void;
+  requestCurrentProject: () => void;
+  listFiles: (path?: string) => void;
+  listGitStatus: () => void;
   disconnect: () => void;
   send: (msg: Record<string, unknown>) => void;
 }
@@ -22,6 +42,9 @@ export function createRemoteConnection(): RemoteConnectionApi {
   const state = writable<ConnectionState>('disconnected');
   const error = writable<string | null>(null);
   const panes = writable<PaneInfo[]>([]);
+  const currentProject = writable<string>('');
+  const fileEntries = writable<FileEntry[]>([]);
+  const gitStatus = writable<GitStatusData>({ staged: [], unstaged: [], commits: [] });
 
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -61,6 +84,15 @@ export function createRemoteConnection(): RemoteConnectionApi {
         switch (msg.type) {
           case 'panes':
             panes.set(msg.panes ?? []);
+            break;
+          case 'current-project':
+            currentProject.set(msg.path ?? '');
+            break;
+          case 'files':
+            fileEntries.set(msg.entries ?? []);
+            break;
+          case 'git-status':
+            gitStatus.set({ staged: msg.staged ?? [], unstaged: msg.unstaged ?? [], commits: msg.commits ?? [] });
             break;
           case 'error':
             error.set(msg.message ?? 'unknown error');
@@ -105,6 +137,9 @@ export function createRemoteConnection(): RemoteConnectionApi {
   function ping() { send({ type: 'ping' }); }
 
   function listPanes() { send({ type: 'list-panes' }); }
+  function requestCurrentProject() { send({ type: 'current-project' }); }
+  function listFiles(path?: string) { send({ type: 'list-files', path: path || '' }); }
+  function listGitStatus() { send({ type: 'list-git-status' }); }
 
   function disconnect() {
     intentionalDisconnect = true;
@@ -124,5 +159,5 @@ export function createRemoteConnection(): RemoteConnectionApi {
     code = '';
   }
 
-  return { state, error, panes, connect, ping, listPanes, disconnect, send };
+  return { state, error, panes, currentProject, fileEntries, gitStatus, connect, ping, listPanes, requestCurrentProject, listFiles, listGitStatus, disconnect, send };
 }

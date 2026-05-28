@@ -30,13 +30,14 @@
           activePaneId = msg.panes[0].id;
         }
       }
+      // Refresh workspace list when a workspace operation completes.
+      if (msg.type === 'switch-workspace-result' || msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
+        refreshWorkspaces();
+      }
     });
     ws.listPanes();
     refreshWorkspaces();
-    const wsTimer = setInterval(() => {
-      refreshWorkspaces();
-    }, 10000);
-    return () => { ws.disconnect(); clearInterval(wsTimer); };
+    return () => { ws.disconnect(); };
   });
 
   $effect(() => {

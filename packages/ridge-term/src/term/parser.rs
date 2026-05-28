@@ -432,6 +432,7 @@ impl<'a> Perform for Performer<'a> {
                     attr: cur.attr,
                     origin: self.modes.origin,
                     pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
                 });
             }
             'u' => {
@@ -639,7 +640,7 @@ impl<'a> Perform for Performer<'a> {
         match byte {
             b'7' => {
                 // DECSC — save full cursor state per VT spec: position,
-                // attrs, DECOM origin mode, and pending-wrap flag.
+                // attrs, DECOM origin mode, pending-wrap, and DECCKM.
                 let cur = *self.grid.cursor();
                 *self.grid.saved_cursor_mut() = Some(super::cursor::SavedCursor {
                     row: cur.row,
@@ -647,6 +648,7 @@ impl<'a> Perform for Performer<'a> {
                     attr: cur.attr,
                     origin: self.modes.origin,
                     pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
                 });
             }
             b'8' => {
@@ -814,6 +816,8 @@ impl<'a> Performer<'a> {
                 // to alt + clear, then cursor home. The DECSC must run while
                 // the primary screen is still active so it captures the
                 // primary cursor — that's the one we'll restore on ?1049l.
+                // Also saves DECCKM (?1) so ?1049l can restore it — prevents
+                // TUIs that set DECCKM from leaking it to the primary screen.
                 let cur = *self.grid.cursor();
                 *self.grid.saved_cursor_mut() = Some(super::cursor::SavedCursor {
                     row: cur.row,
@@ -821,6 +825,7 @@ impl<'a> Performer<'a> {
                     attr: cur.attr,
                     origin: self.modes.origin,
                     pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
                 });
                 self.grid.enter_alt_screen(true);
                 self.grid.cursor_to(0, 0);
@@ -830,11 +835,13 @@ impl<'a> Performer<'a> {
                 // Switch back to primary first so saved_cursor_mut accesses
                 // the primary screen's saved slot (set by ?1049h above).
                 // Restores full cursor state (DECRC equivalent), including
-                // origin mode and pending-wrap, so TUIs that toggled DECOM
-                // inside the alt screen don't leak that state to primary.
+                // origin mode, pending-wrap, and app_cursor_keys, so TUIs
+                // that toggled DECOM or DECCKM inside the alt screen don't
+                // leak those states to primary.
                 self.grid.leave_alt_screen();
                 if let Some(s) = *self.grid.saved_cursor_mut() {
                     self.modes.origin = s.origin;
+                    self.modes.app_cursor_keys = s.app_cursor_keys;
                     let cur = self.grid.cursor_mut();
                     cur.row = s.row;
                     cur.col = s.col;

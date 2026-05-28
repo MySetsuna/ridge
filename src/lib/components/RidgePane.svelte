@@ -1215,8 +1215,21 @@ function onScrollbarTrackClick(e: MouseEvent) {
 	refreshScrollState();
 }
 
-function onContainerPointerDown() {
+function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
+	// ★ TUI mouse reporting takes priority: forward the click to the
+	// running application instead of changing focus. Without this,
+	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends
+	// the event to the kernel's pointerDownListener but the Svelte
+	// template handler runs first and steals focus from the IME helper,
+	// breaking the next keystroke.
+	if (manager.isMouseReporting(paneId)) {
+		manager.handlePointerDown(paneId, e);
+		// Don't focus the IME helper — the TUI owns input now, and
+		// the next keydown will still reach onContainerKeyDown via
+		// bubbling from whichever child has focus.
+		return;
+	}
 	// In 'direct' mode the IME helper isn't rendered at all (see below),
 	// so focus the container directly — its keydown handler still
 	// services every printable key without IME composition.

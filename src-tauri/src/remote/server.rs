@@ -2,8 +2,11 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use parking_lot::Mutex;
 
 use portable_pty::PtySize;
+
+use crate::engine::parser::PaneParser;
 
 use axum::{
     extract::{
@@ -489,6 +492,11 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     // Track which (ws, pane) this client is currently subscribed to.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
 
+    // Mobile-reported grid dimensions, updated by the `resize` WS message
+    // and used to initialise a per-client `PaneParser` on `subscribe-pane`.
+    let mut mobile_rows: u16 = 24;
+    let mut mobile_cols: u16 = 80;
+
     // Initial handshake.
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
     if ws_tx.send(Message::Text(welcome.to_string())).await.is_err() {
@@ -553,43 +561,177 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                     Some("subscribe-pane") => {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            // Unregister from current pane
+                            // Unregister from current pane (drops its parser too).
                             if let Some((ws, p)) = current_pane.take() {
                                 ctx.state.unregister_remote_sub(ws, p, sub_id);
                             }
                             let new_key = (active_ws_id, pane_id);
-                            // Register for new pane
+
+                            // §5 — create a per-mobile `PaneParser` so delta frames
+                            // are sized for the client's actual viewport. If the
+                            // mobile hasn't reported its dimensions yet, fall back
+                            // to desktop-sized deltas (backward compat).
+                            let (mobile_parser, init_bytes) =
+                                if mobile_cols > 0 && mobile_rows > 0 {
+                                    let mut mp =
+                                        PaneParser::new(mobile_rows, mobile_cols, 5000);
+                                    // Replay recent PTY scrollback so the mobile
+                                    // parser reaches the same state as the desktop.
+                                    let replay = ctx.state.get_recent_scrollback_for(
+                                        active_ws_id,
+                                        pane_id,
+                                        65536, // 64 KiB — covers ~500 lines of history
+                                    );
+                                    if !replay.is_empty() {
+                                        mp.feed_and_diff(&replay);
+                                    }
+                                    let frame = mp.full_reframe_with_scrollback();
+                                    let bytes =
+                                        ridge_term::term::delta::encode_frame(&frame)
+                                            .unwrap_or_default();
+                                    (Some(Arc::new(Mutex::new(mp))), bytes)
+                                } else {
+                                    (None, Vec::new())
+                                };
+
+                            // Ensure desktop parser is in delta mode so the main
+                            // event loop feeds it (and, transitively, our mobile
+                            // parser via the fan-out in lib.rs).
+                            {
+                                let workspaces = ctx.state.workspaces.read();
+                                if let Some(ws) = workspaces.get(&active_ws_id) {
+                                    if let Some(h) = ws.terminals.get(&pane_id) {
+                                        h.delta_mode.store(true, Ordering::Release);
+                                    }
+                                }
+                            }
+
                             ctx.state.register_remote_sub(
                                 active_ws_id, pane_id,
                                 RemotePaneSub {
                                     id: sub_id,
                                     output_tx: output_tx.clone(),
                                     delta_tx: delta_tx.clone(),
+                                    parser: mobile_parser,
+                                    rows: mobile_rows,
+                                    cols: mobile_cols,
                                 },
                             );
                             current_pane = Some(new_key);
-                            // Force delta mode + send full-reframe so the mobile
-                            // client can bootstrap its kernel from a known baseline.
-                            let delta_bytes = {
-                                let workspaces = ctx.state.workspaces.read();
-                                if let Some(ws) = workspaces.get(&active_ws_id) {
-                                    if let Some(h) = ws.terminals.get(&pane_id) {
-                                        h.delta_mode.store(true, Ordering::Release);
-                                        let mut p = h.parser.lock();
-                                        p.force_full_reframe();
-                                        let frame = p.feed_and_diff(b"");
-                                        ridge_term::term::delta::encode_frame(&frame).ok()
-                                    } else { None }
-                                } else { None }
-                            };
-                            if let Some(bytes) = delta_bytes {
-                                let mut payload = Vec::with_capacity(16 + bytes.len());
+
+                            // Send initial delta frame to bootstrap the mobile kernel.
+                            if !init_bytes.is_empty() {
+                                let mut payload =
+                                    Vec::with_capacity(16 + init_bytes.len());
                                 payload.extend_from_slice(pane_id.as_bytes());
-                                payload.extend_from_slice(&bytes);
-                                let _ = ws_tx.send(Message::Binary(payload.into())).await;
+                                payload.extend_from_slice(&init_bytes);
+                                let _ =
+                                    ws_tx.send(Message::Binary(payload.into())).await;
                             }
                         }
                         Ok(())
+                    }
+                    Some("current-project") => {
+                        let path = ctx.state.current_project.read().clone()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "current-project",
+                            "path": path,
+                        }).to_string())).await
+                    }
+                    Some("list-workspaces") => {
+                        let ws_list = {
+                            let order = ctx.state.workspace_order.read();
+                            let names = ctx.state.workspace_names.read();
+                            let active = *ctx.state.active_workspace.read();
+                            order.iter().map(|id| {
+                                serde_json::json!({
+                                    "id": id.to_string(),
+                                    "name": names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+                                    "active": *id == active,
+                                })
+                            }).collect::<Vec<_>>()
+                        };
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "workspaces",
+                            "workspaces": ws_list,
+                        }).to_string())).await
+                    }
+                    Some("switch-workspace") => {
+                        let id_str = parsed["workspaceId"].as_str().unwrap_or("");
+                        let result = if let Ok(id) = Uuid::parse_str(id_str) {
+                            let exists = ctx.state.workspaces.read().contains_key(&id);
+                            if exists {
+                                *ctx.state.active_workspace.write() = id;
+                                serde_json::json!({ "type": "switch-workspace-result", "success": true, "workspaceId": id.to_string() })
+                            } else {
+                                serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "workspace not found" })
+                            }
+                        } else {
+                            serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "invalid workspace id" })
+                        };
+                        ws_tx.send(Message::Text(result.to_string())).await
+                    }
+                    Some("create-workspace") => {
+                        let name = parsed["name"].as_str().and_then(|n| if n.is_empty() { None } else { Some(n.to_string()) });
+                        let id = Uuid::new_v4();
+                        let seq = ctx.state.allocate_workspace_seq();
+                        {
+                            use std::collections::HashMap;
+                            let mut map = ctx.state.workspaces.write();
+                            map.insert(id, crate::state::Workspace {
+                                pane_tree: crate::engine::pane_tree::PaneTree::new(),
+                                terminals: HashMap::new(),
+                                teammate_tmux_pane_cursor: 0,
+                                teammate_pane_titles: HashMap::new(),
+                                pane_sizes: HashMap::new(),
+                                last_pane_index: None,
+                                created_at: std::time::SystemTime::now(),
+                                teammate_pane_states: HashMap::new(),
+                                teammate_agent_pane_map: HashMap::new(),
+                                associated_file_path: None,
+                                pending_spawns: HashMap::new(),
+                                teammate_metrics: crate::state::TeammateMetrics::default(),
+                                display_seq: seq,
+                            });
+                        }
+                        ctx.state.workspace_order.write().push(id);
+                        *ctx.state.active_workspace.write() = id;
+                        if let Some(ref n) = name {
+                            ctx.state.workspace_names.write().insert(id, n.clone());
+                        }
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "create-workspace-result",
+                            "success": true,
+                            "workspaceId": id.to_string(),
+                        }).to_string())).await
+                    }
+                    Some("close-workspace") => {
+                        let id_str = parsed["workspaceId"].as_str().unwrap_or("");
+                        let result = if let Ok(id) = Uuid::parse_str(id_str) {
+                            {
+                                let order = ctx.state.workspace_order.read();
+                                if order.len() <= 1 {
+                                    serde_json::json!({ "type": "close-workspace-result", "success": false, "error": "cannot close last workspace" })
+                                } else {
+                                    drop(order);
+                                    ctx.state.workspaces.write().remove(&id);
+                                    ctx.state.workspace_order.write().retain(|w| *w != id);
+                                    ctx.state.workspace_names.write().remove(&id);
+                                    if *ctx.state.active_workspace.read() == id {
+                                        let first = ctx.state.workspace_order.read().first().cloned();
+                                        if let Some(first_id) = first {
+                                            *ctx.state.active_workspace.write() = first_id;
+                                        }
+                                    }
+                                    serde_json::json!({ "type": "close-workspace-result", "success": true })
+                                }
+                            }
+                        } else {
+                            serde_json::json!({ "type": "close-workspace-result", "success": false, "error": "invalid workspace id" })
+                        };
+                        ws_tx.send(Message::Text(result.to_string())).await
                     }
                     Some("stdin") => {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
@@ -611,6 +753,9 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         let rows = parsed["rows"].as_u64().unwrap_or(24) as u16;
                         let cols = parsed["cols"].as_u64().unwrap_or(80) as u16;
+                        // Save mobile dimensions for parser creation on subscribe.
+                        mobile_rows = rows;
+                        mobile_cols = cols;
                         // Use real pixel dimensions from the client when available,
                         // so mobile devices get proper cell size calculation.
                         let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
@@ -628,6 +773,9 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                     );
                                 }
                             }
+                            // §5 — resize the per-client parser (if one exists) so
+                            // subsequent delta frames match the new dimensions.
+                            ctx.state.resize_remote_parser(active_ws_id, pane_id, sub_id, rows, cols);
                         }
                         Ok(())
                     }

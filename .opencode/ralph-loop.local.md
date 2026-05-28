@@ -1,23 +1,16 @@
 ---
 active: true
-iteration: 2
+iteration: 1
 maxIterations: 50
-sessionId: ses_pty_layering
+sessionId: ses_01
 ---
 
-PTY 数据流分层实现：
+按以上讨论得出方案，开始执行，在严格确保不会引入新问题的情况下，完成所有修改
 
-## 迭代 1 (Rust 后端)
-- state.rs: 新增 PaneRegistry/PaneOutputSender/RemotePaneSub；删 broadcast；迁移 pty_delta_channels → registry
-- lib.rs: 两处 fan-out 替换 broadcast.send → registry 遍历
-- server.rs: subscribe → mpsc channel + subscribe-pane handler + force delta + full-reframe
-- commands/terminal.rs: 迁移 register/unregister/get 到新 registry
-
-## 迭代 2 (Frontend)
-- wsRemote.ts: subscribePane()
-- MainApp.svelte: 移除轮询，添加 activePaneId 订阅
-- TerminalScreen.svelte: 移除 pane 过滤
-- ptyBridge.ts: 新增 outputChannel
-
-Completion promise: DONE
-
+Implementation order:
+1. Issue 3: Remote refresh + project path + copy link
+2. Issue 1: Workspace list + add button layout
+3. Bug 6: Shell arrow keys fallback + isAppCursorKeys decay
+4. Bug 5: TUI mouse forwarding
+5. Issue 2: Workspace operations to WS protocol
+6. Issue 4: Remote IDE 3-layer architecture

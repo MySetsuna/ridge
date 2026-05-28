@@ -161,6 +161,26 @@ impl PaneParser {
     /// Does NOT touch the underlying `Terminal` state — just the diff
     /// snapshot. The next visible frame is identical content-wise to
     /// what was on screen before; only the wire payload is larger.
+    ///
+    /// **§5 — mobile PaneParser bootstrap.** Use this for per-client
+    /// parsers that need both visible grid AND scrollback in one frame.
+    /// While `force_full_reframe` snaps the scrollback baseline to the
+    /// current value (so old rows don't re-emit), this method resets it
+    /// to zero so every scrollback row is included in the emitted frame.
+    pub fn full_reframe_with_scrollback(&mut self) -> DeltaFrame {
+        let cols = self.terminal.cols();
+        let rows = self.terminal.rows();
+        self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+        self.cursor = None;
+        self.is_alt = None;
+        self.last_modes = None;
+        // Force every scrollback row into the emitted frame by resetting
+        // the diff baseline to zero.
+        self.last_scrollback_len = 0;
+        self.last_scrollback_evictions = 0;
+        self.diff_into_frame()
+    }
+
     pub fn force_full_reframe(&mut self) {
         let rows = self.terminal.rows();
         let cols = self.terminal.cols();

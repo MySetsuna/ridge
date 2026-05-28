@@ -261,12 +261,32 @@ pub fn run() {
                                                 let reg = st.pty_pane_registry.read();
                                                 if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
                                                     for sub in &entry.remote_subs {
+                                                        // §5 — per-sub mobile parser: feed PTY
+                                                        // data through the sub's dedicated parser
+                                                        // and send mobile-sized deltas. Subs
+                                                        // without a parser fall back to the
+                                                        // desktop parser's delta frame.
+                                                        let sub_bytes = if let Some(ref mp) = sub.parser {
+                                                            let mut p = mp.lock();
+                                                            let frame = p.feed_and_diff(data.as_bytes());
+                                                            // Mobile-side DSR/DA replies would
+                                                            // target the wrong PTY, so drop them.
+                                                            let _ = p.take_pending_response();
+                                                            ridge_term::term::delta::encode_frame(
+                                                                &frame,
+                                                            )
+                                                            .ok()
+                                                        } else {
+                                                            None
+                                                        };
+                                                        let bytes = sub_bytes
+                                                            .unwrap_or_else(|| delta_for_remote.clone());
                                                         let _ = sub.delta_tx.try_send(
                                                             crate::types::PtyDeltaEvent {
                                                                 workspace_id,
                                                                 pane_id,
-                                                                bytes: delta_for_remote.clone(),
-                                                            }
+                                                                bytes,
+                                                            },
                                                         );
                                                     }
                                                 }
@@ -506,6 +526,7 @@ pub fn run() {
             project::reveal_in_file_manager,
             project::copy_path,
             project::move_path,
+            project::path_exists,
             project::read_claude_history,
             project::read_opencode_history,
             project::get_git_changed_files,
