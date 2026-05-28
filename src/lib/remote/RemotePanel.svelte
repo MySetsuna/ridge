@@ -14,9 +14,17 @@
   let totpTimer: ReturnType<typeof setInterval> | null = null;
   let machineName = $state('Ridge');
 
+  import type { RemoteClientEntry } from './wsClient';
+
   let conn = createRemoteConnection();
   let connected = $state(false);
   let copySuccess = $state(false);
+  let remoteClients = $state<RemoteClientEntry[]>([]);
+  let clientsTimer: ReturnType<typeof setInterval> | null = null;
+
+  function kickClient(id: number) {
+    conn.kickRemoteClient(id);
+  }
 
   function buildLinkUri(lanIp: string, port: number): string {
     if (dev) return `http://${lanIp}:5174/`;
@@ -72,6 +80,21 @@
       setTimeout(() => copySuccess = false, 2000);
     } catch { /* clipbord not available */ }
   }
+
+  $effect(() => {
+    const unsub = conn.remoteClients.subscribe(v => remoteClients = v);
+    return unsub;
+  });
+
+  $effect(() => {
+    if (connected) {
+      conn.listRemoteClients();
+      clientsTimer = setInterval(() => conn.listRemoteClients(), 5000);
+    } else {
+      if (clientsTimer) { clearInterval(clientsTimer); clientsTimer = null; }
+      remoteClients = [];
+    }
+  });
 
   onMount(() => {
     refreshRemoteInfo();
@@ -154,6 +177,30 @@
           <p class="text-sm text-[var(--rg-fg)]">已连接到 {hostInput}:{portInput}</p>
           <p class="text-xs text-[var(--rg-fg-muted)]">远程终端会话活跃中</p>
         </div>
+
+        {#if remoteClients.length > 0}
+          <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
+            <h3 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">
+              已连接设备 ({remoteClients.length})
+            </h3>
+            {#each remoteClients as client (client.id)}
+              <div class="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-[var(--rg-surface)] transition-colors">
+                <div class="min-w-0 flex-1">
+                  <p class="text-xs text-[var(--rg-fg)] truncate">{client.remoteAddr}</p>
+                  <p class="text-[10px] text-[var(--rg-fg-muted)]">
+                    已连接 {Math.floor(client.connectedAt / 60)} 分
+                  </p>
+                </div>
+                <button
+                  onclick={() => kickClient(client.id)}
+                  class="shrink-0 ml-2 px-2 py-1 rounded text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  断开
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       {:else if remoteInfo?.ready}
         <!-- QR Code: TOTP authenticator setup -->
         <div class="flex flex-col items-center gap-1 py-1">

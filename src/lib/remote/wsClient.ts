@@ -21,6 +21,13 @@ export interface GitStatusData {
   commits: { msg: string; hash: string; time: string }[];
 }
 
+export interface RemoteClientEntry {
+  id: number;
+  connectedAt: number;
+  remoteAddr: string;
+  userAgent: string;
+}
+
 export interface RemoteConnectionApi {
   state: Writable<ConnectionState>;
   error: Writable<string | null>;
@@ -28,12 +35,15 @@ export interface RemoteConnectionApi {
   currentProject: Writable<string>;
   fileEntries: Writable<FileEntry[]>;
   gitStatus: Writable<GitStatusData>;
+  remoteClients: Writable<RemoteClientEntry[]>;
   connect: (host: string, port: number, code: string) => void;
   ping: () => void;
   listPanes: () => void;
   requestCurrentProject: () => void;
   listFiles: (path?: string) => void;
   listGitStatus: () => void;
+  listRemoteClients: () => void;
+  kickRemoteClient: (id: number) => void;
   disconnect: () => void;
   send: (msg: Record<string, unknown>) => void;
 }
@@ -45,6 +55,7 @@ export function createRemoteConnection(): RemoteConnectionApi {
   const currentProject = writable<string>('');
   const fileEntries = writable<FileEntry[]>([]);
   const gitStatus = writable<GitStatusData>({ staged: [], unstaged: [], commits: [] });
+  const remoteClients = writable<RemoteClientEntry[]>([]);
 
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -94,6 +105,9 @@ export function createRemoteConnection(): RemoteConnectionApi {
           case 'git-status':
             gitStatus.set({ staged: msg.staged ?? [], unstaged: msg.unstaged ?? [], commits: msg.commits ?? [] });
             break;
+          case 'remote-clients':
+            remoteClients.set(msg.clients ?? []);
+            break;
           case 'error':
             error.set(msg.message ?? 'unknown error');
             break;
@@ -140,6 +154,8 @@ export function createRemoteConnection(): RemoteConnectionApi {
   function requestCurrentProject() { send({ type: 'current-project' }); }
   function listFiles(path?: string) { send({ type: 'list-files', path: path || '' }); }
   function listGitStatus() { send({ type: 'list-git-status' }); }
+  function listRemoteClients() { send({ type: 'list-remote-clients' }); }
+  function kickRemoteClient(id: number) { send({ type: 'kick-remote-client', id }); }
 
   function disconnect() {
     intentionalDisconnect = true;
@@ -159,5 +175,5 @@ export function createRemoteConnection(): RemoteConnectionApi {
     code = '';
   }
 
-  return { state, error, panes, currentProject, fileEntries, gitStatus, connect, ping, listPanes, requestCurrentProject, listFiles, listGitStatus, disconnect, send };
+  return { state, error, panes, currentProject, fileEntries, gitStatus, remoteClients, connect, ping, listPanes, requestCurrentProject, listFiles, listGitStatus, listRemoteClients, kickRemoteClient, disconnect, send };
 }

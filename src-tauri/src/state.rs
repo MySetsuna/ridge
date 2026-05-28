@@ -256,6 +256,58 @@ impl RemoteSubId {
     }
 }
 
+/// Information about a connected remote client (WebSocket).
+#[derive(Clone, Debug)]
+pub struct RemoteClientInfo {
+    pub id: u64,
+    pub connected_at: std::time::SystemTime,
+    pub remote_addr: String,
+    pub user_agent: String,
+    pub kill_flag: Arc<AtomicBool>,
+}
+
+/// Registry tracking all currently connected remote WebSocket clients.
+/// Used by the desktop RemotePanel to list connected devices and
+/// forcibly disconnect them.
+#[derive(Default)]
+pub struct RemoteClientRegistry {
+    pub clients: parking_lot::Mutex<HashMap<u64, RemoteClientInfo>>,
+}
+
+impl RemoteClientRegistry {
+    pub fn register(&self, addr: String, ua: String) -> (u64, Arc<AtomicBool>) {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let kill_flag = Arc::new(AtomicBool::new(false));
+        self.clients.lock().insert(id, RemoteClientInfo {
+            id,
+            connected_at: std::time::SystemTime::now(),
+            remote_addr: addr,
+            user_agent: ua,
+            kill_flag: Arc::clone(&kill_flag),
+        });
+        (id, kill_flag)
+    }
+
+    pub fn unregister(&self, id: u64) {
+        self.clients.lock().remove(&id);
+    }
+
+    pub fn list(&self) -> Vec<RemoteClientInfo> {
+        self.clients.lock().values().cloned().collect()
+    }
+
+    pub fn kick(&self, id: u64) -> bool {
+        let map = self.clients.lock();
+        if let Some(info) = map.get(&id) {
+            info.kill_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
@@ -327,6 +379,9 @@ pub struct AppState {
     /// mDNS broadcast thread handle + stop flag. `None` when the server
     /// is not running. Set the flag and join the handle to stop.
     pub remote_mdns: Arc<Mutex<Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>>>,
+    /// Registry of currently connected remote WebSocket clients.
+    /// Used by the desktop RemotePanel to list + disconnect devices.
+    pub remote_client_registry: Arc<RemoteClientRegistry>,
 }
 
 impl AppState {
@@ -387,6 +442,7 @@ impl AppState {
             remote_dev_process: Arc::new(Mutex::new(None)),
             remote_session_store: Arc::new(SessionStore::new()),
             remote_mdns: Arc::new(Mutex::new(None)),
+            remote_client_registry: Arc::new(RemoteClientRegistry::default()),
         }
     }
 

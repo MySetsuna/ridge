@@ -11,6 +11,7 @@
   } = $props();
 
   let canvasRef: TerminalCanvas | undefined = $state();
+  let showKeyboard = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
   let files: FileEntry[] = $state([]);
   let currentPath = $state('');
@@ -65,8 +66,14 @@
       paneId={activePaneId ?? null}
       {onStdin}
       {onResize}
+      {showKeyboard}
     />
   </main>
+  {#if showKeyboard}
+    <div class="ide-keyboard-toggle" onclick={() => showKeyboard = false}>
+      <button class="keyboard-btn">隐藏键盘</button>
+    </div>
+  {/if}
 
   {#if sidebarTab !== null}
     <div class="sidebar-overlay" onclick={closeSidebar} role="presentation"></div>
@@ -165,6 +172,15 @@
     >
       <Search class="w-5 h-5" />
     </button>
+    <div class="stb-sep"></div>
+    <button
+      class="stb-btn"
+      class:active={showKeyboard}
+      onclick={() => showKeyboard = !showKeyboard}
+      title="虚拟键盘"
+    >
+      <span class="kb-icon">⌨</span>
+    </button>
   </div>
 </div>
 
@@ -204,4 +220,9 @@
   .stb-btn{background:none;border:none;color:#8b949e;padding:8px;border-radius:6px;cursor:pointer;transition:all .15s}
   .stb-btn.active{color:#e6edf3;background:#21262d}
   .stb-btn:active{background:#30363d}
+  .stb-sep{width:100%;height:1px;background:#30363d;margin:2px 0}
+  .kb-icon{font-size:16px;line-height:1}
+  .ide-keyboard-toggle{flex-shrink:0;padding:4px 8px;background:#161b22;border-top:1px solid #30363d}
+  .keyboard-btn{width:100%;padding:10px;border:1px solid #30363d;border-radius:8px;background:#0d1117;color:#8b949e;font-size:14px;cursor:pointer;text-align:center}
+  .keyboard-btn:active{background:#21262d}
 </style>
