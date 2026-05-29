@@ -1,10 +1,9 @@
 <script lang="ts">
   import { Plus, X, Folder, GitBranch, Search, Layers, ChevronUp } from 'lucide-svelte';
-  import type { PaneInfo, WorkspaceInfo, RemoteConnection, ConnectionState } from './lib/wsRemote';
+  import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
 
   let { panes, activePaneId = $bindable(), workspaces = [], activeWorkspaceId = '', ws,
-    sidebarTab = null as 'files' | 'git' | 'search' | null, onSidebarToggle, wsState = 'disconnected' as ConnectionState,
-    onRefresh
+    sidebarTab = null as 'files' | 'git' | 'search' | null, onSidebarToggle
   }: {
     panes: PaneInfo[];
     activePaneId?: string | null;
@@ -13,8 +12,6 @@
     ws?: RemoteConnection;
     sidebarTab?: 'files' | 'git' | 'search' | null;
     onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
-    wsState?: ConnectionState;
-    onRefresh?: () => void;
   } = $props();
 
   let wsSwitching = $state(false);
@@ -91,7 +88,7 @@
   <!-- Workspace menu button: current workspace + collapsed switch/create/delete -->
   <div class="ws-menu">
     <button class="ws-btn" class:open={menuOpen} onclick={() => (menuOpen = !menuOpen)} title="工作区">
-      <Layers class="w-4 h-4 shrink-0" />
+      <Layers class="w-3.5 h-3.5 shrink-0" />
       <span class="ws-name">{activeWsName}</span>
       <span class="chev" class:flip={!menuOpen}><ChevronUp class="w-3 h-3 shrink-0" /></span>
     </button>
@@ -117,7 +114,7 @@
           <div class="ws-empty">无工作区</div>
         {/if}
         <button class="ws-create" onclick={handleCreateWorkspace}>
-          <Plus class="w-4 h-4" /> 新建工作区
+          <Plus class="w-3.5 h-3.5" /> 新建工作区
         </button>
       </div>
     {/if}
@@ -152,7 +149,7 @@
           <div class="ws-empty">无终端</div>
         {/if}
         <button class="ws-create" onclick={handleCreatePane} disabled={paneBusy}>
-          <Plus class="w-4 h-4" /> 新建终端
+          <Plus class="w-3.5 h-3.5" /> 新建终端
         </button>
       </div>
     {/if}
@@ -163,21 +160,14 @@
   <!-- Right controls -->
   <div class="right-controls">
     <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title="文件">
-      <Folder class="w-4 h-4" />
+      <Folder class="w-3.5 h-3.5" />
     </button>
     <button class="ctrl-btn" class:active={sidebarTab === 'git'} onclick={() => onSidebarToggle?.('git')} title="Git">
-      <GitBranch class="w-4 h-4" />
+      <GitBranch class="w-3.5 h-3.5" />
     </button>
     <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title="搜索">
-      <Search class="w-4 h-4" />
+      <Search class="w-3.5 h-3.5" />
     </button>
-    <div class="ctrl-sep"></div>
-    <button class="ctrl-btn action-btn" onclick={onRefresh} title="刷新（按本端尺寸）">
-      <span class="refresh-icon">↻</span>
-    </button>
-    <span class="status-dot" class:connected={wsState === 'connected'} class:error={wsState === 'error'} title={wsState}>
-      {wsState === 'connected' ? '●' : wsState === 'error' ? '●' : '○'}
-    </span>
   </div>
 </div>
 
@@ -202,7 +192,7 @@
   .dot{width:7px;height:7px;border-radius:50%;background:#30363d;flex-shrink:0}
   .dot.on{background:#3fb950}
   .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ws-del{display:flex;align-items:center;justify-content:center;width:30px;height:30px;background:none;border:none;color:#8b949e;border-radius:6px;cursor:pointer;flex-shrink:0}
+  .ws-del{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:none;border:none;color:#8b949e;border-radius:6px;cursor:pointer;flex-shrink:0}
   .ws-del:active{background:#21262d;color:#f85149}
   .ws-empty{color:#484f58;font-size:12px;padding:8px}
   .ws-create{display:flex;align-items:center;gap:6px;width:100%;margin-top:4px;padding:9px 8px;background:none;border:none;border-top:1px solid #21262d;color:#58a6ff;font-size:13px;cursor:pointer;text-align:left}
@@ -217,14 +207,8 @@
   .bar-spacer{flex:1;min-width:0}
 
   /* Right controls */
-  .right-controls{display:flex;align-items:center;gap:1px;flex-shrink:0}
-  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:30px;height:30px;background:none;border:none;border-radius:6px;color:#8b949e;cursor:pointer}
+  .right-controls{display:flex;align-items:center;gap:2px;flex-shrink:0}
+  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:none;border:none;border-radius:6px;color:#8b949e;cursor:pointer}
   .ctrl-btn.active{color:#58a6ff;background:rgba(88,166,255,.1)}
   .ctrl-btn:active{background:#21262d;color:#e6edf3}
-  .ctrl-sep{width:1px;height:16px;background:#30363d;margin:0 2px}
-  .refresh-icon{font-size:15px;line-height:1;font-weight:700}
-  .action-btn{color:#8b949e}
-  .status-dot{font-size:8px;color:#8b949e;margin-left:2px;line-height:1}
-  .status-dot.connected{color:#3fb950}
-  .status-dot.error{color:#f85149}
 </style>
