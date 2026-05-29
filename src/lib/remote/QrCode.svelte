@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  // Static import (not a dynamic `await import('qrcode')`): the dynamic form
+  // intermittently failed in Vite dev with "Failed to fetch dynamically
+  // imported module" when the optimized-dep hash went stale after a
+  // re-optimization. Importing statically bundles it with the entry.
+  import { toCanvas } from 'qrcode';
 
   interface Props {
     value: string;
@@ -9,21 +13,14 @@
   let { value, size = 180 }: Props = $props();
 
   let canvas: HTMLCanvasElement;
-  let drawQr: ((c: HTMLCanvasElement, v: string, s: number) => void) | null = null;
-
-  onMount(async () => {
-    const qrcode = await import('qrcode');
-    drawQr = (c: HTMLCanvasElement, v: string, s: number) => {
-      qrcode.toCanvas(c, v, { width: s, margin: 2, color: { dark: '#000', light: '#fff' } });
-    };
-    if (canvas) {
-      drawQr(canvas, value, size);
-    }
-  });
 
   $effect(() => {
-    if (canvas && drawQr) {
-      drawQr(canvas, value, size);
+    if (canvas && value) {
+      void toCanvas(canvas, value, {
+        width: size,
+        margin: 2,
+        color: { dark: '#000', light: '#fff' },
+      });
     }
   });
 </script>
