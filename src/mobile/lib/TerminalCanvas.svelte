@@ -14,6 +14,12 @@
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let containerEl: HTMLDivElement | undefined = $state();
+  // §IME: hidden, focused <textarea> that captures soft-keyboard input.
+  // Mobile keyboards emit composition + beforeinput (insertText /
+  // deleteContentBackward) rather than reliable keydown, so a real editable
+  // element is required for IME candidates, predictive words, and even plain
+  // space to work. See handleBeforeInput / composition handlers below.
+  let imeInput: HTMLTextAreaElement | undefined = $state();
 
   let kernel: TerminalKernel | null = null;
   let renderHandle: RenderHandle | null = null;
@@ -53,6 +59,11 @@
     fitPane();
     flushPending();
     ready = true;
+    // `autocorrect` is a WebKit-only attribute (not in the standard textarea
+    // prop types) — set it via the DOM to suppress iOS autocorrect, which is
+    // what made plain space delete the previous char.
+    imeInput?.setAttribute('autocorrect', 'off');
+    focusInput();
     function frame() {
       if (kernel && renderHandle) renderHandle.render(kernel);
       rafId = requestAnimationFrame(frame);
@@ -340,8 +351,10 @@
       return;
     }
 
-    // Quick tap: forward as mouse click if terminal is in mouse reporting mode
+    // Quick tap: focus the hidden textarea (raises the soft keyboard) and,
+    // if the TUI requested mouse reporting, forward a click.
     const elapsed = Date.now() - touchStartTime;
+    if (elapsed < 250) focusInput();
     if (elapsed < 250 && kernel && cellW > 0 && cellH > 0) {
       const touch = e.changedTouches[0];
       if (touch) {
@@ -385,9 +398,27 @@
     kernel?.clearSelection();
   }
 
+  // ─── Hidden IME textarea: focus + cursor anchoring ─────────────────
+  function focusInput() {
+    try { imeInput?.focus({ preventScroll: true }); } catch { imeInput?.focus(); }
+  }
+
+  /** Park the hidden textarea over the cursor cell so the OS IME candidate
+   *  window pops up next to the caret instead of at the page origin. */
+  function repositionInput() {
+    if (!imeInput || !kernel) return;
+    const r = kernel.cursorRow?.() ?? 0;
+    const c = kernel.cursorCol?.() ?? 0;
+    if (cellW > 0 && cellH > 0) {
+      imeInput.style.left = `${Math.max(0, c) * cellW}px`;
+      imeInput.style.top = `${Math.max(0, r) * cellH}px`;
+    }
+  }
+
   function handleCompositionStart(_e: CompositionEvent) {
     isComposing = true;
     compositionStdinTarget = null;
+    repositionInput();
   }
 
   function handleCompositionUpdate(e: CompositionEvent) {
@@ -400,13 +431,58 @@
 
   function handleCompositionEnd(e: CompositionEvent) {
     isComposing = false;
+    if (imeInput) imeInput.value = '';
     if (!paneId || !kernel || !renderHandle) return;
     const h = renderHandle as unknown as { clearPreedit?: () => void };
     h.clearPreedit?.();
+    // Commit the chosen text RAW (NOT bracketed-paste): IME words / candidates
+    // are normal typed input, so the shell/TUI must receive the bytes as-is.
     const text = e.data;
-    if (text) {
-      const bytes = kernel.encodePaste(text);
-      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+    if (text) onStdin(text);
+  }
+
+  // ─── beforeinput: the reliable text path for soft keyboards ─────────
+  // Plain typing, space, predictive words and backspace on mobile arrive here
+  // as InputEvents rather than keydown. Composition is owned by the
+  // composition handlers above, so we ignore composition/paste input types to
+  // avoid double-emitting.
+  function handleBeforeInput(e: InputEvent) {
+    if (!paneId || !kernel) return;
+    const t = e.inputType;
+    if (t === 'insertCompositionText') return; // handled by compositionend
+    if (isComposing || e.isComposing) return;
+    switch (t) {
+      case 'insertText': {
+        const d = e.data ?? '';
+        if (d) onStdin(d);
+        e.preventDefault();
+        break;
+      }
+      case 'insertLineBreak':
+      case 'insertParagraph':
+        onStdin('\r');
+        e.preventDefault();
+        break;
+      case 'deleteContentBackward':
+        onStdin('\x7f');
+        e.preventDefault();
+        break;
+      case 'deleteContentForward':
+        onStdin('\x1b[3~');
+        e.preventDefault();
+        break;
+      case 'deleteWordBackward':
+        onStdin('\x17'); // Ctrl+W
+        e.preventDefault();
+        break;
+      case 'insertFromPaste':
+        // Let the dedicated `paste` handler wrap it (bracketed paste).
+        break;
+      default:
+        if (e.data) {
+          onStdin(e.data);
+          e.preventDefault();
+        }
     }
   }
 
@@ -501,19 +577,16 @@
       }
       return;
     }
-    if (e.ctrlKey || e.metaKey) {
+    // Modified single chars (Ctrl/Alt/Cmd + key) are control sequences, not
+    // text — encode them here. Plain printable keys (incl. space) are NOT
+    // handled in keydown: they flow through `beforeinput` (insertText) so that
+    // soft keyboards, predictive text, and IME all work and never double-emit.
+    if ((e.ctrlKey || e.metaKey || e.altKey) && e.key.length === 1) {
       const bytes = kernel.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) {
         e.preventDefault();
         onStdin(new TextDecoder().decode(bytes));
       }
-      return;
-    }
-    if (e.key.length === 1) {
-      e.preventDefault();
-      const bytes = kernel.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
-      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
-      else onStdin(e.key);
       return;
     }
     if (e.key.startsWith('Arrow')) {
@@ -538,15 +611,8 @@
   }
 </script>
 
-<svelte:window
-  onkeydown={handleKeydown}
-  oncompositionstart={handleCompositionStart}
-  oncompositionupdate={handleCompositionUpdate}
-  oncompositionend={handleCompositionEnd}
-  onpaste={handlePaste}
-/>
-
 <div class="container" bind:this={containerEl} role="application"
+  onclick={focusInput}
   ontouchstart={handleTouchStart}
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
@@ -555,6 +621,25 @@
     <div class="loading">初始化终端引擎…</div>
   {/if}
   <canvas bind:this={canvasEl} class="term-canvas" class:hidden={!ready}></canvas>
+
+  <!-- §IME: hidden, focused editable that captures soft-keyboard input,
+       composition, predictive words and paste. Parked over the caret so the
+       OS candidate window appears next to the cursor. -->
+  <textarea
+    bind:this={imeInput}
+    class="ime-input"
+    aria-label="终端输入"
+    autocomplete="off"
+    autocapitalize="off"
+    spellcheck="false"
+    rows="1"
+    onkeydown={handleKeydown}
+    onbeforeinput={handleBeforeInput}
+    oncompositionstart={handleCompositionStart}
+    oncompositionupdate={handleCompositionUpdate}
+    oncompositionend={handleCompositionEnd}
+    onpaste={handlePaste}
+  ></textarea>
 
   {#if ready && kernel?.hasSelection()}
     <div class="selection-actions">
@@ -574,6 +659,12 @@
   .container{position:relative;flex:1;overflow:hidden;background:#0d1117;touch-action:manipulation}
   .term-canvas{display:block;width:100%;height:100%;touch-action:none}
   .term-canvas.hidden{opacity:0}
+
+  /* §IME: invisible, focusable editable parked over the caret. width:1px +
+     transparent text/caret keep it out of sight; we render the real cursor.
+     pointer-events:none so taps reach the canvas (focus is set programmatically
+     from the tap handler so the soft keyboard still appears). */
+  .ime-input{position:absolute;top:0;left:0;width:1px;height:1.2em;padding:0;margin:0;border:0;outline:none;background:transparent;color:transparent;caret-color:transparent;opacity:0;z-index:5;resize:none;overflow:hidden;white-space:nowrap;pointer-events:none}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8b949e;font-size:14px}
 
   .selection-actions{position:absolute;bottom:12px;right:12px;display:flex;gap:6px;z-index:10}
