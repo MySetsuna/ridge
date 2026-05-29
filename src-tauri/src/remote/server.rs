@@ -567,10 +567,11 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     // message. Used for the first-connect auto-claim and the refresh button.
     let mut mobile_rows: u16 = 24;
     let mut mobile_cols: u16 = 80;
-    // §multi-size: a newly connected endpoint claims the shared PTY size
-    // exactly once (auto-claim). Later viewport changes do NOT touch the PTY;
-    // the client uses the refresh button (`refresh-pane`) to re-claim.
-    let mut has_auto_claimed = false;
+    // §own-active: there is NO connect-time auto-claim. A remote endpoint resizes
+    // the shared PTY only when it becomes the active owner — i.e. on a genuine
+    // user interaction (`claim-pane`) or the explicit refresh button
+    // (`refresh-pane`). Merely connecting / changing viewport records the size
+    // here but never stomps the PTY the desktop is using.
 
     // Initial handshake.
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
@@ -578,7 +579,13 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
         return;
     }
 
-    let active_ws_id = ctx.state.active_workspace_id();
+    // §state-sep: per-client active workspace. Seeded once from the global
+    // active workspace at connect, then owned by THIS client. Switching /
+    // creating / closing workspaces from a remote no longer rewrites the
+    // shared `active_workspace` (which would drag the desktop and every other
+    // client along) — only this `active_ws_id` moves. All readers below
+    // (list-panes / subscribe / stdin / resize / output+delta filters) use it.
+    let mut active_ws_id = ctx.state.active_workspace_id();
 
     // Periodic health check: if remote control is toggled off while this
     // WS connection is alive, close it so the mobile client gets a clean
@@ -608,9 +615,14 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                 continue;
                             };
                             let mut list = Vec::new();
-                            for (pane_id, _) in &ws.terminals {
-                                let title = ws.teammate_pane_titles.get(pane_id)
-                                    .cloned()
+                            for (pane_id, handle) in &ws.terminals {
+                                // §6: prefer the live OSC window title (matches the
+                                // desktop pane header's variable title), then the
+                                // teammate-assigned name, then the shell kind.
+                                let osc_title = handle.parser.lock().title()
+                                    .filter(|t| !t.trim().is_empty());
+                                let title = osc_title
+                                    .or_else(|| ws.teammate_pane_titles.get(pane_id).cloned())
                                     .or_else(|| ws.pane_tree.panes.get(pane_id).and_then(|n| n.shell_kind.clone()))
                                     .unwrap_or_else(|| "terminal".to_string());
                                 list.push(serde_json::json!({
@@ -720,7 +732,9 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             let order = ctx.state.workspace_order.read();
                             let names = ctx.state.workspace_names.read();
                             let map = ctx.state.workspaces.read();
-                            let active = *ctx.state.active_workspace.read();
+                            // §state-sep: the `active` flag reflects THIS client's
+                            // selection, not the global one.
+                            let active = active_ws_id;
                             order.iter().map(|id| {
                                 // §unify: unnamed workspaces fall back to "工作区 {display_seq}",
                                 // matching the desktop WorkspaceSidebar label.
@@ -744,7 +758,14 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let result = if let Ok(id) = Uuid::parse_str(id_str) {
                             let exists = ctx.state.workspaces.read().contains_key(&id);
                             if exists {
-                                *ctx.state.active_workspace.write() = id;
+                                // §state-sep: switch THIS client only — do not touch
+                                // the global active_workspace. Drop the current pane
+                                // subscription so the old workspace's stream stops; the
+                                // client re-subscribes after its next list-panes.
+                                if let Some((ws, p)) = current_pane.take() {
+                                    ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                }
+                                active_ws_id = id;
                                 serde_json::json!({ "type": "switch-workspace-result", "success": true, "workspaceId": id.to_string() })
                             } else {
                                 serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "workspace not found" })
@@ -778,7 +799,13 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             });
                         }
                         ctx.state.workspace_order.write().push(id);
-                        *ctx.state.active_workspace.write() = id;
+                        // §state-sep: the new workspace is shared data (visible to all),
+                        // but only THIS client jumps to it. Other clients / the desktop
+                        // stay on their own selection.
+                        if let Some((ws, p)) = current_pane.take() {
+                            ctx.state.unregister_remote_sub(ws, p, sub_id);
+                        }
+                        active_ws_id = id;
                         if let Some(ref n) = name {
                             ctx.state.workspace_names.write().insert(id, n.clone());
                         }
@@ -800,10 +827,26 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                     ctx.state.workspaces.write().remove(&id);
                                     ctx.state.workspace_order.write().retain(|w| *w != id);
                                     ctx.state.workspace_names.write().remove(&id);
+                                    // Closing a workspace destroys shared data: if the
+                                    // DESKTOP (global active) was viewing it, move the
+                                    // global off so the desktop doesn't point at a dead
+                                    // workspace. This is unavoidable — you can't view a
+                                    // workspace that no longer exists.
                                     if *ctx.state.active_workspace.read() == id {
                                         let first = ctx.state.workspace_order.read().first().cloned();
                                         if let Some(first_id) = first {
                                             *ctx.state.active_workspace.write() = first_id;
+                                        }
+                                    }
+                                    // §state-sep: if THIS client was on the closed
+                                    // workspace, fall back to the first remaining one
+                                    // (independently of the desktop / other clients).
+                                    if active_ws_id == id {
+                                        if let Some((ws, p)) = current_pane.take() {
+                                            ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                        }
+                                        if let Some(first_id) = ctx.state.workspace_order.read().first().cloned() {
+                                            active_ws_id = first_id;
                                         }
                                     }
                                     serde_json::json!({ "type": "close-workspace-result", "success": true })
@@ -834,27 +877,22 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         let rows = parsed["rows"].as_u64().unwrap_or(24) as u16;
                         let cols = parsed["cols"].as_u64().unwrap_or(80) as u16;
-                        // Remember the client's viewport for the refresh button.
+                        // §own-active: record the client's viewport ONLY. Do NOT
+                        // resize the shared PTY here — that would reflow the desktop
+                        // the moment a remote connects/changes size. The PTY is
+                        // claimed only on genuine activation (`claim-pane`) or the
+                        // explicit refresh button.
+                        let _ = pane_id_str;
                         mobile_rows = rows;
                         mobile_cols = cols;
-                        let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
-                        let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
-                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            // §multi-size: a freshly connected endpoint claims the
-                            // shared PTY size exactly ONCE. Subsequent viewport
-                            // changes no longer stomp the PTY — the client taps the
-                            // refresh button (`refresh-pane`) to re-claim on demand.
-                            if !has_auto_claimed {
-                                has_auto_claimed = true;
-                                apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
-                            }
-                        }
                         Ok(())
                     }
-                    Some("refresh-pane") => {
-                        // §multi-size: explicit re-claim. Resize the PTY (and the
-                        // canonical parser) to this client's current viewport and
-                        // broadcast a full repaint to every viewer.
+                    // §own-active: this client becomes the active size owner. Both
+                    // the implicit "I just interacted" claim (`claim-pane`) and the
+                    // explicit refresh button (`refresh-pane`) resize the shared PTY +
+                    // canonical parser to this client's viewport and broadcast a full
+                    // repaint to every viewer (desktop included). Last interaction wins.
+                    Some("refresh-pane") | Some("claim-pane") => {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
                         let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
@@ -862,11 +900,37 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
                         mobile_rows = rows;
                         mobile_cols = cols;
-                        has_auto_claimed = true;
                         if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
                             apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
                         }
                         Ok(())
+                    }
+                    Some("create-pane") => {
+                        // §6: create a terminal in THIS client's active workspace using
+                        // the balanced-split chooser. The new pane streams to every
+                        // viewer via the existing PTY fan-out once subscribed.
+                        let shell = parsed["shell"].as_str()
+                            .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+                        let result = match crate::commands::pane::remote_create_pane(&ctx.state, active_ws_id, shell) {
+                            Ok(new_id) => serde_json::json!({
+                                "type": "create-pane-result", "success": true, "paneId": new_id.to_string()
+                            }),
+                            Err(e) => serde_json::json!({
+                                "type": "create-pane-result", "success": false, "error": e.to_string()
+                            }),
+                        };
+                        ws_tx.send(Message::Text(result.to_string())).await
+                    }
+                    Some("close-pane") => {
+                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                        let result = match Uuid::parse_str(pane_id_str) {
+                            Ok(pane_id) => match crate::commands::pane::remote_close_pane(&ctx.state, active_ws_id, pane_id).await {
+                                Ok(()) => serde_json::json!({ "type": "close-pane-result", "success": true }),
+                                Err(e) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": e.to_string() }),
+                            },
+                            Err(_) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": "invalid pane id" }),
+                        };
+                        ws_tx.send(Message::Text(result.to_string())).await
                     }
                     Some("list-files") => {
                         let path_str = parsed["path"].as_str().unwrap_or("").to_string();
