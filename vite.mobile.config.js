@@ -11,6 +11,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
+      // Shared, transport-agnostic UI (e.g. the sidebar components reused
+      // between the desktop SvelteKit app and this plain-Svelte remote app).
+      '@shared': path.resolve(__dirname, 'src/shared'),
     },
   },
   plugins: [

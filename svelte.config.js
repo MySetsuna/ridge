@@ -16,6 +16,9 @@ const config = {
       "@components": "src/lib/components",
       "@stores": "src/lib/stores",
       "@types": "src/lib/types",
+      // Transport-agnostic UI shared with the plain-Svelte remote app
+      // (see vite.mobile.config.js for the mirror alias).
+      "@shared": "src/shared",
     },
   },
 };

@@ -1,3 +1,5 @@
+import type { SidebarProvider, DirListing, GitInfo, SearchHit } from '@shared/sidebar/types';
+
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
@@ -83,7 +85,7 @@ export type WsMessage = {
 
 type Listener = (msg: WsMessage) => void;
 
-export class RemoteConnection {
+export class RemoteConnection implements SidebarProvider {
   private ws: WebSocket | null = null;
   private stateListeners: Set<(s: ConnectionState) => void> = new Set();
   private messageListeners: Set<Listener> = new Set();
@@ -147,7 +149,9 @@ export class RemoteConnection {
         // Route result-type responses to pending request promises.
         if (typeof msg === 'object' && msg !== null) {
           const type = (msg as Record<string, unknown>).type as string;
-          const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project';
+          const isResult = type.endsWith('-result') || type === 'workspaces'
+            || type === 'current-project' || type === 'files' || type === 'git-status'
+            || type === 'search-results';
           if (isResult) {
             const pending = this._pendingRequests.get(type);
             if (pending) {
@@ -225,6 +229,33 @@ export class RemoteConnection {
   async requestCurrentProject(): Promise<string> {
     const data = await this._sendAndWait({ type: 'current-project' }, 'current-project') as Record<string, unknown>;
     return (data as { path: string }).path || '';
+  }
+  // ───────────────────────────────────────────────────────────────────
+
+  // ── SidebarProvider: shared file/git/search components data source ──
+  async listDir(path: string): Promise<DirListing> {
+    const data = await this._sendAndWait({ type: 'list-files', path: path || '' }, 'files', 8000) as Record<string, unknown>;
+    return {
+      path: String(data.path ?? ''),
+      parent: (data.parent as string | null) ?? null,
+      entries: (data.entries as DirListing['entries']) ?? [],
+    };
+  }
+
+  async gitStatus(): Promise<GitInfo> {
+    const data = await this._sendAndWait({ type: 'list-git-status' }, 'git-status', 12000) as Record<string, unknown>;
+    return {
+      isGitRepo: data.isGitRepo === true,
+      currentBranch: (data.currentBranch as string | null) ?? null,
+      branches: (data.branches as string[]) ?? [],
+      files: (data.files as GitInfo['files']) ?? [],
+      commits: (data.commits as GitInfo['commits']) ?? [],
+    };
+  }
+
+  async search(query: string): Promise<SearchHit[]> {
+    const data = await this._sendAndWait({ type: 'search-files', query }, 'search-results', 20000) as Record<string, unknown>;
+    return (data.results as SearchHit[]) ?? [];
   }
   // ───────────────────────────────────────────────────────────────────
 

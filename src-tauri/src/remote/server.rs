@@ -388,11 +388,16 @@ struct WorkspaceCloseBody {
 async fn workspace_list_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     let order = ctx.state.workspace_order.read();
     let names = ctx.state.workspace_names.read();
+    let map = ctx.state.workspaces.read();
     let active = *ctx.state.active_workspace.read();
     let workspaces: Vec<serde_json::Value> = order.iter().map(|id| {
+        // §unify: per-workspace display_seq fallback name, matching the desktop
+        // and the WS `list-workspaces` handler.
+        let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
         serde_json::json!({
             "id": id.to_string(),
-            "name": names.get(id).cloned().unwrap_or_else(|| format!("工作区 {}", ctx.state.next_workspace_seq.read().saturating_sub(1))),
+            "name": names.get(id).cloned().unwrap_or_else(|| format!("工作区 {}", display_seq)),
+            "displaySeq": display_seq,
             "active": *id == active,
         })
     }).collect();
@@ -650,11 +655,17 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let ws_list = {
                             let order = ctx.state.workspace_order.read();
                             let names = ctx.state.workspace_names.read();
+                            let map = ctx.state.workspaces.read();
                             let active = *ctx.state.active_workspace.read();
                             order.iter().map(|id| {
+                                // §unify: unnamed workspaces fall back to "工作区 {display_seq}",
+                                // matching the desktop WorkspaceSidebar label.
+                                let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
                                 serde_json::json!({
                                     "id": id.to_string(),
-                                    "name": names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+                                    "name": names.get(id).cloned()
+                                        .unwrap_or_else(|| format!("工作区 {}", display_seq)),
+                                    "displaySeq": display_seq,
                                     "active": *id == active,
                                 })
                             }).collect::<Vec<_>>()
@@ -787,46 +798,42 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                     }
                     Some("list-files") => {
                         let path_str = parsed["path"].as_str().unwrap_or("").to_string();
-                        let base_dir = ctx.state.current_project.read().clone()
-                            .or_else(|| dirs::home_dir())
-                            .unwrap_or_else(|| PathBuf::from("/"));
+                        // §unify: base dir follows the subscribed pane's cwd (same as the
+                        // desktop file tree), falling back to the active project, then home.
+                        let base_dir = current_pane
+                            .and_then(|(ws_id, pane_id)| {
+                                let map = ctx.state.workspaces.read();
+                                map.get(&ws_id)
+                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                    .and_then(|n| n.cwd.clone())
+                            })
+                            .or_else(|| ctx.state.current_project.read().clone())
+                            .or_else(dirs::home_dir)
+                            .unwrap_or_else(|| PathBuf::from("."));
                         let result = tokio::task::spawn_blocking(move || {
+                            // Empty/"/" → base dir; absolute → as-is; else relative to base.
                             let target = if path_str.is_empty() || path_str == "/" {
                                 base_dir.clone()
                             } else {
-                                base_dir.join(&path_str)
+                                let p = PathBuf::from(&path_str);
+                                if p.is_absolute() { p } else { base_dir.join(&path_str) }
                             };
-                            let gictx = crate::fs::tree::FileTreeContext::for_path(&target);
-                            let mut entries: Vec<serde_json::Value> = Vec::new();
-                            if let Ok(read_dir) = std::fs::read_dir(&target) {
-                                for entry in read_dir.flatten() {
-                                    let name = entry.file_name().to_string_lossy().to_string();
-                                    if crate::fs::tree::FileTree::should_ignore(&entry.path()) { continue; }
-                                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                                    let is_ignored = gictx.matches(&entry.path(), is_dir);
-                                    let child_count = if is_dir {
-                                        std::fs::read_dir(&entry.path()).ok().map(|rd| rd.flatten().filter(|e| !crate::fs::tree::FileTree::should_ignore(&e.path())).count())
-                                    } else { None };
-                                    entries.push(serde_json::json!({
-                                        "name": name,
-                                        "path": entry.path().strip_prefix(&base_dir)
-                                            .unwrap_or(entry.path().as_path())
-                                            .to_string_lossy().to_string().replace('\\', "/"),
-                                        "is_dir": is_dir,
-                                        "is_ignored": is_ignored,
-                                        "child_count": child_count,
-                                    }));
-                                }
-                            }
-                            entries.sort_by(|a, b| {
-                                let a_dir = a["is_dir"].as_bool().unwrap_or(false);
-                                let b_dir = b["is_dir"].as_bool().unwrap_or(false);
-                                b_dir.cmp(&a_dir).then(
-                                    a["name"].as_str().unwrap_or("").to_lowercase()
-                                        .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
-                                )
-                            });
-                            serde_json::json!({"type":"files","path":path_str,"entries":entries})
+                            // §unify: reuse the desktop file-tree pager so gitignore marking,
+                            // OS-junk filtering and dir-first sorting match the desktop UI.
+                            let page = crate::fs::tree::FileTree::page_children(&target, 0, 5000)
+                                .unwrap_or(crate::fs::tree::DirectoryPage {
+                                    entries: Vec::new(),
+                                    total: 0,
+                                    offset: 0,
+                                    has_more: false,
+                                });
+                            let parent = target.parent().map(|p| p.to_string_lossy().to_string());
+                            serde_json::json!({
+                                "type": "files",
+                                "path": target.to_string_lossy().to_string(),
+                                "parent": parent,
+                                "entries": page.entries,
+                            })
                         }).await;
                         match result {
                             Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
@@ -864,37 +871,29 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         }).to_string())).await
                     }
                     Some("list-git-status") => {
-                        let workspace_dir = ctx.state.current_project.read().clone()
-                            .or_else(|| dirs::home_dir())
+                        // §unify: same cwd resolution as list-files (subscribed pane → project → home).
+                        let base_dir = current_pane
+                            .and_then(|(ws_id, pane_id)| {
+                                let map = ctx.state.workspaces.read();
+                                map.get(&ws_id)
+                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                    .and_then(|n| n.cwd.clone())
+                            })
+                            .or_else(|| ctx.state.current_project.read().clone())
+                            .or_else(dirs::home_dir)
                             .unwrap_or_else(|| PathBuf::from("."));
                         let result = tokio::task::spawn_blocking(move || {
-                            let mut staged: Vec<String> = Vec::new();
-                            let mut unstaged: Vec<serde_json::Value> = Vec::new();
-                            let mut commits: Vec<serde_json::Value> = Vec::new();
-                            if let Ok(output) = std::process::Command::new("git")
-                                .args(["-C", &workspace_dir.to_string_lossy(), "status", "--porcelain"]).output()
-                            {
-                                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                                    if line.len() < 3 { continue; }
-                                    let file = &line[3..];
-                                    let st = line.as_bytes()[0];
-                                    if st == b'?' || st == b' ' {
-                                        unstaged.push(serde_json::json!({"name": file, "status": line[..2].to_string()}));
-                                    } else {
-                                        staged.push(file.to_string());
-                                    }
-                                }
-                            }
-                            if let Ok(output) = std::process::Command::new("git")
-                                .args(["-C", &workspace_dir.to_string_lossy(), "log", "--oneline", "-10"]).output()
-                            {
-                                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                                    if let Some((hash, msg)) = line.split_once(' ') {
-                                        commits.push(serde_json::json!({"hash": hash, "msg": msg, "time": ""}));
-                                    }
-                                }
-                            }
-                            serde_json::json!({"type":"git-status","staged":staged,"unstaged":unstaged,"commits":commits})
+                            // §unify: reuse the desktop git module so branch / commits / diff
+                            // come from the exact same source as the desktop Git panel.
+                            let info = crate::commands::git::git_info_for_path(&base_dir);
+                            serde_json::json!({
+                                "type": "git-status",
+                                "isGitRepo": info.is_git_repo,
+                                "currentBranch": info.current_branch,
+                                "branches": info.branches,
+                                "files": info.diff.files,
+                                "commits": info.commits,
+                            })
                         }).await;
                         match result {
                             Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
@@ -903,6 +902,37 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                 Ok(())
                             }
                         }
+                    }
+                    Some("search-files") => {
+                        let query = parsed["query"].as_str().unwrap_or("").to_string();
+                        // §unify: search root follows the subscribed pane's cwd (same as desktop).
+                        let root = current_pane
+                            .and_then(|(ws_id, pane_id)| {
+                                let map = ctx.state.workspaces.read();
+                                map.get(&ws_id)
+                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                    .and_then(|n| n.cwd.clone())
+                            })
+                            .or_else(|| ctx.state.current_project.read().clone())
+                            .or_else(dirs::home_dir)
+                            .unwrap_or_else(|| PathBuf::from("."));
+                        let results = if query.trim().is_empty() {
+                            Vec::new()
+                        } else {
+                            // §unify: reuse the desktop text_search engine (gitignore-aware ripgrep walk).
+                            crate::commands::project::text_search(
+                                root.to_string_lossy().to_string(),
+                                query.clone(),
+                                None, None, None, Some(200), None, None,
+                            )
+                            .await
+                            .unwrap_or_default()
+                        };
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "search-results",
+                            "query": query,
+                            "results": results,
+                        }).to_string())).await
                     }
                     _ => {
                         ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
