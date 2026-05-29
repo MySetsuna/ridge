@@ -8,6 +8,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   root: path.resolve(__dirname, 'src/mobile'),
   base: '/',
+  // Use a SEPARATE dep-optimization cache from the desktop SvelteKit dev server
+  // (vite.config.js → default node_modules/.vite). Both run at once when remote
+  // control is enabled; sharing one cache makes the mobile server re-optimize
+  // and wipe the desktop's deps (e.g. `qrcode`), 404-ing the desktop's
+  // already-loaded `qrcode.js?v=…` dynamic import.
+  cacheDir: path.resolve(__dirname, 'node_modules/.vite-mobile'),
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
