@@ -1262,14 +1262,10 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
-	// §own-active: when the remote server is actually running, a remote device may
-	// have claimed (shrunk) this pane's shared PTY. Interacting on the desktop
-	// re-claims it at the desktop size — "whoever is active owns the size".
-	// fitPaneNow is idempotent when the size already matches, so per-click cost is
-	// negligible. Gated on the live server state (not the persisted setting).
-	if ($remoteRunning) {
-		manager.fitPaneNow(paneId);
-	}
+	// §multi-size: each client (desktop + every remote) now renders its OWN grid
+	// via a per-sub parser, so desktop interaction no longer needs to "re-claim"
+	// the shared PTY size. The PTY is resized only by an explicit per-pane refresh
+	// (desktop or remote) — see the refresh button below.
 	// ★ TUI mouse reporting takes priority: forward the click to the
 	// running application instead of changing focus. Without this,
 	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends

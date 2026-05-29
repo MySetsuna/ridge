@@ -3,12 +3,14 @@
   import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
   import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
   import { peekMods, consumeMods, clearMods } from './modState.svelte';
-  let { paneId, onStdin, onClaim, onRefresh, shiftY = 0 }: {
+  let { paneId, onStdin, onResize, onRefresh, shiftY = 0 }: {
     paneId: string | null;
     onStdin: (data: string) => void;
-    // §own-active: called ONCE on this client's first genuine interaction with a
-    // pane → resize the shared PTY to this device's viewport. Never on connect.
-    onClaim?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    // §multi-size: called whenever this client's viewport grid changes → resize
+    // ONLY this client's per-sub parser (never the shared PTY). Keeps the client
+    // kernel and the server-side sub parser in lock-step so input + mouse map to
+    // the right cells.
+    onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     onRefresh?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     // §3: shift the rendered canvas up (CSS px) so the cursor row clears the
     // soft keyboard. The canvas is NOT resized — only translated.
@@ -31,9 +33,10 @@
 
   const pendingData: Uint8Array[] = [];
   let fitPending = false;
-  // §own-active: true once this client has claimed the shared PTY size for the
-  // current pane (on first genuine interaction). Reset on every pane switch.
-  let hasClaimed = false;
+  // §multi-size: the last viewport grid we reported to the server (debounces the
+  // onResize calls). Reset on every pane switch.
+  let sentRows = 0;
+  let sentCols = 0;
   // §5: the pane this kernel currently mirrors. Drives the reset-on-switch
   // effect and lets us drop stray deltas addressed to a different pane.
   let currentPaneId: string | null = null;
@@ -149,21 +152,22 @@
     if (cellW > 0 && cellH > 0) {
       cols = Math.max(1, Math.floor(w / cellW));
       rows = Math.max(1, Math.floor(h / cellH));
-      // §own-active: fitPane is render-only. It recomputes local cols/rows/cell
-      // metrics for hit-testing and the translateY cursor math — it does NOT
-      // resize the shared PTY. The PTY is claimed only on genuine interaction
-      // (claimIfNeeded → onClaim) or the explicit refresh button, so merely
-      // mounting / changing viewport never reflows the desktop.
+      // §multi-size: report our new grid so the server reflows our per-sub
+      // parser (NOT the shared PTY). The explicit refresh button (onRefresh) is
+      // what resizes the real PTY for full-screen TUIs.
+      notifyViewport();
     }
   }
 
-  // §own-active: on the first genuine user interaction with this pane, claim the
-  // shared PTY at this device's viewport size (last interaction wins). Idempotent
-  // per pane — reset on pane switch by resetKernel().
-  function claimIfNeeded() {
-    if (hasClaimed || !paneId || !onClaim || !containerEl) return;
-    hasClaimed = true;
-    onClaim(
+  // §multi-size: tell the server this client's current viewport grid so it
+  // resizes ONLY our per-sub parser (never the shared PTY). Debounced via the
+  // last-sent size. Called from fitPane on any grid change.
+  function notifyViewport() {
+    if (!paneId || !onResize || !containerEl) return;
+    if (rows === sentRows && cols === sentCols) return;
+    sentRows = rows;
+    sentCols = cols;
+    onResize(
       paneId,
       rows,
       cols,
@@ -183,7 +187,8 @@
     pendingData.length = 0;
     flushPending();
     // Reset per-pane interaction / input / gesture state.
-    hasClaimed = false;
+    sentRows = 0;
+    sentCols = 0;
     isComposing = false;
     compositionStdinTarget = null;
     clearMods();
@@ -278,9 +283,8 @@
   // ─── Quick-key bar integration (exported for the always-visible bar) ──
   export function sendKey(key: string, ctrl: boolean, alt: boolean, shift: boolean) {
     if (!paneId || !kernel) return;
-    // §2: a quick-key tap is a genuine interaction (claim PTY) but must NOT
-    // open or close the soft keyboard — so no focusInput() here.
-    claimIfNeeded();
+    // §2: a quick-key tap must NOT open or close the soft keyboard — so no
+    // focusInput() here.
     const bytes = kernel.encodeKey(key, ctrl, alt, shift, false);
     if (bytes.length > 0) {
       onStdin(new TextDecoder().decode(bytes));
@@ -457,12 +461,11 @@
     if (isSelecting) { isSelecting = false; touchScrollAccum = 0; didScroll = false; return; }
     if (didLongPress) { didLongPress = false; touchScrollAccum = 0; didScroll = false; return; }
 
-    // §7 quick tap (not a swipe): focus input (raises soft keyboard) + claim the
-    // PTY (first interaction) + left-click when the TUI has mouse reporting on.
+    // §7 quick tap (not a swipe): focus input (raises soft keyboard) +
+    // left-click when the TUI has mouse reporting on.
     const elapsed = Date.now() - touchStartTime;
     if (elapsed < 300 && !didScroll) {
       focusInput();
-      claimIfNeeded();
       if (kernel && cellW > 0 && cellH > 0 && kernel.isMouseReporting()) {
         const touch = e.changedTouches[0];
         const cell = touch ? touchToCell(touch.clientX, touch.clientY) : null;
@@ -495,7 +498,6 @@
     // §1b: focus on pointerdown (so typing works) — NOT on a trailing click,
     // which used to steal focus right after a drag-selection finished.
     focusInput();
-    claimIfNeeded();
     mouseLast = null;
     const cell = touchToCell(e.clientX, e.clientY);
     if (!cell) return;
@@ -637,7 +639,6 @@
     const t = e.inputType;
     if (t === 'insertCompositionText') return; // handled by compositionend
     if (isComposing || e.isComposing) return;
-    claimIfNeeded();
     switch (t) {
       case 'insertText': {
         const d = e.data ?? '';
@@ -689,7 +690,6 @@
   function handleKeydown(e: KeyboardEvent) {
     if (isComposing || e.isComposing) return;
     if (!paneId || !kernel) return;
-    claimIfNeeded();
     // §2: a sticky modifier armed via the quick-key bar combines with this key
     // (hardware keyboards / special soft-keyboard keys). Skip bare modifier keys
     // so arming Ctrl then pressing it again doesn't clear prematurely.
