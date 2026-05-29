@@ -2,11 +2,17 @@
   import { onMount, onDestroy } from 'svelte';
   import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
   import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-  let { paneId, onStdin, onResize, onRefresh }: {
+  import { peekMods, consumeMods, clearMods } from './modState.svelte';
+  let { paneId, onStdin, onClaim, onRefresh, shiftY = 0 }: {
     paneId: string | null;
     onStdin: (data: string) => void;
-    onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    // §own-active: called ONCE on this client's first genuine interaction with a
+    // pane → resize the shared PTY to this device's viewport. Never on connect.
+    onClaim?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     onRefresh?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    // §3: shift the rendered canvas up (CSS px) so the cursor row clears the
+    // soft keyboard. The canvas is NOT resized — only translated.
+    shiftY?: number;
   } = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -25,8 +31,12 @@
 
   const pendingData: Uint8Array[] = [];
   let fitPending = false;
-  // §multi-size: true once this endpoint has auto-claimed the shared PTY size.
-  let claimed = false;
+  // §own-active: true once this client has claimed the shared PTY size for the
+  // current pane (on first genuine interaction). Reset on every pane switch.
+  let hasClaimed = false;
+  // §5: the pane this kernel currently mirrors. Drives the reset-on-switch
+  // effect and lets us drop stray deltas addressed to a different pane.
+  let currentPaneId: string | null = null;
   let isComposing = false;
   let compositionStdinTarget: string | null = null;
 
@@ -37,6 +47,10 @@
   let cellH = $state(16);
 
   let copySuccess = $state(false);
+  // §reactivity: mirror kernel.hasSelection() into reactive state (updated in the
+  // render loop) so the copy/dismiss buttons toggle without making `kernel` a
+  // reactive proxy.
+  let selectionActive = $state(false);
 
   function calcFontSize(): number {
     const w = containerEl ? containerEl.clientWidth : window.innerWidth;
@@ -51,6 +65,7 @@
     await init(wasmUrl);
     fontSize = calcFontSize();
     kernel = new TerminalKernel(rows, cols, 5000);
+    currentPaneId = paneId;
     renderHandle = await RenderHandle.newWithWebgpuFirst(canvasEl!);
     renderHandle.applyDefaultTheme();
     fitPane();
@@ -63,6 +78,10 @@
     focusInput();
     function frame() {
       if (kernel && renderHandle) renderHandle.render(kernel);
+      // Drive the copy/dismiss UI reactively without making `kernel` itself a
+      // reactive ($state) proxy — wrapping the wasm object would break it.
+      const sel = kernel?.hasSelection() ?? false;
+      if (sel !== selectionActive) selectionActive = sel;
       rafId = requestAnimationFrame(frame);
     }
     rafId = requestAnimationFrame(frame);
@@ -130,17 +149,71 @@
     if (cellW > 0 && cellH > 0) {
       cols = Math.max(1, Math.floor(w / cellW));
       rows = Math.max(1, Math.floor(h / cellH));
-      // §multi-size: the kernel grid is driven by the SHARED canonical delta
-      // stream (Resize ops), not the local viewport — so we do NOT
-      // kernel.resize() here. A fresh endpoint claims the shared PTY size
-      // exactly once on first fit; later viewport changes don't touch the
-      // PTY (use refresh() to re-claim on demand).
-      if (!claimed && paneId && onResize) {
-        claimed = true;
-        onResize(paneId, rows, cols, Math.round(w), Math.round(h));
-      }
+      // §own-active: fitPane is render-only. It recomputes local cols/rows/cell
+      // metrics for hit-testing and the translateY cursor math — it does NOT
+      // resize the shared PTY. The PTY is claimed only on genuine interaction
+      // (claimIfNeeded → onClaim) or the explicit refresh button, so merely
+      // mounting / changing viewport never reflows the desktop.
     }
   }
+
+  // §own-active: on the first genuine user interaction with this pane, claim the
+  // shared PTY at this device's viewport size (last interaction wins). Idempotent
+  // per pane — reset on pane switch by resetKernel().
+  function claimIfNeeded() {
+    if (hasClaimed || !paneId || !onClaim || !containerEl) return;
+    hasClaimed = true;
+    onClaim(
+      paneId,
+      rows,
+      cols,
+      Math.round(containerEl.clientWidth),
+      Math.round(containerEl.clientHeight),
+    );
+  }
+
+  // §5: drop and rebuild the kernel when the pane changes so a workspace/pane
+  // switch never shows the previous pane's grid or scrollback. The server
+  // re-bootstraps the new pane with a full frame on subscribe (see MainApp
+  // $effect → ws.subscribePane), which arrives async — after this synchronous
+  // reset — so we always start clean.
+  function resetKernel() {
+    try { kernel?.free(); } catch { /* already freed */ }
+    kernel = new TerminalKernel(rows, cols, 5000);
+    pendingData.length = 0;
+    flushPending();
+    // Reset per-pane interaction / input / gesture state.
+    hasClaimed = false;
+    isComposing = false;
+    compositionStdinTarget = null;
+    clearMods();
+    isSelecting = false;
+    didLongPress = false;
+    isTwoFinger = false;
+    touchMousePressed = false;
+    lastMouseCell = null;
+    touchScrollAccum = 0;
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    mouseSelecting = false;
+    mouseSelAnchor = null;
+    mouseLast = null;
+  }
+
+  // §3: cursor Y position in CSS pixels, for MainApp's translateY keyboard math.
+  export function getCursorY(): number {
+    if (!kernel) return 0;
+    const dpr = window.devicePixelRatio || 1;
+    const row = kernel.cursorRow?.() ?? 0;
+    return (row * cellH) / dpr;
+  }
+
+  $effect(() => {
+    const id = paneId;
+    if (!ready) return;
+    if (id === currentPaneId) return;
+    currentPaneId = id;
+    resetKernel();
+  });
 
   /// Re-claim the shared PTY at this client's current viewport size and
   /// trigger a full repaint. Wired to the toolbar refresh button.
@@ -205,7 +278,9 @@
   // ─── Quick-key bar integration (exported for the always-visible bar) ──
   export function sendKey(key: string, ctrl: boolean, alt: boolean, shift: boolean) {
     if (!paneId || !kernel) return;
-    focusInput();
+    // §2: a quick-key tap is a genuine interaction (claim PTY) but must NOT
+    // open or close the soft keyboard — so no focusInput() here.
+    claimIfNeeded();
     const bytes = kernel.encodeKey(key, ctrl, alt, shift, false);
     if (bytes.length > 0) {
       onStdin(new TextDecoder().decode(bytes));
@@ -245,8 +320,10 @@
   let selAnchorCol = 0;
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   let didLongPress = false;
-  // §TUI-mouse: true once a single-finger drag has sent a left-button press,
-  // so subsequent moves forward as motion and touchend forwards a release.
+  // §7: true once a single-finger swipe has produced a scroll, so touchend does
+  // not mistake a quick flick for a tap.
+  let didScroll = false;
+  // Retained (reset by resetKernel); no longer used for touch drag-select.
   let touchMousePressed = false;
   let lastMouseCell: { row: number; col: number } | null = null;
 
@@ -285,6 +362,7 @@
     touchStartTime = Date.now();
     isSelecting = false;
     didLongPress = false;
+    didScroll = false;
     touchMousePressed = false;
     lastMouseCell = null;
 
@@ -294,19 +372,13 @@
       const cell = touchToCell(touch.clientX, touch.clientY);
       if (!cell) return;
       didLongPress = true;
-      if (kernel.isMouseReporting()) {
-        // §TUI-mouse: long-press = right click.
-        sendBytes(kernel.encodeMouse(cell.row, cell.col, 2, 0, false, false, false));
-        sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
-        try { navigator.vibrate(15); } catch {}
-      } else {
-        // Local text selection.
-        isSelecting = true;
-        selAnchorRow = cell.row;
-        selAnchorCol = cell.col;
-        kernel.clearSelection();
-        try { navigator.vibrate(15); } catch {}
-      }
+      // §7: long-press ALWAYS enters local text-selection mode (regardless of
+      // TUI mouse reporting). A plain swipe is reserved for scrolling.
+      isSelecting = true;
+      selAnchorRow = cell.row;
+      selAnchorCol = cell.col;
+      kernel.clearSelection();
+      try { navigator.vibrate(15); } catch {}
     }, 400);
   }
 
@@ -339,30 +411,7 @@
     if (e.touches.length !== 1) return;
     const touch = e.touches[0];
 
-    // §TUI-mouse: single-finger drag → left-button drag when reporting on
-    // (vim visual select, lazygit drag, tmux copy-mode, etc.).
-    if (kernel && kernel.isMouseReporting() && !isSelecting && !didLongPress) {
-      const moved = Math.abs(touch.clientY - touchStartY) > 6 || Math.abs(touch.clientX - touchStartX) > 6;
-      if (touchMousePressed || moved) {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-        const cell = touchToCell(touch.clientX, touch.clientY);
-        if (cell) {
-          if (!touchMousePressed) {
-            const start = touchToCell(touchStartX, touchStartY) ?? cell;
-            sendBytes(kernel.encodeMouse(start.row, start.col, 0, 0, false, false, false));
-            touchMousePressed = true;
-            lastMouseCell = start;
-          }
-          if (!lastMouseCell || lastMouseCell.row !== cell.row || lastMouseCell.col !== cell.col) {
-            sendBytes(kernel.encodeMouse(cell.row, cell.col, 0, 2, false, false, false));
-            lastMouseCell = cell;
-          }
-        }
-        e.preventDefault();
-        return;
-      }
-    }
-
+    // §7: long-press selection mode → extend the selection as the finger moves.
     if (isSelecting && kernel) {
       if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
       e.preventDefault();
@@ -372,52 +421,63 @@
     }
     if (didLongPress) return;
 
-    // Local one-finger scroll.
+    // §7: a single-finger swipe is ALWAYS a scroll (the default gesture). When
+    // the TUI has mouse reporting on, forward wheel events (SGR 64/65) so the
+    // app scrolls; otherwise scroll the local scrollback. Text selection is only
+    // entered via long-press (above) — never via a drag.
     const dy = touch.clientY - touchStartY;
     if (Math.abs(dy) > 10 && longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
     touchScrollAccum += dy;
-    if (Math.abs(touchScrollAccum) > 30 && kernel) {
-      const lines = touchScrollAccum > 0 ? -3 : 3;
-      if (lines < 0) kernel.scrollUp(-lines); else kernel.scrollDown(lines);
-      touchScrollAccum = 0;
+    if (Math.abs(touchScrollAccum) > 24 && kernel) {
+      // dy > 0 (finger moved down) → reveal older content → scroll up / wheel-up.
+      const lines = Math.trunc(touchScrollAccum / 24);
+      if (lines !== 0) {
+        didScroll = true;
+        if (kernel.isMouseReporting()) {
+          const cell = touchToCell(touch.clientX, touch.clientY) ?? { row: 0, col: 0 };
+          const btn = lines > 0 ? 64 : 65; // wheel up : wheel down
+          const n = Math.min(Math.abs(lines), 5);
+          for (let i = 0; i < n; i++) sendBytes(kernel.encodeMouse(cell.row, cell.col, btn, 0, false, false, false));
+        } else if (lines > 0) {
+          kernel.scrollUp(lines);
+        } else {
+          kernel.scrollDown(-lines);
+        }
+        touchScrollAccum = 0;
+      }
     }
+    e.preventDefault();
     touchStartY = touch.clientY;
   }
 
   function handleTouchEnd(e: TouchEvent) {
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
 
-    // §TUI-mouse: finish a forwarded drag with a release.
-    if (touchMousePressed && kernel) {
-      const touch = e.changedTouches[0];
-      const cell = touch ? touchToCell(touch.clientX, touch.clientY) : lastMouseCell;
-      if (cell) sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
-      touchMousePressed = false;
-      lastMouseCell = null;
-      isTwoFinger = false;
-      return;
-    }
+    if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; isSelecting = false; didScroll = false; return; }
+    if (isSelecting) { isSelecting = false; touchScrollAccum = 0; didScroll = false; return; }
+    if (didLongPress) { didLongPress = false; touchScrollAccum = 0; didScroll = false; return; }
 
-    if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; isSelecting = false; return; }
-    if (isSelecting) { isSelecting = false; touchScrollAccum = 0; return; }
-    if (didLongPress) { didLongPress = false; touchScrollAccum = 0; return; }
-
-    // Quick tap: focus input (raises soft keyboard) + left-click when reporting.
+    // §7 quick tap (not a swipe): focus input (raises soft keyboard) + claim the
+    // PTY (first interaction) + left-click when the TUI has mouse reporting on.
     const elapsed = Date.now() - touchStartTime;
-    if (elapsed < 250) focusInput();
-    if (elapsed < 250 && kernel && cellW > 0 && cellH > 0 && kernel.isMouseReporting()) {
-      const touch = e.changedTouches[0];
-      const cell = touch ? touchToCell(touch.clientX, touch.clientY) : null;
-      if (cell) {
-        sendBytes(kernel.encodeMouse(cell.row, cell.col, 0, 0, false, false, false));
-        requestAnimationFrame(() => {
-          if (kernel) sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
-        });
+    if (elapsed < 300 && !didScroll) {
+      focusInput();
+      claimIfNeeded();
+      if (kernel && cellW > 0 && cellH > 0 && kernel.isMouseReporting()) {
+        const touch = e.changedTouches[0];
+        const cell = touch ? touchToCell(touch.clientX, touch.clientY) : null;
+        if (cell) {
+          sendBytes(kernel.encodeMouse(cell.row, cell.col, 0, 0, false, false, false));
+          requestAnimationFrame(() => {
+            if (kernel) sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
+          });
+        }
       }
     }
 
     isTwoFinger = false;
     touchScrollAccum = 0;
+    didScroll = false;
   }
 
   // ─── Mouse (desktop browser remote): mirror the ridge desktop contract ─
@@ -432,7 +492,11 @@
 
   function handlePointerDown(e: PointerEvent) {
     if (e.pointerType !== 'mouse' || !kernel) return;
+    // §1b: focus on pointerdown (so typing works) — NOT on a trailing click,
+    // which used to steal focus right after a drag-selection finished.
     focusInput();
+    claimIfNeeded();
+    mouseLast = null;
     const cell = touchToCell(e.clientX, e.clientY);
     if (!cell) return;
     if (kernel.mouseReportingModes() !== 0) {
@@ -519,7 +583,9 @@
   }
 
   // ─── Hidden IME textarea: focus + cursor anchoring ─────────────────
-  function focusInput() {
+  // Exported so the quick-key bar's modifier taps (VirtualKeyboard onSummon)
+  // can raise the soft keyboard. §2/§3.
+  export function focusInput() {
     try { imeInput?.focus({ preventScroll: true }); } catch { imeInput?.focus(); }
   }
 
@@ -571,10 +637,23 @@
     const t = e.inputType;
     if (t === 'insertCompositionText') return; // handled by compositionend
     if (isComposing || e.isComposing) return;
+    claimIfNeeded();
     switch (t) {
       case 'insertText': {
         const d = e.data ?? '';
-        if (d) onStdin(d);
+        if (d) {
+          // §2: if a sticky modifier is armed (tapped Ctrl/Alt/Shift on the
+          // quick-key bar), encode this soft-keyboard char as a chord (e.g.
+          // Ctrl+C) then clear the modifiers. Otherwise send the raw text.
+          const m = peekMods();
+          if (m.ctrl || m.alt || m.shift) {
+            const bytes = kernel.encodeKey(d, m.ctrl, m.alt, m.shift, false);
+            consumeMods();
+            onStdin(bytes.length > 0 ? new TextDecoder().decode(bytes) : d);
+          } else {
+            onStdin(d);
+          }
+        }
         e.preventDefault();
         break;
       }
@@ -610,6 +689,24 @@
   function handleKeydown(e: KeyboardEvent) {
     if (isComposing || e.isComposing) return;
     if (!paneId || !kernel) return;
+    claimIfNeeded();
+    // §2: a sticky modifier armed via the quick-key bar combines with this key
+    // (hardware keyboards / special soft-keyboard keys). Skip bare modifier keys
+    // so arming Ctrl then pressing it again doesn't clear prematurely.
+    if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+      const m = peekMods();
+      if (m.ctrl || m.alt || m.shift) {
+        const bytes = kernel.encodeKey(
+          e.key, e.ctrlKey || m.ctrl, e.altKey || m.alt, e.shiftKey || m.shift, e.metaKey,
+        );
+        if (bytes.length > 0) {
+          consumeMods();
+          e.preventDefault();
+          onStdin(new TextDecoder().decode(bytes));
+          return;
+        }
+      }
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       onStdin('\r');
@@ -731,8 +828,10 @@
   }
 </script>
 
+<!-- §1b: no container onclick={focusInput} — it stole focus on the trailing
+     click after a mouse drag-selection. Focus is acquired in handlePointerDown
+     (mouse) and the handleTouchEnd tap branch instead. -->
 <div class="container" bind:this={containerEl} role="application"
-  onclick={focusInput}
   ontouchstart={handleTouchStart}
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
@@ -740,7 +839,12 @@
   {#if !ready}
     <div class="loading">初始化终端引擎…</div>
   {/if}
-  <canvas bind:this={canvasEl} class="term-canvas" class:hidden={!ready}></canvas>
+  <canvas
+    bind:this={canvasEl}
+    class="term-canvas"
+    class:hidden={!ready}
+    style="transform: translateY({-shiftY}px)"
+  ></canvas>
 
   <!-- §IME: hidden, focused editable that captures soft-keyboard input,
        composition, predictive words and paste. Parked over the caret so the
@@ -761,7 +865,7 @@
     onpaste={handlePaste}
   ></textarea>
 
-  {#if ready && kernel?.hasSelection()}
+  {#if ready && selectionActive}
     <div class="selection-actions">
       <button class="copy-btn" onclick={handleCopy}>
         {copySuccess ? '✓ 已复制' : '复制'}

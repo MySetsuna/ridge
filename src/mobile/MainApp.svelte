@@ -20,12 +20,40 @@
   let canvasRef: TerminalCanvas | undefined = $state();
   let rootEl: HTMLDivElement | undefined = $state();
 
-  function onStdin(data: string) {
-    if (activePaneId) ws.sendStdin(activePaneId, data);
+  // §3: virtual-keyboard layout state. We do NOT shrink the canvas when the
+  // soft keyboard opens; instead the quick-key bar floats above the keyboard
+  // and the canvas is shifted up (translateY) so the cursor row sits just above
+  // the quick-key bar. The workspace row (BottomTabBar) stays put (covered by
+  // the keyboard) — per user request, only the quick-keys float.
+  let kbHeight = $state(0);
+  let termShift = $state(0);
+  let vkHostH = $state(40);
+  const keyboardUp = $derived(kbHeight > 80);
+
+  function recomputeViewport() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    kbHeight = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    if (kbHeight > 80) {
+      // Bottom of the visible terminal area = top of the floating quick-key bar
+      // (which sits just above the keyboard at bottom:kbHeight).
+      const cursorBottom = canvasRef?.getCursorY?.() ?? 0;
+      const visibleBottom = vv.height - vkHostH;
+      const MARGIN = 4;
+      termShift = Math.max(0, cursorBottom - visibleBottom + MARGIN);
+    } else {
+      termShift = 0;
+    }
   }
 
-  function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    ws.resizePane(paneId, rows, cols, pixelWidth, pixelHeight);
+  let vpRaf = 0;
+  function scheduleRecompute() {
+    if (vpRaf) return;
+    vpRaf = requestAnimationFrame(() => { vpRaf = 0; recomputeViewport(); });
+  }
+
+  function onStdin(data: string) {
+    if (activePaneId) ws.sendStdin(activePaneId, data);
   }
 
   function handleRefresh() {
@@ -59,8 +87,12 @@
     const unsubMsg = ws.onMessage((msg) => {
       if (msg.type === 'panes') {
         panes = msg.panes;
-        if (!activePaneId && msg.panes.length > 0) {
-          activePaneId = msg.panes[0].id;
+        // §state-sep: after a workspace switch the previous pane id won't be in
+        // the new list — fall back to the first pane (or none). This drives the
+        // $effect → subscribe-pane → kernel reset chain (issue 5).
+        const stillThere = activePaneId != null && msg.panes.some((p) => p.id === activePaneId);
+        if (!stillThere) {
+          activePaneId = msg.panes.length > 0 ? msg.panes[0].id : null;
         }
       }
       if (msg.type === 'switch-workspace-result' || msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
@@ -69,30 +101,29 @@
     });
     // Apply the shared canonical delta stream to the terminal kernel. The
     // server always runs subscribed panes in delta mode, so binary frames
-    // (not the raw `output` text) are the render path.
-    const unsubDelta = ws.onBinaryDelta((_paneId, data) => {
+    // (not the raw `output` text) are the render path. §5: ignore frames for a
+    // pane we're not currently showing (stale during a switch).
+    const unsubDelta = ws.onBinaryDelta((paneId, data) => {
+      if (paneId !== activePaneId) return;
       canvasRef?.applyDelta(data);
+      // Cursor may have moved → keep it above the keyboard.
+      if (keyboardUp) scheduleRecompute();
     });
 
-    // Keep the app within the visual viewport so the bottom quick-key bar
-    // sticks right above the OS soft keyboard instead of being covered by it.
+    // §3: track the visual viewport to float the quick-key bar above the soft
+    // keyboard and shift the canvas (NOT resize it). Do not shrink rootEl.
     const vv = window.visualViewport;
-    const applyVV = () => {
-      if (!rootEl || !vv) return;
-      rootEl.style.height = `${vv.height}px`;
-      rootEl.style.transform = `translateY(${vv.offsetTop}px)`;
-    };
-    applyVV();
-    vv?.addEventListener('resize', applyVV);
-    vv?.addEventListener('scroll', applyVV);
+    recomputeViewport();
+    vv?.addEventListener('resize', recomputeViewport);
+    vv?.addEventListener('scroll', recomputeViewport);
 
     ws.listPanes();
     refreshWorkspaces();
     return () => {
       unsubMsg();
       unsubDelta();
-      vv?.removeEventListener('resize', applyVV);
-      vv?.removeEventListener('scroll', applyVV);
+      vv?.removeEventListener('resize', recomputeViewport);
+      vv?.removeEventListener('scroll', recomputeViewport);
       ws.disconnect();
     };
   });
@@ -112,7 +143,8 @@
       bind:this={canvasRef}
       paneId={activePaneId ?? null}
       {onStdin}
-      {onResize}
+      shiftY={termShift}
+      onClaim={(p, r, c, pw, ph) => ws.claimPane(p, r, c, pw, ph)}
       onRefresh={(p, r, c, pw, ph) => ws.refreshPane(p, r, c, pw, ph)}
     />
   {/if}
@@ -152,9 +184,21 @@
     onRefresh={handleRefresh}
   />
 
-  <!-- Always-visible compact quick-key strip; sticks above the soft keyboard. -->
+  <!-- §3: quick-key strip. When the soft keyboard is up it floats to just above
+       the keyboard (position:fixed; bottom:kbHeight); otherwise it sits in flow
+       below the workspace row. Only THIS bar floats — the workspace row stays. -->
   {#if activePaneId}
-    <VirtualKeyboard onKey={(k, c, a, s) => canvasRef?.sendKey(k, c, a, s)} />
+    <div
+      class="vk-host"
+      class:floating={keyboardUp}
+      style={keyboardUp ? `bottom:${kbHeight}px` : ''}
+      bind:clientHeight={vkHostH}
+    >
+      <VirtualKeyboard
+        onKey={(k, c, a, s) => canvasRef?.sendKey(k, c, a, s)}
+        onSummon={() => canvasRef?.focusInput()}
+      />
+    </div>
   {/if}
 </div>
 
@@ -171,4 +215,10 @@
   .close-btn{background:none;border:none;color:#8b949e;padding:4px;border-radius:6px;cursor:pointer}
   .close-btn:active{background:#21262d}
   .sidebar-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+
+  /* §3: quick-key host. In flow by default (below the workspace row); floats to
+     just above the soft keyboard when it opens. Not inside any transformed
+     ancestor, so position:fixed is relative to the viewport. */
+  .vk-host{flex-shrink:0}
+  .vk-host.floating{position:fixed;left:0;right:0;z-index:60}
 </style>

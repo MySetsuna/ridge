@@ -1,36 +1,28 @@
 <script lang="ts">
-  interface ModState {
-    ctrl: boolean;
-    alt: boolean;
-    shift: boolean;
-  }
+  import { stickyMods, toggleMod as toggleStickyMod, consumeMods } from './modState.svelte';
 
-  let { onKey }: {
+  let { onKey, onSummon }: {
     onKey: (key: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
+    // §2 — tapping a MODIFIER raises the soft keyboard so the next typed key
+    // forms a chord. Plain quick-keys never call this (they must not open/close
+    // the keyboard).
+    onSummon?: () => void;
   } = $props();
 
-  let mods = $state<ModState>({ ctrl: false, alt: false, shift: false });
+  const mods = stickyMods;
 
   function toggleMod(m: 'ctrl' | 'alt' | 'shift') {
-    mods = { ...mods, [m]: !mods[m] };
+    toggleStickyMod(m);
+    // Raise the keyboard so the chord can be completed with a soft-keyboard key.
+    onSummon?.();
   }
 
   function sendNamedKey(key: string) {
-    onKey(key, mods.ctrl, mods.alt, mods.shift);
-    mods = { ctrl: false, alt: false, shift: false };
+    // Plain quick-keys consume any armed sticky modifiers but do NOT summon or
+    // dismiss the soft keyboard.
+    const m = consumeMods();
+    onKey(key, m.ctrl, m.alt, m.shift);
   }
-
-  // Clear sticky modifiers once a physical key fires elsewhere.
-  $effect(() => {
-    function handleGlobalKey(e: KeyboardEvent) {
-      if (['Control', 'Alt', 'Shift'].includes(e.key)) return;
-      if (mods.ctrl || mods.alt || mods.shift) {
-        mods = { ctrl: false, alt: false, shift: false };
-      }
-    }
-    window.addEventListener('keydown', handleGlobalKey);
-    return () => window.removeEventListener('keydown', handleGlobalKey);
-  });
 </script>
 
 <!-- Compact, always-visible quick-key strip. Horizontally scrollable so it
