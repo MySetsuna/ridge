@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
   import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-  import { peekMods, consumeMods, clearMods } from './modState.svelte';
+  import { peekMods } from './modState.svelte';
   let { paneId, onStdin, onResize, onRefresh, shiftY = 0 }: {
     paneId: string | null;
     onStdin: (data: string) => void;
@@ -191,7 +191,8 @@
     sentCols = 0;
     isComposing = false;
     compositionStdinTarget = null;
-    clearMods();
+    // §latch: do NOT clear modifiers on pane switch — Ctrl/Alt/Sft stay armed
+    // until the user taps them off (only manual tap releases them).
     isSelecting = false;
     didLongPress = false;
     isTwoFinger = false;
@@ -648,8 +649,9 @@
           // Ctrl+C) then clear the modifiers. Otherwise send the raw text.
           const m = peekMods();
           if (m.ctrl || m.alt || m.shift) {
+            // §latch: keep the modifier armed (no consume) — releases only on a
+            // manual tap of the quick-key modifier button.
             const bytes = kernel.encodeKey(d, m.ctrl, m.alt, m.shift, false);
-            consumeMods();
             onStdin(bytes.length > 0 ? new TextDecoder().decode(bytes) : d);
           } else {
             onStdin(d);
@@ -700,7 +702,7 @@
           e.key, e.ctrlKey || m.ctrl, e.altKey || m.alt, e.shiftKey || m.shift, e.metaKey,
         );
         if (bytes.length > 0) {
-          consumeMods();
+          // §latch: keep the modifier armed (no consume).
           e.preventDefault();
           onStdin(new TextDecoder().decode(bytes));
           return;

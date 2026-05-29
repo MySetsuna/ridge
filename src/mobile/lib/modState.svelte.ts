@@ -1,11 +1,13 @@
-// §2 — sticky modifier state shared between the on-screen quick-key bar
+// §2 — latched modifier state shared between the on-screen quick-key bar
 // (VirtualKeyboard) and the terminal input path (TerminalCanvas).
 //
-// Tapping Ctrl/Alt/Shift on the quick-key bar sets a *sticky* modifier and
-// raises the soft keyboard; the NEXT keystroke — including soft-keyboard text
-// that arrives via `beforeinput` (insertText) — consumes the sticky modifiers
-// to form a chord (e.g. tap Ctrl, then type `c` → Ctrl+C), after which they
-// clear. Plain quick-keys (Esc/Tab/arrows/…) do not raise/close the keyboard.
+// Tapping Ctrl/Alt/Shift on the quick-key bar LATCHES that modifier (and raises
+// the soft keyboard). It stays armed across keystrokes — every following key
+// forms a chord with it (tap Ctrl → Ctrl+C, Ctrl+V, …) — until the user taps
+// the same modifier again to release it (caps-lock style). The input path reads
+// via `peekMods()` and never auto-clears. Plain quick-keys (Esc/Tab/arrows/…)
+// do not raise/close the keyboard. `consumeMods`/`clearMods` remain available
+// for explicit one-shot/reset use.
 
 export interface Mods {
   ctrl: boolean;

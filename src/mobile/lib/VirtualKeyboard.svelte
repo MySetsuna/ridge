@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { stickyMods, toggleMod as toggleStickyMod, consumeMods } from './modState.svelte';
+  import { stickyMods, toggleMod as toggleStickyMod, peekMods } from './modState.svelte';
 
   let { onKey, onSummon }: {
     onKey: (key: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
@@ -18,9 +18,10 @@
   }
 
   function sendNamedKey(key: string) {
-    // Plain quick-keys consume any armed sticky modifiers but do NOT summon or
+    // Plain quick-keys read the latched modifiers (without clearing them — they
+    // stay armed until the user taps the modifier again) and do NOT summon or
     // dismiss the soft keyboard.
-    const m = consumeMods();
+    const m = peekMods();
     onKey(key, m.ctrl, m.alt, m.shift);
   }
 </script>
