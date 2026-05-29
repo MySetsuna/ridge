@@ -1,6 +1,7 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { getTheme } from './themes';
+import { refreshRemoteRunning } from './remoteStatus';
 
 export interface UserSettings {
   theme: string;
@@ -171,10 +172,18 @@ export function setTheme(themeId: string): void {
 export function initSettingsBoot(): void {
   const s = get(store);
   applyTheme(s.theme);
-  // Restore remote control server state if it was enabled on last session.
+  // Restore remote control server state if it was enabled on last session, then
+  // sync the live `remoteRunning` flag to the backend's ACTUAL state (the
+  // auto-start may fail to bind, leaving the setting on but the server down).
   if (s.remoteEnabled) {
-    invoke('set_remote_enabled', { enabled: true }).catch((e) => {
-      console.warn('[settings] remote server auto-start failed', e);
-    });
+    invoke('set_remote_enabled', { enabled: true })
+      .catch((e) => {
+        console.warn('[settings] remote server auto-start failed', e);
+      })
+      .finally(() => {
+        void refreshRemoteRunning();
+      });
+  } else {
+    void refreshRemoteRunning();
   }
 }

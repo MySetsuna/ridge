@@ -44,6 +44,7 @@
   }
 
   import { settingsStore, setSetting } from '$lib/stores/settings';
+  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
 
   async function toggleRemoteEnabled() {
     try {
@@ -51,11 +52,14 @@
       await invoke('set_remote_enabled', { enabled: newState });
       remoteEnabled = newState;
       setSetting('remoteEnabled', newState);
+      await refreshRemoteRunning();
       if (newState) {
         await refreshRemoteInfo();
       }
     } catch (e: unknown) {
       connectError = e instanceof Error ? e.message : '切换失败';
+      // Reflect the real server state even if the toggle threw mid-way.
+      void refreshRemoteRunning();
     }
   }
 

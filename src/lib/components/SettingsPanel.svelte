@@ -12,6 +12,7 @@
     setSetting,
     setTheme,
   } from '$lib/stores/settings';
+  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
   import { themeData, getThemeIds, getThemeLabels } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
   interface Props {
@@ -335,9 +336,11 @@
                     await invoke('set_remote_enabled', { enabled: next });
                   } catch (e) {
                     console.warn('远程控制切换失败', e);
+                    void refreshRemoteRunning();
                     return;
                   }
                   setSetting('remoteEnabled', next);
+                  void refreshRemoteRunning();
                 }}
               >
                 <span
