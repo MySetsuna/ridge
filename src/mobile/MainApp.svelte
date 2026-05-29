@@ -144,7 +144,7 @@
       paneId={activePaneId ?? null}
       {onStdin}
       shiftY={termShift}
-      onClaim={(p, r, c, pw, ph) => ws.claimPane(p, r, c, pw, ph)}
+      onResize={(p, r, c, pw, ph) => ws.resizePane(p, r, c, pw, ph)}
       onRefresh={(p, r, c, pw, ph) => ws.refreshPane(p, r, c, pw, ph)}
     />
   {/if}
