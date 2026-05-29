@@ -322,7 +322,7 @@ pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec
         .unwrap_or_default()
 }
 
-pub(crate) fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
+fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
     // Directories we never descend into. Grouped roughly by ecosystem so future
     // additions land in the right bucket. Keep this list tight — each entry
     // short-circuits a potentially huge subtree scan. If a project does
@@ -564,7 +564,7 @@ pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> 
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
+fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let path = Path::new(&repo_root);
     if !path.join(".git").exists() {
         return Err(format!("Not a git repo: {}", repo_root));
@@ -637,7 +637,7 @@ pub async fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), Stri
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let mut cmd = git_cmd();
     cmd.arg("add");
@@ -655,7 +655,7 @@ pub async fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), St
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let mut cmd = git_cmd();
     cmd.args(["reset", "HEAD", "--"]);
@@ -684,7 +684,7 @@ pub async fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), St
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() { return Err("Refusing to discard all — specify paths".to_string()); }
     let path = Path::new(&repo_root);
     let out = git_cmd()
@@ -705,7 +705,7 @@ pub async fn git_clean_untracked(repo_root: String, paths: Vec<String>) -> Resul
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_clean_untracked_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
+fn git_clean_untracked_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() {
         return Err("Refusing to clean — specify paths".to_string());
     }
@@ -731,7 +731,7 @@ pub async fn git_commit(repo_root: String, message: String, amend: Option<bool>)
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
+fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
     if message.trim().is_empty() { return Err("Commit message is empty".to_string()); }
     let path = Path::new(&repo_root);
     let mut cmd = git_cmd();
@@ -764,7 +764,7 @@ pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, Str
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
+fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args([
@@ -812,7 +812,7 @@ pub async fn git_checkout(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_checkout_sync(
+fn git_checkout_sync(
     repo_root: String,
     branch: String,
     create: Option<bool>,
@@ -851,7 +851,7 @@ pub async fn git_fetch(repo_root: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_fetch_sync(repo_root: String) -> Result<(), String> {
+fn git_fetch_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args(["fetch", "--all", "--prune"])
@@ -871,7 +871,7 @@ pub async fn git_pull(repo_root: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_pull_sync(repo_root: String) -> Result<(), String> {
+fn git_pull_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args(["pull", "--ff-only"])
@@ -891,7 +891,7 @@ pub async fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_push_sync(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
+fn git_push_sync(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let mut cmd = git_cmd();
     if set_upstream.unwrap_or(false) {
@@ -924,7 +924,7 @@ pub async fn git_sync(repo_root: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_sync_sync(repo_root: String) -> Result<(), String> {
+fn git_sync_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
 
     // Quick upstream probe — same parser used by get_scm_status, so the
@@ -998,7 +998,7 @@ pub async fn git_cherry_pick_abort(repo_root: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_cherry_pick_abort_sync(repo_root: String) -> Result<(), String> {
+fn git_cherry_pick_abort_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args(["cherry-pick", "--abort"])
@@ -1019,7 +1019,7 @@ pub async fn git_revert_abort(repo_root: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_revert_abort_sync(repo_root: String) -> Result<(), String> {
+fn git_revert_abort_sync(repo_root: String) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args(["revert", "--abort"])
@@ -1047,7 +1047,7 @@ pub async fn git_cherry_pick(repo_root: String, hash: String) -> Result<(), Stri
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_cherry_pick_sync(repo_root: String, hash: String) -> Result<(), String> {
+fn git_cherry_pick_sync(repo_root: String, hash: String) -> Result<(), String> {
     if hash.trim().is_empty() {
         return Err("commit hash 不能为空".into());
     }
@@ -1078,7 +1078,7 @@ pub async fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_revert_sync(repo_root: String, hash: String) -> Result<(), String> {
+fn git_revert_sync(repo_root: String, hash: String) -> Result<(), String> {
     if hash.trim().is_empty() {
         return Err("commit hash 不能为空".into());
     }
@@ -1118,7 +1118,7 @@ pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, Strin
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
+fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
     let repo = Path::new(&repo_root);
     let out = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "HEAD", "--"])
@@ -1193,7 +1193,7 @@ pub async fn git_get_commit_files(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_get_commit_files_sync(repo_root: String, hash: String) -> Result<Vec<CommitFileEntry>, String> {
+fn git_get_commit_files_sync(repo_root: String, hash: String) -> Result<Vec<CommitFileEntry>, String> {
     if hash.is_empty() {
         return Err("missing commit hash".to_string());
     }
@@ -1245,7 +1245,7 @@ pub async fn git_get_file_versions_at_commit(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_get_file_versions_at_commit_sync(
+fn git_get_file_versions_at_commit_sync(
     repo_root: String,
     path: String,
     hash: String,
@@ -1284,7 +1284,7 @@ pub async fn git_create_tag(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_create_tag_sync(
+fn git_create_tag_sync(
     repo_root: String,
     name: String,
     hash: Option<String>,
@@ -1323,7 +1323,7 @@ pub async fn git_reset(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_reset_sync(repo_root: String, hash: String, mode: String) -> Result<(), String> {
+fn git_reset_sync(repo_root: String, hash: String, mode: String) -> Result<(), String> {
     if hash.is_empty() {
         return Err("missing target hash".to_string());
     }
@@ -1345,7 +1345,7 @@ pub(crate) fn git_reset_sync(repo_root: String, hash: String, mode: String) -> R
     Ok(())
 }
 
-pub(crate) fn git_get_file_versions_sync(
+fn git_get_file_versions_sync(
     repo_root: String,
     path: String,
     cached: Option<bool>,
@@ -1421,7 +1421,7 @@ pub async fn git_diff_file(repo_root: String, path: String, cached: Option<bool>
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-pub(crate) fn git_diff_file_sync(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
+fn git_diff_file_sync(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
     let repo = Path::new(&repo_root);
     let mut cmd = git_cmd();
     cmd.args(["--no-pager", "diff", "--no-color", "--unified=3"]);
@@ -1493,7 +1493,7 @@ fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<C
     }
 }
 
-pub(crate) fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
+fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
     let repo_path = Path::new(&cwd);
 
     // 检查是否是 git 仓库
@@ -1532,6 +1532,14 @@ pub(crate) fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, Str
         current_branch,
         diff,
     })
+}
+
+/// Synchronous git info for an arbitrary directory, reusable outside the
+/// Tauri command layer (e.g. the remote WebSocket server) so that desktop
+/// and remote git views are computed from the exact same source. Returns an
+/// empty non-repo `GitRepoInfo` on error instead of propagating.
+pub fn git_info_for_path(cwd: &Path) -> GitRepoInfo {
+    get_git_info_with_cwd_sync(cwd.to_string_lossy().to_string()).unwrap_or_default()
 }
 
 /// 内部函数：根据路径获取 git diff

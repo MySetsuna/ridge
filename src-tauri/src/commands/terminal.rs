@@ -658,10 +658,25 @@ fn activate_pane_pty_inner(
 	rows: Option<u16>,
 	cols: Option<u16>,
 ) -> Result<(), AppError> {
-	use tauri::Emitter;
 	let workspace_id = Uuid::parse_str(&workspace_id)
 		.map_err(|_| AppError::PtyError("invalid workspace_id".into()))?;
 	let pane_id = parse_pane_id(&pane_id)?;
+	activate_pane_pty_state(state.inner(), Some(&app), workspace_id, pane_id, rows, cols)
+}
+
+/// Phase 2 core, decoupled from Tauri's `State`/`AppHandle` so non-front-end
+/// callers (e.g. the remote WebSocket server) can activate a pending spawn too.
+/// `app` is only used to emit the layout-changed event on spawn failure — pass
+/// `None` when there is no front-end to notify.
+pub(crate) fn activate_pane_pty_state(
+	state: &AppState,
+	app: Option<&tauri::AppHandle>,
+	workspace_id: Uuid,
+	pane_id: Uuid,
+	rows: Option<u16>,
+	cols: Option<u16>,
+) -> Result<(), AppError> {
+	use tauri::Emitter;
 
 	// Idempotency: already activated → no-op success. Front-end can call
 	// activate twice (mount + restore) without consequence.
@@ -736,10 +751,12 @@ fn activate_pane_pty_inner(
 			// Tell the frontend the layout changed so the dead leaf is
 			// dropped from the visible split tree (front-end re-renders
 			// the workspace from authoritative backend state).
-			let _ = app.emit(
-				"teammate-layout-changed",
-				serde_json::json!({ "trace_id": trace_id, "activate_failed": true }),
-			);
+			if let Some(app) = app {
+				let _ = app.emit(
+					"teammate-layout-changed",
+					serde_json::json!({ "trace_id": trace_id, "activate_failed": true }),
+				);
+			}
 			return Err(AppError::PtyError(msg));
 		}
 	};
@@ -775,8 +792,7 @@ fn activate_pane_pty_inner(
 	}
 
 	pty_log::create_spawned(workspace_id, pane_id, &trace_id);
-	let st = state.inner().clone();
-	spawn_pty_reader(st, workspace_id, pane_id, reader);
+	spawn_pty_reader(state.clone(), workspace_id, pane_id, reader);
 
 	if let Some(tx) = pending.ready_tx.lock().take() {
 		let _ = tx.send(Ok(()));

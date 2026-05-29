@@ -21,6 +21,7 @@ import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
+import { remoteRunning } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
@@ -868,6 +869,9 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
+	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
+	// unmounts mid-drag can't leave the whole app stuck at user-select:none.
+	if (scrollbarDragGuardActive) endScrollbarDrag();
 	if (bellFlashTimer !== null) {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
@@ -1112,6 +1116,16 @@ function jumpToBottom() {
 	imeHelper?.focus();
 }
 
+// §multi-size: when remote control is on, the desktop and remote devices
+// share ONE PTY size. A remote device that claims/refreshes can shrink this
+// pane's grid; this button re-claims the PTY at THIS desktop pane's size and
+// forces a full repaint. Only shown while remote control is enabled.
+function refreshForRemote() {
+	if (!alive || !attached) return;
+	manager.fitPaneNow(paneId);
+	manager.forceFullRedraw(paneId);
+}
+
 // Scrollbar geometry, derived from current state. Both thumb top and
 // thumb height are FRACTIONS of the pane container's height so CSS can
 // express them as `top: x%; height: y%`.
@@ -1144,6 +1158,32 @@ let scrollbarThumbTopPct = $derived.by(() => {
 // can compute a delta-based new offset without re-measuring the track.
 let scrollbarTrackEl: HTMLDivElement | undefined = $state(undefined);
 let dragging: { startY: number; startOffset: number; trackH: number } | null = null;
+let scrollbarDragGuardActive = false;
+
+// Unconditionally clear the window-wide text-selection suppression. Reset to ''
+// so any app-wide CSS rule keeps owning the property.
+function clearBodySelectGuard(): void {
+	document.body.style.userSelect = '';
+	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
+}
+
+// End a scrollbar-thumb drag from ANY source — the thumb's own pointerup, OR a
+// window-level pointerup/cancel/blur. The latter is the safety net: the thumb
+// lives under `{#if scrollbarVisible}`, so a resize that drops scrollback to 0
+// (more frequent now that remote control re-fits on interaction) can unmount it
+// mid-drag — its pointerup then never fires, and the body would stay
+// `user-select:none` forever, disabling selection across the whole app.
+function endScrollbarDrag(): void {
+	if (scrollbarDragGuardActive) {
+		window.removeEventListener('pointerup', endScrollbarDrag, true);
+		window.removeEventListener('pointercancel', endScrollbarDrag, true);
+		window.removeEventListener('blur', endScrollbarDrag);
+		scrollbarDragGuardActive = false;
+	}
+	dragging = null;
+	clearBodySelectGuard();
+}
+
 function onScrollbarThumbPointerDown(e: PointerEvent) {
 	if (!alive || !attached || !scrollbarTrackEl) return;
 	e.stopPropagation();
@@ -1164,6 +1204,15 @@ function onScrollbarThumbPointerDown(e: PointerEvent) {
 	// and the WebKit prefix for Tauri's older webview versions.
 	document.body.style.userSelect = 'none';
 	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = 'none';
+	// Safety net so the guard is ALWAYS lifted even if the thumb unmounts
+	// mid-drag (its own pointerup never fires). Capture phase so we see the
+	// release regardless of where it lands.
+	if (!scrollbarDragGuardActive) {
+		scrollbarDragGuardActive = true;
+		window.addEventListener('pointerup', endScrollbarDrag, true);
+		window.addEventListener('pointercancel', endScrollbarDrag, true);
+		window.addEventListener('blur', endScrollbarDrag);
+	}
 }
 function onScrollbarThumbPointerMove(e: PointerEvent) {
 	if (!dragging) return;
@@ -1185,14 +1234,10 @@ function onScrollbarThumbPointerMove(e: PointerEvent) {
 	refreshScrollState();
 }
 function onScrollbarThumbPointerUp(e: PointerEvent) {
-	if (!dragging) return;
-	dragging = null;
-	(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-	// Restore window-wide text selection (paired with the userSelect
-	// suppression in onScrollbarThumbPointerDown). Reset to '' so any
-	// app-wide CSS rule keeps owning the property.
-	document.body.style.userSelect = '';
-	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
+	try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* capture already gone */ }
+	// Always restore — NOT gated on `dragging`, which an interleaved resize may
+	// have already cleared, leaving the body stuck at user-select:none.
+	endScrollbarDrag();
 }
 
 // Click on the empty track jumps the thumb center to the cursor — same
@@ -1217,6 +1262,10 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
+	// §multi-size: each client (desktop + every remote) now renders its OWN grid
+	// via a per-sub parser, so desktop interaction no longer needs to "re-claim"
+	// the shared PTY size. The PTY is resized only by an explicit per-pane refresh
+	// (desktop or remote) — see the refresh button below.
 	// ★ TUI mouse reporting takes priority: forward the click to the
 	// running application instead of changing focus. Without this,
 	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends
@@ -1321,6 +1370,24 @@ function onContainerMouseDown(e: MouseEvent) {
 			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 				<path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
 				<path d="M3 10l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+			</svg>
+		</button>
+	{/if}
+
+	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while the
+	     remote server is actually RUNNING (not merely the persisted setting) —
+	     otherwise this pane is the sole viewer and fitPane already owns the size. -->
+	{#if $remoteRunning}
+		<button
+			type="button"
+			class="rg-remote-refresh"
+			title="按本端尺寸刷新（远程控制开启时可用）"
+			onclick={refreshForRemote}
+			aria-label="按本端尺寸刷新"
+		>
+			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+				<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+				<path d="M13.5 2.4V5.1H10.8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
 			</svg>
 		</button>
 	{/if}
@@ -1505,6 +1572,39 @@ function onContainerMouseDown(e: MouseEvent) {
 		transform: translateY(-1px);
 	}
 	.rg-jump-bottom:focus {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
+	}
+
+	.rg-remote-refresh {
+		/* §multi-size — floating "re-claim my size" button, top-right so it
+		 * never collides with the bottom-right jump-to-bottom affordance.
+		 * Only mounted while remote control is enabled. */
+		position: absolute;
+		right: 14px;
+		top: 14px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 30px;
+		border-radius: 9999px;
+		border: 1px solid var(--rg-border, #333);
+		background: var(--rg-surface, rgba(30, 30, 30, 0.92));
+		color: var(--rg-fg, #ddd);
+		cursor: pointer;
+		opacity: 0.7;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+		transition: opacity 120ms ease-out, background 120ms ease-out, transform 120ms ease-out;
+		z-index: 21;
+	}
+	.rg-remote-refresh:hover {
+		opacity: 1;
+		background: var(--rg-accent, #4a8cff);
+		color: #fff;
+		transform: translateY(-1px);
+	}
+	.rg-remote-refresh:focus {
 		outline: none;
 		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
 	}
