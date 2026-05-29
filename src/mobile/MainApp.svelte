@@ -1,18 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { X } from 'lucide-svelte';
+  import { X, RefreshCw } from 'lucide-svelte';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
   import VirtualKeyboard from './lib/VirtualKeyboard.svelte';
   import SidebarFileTree from '@shared/sidebar/SidebarFileTree.svelte';
   import SidebarGitPanel from '@shared/sidebar/SidebarGitPanel.svelte';
   import SidebarSearch from '@shared/sidebar/SidebarSearch.svelte';
-  import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
+  import { RemoteConnection, type PaneInfo, type WorkspaceInfo } from './lib/wsRemote';
 
   let { ws }: { ws: RemoteConnection } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
-  let wsState = $state<ConnectionState>('disconnected');
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
@@ -83,7 +82,6 @@
   }
 
   onMount(() => {
-    ws.onStateChange((s) => wsState = s);
     const unsubMsg = ws.onMessage((msg) => {
       if (msg.type === 'panes') {
         panes = msg.panes;
@@ -136,6 +134,15 @@
 </script>
 
 <div class="app-root" bind:this={rootEl}>
+  <!-- §UI: floating refresh button, fixed at the top-right of the whole page.
+       Re-claims the PTY at this device's size + full repaint (for full-screen
+       TUIs). Only shown when a terminal is active. -->
+  {#if activePaneId}
+    <button class="refresh-fab" onclick={handleRefresh} title="刷新（按本端尺寸渲染）" aria-label="刷新">
+      <RefreshCw class="w-4 h-4" />
+    </button>
+  {/if}
+
   {#if panes.length === 0}
     <div class="empty"><p>无活跃终端</p><p class="hint">在桌面端打开一个终端以开始</p></div>
   {:else if activePaneId}
@@ -180,8 +187,6 @@
     {ws}
     {sidebarTab}
     onSidebarToggle={handleSidebarToggle}
-    {wsState}
-    onRefresh={handleRefresh}
   />
 
   <!-- §3: quick-key strip. When the soft keyboard is up it floats to just above
@@ -204,6 +209,11 @@
 
 <style>
   .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:#0d1117;color:#e6edf3}
+
+  /* §UI: floating refresh button, top-right of the whole page (overlays the
+     terminal). Semi-transparent so it never fully hides terminal content. */
+  .refresh-fab{position:fixed;top:8px;right:8px;z-index:65;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid #30363d;border-radius:8px;background:rgba(22,27,34,.82);color:#8b949e;cursor:pointer;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+  .refresh-fab:active{background:#21262d;color:#e6edf3}
   .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b949e;gap:8px}
   .empty .hint{font-size:12px;color:#484f58}
 
