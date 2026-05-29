@@ -95,6 +95,11 @@ pub struct PaneParser {
     /// Monotonic per-pane sequence; bumped on every emitted frame.
     /// Frontend logs a warning on gaps. Resets to 0 on `new`.
     pane_seq: u64,
+    /// §6 — latest OSC 0/2 window title seen on this pane's stream. Mirrors
+    /// what the desktop surfaces into `paneOscTitleStore`; the remote
+    /// `list-panes` reads it so remote terminal names match the desktop pane
+    /// header's variable title. `None` until the program sets a title.
+    last_title: Option<String>,
 }
 
 impl PaneParser {
@@ -112,7 +117,15 @@ impl PaneParser {
             last_scrollback_evictions: 0,
             last_modes: None,
             pane_seq: 0,
+            last_title: None,
         }
+    }
+
+    /// §6 — latest OSC window title seen on this pane (OSC 0/2), or `None` if
+    /// the program never set one. Used by the remote `list-panes` so remote
+    /// terminal names match the desktop pane header's variable title.
+    pub fn title(&self) -> Option<String> {
+        self.last_title.clone()
     }
 
     /// P3.9.r will use this to report current dimensions back to the
@@ -439,7 +452,10 @@ impl PaneParser {
         //    what UIs surface.
         for ev in self.terminal.take_pending_events() {
             match ev {
-                KernelEvent::TitleChanged(t) => deltas.push(GridDelta::Title(t)),
+                KernelEvent::TitleChanged(t) => {
+                    self.last_title = Some(t.clone());
+                    deltas.push(GridDelta::Title(t));
+                }
                 KernelEvent::CwdChanged(p) => deltas.push(GridDelta::Cwd(p)),
                 KernelEvent::Bell => deltas.push(GridDelta::Bell),
                 KernelEvent::IconNameChanged(_) => {}
@@ -709,12 +725,19 @@ mod tests {
     fn osc_title_emits_title_delta() {
         let mut p = make_parser(2, 5);
         let _ = p.feed_and_diff(b"");
+        // §6: no title until the program sets one.
+        assert_eq!(p.title(), None);
         let frame = p.feed_and_diff(b"\x1b]0;hello\x07");
         let saw = frame
             .deltas
             .iter()
             .any(|d| matches!(d, GridDelta::Title(t) if t == "hello"));
         assert!(saw, "expected Title('hello'); got {:?}", frame.deltas);
+        // §6: the latest title is retained for the remote list-panes lookup.
+        assert_eq!(p.title().as_deref(), Some("hello"));
+        // OSC 2 (window title only) updates it too.
+        let _ = p.feed_and_diff(b"\x1b]2;world\x07");
+        assert_eq!(p.title().as_deref(), Some("world"));
     }
 
     #[test]
