@@ -45,7 +45,7 @@
     await init(wasmUrl);
     fontSize = calcFontSize();
     kernel = new TerminalKernel(rows, cols, 5000);
-    renderHandle = new RenderHandle(canvasEl!);
+    renderHandle = await RenderHandle.newWithWebgpuFirst(canvasEl!);
     renderHandle.applyDefaultTheme();
     fitPane();
     flushPending();
