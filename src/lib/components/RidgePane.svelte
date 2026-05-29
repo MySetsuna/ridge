@@ -1227,6 +1227,13 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
+	// §own-active: when remote control is on, a remote device may have claimed
+	// (shrunk) this pane's shared PTY. Interacting on the desktop re-claims it at
+	// the desktop size — "whoever is active owns the size". fitPaneNow is
+	// idempotent when the size already matches, so per-click cost is negligible.
+	if ($settingsStore.remoteEnabled) {
+		manager.fitPaneNow(paneId);
+	}
 	// ★ TUI mouse reporting takes priority: forward the click to the
 	// running application instead of changing focus. Without this,
 	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends
