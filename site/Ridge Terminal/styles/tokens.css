@@ -1,0 +1,247 @@
+/* ============================================================
+   Ridge Terminal — Design Tokens
+   Lifted directly from site/styles/main.css (canonical source)
+   plus semantic helpers for designs built against this system.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* ── Backgrounds (dark earth, green-tinted, 4 stops) ───── */
+  --bg-0: #0c1310;   /* deepest — page bg */
+  --bg-1: #121a16;   /* cards, code blocks, frames */
+  --bg-2: #19241e;   /* secondary surfaces, hovered cards */
+  --bg-3: #223028;   /* tertiary, controls, light-on-dark chips */
+
+  /* ── Lines & dividers ──────────────────────────────────── */
+  --line: #2a3a31;
+  --line-soft: #1f2c25;
+
+  /* ── Text — "crops" (warm dry-grass creams) ────────────── */
+  --crop: #ece0c4;          /* primary text, foreground 1 */
+  --crop-soft: #c9bf9f;     /* body text, foreground 2 */
+  --mist: #8a9a8d;          /* muted text, foreground 3 */
+  --mist-soft: #5b6b62;     /* most muted, captions, mono meta */
+
+  /* ── Accents ───────────────────────────────────────────── */
+  --ridge: #7fb069;         /* primary accent — ridge-green */
+  --ridge-bright: #9ed184;  /* hovered links, success */
+  --ridge-deep: #547549;    /* hover borders, emphasized strokes */
+  --soil: #d97757;          /* secondary accent — sunset earth, primary CTA */
+  --soil-bright: #ea8a6a;   /* link hover, CTA hover */
+  --sun: #e6c454;           /* highlights, warnings, code strings */
+
+  /* ── Semantic colors (built atop the palette) ──────────── */
+  --fg1: var(--crop);
+  --fg2: var(--crop-soft);
+  --fg3: var(--mist);
+  --fg4: var(--mist-soft);
+
+  --bg-page: var(--bg-0);
+  --bg-card: var(--bg-1);
+  --bg-card-hover: var(--bg-2);
+  --bg-input: var(--bg-2);
+  --bg-chip: var(--bg-3);
+
+  --border-subtle: var(--line-soft);
+  --border-default: var(--line);
+  --border-strong: var(--ridge-deep);
+
+  --accent: var(--ridge);
+  --accent-hover: var(--ridge-bright);
+  --accent-deep: var(--ridge-deep);
+
+  --cta: var(--soil);
+  --cta-hover: var(--soil-bright);
+
+  --warn: var(--sun);
+  --success: var(--ridge-bright);
+  --info: var(--ridge);
+
+  /* ── Shadows ───────────────────────────────────────────── */
+  --shadow: 0 12px 36px -12px rgba(0, 0, 0, 0.6);
+  --glow-ridge: 0 0 0 1px rgba(127, 176, 105, 0.18), 0 8px 28px -8px rgba(127, 176, 105, 0.25);
+
+  /* ── Radii ─────────────────────────────────────────────── */
+  --rad-xs: 5px;
+  --rad-sm: 8px;
+  --rad: 12px;
+  --rad-lg: 18px;
+  --rad-pill: 999px;
+
+  /* ── Spacing scale ─────────────────────────────────────── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 14px;
+  --sp-5: 18px;
+  --sp-6: 22px;
+  --sp-7: 28px;
+  --sp-8: 32px;
+  --sp-9: 40px;
+  --sp-10: 56px;
+  --sp-11: 64px;
+  --sp-12: 96px;
+
+  /* ── Typography ────────────────────────────────────────── */
+  --font-display: 'Space Grotesk', 'Inter', system-ui, -apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+  --font-body: 'Inter', system-ui, -apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'Cascadia Code', monospace;
+
+  /* fluid display sizes (matched to source) */
+  --fs-h1: clamp(40px, 6vw, 72px);
+  --fs-h2: clamp(28px, 4vw, 44px);
+  --fs-h3: 20px;
+  --fs-body-lg: 18px;
+  --fs-body: 16px;
+  --fs-body-sm: 14.5px;
+  --fs-mono-meta: 12px;
+  --fs-mono-eyebrow: 12px;
+
+  --lh-tight: 1.15;
+  --lh-snug: 1.45;
+  --lh-body: 1.6;
+  --lh-relaxed: 1.75;
+
+  --ls-display: -0.02em;
+  --ls-mono-eyebrow: 0.12em;
+  --ls-mono-pill: 0.08em;
+
+  /* ── Motion ────────────────────────────────────────────── */
+  --dur-fast: 0.12s;
+  --dur: 0.15s;
+  --dur-card: 0.18s;
+  --dur-reveal: 0.55s;
+  --ease: ease;
+}
+
+/* ============================================================
+   Semantic type styles
+   Use these as building blocks. e.g. <h1 class="ds-h1">…</h1>
+   ============================================================ */
+
+.ds-h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-h1);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-display);
+  color: var(--fg1);
+}
+
+.ds-h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-h2);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-display);
+  color: var(--fg1);
+}
+
+.ds-h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-h3);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-display);
+  color: var(--fg1);
+}
+
+.ds-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-eyebrow);
+  font-weight: 500;
+  letter-spacing: var(--ls-mono-eyebrow);
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.ds-eyebrow::before {
+  content: '';
+  width: 24px;
+  height: 1px;
+  background: currentColor;
+}
+
+.ds-body {
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg2);
+}
+
+.ds-body-lg {
+  font-family: var(--font-body);
+  font-size: var(--fs-body-lg);
+  line-height: var(--lh-body);
+  color: var(--fg3);
+}
+
+.ds-mono-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: var(--ls-mono-eyebrow);
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.ds-meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-meta);
+  color: var(--fg4);
+}
+
+.ds-code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--bg-chip);
+  border: 1px solid var(--border-subtle);
+  padding: 1px 7px;
+  border-radius: var(--rad-xs);
+  color: var(--ridge-bright);
+}
+
+.ds-code-block {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--rad);
+  padding: 20px 22px;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  color: var(--fg1);
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.65;
+  box-shadow: var(--shadow);
+}
+
+/* ============================================================
+   Common element resets — convenience for design files
+   ============================================================ */
+
+body.ds-body-bg {
+  font-family: var(--font-body);
+  background: var(--bg-page);
+  color: var(--fg1);
+  line-height: var(--lh-body);
+  background-image:
+    radial-gradient(1200px 600px at 80% -200px, rgba(127, 176, 105, 0.08), transparent 60%),
+    radial-gradient(900px 500px at -10% 30%, rgba(217, 119, 87, 0.06), transparent 60%);
+}
+
+.ds-grid-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(to right, var(--line-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line-soft) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 30%, transparent 80%);
+}
