@@ -85,9 +85,21 @@
       fitDebounceTimer = setTimeout(() => fitPane(), 150);
     });
     if (containerEl) ro.observe(containerEl);
+    // §TUI-mouse: desktop-browser mouse handling. Attached imperatively so the
+    // wheel listener can be non-passive (it preventDefaults to forward scroll
+    // to the TUI). Touch is handled by the on:touch* template handlers.
+    const el = containerEl;
+    el?.addEventListener('pointerdown', handlePointerDown);
+    el?.addEventListener('pointermove', handlePointerMove);
+    el?.addEventListener('pointerup', handlePointerUp);
+    el?.addEventListener('wheel', handleWheel, { passive: false });
     return () => {
       if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
       ro?.disconnect();
+      el?.removeEventListener('pointerdown', handlePointerDown);
+      el?.removeEventListener('pointermove', handlePointerMove);
+      el?.removeEventListener('pointerup', handlePointerUp);
+      el?.removeEventListener('wheel', handleWheel);
     };
   });
 
@@ -223,11 +235,11 @@
     }
   }
 
-  // ─── Touch support: scroll + selection + mouse ─────────────────────
+  // ─── Pointer/touch input: TUI mouse forwarding + local select/scroll ──
   let touchStartY = 0;
   let touchStartX = 0;
   let touchScrollAccum = 0;
-  let lastTouchDistance = 0;
+  let lastTwoFingerY = 0;
   let isTwoFinger = false;
   let touchStartTime = 0;
   let isSelecting = false;
@@ -235,41 +247,62 @@
   let selAnchorCol = 0;
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   let didLongPress = false;
+  // §TUI-mouse: true once a single-finger drag has sent a left-button press,
+  // so subsequent moves forward as motion and touchend forwards a release.
+  let touchMousePressed = false;
+  let lastMouseCell: { row: number; col: number } | null = null;
+
+  function sendBytes(bytes: Uint8Array) {
+    if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+  }
+
+  /** Viewport row → absolute (scrollback-aware) row, for local selection. */
+  function absRowOf(row: number): number {
+    if (!kernel) return row;
+    const off = kernel.scrollbackLen() > 0 && kernel.scrollOffset() > 0 ? kernel.scrollOffset() : 0;
+    return row + off;
+  }
 
   function touchToCell(clientX: number, clientY: number): { row: number; col: number } | null {
     if (!canvasEl || cellW <= 0 || cellH <= 0) return null;
     const rect = canvasEl.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-    const col = Math.max(0, Math.floor(x / cellW));
-    const row = Math.max(0, Math.floor(y / cellH));
+    const col = Math.max(0, Math.floor((clientX - rect.left) / cellW));
+    const row = Math.max(0, Math.floor((clientY - rect.top) / cellH));
     return { row, col };
   }
 
   function handleTouchStart(e: TouchEvent) {
     if (e.touches.length === 2) {
       isTwoFinger = true;
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      lastTouchDistance = Math.sqrt(dx * dx + dy * dy);
+      lastTwoFingerY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
       e.preventDefault();
       return;
     }
     if (e.touches.length !== 1) return;
-    touchStartY = e.touches[0].clientY;
-    touchStartX = e.touches[0].clientX;
+    const touch = e.touches[0];
+    touchStartY = touch.clientY;
+    touchStartX = touch.clientX;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
     isSelecting = false;
     didLongPress = false;
+    touchMousePressed = false;
+    lastMouseCell = null;
 
-    const touch = e.touches[0];
     if (longPressTimer) clearTimeout(longPressTimer);
     longPressTimer = setTimeout(() => {
       if (!kernel || isTwoFinger) return;
-      didLongPress = true;
       const cell = touchToCell(touch.clientX, touch.clientY);
-      if (cell) {
+      if (!cell) return;
+      didLongPress = true;
+      if (kernel.isMouseReporting()) {
+        // §TUI-mouse: long-press = right click.
+        sendBytes(kernel.encodeMouse(cell.row, cell.col, 2, 0, false, false, false));
+        sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
+        try { navigator.vibrate(15); } catch {}
+      } else {
+        // Local text selection.
         isSelecting = true;
         selAnchorRow = cell.row;
         selAnchorCol = cell.col;
@@ -280,106 +313,195 @@
   }
 
   function handleTouchMove(e: TouchEvent) {
+    // Two-finger vertical pan → scroll (wheel to TUI when reporting, else local).
     if (e.touches.length === 2 && isTwoFinger) {
       if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const delta = lastTouchDistance - dist;
-      if (Math.abs(delta) > 3) {
-        const lines = Math.round(delta / 20);
-        if (lines !== 0 && kernel) {
-          if (lines < 0) kernel.scrollUp(-lines);
-          else kernel.scrollDown(lines);
+      const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const dy = lastTwoFingerY - y;
+      if (Math.abs(dy) > 6 && kernel) {
+        const lines = Math.trunc(dy / 12);
+        if (lines !== 0) {
+          if (kernel.isMouseReporting()) {
+            const cell = touchToCell(e.touches[0].clientX, e.touches[0].clientY) ?? { row: 0, col: 0 };
+            const btn = lines < 0 ? 64 : 65; // wheel up : down
+            const n = Math.min(Math.abs(lines), 5);
+            for (let i = 0; i < n; i++) sendBytes(kernel.encodeMouse(cell.row, cell.col, btn, 0, false, false, false));
+          } else if (lines < 0) {
+            kernel.scrollUp(-lines);
+          } else {
+            kernel.scrollDown(lines);
+          }
+          lastTwoFingerY = y;
         }
-        lastTouchDistance = dist;
       }
       e.preventDefault();
       return;
     }
     if (e.touches.length === 1 && isTwoFinger) return;
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
 
-    if (e.touches.length === 1 && !isTwoFinger) {
-      if (isSelecting && kernel) {
+    // §TUI-mouse: single-finger drag → left-button drag when reporting on
+    // (vim visual select, lazygit drag, tmux copy-mode, etc.).
+    if (kernel && kernel.isMouseReporting() && !isSelecting && !didLongPress) {
+      const moved = Math.abs(touch.clientY - touchStartY) > 6 || Math.abs(touch.clientX - touchStartX) > 6;
+      if (touchMousePressed || moved) {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-        e.preventDefault();
-        const cell = touchToCell(e.touches[0].clientX, e.touches[0].clientY);
+        const cell = touchToCell(touch.clientX, touch.clientY);
         if (cell) {
-          const absRow = kernel.scrollbackLen() > 0
-            ? cell.row + (kernel.scrollOffset() > 0 ? kernel.scrollOffset() : 0)
-            : cell.row;
-          kernel.setSelectionAbs(selAnchorRow, selAnchorCol, absRow, cell.col);
+          if (!touchMousePressed) {
+            const start = touchToCell(touchStartX, touchStartY) ?? cell;
+            sendBytes(kernel.encodeMouse(start.row, start.col, 0, 0, false, false, false));
+            touchMousePressed = true;
+            lastMouseCell = start;
+          }
+          if (!lastMouseCell || lastMouseCell.row !== cell.row || lastMouseCell.col !== cell.col) {
+            sendBytes(kernel.encodeMouse(cell.row, cell.col, 0, 2, false, false, false));
+            lastMouseCell = cell;
+          }
         }
+        e.preventDefault();
         return;
       }
-      if (didLongPress) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      if (Math.abs(dy) > 10) {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      }
-      touchScrollAccum += dy;
-      if (Math.abs(touchScrollAccum) > 30) {
-        const lines = touchScrollAccum > 0 ? -3 : 3;
-        if (kernel) {
-          if (lines < 0) kernel.scrollUp(-lines);
-          else kernel.scrollDown(lines);
-        }
-        touchScrollAccum = 0;
-      }
-      touchStartY = e.touches[0].clientY;
     }
+
+    if (isSelecting && kernel) {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      e.preventDefault();
+      const cell = touchToCell(touch.clientX, touch.clientY);
+      if (cell) kernel.setSelectionAbs(selAnchorRow, selAnchorCol, absRowOf(cell.row), cell.col);
+      return;
+    }
+    if (didLongPress) return;
+
+    // Local one-finger scroll.
+    const dy = touch.clientY - touchStartY;
+    if (Math.abs(dy) > 10 && longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    touchScrollAccum += dy;
+    if (Math.abs(touchScrollAccum) > 30 && kernel) {
+      const lines = touchScrollAccum > 0 ? -3 : 3;
+      if (lines < 0) kernel.scrollUp(-lines); else kernel.scrollDown(lines);
+      touchScrollAccum = 0;
+    }
+    touchStartY = touch.clientY;
   }
 
   function handleTouchEnd(e: TouchEvent) {
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-    if (isTwoFinger) {
+
+    // §TUI-mouse: finish a forwarded drag with a release.
+    if (touchMousePressed && kernel) {
+      const touch = e.changedTouches[0];
+      const cell = touch ? touchToCell(touch.clientX, touch.clientY) : lastMouseCell;
+      if (cell) sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
+      touchMousePressed = false;
+      lastMouseCell = null;
       isTwoFinger = false;
-      touchScrollAccum = 0;
-      isSelecting = false;
       return;
     }
 
-    if (isSelecting) {
-      isSelecting = false;
-      touchScrollAccum = 0;
-      return;
-    }
+    if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; isSelecting = false; return; }
+    if (isSelecting) { isSelecting = false; touchScrollAccum = 0; return; }
+    if (didLongPress) { didLongPress = false; touchScrollAccum = 0; return; }
 
-    if (didLongPress) {
-      didLongPress = false;
-      touchScrollAccum = 0;
-      return;
-    }
-
-    // Quick tap: focus the hidden textarea (raises the soft keyboard) and,
-    // if the TUI requested mouse reporting, forward a click.
+    // Quick tap: focus input (raises soft keyboard) + left-click when reporting.
     const elapsed = Date.now() - touchStartTime;
     if (elapsed < 250) focusInput();
-    if (elapsed < 250 && kernel && cellW > 0 && cellH > 0) {
+    if (elapsed < 250 && kernel && cellW > 0 && cellH > 0 && kernel.isMouseReporting()) {
       const touch = e.changedTouches[0];
-      if (touch) {
-        const cell = touchToCell(touch.clientX, touch.clientY);
-        if (cell && kernel.isMouseReporting()) {
-          const bytes = kernel.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
-          if (bytes.length > 0) {
-            onStdin(new TextDecoder().decode(bytes));
-          }
-
-          // Send mouse release
-          requestAnimationFrame(() => {
-            if (kernel) {
-              const releaseBytes = kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
-              if (releaseBytes.length > 0) {
-                onStdin(new TextDecoder().decode(releaseBytes));
-              }
-            }
-          });
-        }
+      const cell = touch ? touchToCell(touch.clientX, touch.clientY) : null;
+      if (cell) {
+        sendBytes(kernel.encodeMouse(cell.row, cell.col, 0, 0, false, false, false));
+        requestAnimationFrame(() => {
+          if (kernel) sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, false, false, false));
+        });
       }
     }
 
     isTwoFinger = false;
     touchScrollAccum = 0;
+  }
+
+  // ─── Mouse (desktop browser remote): mirror the ridge desktop contract ─
+  // When the TUI has mouse reporting on, ALL buttons forward to it (SGR);
+  // otherwise the drag does host text selection. rAF-batched + deduped like
+  // src/lib/terminal/manager.ts.
+  let mouseSelecting = false;
+  let mouseSelAnchor: { row: number; col: number } | null = null;
+  let mouseLast: { row: number; col: number; buttons: number; action: number } | null = null;
+  let mousePending: PointerEvent | null = null;
+  let mouseRaf: number | null = null;
+
+  function handlePointerDown(e: PointerEvent) {
+    if (e.pointerType !== 'mouse' || !kernel) return;
+    focusInput();
+    const cell = touchToCell(e.clientX, e.clientY);
+    if (!cell) return;
+    if (kernel.mouseReportingModes() !== 0) {
+      sendBytes(kernel.encodeMouse(cell.row, cell.col, e.button, 0, e.shiftKey, e.ctrlKey, e.altKey));
+      mouseLast = { row: cell.row, col: cell.col, buttons: e.buttons, action: 0 };
+      try { (e.target as Element).setPointerCapture?.(e.pointerId); } catch {}
+      e.preventDefault();
+    } else {
+      mouseSelecting = true;
+      mouseSelAnchor = { row: absRowOf(cell.row), col: cell.col };
+      kernel.clearSelection();
+      try { (e.target as Element).setPointerCapture?.(e.pointerId); } catch {}
+    }
+  }
+
+  function flushPointerMove() {
+    mouseRaf = null;
+    const e = mousePending;
+    mousePending = null;
+    if (!e || !kernel) return;
+    const cell = touchToCell(e.clientX, e.clientY);
+    if (!cell) return;
+    const modes = kernel.mouseReportingModes();
+    if (modes !== 0) {
+      const motion = (modes & 0x2) !== 0 || (modes & 0x4) !== 0; // ?1002 | ?1003
+      if (!motion) return;
+      if ((modes & 0x4) === 0 && e.buttons === 0) return; // ?1002 only while a button is held
+      const btn = e.buttons & 1 ? 0 : e.buttons & 2 ? 2 : e.buttons & 4 ? 1 : 0;
+      const l = mouseLast;
+      if (!l || l.row !== cell.row || l.col !== cell.col || l.buttons !== e.buttons || l.action !== 2) {
+        sendBytes(kernel.encodeMouse(cell.row, cell.col, btn, 2, e.shiftKey, e.ctrlKey, e.altKey));
+        mouseLast = { row: cell.row, col: cell.col, buttons: e.buttons, action: 2 };
+      }
+    } else if (mouseSelecting && mouseSelAnchor) {
+      kernel.setSelectionAbs(mouseSelAnchor.row, mouseSelAnchor.col, absRowOf(cell.row), cell.col);
+    }
+  }
+
+  function handlePointerMove(e: PointerEvent) {
+    if (e.pointerType !== 'mouse' || !kernel) return;
+    mousePending = e;
+    if (mouseRaf == null) mouseRaf = requestAnimationFrame(flushPointerMove);
+  }
+
+  function handlePointerUp(e: PointerEvent) {
+    if (e.pointerType !== 'mouse' || !kernel) return;
+    if (kernel.mouseReportingModes() !== 0) {
+      const cell = touchToCell(e.clientX, e.clientY);
+      if (cell) sendBytes(kernel.encodeMouse(cell.row, cell.col, 3, 1, e.shiftKey, e.ctrlKey, e.altKey));
+    }
+    mouseSelecting = false;
+    mouseLast = null;
+    try { (e.target as Element).releasePointerCapture?.(e.pointerId); } catch {}
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (!kernel || e.deltaY === 0) return;
+    if (kernel.mouseReportingModes() !== 0) {
+      const cell = touchToCell(e.clientX, e.clientY);
+      if (!cell) return;
+      const btn = e.deltaY < 0 ? 64 : 65;
+      sendBytes(kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, e.ctrlKey, e.altKey));
+      e.preventDefault();
+    } else {
+      if (e.deltaY < 0) kernel.scrollUp(3); else kernel.scrollDown(3);
+      e.preventDefault();
+    }
   }
 
   // ─── Copy handler ──────────────────────────────────────────────────
