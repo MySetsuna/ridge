@@ -1,2 +1,7 @@
 packages:
   - 'packages/*'
+allowBuilds:
+  edgedriver: false
+  esbuild: false
+  geckodriver: false
+  sharp: false

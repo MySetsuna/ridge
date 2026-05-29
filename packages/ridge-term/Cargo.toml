@@ -5,6 +5,9 @@ edition = "2021"
 description = "A Rust terminal kernel (VT parser + grid + render backends) compiled to WebAssembly"
 license = "MIT"
 
+[package.metadata.wasm-pack]
+wasm-opt = false
+
 # Two-target crate. The `term` / `input` / `selection` / `search` modules
 # are pure Rust (vte + unicode-segmentation) and compile cleanly on the
 # host — `cargo check --lib` on x86_64-pc-windows-msvc passes today.
