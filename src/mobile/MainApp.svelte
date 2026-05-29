@@ -179,19 +179,9 @@
     </div>
   {/if}
 
-  <BottomTabBar
-    {panes}
-    bind:activePaneId
-    {workspaces}
-    {activeWorkspaceId}
-    {ws}
-    {sidebarTab}
-    onSidebarToggle={handleSidebarToggle}
-  />
-
-  <!-- §3: quick-key strip. When the soft keyboard is up it floats to just above
-       the keyboard (position:fixed; bottom:kbHeight); otherwise it sits in flow
-       below the workspace row. Only THIS bar floats — the workspace row stays. -->
+  <!-- §3: quick-key strip (快捷键行). Sits ABOVE the operation bar in flow.
+       When the soft keyboard is up it floats to just above the keyboard
+       (position:fixed; bottom:kbHeight). Only THIS bar floats. -->
   {#if activePaneId}
     <div
       class="vk-host"
@@ -205,6 +195,17 @@
       />
     </div>
   {/if}
+
+  <!-- 操作栏 (operation bar) sits at the very bottom, below the quick-key row. -->
+  <BottomTabBar
+    {panes}
+    bind:activePaneId
+    {workspaces}
+    {activeWorkspaceId}
+    {ws}
+    {sidebarTab}
+    onSidebarToggle={handleSidebarToggle}
+  />
 </div>
 
 <style>
