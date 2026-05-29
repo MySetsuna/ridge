@@ -356,6 +356,16 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+pub(crate) fn write_file_blocking(path: String, content: String) -> Result<(), String> {
+    let file_path = PathBuf::from(&path);
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+        }
+    }
+    std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))
+}
+
 #[tauri::command]
 pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let project = state.current_project.read();
@@ -443,7 +453,7 @@ pub async fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Res
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn copy_path_sync(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
+pub(crate) fn copy_path_sync(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
     let from_path = PathBuf::from(&from);
     let to_path = PathBuf::from(&to);
     if !from_path.exists() {
@@ -499,7 +509,7 @@ pub async fn move_path(from: String, to: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn move_path_sync(from: String, to: String) -> Result<(), String> {
+pub(crate) fn move_path_sync(from: String, to: String) -> Result<(), String> {
     let from_path = PathBuf::from(&from);
     let to_path = PathBuf::from(&to);
     if !from_path.exists() {

@@ -904,6 +904,250 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             }
                         }
                     }
+                    Some("data-request") => {
+                        let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
+                        let method = parsed["method"].as_str().unwrap_or("").to_string();
+                        let project_dir = ctx.state.current_project.read().clone()
+                            .or_else(|| dirs::home_dir())
+                            .unwrap_or_else(|| PathBuf::from("."));
+                        let parsed_clone = parsed.clone();
+                        let result = tokio::task::spawn_blocking(move || -> serde_json::Value {
+                            match method.as_str() {
+                                "get_file_tree" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let depth = parsed_clone["depth"].as_u64().unwrap_or(1) as usize;
+                                    let full = project_dir.join(path);
+                                    match crate::fs::tree::FileTree::build(&full, depth) {
+                                        Ok(tree) => serde_json::json!({"_result": tree}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "get_directory_children" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let offset = parsed_clone["offset"].as_u64().unwrap_or(0) as usize;
+                                    let limit = parsed_clone["limit"].as_u64().unwrap_or(200) as usize;
+                                    let full = project_dir.join(path);
+                                    match crate::fs::tree::FileTree::page_children(&full, offset, limit) {
+                                        Ok(page) => serde_json::json!({"_result": page}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "path_exists" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let full = project_dir.join(path);
+                                    serde_json::json!({"_result": full.exists()})
+                                }
+                                "read_file" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let full = project_dir.join(path);
+                                    match std::fs::read_to_string(&full) {
+                                        Ok(content) => serde_json::json!({"_result": content}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "write_file" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let content = parsed_clone["content"].as_str().unwrap_or("");
+                                    let full = project_dir.join(path);
+                                    match crate::commands::project::write_file_blocking(full.to_string_lossy().to_string(), content.to_string()) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "rename_path" => {
+                                    let from = parsed_clone["from"].as_str().unwrap_or("");
+                                    let to = parsed_clone["to"].as_str().unwrap_or("");
+                                    let from_full = project_dir.join(from);
+                                    let to_full = project_dir.join(to);
+                                    match std::fs::rename(&from_full, &to_full) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "delete_path" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let full = project_dir.join(path);
+                                    let result = if full.is_dir() {
+                                        std::fs::remove_dir_all(&full)
+                                    } else {
+                                        std::fs::remove_file(&full)
+                                    };
+                                    match result {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "create_file" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let full = project_dir.join(path);
+                                    match std::fs::File::create(&full) {
+                                        Ok(_) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "create_directory" => {
+                                    let path = parsed_clone["path"].as_str().unwrap_or("");
+                                    let full = project_dir.join(path);
+                                    match std::fs::create_dir_all(&full) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
+                                    }
+                                }
+                                "copy_path" => {
+                                    let from = parsed_clone["from"].as_str().unwrap_or("");
+                                    let to = parsed_clone["to"].as_str().unwrap_or("");
+                                    let from_full = project_dir.join(from);
+                                    let to_full = project_dir.join(to);
+                                    match crate::commands::project::copy_path_sync(from_full.to_string_lossy().to_string(), to_full.to_string_lossy().to_string(), None) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "move_path" => {
+                                    let from = parsed_clone["from"].as_str().unwrap_or("");
+                                    let to = parsed_clone["to"].as_str().unwrap_or("");
+                                    match crate::commands::project::move_path_sync(from.to_string(), to.to_string()) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_status" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::get_scm_status_sync(repo_root) {
+                                        Ok(status) => serde_json::json!({"_result": status}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_stage" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let paths: Vec<String> = parsed_clone["paths"].as_array()
+                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .unwrap_or_default();
+                                    match crate::commands::git::git_stage_sync(repo_root, paths) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_unstage" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let paths: Vec<String> = parsed_clone["paths"].as_array()
+                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .unwrap_or_default();
+                                    match crate::commands::git::git_unstage_sync(repo_root, paths) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_commit" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let message = parsed_clone["message"].as_str().unwrap_or("").to_string();
+                                    let amend = parsed_clone["amend"].as_bool();
+                                    match crate::commands::git::git_commit_sync(repo_root, message, amend) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_pull" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::git_pull_sync(repo_root) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_push" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let set_upstream = parsed_clone["setUpstream"].as_bool();
+                                    match crate::commands::git::git_push_sync(repo_root, set_upstream) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_sync" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::git_sync_sync(repo_root) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_checkout" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let branch = parsed_clone["branch"].as_str().unwrap_or("").to_string();
+                                    let create = parsed_clone["create"].as_bool();
+                                    match crate::commands::git::git_checkout_sync(repo_root, branch, create, None) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_revert" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let hash = parsed_clone["hash"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::git_revert_sync(repo_root, hash) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_cherry_pick" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let hash = parsed_clone["hash"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::git_cherry_pick_sync(repo_root, hash) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_reset" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let mode = parsed_clone["mode"].as_str().unwrap_or("mixed").to_string();
+                                    let commit = parsed_clone["commit"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::git_reset_sync(repo_root, commit, mode) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_create_tag" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let name = parsed_clone["name"].as_str().unwrap_or("").to_string();
+                                    let message = parsed_clone["message"].as_str().map(String::from);
+                                    match crate::commands::git::git_create_tag_sync(repo_root, name, None::<String>, message) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_discard" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    let paths: Vec<String> = parsed_clone["paths"].as_array()
+                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .unwrap_or_default();
+                                    match crate::commands::git::git_discard_sync(repo_root, paths) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "git_clean_untracked" => {
+                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
+                                    match crate::commands::git::git_clean_untracked_sync(repo_root, vec![]) {
+                                        Ok(()) => serde_json::json!({"_result": null}),
+                                        Err(e) => serde_json::json!({"_error": e}),
+                                    }
+                                }
+                                "search_files" => {
+                                    let query = parsed_clone["query"].as_str().unwrap_or("").to_string();
+                                    let path = parsed_clone["path"].as_str().unwrap_or("").to_string();
+                                    let root = if path.is_empty() { project_dir.clone() } else { project_dir.join(&path) };
+                                    let results = crate::fs::search::SearchEngine::search_files(&root, &query);
+                                    serde_json::json!({"_result": results})
+                                }
+                                _ => serde_json::json!({"_error": format!("unknown data-request method: {}", method)})
+                            }
+                        }).await;
+                        let reply = match result {
+                            Ok(mut val) => {
+                                val.as_object_mut().unwrap().insert("_reqId".to_string(), serde_json::json!(req_id));
+                                val
+                            }
+                            Err(e) => serde_json::json!({"_reqId": req_id, "_error": e.to_string()}),
+                        };
+                        ws_tx.send(Message::Text(reply.to_string())).await
+                    }
                     _ => {
                         ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
                     }
