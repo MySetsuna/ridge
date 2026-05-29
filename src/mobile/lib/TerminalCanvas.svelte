@@ -4,10 +4,11 @@
   import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
   import VirtualKeyboard from './VirtualKeyboard.svelte';
 
-  let { paneId, onStdin, onResize, showKeyboard = false }: {
+  let { paneId, onStdin, onResize, onRefresh, showKeyboard = false }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    onRefresh?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     showKeyboard?: boolean;
   } = $props();
 
@@ -21,6 +22,8 @@
 
   const pendingData: Uint8Array[] = [];
   let fitPending = false;
+  // §multi-size: true once this endpoint has auto-claimed the shared PTY size.
+  let claimed = false;
   let isComposing = false;
   let compositionStdinTarget: string | null = null;
 
@@ -107,10 +110,30 @@
     if (cellW > 0 && cellH > 0) {
       cols = Math.max(1, Math.floor(w / cellW));
       rows = Math.max(1, Math.floor(h / cellH));
-      kernel.resize(rows, cols);
-      if (paneId && onResize) {
+      // §multi-size: the kernel grid is driven by the SHARED canonical delta
+      // stream (Resize ops), not the local viewport — so we do NOT
+      // kernel.resize() here. A fresh endpoint claims the shared PTY size
+      // exactly once on first fit; later viewport changes don't touch the
+      // PTY (use refresh() to re-claim on demand).
+      if (!claimed && paneId && onResize) {
+        claimed = true;
         onResize(paneId, rows, cols, Math.round(w), Math.round(h));
       }
+    }
+  }
+
+  /// Re-claim the shared PTY at this client's current viewport size and
+  /// trigger a full repaint. Wired to the toolbar refresh button.
+  export function refresh() {
+    fitPane();
+    if (paneId && onRefresh && containerEl) {
+      onRefresh(
+        paneId,
+        rows,
+        cols,
+        Math.round(containerEl.clientWidth),
+        Math.round(containerEl.clientHeight),
+      );
     }
   }
 

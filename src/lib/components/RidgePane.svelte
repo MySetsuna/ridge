@@ -1112,6 +1112,16 @@ function jumpToBottom() {
 	imeHelper?.focus();
 }
 
+// §multi-size: when remote control is on, the desktop and remote devices
+// share ONE PTY size. A remote device that claims/refreshes can shrink this
+// pane's grid; this button re-claims the PTY at THIS desktop pane's size and
+// forces a full repaint. Only shown while remote control is enabled.
+function refreshForRemote() {
+	if (!alive || !attached) return;
+	manager.fitPaneNow(paneId);
+	manager.forceFullRedraw(paneId);
+}
+
 // Scrollbar geometry, derived from current state. Both thumb top and
 // thumb height are FRACTIONS of the pane container's height so CSS can
 // express them as `top: x%; height: y%`.
@@ -1325,6 +1335,24 @@ function onContainerMouseDown(e: MouseEvent) {
 		</button>
 	{/if}
 
+	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while
+	     remote control is on (otherwise this pane is the sole viewer and
+	     fitPane already owns the size). -->
+	{#if $settingsStore.remoteEnabled}
+		<button
+			type="button"
+			class="rg-remote-refresh"
+			title="按本端尺寸刷新（远程控制开启时可用）"
+			onclick={refreshForRemote}
+			aria-label="按本端尺寸刷新"
+		>
+			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+				<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+				<path d="M13.5 2.4V5.1H10.8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+			</svg>
+		</button>
+	{/if}
+
 	<!-- §1.23 (2026-05-05): side scrollbar overlay.
 	     Visible only when there is actual scrollback (total > 0). Track
 	     covers full pane height; thumb position + height reflect current
@@ -1505,6 +1533,39 @@ function onContainerMouseDown(e: MouseEvent) {
 		transform: translateY(-1px);
 	}
 	.rg-jump-bottom:focus {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
+	}
+
+	.rg-remote-refresh {
+		/* §multi-size — floating "re-claim my size" button, top-right so it
+		 * never collides with the bottom-right jump-to-bottom affordance.
+		 * Only mounted while remote control is enabled. */
+		position: absolute;
+		right: 14px;
+		top: 14px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 30px;
+		border-radius: 9999px;
+		border: 1px solid var(--rg-border, #333);
+		background: var(--rg-surface, rgba(30, 30, 30, 0.92));
+		color: var(--rg-fg, #ddd);
+		cursor: pointer;
+		opacity: 0.7;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+		transition: opacity 120ms ease-out, background 120ms ease-out, transform 120ms ease-out;
+		z-index: 21;
+	}
+	.rg-remote-refresh:hover {
+		opacity: 1;
+		background: var(--rg-accent, #4a8cff);
+		color: #fff;
+		transform: translateY(-1px);
+	}
+	.rg-remote-refresh:focus {
 		outline: none;
 		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
 	}

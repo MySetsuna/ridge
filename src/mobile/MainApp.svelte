@@ -28,6 +28,8 @@
   }
 
   function handleRefresh() {
+    // §multi-size: re-claim the shared PTY at this device's size + full repaint.
+    canvasRef?.refresh();
     ws.listPanes();
     refreshWorkspaces();
   }
@@ -53,7 +55,7 @@
 
   onMount(() => {
     ws.onStateChange((s) => wsState = s);
-    ws.onMessage((msg) => {
+    const unsubMsg = ws.onMessage((msg) => {
       if (msg.type === 'panes') {
         panes = msg.panes;
         if (!activePaneId && msg.panes.length > 0) {
@@ -64,9 +66,15 @@
         refreshWorkspaces();
       }
     });
+    // Apply the shared canonical delta stream to the terminal kernel. The
+    // server always runs subscribed panes in delta mode, so binary frames
+    // (not the raw `output` text) are the render path.
+    const unsubDelta = ws.onBinaryDelta((_paneId, data) => {
+      canvasRef?.applyDelta(data);
+    });
     ws.listPanes();
     refreshWorkspaces();
-    return () => { ws.disconnect(); };
+    return () => { unsubMsg(); unsubDelta(); ws.disconnect(); };
   });
 
   $effect(() => {
@@ -85,6 +93,7 @@
       paneId={activePaneId ?? null}
       {onStdin}
       {onResize}
+      onRefresh={(p, r, c, pw, ph) => ws.refreshPane(p, r, c, pw, ph)}
       {showKeyboard}
     />
   {/if}
