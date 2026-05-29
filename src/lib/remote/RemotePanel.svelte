@@ -5,8 +5,14 @@
   import QrCode from './QrCode.svelte';
   import { Smartphone, Link, Unlink, RefreshCw, Power, PowerOff, ExternalLink } from 'lucide-svelte';
   import { dev } from '$app/environment';
+  import { settingsStore, setSetting } from '$lib/stores/settings';
+  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
 
-  let remoteEnabled = $state(false);
+  // Reflect the persisted/auto-restored state on mount (and stay in sync with
+  // the Settings panel, which also reads `settingsStore.remoteEnabled`). The old
+  // local `$state(false)` always showed OFF after launch even when remote had
+  // auto-started, and made the first toggle click a no-op (out of phase).
+  const remoteEnabled = $derived($settingsStore.remoteEnabled);
   let remoteInfo = $state<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
   let hostInput = $state('localhost');
   let portInput = $state('');
@@ -43,14 +49,12 @@
     }
   }
 
-  import { settingsStore, setSetting } from '$lib/stores/settings';
-  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
-
   async function toggleRemoteEnabled() {
     try {
       const newState = !remoteEnabled;
       await invoke('set_remote_enabled', { enabled: newState });
-      remoteEnabled = newState;
+      // `remoteEnabled` is derived from settingsStore — updating the store here
+      // flips it (no local assignment needed; keeps both panels consistent).
       setSetting('remoteEnabled', newState);
       await refreshRemoteRunning();
       if (newState) {
