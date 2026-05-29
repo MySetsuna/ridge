@@ -1,31 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Appends [INSTALLDIR] to the current user's PATH so `tmux` (the Ridge shim)
-  is resolvable from any shell, not only Ridge's own PTY panes.
-
-  System="no" targets HKCU (matches the NSIS installer hook).
-  Part="last" Action="set" = append (non-destructive) and Permanent="no" = remove on uninstall.
-
-  KeyPath is a RegistryValue so the component has a real uninstall anchor.
--->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-    <Fragment>
-        <DirectoryRef Id="INSTALLDIR">
-            <Component Id="RidgePathEnvVar" Guid="f3a7b2c8-9d4e-4a1b-b5c6-d7e8f9a0b1c2">
-                <RegistryValue Root="HKCU"
-                               Key="Software\tauri-app\ridge"
-                               Name="RidgePathEnv"
-                               Type="integer"
-                               Value="1"
-                               KeyPath="yes" />
-                <Environment Id="RidgePathEnv"
-                             Name="PATH"
-                             Value="[INSTALLDIR]"
-                             Permanent="no"
-                             Part="last"
-                             Action="set"
-                             System="no" />
-            </Component>
-        </DirectoryRef>
-    </Fragment>
+  <Fragment>
+    <Component Id="RidgePathEnvVar_0_0_2" Guid="DA46AA9C-B62F-5D2D-BE7A-3D080348EA8E" Directory="INSTALLDIR">
+      <RegistryValue Root="HKLM" Key="Software\tauri-app\ridge_0_0_2" Name="RidgePathEnv_0_0_2" Type="string" Value="1" />
+      <Environment Id="RidgePathEnv_0_0_2" Name="PATH" Value="[INSTALLDIR]" Permanent="no" Part="last" Action="set" System="yes" />
+    </Component>
+  </Fragment>
 </Wix>

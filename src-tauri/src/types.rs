@@ -2,6 +2,22 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
+/// Event emitted by the PTY reader thread, picked up by the main event loop
+/// AND broadcast to remote WebSocket clients.
+#[derive(Clone, Debug)]
+pub struct PtyOutputEvent {
+    pub workspace_id: Uuid,
+    pub pane_id: Uuid,
+    pub data: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PtyDeltaEvent {
+    pub workspace_id: Uuid,
+    pub pane_id: Uuid,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PaneMode {
     Terminal,

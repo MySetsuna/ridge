@@ -91,6 +91,11 @@ pub struct Theme {
     /// Override via theme key `hyperlinkColor`. Solid by default — links
     /// should be obviously different from regular underlined text.
     pub hyperlink_color: [u8; 4],
+    /// Background color used when a TUI app (alt-screen / inline-tui)
+    /// owns the terminal. Default cells resolve to this instead of `bg`
+    /// so the terminal theme doesn't pollute the TUI's color scheme.
+    /// Override via theme key `tuiBackground`.
+    pub tui_bg: [u8; 4],
     /// 256-entry palette: ANSI 0..15 + 6×6×6 cube + 24-step gray ramp.
     pub palette: [[u8; 4]; 256],
 }
@@ -105,6 +110,7 @@ impl Theme {
             cursor_text_color: [0x07, 0x10, 0x09, 0xff],
             selection_bg: [0x55, 0xaa, 0xff, 0x60],
             hyperlink_color: [0x66, 0xb3, 0xff, 0xff],
+            tui_bg: [0x0a, 0x0a, 0x0a, 0xff],
             palette: build_xterm_palette(),
         }
     }
@@ -141,6 +147,9 @@ impl Theme {
         }
         if let Some(c) = get("hyperlinkColor").and_then(|s| parse_hex_color(&s)) {
             self.hyperlink_color = c;
+        }
+        if let Some(c) = get("tuiBackground").and_then(|s| parse_hex_color(&s)) {
+            self.tui_bg = c;
         }
 
         // ANSI 16 — order matches palette indices.
@@ -250,6 +259,10 @@ pub struct FrameMetrics {
     /// Pixel ratio (device_pixel_ratio). Backend multiplies internally
     /// when writing to the actual surface.
     pub dpr: f32,
+    /// When true the renderer is in alt-screen or inline-tui mode.
+    /// Backends use this to avoid forcing the theme background onto
+    /// cells that haven't explicitly set a background color.
+    pub tui_mode: bool,
 }
 
 /// What a backend must implement. Methods are called in this order each frame:
@@ -319,7 +332,9 @@ pub trait RenderBackend {
     ///      to save fill calls — caller doesn't optimize this).
     ///   2. Paint each cell's glyph.
     /// `attrs_table` resolves `AttrId` to colors and flags.
-    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
 
     /// Draw the cursor on top of any existing cell content. Coordinates
     /// are in cell units (0..cols, 0..rows).
@@ -338,6 +353,49 @@ pub trait RenderBackend {
     /// Draw a 1-cell-wide underline beneath each (row, col_start, col_end)
     /// hyperlink range using `theme.hyperlink_color`. No-op when empty.
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]);
+
+    /// Paint the IME preedit text on top of the cell grid as the final
+    /// pass. `text` is the composition's current preedit string;
+    /// `(row, col)` is the cell at which the preedit starts. The
+    /// backend should:
+    ///   1. Cover the preedit's cell range with an opaque bg matching
+    ///      `theme.bg` (so the underlying cell content doesn't bleed
+    ///      through).
+    ///   2. Rasterize and paint each preedit glyph in `theme.fg`.
+    ///   3. Draw a 1-px underline beneath the preedit cells — the
+    ///      standard convention for in-progress IME text on every OS.
+    /// Cell content is NOT modified. Default no-op so backends can
+    /// add this incrementally.
+    fn draw_preedit_overlay(
+        &mut self,
+        _text: &str,
+        _row: usize,
+        _col: usize,
+        _theme: &Theme,
+    ) {
+    }
+
+    /// §1.34 (2026-05-22) — paint the shell-history popup on top of
+    /// the cell grid as a final pass. The backend should:
+    ///   1. Compute pixel rect from `overlay.anchor_row`,
+    ///      `overlay.anchor_col`, `overlay.place_above`, and the
+    ///      capped item count (`min(items.len(), max_visible_rows)`).
+    ///   2. Paint an opaque background panel using `theme.bg`.
+    ///   3. Paint a 1-device-pixel border using `theme.fg` so the
+    ///      panel is visually distinct from the underlying cells.
+    ///   4. Paint each item's text in `theme.fg`; the row at
+    ///      `overlay.selected_index` (when >= 0) gets an inverse
+    ///      treatment: bg = `theme.fg`, fg = `theme.bg`.
+    ///   5. Truncate per-row text that exceeds the panel width.
+    /// Cells underneath the popup are NOT modified — the overlay is
+    /// a top-layer paint only, matching the preedit pattern. Default
+    /// no-op so backends can add this incrementally.
+    fn draw_history_overlay(
+        &mut self,
+        _overlay: &crate::render::renderer::HistoryOverlay,
+        _theme: &Theme,
+    ) {
+    }
 
     /// Commit the frame to the surface. For Canvas2D this is a no-op
     /// (drawing was already direct); for WebGPU this submits the command
@@ -358,28 +416,57 @@ pub fn draw_frame<B: RenderBackend>(
     full_redraw: bool,
     selection_rects: &[(usize, usize, usize)],
     hyperlink_rects: &[(usize, usize, usize)],
+    preedit: Option<&crate::render::renderer::Preedit>,
+    history_overlay: Option<&crate::render::renderer::HistoryOverlay>,
 ) {
     backend.begin_frame(metrics, theme);
     if full_redraw {
         backend.clear();
     }
+    
+    // Pass 1: Backgrounds
     for row in rows {
-        backend.draw_row(row, attrs_table);
+        backend.draw_row_backgrounds(row, attrs_table);
     }
-    // Hyperlink underlines under row content but above row bg — drawn
-    // first so the selection overlay (next) can dim them slightly.
-    if !hyperlink_rects.is_empty() {
-        backend.draw_hyperlink_underlines(hyperlink_rects);
-    }
+    
     // Selection overlay sits between row content and cursor — translucent
     // so glyphs underneath remain readable; cursor on top so it's still
     // distinguishable inside a selected region.
+    // However, if we put it BEFORE texts, the text won't be washed out!
     if !selection_rects.is_empty() {
         backend.draw_selection_overlay(selection_rects);
     }
-    if let Some(cur) = cursor {
-        backend.draw_cursor(cur, attrs_table);
+    
+    // Pass 2: Texts
+    for row in rows {
+        backend.draw_row_texts(row, attrs_table);
     }
+    
+    // Hyperlink underlines
+    if !hyperlink_rects.is_empty() {
+        backend.draw_hyperlink_underlines(hyperlink_rects);
+    }
+    
+    // Pass 3: Cursor
+    if let Some(c) = cursor {
+        backend.draw_cursor(c, attrs_table);
+    }
+
+    // Pass 4: IME preedit overlay (drawn LAST so it sits on top of
+    // everything, including the cursor — the user is actively typing
+    // into the preedit so it must be visible above any frame element).
+    if let Some(p) = preedit {
+        backend.draw_preedit_overlay(&p.text, p.row, p.col, theme);
+    }
+
+    // Pass 5: shell-history popup overlay (§1.34). Drawn LAST after
+    // preedit so the popup always sits on top — the user explicitly
+    // opened it with ArrowUp/Down and expects it to obscure the
+    // prompt area until they pick, dismiss, or commit.
+    if let Some(h) = history_overlay {
+        backend.draw_history_overlay(h, theme);
+    }
+
     backend.end_frame();
 }
 
@@ -389,10 +476,34 @@ pub fn resolve_cell_colors(
     cell: &Cell,
     attrs_table: &crate::term::attr_table::AttrTable,
     theme: &Theme,
+    tui_mode: bool,
 ) -> (Attrs, [u8; 4], [u8; 4]) {
     let attrs = attrs_table.get(cell.attr);
     let mut fg = theme.resolve(attrs.fg, true);
     let mut bg = theme.resolve(attrs.bg, false);
+
+    // In TUI mode (alt-screen / inline-tui), cells with Default
+    // background resolve to tui_bg instead of theme.bg.  This
+    // prevents the terminal theme's accent background from
+    // polluting the TUI app's colour scheme.
+    // In normal shell mode, Default background resolves to transparent,
+    // so the container's CSS background (e.g. glass effect) shows through.
+    //
+    // Note: with BCE (Background Color Erase) in the grid, cells that
+    // were explicitly cleared while a coloured SGR pen was active
+    // already carry a non-Default bg → this fallback never runs for
+    // them, so a coloured status-bar / preview-pane background isn't
+    // overwritten by tui_bg. The fallback now only fires for cells
+    // that were never touched (alt-screen initial fill before the TUI
+    // app drew anything) — exactly the case where tui_bg IS the right
+    // answer.
+    if matches!(attrs.bg.kind(), crate::term::attrs::ColorKind::Default) {
+        if tui_mode {
+            bg = theme.tui_bg;
+        } else {
+            bg = [0, 0, 0, 0];
+        }
+    }
 
     use crate::term::attrs::Flags;
 

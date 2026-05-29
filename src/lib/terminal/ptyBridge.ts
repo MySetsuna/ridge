@@ -26,15 +26,33 @@
 //     `ensurePtyBridge` is a no-op (idempotent).
 //   - Real pane close (paneTree.closePane) → `teardownPtyBridge(paneId)`.
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
 import { TerminalManager } from './manager';
 import { settingsStore } from '$lib/stores/settings';
+import { perfMark } from './perfTrace';
+
+/**
+ * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
+ * `Channel<Vec<u8>>` (Rust side) dispatches through the IPC binary path,
+ * which the JS layer may surface as an `ArrayBuffer`, a `Uint8Array`, or —
+ * for older runtime configurations — a plain `number[]`. The handler
+ * normalizes all three into `Uint8Array` before feeding the kernel.
+ */
+type DeltaPayload = ArrayBuffer | Uint8Array | number[];
 
 interface Bridge {
 	outUnlisten: UnlistenFn;
 	closedUnlisten: UnlistenFn;
+	workspaceId: string;
+	/// P4.3 — strong reference to the Tauri Channel for delta bytes.
+	/// Replaces the P3.9 `pty-delta-*` event listener: deltas now arrive
+	/// via `Channel.onmessage` (skipping the JSON-wrap / base64 / event
+	/// dispatch overhead). The backend unregisters the channel in
+	/// `kill_pty_if_present`; keeping this field rooted prevents JS GC
+	/// from collecting the Channel while the bridge is alive.
+	deltaChannel: Channel<DeltaPayload>;
 }
 
 const bridges = new Map<string, Bridge>();
@@ -86,7 +104,17 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 					/* localStorage denied / SSR — silently skip */
 				}
 			}
-			manager.feed(paneId, e.payload.data);
+			// §P4 attribution — wrap the JSON-event-path feed so the
+			// `frame-time-attribution` spec can measure how much of a
+			// stressed frame the base64 + JSON-wrap path costs vs the
+			// binary Channel path below.
+			perfMark('rg.ptyText.feed', () => manager.feed(paneId, e.payload.data));
+			// History popup close is driven by the user's Enter keystroke
+			// inside the active pane (RidgePane.dispatchBufferEvent 'clear'
+			// case) — NOT by `\n`/`\r` in PTY output. Per-byte detection
+			// here used to fire a window event that closed popups across
+			// every pane whenever any pane echoed a newline, including
+			// every shell prompt redraw and async background output.
 		},
 	);
 
@@ -98,6 +126,13 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 			// our handler running, bail out — the pane is being closed
 			// for real and we shouldn't resurrect the PTY.
 			if (!bridges.has(paneId)) return;
+
+			// §1.35 — force-leave alt screen before spawning a new shell.
+			// If the previous process was in alt screen mode (TUI crashed
+			// or exited without sending ?1049l), the new shell's output
+			// would go into the alt buffer, hiding primary screen content
+			// and giving the user the impression the screen was cleared.
+			manager.leaveAltScreen(paneId);
 
 			try {
 				await invoke('create_pane', {
@@ -125,7 +160,87 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 		},
 	);
 
-	bridges.set(paneId, { outUnlisten, closedUnlisten });
+	// P4.3 — pty-delta channel. Replaces the P3.9 `listen('pty-delta-...')`
+	// path. The Rust backend (P4.1 `register_pane_delta_channel`) wraps the
+	// Channel into a closure inside `AppState.pty_delta_channels`; the three
+	// emit sites (lib.rs main loop, resize_pane, set_pane_delta_mode) call
+	// the closure with the postcard-encoded bytes. The IPC binary path skips
+	// the base64 + JSON-wrap + event-name routing the listen() path required.
+	//
+	// `delta_mode` on the backend still gates whether the channel fires at
+	// all, so registering here is safe even before `set_pane_delta_mode`
+	// flips the gate — the channel simply stays quiet until then.
+	const deltaChannel = new Channel<DeltaPayload>();
+	deltaChannel.onmessage = (payload) => {
+		// Normalize whatever the runtime hands us into a Uint8Array view.
+		// `Uint8Array` instances pass through; ArrayBuffer is wrapped; a
+		// plain number[] gets copied into a fresh array (the slow path —
+		// happens only on older Tauri runtime configurations).
+		const bytes =
+			payload instanceof Uint8Array
+				? payload
+				: payload instanceof ArrayBuffer
+				? new Uint8Array(payload)
+				: new Uint8Array(payload);
+		try {
+			// §P4 attribution — the binary Channel path is the optimized
+			// path; this measure proves how much cheaper it is per frame
+			// vs `rg.ptyText.feed` (above).
+			perfMark('rg.ptyDelta.apply', () => manager.applyDeltaFrame(paneId, bytes));
+		} catch (err) {
+			// R5 self-heal: protocol / decode error → fall back to
+			// the text path so the pane stays usable. Best-effort;
+			// the invoke uses fire-and-forget semantics.
+			console.warn(
+				'[ridge-term] pty-delta apply failed; falling back to wasm parser',
+				{ paneId, error: String(err) },
+			);
+			void invoke('set_pane_delta_mode', {
+				workspaceId,
+				paneId,
+				enabled: false,
+			}).catch(() => {});
+		}
+	};
+
+	// Hand the Channel to the backend BEFORE inserting the bridge entry —
+	// if registration fails (e.g. backend not ready) we don't end up with
+	// a half-wired bridge whose Channel never gets fed.
+	try {
+		await invoke('register_pane_delta_channel', {
+			workspaceId,
+			paneId,
+			channel: deltaChannel,
+		});
+	} catch (err) {
+		// Backend not ready or pane vanished mid-registration. Surface to
+		// console for diagnostics but don't tear down the other listeners
+		// — the `pty-output-*` path keeps the pane usable until the next
+		// reconnect attempt.
+		console.warn(
+			'[ridge-term] register_pane_delta_channel failed; pane will use legacy pty-output path',
+			{ paneId, workspaceId, error: String(err) },
+		);
+	}
+
+	bridges.set(paneId, { outUnlisten, closedUnlisten, workspaceId, deltaChannel });
+}
+
+/**
+ * Switch this pane's backend delta_mode at runtime. Called by RidgePane
+ * (or anywhere watching the `settingsStore.parserBackend` value) when
+ * the user flips the parserBackend toggle. The backend implementation
+ * forces a full reframe on enable so the mirror catches up without
+ * a visible blank — see `set_pane_delta_mode` in src-tauri.
+ */
+export async function setPaneDeltaMode(paneId: string, enabled: boolean): Promise<void> {
+	const bridge = bridges.get(paneId);
+	if (!bridge) return;
+	try {
+		await invoke('set_pane_delta_mode', { workspaceId: bridge.workspaceId, paneId, enabled });
+	} catch (e) {
+		console.warn('[ridge-term] set_pane_delta_mode runtime switch failed', { paneId, enabled, error: String(e) });
+	}
 }
 
 /**
@@ -139,6 +254,9 @@ export function teardownPtyBridge(paneId: string): void {
 	if (!b) return;
 	try { b.outUnlisten(); } catch { /* already unsubscribed */ }
 	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
+	// P4.3 — the Channel has no explicit unlisten; dropping the bridge
+	// reference releases JS ownership and the backend already unregistered
+	// the channel in `kill_pty_if_present` before this teardown runs.
 	bridges.delete(paneId);
 }
 

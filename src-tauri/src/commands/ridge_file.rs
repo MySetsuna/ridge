@@ -162,6 +162,117 @@ fn recent_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("recent_workspaces.json")
 }
 
+/// `restore_workspaces.json` 路径：close 时把当前已保存（associated_file_path != None）
+/// 工作区的 .ridge 路径列表写到这里；下次非 cli 启动时回读用于自动恢复 tab。
+fn restore_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("restore_workspaces.json")
+}
+
+/// 收集当前所有 `associated_file_path` 非空的工作区路径，按 workspace_order 顺序写出。
+/// 仅在窗口关闭事件里同步调用（进程即将退出，不能 spawn 异步）。
+pub fn save_restore_set(app: &tauri::AppHandle, state: &AppState) {
+    let order = state.workspace_order.read().clone();
+    let map = state.workspaces.read();
+    let paths: Vec<String> = order
+        .iter()
+        .filter_map(|wid| {
+            map.get(wid).and_then(|ws| {
+                ws.associated_file_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+            })
+        })
+        .collect();
+    drop(map);
+    if let Ok(s) = serde_json::to_string_pretty(&paths) {
+        let _ = std::fs::write(restore_workspaces_path(app), s);
+    }
+}
+
+fn load_restore_set(app: &tauri::AppHandle) -> Vec<String> {
+    let p = restore_workspaces_path(app);
+    if !p.is_file() {
+        return Vec::new();
+    }
+    std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedWorkspaceEntry {
+    pub name: String,
+    pub path: String,
+    /// Modification time in seconds since unix epoch (0 if not retrievable).
+    pub mtime_secs: u64,
+}
+
+/// Scan the default save directory (`<home>/ridge-workspaces/`) for `.ridge`
+/// files and return the entries newest-first. Used by the Explorer's
+/// "已保存工作区" secondary button.
+#[tauri::command]
+pub fn list_saved_workspace_files() -> Result<Vec<SavedWorkspaceEntry>, String> {
+    let dir = default_save_dir();
+    let mut out: Vec<SavedWorkspaceEntry> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ridge") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        let mtime_secs = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        out.push(SavedWorkspaceEntry {
+            name,
+            path: path.to_string_lossy().to_string(),
+            mtime_secs,
+        });
+    }
+    out.sort_by(|a, b| b.mtime_secs.cmp(&a.mtime_secs));
+    Ok(out)
+}
+
+/// Tauri command — front-end calls on startup (after deciding it's not a cli launch
+/// with a cwd-resident .ridge) to fetch the workspaces it should auto-open.
+/// Stale entries (file deleted) are filtered out and the on-disk list is rewritten.
+#[tauri::command]
+pub fn get_restore_set(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let raw = load_restore_set(&app_handle);
+    let alive: Vec<String> = raw
+        .iter()
+        .filter(|p| PathBuf::from(p).is_file())
+        .cloned()
+        .collect();
+    if alive.len() != raw.len() {
+        if let Ok(s) = serde_json::to_string_pretty(&alive) {
+            let _ = std::fs::write(restore_workspaces_path(&app_handle), s);
+        }
+    }
+    Ok(alive)
+}
+
 const RECENT_MAX: usize = 10;
 
 fn load_recent(app: &tauri::AppHandle) -> Vec<String> {
@@ -457,10 +568,15 @@ pub fn open_workspace_from_file(
 pub struct StartupContext {
     pub cwd: String,
     pub wind_file_in_cwd: Option<String>,
+    /// "cli" — process inherited a real working dir from a terminal.
+    /// "menu" — process current_dir equals ridge.exe parent (双击启动).
+    /// Frontend uses this to gate the restore-set logic: cli launch should not
+    /// auto-open saved workspaces (user signalled intent via cwd).
+    pub kind: String,
 }
 
 #[tauri::command]
-pub fn get_startup_context() -> Result<StartupContext, String> {
+pub fn get_startup_context(state: State<'_, AppState>) -> Result<StartupContext, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     // 只扫一层：避免在用户主目录 / 大型项目根下做深度遍历，也匹配用户预期
     // “cwd 内是否直接放着 .ridge”。
@@ -483,9 +599,15 @@ pub fn get_startup_context() -> Result<StartupContext, String> {
         .into_iter()
         .next()
         .map(|p| p.to_string_lossy().to_string());
+    let kind = match state.startup_cwd_kind {
+        crate::utils::cwd::StartupCwdKind::Cli => "cli",
+        crate::utils::cwd::StartupCwdKind::Menu => "menu",
+    }
+    .to_string();
     Ok(StartupContext {
         cwd: cwd.to_string_lossy().to_string(),
         wind_file_in_cwd,
+        kind,
     })
 }
 

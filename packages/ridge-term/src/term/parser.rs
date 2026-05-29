@@ -66,6 +66,13 @@ pub struct Performer<'a> {
     /// cluster boundary is reached, then emits each completed cluster as
     /// a single unit via `emit_grapheme`.
     pub grapheme_buf: &'a mut String,
+    /// P3.10 — set when `esc_dispatch` handles RIS (`ESC c`). Drained
+    /// by `Terminal::take_pending_reset`; `PaneParser` peeks it before
+    /// diffing the next frame and prefixes a `GridDelta::Reset`. The
+    /// flag is purely an out-of-band signal for the delta producer;
+    /// RIS still applies its full reset inline so the wasm path
+    /// remains correct without consulting the flag.
+    pub pending_reset: &'a mut bool,
 }
 
 impl<'a> Performer<'a> {
@@ -268,10 +275,33 @@ impl<'a> Perform for Performer<'a> {
         // Private CSI ? h / l — DEC mode set/reset.
         if is_private && (action == 'h' || action == 'l') {
             let value = action == 'h';
+            // §1.33 (2026-05-22): every TUI-signal-affecting mode
+            // change bumps `grid.last_tui_signal_at_ms` while the
+            // resulting state is "TUI active", so the shell-history
+            // popup gate's sticky window catches the activation
+            // even when a single feed chunk both turns the signal
+            // ON and back OFF (Ink-style `\x1b[?25l...\x1b[?25h`
+            // frame). We snapshot now ONCE per dispatch and apply
+            // every sub-parameter under the same timestamp —
+            // sub-millisecond ordering between sub-params does not
+            // matter for a 2 s sticky window.
+            let now = clock::now_ms();
             for sub in params.iter() {
                 if let Some(&code) = sub.first() {
                     let effect = self.modes.set(code, value, true);
                     self.apply_mode_effect(effect);
+                    // After the mode + side-effect is applied, sample
+                    // every persistent TUI signal. Any one true → bump.
+                    let m = &self.modes;
+                    let tui_active = m.app_cursor_keys
+                        || m.mouse_normal
+                        || m.mouse_button_event
+                        || m.mouse_any_event
+                        || !m.cursor_visible
+                        || self.grid.is_alt_screen();
+                    if tui_active {
+                        self.grid.note_tui_signal_at(now);
+                    }
                 }
             }
             return;
@@ -402,6 +432,7 @@ impl<'a> Perform for Performer<'a> {
                     attr: cur.attr,
                     origin: self.modes.origin,
                     pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
                 });
             }
             'u' => {
@@ -506,6 +537,8 @@ impl<'a> Perform for Performer<'a> {
                 self.grid.set_scroll_region(None, None);
                 *self.grid.saved_cursor_mut() = None;
                 *self.current_attrs = Attrs::DEFAULT;
+                // BCE: pen tracks current_attrs.
+                self.grid.set_pen(*self.current_attrs);
                 self.grid.cursor_to(0, 0);
             }
             'q' if intermediates.first() == Some(&b' ') => {
@@ -553,7 +586,13 @@ impl<'a> Perform for Performer<'a> {
                 let bottom = nth_param_opt(params, 1);
                 self.grid.set_scroll_region(top, bottom);
             }
-            'm' => apply_sgr(self.current_attrs, params),
+            'm' => {
+                apply_sgr(self.current_attrs, params);
+                // BCE: sync SGR pen to the grid so subsequent erase /
+                // scroll / IL / DL paths fill blanks with the active
+                // background colour.
+                self.grid.set_pen(*self.current_attrs);
+            }
             'n' => {
                 // Device Status Report.
                 //   CSI 5 n   → terminal status request → reply CSI 0 n (OK)
@@ -601,7 +640,7 @@ impl<'a> Perform for Performer<'a> {
         match byte {
             b'7' => {
                 // DECSC — save full cursor state per VT spec: position,
-                // attrs, DECOM origin mode, and pending-wrap flag.
+                // attrs, DECOM origin mode, pending-wrap, and DECCKM.
                 let cur = *self.grid.cursor();
                 *self.grid.saved_cursor_mut() = Some(super::cursor::SavedCursor {
                     row: cur.row,
@@ -609,6 +648,7 @@ impl<'a> Perform for Performer<'a> {
                     attr: cur.attr,
                     origin: self.modes.origin,
                     pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
                 });
             }
             b'8' => {
@@ -642,6 +682,7 @@ impl<'a> Perform for Performer<'a> {
                 // TUIs that need a clean screen send ED 2 explicitly).
                 *self.modes = Modes::default(); // autowrap, cursor, mouse, etc.
                 *self.current_attrs = Attrs::DEFAULT; // SGR back to default fg/bg
+                self.grid.set_pen(*self.current_attrs); // BCE: pen tracks current_attrs.
                 *self.current_link = None; // close any open OSC 8 span
                 *self.last_printed = None; // REP has nothing to repeat
                                            // Order matters: leave alt screen FIRST so the subsequent
@@ -653,6 +694,13 @@ impl<'a> Perform for Performer<'a> {
                 *self.grid.saved_cursor_mut() = None; // discard any DECSC slot
                 self.grid.cursor_to(0, 0);
                 self.grid.erase_in_display(EraseMode::All);
+                // P3.10 — let `PaneParser` emit a `GridDelta::Reset`
+                // ahead of the post-reset Cells deltas so the mirror
+                // can apply the matching reset on its side before
+                // ingesting the new grid. The wasm Terminal already
+                // applied the reset above — this flag is only for the
+                // delta pipeline; it self-clears on `take_pending_reset`.
+                *self.pending_reset = true;
             }
             _ => {}
         }
@@ -768,6 +816,8 @@ impl<'a> Performer<'a> {
                 // to alt + clear, then cursor home. The DECSC must run while
                 // the primary screen is still active so it captures the
                 // primary cursor — that's the one we'll restore on ?1049l.
+                // Also saves DECCKM (?1) so ?1049l can restore it — prevents
+                // TUIs that set DECCKM from leaking it to the primary screen.
                 let cur = *self.grid.cursor();
                 *self.grid.saved_cursor_mut() = Some(super::cursor::SavedCursor {
                     row: cur.row,
@@ -775,6 +825,7 @@ impl<'a> Performer<'a> {
                     attr: cur.attr,
                     origin: self.modes.origin,
                     pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
                 });
                 self.grid.enter_alt_screen(true);
                 self.grid.cursor_to(0, 0);
@@ -784,11 +835,13 @@ impl<'a> Performer<'a> {
                 // Switch back to primary first so saved_cursor_mut accesses
                 // the primary screen's saved slot (set by ?1049h above).
                 // Restores full cursor state (DECRC equivalent), including
-                // origin mode and pending-wrap, so TUIs that toggled DECOM
-                // inside the alt screen don't leak that state to primary.
+                // origin mode, pending-wrap, and app_cursor_keys, so TUIs
+                // that toggled DECOM or DECCKM inside the alt screen don't
+                // leak those states to primary.
                 self.grid.leave_alt_screen();
                 if let Some(s) = *self.grid.saved_cursor_mut() {
                     self.modes.origin = s.origin;
+                    self.modes.app_cursor_keys = s.app_cursor_keys;
                     let cur = self.grid.cursor_mut();
                     cur.row = s.row;
                     cur.col = s.col;

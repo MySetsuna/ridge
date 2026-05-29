@@ -10,6 +10,17 @@ import { defineConfig, devices } from '@playwright/test';
  *
  * Not headless? — Set `PWDEBUG=1` or pass `--headed` to inspect visually.
  */
+
+// P1.4 (2026-05-19): merge loopback into NO_PROXY so the webServer URL probe
+// + per-test fetches don't get hijacked by a developer's local HTTP_PROXY
+// (Clash / v2ray / corporate gateways). Without this, the proxy returns
+// 502 for 127.0.0.1:5173 because it can't reach an upstream there, and
+// `pnpm e2e` deadlocks for 120 s waiting for the dev server URL. Idempotent
+// — appends to any existing NO_PROXY value.
+process.env.NO_PROXY = [process.env.NO_PROXY, 'localhost,127.0.0.1,::1']
+  .filter(Boolean)
+  .join(',');
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,

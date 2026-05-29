@@ -29,7 +29,7 @@
 //! `less +F` doesn't fill your scrollback while tailing a log.
 
 use super::attr_table::{AttrId, AttrTable};
-use super::attrs::Attrs;
+use super::attrs::{Attrs, Color, Flags};
 use super::cell::{Cell, Row};
 use super::cursor::{Cursor, SavedCursor};
 use super::scrollback::Scrollback;
@@ -140,6 +140,15 @@ const RESIZE_DIAG_RING_CAP: usize = 32;
 /// rest of the session.
 const INLINE_TUI_DECAY_MS: i64 = 2_000;
 
+/// Grace window after the user sends Ctrl+C during which the inline-TUI
+/// heuristic is force-disabled. 3 s covers: (a) the SIGINT delivery
+/// roundtrip through ConPTY, (b) the shell's prompt repaint
+/// (`PS C:\...> `), and (c) a couple of PSReadLine keystroke-driven
+/// CHA emits that would otherwise immediately re-arm the heuristic.
+/// Past 3 s, real surviving TUIs (those that trapped SIGINT) get
+/// re-classified normally on their next abs-positioning CSI.
+const CTRL_C_GRACE_MS: i64 = 3_000;
+
 pub struct Grid {
     rows: usize,
     cols: usize,
@@ -184,6 +193,47 @@ pub struct Grid {
     /// helper anchor) keeps its "last absolute LANDING" semantics — adding
     /// redraw CSIs there would corrupt the anchor.
     last_redraw_csi_at_ms: i64,
+    /// Timestamp of the most recent Ctrl+C the user sent to this pane.
+    /// Within `CTRL_C_GRACE_MS` of this timestamp,
+    /// `is_inline_tui_active_at` returns false unconditionally — even
+    /// if cursor-hidden + recent abs-CSI would normally classify the
+    /// pane as inline-TUI mode.
+    ///
+    /// Why: when a user kills an Ink-style TUI with Ctrl+C, the TUI
+    /// has no chance to emit `?25h` (show cursor), so `cursor_visible`
+    /// stays `false`. PSReadLine then emits `CHA \x1b[G` on every
+    /// keystroke of the user's next command — an absolute-positioning
+    /// CSI that keeps `last_abs_csi_at_ms` perpetually fresh. The
+    /// three heuristic conditions stay satisfied forever and the
+    /// shell-history IME helper / popup never re-enables.
+    ///
+    /// Grace window short-circuits this: for a few seconds post-Ctrl+C
+    /// we assume any TUI we were running has been killed. If it
+    /// trapped SIGINT and is still running, it'll re-emit CSIs and
+    /// the heuristic re-engages cleanly once the grace expires.
+    /// Sentinel 0 = no Ctrl+C ever observed.
+    last_ctrl_c_at_ms: i64,
+    /// §1.33 (2026-05-22) — wall-clock ms (unix epoch) of the most
+    /// recent observation that ANY TUI-relevant mode signal became
+    /// active. Bumped from the parser as soon as `?1h` (DECCKM),
+    /// `?47h` / `?1049h` (alt screen), `?1000h` / `?1002h` / `?1003h`
+    /// (mouse reporting), or `?25l` (cursor hidden) is processed —
+    /// so the timestamp captures the signal even when a single feed
+    /// chunk both activates AND deactivates the signal (e.g. an
+    /// Ink-style TUI emitting `\x1b[?25l...\x1b[?25h` for one frame).
+    /// The shell-history popup gate uses this for its sticky-window
+    /// branch; the old JS-side `tuiGate` leaked because it could only
+    /// observe signals at gate-query time, missing the brief window.
+    /// Sentinel 0 = no TUI signal ever observed.
+    last_tui_signal_at_ms: i64,
+    /// SGR "pen" mirrored from the parser's `current_attrs` for BCE
+    /// (Background Color Erase). Erase / scroll / IL / DL paths fill
+    /// blanked cells with `Cell { ch: ' ', attr: <pen.bg> }` so a TUI
+    /// that paints a coloured status line and then ED-clears the rest
+    /// of the row preserves the bg colour to the right margin — xterm
+    /// / iTerm2 / VTE standard behaviour. Parser keeps this in sync
+    /// via `set_pen` after every SGR / DECSTR / RIS.
+    pen: Attrs,
 }
 
 impl Grid {
@@ -201,7 +251,38 @@ impl Grid {
             last_abs_csi_row: 0,
             last_abs_csi_col: 0,
             last_redraw_csi_at_ms: 0,
+            last_ctrl_c_at_ms: 0,
+            last_tui_signal_at_ms: 0,
+            pen: Attrs::DEFAULT,
         }
+    }
+
+    /// Sync the BCE pen from the parser's `current_attrs`. Called after
+    /// every SGR / DECSTR / RIS so subsequent erase / scroll / IL / DL
+    /// paths fill blank cells with the active background colour.
+    pub fn set_pen(&mut self, attrs: Attrs) {
+        self.pen = attrs;
+    }
+
+    /// Build the cell that erase / scroll / IL / DL paths use to fill
+    /// blanked positions. When the pen carries the default background
+    /// this collapses to `Cell::EMPTY` — no attr table churn, identical
+    /// to the pre-BCE behaviour. When the pen carries a non-default
+    /// background, only the `bg` field is preserved (fg drops to default
+    /// and flags clear) — matches xterm's BCE rule which intentionally
+    /// strips fg / underline / bold from the blank so a future print
+    /// inside the cleared region starts from a sensible base.
+    fn bce_cell(&mut self) -> Cell {
+        if matches!(self.pen.bg.kind(), super::attrs::ColorKind::Default) {
+            return Cell::EMPTY;
+        }
+        let bce_attrs = Attrs {
+            fg: Color::DEFAULT,
+            bg: self.pen.bg,
+            flags: Flags::empty(),
+        };
+        let attr_id = self.attrs.intern(bce_attrs);
+        Cell::new(' ', attr_id, 1)
     }
 
     /// Most recent `resize` calls (newest last), bounded to 32 entries.
@@ -235,6 +316,34 @@ impl Grid {
     /// from `last_abs_csi_position()`.
     pub fn note_redraw_csi(&mut self, now_ms: i64) {
         self.last_redraw_csi_at_ms = now_ms;
+    }
+
+    /// Record that the user just sent Ctrl+C (ETX `\x03`) to this pane.
+    /// Within `CTRL_C_GRACE_MS` of this timestamp, the inline-TUI
+    /// heuristic is force-disabled — see `last_ctrl_c_at_ms` doc for
+    /// motivation. Caller passes wall-clock ms.
+    pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
+        self.last_ctrl_c_at_ms = now_ms;
+    }
+
+    /// §1.33 (2026-05-22) — record that the parser just observed a
+    /// TUI-active mode signal (DECCKM on, alt screen on, mouse
+    /// reporting on, cursor hidden, etc.). Only stores `now_ms` if
+    /// strictly larger than the existing value so out-of-order or
+    /// stale wall-clock samples never roll the timestamp backwards.
+    /// See `JsTerminal::should_allow_shell_history_at` for how the
+    /// timestamp feeds the popup gate's sticky-window branch.
+    pub fn note_tui_signal_at(&mut self, now_ms: i64) {
+        if now_ms > self.last_tui_signal_at_ms {
+            self.last_tui_signal_at_ms = now_ms;
+        }
+    }
+
+    /// §1.33 — most-recent TUI-signal observation timestamp, or 0
+    /// when no TUI signal has ever been observed. Read by the
+    /// shell-history popup gate.
+    pub fn last_tui_signal_at_ms(&self) -> i64 {
+        self.last_tui_signal_at_ms
     }
 
     /// Most recent absolute-positioning timestamp. 0 = never observed.
@@ -276,6 +385,17 @@ impl Grid {
             return false;
         }
         if cursor_visible {
+            return false;
+        }
+        // Ctrl+C grace window: caller sent SIGINT recently. Assume any
+        // inline-TUI we were tracking is now dead (or about to be). If
+        // a surviving TUI keeps re-emitting CSIs, the next check after
+        // the grace expires will re-engage the heuristic naturally.
+        // See `last_ctrl_c_at_ms` doc for the PSReadLine-keeps-it-stuck
+        // bug this fixes.
+        if self.last_ctrl_c_at_ms > 0
+            && now_ms.saturating_sub(self.last_ctrl_c_at_ms) < CTRL_C_GRACE_MS
+        {
             return false;
         }
         // §A.4 — accept either an absolute-positioning CSI (CUP/HVP/CHA/VPA)
@@ -341,6 +461,54 @@ impl Grid {
         self.screen().rows.get(idx)
     }
 
+    /// Mutable row access on the active screen. Added for the P3.4
+    /// delta-apply path so `Terminal::apply_delta` can overwrite cell
+    /// contents from a `GridDelta::Cells` payload without having to
+    /// re-feed the change through the vte parser (which would defeat
+    /// the entire point of having the parser run on the Rust side).
+    /// Returns `None` past the last live row; callers should ignore
+    /// such writes rather than treat them as errors — the producer
+    /// (`PaneParser`) only emits in-bounds rows.
+    pub fn row_mut(&mut self, idx: usize) -> Option<&mut Row> {
+        self.screen_mut().rows.get_mut(idx)
+    }
+
+    /// Write a span of `(ch, attrs, width)` cells starting at
+    /// `(row, col)`. Used by the P3.4 delta-apply path; the AttrTable
+    /// re-interns each cell's attrs to a local AttrId before writing
+    /// so the resulting cell is comparable with the rest of this
+    /// grid's cells (interned ids are per-AttrTable, not portable).
+    ///
+    /// Out-of-bounds writes are silently ignored — see `row_mut`.
+    pub fn write_delta_cells(
+        &mut self,
+        row: usize,
+        col: usize,
+        cells: &[(char, Attrs, u8)],
+    ) {
+        // Intern attrs in a first pass so we don't hold &mut self.attrs
+        // and &mut self.screen at the same time (the borrow checker
+        // would reject it even though the fields are disjoint).
+        let attr_ids: Vec<crate::term::attr_table::AttrId> = cells
+            .iter()
+            .map(|(_, attrs, _)| self.attrs.intern(*attrs))
+            .collect();
+        let target = match self.screen_mut().rows.get_mut(row) {
+            Some(r) => r,
+            None => return,
+        };
+        for (i, (ch, _attrs, width)) in cells.iter().enumerate() {
+            let target_col = col + i;
+            let grid_cell = match target.cells.get_mut(target_col) {
+                Some(c) => c,
+                None => break,
+            };
+            grid_cell.ch = *ch;
+            grid_cell.attr = attr_ids[i];
+            grid_cell.width = *width;
+        }
+    }
+
     /// Switch to alt screen (DECSET 1049 / 47 / 1047). Idempotent.
     /// `clear_on_enter` corresponds to the `1049` variant: clear the alt
     /// screen on entry so we get a fresh blank canvas for fullscreen apps.
@@ -350,8 +518,9 @@ impl Grid {
         }
         self.is_alt = true;
         if clear_on_enter {
+            let bce = self.bce_cell();
             for r in &mut self.alt.rows {
-                r.clear();
+                r.fill_blank(bce);
             }
             self.alt.cursor = Cursor::default();
             self.alt.scroll_top = 0;
@@ -471,8 +640,9 @@ impl Grid {
         // active (see §1.23 above); reflow deferred to next non-alt resize.
         let wipe_fired = dim_changed && self.is_alt;
         if wipe_fired {
+            let bce = self.bce_cell();
             for r in &mut self.alt.rows {
-                r.clear();
+                r.fill_blank(bce);
             }
             self.alt.cursor = Cursor::default();
             self.alt.scroll_top = 0;
@@ -537,8 +707,9 @@ impl Grid {
             } else {
                 0
             };
+            let bce = self.bce_cell();
             for r in self.primary.rows.iter_mut().skip(wipe_from_row) {
-                r.clear();
+                r.fill_blank(bce);
             }
             // Preserve current SGR attrs by mutating instead of
             // rebuilding the Cursor struct — avoids the `attr` field
@@ -583,11 +754,12 @@ impl Grid {
             let last_col_idx = cols.saturating_sub(1);
             let cur_row = self.primary.cursor.row.min(last_row_idx);
             let cur_col = self.primary.cursor.col.min(last_col_idx);
+            let bce = self.bce_cell();
             if let Some(r) = self.primary.rows.get_mut(cur_row) {
                 let row_len = r.cells.len();
                 let start = (cur_col + 1).min(row_len);
                 for c in start..row_len {
-                    r.cells[c] = Cell::EMPTY;
+                    r.cells[c] = bce;
                 }
                 // Mirror `erase_row_range`'s hyperlink-clipping
                 // invariant so OSC 8 underlines don't outlive their
@@ -602,7 +774,7 @@ impl Grid {
                 }
             }
             for r in self.primary.rows.iter_mut().skip(cur_row + 1) {
-                r.clear();
+                r.fill_blank(bce);
             }
         }
 
@@ -1128,22 +1300,23 @@ impl Grid {
         let cur_col = self.screen().cursor.col;
         let cols = self.cols;
         let total_rows = self.rows;
+        let bce = self.bce_cell();
         match mode {
             EraseMode::Below => {
                 self.erase_row_range(cur_row, cur_col, cols);
                 for r in (cur_row + 1)..total_rows {
-                    self.screen_mut().rows[r].clear();
+                    self.screen_mut().rows[r].fill_blank(bce);
                 }
             }
             EraseMode::Above => {
                 for r in 0..cur_row {
-                    self.screen_mut().rows[r].clear();
+                    self.screen_mut().rows[r].fill_blank(bce);
                 }
                 self.erase_row_range(cur_row, 0, cur_col + 1);
             }
             EraseMode::All => {
                 for r in &mut self.screen_mut().rows {
-                    r.clear();
+                    r.fill_blank(bce);
                 }
             }
             EraseMode::SavedLines => {
@@ -1186,6 +1359,7 @@ impl Grid {
     }
 
     fn erase_row_range(&mut self, row: usize, start: usize, end: usize) {
+        let bce = self.bce_cell();
         if let Some(r) = self.screen_mut().rows.get_mut(row) {
             let clamped_end = end.min(r.cells.len());
             // §1.28: orphan-clear any wide-pair half whose partner falls
@@ -1194,7 +1368,7 @@ impl Grid {
             // half still carries its width marker for the boundary check.
             clip_wide_pair_at_range_boundaries(r, start, clamped_end);
             for c in start..clamped_end {
-                r.cells[c] = Cell::EMPTY;
+                r.cells[c] = bce;
             }
             // §B.2 (2026-05-08): drop every cluster sidecar whose anchor
             // col is in the erased range. Without this, ED/EL leaves
@@ -1232,12 +1406,13 @@ impl Grid {
         let cur_col = self.screen().cursor.col;
         let cols = self.cols;
         let end = (cur_col + n).min(cols);
+        let bce = self.bce_cell();
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let clamped_end = end.min(r.cells.len());
             // §1.28: same wide-pair boundary guard as erase_row_range.
             clip_wide_pair_at_range_boundaries(r, cur_col, clamped_end);
             for c in cur_col..clamped_end {
-                r.cells[c] = Cell::EMPTY;
+                r.cells[c] = bce;
             }
             // §B.2 — drop cluster sidecars in the erased range.
             r.clear_clusters_in_range(cur_col, clamped_end);
@@ -1257,6 +1432,7 @@ impl Grid {
         let cur_row = self.screen().cursor.row;
         let cur_col = self.screen().cursor.col;
         let cols = self.cols;
+        let bce = self.bce_cell();
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let n = n.min(cols.saturating_sub(cur_col));
             if n == 0 {
@@ -1311,7 +1487,7 @@ impl Grid {
                 }
             }
             for c in cur_col..(cur_col + n).min(r.cells.len()) {
-                r.cells[c] = Cell::EMPTY;
+                r.cells[c] = bce;
             }
             // Hyperlink spans straddling or after the cursor get
             // invalidated. Line-edit operations (PSReadLine / readline /
@@ -1367,6 +1543,7 @@ impl Grid {
         let cur_row = self.screen().cursor.row;
         let cur_col = self.screen().cursor.col;
         let cols = self.cols;
+        let bce = self.bce_cell();
         if let Some(r) = self.screen_mut().rows.get_mut(cur_row) {
             let n = n.min(cols.saturating_sub(cur_col));
             if n == 0 {
@@ -1391,7 +1568,7 @@ impl Grid {
             }
             // Fill the right side with blanks.
             for c in (cols - n)..cols.min(r.cells.len()) {
-                r.cells[c] = Cell::EMPTY;
+                r.cells[c] = bce;
             }
             // Drop any hyperlink span overlapping or after the cursor
             // — see ICH for rationale. (TASKS §1.18.b extension.)
@@ -1409,6 +1586,7 @@ impl Grid {
     /// enter scrollback ONLY if (a) we're on the primary screen AND
     /// (b) the region covers the entire screen.
     fn scroll_region_up(&mut self, n: usize) {
+        let bce = self.bce_cell();
         let scr = self.screen();
         let top = scr.scroll_top;
         let bottom = scr.scroll_bottom;
@@ -1427,17 +1605,21 @@ impl Grid {
             let new_bottom = if push_to_scrollback {
                 match self.scrollback.push(evicted_top) {
                     Some(mut recycled) => {
-                        recycled.clear();
+                        recycled.fill_blank(bce);
                         recycled.resize(cols);
                         recycled
                     }
-                    None => Row::new(cols),
+                    None => {
+                        let mut row = Row::new(cols);
+                        row.fill_blank(bce);
+                        row
+                    }
                 }
             } else {
                 // Reuse the dropped row's allocation directly: clear and place
                 // it at the bottom. This keeps alloc count flat per scroll.
                 let mut row = evicted_top;
-                row.clear();
+                row.fill_blank(bce);
                 row.resize(cols);
                 row
             };
@@ -1453,6 +1635,7 @@ impl Grid {
     /// Internal: scroll the active region down by `n` rows. New blank rows
     /// at scroll_top, rows leaving scroll_bottom dropped (no scrollback).
     fn scroll_region_down(&mut self, n: usize) {
+        let bce = self.bce_cell();
         let scr = self.screen();
         let top = scr.scroll_top;
         let bottom = scr.scroll_bottom;
@@ -1463,7 +1646,7 @@ impl Grid {
         for _ in 0..n {
             // Drop the bottom row, recycle its allocation as the new top.
             let mut recycled = self.screen_mut().rows.remove(bottom);
-            recycled.clear();
+            recycled.fill_blank(bce);
             recycled.resize(cols);
             self.screen_mut().rows.insert(top, recycled);
         }
@@ -1504,11 +1687,12 @@ impl Grid {
         let region_h = bottom - cur + 1;
         let n = n.min(region_h);
         let cols = self.cols;
+        let bce = self.bce_cell();
         for _ in 0..n {
             // Drop the row at `bottom`, recycle its allocation as the new
             // blank inserted at `cur`. Net: rows[cur..bottom] shift down by 1.
             let mut recycled = self.screen_mut().rows.remove(bottom);
-            recycled.clear();
+            recycled.fill_blank(bce);
             recycled.resize(cols);
             self.screen_mut().rows.insert(cur, recycled);
         }
@@ -1529,10 +1713,11 @@ impl Grid {
         let region_h = bottom - cur + 1;
         let n = n.min(region_h);
         let cols = self.cols;
+        let bce = self.bce_cell();
         for _ in 0..n {
             // Remove the row at `cur`, recycle as new blank at `bottom`.
             let mut recycled = self.screen_mut().rows.remove(cur);
-            recycled.clear();
+            recycled.fill_blank(bce);
             recycled.resize(cols);
             self.screen_mut().rows.insert(bottom, recycled);
         }
@@ -1639,6 +1824,135 @@ fn clip_hyperlinks_around(spans: &mut Vec<super::cell::HyperlinkSpan>, start: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BCE: when the pen carries a non-default background, EL all should
+    /// fill blanked cells with `bg = pen.bg` (default fg, no flags). The
+    /// classic xterm/iTerm behaviour without which "TUI 设的色被 ED 清掉"
+    /// after a colour-set + clear sequence.
+    #[test]
+    fn bce_erase_in_line_all_preserves_pen_bg() {
+        let mut g = Grid::new(2, 5, 0);
+        let blue = Attrs {
+            fg: Color::DEFAULT,
+            bg: Color::indexed(4),
+            flags: Flags::empty(),
+        };
+        g.set_pen(blue);
+        g.erase_in_line(EraseMode::All);
+        let row = g.row(0).unwrap();
+        for c in &row.cells {
+            assert_eq!(c.ch, ' ');
+            assert_eq!(g.attrs.get(c.attr).bg, Color::indexed(4));
+            assert_eq!(g.attrs.get(c.attr).fg, Color::DEFAULT);
+        }
+    }
+
+    /// BCE: when the pen is default the helper short-circuits to
+    /// `Cell::EMPTY` — `AttrId::DEFAULT` index 0, no attr-table churn.
+    /// This keeps the common path (no SGR change before clear) identical
+    /// to the pre-BCE behaviour.
+    #[test]
+    fn bce_erase_with_default_pen_yields_attrid_default() {
+        let mut g = Grid::new(1, 4, 0);
+        g.erase_in_line(EraseMode::All);
+        let row = g.row(0).unwrap();
+        for c in &row.cells {
+            assert_eq!(c.attr, AttrId::DEFAULT);
+        }
+    }
+
+    /// BCE: ECH must respect the pen too — TUIs commonly do "set bg
+    /// → ECH N → write text" to repaint a coloured run in place
+    /// (PSReadLine prompt redraws, fzf preview pane).
+    #[test]
+    fn bce_erase_chars_preserves_pen_bg() {
+        let mut g = Grid::new(1, 6, 0);
+        let red = Attrs {
+            fg: Color::DEFAULT,
+            bg: Color::indexed(1),
+            flags: Flags::empty(),
+        };
+        g.set_pen(red);
+        g.erase_chars(3);
+        let row = g.row(0).unwrap();
+        for c in row.cells.iter().take(3) {
+            assert_eq!(g.attrs.get(c.attr).bg, Color::indexed(1));
+        }
+        // Cells past the erase range should remain untouched (still default).
+        for c in row.cells.iter().skip(3) {
+            assert_eq!(c.attr, AttrId::DEFAULT);
+        }
+    }
+
+    /// BCE: DCH shifts the row left and fills the right margin with
+    /// blanks — those right-margin fills should carry the pen bg.
+    #[test]
+    fn bce_delete_chars_right_fill_uses_pen_bg() {
+        let mut g = Grid::new(1, 6, 0);
+        for ch in "ABCDEF".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        let green = Attrs {
+            fg: Color::DEFAULT,
+            bg: Color::indexed(2),
+            flags: Flags::empty(),
+        };
+        g.set_pen(green);
+        g.cursor_to(0, 0);
+        g.delete_chars(2);
+        let row = g.row(0).unwrap();
+        // After DCH(2): "CDEF" + 2 blanks → blanks at cols 4..6 carry bg=2.
+        assert_eq!(row.cells[0].ch, 'C');
+        assert_eq!(row.cells[3].ch, 'F');
+        for c in row.cells.iter().skip(4) {
+            assert_eq!(c.ch, ' ');
+            assert_eq!(g.attrs.get(c.attr).bg, Color::indexed(2));
+        }
+    }
+
+    /// BCE: scroll_up at the bottom of the scroll region inserts a new
+    /// blank row at `bottom` — that row should carry the pen bg.
+    #[test]
+    fn bce_scroll_up_new_row_uses_pen_bg() {
+        let mut g = Grid::new(2, 4, 0);
+        g.print('X', Attrs::DEFAULT);
+        let cyan = Attrs {
+            fg: Color::DEFAULT,
+            bg: Color::indexed(6),
+            flags: Flags::empty(),
+        };
+        g.set_pen(cyan);
+        g.scroll_up(1);
+        // Row 1 (the new bottom) should be filled with cyan blanks.
+        let row1 = g.row(1).unwrap();
+        for c in &row1.cells {
+            assert_eq!(c.ch, ' ');
+            assert_eq!(g.attrs.get(c.attr).bg, Color::indexed(6));
+        }
+    }
+
+    /// BCE: BG is preserved on erase but fg / bold / underline are NOT —
+    /// matches xterm's "Background Color Erase" definition (only bg
+    /// follows the pen; fg + flags reset). This guards against future
+    /// well-meaning patches that copy the full `Attrs` into the blank.
+    #[test]
+    fn bce_strips_fg_and_flags_keeps_only_bg() {
+        let mut g = Grid::new(1, 3, 0);
+        let bold_red_on_blue = Attrs {
+            fg: Color::indexed(1),
+            bg: Color::indexed(4),
+            flags: Flags::BOLD,
+        };
+        g.set_pen(bold_red_on_blue);
+        g.erase_in_line(EraseMode::All);
+        let row = g.row(0).unwrap();
+        for c in &row.cells {
+            let a = g.attrs.get(c.attr);
+            assert_eq!(a.bg, Color::indexed(4));
+            assert_eq!(a.fg, Color::DEFAULT);
+            assert_eq!(a.flags, Flags::empty());
+        }
+    }
 
     #[test]
     fn alt_screen_isolates_content() {
@@ -1818,6 +2132,7 @@ mod tests {
             attr: AttrId::DEFAULT,
             origin: false,
             pending_wrap: false,
+            app_cursor_keys: false,
         });
         g.enter_alt_screen(true);
         assert!(g.is_alt_screen());
@@ -1840,6 +2155,7 @@ mod tests {
             attr: AttrId::DEFAULT,
             origin: false,
             pending_wrap: false,
+            app_cursor_keys: false,
         });
 
         g.resize(3, 3);
@@ -2155,6 +2471,45 @@ mod tests {
         // Even a fresh `note` followed by cursor-visible should be off.
         g2.note_absolute_positioning(50_000);
         assert!(!g2.is_inline_tui_active_at(50_500, true));
+    }
+
+    #[test]
+    fn ctrl_c_grace_window_disables_inline_tui_heuristic() {
+        // Scenario: Ink-style TUI hides cursor (`?25l`) and keeps
+        // re-emitting absolute-positioning CSIs as the user types. User
+        // hits Ctrl+C; TUI dies without sending `?25h` so
+        // `cursor_visible` stays false. PSReadLine then writes
+        // `\x1b[G` on every keystroke, keeping the abs-CSI timestamp
+        // fresh — without the grace window, the heuristic would stay
+        // wedged "on" forever and the shell-history IME helper
+        // wouldn't re-enable. Verify the grace window short-circuits
+        // the heuristic for exactly CTRL_C_GRACE_MS.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+
+        // Set up the "wedged" state: cursor hidden, abs-CSI fresh.
+        g.note_absolute_positioning(now);
+        assert!(g.is_inline_tui_active_at(now + 500, false), "heuristic on pre-Ctrl+C");
+
+        // User sends Ctrl+C.
+        g.note_ctrl_c_sent(now + 500);
+
+        // Within grace window → heuristic forced off even though
+        // PSReadLine keeps emitting abs-CSIs.
+        g.note_absolute_positioning(now + 1_000);
+        assert!(!g.is_inline_tui_active_at(now + 1_500, false), "grace window suppresses heuristic");
+        g.note_absolute_positioning(now + 3_000);
+        assert!(!g.is_inline_tui_active_at(now + 3_400, false), "still suppressed near grace boundary");
+
+        // Past grace window (3 s) AND fresh abs-CSI → heuristic re-engages.
+        g.note_absolute_positioning(now + 4_000);
+        assert!(g.is_inline_tui_active_at(now + 4_100, false), "heuristic re-engages after grace expires");
+
+        // Cursor visible during grace → off regardless (no regression).
+        let mut g2 = Grid::new(5, 20, 0);
+        g2.note_absolute_positioning(now);
+        g2.note_ctrl_c_sent(now);
+        assert!(!g2.is_inline_tui_active_at(now + 500, true), "visible cursor still wins");
     }
 
     #[test]

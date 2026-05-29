@@ -229,26 +229,27 @@ impl GlyphAtlas {
 /// GPU sampled them, so the earlier cell rendered the *new* glyph. The
 /// frame-to-frame variation produced the visible "Claude TUI 历史输出
 /// 字符不停刷新" symptom.
-pub fn pick_evictable_layer(atlas: &mut GlyphAtlas, pinned: &[bool]) -> Option<u32> {
-    // Hold pinned entries we walk past so we can re-insert them after
-    // we either find an evictable layer or exhaust the cache. Pre-
-    // reserve 8: typical pin density is small (LRU is almost always
-    // unpinned, so requeue stays length 0 on the steady-state hot
-    // path). Under thrash the Vec grows in place.
+/// Pick an LRU layer to reuse. The returned layer is guaranteed:
+///   - Not in `pinned` (per-pane pin set for current frame)
+///   - Not in `written` (global pin set: already written by any pane this frame)
+/// Returns `None` when every layer is pinned or written (atlas exhausted).
+pub fn pick_evictable_layer(
+    atlas: &mut GlyphAtlas,
+    pinned: &[bool],
+    written: &[bool],
+) -> Option<u32> {
     let mut requeue: Vec<(GlyphKey, GlyphEntry)> = Vec::with_capacity(8);
     let mut chosen: Option<u32> = None;
     while let Some((k, e)) = atlas.evict_oldest() {
         let layer = e.layer as usize;
         let is_pinned = pinned.get(layer).copied().unwrap_or(false);
-        if !is_pinned {
+        let is_written = written.get(layer).copied().unwrap_or(true);
+        if !is_pinned && !is_written {
             chosen = Some(e.layer as u32);
             break;
         }
         requeue.push((k, e));
     }
-    // Restore every pinned entry we skipped so they remain in the
-    // cache. Re-insertion places them at MRU which is correct: they're
-    // being actively sampled by the current frame's draw queue.
     for (k, e) in requeue {
         atlas.insert(k, e);
     }
@@ -413,16 +414,17 @@ mod tests {
         // Pin layers 0, 2, 4 — simulate an in-frame draw_row that
         // looked up keys with those layer ids first this frame.
         let pinned = [true, false, true, false, true];
+        let written = [false; 5];
 
         // First eviction must return an unpinned layer (1 or 3).
-        let first = pick_evictable_layer(&mut a, &pinned);
+        let first = pick_evictable_layer(&mut a, &pinned, &written);
         assert!(
             matches!(first, Some(1) | Some(3)),
             "expected an unpinned layer (1 or 3), got {first:?}"
         );
 
         // Second eviction returns the OTHER unpinned layer.
-        let second = pick_evictable_layer(&mut a, &pinned);
+        let second = pick_evictable_layer(&mut a, &pinned, &written);
         assert!(
             matches!(second, Some(1) | Some(3)),
             "expected the remaining unpinned layer (1 or 3), got {second:?}"
@@ -430,7 +432,7 @@ mod tests {
         assert_ne!(first, second, "must not return the same layer twice");
 
         // Third call: every remaining layer is pinned → None.
-        let third = pick_evictable_layer(&mut a, &pinned);
+        let third = pick_evictable_layer(&mut a, &pinned, &written);
         assert_eq!(third, None, "all remaining layers pinned → must be None");
 
         // Critically: pinned keys must STILL be in the atlas after the
@@ -449,15 +451,17 @@ mod tests {
         a.insert(key(11), entry(1));
         a.insert(key(12), entry(2));
         let pinned = [false, false, false];
+        let written = [false; 3];
         // No pins → standard LRU rule wins → layer 0 (key 10).
-        assert_eq!(pick_evictable_layer(&mut a, &pinned), Some(0));
+        assert_eq!(pick_evictable_layer(&mut a, &pinned, &written), Some(0));
     }
 
     #[test]
     fn pick_evictable_layer_returns_none_for_empty_atlas() {
         let mut a = GlyphAtlas::new(4);
         let pinned = [false; 4];
-        assert_eq!(pick_evictable_layer(&mut a, &pinned), None);
+        let written = [false; 4];
+        assert_eq!(pick_evictable_layer(&mut a, &pinned, &written), None);
     }
 
     #[test]
@@ -471,8 +475,9 @@ mod tests {
         a.insert(key(102), entry(2));
         a.insert(key(103), entry(3));
         let pinned = [true, false, false, false];
+        let written = [false; 4];
 
-        let chosen = pick_evictable_layer(&mut a, &pinned);
+        let chosen = pick_evictable_layer(&mut a, &pinned, &written);
         assert_eq!(chosen, Some(1));
 
         // Atlas should now contain keys 100, 102, 103 — exactly the

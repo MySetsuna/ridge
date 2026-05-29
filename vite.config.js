@@ -37,6 +37,18 @@ export default defineConfig({
   // 构建配置
   build: {
     target: 'esnext',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/monaco-editor')) {
+            return 'monaco-editor';
+          }
+          if (id.includes('node_modules/mermaid')) {
+            return 'mermaid';
+          }
+        }
+      }
+    }
   },
 
   // 优化依赖预构建
@@ -44,9 +56,24 @@ export default defineConfig({
     include: [
       'monaco-editor',
       'svelte-splitpanes',
-      '@tauri-apps/api'
+      '@tauri-apps/api',
+      'qrcode',
     ],
     exclude: ['@ridge/term-wasm'],
   },
+  ssr: {
+    noExternal: ['qrcode'],
+  },
   assetsInclude: ['**/*.wasm'],
+
+  // (2026-05-22) — render worker 用 `new Worker(url, { type: 'module' })`
+  // 创建（src/lib/terminal/workerRendererSingleton.ts），且 worker 本身
+  // import 其它模块（renderWorker.ts → handleRequest deps）。Vite 默认
+  // `worker.format: 'iife'` 与 code-splitting 不兼容，production build
+  // 报错 `Invalid value "iife" for option "worker.format"`。改成 'es' 让
+  // worker chunk 走 ESM 输出，与上面的 `type: 'module'` 一致；现代
+  // WebView2 (Chromium 148) 完全支持 module workers。
+  worker: {
+    format: 'es',
+  },
 });

@@ -27,11 +27,16 @@
 //! be 1px narrower than the others.
 
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use wasm_bindgen::JsValue;
+use web_sys::{
+    CanvasRenderingContext2d, HtmlCanvasElement, OffscreenCanvas,
+    OffscreenCanvasRenderingContext2d, TextMetrics,
+};
 
 use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
+use crate::render::procedural_box;
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
 // §B.8 (2026-05-08) — `is_color_emoji_codepoint` and
@@ -41,9 +46,168 @@ use crate::term::attrs::Flags;
 // agnostic. Imports removed; the helpers themselves are still in
 // `wcwidth.rs` for completeness / external consumers.
 
+/// §p4.9 (2026-05-22) — abstraction over the 2D drawing context so the
+/// same `Canvas2dBackend` body works on both `CanvasRenderingContext2d`
+/// (DOM canvas, main thread) and `OffscreenCanvasRenderingContext2d`
+/// (worker thread, OffscreenCanvas). Each method is a one-liner that
+/// delegates to the underlying inherent web-sys method; the only
+/// non-trivial part is `measure_text`, whose return type is the same
+/// `web_sys::TextMetrics` for both contexts.
+pub trait Canvas2dCtxLike {
+    fn save(&self);
+    fn restore(&self);
+    fn set_font(&self, font: &str);
+    fn set_text_baseline(&self, value: &str);
+    fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue>;
+    fn set_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> Result<(), JsValue>;
+    fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64);
+    fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64);
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue>;
+    fn set_fill_style_str(&self, value: &str);
+}
+
+impl Canvas2dCtxLike for CanvasRenderingContext2d {
+    fn save(&self) {
+        CanvasRenderingContext2d::save(self);
+    }
+    fn restore(&self) {
+        CanvasRenderingContext2d::restore(self);
+    }
+    fn set_font(&self, font: &str) {
+        CanvasRenderingContext2d::set_font(self, font);
+    }
+    fn set_text_baseline(&self, value: &str) {
+        CanvasRenderingContext2d::set_text_baseline(self, value);
+    }
+    fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue> {
+        CanvasRenderingContext2d::measure_text(self, text)
+    }
+    fn set_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> Result<(), JsValue> {
+        CanvasRenderingContext2d::set_transform(self, a, b, c, d, e, f)
+    }
+    fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        CanvasRenderingContext2d::clear_rect(self, x, y, w, h);
+    }
+    fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        CanvasRenderingContext2d::fill_rect(self, x, y, w, h);
+    }
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue> {
+        CanvasRenderingContext2d::fill_text(self, text, x, y)
+    }
+    fn set_fill_style_str(&self, value: &str) {
+        CanvasRenderingContext2d::set_fill_style_str(self, value);
+    }
+}
+
+impl Canvas2dCtxLike for OffscreenCanvasRenderingContext2d {
+    fn save(&self) {
+        OffscreenCanvasRenderingContext2d::save(self);
+    }
+    fn restore(&self) {
+        OffscreenCanvasRenderingContext2d::restore(self);
+    }
+    fn set_font(&self, font: &str) {
+        OffscreenCanvasRenderingContext2d::set_font(self, font);
+    }
+    fn set_text_baseline(&self, value: &str) {
+        OffscreenCanvasRenderingContext2d::set_text_baseline(self, value);
+    }
+    fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue> {
+        OffscreenCanvasRenderingContext2d::measure_text(self, text)
+    }
+    fn set_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> Result<(), JsValue> {
+        OffscreenCanvasRenderingContext2d::set_transform(self, a, b, c, d, e, f)
+    }
+    fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        OffscreenCanvasRenderingContext2d::clear_rect(self, x, y, w, h);
+    }
+    fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64) {
+        OffscreenCanvasRenderingContext2d::fill_rect(self, x, y, w, h);
+    }
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue> {
+        OffscreenCanvasRenderingContext2d::fill_text(self, text, x, y)
+    }
+    fn set_fill_style_str(&self, value: &str) {
+        OffscreenCanvasRenderingContext2d::set_fill_style_str(self, value);
+    }
+}
+
+/// §p4.9 (2026-05-22) — abstraction over the canvas surface. Both
+/// `HtmlCanvasElement` and `OffscreenCanvas` accept `set_width` /
+/// `set_height` to size the backing buffer, but only `HtmlCanvasElement`
+/// has a `.style` CSS property — for the worker path, the host owns
+/// the layout (it transferred a pre-sized canvas) so `lock_css_size`
+/// is a documented no-op.
+pub trait Canvas2dSurfaceLike {
+    fn set_width(&self, value: u32);
+    fn set_height(&self, value: u32);
+    /// On the main thread, lock the canvas CSS size to `width: 100%`
+    /// / `height: 100%` so it tracks subsequent container resizes
+    /// (see TASKS §1.9 — earlier code froze it at first-fit pixel
+    /// size, blocking later fitPane calls). On the worker thread,
+    /// the host owns layout, so this is a no-op.
+    fn lock_css_size_to_100_percent(&self) -> Result<(), String>;
+}
+
+impl Canvas2dSurfaceLike for HtmlCanvasElement {
+    fn set_width(&self, value: u32) {
+        HtmlCanvasElement::set_width(self, value);
+    }
+    fn set_height(&self, value: u32) {
+        HtmlCanvasElement::set_height(self, value);
+    }
+    fn lock_css_size_to_100_percent(&self) -> Result<(), String> {
+        let style = self.style();
+        style
+            .set_property("width", "100%")
+            .map_err(|e| format!("style.width: {:?}", e))?;
+        style
+            .set_property("height", "100%")
+            .map_err(|e| format!("style.height: {:?}", e))?;
+        Ok(())
+    }
+}
+
+impl Canvas2dSurfaceLike for OffscreenCanvas {
+    fn set_width(&self, value: u32) {
+        OffscreenCanvas::set_width(self, value);
+    }
+    fn set_height(&self, value: u32) {
+        OffscreenCanvas::set_height(self, value);
+    }
+    fn lock_css_size_to_100_percent(&self) -> Result<(), String> {
+        // OffscreenCanvas has no DOM presence — host owns layout.
+        Ok(())
+    }
+}
+
 pub struct Canvas2dBackend {
-    canvas: HtmlCanvasElement,
-    ctx: CanvasRenderingContext2d,
+    canvas: Box<dyn Canvas2dSurfaceLike>,
+    ctx: Box<dyn Canvas2dCtxLike>,
     /// Saved per begin_frame so draw_row / draw_cursor can read them.
     metrics: FrameMetrics,
     /// `Theme` is cloned each frame because it holds 256 colors (~1KB).
@@ -57,6 +221,7 @@ pub struct Canvas2dBackend {
 }
 
 impl Canvas2dBackend {
+    /// Main-thread constructor — `HtmlCanvasElement` from the DOM.
     pub fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
         let ctx_obj = canvas
             .get_context("2d")
@@ -65,20 +230,49 @@ impl Canvas2dBackend {
         let ctx: CanvasRenderingContext2d = ctx_obj
             .dyn_into()
             .map_err(|_| "context is not Canvas2D".to_string())?;
+        Ok(Self::from_handles(Box::new(canvas), Box::new(ctx)))
+    }
 
-        Ok(Self {
+    /// §p4.9 (2026-05-22) — worker-thread constructor.
+    ///
+    /// `OffscreenCanvas` is the only canvas type a DedicatedWorker can
+    /// own (you can't ship a `HtmlCanvasElement` cross-realm; you call
+    /// `canvas.transferControlToOffscreen()` on the main thread, then
+    /// postMessage the resulting `OffscreenCanvas` via `transferList`).
+    /// The 2D context surface this gives us back is fully symmetric
+    /// with `CanvasRenderingContext2d` for everything this backend uses
+    /// — see `Canvas2dCtxLike`.
+    pub fn new_from_offscreen(canvas: OffscreenCanvas) -> Result<Self, String> {
+        let ctx_obj = canvas
+            .get_context("2d")
+            .map_err(|e| format!("getContext('2d') failed: {:?}", e))?
+            .ok_or_else(|| "getContext('2d') returned null".to_string())?;
+        let ctx: OffscreenCanvasRenderingContext2d = ctx_obj
+            .dyn_into()
+            .map_err(|_| "context is not OffscreenCanvas2D".to_string())?;
+        Ok(Self::from_handles(Box::new(canvas), Box::new(ctx)))
+    }
+
+    /// Shared post-context init. Both constructors funnel here so the
+    /// default metrics / theme / font_css live in one place.
+    fn from_handles(
+        canvas: Box<dyn Canvas2dSurfaceLike>,
+        ctx: Box<dyn Canvas2dCtxLike>,
+    ) -> Self {
+        Self {
             canvas,
             ctx,
             metrics: FrameMetrics {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
             },
             theme: Theme::default_dark(),
             font_css: String::from("15px monospace"),
             css_w: 0,
             css_h: 0,
-        })
+        }
     }
 
     /// Set the font CSS used for `fillText`. Must include size, e.g.
@@ -158,13 +352,7 @@ impl RenderBackend for Canvas2dBackend {
         // `set_height` above) control the device-pixel backing buffer
         // and are independent of CSS — DPR changes update the buffer
         // without touching CSS layout.
-        let style = self.canvas.style();
-        style
-            .set_property("width", "100%")
-            .map_err(|e| format!("style.width: {:?}", e))?;
-        style
-            .set_property("height", "100%")
-            .map_err(|e| format!("style.height: {:?}", e))?;
+        self.canvas.lock_css_size_to_100_percent()?;
         // Reset transform — setting width/height clears the transform
         // matrix automatically, but we'll re-apply scale in begin_frame.
         Ok(())
@@ -196,35 +384,52 @@ impl RenderBackend for Canvas2dBackend {
         // scale uniformly to both calls).
         self.ctx
             .clear_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
-        self.ctx
-            .set_fill_style_str(&Self::rgba_to_css(self.theme.bg));
-        self.ctx
-            .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
+        
+        let clear_bg = if self.metrics.tui_mode { self.theme.tui_bg } else { [0, 0, 0, 0] };
+        if clear_bg[3] != 0 {
+            self.ctx
+                .set_fill_style_str(&Self::rgba_to_css(clear_bg));
+            self.ctx
+                .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
+        }
     }
 
-    fn draw_row(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
+
         let y_top = (row.row_index as f64 * cell_h).round();
+        let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
+        let h = y_bottom - y_top;
 
-        // Pass 1: backgrounds. Skip cells whose bg matches theme bg
-        // (they were already painted by `clear()`, or by the previous
-        // frame's content that didn't change). For partial draws (no
-        // clear), we MUST paint bg to overwrite the previous frame.
-        // Conservative: always paint, accept the perf hit. Canvas2D
-        // is the oracle, not the fast path.
         for (col, cell) in row.cells.iter().enumerate() {
-            // Wide-cell continuation halves carry the same bg as the
-            // first half — paint them too so the bg spans both cells.
-            let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme);
-            self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
-            let x = (col as f64 * cell_w).round();
-            self.ctx.fill_rect(x, y_top, cell_w.ceil(), cell_h.ceil());
-        }
+            let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
 
-        // Pass 2: glyphs. Skip width-0 (continuation halves of wide
-        // cells — the wide cell's own draw already covers both halves)
-        // and blanks (space at default attrs).
+            let x_left = (col as f64 * cell_w).round();
+            let x_right = ((col + cell.width as usize) as f64 * cell_w).round();
+            let w = x_right - x_left;
+
+            if w <= 0.0 {
+                continue;
+            }
+
+            if bg[3] == 0 {
+                self.ctx.clear_rect(x_left, y_top, w, h);
+            } else {
+                self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
+                self.ctx.fill_rect(x_left, y_top, w, h);
+            }
+        }
+    }
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        let cell_w = self.metrics.cell_w as f64;
+        let cell_h = self.metrics.cell_h as f64;
+
+        let y_top = (row.row_index as f64 * cell_h).round();
+        let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
+        let h = y_bottom - y_top;
+
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
@@ -232,12 +437,9 @@ impl RenderBackend for Canvas2dBackend {
             if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
                 continue;
             }
-            let (attrs, fg, _bg) = resolve_cell_colors(cell, attrs_table, &self.theme);
+            let (attrs, fg, _bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
             self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
 
-            // Bold: rebuild the font string with `bold` weight prefix.
-            // Italic: same with `italic` style. We only do this when needed
-            // — most cells stay on the base font.
             if attrs.flags.contains(Flags::BOLD) || attrs.flags.contains(Flags::ITALIC) {
                 let mut font = String::new();
                 if attrs.flags.contains(Flags::ITALIC) {
@@ -252,15 +454,10 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.set_font(&self.font_css);
             }
 
-            let x = (col as f64 * cell_w).round();
-            // §4.7: if a multi-codepoint grapheme cluster was registered
-            // at this column, paint the full cluster string via
-            // `fill_text` (browsers handle ZWJ + variation selectors
-            // natively when the font stack includes color-emoji fonts).
-            // Otherwise fall back to the single codepoint stored in
-            // `cell.ch`. Linear scan over `row.clusters` is cheap because
-            // most rows have 0 clusters and emoji-heavy rows still have
-            // <10.
+            let x_left = (col as f64 * cell_w).round();
+            let x_right = ((col + cell.width as usize) as f64 * cell_w).round();
+            let w = x_right - x_left;
+
             let cluster = if !row.clusters.is_empty() {
                 let target = col.min(u16::MAX as usize) as u16;
                 row.clusters.iter().find(|c| c.col == target)
@@ -273,32 +470,30 @@ impl RenderBackend for Canvas2dBackend {
                 Some(cspan) => glyph_str = &cspan.text,
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
-            // §B.11 (2026-05-08) — natural-size rendering. Plain
-            // `fill_text` paints the glyph at its natural advance
-            // anchored at cell left. If natural > cell_w, the glyph
-            // visually overflows into the next cell. Layer-rendering
-            // semantics naturally hold here because draw_row already
-            // does TWO passes (Pass 1: backgrounds for ALL cells in
-            // the row; Pass 2: glyphs for ALL cells in cell-index
-            // order). So cell N's overflow glyph paints OVER cell
-            // N+1's already-painted bg, then cell N+1's glyph paints
-            // OVER cell N's overflow at intersection only — both
-            // glyphs visible at correct proportions.
-            //
-            // Reverts §B.10's bidirectional rescale + scale_x trick.
-            // The user explicitly prefers natural-shape glyphs over
-            // cursor-aligned visuals — same call as Windows Terminal /
-            // iTerm2 / Apple Terminal.
-            let _ = self.ctx.fill_text(glyph_str, x, y_top);
+            
+            let first_char = glyph_str.chars().next();
+            let mut drawn_procedurally = false;
+            
+            if let Some(ch) = first_char {
+                if let Some(rects) = procedural_box(ch, x_left as f32, y_top as f32, w as f32, h as f32) {
+                    for r in rects {
+                        self.ctx.fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
+                    }
+                    drawn_procedurally = true;
+                }
+            }
+            
+            if !drawn_procedurally {
+                let _ = self.ctx.fill_text(glyph_str, x_left, y_top);
+            }
 
-            // Underline / strikethrough as separate strokes after the glyph.
             if attrs.flags.contains(Flags::UNDERLINE) {
-                let y = y_top + cell_h - 2.0;
-                self.ctx.fill_rect(x, y, cell_w, 1.0);
+                let y = y_top + h - 2.0;
+                self.ctx.fill_rect(x_left, y, w, 1.0);
             }
             if attrs.flags.contains(Flags::STRIKETHROUGH) {
-                let y = y_top + cell_h * 0.5;
-                self.ctx.fill_rect(x, y, cell_w, 1.0);
+                let y = y_top + h * 0.5;
+                self.ctx.fill_rect(x_left, y, w, 1.0);
             }
         }
     }
@@ -308,20 +503,17 @@ impl RenderBackend for Canvas2dBackend {
         let cell_h = self.metrics.cell_h as f64;
         let x = (cursor.col as f64 * cell_w).round();
         let y = (cursor.row as f64 * cell_h).round();
+        let y_bottom = ((cursor.row + 1) as f64 * cell_h).round();
+        let cell_h_int = y_bottom - y;
+        let cursor_span = cursor.width.max(1) as usize;
+        let x_right = ((cursor.col + cursor_span) as f64 * cell_w).round();
+        let w = x_right - x;
 
-        // Cursor color (theme override) — paint the shape first.
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_color));
         match cursor.style {
             CursorStyle::Block => {
-                let w = if cursor.width == 2 {
-                    cell_w * 2.0
-                } else {
-                    cell_w
-                };
-                self.ctx.fill_rect(x, y, w.ceil(), cell_h.ceil());
-                // Repaint the glyph in cursor_text_color on top, so the
-                // character under the cursor stays legible.
+                self.ctx.fill_rect(x, y, w, cell_h_int);
                 if cursor.ch != ' ' && cursor.ch != '\0' {
                     self.ctx
                         .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_text_color));
@@ -330,15 +522,14 @@ impl RenderBackend for Canvas2dBackend {
                     let s = cursor.ch.encode_utf8(&mut buf);
                     let _ = self.ctx.fill_text(s, x, y);
                 }
-                // Silence unused on attrs_table for this style.
                 let _ = attrs_table;
             }
             CursorStyle::Bar => {
-                self.ctx.fill_rect(x, y, 2.0, cell_h.ceil());
+                self.ctx.fill_rect(x, y, 2.0, cell_h_int);
                 let _ = attrs_table;
             }
             CursorStyle::Underline => {
-                self.ctx.fill_rect(x, y + cell_h - 2.0, cell_w.ceil(), 2.0);
+                self.ctx.fill_rect(x, y + cell_h_int - 2.0, w, 2.0);
                 let _ = attrs_table;
             }
         }
@@ -353,29 +544,30 @@ impl RenderBackend for Canvas2dBackend {
             if col_end <= col_start {
                 continue;
             }
-            let x = (col_start as f64 * cell_w).round();
-            let y = (row as f64 * cell_h).round();
-            let w = ((col_end - col_start) as f64 * cell_w).ceil();
-            self.ctx.fill_rect(x, y, w, cell_h.ceil());
+            let x_left = (col_start as f64 * cell_w).round();
+            let x_right = (col_end as f64 * cell_w).round();
+            let w = x_right - x_left;
+            let y_top = (row as f64 * cell_h).round();
+            let y_bottom = ((row + 1) as f64 * cell_h).round();
+            let h = y_bottom - y_top;
+            self.ctx.fill_rect(x_left, y_top, w, h);
         }
     }
 
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
         let cell_w = self.metrics.cell_w as f64;
-        let cell_h = self.metrics.cell_h as f64;
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.hyperlink_color));
-        // 1px tall underline at the bottom of the cell row. The DPR
-        // transform applied in begin_frame means 1.0 here = 1 CSS px,
-        // not 1 device px — visible on hi-DPI without manual scaling.
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
                 continue;
             }
-            let x = (col_start as f64 * cell_w).round();
-            let y = (row as f64 * cell_h + cell_h - 1.0).round();
-            let w = ((col_end - col_start) as f64 * cell_w).ceil();
-            self.ctx.fill_rect(x, y, w, 1.0);
+            let x_left = (col_start as f64 * cell_w).round();
+            let x_right = (col_end as f64 * cell_w).round();
+            let w = x_right - x_left;
+            let y_bottom = ((row + 1) as f64 * self.metrics.cell_h as f64).round();
+            let y = y_bottom - 1.0;
+            self.ctx.fill_rect(x_left, y, w, 1.0);
         }
     }
 

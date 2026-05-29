@@ -31,21 +31,21 @@ self.MonacoEnvironment = {
   import Explorer from '$lib/components/Explorer.svelte';
   import FileEditor from '$lib/components/FileEditor.svelte';
   import ContextMenu from '$lib/components/ContextMenu.svelte';
-  import ClaudeAgentLauncher from '$lib/components/ClaudeAgentLauncher.svelte';
-  import ScrollbackHistoryModal from '$lib/components/ScrollbackHistoryModal.svelte';
-  // DiffEditorModal removed — diff view integrated into FileEditor tabs
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
-  import ClaudeCodePanel from '$lib/components/ClaudeCodePanel.svelte';
   import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
-  import { Bot } from 'lucide-svelte';
+  import RemotePanel from '$lib/remote/RemotePanel.svelte';
+  import { Smartphone } from 'lucide-svelte';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
   // Side-effect import: each built-in plugin auto-registers via its module
   // script. Must land once, at app chrome level.
   import '$lib/plugins';
+  import { initThemeSystem } from '$lib/stores/themes';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { setupTerminalThemeBridge } from '$lib/terminal/themeBridge';
   import {
     Terminal,
     FolderOpen,
@@ -71,13 +71,17 @@ self.MonacoEnvironment = {
     Settings,
     FileCode,
     FolderInput,
+    History,
+    Bookmark,
     Search,
     PanelRightOpen,
     RefreshCw,
   } from 'lucide-svelte';
+// 删除相关的最近工作区定义和函数
   import {
     paneTreeStore,
     workspacePaneTrees,
+    workspaceSaveInfoStore,
     activePaneId,
     splitActivePane,
     syncPaneLayoutFromBackend,
@@ -93,10 +97,11 @@ self.MonacoEnvironment = {
     saveCurrentWorkspace,
     loadSavedWorkspaces,
     getStartupContext,
+    getRestoreSet,
     openWorkspaceFromFile,
+    listSavedWorkspaceFiles,
     refreshWorkspaceSaveInfo,
-    listRecentWorkspaces,
-    clearRecentWorkspaces,
+    deleteWorkspaceFile, // 添加此导入
     closePane,
     paneCwdStore,
   } from '$lib/stores/paneTree';
@@ -109,44 +114,34 @@ self.MonacoEnvironment = {
     promptDialog,
   } from '$lib/components/RidgeDialog.svelte';
 
-  // ─── 打开 .ridge 入口 + 最近打开下拉（使用 tauri-plugin-dialog 的 OS 原生文件选择器）───
-  let recentOpen = $state(false);
-  let recentList = $state<string[]>([]);
-  let recentBtn: HTMLButtonElement | undefined = $state();
-  let recentPopupStyle = $state('');
-  async function loadRecentAndToggle() {
-    recentList = await listRecentWorkspaces();
-    if (!recentOpen && recentBtn) {
-      const r = recentBtn.getBoundingClientRect();
-      recentPopupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
+// ─── 打开 .ridge 入口（双下拉）───
+  // 副按钮 = 已保存工作区（Bookmark 图标，列出 ~/ridge-workspaces/*.ridge）。
+  // 点击 = openWorkspaceFromFile。
+  let savedOpen = $state(false);
+  let savedList = $state<{ name: string; path: string; mtime_secs: number }[]>([]);
+  let savedBtn: HTMLButtonElement | undefined = $state();
+  let savedPopupStyle = $state('');
+
+  async function loadSavedAndToggle() {
+    savedList = await listSavedWorkspaceFiles();
+    if (!savedOpen && savedBtn) {
+      const r = savedBtn.getBoundingClientRect();
+      savedPopupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
     }
-    recentOpen = !recentOpen;
+    savedOpen = !savedOpen;
   }
-  function basenameOf(p: string): string {
-    return p.split(/[/\\]/).filter(Boolean).pop() || p;
-  }
-  function dirnameOf(p: string): string {
-    const parts = p.split(/[/\\]/).filter(Boolean);
-    if (parts.length <= 1) return '';
-    return parts.slice(0, -1).join('/');
-  }
-  async function openRecent(path: string) {
-    recentOpen = false;
+  async function openSaved(path: string) {
+    savedOpen = false;
     try {
       await openWorkspaceFromFile(path);
     } catch (err) {
       await alertDialog({ title: '打开失败', message: String(err), danger: true });
     }
   }
-  async function handleClearRecent() {
-    await clearRecentWorkspaces();
-    recentList = [];
-    recentOpen = false;
-  }
+
   async function pickAndOpenWorkspace() {
-    recentOpen = false;
+    savedOpen = false;
     try {
-      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
       const picked = await openDialog({
         multiple: false,
         filters: [{ name: 'Ridge Workspace', extensions: ['ridge'] }],
@@ -159,6 +154,7 @@ self.MonacoEnvironment = {
       await alertDialog({ title: '打开失败', message: String(err), danger: true });
     }
   }
+
   import {
     hideContextMenu,
     showContextMenu,
@@ -166,10 +162,11 @@ self.MonacoEnvironment = {
     type ContextMenuTarget,
     type ContextMenuItem,
   } from '$lib/stores/contextMenu';
-  import type { PaneNode } from '$lib/stores/paneTree';
+
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
   import { get } from 'svelte/store';
+
   import { onMount, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -206,12 +203,24 @@ self.MonacoEnvironment = {
     const parent = node.parentElement;
     let observer: ResizeObserver | undefined;
     let pendingRaf = 0;
+    let pendingDims: { wCss: number; hCss: number } | null = null;
     if (parent) {
-      observer = new ResizeObserver(() => {
+      observer = new ResizeObserver((entries) => {
+        // Capture dims from the ResizeObserver entry (no layout query).
+        // Stash on outer scope so the RAF callback below uses the LATEST
+        // observed dims even when several observer fires coalesce into
+        // one RAF tick.
+        const e = entries[entries.length - 1];
+        if (e) pendingDims = { wCss: e.contentRect.width, hCss: e.contentRect.height };
         if (pendingRaf !== 0) return;
         pendingRaf = requestAnimationFrame(() => {
           pendingRaf = 0;
-          manager.resizeHost();
+          if (pendingDims) {
+            manager.resizeHost(pendingDims);
+            pendingDims = null;
+          } else {
+            manager.resizeHost();
+          }
         });
       });
       observer.observe(parent);
@@ -255,17 +264,10 @@ self.MonacoEnvironment = {
     });
   });
 
-  type SidebarTab = 'git' | 'files' | 'search' | 'claude';
+  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote';
   let sidebarTab = $state<SidebarTab>('files');
 
-  // If the Claude extension toggle flips to false while we're on the
-  // Claude tab, fall back to Files. Without this guard the user would
-  // see an empty sidebar (rail button gone, but tab still active).
-  $effect(() => {
-    if (!$settingsStore.claudeExtensionEnabled && sidebarTab === 'claude') {
-      sidebarTab = 'files';
-    }
-  });
+
 
   // localStorage 键名
   const SIDEBAR_WIDTH_KEY = 'ridge-sidebar-width';
@@ -410,11 +412,7 @@ function expandSidebar() {
     }
   }
 
-  // 切换侧边栏tab时加载历史工作区
-  $effect(() => {
-    void sidebarTab; // 订阅 sidebarTab 变化
-    void loadSavedWorkspaces();
-  });
+
 
   // 窗口控制
   let isMaximized = $state(false);
@@ -509,28 +507,7 @@ function expandSidebar() {
     return { target: 'unknown' };
   }
 
-  // 获取指定 pane 的模式（终端或编辑器）
-  function getPaneMode(
-    paneId: string | undefined
-  ): 'terminal' | 'editor' | null {
-    if (!paneId) return null;
-    const findPaneMode = (node: PaneNode): 'terminal' | 'editor' | null => {
-      if (node.type === 'leaf' && node.id === paneId) {
-        return (node as any).mode || 'terminal';
-      }
-      if (node.type === 'split') {
-        for (const child of node.children) {
-          const result = findPaneMode(child);
-          if (result) return result;
-        }
-      }
-      return null;
-    };
-    return findPaneMode(rootNode);
-  }
-
-  /**
-   * Real handler shared across menu items + the Ctrl+W shortcut.
+  /**   * Real handler shared across menu items + the Ctrl+W shortcut.
    * Centralises the "close *this* pane" semantic so the menu fires the
    * same code path as the keyboard shortcut.
    */
@@ -919,8 +896,7 @@ function expandSidebar() {
     if (
       detail === 'files' ||
       detail === 'search' ||
-      detail === 'git' ||
-      (detail === 'claude' && $settingsStore.claudeExtensionEnabled)
+      detail === 'git'
     ) {
       sidebarTab = detail;
       if (sidebarCollapsed) {
@@ -931,32 +907,17 @@ function expandSidebar() {
   }
 
   onMount(() => {
+    // Sync onMount — Svelte's `onMount(async () => …)` returns a Promise
+    // and the framework silently DROPS any cleanup function resolved from
+    // it. With `async`, every listener / subscription registered below
+    // would have leaked on every component unmount and HMR reload. We
+    // keep the outer handler sync (so the returned cleanup actually runs)
+    // and move the single `await initThemeSystem()` plus all dependent
+    // setup into an inner `void (async () => …)()` IIFE.
+
     // 全局屏蔽默认右键菜单，显示自定义菜单
     document.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
-
-    // 启动时把当前主题写到 <html data-rg-theme>，避免首帧短暂闪默认色。
-    initSettingsBoot();
-
-    // 终端主题桥：把 Ridge 的 CSS 变量（--rg-term-bg / --rg-fg /
-    // --rg-accent / --rg-selection-bg）映射到 wasm 内核的 Theme，
-    // 订阅 settingsStore 让暗/亮主题切换跟随。否则 wasm 永远用编译期
-    // 默认蓝色 selection bg，与 Ridge 绿色 accent 不搭。详见 TASKS Bug A。
-    void import('$lib/terminal/themeBridge').then((m) => {
-      m.setupTerminalThemeBridge();
-    });
-
-    // §A.9 (2026-05-08 follow-up) — single global host canvas. The
-    // canvas itself is mounted by `globalHostCanvas` action on the
-    // pane-area wrapper (just outside the workspace `{#each}` loop);
-    // see the markup section below. No per-workspace canvas, no
-    // per-workspace attachHost — switching workspaces is a pure DOM
-    // toggle on the SplitContainer side, the canvas/swap-chain stays
-    // alive across switches.
-
-    // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
-    // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
-    initFileWatcherSync();
 
     // Track viewport width so `sidebarMaxPx` (80% cap) recomputes when
     // the user resizes the window — otherwise a 2000px-wide sidebar
@@ -973,33 +934,96 @@ function expandSidebar() {
     window.addEventListener('resize', onResize);
 
     loadSidebarSettings();
-    if (!isTauri()) return;
+
+    // Hoisted cleanup handles so the sync `return` below can dispose them
+    // even if the async IIFE hasn't yet assigned them (`?.()` guards undef).
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
+    let unsubDefaultCwd: (() => void) | undefined;
+
     void (async () => {
+      try {
+      // 初始化主题系统：从后端获取主题数据
+      await initThemeSystem();
+      // 主题数据就绪后，把当前主题写到 CSS 变量
+      initSettingsBoot();
+      // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
+      // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
+      // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
+      setupTerminalThemeBridge();
+
+      // §A.9 (2026-05-08 follow-up) — single global host canvas. The
+      // canvas itself is mounted by `globalHostCanvas` action on the
+      // pane-area wrapper (just outside the workspace `{#each}` loop);
+      // see the markup section below. No per-workspace canvas, no
+      // per-workspace attachHost — switching workspaces is a pure DOM
+      // toggle on the SplitContainer side, the canvas/swap-chain stays
+      // alive across switches.
+
+      // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
+      // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
+      initFileWatcherSync();
+
+      if (!isTauri()) return;
+
+      // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
+      // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
+      // 优先级（home）而不是用户配置。Svelte writable 的 subscribe 立即用当前值
+      // 触发一次，所以无需另写初始 push 路径。
+      unsubDefaultCwd = settingsStore.subscribe((s) => {
+        void invoke('set_user_default_cwd', { path: s.defaultCwd || null }).catch((err) => {
+          console.warn('set_user_default_cwd failed', err);
+        });
+      });
+
       await refreshWorkspaces();
-      // 启动策略：从命令行 / 资源管理器启动时，以进程 cwd 为决策依据。
-      // - cwd 顶层有 .ridge 文件：打开该工作区，并关掉默认空工作区（用户没交互过）；
-      // - cwd 无 .ridge：默认工作区的根 pane 已在后端 `AppState::new` 中把 cwd 种为启动 cwd，
-      //   这里不需要再做任何事，默认终端会自然落在启动目录。
+      // 启动策略：
+      // 1. cli 启动（终端里 `ridge`）：cwd 是用户工作目录。
+      //    - cwd 顶层有 .ridge → 打开它，关默认；否则保留默认（cwd 已种入根 pane）。
+      //    - 不读取 restore set，避免覆盖用户用 cwd 表达的意图。
+      // 2. menu 启动（双击 / 开始菜单）：cwd 是 ridge.exe 目录，无意义。
+      //    - 优先读 restore set（上次关闭时已保存的工作区）；非空 → 全部 reopen，
+      //      关掉默认空工作区，切到第一个；空 → 保留默认。
       try {
         const ctx = await getStartupContext();
-        if (ctx && ctx.wind_file_in_cwd) {
-          const priorDefaultId = get(activeWorkspaceId);
-          await openWorkspaceFromFile(ctx.wind_file_in_cwd);
-          const nowActive = get(activeWorkspaceId);
-          if (priorDefaultId && priorDefaultId !== nowActive) {
+        const priorDefaultId = get(activeWorkspaceId);
+        const cwdRidge = ctx?.wind_file_in_cwd ?? null;
+        if (cwdRidge) {
+          await openWorkspaceFromFile(cwdRidge);
+        } else if (ctx?.kind === 'menu') {
+          const restorePaths = await getRestoreSet();
+          for (const p of restorePaths) {
             try {
-              await closeWorkspace(priorDefaultId);
+              await openWorkspaceFromFile(p);
             } catch (e) {
-              console.warn('close default workspace after auto-open failed', e);
+              console.warn('restore workspace failed', p, e);
             }
+          }
+        }
+        // 默认空工作区如果不再是活动项（已被覆盖打开），关掉它，避免顶部多出空 tab。
+        const nowActive = get(activeWorkspaceId);
+        if (priorDefaultId && priorDefaultId !== nowActive) {
+          try {
+            await closeWorkspace(priorDefaultId);
+          } catch (e) {
+            console.warn('close default workspace after auto-open failed', e);
           }
         }
       } catch (err) {
         console.warn('startup workspace resolution failed', err);
       }
+      await loadSavedWorkspaces();
       await refreshWorkspaceSaveInfo();
+
+      // 等待首个终端面板就绪后关闭 loader
+      window.addEventListener('ridge:pane-attached', () => {
+        window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+      }, { once: true });
+      // 兜底：5秒后无论如何关闭 loader，避免异常阻塞
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+      }, 5000);
+
       // 检查初始最大化状态
       const win = getCurrentWindow();
       isMaximized = await win.isMaximized();
@@ -1041,10 +1065,15 @@ function expandSidebar() {
         prevUnlisten?.();
         unlistenActive();
       };
+      } catch (err) {
+        console.error('[boot] init failed', err);
+      }
     })();
+
     return () => {
       unlisten?.();
       unlistenResized?.();
+      unsubDefaultCwd?.();
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
@@ -1107,27 +1136,20 @@ function expandSidebar() {
     >
       <GitBranch class="h-5 w-5" />
     </button>
-    {#if $settingsStore.claudeExtensionEnabled}
-      <!-- Claude Code 扩展开关：在 settings.claudeExtensionEnabled = true 时
-           出现；点击切到 Claude 独立 tab。pane 标题栏的 Bot 按钮和原本嵌在
-           Explorer 里的 claudeHistory 插件都跟随这一开关，统一在扩展面板里
-           关闭即可全局禁用。 -->
-      <button
-        type="button"
-        class="{actBtn}{sidebarTab === 'claude' ? actBtnOn : ''}"
-        title="Claude Code"
-        onclick={() => { sidebarTab = 'claude'; expandSidebar(); }}
-      >
-        <Bot class="h-5 w-5" />
-      </button>
-    {/if}
-
     <!-- Bottom-anchored extension manager — uses mt-auto so it stays at the
          rail's bottom regardless of how many tabs sit above. Click toggles
          the Claude Code extension. The icon flips between dim/Bot when off
          and accent/Bot when on, giving a single button that both tells the
          user the current state and lets them flip it without spelunking
          through nested settings. -->
+    <button
+      type="button"
+      class="{actBtn}{sidebarTab === 'remote' ? actBtnOn : ''}"
+      title="远程控制"
+      onclick={() => { sidebarTab = 'remote'; expandSidebar(); }}
+    >
+      <Smartphone class="h-5 w-5" />
+    </button>
     <button
       type="button"
       class="{actBtn} mt-auto"
@@ -1141,14 +1163,22 @@ function expandSidebar() {
 
   <!-- 侧边栏区域：wrapper 始终渲染，toggle 按钮始终可见 -->
   <div
-    class="relative shrink-0 z-10"
+    class="relative shrink-0 z-11"
     style="width: {sidebarCollapsed ? 0 : sidebarWidth}px; overflow: visible"
   >
-    {#if !sidebarCollapsed}
+      {#if !sidebarCollapsed}
       <aside
-        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0 rg-scroll overflow-y-auto"
+        class="h-full border-r border-[var(--rg-border)] bg-[var(--rg-surface-2)]/55 backdrop-blur-xl flex flex-col min-h-0"
       >
-        {#if sidebarTab === 'git'}
+        <!-- Tab content container: holds the four absolutely-positioned
+             tab panels (git / search / claude / files) inside a relative
+             box. Anchoring `absolute inset-0` to this flex-1 box (instead
+             of the whole aside) keeps the global SidebarPluginRegion
+             footer below from being overlapped — the footer sits in the
+             flex flow after this container, not underneath it. -->
+        <div class="relative flex-1 min-h-0 rg-scroll overflow-y-auto">
+        <!-- Git tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'git' ? '' : 'hidden'}">
           <div
             data-tauri-drag-region
             class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]"
@@ -1158,77 +1188,27 @@ function expandSidebar() {
           <div class="flex-1 min-h-0 overflow-hidden">
             <SourceControl />
           </div>
-        {:else if sidebarTab === 'search'}
+        </div>
+
+        <!-- Search tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'search' ? '' : 'hidden'}">
           <div class="flex-1 min-h-0 overflow-hidden">
             <SearchSidebar active={sidebarTab === 'search'} />
           </div>
-        {:else if sidebarTab === 'claude' && $settingsStore.claudeExtensionEnabled}
-          <ClaudeCodePanel />
-        {:else}
+        </div>
+
+        <!-- Remote tab -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'remote' ? '' : 'hidden'}">
+          <RemotePanel />
+        </div>
+
+        <!-- Files tab (default) -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'files' ? '' : 'hidden'}">
           <div
             data-tauri-drag-region
             class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] relative"
           >
             <span>资源管理器</span>
-            <!-- 打开 .ridge 已保存工作区入口（主按钮走 OS 文件选择器；chevron 展开最近列表）-->
-            <div class="flex items-center gap-0.5">
-              <button
-                type="button"
-                class="flex items-center gap-1 h-7 pl-2 pr-1 rounded-l text-[10px] font-medium normal-case tracking-normal text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
-                title="从 .ridge 文件打开已保存的工作区"
-                onclick={() => void pickAndOpenWorkspace()}
-              >
-                <FolderInput class="h-3.5 w-3.5" /> 打开
-              </button>
-              <button
-                bind:this={recentBtn}
-                type="button"
-                class="flex items-center justify-center h-7 w-5 rounded-r text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
-                title="最近打开的工作区"
-                onclick={() => void loadRecentAndToggle()}
-              >
-                <ChevronDown class="h-3 w-3" />
-              </button>
-            </div>
-
-            {#if recentOpen}
-              <div
-                style={recentPopupStyle}
-                class="rg-popup w-[300px] max-w-[90vw]"
-                role="menu"
-                use:portal={{ id: 'recent-workspaces' }}
-              >
-                <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-                  <span>最近的工作区</span>
-                  {#if recentList.length > 0}
-                    <button
-                      type="button"
-                      class="text-[10px] normal-case tracking-normal hover:text-[var(--rg-fg)]"
-                      onclick={handleClearRecent}
-                    >
-                      清空
-                    </button>
-                  {/if}
-                </div>
-                <div class="max-h-[260px] overflow-y-auto">
-                  {#if recentList.length === 0}
-                    <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无历史记录</div>
-                  {:else}
-                    {#each recentList as p (p)}
-                      <button
-                        type="button"
-                        class="group flex flex-col items-start w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal"
-                        onclick={() => void openRecent(p)}
-                        title={p}
-                      >
-                        <span class="text-[12px] text-[var(--rg-fg)] truncate max-w-full">{basenameOf(p)}</span>
-                        <span class="text-[10px] text-[var(--rg-fg-muted)] truncate max-w-full font-mono">{dirnameOf(p)}</span>
-                      </button>
-                    {/each}
-                  {/if}
-                </div>
-              </div>
-            {/if}
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeWorkspaceId}
@@ -1241,11 +1221,13 @@ function expandSidebar() {
               </div>
             {/if}
           </div>
-        {/if}
+        </div>
 
+        </div>
         <!-- Global-scope plugin region — mounted once at the sidebar footer,
-             visible across every tab. Keep it compact; plugins are expected
-             to collapse their own heavy UI. -->
+             visible across every tab. Sits OUTSIDE the absolute tab container
+             above so the four tab panels can use `absolute inset-0` without
+             overlaying it. -->
         <div class="shrink-0 border-t border-[var(--rg-border)]/40">
           <SidebarPluginRegion scope="global" />
         </div>
@@ -1257,12 +1239,12 @@ function expandSidebar() {
      wrapper 有 z-10 + overflow:visible，保证此元素即使在 collapsed 状态下也能响应点击。 -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- T16：与 SplitContainer 终端 splitter 视觉对齐 —— 8px 命中区透明，
-     ::before 画 1px var(--rg-border) 中线；hover/drag 时 scaleX(4) 变粗
-     并切到 var(--rg-accent) + accent-glow 阴影。 -->
-<div
-  class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : 'right-0'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
-  role="separator"
+  <!-- T16：与 SplitContainer 终端 splitter 视觉对齐 —— 8px 命中区透明，
+       ::before 画 1px var(--rg-border) 中线；hover/drag 时 scaleX(4) 变粗
+       并切到 var(--rg-accent) + accent-glow 阴影。 -->
+  <div
+    class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : '-right-1'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
+    role="separator"
   aria-orientation="vertical"
   aria-label={sidebarCollapsed ? '拖动展开侧边栏' : '拖动调整侧边栏宽度'}
   tabindex="0"
@@ -1320,11 +1302,86 @@ function expandSidebar() {
           onReorder={reorderWorkspaces}
           onRename={renameWorkspace}
         >
-          <!-- 新建工作区按钮 -->
           {#snippet actions()}
             <button
+              bind:this={savedBtn}
               type="button"
-              class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-violet-400/40 hover:text-violet-200 hover:bg-violet-500/[0.06] transition-colors"
+              class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
+              title="已保存工作区"
+              aria-label="已保存工作区"
+              onclick={() => void loadSavedAndToggle()}
+            >
+              <Bookmark class="h-4 w-4" />
+            </button>
+            {#if savedOpen}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                role="presentation"
+                class="fixed inset-0 z-[9989]"
+                onmousedown={() => (savedOpen = false)}
+              >
+                <!-- svelte-ignore a11y_interactive_supports_focus -->
+                <div
+                  style={savedPopupStyle}
+                  class="rg-popup w-[300px] max-w-[90vw]"
+                  role="menu"
+                  use:portal={{ id: 'saved-workspaces' }}
+                  onmousedown={(e) => e.stopPropagation()}
+                >
+                  <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+                    <span>已保存工作区</span>
+                    <button
+                      type="button"
+                      class="text-[10px] normal-case tracking-normal hover:text-[var(--rg-fg)]"
+                      title="从任意 .ridge 文件打开（OS 文件选择器）"
+                      onclick={() => { savedOpen = false; void pickAndOpenWorkspace(); }}
+                    >
+                      浏览…
+                    </button>
+                  </div>
+                  <div class="max-h-[260px] overflow-y-auto">
+                    {#if savedList.length === 0}
+                      <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">~/ridge-workspaces 下暂无 .ridge 文件</div>
+                    {:else}
+                      {#each savedList as s (s.path)}
+                        <div class="group flex items-center justify-between w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal">
+                          <button
+                            type="button"
+                            class="flex-1 flex flex-col items-start min-w-0"
+                            onclick={() => void openSaved(s.path)}
+                            title={s.path}
+                          >
+                            <span class="text-[12px] text-[var(--rg-fg)] truncate max-w-full">{s.name}</span>
+                            <span class="text-[10px] text-[var(--rg-fg-muted)] truncate max-w-full font-mono">{s.path}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--rg-surface)] hover:text-red-500 transition-colors"
+                            title="删除工作区"
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              const info = Object.values($workspaceSaveInfoStore).find(
+                                (i) => i.file_path === s.path
+                              );
+                              if (info) {
+                                void deleteWorkspaceFile(info.workspace_id);
+                              } else {
+                                console.warn('Workspace file not associated with active workspace, direct deletion not implemented');
+                              }
+                            }}
+                          >
+                            <Trash2 class="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      {/each}
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            {/if}
+            <button
+              type="button"
+              class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
               title="新建根工作区（独立分屏树与终端）"
               onclick={() => createWorkspace()}
             >
@@ -1344,6 +1401,19 @@ function expandSidebar() {
             Dev Issue
           </button>
         {/if}
+
+        <!-- 手机远程入口：在开发模式下连接到 Vite dev server，构建模式下显示嵌入式远程服务器信息 -->
+        <button
+          type="button"
+          class="rg-no-drag {toolBtn}{sidebarTab === 'remote' ? ' bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
+          title="手机远程控制"
+          onclick={() => {
+            sidebarTab = 'remote';
+            expandSidebar();
+          }}
+        >
+          <Smartphone class="h-4 w-4" />
+        </button>
 
         <!-- 编辑器抽屉开关：放在分屏按钮左侧，给"打开文件编辑器"一个常驻入口；
              toggle 行为——已显示时点一下隐藏，已隐藏时再点一下显示，与
@@ -1489,11 +1559,7 @@ function expandSidebar() {
             {/if}
           {/each}
         {:else}
-          <div
-            class="flex flex-1 items-center justify-center text-[13px] text-[var(--rg-fg-muted)]"
-          >
-            正在加载工作区…
-          </div>
+          <div style="display:none"></div>
         {/if}
 
         <!-- §A.9 (2026-05-08 follow-up) — single global canvas. ONE
@@ -1516,7 +1582,7 @@ function expandSidebar() {
           use:globalHostCanvas
           data-rg-host
           aria-hidden="true"
-          style="position:absolute; inset:0; pointer-events:none; z-index:0;"
+          style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0; display:block;"
         ></canvas>
       </div>
       <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流 -->
@@ -1537,7 +1603,4 @@ function expandSidebar() {
 <WindToast />
 <!-- 全局右键菜单 -->
 <ContextMenu />
-<!-- Claude Code 启动 modal -->
-<ClaudeAgentLauncher />
-<!-- 终端滚动历史浏览器 -->
-<ScrollbackHistoryModal />
+

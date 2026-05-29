@@ -1534,6 +1534,14 @@ fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
     })
 }
 
+/// Synchronous git info for an arbitrary directory, reusable outside the
+/// Tauri command layer (e.g. the remote WebSocket server) so that desktop
+/// and remote git views are computed from the exact same source. Returns an
+/// empty non-repo `GitRepoInfo` on error instead of propagating.
+pub fn git_info_for_path(cwd: &Path) -> GitRepoInfo {
+    get_git_info_with_cwd_sync(cwd.to_string_lossy().to_string()).unwrap_or_default()
+}
+
 /// 内部函数：根据路径获取 git diff
 fn get_git_diff_internal(repo_path: &Path) -> GitDiffStatus {
     // 获取 diff 输出

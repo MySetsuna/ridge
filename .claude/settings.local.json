@@ -23,7 +23,10 @@
       "Bash(git -C C:/code/wind grep -l \"splitPane\\\\|paneTreeStore.split\\\\|splitHorizontal\\\\|splitVertical\" -- \"src/lib/components/*.svelte\")",
       "Bash(git -C C:/code/wind grep -l \"split\" -- \"src/lib/components/*.svelte\")",
       "Bash(grep -n \"^- 2026-05-04\\\\|^---$\\\\|^## 文档导航\" C:/code/wind/docs/term-rebuild/TASKS.md)",
-      "Bash(grep -n \"OSC 7\\\\|CwdChanged\\\\|file://\\\\|0x07.*7\\\\|\\\\\\\\bb'7'\" C:/code/wind/packages/ridge-term/src/term/parser.rs)"
+      "Bash(grep -n \"OSC 7\\\\|CwdChanged\\\\|file://\\\\|0x07.*7\\\\|\\\\\\\\bb'7'\" C:/code/wind/packages/ridge-term/src/term/parser.rs)",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(Get-ChildItem -Path C:\\\\code\\\\wind -Directory | ForEach-Object { $_.Name })",
+      "Bash(grep -E \"\\\\.\\(ts|svelte\\)$\")"
     ]
   }
 }

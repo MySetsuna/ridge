@@ -1,5 +1,6 @@
 use crate::fs::{DirectoryPage, FileNode, FileTree, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
 use crate::state::AppState;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::State;
@@ -563,9 +564,252 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ─── Opencode history ────────────────────────────────────────────────────────
+
+/// Single entry for Opencode session
+#[derive(Debug, Serialize, Clone)]
+pub struct OpencodeHistoryEntry {
+    pub session_id: String,
+    pub title: String,
+    pub updated_at: u64,
+    pub project: String,
+    pub files: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn read_opencode_history(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    workspace_cwds: Option<Vec<String>>,
+) -> Vec<OpencodeHistoryEntry> {
+    tokio::task::spawn_blocking(move || {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        let session_dir = home.join(".local").join("share").join("opencode").join("storage").join("session_diff");
+        let db_path = home.join(".local").join("share").join("opencode").join("storage").join("opencode.db");
+
+        // Try to open the opencode SQLite database for session metadata
+        let conn = Connection::open(&db_path).ok();
+
+        // Normalise workspace CWDs for matching
+        let ws_cwds: Vec<String> = workspace_cwds.unwrap_or_default().into_iter()
+            .map(|c| c.replace('\\', "/"))
+            .collect();
+
+        let mut entries = Vec::new();
+        if let Ok(paths) = std::fs::read_dir(&session_dir) {
+            let mut file_paths: Vec<_> = paths.filter_map(|p| p.ok()).collect();
+            // Sort by modification time descending
+            file_paths.sort_by(|a, b| {
+                let a_meta = a.metadata().ok().and_then(|m| m.modified().ok());
+                let b_meta = b.metadata().ok().and_then(|m| m.modified().ok());
+                b_meta.cmp(&a_meta)
+            });
+
+            let offset = offset.unwrap_or(0);
+            let limit = limit.unwrap_or(50);
+            
+            for path in file_paths.into_iter().skip(offset).take(limit) {
+                if path.path().extension().and_then(|s| s.to_str()) == Some("json") {
+                    let session_id = path.path().file_stem().unwrap().to_string_lossy().to_string();
+                    let metadata = std::fs::metadata(path.path()).ok();
+                    let updated_at = metadata.and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    
+                    let mut files = Vec::new();
+                    let mut project = String::new();
+                    let mut title = "New Session".to_string();
+
+                    // Read session metadata from opencode SQLite database
+                    if let Some(ref conn) = conn {
+                        if let Ok(mut stmt) = conn.prepare("SELECT s.title, s.directory FROM session s WHERE s.id = ?1") {
+                            if let Ok(row) = stmt.query_row(rusqlite::params![session_id], |row| {
+                                let db_title: String = row.get(0)?;
+                                let directory: String = row.get(1)?;
+                                Ok((db_title, directory))
+                            }) {
+                                title = row.0;
+                                project = row.1.replace('\\', "/");
+                            }
+                        }
+                    }
+
+                    // Read files from session_diff JSON
+                    if let Ok(file) = std::fs::File::open(path.path()) {
+                        if let Ok(json) = serde_json::from_reader::<_, serde_json::Value>(file) {
+                            if let Some(arr) = json.as_array() {
+                                for item in arr {
+                                    if let Some(f) = item.get("file").and_then(|p| p.as_str()) {
+                                        files.push(f.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback: infer project CWD by matching relative file paths
+                    // against known workspace directories
+                    if project.is_empty() && !ws_cwds.is_empty() && !files.is_empty() {
+                        project = infer_project_from_workspace(&files, &ws_cwds);
+                    }
+                    
+                    entries.push(OpencodeHistoryEntry { 
+                        session_id, 
+                        title, 
+                        updated_at,
+                        project,
+                        files 
+                    });
+                }
+            }
+        }
+        entries
+    }).await.unwrap_or_default()
+}
+
+// ─── OpenCode history ─────────────────────────────────────────────────────
+
+/// Infer the project working directory from a list of absolute file paths.
+/// Walks up each file's directory tree looking for a `.git` folder; if found,
+/// returns that repo root. Otherwise falls back to the longest common prefix.
+fn infer_project_from_files(files: &[String]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+
+    // Try to find a git repo root from any file
+    for f in files {
+        let path = std::path::Path::new(f);
+        if let Some(ancestor) = path.ancestors().skip(1).find(|a| a.join(".git").exists()) {
+            return ancestor.to_string_lossy().to_string();
+        }
+    }
+
+    // Fallback: longest common prefix of all file paths
+    // Normalize separators first
+    let normalized: Vec<String> = files.iter().map(|f| f.replace('\\', "/")).collect();
+    let mut prefix = normalized[0].clone();
+    for f in &normalized[1..] {
+        while !f.starts_with(&prefix) {
+            let trunc = prefix.trim_end_matches('/');
+            if let Some(pos) = trunc.rfind('/') {
+                prefix = trunc[..=pos].to_string();
+            } else {
+                prefix = String::new();
+                break;
+            }
+        }
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    // If prefix looks like a file path (not ending in /), get its parent
+    if !prefix.is_empty() && !prefix.ends_with('/') {
+        if let Some(pos) = prefix.rfind('/') {
+            prefix = prefix[..=pos].to_string();
+        }
+    }
+    // Convert back to native path format
+    prefix.trim_end_matches('/').replace('/', "\\")
+}
+
+/// Infer the best-matching workspace CWD from a list of file paths.
+/// Counts how many files live under each workspace directory and returns
+/// the one with the most matches (deepest prefix wins on ties).
+fn infer_project_from_workspace(files: &[String], ws_cwds: &[String]) -> String {
+    if files.is_empty() || ws_cwds.is_empty() {
+        return String::new();
+    }
+
+    let mut best: (&str, usize) = ("", 0);
+
+    for ws in ws_cwds {
+        let ws_norm = ws.trim_end_matches('/');
+        let mut count = 0;
+        for f in files {
+            let f_norm = f.replace('\\', "/");
+            if f_norm.starts_with(ws_norm) {
+                count += 1;
+            }
+        }
+        // Prefer the workspace that matches more files; on a tie,
+        // keep the first one encountered (which corresponds to the
+        // order returned by the package manager / workspace config).
+        if count > best.1 {
+            best = (ws, count);
+        }
+    }
+
+    if best.1 > 0 {
+        best.0.to_string()
+    } else {
+        infer_project_from_files(files)
+    }
+}
+
+/// Get files changed in a git repository between two points in time
+#[tauri::command]
+pub async fn get_git_changed_files(
+    cwd: String,
+    since: u64,
+    until: u64,
+) -> Result<Vec<String>, String> {
+    use std::process::Command;
+    
+    tokio::task::spawn_blocking(move || {
+        // Validate CWD exists and is a directory
+        let cwd_path = std::path::Path::new(&cwd);
+        if !cwd_path.exists() || !cwd_path.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let since_str = format!("{}", since);
+        let until_str = format!("{}", until);
+        
+        // Use git log to find changed files in the time range
+        let output = match Command::new("git")
+            .current_dir(&cwd)
+            .args(&[
+                "log", 
+                "--since", &since_str, 
+                "--until", &until_str, 
+                "--name-only", 
+                "--pretty=format:",
+                "--diff-filter=ACMRT"
+            ])
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let content = String::from_utf8_lossy(&output.stdout);
+        let mut files: Vec<String> = content
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        files.sort();
+        files.dedup();
+        Ok(files)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 // ─── Claude Code history ─────────────────────────────────────────────────────
 
 /// Single entry from `~/.claude/history.jsonl`.
+
 #[derive(Debug, Serialize, Clone)]
 pub struct ClaudeHistoryEntry {
     pub display: String,
@@ -632,6 +876,12 @@ fn read_claude_history_sync(project_paths: Vec<String>, limit: Option<usize>) ->
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     entries.truncate(limit.unwrap_or(100));
     entries
+}
+
+#[tauri::command]
+pub async fn path_exists(path: String) -> Result<bool, String> {
+    let p = normalize_path_input(&path);
+    Ok(p.exists())
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

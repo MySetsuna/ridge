@@ -9,6 +9,8 @@ import type { PaneNode } from '$lib/types';
 export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
+import { TerminalManager } from '$lib/terminal/manager';
+import { teardownPtyBridge } from '$lib/terminal/ptyBridge';
 
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
@@ -435,12 +437,32 @@ export interface SameAxisCandidate {
   distance: number;
 }
 
+/** 在 DOM 里按 splitPath + axis 查 .rg-split。
+ *  Keep-alive 工作区架构下，所有 workspace 的 SplitContainer 同时挂在 DOM 中，
+ *  非活动工作区被 `display:none` 隐藏。多个 workspace 的 root split 都用
+ *  `data-split-path=""`，querySelector 只会返回 DOM 顺序里**第一个**——也就是
+ *  tab index 0 的 splitRoot。当用户在非 tab-0 的工作区拖拽 splitter 时，
+ *  这里若不挑可见的，就会拿到 tab-0 那个 display:none 的 root，clientWidth=0
+ *  → basisPx 退化为 1 → drag 立刻把 ratios 推到极端，splitter 看似"不能拖动"。
+ *
+ *  优先取 `offsetParent !== null` 的（display:none 时 offsetParent 为 null），
+ *  没有时退回第一个匹配，保留 SSR / 测试场景的旧行为。 */
+function findVisibleSplitRoot(splitPath: number[], axis: SplitterAxis): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const matches = document.querySelectorAll<HTMLElement>(
+    `.rg-split[data-split-path="${pathKey(splitPath)}"][data-split-axis="${axis}"]`
+  );
+  if (matches.length === 0) return null;
+  for (const el of matches) {
+    if (el.checkVisibility()) return el;
+  }
+  return matches[0] ?? null;
+}
+
 /** 通过 DOM 查询获取分割条在屏幕上的中线坐标（无 DOM 时返回 null）。 */
 export function getSplitterScreenCenter(ref: SplitterRef): number | null {
   if (typeof document === 'undefined') return null;
-  const splitRoot = document.querySelector<HTMLElement>(
-    `.rg-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
-  );
+  const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
   if (!splitRoot) return null;
   const splitters = Array.from(
     splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
@@ -464,9 +486,7 @@ export function getSplitterLineEndpoints(
   ref: SplitterRef
 ): { start: number; end: number } | null {
   if (typeof document === 'undefined') return null;
-  const splitRoot = document.querySelector<HTMLElement>(
-    `.rg-split[data-split-path="${pathKey(ref.splitPath)}"][data-split-axis="${ref.axis}"]`
-  );
+  const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
   if (!splitRoot) return null;
   const splitters = Array.from(
     splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
@@ -906,11 +926,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     if (!split) continue;
     let basisPx = ref.basisPx;
     if (typeof document !== 'undefined') {
-      const splitRoot = document.querySelector(
-        `.rg-split[data-split-path="${pathKey(
-          ref.splitPath
-        )}"][data-split-axis="${ref.axis}"]`
-      ) as HTMLElement;
+      const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
       if (splitRoot) {
         basisPx = Math.max(
           1,
@@ -1101,6 +1117,32 @@ export function getAllPaneIds(node: PaneNode): string[] {
   }
   traverse(node);
   return ids;
+}
+
+/** 从 SplitRatioUpdate[] 中提取所有受影响的 leaf pane ids。
+ *  每个 update 的 path 指向一个 Split 节点，该 Split 下的所有
+ *  leaf panes 在 resize 后尺寸都发生了变化。 */
+export function paneIdsFromRatioUpdates(
+  root: PaneNode,
+  updates: SplitRatioUpdate[]
+): string[] {
+  const set = new Set<string>();
+  for (const update of updates) {
+    // Navigate to the split node at the given path
+    let node: PaneNode = root;
+    for (const idx of update.path) {
+      if (node.type !== 'split' || idx < 0 || idx >= node.children.length) {
+        node = root; // path misaligned — fall back to root
+        break;
+      }
+      node = node.children[idx];
+    }
+    // Collect all leaf panes under the reached node
+    for (const id of getAllPaneIds(node)) {
+      set.add(id);
+    }
+  }
+  return [...set];
 }
 
 /** 当前 activePaneId 若不在树内（切换工作区等），回退到第一个 leaf。 */
@@ -1341,8 +1383,53 @@ export async function splitPane(
     }
   }
   await syncPaneLayoutFromBackend();
+  // §split-fit (2026-05-21): after the layout sync, the source pane has
+  // shrunk from filling its parent to ~50 %, and Svelte will mount the
+  // new pane on the next microtask. attach() (new pane) and unpark()
+  // (source pane, re-mounted at the new tree position) each schedule
+  // their own initial fitPane on the next animation frame, but that
+  // single RAF races SvelteKit's component mount and the wasm
+  // `manager.ready()` await — when the race goes the wrong way the
+  // kernel grid stays at its attach-time 24×80 default while the
+  // container is already 50 % wide, leaving the visible "黑边/空行"
+  // the user sees as "拆出来的终端不是占满的". Queue a second forced fit
+  // two animation frames out so the new RidgePane has reliably finished
+  // its async attach pipeline before we ask the manager to size against
+  // the settled DOM.
+  scheduleForceFitAfterSplit(paneId, result.pane_id);
   return result.pane_id;
 }
+
+/**
+ * Belt-and-suspenders fit after a split.
+ *
+ * Two-RAF delay rationale:
+ *   - Frame 1: Svelte reconciles the store update and mounts the new
+ *     RidgePane component. onMount fires; the async `manager.ready()`
+ *     await begins.
+ *   - Frame 2: `manager.attach(paneId, container, workspaceId)` has
+ *     finished, the new entry is in `manager.panes`, and the container
+ *     has its post-split bounding rect. `fitPaneNow` runs against the
+ *     correct state.
+ *
+ * Exported (re-exported below) so unit tests can mock TerminalManager
+ * and assert on the per-pane call without going through the full
+ * `splitPane` IPC dance.
+ */
+function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): void {
+  if (typeof requestAnimationFrame === 'undefined') return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const mgr = TerminalManager.instance();
+      mgr.fitPaneNow(sourcePaneId);
+      mgr.fitPaneNow(newPaneId);
+    });
+  });
+}
+
+/** Test-only: exported so paneTree.test.ts can drive the post-split fit
+ *  scheduling against a mocked TerminalManager. Not for production use. */
+export const __test_scheduleForceFitAfterSplit = scheduleForceFitAfterSplit;
 
 /** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置。 */
 export async function dockPane(
@@ -1413,11 +1500,7 @@ export async function closePane(paneId: string) {
   //   2. Manager.detach → frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  // Lazy-import to keep paneTree.ts independent of the terminal layer
-  // for non-Tauri / SSR / test contexts (paneTree.test.ts mocks only
-  // its own surface).
-  const { TerminalManager } = await import('$lib/terminal/manager');
-  const { teardownPtyBridge } = await import('$lib/terminal/ptyBridge');
+  // 拆除 PTY 连接 → 不再投递 pty-output 事件到即将释放的 kernel
   teardownPtyBridge(paneId);
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {
@@ -1501,7 +1584,7 @@ export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
   workspacesList.update((list) => {
     if (
       fromIndex < 0 || toIndex < 0 ||
-      fromIndex >= list.length || toIndex >= list.length ||
+      fromIndex >= list.length || toIndex > list.length ||
       fromIndex === toIndex
     ) return list;
     rolledBack = list;
@@ -1646,9 +1729,14 @@ export async function getLastOpenedWorkspacePath(): Promise<string | null> {
 export interface StartupContext {
   cwd: string;
   wind_file_in_cwd: string | null;
+  /** "cli" — process inherited a real working dir from a terminal.
+   *  "menu" — process current_dir equals ridge.exe parent (双击 / 开始菜单).
+   *  Used to gate auto-restore: cli launch should NOT auto-open the saved
+   *  workspace set, since the user signalled intent via the cwd. */
+  kind: 'cli' | 'menu';
 }
 
-/** 启动上下文：进程 cwd + cwd 顶层第一个 .ridge 文件（若存在）。 */
+/** 启动上下文：进程 cwd + cwd 顶层第一个 .ridge 文件（若存在）+ 启动模式。 */
 export async function getStartupContext(): Promise<StartupContext | null> {
   if (!isTauri()) return null;
   try {
@@ -1662,6 +1750,33 @@ export async function listRecentWorkspaces(): Promise<string[]> {
   if (!isTauri()) return [];
   try {
     return await invoke<string[]>('list_recent_workspaces');
+  } catch {
+    return [];
+  }
+}
+
+/** 关闭时被后端写下的「下次启动应自动恢复的已保存工作区路径」列表。
+ *  非 cli 启动 + 列表非空 → 前端依次 openWorkspaceFromFile，再关掉默认空 workspace。 */
+export async function getRestoreSet(): Promise<string[]> {
+  if (!isTauri()) return [];
+  try {
+    return await invoke<string[]>('get_restore_set');
+  } catch {
+    return [];
+  }
+}
+
+export interface SavedWorkspaceEntry {
+  name: string;
+  path: string;
+  mtime_secs: number;
+}
+
+/** 默认 ~/ridge-workspaces/ 下的所有 .ridge 文件，按 mtime 倒序。 */
+export async function listSavedWorkspaceFiles(): Promise<SavedWorkspaceEntry[]> {
+  if (!isTauri()) return [];
+  try {
+    return await invoke<SavedWorkspaceEntry[]>('list_saved_workspace_files');
   } catch {
     return [];
   }

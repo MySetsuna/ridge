@@ -21,14 +21,9 @@
     renderMermaidBlocks,
     toggleTaskAtLine,
   } from '$lib/utils/markdown';
-  import { fileEditorStore } from '$lib/stores/fileEditor';
-  import { isTauri } from '@tauri-apps/api/core';
-  import {
-    hostKeyFromUrl,
-    isTrustedUrl,
-    trustHostFromUrl,
-  } from '$lib/utils/linkTrust';
-  import { choiceDialog } from './RidgeDialog.svelte';
+  import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
+  import { resolveLink, executeAction } from '$lib/utils/linkResolver';
+  import { joinPath } from '$lib/utils/path';
 
   interface Props {
     content: string;
@@ -77,14 +72,90 @@
     void (async () => {
       await tick();
       if (!container) return;
-      // Mermaid 与代码高亮独立运行；mermaid 走 `rg-md-mermaid` 占位 div，
-      // 高亮走 `pre.rg-md-pre`，不重叠。两者并发即可。
+      // Mermaid 与代码高亮、图片 src 改写独立运行；三者无重叠并发即可。
+      // - mermaid 走 `rg-md-mermaid` 占位 div
+      // - 高亮走 `pre.rg-md-pre`
+      // - 图片 src 改写：相对/绝对路径 → asset:// 协议（Tauri convertFileSrc）
       await Promise.all([
         highlightCodeBlocks(container),
         renderMermaidBlocks(container),
+        rewriteImageSrcs(container, basePath),
       ]);
     })();
   });
+
+	/**
+	 * 把 markdown 渲染出来的 `<img src="...">` 中的本地路径改写为 Tauri 的
+	 * `asset://` 协议 URL（通过 convertFileSrc）。Marked 的 image renderer
+	 * 直接吐 raw href，不经过 basePath 解析也不走 asset 协议，所以中文路径 /
+	 * 相对路径 / 绝对路径都加载不了。这里在异步 enhance 阶段统一兜底。
+	 *
+	 * 跳过：http(s):、data:、blob:、asset:、已经改写过的（标 data-rg-rewritten）。
+	 * 处理：file:// → 剥 scheme；C:\ 或 / → 视为绝对；其它 + basePath → 相对。
+	 * 失败兜底：保留原 src + console.warn，不抛。
+	 *
+	 * 非 Tauri 环境（dev server）：改用 file:// URL 做最佳努力，不保证 CORS 通过。
+	 */
+	async function rewriteImageSrcs(
+		root: HTMLElement,
+		base?: string,
+	): Promise<void> {
+		const isTauriEnv = isTauri();
+		const imgs = root.querySelectorAll<HTMLImageElement>('img:not([data-rg-rewritten])');
+		for (const img of imgs) {
+			const raw = img.getAttribute('src') ?? '';
+			img.dataset.rgRewritten = '1';
+			if (!raw) continue;
+			if (/^(https?|data|blob|asset):/i.test(raw)) continue;
+			let abs: string | null = null;
+			try {
+				if (raw.startsWith('file://')) {
+					// Windows 下 file://C:/path（双斜杠）被 new URL 把 C: 当 hostname，
+					// pathname 变成 /path  丢了盘符。统一补成 file:///C:/path（三斜杠）。
+					const normalizedFileUrl = raw.startsWith('file:///')
+						? raw
+						: raw.replace(/^file:\/\//, 'file:///');
+					const u = new URL(normalizedFileUrl);
+					abs = decodeURIComponent(u.pathname.replace(/^\/(\w:)/, '$1'));
+				} else if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('/')) {
+					try {
+						abs = decodeURIComponent(raw);
+					} catch {
+						abs = raw;
+					}
+				} else if (base) {
+					let decoded: string;
+					try {
+						decoded = decodeURIComponent(raw);
+					} catch {
+						decoded = raw;
+					}
+					abs = joinPath(base, decoded);
+				}
+			} catch (err) {
+				console.warn('[md-preview] rewrite image src failed (parse)', raw, err);
+				continue;
+			}
+			if (!abs) continue;
+			if (isTauriEnv) {
+				try {
+					const normalized = abs.replace(/\\/g, '/');
+					img.src = convertFileSrc(normalized);
+				} catch (err) {
+					console.warn('[md-preview] convertFileSrc failed', abs, err);
+				}
+			} else {
+				// 非 Tauri 环境：构造 file:// URL（最佳努力，dev server 下可能跨域）
+				try {
+					const normalized = abs.replace(/\\/g, '/');
+					const fileUrl = normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`;
+					img.src = fileUrl;
+				} catch (err) {
+					console.warn('[md-preview] file:// URL construction failed', abs, err);
+				}
+			}
+		}
+	}
 
   /**
    * Scroll to the preview block whose `data-rg-md-src-line` is the largest
@@ -124,115 +195,6 @@
     if (cursorLine != null) scheduleSync(cursorLine);
   });
 
-  /** True for schemes the OS shell should handle (opened in external browser). */
-  function isExternalUrl(href: string): boolean {
-    return /^(https?:|mailto:|ftp:|tel:)/i.test(href);
-  }
-
-  /** True for a Windows-style absolute path like `C:\...` or `C:/...`. */
-  function isWindowsAbsolute(href: string): boolean {
-    return /^[a-zA-Z]:[\\/]/.test(href);
-  }
-
-  /**
-   * Join `base` (a directory) with `rel` (a relative posix-style path). Keeps
-   * the separator style of `base` when possible. Strips leading `./`.
-   */
-  function joinPath(base: string, rel: string): string {
-    const sep = base.includes('\\') && !base.includes('/') ? '\\' : '/';
-    const cleanBase = base.replace(/[\\/]+$/, '');
-    const cleanRel = rel.replace(/^\.\//, '');
-    // Normalise rel's own slashes to match base's sep
-    const normalisedRel = cleanRel.split(/[\\/]+/).join(sep);
-    return `${cleanBase}${sep}${normalisedRel}`;
-  }
-
-  /**
-   * Strip a trailing `?query` (and any embedded query before the hash) from a
-   * path-like href. CommonMark treats everything before `#` as the path part,
-   * but real local files don't have `?query` — markdown sometimes uses it as
-   * a cache-buster (`./img.png?v=2`) or borrows it from URL conventions. We
-   * silently drop it so `joinPath` doesn't produce `foo.md?v=2` and crash the
-   * file open. Returns the cleaned path; `#fragment` is split separately by
-   * the caller before we ever see it here.
-   */
-  function stripQuery(pathPart: string): string {
-    const q = pathPart.indexOf('?');
-    return q >= 0 ? pathPart.slice(0, q) : pathPart;
-  }
-
-  /**
-   * Detect href that targets the containing directory itself: `.` or `./` (the
-   * trailing slash is optional). These would otherwise be joined to
-   * `<basePath>/.` and fed to read_file_for_editor, which fails with "Path is
-   * not a file" — instead we reveal the directory in the OS file manager.
-   */
-  function isCurrentDirHref(href: string): boolean {
-    return href === '.' || href === './' || href === '.\\';
-  }
-
-  /**
-   * Open a directory (or any path) in the OS file manager. Uses the same
-   * Tauri command the Explorer right-click menu does.
-   */
-  async function revealInFileManager(path: string): Promise<void> {
-    if (!isTauri()) return;
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('reveal_in_file_manager', { path });
-    } catch (err) {
-      console.warn('[md-preview] reveal_in_file_manager failed', path, err);
-    }
-  }
-
-  const MARKDOWN_EXT_RE = /\.(md|markdown|mdown)(\?|#|$)/i;
-
-  function isLikelyMarkdownOrTextPath(path: string): boolean {
-    // We let any local path through; this helper only exists for future
-    // heuristics (e.g. preferring a preview pane for markdown targets).
-    return MARKDOWN_EXT_RE.test(path);
-  }
-
-  /**
-   * Open an external URL via the Tauri opener plugin. Falls back to
-   * window.open when not running inside Tauri (dev server).
-   *
-   * First time per session a host is touched we surface a `confirm()` prompt
-   * so the user can sanity-check unfamiliar markdown link targets — once
-   * trusted the host is remembered for the rest of the session (see
-   * `linkTrust.ts`). mailto:/tel: bypass the prompt; the OS already
-   * intercepts those.
-   */
-  async function openExternal(href: string): Promise<void> {
-    if (!isTrustedUrl(href, basePath)) {
-      const host = hostKeyFromUrl(href) ?? href;
-      // Use the themed WindDialog so the prompt sits inside Ridge's
-      // visual stack instead of bursting out as OS chrome (round-32
-      // review HIGH — also covered the SCM cherry-pick / revert
-      // confirms in the same round).
-      const choice = await choiceDialog({
-        title: '打开外部链接',
-        message: `${host}\n${href}`,
-        okLabel: '始终允许（本次会话）',
-        secondaryLabel: '仅本次',
-        cancelLabel: '取消',
-      });
-      if (choice === 'cancel') return;
-      if (choice === 'primary') trustHostFromUrl(href, basePath);
-      // 'secondary' → open once without adding to trust list
-    }
-    if (!isTauri()) {
-      window.open(href, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    try {
-      const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl(href);
-    } catch (err) {
-      console.warn('[md-preview] openUrl failed', href, err);
-    }
-  }
-
   /** Scroll to an element inside the preview container by id (or name). */
   function scrollToAnchor(fragment: string): boolean {
     if (!container) return false;
@@ -256,98 +218,28 @@
       e.preventDefault();
       return;
     }
-
-    // Normalise: strip surrounding whitespace, ignore `javascript:`.
+    e.preventDefault();
     const href = rawHref.trim();
-    if (!href || href.toLowerCase().startsWith('javascript:')) {
-      e.preventDefault();
-      return;
-    }
+    // 拆 fragment 以便跨文件链接 `./file.md#section` 在文件打开后再滚到锚点
+    const hashIdx = href.indexOf('#');
+    const noHash = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+    const trailingFragment = hashIdx >= 0 ? href.slice(hashIdx) : '';
 
-    // Anchor-only link (#heading) → scroll inside preview.
-    if (href.startsWith('#')) {
-      e.preventDefault();
+    const action = resolveLink(noHash || href, { basePath });
+
+    if (action.kind === 'fragment' || (noHash === '' && href.startsWith('#'))) {
       scrollToAnchor(href);
       return;
     }
 
-    // External URL → OS default browser (not the webview).
-    if (isExternalUrl(href)) {
-      e.preventDefault();
-      void openExternal(href);
-      return;
+    // open-url / reveal / open-file 都委托给 resolver
+    await executeAction(action);
+
+    // 跨文件 fragment：等编辑器加载完目标文件再滚（与原行为一致）
+    if (action.kind === 'open-file' && trailingFragment) {
+      await tick();
+      scrollToAnchor(trailingFragment);
     }
-
-    // file:// URL → treat the remaining path as a local file.
-    let target: string | null = null;
-    let trailingFragment = '';
-
-    // Split off fragment so we can scroll-within if it happens to be a
-    // same-file anchor written as `./file.md#section`.
-    const hashIdx = href.indexOf('#');
-    const hrefNoHash = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
-    trailingFragment = hashIdx >= 0 ? href.slice(hashIdx) : '';
-
-    // `[here](.)` / `[here](./)` → reveal the containing directory in the OS
-    // file manager (no useful "open in editor" action for a directory).
-    if (isCurrentDirHref(hrefNoHash)) {
-      e.preventDefault();
-      if (basePath) void revealInFileManager(basePath);
-      return;
-    }
-
-    // Drop any `?query` segment authored markdown sometimes carries (cache
-    // busters, URL-style suffixes). Local file targets don't have one.
-    const hrefPath = stripQuery(hrefNoHash);
-
-    if (hrefPath.startsWith('file://')) {
-      try {
-        const u = new URL(hrefPath);
-        target = decodeURIComponent(u.pathname.replace(/^\/(\w:)/, '$1'));
-      } catch {
-        target = null;
-      }
-    } else if (hrefPath.startsWith('/') || isWindowsAbsolute(hrefPath)) {
-      // Defensive decode: `decodeURIComponent` throws on stray `%` — fall
-      // back to the literal string so a hand-typed path with a real `%` in
-      // the filename still opens.
-      try {
-        target = decodeURIComponent(hrefPath);
-      } catch {
-        target = hrefPath;
-      }
-    } else if (hrefPath.length > 0 && basePath) {
-      let decoded: string;
-      try {
-        decoded = decodeURIComponent(hrefPath);
-      } catch {
-        decoded = hrefPath;
-      }
-      target = joinPath(basePath, decoded);
-    }
-
-    if (!target) {
-      // Nothing we can resolve (relative path but no basePath): don't leak
-      // the click to the webview navigator — silently no-op.
-      e.preventDefault();
-      return;
-    }
-
-    // Prevent the webview from navigating away to `about:srcdoc` / top-level.
-    e.preventDefault();
-
-    // Open the file in the editor. Images and binaries are handled by
-    // fileEditorStore.openFile (will alert on binaries). Markdown files
-    // default to preview-mode once opened.
-    void (async () => {
-      await fileEditorStore.openFile(target!);
-      if (trailingFragment) {
-        // Give the editor a tick to render the new file's preview before
-        // jumping to the anchor.
-        await tick();
-        scrollToAnchor(trailingFragment);
-      }
-    })();
   }
 
   /**

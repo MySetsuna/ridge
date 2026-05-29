@@ -17,11 +17,21 @@ import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
+import type { KernelEvent } from '$lib/terminal/manager';
+import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
+import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
+import { remoteRunning } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
-import { TerminalManager, type KernelEvent } from '$lib/terminal/manager';
-import { ensurePtyBridge } from '$lib/terminal/ptyBridge';
+import { TerminalManager } from '$lib/terminal/manager';
+import { isTuiActive } from '$lib/terminal/tuiGate';
+import {
+	deriveBufferEvent,
+	updateInputBuffer,
+	EMPTY_INPUT_BUFFER,
+	type InputBufferState,
+} from './inputBufferTracker';
 
 interface Props {
 	paneId: string;
@@ -39,6 +49,13 @@ let alive = true;
 // after a split until the next activePaneId change.
 let attached = $state(false);
 
+// P4.4 (2026-05-21) — removed the parserBackend live-switch state.
+// The Rust path is now unconditional; `set_pane_delta_mode(true)` is
+// still called on attach (see onMount IIFE below) so the backend
+// `delta_mode` AtomicBool is in the expected state for the channel
+// path. No more `backendSwitching` fade — there is no other backend
+// to switch to.
+
 // PTY listener subscriptions used to live here as ptyUnlisten /
 // ptyClosedUnlisten. Both moved to `$lib/terminal/ptyBridge` (TASKS §5.1)
 // so listener lifetime tracks the wasm kernel lifetime (manager.attach →
@@ -48,9 +65,51 @@ let attached = $state(false);
 
 const manager = TerminalManager.instance();
 
-// Ctrl+F search — viewport-scoped substring search (round 4).
-// Highlights the active match via the selection overlay.
-// Esc closes; Enter / Shift+Enter step next/prev; toggle Aa for case.
+// §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
+// ArrowLeft / Home / Delete / mid-line edits preserve the buffer
+// instead of clearing it. See `inputBufferTracker.ts` for the rules.
+let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
+
+// §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
+// path that mutates the shell line through the unit-tested
+// `inputBufferTracker` state machine so `currentInputBuffer` stays in
+// sync with the real shell line for all common operations
+// (Ctrl+U / Ctrl+W / Ctrl+K kills, paste, printable chars, backspace).
+function pasteIntoPane(text: string): void {
+	// §1.32 Wave F: paste is "input started" too — mark before writing
+	// so the snapshot has a valid baseline. markInputStart is idempotent.
+	manager.markInputStart(paneId);
+	manager.paste(paneId, text);
+	currentInputBuffer = updateInputBuffer(currentInputBuffer, { type: 'paste', text });
+}
+
+function dispatchBufferEvent(e: KeyboardEvent): void {
+	const ev = deriveBufferEvent(e);
+	if (!ev) return;
+	// §1.32 Wave F: keep the keystroke mirror updated for the popup's
+	// live filter, AND drive the snapshot's input-start lifecycle so
+	// `readShellInputSnapshot` can read the actual shell line at
+	// history-pick time.
+	currentInputBuffer = updateInputBuffer(currentInputBuffer, ev);
+	switch (ev.type) {
+		case 'char':
+		case 'paste':
+		case 'tab':
+			// First content-producing event after a fresh prompt:
+			// remember WHERE on the grid the input begins.
+			manager.markInputStart(paneId);
+			break;
+		case 'clear':
+		case 'killLine':
+			// Enter / Ctrl+U: shell line ends or fully clears; the
+			// next input is a fresh start.
+			manager.clearInputStart(paneId);
+			break;
+		// Other events (backspace / cursor moves / killWord / killToEol)
+		// don't change the input's start position — leave the marker.
+	}
+}
+// Search state
 let termSearchOpen = $state(false);
 let searchQuery = $state('');
 let searchCaseSensitive = $state(false);
@@ -63,6 +122,7 @@ let searchInputEl: HTMLInputElement | undefined = $state(undefined);
 // && tput bel`). 120ms is short enough not to be annoying.
 let bellFlash = $state(false);
 let bellFlashTimer: ReturnType<typeof setTimeout> | null = null;
+let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
 function triggerBellFlash() {
 	bellFlash = true;
 	if (bellFlashTimer !== null) clearTimeout(bellFlashTimer);
@@ -80,6 +140,152 @@ function triggerBellFlash() {
 // so partial composition keys don't reach the shell.
 let imeHelper: HTMLTextAreaElement | undefined = $state(undefined);
 let isComposing = $state(false);
+/** Latest preedit string handed to the wasm renderer for this
+ *  composition session. Sent verbatim to `manager.setPreedit`; the
+ *  renderer paints it on top of the cell grid at
+ *  `composingAnchor.{row,col}` as the last pass each frame, leaving
+ *  kernel cells untouched. Reset on compositionstart / compositionend. */
+let preeditSentToPty = '';
+// §P5.IME (2026-05-21): preeditStartCell removed — the cell coordinates
+// for the wasm preedit overlay now live on `composingAnchor.{row,col}`,
+// the SAME object that drives the textarea pixel rect. Read each on
+// `compositionupdate`; never let them disagree.
+
+// §1.28 (2026-05-19) + §P5.IME (2026-05-21): anchor snapshot used by
+// BOTH the textarea DOM rect AND the wasm preedit overlay, so they can
+// never drift apart by even a cell (single source via
+// `manager.inputAnchorResolved`).
+//
+// Lock policy:
+//   - Alt-screen / inline-TUI: snapshot frozen at compositionstart and
+//     held for the whole session. Re-resolving mid-update lets Ink-style
+//     log-update spinner walks (claude code, opencode) drag the preedit
+//     across the pane — the original "IME 输入域到处乱跑" symptom.
+//   - Plain shell (cmd / PowerShell / bash / zsh / fish): re-resolve on
+//     every compositionupdate. The resolver chain in shell mode is
+//     stable (imeAnchor reflects post-keystroke cursor; no spinner to
+//     drag it) so following genuine input movement — line wrap, async
+//     prompt re-emit — keeps preedit + textarea pinned to the visible
+//     input cell.
+type ImeAnchor = {
+	row: number;
+	col: number;
+	x: number;
+	y: number;
+	cellW: number;
+	cellH: number;
+	fontSizePx: number;
+};
+let composingAnchor: ImeAnchor | null = null;
+
+// Sticky inline-TUI gate. The kernel's inline-TUI heuristic
+// (grid.rs::INLINE_TUI_DECAY_MS) decays after 2 s without abs/redraw
+// CSI activity so that returning to a normal shell prompt immediately
+// re-enables host shortcuts. The trade-off bites in TUIs that draw
+// once and then idle waiting for input — claude code's `/theme`
+// menu is exactly that. After a wheel scroll the TUI consumes no
+// fresh CSI, the 2 s window expires, and the next ArrowUp suddenly
+// pops the shell-history overlay instead of navigating the menu.
+//
+// Sticky: once we see any live TUI signal, treat the pane as TUI
+// for up to TUI_STICKY_MS — but only while the cursor stays hidden.
+// Shell prompts always run with the cursor visible, so the moment
+// the user is actually back at a prompt the sticky bit can no
+// longer apply and host shortcuts re-enable as before.
+const TUI_STICKY_MS = 60_000;
+let lastTuiActiveTs = 0;
+// §1.31 (2026-05-19): delegate the decision logic to the pure helper in
+// `$lib/terminal/tuiGate` so it can be unit-tested as a truth table.
+// We retain the stateful `lastTuiActiveTs` refresh here because the
+// gate function is intentionally stateless. The new DECCKM branch
+// (`isAppCursorKeys`) lives inside `isTuiActive` and dominates every
+// other signal — once an app sets DECCKM the shell-history popup is
+// unreachable, which is exactly what the user asked for.
+function isTuiSticky(): boolean {
+	const live = manager.isAltScreen(paneId)
+		|| manager.isInlineTuiActive(paneId)
+		|| manager.isMouseReporting(paneId);
+	const now = performance.now();
+	if (live) lastTuiActiveTs = now;
+	return isTuiActive({
+		isAltScreen: manager.isAltScreen(paneId),
+		isInlineTuiActive: manager.isInlineTuiActive(paneId),
+		isMouseReporting: manager.isMouseReporting(paneId),
+		isAppCursorKeys: manager.isAppCursorKeys(paneId),
+		cursorVisible: manager.isCursorVisible(paneId),
+		lastTuiActiveTs,
+		now,
+		stickyMs: TUI_STICKY_MS,
+	});
+}
+
+// Host-priority shortcuts that should fire BEFORE TUI key forwarding.
+// Convention shared by gnome-terminal / kitty / iTerm2 / wezterm /
+// Windows Terminal: a small fixed set of modifier+Shift or platform-
+// native combinations is always handled by the host so users can
+// paste / copy / fullscreen even inside a TUI that captures everything
+// else (claude code, opencode, etc.). Plain Ctrl+V / Ctrl+C still flow
+// through to the TUI as bytes — those are TUI semantics (SYN / SIGINT).
+// Returns true when the host claimed the event.
+function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
+	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+	const isWin = /Win/i.test(navigator.platform || '');
+	const mod = e.ctrlKey || (isMac && e.metaKey);
+
+	// Ctrl+Shift+V / Cmd+Shift+V — host paste, always wins on every
+	// platform. Conservative POSIX users can reach the TUI's SYN byte
+	// ("literal next" in readline) via Ctrl+Q instead.
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		e.preventDefault();
+		return true;
+	}
+
+	// macOS Cmd+V (no Shift) — host paste, matches every other macOS app.
+	if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+			&& (e.key === 'v' || e.key === 'V')) {
+		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		e.preventDefault();
+		return true;
+	}
+
+	// Windows plain Ctrl+V — host paste, matches the default Windows
+	// Terminal / PowerShell / ConHost behaviour where users expect
+	// Ctrl+V to insert clipboard contents into stdin (the host pastes
+	// before the byte ever reaches the running process). POSIX
+	// platforms still send SYN to the TUI on plain Ctrl+V; that's the
+	// xterm / gnome-terminal / iTerm2 convention.
+	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
+			&& (e.key === 'v' || e.key === 'V')) {
+		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		e.preventDefault();
+		return true;
+	}
+
+	// Ctrl+Shift+C — host copy when a selection exists. Falls through
+	// otherwise so a TUI that wants Ctrl+Shift+C as its own hotkey can
+	// still receive it.
+	if (mod && e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+		const sel = manager.getSelectionText(paneId);
+		if (sel) {
+			void writeText(sel);
+			e.preventDefault();
+			return true;
+		}
+	}
+
+	// F11 fullscreen / Ctrl+, settings — OS / app-shell concerns, let
+	// the browser handle them regardless of TUI state. Returning true
+	// without preventDefault lets the event bubble up to the document.
+	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) {
+		return true;
+	}
+	if (mod && !e.shiftKey && !e.altKey && e.key === ',') {
+		return true;
+	}
+
+	return false;
+}
 
 // Reverse-scrollback bridge state (TASKS §2.1).
 //
@@ -97,6 +303,17 @@ let isComposing = $state(false);
 let oldestSeq = 0;
 let atOldest = false;
 let pendingScrollbackFetch = false;
+
+// §1.23 (2026-05-15): Auto-hide scrollbar logic.
+// `isScrolling` toggles when user interacts via wheel or keyboard.
+// `scrollHideTimer` resets on each action; 1.5s delay before hiding.
+let isScrolling = $state(false);
+let scrollHideTimer: ReturnType<typeof setTimeout> | null = null;
+function showScrollbarTemporarily() {
+	isScrolling = true;
+	if (scrollHideTimer) clearTimeout(scrollHideTimer);
+	scrollHideTimer = setTimeout(() => { isScrolling = false; }, 1500);
+}
 
 async function fetchOlderScrollback(): Promise<void> {
 	if (!alive || !attached) return;
@@ -148,36 +365,30 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	// §1.27 fix: use the stable user-input anchor instead of the live
-	// kernel cursor. Ink/log-update walks the kernel cursor up through
-	// every previously-rendered row each spinner tick; reading the live
-	// position during compositionupdate would teleport the helper to the
-	// spinner row mid-walk, where its opaque background covers the
-	// loading area. `inputAnchorPixelPosition` snapshots after each user
-	// keystroke and stays put across PTY-driven cursor moves. Falls back
-	// to the live cursor when no keystroke has happened yet.
-	const pos = manager.inputAnchorPixelPosition(paneId);
+	// §1.28 + §P5.IME: during active composition use the snapshot
+	// `composingAnchor` (already maintained by the lock-or-follow rule
+	// in `onCompositionUpdate` — see below). Outside composition pull
+	// directly from the unified resolver so the textarea, the history
+	// popup, and the wasm overlay all see the same cell.
+	const pos: { x: number; y: number; cellW: number; cellH: number } | null =
+		isComposing && composingAnchor
+			? composingAnchor
+			: (manager.inputAnchorResolved?.(paneId) ?? manager.inputAnchorPixelPosition(paneId));
 	if (!pos) return;
-	// Anchor the helper AT the cursor cell so the visible preedit text
-	// (set by `.is-composing` CSS) overlays the canvas cursor exactly.
-	// Earlier we anchored one row below to keep the candidate popup
-	// "out of the way", but that left the typed pinyin invisible AND
-	// the underlying canvas cursor kept blinking through, producing the
-	// flicker users reported. With the textarea at the cursor cell, the
-	// canvas cursor sits underneath the opaque textarea (no flicker)
-	// and the IME candidate popup naturally opens below the textarea
-	// caret in every browser we've tested.
+	// Anchor the (invisible) IME textarea exactly on the cursor cell.
+	// The OS IME's candidate-popup will dock below this rect — same
+	// place a native input field surfaces its candidates, which is the
+	// familiar interaction model for every CJK / IBus / IME user. No
+	// font / baseline / preedit rendering on our side; the OS handles
+	// it. Standard pattern across xterm.js, VS Code terminal, wezterm-web.
 	imeHelper.style.left = `${pos.x}px`;
 	imeHelper.style.top = `${pos.y}px`;
 	imeHelper.style.bottom = 'auto';
-	// Drive the visible-during-composition styles via CSS custom
-	// properties so the textarea matches the wasm renderer's metrics
-	// (cellW for min-width, cellH for line-height, fontSizePx for font
-	// size). Set unconditionally — the styles only apply when the
-	// `.is-composing` class is also present.
+	// Cell dimensions drive the textarea's own `width / height` (set
+	// in CSS via `var(--rg-ime-cell-w)`), so the OS IME has a real
+	// cell-sized rect to anchor its candidate window against.
 	imeHelper.style.setProperty('--rg-ime-cell-w', `${pos.cellW}px`);
 	imeHelper.style.setProperty('--rg-ime-cell-h', `${pos.cellH}px`);
-	imeHelper.style.setProperty('--rg-ime-font-size', `${pos.fontSizePx}px`);
 }
 
 // §1.27 (2026-05-07): RIDGE_DIAG-gated IME composition trace. The dim/IME
@@ -209,35 +420,90 @@ function diagLogIme(event: string, extra?: Record<string, unknown>) {
 
 function onCompositionStart() {
 	isComposing = true;
-	// Re-anchor right before the candidate window appears.
+	preeditSentToPty = '';
+	// §P5.IME: single-source anchor. Same `(row, col)` powers the
+	// wasm preedit overlay AND the textarea pixel rect — they cannot
+	// disagree about where the user's caret is.
+	composingAnchor = manager.inputAnchorResolved?.(paneId) ?? null;
 	repositionImeHelper();
 	diagLogIme('start');
 }
 
-function onCompositionUpdate(e: CompositionEvent) {
-	// Re-anchor on every keystroke during composition: the user may
-	// scroll the canvas (e.g. PageUp closes the IME on most systems
-	// but defensive); also lets the candidate-window popup track if
-	// the cursor row shifts while composing.
-	repositionImeHelper();
-	diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
-}
 
-function onImeHelperFocus() {
-	// Anchor on focus too, in case the user clicked into the pane and
-	// expects the next IME composition to appear near the current cursor.
-	repositionImeHelper();
-}
-function onCompositionEnd(e: CompositionEvent) {
-	isComposing = false;
-	const data = e.data;
-	if (data && data.length > 0) {
-		manager.write(paneId, data);
+	function onCompositionUpdate(e: CompositionEvent) {
+		// Renderer-side preedit overlay: the wasm renderer paints the
+		// preedit text on top of the cell grid as a final pass each
+		// frame. Cells are NOT modified, so a TUI redrawing its frame
+		// mid-composition can't corrupt the preedit, AND the preedit
+		// can't corrupt the TUI's cells. Works identically in shell
+		// mode and alt-screen TUIs (vim, less, claude code, opencode).
+		const next = e.data ?? '';
+
+		// §P5.IME (2026-05-21): re-resolve the anchor INSIDE shell mode
+		// so the preedit + textarea follow genuine input movement
+		// (line wrap, async prompt re-emit). In alt-screen / inline-TUI
+		// keep §1.28 lock — the resolver can hop to spinner / status-bar
+		// rows mid-frame, which dragged the preedit before the lock
+		// existed. Re-resolve happens SAME-FRAME (no RAF) so the OS IME
+		// candidate popup tracks the cursor without a one-frame lag.
+		if (composingAnchor) {
+			const inTui = manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId);
+			if (!inTui) {
+				const fresh = manager.inputAnchorResolved?.(paneId);
+				if (
+					fresh &&
+					(fresh.row !== composingAnchor.row || fresh.col !== composingAnchor.col)
+				) {
+					composingAnchor = fresh;
+					repositionImeHelper();
+				}
+			}
+		}
+
+		if (composingAnchor) {
+			manager.setPreedit?.(paneId, next, composingAnchor.row, composingAnchor.col);
+			preeditSentToPty = next;
+		}
+		if (imeHelper && composingAnchor && e.data) {
+			const charCount = e.data.length;
+			imeHelper.style.width = `${(charCount + 1) * composingAnchor.cellW}px`;
+		}
+		diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
 	}
-	// Clear the helper textarea so the next composition starts at length 0.
-	if (imeHelper) imeHelper.value = '';
 
-	// §1.27 fix: force a full-frame redraw so any canvas pixels that
+	function onImeHelperFocus() {
+		// Anchor on focus too, in case the user clicked into the pane and
+		// expects the next IME composition to appear near the current cursor.
+		repositionImeHelper();
+	}
+
+	function onImeHelperPaste(e: ClipboardEvent) {
+		const text = e.clipboardData?.getData('text');
+		if (text) {
+			pasteIntoPane(text);
+			e.preventDefault();
+		}
+	}
+	function onCompositionEnd(e: CompositionEvent) {
+		isComposing = false;
+		composingAnchor = null;
+		const data = e.data ?? '';
+		// Clear the renderer-side preedit overlay (kernel cells were
+		// never touched, no erase needed). Then ship the committed
+		// string through the normal PTY write path; the shell / TUI
+		// echoes it back at its OWN tracked cursor — which lands in
+		// the right cell because we didn't disturb anything.
+		manager.clearPreedit?.(paneId);
+		preeditSentToPty = '';
+		if (data.length > 0) {
+			manager.write(paneId, data);
+		}
+		if (imeHelper) {
+			imeHelper.value = '';
+			imeHelper.style.width = 'auto';
+		}
+
+		// §1.27 fix: force a full-frame redraw so any canvas pixels that
 	// were under the now-shrunk `.is-composing` overlay are repainted
 	// from kernel cell state. Without this, Canvas2D's per-row hash diff
 	// can skip rows whose CELLS are unchanged but whose PIXELS were
@@ -256,7 +522,7 @@ function onCompositionEnd(e: CompositionEvent) {
 	// just collapsed. A 120 ms follow-up redraw catches the echoed
 	// cells and refreshes the canvas. `alive` guards against the
 	// component unmounting (split / close) before the timer fires.
-	setTimeout(() => {
+	compositionEndTimer = setTimeout(() => {
 		if (!alive) return;
 		manager.forceFullRedraw(paneId);
 	}, 120);
@@ -270,6 +536,10 @@ function onCompositionEnd(e: CompositionEvent) {
 	// kernel handle from devtools is sufficient evidence to drive
 	// the §1.27 fix.
 	diagLogIme('end', { committed: data });
+
+	// §1.34 — the wasm overlay tracks its own anchor cell; no JS
+	// repositioning needed across IME commits. Anchor was captured
+	// at open time and stays put through the kernel rasterizer.
 }
 
 function refreshSearch() {
@@ -446,6 +716,7 @@ onMount(() => {
 			await manager.unpark(paneId, container);
 			if (!alive) return;
 			attached = true;
+			window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
 			manager.setFocused(paneId, get(activePaneId) === paneId);
 			manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
 			// Re-register handlers so this fresh component owns the
@@ -466,6 +737,17 @@ onMount(() => {
 		await manager.attach(paneId, container, workspaceId);
 		if (!alive) return;
 		attached = true;
+		// Force-push the current CSS-derived theme onto the fresh kernel.
+		// `setupTerminalThemeBridge` runs once at app boot and only
+		// re-pushes when the settings store changes, so the very first
+		// pane to attach AFTER bootup races the bridge's initial RAF —
+		// if attach wins, `opts.theme` is null and the kernel keeps its
+		// compile-time defaults until the next settings tick (which may
+		// never come). This force-push closes that window: every attach
+		// sees the live `--rg-*` CSS vars on documentElement and applies
+		// them synchronously.
+		pushTerminalThemeNow();
+		window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
 
 		// Sync focus state immediately so a freshly-split pane doesn't draw
 		// a phantom cursor between attach and the next $effect tick. The
@@ -541,46 +823,67 @@ onMount(() => {
 			}
 		}
 
+		// 7) Sync the backend delta_mode to the user's current Settings
+		// preference. MUST come after `activate_pane_pty` — `create_pane`
+		// only registers a `PendingSpawn`, the live pane handle that
+		// `set_pane_delta_mode` looks up in `ws.terminals` doesn't land
+		// until `activate_pane_pty` runs. Pre-fix, this call was inside
+		// `ensurePtyBridge` and fired before activation → "pane not found"
+		// warning on every cold boot. Fire-and-forget here is safe; if it
+		// fails the user just stays on whatever the backend's default
+		// delta_mode is.
+		// P4.4 — Rust path is the only path; unconditionally enable
+		// delta_mode on attach. The backend defaults `delta_mode` to
+		// false so the initial bytes use the legacy text path; this
+		// call flips the gate after the pane has activated, at which
+		// point the channel (registered by ptyBridge) starts
+		// receiving delta frames.
+		if (alive) {
+			void setPaneDeltaMode(paneId, true);
+		}
+
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
 		// across this component's mount cycle, so we don't subscribe
 		// here. See ptyBridge.ts.
 	})();
 });
 
-// §1.23 (2026-05-05): low-frequency poll so the side scrollbar's thumb
-// position stays in sync as new PTY output arrives (scrollback grows
-// asynchronously; the keystroke / wheel handlers alone miss it). 250 ms
-// = 4Hz which is plenty for visual feedback and costs ~0.05% CPU on the
-// O(1) `manager.scrollState` read. Stops on detach (the !alive guard
-// inside refreshScrollState makes it a no-op even if the timer ticks
-// once after onDestroy).
-let scrollStatePollTimer: ReturnType<typeof setInterval> | null = null;
+// P4.4 (2026-05-21) — removed the parserBackend live-switch effect.
+// With Rust path unconditional, the initial `setPaneDeltaMode(paneId, true)`
+// in the onMount IIFE is the only call site needed. No more 200ms fade
+// mask — there is no backend to switch to.
+
+// §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
+// used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`
+// per attached pane — pure polling so that async PTY-driven scrollback
+// growth was reflected even when no keystroke / wheel handler fired.
+// Multiplied across panes it was a measurable chunk of the idle CPU
+// floor. The manager now diffs `kernel.scrollOffset` / `scrollbackLen`
+// on the RAF tick and notifies subscribers only on change (and fires
+// an immediate baseline emit on subscription), so we get strictly
+// better latency (16 ms worst-case vs 250 ms) at zero idle cost.
 $effect(() => {
 	if (!attached) return;
-	scrollStatePollTimer = setInterval(refreshScrollState, 250);
-	return () => {
-		if (scrollStatePollTimer !== null) {
-			clearInterval(scrollStatePollTimer);
-			scrollStatePollTimer = null;
-		}
-	};
+	return manager.onScrollState(paneId, refreshScrollState);
 });
 
 onDestroy(() => {
 	alive = false;
-	// Cancel pending Bell flash so the timer can't fire after unmount.
-	// Without this, a Bell received within 120ms of pane close leaves a
-	// dangling setTimeout that writes `bellFlash` on a torn-down component.
+	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
+	// unmounts mid-drag can't leave the whole app stuck at user-select:none.
+	if (scrollbarDragGuardActive) endScrollbarDrag();
 	if (bellFlashTimer !== null) {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
 	}
-	// Defensive scrollbar poll cleanup; the $effect cleanup handles the
-	// usual case but onDestroy is the last-line guard.
-	if (scrollStatePollTimer !== null) {
-		clearInterval(scrollStatePollTimer);
-		scrollStatePollTimer = null;
+	if (compositionEndTimer !== null) {
+		clearTimeout(compositionEndTimer);
+		compositionEndTimer = null;
 	}
+	// P1.3 (2026-05-19): no scrollbar poll timer to tear down — the
+	// $effect that wired `manager.onScrollState` handles unsubscription
+	// via its cleanup return, and `manager.park` clears the handler
+	// slot on the pane entry below.
 	// Park instead of detach (TASKS §5.1). We don't know in onDestroy
 	// whether this is a transient unmount (split / reparent) or a real
 	// close — parking is cheap to reverse via unpark, and the PTY bridge
@@ -620,112 +923,119 @@ $effect(() => {
 	manager.setPadding(paneId, px);
 });
 
-function onContainerKeyDown(e: KeyboardEvent) {
-	if (!alive || !attached) return;
-	// Skip key handling entirely during IME composition so partial
-	// composition keys (especially keyCode=229 from Pinyin/Kana IMEs)
-	// don't reach the shell. compositionend delivers the final string
-	// via manager.write.
-	if (isComposing || e.isComposing) return;
+	function onContainerKeyDown(e: KeyboardEvent) {
+		if (!alive || !attached) return;
 
-	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-	const mod = e.ctrlKey || (isMac && e.metaKey);
+		if (isComposing || e.isComposing) return;
 
-	// App-level keys that should NOT be consumed by the terminal —
-	// the OS/Tauri window or another part of the app handles them.
-	// Add to this list as needed; xterm uses attachCustomKeyEventHandler
-	// for the same purpose.
-	if (e.key === 'F11' && !mod && !e.altKey && !e.shiftKey) return;        // fullscreen
-	if (mod && !e.shiftKey && !e.altKey && e.key === ',') return;            // settings panel
-	if (mod && e.shiftKey && !e.altKey && (e.key === 'P' || e.key === 'p')) return; // command palette
+		// 2. Host-priority shortcuts (paste / copy-with-selection /
+		// fullscreen / settings). These bypass TUI key forwarding so
+		// users can always paste into claude / opencode / vim — the
+		// TUI never sees Ctrl+Shift+V because the host intercepts
+		// first. See handleHostPriorityShortcut for the full table.
+		if (handleHostPriorityShortcut(e)) return;
 
-	// Ctrl+F — open in-pane search bar.
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
-		openSearchBar();
-		e.preventDefault();
-		return;
+		// 3. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
+		// 注意: TUI 启用鼠标模式 (isMouseReporting) 也意味着键盘应优先给 TUI
+		// 使用 isTuiSticky() 而非直接 OR，避免 claude /theme 这类静态
+		// 菜单在 inline-TUI 2s decay 过期后误判出 TUI 模式。
+		const isTui = isTuiSticky();
+		if (isTui) {
+			if (manager.handleKeyDown(paneId, e)) {
+				e.preventDefault();
+				return;
+			}
+		}
+
+		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const mod = e.ctrlKey || (isMac && e.metaKey);
+
+		// 4. Non-TUI-only 快捷键。Host-priority 集合（粘贴 / 复制选中 /
+		// F11 / Ctrl+,）已在 step 2 提前处理；这里只剩下与 TUI 行为冲突、
+		// 必须避让 TUI 的 host 快捷键（in-pane 搜索、scrollback 翻页）。
+		if (!isTui) {
+			// Ctrl+F — open/close in-pane search bar. TUI 里 Ctrl+F 通常
+			// 是 page down (vim/less)，所以非 TUI 才拦截。
+			if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+				if (termSearchOpen) {
+					closeSearchBar();
+				} else {
+					openSearchBar();
+				}
+				e.preventDefault();
+				return;
+			}
+
+			// PageUp/Down for scrollback navigation. Modifier required so we don't
+			// hijack programs like less that use bare PageUp.
+			if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageUp') {
+				manager.scrollUp(paneId, manager.rows(paneId) - 1);
+				maybePrefetchOlder();
+				refreshScrollState();
+				showScrollbarTemporarily();
+				e.preventDefault();
+				return;
+			}
+			if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageDown') {
+				manager.scrollDown(paneId, manager.rows(paneId) - 1);
+				refreshScrollState();
+				showScrollbarTemporarily();
+				e.preventDefault();
+				return;
+			}
+		}
+
+		// 5. Default: pass through to kernel's key encoder (非 TUI 下)
+		if (!isTui && manager.handleKeyDown(paneId, e)) {
+			e.preventDefault();
+			refreshScrollState();
+
+			// §1.32 (2026-05-20) Wave B: route every buffer-affecting key
+			// through the unit-tested `inputBufferTracker` state machine.
+			// Adds Ctrl+U / Ctrl+W / Ctrl+K (readline kills, Bug #4) on
+			// top of the original char-append / backspace / cursor-clear
+			// behaviour. Enter is now treated as `clear` too (was
+			// previously not handled, leaving a stale buffer after each
+			// command).
+			dispatchBufferEvent(e);
+		}
 	}
 
-	// Ctrl+C with selection: copy. Without selection: fall through to
-	// kernel encoder which produces 0x03 (SIGINT).
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
-		const sel = manager.getSelectionText(paneId);
-		if (sel) {
-			void writeText(sel);
+	function onContainerWheel(e: WheelEvent) {
+		if (!alive || !attached) return;
+
+		// ★ TUI 模式下: 将滚轮编码为 SGR 鼠标滚动事件转发给 PTY
+		// 利用 handleWheel 的返回值——只有 TUI 启用了 mouse reporting
+		// 且字节真的发出去时才 preventDefault。否则（如 claude code 这
+		// 类启用了 cursor hidden 让 sticky=true 但不接管鼠标的 inline-TUI）
+		// 落到下方的 scrollback 分支，用户仍能向上翻页 host 历史。
+		if (isTuiSticky() && manager.handleWheel(paneId, e)) {
 			e.preventDefault();
 			return;
 		}
-		// Fall through to encoder for SIGINT.
-	}
 
-	// Ctrl+V — paste (manager handles bracketed paste).
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => {
-			if (text) manager.paste(paneId, text);
-		});
-		e.preventDefault();
-		return;
-	}
+		// Only intercept when there's actually scrollback to scroll through.
+		const { total } = manager.scrollState(paneId);
+		if (total === 0) return;
 
-	// Ctrl+A — select all (overrides shell ^A jump-to-start; if user
-	// wants ^A they can use Ctrl+Home or similar; revisit if complaints).
-	if (mod && !e.shiftKey && !e.altKey && (e.key === 'a' || e.key === 'A')) {
-		manager.selectAll(paneId);
-		e.preventDefault();
-		return;
-	}
+		const delta = e.deltaY;
+		const lines = Math.max(1, Math.round(Math.abs(delta) / 30));
+		if (delta < 0) {
+			manager.scrollUp(paneId, lines);
+		} else {
+			manager.scrollDown(paneId, lines);
+		}
 
-	// PageUp/Down for scrollback navigation. Modifier required so we don't
-	// hijack programs like less that use bare PageUp.
-	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageUp') {
-		manager.scrollUp(paneId, manager.rows(paneId) - 1);
-		// Pull older history from the backend if we're approaching the
-		// top of the kernel buffer; fire-and-forget so the immediate
-		// scroll stays responsive (TASKS §2.1).
-		maybePrefetchOlder();
 		refreshScrollState();
+		showScrollbarTemporarily();
 		e.preventDefault();
-		return;
-	}
-	if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'PageDown') {
-		manager.scrollDown(paneId, manager.rows(paneId) - 1);
-		refreshScrollState();
-		e.preventDefault();
-		return;
 	}
 
-	// Default: pass through to kernel's key encoder.
-	// User typing usually causes the kernel to auto-scroll to bottom; refresh
-	// the local mirror so the scroll-to-bottom button re-hides.
-	if (manager.handleKeyDown(paneId, e)) {
-		e.preventDefault();
-		refreshScrollState();
-	}
-}
-
-function onContainerWheel(e: WheelEvent) {
-	if (!alive || !attached) return;
-	// Only intercept when there's actually scrollback to scroll through.
-	const { total } = manager.scrollState(paneId);
-	if (total === 0) return;
-	const delta = e.deltaY;
-	// 3 lines per wheel notch — matches xterm/most terminals.
-	const lines = Math.max(1, Math.round(Math.abs(delta) / 30));
-	if (delta < 0) {
-		manager.scrollUp(paneId, lines);
-		// Same paging behaviour as Shift+PageUp — fire-and-forget fetch
-		// when approaching the top, so heavy wheel scrolling can keep
-		// drilling into backend history (TASKS §2.1).
-		maybePrefetchOlder();
-	} else {
-		manager.scrollDown(paneId, lines);
-	}
-	refreshScrollState();
-	e.preventDefault();
-}
 
 function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
+	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
+	if (manager.isMouseReporting(paneId)) return;
 	e.preventDefault();
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
@@ -733,7 +1043,7 @@ function onContextMenu(e: MouseEvent) {
 			? [{ id: 'term-copy', label: '复制', action: () => { void writeText(sel); } }]
 			: []),
 		{ id: 'term-paste', label: '粘贴', action: () => {
-			void readText().then((t) => { if (t) manager.paste(paneId, t); });
+			void readText().then((t) => { if (t) pasteIntoPane(t); });
 		}},
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: '全选', action: () => manager.selectAll(paneId) },
@@ -806,6 +1116,16 @@ function jumpToBottom() {
 	imeHelper?.focus();
 }
 
+// §multi-size: when remote control is on, the desktop and remote devices
+// share ONE PTY size. A remote device that claims/refreshes can shrink this
+// pane's grid; this button re-claims the PTY at THIS desktop pane's size and
+// forces a full repaint. Only shown while remote control is enabled.
+function refreshForRemote() {
+	if (!alive || !attached) return;
+	manager.fitPaneNow(paneId);
+	manager.forceFullRedraw(paneId);
+}
+
 // Scrollbar geometry, derived from current state. Both thumb top and
 // thumb height are FRACTIONS of the pane container's height so CSS can
 // express them as `top: x%; height: y%`.
@@ -838,6 +1158,32 @@ let scrollbarThumbTopPct = $derived.by(() => {
 // can compute a delta-based new offset without re-measuring the track.
 let scrollbarTrackEl: HTMLDivElement | undefined = $state(undefined);
 let dragging: { startY: number; startOffset: number; trackH: number } | null = null;
+let scrollbarDragGuardActive = false;
+
+// Unconditionally clear the window-wide text-selection suppression. Reset to ''
+// so any app-wide CSS rule keeps owning the property.
+function clearBodySelectGuard(): void {
+	document.body.style.userSelect = '';
+	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
+}
+
+// End a scrollbar-thumb drag from ANY source — the thumb's own pointerup, OR a
+// window-level pointerup/cancel/blur. The latter is the safety net: the thumb
+// lives under `{#if scrollbarVisible}`, so a resize that drops scrollback to 0
+// (more frequent now that remote control re-fits on interaction) can unmount it
+// mid-drag — its pointerup then never fires, and the body would stay
+// `user-select:none` forever, disabling selection across the whole app.
+function endScrollbarDrag(): void {
+	if (scrollbarDragGuardActive) {
+		window.removeEventListener('pointerup', endScrollbarDrag, true);
+		window.removeEventListener('pointercancel', endScrollbarDrag, true);
+		window.removeEventListener('blur', endScrollbarDrag);
+		scrollbarDragGuardActive = false;
+	}
+	dragging = null;
+	clearBodySelectGuard();
+}
+
 function onScrollbarThumbPointerDown(e: PointerEvent) {
 	if (!alive || !attached || !scrollbarTrackEl) return;
 	e.stopPropagation();
@@ -858,6 +1204,15 @@ function onScrollbarThumbPointerDown(e: PointerEvent) {
 	// and the WebKit prefix for Tauri's older webview versions.
 	document.body.style.userSelect = 'none';
 	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = 'none';
+	// Safety net so the guard is ALWAYS lifted even if the thumb unmounts
+	// mid-drag (its own pointerup never fires). Capture phase so we see the
+	// release regardless of where it lands.
+	if (!scrollbarDragGuardActive) {
+		scrollbarDragGuardActive = true;
+		window.addEventListener('pointerup', endScrollbarDrag, true);
+		window.addEventListener('pointercancel', endScrollbarDrag, true);
+		window.addEventListener('blur', endScrollbarDrag);
+	}
 }
 function onScrollbarThumbPointerMove(e: PointerEvent) {
 	if (!dragging) return;
@@ -879,14 +1234,10 @@ function onScrollbarThumbPointerMove(e: PointerEvent) {
 	refreshScrollState();
 }
 function onScrollbarThumbPointerUp(e: PointerEvent) {
-	if (!dragging) return;
-	dragging = null;
-	(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-	// Restore window-wide text selection (paired with the userSelect
-	// suppression in onScrollbarThumbPointerDown). Reset to '' so any
-	// app-wide CSS rule keeps owning the property.
-	document.body.style.userSelect = '';
-	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
+	try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* capture already gone */ }
+	// Always restore — NOT gated on `dragging`, which an interleaved resize may
+	// have already cleared, leaving the body stuck at user-select:none.
+	endScrollbarDrag();
 }
 
 // Click on the empty track jumps the thumb center to the cursor — same
@@ -909,8 +1260,32 @@ function onScrollbarTrackClick(e: MouseEvent) {
 	refreshScrollState();
 }
 
-function onContainerPointerDown() {
+function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
+	// §multi-size: each client (desktop + every remote) now renders its OWN grid
+	// via a per-sub parser, so desktop interaction no longer needs to "re-claim"
+	// the shared PTY size. The PTY is resized only by an explicit per-pane refresh
+	// (desktop or remote) — see the refresh button below.
+	// ★ TUI mouse reporting takes priority: forward the click to the
+	// running application instead of changing focus. Without this,
+	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends
+	// the event to the kernel's pointerDownListener but the Svelte
+	// template handler runs first and steals focus from the IME helper,
+	// breaking the next keystroke.
+	if (manager.isMouseReporting(paneId)) {
+		manager.handlePointerDown(paneId, e);
+		// Don't focus the IME helper — the TUI owns input now, and
+		// the next keydown will still reach onContainerKeyDown via
+		// bubbling from whichever child has focus.
+		return;
+	}
+	// In 'direct' mode the IME helper isn't rendered at all (see below),
+	// so focus the container directly — its keydown handler still
+	// services every printable key without IME composition.
+	if ($settingsStore.terminalImeMode === 'direct') {
+		container?.focus();
+		return;
+	}
 	// Focus the IME helper textarea so keystrokes (including IME
 	// composition) flow to us. Falling back to container focus if the
 	// helper isn't mounted yet (early HMR / SSR edge case).
@@ -954,26 +1329,37 @@ function onContainerMouseDown(e: MouseEvent) {
 	onpointerdown={onContainerPointerDown}
 	onkeydown={onContainerKeyDown}
 >
-	<textarea
-		bind:this={imeHelper}
-		class="rg-ime-helper"
-		class:is-composing={isComposing}
-		aria-label="终端输入"
-		autocomplete="off"
-		autocapitalize="off"
-		spellcheck="false"
-		oncompositionstart={onCompositionStart}
-		oncompositionupdate={onCompositionUpdate}
-		oncompositionend={onCompositionEnd}
-		onfocus={onImeHelperFocus}
-	></textarea>
+	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
+	     so users who only type ASCII can flip to 'direct' mode and the
+	     textarea never enters the DOM — OS IME has no focusable input
+	     to attach to, and `onContainerKeyDown` services every keystroke
+	     directly with no compositionstart/update/end round-trip. The
+	     "history input flickers with cursor" symptom (Microsoft Pinyin /
+	     Sogou intercepting plain ASCII as a pinyin composition) goes
+	     away in 'direct' mode. -->
+	{#if $settingsStore.terminalImeMode === 'ime'}
+		<textarea
+			bind:this={imeHelper}
+			class="rg-ime-helper"
+			class:is-composing={isComposing}
+			aria-label="终端输入"
+			autocomplete="off"
+			autocapitalize="off"
+			spellcheck="false"
+			oncompositionstart={onCompositionStart}
+			oncompositionupdate={onCompositionUpdate}
+			oncompositionend={onCompositionEnd}
+			onfocus={onImeHelperFocus}
+			onpaste={onImeHelperPaste}
+		></textarea>
+	{/if}
 
 	<!-- §1.23 (2026-05-05): floating scroll-to-bottom button.
 	     Only shown when the user has paged into history (`isAtBottom`
 	     starts true and stays true unless wheel/PageUp triggered a scroll
 	     that left scroll_offset > 0). Click jumps the kernel viewport
 	     back to the live grid and re-focuses the IME helper for input. -->
-	{#if !isAtBottom}
+	{#if scrollTotal > 0 && scrollOffset > 0}
 		<button
 			type="button"
 			class="rg-jump-bottom"
@@ -988,6 +1374,24 @@ function onContainerMouseDown(e: MouseEvent) {
 		</button>
 	{/if}
 
+	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while the
+	     remote server is actually RUNNING (not merely the persisted setting) —
+	     otherwise this pane is the sole viewer and fitPane already owns the size. -->
+	{#if $remoteRunning}
+		<button
+			type="button"
+			class="rg-remote-refresh"
+			title="按本端尺寸刷新（远程控制开启时可用）"
+			onclick={refreshForRemote}
+			aria-label="按本端尺寸刷新"
+		>
+			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+				<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+				<path d="M13.5 2.4V5.1H10.8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+			</svg>
+		</button>
+	{/if}
+
 	<!-- §1.23 (2026-05-05): side scrollbar overlay.
 	     Visible only when there is actual scrollback (total > 0). Track
 	     covers full pane height; thumb position + height reflect current
@@ -996,6 +1400,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	{#if scrollbarVisible}
 		<div
 			class="rg-scrollbar-track"
+			class:is-active={isScrolling}
 			bind:this={scrollbarTrackEl}
 			onclick={onScrollbarTrackClick}
 			role="presentation"
@@ -1018,6 +1423,10 @@ function onContainerMouseDown(e: MouseEvent) {
 		</div>
 	{/if}
 </div>
+
+<!-- §1.34 (2026-05-22) — shell-history popup moved to wasm canvas
+     overlay; driver fns: openHistoryOverlay / closeHistoryOverlay /
+     moveHistorySelection / commitHistorySelection live in <script>. -->
 
 {#if termSearchOpen}
 	<div class="rg-search-bar">
@@ -1069,6 +1478,9 @@ function onContainerMouseDown(e: MouseEvent) {
 	 * empty rulesets. The strict containment lets the browser skip
 	 * layout/paint on unrelated mutations elsewhere — small win in
 	 * multi-pane setups. */
+	/* P4.4 (2026-05-21) — removed the `.rg-backend-switching` fade rule.
+	 * With Rust path unconditional, there is no backend switch to mask. */
+
 	.rg-pane-container.bell-flash {
 		/* Brief inset highlight to draw the eye on BEL (0x07). 120ms is
 		 * long enough to register, short enough not to be annoying. */
@@ -1076,56 +1488,58 @@ function onContainerMouseDown(e: MouseEvent) {
 		transition: box-shadow 60ms ease-out;
 	}
 	.rg-ime-helper {
-		/* IME helper textarea — invisible but focusable so the browser
-		 * shows the IME candidate window near it. Position is set by
-		 * `repositionImeHelper()` (left/top in pixels relative to the
-		 * pane container) so the candidate window anchors to the actual
-		 * terminal cursor. The default `bottom: 0` is the v1 fallback
-		 * if JS hasn't repositioned yet (e.g. before first focus).
-		 * `caret-color: transparent` hides the textarea's own blinking
-		 * cursor; the actual terminal cursor is drawn by the wasm renderer. */
+		/* IME anchor textarea. The OS IME treats this as a visible
+		 * focused input field and renders the preedit INSIDE it —
+		 * so it does NOT also pop up a separate preedit display that
+		 * would cover the canvas overlay we paint ourselves. The
+		 * candidate-list popup (你/妳/呢/...) still appears as a
+		 * separate OS window — that's the part the user needs to
+		 * read and choose from.
+		 *
+		 * The textarea itself is invisible to the user: `color:
+		 * transparent` hides the preedit char glyphs the OS draws
+		 * into it; `background: transparent` and `caret-color:
+		 * transparent` keep the rest clean. We can NOT use
+		 * `opacity: 0` because some OS IMEs (Microsoft Pinyin
+		 * notably) treat an opacity:0 input as "hidden" and switch
+		 * back to popup-rendered preedit — undoing the whole point.
+		 * Pixel rect is one cell-sized box at the kernel cursor so
+		 * the OS positions the candidate popup correctly below it. */
 		position: absolute;
-		left: 1px;
-		bottom: 0;
-		width: 1px;
-		height: 1px;
-		opacity: 0;
+		left: 0;
+		top: 0;
+		width: var(--rg-ime-cell-w, 8px);
+		height: var(--rg-ime-cell-h, 18px);
+		opacity: 1;
 		pointer-events: none;
 		caret-color: transparent;
+		background: transparent;
+		color: transparent;
 		border: none;
 		outline: none;
 		padding: 0;
 		margin: 0;
 		resize: none;
 		overflow: hidden;
-		background: transparent;
+		font-family: var(--rg-term-font-family, ui-monospace, 'Cascadia Code', Consolas, monospace);
+		font-size: var(--rg-term-font-size, 14px);
+		line-height: var(--rg-ime-cell-h, 18px);
 	}
 	.rg-ime-helper.is-composing {
-		/* While the user is mid-composition (CJK pinyin / kana), make
-		 * the textarea visible at the cursor cell so the typed preedit
-		 * letters are readable, AND so the textarea's opaque background
-		 * covers the canvas cursor underneath (otherwise the canvas
-		 * cursor keeps blinking through, producing flicker). The
-		 * underline mirrors the OS convention for inline preedit text.
-		 * Width grows with content; min-width = one cell so the candidate
-		 * popup anchors correctly even on the first keystroke before
-		 * `compositionupdate` writes anything. Font + line metrics come
-		 * from CSS custom props set by repositionImeHelper(). */
-		width: auto;
-		min-width: var(--rg-ime-cell-w, 8px);
+		/* During composition we stream the preedit text directly through
+		 * the PTY (see `onCompositionUpdate` in this file) so the shell
+		 * echoes it back and the user sees pinyin/kana letters appear
+		 * at the cursor cell — drawn by the wasm canvas renderer, not
+		 * by an overlay. The textarea itself stays invisible; we only
+		 * resize its width slightly so the OS candidate popup anchors
+		 * close to the user's typed letters. */
+		width: var(--rg-ime-cell-w, 8px);
 		height: var(--rg-ime-cell-h, 18px);
-		opacity: 1;
-		pointer-events: auto;
-		background: var(--rg-bg, #1e1e2e);
-		color: var(--rg-fg, #cdd6f4);
-		font-family: var(--rg-font-family, ui-monospace, monospace);
-		font-size: var(--rg-ime-font-size, 14px);
-		line-height: var(--rg-ime-cell-h, 18px);
-		white-space: pre;
-		overflow: visible;
-		text-decoration: underline;
-		caret-color: var(--rg-fg, #cdd6f4);
-		z-index: 5;
+		opacity: 0;
+		pointer-events: none;
+		caret-color: transparent;
+		color: transparent;
+		background: transparent;
 	}
 	.rg-jump-bottom {
 		/* §1.23 — floating scroll-to-bottom shortcut. Anchored to the
@@ -1149,7 +1563,7 @@ function onContainerMouseDown(e: MouseEvent) {
 		opacity: 0.85;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 		transition: opacity 120ms ease-out, transform 120ms ease-out, background 120ms ease-out;
-		z-index: 9;
+		z-index: 21;
 	}
 	.rg-jump-bottom:hover {
 		opacity: 1;
@@ -1158,6 +1572,39 @@ function onContainerMouseDown(e: MouseEvent) {
 		transform: translateY(-1px);
 	}
 	.rg-jump-bottom:focus {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
+	}
+
+	.rg-remote-refresh {
+		/* §multi-size — floating "re-claim my size" button, top-right so it
+		 * never collides with the bottom-right jump-to-bottom affordance.
+		 * Only mounted while remote control is enabled. */
+		position: absolute;
+		right: 14px;
+		top: 14px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 30px;
+		border-radius: 9999px;
+		border: 1px solid var(--rg-border, #333);
+		background: var(--rg-surface, rgba(30, 30, 30, 0.92));
+		color: var(--rg-fg, #ddd);
+		cursor: pointer;
+		opacity: 0.7;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+		transition: opacity 120ms ease-out, background 120ms ease-out, transform 120ms ease-out;
+		z-index: 21;
+	}
+	.rg-remote-refresh:hover {
+		opacity: 1;
+		background: var(--rg-accent, #4a8cff);
+		color: #fff;
+		transform: translateY(-1px);
+	}
+	.rg-remote-refresh:focus {
 		outline: none;
 		box-shadow: 0 0 0 2px var(--rg-accent, #4a8cff);
 	}
@@ -1173,13 +1620,16 @@ function onContainerMouseDown(e: MouseEvent) {
 		right: 0;
 		bottom: 0;
 		width: 10px;
-		z-index: 8;
+		z-index: 20;
 		cursor: pointer;
 		opacity: 0;
 		transition: opacity 150ms ease-out;
+		pointer-events: none;
 	}
+	.rg-scrollbar-track.is-active,
 	.rg-pane-container:hover .rg-scrollbar-track {
 		opacity: 1;
+		pointer-events: auto;
 	}
 	.rg-scrollbar-thumb {
 		position: absolute;
@@ -1187,14 +1637,16 @@ function onContainerMouseDown(e: MouseEvent) {
 		right: 2px;
 		min-height: 18px;
 		border-radius: 6px;
-		background: var(--rg-fg-muted, rgba(180, 180, 180, 0.45));
+		background: var(--rg-fg-muted, rgba(180, 180, 180, 0.3));
 		opacity: 0.55;
 		cursor: grab;
 		transition: opacity 120ms ease-out, background 120ms ease-out;
 		touch-action: none;
 	}
+	.rg-scrollbar-track.is-active .rg-scrollbar-thumb,
 	.rg-scrollbar-thumb:hover {
 		opacity: 0.85;
+		background: var(--rg-accent, #4a8cff);
 	}
 	.rg-scrollbar-thumb:active {
 		opacity: 1;

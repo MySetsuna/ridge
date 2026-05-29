@@ -335,6 +335,40 @@ pub fn wrap_paste(text: &str, bracketed_paste: bool) -> Vec<u8> {
     }
 }
 
+/// Encode a mouse event as an SGR-format terminal sequence.
+///
+/// `btn`: 0=left, 1=middle, 2=right, 3=release, 64=scroll-up, 65=scroll-down
+/// `action`: 0=press, 1=release, 2=motion (drag)
+/// `row`/`col`: 0-based viewport cell coordinates
+///
+/// SGR format: `ESC [ < btn+mods > ; < col+1 > ; < row+1 > M/m`
+///   - Per xterm spec (invisible-island.net/xterm/ctlseqs/ctlseqs.html):
+///     `CSI < Cb ; Cx ; Cy M` where Cx=column (1-based), Cy=row (1-based) —
+///     column comes first, then row. Strict SGR clients like BubbleTea's
+///     mouse decoder will silently misinterpret the click coordinate if
+///     the order is reversed.
+///   - `M` for press/motion, `m` for release
+///   - Modifier flags: +4 shift, +8 alt, +16 ctrl
+///   - Motion flag: +32 (0x20) when `action == 2`
+pub fn encode_mouse(btn: u8, row: usize, col: usize, action: u8, shift: bool, ctrl: bool, alt: bool, _modes: &Modes) -> Vec<u8> {
+    let mut b = btn;
+    if shift {
+        b |= 4;
+    }
+    if alt {
+        b |= 8;
+    }
+    if ctrl {
+        b |= 16;
+    }
+    if action == 2 {
+        b |= 32; // motion flag
+    }
+    // SGR: ESC [ < b > ; < col+1 > ; < row+1 > M (press/motion) / m (release)
+    let suffix = if action == 1 { 'm' } else { 'M' };
+    format!("\x1b[<{};{};{}{}", b, col + 1, row + 1, suffix).into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,8 +531,8 @@ mod tests {
         assert_eq!(encode(&key("Escape"), &modes()).bytes, vec![0x1b]);
     }
 
-    #[test]
-    fn unknown_key_returns_ignored() {
+#[test]
+fn unknown_key_returns_ignored() {
         let r = encode(&key("Process"), &modes()); // IME placeholder
         assert!(!r.consumed);
         assert!(r.bytes.is_empty());
@@ -513,5 +547,84 @@ mod tests {
     #[test]
     fn paste_passthrough_when_bracketed_off() {
         assert_eq!(wrap_paste("hi", false), b"hi");
+    }
+
+    // ---- mouse encoding tests ----------------------------------------
+
+    #[test]
+    fn mouse_left_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 2, 5, 0, false, false, false, &m);
+        // SGR: col+1 first, then row+1 → col=5→6, row=2→3
+        assert_eq!(bytes, b"\x1b[<0;6;3M");
+    }
+
+    #[test]
+    fn mouse_right_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(2, 10, 20, 0, false, false, false, &m);
+        // col=20→21, row=10→11
+        assert_eq!(bytes, b"\x1b[<2;21;11M");
+    }
+
+    #[test]
+    fn mouse_release_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(3, 5, 8, 1, false, false, false, &m);
+        // release → suffix 'm'; col=8→9, row=5→6
+        assert_eq!(bytes, b"\x1b[<3;9;6m");
+    }
+
+    #[test]
+    fn mouse_motion_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 3, 7, 2, false, false, false, &m);
+        // motion → +32 flag → btn 32; col=7→8, row=3→4
+        assert_eq!(bytes, b"\x1b[<32;8;4M");
+    }
+
+    #[test]
+    fn mouse_shift_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 1, 1, 0, true, false, false, &m);
+        // shift → +4 → btn 4; col=1=row=1 → symmetric coordinate
+        assert_eq!(bytes, b"\x1b[<4;2;2M");
+    }
+
+    #[test]
+    fn mouse_ctrl_alt_click_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 0, 0, 0, false, true, true, &m);
+        // ctrl=16 + alt=8 → btn 24; origin coordinate is symmetric
+        assert_eq!(bytes, b"\x1b[<24;1;1M");
+    }
+
+    #[test]
+    fn mouse_scroll_up_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(64, 5, 10, 0, false, false, false, &m);
+        // col=10→11, row=5→6
+        assert_eq!(bytes, b"\x1b[<64;11;6M");
+    }
+
+    #[test]
+    fn mouse_all_modifiers_motion_sgr() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, 4, 9, 2, true, true, true, &m);
+        // shift(4) + alt(8) + ctrl(16) + motion(32) = 60; col=9→10, row=4→5
+        assert_eq!(bytes, b"\x1b[<60;10;5M");
+    }
+
+    /// Regression guard for the SGR field-order bug that broke
+    /// strict clients (BubbleTea / sst-opencode) until 2026-05-19.
+    /// xterm spec: `CSI < Cb ; Cx ; Cy M` — Cx is column, Cy is row.
+    /// Picking distinct row vs col values means a future row/col swap
+    /// can never sneak through symmetric (n, n) coordinates again.
+    #[test]
+    fn mouse_sgr_col_precedes_row() {
+        let m = Modes::default();
+        let bytes = encode_mouse(0, /*row=*/ 10, /*col=*/ 50, 0, false, false, false, &m);
+        // Column 50 (+1=51) must appear before row 10 (+1=11).
+        assert_eq!(bytes, b"\x1b[<0;51;11M");
     }
 }

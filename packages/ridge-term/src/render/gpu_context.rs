@@ -148,6 +148,21 @@ pub struct GpuContext {
     /// Per-pane backends compare their last-seen value at frame start;
     /// mismatch → rebuild bind group against the new view.
     pub atlas_generation: u64,
+    /// Bumped every time a layer is evicted (reused by a new glyph).
+    /// Per-pane backends snapshot this at `end_frame` and check in
+    /// `record_cached_only` — if the count advanced since the last full
+    /// render, their cached instance buffer may reference stale atlas
+    /// data evicted by another pane.
+    pub atlas_eviction_count: u64,
+    /// Per-layer "already written this frame" mask, same length as
+    /// `atlas_layers`. Reset to all-`false` at the start of every frame
+    /// (in `SurfaceHost::begin_frame`). Set to `true` when a layer is
+    /// written by any pane's `rasterize_and_admit`. Prevents the
+    /// cross-pane within-frame race: without this guard, pane B can evict
+    /// a layer that pane A just wrote to via `queue.write_texture`, and
+    /// pane A's deferred draw command (recorded in the command encoder)
+    /// will sample the wrong data when the encoder is submitted.
+    pub frame_written: Vec<bool>,
 
     pub font_family: String,
     pub font_size_px: f32,
@@ -465,6 +480,8 @@ impl GpuContext {
             slot_w,
             slot_h,
             atlas_generation: 0,
+            atlas_eviction_count: 0,
+            frame_written: vec![false; atlas_layers as usize],
             font_family: String::from("monospace"),
             font_size_px: 15.0,
         })
@@ -515,6 +532,15 @@ impl GpuContext {
     /// layer indices are about to become stale). Bumps
     /// `atlas_generation` so per-pane backends know to rebuild their
     /// bind groups against the new `atlas_view`.
+    /// Reset the per-frame written mask. Called at the start of every
+    /// frame from `SurfaceHost::begin_frame` so each frame starts with
+    /// all layers available for writing.
+    pub fn reset_frame_written(&mut self) {
+        for w in &mut self.frame_written {
+            *w = false;
+        }
+    }
+
     pub fn rebuild_atlas(&mut self) -> Result<(), String> {
         self.atlas.clear();
         self.next_free_layer = ATLAS_RESERVED_LAYERS;
@@ -548,6 +574,10 @@ impl GpuContext {
         self.atlas_view = atlas_view;
         self.rasterizer = rasterizer;
         self.atlas_generation = self.atlas_generation.wrapping_add(1);
+        // Texture fully recreated — all layer data is undefined.
+        // Reset both written-mask and free-layer pointer for a clean
+        // start.
+        self.reset_frame_written();
         Ok(())
     }
 
@@ -627,15 +657,27 @@ impl GpuContext {
         let layer: u32 = if self.next_free_layer < self.atlas_layers {
             let l = self.next_free_layer;
             self.next_free_layer += 1;
+            if (l as usize) < self.frame_written.len() {
+                self.frame_written[l as usize] = true;
+            }
             l
         } else {
             // Atlas at capacity — pick an evictable layer that isn't
-            // pinned by this frame's earlier instances. If every layer
-            // is pinned, surface as Err so the caller can bg-only-fall
-            // back. Bare LRU eviction would risk overwriting a layer
-            // that an earlier cell already cited via its CellInstance.
-            match pick_evictable_layer(&mut self.atlas, frame_pinned) {
-                Some(l) => l,
+            // pinned by this frame's earlier instances OR already
+            // written by another pane in this frame. The `frame_written`
+            // guard prevents the cross-pane within-frame race: without
+            // it, pane B's `write_texture` below would overwrite a layer
+            // that pane A just wrote to, and pane A's deferred draw
+            // command (recorded in the command encoder) would sample the
+            // wrong data at submit time.
+            match pick_evictable_layer(&mut self.atlas, frame_pinned, &self.frame_written) {
+                Some(l) => {
+                    self.atlas_eviction_count += 1;
+                    if (l as usize) < self.frame_written.len() {
+                        self.frame_written[l as usize] = true;
+                    }
+                    l
+                }
                 None => {
                     return Err(
                         "atlas: every layer pinned this frame — bg-only fallback".to_string()

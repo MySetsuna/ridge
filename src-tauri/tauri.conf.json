@@ -1,28 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ridge",
-  "version": "0.1.0",
+  "version": "0.0.3",
   "identifier": "com.tauri-app.ridge",
   "build": {
-    "beforeDevCommand": "node scripts/ensure-teammate-shim.mjs && npm run dev",
+    "beforeDevCommand": "node packages/ridge-term/build.mjs --dev && node scripts/ensure-teammate-shim.mjs && pnpm run dev",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm run build",
-    "beforeBundleCommand": "cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml",
+    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:mobile",
+    "beforeBundleCommand": "node -e \"setTimeout(()=>process.exit(0),3000)\" && cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml",
     "frontendDist": "../build"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "title": "ridge",
-        "width": 800,
-        "height": 600,
-        "decorations": false,
-        "transparent": false
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' asset: https://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: https://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -35,13 +26,17 @@
     "icon": [
       "icons/icon.ico"
     ],
+    "resources": {
+      "../ridge.theme": "ridge.theme",
+      "../static/mobile": "static/mobile"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "installer-hooks.nsh"
       },
       "wix": {
         "fragmentPaths": ["wix/path-env.wxs"],
-        "componentRefs": ["RidgePathEnvVar"]
+        "componentRefs": ["RidgePathEnvVar_0_0_2"]
       }
     }
   }

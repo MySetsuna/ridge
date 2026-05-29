@@ -17,6 +17,8 @@
 //!     - getSelectionText()
 //!     - hasSelection()
 //!     - isAltScreen() / isCursorVisible() / isBracketedPaste() / isAppCursorKeys()
+//!     - isMouseReporting() / isMouseButtonEvent() / isMouseAnyEvent() / isMouseSgr()
+//!     - encodeMouse(row, col, button, action, shift, ctrl, alt) → Uint8Array
 //!     - dumpVisibleText()  (debug)
 //!
 //!   class RenderHandle (wasm32-only)
@@ -42,7 +44,7 @@ pub mod term;
 
 use crate::input::KeyEvent;
 use crate::search::SearchState;
-use crate::selection::{Pos, Range, Selection};
+use crate::selection::{Pos, Range, RangeAbs, Selection};
 use crate::term::Terminal;
 
 #[wasm_bindgen(start)]
@@ -55,7 +57,24 @@ pub struct JsTerminal {
     inner: Terminal,
     selection: Selection,
     search: SearchState,
+    /// §1.33 (2026-05-22) — wall-clock ms of the most recent observation
+    /// that ANY TUI signal was true on this kernel. Bumped from inside
+    /// `should_allow_shell_history` every time the gate runs while a
+    /// live signal still holds, and read by the sticky-window branch to
+    /// keep the shell-history popup gated for `SHELL_HISTORY_STICKY_MS`
+    /// after the last TUI frame — irrespective of cursor visibility,
+    /// which is where the previous JS-side `tuiGate` leaked (Claude
+    /// Code menu transitions briefly show the cursor between frames).
+    last_tui_signal_at_ms: i64,
 }
+
+/// §1.33 (2026-05-22) — sticky window for the shell-history popup gate.
+/// After any TUI signal (DECCKM, alt screen, mouse reporting, inline-TUI
+/// heuristic, cursor hidden) is observed true, the gate stays closed for
+/// this many milliseconds even after the signal clears. Matches the
+/// kernel's existing `INLINE_TUI_DECAY_MS` so a TUI's intra-frame
+/// "all-signals-false" gap can't race the popup open between repaints.
+const SHELL_HISTORY_STICKY_MS: i64 = 0;
 
 #[wasm_bindgen(js_class = TerminalKernel)]
 impl JsTerminal {
@@ -65,6 +84,7 @@ impl JsTerminal {
             inner: Terminal::new(rows.max(1), cols.max(1), scrollback),
             selection: Selection::new(),
             search: SearchState::new(),
+            last_tui_signal_at_ms: 0,
         }
     }
 
@@ -136,6 +156,50 @@ impl JsTerminal {
             .into_iter()
             .filter_map(|ev| serde_wasm_bindgen::to_value(&ev).ok())
             .collect()
+    }
+
+    /// P3.6 (2026-05-20) — apply one postcard-encoded `DeltaFrame` (produced
+    /// by the Rust-side `engine::parser::PaneParser`) to the mirror grid.
+    ///
+    /// Counterpart to `feed()` for the `Settings.parserBackend = 'rust'`
+    /// path: PTY bytes are parsed once by the native PaneParser, the
+    /// resulting frame is postcard-encoded and emitted as a Tauri event,
+    /// and the wasm consumer applies the diff here instead of running its
+    /// own vte parse on the JS main thread.
+    ///
+    /// Returns `Err(JsValue)` with a human-readable string on decode
+    /// failure OR protocol-version mismatch — caller is expected to log
+    /// and trigger a `force_full_reframe` self-heal (manager.ts P3.9
+    /// wiring).
+    ///
+    /// Selection / search invalidation: only on the same two conditions
+    /// `feed()` uses — scrollback eviction (capacity rollover) or a hard
+    /// `Reset` delta. Every other delta variant (`Cells`, `Cursor`,
+    /// `ScreenSwitch`, `Resize`, semantic events, `ModeChange`,
+    /// `ScrollbackAppend` below capacity) leaves abs-row anchors valid,
+    /// so the user's drag-selection survives the high-frequency TUI
+    /// redraws Claude Code / htop / vim / less emit (the same
+    /// "TUI 一直刷新无法选中复制" symptom the feed() path fixed in §B.2,
+    /// rebroken by the unconditional clear that originally lived here
+    /// when the rust-parser backend landed in P3.6).
+    #[wasm_bindgen(js_name = applyDeltaFrame)]
+    pub fn apply_delta_frame(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        let frame = crate::term::delta::decode_frame(bytes)
+            .map_err(|e| JsValue::from_str(&format!("delta decode: {e}")))?;
+        let evictions_before = self.inner.scrollback_eviction_count();
+        let has_reset = frame
+            .deltas
+            .iter()
+            .any(|d| matches!(d, crate::term::delta::GridDelta::Reset));
+        self.inner
+            .apply_frame(&frame)
+            .map_err(|v| JsValue::from_str(&format!("protocol version {v} not supported")))?;
+        let evictions_after = self.inner.scrollback_eviction_count();
+        if has_reset || evictions_after != evictions_before {
+            self.selection.clear();
+            self.search.clear();
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
@@ -434,6 +498,30 @@ impl JsTerminal {
         );
     }
 
+    /// Programmatically set a selection range in **absolute-row coords**
+    /// (see `selection.rs` module docstring). The JS-side drag state
+    /// machine in `manager.ts` stores its anchor / focus as `abs_row =
+    /// vp_row + scroll_offset` so the selection survives scroll without
+    /// the caller having to re-translate every sync — this entry point
+    /// lets it forward those abs values directly. Skips the vp→abs
+    /// conversion that `set_selection` does internally, so it's safe to
+    /// call repeatedly during a drag that scrolls the viewport.
+    #[wasm_bindgen(js_name = setSelectionAbs)]
+    pub fn set_selection_abs(
+        &mut self,
+        start_abs_row: usize,
+        start_col: usize,
+        end_abs_row: usize,
+        end_col: usize,
+    ) {
+        self.selection.set_abs(RangeAbs {
+            start_abs_row,
+            start_col,
+            end_abs_row,
+            end_col,
+        });
+    }
+
     #[wasm_bindgen(js_name = getSelectionText)]
     pub fn get_selection_text(&self) -> String {
         self.selection.text(&self.inner)
@@ -442,6 +530,36 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = hasSelection)]
     pub fn has_selection(&self) -> bool {
         !self.selection.is_empty()
+    }
+
+    /// E2E-only — build a postcard-encoded `DeltaFrame` carrying a single
+    /// `Cursor` delta with the supplied coordinates and a default block
+    /// shape. Lets `tests/e2e-shell/` exercise the `applyDeltaFrame` path
+    /// without spinning up a real shell or hand-rolling the postcard
+    /// schema. No state mutation; returns bytes ready to feed back into
+    /// `applyDeltaFrame`.
+    ///
+    /// `pane_seq` is opaque to the mirror (used only for diagnostics) —
+    /// callers can pass any monotonically increasing u32. We accept a
+    /// narrower `u32` than the field's underlying `u64` because JS
+    /// numbers lose precision past 2^53 and tests never need values
+    /// anywhere near that range.
+    #[wasm_bindgen(js_name = e2eEncodeCursorDeltaFrame)]
+    pub fn e2e_encode_cursor_delta_frame(&self, pane_seq: u32, row: u16, col: u16) -> Vec<u8> {
+        use crate::term::delta::{
+            CursorShape as DeltaCursorShape, DeltaFrame, GridDelta, encode_frame,
+        };
+        let frame = DeltaFrame::new(
+            pane_seq as u64,
+            vec![GridDelta::Cursor {
+                row,
+                col,
+                visible: true,
+                blink: true,
+                shape: DeltaCursorShape::Block,
+            }],
+        );
+        encode_frame(&frame).unwrap_or_default()
     }
 
     // ---- search -----------------------------------------------------
@@ -532,6 +650,15 @@ impl JsTerminal {
         self.inner.is_alt_screen()
     }
 
+    /// §1.35 — force-leave alt screen on the kernel side when the PTY
+    /// process exits while a TUI is still in alt screen mode. Without
+    /// this the new shell spawned by `pane-pty-closed` would write into
+    /// the alt buffer, hiding the primary screen content from the user.
+    #[wasm_bindgen(js_name = leaveAltScreen)]
+    pub fn leave_alt_screen(&mut self) {
+        self.inner.leave_alt_screen();
+    }
+
     #[wasm_bindgen(js_name = isCursorVisible)]
     pub fn is_cursor_visible(&self) -> bool {
         self.inner.modes().cursor_visible
@@ -542,9 +669,22 @@ impl JsTerminal {
     /// within the decay window) and the kernel is NOT on alt screen.
     /// Read by `manager.ts::fitPane` to decide whether to wipe primary
     /// before resizing the PTY (mirrors the existing alt-screen branch).
+    /// Also read by `manager.ts::isInlineTuiActive` for keyboard/mouse
+    /// priority routing — see also `isMouseReporting`.
     #[wasm_bindgen(js_name = isInlineTuiMode)]
     pub fn is_inline_tui_mode(&self) -> bool {
         self.inner.is_inline_tui_mode_at(js_sys::Date::now() as i64)
+    }
+
+    /// Called from `manager.ts::handleKeyDown` immediately after the
+    /// user sends Ctrl+C (ETX `\x03`) through the data handler. Arms
+    /// the inline-TUI heuristic's grace window so subsequent PSReadLine
+    /// CHA `\x1b[G` emits don't keep the pane stuck in "inline TUI
+    /// mode" forever after the user killed the foreground TUI. See
+    /// `Grid::is_inline_tui_active_at` for the full rationale.
+    #[wasm_bindgen(js_name = noteCtrlCSent)]
+    pub fn note_ctrl_c_sent(&mut self) {
+        self.inner.note_ctrl_c_sent(js_sys::Date::now() as i64);
     }
 
     #[wasm_bindgen(js_name = isBracketedPaste)]
@@ -555,6 +695,91 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = isAppCursorKeys)]
     pub fn is_app_cursor_keys(&self) -> bool {
         self.inner.modes().app_cursor_keys
+    }
+
+    /// §1.33 (2026-05-22) — hard gate for the shell-history popup
+    /// feature. Returns `true` ONLY when the kernel is confident a
+    /// normal shell prompt owns the input line on this pane; every
+    /// known TUI signal short-circuits to `false`.
+    ///
+    /// Why this lives in WASM instead of the Svelte layer it used to
+    /// be in (`src/lib/terminal/tuiGate.ts`):
+    ///   - The JS `tuiGate` honoured the sticky window only while the
+    ///     cursor was hidden. Claude Code's input prompt flips the
+    ///     cursor visible BEFORE the inline-TUI heuristic decays, so
+    ///     the user saw the popup hijack ArrowUp inside Claude.
+    ///   - With the gate inside the kernel, we own a sticky timestamp
+    ///     that bumps on every signal observation, independent of
+    ///     cursor visibility — the JS layer can no longer race the
+    ///     popup open between TUI frames.
+    ///
+    /// Decision order (any `false` wins immediately):
+    ///   1. DECCKM `?1` (app_cursor_keys) — protocol-level "the app
+    ///      owns the arrow keys" declaration. zsh+zle, bash+readline-
+    ///      vi-mode, PSReadLine, Ink TUIs all set this.
+    ///   2. Alt screen `?1049` / `?47` — full-screen TUI (vim, less,
+    ///      htop) actively rendering.
+    ///   3. Mouse reporting `?1000` / `?1002` / `?1003` — TUI tracks
+    ///      mouse input, keyboard ownership goes with it.
+    ///   4. Inline-TUI heuristic — Ink / log-update style apps that
+    ///      hide the cursor + emit absolute-positioning CSIs within
+    ///      the kernel's `INLINE_TUI_DECAY_MS` window.
+    ///   5. Cursor hidden `?25l` — shell prompts always run with the
+    ///      cursor visible; a hidden cursor is strong evidence a TUI
+    ///      is mid-render or holding the screen between frames.
+    ///   6. Sticky window — if any signal above was observed true
+    ///      within `SHELL_HISTORY_STICKY_MS`, stay closed. Catches
+    ///      the brief intra-frame "all signals false" windows that
+    ///      let the JS-side gate leak before this method existed.
+    ///
+    /// Side effect: takes `&mut self` because the sticky timestamp is
+    /// refreshed on every live-signal observation. Callers must hold
+    /// a mutable handle to the kernel (they always do — wasm-bindgen
+    /// generates `&mut self` on the JS side too).
+    #[wasm_bindgen(js_name = shouldAllowShellHistory)]
+    pub fn should_allow_shell_history(&mut self) -> bool {
+        self.should_allow_shell_history_at(js_sys::Date::now() as i64)
+    }
+
+    /// Test-driveable variant of `should_allow_shell_history` — same
+    /// logic but takes `now_ms` explicitly so native cargo tests can
+    /// step the clock without `js_sys::Date::now()`. The wasm-exposed
+    /// `should_allow_shell_history` is the only caller in production.
+    pub(crate) fn should_allow_shell_history_at(&mut self, now_ms: i64) -> bool {
+        let m = self.inner.modes();
+
+        let live_tui = m.app_cursor_keys
+            || self.inner.is_alt_screen()
+            || m.mouse_normal
+            || m.mouse_button_event
+            || m.mouse_any_event
+            || self.inner.is_inline_tui_mode_at(now_ms)
+            || !m.cursor_visible;
+
+        if live_tui {
+            self.last_tui_signal_at_ms = now_ms;
+            return false;
+        }
+
+        // §1.33 — sticky reference is the MAX of:
+        //   - this gate's own bump (set above whenever JS queried during
+        //     a live signal), and
+        //   - the parser-side bump (set inside `grid.last_tui_signal_at_ms`
+        //     whenever a TUI mode flipped active during a feed).
+        // The parser-side bump is what catches signals JS never had a
+        // chance to query — e.g. Claude Code flipping `?1049h` mid-frame
+        // without the user pressing an arrow key at that moment. Take
+        // the larger of the two so a fresher gate-time bump is still
+        // honoured if the parser's was older.
+        let sticky_ref = self
+            .last_tui_signal_at_ms
+            .max(self.inner.grid().last_tui_signal_at_ms());
+
+        if sticky_ref > 0 && now_ms.saturating_sub(sticky_ref) < SHELL_HISTORY_STICKY_MS {
+            return false;
+        }
+
+        true
     }
 
     /// Synchronous output mode `?2026`. While `true`, the manager should
@@ -574,6 +799,83 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = isFocusReporting)]
     pub fn is_focus_reporting(&self) -> bool {
         self.inner.modes().mouse_focus
+    }
+
+    // ---- mouse mode queries -----------------------------------------
+
+    /// Returns true when any DEC mouse reporting mode is active
+    /// (?1000 normal, ?1002 button-event, or ?1003 any-event).
+    #[wasm_bindgen(js_name = isMouseReporting)]
+    pub fn is_mouse_reporting(&self) -> bool {
+        let m = self.inner.modes();
+        m.mouse_normal || m.mouse_button_event || m.mouse_any_event
+    }
+
+    /// Returns true when ?1002 (button-event / drag tracking) is active.
+    #[wasm_bindgen(js_name = isMouseButtonEvent)]
+    pub fn is_mouse_button_event(&self) -> bool {
+        self.inner.modes().mouse_button_event
+    }
+
+    /// Returns true when ?1003 (any-event / motion tracking) is active.
+    #[wasm_bindgen(js_name = isMouseAnyEvent)]
+    pub fn is_mouse_any_event(&self) -> bool {
+        self.inner.modes().mouse_any_event
+    }
+
+    /// Returns true when ?1006 (SGR mouse encoding) is active.
+    #[wasm_bindgen(js_name = isMouseSgr)]
+    pub fn is_mouse_sgr(&self) -> bool {
+        self.inner.modes().mouse_sgr
+    }
+
+    /// Single-call bitmask of every DEC mouse mode the caller cares
+    /// about. Eliminates the 3-4 separate wasm boundary crossings the
+    /// JS pointer handlers used to make per pointermove event:
+    ///
+    ///   bit 0 (0x1) = ?1000 (mouse_normal)
+    ///   bit 1 (0x2) = ?1002 (button_event / drag tracking)
+    ///   bit 2 (0x4) = ?1003 (any_event / all motion)
+    ///   bit 3 (0x8) = ?1006 (SGR encoding)
+    ///
+    /// `bits != 0` <=> `isMouseReporting() == true`. The individual
+    /// boolean getters above are kept for non-hot-path callers.
+    #[wasm_bindgen(js_name = mouseReportingModes)]
+    pub fn mouse_reporting_modes(&self) -> u32 {
+        let m = self.inner.modes();
+        let mut bits = 0u32;
+        if m.mouse_normal {
+            bits |= 1;
+        }
+        if m.mouse_button_event {
+            bits |= 2;
+        }
+        if m.mouse_any_event {
+            bits |= 4;
+        }
+        if m.mouse_sgr {
+            bits |= 8;
+        }
+        bits
+    }
+
+    /// Encode a mouse event as an SGR terminal sequence. Delegates to
+    /// `input::encode_mouse` which generates `ESC [ < btn ; col ; row [Mm]`
+    /// per xterm SGR spec (column first, then row).
+    /// Always uses SGR format regardless of ?1006 state — the terminal
+    /// decodes both; SGR is simpler and doesn't overflow at high row/col.
+    #[wasm_bindgen(js_name = encodeMouse)]
+    pub fn encode_mouse(
+        &self,
+        row: usize,
+        col: usize,
+        button: u8,
+        action: u8,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) -> Vec<u8> {
+        crate::input::encode_mouse(button, row, col, action, shift, ctrl, alt, self.inner.modes())
     }
 
     #[wasm_bindgen(js_name = dumpVisibleText)]
@@ -612,6 +914,144 @@ impl JsTerminal {
     }
 }
 
+#[cfg(test)]
+mod delta_selection_tests {
+    //! Regression coverage for `apply_delta_frame`'s selection guard.
+    //!
+    //! Locks down the §B.2 invariant for the rust-parser delta path:
+    //! ordinary repaint frames (Cells / Cursor / ModeChange / non-evicting
+    //! ScrollbackAppend) MUST NOT clear the active selection. Only
+    //! scrollback eviction or a hard `Reset` may invalidate anchors.
+    //!
+    //! The bug this test catches: in P3.6 the wasm `applyDeltaFrame`
+    //! cleared selection unconditionally on every applied frame. With the
+    //! rust parser backend as the default (P3.7), Claude Code / htop / vim
+    //! / less emit ~30+ frames/s in active panes, so every drag-select was
+    //! erased one frame after pointerdown — the visible "selection
+    //! flickers, can't copy text from a refreshing TUI" symptom the user
+    //! re-reported on 2026-05-21.
+    use super::*;
+    use crate::term::delta::{
+        CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta, encode_frame,
+    };
+
+    /// Drive a typical TUI repaint into a fresh kernel, set a host
+    /// selection over a known string, slam many no-op delta frames in
+    /// (mimicking Claude's per-frame cursor blink), assert the
+    /// selection text is unchanged.
+    #[test]
+    fn apply_delta_frame_preserves_selection_across_repaints() {
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"hello world\r\n");
+        // Select "hello" — abs row = scrollback_len() + 0 (live grid).
+        // Selection range is end-exclusive, so cols [0, 5) covers
+        // the five chars 'h','e','l','l','o'.
+        let sb = t.inner.scrollback_len();
+        t.set_selection_abs(sb, 0, sb, 5);
+        assert!(t.has_selection(), "precondition: selection set");
+        assert_eq!(t.get_selection_text(), "hello");
+
+        let cursor_frame = encode_frame(&DeltaFrame::new(
+            0,
+            vec![GridDelta::Cursor {
+                row: 0,
+                col: 12,
+                visible: true,
+                blink: true,
+                shape: DeltaCursorShape::Block,
+            }],
+        ))
+        .expect("encode cursor frame");
+        let cells_frame = encode_frame(&DeltaFrame::new(
+            1,
+            vec![GridDelta::Cells {
+                row: 1,
+                col: 0,
+                cells: (b"redraw-line".iter())
+                    .map(|&b| {
+                        let mut c = DeltaCell::blank();
+                        c.ch = b as char;
+                        c
+                    })
+                    .collect(),
+            }],
+        ))
+        .expect("encode cells frame");
+
+        // 30 repaint frames — matches the per-second blink burst the
+        // user reported as the trigger. Pre-fix this would clear
+        // selection on iteration 1.
+        for _ in 0..30 {
+            t.apply_delta_frame(&cursor_frame).unwrap();
+            t.apply_delta_frame(&cells_frame).unwrap();
+        }
+
+        assert!(
+            t.has_selection(),
+            "selection must survive 30 redraw frames (had cleared on iter 1 before §B.2 follow-up)"
+        );
+        assert_eq!(
+            t.get_selection_text(),
+            "hello",
+            "selection content must be byte-identical after redraw storm"
+        );
+    }
+
+    #[test]
+    fn apply_delta_frame_clears_selection_on_reset_delta() {
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"hello world\r\n");
+        let sb = t.inner.scrollback_len();
+        t.set_selection_abs(sb, 0, sb, 5);
+        assert!(t.has_selection());
+
+        let reset_frame =
+            encode_frame(&DeltaFrame::new(0, vec![GridDelta::Reset])).expect("encode reset frame");
+        t.apply_delta_frame(&reset_frame).unwrap();
+        assert!(
+            !t.has_selection(),
+            "Reset delta MUST drop selection — abs anchors point to wiped cells"
+        );
+    }
+
+    #[test]
+    fn apply_delta_frame_clears_selection_on_scrollback_eviction() {
+        // Tiny scrollback so we can trigger eviction with a single
+        // ScrollbackAppend that overflows capacity.
+        let mut t = JsTerminal::new(4, 8, 2);
+        // Push two rows into scrollback, then select something in the
+        // live grid (abs anchor sits above sb_len, stable target).
+        t.feed(b"row0\r\nrow1\r\n");
+        let sb_before = t.inner.scrollback_len();
+        t.set_selection_abs(sb_before, 0, sb_before, 3);
+        assert!(t.has_selection());
+        let evictions_before = t.inner.scrollback_eviction_count();
+
+        // Append more lines than capacity → at least one eviction.
+        let lines: Vec<Vec<DeltaCell>> = (0..4)
+            .map(|_| {
+                let mut row = Vec::new();
+                for _ in 0..4 {
+                    row.push(DeltaCell::blank());
+                }
+                row
+            })
+            .collect();
+        let frame = encode_frame(&DeltaFrame::new(0, vec![GridDelta::ScrollbackAppend { lines }]))
+            .expect("encode append");
+        t.apply_delta_frame(&frame).unwrap();
+
+        assert!(
+            t.inner.scrollback_eviction_count() > evictions_before,
+            "precondition: append must have evicted at least one row"
+        );
+        assert!(
+            !t.has_selection(),
+            "eviction MUST drop selection — abs anchors point to evicted content"
+        );
+    }
+}
+
 // =====================================================================
 // Renderer (wasm-only)
 // =====================================================================
@@ -621,7 +1061,7 @@ mod renderer_js {
     use super::*;
     use crate::render::backend::RenderBackend;
     use crate::render::{AnyBackend, Canvas2dBackend, FrameMetrics, Renderer, Theme};
-    use web_sys::HtmlCanvasElement;
+    use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
     #[wasm_bindgen]
     pub struct RenderHandle {
@@ -641,6 +1081,38 @@ mod renderer_js {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
+            };
+            let renderer = Renderer::new(
+                AnyBackend::Canvas2d(backend),
+                metrics,
+                Theme::default_dark(),
+            );
+            Ok(RenderHandle { renderer })
+        }
+
+        /// §p4.9 (2026-05-22) — worker-thread constructor.
+        ///
+        /// JS bridge: `RenderHandle.newFromOffscreen(offscreenCanvas)`.
+        /// Called from `renderWorker.ts::loadKernelAdapter` after the
+        /// host transferred a canvas via
+        /// `canvas.transferControlToOffscreen()` + postMessage. The
+        /// `OffscreenCanvas` here is the same object the worker side
+        /// receives in the `bindCanvas` request.
+        ///
+        /// Canvas2D-only — the WebGPU-first branch is reserved for the
+        /// main-thread `newWithWebgpuFirst` because the WebGPU surface
+        /// host needs DOM access (window-level GPU adapter / device).
+        /// On the worker path we paint via Canvas2D, which is fully
+        /// available inside a DedicatedWorker since 2018.
+        #[wasm_bindgen(js_name = newFromOffscreen)]
+        pub fn new_from_offscreen(canvas: OffscreenCanvas) -> Result<RenderHandle, JsValue> {
+            let backend = Canvas2dBackend::new_from_offscreen(canvas).map_err(JsValue::from)?;
+            let metrics = FrameMetrics {
+                cell_w: 8.0,
+                cell_h: 16.0,
+                dpr: 1.0,
+                tui_mode: false,
             };
             let renderer = Renderer::new(
                 AnyBackend::Canvas2d(backend),
@@ -680,18 +1152,32 @@ mod renderer_js {
             // — they go through the per-workspace `<canvas data-rg-ws-host>`
             // bound to the workspace's SurfaceHost.
             if let Some(handle) = surface_host {
-                if let Ok(b) =
-                    crate::render::webgpu::WebGpuPaneBackend::new(handle.host_rc()).await
-                {
-                    let metrics = FrameMetrics {
-                        cell_w: 8.0,
-                        cell_h: 16.0,
-                        dpr: 1.0,
-                    };
-                    let renderer =
-                        Renderer::new(AnyBackend::Webgpu(b), metrics, Theme::default_dark());
-                    return Ok(RenderHandle { renderer });
+                match crate::render::webgpu::WebGpuPaneBackend::new(handle.host_rc()).await {
+                    Ok(b) => {
+                        web_sys::console::log_1(&"[ridge] WebGPU backend OK".into());
+                        let metrics = FrameMetrics {
+                            cell_w: 8.0,
+                            cell_h: 16.0,
+                            dpr: 1.0,
+                            tui_mode: false,
+                        };
+                        let renderer = Renderer::new(
+                            AnyBackend::Webgpu(b),
+                            metrics,
+                            Theme::default_dark(),
+                        );
+                        return Ok(RenderHandle { renderer });
+                    }
+                    Err(e) => {
+                        web_sys::console::log_1(
+                            &format!("[ridge] WebGPU backend failed: {e:?}").into(),
+                        );
+                    }
                 }
+            } else {
+                web_sys::console::log_1(
+                    &"[ridge] surface_host is None — attachHost never completed".into(),
+                );
             }
             // No host available or WebGPU adapter missed — Canvas2D.
             let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
@@ -699,6 +1185,7 @@ mod renderer_js {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
+                tui_mode: false,
             };
             let renderer = Renderer::new(
                 AnyBackend::Canvas2d(backend),
@@ -734,6 +1221,7 @@ mod renderer_js {
                 cell_w: w,
                 cell_h: h,
                 dpr,
+                tui_mode: false,
             });
             Ok(vec![w, h])
         }
@@ -847,6 +1335,59 @@ mod renderer_js {
             self.renderer.set_focused(focused);
         }
 
+        /// Install an IME preedit overlay at the given cell. The renderer
+        /// will paint `text` on top of the cell grid each frame until
+        /// `clearPreedit` is called. Cells themselves are NOT modified,
+        /// so a TUI re-rendering into the overlay's row mid-composition
+        /// can't corrupt the preedit, and the preedit can't corrupt the
+        /// TUI's rendered cells. JS calls this on `compositionupdate`.
+        #[wasm_bindgen(js_name = setPreedit)]
+        pub fn set_preedit(&mut self, text: &str, row: usize, col: usize) {
+            self.renderer.set_preedit(text.to_string(), row, col);
+        }
+
+        /// Remove the preedit overlay (JS calls on `compositionend` after
+        /// shipping the committed string to the PTY).
+        #[wasm_bindgen(js_name = clearPreedit)]
+        pub fn clear_preedit(&mut self) {
+            self.renderer.clear_preedit();
+        }
+
+        /// §1.34 (2026-05-22) — install the shell-history popup overlay.
+        /// `items` is a JS array of strings (filtered, newest first).
+        /// `selected_index` is `-1` for "no row picked" or
+        /// `0..items.len()-1` for a selected row. `(anchor_row,
+        /// anchor_col)` is the input anchor in viewport cell coords;
+        /// `place_above` chooses growth direction. The 10-row visible
+        /// cap is hard-coded inside the kernel so the JS caller can't
+        /// request a floor-to-ceiling panel.
+        #[wasm_bindgen(js_name = setHistoryOverlay)]
+        pub fn set_history_overlay(
+            &mut self,
+            items: js_sys::Array,
+            selected_index: i32,
+            anchor_row: u32,
+            anchor_col: u32,
+            place_above: bool,
+        ) {
+            let items: Vec<String> = items.iter().filter_map(|v| v.as_string()).collect();
+            self.renderer
+                .set_history_overlay(crate::render::renderer::HistoryOverlay {
+                    items,
+                    selected_index,
+                    anchor_row: anchor_row as usize,
+                    anchor_col: anchor_col as usize,
+                    place_above,
+                    max_visible_rows: 10,
+                });
+        }
+
+        /// §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+        #[wasm_bindgen(js_name = clearHistoryOverlay)]
+        pub fn clear_history_overlay(&mut self) {
+            self.renderer.clear_history_overlay();
+        }
+
         /// Non-mutating mirror of `render`'s early-exit conditions:
         /// returns `true` when the next `render` call would do any
         /// drawing work, `false` when the renderer has nothing to
@@ -884,6 +1425,24 @@ mod renderer_js {
         /// renderer needs a getter. Add one.
         fn current_theme(&self) -> Theme {
             self.renderer.theme().clone()
+        }
+
+        /// Diagnostic: return the kernel-side renderer.theme.{bg, fg,
+        /// cursor_color, tui_bg} as a Uint8Array of 16 bytes (4×RGBA).
+        /// Lets JS confirm whether `applyTheme` actually propagated into
+        /// the renderer state — the JS-side `opts.theme` snapshot only
+        /// proves the manager *received* the theme, not that the
+        /// wasm renderer accepted it. Cheap (one Theme clone, 16 bytes
+        /// copied) so callers may poll without harm.
+        #[wasm_bindgen(js_name = currentThemeProbe)]
+        pub fn current_theme_probe(&self) -> Box<[u8]> {
+            let t = self.current_theme();
+            let mut out = Vec::with_capacity(16);
+            out.extend_from_slice(&t.bg);
+            out.extend_from_slice(&t.fg);
+            out.extend_from_slice(&t.cursor_color);
+            out.extend_from_slice(&t.tui_bg);
+            out.into_boxed_slice()
         }
     }
 
@@ -1017,3 +1576,134 @@ pub use renderer_js::RenderHandle;
 
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use renderer_js::SurfaceHostHandle;
+
+#[cfg(test)]
+mod shell_history_gate_tests {
+    //! §1.33 (2026-05-22) — regression coverage for the shell-history
+    //! popup gate. The previous JS-side gate (`tuiGate.ts`) was leaking
+    //! ArrowUp/ArrowDown into Claude Code because the sticky branch was
+    //! conditioned on `!cursorVisible` — once a TUI flashed the cursor
+    //! visible between frames the gate opened, and the popup hijacked
+    //! the next ArrowUp before the next TUI signal landed. The kernel-
+    //! side gate added here closes that race by:
+    //!   1. blocking on EVERY TUI signal (including cursor-hidden
+    //!      treated as TUI-active, not just as a sticky-precondition),
+    //!   2. holding sticky for `SHELL_HISTORY_STICKY_MS` regardless of
+    //!      current cursor state.
+    //!
+    //! Tests use the native `should_allow_shell_history_at(now_ms)` so
+    //! they don't need `js_sys::Date::now()` or a browser harness; the
+    //! production wasm-exposed method is a thin wrapper.
+
+    use super::*;
+
+    /// The parser bumps `grid.last_tui_signal_at_ms` using the real
+    /// wall clock (`clock::now_ms()`), so unit tests must derive their
+    /// synthetic `now` from the same clock to keep sticky comparisons
+    /// honest. `clock_baseline()` snapshots the clock right after the
+    /// test's last TUI-activating feed; subsequent assertions use
+    /// `baseline + offset_ms` so the sticky window straddles a
+    /// deterministic offset regardless of how slow CI is.
+    fn clock_baseline() -> i64 {
+        crate::term::clock::now_ms()
+    }
+
+    #[test]
+    fn allows_history_on_fresh_shell_prompt() {
+        // Default modes: cursor visible, no DECCKM, no alt screen, no
+        // mouse reporting, no inline-TUI activity → popup permitted.
+        let mut t = JsTerminal::new(24, 80, 200);
+        assert!(t.should_allow_shell_history_at(clock_baseline()));
+    }
+
+    #[test]
+    fn blocks_when_app_cursor_keys_set() {
+        // DECCKM (`?1h`) → app owns arrows; no sticky needed since the
+        // mode is persistent until the app clears it.
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[?1h");
+        assert!(!t.should_allow_shell_history_at(clock_baseline()));
+    }
+
+    #[test]
+    fn blocks_when_alt_screen_active() {
+        // `?1049h` swaps to alt screen — vim/less/htop convention.
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[?1049h");
+        assert!(!t.should_allow_shell_history_at(clock_baseline()));
+    }
+
+    #[test]
+    fn blocks_when_mouse_reporting_active() {
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[?1000h");
+        assert!(!t.should_allow_shell_history_at(clock_baseline()));
+    }
+
+    #[test]
+    fn blocks_when_cursor_hidden() {
+        // `?25l` — every full-screen and inline TUI hides the cursor
+        // while rendering. Treat it as a live TUI signal so the popup
+        // doesn't open between repaints.
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[?25l");
+        assert!(!t.should_allow_shell_history_at(clock_baseline()));
+    }
+
+    #[test]
+    fn opens_immediately_after_tui_signal_clears() {
+        // §1.35 — SHELL_HISTORY_STICKY_MS = 0, so the gate opens
+        // immediately as soon as every live signal is false. A TUI
+        // that flickered a signal on/off (e.g. `?25l?25h`) must NOT
+        // gate the popup once the cursor is visible again.
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[?25l\x1b[?25h"); // hide and re-show in one chunk
+        let baseline = clock_baseline();
+        // With sticky=0 the gate must open immediately — no extra
+        // buffer after the last signal clears.
+        assert!(
+            t.should_allow_shell_history_at(baseline + 100),
+            "gate must open immediately after TUI signal clears (sticky=0)",
+        );
+    }
+
+    #[test]
+    fn gate_stays_closed_while_live_signal_holds() {
+        // Even with sticky=0, the gate must stay closed while a live
+        // signal is still asserted. This was previously covered by
+        // the sticky-refresh test — now we verify the live-signal
+        // branch directly with repeated queries.
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[?25l");
+        let baseline = clock_baseline();
+        assert!(!t.should_allow_shell_history_at(baseline));
+        // Still hidden 5 s later — still blocked (live signal).
+        assert!(
+            !t.should_allow_shell_history_at(baseline + 5_000),
+            "live cursor-hidden must block regardless of sticky window",
+        );
+        // Show cursor → gate opens immediately.
+        t.feed(b"\x1b[?25h");
+        assert!(
+            t.should_allow_shell_history_at(baseline + 5_100),
+            "gate must open immediately once cursor is visible",
+        );
+    }
+
+    #[test]
+    fn allows_history_even_when_inline_tui_csi_is_stale() {
+        // Once a real shell prompt has been up for >> sticky window
+        // with no further TUI activity AND cursor is visible, the gate
+        // must permit the popup. Without this assertion a regression
+        // that locked sticky permanently after the first TUI use would
+        // pass the earlier negative tests but break daily use.
+        let mut t = JsTerminal::new(24, 80, 200);
+        t.feed(b"\x1b[H");                    // CUP — abs-positioning CSI
+        t.feed(b"\x1b[?25l");                 // hide cursor (TUI active)
+        let baseline = clock_baseline();
+        assert!(!t.should_allow_shell_history_at(baseline));
+        t.feed(b"\x1b[?25h");                 // back to shell
+        // Far past both sticky and inline-TUI decay.
+        assert!(t.should_allow_shell_history_at(baseline + 10_000));
+    }
+}
