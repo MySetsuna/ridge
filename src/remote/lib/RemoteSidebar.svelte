@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getTransport } from '$lib/transport';
-  import type { FileNode, DirectoryPage } from '$lib/stores/project';
   import { Folder, File, ChevronRight, ChevronDown, RefreshCw, GitBranch, Search, X, ArrowUp, Home } from 'lucide-svelte';
 
   let { onClose }: { onClose: () => void } = $props();
@@ -125,27 +124,27 @@
   <div class="sidebar-header">
     <div class="tab-bar">
       <button class="tab-btn" class:active={tab === 'files'} onclick={() => tab = 'files'}>
-        <Folder class="w-4 h-4" />
+        <Folder size={16} />
       </button>
       <button class="tab-btn" class:active={tab === 'git'} onclick={() => tab = 'git'}>
-        <GitBranch class="w-4 h-4" />
+        <GitBranch size={16} />
       </button>
       <button class="tab-btn" class:active={tab === 'search'} onclick={() => tab = 'search'}>
-        <Search class="w-4 h-4" />
+        <Search size={16} />
       </button>
     </div>
     <button class="close-btn" onclick={onClose}>
-      <X class="w-5 h-5" />
+      <X size={20} />
     </button>
   </div>
 
   <div class="sidebar-body">
     {#if tab === 'files'}
       <div class="file-header">
-        <button class="icon-btn" onclick={goHome} title="Root"><Home class="w-3.5 h-3.5" /></button>
+        <button class="icon-btn" onclick={goHome} title="Root"><Home size={14} /></button>
         <span class="path">{currentPath || '/'}</span>
-        <button class="icon-btn" onclick={goUp} title="Go up"><ArrowUp class="w-3.5 h-3.5" /></button>
-        <button class="icon-btn" onclick={() => loadDir(currentPath)} title="Refresh"><RefreshCw class="w-3.5 h-3.5" /></button>
+        <button class="icon-btn" onclick={goUp} title="Go up"><ArrowUp size={14} /></button>
+        <button class="icon-btn" onclick={() => loadDir(currentPath)} title="Refresh"><RefreshCw size={14} /></button>
       </div>
       {#if loading}
         <div class="empty-hint">Loading...</div>
@@ -161,14 +160,14 @@
           >
             {#if entry.is_dir}
               {#if expandedDirs.has(entry.path)}
-                <ChevronDown class="w-3 h-3 shrink-0 text-[#58a6ff]" />
+                <ChevronDown size={12} color="#58a6ff" />
               {:else}
-                <ChevronRight class="w-3 h-3 shrink-0 text-[#8b949e]" />
+                <ChevronRight size={12} color="#8b949e" />
               {/if}
-              <Folder class="w-4 h-4 shrink-0 text-[#58a6ff]" />
+              <Folder size={16} color="#58a6ff" />
             {:else}
-              <span class="w-3"></span>
-              <File class="w-4 h-4 shrink-0 text-[#8b949e]" />
+              <span style="width:12px"></span>
+              <File size={16} color="#8b949e" />
             {/if}
             <span class="name">{entry.name}</span>
           </button>
@@ -182,14 +181,14 @@
               >
                 {#if child.is_dir}
                   {#if expandedDirs.has(child.path)}
-                    <ChevronDown class="w-3 h-3 shrink-0 text-[#58a6ff]" />
+                    <ChevronDown size={12} color="#58a6ff" />
                   {:else}
-                    <ChevronRight class="w-3 h-3 shrink-0 text-[#8b949e]" />
+                    <ChevronRight size={12} color="#8b949e" />
                   {/if}
-                  <Folder class="w-4 h-4 shrink-0 text-[#58a6ff]" />
+                  <Folder size={16} color="#58a6ff" />
                 {:else}
-                  <span class="w-3"></span>
-                  <File class="w-4 h-4 shrink-0 text-[#8b949e]" />
+                  <span style="width:12px"></span>
+                  <File size={16} color="#8b949e" />
                 {/if}
                 <span class="name">{child.name}</span>
               </button>
@@ -292,6 +291,4 @@
   .search-results{display:flex;flex-direction:column;gap:1px;margin-top:8px}
   .search-item{font-size:12px;color:#e6edf3;padding:3px 4px;cursor:pointer}
   .search-item:hover{background:#21262d}
-  .w-3{width:12px}.w-3\.5{width:14px}.w-4{width:16px}.w-5{width:20px}.h-3{height:12px}.h-3\.5{height:14px}.h-4{height:16px}.h-5{height:20px}
-  .shrink-0{flex-shrink:0}.text-\[\#58a6ff\]{color:#58a6ff}.text-\[\#8b949e\]{color:#8b949e}
 </style>

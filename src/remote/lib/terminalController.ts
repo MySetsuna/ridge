@@ -52,7 +52,7 @@ export class TerminalController {
   private imeAnchorCol = -1;
 
   // ── Selection ──
-  private isSelecting = false;
+  isSelecting = false;
   private selAnchorRow = 0;
   private selAnchorCol = 0;
 
@@ -422,17 +422,17 @@ export class TerminalController {
 
   search(query: string, caseSensitive: boolean = false): number {
     if (this.destroyed) return 0;
-    return this.kernel.search(query, caseSensitive);
+    return this.kernel.searchSetQuery(query, caseSensitive);
   }
 
   searchNext(): boolean {
     if (this.destroyed) return false;
-    return this.kernel.searchNext();
+    return this.kernel.searchNext() !== 4294967295;
   }
 
   searchPrev(): boolean {
     if (this.destroyed) return false;
-    return this.kernel.searchPrev();
+    return this.kernel.searchPrev() !== 4294967295;
   }
 
   // ── Cleanup ──
