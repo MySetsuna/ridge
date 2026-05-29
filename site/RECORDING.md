@@ -48,6 +48,7 @@
 | 文件 | 类型 | 要展示什么 |
 |--|--|--|
 | `site/assets/media/hero-demo.mp4`（或 `.gif`） | 主 demo · 8–15s 循环 | 「打开 Ridge → 切两刀分屏 → 一边跑命令 / 一边编辑 / 一边看 Git 图」整段流畅展示，是首页 hero 右侧的主角 |
+| `site/assets/media/remote-mobile.gif` | 8–10s | 手机连接 Ridge 的流程：打开远程面板 → 扫二维码 → 手机上显示分屏 → 虚拟键盘输入命令 |
 | `site/assets/media/splitpanes.gif` | 5–8s | 鼠标拖拽分屏 + 快捷键 (`Ctrl+\` / `Ctrl+-`) 切分。突出「田埂」分割线 |
 | `site/assets/media/editor.png` | 静态截图 | 资源管理器 + Monaco 编辑器并存的画面，最好一边是终端一边是文件 |
 | `site/assets/media/gitgraph.png` | 静态截图 | Git Graph 视图，多分支、多提交，最好有 ahead/behind pill |
