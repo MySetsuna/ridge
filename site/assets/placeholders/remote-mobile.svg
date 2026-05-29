@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" fill="none">
+  <rect width="800" height="450" fill="#121a16"/>
+  <rect x="300" y="65" width="200" height="340" rx="24" stroke="#2a3a31" stroke-width="2" fill="#19241e"/>
+  <rect x="350" y="85" width="100" height="20" rx="4" fill="#1f2c25"/>
+  <circle cx="400" cy="95" r="4" fill="#547549"/>
+  <rect x="330" y="120" width="140" height="180" rx="8" stroke="#2a3a31" stroke-width="1.5" fill="#0c1310"/>
+  <text x="400" y="190" text-anchor="middle" fill="#5b6b62" font-family="monospace" font-size="11">~ $ _</text>
+  <rect x="330" y="315" width="140" height="40" rx="8" fill="#223028" stroke="#2a3a31" stroke-width="1"/>
+  <text x="400" y="340" text-anchor="middle" fill="#8a9a8d" font-family="monospace" font-size="10">键盘浮条</text>
+  <path d="M380 370 h40 M390 380 h20" stroke="#547549" stroke-width="2" stroke-linecap="round"/>
+  <text x="400" y="430" text-anchor="middle" fill="#5b6b62" font-family="monospace" font-size="12">replace: assets/media/remote-mobile.gif</text>
+  <rect x="530" y="100" width="180" height="120" rx="8" stroke="#2a3a31" stroke-width="1.5" fill="#19241e" stroke-dasharray="4 3"/>
+  <text x="620" y="145" text-anchor="middle" fill="#5b6b62" font-family="monospace" font-size="10">Ridge 桌面端</text>
+  <text x="620" y="165" text-anchor="middle" fill="#8a9a8d" font-family="monospace" font-size="9">远程面板</text>
+  <line x1="500" y1="210" x2="500" y2="160" stroke="#547549" stroke-width="1" stroke-dasharray="4 3"/>
+  <path d="M500 210 l-6 -4 h12 z" fill="#547549"/>
+  <text x="510" y="200" fill="#547549" font-family="monospace" font-size="9">扫码</text>
+</svg>

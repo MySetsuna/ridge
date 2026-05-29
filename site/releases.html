@@ -47,6 +47,61 @@
 
     <section style="padding-top: 24px;">
       <div class="release-list">
+
+        <!-- v0.0.3 — remote mobile ────────────────────────── -->
+        <div class="release">
+          <div class="release-head">
+            <div class="release-tag"><span class="v">v</span>0.0.3</div>
+            <div class="release-meta">
+              <span>2026-05-29</span>
+              <a href="https://github.com/MySetsuna/ridge/releases/tag/v0.0.3" target="_blank" rel="noopener">在 GitHub 上查看 →</a>
+            </div>
+          </div>
+
+          <p>v0.0.3 引入了手机远程控制能力。你可以用手机浏览器连接 Ridge，在手机上查看和操作终端分屏。同时修复了多项稳定性问题，优化了分屏渲染与历史回放性能。</p>
+
+          <h4>新增 · New</h4>
+          <ul>
+            <li>手机远程控制：用手机浏览器扫一扫二维码即可连接，局域网内自动发现设备（mDNS）</li>
+            <li>虚拟键盘浮条：手机端集成虚拟键盘，支持文本选择与复制</li>
+            <li>远程面板：桌面端可管理已连接的设备，查看连接状态与断开连接</li>
+            <li>TOTP 安全认证：扫码连接时一机一码，确保连接安全性</li>
+            <li>Linux 构建产物：正式提供 .deb 包与 AppImage，Linux 用户无需从源码构建</li>
+          </ul>
+
+          <h4>改进 · Improved</h4>
+          <ul>
+            <li>分屏渲染性能优化：IPC 与渲染线程解耦（P4），独立的 per-mobile PaneParser delta 帧渲染</li>
+            <li>历史回放窗口升级：WASM 历史覆盖层 + 帧耗时分析（p4）</li>
+            <li>编辑器稳定性：打开文件时重新读取磁盘，保持 Monaco 模型与文件系统同步</li>
+            <li>IME 输入法优化：统一锚点、同帧跟随、新增 ASCII 纯模式设置（绕过 IME 直接输入）</li>
+            <li>闲置循环门控：检测闲置时自动暂停渲染，降低后台资源占用</li>
+            <li>分屏拖拽：拖拽分隔线后的 settle 过程优化，减少误触</li>
+            <li>Shell 历史 WASM 门控：兼容 TUI 应用的选择模式 + e2e 测试 hooks</li>
+            <li>主题系统：修复 app.html 启动时主题 palette 注入的问题</li>
+          </ul>
+
+          <h4>修复 · Fixed</h4>
+          <ul>
+            <li>修复分屏切分后 pane 尺寸未立即适配的问题（force pane fit two RAFs after splitPane）</li>
+            <li>修复历史回放窗口的竞态条件与 Warp ArrowRight 导航异常</li>
+            <li>修复渲染器 PreMultiplied alpha 模式，确保全帧绘制与焦点感知光标闪烁</li>
+            <li>修复侧栏 z-index 层级问题，分屏分割线现在位于 pane 之上</li>
+            <li>修复 Ctrl+C 中断的显示延迟</li>
+          </ul>
+
+          <h4>已知限制 · Known</h4>
+          <ul>
+            <li>手机远程控制目前仅支持局域网（LAN）连接，暂不支持穿透公网</li>
+            <li>macOS 仍需要从源码构建，暂未提供官方二进制安装包</li>
+            <li>站点上的演示截图与录屏正在补录中，部分仍是占位图</li>
+          </ul>
+
+          <p style="margin-top:22px;color:var(--mist-soft);font-family:var(--font-mono);font-size:13px">
+            完整 commit 记录见 <a href="https://github.com/MySetsuna/ridge/commits/v0.0.3" target="_blank" rel="noopener">git log</a>
+          </p>
+        </div>
+
         <!-- v0.1.0 — first release ─────────────────────────── -->
         <div class="release">
           <div class="release-head">
@@ -96,13 +151,6 @@
           </p>
         </div>
       </div>
-    </section>
-
-    <section style="padding-top: 32px;">
-      <div class="ridge-divider">下一版本　Next release</div>
-      <p class="muted" style="text-align:center;font-family:var(--font-mono);font-size:13px;margin-top:12px">
-        v0.2.0 计划：详情见仓库 <a href="https://github.com/MySetsuna/ridge/blob/main/docs/NEXT_LOOP_PLAN.md"><code>docs/NEXT_LOOP_PLAN.md</code></a>
-      </p>
     </section>
   </main>
 

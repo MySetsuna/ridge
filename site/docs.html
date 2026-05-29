@@ -59,6 +59,12 @@
         <ul>
           <li><a href="#agents">Claude Code 协作</a></li>
         </ul>
+        <h4>Remote</h4>
+        <ul>
+          <li><a href="#remote-connect">手机远程连接</a></li>
+          <li><a href="#remote-mobile">手机端操作</a></li>
+          <li><a href="#remote-manage">管理远程连接</a></li>
+        </ul>
         <h4>Reference</h4>
         <ul>
           <li><a href="#shortcuts">Keyboard shortcuts</a></li>
@@ -77,15 +83,23 @@
         </div>
 
         <h1 id="install">安装</h1>
-        <p>Ridge 是一个桌面应用，提供 Windows 安装包；macOS 与 Linux 用户当前需要从源码构建。所有平台均可使用同一份代码。</p>
+        <p>Ridge 是一个桌面应用，提供 Windows 安装包与 Linux 构建产物；macOS 用户当前需要从源码构建。所有平台均可使用同一份代码。</p>
 
         <h3>从安装包安装（Windows）</h3>
         <p>访问 <a href="./releases.html">Releases 页面</a>，下载与系统匹配的安装包：</p>
         <ul>
-          <li><code>ridge_0.1.0_x64-setup.exe</code> — NSIS 安装程序</li>
-          <li><code>ridge_0.1.0_x64_en-US.msi</code> — MSI 安装程序</li>
+          <li><code>ridge_0.0.3_x64-setup.exe</code> — NSIS 安装程序</li>
+          <li><code>ridge_0.0.3_x64_en-US.msi</code> — MSI 安装程序</li>
         </ul>
-        <p>双击运行，按提示完成即可。安装结束后会在「开始」菜单看到 Ridge。首次启动可能需要授予网络权限（Ridge 会在本地启动一个供智能体使用的 HTTP 端口）。</p>
+        <p>双击运行，按提示完成即可。安装结束后会在「开始」菜单看到 Ridge。首次启动可能需要授予网络权限（Ridge 会在本地启动一个供智能体与远程控制使用的 HTTP 端口）。</p>
+
+        <h3>从安装包安装（Linux）</h3>
+        <p>访问 <a href="./releases.html">Releases 页面</a>，下载对应格式：</p>
+        <ul>
+          <li><code>ridge_0.0.3_amd64.deb</code> — Debian / Ubuntu 安装包</li>
+          <li><code>ridge_0.0.3_x86_64.AppImage</code> — AppImage 通用格式</li>
+        </ul>
+        <p>.deb 包使用 <code>sudo dpkg -i ridge_0.0.3_amd64.deb</code> 安装，AppImage 下载后 <code>chmod +x</code> 即可直接运行。</p>
 
         <h3>从源码构建（所有平台）</h3>
         <p>需要：</p>
@@ -186,6 +200,48 @@
         </ul>
         <p>Bot 按钮会弹出启动器，可选预设 prompt 或留空直接进入交互。按住 Shift 或 Alt 点击可跳过启动器、直接打开裸 <code>claude</code>。</p>
         <p>建议从 PowerShell、cmd 或 Windows Terminal 风格的环境里启动 Claude Code，避免一些 shell 在转义参数时引入额外问题。</p>
+
+        <h1 id="remote-connect">手机远程连接</h1>
+        <p>Ridge v0.0.3 开始支持通过手机浏览器远程连接。你不用一直坐在电脑前——在手机上看 Ridge 的分屏内容，甚至输入命令。</p>
+
+        <h2>首次连接</h2>
+        <p>在 Ridge 的左侧栏底部找到手机图标按钮（📱），点击后打开远程面板。面板上会显示一个二维码和当前电脑的局域网地址。</p>
+        <ul>
+          <li>确保你的手机和电脑在同一个局域网（WiFi）下。</li>
+          <li>打开手机上的浏览器（推荐 Chrome / Safari），扫描远程面板上的二维码。</li>
+          <li>扫码后会自动跳转到手机版 Ridge 页面，几秒内就会显示电脑上的分屏内容。</li>
+        </ul>
+        <p>如果你没有二维码扫描工具，也可以直接在手机浏览器里输入面板上显示的 IP 地址和端口号（例如 <code>http://192.168.1.100:9321</code>）。</p>
+
+        <h2>安全认证</h2>
+        <p>每次扫码连接时，Ridge 会通过 TOTP（基于时间的一次性密码）机制确认连接合法性。二维码中已加密包含认证信息，扫码后手机会自动完成验证。一机一码，每次生成的二维码都不同。</p>
+
+        <h1 id="remote-mobile">手机端操作</h1>
+        <p>手机浏览器连接成功后，你会看到 Ridge 当前所有分屏的实时画面。</p>
+
+        <h2>分屏列表</h2>
+        <p>顶部会列出电脑上的所有分屏名称和编号。点击某个分屏，主区域就会切换到该分屏的内容。每个分屏的内容是独立渲染的，切换后不会丢失之前的画面。</p>
+
+        <h2>虚拟键盘</h2>
+        <p>屏幕底部有一个虚拟键盘浮条，点按即可输入命令。键盘浮条支持：</p>
+        <ul>
+          <li>常用按键：Tab、Ctrl、Esc、方向键（上 / 下 / 左 / 右）</li>
+          <li>文本选择：长按或双击文本可选中，选中后可以复制到手机剪贴板</li>
+          <li>隐藏键盘：点击键盘浮条上的隐藏按钮，让出屏幕空间查看分屏输出</li>
+        </ul>
+
+        <h2>TUI 支持</h2>
+        <p>手机端支持大多数 TUI（终端界面）操作。鼠标事件会被转换为触摸操作，例如点击相当于鼠标左键，长按相当于右键。大多数命令行工具（vim、htop、git log）在手机上也能正常使用。</p>
+
+        <h1 id="remote-manage">管理远程连接</h1>
+        <p>在 Ridge 桌面端的远程面板（左下角手机图标）中，你可以：</p>
+        <ul>
+          <li><strong>查看已连接的设备</strong>：面板会列出当前通过手机连接的所有设备及其连接时间。</li>
+          <li><strong>断开连接</strong>：在设备列表中点击「断开」即可终止某个手机的连接。</li>
+          <li><strong>关闭远程功能</strong>：点击面板底部的开关，可以完全关闭远程服务。关闭后手机将无法再连接。</li>
+          <li><strong>自动发现</strong>：Ridge 使用 mDNS 协议在局域网内自动广播自己的存在。同局域网下的手机会在 Ridge 远程面板中自动出现，无需手动输入地址。</li>
+        </ul>
+        <p>远程服务只在需要时启动，不会在后台持续占用资源。关闭远程面板或断开所有连接后，服务自动停止。</p>
 
         <h1 id="shortcuts">快捷键</h1>
         <table>
