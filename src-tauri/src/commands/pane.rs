@@ -500,6 +500,166 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
     Ok(())
 }
 
+/// §6 — balanced-split chooser for remote terminal creation. Picks the
+/// largest-area leaf and splits it along its longer (pixel) axis so the two
+/// resulting panes stay as close to square as possible:
+///   wide pane → `Horizontal` (left/right);  tall pane → `Vertical` (top/bottom).
+/// (Per SplitContainer: horizontal → 左右 / splits width, vertical → 上下.)
+/// Cells are ~2× taller than wide, so rows are weighted accordingly.
+fn choose_balanced_split(ws: &crate::state::Workspace) -> Option<(Uuid, SplitDirection)> {
+    let sizes: Vec<(Uuid, u16, u16)> = ws
+        .pane_tree
+        .get_all_leaves()
+        .iter()
+        .map(|&id| {
+            let (r, c) = ws.pane_sizes.get(&id).copied().unwrap_or((24, 80));
+            (id, r, c)
+        })
+        .collect();
+    balanced_split_decision(&sizes)
+}
+
+/// Pure core of `choose_balanced_split` (testable without a full `Workspace`):
+/// given each leaf's (id, rows, cols), pick the largest-area leaf and split it
+/// along its longer pixel axis (cells are ~2× taller than wide).
+fn balanced_split_decision(sizes: &[(Uuid, u16, u16)]) -> Option<(Uuid, SplitDirection)> {
+    let mut best = sizes.first()?.0;
+    let mut best_area = 0u32;
+    let mut best_rc = (24u16, 80u16);
+    for &(id, rows, cols) in sizes {
+        let area = rows as u32 * cols as u32;
+        if area >= best_area {
+            best_area = area;
+            best = id;
+            best_rc = (rows, cols);
+        }
+    }
+    let (rows, cols) = best_rc;
+    let width_px = cols as f32; // cell width ≈ 1 unit
+    let height_px = rows as f32 * 2.0; // cell height ≈ 2 units
+    let dir = if width_px >= height_px {
+        SplitDirection::Horizontal // wide → left/right
+    } else {
+        SplitDirection::Vertical // tall → top/bottom
+    };
+    Some((best, dir))
+}
+
+/// §6 — create a terminal in a SPECIFIC workspace (used by the remote WS server,
+/// which owns a per-client active workspace and must not depend on the global
+/// `active_workspace_id()`). If the workspace has no live terminal yet, the
+/// existing (PTY-less) root leaf is given a PTY; otherwise the largest leaf is
+/// split via `choose_balanced_split` and the new leaf gets a PTY. Returns the
+/// new pane id. Mirrors `split_pane_inner` + `create_pane_inner`.
+pub(crate) fn remote_create_pane(
+    state: &AppState,
+    ws_id: Uuid,
+    shell: Option<String>,
+) -> Result<Uuid, AppError> {
+    // Decide: attach to the existing leaf (first terminal) or split the largest.
+    let (target_pane, split_dir) = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&ws_id)
+            .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
+        if ws.terminals.is_empty() {
+            let leaf = *ws
+                .pane_tree
+                .get_all_leaves()
+                .first()
+                .ok_or_else(|| AppError::PtyError("workspace has no pane".into()))?;
+            (leaf, None)
+        } else {
+            let (target, dir) = choose_balanced_split(ws)
+                .ok_or_else(|| AppError::PtyError("workspace has no pane".into()))?;
+            (target, Some(dir))
+        }
+    };
+
+    // Inherit cwd from the target pane (tree first, then live OS cwd) when splitting.
+    let parent_cwd: Option<String> = if split_dir.is_some() {
+        {
+            let map = state.workspaces.read();
+            map.get(&ws_id)
+                .and_then(|ws| ws.pane_tree.panes.get(&target_pane))
+                .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()))
+        }
+        .or_else(|| crate::commands::process::current_pane_cwd_live(state, ws_id, target_pane))
+    } else {
+        None
+    };
+
+    let new_pane_id = if let Some(dir) = split_dir {
+        let mut map = state.workspaces.write();
+        let ws = map
+            .get_mut(&ws_id)
+            .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
+        let id = ws.pane_tree.split(target_pane, dir)?;
+        if let Some(ref cwd_str) = parent_cwd {
+            if let Some(np) = ws.pane_tree.panes.get_mut(&id) {
+                np.cwd = Some(std::path::PathBuf::from(cwd_str));
+            }
+        }
+        id
+    } else {
+        target_pane
+    };
+
+    let cwd_path = parent_cwd.as_ref().map(std::path::PathBuf::from);
+    terminal::ensure_pane_pty_workspace(
+        state,
+        ws_id,
+        new_pane_id,
+        shell,
+        cwd_path.as_deref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    crate::commands::ridge_file::schedule_auto_save(state, ws_id);
+    Ok(new_pane_id)
+}
+
+/// §6 — close a terminal in a SPECIFIC workspace (remote counterpart of
+/// `close_pane`, which is bound to the global active workspace). Keeps at least
+/// one pane. Async because PTY teardown is async.
+pub(crate) async fn remote_close_pane(
+    state: &AppState,
+    ws_id: Uuid,
+    pane_id: Uuid,
+) -> Result<(), AppError> {
+    let leaves: Vec<Uuid> = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&ws_id)
+            .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
+        ws.pane_tree.get_all_leaves()
+    };
+    if leaves.len() <= 1 {
+        return Err(AppError::PtyError("无法关闭最后一个窗格".into()));
+    }
+    if !leaves.contains(&pane_id) {
+        return Err(AppError::PaneNotFound(pane_id));
+    }
+    terminal::kill_pty_if_present(state, ws_id, pane_id).await;
+    {
+        let mut map = state.workspaces.write();
+        let ws = map
+            .get_mut(&ws_id)
+            .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
+        ws.teammate_pane_titles.remove(&pane_id);
+        ws.teammate_pane_states.remove(&pane_id);
+        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+        ws.pane_sizes.remove(&pane_id);
+        ws.pending_spawns.remove(&pane_id);
+        ws.pane_tree.close(pane_id)?;
+    }
+    crate::commands::ridge_file::schedule_auto_save(state, ws_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn toggle_mode(
     state: State<'_, AppState>,
@@ -539,4 +699,42 @@ async fn toggle_mode_inner(
         })
         .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod balanced_split_tests {
+    use super::{balanced_split_decision, SplitDirection};
+    use uuid::Uuid;
+
+    #[test]
+    fn empty_is_none() {
+        assert!(balanced_split_decision(&[]).is_none());
+    }
+
+    #[test]
+    fn single_wide_pane_splits_left_right() {
+        let id = Uuid::new_v4();
+        // 80 cols × 24 rows → width 80 vs height 48 → wide → Horizontal.
+        let (chosen, dir) = balanced_split_decision(&[(id, 24, 80)]).unwrap();
+        assert_eq!(chosen, id);
+        assert!(matches!(dir, SplitDirection::Horizontal));
+    }
+
+    #[test]
+    fn single_tall_pane_splits_top_bottom() {
+        let id = Uuid::new_v4();
+        // 20 cols × 50 rows → width 20 vs height 100 → tall → Vertical.
+        let (chosen, dir) = balanced_split_decision(&[(id, 50, 20)]).unwrap();
+        assert_eq!(chosen, id);
+        assert!(matches!(dir, SplitDirection::Vertical));
+    }
+
+    #[test]
+    fn picks_largest_area_leaf() {
+        let small = Uuid::new_v4();
+        let big = Uuid::new_v4();
+        let (chosen, _) =
+            balanced_split_decision(&[(small, 10, 40), (big, 40, 100)]).unwrap();
+        assert_eq!(chosen, big, "must split the largest-area pane");
+    }
 }
