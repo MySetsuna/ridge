@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use crate::engine::parser::PaneParser;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        ConnectInfo, Query, State,
     },
     http::StatusCode,
     middleware::Next,
@@ -43,6 +44,9 @@ struct RemoteCtx {
 struct ConnectQuery {
     code: Option<String>,
     token: Option<String>,
+    /// Stable mobile-generated device id (localStorage UUID), used for the
+    /// session list label and as the blacklist key.
+    device: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -212,9 +216,14 @@ async fn run_remote_server(
 
     let _ = port_tx.send(Some(port));
     let shutdown_signal = shutdown_rx.map(|_| ());
-    if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await
+    // §sessions: serve with peer-address connect info so the WS handler can
+    // capture each client's real IP (for the session list + blacklist).
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await
     {
         tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
     }
@@ -336,6 +345,7 @@ async fn verify_handler_post(
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<ConnectQuery>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
 ) -> impl IntoResponse {
     if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
@@ -351,7 +361,11 @@ async fn ws_handler(
     if !valid {
         return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws(socket, ctx)).into_response()
+    let remote_addr = addr.ip().to_string();
+    let device_id = query.device.clone().unwrap_or_default();
+    let token = query.token.clone();
+    ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token))
+        .into_response()
 }
 
 async fn health_handler() -> &'static str {
@@ -543,15 +557,23 @@ fn apply_pane_resize(
     }
 }
 
-async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
+async fn handle_ws(
+    socket: WebSocket,
+    ctx: RemoteCtx,
+    remote_addr: String,
+    device_id: String,
+    token: Option<String>,
+) {
     use futures::{SinkExt, StreamExt};
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Register this client in the remote client registry so the desktop
-    // RemotePanel can list and optionally disconnect it.
+    // RemotePanel can list, disconnect, or blacklist it.
     let (client_id, kill_flag) = ctx.state.remote_client_registry.register(
-        "unknown".to_string(),
+        remote_addr,
         String::new(), // user-agent not available from axum WS directly
+        device_id,
+        token,
     );
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client connected");
 
@@ -587,10 +609,11 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     // (list-panes / subscribe / stdin / resize / output+delta filters) use it.
     let mut active_ws_id = ctx.state.active_workspace_id();
 
-    // Periodic health check: if remote control is toggled off while this
-    // WS connection is alive, close it so the mobile client gets a clean
-    // disconnect.
-    let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    // Periodic health check: if remote control is toggled off, or this client
+    // is force-disconnected / blacklisted (kill_flag), close the WS so the
+    // mobile client gets a clean disconnect. Polled at 1s so an admin-triggered
+    // disconnect takes effect promptly (just an atomic load per tick).
+    let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(1));
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Message loop: forward PTY output to WS client, relay keystrokes back.

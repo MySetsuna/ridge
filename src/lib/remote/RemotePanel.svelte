@@ -1,35 +1,44 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { createRemoteConnection, type RemoteConnectionApi } from './wsClient';
   import QrCode from './QrCode.svelte';
-  import { Smartphone, Link, Unlink, RefreshCw, Power, PowerOff, ExternalLink } from 'lucide-svelte';
+  import { Smartphone, RefreshCw, Power, PowerOff } from 'lucide-svelte';
   import { dev } from '$app/environment';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
 
   // Reflect the persisted/auto-restored state on mount (and stay in sync with
-  // the Settings panel, which also reads `settingsStore.remoteEnabled`). The old
-  // local `$state(false)` always showed OFF after launch even when remote had
-  // auto-started, and made the first toggle click a no-op (out of phase).
+  // the Settings panel, which also reads `settingsStore.remoteEnabled`).
   const remoteEnabled = $derived($settingsStore.remoteEnabled);
   let remoteInfo = $state<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
-  let hostInput = $state('localhost');
-  let portInput = $state('');
   let connectError = $state('');
   let totpTimer: ReturnType<typeof setInterval> | null = null;
   let machineName = $state('Ridge');
-
-  import type { RemoteClientEntry } from './wsClient';
-
-  let conn = createRemoteConnection();
-  let connected = $state(false);
   let copySuccess = $state(false);
-  let remoteClients = $state<RemoteClientEntry[]>([]);
-  let clientsTimer: ReturnType<typeof setInterval> | null = null;
 
-  function kickClient(id: number) {
-    conn.kickRemoteClient(id);
+  // §sessions: connected remote-control sessions, fetched via Tauri (the desktop
+  // has direct AppState access — no need to connect as a WS client). Shown
+  // whenever remote control is enabled.
+  interface SessionDto { id: number; remoteAddr: string; deviceId: string; userAgent: string; connectedSecs: number; }
+  let sessions = $state<SessionDto[]>([]);
+  let sessionsTimer: ReturnType<typeof setInterval> | null = null;
+
+  function deviceLabel(s: SessionDto): string {
+    if (s.deviceId) return s.deviceId.slice(0, 8);
+    return s.remoteAddr || '未知设备';
+  }
+
+  async function refreshSessions() {
+    try {
+      sessions = await invoke<SessionDto[]>('list_remote_sessions');
+    } catch {
+      sessions = [];
+    }
+  }
+
+  async function disconnectSession(id: number) {
+    try { await invoke('disconnect_session', { id }); } catch { /* ignore */ }
+    refreshSessions();
   }
 
   function buildLinkUri(lanIp: string, port: number): string {
@@ -42,8 +51,6 @@
       const info = await invoke<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string }>('get_remote_info');
       remoteInfo = info;
       machineName = info.machineName;
-      portInput = String(info.port);
-      hostInput = info.lanIp || 'localhost';
     } catch (e: unknown) {
       console.error('Failed to refresh remote info', e);
     }
@@ -53,31 +60,16 @@
     try {
       const newState = !remoteEnabled;
       await invoke('set_remote_enabled', { enabled: newState });
-      // `remoteEnabled` is derived from settingsStore — updating the store here
-      // flips it (no local assignment needed; keeps both panels consistent).
       setSetting('remoteEnabled', newState);
       await refreshRemoteRunning();
       if (newState) {
         await refreshRemoteInfo();
+        await refreshSessions();
       }
     } catch (e: unknown) {
       connectError = e instanceof Error ? e.message : '切换失败';
-      // Reflect the real server state even if the toggle threw mid-way.
       void refreshRemoteRunning();
     }
-  }
-
-  async function connectViaQR() {
-    if (!remoteInfo?.ready) return;
-    await refreshRemoteInfo();
-    if (!remoteInfo?.totpCode) return;
-    connected = true;
-    conn.connect(hostInput || 'localhost', remoteInfo.port, remoteInfo.totpCode);
-  }
-
-  function disconnect() {
-    conn.disconnect();
-    connected = false;
   }
 
   async function copyLink() {
@@ -86,51 +78,37 @@
       await navigator.clipboard.writeText(uri);
       copySuccess = true;
       setTimeout(() => copySuccess = false, 2000);
-    } catch { /* clipbord not available */ }
+    } catch { /* clipboard not available */ }
   }
 
+  // §sessions: poll the connected sessions while remote control is enabled.
   $effect(() => {
-    const unsub = conn.remoteClients.subscribe(v => remoteClients = v);
-    return unsub;
-  });
-
-  $effect(() => {
-    if (connected) {
-      conn.listRemoteClients();
-      clientsTimer = setInterval(() => conn.listRemoteClients(), 5000);
+    if (remoteEnabled) {
+      refreshSessions();
+      sessionsTimer = setInterval(refreshSessions, 3000);
     } else {
-      if (clientsTimer) { clearInterval(clientsTimer); clientsTimer = null; }
-      remoteClients = [];
+      if (sessionsTimer) { clearInterval(sessionsTimer); sessionsTimer = null; }
+      sessions = [];
     }
+    return () => { if (sessionsTimer) { clearInterval(sessionsTimer); sessionsTimer = null; } };
   });
 
   onMount(() => {
     refreshRemoteInfo();
-
     totpTimer = setInterval(async () => {
-      if (remoteEnabled) {
-        await refreshRemoteInfo();
-      }
+      if (remoteEnabled) await refreshRemoteInfo();
     }, 5000);
     return () => { if (totpTimer) clearInterval(totpTimer); };
   });
-
 </script>
 
 <div class="flex flex-col h-full">
-  <!-- Header with toggle -->
+  <!-- Header -->
   <div class="flex items-center justify-between px-3 h-10 border-b border-[var(--rg-border)] shrink-0">
     <h2 class="text-xs font-semibold text-[var(--rg-fg)] uppercase tracking-wider flex items-center gap-1.5">
       <Smartphone class="w-3.5 h-3.5" />
       远程控制 ({machineName})
     </h2>
-    <div class="flex items-center gap-1">
-      {#if connected}
-        <button onclick={disconnect} class="p-1 rounded hover:bg-[var(--rg-surface)] transition-colors" title="断开连接">
-          <Unlink class="w-3.5 h-3.5 text-red-400" />
-        </button>
-      {/if}
-    </div>
   </div>
 
   <div class="flex-1 overflow-auto p-3 space-y-4">
@@ -157,18 +135,10 @@
             开发模式 · 运行 <code class="bg-[var(--rg-surface)] px-1 rounded">pnpm dev:remote</code> 启动手机端
           {:else}
             手机浏览器扫码或访问
-            <button
-              onclick={copyLink}
-              class="inline bg-transparent border-none p-0 cursor-pointer"
-              title="点击复制链接"
-            >
+            <button onclick={copyLink} class="inline bg-transparent border-none p-0 cursor-pointer" title="点击复制链接">
               <code class="bg-[var(--rg-surface)] px-1 rounded hover:bg-[var(--rg-accent)]/10 transition-colors">{buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0)}</code>
             </button>
-            <button
-              onclick={copyLink}
-              class="ml-1 text-[var(--rg-accent)] hover:underline text-[10px]"
-              title="复制链接"
-            >
+            <button onclick={copyLink} class="ml-1 text-[var(--rg-accent)] hover:underline text-[10px]" title="复制链接">
               {copySuccess ? '已复制' : '复制'}
             </button>
           {/if}
@@ -177,39 +147,34 @@
     </div>
 
     {#if remoteEnabled}
-      {#if connected}
-        <div class="flex flex-col items-center gap-3 py-4">
-          <div class="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center">
-            <Link class="w-6 h-6 text-green-400" />
+      <!-- §sessions: connected devices (live, via Tauri) -->
+      <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
+        <h3 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">
+          已连接设备 ({sessions.length})
+        </h3>
+        {#each sessions as s (s.id)}
+          <div class="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-[var(--rg-surface)] transition-colors">
+            <div class="min-w-0 flex-1">
+              <p class="text-xs text-[var(--rg-fg)] truncate" title={s.deviceId}>{deviceLabel(s)}</p>
+              <p class="text-[10px] text-[var(--rg-fg-muted)]">
+                {s.remoteAddr} · 已连接 {Math.floor(s.connectedSecs / 60)} 分
+              </p>
+            </div>
+            <button
+              onclick={() => disconnectSession(s.id)}
+              class="shrink-0 ml-2 px-2 py-1 rounded text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
+              title="断开后该设备需重新输入验证码才能连接"
+            >
+              断开
+            </button>
           </div>
-          <p class="text-sm text-[var(--rg-fg)]">已连接到 {hostInput}:{portInput}</p>
-          <p class="text-xs text-[var(--rg-fg-muted)]">远程终端会话活跃中</p>
-        </div>
-
-        {#if remoteClients.length > 0}
-          <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
-            <h3 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">
-              已连接设备 ({remoteClients.length})
-            </h3>
-            {#each remoteClients as client (client.id)}
-              <div class="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-[var(--rg-surface)] transition-colors">
-                <div class="min-w-0 flex-1">
-                  <p class="text-xs text-[var(--rg-fg)] truncate">{client.remoteAddr}</p>
-                  <p class="text-[10px] text-[var(--rg-fg-muted)]">
-                    已连接 {Math.floor(client.connectedAt / 60)} 分
-                  </p>
-                </div>
-                <button
-                  onclick={() => kickClient(client.id)}
-                  class="shrink-0 ml-2 px-2 py-1 rounded text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
-                >
-                  断开
-                </button>
-              </div>
-            {/each}
-          </div>
+        {/each}
+        {#if sessions.length === 0}
+          <p class="text-[11px] text-[var(--rg-fg-muted)] py-1">暂无连接</p>
         {/if}
-      {:else if remoteInfo?.ready}
+      </div>
+
+      {#if remoteInfo?.ready}
         <!-- QR Code: TOTP authenticator setup -->
         <div class="flex flex-col items-center gap-1 py-1">
           <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">① 扫码绑定身份验证器</p>
@@ -221,11 +186,7 @@
           <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">② 扫码打开远程页面</p>
           <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={140} />
           <p class="text-[9px] text-[var(--rg-fg-muted)]">手机浏览器扫码 → 输入验证码 → 连接</p>
-          <button
-            onclick={copyLink}
-            class="text-[10px] text-[var(--rg-accent)] hover:underline"
-            title="复制链接"
-          >
+          <button onclick={copyLink} class="text-[10px] text-[var(--rg-accent)] hover:underline" title="复制链接">
             {copySuccess ? '链接已复制 ✓' : '复制链接'}
           </button>
         </div>
@@ -263,5 +224,3 @@
     {/if}
   </div>
 </div>
-
-

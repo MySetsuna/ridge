@@ -263,6 +263,13 @@ pub struct RemoteClientInfo {
     pub connected_at: std::time::SystemTime,
     pub remote_addr: String,
     pub user_agent: String,
+    /// Stable, mobile-generated device id (localStorage UUID) sent on connect.
+    /// Used as the blacklist key (survives token rotation). Empty if absent.
+    pub device_id: String,
+    /// The session token this connection authenticated with (if it connected
+    /// via `?token=`). Force-disconnect invalidates it so the device must
+    /// re-enter the auth code to reconnect.
+    pub token: Option<String>,
     pub kill_flag: Arc<AtomicBool>,
 }
 
@@ -275,7 +282,13 @@ pub struct RemoteClientRegistry {
 }
 
 impl RemoteClientRegistry {
-    pub fn register(&self, addr: String, ua: String) -> (u64, Arc<AtomicBool>) {
+    pub fn register(
+        &self,
+        addr: String,
+        ua: String,
+        device_id: String,
+        token: Option<String>,
+    ) -> (u64, Arc<AtomicBool>) {
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let kill_flag = Arc::new(AtomicBool::new(false));
@@ -284,6 +297,8 @@ impl RemoteClientRegistry {
             connected_at: std::time::SystemTime::now(),
             remote_addr: addr,
             user_agent: ua,
+            device_id,
+            token,
             kill_flag: Arc::clone(&kill_flag),
         });
         (id, kill_flag)
@@ -295,6 +310,12 @@ impl RemoteClientRegistry {
 
     pub fn list(&self) -> Vec<RemoteClientInfo> {
         self.clients.lock().values().cloned().collect()
+    }
+
+    /// Snapshot of a single client's info (for resolving token/device on
+    /// disconnect / blacklist).
+    pub fn info_of(&self, id: u64) -> Option<RemoteClientInfo> {
+        self.clients.lock().get(&id).cloned()
     }
 
     pub fn kick(&self, id: u64) -> bool {

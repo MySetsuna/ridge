@@ -2,6 +2,25 @@ import type { SidebarProvider, DirListing, GitInfo, SearchHit } from '@shared/si
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+/** Stable, per-device id persisted in localStorage. Sent on connect so the
+ *  desktop can label sessions and blacklist a specific device (survives token
+ *  rotation). `crypto.randomUUID` needs a secure context (absent on plain-http
+ *  LAN), so fall back to a random string. */
+export function getDeviceId(): string {
+  try {
+    let id = localStorage.getItem('wind-remote-device-id');
+    if (!id) {
+      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : 'dev-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      localStorage.setItem('wind-remote-device-id', id);
+    }
+    return id;
+  } catch {
+    return '';
+  }
+}
+
 function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
   const hex: string[] = [];
   for (let i = offset; i < offset + 16; i++) {
@@ -132,7 +151,7 @@ export class RemoteConnection implements SidebarProvider {
     let url: string;
     if (auth) {
       const param = authType === 'token' ? 'token' : 'code';
-      url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}`;
+      url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}&device=${encodeURIComponent(getDeviceId())}`;
       if (authType === 'token') this._token = auth;
     } else {
       this.setState('error');

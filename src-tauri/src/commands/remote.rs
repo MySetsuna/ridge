@@ -47,6 +47,46 @@ pub fn get_remote_enabled(state: State<AppState>) -> Result<bool, String> {
     Ok(state.remote_enabled.load(Ordering::Relaxed))
 }
 
+/// §sessions: list the currently-connected remote control sessions for the
+/// desktop RemotePanel (IP + device id + connected duration).
+#[tauri::command]
+pub fn list_remote_sessions(state: State<AppState>) -> Vec<serde_json::Value> {
+    let now = std::time::SystemTime::now();
+    let mut sessions: Vec<serde_json::Value> = state
+        .remote_client_registry
+        .list()
+        .into_iter()
+        .map(|c| {
+            let secs = now
+                .duration_since(c.connected_at)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            serde_json::json!({
+                "id": c.id,
+                "remoteAddr": c.remote_addr,
+                "deviceId": c.device_id,
+                "userAgent": c.user_agent,
+                "connectedSecs": secs,
+            })
+        })
+        .collect();
+    sessions.sort_by_key(|v| v["id"].as_u64().unwrap_or(0));
+    sessions
+}
+
+/// §sessions: force-disconnect a session — invalidate its session token (so the
+/// device must re-enter the auth code to reconnect; NOT blacklisted) then kick
+/// the live WebSocket. The 1s health check closes it promptly.
+#[tauri::command]
+pub fn disconnect_session(state: State<AppState>, id: u64) -> bool {
+    if let Some(info) = state.remote_client_registry.info_of(id) {
+        if let Some(ref t) = info.token {
+            state.remote_session_store.invalidate(t);
+        }
+    }
+    state.remote_client_registry.kick(id)
+}
+
 fn start_remote_server(state: &AppState) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

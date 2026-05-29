@@ -555,6 +555,8 @@ pub fn run() {
             commands::remote::get_remote_info,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
+            commands::remote::list_remote_sessions,
+            commands::remote::disconnect_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
