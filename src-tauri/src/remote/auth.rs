@@ -189,6 +189,13 @@ impl SessionStore {
         false
     }
 
+    /// Revoke a session token so the device can no longer reconnect with it
+    /// (force-disconnect). The device must re-enter the auth code to obtain a
+    /// fresh token. No-op if the token is unknown.
+    pub fn invalidate(&self, token: &str) {
+        self.tokens.lock().remove(token);
+    }
+
     fn cleanup_expired(&self) {
         self.tokens.lock().retain(|_, created| created.elapsed() < SESSION_TTL);
     }
