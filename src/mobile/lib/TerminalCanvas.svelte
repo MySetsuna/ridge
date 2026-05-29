@@ -466,6 +466,12 @@
     // left-click when the TUI has mouse reporting on.
     const elapsed = Date.now() - touchStartTime;
     if (elapsed < 300 && !didScroll) {
+      // §kbd-flash: suppress the browser's synthetic mouse/click that follows
+      // touchend. That click lands on the canvas (the hidden IME textarea has
+      // pointer-events:none) and would blur the just-focused textarea, closing
+      // the soft keyboard the instant it opens ("闪一下就收起"). We forward the
+      // real click to the TUI ourselves below, so nothing is lost.
+      e.preventDefault();
       focusInput();
       if (kernel && cellW > 0 && cellH > 0 && kernel.isMouseReporting()) {
         const touch = e.changedTouches[0];
