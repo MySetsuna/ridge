@@ -869,6 +869,9 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
+	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
+	// unmounts mid-drag can't leave the whole app stuck at user-select:none.
+	if (scrollbarDragGuardActive) endScrollbarDrag();
 	if (bellFlashTimer !== null) {
 		clearTimeout(bellFlashTimer);
 		bellFlashTimer = null;
@@ -1155,6 +1158,32 @@ let scrollbarThumbTopPct = $derived.by(() => {
 // can compute a delta-based new offset without re-measuring the track.
 let scrollbarTrackEl: HTMLDivElement | undefined = $state(undefined);
 let dragging: { startY: number; startOffset: number; trackH: number } | null = null;
+let scrollbarDragGuardActive = false;
+
+// Unconditionally clear the window-wide text-selection suppression. Reset to ''
+// so any app-wide CSS rule keeps owning the property.
+function clearBodySelectGuard(): void {
+	document.body.style.userSelect = '';
+	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
+}
+
+// End a scrollbar-thumb drag from ANY source — the thumb's own pointerup, OR a
+// window-level pointerup/cancel/blur. The latter is the safety net: the thumb
+// lives under `{#if scrollbarVisible}`, so a resize that drops scrollback to 0
+// (more frequent now that remote control re-fits on interaction) can unmount it
+// mid-drag — its pointerup then never fires, and the body would stay
+// `user-select:none` forever, disabling selection across the whole app.
+function endScrollbarDrag(): void {
+	if (scrollbarDragGuardActive) {
+		window.removeEventListener('pointerup', endScrollbarDrag, true);
+		window.removeEventListener('pointercancel', endScrollbarDrag, true);
+		window.removeEventListener('blur', endScrollbarDrag);
+		scrollbarDragGuardActive = false;
+	}
+	dragging = null;
+	clearBodySelectGuard();
+}
+
 function onScrollbarThumbPointerDown(e: PointerEvent) {
 	if (!alive || !attached || !scrollbarTrackEl) return;
 	e.stopPropagation();
@@ -1175,6 +1204,15 @@ function onScrollbarThumbPointerDown(e: PointerEvent) {
 	// and the WebKit prefix for Tauri's older webview versions.
 	document.body.style.userSelect = 'none';
 	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = 'none';
+	// Safety net so the guard is ALWAYS lifted even if the thumb unmounts
+	// mid-drag (its own pointerup never fires). Capture phase so we see the
+	// release regardless of where it lands.
+	if (!scrollbarDragGuardActive) {
+		scrollbarDragGuardActive = true;
+		window.addEventListener('pointerup', endScrollbarDrag, true);
+		window.addEventListener('pointercancel', endScrollbarDrag, true);
+		window.addEventListener('blur', endScrollbarDrag);
+	}
 }
 function onScrollbarThumbPointerMove(e: PointerEvent) {
 	if (!dragging) return;
@@ -1196,14 +1234,10 @@ function onScrollbarThumbPointerMove(e: PointerEvent) {
 	refreshScrollState();
 }
 function onScrollbarThumbPointerUp(e: PointerEvent) {
-	if (!dragging) return;
-	dragging = null;
-	(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-	// Restore window-wide text selection (paired with the userSelect
-	// suppression in onScrollbarThumbPointerDown). Reset to '' so any
-	// app-wide CSS rule keeps owning the property.
-	document.body.style.userSelect = '';
-	(document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = '';
+	try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* capture already gone */ }
+	// Always restore — NOT gated on `dragging`, which an interleaved resize may
+	// have already cleared, leaving the body stuck at user-select:none.
+	endScrollbarDrag();
 }
 
 // Click on the empty track jumps the thumb center to the cursor — same
