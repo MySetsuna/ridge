@@ -2,14 +2,11 @@
   import { onMount, onDestroy } from 'svelte';
   import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
   import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-  import VirtualKeyboard from './VirtualKeyboard.svelte';
-
-  let { paneId, onStdin, onResize, onRefresh, showKeyboard = false }: {
+  let { paneId, onStdin, onResize, onRefresh }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     onRefresh?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
-    showKeyboard?: boolean;
   } = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -205,9 +202,10 @@
     pendingData.length = 0;
   }
 
-  // ─── Virtual Keyboard integration ──────────────────────────────────
-  function handleVirtualKey(key: string, ctrl: boolean, alt: boolean, shift: boolean) {
+  // ─── Quick-key bar integration (exported for the always-visible bar) ──
+  export function sendKey(key: string, ctrl: boolean, alt: boolean, shift: boolean) {
     if (!paneId || !kernel) return;
+    focusInput();
     const bytes = kernel.encodeKey(key, ctrl, alt, shift, false);
     if (bytes.length > 0) {
       onStdin(new TextDecoder().decode(bytes));
@@ -772,10 +770,6 @@
     </div>
   {/if}
 </div>
-
-{#if showKeyboard}
-  <VirtualKeyboard onKey={handleVirtualKey} />
-{/if}
 
 <style>
   .container{position:relative;flex:1;overflow:hidden;background:#0d1117;touch-action:manipulation}
