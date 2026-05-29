@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  root: path.resolve(__dirname, 'src/mobile'),
+  root: path.resolve(__dirname, 'src/remote'),
   base: '/',
   resolve: {
     alias: {
@@ -17,7 +17,7 @@ export default defineConfig({
     svelte(),
   ],
   build: {
-    outDir: path.resolve(__dirname, 'static/mobile'),
+    outDir: path.resolve(__dirname, 'static/remote'),
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,

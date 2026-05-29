@@ -86,10 +86,10 @@ export const terminalkernel_setSelectionAbs: (a: number, b: number, c: number, d
 export const terminalkernel_shouldAllowShellHistory: (a: number) => number;
 export const terminalkernel_takePendingEvents: (a: number) => [number, number];
 export const terminalkernel_takePendingResponse: (a: number) => [number, number];
-export const wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];
-export const wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69: (a: number, b: number, c: any, d: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39: (a: number, b: number, c: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39_2: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h5b8f9f9118d17a3b: (a: number, b: number, c: any) => [number, number];
+export const wasm_bindgen__convert__closures_____invoke__h386c8d8a4d76669f: (a: number, b: number, c: any, d: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h86171e4727f69f8c: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h86171e4727f69f8c_2: (a: number, b: number, c: any) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_exn_store: (a: number) => void;
