@@ -178,7 +178,16 @@ impl PaneParser {
         // the diff baseline to zero.
         self.last_scrollback_len = 0;
         self.last_scrollback_evictions = 0;
-        self.diff_into_frame()
+        let mut frame = self.diff_into_frame();
+        // Prepend an explicit Resize so a fresh subscriber whose kernel is
+        // still at its construction size (24×80) resizes its grid to the
+        // canonical dimensions BEFORE applying the bootstrap cells. Without
+        // this, a remote client rendering the SHARED canonical grid (see
+        // remote/server.rs subscribe-pane) could OOB on the first frame.
+        frame
+            .deltas
+            .insert(0, GridDelta::Resize { rows: rows as u16, cols: cols as u16 });
+        frame
     }
 
     pub fn force_full_reframe(&mut self) {

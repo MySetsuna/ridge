@@ -204,6 +204,10 @@ export class RemoteConnection implements SidebarProvider {
   resizePane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
     this.send({ type: 'resize', paneId, rows, cols, pixelWidth, pixelHeight });
   }
+  /** §multi-size: explicitly re-claim the shared PTY at this device's size + full repaint. */
+  refreshPane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
+    this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight });
+  }
 
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {

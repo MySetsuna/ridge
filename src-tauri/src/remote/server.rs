@@ -2,7 +2,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use portable_pty::PtySize;
 
@@ -483,6 +482,67 @@ async fn workspace_close_handler(
     (StatusCode::OK, Json(serde_json::json!({ "success": true })))
 }
 
+/// §multi-size: resize a pane's PTY to `rows`×`cols`, resize its canonical
+/// `PaneParser`, and broadcast the resulting delta frame to BOTH the desktop
+/// (via the pane delta channel) and every remote subscriber. This is the
+/// shared path for the remote "first-connect auto-claim" and the explicit
+/// "refresh-pane" button — i.e. the only places a render endpoint claims the
+/// shared PTY size. Mirrors `commands::terminal::resize_pane_inner` minus the
+/// Tauri-only ConPTY silence window (skipped, like the alt-screen path).
+fn apply_pane_resize(
+    ctx: &RemoteCtx,
+    ws_id: Uuid,
+    pane_id: Uuid,
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+) {
+    let rows = rows.max(1).min(500);
+    let cols = cols.max(1).min(500);
+    let frame_bytes = {
+        let map = ctx.state.workspaces.read();
+        let Some(ws) = map.get(&ws_id) else { return };
+        let Some(handle) = ws.terminals.get(&pane_id) else { return };
+        let _ = handle.master.lock().resize(PtySize {
+            rows,
+            cols,
+            pixel_width,
+            pixel_height,
+        });
+        // The canonical parser owns every viewer's grid now, so it must be
+        // in delta mode and resized in lock-step with the PTY.
+        handle.delta_mode.store(true, Ordering::Release);
+        let frame = {
+            let mut p = handle.parser.lock();
+            p.resize(rows, cols)
+        };
+        ridge_term::term::delta::encode_frame(&frame).ok()
+    };
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&ws_id) {
+            ws.pane_sizes.insert(pane_id, (rows, cols));
+        }
+    }
+    let Some(bytes) = frame_bytes else { return };
+    // Desktop viewer (if attached via a delta channel).
+    if let Some(sender) = ctx.state.get_pane_delta_channel(ws_id, pane_id) {
+        sender(bytes.clone());
+    }
+    // All remote viewers share this one canonical resize frame.
+    let reg = ctx.state.pty_pane_registry.read();
+    if let Some(entry) = reg.get(&(ws_id, pane_id)) {
+        for sub in &entry.remote_subs {
+            let _ = sub.delta_tx.try_send(PtyDeltaEvent {
+                workspace_id: ws_id,
+                pane_id,
+                bytes: bytes.clone(),
+            });
+        }
+    }
+}
+
 async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     use futures::{SinkExt, StreamExt};
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -503,10 +563,14 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     // Track which (ws, pane) this client is currently subscribed to.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
 
-    // Mobile-reported grid dimensions, updated by the `resize` WS message
-    // and used to initialise a per-client `PaneParser` on `subscribe-pane`.
+    // Client-reported viewport grid dimensions, updated by the `resize` WS
+    // message. Used for the first-connect auto-claim and the refresh button.
     let mut mobile_rows: u16 = 24;
     let mut mobile_cols: u16 = 80;
+    // §multi-size: a newly connected endpoint claims the shared PTY size
+    // exactly once (auto-claim). Later viewport changes do NOT touch the PTY;
+    // the client uses the refresh button (`refresh-pane`) to re-claim.
+    let mut has_auto_claimed = false;
 
     // Initial handshake.
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
@@ -578,44 +642,40 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             }
                             let new_key = (active_ws_id, pane_id);
 
-                            // §5 — create a per-mobile `PaneParser` so delta frames
-                            // are sized for the client's actual viewport. If the
-                            // mobile hasn't reported its dimensions yet, fall back
-                            // to desktop-sized deltas (backward compat).
-                            let (mobile_parser, init_bytes) =
-                                if mobile_cols > 0 && mobile_rows > 0 {
-                                    let mut mp =
-                                        PaneParser::new(mobile_rows, mobile_cols, 5000);
-                                    // Replay recent PTY scrollback so the mobile
-                                    // parser reaches the same state as the desktop.
-                                    let replay = ctx.state.get_recent_scrollback_for(
-                                        active_ws_id,
-                                        pane_id,
-                                        65536, // 64 KiB — covers ~500 lines of history
-                                    );
-                                    if !replay.is_empty() {
-                                        mp.feed_and_diff(&replay);
-                                    }
-                                    let frame = mp.full_reframe_with_scrollback();
-                                    let bytes =
-                                        ridge_term::term::delta::encode_frame(&frame)
-                                            .unwrap_or_default();
-                                    (Some(Arc::new(Mutex::new(mp))), bytes)
-                                } else {
-                                    (None, Vec::new())
-                                };
-
-                            // Ensure desktop parser is in delta mode so the main
-                            // event loop feeds it (and, transitively, our mobile
-                            // parser via the fan-out in lib.rs).
-                            {
+                            // §multi-size: all remote clients render the SHARED
+                            // canonical grid (no per-client parser). Ensure the
+                            // canonical parser is fed (delta mode on) so the
+                            // fan-out in lib.rs broadcasts its delta stream to us.
+                            let (canon_rows, canon_cols) = {
                                 let workspaces = ctx.state.workspaces.read();
-                                if let Some(ws) = workspaces.get(&active_ws_id) {
-                                    if let Some(h) = ws.terminals.get(&pane_id) {
+                                let dims = workspaces.get(&active_ws_id)
+                                    .and_then(|ws| ws.terminals.get(&pane_id))
+                                    .map(|h| {
                                         h.delta_mode.store(true, Ordering::Release);
-                                    }
+                                        let p = h.parser.lock();
+                                        (p.rows().max(1), p.cols().max(1))
+                                    });
+                                dims.unwrap_or((24, 80))
+                            };
+
+                            // Bootstrap with a full frame at the *canonical* size
+                            // (built from a throwaway parser fed recent scrollback)
+                            // so the new client's kernel resizes to match before
+                            // the shared delta stream starts arriving.
+                            let init_bytes = {
+                                let mut mp = PaneParser::new(canon_rows, canon_cols, 5000);
+                                let replay = ctx.state.get_recent_scrollback_for(
+                                    active_ws_id,
+                                    pane_id,
+                                    65536, // 64 KiB — covers ~500 lines of history
+                                );
+                                if !replay.is_empty() {
+                                    mp.feed_and_diff(&replay);
                                 }
-                            }
+                                let frame = mp.full_reframe_with_scrollback();
+                                ridge_term::term::delta::encode_frame(&frame)
+                                    .unwrap_or_default()
+                            };
 
                             ctx.state.register_remote_sub(
                                 active_ws_id, pane_id,
@@ -623,14 +683,18 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                     id: sub_id,
                                     output_tx: output_tx.clone(),
                                     delta_tx: delta_tx.clone(),
-                                    parser: mobile_parser,
+                                    // §multi-size: None → the lib.rs fan-out sends
+                                    // this sub the canonical (shared) delta frame.
+                                    parser: None,
                                     rows: mobile_rows,
                                     cols: mobile_cols,
                                 },
                             );
                             current_pane = Some(new_key);
 
-                            // Send initial delta frame to bootstrap the mobile kernel.
+                            // Send the bootstrap frame (goes out before any queued
+                            // canonical delta, since this handler runs to
+                            // completion before the select loop drains delta_rx).
                             if !init_bytes.is_empty() {
                                 let mut payload =
                                     Vec::with_capacity(16 + init_bytes.len());
@@ -770,29 +834,37 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         let rows = parsed["rows"].as_u64().unwrap_or(24) as u16;
                         let cols = parsed["cols"].as_u64().unwrap_or(80) as u16;
-                        // Save mobile dimensions for parser creation on subscribe.
+                        // Remember the client's viewport for the refresh button.
                         mobile_rows = rows;
                         mobile_cols = cols;
-                        // Use real pixel dimensions from the client when available,
-                        // so mobile devices get proper cell size calculation.
                         let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
                         let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
                         if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            let workspaces = ctx.state.workspaces.read();
-                            if let Some(ws) = workspaces.get(&active_ws_id) {
-                                if let Some(handle) = ws.terminals.get(&pane_id) {
-                                    let _ = handle.master.lock().resize(
-                                        PtySize {
-                                            rows, cols,
-                                            pixel_width,
-                                            pixel_height,
-                                        }
-                                    );
-                                }
+                            // §multi-size: a freshly connected endpoint claims the
+                            // shared PTY size exactly ONCE. Subsequent viewport
+                            // changes no longer stomp the PTY — the client taps the
+                            // refresh button (`refresh-pane`) to re-claim on demand.
+                            if !has_auto_claimed {
+                                has_auto_claimed = true;
+                                apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
                             }
-                            // §5 — resize the per-client parser (if one exists) so
-                            // subsequent delta frames match the new dimensions.
-                            ctx.state.resize_remote_parser(active_ws_id, pane_id, sub_id, rows, cols);
+                        }
+                        Ok(())
+                    }
+                    Some("refresh-pane") => {
+                        // §multi-size: explicit re-claim. Resize the PTY (and the
+                        // canonical parser) to this client's current viewport and
+                        // broadcast a full repaint to every viewer.
+                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                        let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
+                        let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
+                        let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
+                        let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
+                        mobile_rows = rows;
+                        mobile_cols = cols;
+                        has_auto_claimed = true;
+                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                            apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
                         }
                         Ok(())
                     }
