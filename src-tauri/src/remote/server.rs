@@ -1,8 +1,8 @@
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use portable_pty::PtySize;
 
@@ -11,7 +11,7 @@ use crate::engine::parser::PaneParser;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        ConnectInfo, Query, State,
     },
     http::StatusCode,
     middleware::Next,
@@ -44,11 +44,17 @@ struct RemoteCtx {
 struct ConnectQuery {
     code: Option<String>,
     token: Option<String>,
+    /// Stable mobile-generated device id (localStorage UUID), used for the
+    /// session list label and as the blacklist key.
+    device: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct VerifyForm {
     code: String,
+    /// Stable mobile-generated device id, for the blacklist check at verify time.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -162,26 +168,26 @@ async fn run_remote_server(
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
     // Resolve the static files directory. Try in order:
-    // 1. CWD/static/remote — works in dev (`cargo tauri dev`) when CWD is project root.
-    // 2. exe_dir/static/remote — works in production (NSIS install copies resources next to exe).
-    // 3. exe_dir/../../../static/remote — works when running the exe directly from
-    //    target/release/ (parent→target→src-tauri→project-root/static/remote).
+    // 1. CWD/static/mobile — works in dev (`cargo tauri dev`) when CWD is project root.
+    // 2. exe_dir/static/mobile — works in production (NSIS install copies resources next to exe).
+    // 3. exe_dir/../../../static/mobile — works when running the exe directly from
+    //    target/release/ (parent→target→src-tauri→project-root/static/mobile).
     let static_dir = {
         let candidates: Vec<PathBuf> = vec![
-            PathBuf::from("static").join("remote"),
+            PathBuf::from("static").join("mobile"),
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|d| d.join("static").join("remote")))
+                .and_then(|p| p.parent().map(|d| d.join("static").join("mobile")))
                 .unwrap_or_default(),
             std::env::current_exe()
                 .ok()
                 .and_then(|p| {
-                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("remote").into()
+                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("mobile").into()
                 })
                 .unwrap_or_default(),
         ];
         candidates.into_iter().find(|p| p.join("index.html").exists())
-            .unwrap_or_else(|| PathBuf::from("static").join("remote"))
+            .unwrap_or_else(|| PathBuf::from("static").join("mobile"))
     };
 
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
@@ -213,9 +219,14 @@ async fn run_remote_server(
 
     let _ = port_tx.send(Some(port));
     let shutdown_signal = shutdown_rx.map(|_| ());
-    if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await
+    // §sessions: serve with peer-address connect info so the WS handler can
+    // capture each client's real IP (for the session list + blacklist).
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await
     {
         tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
     }
@@ -253,7 +264,7 @@ async fn root_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     }
 }
 
-/// Serve static assets (JS, CSS, WASM) from the built remote output directory.
+/// Serve static assets (JS, CSS, WASM) from the built mobile output directory.
 async fn assets_handler(
     State(ctx): State<RemoteCtx>,
     axum::extract::Path(path): axum::extract::Path<String>,
@@ -312,9 +323,19 @@ async fn verify_handler_get(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
 }
 
 async fn verify_handler_post(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     Form(form): Form<VerifyForm>,
 ) -> Json<VerifyResponse> {
+    // §blacklist: a barred device/IP can't even obtain a token.
+    let device_id = form.device.clone().unwrap_or_default();
+    if ctx.state.remote_blacklist.is_blocked(&device_id, &addr.ip().to_string()) {
+        return Json(VerifyResponse {
+            success: false,
+            message: "该设备已被加入黑名单".to_string(),
+            token: None,
+        });
+    }
     let valid = ctx.auth.verify(&form.code);
     let token = if valid {
         Some(ctx.state.remote_session_store.create_session())
@@ -337,10 +358,17 @@ async fn verify_handler_post(
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<ConnectQuery>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
 ) -> impl IntoResponse {
     if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
         return (StatusCode::SERVICE_UNAVAILABLE, "remote control disabled").into_response();
+    }
+    let remote_addr = addr.ip().to_string();
+    let device_id = query.device.clone().unwrap_or_default();
+    // §blacklist: bar barred devices/IPs even with a valid token.
+    if ctx.state.remote_blacklist.is_blocked(&device_id, &remote_addr) {
+        return (StatusCode::FORBIDDEN, "device is blacklisted").into_response();
     }
     let valid = if let Some(ref t) = query.token {
         ctx.state.remote_session_store.validate_token(t)
@@ -352,7 +380,9 @@ async fn ws_handler(
     if !valid {
         return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws(socket, ctx)).into_response()
+    let token = query.token.clone();
+    ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token))
+        .into_response()
 }
 
 async fn health_handler() -> &'static str {
@@ -388,11 +418,16 @@ struct WorkspaceCloseBody {
 async fn workspace_list_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     let order = ctx.state.workspace_order.read();
     let names = ctx.state.workspace_names.read();
+    let map = ctx.state.workspaces.read();
     let active = *ctx.state.active_workspace.read();
     let workspaces: Vec<serde_json::Value> = order.iter().map(|id| {
+        // §unify: per-workspace display_seq fallback name, matching the desktop
+        // and the WS `list-workspaces` handler.
+        let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
         serde_json::json!({
             "id": id.to_string(),
-            "name": names.get(id).cloned().unwrap_or_else(|| format!("工作区 {}", ctx.state.next_workspace_seq.read().saturating_sub(1))),
+            "name": names.get(id).cloned().unwrap_or_else(|| format!("工作区 {}", display_seq)),
+            "displaySeq": display_seq,
             "active": *id == active,
         })
     }).collect();
@@ -478,15 +513,84 @@ async fn workspace_close_handler(
     (StatusCode::OK, Json(serde_json::json!({ "success": true })))
 }
 
-async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
+/// §multi-size: resize a pane's PTY to `rows`×`cols`, resize its canonical
+/// `PaneParser`, and broadcast the resulting delta frame to BOTH the desktop
+/// (via the pane delta channel) and every remote subscriber. This is the
+/// shared path for the remote "first-connect auto-claim" and the explicit
+/// "refresh-pane" button — i.e. the only places a render endpoint claims the
+/// shared PTY size. Mirrors `commands::terminal::resize_pane_inner` minus the
+/// Tauri-only ConPTY silence window (skipped, like the alt-screen path).
+fn apply_pane_resize(
+    ctx: &RemoteCtx,
+    ws_id: Uuid,
+    pane_id: Uuid,
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+) {
+    let rows = rows.max(1).min(500);
+    let cols = cols.max(1).min(500);
+    let frame_bytes = {
+        let map = ctx.state.workspaces.read();
+        let Some(ws) = map.get(&ws_id) else { return };
+        let Some(handle) = ws.terminals.get(&pane_id) else { return };
+        let _ = handle.master.lock().resize(PtySize {
+            rows,
+            cols,
+            pixel_width,
+            pixel_height,
+        });
+        // The canonical parser owns every viewer's grid now, so it must be
+        // in delta mode and resized in lock-step with the PTY.
+        handle.delta_mode.store(true, Ordering::Release);
+        let frame = {
+            let mut p = handle.parser.lock();
+            p.resize(rows, cols)
+        };
+        ridge_term::term::delta::encode_frame(&frame).ok()
+    };
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&ws_id) {
+            ws.pane_sizes.insert(pane_id, (rows, cols));
+        }
+    }
+    let Some(bytes) = frame_bytes else { return };
+    // Desktop viewer (if attached via a delta channel).
+    if let Some(sender) = ctx.state.get_pane_delta_channel(ws_id, pane_id) {
+        sender(bytes.clone());
+    }
+    // All remote viewers share this one canonical resize frame.
+    let reg = ctx.state.pty_pane_registry.read();
+    if let Some(entry) = reg.get(&(ws_id, pane_id)) {
+        for sub in &entry.remote_subs {
+            let _ = sub.delta_tx.try_send(PtyDeltaEvent {
+                workspace_id: ws_id,
+                pane_id,
+                bytes: bytes.clone(),
+            });
+        }
+    }
+}
+
+async fn handle_ws(
+    socket: WebSocket,
+    ctx: RemoteCtx,
+    remote_addr: String,
+    device_id: String,
+    token: Option<String>,
+) {
     use futures::{SinkExt, StreamExt};
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Register this client in the remote client registry so the desktop
-    // RemotePanel can list and optionally disconnect it.
+    // RemotePanel can list, disconnect, or blacklist it.
     let (client_id, kill_flag) = ctx.state.remote_client_registry.register(
-        "unknown".to_string(),
+        remote_addr,
         String::new(), // user-agent not available from axum WS directly
+        device_id,
+        token,
     );
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client connected");
 
@@ -498,10 +602,15 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
     // Track which (ws, pane) this client is currently subscribed to.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
 
-    // Mobile-reported grid dimensions, updated by the `resize` WS message
-    // and used to initialise a per-client `PaneParser` on `subscribe-pane`.
+    // Client-reported viewport grid dimensions, updated by the `resize` WS
+    // message. Used for the first-connect auto-claim and the refresh button.
     let mut mobile_rows: u16 = 24;
     let mut mobile_cols: u16 = 80;
+    // §own-active: there is NO connect-time auto-claim. A remote endpoint resizes
+    // the shared PTY only when it becomes the active owner — i.e. on a genuine
+    // user interaction (`claim-pane`) or the explicit refresh button
+    // (`refresh-pane`). Merely connecting / changing viewport records the size
+    // here but never stomps the PTY the desktop is using.
 
     // Initial handshake.
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
@@ -509,12 +618,19 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
         return;
     }
 
-    let active_ws_id = ctx.state.active_workspace_id();
+    // §state-sep: per-client active workspace. Seeded once from the global
+    // active workspace at connect, then owned by THIS client. Switching /
+    // creating / closing workspaces from a remote no longer rewrites the
+    // shared `active_workspace` (which would drag the desktop and every other
+    // client along) — only this `active_ws_id` moves. All readers below
+    // (list-panes / subscribe / stdin / resize / output+delta filters) use it.
+    let mut active_ws_id = ctx.state.active_workspace_id();
 
-    // Periodic health check: if remote control is toggled off while this
-    // WS connection is alive, close it so the mobile client gets a clean
-    // disconnect.
-    let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    // Periodic health check: if remote control is toggled off, or this client
+    // is force-disconnected / blacklisted (kill_flag), close the WS so the
+    // mobile client gets a clean disconnect. Polled at 1s so an admin-triggered
+    // disconnect takes effect promptly (just an atomic load per tick).
+    let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(1));
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Message loop: forward PTY output to WS client, relay keystrokes back.
@@ -539,9 +655,14 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                 continue;
                             };
                             let mut list = Vec::new();
-                            for (pane_id, _) in &ws.terminals {
-                                let title = ws.teammate_pane_titles.get(pane_id)
-                                    .cloned()
+                            for (pane_id, handle) in &ws.terminals {
+                                // §6: prefer the live OSC window title (matches the
+                                // desktop pane header's variable title), then the
+                                // teammate-assigned name, then the shell kind.
+                                let osc_title = handle.parser.lock().title()
+                                    .filter(|t| !t.trim().is_empty());
+                                let title = osc_title
+                                    .or_else(|| ws.teammate_pane_titles.get(pane_id).cloned())
                                     .or_else(|| ws.pane_tree.panes.get(pane_id).and_then(|n| n.shell_kind.clone()))
                                     .unwrap_or_else(|| "terminal".to_string());
                                 list.push(serde_json::json!({
@@ -573,44 +694,45 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             }
                             let new_key = (active_ws_id, pane_id);
 
-                            // §5 — create a per-mobile `PaneParser` so delta frames
-                            // are sized for the client's actual viewport. If the
-                            // mobile hasn't reported its dimensions yet, fall back
-                            // to desktop-sized deltas (backward compat).
-                            let (mobile_parser, init_bytes) =
-                                if mobile_cols > 0 && mobile_rows > 0 {
-                                    let mut mp =
-                                        PaneParser::new(mobile_rows, mobile_cols, 5000);
-                                    // Replay recent PTY scrollback so the mobile
-                                    // parser reaches the same state as the desktop.
-                                    let replay = ctx.state.get_recent_scrollback_for(
-                                        active_ws_id,
-                                        pane_id,
-                                        65536, // 64 KiB — covers ~500 lines of history
-                                    );
-                                    if !replay.is_empty() {
-                                        mp.feed_and_diff(&replay);
-                                    }
-                                    let frame = mp.full_reframe_with_scrollback();
-                                    let bytes =
-                                        ridge_term::term::delta::encode_frame(&frame)
-                                            .unwrap_or_default();
-                                    (Some(Arc::new(Mutex::new(mp))), bytes)
-                                } else {
-                                    (None, Vec::new())
-                                };
-
-                            // Ensure desktop parser is in delta mode so the main
-                            // event loop feeds it (and, transitively, our mobile
-                            // parser via the fan-out in lib.rs).
+                            // §multi-size: each remote client renders at its OWN
+                            // grid size via a dedicated per-sub PaneParser (the
+                            // lib.rs fan-out feeds PTY output through it and sends
+                            // mobile-sized deltas). Ensure the canonical parser is
+                            // in delta mode so the PTY reader runs the delta path
+                            // that drives every sub.
                             {
                                 let workspaces = ctx.state.workspaces.read();
-                                if let Some(ws) = workspaces.get(&active_ws_id) {
-                                    if let Some(h) = ws.terminals.get(&pane_id) {
-                                        h.delta_mode.store(true, Ordering::Release);
-                                    }
+                                if let Some(h) = workspaces
+                                    .get(&active_ws_id)
+                                    .and_then(|ws| ws.terminals.get(&pane_id))
+                                {
+                                    h.delta_mode.store(true, Ordering::Release);
                                 }
                             }
+
+                            // Per-sub parser at THIS client's viewport size. Feed
+                            // it the recent scrollback so its state matches the
+                            // bootstrap frame sent below — the client kernel and
+                            // this parser then stay in lock-step from frame 0.
+                            let sub_rows = mobile_rows.max(1);
+                            let sub_cols = mobile_cols.max(1);
+                            let sub_parser = Arc::new(parking_lot::Mutex::new(
+                                PaneParser::new(sub_rows, sub_cols, 5000),
+                            ));
+                            let init_bytes = {
+                                let mut mp = sub_parser.lock();
+                                let replay = ctx.state.get_recent_scrollback_for(
+                                    active_ws_id,
+                                    pane_id,
+                                    65536, // 64 KiB — covers ~500 lines of history
+                                );
+                                if !replay.is_empty() {
+                                    mp.feed_and_diff(&replay);
+                                }
+                                let frame = mp.full_reframe_with_scrollback();
+                                ridge_term::term::delta::encode_frame(&frame)
+                                    .unwrap_or_default()
+                            };
 
                             ctx.state.register_remote_sub(
                                 active_ws_id, pane_id,
@@ -618,14 +740,19 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                     id: sub_id,
                                     output_tx: output_tx.clone(),
                                     delta_tx: delta_tx.clone(),
-                                    parser: mobile_parser,
-                                    rows: mobile_rows,
-                                    cols: mobile_cols,
+                                    // §multi-size: per-client parser → the lib.rs
+                                    // fan-out sends this sub its own mobile-sized
+                                    // delta frames.
+                                    parser: Some(sub_parser),
+                                    rows: sub_rows,
+                                    cols: sub_cols,
                                 },
                             );
                             current_pane = Some(new_key);
 
-                            // Send initial delta frame to bootstrap the mobile kernel.
+                            // Send the bootstrap frame (goes out before any queued
+                            // canonical delta, since this handler runs to
+                            // completion before the select loop drains delta_rx).
                             if !init_bytes.is_empty() {
                                 let mut payload =
                                     Vec::with_capacity(16 + init_bytes.len());
@@ -650,11 +777,19 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let ws_list = {
                             let order = ctx.state.workspace_order.read();
                             let names = ctx.state.workspace_names.read();
-                            let active = *ctx.state.active_workspace.read();
+                            let map = ctx.state.workspaces.read();
+                            // §state-sep: the `active` flag reflects THIS client's
+                            // selection, not the global one.
+                            let active = active_ws_id;
                             order.iter().map(|id| {
+                                // §unify: unnamed workspaces fall back to "工作区 {display_seq}",
+                                // matching the desktop WorkspaceSidebar label.
+                                let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
                                 serde_json::json!({
                                     "id": id.to_string(),
-                                    "name": names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+                                    "name": names.get(id).cloned()
+                                        .unwrap_or_else(|| format!("工作区 {}", display_seq)),
+                                    "displaySeq": display_seq,
                                     "active": *id == active,
                                 })
                             }).collect::<Vec<_>>()
@@ -669,7 +804,14 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         let result = if let Ok(id) = Uuid::parse_str(id_str) {
                             let exists = ctx.state.workspaces.read().contains_key(&id);
                             if exists {
-                                *ctx.state.active_workspace.write() = id;
+                                // §state-sep: switch THIS client only — do not touch
+                                // the global active_workspace. Drop the current pane
+                                // subscription so the old workspace's stream stops; the
+                                // client re-subscribes after its next list-panes.
+                                if let Some((ws, p)) = current_pane.take() {
+                                    ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                }
+                                active_ws_id = id;
                                 serde_json::json!({ "type": "switch-workspace-result", "success": true, "workspaceId": id.to_string() })
                             } else {
                                 serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "workspace not found" })
@@ -703,7 +845,13 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             });
                         }
                         ctx.state.workspace_order.write().push(id);
-                        *ctx.state.active_workspace.write() = id;
+                        // §state-sep: the new workspace is shared data (visible to all),
+                        // but only THIS client jumps to it. Other clients / the desktop
+                        // stay on their own selection.
+                        if let Some((ws, p)) = current_pane.take() {
+                            ctx.state.unregister_remote_sub(ws, p, sub_id);
+                        }
+                        active_ws_id = id;
                         if let Some(ref n) = name {
                             ctx.state.workspace_names.write().insert(id, n.clone());
                         }
@@ -725,10 +873,26 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                                     ctx.state.workspaces.write().remove(&id);
                                     ctx.state.workspace_order.write().retain(|w| *w != id);
                                     ctx.state.workspace_names.write().remove(&id);
+                                    // Closing a workspace destroys shared data: if the
+                                    // DESKTOP (global active) was viewing it, move the
+                                    // global off so the desktop doesn't point at a dead
+                                    // workspace. This is unavoidable — you can't view a
+                                    // workspace that no longer exists.
                                     if *ctx.state.active_workspace.read() == id {
                                         let first = ctx.state.workspace_order.read().first().cloned();
                                         if let Some(first_id) = first {
                                             *ctx.state.active_workspace.write() = first_id;
+                                        }
+                                    }
+                                    // §state-sep: if THIS client was on the closed
+                                    // workspace, fall back to the first remaining one
+                                    // (independently of the desktop / other clients).
+                                    if active_ws_id == id {
+                                        if let Some((ws, p)) = current_pane.take() {
+                                            ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                        }
+                                        if let Some(first_id) = ctx.state.workspace_order.read().first().cloned() {
+                                            active_ws_id = first_id;
                                         }
                                     }
                                     serde_json::json!({ "type": "close-workspace-result", "success": true })
@@ -757,76 +921,141 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                     }
                     Some("resize") => {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
-                        let rows = parsed["rows"].as_u64().unwrap_or(24) as u16;
-                        let cols = parsed["cols"].as_u64().unwrap_or(80) as u16;
-                        // Save mobile dimensions for parser creation on subscribe.
-                        mobile_rows = rows;
-                        mobile_cols = cols;
-                        // Use real pixel dimensions from the client when available,
-                        // so mobile devices get proper cell size calculation.
-                        let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
-                        let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
+                        let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
+                        let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
+                        // §multi-size: record the client's viewport and reflow ONLY
+                        // this client's per-sub parser — never the shared PTY (that
+                        // stays owned by whoever last hit refresh/claim). Then push
+                        // a full reframe so an idle app reflows immediately instead
+                        // of waiting for the next PTY output chunk.
+                        mobile_rows = rows.max(1);
+                        mobile_cols = cols.max(1);
                         if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            let workspaces = ctx.state.workspaces.read();
-                            if let Some(ws) = workspaces.get(&active_ws_id) {
-                                if let Some(handle) = ws.terminals.get(&pane_id) {
-                                    let _ = handle.master.lock().resize(
-                                        PtySize {
-                                            rows, cols,
-                                            pixel_width,
-                                            pixel_height,
-                                        }
-                                    );
+                            ctx.state.resize_remote_parser(
+                                active_ws_id, pane_id, sub_id, mobile_rows, mobile_cols,
+                            );
+                            let sub_parser = {
+                                let reg = ctx.state.pty_pane_registry.read();
+                                reg.get(&(active_ws_id, pane_id)).and_then(|entry| {
+                                    entry
+                                        .remote_subs
+                                        .iter()
+                                        .find(|s| s.id == sub_id)
+                                        .and_then(|s| s.parser.clone())
+                                })
+                            };
+                            if let Some(mp) = sub_parser {
+                                let bytes = {
+                                    let mut p = mp.lock();
+                                    let frame = p.full_reframe_with_scrollback();
+                                    ridge_term::term::delta::encode_frame(&frame)
+                                        .unwrap_or_default()
+                                };
+                                if !bytes.is_empty() {
+                                    let mut payload = Vec::with_capacity(16 + bytes.len());
+                                    payload.extend_from_slice(pane_id.as_bytes());
+                                    payload.extend_from_slice(&bytes);
+                                    let _ = ws_tx.send(Message::Binary(payload.into())).await;
                                 }
                             }
-                            // §5 — resize the per-client parser (if one exists) so
-                            // subsequent delta frames match the new dimensions.
-                            ctx.state.resize_remote_parser(active_ws_id, pane_id, sub_id, rows, cols);
                         }
                         Ok(())
                     }
+                    // §own-active: this client becomes the active size owner. Both
+                    // the implicit "I just interacted" claim (`claim-pane`) and the
+                    // explicit refresh button (`refresh-pane`) resize the shared PTY +
+                    // canonical parser to this client's viewport and broadcast a full
+                    // repaint to every viewer (desktop included). Last interaction wins.
+                    Some("refresh-pane") | Some("claim-pane") => {
+                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                        let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
+                        let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
+                        let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
+                        let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
+                        mobile_rows = rows;
+                        mobile_cols = cols;
+                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                            apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
+                        }
+                        Ok(())
+                    }
+                    Some("create-pane") => {
+                        // §6: create a terminal in THIS client's active workspace
+                        // using the balanced-split chooser, then immediately activate
+                        // it (Phase 2) at this client's viewport size. Remote clients
+                        // can't call the front-end `activate_pane_pty` Tauri command,
+                        // so without this the pane would sit in `pending_spawns`
+                        // forever ("pending..."). Once live it streams to every viewer
+                        // via the PTY fan-out on subscribe.
+                        let shell = parsed["shell"].as_str()
+                            .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+                        let result = match crate::commands::pane::remote_create_pane(&ctx.state, active_ws_id, shell) {
+                            Ok(new_id) => match crate::commands::terminal::activate_pane_pty_state(
+                                &ctx.state, None, active_ws_id, new_id,
+                                Some(mobile_rows), Some(mobile_cols),
+                            ) {
+                                Ok(()) => serde_json::json!({
+                                    "type": "create-pane-result", "success": true, "paneId": new_id.to_string()
+                                }),
+                                Err(e) => serde_json::json!({
+                                    "type": "create-pane-result", "success": false, "error": e.to_string()
+                                }),
+                            },
+                            Err(e) => serde_json::json!({
+                                "type": "create-pane-result", "success": false, "error": e.to_string()
+                            }),
+                        };
+                        ws_tx.send(Message::Text(result.to_string())).await
+                    }
+                    Some("close-pane") => {
+                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                        let result = match Uuid::parse_str(pane_id_str) {
+                            Ok(pane_id) => match crate::commands::pane::remote_close_pane(&ctx.state, active_ws_id, pane_id).await {
+                                Ok(()) => serde_json::json!({ "type": "close-pane-result", "success": true }),
+                                Err(e) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": e.to_string() }),
+                            },
+                            Err(_) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": "invalid pane id" }),
+                        };
+                        ws_tx.send(Message::Text(result.to_string())).await
+                    }
                     Some("list-files") => {
                         let path_str = parsed["path"].as_str().unwrap_or("").to_string();
-                        let base_dir = ctx.state.current_project.read().clone()
-                            .or_else(|| dirs::home_dir())
-                            .unwrap_or_else(|| PathBuf::from("/"));
+                        // §unify: base dir follows the subscribed pane's cwd (same as the
+                        // desktop file tree), falling back to the active project, then home.
+                        let base_dir = current_pane
+                            .and_then(|(ws_id, pane_id)| {
+                                let map = ctx.state.workspaces.read();
+                                map.get(&ws_id)
+                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                    .and_then(|n| n.cwd.clone())
+                            })
+                            .or_else(|| ctx.state.current_project.read().clone())
+                            .or_else(dirs::home_dir)
+                            .unwrap_or_else(|| PathBuf::from("."));
                         let result = tokio::task::spawn_blocking(move || {
+                            // Empty/"/" → base dir; absolute → as-is; else relative to base.
                             let target = if path_str.is_empty() || path_str == "/" {
                                 base_dir.clone()
                             } else {
-                                base_dir.join(&path_str)
+                                let p = PathBuf::from(&path_str);
+                                if p.is_absolute() { p } else { base_dir.join(&path_str) }
                             };
-                            let gictx = crate::fs::tree::FileTreeContext::for_path(&target);
-                            let mut entries: Vec<serde_json::Value> = Vec::new();
-                            if let Ok(read_dir) = std::fs::read_dir(&target) {
-                                for entry in read_dir.flatten() {
-                                    let name = entry.file_name().to_string_lossy().to_string();
-                                    if crate::fs::tree::FileTree::should_ignore(&entry.path()) { continue; }
-                                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                                    let is_ignored = gictx.matches(&entry.path(), is_dir);
-                                    let child_count = if is_dir {
-                                        std::fs::read_dir(&entry.path()).ok().map(|rd| rd.flatten().filter(|e| !crate::fs::tree::FileTree::should_ignore(&e.path())).count())
-                                    } else { None };
-                                    entries.push(serde_json::json!({
-                                        "name": name,
-                                        "path": entry.path().strip_prefix(&base_dir)
-                                            .unwrap_or(entry.path().as_path())
-                                            .to_string_lossy().to_string().replace('\\', "/"),
-                                        "is_dir": is_dir,
-                                        "is_ignored": is_ignored,
-                                        "child_count": child_count,
-                                    }));
-                                }
-                            }
-                            entries.sort_by(|a, b| {
-                                let a_dir = a["is_dir"].as_bool().unwrap_or(false);
-                                let b_dir = b["is_dir"].as_bool().unwrap_or(false);
-                                b_dir.cmp(&a_dir).then(
-                                    a["name"].as_str().unwrap_or("").to_lowercase()
-                                        .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
-                                )
-                            });
-                            serde_json::json!({"type":"files","path":path_str,"entries":entries})
+                            // §unify: reuse the desktop file-tree pager so gitignore marking,
+                            // OS-junk filtering and dir-first sorting match the desktop UI.
+                            let page = crate::fs::tree::FileTree::page_children(&target, 0, 5000)
+                                .unwrap_or(crate::fs::tree::DirectoryPage {
+                                    entries: Vec::new(),
+                                    total: 0,
+                                    offset: 0,
+                                    has_more: false,
+                                });
+                            let parent = target.parent().map(|p| p.to_string_lossy().to_string());
+                            serde_json::json!({
+                                "type": "files",
+                                "path": target.to_string_lossy().to_string(),
+                                "parent": parent,
+                                "entries": page.entries,
+                            })
                         }).await;
                         match result {
                             Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
@@ -864,37 +1093,29 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         }).to_string())).await
                     }
                     Some("list-git-status") => {
-                        let workspace_dir = ctx.state.current_project.read().clone()
-                            .or_else(|| dirs::home_dir())
+                        // §unify: same cwd resolution as list-files (subscribed pane → project → home).
+                        let base_dir = current_pane
+                            .and_then(|(ws_id, pane_id)| {
+                                let map = ctx.state.workspaces.read();
+                                map.get(&ws_id)
+                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                    .and_then(|n| n.cwd.clone())
+                            })
+                            .or_else(|| ctx.state.current_project.read().clone())
+                            .or_else(dirs::home_dir)
                             .unwrap_or_else(|| PathBuf::from("."));
                         let result = tokio::task::spawn_blocking(move || {
-                            let mut staged: Vec<String> = Vec::new();
-                            let mut unstaged: Vec<serde_json::Value> = Vec::new();
-                            let mut commits: Vec<serde_json::Value> = Vec::new();
-                            if let Ok(output) = std::process::Command::new("git")
-                                .args(["-C", &workspace_dir.to_string_lossy(), "status", "--porcelain"]).output()
-                            {
-                                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                                    if line.len() < 3 { continue; }
-                                    let file = &line[3..];
-                                    let st = line.as_bytes()[0];
-                                    if st == b'?' || st == b' ' {
-                                        unstaged.push(serde_json::json!({"name": file, "status": line[..2].to_string()}));
-                                    } else {
-                                        staged.push(file.to_string());
-                                    }
-                                }
-                            }
-                            if let Ok(output) = std::process::Command::new("git")
-                                .args(["-C", &workspace_dir.to_string_lossy(), "log", "--oneline", "-10"]).output()
-                            {
-                                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                                    if let Some((hash, msg)) = line.split_once(' ') {
-                                        commits.push(serde_json::json!({"hash": hash, "msg": msg, "time": ""}));
-                                    }
-                                }
-                            }
-                            serde_json::json!({"type":"git-status","staged":staged,"unstaged":unstaged,"commits":commits})
+                            // §unify: reuse the desktop git module so branch / commits / diff
+                            // come from the exact same source as the desktop Git panel.
+                            let info = crate::commands::git::git_info_for_path(&base_dir);
+                            serde_json::json!({
+                                "type": "git-status",
+                                "isGitRepo": info.is_git_repo,
+                                "currentBranch": info.current_branch,
+                                "branches": info.branches,
+                                "files": info.diff.files,
+                                "commits": info.commits,
+                            })
                         }).await;
                         match result {
                             Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
@@ -904,249 +1125,36 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                             }
                         }
                     }
-                    Some("data-request") => {
-                        let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
-                        let method = parsed["method"].as_str().unwrap_or("").to_string();
-                        let project_dir = ctx.state.current_project.read().clone()
-                            .or_else(|| dirs::home_dir())
+                    Some("search-files") => {
+                        let query = parsed["query"].as_str().unwrap_or("").to_string();
+                        // §unify: search root follows the subscribed pane's cwd (same as desktop).
+                        let root = current_pane
+                            .and_then(|(ws_id, pane_id)| {
+                                let map = ctx.state.workspaces.read();
+                                map.get(&ws_id)
+                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                    .and_then(|n| n.cwd.clone())
+                            })
+                            .or_else(|| ctx.state.current_project.read().clone())
+                            .or_else(dirs::home_dir)
                             .unwrap_or_else(|| PathBuf::from("."));
-                        let parsed_clone = parsed.clone();
-                        let result = tokio::task::spawn_blocking(move || -> serde_json::Value {
-                            match method.as_str() {
-                                "get_file_tree" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let depth = parsed_clone["depth"].as_u64().unwrap_or(1) as usize;
-                                    let full = project_dir.join(path);
-                                    match crate::fs::tree::FileTree::build(&full, depth) {
-                                        Ok(tree) => serde_json::json!({"_result": tree}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "get_directory_children" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let offset = parsed_clone["offset"].as_u64().unwrap_or(0) as usize;
-                                    let limit = parsed_clone["limit"].as_u64().unwrap_or(200) as usize;
-                                    let full = project_dir.join(path);
-                                    match crate::fs::tree::FileTree::page_children(&full, offset, limit) {
-                                        Ok(page) => serde_json::json!({"_result": page}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "path_exists" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let full = project_dir.join(path);
-                                    serde_json::json!({"_result": full.exists()})
-                                }
-                                "read_file" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let full = project_dir.join(path);
-                                    match std::fs::read_to_string(&full) {
-                                        Ok(content) => serde_json::json!({"_result": content}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "write_file" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let content = parsed_clone["content"].as_str().unwrap_or("");
-                                    let full = project_dir.join(path);
-                                    match crate::commands::project::write_file_blocking(full.to_string_lossy().to_string(), content.to_string()) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "rename_path" => {
-                                    let from = parsed_clone["from"].as_str().unwrap_or("");
-                                    let to = parsed_clone["to"].as_str().unwrap_or("");
-                                    let from_full = project_dir.join(from);
-                                    let to_full = project_dir.join(to);
-                                    match std::fs::rename(&from_full, &to_full) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "delete_path" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let full = project_dir.join(path);
-                                    let result = if full.is_dir() {
-                                        std::fs::remove_dir_all(&full)
-                                    } else {
-                                        std::fs::remove_file(&full)
-                                    };
-                                    match result {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "create_file" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let full = project_dir.join(path);
-                                    match std::fs::File::create(&full) {
-                                        Ok(_) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "create_directory" => {
-                                    let path = parsed_clone["path"].as_str().unwrap_or("");
-                                    let full = project_dir.join(path);
-                                    match std::fs::create_dir_all(&full) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e.to_string()}),
-                                    }
-                                }
-                                "copy_path" => {
-                                    let from = parsed_clone["from"].as_str().unwrap_or("");
-                                    let to = parsed_clone["to"].as_str().unwrap_or("");
-                                    let from_full = project_dir.join(from);
-                                    let to_full = project_dir.join(to);
-                                    match crate::commands::project::copy_path_sync(from_full.to_string_lossy().to_string(), to_full.to_string_lossy().to_string(), None) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "move_path" => {
-                                    let from = parsed_clone["from"].as_str().unwrap_or("");
-                                    let to = parsed_clone["to"].as_str().unwrap_or("");
-                                    match crate::commands::project::move_path_sync(from.to_string(), to.to_string()) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_status" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::get_scm_status_sync(repo_root) {
-                                        Ok(status) => serde_json::json!({"_result": status}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_stage" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let paths: Vec<String> = parsed_clone["paths"].as_array()
-                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                                        .unwrap_or_default();
-                                    match crate::commands::git::git_stage_sync(repo_root, paths) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_unstage" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let paths: Vec<String> = parsed_clone["paths"].as_array()
-                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                                        .unwrap_or_default();
-                                    match crate::commands::git::git_unstage_sync(repo_root, paths) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_commit" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let message = parsed_clone["message"].as_str().unwrap_or("").to_string();
-                                    let amend = parsed_clone["amend"].as_bool();
-                                    match crate::commands::git::git_commit_sync(repo_root, message, amend) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_pull" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::git_pull_sync(repo_root) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_push" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let set_upstream = parsed_clone["setUpstream"].as_bool();
-                                    match crate::commands::git::git_push_sync(repo_root, set_upstream) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_sync" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::git_sync_sync(repo_root) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_checkout" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let branch = parsed_clone["branch"].as_str().unwrap_or("").to_string();
-                                    let create = parsed_clone["create"].as_bool();
-                                    match crate::commands::git::git_checkout_sync(repo_root, branch, create, None) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_revert" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let hash = parsed_clone["hash"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::git_revert_sync(repo_root, hash) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_cherry_pick" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let hash = parsed_clone["hash"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::git_cherry_pick_sync(repo_root, hash) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_reset" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let mode = parsed_clone["mode"].as_str().unwrap_or("mixed").to_string();
-                                    let commit = parsed_clone["commit"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::git_reset_sync(repo_root, commit, mode) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_create_tag" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let name = parsed_clone["name"].as_str().unwrap_or("").to_string();
-                                    let message = parsed_clone["message"].as_str().map(String::from);
-                                    match crate::commands::git::git_create_tag_sync(repo_root, name, None::<String>, message) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_discard" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    let paths: Vec<String> = parsed_clone["paths"].as_array()
-                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                                        .unwrap_or_default();
-                                    match crate::commands::git::git_discard_sync(repo_root, paths) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "git_clean_untracked" => {
-                                    let repo_root = parsed_clone["repoRoot"].as_str().unwrap_or("").to_string();
-                                    match crate::commands::git::git_clean_untracked_sync(repo_root, vec![]) {
-                                        Ok(()) => serde_json::json!({"_result": null}),
-                                        Err(e) => serde_json::json!({"_error": e}),
-                                    }
-                                }
-                                "search_files" => {
-                                    let query = parsed_clone["query"].as_str().unwrap_or("").to_string();
-                                    let path = parsed_clone["path"].as_str().unwrap_or("").to_string();
-                                    let root = if path.is_empty() { project_dir.clone() } else { project_dir.join(&path) };
-                                    let results = crate::fs::search::SearchEngine::search_files(&root, &query);
-                                    serde_json::json!({"_result": results})
-                                }
-                                _ => serde_json::json!({"_error": format!("unknown data-request method: {}", method)})
-                            }
-                        }).await;
-                        let reply = match result {
-                            Ok(mut val) => {
-                                val.as_object_mut().unwrap().insert("_reqId".to_string(), serde_json::json!(req_id));
-                                val
-                            }
-                            Err(e) => serde_json::json!({"_reqId": req_id, "_error": e.to_string()}),
+                        let results = if query.trim().is_empty() {
+                            Vec::new()
+                        } else {
+                            // §unify: reuse the desktop text_search engine (gitignore-aware ripgrep walk).
+                            crate::commands::project::text_search(
+                                root.to_string_lossy().to_string(),
+                                query.clone(),
+                                None, None, None, Some(200), None, None,
+                            )
+                            .await
+                            .unwrap_or_default()
                         };
-                        ws_tx.send(Message::Text(reply.to_string())).await
+                        ws_tx.send(Message::Text(serde_json::json!({
+                            "type": "search-results",
+                            "query": query,
+                            "results": results,
+                        }).to_string())).await
                     }
                     _ => {
                         ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
