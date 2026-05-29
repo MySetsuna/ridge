@@ -162,26 +162,26 @@ async fn run_remote_server(
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
     // Resolve the static files directory. Try in order:
-    // 1. CWD/static/mobile — works in dev (`cargo tauri dev`) when CWD is project root.
-    // 2. exe_dir/static/mobile — works in production (NSIS install copies resources next to exe).
-    // 3. exe_dir/../../../static/mobile — works when running the exe directly from
-    //    target/release/ (parent→target→src-tauri→project-root/static/mobile).
+    // 1. CWD/static/remote — works in dev (`cargo tauri dev`) when CWD is project root.
+    // 2. exe_dir/static/remote — works in production (NSIS install copies resources next to exe).
+    // 3. exe_dir/../../../static/remote — works when running the exe directly from
+    //    target/release/ (parent→target→src-tauri→project-root/static/remote).
     let static_dir = {
         let candidates: Vec<PathBuf> = vec![
-            PathBuf::from("static").join("mobile"),
+            PathBuf::from("static").join("remote"),
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|d| d.join("static").join("mobile")))
+                .and_then(|p| p.parent().map(|d| d.join("static").join("remote")))
                 .unwrap_or_default(),
             std::env::current_exe()
                 .ok()
                 .and_then(|p| {
-                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("mobile").into()
+                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("remote").into()
                 })
                 .unwrap_or_default(),
         ];
         candidates.into_iter().find(|p| p.join("index.html").exists())
-            .unwrap_or_else(|| PathBuf::from("static").join("mobile"))
+            .unwrap_or_else(|| PathBuf::from("static").join("remote"))
     };
 
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
@@ -253,7 +253,7 @@ async fn root_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     }
 }
 
-/// Serve static assets (JS, CSS, WASM) from the built mobile output directory.
+/// Serve static assets (JS, CSS, WASM) from the built remote output directory.
 async fn assets_handler(
     State(ctx): State<RemoteCtx>,
     axum::extract::Path(path): axum::extract::Path<String>,
