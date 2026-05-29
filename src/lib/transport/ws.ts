@@ -1,4 +1,5 @@
 import type { DataProvider, GitStatusResult, SearchResult } from './types';
+import type { RemoteConnection } from '../../remote/lib/wsRemote';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
 type PendingRequest = {
@@ -8,39 +9,33 @@ type PendingRequest = {
 };
 
 export class WsDataProvider implements DataProvider {
-  private ws: WebSocket;
+  private conn: RemoteConnection;
   private reqId = 0;
   private pending = new Map<number, PendingRequest>();
-  private msgId = 0;
 
-  constructor(ws: WebSocket) {
-    this.ws = ws;
-    this.ws.addEventListener('message', (event) => {
-      if (event.data instanceof ArrayBuffer) return;
-      try {
-        const msg = JSON.parse(event.data) as Record<string, unknown>;
-        if (typeof msg._reqId === 'number') {
-          const req = this.pending.get(msg._reqId);
-          if (req) {
-            clearTimeout(req.timer);
-            this.pending.delete(msg._reqId);
-            if (msg._error) {
-              req.reject(new Error(String(msg._error)));
-            } else {
-              req.resolve(msg._result ?? msg);
-            }
+  constructor(conn: RemoteConnection) {
+    this.conn = conn;
+    this.conn.onMessage((msg) => {
+      if (typeof msg === 'object' && msg !== null && typeof (msg as Record<string, unknown>)._reqId === 'number') {
+        const m = msg as Record<string, unknown>;
+        const id = m._reqId as number;
+        const req = this.pending.get(id);
+        if (req) {
+          clearTimeout(req.timer);
+          this.pending.delete(id);
+          if (m._error) {
+            req.reject(new Error(String(m._error)));
+          } else {
+            req.resolve(m._result ?? m);
           }
         }
-      } catch { /* ignore non-JSON */ }
+      }
     });
   }
 
   private async request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    if (this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error(`WS not open (state=${this.ws.readyState})`);
-    }
     const id = ++this.reqId;
-    const payload = { type: 'data-request', method, _reqId: id, ...params };
+    const payload: Record<string, unknown> = { type: 'data-request', method, _reqId: id, ...params };
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -51,7 +46,7 @@ export class WsDataProvider implements DataProvider {
         reject,
         timer,
       });
-      this.ws.send(JSON.stringify(payload));
+      this.conn.send(payload);
     });
   }
 

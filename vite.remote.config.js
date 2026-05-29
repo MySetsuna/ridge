@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
+      '$lib': path.resolve(__dirname, 'src/lib'),
     },
   },
   plugins: [
