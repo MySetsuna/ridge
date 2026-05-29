@@ -1,6 +1,9 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Semaphore;
+use tokio::task::JoinError;
 
 /// Returns a `Command::new("git")` with CREATE_NO_WINDOW on Windows so
 /// git subprocesses never flash a console window in the Tauri GUI app.
@@ -13,6 +16,55 @@ fn git_cmd() -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// Upper bound on how many `git.exe` invocations may run in parallel.
+///
+/// On Windows, `CreateProcess` is significantly heavier than on Unix
+/// (50–150 ms per spawn). When the user `cd`s into a directory containing
+/// many git subrepos, the SCM sidebar fans out `get_scm_status` /
+/// `git_list_branches` / `git_diff_summary` per repo — without this
+/// gate, 20 repos × ~3 spawns = ~60 concurrent `git.exe` processes,
+/// which saturates tokio's blocking pool and queues every other backend
+/// call (including Explorer's `get_file_tree`), freezing both sidebars.
+///
+/// The frontend has a matching `GIT_FANOUT_CONCURRENCY` in
+/// `src/lib/utils/pLimit.ts` — bump them together when tuning.
+const GIT_MAX_CONCURRENT: usize = 6;
+
+static GIT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn git_semaphore() -> Arc<Semaphore> {
+    GIT_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(GIT_MAX_CONCURRENT)))
+        .clone()
+}
+
+/// `spawn_git_blocking` that first acquires a permit from the global
+/// git-spawn semaphore. The permit is held for the lifetime of the blocking
+/// closure (released when it ends), so the cap reflects *active* git work,
+/// not in-flight Tauri commands.
+///
+/// All git tauri commands route through this so that watcher-driven refresh,
+/// the periodic heartbeat in `paneGitStatus.ts`, the frontend SCM fanout,
+/// and any future caller share the same back-pressure.
+async fn spawn_git_blocking<F, T>(f: F) -> Result<T, JoinError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let sem = git_semaphore();
+    // `acquire_owned` ties the permit to a 'static future so it can move into
+    // `spawn_blocking`. `expect` is safe: the semaphore is never closed.
+    let permit = sem
+        .acquire_owned()
+        .await
+        .expect("git semaphore should never be closed");
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
 }
 
 /// 与前端 GitGraph 约定一致
@@ -317,7 +369,7 @@ pub fn find_git_repo_root(path: String) -> Option<String> {
 /// `paneCwdStore` 的键空间保持一致。
 #[tauri::command]
 pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec<String> {
-    tokio::task::spawn_blocking(move || find_git_repos_below_sync(path, max_depth))
+    spawn_git_blocking(move || find_git_repos_below_sync(path, max_depth))
         .await
         .unwrap_or_default()
 }
@@ -559,7 +611,7 @@ fn parse_numstat(stdout: &str) -> std::collections::HashMap<String, (u32, u32)> 
 /// 获取仓库的 VSCode 源代码管理视图（staged / changes / untracked 分组）。
 #[tauri::command]
 pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
-    tokio::task::spawn_blocking(move || get_scm_status_sync(repo_root))
+    spawn_git_blocking(move || get_scm_status_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -632,7 +684,7 @@ fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
 /// 暂存指定文件（相对于 repo_root 的路径列表，空=全部）
 #[tauri::command]
 pub async fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_stage_sync(repo_root, paths))
+    spawn_git_blocking(move || git_stage_sync(repo_root, paths))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -650,7 +702,7 @@ fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
 /// 撤销暂存（reset HEAD -- <paths>，空=全部）
 #[tauri::command]
 pub async fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_unstage_sync(repo_root, paths))
+    spawn_git_blocking(move || git_unstage_sync(repo_root, paths))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -679,7 +731,7 @@ fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
 /// 丢弃工作区修改（checkout -- <paths>）——危险操作，前端应再次确认
 #[tauri::command]
 pub async fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_discard_sync(repo_root, paths))
+    spawn_git_blocking(move || git_discard_sync(repo_root, paths))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -700,7 +752,7 @@ fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
 /// 路径必须由调用方明确给出 —— 拒绝空集合，避免 `git clean -fd` 全仓库清理。
 #[tauri::command]
 pub async fn git_clean_untracked(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_clean_untracked_sync(repo_root, paths))
+    spawn_git_blocking(move || git_clean_untracked_sync(repo_root, paths))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -726,7 +778,7 @@ fn git_clean_untracked_sync(repo_root: String, paths: Vec<String>) -> Result<(),
 /// amend=true 时等价 `git commit --amend -m`，用于修改最近一次提交。
 #[tauri::command]
 pub async fn git_commit(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_commit_sync(repo_root, message, amend))
+    spawn_git_blocking(move || git_commit_sync(repo_root, message, amend))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -759,7 +811,7 @@ pub struct BranchInfo {
 /// 列出本地 + 远端分支（去掉 HEAD 指针行），标记当前分支。
 #[tauri::command]
 pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, String> {
-    tokio::task::spawn_blocking(move || git_list_branches_sync(repo_root))
+    spawn_git_blocking(move || git_list_branches_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -807,7 +859,7 @@ pub async fn git_checkout(
     create: Option<bool>,
     base: Option<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_checkout_sync(repo_root, branch, create, base))
+    spawn_git_blocking(move || git_checkout_sync(repo_root, branch, create, base))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -846,7 +898,7 @@ fn git_checkout_sync(
 
 #[tauri::command]
 pub async fn git_fetch(repo_root: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_fetch_sync(repo_root))
+    spawn_git_blocking(move || git_fetch_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -866,7 +918,7 @@ fn git_fetch_sync(repo_root: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn git_pull(repo_root: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_pull_sync(repo_root))
+    spawn_git_blocking(move || git_pull_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -886,7 +938,7 @@ fn git_pull_sync(repo_root: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_push_sync(repo_root, set_upstream))
+    spawn_git_blocking(move || git_push_sync(repo_root, set_upstream))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -919,7 +971,7 @@ fn git_push_sync(repo_root: String, set_upstream: Option<bool>) -> Result<(), St
 /// the failing subcommands at all.
 #[tauri::command]
 pub async fn git_sync(repo_root: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_sync_sync(repo_root))
+    spawn_git_blocking(move || git_sync_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -993,7 +1045,7 @@ pub fn git_op_in_progress(repo_root: String) -> GitOpInProgress {
 /// --abort`. Restores the working tree to its pre-cherry-pick state.
 #[tauri::command]
 pub async fn git_cherry_pick_abort(repo_root: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_cherry_pick_abort_sync(repo_root))
+    spawn_git_blocking(move || git_cherry_pick_abort_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1014,7 +1066,7 @@ fn git_cherry_pick_abort_sync(repo_root: String) -> Result<(), String> {
 /// Abort a revert that's paused on conflict — `git revert --abort`.
 #[tauri::command]
 pub async fn git_revert_abort(repo_root: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_revert_abort_sync(repo_root))
+    spawn_git_blocking(move || git_revert_abort_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1042,7 +1094,7 @@ fn git_revert_abort_sync(repo_root: String) -> Result<(), String> {
 /// Cherry-Pick Commit" command.
 #[tauri::command]
 pub async fn git_cherry_pick(repo_root: String, hash: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_cherry_pick_sync(repo_root, hash))
+    spawn_git_blocking(move || git_cherry_pick_sync(repo_root, hash))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1073,7 +1125,7 @@ fn git_cherry_pick_sync(repo_root: String, hash: String) -> Result<(), String> {
 /// surfaces the auto-generated message in the next status refresh.
 #[tauri::command]
 pub async fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_revert_sync(repo_root, hash))
+    spawn_git_blocking(move || git_revert_sync(repo_root, hash))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1113,7 +1165,7 @@ pub struct GitDiffSummary {
 
 #[tauri::command]
 pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, String> {
-    tokio::task::spawn_blocking(move || git_diff_summary_sync(repo_root))
+    spawn_git_blocking(move || git_diff_summary_sync(repo_root))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1170,7 +1222,7 @@ pub async fn git_get_file_versions(
     path: String,
     cached: Option<bool>,
 ) -> Result<GitFileVersions, String> {
-    tokio::task::spawn_blocking(move || git_get_file_versions_sync(repo_root, path, cached))
+    spawn_git_blocking(move || git_get_file_versions_sync(repo_root, path, cached))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1188,7 +1240,7 @@ pub async fn git_get_commit_files(
     repo_root: String,
     hash: String,
 ) -> Result<Vec<CommitFileEntry>, String> {
-    tokio::task::spawn_blocking(move || git_get_commit_files_sync(repo_root, hash))
+    spawn_git_blocking(move || git_get_commit_files_sync(repo_root, hash))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1240,7 +1292,7 @@ pub async fn git_get_file_versions_at_commit(
     path: String,
     hash: String,
 ) -> Result<GitFileVersions, String> {
-    tokio::task::spawn_blocking(move || git_get_file_versions_at_commit_sync(repo_root, path, hash))
+    spawn_git_blocking(move || git_get_file_versions_at_commit_sync(repo_root, path, hash))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1279,7 +1331,7 @@ pub async fn git_create_tag(
     hash: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_create_tag_sync(repo_root, name, hash, message))
+    spawn_git_blocking(move || git_create_tag_sync(repo_root, name, hash, message))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1318,7 +1370,7 @@ pub async fn git_reset(
     hash: String,
     mode: String,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || git_reset_sync(repo_root, hash, mode))
+    spawn_git_blocking(move || git_reset_sync(repo_root, hash, mode))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1416,7 +1468,7 @@ fn git_get_file_versions_sync(
 /// 文件 diff。`cached=true` 返回已暂存 diff (HEAD vs index)；false 返回工作区 diff (index vs working tree)。
 #[tauri::command]
 pub async fn git_diff_file(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || git_diff_file_sync(repo_root, path, cached))
+    spawn_git_blocking(move || git_diff_file_sync(repo_root, path, cached))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1447,7 +1499,7 @@ pub fn get_git_graph(_workspace_id: String, _pane_id: String) -> Result<GitRepoI
 /// 根据 cwd 获取 git 仓库信息（前端调用此命令）
 #[tauri::command]
 pub async fn get_git_info_with_cwd(cwd: String) -> Result<GitRepoInfo, String> {
-    tokio::task::spawn_blocking(move || get_git_info_with_cwd_sync(cwd))
+    spawn_git_blocking(move || get_git_info_with_cwd_sync(cwd))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
@@ -1460,7 +1512,7 @@ pub async fn get_git_commits_paginated(
     offset: u32,
     limit: u32,
 ) -> Result<Vec<CommitNode>, String> {
-    tokio::task::spawn_blocking(move || {
+    spawn_git_blocking(move || {
         let path = Path::new(&repo_root);
         Ok(get_git_log_with_skip(path, offset as usize, limit as usize))
     })

@@ -37,6 +37,7 @@
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
+  import { mapLimit, GIT_FANOUT_CONCURRENCY } from '$lib/utils/pLimit';
   import { invalidatePaneGitStatusForRepo } from '$lib/stores/paneGitStatus';
   import { onFsChange, type FsChangedPayload } from '$lib/stores/fsEvents';
   import {
@@ -189,7 +190,11 @@
         selectedRepo = nextRoots[0];
       }
 
-      await Promise.all(nextRoots.map((root) => refreshStatus(root)));
+      // Cap concurrent `get_scm_status` fanout: each call spawns ~3 git.exe
+      // and Windows `CreateProcess` is slow enough that 20 repos × parallel
+      // burst saturates tokio's blocking pool, freezing the Explorer sidebar
+      // (which queues behind us). See `src/lib/utils/pLimit.ts` for context.
+      await mapLimit(nextRoots, GIT_FANOUT_CONCURRENCY, (root) => refreshStatus(root));
       if (rootsChanged && selectedRepo) await loadGraph(selectedRepo);
     } finally {
       discoveryLoading = false;
@@ -894,10 +899,15 @@
   }
 
   // 每次扫描完成后，同步加载各仓库的分支信息（供 header 显示 upstream 状态）。
+  // 历史问题：N 个仓库一次性 `void loadBranches(root)` 会并发触发 N 个
+  // `git branch --all` 进程，与 refreshStatus 的 ~3N 个 git 进程叠加，在
+  // Windows 上 CreateProcess 是瓶颈，整批 spawn 会阻塞 tokio blocking pool
+  // 并把 Explorer 的 get_file_tree 一起拖死。改用 GIT_FANOUT_CONCURRENCY
+  // 控制并发，与后端 git 信号量保持同步。
   $effect(() => {
-    for (const root of repoRoots) {
-      if (!branchLists[root]) void loadBranches(root);
-    }
+    const pending = repoRoots.filter((root) => !branchLists[root]);
+    if (pending.length === 0) return;
+    void mapLimit(pending, GIT_FANOUT_CONCURRENCY, (root) => loadBranches(root));
   });
 
   // ─── Status label / color ──────────────────────────────────────────────────
@@ -1039,7 +1049,9 @@ onMount(() => {
     // 用户隐藏 SCM tab 期间，工作区文件可能已被外部修改但 fs-changed 订阅
     // 已随组件 unmount 释放，cache 里的 status 已陈旧。切回时静默并发刷一次，
     // 不设 loading flag、不显示 spinner —— 数据替换由 setScmRepoStatus 直接生效。
-    void Promise.all(cache.repoRoots.map((r) => refreshStatus(r)));
+    // 并发同样受 GIT_FANOUT_CONCURRENCY 约束，避免多仓库 SCM tab remount
+    // 触发 N 个 get_scm_status 同时启动 ~3N 个 git.exe。
+    void mapLimit(cache.repoRoots, GIT_FANOUT_CONCURRENCY, (r) => refreshStatus(r));
   }
 
   // 监听 paneCwdStore：出现新的不重复 cwd 时触发 discoverRepos
@@ -1136,7 +1148,9 @@ onMount(() => {
   async function manualRefresh(): Promise<void> {
     if (inFlight) return;
     await discoverRepos(true);
-    await Promise.all(repoRoots.map((root) => refreshStatus(root)));
+    // 手动刷新按钮：与 discoverRepos 一致地用 mapLimit 限流，避免一次性
+    // 把所有仓库的 get_scm_status 推进 tokio blocking pool 导致 UI 卡顿。
+    await mapLimit(repoRoots, GIT_FANOUT_CONCURRENCY, (root) => refreshStatus(root));
     if (selectedRepo) await loadGraph(selectedRepo);
   }
 
