@@ -98,6 +98,14 @@ pub struct Terminal {
     /// finish it in the next chunk ("👩"). Flushed (a) on every
     /// non-print Perform event and (b) at the end of `feed()`.
     grapheme_buf: String,
+    /// P3.10 (2026-05-20) — RIS observed since the last drain. Set by
+    /// the parser's `esc_dispatch` arm for `ESC c`; drained via
+    /// `take_pending_reset` so the producer side (`PaneParser`) can
+    /// emit `GridDelta::Reset` ahead of the next frame's diff. Wasm
+    /// callers can ignore this — the RIS handler already applies the
+    /// full reset inline during `feed`, so the wasm Terminal stays
+    /// consistent without consulting the flag.
+    pending_reset: bool,
 }
 
 impl Terminal {
@@ -114,7 +122,17 @@ impl Terminal {
             last_printed: None,
             current_link: None,
             grapheme_buf: String::new(),
+            pending_reset: false,
         }
+    }
+
+    /// P3.10 — drain the RIS-observed flag. Used by `PaneParser` to
+    /// decide whether the next frame should be prefixed with a
+    /// `GridDelta::Reset` so the mirror can clear its state before
+    /// applying the post-reset Cells deltas. Returns `false` when
+    /// no RIS has happened since the last drain.
+    pub fn take_pending_reset(&mut self) -> bool {
+        std::mem::replace(&mut self.pending_reset, false)
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -140,6 +158,7 @@ impl Terminal {
             last_printed: &mut self.last_printed,
             current_link: &mut self.current_link,
             grapheme_buf: &mut self.grapheme_buf,
+            pending_reset: &mut self.pending_reset,
         };
         for &b in bytes {
             self.parser.advance(&mut perf, b);
@@ -170,6 +189,174 @@ impl Terminal {
     /// position across child-process boundaries.
     pub fn take_pending_response(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pending_response)
+    }
+
+    /// P3.4 (2026-05-20) — apply one `GridDelta` produced by a remote
+    /// parser to this terminal's state. Counterpart to `feed()` for the
+    /// frontend mirror, which receives a stream of deltas from the
+    /// Rust-side `PaneParser` over Tauri events instead of running its
+    /// own vte parse.
+    ///
+    /// Variants that affect viewport content (`Cells`, `Cursor`,
+    /// `ScreenSwitch`, `Resize`) mutate the grid / cursor / modes
+    /// directly. Semantic events (`Title`, `Cwd`, `Bell`) are pushed
+    /// into `pending_events` so the JS layer's existing
+    /// `take_pending_events` drain wires them to the title/cwd/bell
+    /// stores without needing a parallel event channel.
+    ///
+    /// `ScrollbackAppend`, `ModeChange`, `Reset` are accepted but
+    /// only partially applied in v1 — see inline notes. The producer
+    /// (`engine::parser::PaneParser`) does not emit those variants yet
+    /// either, so the gap is symmetric.
+    pub fn apply_delta(&mut self, delta: &crate::term::delta::GridDelta) {
+        use super::attrs::Attrs;
+        use super::modes::CursorShape as KernelCursorShape;
+        use crate::term::delta::{CursorShape as DeltaCursorShape, GridDelta};
+        match delta {
+            GridDelta::Cells { row, col, cells } => {
+                let triples: Vec<(char, Attrs, u8)> = cells
+                    .iter()
+                    .map(|dc| {
+                        (
+                            dc.ch,
+                            Attrs {
+                                fg: dc.fg,
+                                bg: dc.bg,
+                                flags: dc.flags,
+                            },
+                            dc.width,
+                        )
+                    })
+                    .collect();
+                self.grid
+                    .write_delta_cells(*row as usize, *col as usize, &triples);
+            }
+            GridDelta::Cursor {
+                row,
+                col,
+                visible,
+                blink,
+                shape,
+            } => {
+                let cur = self.grid.cursor_mut();
+                cur.row = *row as usize;
+                cur.col = *col as usize;
+                self.modes.cursor_visible = *visible;
+                self.modes.cursor_blink = *blink;
+                self.modes.cursor_shape = match shape {
+                    DeltaCursorShape::Block => KernelCursorShape::Block,
+                    DeltaCursorShape::Bar => KernelCursorShape::Bar,
+                    DeltaCursorShape::Underline => KernelCursorShape::Underline,
+                };
+            }
+            GridDelta::ScreenSwitch { is_alt } => {
+                if *is_alt {
+                    // `clear_on_enter = false`: the producer is going
+                    // to send Cells deltas describing the alt-screen
+                    // contents next. Clearing here would just be
+                    // overwritten immediately and waste cycles.
+                    self.grid.enter_alt_screen(false);
+                } else {
+                    self.grid.leave_alt_screen();
+                }
+            }
+            GridDelta::Resize { rows, cols } => {
+                self.resize(*rows as usize, *cols as usize);
+            }
+            GridDelta::Title(t) => {
+                self.pending_events
+                    .push(KernelEvent::TitleChanged(t.clone()));
+            }
+            GridDelta::Cwd(p) => {
+                self.pending_events
+                    .push(KernelEvent::CwdChanged(p.clone()));
+            }
+            GridDelta::Bell => {
+                self.pending_events.push(KernelEvent::Bell);
+            }
+            GridDelta::Reset => {
+                // P3.10 — symmetric counterpart to the parser's RIS
+                // handler. Matches `esc_dispatch b'c'` in `parser.rs`:
+                // restore all app-controllable state to power-on
+                // defaults, clear the visible primary grid, but
+                // preserve scrollback (Alacritty-style — see RIS
+                // comment in parser.rs:644). The producer always emits
+                // Reset BEFORE the post-reset Cells deltas, so by the
+                // time those land the mirror is ready to ingest them.
+                use super::modes::Modes;
+                self.modes = Modes::default();
+                self.current_attrs = Attrs::DEFAULT;
+                self.grid.set_pen(self.current_attrs);
+                self.current_link = None;
+                self.last_printed = None;
+                self.grid.leave_alt_screen();
+                self.grid.set_scroll_region(None, None);
+                *self.grid.saved_cursor_mut() = None;
+                self.grid.cursor_to(0, 0);
+                self.grid.erase_in_display(super::grid::EraseMode::All);
+                self.scroll_offset = 0;
+                self.user_scroll_locked = false;
+                self.pending_reset = false;
+            }
+            GridDelta::ScrollbackAppend { lines } => {
+                // P3.11 — push each line onto the scrollback ring's
+                // newest end. Mirror's capacity matches the producer's
+                // (both sides see Terminal::new with the same
+                // scrollback_lines argument), so when the producer hit
+                // an eviction the mirror's `Scrollback::push` hits the
+                // same eviction here — no separate eviction signal
+                // required on the wire. Attrs get re-interned into the
+                // mirror's own AttrTable so the rows are usable through
+                // the rest of the grid API (row_at_abs, dump_visible_text,
+                // selection text extraction). The intern call dedupes
+                // default attrs to AttrId::DEFAULT internally so the
+                // ring of blank rows doesn't fragment the table.
+                use super::cell::{Cell, Row};
+                let cols = self.grid.cols();
+                for line in lines {
+                    let mut row = Row::new(cols);
+                    for (i, dc) in line.iter().take(cols).enumerate() {
+                        let attr_id = self.grid.attrs.intern(Attrs {
+                            fg: dc.fg,
+                            bg: dc.bg,
+                            flags: dc.flags,
+                        });
+                        row.cells[i] = Cell::new(dc.ch, attr_id, dc.width);
+                    }
+                    let _ = self.grid.scrollback.push(row);
+                }
+            }
+            GridDelta::ModeChange { mode, on } => {
+                // P3.12 — symmetric counterpart to PaneParser's
+                // `Modes::diff` emission. The mode codes are the same
+                // numeric ids an application would use to flip the
+                // mode via `CSI ? <n> h/l`, so the apply step is a
+                // direct lookup. Unknown codes silently ignored
+                // (forward compat — a newer producer ships a mode
+                // an older mirror doesn't recognise). Cursor mode
+                // bits are NOT routed here because GridDelta::Cursor
+                // already carries them.
+                self.modes.apply_mode_change(*mode, *on);
+            }
+        }
+    }
+
+    /// Apply every delta in a `DeltaFrame` in order. Convenience
+    /// wrapper for the wasm entry point; the version word is checked
+    /// against `DeltaFrame::PROTOCOL_VERSION` and a mismatch returns
+    /// the encountered version so the caller can log a warning and
+    /// skip the frame instead of corrupting the mirror.
+    pub fn apply_frame(
+        &mut self,
+        frame: &crate::term::delta::DeltaFrame,
+    ) -> Result<(), u16> {
+        if frame.version != crate::term::delta::DeltaFrame::PROTOCOL_VERSION {
+            return Err(frame.version);
+        }
+        for d in &frame.deltas {
+            self.apply_delta(d);
+        }
+        Ok(())
     }
 
     /// Drain structured semantic events (title / cwd / hyperlinks / bell)
@@ -370,6 +557,16 @@ impl Terminal {
             .is_inline_tui_active_at(now_ms, self.modes.cursor_visible)
     }
 
+    /// JS-side hook: caller (manager.ts) just wrote ETX `\x03` to the
+    /// PTY in response to a user Ctrl+C. Forwards to
+    /// `Grid::note_ctrl_c_sent` which arms the inline-TUI grace window,
+    /// and resets all modes to default so mouse reporting / DECCKM /
+    /// bracketed paste left on by the killed TUI don't leak to the shell.
+    pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
+        self.grid.note_ctrl_c_sent(now_ms);
+        self.modes = Modes::default();
+    }
+
     /// Diagnostic accessor — returns the most recent `Grid::resize` calls.
     /// Used by `JsTerminal::lastResizeDiags` to surface live-repro evidence
     /// to frontend devtools, and by integration tests to verify which
@@ -392,6 +589,19 @@ impl Terminal {
     }
     pub fn is_alt_screen(&self) -> bool {
         self.grid.is_alt_screen()
+    }
+    /// §1.35 — force-leave alt screen without going through CSI dispatch.
+    /// Used when the PTY process exits while the kernel is still in alt
+    /// screen mode (e.g. TUI crash or pane kill). Without this the new
+    /// shell's output would go into the alt buffer, hiding the primary
+    /// screen content.
+    ///
+    /// Also resets all modes to default — a killed/exited TUI may have
+    /// left mouse reporting, DECCKM, bracketed paste, or other modes
+    /// active, and the new shell shouldn't inherit them.
+    pub fn leave_alt_screen(&mut self) {
+        self.grid.leave_alt_screen();
+        self.modes = Modes::default();
     }
 
     /// Renderer entry point: returns the row at viewport-relative index
@@ -451,6 +661,99 @@ impl Terminal {
 mod tests {
     use super::*;
     use crate::term::attrs::{Color, Flags};
+
+    #[test]
+    fn apply_delta_scrollback_append_pushes_lines_and_preserves_visible_grid() {
+        use crate::term::attrs::{Color, Flags};
+        use crate::term::delta::{DeltaCell, GridDelta};
+        let mut t = Terminal::new(2, 5, 100);
+        // Establish some visible-grid content to make sure apply doesn't
+        // disturb it. 'XX' lives on row 0; row 1 is blank.
+        t.feed(b"XX");
+        let visible_before: Vec<String> = t.dump_visible_text();
+        let sb_before = t.scrollback_len();
+        // Apply two new scrollback rows. Default attrs everywhere so
+        // the intern call hits AttrId::DEFAULT.
+        let line_a: Vec<DeltaCell> = "ALPHA"
+            .chars()
+            .map(|ch| DeltaCell {
+                ch,
+                fg: Color::DEFAULT,
+                bg: Color::DEFAULT,
+                flags: Flags::empty(),
+                width: 1,
+            })
+            .collect();
+        let line_b: Vec<DeltaCell> = "BETA "
+            .chars()
+            .map(|ch| DeltaCell {
+                ch,
+                fg: Color::DEFAULT,
+                bg: Color::DEFAULT,
+                flags: Flags::empty(),
+                width: 1,
+            })
+            .collect();
+        t.apply_delta(&GridDelta::ScrollbackAppend {
+            lines: vec![line_a, line_b],
+        });
+        assert_eq!(
+            t.scrollback_len(),
+            sb_before + 2,
+            "scrollback length must grow by exactly the number of applied lines",
+        );
+        // Live grid untouched.
+        assert_eq!(t.dump_visible_text(), visible_before);
+        // Most-recent applied line lands at the newest scrollback end.
+        let newest = t.grid().scrollback.get(t.scrollback_len() - 1).unwrap();
+        let newest_text: String = newest.cells.iter().map(|c| c.ch).collect();
+        assert_eq!(newest_text, "BETA ");
+    }
+
+    #[test]
+    fn apply_delta_reset_clears_visible_grid_and_modes_but_keeps_scrollback() {
+        // P3.10 — `Terminal::apply_delta(Reset)` must mirror the
+        // parser's RIS handler exactly: wipe visible grid + reset
+        // modes + reset cursor + close any hyperlink span, but
+        // PRESERVE scrollback (Alacritty-style retention).
+        let mut t = Terminal::new(2, 5, 100);
+        // Push enough content to land some rows in scrollback.
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        // Tweak modes so we can confirm they reset (cursor blink off
+        // is a non-default state).
+        t.feed(b"\x1b[?25l"); // cursor invisible
+        t.feed(b"\x1b[?2004h"); // bracketed paste on
+        assert!(!t.modes().cursor_visible);
+        assert!(t.modes().bracketed_paste);
+        let sb_before = t.scrollback_len();
+        assert!(sb_before > 0, "expected non-zero scrollback");
+
+        // Apply Reset directly (simulates a producer-emitted frame).
+        t.apply_delta(&crate::term::delta::GridDelta::Reset);
+
+        // Modes back to default.
+        assert!(t.modes().cursor_visible, "cursor visibility should be reset to default");
+        assert!(!t.modes().bracketed_paste, "bracketed paste should be reset to default");
+        // Cursor home.
+        assert_eq!(t.grid().cursor().row, 0);
+        assert_eq!(t.grid().cursor().col, 0);
+        // Visible primary grid wiped — every cell on every row blank.
+        for r in 0..2 {
+            let row = t.grid().row(r).unwrap();
+            for cell in &row.cells {
+                assert!(cell.is_blank(), "row {r} cell must be blank after Reset");
+            }
+        }
+        // Scrollback preserved.
+        assert_eq!(
+            t.scrollback_len(),
+            sb_before,
+            "Reset must NOT touch scrollback (Alacritty-style retention)",
+        );
+        // Viewport snaps to live grid (Reset wipes any user-scroll lock).
+        assert_eq!(t.scroll_offset(), 0);
+        assert!(!t.is_user_scroll_locked());
+    }
 
     #[test]
     fn plain_text_lands_on_first_row() {

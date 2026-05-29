@@ -43,6 +43,19 @@ export class RenderHandle {
         }
     }
     /**
+     * §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+     */
+    clearHistoryOverlay() {
+        wasm.renderhandle_clearHistoryOverlay(this.__wbg_ptr);
+    }
+    /**
+     * Remove the preedit overlay (JS calls on `compositionend` after
+     * shipping the committed string to the PTY).
+     */
+    clearPreedit() {
+        wasm.renderhandle_clearPreedit(this.__wbg_ptr);
+    }
+    /**
      * Configure font + measure cell dimensions. Returns [cell_w, cell_h]
      * in CSS pixels so JS can calculate cols/rows for a target
      * container size.
@@ -61,6 +74,22 @@ export class RenderHandle {
         var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v2;
+    }
+    /**
+     * Diagnostic: return the kernel-side renderer.theme.{bg, fg,
+     * cursor_color, tui_bg} as a Uint8Array of 16 bytes (4×RGBA).
+     * Lets JS confirm whether `applyTheme` actually propagated into
+     * the renderer state — the JS-side `opts.theme` snapshot only
+     * proves the manager *received* the theme, not that the
+     * wasm renderer accepted it. Cheap (one Theme clone, 16 bytes
+     * copied) so callers may poll without harm.
+     * @returns {Uint8Array}
+     */
+    currentThemeProbe() {
+        const ret = wasm.renderhandle_currentThemeProbe(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * Force a full redraw on the next render() — useful after
@@ -104,6 +133,31 @@ export class RenderHandle {
         this.__wbg_ptr = ret[0];
         RenderHandleFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * §p4.9 (2026-05-22) — worker-thread constructor.
+     *
+     * JS bridge: `RenderHandle.newFromOffscreen(offscreenCanvas)`.
+     * Called from `renderWorker.ts::loadKernelAdapter` after the
+     * host transferred a canvas via
+     * `canvas.transferControlToOffscreen()` + postMessage. The
+     * `OffscreenCanvas` here is the same object the worker side
+     * receives in the `bindCanvas` request.
+     *
+     * Canvas2D-only — the WebGPU-first branch is reserved for the
+     * main-thread `newWithWebgpuFirst` because the WebGPU surface
+     * host needs DOM access (window-level GPU adapter / device).
+     * On the worker path we paint via Canvas2D, which is fully
+     * available inside a DedicatedWorker since 2018.
+     * @param {OffscreenCanvas} canvas
+     * @returns {RenderHandle}
+     */
+    static newFromOffscreen(canvas) {
+        const ret = wasm.renderhandle_newFromOffscreen(canvas);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return RenderHandle.__wrap(ret[0]);
     }
     /**
      * Async constructor — try WebGPU first, fall back to Canvas2D
@@ -203,6 +257,40 @@ export class RenderHandle {
      */
     setFocused(focused) {
         wasm.renderhandle_setFocused(this.__wbg_ptr, focused);
+    }
+    /**
+     * §1.34 (2026-05-22) — install the shell-history popup overlay.
+     * `items` is a JS array of strings (filtered, newest first).
+     * `selected_index` is `-1` for "no row picked" or
+     * `0..items.len()-1` for a selected row. `(anchor_row,
+     * anchor_col)` is the input anchor in viewport cell coords;
+     * `place_above` chooses growth direction. The 10-row visible
+     * cap is hard-coded inside the kernel so the JS caller can't
+     * request a floor-to-ceiling panel.
+     * @param {Array<any>} items
+     * @param {number} selected_index
+     * @param {number} anchor_row
+     * @param {number} anchor_col
+     * @param {boolean} place_above
+     */
+    setHistoryOverlay(items, selected_index, anchor_row, anchor_col, place_above) {
+        wasm.renderhandle_setHistoryOverlay(this.__wbg_ptr, items, selected_index, anchor_row, anchor_col, place_above);
+    }
+    /**
+     * Install an IME preedit overlay at the given cell. The renderer
+     * will paint `text` on top of the cell grid each frame until
+     * `clearPreedit` is called. Cells themselves are NOT modified,
+     * so a TUI re-rendering into the overlay's row mid-composition
+     * can't corrupt the preedit, and the preedit can't corrupt the
+     * TUI's rendered cells. JS calls this on `compositionupdate`.
+     * @param {string} text
+     * @param {number} row
+     * @param {number} col
+     */
+    setPreedit(text, row, col) {
+        const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.renderhandle_setPreedit(this.__wbg_ptr, ptr0, len0, row, col);
     }
     /**
      * Phase B: record the pane's `(x, y)` position on the host
@@ -338,6 +426,41 @@ export class TerminalKernel {
         wasm.__wbg_terminalkernel_free(ptr, 0);
     }
     /**
+     * P3.6 (2026-05-20) — apply one postcard-encoded `DeltaFrame` (produced
+     * by the Rust-side `engine::parser::PaneParser`) to the mirror grid.
+     *
+     * Counterpart to `feed()` for the `Settings.parserBackend = 'rust'`
+     * path: PTY bytes are parsed once by the native PaneParser, the
+     * resulting frame is postcard-encoded and emitted as a Tauri event,
+     * and the wasm consumer applies the diff here instead of running its
+     * own vte parse on the JS main thread.
+     *
+     * Returns `Err(JsValue)` with a human-readable string on decode
+     * failure OR protocol-version mismatch — caller is expected to log
+     * and trigger a `force_full_reframe` self-heal (manager.ts P3.9
+     * wiring).
+     *
+     * Selection / search invalidation: only on the same two conditions
+     * `feed()` uses — scrollback eviction (capacity rollover) or a hard
+     * `Reset` delta. Every other delta variant (`Cells`, `Cursor`,
+     * `ScreenSwitch`, `Resize`, semantic events, `ModeChange`,
+     * `ScrollbackAppend` below capacity) leaves abs-row anchors valid,
+     * so the user's drag-selection survives the high-frequency TUI
+     * redraws Claude Code / htop / vim / less emit (the same
+     * "TUI 一直刷新无法选中复制" symptom the feed() path fixed in §B.2,
+     * rebroken by the unconditional clear that originally lived here
+     * when the rust-parser backend landed in P3.6).
+     * @param {Uint8Array} bytes
+     */
+    applyDeltaFrame(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.terminalkernel_applyDeltaFrame(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
      * residue investigation. Returns up to `len` cells starting at
      * (row, col) on the active screen as a JS array of plain objects
@@ -418,6 +541,30 @@ export class TerminalKernel {
         return v1;
     }
     /**
+     * E2E-only — build a postcard-encoded `DeltaFrame` carrying a single
+     * `Cursor` delta with the supplied coordinates and a default block
+     * shape. Lets `tests/e2e-shell/` exercise the `applyDeltaFrame` path
+     * without spinning up a real shell or hand-rolling the postcard
+     * schema. No state mutation; returns bytes ready to feed back into
+     * `applyDeltaFrame`.
+     *
+     * `pane_seq` is opaque to the mirror (used only for diagnostics) —
+     * callers can pass any monotonically increasing u32. We accept a
+     * narrower `u32` than the field's underlying `u64` because JS
+     * numbers lose precision past 2^53 and tests never need values
+     * anywhere near that range.
+     * @param {number} pane_seq
+     * @param {number} row
+     * @param {number} col
+     * @returns {Uint8Array}
+     */
+    e2eEncodeCursorDeltaFrame(pane_seq, row, col) {
+        const ret = wasm.terminalkernel_e2eEncodeCursorDeltaFrame(this.__wbg_ptr, pane_seq, row, col);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * Encode a key event to the byte sequence the PTY expects. Returns
      * an empty array if the event is unknown (caller may then let the
      * browser handle it natively).
@@ -438,6 +585,27 @@ export class TerminalKernel {
         var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
+    }
+    /**
+     * Encode a mouse event as an SGR terminal sequence. Delegates to
+     * `input::encode_mouse` which generates `ESC [ < btn ; col ; row [Mm]`
+     * per xterm SGR spec (column first, then row).
+     * Always uses SGR format regardless of ?1006 state — the terminal
+     * decodes both; SGR is simpler and doesn't overflow at high row/col.
+     * @param {number} row
+     * @param {number} col
+     * @param {number} button
+     * @param {number} action
+     * @param {boolean} shift
+     * @param {boolean} ctrl
+     * @param {boolean} alt
+     * @returns {Uint8Array}
+     */
+    encodeMouse(row, col, button, action, shift, ctrl, alt) {
+        const ret = wasm.terminalkernel_encodeMouse(this.__wbg_ptr, row, col, button, action, shift, ctrl, alt);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * Wrap a paste string for the PTY, applying bracketed-paste
@@ -540,10 +708,45 @@ export class TerminalKernel {
      * within the decay window) and the kernel is NOT on alt screen.
      * Read by `manager.ts::fitPane` to decide whether to wipe primary
      * before resizing the PTY (mirrors the existing alt-screen branch).
+     * Also read by `manager.ts::isInlineTuiActive` for keyboard/mouse
+     * priority routing — see also `isMouseReporting`.
      * @returns {boolean}
      */
     isInlineTuiMode() {
         const ret = wasm.terminalkernel_isInlineTuiMode(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when ?1003 (any-event / motion tracking) is active.
+     * @returns {boolean}
+     */
+    isMouseAnyEvent() {
+        const ret = wasm.terminalkernel_isMouseAnyEvent(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when ?1002 (button-event / drag tracking) is active.
+     * @returns {boolean}
+     */
+    isMouseButtonEvent() {
+        const ret = wasm.terminalkernel_isMouseButtonEvent(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when any DEC mouse reporting mode is active
+     * (?1000 normal, ?1002 button-event, or ?1003 any-event).
+     * @returns {boolean}
+     */
+    isMouseReporting() {
+        const ret = wasm.terminalkernel_isMouseReporting(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Returns true when ?1006 (SGR mouse encoding) is active.
+     * @returns {boolean}
+     */
+    isMouseSgr() {
+        const ret = wasm.terminalkernel_isMouseSgr(this.__wbg_ptr);
         return ret !== 0;
     }
     /**
@@ -606,6 +809,33 @@ export class TerminalKernel {
         return v1;
     }
     /**
+     * §1.35 — force-leave alt screen on the kernel side when the PTY
+     * process exits while a TUI is still in alt screen mode. Without
+     * this the new shell spawned by `pane-pty-closed` would write into
+     * the alt buffer, hiding the primary screen content from the user.
+     */
+    leaveAltScreen() {
+        wasm.terminalkernel_leaveAltScreen(this.__wbg_ptr);
+    }
+    /**
+     * Single-call bitmask of every DEC mouse mode the caller cares
+     * about. Eliminates the 3-4 separate wasm boundary crossings the
+     * JS pointer handlers used to make per pointermove event:
+     *
+     *   bit 0 (0x1) = ?1000 (mouse_normal)
+     *   bit 1 (0x2) = ?1002 (button_event / drag tracking)
+     *   bit 2 (0x4) = ?1003 (any_event / all motion)
+     *   bit 3 (0x8) = ?1006 (SGR encoding)
+     *
+     * `bits != 0` <=> `isMouseReporting() == true`. The individual
+     * boolean getters above are kept for non-hot-path callers.
+     * @returns {number}
+     */
+    mouseReportingModes() {
+        const ret = wasm.terminalkernel_mouseReportingModes(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * @param {number} rows
      * @param {number} cols
      * @param {number} scrollback
@@ -615,6 +845,17 @@ export class TerminalKernel {
         this.__wbg_ptr = ret;
         TerminalKernelFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * Called from `manager.ts::handleKeyDown` immediately after the
+     * user sends Ctrl+C (ETX `\x03`) through the data handler. Arms
+     * the inline-TUI heuristic's grace window so subsequent PSReadLine
+     * CHA `\x1b[G` emits don't keep the pane stuck in "inline TUI
+     * mode" forever after the user killed the foreground TUI. See
+     * `Grid::is_inline_tui_active_at` for the full rationale.
+     */
+    noteCtrlCSent() {
+        wasm.terminalkernel_noteCtrlCSent(this.__wbg_ptr);
     }
     /**
      * Prepend older history at the OLDEST end of the scrollback ring.
@@ -763,6 +1004,69 @@ export class TerminalKernel {
         wasm.terminalkernel_setSelection(this.__wbg_ptr, start_row, start_col, end_row, end_col);
     }
     /**
+     * Programmatically set a selection range in **absolute-row coords**
+     * (see `selection.rs` module docstring). The JS-side drag state
+     * machine in `manager.ts` stores its anchor / focus as `abs_row =
+     * vp_row + scroll_offset` so the selection survives scroll without
+     * the caller having to re-translate every sync — this entry point
+     * lets it forward those abs values directly. Skips the vp→abs
+     * conversion that `set_selection` does internally, so it's safe to
+     * call repeatedly during a drag that scrolls the viewport.
+     * @param {number} start_abs_row
+     * @param {number} start_col
+     * @param {number} end_abs_row
+     * @param {number} end_col
+     */
+    setSelectionAbs(start_abs_row, start_col, end_abs_row, end_col) {
+        wasm.terminalkernel_setSelectionAbs(this.__wbg_ptr, start_abs_row, start_col, end_abs_row, end_col);
+    }
+    /**
+     * §1.33 (2026-05-22) — hard gate for the shell-history popup
+     * feature. Returns `true` ONLY when the kernel is confident a
+     * normal shell prompt owns the input line on this pane; every
+     * known TUI signal short-circuits to `false`.
+     *
+     * Why this lives in WASM instead of the Svelte layer it used to
+     * be in (`src/lib/terminal/tuiGate.ts`):
+     *   - The JS `tuiGate` honoured the sticky window only while the
+     *     cursor was hidden. Claude Code's input prompt flips the
+     *     cursor visible BEFORE the inline-TUI heuristic decays, so
+     *     the user saw the popup hijack ArrowUp inside Claude.
+     *   - With the gate inside the kernel, we own a sticky timestamp
+     *     that bumps on every signal observation, independent of
+     *     cursor visibility — the JS layer can no longer race the
+     *     popup open between TUI frames.
+     *
+     * Decision order (any `false` wins immediately):
+     *   1. DECCKM `?1` (app_cursor_keys) — protocol-level "the app
+     *      owns the arrow keys" declaration. zsh+zle, bash+readline-
+     *      vi-mode, PSReadLine, Ink TUIs all set this.
+     *   2. Alt screen `?1049` / `?47` — full-screen TUI (vim, less,
+     *      htop) actively rendering.
+     *   3. Mouse reporting `?1000` / `?1002` / `?1003` — TUI tracks
+     *      mouse input, keyboard ownership goes with it.
+     *   4. Inline-TUI heuristic — Ink / log-update style apps that
+     *      hide the cursor + emit absolute-positioning CSIs within
+     *      the kernel's `INLINE_TUI_DECAY_MS` window.
+     *   5. Cursor hidden `?25l` — shell prompts always run with the
+     *      cursor visible; a hidden cursor is strong evidence a TUI
+     *      is mid-render or holding the screen between frames.
+     *   6. Sticky window — if any signal above was observed true
+     *      within `SHELL_HISTORY_STICKY_MS`, stay closed. Catches
+     *      the brief intra-frame "all signals false" windows that
+     *      let the JS-side gate leak before this method existed.
+     *
+     * Side effect: takes `&mut self` because the sticky timestamp is
+     * refreshed on every live-signal observation. Callers must hold
+     * a mutable handle to the kernel (they always do — wasm-bindgen
+     * generates `&mut self` on the JS side too).
+     * @returns {boolean}
+     */
+    shouldAllowShellHistory() {
+        const ret = wasm.terminalkernel_shouldAllowShellHistory(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Drain semantic events (title, cwd, hyperlinks, bell) produced by
      * the parser during the most recent `feed` calls. Returns a JS
      * array of tagged objects: `{ type: "TitleChanged", value: "..." }`
@@ -881,6 +1185,9 @@ function __wbg_get_imports() {
             arg0.clearBuffer(arg1, arg2);
         },
         __wbg_clearRect_4c8837d514ced7c2: function(arg0, arg1, arg2, arg3, arg4) {
+            arg0.clearRect(arg1, arg2, arg3, arg4);
+        },
+        __wbg_clearRect_ff21a25636146bdd: function(arg0, arg1, arg2, arg3, arg4) {
             arg0.clearRect(arg1, arg2, arg3, arg4);
         },
         __wbg_configure_c71c9f57ca3edf98: function(arg0, arg1) {
@@ -1039,9 +1346,15 @@ function __wbg_get_imports() {
             const ret = arg0.features;
             return ret;
         },
+        __wbg_fillRect_4c953e6c3f527b5d: function(arg0, arg1, arg2, arg3, arg4) {
+            arg0.fillRect(arg1, arg2, arg3, arg4);
+        },
         __wbg_fillRect_9219f775d7e8e73e: function(arg0, arg1, arg2, arg3, arg4) {
             arg0.fillRect(arg1, arg2, arg3, arg4);
         },
+        __wbg_fillText_6d1a4715d8d662d0: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4);
+        }, arguments); },
         __wbg_fillText_9fbea3af94326c74: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4);
         }, arguments); },
@@ -1123,6 +1436,10 @@ function __wbg_get_imports() {
         __wbg_get_a6a7ef761f5bd232: function(arg0, arg1) {
             const ret = arg0[arg1 >>> 0];
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_get_unchecked_be562b1421656321: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
         },
         __wbg_gpu_c773d7932dc745d7: function(arg0) {
             const ret = arg0.gpu;
@@ -1206,6 +1523,16 @@ function __wbg_get_imports() {
             let result;
             try {
                 result = arg0 instanceof Object;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
+        __wbg_instanceof_OffscreenCanvasRenderingContext2d_23f7ce578afab75f: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof OffscreenCanvasRenderingContext2D;
             } catch (_) {
                 result = false;
             }
@@ -1380,6 +1707,10 @@ function __wbg_get_imports() {
             const ret = arg0.measureText(getStringFromWasm0(arg1, arg2));
             return ret;
         }, arguments); },
+        __wbg_measureText_29ad84bd45ab9fce: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = arg0.measureText(getStringFromWasm0(arg1, arg2));
+            return ret;
+        }, arguments); },
         __wbg_message_8fd23df93c50075a: function(arg0, arg1) {
             const ret = arg1.message;
             const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1519,10 +1850,16 @@ function __wbg_get_imports() {
             const ret = Promise.resolve(arg0);
             return ret;
         },
+        __wbg_restore_2873d3a43dd9a217: function(arg0) {
+            arg0.restore();
+        },
         __wbg_restore_5bff5e1cc672e792: function(arg0) {
             arg0.restore();
         },
         __wbg_save_512a4b0787b6682e: function(arg0) {
+            arg0.save();
+        },
+        __wbg_save_a54747b79d1fbb6b: function(arg0) {
             arg0.save();
         },
         __wbg_setAttribute_50dcf32d70e1628c: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
@@ -1579,6 +1916,9 @@ function __wbg_get_imports() {
         __wbg_setStencilReference_7a98f054e2f31f54: function(arg0, arg1) {
             arg0.setStencilReference(arg1 >>> 0);
         },
+        __wbg_setTransform_a1d4acdd45eb66fd: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4, arg5, arg6) {
+            arg0.setTransform(arg1, arg2, arg3, arg4, arg5, arg6);
+        }, arguments); },
         __wbg_setTransform_f25014a0bb3cb050: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4, arg5, arg6) {
             arg0.setTransform(arg1, arg2, arg3, arg4, arg5, arg6);
         }, arguments); },
@@ -1610,6 +1950,12 @@ function __wbg_get_imports() {
         __wbg_set_fillStyle_a3656c7c5d4ad803: function(arg0, arg1, arg2) {
             arg0.fillStyle = getStringFromWasm0(arg1, arg2);
         },
+        __wbg_set_fillStyle_f2dd6e6182484100: function(arg0, arg1, arg2) {
+            arg0.fillStyle = getStringFromWasm0(arg1, arg2);
+        },
+        __wbg_set_font_38efcddbe831b07e: function(arg0, arg1, arg2) {
+            arg0.font = getStringFromWasm0(arg1, arg2);
+        },
         __wbg_set_font_5b1b8c76449f5864: function(arg0, arg1, arg2) {
             arg0.font = getStringFromWasm0(arg1, arg2);
         },
@@ -1623,6 +1969,9 @@ function __wbg_get_imports() {
             arg0.onuncapturederror = arg1;
         },
         __wbg_set_textBaseline_68cf9979f06f859b: function(arg0, arg1, arg2) {
+            arg0.textBaseline = getStringFromWasm0(arg1, arg2);
+        },
+        __wbg_set_textBaseline_bb8350220310ce4c: function(arg0, arg1, arg2) {
             arg0.textBaseline = getStringFromWasm0(arg1, arg2);
         },
         __wbg_set_width_d2ec5d6689655fa9: function(arg0, arg1) {
@@ -1711,18 +2060,18 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 277, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 309, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 59, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 91, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 59, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 91, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39_2);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -1761,12 +2110,12 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39_2(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39_2(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01(arg0, arg1, arg2) {

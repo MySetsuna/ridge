@@ -4,14 +4,17 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::ipc::Channel;
 use tauri::State;
 use uuid::Uuid;
 
+use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
-use crate::state::AppState;
+use crate::state::{AppState, PaneDeltaSender};
+use crate::utils::cwd::resolve_default_cwd;
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
 use crate::utils::pty_log;
@@ -106,14 +109,14 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
 
 	#[cfg(target_os = "windows")]
 	{
-		try_add(&mut found, "pwsh", "PowerShell 7", &["pwsh.exe", "pwsh"]);
+		try_add(&mut found, "pwsh", "PowerShell 7+ (pwsh)", &["pwsh.exe", "pwsh"]);
 		try_add(
 			&mut found,
 			"powershell",
-			"Windows PowerShell",
+			"Windows PowerShell 5.1",
 			&["powershell.exe", "powershell"],
 		);
-		try_add(&mut found, "cmd", "命令提示符", &["cmd.exe", "cmd"]);
+		try_add(&mut found, "cmd", "命令提示符 (CMD)", &["cmd.exe", "cmd"]);
 		try_add(
 			&mut found,
 			"git-bash",
@@ -124,16 +127,59 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
 				"C:\\Program Files\\Git\\usr\\bin\\bash.exe",
 			],
 		);
-		try_add(&mut found, "wsl", "WSL", &["wsl.exe", "wsl"]);
+		try_add(&mut found, "wsl", "WSL (Ubuntu)", &["wsl.exe", "wsl"]);
+		try_add(&mut found, "nu", "Nushell", &["nu.exe", "nu"]);
+		try_add(
+			&mut found,
+			"clink",
+			"Clink (CMD 增强)",
+			&["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
+		);
 	}
 	#[cfg(not(target_os = "windows"))]
 	{
 		try_add(&mut found, "zsh", "Zsh", &["zsh", "/bin/zsh", "/usr/bin/zsh"]);
 		try_add(&mut found, "bash", "Bash", &["bash", "/bin/bash", "/usr/bin/bash"]);
 		try_add(&mut found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
-		try_add(&mut found, "sh", "sh", &["sh", "/bin/sh"]);
+		try_add(&mut found, "sh", "POSIX sh", &["sh", "/bin/sh", "/usr/bin/sh"]);
+		try_add(&mut found, "dash", "Dash", &["dash", "/bin/dash", "/usr/bin/dash"]);
+		try_add(&mut found, "nu", "Nushell", &["nu", "/bin/nu", "/usr/bin/nu"]);
+		try_add(&mut found, "elvish", "Elvish", &["elvish", "/bin/elvish", "/usr/local/bin/elvish"]);
 	}
 	found
+}
+
+#[tauri::command]
+pub async fn change_pane_shell(
+	state: State<'_, AppState>,
+	pane_id: String,
+	shell: String,
+) -> Result<(), String> {
+	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+	let workspace_id = state.active_workspace_id();
+	let cwd = {
+		let map = state.workspaces.read();
+		map.get(&workspace_id)
+			.and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+			.and_then(|p| p.cwd.clone())
+	};
+
+	teardown_pane_pty_if_present(&state, workspace_id, pane_id);
+	state.clear_pty_scrollback(workspace_id, pane_id);
+
+	ensure_pane_pty_workspace(
+		&*state,
+		workspace_id,
+		pane_id,
+		Some(shell),
+		cwd.as_deref(),
+		None,
+		None,
+		None,
+		None,
+		None,
+	)
+	.map_err(|e| e.to_string())
 }
 
 fn create_pane_inner(
@@ -146,15 +192,23 @@ fn create_pane_inner(
 
 	// 优先使用 pane tree 中已记录的 CWD（分屏时由 split_pane 从父 pane 继承），
 	// 若已保存过 shell_kind（来自 .ridge 文件恢复）也一并取出。
+	// pane.cwd 缺失时（首个 pane 在 menu 启动模式下）走 resolve_default_cwd：
+	//   cli_cwd > user_cwd（§2 接入）> home > "." —— 不再回退到 std::env::current_dir()，
+	//   因为 menu 启动时 current_dir 是 ridge.exe 所在目录。
 	let (cwd, persisted_shell): (PathBuf, Option<String>) = {
 		let map = state.workspaces.read();
 		let entry = map.get(&workspace_id).and_then(|ws| ws.pane_tree.panes.get(&pane_id));
 		let cwd = entry.and_then(|p| p.cwd.clone());
 		let sk = entry.and_then(|p| p.shell_kind.clone());
+		drop(map);
+		let user_cwd = state.user_default_cwd.read().clone();
 		(
-			cwd.or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
-				.or_else(|| std::env::current_dir().ok())
-				.unwrap_or_else(|| PathBuf::from(".")),
+			cwd.unwrap_or_else(|| {
+				resolve_default_cwd(
+					state.startup_cli_cwd.as_deref(),
+					user_cwd.as_deref(),
+				)
+			}),
 			sk,
 		)
 	};
@@ -604,10 +658,25 @@ fn activate_pane_pty_inner(
 	rows: Option<u16>,
 	cols: Option<u16>,
 ) -> Result<(), AppError> {
-	use tauri::Emitter;
 	let workspace_id = Uuid::parse_str(&workspace_id)
 		.map_err(|_| AppError::PtyError("invalid workspace_id".into()))?;
 	let pane_id = parse_pane_id(&pane_id)?;
+	activate_pane_pty_state(state.inner(), Some(&app), workspace_id, pane_id, rows, cols)
+}
+
+/// Phase 2 core, decoupled from Tauri's `State`/`AppHandle` so non-front-end
+/// callers (e.g. the remote WebSocket server) can activate a pending spawn too.
+/// `app` is only used to emit the layout-changed event on spawn failure — pass
+/// `None` when there is no front-end to notify.
+pub(crate) fn activate_pane_pty_state(
+	state: &AppState,
+	app: Option<&tauri::AppHandle>,
+	workspace_id: Uuid,
+	pane_id: Uuid,
+	rows: Option<u16>,
+	cols: Option<u16>,
+) -> Result<(), AppError> {
+	use tauri::Emitter;
 
 	// Idempotency: already activated → no-op success. Front-end can call
 	// activate twice (mount + restore) without consequence.
@@ -682,19 +751,36 @@ fn activate_pane_pty_inner(
 			// Tell the frontend the layout changed so the dead leaf is
 			// dropped from the visible split tree (front-end re-renders
 			// the workspace from authoritative backend state).
-			let _ = app.emit(
-				"teammate-layout-changed",
-				serde_json::json!({ "trace_id": trace_id, "activate_failed": true }),
-			);
+			if let Some(app) = app {
+				let _ = app.emit(
+					"teammate-layout-changed",
+					serde_json::json!({ "trace_id": trace_id, "activate_failed": true }),
+				);
+			}
 			return Err(AppError::PtyError(msg));
 		}
 	};
+
+	// P3.8 — initialize the native VT parser at PtyHandle creation time so
+	// the main event loop can take a parser lock the moment it sees the
+	// first PtyOutput chunk. Dimensions match the front-end's initial fit
+	// (24×80 placeholder until the rAF "兜底 fit" catches up); a soon-
+	// after resize via `resize_pane` (P3.9.r) will sync both PTY native
+	// resize and `parser.resize(...)` so the mirror stays in lock-step.
+	// `delta_mode` starts disabled — front-end opts in via the per-pane
+	// `set_pane_delta_mode` command (P3.9). This makes `cargo build`
+	// safe even before any front-end work lands.
+	let initial_rows = rows.unwrap_or(24).max(1);
+	let initial_cols = cols.unwrap_or(80).max(1);
+	let parser = Arc::new(Mutex::new(PaneParser::new(initial_rows, initial_cols, 2000)));
 
 	let handle = PtyHandle {
 		master: pending.master.clone(),
 		writer: pending.writer.clone(),
 		_child: child,
 		resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+		parser,
+		delta_mode: Arc::new(AtomicBool::new(false)),
 	};
 
 	{
@@ -706,8 +792,7 @@ fn activate_pane_pty_inner(
 	}
 
 	pty_log::create_spawned(workspace_id, pane_id, &trace_id);
-	let st = state.inner().clone();
-	spawn_pty_reader(st, workspace_id, pane_id, reader);
+	spawn_pty_reader(state.clone(), workspace_id, pane_id, reader);
 
 	if let Some(tx) = pending.ready_tx.lock().take() {
 		let _ = tx.send(Ok(()));
@@ -726,6 +811,54 @@ pub async fn get_teammate_metrics(
 	let map = state.workspaces.read();
 	let ws = map.get(&wid).ok_or("workspace not found")?;
 	Ok(ws.teammate_metrics.clone())
+}
+
+#[tauri::command]
+pub async fn get_shell_history(_shell_kind: String) -> Result<Vec<String>, String> {
+    let home_dir = dirs::home_dir().ok_or("无法获取 home 目录")?;
+    let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
+
+    // 收集所有可能的 shell 历史文件路径
+    let history_files = vec![
+        // PowerShell
+        app_data.join("Microsoft").join("Windows").join("PowerShell").join("PSReadLine").join("ConsoleHost_history.txt"),
+        // Bash（含 Git Bash）
+        home_dir.join(".bash_history"),
+        // Zsh
+        home_dir.join(".zsh_history"),
+    ];
+
+    let mut all_lines: Vec<String> = Vec::new();
+    for file in &history_files {
+        if !file.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Bash 时间戳行过滤
+            if trimmed.starts_with('#') && trimmed.len() > 1
+                && trimmed[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            all_lines.push(trimmed.to_string());
+        }
+    }
+
+    // 按出现顺序去重（保留最靠后的 = 最近使用）
+    all_lines.reverse();
+    let mut seen = std::collections::HashSet::new();
+    all_lines.retain(|line| seen.insert(line.clone()));
+
+    all_lines.truncate(1000);
+    Ok(all_lines)
 }
 
 #[tauri::command]
@@ -762,6 +895,7 @@ fn write_to_pty_inner(
 #[tauri::command]
 pub async fn resize_pane(
 	state: State<'_, AppState>,
+	app: tauri::AppHandle,
 	pane_id: String,
 	rows: u16,
 	cols: u16,
@@ -770,6 +904,7 @@ pub async fn resize_pane(
 ) -> Result<(), String> {
 	resize_pane_inner(
 		state,
+		app,
 		pane_id,
 		rows,
 		cols,
@@ -781,6 +916,7 @@ pub async fn resize_pane(
 
 fn resize_pane_inner(
 	state: State<'_, AppState>,
+	app: tauri::AppHandle,
 	pane_id: String,
 	rows: u16,
 	cols: u16,
@@ -875,9 +1011,61 @@ fn resize_pane_inner(
         Ok(()) => {
             pty_log::resize_ok(wid, pane_id, rows, cols);
             // Now we can safely acquire a write lock to update pane_sizes
-            let mut map = state.workspaces.write();
-            if let Some(ws) = map.get_mut(&wid) {
-                ws.pane_sizes.insert(pane_id, (rows, cols));
+            {
+                let mut map = state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.pane_sizes.insert(pane_id, (rows, cols));
+                }
+            }
+
+            // P3.9.r (2026-05-20) — keep PaneParser in lock-step with PTY
+            // native resize when delta_mode is on. The mirror grid follows
+            // via apply_delta(Resize) inside the emitted frame, so this
+            // path is the canonical "parser resizes FIRST, mirror catches
+            // up via the next delta frame" — fitPane in the front-end is
+            // told to skip its own `kernel.resize(...)` in rust mode so
+            // we never break the invariant.
+            let parser_for_delta = {
+                let map = state.workspaces.read();
+                map.get(&wid)
+                    .and_then(|ws| ws.terminals.get(&pane_id))
+                    .and_then(|h| {
+                        if h.delta_mode.load(Ordering::Acquire) {
+                            Some(h.parser.clone())
+                        } else {
+                            None
+                        }
+                    })
+            };
+            if let Some(parser) = parser_for_delta {
+                use ridge_term::term::delta::encode_frame;
+                use tauri::Emitter;
+                let frame = {
+                    let mut p = parser.lock();
+                    p.resize(rows, cols)
+                };
+                match encode_frame(&frame) {
+                    Ok(bytes) => {
+                        // P4.2 — prefer the Tauri Channel; fall back to
+                        // app.emit when the frontend hasn't registered a
+                        // channel yet for this pane.
+                        if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
+                            sender(bytes);
+                        } else {
+                            let label = pane_id.to_string();
+                            let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ridge::pty_delta",
+                            error = %e,
+                            ws = %wid,
+                            pane = %pane_id,
+                            "resize delta encode failed; mirror may briefly desync until next chunk",
+                        );
+                    }
+                }
             }
             Ok(())
         }
@@ -890,8 +1078,52 @@ fn resize_pane_inner(
 
 }
 
+/// P4.1 (2026-05-21) — store the frontend's Tauri Channel as the delta-byte
+/// sink for `(workspace_id, pane_id)`. After this command returns, the three
+/// `pty-delta-*` emit sites (`lib.rs` main loop, `resize_pane`,
+/// `set_pane_delta_mode`) prefer `channel.send(bytes)` over `app.emit`,
+/// skipping JSON wrap + event-name routing.
+///
+/// Idempotent: a second register for the same pane replaces the first. The
+/// channel is unregistered automatically in `kill_pty_if_present`, so the
+/// frontend doesn't need to clean up on pane close.
+///
+/// The Channel is wrapped in a closure so `AppState` stays Tauri-runtime
+/// agnostic (lets `state.rs` host unit tests without spinning up Tauri).
+/// Closure send errors are logged at `warn` so a missing/closed frontend
+/// surfaces in tracing but doesn't take down the PTY pump.
+#[tauri::command]
+pub async fn register_pane_delta_channel(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+    channel: Channel<Vec<u8>>,
+) -> Result<(), String> {
+    let workspace_id = Uuid::parse_str(&workspace_id)
+        .map_err(|_| "invalid workspace_id".to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+
+    let sender: PaneDeltaSender = Arc::new(move |bytes: Vec<u8>| {
+        if let Err(e) = channel.send(bytes) {
+            tracing::warn!(
+                target: "ridge::pty_delta",
+                ws = %workspace_id,
+                pane = %pane_id,
+                error = %e,
+                "pty-delta channel send failed (frontend likely disconnected)",
+            );
+        }
+    });
+    state.register_pane_delta_channel(workspace_id, pane_id, sender);
+    Ok(())
+}
+
 /// 在指定工作区内移除并结束 PTY（若存在）。
 pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
+	// P4.1 — drop the delta sender first so a racing `pty-delta-*` emit
+	// from the parser tail can't enqueue against a freshly-dead frontend
+	// handle. Safe to call when no channel is registered.
+	state.unregister_pane_delta_channel(workspace_id, pane_id);
 	state.clear_pty_scrollback(workspace_id, pane_id);
 	// Drain both the live terminal AND any unconsumed PendingSpawn under a
 	// single write lock. The `_pending` binding's drop releases its master /
@@ -904,6 +1136,16 @@ pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: 
 			.unwrap_or((None, None))
 	};
 	if let Some(mut handle) = handle {
+		// §1.35 — gracefully exit TUI modes before killing. A stuck or
+		// foreground TUI may still hold alt screen / DECCKM / mouse /
+		// cursor-hidden, causing the shell to receive "exit\n" inside
+		// the alt buffer. The new shell spawned by pane-pty-closed
+		// would then write into the alt screen, hiding the primary
+		// screen content and giving the user the impression of a
+		// cleared screen.
+		let _ = handle.writer.lock().write_all(
+			b"\x1b[?1049l\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?25h",
+		);
 		let _ = handle.writer.lock().write_all(b"exit\n");
 		let _ = handle._child.kill();
 		let _ = state
@@ -919,6 +1161,116 @@ pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: 
 #[tauri::command]
 pub async fn kill_pane(state: State<'_, AppState>, pane_id: String) -> Result<(), String> {
 	kill_pane_inner(state, pane_id).await.map_err(|e| e.to_string())
+}
+
+/// P3.9 (2026-05-20) — flip the per-pane PaneParser path on or off.
+///
+/// On enable (false → true): force a full reframe so the next emitted
+/// frame is a complete ScreenSwitch + Cursor + Cells snapshot. The
+/// front-end mirror catches up in one round-trip without any
+/// transient blank state. The atomic flag is set *after* the first
+/// frame goes out so a racing PtyOutput chunk can't slip through with
+/// the old (stale) snapshot.
+///
+/// On disable (true → false): just flip the flag; the next PtyOutput
+/// chunk lands in the legacy coalescer, emitting `pty-output-*` to
+/// the front-end. Scrollback that accumulated during the rust-parser
+/// session is NOT replayed to the wasm parser — accepted regression
+/// for the rare backend-switch case. ScrollbackAppend deltas (P3.11)
+/// keep the mirror's scrollback in sync while rust mode is on.
+#[tauri::command]
+pub async fn set_pane_delta_mode(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    workspace_id: String,
+    pane_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    use ridge_term::term::delta::encode_frame;
+    use tauri::Emitter;
+
+    let workspace_id = Uuid::parse_str(&workspace_id)
+        .map_err(|_| "invalid workspace_id".to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+
+    // Snapshot the handles we need under a single workspace read-lock,
+    // then drop the lock before any I/O — feed_and_diff / encode_frame
+    // shouldn't gate other map readers.
+    let (parser, writer, delta_mode_flag) = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        let handle = ws
+            .terminals
+            .get(&pane_id)
+            .ok_or_else(|| "pane not found".to_string())?;
+        (
+            handle.parser.clone(),
+            handle.writer.clone(),
+            handle.delta_mode.clone(),
+        )
+    };
+
+    let was_enabled = delta_mode_flag.load(Ordering::Acquire);
+    if was_enabled == enabled {
+        return Ok(());
+    }
+
+    if enabled {
+        // Build the full reframe BEFORE flipping the gate so a racing
+        // PtyOutput chunk can't slip past with the snapshot already
+        // cleared but the flag still off.
+        let frame = {
+            let mut p = parser.lock();
+            p.force_full_reframe();
+            // feed_and_diff(b"") doesn't consume bytes but does run the
+            // diff, producing the ScreenSwitch + Cursor + Cells reframe
+            // against the now-empty snapshot.
+            p.feed_and_diff(b"")
+        };
+        // DSR/DA replies from the kernel during reframe (rare; usually
+        // empty) still need to flow back to the PTY for symmetry.
+        let response = {
+            let mut p = parser.lock();
+            p.take_pending_response()
+        };
+        if !response.is_empty() {
+            let mut w = writer.lock();
+            let _ = w.write_all(&response);
+            let _ = w.flush();
+        }
+        let bytes = encode_frame(&frame).map_err(|e| format!("delta encode failed: {e}"))?;
+        // P4.2 — prefer the Tauri Channel; fall back to app.emit when no
+        // channel is registered yet (in particular: tests, or a frontend
+        // that opted into rust mode before its ptyBridge registered).
+        if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
+            sender(bytes);
+        } else {
+            let label = pane_id.to_string();
+            let _ = app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
+        }
+        // Flip the gate AFTER the reframe goes out — main-loop sees
+        // it on the next chunk.
+        delta_mode_flag.store(true, Ordering::Release);
+    } else {
+        // Drain any in-flight pending_response so the PTY writer
+        // doesn't lose the queue when the rust path stops draining.
+        // The text path doesn't run the parser, so anything still
+        // sitting in pending_response would be silently dropped.
+        let response = {
+            let mut p = parser.lock();
+            p.take_pending_response()
+        };
+        if !response.is_empty() {
+            let mut w = writer.lock();
+            let _ = w.write_all(&response);
+            let _ = w.flush();
+        }
+        delta_mode_flag.store(false, Ordering::Release);
+    }
+
+    Ok(())
 }
 
 /// 供 teammate HTTP 面向指定 workspace 写字节（不依赖当前 active 以外的逻辑）。

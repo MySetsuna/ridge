@@ -2,12 +2,13 @@ use parking_lot::Mutex;
 use portable_pty::MasterPty;
 use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::engine::cwd;
+use crate::engine::parser::PaneParser;
 use crate::engine::title;
 use crate::state::AppState;
 use crate::types::GlobalEvent;
@@ -86,6 +87,23 @@ pub struct PtyHandle {
     /// (`OSC 133;A/B/P` FinalTerm or `OSC 633;A/B/P` VS Code shell-integration) is seen
     /// in the byte stream, OR when the hard timeout elapses.
     pub resize_silence_deadline: Arc<AtomicI64>,
+    /// P3.8 (2026-05-20) — per-pane VT parser. The main event loop's
+    /// `PtyOutput` arm checks `delta_mode`; when `true` it locks this
+    /// parser, calls `feed_and_diff(bytes)`, postcard-encodes the
+    /// resulting `DeltaFrame`, and emits `pty-delta-{ws}-{pane}` to the
+    /// frontend. The legacy `pty-output-*` text path remains the
+    /// fallback for `delta_mode = false`.
+    ///
+    /// Lives inside `Arc<Mutex<...>>` so the main loop holds a short
+    /// lock per chunk without blocking other accessors (resize commands
+    /// take the lock too, for symmetry with PTY native resize).
+    pub parser: Arc<Mutex<PaneParser>>,
+    /// P3.8 — per-pane toggle. Driven by `set_pane_delta_mode` (P3.9).
+    /// When `true`, PTY bytes go through `parser.feed_and_diff` →
+    /// `encode_frame` → `pty-delta-*` emit. When `false`, bytes go
+    /// through the legacy coalescer → `pty-output-*` emit. Atomic so
+    /// the main loop reads it without acquiring the parser mutex.
+    pub delta_mode: Arc<AtomicBool>,
 }
 
 /// 默认 resize 静默窗口（毫秒）。ConPTY 在 `ResizePseudoConsole` 后会把整个

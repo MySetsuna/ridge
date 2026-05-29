@@ -2,17 +2,20 @@ mod commands;
 mod db;
 mod engine;
 mod fs;
+pub mod remote;
 mod state;
 mod teammate;
 mod types;
 mod utils;
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::mpsc;
-use crate::commands::{fs_watch, git, pane, process, project, terminal, watch, ridge_file, workspace};
+use crate::commands::{fs_watch, git, pane, process, project, settings, terminal, theme, watch, ridge_file, workspace};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
@@ -38,22 +41,63 @@ pub fn run() {
 
     let mut app_state = AppState::new(event_tx);
     app_state.project_store = project_store.map(Arc::new);
+    // §blacklist: load the persistent remote-control blacklist (devices/IPs
+    // barred from connecting) from the app data dir.
+    app_state
+        .remote_blacklist
+        .set_path_and_load(app_data_dir.join("remote-blacklist.json"));
     let teammate_state = app_state.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_dialog::init())
+        // §4 关闭即将退出 → 同步把当前所有已保存（`associated_file_path != None`）
+        // 工作区路径写到 `restore_workspaces.json`，下次非 cli 启动时由前端
+        // `get_restore_set` 取回并自动 reopen。这里必须同步：spawn 异步任务在
+        // 进程退出前可能跑不完。
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                let app = window.app_handle();
+                let state = app.state::<AppState>();
+                // 确保远程服务器被停止
+                crate::commands::remote::stop_remote_server(&state);
+                ridge_file::save_restore_set(app, &state);
+            }
+        })
         .manage(app_state)
-        .setup(move |app| {
-            let handle = app.handle().clone();
-            let (teammate_ready_tx, teammate_ready_rx) = std::sync::mpsc::channel();
-            teammate::spawn_teammate_server(
-                handle.clone(),
-                teammate_state.clone(),
-                Some(teammate_ready_tx),
-            );
-            let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+        .setup({
+            let app_data_dir = app_data_dir.clone();
+            move |app| {
+                let handle = app.handle().clone();
+                let (teammate_ready_tx, teammate_ready_rx) = std::sync::mpsc::channel();
+                teammate::spawn_teammate_server(
+                    handle.clone(),
+                    teammate_state.clone(),
+                    Some(teammate_ready_tx),
+                );
+                let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+
+                // Build the main window programmatically (rather than declaring
+                // it in `tauri.conf.json`) so we can attach an
+                // `initialization_script` that runs BEFORE the page's inline
+                // splash bootstrap. That script pushes the persisted theme's
+                // loader config onto `window.__RIDGE_BOOT_*` globals; without it
+                // the very first frame would render with the hardcoded fallback
+                // colors because `localStorage.ridge-theme-data` is empty until
+                // SvelteKit hydrates. See `src/app.html` for the consumer end.
+                let splash_init_script = theme::build_splash_init_script(app.handle(), &app_data_dir);
+                let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+                    .title("ridge")
+                    .inner_size(800.0, 600.0)
+                    .decorations(false)
+                    .transparent(false)
+                    .visible(false)
+                    .devtools(true)
+                    .initialization_script(&splash_init_script)
+                    .build()?;
+                window.show()?;
+
             tauri::async_runtime::spawn(async move {
                 use std::collections::HashMap;
                 // Adaptive coalesce window. A fixed 4ms window was fine for
@@ -132,6 +176,143 @@ pub fn run() {
                             pane_id,
                             data,
                         }) => {
+                            // Fan-out to remote WS clients via per-pane registry.
+                            let app_state = handle.state::<AppState>();
+                            if app_state.remote_enabled.load(Ordering::Relaxed) {
+                                let reg = app_state.pty_pane_registry.read();
+                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
+                                    for sub in &entry.remote_subs {
+                                        let _ = sub.output_tx.try_send(
+                                            crate::types::PtyOutputEvent {
+                                                workspace_id,
+                                                pane_id,
+                                                data: data.clone(),
+                                            }
+                                        );
+                                    }
+                                }
+                            }
+                            drop(app_state);
+
+                            // P3.8 — per-pane delta_mode gate. When the front-end
+                            // has opted into the rust parser path (via the
+                            // `set_pane_delta_mode` command, P3.9), bypass the
+                            // text coalescer entirely: feed bytes to PaneParser,
+                            // postcard-encode the resulting DeltaFrame, emit
+                            // `pty-delta-*` to the frontend, and pump DSR/DA
+                            // query responses back into the PTY writer.
+                            //
+                            // The flag, parser handle, and writer handle are all
+                            // pulled under a single `workspaces` read-lock, then
+                            // the lock drops before the per-chunk work runs. The
+                            // read-lock is shared with other map readers (resize,
+                            // scrollback, etc.) so PTY throughput isn't gated on
+                            // any one path holding a write-lock.
+                            let mode_handles = {
+                                let st = handle.state::<AppState>();
+                                let map = st.workspaces.read();
+                                map.get(&workspace_id)
+                                    .and_then(|ws| ws.terminals.get(&pane_id))
+                                    .map(|h| {
+                                        (
+                                            h.delta_mode.load(Ordering::Acquire),
+                                            h.parser.clone(),
+                                            h.writer.clone(),
+                                        )
+                                    })
+                            };
+                            if let Some((true, parser, writer)) = mode_handles {
+                                let frame = {
+                                    let mut p = parser.lock();
+                                    p.feed_and_diff(data.as_bytes())
+                                };
+                                // Pump DSR/DA replies back into the PTY so
+                                // PSReadLine + ConPTY can anchor the prompt
+                                // after child process exits. Mirrors what the
+                                // wasm `take_pending_response` path does on the
+                                // front-end side of the wasm bridge.
+                                let response = {
+                                    let mut p = parser.lock();
+                                    p.take_pending_response()
+                                };
+                                if !response.is_empty() {
+                                    let mut w = writer.lock();
+                                    let _ = w.write_all(&response);
+                                    let _ = w.flush();
+                                }
+                                if !frame.deltas.is_empty() {
+                                    match ridge_term::term::delta::encode_frame(&frame) {
+                                        Ok(bytes) => {
+                                            // P4.2 — prefer the Tauri Channel
+                                            // (zero JSON wrap / zero base64 /
+                                            // zero event-name routing); fall
+                                            // back to app.emit when no channel
+                                            // is registered yet (frontend not
+                                            // mounted, or tests).
+                                            let st = handle.state::<AppState>();
+                                            let delta_for_remote = bytes.clone();
+                                            if let Some(sender) =
+                                                st.get_pane_delta_channel(workspace_id, pane_id)
+                                            {
+                                                sender(bytes);
+                                            } else {
+                                                let label = pane_id.to_string();
+                                                let _ = handle.emit(
+                                                    &format!("pty-delta-{workspace_id}-{label}"),
+                                                    bytes,
+                                                );
+                                            }
+                                            if st.remote_enabled.load(Ordering::Relaxed) {
+                                                let reg = st.pty_pane_registry.read();
+                                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
+                                                    for sub in &entry.remote_subs {
+                                                        // §5 — per-sub mobile parser: feed PTY
+                                                        // data through the sub's dedicated parser
+                                                        // and send mobile-sized deltas. Subs
+                                                        // without a parser fall back to the
+                                                        // desktop parser's delta frame.
+                                                        let sub_bytes = if let Some(ref mp) = sub.parser {
+                                                            let mut p = mp.lock();
+                                                            let frame = p.feed_and_diff(data.as_bytes());
+                                                            // Mobile-side DSR/DA replies would
+                                                            // target the wrong PTY, so drop them.
+                                                            let _ = p.take_pending_response();
+                                                            ridge_term::term::delta::encode_frame(
+                                                                &frame,
+                                                            )
+                                                            .ok()
+                                                        } else {
+                                                            None
+                                                        };
+                                                        let bytes = sub_bytes
+                                                            .unwrap_or_else(|| delta_for_remote.clone());
+                                                        let _ = sub.delta_tx.try_send(
+                                                            crate::types::PtyDeltaEvent {
+                                                                workspace_id,
+                                                                pane_id,
+                                                                bytes,
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            drop(st);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                target: "ridge::pty_delta",
+                                                error = %e,
+                                                ws = %workspace_id,
+                                                pane = %pane_id,
+                                                "delta encode failed; skipping frame",
+                                            );
+                                        }
+                                    }
+                                }
+                                // Bypass the coalescer entirely — delta mode
+                                // owns the frontend's view of this pane.
+                                continue;
+                            }
                             let entry = pending_output
                                 .entry((workspace_id, pane_id))
                                 .or_insert_with(String::new);
@@ -252,7 +433,8 @@ pub fn run() {
                     }
                 }
             });
-            Ok(())
+                Ok(())
+            }
         })
         .invoke_handler(tauri::generate_handler![
             git::get_git_graph,
@@ -300,9 +482,13 @@ pub fn run() {
             terminal::create_pane,
             terminal::activate_pane_pty,
             terminal::get_teammate_metrics,
+            terminal::change_pane_shell,
             terminal::detect_available_shells,
+            terminal::get_shell_history,
             terminal::write_to_pty,
             terminal::resize_pane,
+            terminal::set_pane_delta_mode,
+            terminal::register_pane_delta_channel,
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
@@ -345,7 +531,10 @@ pub fn run() {
             project::reveal_in_file_manager,
             project::copy_path,
             project::move_path,
+            project::path_exists,
             project::read_claude_history,
+            project::read_opencode_history,
+            project::get_git_changed_files,
             process::get_pane_foreground_process,
             process::get_pane_cwd,
             // .ridge file commands
@@ -361,8 +550,21 @@ pub fn run() {
             ridge_file::browse_directory,
             ridge_file::list_recent_workspaces,
             ridge_file::clear_recent_workspaces,
+            ridge_file::get_restore_set,
+            ridge_file::list_saved_workspace_files,
+            settings::set_user_default_cwd,
+            theme::get_theme_data,
+            theme::set_active_theme,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
+            commands::remote::get_remote_info,
+            commands::remote::set_remote_enabled,
+            commands::remote::get_remote_enabled,
+            commands::remote::list_remote_sessions,
+            commands::remote::disconnect_session,
+            commands::remote::add_to_blacklist,
+            commands::remote::list_blacklist,
+            commands::remote::remove_from_blacklist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

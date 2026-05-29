@@ -1,13 +1,9 @@
-; Ridge NSIS installer hooks
-;
-; Append $INSTDIR to the current-user PATH so `tmux` (the Ridge shim) resolves
-; from any shell — not only inside Ridge's own PTY panes.
-;
-; Uses StrFunc ${StrLoc} (declared in the generated installer.nsi) for
-; idempotent detection, and WordFunc ${WordReplace} (installer.nsi already
-; `!include`s WordFunc.nsh) for safe removal on uninstall.
-
-!include "WinMessages.nsh"
+!macro NSIS_HOOK_INIT
+  Push $0
+  ${GetParent} $INSTDIR $0
+  StrCpy $INSTDIR "$0\ridge\${VERSION}"
+  Pop $0
+!macroend
 
 !macro NSIS_HOOK_POSTINSTALL
   Push $0
@@ -40,3 +36,4 @@
   Pop $1
   Pop $0
 !macroend
+

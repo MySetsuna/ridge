@@ -51,6 +51,29 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: createMockListen(),
 }));
 
+// ─── Mock $lib/terminal/manager ──────────────────────────────────────────────
+// Captured spies for the post-split forced-fit invariant. Tests reset
+// them via `mockReset()` in their own `beforeEach` block — the module
+// singleton is reused across tests because vi.mock hoists once per file.
+const __mockManagerSpies = {
+  fitPaneNow: vi.fn(),
+  detach: vi.fn(),
+  forceFullRedrawFor: vi.fn(),
+};
+vi.mock('$lib/terminal/manager', () => ({
+  TerminalManager: {
+    instance: () => __mockManagerSpies,
+  },
+}));
+
+// ─── Mock $lib/terminal/ptyBridge ────────────────────────────────────────────
+// Only `teardownPtyBridge` is imported by paneTree.ts; stubbing it keeps
+// closePane / detach from reaching into the real Tauri-only PTY bridge
+// during tests that exercise pane-mutation code paths.
+vi.mock('$lib/terminal/ptyBridge', () => ({
+  teardownPtyBridge: vi.fn(),
+}));
+
 // ─── Import SUT after mocks ───────────────────────────────────────────────────
 const paneTreeModule = await import('./paneTree');
 
@@ -898,5 +921,180 @@ describe('px-anchor: buildPxAnchorPlans + pxAnchorRatios', () => {
     expect(ratios[0]).toBeGreaterThanOrEqual(6);
     expect(ratios[1]).toBeGreaterThanOrEqual(6);
     expect(ratios[0] + ratios[1]).toBeCloseTo(100, 5);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITE: post-split forced fit (split-fit invariant)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Regression guard for "拆出来的终端不是占满的" — after a split, the source
+// pane shrinks from filling its parent to ~50 %, and the brand-new pane
+// mounts a fresh kernel that starts at the 24×80 default. Both attach()
+// (new pane) and unpark() (source pane re-mounted at the new tree
+// position) schedule their own initial fitPane on a single RAF, but
+// that RAF races SvelteKit's component mount + `manager.ready()` await
+// — when the race goes the wrong way the kernel grid stays at 24×80
+// while the container is already 50 % wide, leaving visible black
+// edges / empty rows in the new pane.
+//
+// `splitPane` now schedules a defensive `fitPaneNow` two animation
+// frames after the layout sync. The tests below pin that contract:
+//   1. fitPaneNow is called for the SOURCE pane (it shrunk; kernel
+//      needs to match the post-split container) AND for the NEW pane
+//      (its container is finally laid out by frame 2).
+//   2. The fit is deferred by exactly two RAFs (one for Svelte mount,
+//      one for `manager.attach()` to land the entry in `manager.panes`).
+//   3. SSR-safe: when `requestAnimationFrame` is unavailable, the
+//      helper is a no-op and never throws.
+describe('splitPane forced fit after split (regression: split pane not filled)', () => {
+  let originalRaf: typeof globalThis.requestAnimationFrame | undefined;
+  let pendingRafCallbacks: FrameRequestCallback[] = [];
+
+  beforeEach(() => {
+    __mockManagerSpies.fitPaneNow.mockReset();
+    pendingRafCallbacks = [];
+    originalRaf = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      pendingRafCallbacks.push(cb);
+      return pendingRafCallbacks.length;
+    }) as typeof globalThis.requestAnimationFrame;
+  });
+
+  afterEach(() => {
+    if (originalRaf !== undefined) {
+      globalThis.requestAnimationFrame = originalRaf;
+    }
+    pendingRafCallbacks = [];
+    vi.restoreAllMocks();
+  });
+
+  /** Drain queued RAF callbacks once. Returns the count drained so tests
+   *  can assert that exactly N callbacks were scheduled per frame. */
+  function flushOneFrame(): number {
+    const cbs = pendingRafCallbacks.slice();
+    pendingRafCallbacks = [];
+    cbs.forEach((cb) => cb(performance.now()));
+    return cbs.length;
+  }
+
+  it('schedules fitPaneNow for BOTH source and new pane two RAFs after split', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('source-pane', 'new-pane');
+
+    // Pre-frame: nothing fired yet — fit must be deferred.
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+
+    // Frame 1: Svelte mounts the new RidgePane. Still no fit (waiting
+    // for the inner RAF that lets `manager.attach()` finish).
+    expect(flushOneFrame()).toBe(1);
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+
+    // Frame 2: the inner RAF fires. Both panes now get a forced fit.
+    expect(flushOneFrame()).toBe(1);
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(2);
+  });
+
+  it('forces fit on the SOURCE pane (it shrunk from 100% → 50%)', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('source-pane', 'new-pane');
+    flushOneFrame();
+    flushOneFrame();
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('source-pane');
+  });
+
+  it('forces fit on the NEW pane (its kernel started at default 24×80)', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('source-pane', 'new-pane');
+    flushOneFrame();
+    flushOneFrame();
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('new-pane');
+  });
+
+  it('schedules in source-then-new order (so the existing pane catches up first)', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('source-pane', 'new-pane');
+    flushOneFrame();
+    flushOneFrame();
+    expect(__mockManagerSpies.fitPaneNow.mock.calls[0]).toEqual(['source-pane']);
+    expect(__mockManagerSpies.fitPaneNow.mock.calls[1]).toEqual(['new-pane']);
+  });
+
+  it('does NOT fire fitPaneNow synchronously (must wait for layout to settle)', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('a', 'b');
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire fitPaneNow after only ONE RAF (must wait for the second)', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('a', 'b');
+    flushOneFrame();
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+  });
+
+  it('is SSR-safe: silently skips when requestAnimationFrame is undefined', () => {
+    const saved = globalThis.requestAnimationFrame;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).requestAnimationFrame = undefined;
+    try {
+      expect(() =>
+        paneTreeModule.__test_scheduleForceFitAfterSplit('a', 'b')
+      ).not.toThrow();
+      expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+    } finally {
+      globalThis.requestAnimationFrame = saved;
+    }
+  });
+
+  it('handles repeated splits independently (no scheduler state leak between calls)', () => {
+    paneTreeModule.__test_scheduleForceFitAfterSplit('source-1', 'new-1');
+    flushOneFrame();
+    flushOneFrame();
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(2);
+
+    __mockManagerSpies.fitPaneNow.mockClear();
+    paneTreeModule.__test_scheduleForceFitAfterSplit('source-2', 'new-2');
+    flushOneFrame();
+    flushOneFrame();
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(2);
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('source-2');
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('new-2');
+  });
+
+  it('splitPane() end-to-end: backend split_pane → layout sync → deferred fit', async () => {
+    // Mock backend: split_pane returns the new pane id; get_pane_layout
+    // returns the post-split tree the frontend uses to update its store.
+    const tauri = await import('@tauri-apps/api/core');
+    const mockInvoke = vi.mocked(tauri.invoke);
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'split_pane') {
+        return { pane_id: 'new-pane-uuid', initial_cwd: null };
+      }
+      if (cmd === 'get_pane_layout') {
+        return {
+          type: 'split',
+          id: 'split-1',
+          direction: 'horizontal',
+          children: [
+            { type: 'leaf', id: 'source-pane-uuid' },
+            { type: 'leaf', id: 'new-pane-uuid' },
+          ],
+          ratios: [50, 50],
+        };
+      }
+      return null;
+    });
+
+    const newId = await paneTreeModule.splitPane('source-pane-uuid', 'horizontal');
+    expect(newId).toBe('new-pane-uuid');
+
+    // splitPane returns BEFORE the deferred fit fires (the RAFs are
+    // still queued at this point). This is the whole point of the
+    // two-frame wait — `splitPane` resolves as soon as the IPC + store
+    // update are done, and the fit catches up on the next two frames.
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+
+    flushOneFrame();
+    flushOneFrame();
+
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(2);
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('source-pane-uuid');
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('new-pane-uuid');
   });
 });

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -9,12 +10,16 @@ use portable_pty::{CommandBuilder, MasterPty, SlavePty};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::engine::parser::PaneParser;
+
 use crate::commands::fs_watch::FsWatcher;
 use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
-use crate::types::GlobalEvent;
+use crate::remote::auth::{RemoteAuth, SessionStore};
+use crate::types::{GlobalEvent, PtyDeltaEvent, PtyOutputEvent};
+use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
 /// Two-stage PTY spawn record.
 ///
@@ -203,6 +208,224 @@ impl PaneScrollback {
     }
 }
 
+/// P4.1 (2026-05-21) — per-pane delta-byte sender. Wraps a Tauri
+/// `Channel<Vec<u8>>::send` (or any other sink — e.g. a postMessage shim
+/// to a render worker in P4.9) so the `pty-delta-*` emit sites in `lib.rs`
+/// and `commands/terminal.rs` can stay agnostic of *how* bytes reach the
+/// frontend. `Arc` so the main loop can clone out of the RwLock and call
+/// `send` without holding any state lock.
+///
+/// Returning `()` is intentional: send failures are best-effort (the
+/// frontend has gone away if they fail, and the next pane-close cleanup
+/// will drop the sender). Callers log errors inside the closure.
+pub type PaneOutputSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
+pub struct RemotePaneSub {
+    pub id: u64,
+    pub output_tx: mpsc::Sender<PtyOutputEvent>,
+    pub delta_tx: mpsc::Sender<PtyDeltaEvent>,
+    /// Per-subscriber dedicated `PaneParser` initialised at the mobile
+    /// client's grid dimensions. When `Some`, PTY output is fed through
+    /// this parser and the resulting (mobile-sized) deltas are sent to
+    /// `delta_tx` instead of the desktop parser's deltas. `None` falls
+    /// back to the legacy behaviour (desktop deltas broadcast).
+    pub parser: Option<Arc<Mutex<PaneParser>>>,
+    /// Mobile client's last-reported grid rows. Captured from `resize`
+    /// WS messages and used to initialise `parser` on subscribe.
+    pub rows: u16,
+    /// Mobile client's last-reported grid cols.
+    pub cols: u16,
+}
+
+#[derive(Default)]
+pub struct PaneRegistry {
+    pub output_cb: Option<PaneOutputSender>,
+    pub delta_cb: Option<PaneDeltaSender>,
+    pub remote_subs: Vec<RemotePaneSub>,
+}
+
+/// Monotonic remote subscriber ID counter. Each `handle_ws` invocation
+/// grabs a unique id for registration/deregistration.
+pub struct RemoteSubId;
+
+impl RemoteSubId {
+    pub fn next() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Information about a connected remote client (WebSocket).
+#[derive(Clone, Debug)]
+pub struct RemoteClientInfo {
+    pub id: u64,
+    pub connected_at: std::time::SystemTime,
+    pub remote_addr: String,
+    pub user_agent: String,
+    /// Stable, mobile-generated device id (localStorage UUID) sent on connect.
+    /// Used as the blacklist key (survives token rotation). Empty if absent.
+    pub device_id: String,
+    /// The session token this connection authenticated with (if it connected
+    /// via `?token=`). Force-disconnect invalidates it so the device must
+    /// re-enter the auth code to reconnect.
+    pub token: Option<String>,
+    pub kill_flag: Arc<AtomicBool>,
+}
+
+/// Registry tracking all currently connected remote WebSocket clients.
+/// Used by the desktop RemotePanel to list connected devices and
+/// forcibly disconnect them.
+#[derive(Default)]
+pub struct RemoteClientRegistry {
+    pub clients: parking_lot::Mutex<HashMap<u64, RemoteClientInfo>>,
+}
+
+impl RemoteClientRegistry {
+    pub fn register(
+        &self,
+        addr: String,
+        ua: String,
+        device_id: String,
+        token: Option<String>,
+    ) -> (u64, Arc<AtomicBool>) {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let kill_flag = Arc::new(AtomicBool::new(false));
+        self.clients.lock().insert(id, RemoteClientInfo {
+            id,
+            connected_at: std::time::SystemTime::now(),
+            remote_addr: addr,
+            user_agent: ua,
+            device_id,
+            token,
+            kill_flag: Arc::clone(&kill_flag),
+        });
+        (id, kill_flag)
+    }
+
+    pub fn unregister(&self, id: u64) {
+        self.clients.lock().remove(&id);
+    }
+
+    pub fn list(&self) -> Vec<RemoteClientInfo> {
+        self.clients.lock().values().cloned().collect()
+    }
+
+    /// Snapshot of a single client's info (for resolving token/device on
+    /// disconnect / blacklist).
+    pub fn info_of(&self, id: u64) -> Option<RemoteClientInfo> {
+        self.clients.lock().get(&id).cloned()
+    }
+
+    pub fn kick(&self, id: u64) -> bool {
+        let map = self.clients.lock();
+        if let Some(info) = map.get(&id) {
+            info.kill_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// A persistent blacklist entry. A connection is barred if its device id OR its
+/// IP matches a non-empty field of any entry.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BlacklistEntry {
+    /// UUID for stable UI keying / removal.
+    pub id: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub ip: Option<String>,
+    /// Display label (short device id or IP).
+    pub label: String,
+    /// Unix seconds when added.
+    pub added_at: u64,
+}
+
+/// Persistent blacklist of devices/IPs barred from the remote server. Backed by
+/// a JSON file under the app data dir; enforced at `/verify` and the `/ws`
+/// upgrade. Survives token rotation by keying on the mobile-provided device id
+/// (and/or IP).
+#[derive(Default)]
+pub struct RemoteBlacklist {
+    entries: parking_lot::Mutex<Vec<BlacklistEntry>>,
+    path: parking_lot::Mutex<Option<std::path::PathBuf>>,
+}
+
+impl RemoteBlacklist {
+    /// Point the blacklist at its on-disk JSON and load existing entries.
+    /// Called once at Tauri setup when the app data dir is known.
+    pub fn set_path_and_load(&self, path: std::path::PathBuf) {
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            if let Ok(list) = serde_json::from_str::<Vec<BlacklistEntry>>(&s) {
+                *self.entries.lock() = list;
+            }
+        }
+        *self.path.lock() = Some(path);
+    }
+
+    fn save(&self) {
+        let path = self.path.lock().clone();
+        if let Some(path) = path {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(s) = serde_json::to_string_pretty(&*self.entries.lock()) {
+                let _ = std::fs::write(&path, s);
+            }
+        }
+    }
+
+    pub fn list(&self) -> Vec<BlacklistEntry> {
+        self.entries.lock().clone()
+    }
+
+    /// True if this device id or IP is blacklisted (empty values never match).
+    pub fn is_blocked(&self, device_id: &str, ip: &str) -> bool {
+        self.entries.lock().iter().any(|e| {
+            e.device_id.as_deref().is_some_and(|d| !d.is_empty() && d == device_id)
+                || e.ip.as_deref().is_some_and(|i| !i.is_empty() && i == ip)
+        })
+    }
+
+    /// Add an entry, de-duplicating by matching device id / IP, then persist.
+    pub fn add(&self, entry: BlacklistEntry) {
+        {
+            let mut entries = self.entries.lock();
+            entries.retain(|e| {
+                let same_dev = match (&e.device_id, &entry.device_id) {
+                    (Some(a), Some(b)) => !a.is_empty() && a == b,
+                    _ => false,
+                };
+                let same_ip = match (&e.ip, &entry.ip) {
+                    (Some(a), Some(b)) => !a.is_empty() && a == b,
+                    _ => false,
+                };
+                !(same_dev || same_ip)
+            });
+            entries.push(entry);
+        }
+        self.save();
+    }
+
+    /// Remove an entry by its UUID; returns whether anything was removed.
+    pub fn remove(&self, id: &str) -> bool {
+        let removed = {
+            let mut entries = self.entries.lock();
+            let before = entries.len();
+            entries.retain(|e| e.id != id);
+            entries.len() != before
+        };
+        if removed {
+            self.save();
+        }
+        removed
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
@@ -230,6 +453,56 @@ pub struct AppState {
     /// 通用文件系统 watcher：覆盖 Explorer 列出的 cwd 和编辑器打开的外部文件，
     /// emit `fs-changed` 事件供前端文件树/编辑器订阅。
     pub fs_watcher: Arc<FsWatcher>,
+    /// 启动方式：cli（终端调用 `ridge`）/ menu（资源管理器、开始菜单双击 ridge.exe）。
+    /// 关键差异：menu 模式下进程的 `current_dir()` 等于 ridge.exe 所在目录，**不**应作为
+    /// 默认工作目录；cli 模式下它是用户期望的工作目录。
+    /// §4 启动恢复读它：cli 模式下跳过 restore set，让 cwd 接管首个工作区。
+    pub startup_cwd_kind: StartupCwdKind,
+    /// cli 模式下捕获的启动 cwd；menu 模式为 None。后续 §2 用户配置 defaultCwd
+    /// 时按 cli > user > home 的优先级合并（utils::cwd::resolve_default_cwd）。
+    pub startup_cli_cwd: Option<PathBuf>,
+    /// 用户在设置面板配置的默认工作目录（front-end localStorage `defaultCwd` 字段
+    /// 在启动时通过 `set_user_default_cwd` 命令同步到这里）。menu 启动模式下，
+    /// 这是首个 pane 的 cwd 来源（cli 启动时被 startup_cli_cwd 覆盖，仍然优先）。
+    pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
+    /// Unified per-pane registry for desktop callbacks and remote WS subscribers.
+    /// Keyed by (workspace_id, pane_id). Each entry can hold:
+    ///   - output_cb: desktop Tauri Channel for coalesced pty-output
+    ///   - delta_cb:  desktop Tauri Channel for delta frames (replaces pty_delta_channels)
+    ///   - remote_subs: mobile WS client subscribers with per-client mpsc channels
+    pub pty_pane_registry: Arc<RwLock<HashMap<(Uuid, Uuid), PaneRegistry>>>,
+    /// Remote Control (主线一): the port the WebSocket server is listening on.
+    /// 0 means the server is not running (failed to bind or disabled).
+    pub remote_port: Arc<RwLock<u16>>,
+    /// Remote Control auth — shared TOTP generator. Created on app startup;
+    /// the same secret persists for the process lifetime.
+    pub remote_auth: Arc<RemoteAuth>,
+    /// Global remote control toggle. When `false`, the remote server handlers
+    /// return 503 and the WebSocket upgrade is refused. Set via the settings
+    /// panel's "Remote Control" switch.
+    pub remote_enabled: Arc<AtomicBool>,
+    /// Handle to the remote server background thread. `None` when the server
+    /// is not running. Used to join the thread on shutdown / restart.
+    pub remote_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// One-shot sender to signal the remote server to gracefully shut down.
+    /// Drained (taken) after each start/stop cycle.
+    pub remote_shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    /// Handle to the remote server dev-mode process (`pnpm dev:remote`).
+    /// `None` when not in dev mode or server not running.
+    pub remote_dev_process: Arc<Mutex<Option<std::process::Child>>>,
+    /// Session token store for mobile client authentication.
+    /// Tokens are created via POST /verify and validated via WS ?token=.
+    /// Each token expires after 3 days of inactivity.
+    pub remote_session_store: Arc<SessionStore>,
+    /// mDNS broadcast thread handle + stop flag. `None` when the server
+    /// is not running. Set the flag and join the handle to stop.
+    pub remote_mdns: Arc<Mutex<Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>>>,
+    /// Registry of currently connected remote WebSocket clients.
+    /// Used by the desktop RemotePanel to list + disconnect devices.
+    pub remote_client_registry: Arc<RemoteClientRegistry>,
+    /// Persistent blacklist of devices/IPs barred from connecting. Loaded from
+    /// `<app_data_dir>/remote-blacklist.json` at startup.
+    pub remote_blacklist: Arc<RemoteBlacklist>,
 }
 
 impl AppState {
@@ -237,10 +510,10 @@ impl AppState {
         let id = Uuid::new_v4();
         let mut map = HashMap::new();
         let mut pane_tree = PaneTree::new();
-        // 将启动 cwd 种入默认 pane：从命令行 / 资源管理器启动时，用户期望默认终端
-        // 落在他们当前所在的目录，而不是 HOME 兜底。若无 .ridge 工作区覆盖这颗默认树，
-        // 这个 cwd 将直接被 create_pane 采用。
-        if let Ok(cwd) = std::env::current_dir() {
+        let (startup_cwd_kind, startup_cli_cwd) = detect_startup_cwd_kind();
+        // 仅 cli 启动时把 cwd 种入默认 pane；menu 启动时让 create_pane_inner 走
+        // HOME / 用户配置的 fallback，避免默认终端落到 ridge.exe 安装目录。
+        if let Some(cwd) = startup_cli_cwd.clone() {
             if let Some(&root_id) = pane_tree.panes.keys().next() {
                 if let Some(pane) = pane_tree.panes.get_mut(&root_id) {
                     pane.cwd = Some(cwd);
@@ -278,6 +551,20 @@ impl AppState {
             current_project: Arc::new(RwLock::new(None)),
             git_watcher: Arc::new(GitWatcher::new()),
             fs_watcher: Arc::new(FsWatcher::new()),
+            startup_cwd_kind,
+            startup_cli_cwd,
+            user_default_cwd: Arc::new(RwLock::new(None)),
+            pty_pane_registry: Arc::new(RwLock::new(HashMap::new())),
+            remote_port: Arc::new(RwLock::new(0)),
+            remote_auth: Arc::new(RemoteAuth::new()),
+            remote_enabled: Arc::new(AtomicBool::new(false)),
+            remote_thread: Arc::new(Mutex::new(None)),
+            remote_shutdown: Arc::new(Mutex::new(None)),
+            remote_dev_process: Arc::new(Mutex::new(None)),
+            remote_session_store: Arc::new(SessionStore::new()),
+            remote_mdns: Arc::new(Mutex::new(None)),
+            remote_client_registry: Arc::new(RemoteClientRegistry::default()),
+            remote_blacklist: Arc::new(RemoteBlacklist::default()),
         }
     }
 
@@ -487,6 +774,177 @@ impl AppState {
             at_oldest: start_seq <= oldest_seq,
         }
     }
+
+    /// P4.1 — install (or replace) the delta-byte sender for `(ws, pane)`.
+    /// Subsequent `pty-delta-*` emit sites route bytes through this sender
+    /// instead of `app.emit`. Idempotent — a second register for the same
+    /// pane replaces the previous sender (the old `Arc` is dropped).
+    pub fn register_pane_delta_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        sender: PaneDeltaSender,
+    ) {
+        self.pty_pane_registry
+            .write()
+            .entry((workspace_id, pane_id))
+            .or_default()
+            .delta_cb = Some(sender);
+    }
+
+    pub fn unregister_pane_delta_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (workspace_id, pane_id);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.delta_cb = None;
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+
+    pub fn get_pane_delta_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Option<PaneDeltaSender> {
+        self.pty_pane_registry
+            .read()
+            .get(&(workspace_id, pane_id))
+            .and_then(|e| e.delta_cb.clone())
+    }
+
+    pub fn register_pane_output_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        sender: PaneOutputSender,
+    ) {
+        self.pty_pane_registry
+            .write()
+            .entry((workspace_id, pane_id))
+            .or_default()
+            .output_cb = Some(sender);
+    }
+
+    pub fn unregister_pane_output_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (workspace_id, pane_id);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.output_cb = None;
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+
+    pub fn get_pane_output_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Option<PaneOutputSender> {
+        self.pty_pane_registry
+            .read()
+            .get(&(workspace_id, pane_id))
+            .and_then(|e| e.output_cb.clone())
+    }
+
+    /// Retrieve the most recent PTY scrollback bytes for a pane, up to
+    /// `max_bytes`. Used to seed a newly-created mobile `PaneParser` so its
+    /// state mirrors the desktop parser before the first delta frame is sent.
+    pub fn get_recent_scrollback_for(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        max_bytes: usize,
+    ) -> Vec<u8> {
+        let sb = self.pty_scrollback.read();
+        let Some(scrollback) = sb.get(&(ws, pane)) else {
+            return Vec::new();
+        };
+        let blocks = scrollback.snapshot_blocks();
+        let mut total: usize = 0;
+        // Walk most-recent block first.
+        let mut recent: Vec<Vec<u8>> = Vec::new();
+        for (_, bytes) in blocks.into_iter().rev() {
+            if total + bytes.len() <= max_bytes {
+                recent.push((*bytes).clone());
+                total += bytes.len();
+            } else if total < max_bytes {
+                let remaining = max_bytes - total;
+                let start = bytes.len().saturating_sub(remaining);
+                recent.push(bytes[start..].to_vec());
+                total = max_bytes;
+                break;
+            } else {
+                break;
+            }
+        }
+        recent.reverse(); // restore chronological order
+        let mut result = Vec::with_capacity(total);
+        for block in recent {
+            result.extend_from_slice(&block);
+        }
+        result
+    }
+
+    pub fn register_remote_sub(&self, ws: Uuid, pane: Uuid, sub: RemotePaneSub) {
+        self.pty_pane_registry
+            .write()
+            .entry((ws, pane))
+            .or_default()
+            .remote_subs
+            .push(sub);
+    }
+
+    pub fn unregister_remote_sub(&self, ws: Uuid, pane: Uuid, sub_id: u64) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (ws, pane);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.remote_subs.retain(|s| s.id != sub_id);
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+
+    /// §5 — update the grid dimensions of a remote subscriber's dedicated
+    /// `PaneParser` (if one exists). Called from the WS resize handler so
+    /// that subsequent delta frames match the mobile client's new viewport.
+    /// If no parser exists yet for this sub, this is a no-op (the parser
+    /// will be created with the correct dimensions on the next
+    /// `subscribe-pane`).
+    pub fn resize_remote_parser(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        sub_id: u64,
+        rows: u16,
+        cols: u16,
+    ) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (ws, pane);
+        let Some(entry) = reg.get_mut(&key) else {
+            return;
+        };
+        let Some(sub) = entry.remote_subs.iter_mut().find(|s| s.id == sub_id) else {
+            return;
+        };
+        sub.rows = rows;
+        sub.cols = cols;
+        if let Some(ref mp) = sub.parser {
+            let mut p = mp.lock();
+            // resize returns a frame that we must drop — the mobile client
+            // will request the right-size frame via its next output delta.
+            let _ = p.resize(rows, cols);
+        }
+    }
+}
+
+impl PaneRegistry {
+    fn is_empty(&self) -> bool {
+        self.output_cb.is_none() && self.delta_cb.is_none() && self.remote_subs.is_empty()
+    }
 }
 
 /// Same semantics as `str::is_char_boundary` but on a raw `&[u8]`. Returns
@@ -633,5 +1091,218 @@ mod scrollback_tests {
         state.clear_pty_scrollback(ws, pane);
         let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
         assert!(chunk.bytes.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pty_delta_channel_tests {
+    //! P4.1 unit tests — verify the `(ws, pane)` keyed delta-sender
+    //! registry: registration/lookup, idempotent replace, key isolation
+    //! across panes and across workspaces, and removal on unregister.
+    //! The senders are plain closures so these tests do NOT need a Tauri
+    //! runtime — that boundary lives in `commands/terminal.rs`.
+
+    use super::*;
+    use parking_lot::Mutex as PMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::mpsc;
+
+    fn make_state() -> AppState {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        AppState::new(tx)
+    }
+
+    /// Build a counting sender: each call increments `count` and records the
+    /// payload length. Returns `(sender, count, last_len)` so the test can
+    /// assert how many bytes the channel was asked to send.
+    fn counting_sender() -> (PaneDeltaSender, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let last_len = Arc::new(AtomicUsize::new(0));
+        let count_clone = Arc::clone(&count);
+        let last_len_clone = Arc::clone(&last_len);
+        let sender: PaneDeltaSender = Arc::new(move |bytes: Vec<u8>| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+            last_len_clone.store(bytes.len(), Ordering::SeqCst);
+        });
+        (sender, count, last_len)
+    }
+
+    #[test]
+    fn get_returns_none_when_unregistered() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn register_then_get_returns_same_sender() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, last_len) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane, sender);
+        let fetched = state
+            .get_pane_delta_channel(ws, pane)
+            .expect("registered sender must be retrievable");
+        fetched(vec![1, 2, 3, 4]);
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last_len.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn register_is_idempotent_replace() {
+        // Second register on the same key replaces the first sender; the
+        // old Arc is dropped (which we verify via a sentinel flag).
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let drop_flag = Arc::clone(&dropped);
+        struct DropFlag(Arc<AtomicUsize>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let first_flag = PMutex::new(Some(DropFlag(drop_flag)));
+        let first: PaneDeltaSender = Arc::new(move |_| {
+            // Touch the flag so the closure owns it.
+            let _ = first_flag.lock().is_some();
+        });
+        state.register_pane_delta_channel(ws, pane, first);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        let (second, count, _) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, second);
+
+        // After replacement, the first sender's Arc count reached zero and
+        // the embedded DropFlag fired exactly once.
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        // The new sender is the one we retrieve.
+        let fetched = state.get_pane_delta_channel(ws, pane).expect("present");
+        fetched(vec![0]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn different_panes_in_same_workspace_are_isolated() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane_a = Uuid::new_v4();
+        let pane_b = Uuid::new_v4();
+        let (sender_a, count_a, _) = counting_sender();
+        let (sender_b, count_b, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane_a, sender_a);
+        state.register_pane_delta_channel(ws, pane_b, sender_b);
+
+        state
+            .get_pane_delta_channel(ws, pane_a)
+            .expect("pane_a")(vec![0]);
+        state
+            .get_pane_delta_channel(ws, pane_a)
+            .expect("pane_a")(vec![0, 0]);
+        state
+            .get_pane_delta_channel(ws, pane_b)
+            .expect("pane_b")(vec![0]);
+
+        assert_eq!(count_a.load(Ordering::SeqCst), 2);
+        assert_eq!(count_b.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn same_pane_id_in_different_workspaces_is_isolated() {
+        // Tauri pane UUIDs are globally unique in practice, but the map key
+        // is (workspace, pane) so even a colliding pane uuid across two
+        // workspaces must dispatch to the correct sender.
+        let state = make_state();
+        let ws_a = Uuid::new_v4();
+        let ws_b = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender_a, count_a, _) = counting_sender();
+        let (sender_b, count_b, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws_a, pane, sender_a);
+        state.register_pane_delta_channel(ws_b, pane, sender_b);
+
+        state.get_pane_delta_channel(ws_a, pane).expect("a")(vec![1]);
+        state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![2]);
+        state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![3]);
+
+        assert_eq!(count_a.load(Ordering::SeqCst), 1);
+        assert_eq!(count_b.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unregister_drops_the_sender() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane, sender);
+        assert!(state.get_pane_delta_channel(ws, pane).is_some());
+
+        state.unregister_pane_delta_channel(ws, pane);
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+
+        // Cleanup must NOT increment the counter — nothing was sent.
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unregister_unknown_pane_is_silent() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        // No panic / no observable side effect on an unknown key.
+        state.unregister_pane_delta_channel(ws, pane);
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn unregister_only_affects_matching_key() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane_keep = Uuid::new_v4();
+        let pane_drop = Uuid::new_v4();
+        let (keep, _, _) = counting_sender();
+        let (drop_it, _, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane_keep, keep);
+        state.register_pane_delta_channel(ws, pane_drop, drop_it);
+        state.unregister_pane_delta_channel(ws, pane_drop);
+
+        assert!(state.get_pane_delta_channel(ws, pane_keep).is_some());
+        assert!(state.get_pane_delta_channel(ws, pane_drop).is_none());
+    }
+
+    #[test]
+    fn cloned_appstate_shares_channel_registry() {
+        // AppState is `#[derive(Clone)]` and the registry is wrapped in
+        // `Arc<RwLock<...>>`. Cloning the state must NOT fork the registry
+        // — both clones see the same registrations. Otherwise the emit-site
+        // clone in `lib.rs` would see an empty registry and silently fall
+        // back to app.emit for every pane.
+        let state_a = make_state();
+        let state_b = state_a.clone();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+
+        state_a.register_pane_delta_channel(ws, pane, sender);
+        let from_b = state_b
+            .get_pane_delta_channel(ws, pane)
+            .expect("clone must see registrations made on the original");
+        from_b(vec![9]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unregister via clone B; clone A should see the empty slot too.
+        state_b.unregister_pane_delta_channel(ws, pane);
+        assert!(state_a.get_pane_delta_channel(ws, pane).is_none());
     }
 }

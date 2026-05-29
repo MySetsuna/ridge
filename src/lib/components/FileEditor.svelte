@@ -60,9 +60,16 @@
   const monacoTheme = $derived(ridgeMonacoThemeId($settingsStore.theme));
   $effect(() => {
     applyRidgeMonacoTheme($settingsStore.theme);
+    // `monaco.editor.setTheme` is the global retint — it switches the
+    // active registered theme for every Monaco editor instance at once,
+    // including diff editors whose `IDiffEditorOptions` doesn't accept
+    // `theme` via `updateOptions`. Using setTheme here both unifies the
+    // code path and fixes the type error on the diff branch.
+    monaco.editor.setTheme(monacoTheme);
   });
 
   let mountPoint: HTMLDivElement | undefined;
+  let panelRootEl: HTMLDivElement | undefined = $state();
   let editor: monaco.editor.IStandaloneCodeEditor | null = null;
   let currentModelPath: string | null = null;
   // 搜索命中高亮装饰句柄。tied to editorState.searchHighlight：搜索点击时
@@ -82,11 +89,19 @@
   let isResizingFloating = $state(false);
 
   // ─── Diff editor state ─────────────────────────────────────────────────────
+  // Keep-alive 模式（与主 source editor 对齐）：单一 diffEditor 实例 + 按 path
+  // 缓存的 (originalModel, modifiedModel) pair 与 view state。切走 diff tab 时
+  // 仅 saveViewState；切回时 setModel + restoreViewState，scroll/折叠/光标全部
+  // 还原。tab 真正关闭（在 openFiles 中消失）才在 GC effect 里 dispose models。
   let diffMountPoint: HTMLDivElement | undefined;
   let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
-  let diffOriginalModel: monaco.editor.ITextModel | null = null;
-  let diffModifiedModel: monaco.editor.ITextModel | null = null;
-  let diffLoadedTabPath: string | null = null;
+  type DiffPair = {
+    original: monaco.editor.ITextModel;
+    modified: monaco.editor.ITextModel;
+  };
+  const diffModelCache = new Map<string, DiffPair>();
+  const diffViewStateCache = new Map<string, monaco.editor.IDiffEditorViewState>();
+  let diffCurrentPath: string | null = null;
   let diffLoading = $state(false);
   let diffError = $state('');
   let diffRenderSideBySide = $state(typeof window !== 'undefined' ? window.innerWidth >= 900 : true);
@@ -203,24 +218,78 @@
     };
   }
 
+  /** 仅在整个 FileEditor 卸载时调用：彻底销毁 diff editor 实例 + 全部缓存的
+   *  models / view states。切 tab 时不要调这个，用 saveAndDetachDiff() 代替。 */
   function disposeDiffEditor(): void {
     diffEditor?.dispose();
     diffEditor = null;
-    diffOriginalModel?.dispose();
-    diffModifiedModel?.dispose();
-    diffOriginalModel = null;
-    diffModifiedModel = null;
-    diffLoadedTabPath = null;
+    for (const pair of diffModelCache.values()) {
+      pair.original.dispose();
+      pair.modified.dispose();
+    }
+    diffModelCache.clear();
+    diffViewStateCache.clear();
+    diffCurrentPath = null;
+  }
+
+  /** 切走 diff tab 时调用：保留实例 + cache，仅保存 view state。 */
+  function saveDiffViewState(): void {
+    if (!diffEditor || !diffCurrentPath) return;
+    const vs = diffEditor.saveViewState();
+    if (vs) diffViewStateCache.set(diffCurrentPath, vs);
+  }
+
+  function ensureDiffEditor(): monaco.editor.IStandaloneDiffEditor | null {
+    if (diffEditor) return diffEditor;
+    if (!diffMountPoint) return null;
+    diffEditor = monaco.editor.createDiffEditor(diffMountPoint, {
+      theme: monacoTheme,
+      automaticLayout: true,
+      readOnly: true,
+      renderOverviewRuler: false,
+      minimap: { enabled: false },
+      fontFamily: editorFontFamily,
+      fontSize: editorFontSize,
+      renderWhitespace: 'boundary',
+      scrollBeyondLastLine: false,
+    });
+    diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    return diffEditor;
   }
 
   async function loadDiff(
     args: { repoRoot: string; path: string; cached: boolean; commit?: string },
-    tabPath: string
+    tabPath: string,
+    forceReload: boolean = false
   ): Promise<void> {
+    if (forceReload) {
+      const existing = diffModelCache.get(tabPath);
+      if (existing) {
+        existing.original.dispose();
+        existing.modified.dispose();
+        diffModelCache.delete(tabPath);
+      }
+    }
+
+    // 命中缓存：跳过 IPC 直接切模型 + 还原 view state（与主 source editor 一致）。
+    const cached = diffModelCache.get(tabPath);
+    if (cached) {
+      const ed = ensureDiffEditor();
+      if (!ed) return;
+      // 切走当前 path 前先存 view state。
+      if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
+      ed.setModel({ original: cached.original, modified: cached.modified });
+      diffCurrentPath = tabPath;
+      const vs = diffViewStateCache.get(tabPath);
+      if (vs) ed.restoreViewState(vs);
+      diffError = '';
+      return;
+    }
     const myId = ++diffReqId;
     diffLoading = true;
     diffError = '';
-    disposeDiffEditor();
+    // 切走当前正在显示的 path 之前先存 view state，避免被新加载覆盖。
+    if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
     try {
       if (!isTauri()) throw new Error('需要 Tauri 环境');
       const v = args.commit
@@ -238,26 +307,18 @@
       await tick();
       if (myId !== diffReqId) return;
       const lang = langFromPath(args.path);
-      diffOriginalModel = monaco.editor.createModel(v.original, lang);
-      diffModifiedModel = monaco.editor.createModel(v.modified, lang);
-      diffEditor = monaco.editor.createDiffEditor(diffMountPoint, {
-        theme: monacoTheme,
-        automaticLayout: true,
-        readOnly: true,
-        renderOverviewRuler: false,
-        minimap: { enabled: false },
-        fontFamily: editorFontFamily,
-        fontSize: editorFontSize,
-        renderWhitespace: 'boundary',
-        scrollBeyondLastLine: false,
-      });
-      diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
-      diffEditor.setModel({ original: diffOriginalModel, modified: diffModifiedModel });
-      diffLoadedTabPath = tabPath;
+      const original = monaco.editor.createModel(v.original, lang);
+      const modified = monaco.editor.createModel(v.modified, lang);
+      diffModelCache.set(tabPath, { original, modified });
+      const ed = ensureDiffEditor();
+      if (!ed) return;
+      ed.setModel({ original, modified });
+      diffCurrentPath = tabPath;
+      const vs = diffViewStateCache.get(tabPath);
+      if (vs) ed.restoreViewState(vs);
     } catch (e) {
       if (myId !== diffReqId) return;
       diffError = e instanceof Error ? e.message : String(e);
-      disposeDiffEditor();
     } finally {
       if (myId === diffReqId) diffLoading = false;
     }
@@ -290,6 +351,10 @@
     if (!mountPoint || !editorState.isVisible) return;
     if (editor) return;
     if (current?.isImage || current?.diffArgs) return;
+    
+    // Ensure theme is applied before creating editor
+    applyRidgeMonacoTheme($settingsStore.theme);
+
     // 显式构造初始 model 并塞进 modelCache，后续切回这个 path 才能复用 undo/redo 栈。
     let initialModel: monaco.editor.ITextModel;
     if (current) {
@@ -341,6 +406,9 @@
   });
 
   // Swap editor model when active tab changes —— **keep-alive 模式**：
+
+
+
   //   • 切到另一个 tab 时不 dispose 旧 model；先把当前的 view state（滚动、
   //     光标、selection、折叠等）按 path 存到 viewStateCache。
   //   • 切到目标 tab 时优先复用 modelCache 里已有的 model（含 undo/redo 栈），
@@ -350,8 +418,7 @@
   $effect(() => {
     const c = current; // 先读 current 建立响应式订阅
     if (!editor) return;
-    // Image and diff tabs don't use the regular Monaco editor.
-    if (c?.isImage || c?.diffArgs) return;
+
     try {
       // —— 0) 保存上一个 model 的 view state（仅当 path 变化时才存，避免
       //        相同 path 自我覆盖）。
@@ -360,8 +427,9 @@
         viewStateCache.set(currentModelPath, vs);
       }
 
-      if (!c) {
-        // 没有活动文件：指向空白单例，不动 modelCache。
+      // Image and diff tabs don't use the regular Monaco editor.
+      if (!c || c.isImage || c.diffArgs) {
+        // 没有活动文件，或者正在显示 Image / Diff：指向空白单例，不动 modelCache。
         if (!emptyModel) emptyModel = monaco.editor.createModel('', 'plaintext');
         currentModelPath = null;
         editor.setModel(emptyModel);
@@ -391,6 +459,17 @@
           model = monaco.editor.createModel(c.content, 'plaintext');
         }
         modelCache.set(c.path, model);
+      } else if (model.getValue() !== c.content) {
+        // Cached model exists but its text drifted from the store.
+        // Happens when `fileEditor.openFile` re-reads from disk on
+        // re-activation (the bug where reopening a tab showed the
+        // stale content from when it was first opened, even after the
+        // file changed on disk in the background). Push the fresh
+        // content into the model so the next `setModel` swap shows
+        // the current bytes. Resets undo, which is the right call
+        // here — the prior undo stack was relative to a pre-refresh
+        // snapshot that no longer represents anything on disk.
+        model.setValue(c.content);
       }
 
       // —— 2) 切模型 + 还原 view state。
@@ -412,8 +491,8 @@
   });
 
   // —— GC：openFiles 中已经不再存在的 path，对应的 model / view state /
-  //    markdown 滚动位置一并释放。Tab 关闭走的是 fileEditorStore.closeFile →
-  //    openFiles 移除该项 → 这里命中。
+  //    markdown 滚动位置 / diff pair 一并释放。Tab 关闭走的是
+  //    fileEditorStore.closeFile → openFiles 移除该项 → 这里命中。
   $effect(() => {
     const openPaths = new Set(editorState.openFiles.map((f) => f.path));
     for (const [path, model] of modelCache) {
@@ -433,20 +512,42 @@
     for (const path of markdownScrollCache.keys()) {
       if (!openPaths.has(path)) markdownScrollCache.delete(path);
     }
+    // diff tab 关闭：dispose models + 删 view state。守卫 active diff
+    // 不做 dispose（与主 model GC 同思路），由后续 setModel 切走后自然释放。
+    const activeDiffModels = diffEditor?.getModel();
+    for (const [path, pair] of diffModelCache) {
+      if (!openPaths.has(path)) {
+        diffModelCache.delete(path);
+        diffViewStateCache.delete(path);
+        if (
+          !activeDiffModels ||
+          (pair.original !== activeDiffModels.original &&
+            pair.modified !== activeDiffModels.modified)
+        ) {
+          pair.original.dispose();
+          pair.modified.dispose();
+        }
+        if (path === diffCurrentPath) diffCurrentPath = null;
+      }
+    }
   });
 
   // ─── Diff editor lifecycle ────────────────────────────────────────────────
-  // Load or reload when the active tab is (or changes to) a diff tab.
-  // Uses diffReqId to discard stale async results on rapid switching.
+  // Keep-alive：切走 diff tab 仅保存 view state；切回 / 切换到不同 diff path
+  // 走 loadDiff（命中缓存即跳 IPC）。diffReqId 防止快速切换时 stale 异步覆盖。
   $effect(() => {
     const c = current;
     if (!c?.diffArgs) {
-      // Switched away from diff tab — dispose
-      if (diffLoadedTabPath !== null) disposeDiffEditor();
+      // Switched away from diff tab — keep instance alive; just save scroll/cursor.
+      if (diffCurrentPath !== null) {
+        saveDiffViewState();
+        diffCurrentPath = null;
+        if (diffEditor) diffEditor.setModel(null);
+      }
       return;
     }
     if (!diffMountPoint) return;
-    if (c.path === diffLoadedTabPath) return; // same diff already shown
+    if (c.path === diffCurrentPath) return; // same diff already shown
     void loadDiff(c.diffArgs, c.path);
   });
 
@@ -462,14 +563,16 @@
   // Monaco 在 inline ↔ sideBySide 切换时，仅 updateOptions 不会重建右侧 diff
   // widget（表面上选项已改但视觉仍是旧模式）。setModel(null) → setModel(real)
   // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
+  // 重建后再 restoreViewState 防止 toggle 时 scroll/折叠位置丢失。
   $effect(() => {
     if (!diffEditor) return;
     diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
-    const orig = diffOriginalModel;
-    const mod = diffModifiedModel;
-    if (orig && mod) {
+    const cur = diffCurrentPath ? diffModelCache.get(diffCurrentPath) : null;
+    if (cur) {
+      const vs = diffEditor.saveViewState();
       diffEditor.setModel(null);
-      diffEditor.setModel({ original: orig, modified: mod });
+      diffEditor.setModel({ original: cur.original, modified: cur.modified });
+      if (vs) diffEditor.restoreViewState(vs);
     }
     diffEditor.layout();
   });
@@ -478,8 +581,17 @@
   // Because visibility:hidden doesn't affect element size, automaticLayout
   // doesn't detect the change. Force layout after the DOM settles.
   $effect(() => {
-    if (isDiffTab && diffEditor) {
+    if (isDiffTab && !diffError && diffEditor) {
       void tick().then(() => diffEditor?.layout());
+    }
+  });
+
+  // When switching back to a regular editor from a diff tab or preview, 
+  // visibility changes from hidden→visible. Force layout similarly.
+  $effect(() => {
+    const hidden = inPreviewMode || isDiffTab;
+    if (!hidden && editor) {
+      void tick().then(() => editor?.layout());
     }
   });
 
@@ -713,7 +825,7 @@
     // 必须高于 pin (floating) 模式编辑器面板的 z-index:60，否则在 pin 模式下
     // 拖拽 tab 时浮动副本会被面板自身遮住，看起来像"消失了"。仍然低于 9990
     // 起跳的 modal 层（见 CLAUDE.md 的 z-index 注册表）。
-    el.style.zIndex = '100';
+    el.style.zIndex = '300';
 
     let lockedY: number | null = null;
     const observer = new MutationObserver(() => {
@@ -916,13 +1028,40 @@
     return () => document.removeEventListener('mousedown', onDocClick, true);
   });
 
+  // ─── ESC 双击隐藏面板 ──────────────────────────────────────────────────────
+  // 第一次 ESC：让 Monaco 自己处理（关 find widget / autocomplete / hover）；
+  // 500 ms 内的第二次 ESC（焦点仍在面板内）才隐藏整个面板。capture-phase
+  // 监听确保我们先于 Monaco 看到事件，但仅在第二次时 stopPropagation —— 第一次
+  // 不阻断让 Monaco 正常清场。焦点不在面板内时不响应（避免在终端等场景把
+  // 用户的 ESC 键序列吃掉）。
+  let lastEscAt: number | null = null;
+  function onWindowKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return;
+    if (!editorState.isVisible) return;
+    const ae = document.activeElement as Node | null;
+    if (!panelRootEl || !ae || !panelRootEl.contains(ae)) return;
+    const now = performance.now();
+    if (lastEscAt !== null && now - lastEscAt < 500) {
+      e.preventDefault();
+      e.stopPropagation();
+      lastEscAt = null;
+      fileEditorStore.hide();
+      return;
+    }
+    lastEscAt = now;
+  }
+  onMount(() => {
+    window.addEventListener('keydown', onWindowKeyDown, true);
+    return () => window.removeEventListener('keydown', onWindowKeyDown, true);
+  });
+
   // ─── Style computations ────────────────────────────────────────────────────
   const containerStyle = $derived.by(() => {
     if (!editorState.isVisible || editorState.openFiles.length === 0)
       return 'display: none;';
     if (editorState.displayMode === 'floating') {
       const r = editorState.floatingRect;
-      return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 60;`;
+      return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 200;`;
     }
     if (editorState.displayMode === 'embedded') {
       // Embedded: part of the normal flex layout — no position:fixed.
@@ -932,11 +1071,12 @@
     // drawer: anchored to the right, **below the 44px header bar** so the
     // titlebar + workspace tabs remain visible/interactive (用户反馈：抽屉不能遮挡顶部 header)。
     const TOP_OFFSET = 44;
-    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 40;`;
+    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 200;`;
   });
 </script>
 
 <div
+  bind:this={panelRootEl}
   class="rg-file-editor flex flex-col bg-[var(--rg-surface-2)]/98 backdrop-blur-xl border border-[var(--rg-border)] shadow-2xl {editorState.displayMode === 'floating'
     ? 'rounded-lg overflow-hidden'
     : editorState.displayMode === 'drawer'
@@ -1014,12 +1154,12 @@
             <AlignLeft class="h-3.5 w-3.5" />
           </button>
         </div>
-        <button
-          type="button"
-          class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
-          title="重新加载 diff"
-          onclick={() => { if (current?.diffArgs) void loadDiff(current.diffArgs, current.path); }}
-        >
+          <button
+            type="button"
+            class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
+            title="重新加载 diff"
+            onclick={() => { if (current?.diffArgs) void loadDiff(current.diffArgs, current.path, true); }}
+          >
           <RotateCw class="h-3.5 w-3.5 {diffLoading ? 'animate-spin' : ''}" />
         </button>
       {:else}
@@ -1292,6 +1432,10 @@
     src={current.imageUrl}
     alt={current.name}
     class="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+    onerror={(e) => {
+      const img = e.currentTarget as HTMLImageElement;
+      console.warn('[FileEditor] image failed to load', current!.path, img.src);
+    }}
   />
 </div>
 {/if}

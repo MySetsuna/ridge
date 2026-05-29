@@ -27,12 +27,33 @@
 //     already active.
 
 import { settingsStore } from '$lib/stores/settings';
+import { termFontSize } from '$lib/stores/termSettings';
 import { hex8 } from '$lib/utils/cssColor';
 import { TerminalManager } from './manager';
 
 // Color normalization moved to $lib/utils/cssColor — shared with
 // $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the
 // same way against the same `--rg-*` CSS-variable values.
+
+/** Map a Ridge `--rg-ansi-*` CSS var name to its xterm.js key. */
+const ANSI_CSS_TO_KEY: Record<string, string> = {
+	'--rg-ansi-black': 'black',
+	'--rg-ansi-red': 'red',
+	'--rg-ansi-green': 'green',
+	'--rg-ansi-yellow': 'yellow',
+	'--rg-ansi-blue': 'blue',
+	'--rg-ansi-magenta': 'magenta',
+	'--rg-ansi-cyan': 'cyan',
+	'--rg-ansi-white': 'white',
+	'--rg-ansi-brightBlack': 'brightBlack',
+	'--rg-ansi-brightRed': 'brightRed',
+	'--rg-ansi-brightGreen': 'brightGreen',
+	'--rg-ansi-brightYellow': 'brightYellow',
+	'--rg-ansi-brightBlue': 'brightBlue',
+	'--rg-ansi-brightMagenta': 'brightMagenta',
+	'--rg-ansi-brightCyan': 'brightCyan',
+	'--rg-ansi-brightWhite': 'brightWhite',
+};
 
 /**
  * Read Ridge's terminal-relevant CSS variables and project them onto the
@@ -48,10 +69,12 @@ function readRidgeTheme(): Record<string, string> {
 	const bg = v('--rg-term-bg');
 	const fg = v('--rg-fg');
 	const accent = v('--rg-accent');
+	const tuiBg = v('--rg-tui-bg');
 
 	const out: Record<string, string> = {};
 	if (bg) out.background = bg;
 	if (fg) out.foreground = fg;
+	if (tuiBg) out.tuiBackground = tuiBg;
 	if (accent) {
 		out.cursor = accent;
 		// Cursor-text-color (the glyph drawn ON TOP of the cursor block)
@@ -69,6 +92,16 @@ function readRidgeTheme(): Record<string, string> {
 			out.selectionBackground = `${accent.slice(0, 7)}3d`;
 		}
 	}
+
+	// ANSI 16 colors: read `--rg-ansi-*` CSS vars set by the theme.
+	// When a theme doesn't define ANSI overrides (dark themes keep their
+	// wasm defaults), these CSS vars won't exist and hex8 returns null —
+	// apply_partial simply leaves those palette entries untouched.
+	for (const [cssVar, key] of Object.entries(ANSI_CSS_TO_KEY)) {
+		const color = v(cssVar);
+		if (color) out[key] = color;
+	}
+
 	return out;
 }
 
@@ -89,39 +122,113 @@ export function setupTerminalThemeBridge(): () => void {
 	const manager = TerminalManager.instance();
 
 	const push = () => {
-		const theme = readRidgeTheme();
-		// Skip if nothing changed since the last push — avoids walking
-		// every pane's handle on unrelated settings updates (font size,
-		// shell selection, …) that share the same store.
-		const fingerprint = JSON.stringify(theme);
-		if (fingerprint === _lastApplied) return;
-		_lastApplied = fingerprint;
-		manager.setTheme(theme);
+		// Delay reading CSS vars by one frame — the browser needs a
+		// paint cycle to compute new values after `data-rg-theme` changes.
+		// Without this delay, getComputedStyle returns stale values.
+		requestAnimationFrame(() => {
+			const theme = readRidgeTheme();
+			// Skip if nothing changed since the last push — avoids walking
+			// every pane's handle on unrelated settings updates (font size,
+			// shell selection, …) that share the same store.
+			const fingerprint = JSON.stringify(theme);
+			const changed = fingerprint !== _lastApplied;
+			if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
+				const ts = performance.now().toFixed(1);
+				const bg = theme.background ?? '∅';
+				const fg = theme.foreground ?? '∅';
+				const cur = theme.cursor ?? '∅';
+				const sel = theme.selectionBackground ?? '∅';
+				const ansiCount = Object.keys(theme).filter((k) => k.startsWith('bright') || ['black','red','green','yellow','blue','magenta','cyan','white'].includes(k)).length;
+				// eslint-disable-next-line no-console
+				console.debug(`[theme-trace][${ts}ms] push${changed ? '' : '/skip-unchanged'} bg=${bg} fg=${fg} cursor=${cur} sel=${sel} ansi=${ansiCount}/16`);
+			}
+			if (changed) {
+				_lastApplied = fingerprint;
+				manager.setTheme(theme);
+			}
+		});
+	};
+
+	let _lastFontFamily: string | null = null;
+	let _lastFontSize: number | null = null;
+
+	const pushFont = (family: string, size: number) => {
+		if (family === _lastFontFamily && size === _lastFontSize) return;
+		_lastFontFamily = family;
+		_lastFontSize = size;
+		
+		const resolvedFamily = family.trim() !== '' 
+			? family 
+			: "'Cascadia Code','Cascadia Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace";
+		
+		manager.setFont(resolvedFamily, size);
 	};
 
 	// Initial push: the store fires immediately on subscribe. settings.ts's
 	// `applyTheme` runs synchronously during `initSettingsBoot` so by the
 	// time +page.svelte onMount fires the CSS vars are already correct.
-	const unsubscribe = settingsStore.subscribe(() => {
+	const unsubscribeTheme = settingsStore.subscribe((settings) => {
 		// settings.ts's setTheme calls applyTheme BEFORE persisting + fanning
 		// the store update, so by the time the subscriber fires, the
 		// `<html data-rg-theme>` attribute (and thus computed CSS vars)
 		// reflect the new theme. Push synchronously.
 		push();
+		
+		// Also sync font-family updates
+		let size = _lastFontSize;
+		// If termFontSize hasn't fired yet, try to read it now or fallback to 15
+		if (size === null) {
+			let currentSize = 15;
+			termFontSize.subscribe(v => { currentSize = v; })();
+			size = currentSize;
+		}
+		pushFont(settings.terminalFontFamily, size);
+	});
+
+	const unsubscribeFont = termFontSize.subscribe((size) => {
+		let family = _lastFontFamily;
+		if (family === null) {
+			let currentSettings = { terminalFontFamily: '' };
+			settingsStore.subscribe(v => { currentSettings = v; })();
+			family = currentSettings.terminalFontFamily;
+		}
+		pushFont(family, size);
 	});
 
 	return () => {
-		unsubscribe();
+		unsubscribeTheme();
+		unsubscribeFont();
 		_subscribed = false;
 	};
 }
 
 /** Force-push the current theme to the wasm kernel right now. Useful from
- *  test setups or after a manual CSS-var override. The store subscription
- *  in `setupTerminalThemeBridge` covers all normal paths. */
+ *  test setups, after a manual CSS-var override, or from a freshly-attached
+ *  pane that wants the kernel rebased on the current theme without
+ *  waiting for the bridge's next RAF.
+ *
+ *  Important: bails out silently when `readRidgeTheme()` returns an empty
+ *  object — that happens before `initSettingsBoot()` writes any `--rg-*`
+ *  CSS vars onto documentElement, e.g. when a pane's onMount finishes
+ *  ahead of `+page.svelte`'s async theme-bootstrap IIFE. Pushing the
+ *  empty theme would `setTheme({})` → manager.setTheme calls
+ *  `handle.applyDefaultTheme()` on every pane, which rebases the wasm
+ *  kernel's `Theme::bg` back to `default_dark` (`#071009`, "near-black
+ *  dark green"). The kernel would then visibly flash to the default-dark
+ *  palette and only recover on the bridge's next RAF — exactly the
+ *  "background should be theme color but is black" symptom. Leaving the
+ *  existing `opts.theme` intact lets the bridge's pending RAF (already
+ *  scheduled at boot via `setupTerminalThemeBridge` subscribing to
+ *  settingsStore) apply the right theme as soon as CSS vars land. */
 export function pushTerminalThemeNow(): void {
 	const manager = TerminalManager.instance();
 	const theme = readRidgeTheme();
+	// `background` is the only field always set when CSS vars are
+	// populated (everything else may be absent if a theme didn't
+	// declare e.g. `selectionBackground`). If `background` is empty,
+	// the whole probe missed — defer to the bridge's RAF rather than
+	// blow away an already-applied theme.
+	if (!theme.background) return;
 	_lastApplied = JSON.stringify(theme);
 	manager.setTheme(theme);
 }

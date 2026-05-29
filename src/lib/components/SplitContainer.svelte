@@ -10,15 +10,13 @@
   // 通过 class prop forward，沿用 findSameAxisRefs 等查询逻辑。
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
   import { isTauri } from '@tauri-apps/api/core';
-  import { Bot, History } from 'lucide-svelte';
-  import { openClaudeAgentLauncher } from './ClaudeAgentLauncher.svelte';
+  import { TerminalManager } from '$lib/terminal/manager';
   import { alertDialog } from './RidgeDialog.svelte';
-  import { openScrollbackHistory } from './ScrollbackHistoryModal.svelte';
   import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
   import PaneGitPill from './PaneGitPill.svelte';
   import PaneDiffPill from './PaneDiffPill.svelte';
   import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
-  import { settingsStore } from '$lib/stores/settings';
+  import PaneShellSwitcher from './PaneShellSwitcher.svelte';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -27,7 +25,7 @@
     JunctionRef,
     JunctionSnapState,
   } from '$lib/stores/paneTree';
-  import {
+import {
     paneTreeStore,
     workspacePaneTrees,
     getAllPaneIds,
@@ -35,6 +33,10 @@
     activePaneId,
     paneDragSourceId,
     dockPane,
+    activeWorkspaceId,
+    paneCwdStore,
+    terminalTitles,
+    paneForegroundProcessStore,
     persistSplitRatios,
     persistSplitRatiosBatch,
     splitResizeUiState,
@@ -43,17 +45,14 @@
     startSplitResizeDrag,
     updateSplitResizeDrag,
     finishSplitResizeDrag,
+    paneIdsFromRatioUpdates,
     SAME_AXIS_ATTRACT_PX,
     pointerInCoupleZone,
     findJunctionsNearPosition,
-    registerJunction,
-    clearJunctionRegistry,
     findSameAxisRefs,
-    terminalTitles,
-    paneCwdStore,
-    paneForegroundProcessStore,
     collapseCwd,
   } from '$lib/stores/paneTree';
+
 
   interface Props {
     node: PaneNode;
@@ -89,6 +88,25 @@
 
   /** 当前叶节点上的停靠预览（仅拖拽他格悬停时）。 */
   let dockHover: DockRegion | null = $state(null);
+
+  function getDockRegion(e: DragEvent): DockRegion | null {
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const w = rect.width;
+    const h = rect.height;
+
+    const threshold = 0.25;
+
+    if (x < w * threshold) return 'left';
+    if (x > w * (1 - threshold)) return 'right';
+    if (y < h * threshold) return 'top';
+    if (y > h * (1 - threshold)) return 'bottom';
+    if (x > w * 0.3 && x < w * 0.7 && y > h * 0.3 && y < h * 0.7) return 'center';
+    
+    return null;
+  }
 
   /**
    * svelte-splitpanes: horizontal=true → flex 纵向 → 上下分屏（横条分割）；
@@ -322,7 +340,14 @@
       latestPointer = null;
       const updates = finishSplitResizeDrag();
       unbindDragListeners();
-      if (updates.length) await persistSplitRatiosBatch(updates);
+      if (updates.length) {
+        await persistSplitRatiosBatch(updates);
+        // §pane-resize-reflow (2026-05-09): refresh only the panes
+        // affected by this split resize drag.
+        const tree = $workspacePaneTrees.get(workspaceId) ?? $paneTreeStore;
+        const affectedIds = paneIdsFromRatioUpdates(tree, updates);
+        TerminalManager.instance().forceFullRedrawFor(affectedIds);
+      }
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp, { once: true });
@@ -374,7 +399,7 @@
     const sameAxisCandidates = findSameAxisRefs(
       primary,
       SAME_AXIS_ATTRACT_PX
-    ).map((c) => c.ref);
+    ).map((c: any) => c.ref);
     if (!orthogonals.length && !sameAxisCandidates.length) {
       if (splitEngaged(splitPath, $splitResizeUiState)) clearSplitResizeUi();
       return;
@@ -428,7 +453,7 @@
       const sameAxisCandidates = findSameAxisRefs(
         primary,
         SAME_AXIS_ATTRACT_PX
-      ).map((c) => c.ref);
+      ).map((c: any) => c.ref);
       splitResizeUiState.set({
         phase: 'junction',
         primary,
@@ -554,7 +579,7 @@
             class="rg-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
           >
             <div
-              class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 -my-1 select-none"
+              class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
               draggable="true"
               title="拖拽到其它窗格：靠边分屏，靠中间与目标互换"
               onclick={() => activePaneId.set(node.id)}
@@ -630,7 +655,7 @@
               {/if}
             </div>
             {#if node.type === 'leaf'}
-              {@const leafAgentState = node.agent_state}
+              <PaneShellSwitcher paneId={node.id} />
               <!-- Repo switcher (renders only when cwd hosts >1 git repo);
                    then Branch pill (picker + ahead/behind + upstream warn);
                    then Diff pill (working-tree changed-file count + +N -N).
@@ -641,44 +666,6 @@
               <PaneRepoSwitcher paneId={node.id} />
               <PaneGitPill paneId={node.id} />
               <PaneDiffPill paneId={node.id} />
-              <!-- "Run Claude Code here" button — seeds a teammate agent on this
-                   pane and kicks `claude` in the PTY. Busy panes hide the button
-                   so users don't stack agents; click again releases + relaunches
-                   only via the backend release_teammate_agent path.
-                   Hidden entirely when the Claude Code extension is disabled —
-                   the user gets a clean header without the Bot affordance. -->
-              {#if $settingsStore.claudeExtensionEnabled}
-              <button
-                type="button"
-                title={leafAgentState === 'busy'
-                  ? '此窗格已有 agent 运行'
-                  : '在此窗格启动 Claude Code agent（Shift-Click 直接启动）'}
-                disabled={leafAgentState === 'busy' || !isTauri()}
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 disabled:opacity-25 disabled:pointer-events-none"
-                onclick={(e) => {
-                  if (!isTauri()) return;
-                  // Shift / Alt-Click skips the prompt modal and launches bare
-                  // `claude` directly — matches the round-10 behaviour for
-                  // users who've already memorised the shortcut.
-                  openClaudeAgentLauncher(node.id, e.shiftKey || e.altKey);
-                }}
-              >
-                <Bot class="h-3.5 w-3.5" />
-              </button>
-              {/if}
-              <!-- History browser — read-only viewer for bytes that scrolled past
-                   the live pane viewport (backend keeps 4 MiB of block-paged
-                   scrollback per pane). Lives in a modal because the pane
-                   header is already busy with branch / agent affordances. -->
-              <button
-                type="button"
-                title="查看终端历史记录（包含已滚出视窗的早期输出）"
-                disabled={!isTauri()}
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-[var(--rg-accent)]/10 hover:text-[var(--rg-accent)] disabled:opacity-25 disabled:pointer-events-none"
-                onclick={() => openScrollbackHistory(node.id)}
-              >
-                <History class="h-3.5 w-3.5" />
-              </button>
             {/if}
             <button
               type="button"
@@ -690,7 +677,7 @@
               ×
             </button>
           </header>
-          <div class="flex-1 min-h-0 min-w-0">
+          <div class="flex-1 min-h-0 min-w-0 z-79">
             <Pane paneId={node.id} {workspaceId} />
           </div>
         </div>
@@ -703,9 +690,28 @@
              链路问题。inline style 直接挂 SplitContainer 内联表达式，paneTreeStore
              更新后 svelte 一定立刻重写 style。 -->
         <div
-          class="rg-pane splitpanes__pane"
+          class="rg-pane splitpanes__pane relative"
+          role="region"
+          ondragover={(e) => {
+            e.preventDefault();
+            dockHover = getDockRegion(e);
+          }}
+          ondragleave={() => (dockHover = null)}
+          ondrop={async (e) => {
+            e.preventDefault();
+            const sourceId = e.dataTransfer?.getData('text/plain');
+            if (sourceId && child.id && sourceId !== child.id && dockHover) {
+              await dockPane(sourceId, child.id, dockHover);
+            }
+            dockHover = null;
+          }}
           style="{dim}: {ratio}%; flex-grow: 0; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden;"
         >
+          {#if dockHover}
+            <div
+              class="absolute inset-0 z-50 bg-[var(--rg-accent)]/20 border-2 border-[var(--rg-accent)] pointer-events-none"
+            ></div>
+          {/if}
           <SplitLayout
             node={child}
             {workspaceId}
@@ -747,7 +753,7 @@
    */
   :global(.splitpanes__splitter),
   :global(.rg-split > .rg-splitter) {
-    z-index: 30;
+    z-index: 80;
   }
 
   /* 业务高亮：rg-split--junction (4-way orthogonal hover) 和 rg-split--aligned

@@ -1,0 +1,181 @@
+diff --git a/packages/ridge-term/src/render/backend.rs b/packages/ridge-term/src/render/backend.rs
+index 6531405..cb49e9d 100644
+--- a/packages/ridge-term/src/render/backend.rs
++++ b/packages/ridge-term/src/render/backend.rs
+@@ -375,6 +375,28 @@ pub trait RenderBackend {
+     ) {
+     }
+ 
++    /// §1.34 (2026-05-22) — paint the shell-history popup on top of
++    /// the cell grid as a final pass. The backend should:
++    ///   1. Compute pixel rect from `overlay.anchor_row`,
++    ///      `overlay.anchor_col`, `overlay.place_above`, and the
++    ///      capped item count (`min(items.len(), max_visible_rows)`).
++    ///   2. Paint an opaque background panel using `theme.bg`.
++    ///   3. Paint a 1-device-pixel border using `theme.fg` so the
++    ///      panel is visually distinct from the underlying cells.
++    ///   4. Paint each item's text in `theme.fg`; the row at
++    ///      `overlay.selected_index` (when >= 0) gets an inverse
++    ///      treatment: bg = `theme.fg`, fg = `theme.bg`.
++    ///   5. Truncate per-row text that exceeds the panel width.
++    /// Cells underneath the popup are NOT modified — the overlay is
++    /// a top-layer paint only, matching the preedit pattern. Default
++    /// no-op so backends can add this incrementally.
++    fn draw_history_overlay(
++        &mut self,
++        _overlay: &crate::render::renderer::HistoryOverlay,
++        _theme: &Theme,
++    ) {
++    }
++
+     /// Commit the frame to the surface. For Canvas2D this is a no-op
+     /// (drawing was already direct); for WebGPU this submits the command
+     /// encoder.
+@@ -395,6 +417,7 @@ pub fn draw_frame<B: RenderBackend>(
+     selection_rects: &[(usize, usize, usize)],
+     hyperlink_rects: &[(usize, usize, usize)],
+     preedit: Option<&crate::render::renderer::Preedit>,
++    history_overlay: Option<&crate::render::renderer::HistoryOverlay>,
+ ) {
+     backend.begin_frame(metrics, theme);
+     if full_redraw {
+@@ -436,6 +459,14 @@ pub fn draw_frame<B: RenderBackend>(
+         backend.draw_preedit_overlay(&p.text, p.row, p.col, theme);
+     }
+ 
++    // Pass 5: shell-history popup overlay (§1.34). Drawn LAST after
++    // preedit so the popup always sits on top — the user explicitly
++    // opened it with ArrowUp/Down and expects it to obscure the
++    // prompt area until they pick, dismiss, or commit.
++    if let Some(h) = history_overlay {
++        backend.draw_history_overlay(h, theme);
++    }
++
+     backend.end_frame();
+ }
+ 
+diff --git a/packages/ridge-term/src/render/renderer.rs b/packages/ridge-term/src/render/renderer.rs
+index e520ba9..3b642d3 100644
+--- a/packages/ridge-term/src/render/renderer.rs
++++ b/packages/ridge-term/src/render/renderer.rs
+@@ -76,6 +76,19 @@ pub struct Renderer<B: RenderBackend> {
+     /// rendered cells. Cleared via `clear_preedit` from JS on
+     /// `compositionend`.
+     preedit: Option<Preedit>,
++    /// §1.34 (2026-05-22) — shell-history popup overlay. When `Some`,
++    /// the renderer paints a panel of history rows on top of the cell
++    /// grid as the final pass each frame, anchored at
++    /// `(anchor_row, anchor_col)` and growing either upward
++    /// (`place_above=true`) or downward (`place_above=false`).
++    /// The Svelte/DOM `<TerminalHistoryPopup>` component was replaced
++    /// by this overlay so the popup lives on the SAME canvas as the
++    /// terminal cells — no separate DOM element, no z-index battles
++    /// with split-container CSS, no font-metric drift between DOM
++    /// renderer and wasm renderer. Mirror of `preedit` in lifecycle:
++    /// JS installs via `setHistoryOverlay`, every frame paints, JS
++    /// clears via `clearHistoryOverlay`.
++    history_overlay: Option<HistoryOverlay>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -85,6 +98,39 @@ pub struct Preedit {
+     pub col: usize,
+ }
+ 
++/// §1.34 (2026-05-22) — descriptor for the shell-history popup overlay
++/// rendered directly on the wasm canvas (replacing the prior Svelte
++/// `<TerminalHistoryPopup>` DOM element). The JS layer owns the
++/// filter / dedup logic and pushes a snapshot every time the user
++/// changes selection or the filter narrows; the renderer just paints.
++#[derive(Debug, Clone)]
++pub struct HistoryOverlay {
++    /// Filtered history entries, newest first. The renderer paints
++    /// items[0..min(items.len(), max_visible_rows)] in order.
++    /// Empty `items` is allowed (renderer no-ops) but the caller
++    /// should prefer `clear_history_overlay` in that case.
++    pub items: Vec<String>,
++    /// Currently selected row index, or `-1` for "no selection".
++    /// `-1` is rendered without the inverse-color highlight so the
++    /// popup-open state is visually distinct from a row-picked state.
++    pub selected_index: i32,
++    /// Cell row of the input anchor on the active screen (viewport
++    /// coords). The overlay is positioned to abut this row — above
++    /// when `place_above=true`, below otherwise.
++    pub anchor_row: usize,
++    /// Cell column of the input anchor.
++    pub anchor_col: usize,
++    /// Place the popup ABOVE the anchor (overflowing upward) when
++    /// `true`. Used when the prompt sits in the bottom half of the
++    /// viewport so the popup doesn't get clipped by the bottom edge.
++    pub place_above: bool,
++    /// Maximum number of history rows to paint. Items beyond this
++    /// cap are dropped at render time (the JS caller is expected to
++    /// pre-cap to a sensible value like 10). Acts as a hard floor on
++    /// popup height regardless of how much history the shell has.
++    pub max_visible_rows: usize,
++}
++
+ impl<B: RenderBackend> Renderer<B> {
+     pub fn new(backend: B, metrics: FrameMetrics, theme: Theme) -> Self {
+         Self {
+@@ -101,6 +147,29 @@ impl<B: RenderBackend> Renderer<B> {
+             full_redraw_pending: true,
+             last_is_alt: false,
+             preedit: None,
++            history_overlay: None,
++        }
++    }
++
++    /// §1.34 (2026-05-22) — install the shell-history popup overlay.
++    /// Replaces any prior overlay state in place; the next frame
++    /// repaints with the new items / selected_index / anchor.
++    /// `full_redraw_pending = true` so the overlay (and any cells it
++    /// just covered) are painted on the very next tick instead of
++    /// waiting for an unrelated dirty signal.
++    pub fn set_history_overlay(&mut self, overlay: HistoryOverlay) {
++        self.history_overlay = Some(overlay);
++        self.full_redraw_pending = true;
++    }
++
++    /// §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
++    /// No-op when no overlay is installed. Forces a full redraw so
++    /// the cells underneath the prior overlay region repaint from
++    /// kernel state.
++    pub fn clear_history_overlay(&mut self) {
++        if self.history_overlay.is_some() {
++            self.history_overlay = None;
++            self.full_redraw_pending = true;
+         }
+     }
+ 
+@@ -489,6 +558,7 @@ impl<B: RenderBackend> Renderer<B> {
+             &sel_rects,
+             &hl_rects,
+             self.preedit.as_ref(),
++            self.history_overlay.as_ref(),
+         );
+         self.first_frame = false;
+         self.full_redraw_pending = false;
+diff --git a/packages/ridge-term/src/render/mod.rs b/packages/ridge-term/src/render/mod.rs
+index 39d6416..0fb0e8e 100644
+--- a/packages/ridge-term/src/render/mod.rs
++++ b/packages/ridge-term/src/render/mod.rs
+@@ -495,6 +495,18 @@ impl RenderBackend for AnyBackend {
+         }
+     }
+ 
++    fn draw_history_overlay(
++        &mut self,
++        overlay: &crate::render::renderer::HistoryOverlay,
++        theme: &Theme,
++    ) {
++        match self {
++            AnyBackend::Canvas2d(b) => b.draw_history_overlay(overlay, theme),
++            #[cfg(feature = "webgpu")]
++            AnyBackend::Webgpu(b) => b.draw_history_overlay(overlay, theme),
++        }
++    }
++
+     fn end_frame(&mut self) {
+         match self {
+             AnyBackend::Canvas2d(b) => b.end_frame(),

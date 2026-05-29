@@ -1,10 +1,14 @@
 [package]
 name = "ridge"
-version = "0.1.0"
+version = "0.0.3"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
 default-run = "ridge"
+
+[features]
+# 对于自定义构建，启用 "devtools" 这个特性
+devtools = ["tauri/devtools"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -25,12 +29,14 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
 parking_lot = "0.12"
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "1"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+futures = "0.3"
+sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -50,7 +56,40 @@ base64 = "0.22"
 notify = { version = "6", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.4"
 
+# P3.1 (2026-05-20): pull the ridge-term parser + grid + modes into
+# the Tauri binary. `default-features = false` skips the `webgpu`
+# default (whose deps are gated `optional = true` in ridge-term's
+# Cargo.toml + `cfg(target_arch = "wasm32")` blocks). The native
+# build only ends up with vte / unicode-segmentation / serde / the
+# wasm-bindgen no-op stubs, so no wgpu / web-sys / bytemuck creeps
+# into the desktop binary.
+#
+# Not consumed yet — P3.3 wires the per-pane parser task in
+# src-tauri/src/engine/parser.rs. Adding the dep now (zero-import)
+# so a fresh `cargo build` confirms the dependency graph resolves
+# without surprise rebuilds when P3.3 lands.
+ridge-term = { path = "../packages/ridge-term", default-features = false }
+
+# P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
+# the GridDelta wire format. The native PaneParser (`engine::parser`)
+# encodes frames to Vec<u8>, emits via Tauri events; the wasm consumer
+# decodes the same bytes back into DeltaFrame in JsTerminal. Keeping
+# the dep version aligned (both at "1") guarantees the same postcard
+# encoding rules — protocol stability is enforced by DeltaFrame::version,
+# not by source-level postcard compatibility.
+postcard = { version = "1", features = ["alloc"] }
+
+# Remote Control (主线一, 2026-05-24): LAN-First remote access.
+# TOTP for one-time password authentication (RFC 6238).
+# Using manual implementation to avoid new dep downloads.
+# mDNS uses raw UDP multicast — no extra crate needed.
+# WebSocket is built into axum 0.7 — no extra dep needed.
+
 [[bin]]
 name = "tmux"
 path = "src/bin/tmux.rs"
+
+[[bin]]
+name = "remote-server"
+path = "src/bin/remote-server.rs"
 

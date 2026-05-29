@@ -22,11 +22,30 @@ export class RenderHandle {
      */
     applyTheme(theme_obj: any): void;
     /**
+     * §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+     */
+    clearHistoryOverlay(): void;
+    /**
+     * Remove the preedit overlay (JS calls on `compositionend` after
+     * shipping the committed string to the PTY).
+     */
+    clearPreedit(): void;
+    /**
      * Configure font + measure cell dimensions. Returns [cell_w, cell_h]
      * in CSS pixels so JS can calculate cols/rows for a target
      * container size.
      */
     configure(font_family: string, font_size_px: number, dpr: number): Float32Array;
+    /**
+     * Diagnostic: return the kernel-side renderer.theme.{bg, fg,
+     * cursor_color, tui_bg} as a Uint8Array of 16 bytes (4×RGBA).
+     * Lets JS confirm whether `applyTheme` actually propagated into
+     * the renderer state — the JS-side `opts.theme` snapshot only
+     * proves the manager *received* the theme, not that the
+     * wasm renderer accepted it. Cheap (one Theme clone, 16 bytes
+     * copied) so callers may poll without harm.
+     */
+    currentThemeProbe(): Uint8Array;
     /**
      * Force a full redraw on the next render() — useful after
      * invalidating external state without using the dedicated setters.
@@ -52,6 +71,23 @@ export class RenderHandle {
      * `await RenderHandle.newWithWebgpuFirst(canvas)` instead.
      */
     constructor(canvas: HTMLCanvasElement);
+    /**
+     * §p4.9 (2026-05-22) — worker-thread constructor.
+     *
+     * JS bridge: `RenderHandle.newFromOffscreen(offscreenCanvas)`.
+     * Called from `renderWorker.ts::loadKernelAdapter` after the
+     * host transferred a canvas via
+     * `canvas.transferControlToOffscreen()` + postMessage. The
+     * `OffscreenCanvas` here is the same object the worker side
+     * receives in the `bindCanvas` request.
+     *
+     * Canvas2D-only — the WebGPU-first branch is reserved for the
+     * main-thread `newWithWebgpuFirst` because the WebGPU surface
+     * host needs DOM access (window-level GPU adapter / device).
+     * On the worker path we paint via Canvas2D, which is fully
+     * available inside a DedicatedWorker since 2018.
+     */
+    static newFromOffscreen(canvas: OffscreenCanvas): RenderHandle;
     /**
      * Async constructor — try WebGPU first, fall back to Canvas2D
      * on adapter miss / device-creation failure. Always succeeds
@@ -110,6 +146,26 @@ export class RenderHandle {
      * only the truly active terminal blinks. Idempotent.
      */
     setFocused(focused: boolean): void;
+    /**
+     * §1.34 (2026-05-22) — install the shell-history popup overlay.
+     * `items` is a JS array of strings (filtered, newest first).
+     * `selected_index` is `-1` for "no row picked" or
+     * `0..items.len()-1` for a selected row. `(anchor_row,
+     * anchor_col)` is the input anchor in viewport cell coords;
+     * `place_above` chooses growth direction. The 10-row visible
+     * cap is hard-coded inside the kernel so the JS caller can't
+     * request a floor-to-ceiling panel.
+     */
+    setHistoryOverlay(items: Array<any>, selected_index: number, anchor_row: number, anchor_col: number, place_above: boolean): void;
+    /**
+     * Install an IME preedit overlay at the given cell. The renderer
+     * will paint `text` on top of the cell grid each frame until
+     * `clearPreedit` is called. Cells themselves are NOT modified,
+     * so a TUI re-rendering into the overlay's row mid-composition
+     * can't corrupt the preedit, and the preedit can't corrupt the
+     * TUI's rendered cells. JS calls this on `compositionupdate`.
+     */
+    setPreedit(text: string, row: number, col: number): void;
     /**
      * Phase B: record the pane's `(x, y)` position on the host
      * canvas in **device pixels**. JS calls this from
@@ -192,6 +248,33 @@ export class TerminalKernel {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * P3.6 (2026-05-20) — apply one postcard-encoded `DeltaFrame` (produced
+     * by the Rust-side `engine::parser::PaneParser`) to the mirror grid.
+     *
+     * Counterpart to `feed()` for the `Settings.parserBackend = 'rust'`
+     * path: PTY bytes are parsed once by the native PaneParser, the
+     * resulting frame is postcard-encoded and emitted as a Tauri event,
+     * and the wasm consumer applies the diff here instead of running its
+     * own vte parse on the JS main thread.
+     *
+     * Returns `Err(JsValue)` with a human-readable string on decode
+     * failure OR protocol-version mismatch — caller is expected to log
+     * and trigger a `force_full_reframe` self-heal (manager.ts P3.9
+     * wiring).
+     *
+     * Selection / search invalidation: only on the same two conditions
+     * `feed()` uses — scrollback eviction (capacity rollover) or a hard
+     * `Reset` delta. Every other delta variant (`Cells`, `Cursor`,
+     * `ScreenSwitch`, `Resize`, semantic events, `ModeChange`,
+     * `ScrollbackAppend` below capacity) leaves abs-row anchors valid,
+     * so the user's drag-selection survives the high-frequency TUI
+     * redraws Claude Code / htop / vim / less emit (the same
+     * "TUI 一直刷新无法选中复制" symptom the feed() path fixed in §B.2,
+     * rebroken by the unconditional clear that originally lived here
+     * when the rust-parser backend landed in P3.6).
+     */
+    applyDeltaFrame(bytes: Uint8Array): void;
+    /**
      * §1.27 (2026-05-07) — diagnostic cell inspector for the dim/IME
      * residue investigation. Returns up to `len` cells starting at
      * (row, col) on the active screen as a JS array of plain objects
@@ -237,6 +320,21 @@ export class TerminalKernel {
     cursorRow(): number;
     dumpVisibleText(): any[];
     /**
+     * E2E-only — build a postcard-encoded `DeltaFrame` carrying a single
+     * `Cursor` delta with the supplied coordinates and a default block
+     * shape. Lets `tests/e2e-shell/` exercise the `applyDeltaFrame` path
+     * without spinning up a real shell or hand-rolling the postcard
+     * schema. No state mutation; returns bytes ready to feed back into
+     * `applyDeltaFrame`.
+     *
+     * `pane_seq` is opaque to the mirror (used only for diagnostics) —
+     * callers can pass any monotonically increasing u32. We accept a
+     * narrower `u32` than the field's underlying `u64` because JS
+     * numbers lose precision past 2^53 and tests never need values
+     * anywhere near that range.
+     */
+    e2eEncodeCursorDeltaFrame(pane_seq: number, row: number, col: number): Uint8Array;
+    /**
      * Encode a key event to the byte sequence the PTY expects. Returns
      * an empty array if the event is unknown (caller may then let the
      * browser handle it natively).
@@ -245,6 +343,14 @@ export class TerminalKernel {
      * calling — see `input.rs` for rationale.
      */
     encodeKey(key: string, ctrl: boolean, alt: boolean, shift: boolean, meta: boolean): Uint8Array;
+    /**
+     * Encode a mouse event as an SGR terminal sequence. Delegates to
+     * `input::encode_mouse` which generates `ESC [ < btn ; col ; row [Mm]`
+     * per xterm SGR spec (column first, then row).
+     * Always uses SGR format regardless of ?1006 state — the terminal
+     * decodes both; SGR is simpler and doesn't overflow at high row/col.
+     */
+    encodeMouse(row: number, col: number, button: number, action: number, shift: boolean, ctrl: boolean, alt: boolean): Uint8Array;
     /**
      * Wrap a paste string for the PTY, applying bracketed-paste
      * markers when DEC mode 2004 is active.
@@ -276,8 +382,27 @@ export class TerminalKernel {
      * within the decay window) and the kernel is NOT on alt screen.
      * Read by `manager.ts::fitPane` to decide whether to wipe primary
      * before resizing the PTY (mirrors the existing alt-screen branch).
+     * Also read by `manager.ts::isInlineTuiActive` for keyboard/mouse
+     * priority routing — see also `isMouseReporting`.
      */
     isInlineTuiMode(): boolean;
+    /**
+     * Returns true when ?1003 (any-event / motion tracking) is active.
+     */
+    isMouseAnyEvent(): boolean;
+    /**
+     * Returns true when ?1002 (button-event / drag tracking) is active.
+     */
+    isMouseButtonEvent(): boolean;
+    /**
+     * Returns true when any DEC mouse reporting mode is active
+     * (?1000 normal, ?1002 button-event, or ?1003 any-event).
+     */
+    isMouseReporting(): boolean;
+    /**
+     * Returns true when ?1006 (SGR mouse encoding) is active.
+     */
+    isMouseSgr(): boolean;
     /**
      * Synchronous output mode `?2026`. While `true`, the manager should
      * hold off rendering frames so the user doesn't see torn intermediate
@@ -317,7 +442,37 @@ export class TerminalKernel {
      */
     lastAbsCsiPosition(): any;
     lastResizeDiags(): any[];
+    /**
+     * §1.35 — force-leave alt screen on the kernel side when the PTY
+     * process exits while a TUI is still in alt screen mode. Without
+     * this the new shell spawned by `pane-pty-closed` would write into
+     * the alt buffer, hiding the primary screen content from the user.
+     */
+    leaveAltScreen(): void;
+    /**
+     * Single-call bitmask of every DEC mouse mode the caller cares
+     * about. Eliminates the 3-4 separate wasm boundary crossings the
+     * JS pointer handlers used to make per pointermove event:
+     *
+     *   bit 0 (0x1) = ?1000 (mouse_normal)
+     *   bit 1 (0x2) = ?1002 (button_event / drag tracking)
+     *   bit 2 (0x4) = ?1003 (any_event / all motion)
+     *   bit 3 (0x8) = ?1006 (SGR encoding)
+     *
+     * `bits != 0` <=> `isMouseReporting() == true`. The individual
+     * boolean getters above are kept for non-hot-path callers.
+     */
+    mouseReportingModes(): number;
     constructor(rows: number, cols: number, scrollback: number);
+    /**
+     * Called from `manager.ts::handleKeyDown` immediately after the
+     * user sends Ctrl+C (ETX `\x03`) through the data handler. Arms
+     * the inline-TUI heuristic's grace window so subsequent PSReadLine
+     * CHA `\x1b[G` emits don't keep the pane stuck in "inline TUI
+     * mode" forever after the user killed the foreground TUI. See
+     * `Grid::is_inline_tui_active_at` for the full rationale.
+     */
+    noteCtrlCSent(): void;
     /**
      * Prepend older history at the OLDEST end of the scrollback ring.
      *
@@ -381,6 +536,59 @@ export class TerminalKernel {
      */
     setSelection(start_row: number, start_col: number, end_row: number, end_col: number): void;
     /**
+     * Programmatically set a selection range in **absolute-row coords**
+     * (see `selection.rs` module docstring). The JS-side drag state
+     * machine in `manager.ts` stores its anchor / focus as `abs_row =
+     * vp_row + scroll_offset` so the selection survives scroll without
+     * the caller having to re-translate every sync — this entry point
+     * lets it forward those abs values directly. Skips the vp→abs
+     * conversion that `set_selection` does internally, so it's safe to
+     * call repeatedly during a drag that scrolls the viewport.
+     */
+    setSelectionAbs(start_abs_row: number, start_col: number, end_abs_row: number, end_col: number): void;
+    /**
+     * §1.33 (2026-05-22) — hard gate for the shell-history popup
+     * feature. Returns `true` ONLY when the kernel is confident a
+     * normal shell prompt owns the input line on this pane; every
+     * known TUI signal short-circuits to `false`.
+     *
+     * Why this lives in WASM instead of the Svelte layer it used to
+     * be in (`src/lib/terminal/tuiGate.ts`):
+     *   - The JS `tuiGate` honoured the sticky window only while the
+     *     cursor was hidden. Claude Code's input prompt flips the
+     *     cursor visible BEFORE the inline-TUI heuristic decays, so
+     *     the user saw the popup hijack ArrowUp inside Claude.
+     *   - With the gate inside the kernel, we own a sticky timestamp
+     *     that bumps on every signal observation, independent of
+     *     cursor visibility — the JS layer can no longer race the
+     *     popup open between TUI frames.
+     *
+     * Decision order (any `false` wins immediately):
+     *   1. DECCKM `?1` (app_cursor_keys) — protocol-level "the app
+     *      owns the arrow keys" declaration. zsh+zle, bash+readline-
+     *      vi-mode, PSReadLine, Ink TUIs all set this.
+     *   2. Alt screen `?1049` / `?47` — full-screen TUI (vim, less,
+     *      htop) actively rendering.
+     *   3. Mouse reporting `?1000` / `?1002` / `?1003` — TUI tracks
+     *      mouse input, keyboard ownership goes with it.
+     *   4. Inline-TUI heuristic — Ink / log-update style apps that
+     *      hide the cursor + emit absolute-positioning CSIs within
+     *      the kernel's `INLINE_TUI_DECAY_MS` window.
+     *   5. Cursor hidden `?25l` — shell prompts always run with the
+     *      cursor visible; a hidden cursor is strong evidence a TUI
+     *      is mid-render or holding the screen between frames.
+     *   6. Sticky window — if any signal above was observed true
+     *      within `SHELL_HISTORY_STICKY_MS`, stay closed. Catches
+     *      the brief intra-frame "all signals false" windows that
+     *      let the JS-side gate leak before this method existed.
+     *
+     * Side effect: takes `&mut self` because the sticky timestamp is
+     * refreshed on every live-signal observation. Callers must hold
+     * a mutable handle to the kernel (they always do — wasm-bindgen
+     * generates `&mut self` on the JS side too).
+     */
+    shouldAllowShellHistory(): boolean;
+    /**
      * Drain semantic events (title, cwd, hyperlinks, bell) produced by
      * the parser during the most recent `feed` calls. Returns a JS
      * array of tagged objects: `{ type: "TitleChanged", value: "..." }`
@@ -411,16 +619,22 @@ export interface InitOutput {
     readonly _init: () => void;
     readonly renderhandle_applyDefaultTheme: (a: number) => void;
     readonly renderhandle_applyTheme: (a: number, b: any) => [number, number];
+    readonly renderhandle_clearHistoryOverlay: (a: number) => void;
+    readonly renderhandle_clearPreedit: (a: number) => void;
     readonly renderhandle_configure: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly renderhandle_currentThemeProbe: (a: number) => [number, number];
     readonly renderhandle_invalidateAll: (a: number) => void;
     readonly renderhandle_isDirty: (a: number, b: number, c: number) => number;
     readonly renderhandle_new: (a: any) => [number, number, number];
+    readonly renderhandle_newFromOffscreen: (a: any) => [number, number, number];
     readonly renderhandle_newWithWebgpuFirst: (a: any, b: number) => any;
     readonly renderhandle_nextBlinkDeadlineMs: (a: number, b: number, c: number) => number;
     readonly renderhandle_recordCachedOnly: (a: number) => number;
     readonly renderhandle_render: (a: number, b: number) => number;
     readonly renderhandle_resize: (a: number, b: number, c: number, d: number) => [number, number];
     readonly renderhandle_setFocused: (a: number, b: number) => void;
+    readonly renderhandle_setHistoryOverlay: (a: number, b: any, c: number, d: number, e: number, f: number) => void;
+    readonly renderhandle_setPreedit: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly renderhandle_setViewportOffset: (a: number, b: number, c: number) => void;
     readonly surfacehosthandle_beginFrame: (a: number, b: number, c: number) => number;
     readonly surfacehosthandle_clone: (a: number) => number;
@@ -428,6 +642,7 @@ export interface InitOutput {
     readonly surfacehosthandle_init: (a: any) => any;
     readonly surfacehosthandle_invalidate: (a: number) => void;
     readonly surfacehosthandle_resize: (a: number, b: number, c: number, d: number) => void;
+    readonly terminalkernel_applyDeltaFrame: (a: number, b: number, c: number) => [number, number];
     readonly terminalkernel_cellsAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_clearScrollback: (a: number) => void;
     readonly terminalkernel_clearSelection: (a: number) => void;
@@ -435,7 +650,9 @@ export interface InitOutput {
     readonly terminalkernel_cursorCol: (a: number) => number;
     readonly terminalkernel_cursorRow: (a: number) => number;
     readonly terminalkernel_dumpVisibleText: (a: number) => [number, number];
+    readonly terminalkernel_e2eEncodeCursorDeltaFrame: (a: number, b: number, c: number, d: number) => [number, number];
     readonly terminalkernel_encodeKey: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly terminalkernel_encodeMouse: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly terminalkernel_encodePaste: (a: number, b: number, c: number) => [number, number];
     readonly terminalkernel_feed: (a: number, b: number, c: number) => void;
     readonly terminalkernel_getSelectionText: (a: number) => [number, number];
@@ -447,11 +664,18 @@ export interface InitOutput {
     readonly terminalkernel_isCursorVisible: (a: number) => number;
     readonly terminalkernel_isFocusReporting: (a: number) => number;
     readonly terminalkernel_isInlineTuiMode: (a: number) => number;
+    readonly terminalkernel_isMouseAnyEvent: (a: number) => number;
+    readonly terminalkernel_isMouseButtonEvent: (a: number) => number;
+    readonly terminalkernel_isMouseReporting: (a: number) => number;
+    readonly terminalkernel_isMouseSgr: (a: number) => number;
     readonly terminalkernel_isSyncOutput: (a: number) => number;
     readonly terminalkernel_isUserScrollLocked: (a: number) => number;
     readonly terminalkernel_lastAbsCsiPosition: (a: number) => any;
     readonly terminalkernel_lastResizeDiags: (a: number) => [number, number];
+    readonly terminalkernel_leaveAltScreen: (a: number) => void;
+    readonly terminalkernel_mouseReportingModes: (a: number) => number;
     readonly terminalkernel_new: (a: number, b: number, c: number) => number;
+    readonly terminalkernel_noteCtrlCSent: (a: number) => void;
     readonly terminalkernel_prependScrollback: (a: number, b: number, c: number) => void;
     readonly terminalkernel_resize: (a: number, b: number, c: number) => void;
     readonly terminalkernel_rows: (a: number) => number;
@@ -470,12 +694,14 @@ export interface InitOutput {
     readonly terminalkernel_selectLineAt: (a: number, b: number) => void;
     readonly terminalkernel_selectWordAt: (a: number, b: number, c: number) => void;
     readonly terminalkernel_setSelection: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly terminalkernel_setSelectionAbs: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly terminalkernel_shouldAllowShellHistory: (a: number) => number;
     readonly terminalkernel_takePendingEvents: (a: number) => [number, number];
     readonly terminalkernel_takePendingResponse: (a: number) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h8457813fc47a9b01: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h1562f2e1bee1ba69: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hd7d168d362deb406_2: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h20b1ef79d5903e39_2: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

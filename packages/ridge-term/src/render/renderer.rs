@@ -59,6 +59,76 @@ pub struct Renderer<B: RenderBackend> {
     /// Whether a full redraw is needed next frame (theme change, font
     /// change, resize). Cleared after the next tick.
     full_redraw_pending: bool,
+    /// Last-seen `Grid::is_alt_screen()` value. On any flip
+    /// (primary→alt, alt→primary) the snapshot tracks rows from the
+    /// *other* screen and would produce stale dirty-row decisions —
+    /// most visibly, exiting a TUI (e.g. `vim`, `htop`) appeared to
+    /// blank the primary scrollback because per-row hashes happened to
+    /// match between alt and primary content. We compare here and force
+    /// `invalidate_all` on transitions so the next frame redraws
+    /// against the currently-active screen from scratch.
+    last_is_alt: bool,
+    /// IME preedit overlay (CJK composition in progress). When `Some`,
+    /// the renderer paints the preedit text on top of the cell grid at
+    /// `row, col` as a final pass — the cells themselves are NOT
+    /// modified, so a TUI redrawing into the same row mid-composition
+    /// can't corrupt the preedit AND the preedit can't corrupt the TUI's
+    /// rendered cells. Cleared via `clear_preedit` from JS on
+    /// `compositionend`.
+    preedit: Option<Preedit>,
+    /// §1.34 (2026-05-22) — shell-history popup overlay. When `Some`,
+    /// the renderer paints a panel of history rows on top of the cell
+    /// grid as the final pass each frame, anchored at
+    /// `(anchor_row, anchor_col)` and growing either upward
+    /// (`place_above=true`) or downward (`place_above=false`).
+    /// The Svelte/DOM `<TerminalHistoryPopup>` component was replaced
+    /// by this overlay so the popup lives on the SAME canvas as the
+    /// terminal cells — no separate DOM element, no z-index battles
+    /// with split-container CSS, no font-metric drift between DOM
+    /// renderer and wasm renderer. Mirror of `preedit` in lifecycle:
+    /// JS installs via `setHistoryOverlay`, every frame paints, JS
+    /// clears via `clearHistoryOverlay`.
+    history_overlay: Option<HistoryOverlay>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Preedit {
+    pub text: String,
+    pub row: usize,
+    pub col: usize,
+}
+
+/// §1.34 (2026-05-22) — descriptor for the shell-history popup overlay
+/// rendered directly on the wasm canvas (replacing the prior Svelte
+/// `<TerminalHistoryPopup>` DOM element). The JS layer owns the
+/// filter / dedup logic and pushes a snapshot every time the user
+/// changes selection or the filter narrows; the renderer just paints.
+#[derive(Debug, Clone)]
+pub struct HistoryOverlay {
+    /// Filtered history entries, newest first. The renderer paints
+    /// items[0..min(items.len(), max_visible_rows)] in order.
+    /// Empty `items` is allowed (renderer no-ops) but the caller
+    /// should prefer `clear_history_overlay` in that case.
+    pub items: Vec<String>,
+    /// Currently selected row index, or `-1` for "no selection".
+    /// `-1` is rendered without the inverse-color highlight so the
+    /// popup-open state is visually distinct from a row-picked state.
+    pub selected_index: i32,
+    /// Cell row of the input anchor on the active screen (viewport
+    /// coords). The overlay is positioned to abut this row — above
+    /// when `place_above=true`, below otherwise.
+    pub anchor_row: usize,
+    /// Cell column of the input anchor.
+    pub anchor_col: usize,
+    /// Place the popup ABOVE the anchor (overflowing upward) when
+    /// `true`. Used when the prompt sits in the bottom half of the
+    /// viewport so the popup doesn't get clipped by the bottom edge.
+    pub place_above: bool,
+    /// Maximum number of history rows to paint. Items beyond this
+    /// cap are dropped at render time (the JS caller is expected to
+    /// pre-cap to a sensible value like 10). Acts as a hard floor on
+    /// popup height regardless of how much history the shell has.
+    pub max_visible_rows: usize,
 }
 
 impl<B: RenderBackend> Renderer<B> {
@@ -75,6 +145,56 @@ impl<B: RenderBackend> Renderer<B> {
             theme,
             first_frame: true,
             full_redraw_pending: true,
+            last_is_alt: false,
+            preedit: None,
+            history_overlay: None,
+        }
+    }
+
+    /// §1.34 (2026-05-22) — install the shell-history popup overlay.
+    /// Replaces any prior overlay state in place; the next frame
+    /// repaints with the new items / selected_index / anchor.
+    /// `full_redraw_pending = true` so the overlay (and any cells it
+    /// just covered) are painted on the very next tick instead of
+    /// waiting for an unrelated dirty signal.
+    pub fn set_history_overlay(&mut self, overlay: HistoryOverlay) {
+        self.history_overlay = Some(overlay);
+        self.full_redraw_pending = true;
+    }
+
+    /// §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
+    /// No-op when no overlay is installed. Forces a full redraw so
+    /// the cells underneath the prior overlay region repaint from
+    /// kernel state.
+    pub fn clear_history_overlay(&mut self) {
+        if self.history_overlay.is_some() {
+            self.history_overlay = None;
+            self.full_redraw_pending = true;
+        }
+    }
+
+    /// Install an IME preedit overlay at the given cell. The renderer
+    /// paints the text on top of the cell grid as a final pass each
+    /// frame — non-destructive (cells unchanged). Replaces any prior
+    /// preedit. Empty `text` is treated the same as `clear_preedit`.
+    pub fn set_preedit(&mut self, text: String, row: usize, col: usize) {
+        if text.is_empty() {
+            self.preedit = None;
+        } else {
+            self.preedit = Some(Preedit { text, row, col });
+        }
+        // Force the next frame to repaint so the overlay (or its
+        // removal) is visible immediately. Without this an idle
+        // renderer might skip the next tick entirely.
+        self.full_redraw_pending = true;
+    }
+
+    /// Remove the preedit overlay (called on `compositionend` after the
+    /// committed string has been shipped to the PTY).
+    pub fn clear_preedit(&mut self) {
+        if self.preedit.is_some() {
+            self.preedit = None;
+            self.full_redraw_pending = true;
         }
     }
 
@@ -176,6 +296,23 @@ impl<B: RenderBackend> Renderer<B> {
     /// blink is also gated on `Modes::cursor_blink`.
     pub fn tick(&mut self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         let rows_n = terminal.rows();
+
+        // Screen-switch invalidation: when the active screen flips
+        // (DECSET/DECRST ?1049 / ?47 / ?1047), the snapshot was built
+        // against the *previous* screen's rows. Without clearing it,
+        // exiting a fullscreen TUI like `vim` or `htop` could leave the
+        // primary scrollback blank — alt-screen rows and the now-active
+        // primary rows would hash-collide on common blank patterns and
+        // the renderer would skip those rows entirely. Force a full
+        // reset on every transition so the next frame redraws the
+        // currently-active screen against an empty snapshot. The check
+        // happens before sel/blink/resize so the post-invalidate state
+        // captured below already reflects the post-switch screen.
+        let cur_is_alt = terminal.is_alt_screen();
+        if cur_is_alt != self.last_is_alt {
+            self.last_is_alt = cur_is_alt;
+            self.invalidate_all();
+        }
 
         // Selection changed → force redraw so old translucent overlay
         // doesn't linger on rows that left the selection.
@@ -293,15 +430,30 @@ impl<B: RenderBackend> Renderer<B> {
         // mutations is cheap (most rows have 0 spans). URI/id are NOT
         // hashed — the underline overlay only varies spatially, so
         // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
-        let mut dirty_rows: Vec<usize> = Vec::with_capacity(rows_n);
+        let mut dirty_rows = Vec::with_capacity(rows_n);
+        let mut dirty_flags = vec![false; rows_n];
+
         for r in 0..rows_n {
             let Some(row) = terminal.viewport_row(r) else {
                 continue;
             };
             let h = compute_row_hash(row);
-            if self.full_redraw_pending || h != self.snapshot[r] {
-                self.snapshot[r] = h;
+            if self.full_redraw_pending || r >= self.snapshot.len() || h != self.snapshot[r] {
+                if r < self.snapshot.len() {
+                    self.snapshot[r] = h;
+                } else {
+                    self.snapshot.push(h);
+                }
                 dirty_rows.push(r);
+                dirty_flags[r] = true;
+            }
+        }
+
+        // Expand dirty rows upwards to fix descender cutoff (Row N's background covers Row N-1's descenders).
+        for r in (1..rows_n).rev() {
+            if dirty_flags[r] && !dirty_flags[r - 1] {
+                dirty_rows.push(r - 1);
+                dirty_flags[r - 1] = true;
             }
         }
 
@@ -375,6 +527,13 @@ impl<B: RenderBackend> Renderer<B> {
 
         let do_full = self.first_frame || self.full_redraw_pending;
         let sel_rects = selection_to_rects(selection, terminal.cols(), terminal.rows());
+        // Potentially set tui_mode on the metrics so backends can avoid
+        // forcing the theme background onto cells whose background hasn't
+        // been explicitly set by the foreground program.
+        let tui_mode = terminal.grid().is_alt_screen() || terminal
+            .grid()
+            .is_inline_tui_active_at(crate::term::clock::now_ms(), terminal.modes().cursor_visible);
+        let tui_metrics = FrameMetrics { tui_mode, ..self.metrics };
         // Collect hyperlink rects from every visible row. Most rows have
         // empty `hyperlinks` so this is cheap. We always re-emit on full
         // redraw; partial draws still emit them so the underlines aren't
@@ -390,7 +549,7 @@ impl<B: RenderBackend> Renderer<B> {
         }
         draw_frame(
             &mut self.backend,
-            self.metrics,
+            tui_metrics,
             &self.theme,
             &rows,
             self.last_cursor.as_ref(),
@@ -398,6 +557,8 @@ impl<B: RenderBackend> Renderer<B> {
             do_full,
             &sel_rects,
             &hl_rects,
+            self.preedit.as_ref(),
+            self.history_overlay.as_ref(),
         );
         self.first_frame = false;
         self.full_redraw_pending = false;
@@ -481,6 +642,17 @@ impl<B: RenderBackend> Renderer<B> {
     /// `tick` uses. Caller is responsible for the lower bound (e.g.
     /// `Math.max(deadline, 1)` to avoid 0-ms timers).
     pub fn next_blink_deadline_ms(&self, terminal: &Terminal, now_ms: f64) -> f64 {
+        // `self.focused` gates cursor rendering at compute_cursor_draw
+        // (line 355): when the pane isn't focused, `new_cursor` is
+        // always None, `last_cursor` quickly settles to None, and no
+        // further blink-driven dirty events fire. Returning a finite
+        // deadline here would still wake the RAF loop every 500 ms to
+        // run a no-op tick — burning the whole point of letting the
+        // loop sleep through unfocused idle. Cap to Infinity so the
+        // loop falls through to its 1 s watchdog (caller clamps).
+        if !self.focused {
+            return f64::INFINITY;
+        }
         let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         if !blink_active {
             return f64::INFINITY;

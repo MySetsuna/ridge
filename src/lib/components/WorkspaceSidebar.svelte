@@ -121,14 +121,11 @@
  <!-- 头部 -->
  <div class="h-11 px-3 shrink-0 border-b border-[var(--rg-border)] flex items-center justify-between">
  <span class="text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">工作区</span>
- <div class="flex items-center gap-1">
- <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title="保存工作区" onclick={onSave}>
- <Save class="h-4 w-4" />
- </button>
- <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title="新建工作区" onclick={onCreate}>
- <Plus class="h-4 w-4" />
- </button>
- </div>
+  <div class="flex items-center gap-1">
+  <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title="保存工作区" onclick={onSave}>
+    <Save class="h-4 w-4" />
+  </button>
+  </div>
  </div>
 
  <!-- 工作区列表 -->
@@ -195,7 +192,16 @@
  </button>
  {/if}
  </div>
- {/each}
- {/if}
- </div>
+  {/each}
+  {/if}
+  <button
+    type="button"
+    class="flex items-center gap-2 w-full rounded-lg px-2 py-2 text-[13px] text-[var(--rg-fg-muted)] hover:bg-white/[0.04] hover:text-[var(--rg-fg)] transition-colors mt-1"
+    title="新建工作区"
+    onclick={onCreate}
+  >
+    <Plus class="h-4 w-4 shrink-0" />
+    <span>新建工作区</span>
+  </button>
+  </div>
 </div>

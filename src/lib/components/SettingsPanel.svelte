@@ -1,33 +1,20 @@
 <!-- src/lib/components/SettingsPanel.svelte
      统一设置中心。模态弹层；左侧分组 tab，右侧表单。所有可持久化偏好聚合在此：
      外观（主题）、字体（终端 / 编辑器）、搜索 globs、扩展开关。
-     z-index 9994（低于 ContextMenu 9999、ScrollbackHistoryModal 9996，避免遮挡 toast）。
+     z-index 9994（低于 ContextMenu 9999）。
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, Activity, RefreshCw } from 'lucide-svelte';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
     setTheme,
-    setClaudeExtensionEnabled,
-    THEME_IDS,
-    THEME_LABELS,
-    type ThemeId,
   } from '$lib/stores/settings';
+  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
+  import { themeData, getThemeIds, getThemeLabels } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
-  import { activeWorkspaceId } from '$lib/stores/paneTree';
-
-  /** Backend `TeammateMetrics` shape. Mirrors the Rust struct serialized
-   *  via `get_teammate_metrics`. Failure-type keys are dynamic strings
-   *  emitted by route_split (e.g. "activate_failed", "watchdog_30s"). */
-  interface TeammateMetrics {
-    split_attempts: number;
-    split_success: number;
-    failures: Record<string, number>;
-  }
-
   interface Props {
     open: boolean;
     onClose: () => void;
@@ -35,51 +22,8 @@
 
   let { open, onClose }: Props = $props();
 
-  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions' | 'agent';
+  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions' | 'debug';
   let activeSection = $state<SectionId>('appearance');
-
-  // ── Agent 统计 ────────────────────────────────────────────────────────────
-  let agentMetrics = $state<TeammateMetrics | null>(null);
-  let agentMetricsLoading = $state(false);
-  let agentMetricsError = $state<string | null>(null);
-
-  async function loadAgentMetrics(wid: string): Promise<void> {
-    if (!isTauri()) return;
-    agentMetricsLoading = true;
-    agentMetricsError = null;
-    try {
-      agentMetrics = await invoke<TeammateMetrics>('get_teammate_metrics', {
-        workspaceId: wid,
-      });
-    } catch (e) {
-      agentMetricsError = String(e);
-      agentMetrics = null;
-    } finally {
-      agentMetricsLoading = false;
-    }
-  }
-
-  // Auto-load when the user opens the agent section AND re-fetch on
-  // workspace switch. Subscribing to `$activeWorkspaceId` here makes Svelte
-  // re-run the effect whenever the user changes the active workspace, so
-  // the metrics view always reflects the workspace currently in focus.
-  $effect(() => {
-    const wid = $activeWorkspaceId;
-    if (open && activeSection === 'agent' && wid) void loadAgentMetrics(wid);
-  });
-
-  /** Success rate as 0-100 with one decimal place; "—" when no attempts yet. */
-  const agentSuccessRate = $derived.by(() => {
-    if (!agentMetrics || agentMetrics.split_attempts === 0) return '—';
-    const pct = (agentMetrics.split_success / agentMetrics.split_attempts) * 100;
-    return `${pct.toFixed(1)}%`;
-  });
-
-  /** Stable, alphabetised entries for the failures table. */
-  const agentFailureRows = $derived.by(() => {
-    if (!agentMetrics) return [] as Array<[string, number]>;
-    return Object.entries(agentMetrics.failures).sort((a, b) => a[0].localeCompare(b[0]));
-  });
 
   // T14：可用 shell 列表 —— 第一次打开 settings 面板时拉一次。
   interface ShellInfo {
@@ -119,22 +63,31 @@
     }
   }
 
-  /** 主题选择器小卡片：实时预览的色块。与 app.css 色值同步。 */
-  const THEME_PREVIEW: Record<ThemeId, { bg: string; surface: string; accent: string; fg: string }> = {
-    dark:    { bg: '#071009', surface: '#111e14', accent: '#36c26e', fg: '#c8e8d4' },
-    sand:    { bg: '#faf6ef', surface: '#ede5d2', accent: '#c69a4f', fg: '#4a3c2a' },
-    grass:   { bg: '#f3f8ee', surface: '#d9e9c9', accent: '#6c9a3d', fg: '#2c3a25' },
-    soil:    { bg: '#1c1410', surface: '#2d201a', accent: '#d97757', fg: '#e8d9c4' },
-    wheat:   { bg: '#fdf8e8', surface: '#f0e0b0', accent: '#c8860c', fg: '#3a2204' },
-    starsky: { bg: '#040810', surface: '#0c1428', accent: '#4899ff', fg: '#c4d8f8' },
-  };
+  const themeIds = $derived(getThemeIds());
+  const themeLabels = $derived(getThemeLabels());
+
+  const themePreview = $derived.by(() => {
+    const out: Record<string, { bg: string; surface: string; accent: string; fg: string }> = {};
+    for (const id of themeIds) {
+      const t = $themeData.themes.find(x => x.id === id);
+      if (t) {
+        out[id] = {
+          bg: t.colors['bg'] ?? '#000',
+          surface: t.colors['surface'] ?? '#111',
+          accent: t.colors['accent'] ?? '#fff',
+          fg: t.colors['fg'] ?? '#ccc',
+        };
+      }
+    }
+    return out;
+  });
 
   const SECTIONS: { id: SectionId; label: string; icon: typeof Palette }[] = [
     { id: 'appearance',  label: '外观',     icon: Palette },
     { id: 'font',        label: '字体',     icon: Type },
     { id: 'terminal',    label: '终端',     icon: TerminalIcon },
     { id: 'extensions',  label: '扩展',     icon: Puzzle },
-    { id: 'agent',       label: 'Agent 统计', icon: Activity },
+    { id: 'debug',       label: '调试应用',   icon: Bug },
   ];
 </script>
 
@@ -202,8 +155,8 @@
               <div class="text-[12px] text-[var(--rg-fg)] mb-1">主题</div>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">选择整体配色方案。立即生效，自动保存。</div>
               <div class="grid grid-cols-2 gap-3">
-                {#each THEME_IDS as id (id)}
-                  {@const p = THEME_PREVIEW[id]}
+                {#each themeIds as id (id)}
+                  {@const p = themePreview[id]}
                   {@const selected = $settingsStore.theme === id}
                   <button
                     type="button"
@@ -220,7 +173,7 @@
                       </div>
                     </div>
                     <div class="px-3 py-2 bg-[var(--rg-surface)]/60 flex items-center justify-between">
-                      <span class="text-[12px] font-medium text-[var(--rg-fg)]">{THEME_LABELS[id]}</span>
+                      <span class="text-[12px] font-medium text-[var(--rg-fg)]">{themeLabels[id]}</span>
                       {#if selected}
                         <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/20 text-[var(--rg-accent)] font-mono uppercase">使用中</span>
                       {/if}
@@ -246,24 +199,6 @@
                   class="flex-1 accent-[var(--rg-accent)]"
                 />
                 <span class="w-12 text-right text-[12px] font-mono text-[var(--rg-fg)]">{$termFontSize} px</span>
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-padding">终端内边距</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">把终端 canvas 从 pane 边框向内推。0 – 32 px。建议 4 – 12，避免字符贴边。</div>
-              <div class="flex items-center gap-3">
-                <input
-                  id="set-term-padding"
-                  type="range"
-                  min="0"
-                  max="32"
-                  step="1"
-                  value={$settingsStore.terminalPaddingPx}
-                  oninput={(e) => setSetting('terminalPaddingPx', Number((e.currentTarget as HTMLInputElement).value))}
-                  class="flex-1 accent-[var(--rg-accent)]"
-                />
-                <span class="w-12 text-right text-[12px] font-mono text-[var(--rg-fg)]">{$settingsStore.terminalPaddingPx} px</span>
               </div>
             </div>
 
@@ -349,99 +284,94 @@
               {/if}
             </div>
 
+            <div class="pt-4">
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-default-cwd">默认工作目录</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
+                未从终端用 <code class="font-mono">ridge</code> 命令启动时，新建工作区/首个 pane 使用的目录。空 = 使用系统用户 home。
+              </div>
+              <div class="flex gap-2">
+                <input
+                  id="set-default-cwd"
+                  type="text"
+                  value={$settingsStore.defaultCwd}
+                  oninput={(e) => setSetting('defaultCwd', (e.currentTarget as HTMLInputElement).value)}
+                  placeholder="(未设置 — 使用 home)"
+                  class="flex-1 px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)]"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 px-2 py-1.5 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)] hover:bg-[var(--rg-surface-2)] text-[12px] text-[var(--rg-fg)] flex items-center gap-1"
+                  onclick={async () => {
+                    if (!isTauri()) return;
+                    const picked = await openDialog({ directory: true, multiple: false, defaultPath: $settingsStore.defaultCwd || undefined });
+                    if (typeof picked === 'string') setSetting('defaultCwd', picked);
+                  }}
+                  title="浏览选择目录"
+                >
+                  <FolderOpen size={14} />
+                  浏览
+                </button>
+              </div>
+            </div>
+
           {:else if activeSection === 'extensions'}
             <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
               <div class="min-w-0 flex-1">
-                <div class="text-[12px] text-[var(--rg-fg)]">Claude Code 扩展</div>
-                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">启用后显示侧栏 Claude 标签、每个 pane 的 Bot 启动按钮，以及命令历史插件。</div>
+                <div class="text-[12px] text-[var(--rg-fg)]">远程控制</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">启动远程控制服务器，手机浏览器扫码或手动连接后可从移动端操作终端和文件。</div>
               </div>
               <button
                 type="button"
                 role="switch"
-                aria-checked={$settingsStore.claudeExtensionEnabled}
-                aria-label="切换 Claude Code 扩展"
-                title={$settingsStore.claudeExtensionEnabled ? '点击禁用' : '点击启用'}
-                class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.claudeExtensionEnabled
+                aria-checked={$settingsStore.remoteEnabled}
+                aria-label="切换远程控制"
+                title={$settingsStore.remoteEnabled ? '点击关闭远程控制' : '点击启动远程控制'}
+                class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.remoteEnabled
                   ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
                   : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
-                onclick={() => setClaudeExtensionEnabled(!$settingsStore.claudeExtensionEnabled)}
+                onclick={async () => {
+                  const next = !$settingsStore.remoteEnabled;
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke('set_remote_enabled', { enabled: next });
+                  } catch (e) {
+                    console.warn('远程控制切换失败', e);
+                    void refreshRemoteRunning();
+                    return;
+                  }
+                  setSetting('remoteEnabled', next);
+                  void refreshRemoteRunning();
+                }}
               >
                 <span
-                  class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.claudeExtensionEnabled
+                  class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.remoteEnabled
                     ? 'translate-x-[18px]'
                     : 'translate-x-0.5'}"
                 ></span>
               </button>
             </div>
 
-            <div class="text-[11px] text-[var(--rg-fg-muted)] leading-relaxed pt-2">
-              更多扩展（侧栏插件管理、外部主题包等）将在后续版本加入。当前已通过
-              <code class="font-mono">$lib/stores/sidebarPlugins</code>
-              注册的内置插件会随 Claude 扩展开关一并启停。
-            </div>
-
-          {:else if activeSection === 'agent'}
-            <!-- Agent 统计：Claude Code 通过 teammate HTTP 触发的 split 操作度量。
-                 后端 route_split 维护 split_attempts / split_success / failures，
-                 在这里只读展示，方便排查 agent 启动失败的频率与原因。 -->
-            <div class="flex items-start justify-between gap-4 mb-3">
-              <div class="min-w-0 flex-1">
-                <div class="text-[12px] text-[var(--rg-fg)]">当前工作区 split 度量</div>
-                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">
-                  统计来自 teammate HTTP 路由（Claude Code shim 触发的 split 请求）。切换工作区会切换数据源。
-                </div>
+          {:else if activeSection === 'debug'}
+            {#if import.meta.env.DEV}
+            <div>
+              <div class="text-[12px] text-[var(--rg-fg)] mb-1">调试工具</div>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">
+                打开 Chromium DevTools 检查应用布局、网络请求和终端渲染状态。
               </div>
               <button
                 type="button"
-                class="shrink-0 flex items-center gap-1 h-7 px-2 rounded text-[11px] border border-[var(--rg-border)] bg-[var(--rg-surface)] text-[var(--rg-fg)] hover:bg-[var(--rg-surface-2)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={agentMetricsLoading || !$activeWorkspaceId}
-                onclick={() => {
-                  const wid = $activeWorkspaceId;
-                  if (wid) void loadAgentMetrics(wid);
+                class="px-4 py-2 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)] hover:bg-[var(--rg-surface-2)] text-[12px] text-[var(--rg-fg)] transition-colors"
+                onclick={async () => {
+                  try {
+                    await invoke('plugin:webview|internal_toggle_devtools');
+                  } catch (e) {
+                    console.error('toggle devtools failed:', e);
+                  }
                 }}
               >
-                <RefreshCw class="h-3 w-3 {agentMetricsLoading ? 'animate-spin' : ''}" />
-                刷新
+                打开 DevTools
               </button>
             </div>
-
-            {#if agentMetricsError}
-              <div class="p-3 rounded border border-red-500/40 bg-red-500/10 text-[11px] text-red-300">
-                {agentMetricsError}
-              </div>
-            {:else if !agentMetrics}
-              <div class="text-[11px] text-[var(--rg-fg-muted)]/70">{agentMetricsLoading ? '读取中…' : '尚未加载，点击刷新。'}</div>
-            {:else}
-              <div class="grid grid-cols-3 gap-2 mb-3">
-                <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
-                  <div class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">尝试</div>
-                  <div class="text-[18px] font-mono text-[var(--rg-fg)] mt-1">{agentMetrics.split_attempts}</div>
-                </div>
-                <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
-                  <div class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">成功</div>
-                  <div class="text-[18px] font-mono text-[var(--rg-accent)] mt-1">{agentMetrics.split_success}</div>
-                </div>
-                <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
-                  <div class="text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]">成功率</div>
-                  <div class="text-[18px] font-mono text-[var(--rg-fg)] mt-1">{agentSuccessRate}</div>
-                </div>
-              </div>
-
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-1.5">失败类型分布</div>
-              {#if agentFailureRows.length === 0}
-                <div class="p-3 rounded border border-[var(--rg-border)]/60 bg-[var(--rg-surface)]/30 text-[11px] text-[var(--rg-fg-muted)]/70">
-                  无失败记录。
-                </div>
-              {:else}
-                <div class="border border-[var(--rg-border)] rounded overflow-hidden">
-                  {#each agentFailureRows as [reason, count] (reason)}
-                    <div class="flex items-center justify-between px-3 h-7 text-[11px] border-b border-[var(--rg-border)]/40 last:border-b-0 bg-[var(--rg-surface)]/30">
-                      <code class="font-mono text-[var(--rg-fg)]">{reason}</code>
-                      <span class="font-mono text-amber-300">{count}</span>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
             {/if}
           {/if}
         </div>
