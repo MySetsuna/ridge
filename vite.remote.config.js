@@ -22,6 +22,14 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('ridge-term')) return 'term-wasm';
+          if (id.includes('node_modules/lucide-svelte')) return 'icons';
+        },
+      },
+    },
   },
   optimizeDeps: {
     exclude: ['@ridge/term-wasm'],
