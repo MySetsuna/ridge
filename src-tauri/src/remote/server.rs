@@ -940,15 +940,27 @@ async fn handle_ws(socket: WebSocket, ctx: RemoteCtx) {
                         Ok(())
                     }
                     Some("create-pane") => {
-                        // §6: create a terminal in THIS client's active workspace using
-                        // the balanced-split chooser. The new pane streams to every
-                        // viewer via the existing PTY fan-out once subscribed.
+                        // §6: create a terminal in THIS client's active workspace
+                        // using the balanced-split chooser, then immediately activate
+                        // it (Phase 2) at this client's viewport size. Remote clients
+                        // can't call the front-end `activate_pane_pty` Tauri command,
+                        // so without this the pane would sit in `pending_spawns`
+                        // forever ("pending..."). Once live it streams to every viewer
+                        // via the PTY fan-out on subscribe.
                         let shell = parsed["shell"].as_str()
                             .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
                         let result = match crate::commands::pane::remote_create_pane(&ctx.state, active_ws_id, shell) {
-                            Ok(new_id) => serde_json::json!({
-                                "type": "create-pane-result", "success": true, "paneId": new_id.to_string()
-                            }),
+                            Ok(new_id) => match crate::commands::terminal::activate_pane_pty_state(
+                                &ctx.state, None, active_ws_id, new_id,
+                                Some(mobile_rows), Some(mobile_cols),
+                            ) {
+                                Ok(()) => serde_json::json!({
+                                    "type": "create-pane-result", "success": true, "paneId": new_id.to_string()
+                                }),
+                                Err(e) => serde_json::json!({
+                                    "type": "create-pane-result", "success": false, "error": e.to_string()
+                                }),
+                            },
                             Err(e) => serde_json::json!({
                                 "type": "create-pane-result", "success": false, "error": e.to_string()
                             }),
