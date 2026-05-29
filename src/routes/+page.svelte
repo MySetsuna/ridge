@@ -1379,9 +1379,11 @@ function expandSidebar() {
                 </div>
               </div>
             {/if}
+          {/snippet}
+          {#snippet trailingActions()}
             <button
               type="button"
-              class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
+              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
               title="新建根工作区（独立分屏树与终端）"
               onclick={() => createWorkspace()}
             >
@@ -1402,24 +1404,8 @@ function expandSidebar() {
           </button>
         {/if}
 
-        <!-- 手机远程入口：在开发模式下连接到 Vite dev server，构建模式下显示嵌入式远程服务器信息 -->
-        <button
-          type="button"
-          class="rg-no-drag {toolBtn}{sidebarTab === 'remote' ? ' bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
-          title="手机远程控制"
-          onclick={() => {
-            sidebarTab = 'remote';
-            expandSidebar();
-          }}
-        >
-          <Smartphone class="h-4 w-4" />
-        </button>
-
-        <!-- 编辑器抽屉开关：放在分屏按钮左侧，给"打开文件编辑器"一个常驻入口；
-             toggle 行为——已显示时点一下隐藏，已隐藏时再点一下显示，与
-             FileEditor 头部的左侧收起按钮形成开/关对偶。$fileEditorStore
-             的 `isVisible` 用于切换图标突出态，让用户一眼就能看出当前面板
-             状态。 -->
+<!-- 编辑器抽屉开关：没有打开文件时不展示 -->
+        {#if $fileEditorStore.openFiles.length > 0}
         <button
           type="button"
           class="rg-no-drag {toolBtn} {$fileEditorStore.isVisible ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
@@ -1428,6 +1414,7 @@ function expandSidebar() {
         >
           <PanelRightOpen class="h-4 w-4" />
         </button>
+        {/if}
 
         <!-- 分屏操作按钮 -->
         <div

@@ -24,6 +24,7 @@
     onReorder: (fromIndex: number, toIndex: number) => void;
     onRename: (id: string, name: string) => void;
     actions?: Snippet;
+    trailingActions?: Snippet;
   }
 
   let {
@@ -34,6 +35,7 @@
     onReorder,
     onRename,
     actions,
+    trailingActions,
   }: Props = $props();
 
   // svelte-dnd-action 在交互期会替换 items 数组（插入 placeholder 等），
@@ -330,6 +332,11 @@
       </div>
       {/each}
     </div>
+    {#if trailingActions}
+    <div class="shrink-0 rg-no-drag">
+      {@render trailingActions()}
+    </div>
+    {/if}
   </div>
 </div>
 
