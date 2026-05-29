@@ -23,6 +23,25 @@
   let sessions = $state<SessionDto[]>([]);
   let sessionsTimer: ReturnType<typeof setInterval> | null = null;
 
+  // §blacklist: persistent device/IP bans (snake_case keys from the Rust struct).
+  interface BlacklistDto { id: string; device_id?: string | null; ip?: string | null; label: string; added_at: number; }
+  let blacklist = $state<BlacklistDto[]>([]);
+
+  async function refreshBlacklist() {
+    try { blacklist = await invoke<BlacklistDto[]>('list_blacklist'); } catch { blacklist = []; }
+  }
+
+  async function blacklistSession(id: number) {
+    try { await invoke('add_to_blacklist', { id }); } catch { /* ignore */ }
+    refreshSessions();
+    refreshBlacklist();
+  }
+
+  async function unblacklist(id: string) {
+    try { await invoke('remove_from_blacklist', { id }); } catch { /* ignore */ }
+    refreshBlacklist();
+  }
+
   function deviceLabel(s: SessionDto): string {
     if (s.deviceId) return s.deviceId.slice(0, 8);
     return s.remoteAddr || '未知设备';
@@ -85,6 +104,7 @@
   $effect(() => {
     if (remoteEnabled) {
       refreshSessions();
+      refreshBlacklist();
       sessionsTimer = setInterval(refreshSessions, 3000);
     } else {
       if (sessionsTimer) { clearInterval(sessionsTimer); sessionsTimer = null; }
@@ -160,19 +180,54 @@
                 {s.remoteAddr} · 已连接 {Math.floor(s.connectedSecs / 60)} 分
               </p>
             </div>
-            <button
-              onclick={() => disconnectSession(s.id)}
-              class="shrink-0 ml-2 px-2 py-1 rounded text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
-              title="断开后该设备需重新输入验证码才能连接"
-            >
-              断开
-            </button>
+            <div class="shrink-0 ml-2 flex items-center gap-1">
+              <button
+                onclick={() => disconnectSession(s.id)}
+                class="px-2 py-1 rounded text-[10px] font-medium border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
+                title="断开后该设备需重新输入验证码才能连接"
+              >
+                断开
+              </button>
+              <button
+                onclick={() => blacklistSession(s.id)}
+                class="px-2 py-1 rounded text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
+                title="加入黑名单：失效 token 并禁止重连，直到从黑名单移除"
+              >
+                拉黑
+              </button>
+            </div>
           </div>
         {/each}
         {#if sessions.length === 0}
           <p class="text-[11px] text-[var(--rg-fg-muted)] py-1">暂无连接</p>
         {/if}
       </div>
+
+      <!-- §blacklist: barred devices/IPs (persistent) -->
+      {#if blacklist.length > 0}
+        <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
+          <h3 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">
+            黑名单 ({blacklist.length})
+          </h3>
+          {#each blacklist as b (b.id)}
+            <div class="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-[var(--rg-surface)] transition-colors">
+              <div class="min-w-0 flex-1">
+                <p class="text-xs text-[var(--rg-fg)] truncate">{b.label}</p>
+                <p class="text-[10px] text-[var(--rg-fg-muted)] truncate">
+                  {b.device_id ? '设备 ' + b.device_id.slice(0, 8) : ''}{b.device_id && b.ip ? ' · ' : ''}{b.ip ?? ''}
+                </p>
+              </div>
+              <button
+                onclick={() => unblacklist(b.id)}
+                class="shrink-0 ml-2 px-2 py-1 rounded text-[10px] font-medium border border-[var(--rg-border)] text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/10 transition-colors"
+                title="从黑名单移除，允许该设备重新连接"
+              >
+                移除
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
 
       {#if remoteInfo?.ready}
         <!-- QR Code: TOTP authenticator setup -->

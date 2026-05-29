@@ -41,6 +41,11 @@ pub fn run() {
 
     let mut app_state = AppState::new(event_tx);
     app_state.project_store = project_store.map(Arc::new);
+    // §blacklist: load the persistent remote-control blacklist (devices/IPs
+    // barred from connecting) from the app data dir.
+    app_state
+        .remote_blacklist
+        .set_path_and_load(app_data_dir.join("remote-blacklist.json"));
     let teammate_state = app_state.clone();
 
     tauri::Builder::default()
@@ -557,6 +562,9 @@ pub fn run() {
             commands::remote::get_remote_enabled,
             commands::remote::list_remote_sessions,
             commands::remote::disconnect_session,
+            commands::remote::add_to_blacklist,
+            commands::remote::list_blacklist,
+            commands::remote::remove_from_blacklist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

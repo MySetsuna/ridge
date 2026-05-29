@@ -87,6 +87,58 @@ pub fn disconnect_session(state: State<AppState>, id: u64) -> bool {
     state.remote_client_registry.kick(id)
 }
 
+/// §blacklist: bar a live session's device — record its device id (+ IP) in the
+/// persistent blacklist, invalidate its token, and kick it. Until removed from
+/// the blacklist it can no longer obtain a token or connect.
+#[tauri::command]
+pub fn add_to_blacklist(state: State<AppState>, id: u64) -> bool {
+    let Some(info) = state.remote_client_registry.info_of(id) else {
+        return false;
+    };
+    if let Some(ref t) = info.token {
+        state.remote_session_store.invalidate(t);
+    }
+    let device_id = if info.device_id.is_empty() { None } else { Some(info.device_id.clone()) };
+    let ip = if info.remote_addr.is_empty() || info.remote_addr == "unknown" {
+        None
+    } else {
+        Some(info.remote_addr.clone())
+    };
+    // Need at least one identity to enforce against.
+    if device_id.is_none() && ip.is_none() {
+        return false;
+    }
+    let label = device_id
+        .as_deref()
+        .map(|d| d.chars().take(8).collect::<String>())
+        .unwrap_or_else(|| info.remote_addr.clone());
+    let added_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    state.remote_blacklist.add(crate::state::BlacklistEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        device_id,
+        ip,
+        label,
+        added_at,
+    });
+    state.remote_client_registry.kick(id)
+}
+
+/// §blacklist: list current blacklist entries for the RemotePanel.
+#[tauri::command]
+pub fn list_blacklist(state: State<AppState>) -> Vec<crate::state::BlacklistEntry> {
+    state.remote_blacklist.list()
+}
+
+/// §blacklist: remove an entry by its id (un-ban). The device can then reconnect
+/// via the auth code.
+#[tauri::command]
+pub fn remove_from_blacklist(state: State<AppState>, id: String) -> bool {
+    state.remote_blacklist.remove(&id)
+}
+
 fn start_remote_server(state: &AppState) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
