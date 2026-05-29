@@ -21,6 +21,8 @@
 
   const pendingData: Uint8Array[] = [];
   let fitPending = false;
+  let isComposing = false;
+  let compositionStdinTarget: string | null = null;
 
   let fontSize = $state(12);
   let cols = $state(80);
@@ -31,7 +33,7 @@
   let copySuccess = $state(false);
 
   function calcFontSize(): number {
-    const w = window.innerWidth;
+    const w = containerEl ? containerEl.clientWidth : window.innerWidth;
     if (w < 360) return 10;
     if (w < 420) return 11;
     if (w < 540) return 12;
@@ -62,10 +64,17 @@
   });
 
   let ro: ResizeObserver | undefined;
+  let fitDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   onMount(() => {
-    ro = new ResizeObserver(() => fitPane());
+    ro = new ResizeObserver(() => {
+      if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
+      fitDebounceTimer = setTimeout(() => fitPane(), 150);
+    });
     if (containerEl) ro.observe(containerEl);
-    return () => ro?.disconnect();
+    return () => {
+      if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
+      ro?.disconnect();
+    };
   });
 
   function fitPane() {
@@ -156,13 +165,22 @@
     const bytes = kernel.encodeKey(key, ctrl, alt, shift, false);
     if (bytes.length > 0) {
       onStdin(new TextDecoder().decode(bytes));
-    } else if (key === 'Tab') {
-      onStdin('\t');
-    } else if (key === 'Escape') {
-      onStdin('\x1b');
-    } else if (key === 'Enter') {
-      onStdin('\r');
-    } else if (key.startsWith('Arrow')) {
+      return;
+    }
+    if (key === 'Tab') {
+      onStdin(shift ? '\x1b[Z' : '\t');
+      return;
+    }
+    if (key === 'Escape') { onStdin('\x1b'); return; }
+    if (key === 'Enter') { onStdin('\r'); return; }
+    if (key === 'Backspace') { onStdin('\x7f'); return; }
+    if (key === 'Delete') { onStdin('\x1b[3~'); return; }
+    if (key === 'Home') { onStdin('\x1b[H'); return; }
+    if (key === 'End') { onStdin('\x1b[F'); return; }
+    if (key === 'PageUp') { onStdin('\x1b[5~'); return; }
+    if (key === 'PageDown') { onStdin('\x1b[6~'); return; }
+    if (key === 'Insert') { onStdin('\x1b[2~'); return; }
+    if (key.startsWith('Arrow')) {
       const map: Record<string, string> = {
         ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
         ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
@@ -344,9 +362,35 @@
     kernel?.clearSelection();
   }
 
+  function handleCompositionStart(_e: CompositionEvent) {
+    isComposing = true;
+    compositionStdinTarget = null;
+  }
+
+  function handleCompositionUpdate(e: CompositionEvent) {
+    if (!paneId || !kernel || !renderHandle) return;
+    const r = kernel.cursorRow?.() ?? -1;
+    const c = kernel.cursorCol?.() ?? -1;
+    const h = renderHandle as unknown as { setPreedit?: (t: string, r: number, c: number) => void };
+    h.setPreedit?.(e.data, r, c);
+  }
+
+  function handleCompositionEnd(e: CompositionEvent) {
+    isComposing = false;
+    if (!paneId || !kernel || !renderHandle) return;
+    const h = renderHandle as unknown as { clearPreedit?: () => void };
+    h.clearPreedit?.();
+    const text = e.data;
+    if (text) {
+      const bytes = kernel.encodePaste(text);
+      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+    }
+  }
+
   // ─── Keyboard handling ────────────────────────────────────────────
   function handleKeydown(e: KeyboardEvent) {
-    if (!paneId || !kernel || e.ctrlKey || e.metaKey) return;
+    if (isComposing || e.isComposing) return;
+    if (!paneId || !kernel) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       onStdin('\r');
@@ -354,21 +398,100 @@
     }
     if (e.key === 'Backspace') {
       e.preventDefault();
-      const bytes = kernel.encodeKey('Backspace', false, false, false, false);
+      const bytes = kernel.encodeKey('Backspace', e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
       else onStdin('\x7f');
       return;
     }
+    if (e.key === 'Delete') {
+      e.preventDefault();
+      const bytes = kernel.encodeKey('Delete', e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      else onStdin('\x1b[3~');
+      return;
+    }
     if (e.key === 'Tab') {
       e.preventDefault();
-      onStdin('\t');
+      if (e.shiftKey) {
+        onStdin('\x1b[Z');
+      } else {
+        onStdin('\t');
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onStdin('\x1b');
+      return;
+    }
+    if (e.key === 'Home') {
+      e.preventDefault();
+      const bytes = kernel.encodeKey('Home', e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      else onStdin('\x1b[H');
+      return;
+    }
+    if (e.key === 'End') {
+      e.preventDefault();
+      const bytes = kernel.encodeKey('End', e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      else onStdin('\x1b[F');
+      return;
+    }
+    if (e.key === 'PageUp') {
+      e.preventDefault();
+      const bytes = kernel.encodeKey('PageUp', e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      else onStdin('\x1b[5~');
+      return;
+    }
+    if (e.key === 'PageDown') {
+      e.preventDefault();
+      const bytes = kernel.encodeKey('PageDown', e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      else onStdin('\x1b[6~');
+      return;
+    }
+    if (e.key === 'Insert') {
+      e.preventDefault();
+      onStdin('\x1b[2~');
+      return;
+    }
+    if (e.key.startsWith('F') && e.key.length >= 2) {
+      e.preventDefault();
+      const fn = parseInt(e.key.slice(1));
+      if (fn >= 1 && fn <= 12) {
+        let seq = '';
+        if (fn === 1) seq = '\x1bOP';
+        else if (fn === 2) seq = '\x1bOQ';
+        else if (fn === 3) seq = '\x1bOR';
+        else if (fn === 4) seq = '\x1bOS';
+        else if (fn <= 5) seq = '\x1b[15~';
+        else if (fn === 6) seq = '\x1b[17~';
+        else if (fn === 7) seq = '\x1b[18~';
+        else if (fn === 8) seq = '\x1b[19~';
+        else if (fn === 9) seq = '\x1b[20~';
+        else if (fn === 10) seq = '\x1b[21~';
+        else if (fn === 11) seq = '\x1b[23~';
+        else if (fn === 12) seq = '\x1b[24~';
+        if (seq) onStdin(seq);
+      }
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const bytes = kernel.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) {
+        e.preventDefault();
+        onStdin(new TextDecoder().decode(bytes));
+      }
       return;
     }
     if (e.key.length === 1) {
       e.preventDefault();
-      const bytes = kernel.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, false);
+      const bytes = kernel.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
       else onStdin(e.key);
+      return;
     }
     if (e.key.startsWith('Arrow')) {
       e.preventDefault();
@@ -376,14 +499,29 @@
         ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
         ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
       };
-      const bytes = kernel.encodeKey(e.key, false, e.altKey, e.shiftKey, false);
+      const bytes = kernel.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
       else if (map[e.key]) onStdin(map[e.key]);
     }
   }
+
+  async function handlePaste(e: ClipboardEvent) {
+    if (!paneId || !kernel) return;
+    e.preventDefault();
+    const text = e.clipboardData?.getData('text') ?? '';
+    if (!text) return;
+    const bytes = kernel.encodePaste(text);
+    if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+  }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window
+  onkeydown={handleKeydown}
+  oncompositionstart={handleCompositionStart}
+  oncompositionupdate={handleCompositionUpdate}
+  oncompositionend={handleCompositionEnd}
+  onpaste={handlePaste}
+/>
 
 <div class="container" bind:this={containerEl} role="application"
   ontouchstart={handleTouchStart}
@@ -411,7 +549,7 @@
 
 <style>
   .container{position:relative;flex:1;overflow:hidden;background:#0d1117;touch-action:manipulation}
-  .term-canvas{display:block;touch-action:none}
+  .term-canvas{display:block;width:100%;height:100%;touch-action:none}
   .term-canvas.hidden{opacity:0}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8b949e;font-size:14px}
 

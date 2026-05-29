@@ -4270,6 +4270,7 @@ export class TerminalManager {
 				// pure workspace switches — typically same layout).
 				if (entry.wasHiddenLastTick) {
 					entry.wasHiddenLastTick = false;
+					this._recomputeViewport(entry);
 					void this.fitPane(entry);
 				}
 				// Synchronous output mode (?2026): hold rendering while the
