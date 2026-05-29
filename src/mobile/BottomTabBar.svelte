@@ -19,9 +19,13 @@
 
   let wsSwitching = $state(false);
   let menuOpen = $state(false);
+  let paneMenuOpen = $state(false);
+  let paneBusy = $state(false);
 
   const activeWs = $derived(workspaces.find((w) => w.id === activeWorkspaceId));
   const activeWsName = $derived(activeWs?.name || '工作区');
+  const activePane = $derived(panes.find((p) => p.id === activePaneId));
+  const activePaneName = $derived(activePane?.title || '终端');
 
   async function handleSwitchWorkspace(wsId: string) {
     if (wsSwitching || !ws) return;
@@ -47,6 +51,39 @@
     if (!ws) return;
     await ws.closeWorkspace(wsId);
     ws.listPanes();
+  }
+
+  // ── Terminal (pane) menu — §6 ─────────────────────────────────────
+  function handleSelectPane(paneId: string) {
+    activePaneId = paneId;
+    paneMenuOpen = false;
+  }
+
+  async function handleCreatePane() {
+    if (!ws || paneBusy) return;
+    paneBusy = true;
+    try {
+      const id = await ws.createPane();
+      ws.listPanes();
+      if (id) activePaneId = id; // drives subscribe + kernel reset in MainApp
+    } finally {
+      paneBusy = false;
+      paneMenuOpen = false;
+    }
+  }
+
+  async function handleClosePane(e: Event, paneId: string) {
+    e.stopPropagation();
+    if (!ws || paneBusy) return;
+    paneBusy = true;
+    try {
+      await ws.closePane(paneId);
+      ws.listPanes();
+      // If we closed the active pane, MainApp's `panes` handler falls back to
+      // the first remaining pane on the next list-panes.
+    } finally {
+      paneBusy = false;
+    }
   }
 </script>
 
@@ -86,18 +123,42 @@
     {/if}
   </div>
 
-  <!-- Pane tabs -->
-  <div class="pane-tabs">
-    {#each panes as pane (pane.id)}
-      <button class="pane-tab" class:active={pane.id === activePaneId} onclick={() => (activePaneId = pane.id)}>
-        <span class="pdot">▸</span>
-        <span class="label">{pane.title || '终端'}</span>
-      </button>
-    {/each}
-    {#if panes.length === 0}
-      <span class="empty-msg">无终端</span>
+  <!-- Terminal menu: current terminal + collapsed select/create/close (§6) -->
+  <div class="pane-menu">
+    <button class="pane-btn" class:open={paneMenuOpen} onclick={() => (paneMenuOpen = !paneMenuOpen)} title="终端">
+      <span class="pdot">▸</span>
+      <span class="pane-name">{panes.length === 0 ? '无终端' : activePaneName}</span>
+      <span class="chev" class:flip={!paneMenuOpen}><ChevronUp class="w-3 h-3 shrink-0" /></span>
+    </button>
+
+    {#if paneMenuOpen}
+      <div class="ws-overlay" onclick={() => (paneMenuOpen = false)} role="presentation"></div>
+      <div class="ws-popup" role="menu">
+        <div class="ws-popup-head">终端</div>
+        {#each panes as pane (pane.id)}
+          <div class="ws-row" class:active={pane.id === activePaneId}>
+            <button class="ws-row-main" onclick={() => handleSelectPane(pane.id)}>
+              <span class="dot" class:on={pane.id === activePaneId}></span>
+              <span class="nm">{pane.title || '终端'}</span>
+            </button>
+            {#if panes.length > 1}
+              <button class="ws-del" title="关闭" onclick={(e) => handleClosePane(e, pane.id)} disabled={paneBusy}>
+                <X class="w-3.5 h-3.5" />
+              </button>
+            {/if}
+          </div>
+        {/each}
+        {#if panes.length === 0}
+          <div class="ws-empty">无终端</div>
+        {/if}
+        <button class="ws-create" onclick={handleCreatePane} disabled={paneBusy}>
+          <Plus class="w-4 h-4" /> 新建终端
+        </button>
+      </div>
     {/if}
   </div>
+
+  <div class="bar-spacer"></div>
 
   <!-- Right controls -->
   <div class="right-controls">
@@ -147,14 +208,13 @@
   .ws-create{display:flex;align-items:center;gap:6px;width:100%;margin-top:4px;padding:9px 8px;background:none;border:none;border-top:1px solid #21262d;color:#58a6ff;font-size:13px;cursor:pointer;text-align:left}
   .ws-create:active{background:#21262d}
 
-  /* Pane tabs */
-  .pane-tabs{display:flex;gap:3px;overflow-x:auto;overflow-y:hidden;flex:1;min-width:0;scrollbar-width:none;-webkit-overflow-scrolling:touch}
-  .pane-tabs::-webkit-scrollbar{display:none}
-  .pane-tab{display:flex;align-items:center;gap:4px;padding:4px 9px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#8b949e;font-size:12px;white-space:nowrap;cursor:pointer;flex-shrink:0;max-width:160px}
-  .pane-tab.active{border-color:#58a6ff;color:#e6edf3;background:rgba(88,166,255,.1)}
+  /* Terminal menu (mirrors the workspace menu) */
+  .pane-menu{position:relative;flex-shrink:0}
+  .pane-btn{display:flex;align-items:center;gap:4px;max-width:150px;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#e6edf3;font-size:12px;cursor:pointer}
+  .pane-btn.open{border-color:#58a6ff;color:#58a6ff}
+  .pane-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pdot{color:#58a6ff;font-weight:700;font-size:10px;flex-shrink:0}
-  .label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-  .empty-msg{color:#484f58;font-size:11px;padding:1px 4px}
+  .bar-spacer{flex:1;min-width:0}
 
   /* Right controls */
   .right-controls{display:flex;align-items:center;gap:1px;flex-shrink:0}

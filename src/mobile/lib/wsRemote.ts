@@ -81,6 +81,15 @@ export type WsMessage = {
   type: 'close-workspace-result';
   success: boolean;
   error?: string;
+} | {
+  type: 'create-pane-result';
+  success: boolean;
+  paneId?: string;
+  error?: string;
+} | {
+  type: 'close-pane-result';
+  success: boolean;
+  error?: string;
 };
 
 type Listener = (msg: WsMessage) => void;
@@ -208,6 +217,11 @@ export class RemoteConnection implements SidebarProvider {
   refreshPane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
     this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight });
   }
+  /** §own-active: this client just became the active owner (genuine interaction)
+   *  → resize the shared PTY to this device's size. Last interaction wins. */
+  claimPane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
+    this.send({ type: 'claim-pane', paneId, rows, cols, pixelWidth, pixelHeight });
+  }
 
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
@@ -227,6 +241,18 @@ export class RemoteConnection implements SidebarProvider {
 
   async closeWorkspace(workspaceId: string): Promise<boolean> {
     const data = await this._sendAndWait({ type: 'close-workspace', workspaceId }, 'close-workspace-result') as Record<string, unknown>;
+    return (data as Record<string, unknown>).success === true;
+  }
+
+  // ── Terminal (pane) operations via WS — §6 ─────────────────────────
+  /** Create a terminal in the current workspace (server picks a balanced split). */
+  async createPane(shell?: string): Promise<string | null> {
+    const data = await this._sendAndWait({ type: 'create-pane', shell: shell || '' }, 'create-pane-result') as Record<string, unknown>;
+    return (data.success && data.paneId) ? String(data.paneId) : null;
+  }
+
+  async closePane(paneId: string): Promise<boolean> {
+    const data = await this._sendAndWait({ type: 'close-pane', paneId }, 'close-pane-result') as Record<string, unknown>;
     return (data as Record<string, unknown>).success === true;
   }
 
