@@ -52,6 +52,9 @@ struct ConnectQuery {
 #[derive(Deserialize)]
 struct VerifyForm {
     code: String,
+    /// Stable mobile-generated device id, for the blacklist check at verify time.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -320,9 +323,19 @@ async fn verify_handler_get(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
 }
 
 async fn verify_handler_post(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     Form(form): Form<VerifyForm>,
 ) -> Json<VerifyResponse> {
+    // §blacklist: a barred device/IP can't even obtain a token.
+    let device_id = form.device.clone().unwrap_or_default();
+    if ctx.state.remote_blacklist.is_blocked(&device_id, &addr.ip().to_string()) {
+        return Json(VerifyResponse {
+            success: false,
+            message: "该设备已被加入黑名单".to_string(),
+            token: None,
+        });
+    }
     let valid = ctx.auth.verify(&form.code);
     let token = if valid {
         Some(ctx.state.remote_session_store.create_session())
@@ -351,6 +364,12 @@ async fn ws_handler(
     if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
         return (StatusCode::SERVICE_UNAVAILABLE, "remote control disabled").into_response();
     }
+    let remote_addr = addr.ip().to_string();
+    let device_id = query.device.clone().unwrap_or_default();
+    // §blacklist: bar barred devices/IPs even with a valid token.
+    if ctx.state.remote_blacklist.is_blocked(&device_id, &remote_addr) {
+        return (StatusCode::FORBIDDEN, "device is blacklisted").into_response();
+    }
     let valid = if let Some(ref t) = query.token {
         ctx.state.remote_session_store.validate_token(t)
     } else if let Some(ref c) = query.code {
@@ -361,8 +380,6 @@ async fn ws_handler(
     if !valid {
         return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
     }
-    let remote_addr = addr.ip().to_string();
-    let device_id = query.device.clone().unwrap_or_default();
     let token = query.token.clone();
     ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token))
         .into_response()

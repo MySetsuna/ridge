@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { RemoteConnection, type ConnectionState } from './lib/wsRemote';
+  import { RemoteConnection, type ConnectionState, getDeviceId } from './lib/wsRemote';
 
   const TOKEN_KEY = 'ridge_remote_token';
 
@@ -27,7 +27,7 @@
     fetch('/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `code=${encodeURIComponent(numeric)}`,
+      body: `code=${encodeURIComponent(numeric)}&device=${encodeURIComponent(getDeviceId())}`,
     })
       .then(r => r.json())
       .then(d => {
