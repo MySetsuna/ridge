@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
   import type { RemoteConnection, PaneInfo, WorkspaceInfo } from './lib/wsRemote';
@@ -25,29 +25,21 @@
 
   let hiddenInput: HTMLInputElement | undefined;
 
-  $effect(() => {
-    if (showKeyboard) {
-      if (hiddenInput) hiddenInput.remove();
-      const el = document.createElement('input');
-      el.style.position = 'fixed';
-      el.style.top = '-100px';
-      el.style.left = '0';
-      el.style.opacity = '0';
-      el.style.pointerEvents = 'none';
-      el.style.fontSize = '16px';
-      el.setAttribute('inputmode', 'text');
-      el.setAttribute('autocomplete', 'off');
-      el.setAttribute('autocorrect', 'off');
-      el.spellcheck = false;
-      document.body.appendChild(el);
-      hiddenInput = el;
-      el.focus();
-    } else {
-      if (hiddenInput) { hiddenInput.remove(); hiddenInput = undefined; }
-    }
-  });
-
   onMount(() => {
+    const el = document.createElement('input');
+    el.style.position = 'fixed';
+    el.style.top = '-100px';
+    el.style.left = '0';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    el.style.fontSize = '16px';
+    el.setAttribute('inputmode', 'text');
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('autocorrect', 'off');
+    el.spellcheck = false;
+    document.body.appendChild(el);
+    hiddenInput = el;
+
     const msgUnsub = ws.onMessage((msg) => {
       if (msg.type === 'output' && canvasRef) {
         canvasRef.feed(msg.data);
@@ -59,6 +51,21 @@
       }
     });
     return () => { msgUnsub(); deltaUnsub(); };
+  });
+
+  onDestroy(() => {
+    if (hiddenInput) { hiddenInput.remove(); hiddenInput = undefined; }
+  });
+
+  $effect(() => {
+    if (!hiddenInput) return;
+    if (showKeyboard) {
+      hiddenInput.style.opacity = '0';
+      hiddenInput.style.pointerEvents = 'none';
+      hiddenInput.focus();
+    } else {
+      hiddenInput.blur();
+    }
   });
 </script>
 
