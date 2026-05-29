@@ -3,6 +3,7 @@
   import { X } from 'lucide-svelte';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
+  import VirtualKeyboard from './lib/VirtualKeyboard.svelte';
   import SidebarFileTree from '@shared/sidebar/SidebarFileTree.svelte';
   import SidebarGitPanel from '@shared/sidebar/SidebarGitPanel.svelte';
   import SidebarSearch from '@shared/sidebar/SidebarSearch.svelte';
@@ -14,10 +15,10 @@
   let wsState = $state<ConnectionState>('disconnected');
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
-  let showKeyboard = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
 
   let canvasRef: TerminalCanvas | undefined = $state();
+  let rootEl: HTMLDivElement | undefined = $state();
 
   function onStdin(data: string) {
     if (activePaneId) ws.sendStdin(activePaneId, data);
@@ -72,9 +73,28 @@
     const unsubDelta = ws.onBinaryDelta((_paneId, data) => {
       canvasRef?.applyDelta(data);
     });
+
+    // Keep the app within the visual viewport so the bottom quick-key bar
+    // sticks right above the OS soft keyboard instead of being covered by it.
+    const vv = window.visualViewport;
+    const applyVV = () => {
+      if (!rootEl || !vv) return;
+      rootEl.style.height = `${vv.height}px`;
+      rootEl.style.transform = `translateY(${vv.offsetTop}px)`;
+    };
+    applyVV();
+    vv?.addEventListener('resize', applyVV);
+    vv?.addEventListener('scroll', applyVV);
+
     ws.listPanes();
     refreshWorkspaces();
-    return () => { unsubMsg(); unsubDelta(); ws.disconnect(); };
+    return () => {
+      unsubMsg();
+      unsubDelta();
+      vv?.removeEventListener('resize', applyVV);
+      vv?.removeEventListener('scroll', applyVV);
+      ws.disconnect();
+    };
   });
 
   $effect(() => {
@@ -84,7 +104,7 @@
   });
 </script>
 
-<div class="app-root">
+<div class="app-root" bind:this={rootEl}>
   {#if panes.length === 0}
     <div class="empty"><p>无活跃终端</p><p class="hint">在桌面端打开一个终端以开始</p></div>
   {:else if activePaneId}
@@ -94,7 +114,6 @@
       {onStdin}
       {onResize}
       onRefresh={(p, r, c, pw, ph) => ws.refreshPane(p, r, c, pw, ph)}
-      {showKeyboard}
     />
   {/if}
 
@@ -131,8 +150,12 @@
     onSidebarToggle={handleSidebarToggle}
     {wsState}
     onRefresh={handleRefresh}
-    bind:showKeyboard
   />
+
+  <!-- Always-visible compact quick-key strip; sticks above the soft keyboard. -->
+  {#if activePaneId}
+    <VirtualKeyboard onKey={(k, c, a, s) => canvasRef?.sendKey(k, c, a, s)} />
+  {/if}
 </div>
 
 <style>

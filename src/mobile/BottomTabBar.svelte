@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { Plus, X, Folder, GitBranch, Search } from 'lucide-svelte';
+  import { Plus, X, Folder, GitBranch, Search, Layers, ChevronUp } from 'lucide-svelte';
   import type { PaneInfo, WorkspaceInfo, RemoteConnection, ConnectionState } from './lib/wsRemote';
 
   let { panes, activePaneId = $bindable(), workspaces = [], activeWorkspaceId = '', ws,
     sidebarTab = null as 'files' | 'git' | 'search' | null, onSidebarToggle, wsState = 'disconnected' as ConnectionState,
-    onRefresh, showKeyboard = $bindable(false)
+    onRefresh
   }: {
     panes: PaneInfo[];
     activePaneId?: string | null;
@@ -15,10 +15,13 @@
     onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
     wsState?: ConnectionState;
     onRefresh?: () => void;
-    showKeyboard?: boolean;
   } = $props();
 
   let wsSwitching = $state(false);
+  let menuOpen = $state(false);
+
+  const activeWs = $derived(workspaces.find((w) => w.id === activeWorkspaceId));
+  const activeWsName = $derived(activeWs?.name || '工作区');
 
   async function handleSwitchWorkspace(wsId: string) {
     if (wsSwitching || !ws) return;
@@ -28,13 +31,15 @@
       ws.listPanes();
     } finally {
       wsSwitching = false;
+      menuOpen = false;
     }
   }
 
   async function handleCreateWorkspace() {
     if (!ws) return;
     const id = await ws.createWorkspace();
-    if (id) { ws.listPanes(); }
+    if (id) ws.listPanes();
+    menuOpen = false;
   }
 
   async function handleCloseWorkspace(e: Event, wsId: string) {
@@ -46,50 +51,55 @@
 </script>
 
 <div class="bar">
-  <div class="bar-inner">
-    <div class="ws-tabs">
-      {#each workspaces as wsp (wsp.id)}
-        <button
-          class="ws-tab"
-          class:active={wsp.id === activeWorkspaceId}
-          onclick={() => handleSwitchWorkspace(wsp.id)}
-          disabled={wsSwitching}
-        >
-          <span class="ws-label">{wsp.name || '工作区'}</span>
-          {#if workspaces.length > 1}
-            <span class="ws-close" role="button" tabindex="-1"
-              onclick={(e) => handleCloseWorkspace(e, wsp.id)}
-              onkeydown={() => {}}>
-              <X class="w-3 h-3" />
-            </span>
-          {/if}
-        </button>
-      {/each}
-      {#if workspaces.length === 0}
-        <span class="empty-msg">无工作区</span>
-      {/if}
-    </div>
+  <!-- Workspace menu button: current workspace + collapsed switch/create/delete -->
+  <div class="ws-menu">
+    <button class="ws-btn" class:open={menuOpen} onclick={() => (menuOpen = !menuOpen)} title="工作区">
+      <Layers class="w-4 h-4 shrink-0" />
+      <span class="ws-name">{activeWsName}</span>
+      <span class="chev" class:flip={!menuOpen}><ChevronUp class="w-3 h-3 shrink-0" /></span>
+    </button>
 
-    <div class="pane-tabs">
-      {#each panes as pane}
-        <button
-          class="pane-tab"
-          class:active={pane.id === activePaneId}
-          onclick={() => activePaneId = pane.id}
-        >
-          <span class="dot">▸</span>
-          <span class="label">{pane.title || '终端'}</span>
-          {#if pane.cwd}
-            <span class="cwd">{pane.cwd.split('/').pop() || pane.cwd.split('\\').pop()}</span>
-          {/if}
+    {#if menuOpen}
+      <div class="ws-overlay" onclick={() => (menuOpen = false)} role="presentation"></div>
+      <div class="ws-popup" role="menu">
+        <div class="ws-popup-head">工作区</div>
+        {#each workspaces as wsp (wsp.id)}
+          <div class="ws-row" class:active={wsp.id === activeWorkspaceId}>
+            <button class="ws-row-main" onclick={() => handleSwitchWorkspace(wsp.id)} disabled={wsSwitching}>
+              <span class="dot" class:on={wsp.id === activeWorkspaceId}></span>
+              <span class="nm">{wsp.name || '工作区'}</span>
+            </button>
+            {#if workspaces.length > 1}
+              <button class="ws-del" title="关闭" onclick={(e) => handleCloseWorkspace(e, wsp.id)}>
+                <X class="w-3.5 h-3.5" />
+              </button>
+            {/if}
+          </div>
+        {/each}
+        {#if workspaces.length === 0}
+          <div class="ws-empty">无工作区</div>
+        {/if}
+        <button class="ws-create" onclick={handleCreateWorkspace}>
+          <Plus class="w-4 h-4" /> 新建工作区
         </button>
-      {/each}
-      {#if panes.length === 0}
-        <span class="empty-msg">无终端</span>
-      {/if}
-    </div>
+      </div>
+    {/if}
   </div>
 
+  <!-- Pane tabs -->
+  <div class="pane-tabs">
+    {#each panes as pane (pane.id)}
+      <button class="pane-tab" class:active={pane.id === activePaneId} onclick={() => (activePaneId = pane.id)}>
+        <span class="pdot">▸</span>
+        <span class="label">{pane.title || '终端'}</span>
+      </button>
+    {/each}
+    {#if panes.length === 0}
+      <span class="empty-msg">无终端</span>
+    {/if}
+  </div>
+
+  <!-- Right controls -->
   <div class="right-controls">
     <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title="文件">
       <Folder class="w-4 h-4" />
@@ -100,22 +110,10 @@
     <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title="搜索">
       <Search class="w-4 h-4" />
     </button>
-
     <div class="ctrl-sep"></div>
-
-    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title="键盘">
-      <span class="kb-icon">⌨</span>
-    </button>
-
-    <div class="ctrl-sep"></div>
-
-    <button class="ctrl-btn action-btn" onclick={onRefresh} title="刷新">
+    <button class="ctrl-btn action-btn" onclick={onRefresh} title="刷新（按本端尺寸）">
       <span class="refresh-icon">↻</span>
     </button>
-    <button class="ctrl-btn action-btn" onclick={handleCreateWorkspace} title="新建工作区">
-      <Plus class="w-4 h-4" />
-    </button>
-
     <span class="status-dot" class:connected={wsState === 'connected'} class:error={wsState === 'error'} title={wsState}>
       {wsState === 'connected' ? '●' : wsState === 'error' ? '●' : '○'}
     </span>
@@ -123,35 +121,49 @@
 </div>
 
 <style>
-  .bar{display:flex;align-items:center;gap:2px;padding:4px 6px;background:#161b22;border-top:1px solid #30363d;flex-shrink:0;min-height:52px}
-  .bar-inner{display:flex;flex-direction:column;flex:1;min-width:0;gap:2px}
-  .ws-tabs{display:flex;gap:2px;overflow-x:auto;overflow-y:hidden;min-height:22px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
-  .ws-tabs::-webkit-scrollbar{display:none}
-  .ws-tab{display:flex;align-items:center;gap:3px;padding:1px 6px;border:1px solid #30363d;border-radius:4px;background:#0d1117;color:#8b949e;font-size:10px;white-space:nowrap;cursor:pointer;transition:all .15s;flex-shrink:0;max-width:100px}
-  .ws-tab.active{border-color:#58a6ff;color:#e6edf3;background:rgba(88,166,255,.12)}
-  .ws-tab:disabled{opacity:.5}
-  .ws-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-  .ws-close{display:flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:3px;opacity:.5;flex-shrink:0}
-  .ws-close:active{background:rgba(255,255,255,.1);opacity:1}
+  .bar{display:flex;align-items:center;gap:6px;padding:5px 8px;background:#161b22;border-top:1px solid #30363d;flex-shrink:0;min-height:44px}
 
-  .pane-tabs{display:flex;gap:2px;overflow-x:auto;overflow-y:hidden;min-height:24px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  /* Workspace menu */
+  .ws-menu{position:relative;flex-shrink:0}
+  .ws-btn{display:flex;align-items:center;gap:4px;max-width:130px;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#e6edf3;font-size:12px;cursor:pointer}
+  .ws-btn.open{border-color:#58a6ff;color:#58a6ff}
+  .ws-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chev{display:inline-flex;align-items:center;transition:transform .15s}
+  .chev.flip{transform:rotate(180deg)}
+
+  .ws-overlay{position:fixed;inset:0;z-index:70}
+  .ws-popup{position:absolute;bottom:calc(100% + 6px);left:0;z-index:71;min-width:200px;max-height:50vh;overflow-y:auto;background:#161b22;border:1px solid #30363d;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:6px}
+  .ws-popup-head{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;padding:4px 8px}
+  .ws-row{display:flex;align-items:center;border-radius:6px}
+  .ws-row.active{background:rgba(88,166,255,.1)}
+  .ws-row-main{flex:1;min-width:0;display:flex;align-items:center;gap:8px;background:none;border:none;color:#e6edf3;padding:9px 8px;font-size:14px;cursor:pointer;text-align:left}
+  .ws-row-main:disabled{opacity:.5}
+  .dot{width:7px;height:7px;border-radius:50%;background:#30363d;flex-shrink:0}
+  .dot.on{background:#3fb950}
+  .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ws-del{display:flex;align-items:center;justify-content:center;width:30px;height:30px;background:none;border:none;color:#8b949e;border-radius:6px;cursor:pointer;flex-shrink:0}
+  .ws-del:active{background:#21262d;color:#f85149}
+  .ws-empty{color:#484f58;font-size:12px;padding:8px}
+  .ws-create{display:flex;align-items:center;gap:6px;width:100%;margin-top:4px;padding:9px 8px;background:none;border:none;border-top:1px solid #21262d;color:#58a6ff;font-size:13px;cursor:pointer;text-align:left}
+  .ws-create:active{background:#21262d}
+
+  /* Pane tabs */
+  .pane-tabs{display:flex;gap:3px;overflow-x:auto;overflow-y:hidden;flex:1;min-width:0;scrollbar-width:none;-webkit-overflow-scrolling:touch}
   .pane-tabs::-webkit-scrollbar{display:none}
-  .pane-tab{display:flex;align-items:center;gap:3px;padding:2px 8px;border:1px solid #30363d;border-radius:5px;background:#0d1117;color:#8b949e;font-size:11px;white-space:nowrap;cursor:pointer;transition:all .15s;flex-shrink:0;max-width:180px}
+  .pane-tab{display:flex;align-items:center;gap:4px;padding:4px 9px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#8b949e;font-size:12px;white-space:nowrap;cursor:pointer;flex-shrink:0;max-width:160px}
   .pane-tab.active{border-color:#58a6ff;color:#e6edf3;background:rgba(88,166,255,.1)}
-  .dot{color:#58a6ff;font-weight:700;font-size:10px;flex-shrink:0}
+  .pdot{color:#58a6ff;font-weight:700;font-size:10px;flex-shrink:0}
   .label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-  .cwd{font-size:9px;color:#484f58;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60px;flex-shrink:1}
-  .empty-msg{color:#484f58;font-size:10px;padding:1px 4px}
+  .empty-msg{color:#484f58;font-size:11px;padding:1px 4px}
 
-  .right-controls{display:flex;align-items:center;gap:1px;flex-shrink:0;padding-left:2px}
-  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;background:none;border:none;border-radius:4px;color:#8b949e;cursor:pointer;transition:all .15s}
+  /* Right controls */
+  .right-controls{display:flex;align-items:center;gap:1px;flex-shrink:0}
+  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:30px;height:30px;background:none;border:none;border-radius:6px;color:#8b949e;cursor:pointer}
   .ctrl-btn.active{color:#58a6ff;background:rgba(88,166,255,.1)}
   .ctrl-btn:active{background:#21262d;color:#e6edf3}
   .ctrl-sep{width:1px;height:16px;background:#30363d;margin:0 2px}
-  .kb-icon{font-size:12px;line-height:1}
-  .refresh-icon{font-size:14px;line-height:1;font-weight:700}
+  .refresh-icon{font-size:15px;line-height:1;font-weight:700}
   .action-btn{color:#8b949e}
-
   .status-dot{font-size:8px;color:#8b949e;margin-left:2px;line-height:1}
   .status-dot.connected{color:#3fb950}
   .status-dot.error{color:#f85149}
