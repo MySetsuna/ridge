@@ -21,6 +21,7 @@ import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
+import { remoteRunning } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
@@ -1227,11 +1228,12 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
-	// §own-active: when remote control is on, a remote device may have claimed
-	// (shrunk) this pane's shared PTY. Interacting on the desktop re-claims it at
-	// the desktop size — "whoever is active owns the size". fitPaneNow is
-	// idempotent when the size already matches, so per-click cost is negligible.
-	if ($settingsStore.remoteEnabled) {
+	// §own-active: when the remote server is actually running, a remote device may
+	// have claimed (shrunk) this pane's shared PTY. Interacting on the desktop
+	// re-claims it at the desktop size — "whoever is active owns the size".
+	// fitPaneNow is idempotent when the size already matches, so per-click cost is
+	// negligible. Gated on the live server state (not the persisted setting).
+	if ($remoteRunning) {
 		manager.fitPaneNow(paneId);
 	}
 	// ★ TUI mouse reporting takes priority: forward the click to the
@@ -1342,10 +1344,10 @@ function onContainerMouseDown(e: MouseEvent) {
 		</button>
 	{/if}
 
-	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while
-	     remote control is on (otherwise this pane is the sole viewer and
-	     fitPane already owns the size). -->
-	{#if $settingsStore.remoteEnabled}
+	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while the
+	     remote server is actually RUNNING (not merely the persisted setting) —
+	     otherwise this pane is the sole viewer and fitPane already owns the size. -->
+	{#if $remoteRunning}
 		<button
 			type="button"
 			class="rg-remote-refresh"
