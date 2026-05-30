@@ -48,7 +48,7 @@ pub struct RowDraw<'a> {
 
 /// Cursor descriptor passed each frame. `None` = don't draw cursor
 /// (DECTCEM off, blink off-phase, terminal blurred, etc.).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CursorDraw {
     pub row: usize,
     pub col: usize,
@@ -60,6 +60,12 @@ pub struct CursorDraw {
     pub ch: char,
     pub ch_attr: crate::term::attr_table::AttrId,
     pub width: u8,
+    /// §Smart Cursor: when the cursor sits on a multi-codepoint grapheme
+    /// cluster (ZWJ emoji, flag RIS pair, etc.), this field carries the
+    /// full cluster text so the backend can look up the measured glyph width
+    /// and size the cursor block to match the visual extent. `None` for
+    /// simple single-codepoint cells.
+    pub cluster_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

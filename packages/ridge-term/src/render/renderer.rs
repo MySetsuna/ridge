@@ -264,7 +264,7 @@ impl<B: RenderBackend> Renderer<B> {
             return;
         }
         self.focused = focused;
-        if let Some(prev) = self.last_cursor {
+        if let Some(ref prev) = self.last_cursor {
             if prev.row < self.snapshot.len() {
                 self.snapshot[prev.row] = self.snapshot[prev.row].wrapping_add(1);
             }
@@ -337,7 +337,7 @@ impl<B: RenderBackend> Renderer<B> {
             true // non-blinking → always on
         };
         if blink_phase != self.last_blink_phase {
-            if let Some(prev) = self.last_cursor {
+            if let Some(ref prev) = self.last_cursor {
                 if prev.row < self.snapshot.len() {
                     self.snapshot[prev.row] = self.snapshot[prev.row].wrapping_add(1);
                 }
@@ -469,7 +469,7 @@ impl<B: RenderBackend> Renderer<B> {
         };
 
         if !cursor_eq(&self.last_cursor, &new_cursor) {
-            if let Some(prev) = self.last_cursor {
+            if let Some(ref prev) = self.last_cursor {
                 if !dirty_rows.contains(&prev.row) {
                     dirty_rows.push(prev.row);
                 }
@@ -675,6 +675,7 @@ impl<B: RenderBackend> Renderer<B> {
         let cur = grid.cursor();
         let row = grid.row(cur.row)?;
         let cell = row.cells.get(cur.col).copied().unwrap_or_default();
+        let cluster_text = row.cluster_at(cur.col).map(|c| c.text.as_ref().to_string());
         Some(CursorDraw {
             row: cur.row,
             col: cur.col,
@@ -690,6 +691,7 @@ impl<B: RenderBackend> Renderer<B> {
             ch: cell.ch,
             ch_attr: cell.attr,
             width: cell.width.max(1),
+            cluster_text,
         })
     }
 }
@@ -985,6 +987,7 @@ mod tests {
             ch: ' ',
             ch_attr: crate::term::attr_table::AttrId::DEFAULT,
             width: 1,
+            cluster_text: None,
         }
     }
 
