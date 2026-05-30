@@ -498,39 +498,52 @@ impl RenderBackend for Canvas2dBackend {
         }
     }
 
-    fn draw_cursor(&mut self, cursor: &CursorDraw, attrs_table: &AttrTable) {
+    fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        let x = (cursor.col as f64 * cell_w).round();
-        let y = (cursor.row as f64 * cell_h).round();
-        let y_bottom = ((cursor.row + 1) as f64 * cell_h).round();
+        let x = (cursor.col as f64 * cell_w + 0.5).floor();
+        let y = (cursor.row as f64 * cell_h + 0.5).floor();
+        let y_bottom = ((cursor.row + 1) as f64 * cell_h + 0.5).floor();
         let cell_h_int = y_bottom - y;
         let cursor_span = cursor.width.max(1) as usize;
-        let x_right = ((cursor.col + cursor_span) as f64 * cell_w).round();
-        let w = x_right - x;
+        let x_grid_right = ((cursor.col + cursor_span) as f64 * cell_w + 0.5).floor();
+        let grid_w = x_grid_right - x;
+
+        // Smart Cursor: measure cluster glyph width from the canvas
+        // font metrics when cluster_text is available.
+        let cursor_w = match &cursor.cluster_text {
+            Some(text) if !text.is_empty() => {
+                let measured = self.ctx.measure_text(text).ok();
+                match measured {
+                    Some(m) if m.width() > grid_w => m.width(),
+                    _ => grid_w,
+                }
+            }
+            _ => grid_w,
+        };
 
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_color));
         match cursor.style {
             CursorStyle::Block => {
-                self.ctx.fill_rect(x, y, w, cell_h_int);
+                self.ctx.fill_rect(x, y, cursor_w, cell_h_int);
                 if cursor.ch != ' ' && cursor.ch != '\0' {
                     self.ctx
                         .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_text_color));
                     self.ctx.set_font(&self.font_css);
-                    let mut buf = [0u8; 4];
-                    let s = cursor.ch.encode_utf8(&mut buf);
-                    let _ = self.ctx.fill_text(s, x, y);
+                    let mut ch_buf = [0u8; 4];
+                    let text: &str = match &cursor.cluster_text {
+                        Some(t) if !t.is_empty() => t.as_str(),
+                        _ => cursor.ch.encode_utf8(&mut ch_buf),
+                    };
+                    let _ = self.ctx.fill_text(text, x, y);
                 }
-                let _ = attrs_table;
             }
             CursorStyle::Bar => {
                 self.ctx.fill_rect(x, y, 2.0, cell_h_int);
-                let _ = attrs_table;
             }
             CursorStyle::Underline => {
-                self.ctx.fill_rect(x, y + cell_h_int - 2.0, w, 2.0);
-                let _ = attrs_table;
+                self.ctx.fill_rect(x, y + cell_h_int - 2.0, cursor_w, 2.0);
             }
         }
     }
