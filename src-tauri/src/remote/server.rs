@@ -167,27 +167,30 @@ async fn run_remote_server(
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
-    // Resolve the static files directory. Try in order:
-    // 1. CWD/static/mobile — works in dev (`cargo tauri dev`) when CWD is project root.
-    // 2. exe_dir/static/mobile — works in production (NSIS install copies resources next to exe).
-    // 3. exe_dir/../../../static/mobile — works when running the exe directly from
-    //    target/release/ (parent→target→src-tauri→project-root/static/mobile).
+    // Resolve the static files directory. The remote UI is built by
+    // `pnpm build:remote` (vite.remote.config.js) into `static/remote/`, and
+    // tauri.conf.json bundles `../static/remote` → `static/remote` next to the
+    // exe. Try in order:
+    // 1. CWD/static/remote — works in dev (`cargo tauri dev`) when CWD is project root.
+    // 2. exe_dir/static/remote — works in production (NSIS install copies resources next to exe).
+    // 3. exe_dir/../../../static/remote — works when running the exe directly from
+    //    target/release/ (parent→target→src-tauri→project-root/static/remote).
     let static_dir = {
         let candidates: Vec<PathBuf> = vec![
-            PathBuf::from("static").join("mobile"),
+            PathBuf::from("static").join("remote"),
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|d| d.join("static").join("mobile")))
+                .and_then(|p| p.parent().map(|d| d.join("static").join("remote")))
                 .unwrap_or_default(),
             std::env::current_exe()
                 .ok()
                 .and_then(|p| {
-                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("mobile").into()
+                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("remote").into()
                 })
                 .unwrap_or_default(),
         ];
         candidates.into_iter().find(|p| p.join("index.html").exists())
-            .unwrap_or_else(|| PathBuf::from("static").join("mobile"))
+            .unwrap_or_else(|| PathBuf::from("static").join("remote"))
     };
 
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
@@ -255,9 +258,9 @@ async fn root_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     match tokio::fs::read_to_string(&index_path).await {
         Ok(html) => Html(html).into_response(),
         Err(_) => {
-            // Fallback: embed a basic page directing the user to build the mobile app
+            // Fallback: embed a basic page directing the user to build the remote app
             Html(format!(
-                r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p>Mobile UI not built yet.</p><p>Run: <code>pnpm build:mobile</code></p></body></html>"#,
+                r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p>Remote UI not built yet.</p><p>Run: <code>pnpm build:remote</code></p></body></html>"#,
             ))
             .into_response()
         }

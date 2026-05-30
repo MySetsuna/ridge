@@ -18,5 +18,5 @@ bash.exe.stackdump
 .ridge-remote-port
 /coverage
 /test-results
-/static/mobile
+/static/remote
 /packages/ridge-term/pkg
