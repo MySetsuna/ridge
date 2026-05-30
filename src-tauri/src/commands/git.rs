@@ -18,7 +18,8 @@ fn git_cmd() -> Command {
     cmd
 }
 
-/// Upper bound on how many `git.exe` invocations may run in parallel.
+/// Device-adaptive upper bound on how many git blocking operations may run in
+/// parallel.
 ///
 /// On Windows, `CreateProcess` is significantly heavier than on Unix
 /// (50–150 ms per spawn). When the user `cd`s into a directory containing
@@ -28,15 +29,23 @@ fn git_cmd() -> Command {
 /// which saturates tokio's blocking pool and queues every other backend
 /// call (including Explorer's `get_file_tree`), freezing both sidebars.
 ///
-/// The frontend has a matching `GIT_FANOUT_CONCURRENCY` in
-/// `src/lib/utils/pLimit.ts` — bump them together when tuning.
-const GIT_MAX_CONCURRENT: usize = 6;
+/// Sizing from `available_parallelism` lets high-core workstations scan a
+/// multi-repo tree fast while keeping 2–4 core laptops responsive (they load
+/// progressively instead of freezing). The frontend mirrors this with
+/// `recommendedGitConcurrency` in `src/lib/utils/pLimit.ts` off
+/// `navigator.hardwareConcurrency` — keep the clamp bounds in sync.
+fn git_max_concurrent() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 12)
+}
 
 static GIT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 fn git_semaphore() -> Arc<Semaphore> {
     GIT_SEMAPHORE
-        .get_or_init(|| Arc::new(Semaphore::new(GIT_MAX_CONCURRENT)))
+        .get_or_init(|| Arc::new(Semaphore::new(git_max_concurrent())))
         .clone()
 }
 
