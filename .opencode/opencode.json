@@ -14,6 +14,7 @@
       }
     }
   },
+  "lsp": {},
   "command": {
     "ralph-loop": {
       "template": "You are entering a Ralph Loop. Follow the ralph-loop skill (auto-loaded from ~/.claude/skills/ralph-loop/). Parse the user's arguments: first parts are the task description, --max-iterations N (integer), --completion-promise \"TEXT\". Initialize .opencode/ralph-loop.state.md and begin iteration 1.",

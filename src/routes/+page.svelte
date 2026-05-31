@@ -25,6 +25,7 @@ self.MonacoEnvironment = {
     return new editorWorker();
   }
 };
+  import { focusActiveTerminal, ownsTabKey } from '$lib/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -84,6 +85,7 @@ self.MonacoEnvironment = {
     workspaceSaveInfoStore,
     activePaneId,
     splitActivePane,
+    splitPane,
     syncPaneLayoutFromBackend,
     refreshWorkspaces,
     workspacesList,
@@ -379,6 +381,19 @@ function expandSidebar() {
       e.preventDefault();
       return;
     }
+    // Tab 焦点收敛：终端真正的输入目标是每个 pane 的隐藏 IME helper
+    // textarea（或 direct 模式下 tabindex=-1 的容器）。当焦点漂到桌面
+    // chrome（工作区标签、文件树行、工具栏按钮）或 <body> 时，裸 Tab 会
+    // 沿 chrome 的焦点环游走——把用户从没想选的元素逐个“选中”。这里把它
+    // 拽回当前活动终端。`defaultPrevented` 表示已聚焦的 pane 已经把 Tab
+    // 编码进 shell（onContainerKeyDown 两条路径都 preventDefault），故跳过；
+    // 真正的文本输入（搜索 / 重命名 / Monaco 编辑器）保留原生 Tab 行为。
+    if (e.key === 'Tab' && !e.defaultPrevented && !ownsTabKey(document.activeElement)) {
+      if (focusActiveTerminal()) {
+        e.preventDefault();
+        return;
+      }
+    }
     // Ctrl+B: 切换侧边栏
     if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
       e.preventDefault();
@@ -473,7 +488,11 @@ function expandSidebar() {
 
     // 检查是否点击在窗格标题栏
     if (target.closest('.rg-pane-header')) {
-      return { target: 'pane-header' };
+      const headerEl = target.closest('.rg-pane-header')!;
+      const wrapper = headerEl.closest('.splitpanes__pane') as HTMLElement | null;
+      const paneEl = wrapper?.querySelector('[data-rg-pane-id]') as HTMLElement | null;
+      const paneId = paneEl?.getAttribute('data-rg-pane-id');
+      return { target: 'pane-header', paneId: paneId ?? undefined };
     }
 
     // 检查是否点击在终端或编辑器内容区域
@@ -814,13 +833,13 @@ function expandSidebar() {
             id: 'split-h',
             label: '水平分割',
             icon: Columns,
-            action: () => splitActivePane('horizontal'),
+            action: () => { if (paneId) void splitPane(paneId, 'horizontal'); },
           },
           {
             id: 'split-v',
             label: '垂直分割',
             icon: Rows,
-            action: () => splitActivePane('vertical'),
+            action: () => { if (paneId) void splitPane(paneId, 'vertical'); },
           },
           { divider: true, id: 'divider-1' },
           {

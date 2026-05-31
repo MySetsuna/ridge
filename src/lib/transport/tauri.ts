@@ -2,6 +2,36 @@ import { invoke } from '@tauri-apps/api/core';
 import type { DataProvider, GitStatusResult, SearchResult } from './types';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
+// Raw backend shapes that need remapping onto the DataProvider contract. These
+// mirror the Rust structs in src-tauri/src/commands/{git,project}.rs and
+// fs/search.rs. `git_status` / `search_files` aren't real Tauri commands — the
+// desktop reaches the same data via `get_scm_status` + `get_git_info_with_cwd`
+// and `text_search`, then converts here so both transports (this and
+// WsDataProvider) hand callers identical shapes.
+interface ScmFileRaw {
+  path: string;
+  status: string;
+}
+interface ScmRepoStatusRaw {
+  staged: ScmFileRaw[];
+  changes: ScmFileRaw[];
+  untracked: ScmFileRaw[];
+}
+interface CommitNodeRaw {
+  hash: string;
+  subject: string;
+  date: string;
+}
+interface GitRepoInfoRaw {
+  commits: CommitNodeRaw[];
+}
+interface RawSearchHit {
+  file: string;
+  line: number;
+  column: number;
+  content: string;
+}
+
 export class TauriDataProvider implements DataProvider {
   // ── Filesystem ──
   async getFileTree(path: string, depth = 1): Promise<FileNode> {
@@ -45,7 +75,19 @@ export class TauriDataProvider implements DataProvider {
 
   // ── Git ──
   async gitStatus(repoRoot: string): Promise<GitStatusResult> {
-    return invoke<GitStatusResult>('git_status', { repoRoot });
+    // `get_scm_status` carries staged/changes/untracked but no commit log, so
+    // pull the recent commits from `get_git_info_with_cwd` in parallel, then
+    // remap both into `GitStatusResult` (identical to WsDataProvider's output).
+    const [scm, info] = await Promise.all([
+      invoke<ScmRepoStatusRaw>('get_scm_status', { repoRoot }),
+      invoke<GitRepoInfoRaw>('get_git_info_with_cwd', { cwd: repoRoot }),
+    ]);
+    return {
+      staged: scm.staged.map((f) => ({ name: f.path, status: f.status })),
+      unstaged: scm.changes.map((f) => ({ name: f.path, status: f.status })),
+      untracked: scm.untracked.map((f) => f.path),
+      commits: info.commits.map((c) => ({ hash: c.hash, msg: c.subject, time: c.date })),
+    };
   }
   async gitStage(repoRoot: string, paths: string[]): Promise<void> {
     await invoke('git_stage', { repoRoot, paths });
@@ -89,6 +131,10 @@ export class TauriDataProvider implements DataProvider {
 
   // ── Search ──
   async searchFiles(query: string, path?: string): Promise<SearchResult[]> {
-    return invoke<SearchResult[]>('search_files', { query, path: path ?? '' });
+    if (!query.trim()) return [];
+    // Empty path → fall back to the active project (mirrors the remote server).
+    const root = path?.trim() || (await invoke<string | null>('get_current_project')) || '.';
+    const hits = await invoke<RawSearchHit[]>('text_search', { root, query, maxResults: 500 });
+    return hits.map((h) => ({ path: h.file, line: h.line, column: h.column, snippet: h.content }));
   }
 }

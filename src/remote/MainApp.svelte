@@ -59,6 +59,24 @@
         refreshWorkspaces();
       }
     });
+    ws.onRawBytes((paneId, data) => {
+      if (paneId === activePaneId) {
+        canvasRef?.feedUtf8(data);
+      }
+    });
+    ws.onMetadata((paneId, title) => {
+      // Title drives the document/tab title directly — the controller has no
+      // title sink of its own. (cwd also arrives in this event but has no
+      // consumer in the remote UI yet, so it's ignored here.)
+      if (paneId === activePaneId && title != null && title.length > 0) {
+        document.title = title;
+      }
+    });
+    ws.onPtyResize((paneId, rows, cols) => {
+      if (paneId === activePaneId) {
+        canvasRef?.resizeKernel(rows, cols);
+      }
+    });
     ws.listPanes();
     refreshWorkspaces();
     return () => { ws.disconnect(); };
