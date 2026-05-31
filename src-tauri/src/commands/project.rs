@@ -832,6 +832,11 @@ pub async fn get_git_changed_files(
         let output = match Command::new("git")
             .current_dir(&cwd)
             .args(&[
+                // Match git.rs `git_cmd()`: don't take optional index locks for
+                // this read-only history scan (uniform policy; `log` itself
+                // doesn't lock the index, but keeps every background git read
+                // consistent and future-proof).
+                "--no-optional-locks",
                 "log",
                 "--since",
                 &since_str,
