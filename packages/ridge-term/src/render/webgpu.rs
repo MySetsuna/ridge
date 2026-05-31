@@ -837,7 +837,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 };
                 let measured = self
                     .ctx
-                    .borrow()
+                    .borrow_mut()
                     .atlas
                     .lookup(&key)
                     .map(|e| (e.px_w as f32).max(1.0));
@@ -886,7 +886,7 @@ impl RenderBackend for WebGpuPaneBackend {
             let mut ch_buf = [0u8; 4];
             let glyph_text: &str = match &cursor.cluster_text {
                 Some(text) if !text.is_empty() => text.as_str(),
-                None => cursor.ch.encode_utf8(&mut ch_buf),
+                None | Some(_) => cursor.ch.encode_utf8(&mut ch_buf),
             };
             let glyph_id = match &cursor.cluster_text {
                 Some(text) if !text.is_empty() => {

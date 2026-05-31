@@ -21,6 +21,7 @@ export class TerminalController {
   private canvas: HTMLCanvasElement;
   private container: HTMLDivElement;
   private rafId: number | null = null;
+  private sleepTimerId: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
 
   private fontSize: number;
@@ -59,6 +60,10 @@ export class TerminalController {
   // ── Callbacks ──
   onStdin: ((data: string) => void) | null = null;
   onResize: ((rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void) | null = null;
+
+  // ── Document event listeners (stored for cleanup) ──
+  private _visibilityHandler: (() => void) | null = null;
+  private _fontHandler: (() => void) | null = null;
 
   private static initialized = false;
 
@@ -123,7 +128,8 @@ export class TerminalController {
     } else if (msUntilBlink < 16) {
       this.rafId = requestAnimationFrame(() => this.startRenderLoop());
     } else {
-      setTimeout(() => {
+      this.sleepTimerId = setTimeout(() => {
+        if (this.destroyed) return;
         this.rafId = requestAnimationFrame(() => this.startRenderLoop());
       }, msUntilBlink - 8);
     }
@@ -211,6 +217,16 @@ export class TerminalController {
     this.needsRender = true;
   }
 
+  // ── External resize (called when server notifies of PTY resize) ──
+
+  kernelResize(rows: number, cols: number) {
+    if (this.destroyed) return;
+    this.rows = rows;
+    this.cols = cols;
+    this.kernel.resize(rows, cols);
+    this.needsRender = true;
+  }
+
   // ── Fit pane with DPR drift detection, cell quantization ──
 
   fitPane() {
@@ -279,23 +295,25 @@ export class TerminalController {
   }
 
   private setupVisibilityHandler() {
-    const handler = () => {
+    this._visibilityHandler = () => {
+      if (this.destroyed) return;
       this.visible = !document.hidden;
       if (this.visible) {
         this.needsRender = true;
         this.startRenderLoop();
       }
     };
-    document.addEventListener('visibilitychange', handler);
+    document.addEventListener('visibilitychange', this._visibilityHandler);
   }
 
   private setupFontHandler() {
-    const handler = () => {
+    this._fontHandler = () => {
+      if (this.destroyed) return;
       setTimeout(() => {
         if (!this.destroyed) this.fitPane();
       }, 250);
     };
-    document.fonts?.addEventListener('loadingdone', handler);
+    document.fonts?.addEventListener('loadingdone', this._fontHandler);
   }
 
   // ── IME ──
@@ -440,8 +458,17 @@ export class TerminalController {
   destroy() {
     this.destroyed = true;
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+    if (this.sleepTimerId !== null) clearTimeout(this.sleepTimerId);
     if (this.coalesceTimer) clearTimeout(this.coalesceTimer);
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    if (this._visibilityHandler) {
+      document.removeEventListener('visibilitychange', this._visibilityHandler);
+      this._visibilityHandler = null;
+    }
+    if (this._fontHandler) {
+      document.fonts?.removeEventListener('loadingdone', this._fontHandler);
+      this._fontHandler = null;
+    }
     this.renderHandle.free();
     this.kernel.free();
   }

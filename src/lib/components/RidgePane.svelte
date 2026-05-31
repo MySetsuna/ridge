@@ -29,9 +29,11 @@ import { isTuiActive } from '$lib/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
+	computeReplaySequence,
 	EMPTY_INPUT_BUFFER,
 	type InputBufferState,
 } from './inputBufferTracker';
+import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
 
 interface Props {
 	paneId: string;
@@ -70,6 +72,100 @@ const manager = TerminalManager.instance();
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
 let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
 
+// §1.34 (2026-05-22) — shell-history overlay state. The popup renders
+// directly on the wasm canvas via `manager.setHistoryOverlay(...)` (not
+// a Svelte DOM element) so it inherits pane focus, theme, cell metrics
+// and DPR for free. See
+// `packages/ridge-term/src/render/renderer.rs::HistoryOverlay` for the
+// renderer state and `webgpu.rs::draw_history_overlay` for the paint.
+let historyOverlayOpen = $state(false);
+let historyOverlayItems = $state<string[]>([]);
+let historyOverlaySelected = $state(-1);
+let historyOverlayAbove = $state(true);
+let historyOverlayAnchor = $state<{ row: number; col: number } | null>(null);
+
+const HISTORY_OVERLAY_MAX_ROWS = 10;
+
+function snapshotHistoryItems(query: string): string[] {
+	const all = dedupKeepFirst(get(terminalHistoryStore));
+	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ROWS);
+}
+
+function pushHistoryOverlay(): void {
+	if (!historyOverlayOpen || !historyOverlayAnchor) return;
+	manager.setHistoryOverlay(
+		paneId,
+		historyOverlayItems,
+		historyOverlaySelected,
+		historyOverlayAnchor.row,
+		historyOverlayAnchor.col,
+		historyOverlayAbove,
+	);
+}
+
+function openHistoryOverlay(): boolean {
+	const anchor = manager.inputAnchorResolved?.(paneId);
+	if (!anchor) return false;
+	const items = snapshotHistoryItems(currentInputBuffer.text);
+	if (items.length === 0) return false;
+	historyOverlayItems = items;
+	historyOverlaySelected = -1;
+	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
+	const rows = manager.rows(paneId);
+	historyOverlayAbove = anchor.row >= rows / 2;
+	historyOverlayOpen = true;
+	pushHistoryOverlay();
+	return true;
+}
+
+function closeHistoryOverlay(): void {
+	if (!historyOverlayOpen) return;
+	historyOverlayOpen = false;
+	historyOverlaySelected = -1;
+	historyOverlayItems = [];
+	historyOverlayAnchor = null;
+	manager.clearHistoryOverlay(paneId);
+}
+
+function commitHistorySelection(execute: boolean): void {
+	if (historyOverlaySelected < 0
+		|| historyOverlaySelected >= historyOverlayItems.length) {
+		closeHistoryOverlay();
+		return;
+	}
+	const cmd = historyOverlayItems[historyOverlaySelected];
+	terminalHistoryStore.add(cmd);
+	// Wipe whatever the user already typed on the line before injecting
+	// the picked command. Prefer the kernel-cell snapshot (robust to Tab
+	// completion / alias expansion); fall back to the keystroke mirror.
+	const snapshot = manager.readShellInputSnapshot(paneId);
+	const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
+	if (replay) manager.write(paneId, replay);
+	manager.write(paneId, execute ? cmd + '\r' : cmd);
+	currentInputBuffer = EMPTY_INPUT_BUFFER;
+	closeHistoryOverlay();
+	imeHelper?.focus();
+}
+
+function moveHistorySelection(delta: number): void {
+	if (!historyOverlayOpen) return;
+	const n = historyOverlayItems.length;
+	if (n === 0) {
+		closeHistoryOverlay();
+		return;
+	}
+	if (delta < 0) {
+		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
+		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
+		else historyOverlaySelected -= 1;
+	} else {
+		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
+		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
+		else historyOverlaySelected += 1;
+	}
+	pushHistoryOverlay();
+}
+
 // §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
 // path that mutates the shell line through the unit-tested
 // `inputBufferTracker` state machine so `currentInputBuffer` stays in
@@ -104,6 +200,12 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			// Enter / Ctrl+U: shell line ends or fully clears; the
 			// next input is a fresh start.
 			manager.clearInputStart(paneId);
+			// Close the history popup on Enter / Ctrl+U — the real
+			// "user intent to submit / abandon" signal. Driving close
+			// from the keystroke side keeps it per-pane by construction
+			// (vs. a global pty-newline event closing popups across
+			// panes on every prompt redraw).
+			closeHistoryOverlay();
 			break;
 		// Other events (backspace / cursor moves / killWord / killToEol)
 		// don't change the input's start position — leave the marker.
@@ -689,6 +791,11 @@ onMount(() => {
 		return;
 	}
 
+	// Populate the shell-history store (Rust merges PowerShell / bash /
+	// zsh history files). Idempotent + cheap; the store keeps a single
+	// shared snapshot so per-pane mounts just refresh it.
+	terminalHistoryStore.fetch();
+
 	if (!isValidPaneId(paneId)) {
 		console.error(
 			'[ridge-pane] mounted with non-UUID paneId:',
@@ -911,6 +1018,11 @@ $effect(() => {
 	if (attached) {
 		manager.setFocused(paneId, isActive);
 	}
+	// Close the history popup when this pane loses focus — otherwise an
+	// inactive pane's overlay lingers on screen after the user clicks
+	// into another pane. Keystrokes already can't reach it (its container
+	// isn't focused), but the visual residue confuses.
+	if (!isActive && historyOverlayOpen) closeHistoryOverlay();
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -925,6 +1037,54 @@ $effect(() => {
 
 	function onContainerKeyDown(e: KeyboardEvent) {
 		if (!alive || !attached) return;
+
+		// 1. §1.34 — shell-history overlay (wasm canvas) takes the
+		// highest priority while open. Modifier-free ↑ ↓ Enter → ←
+		// Esc are consumed; any other printable / Backspace / Tab key
+		// closes the overlay and falls through so the user's typing
+		// still flows to the shell.
+		if (historyOverlayOpen) {
+			if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+				if (e.key === 'ArrowUp') {
+					moveHistorySelection(-1);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'ArrowDown') {
+					moveHistorySelection(1);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'Enter') {
+					commitHistorySelection(true);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'ArrowRight') {
+					if (historyOverlaySelected >= 0) {
+						commitHistorySelection(false);
+						e.preventDefault();
+						return;
+					}
+					closeHistoryOverlay();
+					// Fall through so the shell sees ArrowRight.
+				}
+				if (e.key === 'ArrowLeft') {
+					closeHistoryOverlay();
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'Escape') {
+					closeHistoryOverlay();
+					e.preventDefault();
+					return;
+				} else if (e.key.length === 1
+					|| e.key === 'Backspace'
+					|| e.key === 'Tab') {
+					closeHistoryOverlay();
+				}
+			}
+		}
 
 		if (isComposing || e.isComposing) return;
 
@@ -942,6 +1102,24 @@ $effect(() => {
 		const isTui = isTuiSticky();
 		if (isTui) {
 			if (manager.handleKeyDown(paneId, e)) {
+				e.preventDefault();
+				return;
+			}
+		}
+
+		// §1.34: ArrowUp / ArrowDown → open shell-history overlay
+		// (rendered on the wasm canvas). The gate decision lives in the
+		// wasm kernel via `should_allow_shell_history` so any TUI signal
+		// — DECCKM / alt screen / mouse reporting / inline-TUI heuristic
+		// / hidden cursor / 2 s sticky after any of those — short-circuits
+		// to false and the arrow key falls through to the kernel encoder.
+		if (
+			!historyOverlayOpen
+			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+			&& manager.shouldAllowShellHistory(paneId)
+		) {
+			if (openHistoryOverlay()) {
 				e.preventDefault();
 				return;
 			}
@@ -1262,23 +1440,12 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
-	// §multi-size: each client (desktop + every remote) now renders its OWN grid
-	// via a per-sub parser, so desktop interaction no longer needs to "re-claim"
-	// the shared PTY size. The PTY is resized only by an explicit per-pane refresh
-	// (desktop or remote) — see the refresh button below.
-	// ★ TUI mouse reporting takes priority: forward the click to the
-	// running application instead of changing focus. Without this,
-	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends
-	// the event to the kernel's pointerDownListener but the Svelte
-	// template handler runs first and steals focus from the IME helper,
-	// breaking the next keystroke.
-	if (manager.isMouseReporting(paneId)) {
-		manager.handlePointerDown(paneId, e);
-		// Don't focus the IME helper — the TUI owns input now, and
-		// the next keydown will still reach onContainerKeyDown via
-		// bubbling from whichever child has focus.
-		return;
-	}
+	// Mouse routing is handled by Manager's pointerDownListener
+	// (addEventListener on the container): TUI mouse reporting active
+	// → encodeMouse → PTY; otherwise → host default (selection, links).
+	// This handler only manages focus: the clicked pane's IME helper
+	// must receive DOM focus so subsequent keystrokes reach THIS pane's
+	// onContainerKeyDown, not the previously-focused pane's.
 	// In 'direct' mode the IME helper isn't rendered at all (see below),
 	// so focus the container directly — its keydown handler still
 	// services every printable key without IME composition.
@@ -1286,13 +1453,8 @@ function onContainerPointerDown(e: PointerEvent) {
 		container?.focus();
 		return;
 	}
-	// Focus the IME helper textarea so keystrokes (including IME
-	// composition) flow to us. Falling back to container focus if the
-	// helper isn't mounted yet (early HMR / SSR edge case).
 	if (imeHelper) {
 		imeHelper.focus();
-		// Reposition AFTER focus so the candidate window (if it appears
-		// from a held composition) anchors to the freshly-computed spot.
 		repositionImeHelper();
 	} else {
 		container?.focus();

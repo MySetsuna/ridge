@@ -52,6 +52,11 @@
   }
   export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); }
   export function applyDelta(bytes: Uint8Array) { ctrl?.applyDelta(bytes); }
+  export function resizeKernel(rows: number, cols: number) {
+    if (ctrl) {
+      ctrl.kernelResize(rows, cols);
+    }
+  }
   export function applyDeltaBase64(b64: string) {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);

@@ -47,6 +47,22 @@ pub fn get_remote_enabled(state: State<AppState>) -> Result<bool, String> {
     Ok(state.remote_enabled.load(Ordering::Relaxed))
 }
 
+/// §read-only: when enabled, remote `data-request` mutations (file writes,
+/// deletes, git commit/push/…) are refused server-side. Reads stay allowed.
+/// Defence-in-depth for view-only sessions — an authenticated remote already
+/// has shell stdin, so this is a convenience guard, not an isolation boundary.
+#[tauri::command]
+pub fn set_remote_fs_readonly(state: State<AppState>, readonly: bool) -> Result<(), String> {
+    state.remote_fs_readonly.store(readonly, Ordering::Relaxed);
+    tracing::info!(target: "ridge::remote", readonly, "Remote filesystem read-only toggle changed");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_remote_fs_readonly(state: State<AppState>) -> Result<bool, String> {
+    Ok(state.remote_fs_readonly.load(Ordering::Relaxed))
+}
+
 /// §sessions: list the currently-connected remote control sessions for the
 /// desktop RemotePanel (IP + device id + connected duration).
 #[tauri::command]

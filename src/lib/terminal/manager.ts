@@ -67,6 +67,10 @@ import { LinkSpanIndex } from '$lib/terminal/linkSpans';
 // kernel cells instead of mirroring keystrokes. See module docstring.
 
 import type { InputBufferState } from '$lib/components/inputBufferTracker';
+// §1.32 Wave F: pure shell-input reconstruction from kernel cells. The
+// kernel reads + pane-level start marker live here; the reconstruction
+// math is the tested pure function in `shellInputSnapshot`.
+import { reconstructInputSnapshot } from './shellInputSnapshot';
 // §1.32 (2026-05-20): `linkResolver` transitively imports `monaco-editor`
 // via `$lib/stores/fileEditor → $lib/utils/markdown`. Keeping it as a
 // static top-level import drags monaco into every consumer of `manager.ts`,
@@ -3134,6 +3138,60 @@ export class TerminalManager {
 		return this._lastPreeditCall.get(paneId) ?? null;
 	}
 
+	/** §1.34 — shell-history overlay, rendered directly on the wasm
+	 *  canvas (sibling of `setPreedit`). RidgePane computes the filtered
+	 *  history items + the cursor anchor, then pushes them here; the
+	 *  renderer paints the popup so it inherits pane focus, theme, cell
+	 *  metrics and DPR for free. Like `setPreedit`, this targets the
+	 *  main-thread `entry.handle` only — the worker renderer mirror does
+	 *  not carry overlays, matching the preedit path. See
+	 *  `packages/ridge-term/src/render/renderer.rs::HistoryOverlay`. */
+	setHistoryOverlay(
+		paneId: string,
+		items: readonly string[],
+		selectedIndex: number,
+		anchorRow: number,
+		anchorCol: number,
+		placeAbove: boolean,
+	): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const h = entry.handle as unknown as {
+			setHistoryOverlay?: (
+				items: string[],
+				selectedIndex: number,
+				anchorRow: number,
+				anchorCol: number,
+				placeAbove: boolean,
+			) => void;
+		};
+		h.setHistoryOverlay?.([...items], selectedIndex, anchorRow, anchorCol, placeAbove);
+		this.wake();
+	}
+
+	/** Remove the shell-history overlay. Called on commit / close / focus
+	 *  loss. Mirrors `clearPreedit`. */
+	clearHistoryOverlay(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const h = entry.handle as unknown as { clearHistoryOverlay?: () => void };
+		h.clearHistoryOverlay?.();
+		this.wake();
+	}
+
+	/** §1.34 — gate the shell-history popup on the wasm kernel's TUI
+	 *  heuristic. Any live TUI signal — DECCKM / alt screen / mouse
+	 *  reporting / inline-TUI heuristic / hidden cursor / 2 s sticky
+	 *  after any of those — returns false, so an ArrowUp inside claude
+	 *  code / vim / less falls through to the kernel encoder instead of
+	 *  popping the overlay. Returns false when the pane is unknown. */
+	shouldAllowShellHistory(paneId: string): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry) return false;
+		const k = entry.kernel as unknown as { shouldAllowShellHistory?: () => boolean };
+		return k.shouldAllowShellHistory?.() ?? false;
+	}
+
 	/** Whether the pane has DEC mouse reporting enabled (?1000/?1002/?1003).
 	 *  When true, pointer events should be forwarded to the TUI instead of
 	 *  being consumed by ridge's selection/link handlers. */
@@ -3292,6 +3350,46 @@ export class TerminalManager {
 		if (!entry) return;
 		entry.inputStartRow = null;
 		entry.inputStartCol = null;
+	}
+
+	/** §1.32 Wave F — reconstruct the real shell-input line by READING
+	 *  the kernel grid cells between the `markInputStart` anchor and the
+	 *  live cursor, instead of trusting the keystroke mirror. Robust to
+	 *  Tab-completion echoes, alias/`$VAR` expansion and vi-mode moves
+	 *  the mirror can't see. Returns `null` (caller falls back to the
+	 *  keystroke mirror) when:
+	 *    - the pane is unknown / has no input-start marker,
+	 *    - the input wrapped to another row (cursorRow ≠ startRow),
+	 *    - the prompt was redrawn under us (cursorCol < startCol).
+	 *  Shape is `InputBufferState` so it drops straight into
+	 *  `computeReplaySequence`. */
+	readShellInputSnapshot(paneId: string): InputBufferState | null {
+		const entry = this.panes.get(paneId);
+		if (!entry) return null;
+		const startRow = entry.inputStartRow;
+		const startCol = entry.inputStartCol;
+		if (startRow == null || startCol == null) return null;
+
+		const k = entry.kernel as unknown as {
+			cursorRow: () => number;
+			cursorCol: () => number;
+			cols: () => number;
+			cellsAt: (row: number, col: number, len: number) => Array<{ ch: string; width: number }>;
+		};
+		const cursorRow = k.cursorRow();
+		const cursorCol = k.cursorCol();
+		// Multi-row input (long command that wrapped, or cursor moved to
+		// another row via PageUp etc.) — not handled. Fall back to mirror.
+		if (cursorRow !== startRow) return null;
+		// Cursor jumped behind input start — prompt was redrawn under us
+		// (Ctrl+L, screen clear). Snapshot is invalid.
+		if (cursorCol < startCol) return null;
+
+		const totalCols = k.cols();
+		const preCells = k.cellsAt(startRow, startCol, cursorCol - startCol);
+		const postCells = k.cellsAt(startRow, cursorCol, totalCols - cursorCol);
+		const snap = reconstructInputSnapshot(preCells, postCells);
+		return { text: snap.text, cursorCol: snap.cursorCol };
 	}
 
 	/** Schedule a single rAF that snapshots the kernel cursor as the new

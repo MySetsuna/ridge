@@ -1,21 +1,31 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
-/// Event emitted by the PTY reader thread, picked up by the main event loop
-/// AND broadcast to remote WebSocket clients.
+/// Unified event type for the single per-client mpsc channel.
 #[derive(Clone, Debug)]
-pub struct PtyOutputEvent {
-    pub workspace_id: Uuid,
-    pub pane_id: Uuid,
-    pub data: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct PtyDeltaEvent {
-    pub workspace_id: Uuid,
-    pub pane_id: Uuid,
-    pub bytes: Vec<u8>,
+pub enum RemotePtyEvent {
+    RawBytes {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        bytes: Arc<Vec<u8>>,
+    },
+    /// Title / cwd update for a pane. Either field may be `None` when only the
+    /// other changed. Sent out-of-band from the raw byte stream so the client
+    /// can update its tab/document title without parsing the PTY stream itself.
+    Metadata {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        title: Option<String>,
+        cwd: Option<String>,
+    },
+    PtyResized {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        rows: u16,
+        cols: u16,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

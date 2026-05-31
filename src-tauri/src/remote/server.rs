@@ -1,12 +1,11 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use portable_pty::PtySize;
-
-use crate::engine::parser::PaneParser;
 
 use axum::{
     extract::{
@@ -26,7 +25,6 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::state::{AppState, RemotePaneSub, RemoteSubId};
-use crate::types::{PtyDeltaEvent, PtyOutputEvent};
 
 use super::auth::RemoteAuth;
 
@@ -185,11 +183,19 @@ async fn run_remote_server(
             std::env::current_exe()
                 .ok()
                 .and_then(|p| {
-                    p.parent()?.parent()?.parent()?.parent()?.join("static").join("remote").into()
+                    p.parent()?
+                        .parent()?
+                        .parent()?
+                        .parent()?
+                        .join("static")
+                        .join("remote")
+                        .into()
                 })
                 .unwrap_or_default(),
         ];
-        candidates.into_iter().find(|p| p.join("index.html").exists())
+        candidates
+            .into_iter()
+            .find(|p| p.join("index.html").exists())
             .unwrap_or_else(|| PathBuf::from("static").join("remote"))
     };
 
@@ -217,7 +223,10 @@ async fn run_remote_server(
         .route("/workspace/switch", post(workspace_switch_handler))
         .route("/workspace/create", post(workspace_create_handler))
         .route("/workspace/close", post(workspace_close_handler))
-        .route_layer(axum::middleware::from_fn_with_state(ctx.clone(), remote_gate))
+        .route_layer(axum::middleware::from_fn_with_state(
+            ctx.clone(),
+            remote_gate,
+        ))
         .with_state(ctx);
 
     let _ = port_tx.send(Some(port));
@@ -332,7 +341,11 @@ async fn verify_handler_post(
 ) -> Json<VerifyResponse> {
     // §blacklist: a barred device/IP can't even obtain a token.
     let device_id = form.device.clone().unwrap_or_default();
-    if ctx.state.remote_blacklist.is_blocked(&device_id, &addr.ip().to_string()) {
+    if ctx
+        .state
+        .remote_blacklist
+        .is_blocked(&device_id, &addr.ip().to_string())
+    {
         return Json(VerifyResponse {
             success: false,
             message: "该设备已被加入黑名单".to_string(),
@@ -370,7 +383,11 @@ async fn ws_handler(
     let remote_addr = addr.ip().to_string();
     let device_id = query.device.clone().unwrap_or_default();
     // §blacklist: bar barred devices/IPs even with a valid token.
-    if ctx.state.remote_blacklist.is_blocked(&device_id, &remote_addr) {
+    if ctx
+        .state
+        .remote_blacklist
+        .is_blocked(&device_id, &remote_addr)
+    {
         return (StatusCode::FORBIDDEN, "device is blacklisted").into_response();
     }
     let valid = if let Some(ref t) = query.token {
@@ -423,17 +440,20 @@ async fn workspace_list_handler(State(ctx): State<RemoteCtx>) -> impl IntoRespon
     let names = ctx.state.workspace_names.read();
     let map = ctx.state.workspaces.read();
     let active = *ctx.state.active_workspace.read();
-    let workspaces: Vec<serde_json::Value> = order.iter().map(|id| {
-        // §unify: per-workspace display_seq fallback name, matching the desktop
-        // and the WS `list-workspaces` handler.
-        let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
-        serde_json::json!({
-            "id": id.to_string(),
-            "name": names.get(id).cloned().unwrap_or_else(|| format!("工作区 {}", display_seq)),
-            "displaySeq": display_seq,
-            "active": *id == active,
+    let workspaces: Vec<serde_json::Value> = order
+        .iter()
+        .map(|id| {
+            // §unify: per-workspace display_seq fallback name, matching the desktop
+            // and the WS `list-workspaces` handler.
+            let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
+            serde_json::json!({
+                "id": id.to_string(),
+                "name": names.get(id).cloned().unwrap_or_else(|| format!("工作区 {}", display_seq)),
+                "displaySeq": display_seq,
+                "active": *id == active,
+            })
         })
-    }).collect();
+        .collect();
     Json(serde_json::json!({ "workspaces": workspaces }))
 }
 
@@ -443,14 +463,25 @@ async fn workspace_switch_handler(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let id = match Uuid::parse_str(&body.workspace_id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success":false,"error":"invalid workspace id"}))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"success":false,"error":"invalid workspace id"})),
+            )
+        }
     };
     let exists = ctx.state.workspaces.read().contains_key(&id);
     if !exists {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"success":false,"error":"workspace not found"})));
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"success":false,"error":"workspace not found"})),
+        );
     }
     *ctx.state.active_workspace.write() = id;
-    (StatusCode::OK, Json(serde_json::json!({ "success": true, "workspaceId": id.to_string() })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "success": true, "workspaceId": id.to_string() })),
+    )
 }
 
 async fn workspace_create_handler(
@@ -495,12 +526,20 @@ async fn workspace_close_handler(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let id = match Uuid::parse_str(&body.workspace_id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success":false,"error":"invalid workspace id"}))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"success":false,"error":"invalid workspace id"})),
+            )
+        }
     };
     {
         let order = ctx.state.workspace_order.read();
         if order.len() <= 1 {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success":false,"error":"cannot close last workspace"})));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"success":false,"error":"cannot close last workspace"})),
+            );
         }
     }
     ctx.state.workspaces.write().remove(&id);
@@ -516,13 +555,11 @@ async fn workspace_close_handler(
     (StatusCode::OK, Json(serde_json::json!({ "success": true })))
 }
 
-/// §multi-size: resize a pane's PTY to `rows`×`cols`, resize its canonical
-/// `PaneParser`, and broadcast the resulting delta frame to BOTH the desktop
-/// (via the pane delta channel) and every remote subscriber. This is the
-/// shared path for the remote "first-connect auto-claim" and the explicit
-/// "refresh-pane" button — i.e. the only places a render endpoint claims the
-/// shared PTY size. Mirrors `commands::terminal::resize_pane_inner` minus the
-/// Tauri-only ConPTY silence window (skipped, like the alt-screen path).
+/// Resize a pane's PTY and canonical parser, broadcast the resulting
+/// delta frame to the desktop (via the pane delta channel), and send
+/// a PtyResized event to every remote subscriber so they can resize
+/// their own wasm kernel. This is the shared path for the remote
+/// "refresh-pane" / "claim-pane" commands.
 fn apply_pane_resize(
     ctx: &RemoteCtx,
     ws_id: Uuid,
@@ -537,15 +574,15 @@ fn apply_pane_resize(
     let frame_bytes = {
         let map = ctx.state.workspaces.read();
         let Some(ws) = map.get(&ws_id) else { return };
-        let Some(handle) = ws.terminals.get(&pane_id) else { return };
+        let Some(handle) = ws.terminals.get(&pane_id) else {
+            return;
+        };
         let _ = handle.master.lock().resize(PtySize {
             rows,
             cols,
             pixel_width,
             pixel_height,
         });
-        // The canonical parser owns every viewer's grid now, so it must be
-        // in delta mode and resized in lock-step with the PTY.
         handle.delta_mode.store(true, Ordering::Release);
         let frame = {
             let mut p = handle.parser.lock();
@@ -564,17 +601,18 @@ fn apply_pane_resize(
     if let Some(sender) = ctx.state.get_pane_delta_channel(ws_id, pane_id) {
         sender(bytes.clone());
     }
-    // All remote viewers share this one canonical resize frame.
-    let reg = ctx.state.pty_pane_registry.read();
-    if let Some(entry) = reg.get(&(ws_id, pane_id)) {
-        for sub in &entry.remote_subs {
-            let _ = sub.delta_tx.try_send(PtyDeltaEvent {
-                workspace_id: ws_id,
-                pane_id,
-                bytes: bytes.clone(),
-            });
-        }
-    }
+    // All remote viewers receive a PtyResized event so their wasm
+    // kernel can call kernel.resize() for reflow.
+    ctx.state.broadcast_remote_event(
+        ws_id,
+        pane_id,
+        crate::types::RemotePtyEvent::PtyResized {
+            workspace_id: ws_id,
+            pane_id,
+            rows,
+            cols,
+        },
+    );
 }
 
 async fn handle_ws(
@@ -597,10 +635,29 @@ async fn handle_ws(
     );
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client connected");
 
-    // Per-client mpsc channels — isolated from other WS clients.
-    let (output_tx, mut output_rx) = mpsc::channel::<PtyOutputEvent>(128);
-    let (delta_tx, mut delta_rx) = mpsc::channel::<PtyDeltaEvent>(256);
+    // Per-client mpsc channel — isolated from other WS clients.
+    let (raw_tx, mut raw_rx) = mpsc::channel::<crate::types::RemotePtyEvent>(512);
     let sub_id = RemoteSubId::next();
+
+    // Shared with the active `RemotePaneSub`: the PTY fan-out (lib.rs) sets this
+    // when it has to drop a frame because `raw_tx` is full. The WS task clears it
+    // and re-syncs the client on the next forwarded frame.
+    let desync = Arc::new(AtomicBool::new(false));
+    // §resync-throttle: a resync replays up to 64 KiB of scrollback, so under a
+    // sustained-overload feedback loop (slow client → drops → resync → slower)
+    // we cap it to at most once per interval. The desync flag is only CONSUMED
+    // when we actually resync — if throttled, it stays set so a later frame
+    // (after the interval) performs the recovery instead of losing the signal.
+    let mut last_resync: Option<Instant> = None;
+    const RESYNC_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+    // §rate-limit: per-connection token bucket for `data-request`. An
+    // authenticated remote already has shell access, so this is an anti-abuse
+    // / anti-DoS guard (scripted bulk FS/git calls), not an authz boundary.
+    let mut dr_window_start = Instant::now();
+    let mut dr_count: u32 = 0;
+    const DR_WINDOW: Duration = Duration::from_secs(5);
+    const DR_MAX_PER_WINDOW: u32 = 120;
 
     // Track which (ws, pane) this client is currently subscribed to.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
@@ -617,7 +674,12 @@ async fn handle_ws(
 
     // Initial handshake.
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
-    if ws_tx.send(Message::Text(welcome.to_string())).await.is_err() {
+    if ws_tx
+        .send(Message::Text(welcome.to_string()))
+        .await
+        .is_err()
+    {
+        ctx.state.remote_client_registry.unregister(client_id);
         return;
     }
 
@@ -691,18 +753,14 @@ async fn handle_ws(
                     Some("subscribe-pane") => {
                         let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            // Unregister from current pane (drops its parser too).
+                            // Unregister from current pane.
                             if let Some((ws, p)) = current_pane.take() {
                                 ctx.state.unregister_remote_sub(ws, p, sub_id);
                             }
                             let new_key = (active_ws_id, pane_id);
 
-                            // §multi-size: each remote client renders at its OWN
-                            // grid size via a dedicated per-sub PaneParser (the
-                            // lib.rs fan-out feeds PTY output through it and sends
-                            // mobile-sized deltas). Ensure the canonical parser is
-                            // in delta mode so the PTY reader runs the delta path
-                            // that drives every sub.
+                            // Ensure the canonical parser is in delta mode so
+                            // the desktop frontend continues receiving deltas.
                             {
                                 let workspaces = ctx.state.workspaces.read();
                                 if let Some(h) = workspaces
@@ -713,54 +771,38 @@ async fn handle_ws(
                                 }
                             }
 
-                            // Per-sub parser at THIS client's viewport size. Feed
-                            // it the recent scrollback so its state matches the
-                            // bootstrap frame sent below — the client kernel and
-                            // this parser then stay in lock-step from frame 0.
-                            let sub_rows = mobile_rows.max(1);
-                            let sub_cols = mobile_cols.max(1);
-                            let sub_parser = Arc::new(parking_lot::Mutex::new(
-                                PaneParser::new(sub_rows, sub_cols, 5000),
-                            ));
-                            let init_bytes = {
-                                let mut mp = sub_parser.lock();
-                                let replay = ctx.state.get_recent_scrollback_for(
-                                    active_ws_id,
-                                    pane_id,
-                                    65536, // 64 KiB — covers ~500 lines of history
-                                );
-                                if !replay.is_empty() {
-                                    mp.feed_and_diff(&replay);
-                                }
-                                let frame = mp.full_reframe_with_scrollback();
-                                ridge_term::term::delta::encode_frame(&frame)
-                                    .unwrap_or_default()
-                            };
-
+                            // Fresh subscription starts in-sync.
+                            desync.store(false, Ordering::Release);
                             ctx.state.register_remote_sub(
                                 active_ws_id, pane_id,
                                 RemotePaneSub {
                                     id: sub_id,
-                                    output_tx: output_tx.clone(),
-                                    delta_tx: delta_tx.clone(),
-                                    // §multi-size: per-client parser → the lib.rs
-                                    // fan-out sends this sub its own mobile-sized
-                                    // delta frames.
-                                    parser: Some(sub_parser),
-                                    rows: sub_rows,
-                                    cols: sub_cols,
+                                    raw_tx: raw_tx.clone(),
+                                    desync: desync.clone(),
                                 },
                             );
                             current_pane = Some(new_key);
 
-                            // Send the bootstrap frame (goes out before any queued
-                            // canonical delta, since this handler runs to
-                            // completion before the select loop drains delta_rx).
-                            if !init_bytes.is_empty() {
+                            // Send recent scrollback as raw bytes so the client
+                            // kernel can replay history via feed().
+                            //
+                            // Ordering note: we register BEFORE snapshotting the
+                            // scrollback on purpose. This guarantees no GAP — every
+                            // chunk is either in this snapshot or delivered live (or,
+                            // in a sub-microsecond window, both → a harmless duplicate
+                            // that a vte repaint absorbs). The reverse order would
+                            // trade the benign dup for a dropped chunk, which is worse
+                            // for a mirror. True dedup would require coupling the PTY
+                            // reader's scrollback-append + fan-out under one lock — not
+                            // worth the hot-path cost.
+                            let history = ctx.state.get_recent_scrollback_for(
+                                active_ws_id, pane_id, 65536,
+                            );
+                            if !history.is_empty() {
                                 let mut payload =
-                                    Vec::with_capacity(16 + init_bytes.len());
+                                    Vec::with_capacity(16 + history.len());
                                 payload.extend_from_slice(pane_id.as_bytes());
-                                payload.extend_from_slice(&init_bytes);
+                                payload.extend_from_slice(&history);
                                 let _ =
                                     ws_tx.send(Message::Binary(payload.into())).await;
                             }
@@ -923,45 +965,18 @@ async fn handle_ws(
                         Ok(())
                     }
                     Some("resize") => {
-                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                        // The client renders at the canonical PTY grid (driven by
+                        // `pty-resized` from claim/refresh), so a viewport-only resize
+                        // doesn't touch the shared PTY or the client kernel. We just
+                        // record the clamped size as the fallback used by the next
+                        // claim/refresh. The `.min(500)` is a defensive bound against a
+                        // malformed viewport, not the anti-OOM guard it was when each
+                        // sub owned a `rows × cols` parser.
+                        let _pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                         let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
                         let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
-                        // §multi-size: record the client's viewport and reflow ONLY
-                        // this client's per-sub parser — never the shared PTY (that
-                        // stays owned by whoever last hit refresh/claim). Then push
-                        // a full reframe so an idle app reflows immediately instead
-                        // of waiting for the next PTY output chunk.
-                        mobile_rows = rows.max(1);
-                        mobile_cols = cols.max(1);
-                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            ctx.state.resize_remote_parser(
-                                active_ws_id, pane_id, sub_id, mobile_rows, mobile_cols,
-                            );
-                            let sub_parser = {
-                                let reg = ctx.state.pty_pane_registry.read();
-                                reg.get(&(active_ws_id, pane_id)).and_then(|entry| {
-                                    entry
-                                        .remote_subs
-                                        .iter()
-                                        .find(|s| s.id == sub_id)
-                                        .and_then(|s| s.parser.clone())
-                                })
-                            };
-                            if let Some(mp) = sub_parser {
-                                let bytes = {
-                                    let mut p = mp.lock();
-                                    let frame = p.full_reframe_with_scrollback();
-                                    ridge_term::term::delta::encode_frame(&frame)
-                                        .unwrap_or_default()
-                                };
-                                if !bytes.is_empty() {
-                                    let mut payload = Vec::with_capacity(16 + bytes.len());
-                                    payload.extend_from_slice(pane_id.as_bytes());
-                                    payload.extend_from_slice(&bytes);
-                                    let _ = ws_tx.send(Message::Binary(payload.into())).await;
-                                }
-                            }
-                        }
+                        mobile_rows = rows.max(1).min(500);
+                        mobile_cols = cols.max(1).min(500);
                         Ok(())
                     }
                     // §own-active: this client becomes the active size owner. Both
@@ -1159,37 +1174,105 @@ async fn handle_ws(
                             "results": results,
                         }).to_string())).await
                     }
+                    Some("data-request") => {
+                        // Backs the remote `WsDataProvider` (src/lib/transport/ws.ts).
+                        // An authenticated remote already has shell stdin, so this
+                        // mirrors the desktop `TauriDataProvider` 1:1 within the SAME
+                        // trust boundary. Guards layered on top: a per-connection rate
+                        // limit (below), a read-only toggle + path-traversal rejection
+                        // + audit log of mutations (in `dispatch_data_request`). The
+                        // reply carries `_reqId` plus `_result` (ok) or `_error` (fail).
+                        let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
+                        let method = parsed["method"].as_str().unwrap_or("").to_string();
+
+                        // §rate-limit: refill the window, then count this request.
+                        if dr_window_start.elapsed() >= DR_WINDOW {
+                            dr_window_start = Instant::now();
+                            dr_count = 0;
+                        }
+                        dr_count += 1;
+                        if dr_count > DR_MAX_PER_WINDOW {
+                            tracing::warn!(
+                                target: "ridge::remote",
+                                client_id, method = %method,
+                                "data-request rate limit exceeded; rejecting"
+                            );
+                            let reply = serde_json::json!({
+                                "_reqId": req_id,
+                                "_error": "rate limited: too many data requests",
+                            });
+                            ws_tx.send(Message::Text(reply.to_string())).await
+                        } else {
+                            let mut reply =
+                                dispatch_data_request(&method, &parsed, &ctx.state).await;
+                            if let Some(obj) = reply.as_object_mut() {
+                                obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                            }
+                            ws_tx.send(Message::Text(reply.to_string())).await
+                        }
+                    }
                     _ => {
                         ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
                     }
                 };
             }
-            event = output_rx.recv() => {
+            event = raw_rx.recv() => {
                 match event {
-                    Some(PtyOutputEvent { workspace_id, pane_id, data }) => {
+                    Some(crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes }) => {
                         if workspace_id == active_ws_id {
-                            if ws_tx.send(Message::Text(serde_json::json!({
-                                "type": "output",
-                                "paneId": pane_id.to_string(),
-                                "data": data,
-                            }).to_string())).await.is_err() {
-                                break;
+                            // §resync: if the fan-out dropped frames for this sub, the
+                            // client's vte stream has a hole that would corrupt every
+                            // subsequent parse. Reset the terminal (RIS) and replay
+                            // fresh scrollback before the current bytes so the parser
+                            // re-synchronises — but throttle it (see RESYNC_MIN_INTERVAL)
+                            // so a sustained-overload loop can't amplify congestion. We
+                            // only CONSUME the desync flag when we actually resync; if
+                            // throttled it stays set for a later frame to handle.
+                            if desync.load(Ordering::Acquire) {
+                                let now = Instant::now();
+                                let throttled = last_resync
+                                    .is_some_and(|t| now.duration_since(t) < RESYNC_MIN_INTERVAL);
+                                if !throttled {
+                                    desync.store(false, Ordering::Release);
+                                    last_resync = Some(now);
+                                    let history = ctx.state.get_recent_scrollback_for(
+                                        workspace_id, pane_id, 65536,
+                                    );
+                                    let mut resync = Vec::with_capacity(18 + history.len());
+                                    resync.extend_from_slice(pane_id.as_bytes());
+                                    resync.extend_from_slice(b"\x1bc"); // RIS — full reset
+                                    resync.extend_from_slice(&history);
+                                    if ws_tx.send(Message::Binary(resync.into())).await.is_err() {
+                                        break;
+                                    }
+                                }
                             }
-                        }
-                    }
-                    None => break,
-                }
-            }
-            delta_event = delta_rx.recv() => {
-                match delta_event {
-                    Some(PtyDeltaEvent { workspace_id, pane_id, bytes }) => {
-                        if workspace_id == active_ws_id {
                             let mut payload = Vec::with_capacity(16 + bytes.len());
                             payload.extend_from_slice(pane_id.as_bytes());
                             payload.extend_from_slice(&bytes);
                             if ws_tx.send(Message::Binary(payload.into())).await.is_err() {
                                 break;
                             }
+                        }
+                    }
+                    Some(crate::types::RemotePtyEvent::Metadata { workspace_id, pane_id, title, cwd }) => {
+                        if workspace_id == active_ws_id {
+                            let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                "type": "pty-meta",
+                                "paneId": pane_id.to_string(),
+                                "title": title,
+                                "cwd": cwd,
+                            }).to_string())).await;
+                        }
+                    }
+                    Some(crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols }) => {
+                        if workspace_id == active_ws_id {
+                            let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                "type": "pty-resized",
+                                "paneId": pane_id.to_string(),
+                                "rows": rows,
+                                "cols": cols,
+                            }).to_string())).await;
                         }
                     }
                     None => break,
@@ -1223,4 +1306,284 @@ async fn handle_ws(
     ctx.state.remote_client_registry.unregister(client_id);
 
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client disconnected");
+}
+
+/// Dispatches one remote `data-request` `method` to the same backend command
+/// the desktop `TauriDataProvider` (src/lib/transport/tauri.ts) invokes, with
+/// the same arguments, and returns `{"_result": ...}` on success or
+/// `{"_error": ...}` on failure. The caller stamps `_reqId`.
+///
+/// Paths arrive absolute (identical to the desktop IPC contract) and are passed
+/// through unchanged — desktop and remote therefore behave identically. Most
+/// backing commands are `async` and offload their own blocking work; the two
+/// shape-mismatched methods (`git_status`, `search_files`) delegate to the
+/// dedicated mappers below.
+/// Methods that mutate the filesystem or git repository state. Gated by the
+/// read-only toggle and audit-logged.
+fn is_mutating_method(method: &str) -> bool {
+    matches!(
+        method,
+        "write_file"
+            | "rename_path"
+            | "delete_path"
+            | "create_file"
+            | "create_directory"
+            | "copy_path"
+            | "move_path"
+            | "git_stage"
+            | "git_unstage"
+            | "git_commit"
+            | "git_pull"
+            | "git_push"
+            | "git_sync"
+            | "git_checkout"
+            | "git_revert"
+            | "git_cherry_pick"
+            | "git_reset"
+            | "git_create_tag"
+            | "git_discard"
+            | "git_clean_untracked"
+    )
+}
+
+/// Rejects a path that contains a `..` component (post-split, both separators).
+/// Absolute paths still pass — this only blocks traversal tricks, not the
+/// already-trusted absolute-path contract shared with the desktop.
+fn path_has_traversal(p: &str) -> bool {
+    !p.is_empty() && p.split(['/', '\\']).any(|c| c == "..")
+}
+
+async fn dispatch_data_request(
+    method: &str,
+    params: &serde_json::Value,
+    state: &AppState,
+) -> serde_json::Value {
+    use crate::commands::{git, project};
+
+    // §read-only gate: defence-in-depth for view-only remote sessions. (An
+    // authenticated remote already has shell stdin, so this is a convenience
+    // guard, not an isolation boundary.)
+    if is_mutating_method(method) {
+        if state.remote_fs_readonly.load(Ordering::Relaxed) {
+            tracing::warn!(
+                target: "ridge::remote::fs", method,
+                "rejected mutating data-request: remote is read-only"
+            );
+            return serde_json::json!({ "_error": "remote filesystem is read-only" });
+        }
+        // §audit: record every mutation so a trust-but-verify operator has a trail.
+        tracing::info!(target: "ridge::remote::fs", method, "remote mutating data-request");
+    }
+
+    // §traversal guard: reject `..` in any path-bearing field before it reaches
+    // the filesystem layer.
+    for key in ["path", "from", "to", "repoRoot"] {
+        if let Some(v) = params.get(key).and_then(|x| x.as_str()) {
+            if path_has_traversal(v) {
+                tracing::warn!(
+                    target: "ridge::remote::fs", method, key,
+                    "rejected data-request: path traversal"
+                );
+                return serde_json::json!({ "_error": "path traversal rejected" });
+            }
+        }
+    }
+    if let Some(arr) = params.get("paths").and_then(|x| x.as_array()) {
+        if arr
+            .iter()
+            .filter_map(|x| x.as_str())
+            .any(path_has_traversal)
+        {
+            return serde_json::json!({ "_error": "path traversal rejected" });
+        }
+    }
+
+    // Field extractors — keep each arm to a single readable line.
+    fn s(v: &serde_json::Value, k: &str) -> String {
+        v[k].as_str().unwrap_or("").to_string()
+    }
+    fn usize_opt(v: &serde_json::Value, k: &str) -> Option<usize> {
+        v[k].as_u64().map(|n| n as usize)
+    }
+    fn path_list(v: &serde_json::Value) -> Vec<String> {
+        v["paths"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    // Result envelopes.
+    fn unit(r: Result<(), String>) -> serde_json::Value {
+        match r {
+            Ok(()) => serde_json::json!({ "_result": null }),
+            Err(e) => serde_json::json!({ "_error": e }),
+        }
+    }
+    fn val<T: Serialize>(r: Result<T, String>) -> serde_json::Value {
+        match r {
+            Ok(v) => serde_json::json!({ "_result": v }),
+            Err(e) => serde_json::json!({ "_error": e }),
+        }
+    }
+
+    match method {
+        // ── Filesystem ──
+        "get_file_tree" => {
+            val(project::get_file_tree(s(params, "path"), usize_opt(params, "depth")).await)
+        }
+        "get_directory_children" => val(project::get_directory_children(
+            s(params, "path"),
+            usize_opt(params, "offset"),
+            usize_opt(params, "limit"),
+        )
+        .await),
+        "path_exists" => val(project::path_exists(s(params, "path")).await),
+        "read_file" => val(project::read_file(s(params, "path"))),
+        "write_file" => unit(project::write_file(s(params, "path"), s(params, "content")).await),
+        "rename_path" => unit(project::rename_path(s(params, "from"), s(params, "to"))),
+        "delete_path" => unit(project::delete_path(s(params, "path")).await),
+        "create_file" => unit(project::create_file(s(params, "path"))),
+        "create_directory" => unit(project::create_directory(s(params, "path"))),
+        "copy_path" => unit(project::copy_path(s(params, "from"), s(params, "to"), None).await),
+        "move_path" => unit(project::move_path(s(params, "from"), s(params, "to")).await),
+
+        // ── Git ── (all async; offload internally)
+        "git_status" => git_status_result(s(params, "repoRoot")).await,
+        "git_stage" => unit(git::git_stage(s(params, "repoRoot"), path_list(params)).await),
+        "git_unstage" => unit(git::git_unstage(s(params, "repoRoot"), path_list(params)).await),
+        "git_commit" => unit(
+            git::git_commit(
+                s(params, "repoRoot"),
+                s(params, "message"),
+                params["amend"].as_bool(),
+            )
+            .await,
+        ),
+        "git_pull" => unit(git::git_pull(s(params, "repoRoot")).await),
+        "git_push" => {
+            unit(git::git_push(s(params, "repoRoot"), params["setUpstream"].as_bool()).await)
+        }
+        "git_sync" => unit(git::git_sync(s(params, "repoRoot")).await),
+        "git_checkout" => unit(
+            git::git_checkout(
+                s(params, "repoRoot"),
+                s(params, "branch"),
+                params["create"].as_bool(),
+                None,
+            )
+            .await,
+        ),
+        "git_revert" => unit(git::git_revert(s(params, "repoRoot"), s(params, "hash")).await),
+        "git_cherry_pick" => {
+            unit(git::git_cherry_pick(s(params, "repoRoot"), s(params, "hash")).await)
+        }
+        // Frontend sends { mode, commit }; git_reset takes (repo_root, hash, mode).
+        "git_reset" => unit(
+            git::git_reset(
+                s(params, "repoRoot"),
+                s(params, "commit"),
+                s(params, "mode"),
+            )
+            .await,
+        ),
+        "git_create_tag" => unit(
+            git::git_create_tag(
+                s(params, "repoRoot"),
+                s(params, "name"),
+                None,
+                params["message"].as_str().map(String::from),
+            )
+            .await,
+        ),
+        "git_discard" => unit(git::git_discard(s(params, "repoRoot"), path_list(params)).await),
+        "git_clean_untracked" => {
+            unit(git::git_clean_untracked(s(params, "repoRoot"), Vec::new()).await)
+        }
+
+        // ── Search ──
+        "search_files" => search_files_result(state, s(params, "query"), s(params, "path")).await,
+
+        other => serde_json::json!({ "_error": format!("unknown data-request method: {}", other) }),
+    }
+}
+
+/// Maps `ScmRepoStatus` (+ recent commit log) into the frontend `GitStatusResult`
+/// shape: `{ staged, unstaged, untracked, commits }`. Commits aren't part of
+/// `ScmRepoStatus`, so they're pulled separately via `git_info_for_path` on a
+/// blocking thread (it shells out to `git log`).
+async fn git_status_result(repo_root: String) -> serde_json::Value {
+    let scm = match crate::commands::git::get_scm_status(repo_root.clone()).await {
+        Ok(status) => status,
+        Err(e) => return serde_json::json!({ "_error": e }),
+    };
+    let commits = tokio::task::spawn_blocking(move || {
+        crate::commands::git::git_info_for_path(std::path::Path::new(&repo_root)).commits
+    })
+    .await
+    .map(|list| {
+        list.into_iter()
+            .map(|c| serde_json::json!({ "hash": c.hash, "msg": c.subject, "time": c.date }))
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+
+    let map_files = |files: Vec<crate::commands::git::ScmFile>| {
+        files
+            .into_iter()
+            .map(|f| serde_json::json!({ "name": f.path, "status": f.status }))
+            .collect::<Vec<_>>()
+    };
+    serde_json::json!({
+        "_result": {
+            "staged": map_files(scm.staged),
+            "unstaged": map_files(scm.changes),
+            "untracked": scm.untracked.into_iter().map(|f| f.path).collect::<Vec<_>>(),
+            "commits": commits,
+        }
+    })
+}
+
+/// Runs the desktop text-search engine and remaps `fs::search::SearchResult`
+/// (`{ file, content }`) onto the frontend `SearchResult` (`{ path, snippet }`).
+/// An empty `path` falls back to the active project, then the home dir.
+async fn search_files_result(state: &AppState, query: String, path: String) -> serde_json::Value {
+    if query.trim().is_empty() {
+        return serde_json::json!({ "_result": [] });
+    }
+    let root = if path.trim().is_empty() {
+        state
+            .current_project
+            .read()
+            .clone()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .to_string_lossy()
+            .to_string()
+    } else {
+        path
+    };
+    match crate::commands::project::text_search(
+        root,
+        query,
+        None,
+        None,
+        None,
+        Some(500),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(results) => {
+            let mapped = results
+                .into_iter()
+                .map(|r| serde_json::json!({ "path": r.file, "line": r.line, "column": r.column, "snippet": r.content }))
+                .collect::<Vec<_>>();
+            serde_json::json!({ "_result": mapped })
+        }
+        Err(e) => serde_json::json!({ "_error": e }),
+    }
 }

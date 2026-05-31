@@ -1,235 +1,322 @@
-<div align="center">
-
-<img src="./site/assets/ridge-mark.svg" width="64" height="64" alt="Ridge mark" />
-
 # Ridge
 
-**分屏终端工作台。** A modern terminal workbench with split panes, an embedded editor, Git visualisation, and Claude Code agent teams.
+<p align="center">
+  <i>Like the ridges between rice paddies, split your work into plots — each field bearing its own harvest.</i>
+</p>
 
-[Site](https://mysetsuna.github.io/ridge/) · [Docs](https://mysetsuna.github.io/ridge/docs.html) · [Releases](https://github.com/MySetsuna/ridge/releases) · [Issues](https://github.com/MySetsuna/ridge/issues)
+<p align="center">「如田埂分畦，各耕其获」</p>
 
-</div>
+<p align="center">
+  <a href="docs/README_CN.md">中文文档</a>
+</p>
 
 ---
 
-## 特性 · Highlights
+## Architecture
 
-- **递归分屏** — 水平 / 垂直 / 嵌套，无层数限制。每个分屏都是独立的终端会话，有自己的工作目录与命令历史。
-- **稳定的本地终端** — 支持 PowerShell / bash / zsh / cmd，Unicode、超链接、可滚动数 MB 的命令历史。
-- **内嵌代码编辑器** — 与终端共享同一套分屏布局，可同时打开多个编辑器。
-- **Git 可视化** — 提交图、分支选择器、分屏内的状态徽章，仓库变更后自动刷新。
-- **跨分屏搜索** — 一次扫描所有打开的目录，支持正则、glob、批量替换。
-- **Claude Code 智能体协作** — 从 Ridge 启动的智能体即获得多分屏协作能力。
-- **多工作区** — 同时打开多个项目，互不干扰。
+Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelte 5 frontend). Every pane hosts an independent PTY session; the layout engine supports unlimited recursive horizontal/vertical splits. A WebWorker-hosted terminal renderer (Rust → WASM) drives the grid, with WebGPU as the primary backend and Canvas2D as the universal fallback.
 
-## 快速开始
+```
+┌─ Tauri v2 (Rust) ─────────────────────────────────────────┐
+│  ┌─ commands/ ──┐  ┌─ engine/ ──────────┐  ┌─ remote/ ─┐ │
+│  │ git · pane    │  │ pane_tree · pty    │  │ auth.rs   │ │
+│  │ terminal      │  │ parser · cwd       │  │ mDNS      │ │
+│  │ workspace     │  │ title · delta      │  │ WebSocket │ │
+│  │ project       │  └────────────────────┘  └───────────┘ │
+│  └───────────────┘                                         │
+│  ┌─ teammate/ ──┐  ┌─ fs/ ──────┐  ┌─ db/ ──────────────┐ │
+│  │ tmux shim    │  │ search     │  │ projects.db (SQLite)│ │
+│  │ HTTP API     │  │ tree walk  │  └────────────────────┘ │
+│  └──────────────┘  └────────────┘                         │
+├───────────────────────────────────────────────────────────┤
+│  ┌─ SvelteKit SPA (TypeScript) ───────────────────────┐   │
+│  │  SplitContainer → @ridge/split (custom layout)     │   │
+│  │  RidgePane (terminal shell + Monaco editor)         │   │
+│  │  Sidebar: Explorer · Search · Source Control · Apps │   │
+│  │  Multi-workspace with .ridge file persistence       │   │
+│  │  TerminalManager → WebWorker → ridge-term (WASM)    │   │
+│  └─────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────┘
+```
 
-需要 Node 18+, pnpm 9+, Rust 1.77+。Windows 还需要 MSVC + WebView2。
+### Packages (pnpm monorepo)
+
+| Package | Description |
+|---------|-------------|
+| `packages/ridge-term` | Rust terminal kernel: VT parser, grid, scrollback, selection, search, Canvas2D/WebGPU render backends. Compiled to WASM. |
+| `packages/rg-split` | Pure-render split-pane layout component. Zero internal state; the store is the single source of truth. |
+
+---
+
+## Key Features
+
+### Terminal
+- Unlimited recursive **horizontal/vertical splits** with drag-to-dock
+- Independent PTY per pane: each pane has its own shell process, CWD, and history
+- **Delta-mode protocol** (P3): Rust-side parser emits postcard-compressed `GridDelta` frames via Tauri Channel — typical keyboard echo ~10 bytes on the wire vs ~3 KB JSON
+- **Adaptive PTY output coalescing** with sub-1ms echo path: window scales from 0ms (<256 B) to 8ms (>=4 KB)
+- Scrollback with search, "load older" paging, and user-scroll-lock detection
+- Shell-integration prompt markers (`OSC 133;A` / `OSC 633;A`) for instant git-diff refresh
+- Per-pane **shell switcher** (pwsh, cmd, bash, git-bash, WSL)
+- Inline link resolution: clickable hyperlinks, file paths, git SHAs
+
+### Workspaces
+- Multiple **named workspaces** with independent pane trees, all processes kept alive across switches
+- Single **global host canvas** (A.9): workspace switching is a pure DOM display toggle — no canvas reconfigure, no swap-chain clear, no black flash
+- Save/restore via `.ridge` files in `~/ridge-workspaces/`
+- Startup restore: re-open last session when launched from menu; override with CLI `ridge`
+
+### Editor
+- Monaco Editor as an **alternative pane mode** within the split layout
+- Diff editor modal for inline file comparison
+- Markdown preview with Mermaid diagram support
+
+### Git (Source Control)
+- Commit graph rendered from libgit2 history (not `git log` subprocess)
+- Per-pane **Git status pill**: branch name, ahead/behind count, changed-file count
+- **SCM sidebar**: stage/unstage/discard individual files, commit with message, branch switch, create tag, cherry-pick, revert
+- Git operations: fetch, pull, push, sync against the SCM-selected repository
+- Auto-refresh on filesystem change (notify crate) — no polling
+
+### Search
+- **Cross-workspace search** with regex, case-sensitive, whole-word, glob-filter toggles
+- Replace-in-files across matches
+- Text-search diagnostics sidebar
+
+### Collaboration
+- **Teammate server** (local HTTP API): external agents (Claude Code, etc.) can list/create/close panes, read pane CWD, and manage workspace layout
+- **tmux shim**: binary named `tmux` that translates standard tmux CLI commands into Ridge teammate HTTP calls — drop-in for Claude Code `teammateMode: tmux`
+- Agent statistics dashboard in Settings panel
+
+### Remote Control
+- **LAN-first** mobile web app served by the Tauri backend (standalone server also available)
+- TOTP-based authentication (RFC 6238, no external crate)
+- mDNS service discovery (`_ridge._tcp.local.`) on port 5353
+- Per-device blacklist, session management
+- Remote sidebar reuses the same shared TypeScript components (`src/shared/sidebar/`) as the desktop app
+- WebSocket binary terminal feed with per-client mobile parser instances
+
+### Theming
+- Three built-in themes with CSS custom properties
+- Theme system injected at splash-screen time (before SvelteKit hydration) so the first frame already matches the user's saved theme
+- Monaco editor theme auto-synced from Ridge theme data
+
+### Plugins
+- Lightweight sidebar plugin system with global and workspace scopes
+- Built-in plugins: global status panel
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Desktop framework | [Tauri v2](https://v2.tauri.app/) |
+| Frontend | Svelte 5 + SvelteKit (SPA mode) + Tailwind CSS v4 |
+| Terminal kernel | Custom Rust crate (`ridge-term`) → WASM via wasm-bindgen |
+| GPU rendering | wgpu (WebGPU), Canvas2D fallback via OffscreenCanvas |
+| Rendering host | Web Worker (`type: module`) for off-main-thread paint |
+| Code editor | Monaco Editor 0.55 |
+| Git | libgit2 (`git2` crate v0.19) |
+| Database | SQLite via rusqlite (bundled) |
+| Remote server | axum 0.7 (WebSocket + static file serving) |
+| Auth | TOTP (SHA-256 HMAC, self-implemented RFC 6238) |
+| IPC | Tauri `invoke()` for RPC, Tauri Channel for delta frames, Tauri events for PTY output |
+| Serialization | postcard (binary) for grid deltas, serde_json for RPC |
+| PTY | portable-pty 0.8 |
+| Font icons | lucide-svelte |
+| Diagrams | Mermaid 11 |
+| Markdown | marked 15 |
+| File watching | notify v6 + notify-debouncer-mini |
+| Process discovery | sysinfo |
+| Testing | Vitest (unit), Playwright (e2e), WebdriverIO (e2e-shell + perf) |
+
+---
+
+## Development
+
+### Prerequisites
+- **Rust** toolchain (latest stable)
+- **Node.js** ≥ 18
+- **pnpm** ≥ 8
+- **Tauri v2** system dependencies ([setup guide](https://v2.tauri.app/start/prerequisites/))
+- Windows: WebView2 runtime (bundled with Windows 10 21H2+)
+
+### Commands
 
 ```bash
-git clone git@github.com:MySetsuna/ridge.git
-cd ridge
+# Install dependencies
 pnpm install
+
+# Development (Vite HMR + Tauri hot-reload)
 pnpm tauri dev
+
+# Build release binary
+pnpm tauri:build
+
+# Run tests
+pnpm test          # Unit tests (vitest)
+pnpm e2e           # E2E tests (Playwright)
+pnpm e2e:shell     # Shell-level integration tests (WebdriverIO)
+pnpm e2e:perf      # Perf benchmarks (frame attribution, stress)
+
+# Build WASM terminal kernel
+node packages/ridge-term/build.mjs
+
+# Build tmux compatibility shim
+pnpm build:teammate-shim
+
+# Build remote server (standalone binary)
+pnpm build:remote-server
+
+# Remote dev
+pnpm dev:remote         # Run remote app dev server
+pnpm build:remote       # Build remote app for production
+
+# Type-check
+pnpm check
 ```
 
-生产构建：
+### Project Structure
 
-```bash
-pnpm tauri build       # 安装包（Windows: NSIS / MSI）
+```
+src/
+├── routes/                     # SvelteKit pages (SPA entry)
+│   ├── +page.svelte            # Main app shell (layout, sidebar, keyboard, theme, boot)
+│   └── +layout.svelte          # Root layout (loader screen)
+├── lib/
+│   ├── components/             # Svelte UI components
+│   │   ├── SplitContainer.svelte    # Recursive pane split layout
+│   │   ├── RidgePane.svelte         # Terminal/editor pane with header
+│   │   ├── FileTree.svelte          # File explorer tree
+│   │   ├── Explorer.svelte          # Explorer panel with DnD
+│   │   ├── SourceControl.svelte     # SCM panel (stage/commit/diff)
+│   │   ├── GitGraph.svelte          # Commit graph visualization
+│   │   ├── SearchSidebar.svelte     # Search & replace panel
+│   │   ├── SettingsPanel.svelte     # Theme/font/shell settings
+│   │   ├── WorkspaceTabs.svelte     # Workspace tab bar with drag reorder
+│   │   ├── QuickOpen.svelte         # Ctrl+P file quick-open
+│   │   ├── MarkdownPreview.svelte   # Markdown/Mermaid preview pane
+│   │   ├── DiffEditorModal.svelte   # Side-by-side diff viewer
+│   │   └── ...
+│   ├── terminal/               # Terminal lifecycle & rendering
+│   │   ├── manager.ts          # TerminalManager singleton (attach, render RAF loop)
+│   │   ├── ptyBridge.ts        # PTY output → kernel.feed() bridge
+│   │   ├── workerHostedRenderer.ts   # WebWorker proxy for off-main-thread render
+│   │   ├── renderWorker.ts     # Worker-side render orchestration
+│   │   ├── workerRendererBridge.ts   # Main ↔ worker protocol definitions
+│   │   ├── linkSpans.ts        # Clickable-link detector
+│   │   └── ...
+│   ├── stores/                 # Svelte writable stores
+│   │   ├── paneTree.ts         # Global pane tree state (split/close/dock/ratios)
+│   │   ├── fileExplorer.ts     # File tree state
+│   │   ├── scmCache.ts         # Git status cache
+│   │   ├── paneGitStatus.ts    # Per-pane git pill data
+│   │   ├── themes.ts           # Theme state & persistence
+│   │   ├── settings.ts         # User settings
+│   │   ├── searchState.ts      # Search panel state
+│   │   └── ...
+│   ├── transport/              # IPC abstraction
+│   │   ├── tauri.ts            # Tauri invoke() transport
+│   │   └── ws.ts               # WebSocket transport (remote)
+│   ├── remote/                 # Remote-control UI
+│   │   ├── RemotePanel.svelte  # QR code + session list
+│   │   └── wsClient.ts         # Remote WS client
+│   ├── plugins/                # Sidebar plugin system
+│   └── utils/                  # Link resolver, markdown, ANSI, path utils
+├── remote/                     # Standalone mobile remote app (Svelte, no SvelteKit)
+│   ├── App.svelte
+│   ├── MainApp.svelte
+│   └── lib/
+│       ├── terminalController.ts  # WebSocket-based terminal client
+│       ├── VirtualKeyboard.svelte # Mobile on-screen keyboard
+│       └── TerminalCanvas.svelte  # Canvas terminal for mobile
+├── shared/sidebar/             # Transport-agnostic sidebar components
+│   ├── SidebarFileTree.svelte
+│   ├── SidebarGitPanel.svelte
+│   ├── SidebarSearch.svelte
+│   └── types.ts                # SidebarProvider interface
+└── app.html                    # HTML shell (splash loader, boot globals)
+
+src-tauri/
+├── src/
+│   ├── main.rs                 # Entry point → ridge_lib::run()
+│   ├── lib.rs                  # App builder, event loop, command registration
+│   ├── state.rs                # AppState (workspaces, terminals, PTY handles)
+│   ├── types.rs                # GlobalEvent enum, PaneMode, PTY event types
+│   ├── commands/               # Tauri IPC command handlers
+│   │   ├── git.rs              # 25+ git operations (graph, diff, stage, commit, branches...)
+│   │   ├── pane.rs             # Split, close, dock, toggle mode
+│   │   ├── terminal.rs         # Create, activate, resize, write, scrollback, delta
+│   │   ├── workspace.rs        # CRUD + save/restore workspace history
+│   │   ├── project.rs          # File tree, search, replace, read/write, Claude/opencode history
+│   │   ├── ridge_file.rs       # .ridge workspace file I/O + restore set
+│   │   ├── settings.rs         # User default CWD
+│   │   ├── theme.rs            # Theme data + splash init script builder
+│   │   ├── watch.rs            # Git repo filesystem watcher
+│   │   ├── fs_watch.rs         # General filesystem watcher
+│   │   ├── remote.rs           # Remote control enable/disable, session/blacklist management
+│   │   └── process.rs          # Foreground process / CWD detection
+│   ├── engine/                 # Core engine
+│   │   ├── pane_tree.rs        # Recursive split tree data structure + operations
+│   │   ├── pty.rs              # PTY spawn with 2-stage activation
+│   │   ├── parser.rs           # Native PaneParser (ridge-term on desktop)
+│   │   ├── cwd.rs              # OSC 7 CWD tracking
+│   │   └── title.rs            # OSC 0/1/2 title tracking
+│   ├── fs/                     # Filesystem operations
+│   │   ├── tree.rs             # Directory tree builder
+│   │   └── search.rs           # ripgrep-style text search + filename search
+│   ├── remote/                 # Remote control server
+│   │   ├── server.rs           # Axum HTTP + WebSocket server, PTY fan-out
+│   │   ├── auth.rs             # TOTP (RFC 6238) implementation
+│   │   └── mdns.rs             # mDNS broadcaster (_ridge._tcp.local.)
+│   ├── teammate/               # Agent collaboration
+│   │   └── server.rs           # Local HTTP API for external agents
+│   ├── db/
+│   │   └── projects.rs         # SQLite project store
+│   ├── utils/                  # Error types, logging, PTY log, pane_id helpers
+│   └── bin/
+│       ├── tmux.rs             # Tmux shim: translates tmux CLI → Ridge teammate HTTP
+│       └── remote-server.rs    # Standalone remote server binary
+├── Cargo.toml
+└── tauri.conf.json
 ```
 
-## 文档
+---
 
-- 在线主页：<https://mysetsuna.github.io/ridge/>
-- 在线文档：<https://mysetsuna.github.io/ridge/docs.html>
-- 仓库内深度文档：[`docs/`](./docs/) — `TERMINAL_SCROLLBACK.md`、`AGENT_TEAMS_TEAMMATES.md`、`PANE_GIT_PILL_VERIFY.md`
-- 项目根开发约定：[`CLAUDE.md`](./CLAUDE.md)
-- 技术架构：[`technical_architecture.md`](./technical_architecture.md)
+## Release & Distribution
 
-## Releases
+- **Windows**: NSIS installer + MSI, both with `PATH` environment registration
+- Binary includes embedded `tmux` shim for Claude Code agent integration
+- Bundled static assets: `ridge.theme` file + remote web app for LAN mobile access
+- CI: GitHub Actions deploys the marketing site (`site/`) to GitHub Pages on push to `main`
 
-[v0.1.0](https://github.com/MySetsuna/ridge/releases/tag/v0.1.0) — 2026-04-30 · 首个公开版本。
-更新日志详见 [CHANGELOG.md](./CHANGELOG.md)。
+---
 
-## 路线图 · Roadmap (v0.0.3)
+## License
 
-下一个版本（**v0.0.3**）聚焦两条主线：**远程控制能力**与**次世代渲染管线**。两者均以"零服务器依赖、纯客户端、开箱即用"为设计原则。
+MIT License. Copyright (c) 2026 Jack Jiang and Ridge contributors.
 
-### ⚙️ 共同基础：Rust 侧 GridDelta 解析管线（P3 ladder）
-
-为两条主线奠基的 11 步重构。已完成 ✅：
-
-- **p3.1** 把 `ridge-term` 作为 native dep 接入 src-tauri
-- **p3.2** GridDelta wire format 数据类型 (`packages/ridge-term/src/term/delta.rs`)
-- **p3.3** `engine::parser::PaneParser` producer
-- **p3.4** `Terminal::apply_delta` / `apply_frame` consumer + round-trip
-- **p3.5** postcard codec (`encode_frame` / `decode_frame`)
-- **p3.6** wasm-bindgen `applyDeltaFrame(bytes)` entry
-- **p3.7** `Settings.parserBackend = 'wasm' | 'rust'`（默认 `'rust'`）
-- **p3.8** main loop 消费侧接 PaneParser + emit `pty-delta-*`
-- **p3.9** `set_pane_delta_mode` 命令 + manager switch + 200ms fade mask
-- **p3.9.r** rust 模式下 fitPane 走单向 resize
-- **p3.10** `GridDelta::Reset` producer + apply（RIS）
-- **p3.11** `GridDelta::ScrollbackAppend` producer + apply
-- **p3.12** `GridDelta::ModeChange` producer + apply
-- **p3.13** col-range diff（per-row payload 收缩 5-20×）
-- **p3.14** 真桌面 e2e (`tauri-driver` + WebdriverIO) + perf-bench backend 比较
-
-P3 让 VT 解析从 wasm 主线程搬到 Rust tokio 任务，主线程 CPU 占用显著下降；同时为远程控制（主线一）准备好"只接收 delta 不跑解析器"的轻量客户端协议。
-
-### ⚙️ 共同基础：IPC + 渲染线程解耦（P4 ladder · 实施中）
-
-P3 把解析搬到 Rust 之后，perf-bench 暴露剩下两个瓶颈：**Tauri event 序列化开销**（每帧 base64 + JSON-wrap + 事件名路由）与 **渲染挤占主线程**（canvas paint 占用 frame budget）。P4 两档一起做，目标把 perf-bench 帧 p95 从 50ms 压到 20-25ms，逼近 webview 终端的现实天花板。
-
-Baseline（P3.14, 2026-05-20）：FPS 32.8 · 帧 p95 50.1ms · 帧 p99 66.8ms · CPU 21.3%
-
-**当前进度（2026-05-24）**：两档全部完成 ✅ — p4.1-p4.4（Tauri Channel + 单一 Rust 解析路径）与 p4.5-p4.9（OffscreenCanvas + Render Worker）均已落地。核心变化：Rust 侧新增 `RenderHandle::newFromOffscreen` 入口，worker 内可直接通过 `OffscreenCanvas` 绘图；主线程 rAF 在 worker 模式下跳过 canvas paint，仅保留输入采集与布局。单元测试 413 全绿，pnpm check 0 error 0 warning，两条 e2e 工作路径（`worker-path-shadow`、`worker-path-resize`）已就位。Perf-bench 验收门需要交互式 Tauri build + WebDriver，无法在 autonomous loop 内跑；详见 `tests/e2e-perf/frame-time-attribution.spec.ts` 与 `frame-time.spec.ts`。
-
-<details open>
-<summary><b>🎯 第一档 · Tauri Channel + 单一 Rust 解析路径</b></summary>
-
-> 砍掉 emit 的 base64 + JSON 包裹和事件名路由，并取消 wasm 端的 parser 冗余。期望：CPU −4%，帧 p95 −10ms，到 ≤ 40ms。
-
-- **p4.1** AppState 维护 per-pane `Channel<Vec<u8>>`，在 `activate_pane_pty` / `set_pane_delta_mode` 注册句柄
-- **p4.2** main loop 的 `pty-delta-*` emit 替换为 `channel.send(bytes)`；非流式事件（`pane-pty-closed`、`pane-mode-changed-*`、`pane-cwd-changed-*`、`pane-prompt-*`）保留 emit
-- **p4.3** 前端 `ptyBridge.ts` 用 `new Channel<Uint8Array>()` 注册接收端，落点 `kernel.applyDeltaFrame`；删掉 `pty-delta-*` 的 `listen()` 分支
-- **p4.4** 删除 `Settings.parserBackend` 开关与 JS 端 wasm parser 入口（保留 `ridge-term` crate 的 wgpu renderer），perf-bench 跑 `p4.1-rust` 对比 baseline → 验收 p95 ≤ 40ms 且 CPU 均值 ≤ 17%
-
-</details>
-
-<details open>
-<summary><b>🎯 第二档 · OffscreenCanvas + Render Worker</b></summary>
-
-> 渲染从主线程搬到专属 Worker，主线程只剩输入采集和布局。期望：主线程 frame budget 释放 10-15ms，帧 p95 落入 20-25ms 区间。
-
-- **p4.5** 新建 `src/lib/terminal/renderWorker.ts`，把 `TerminalManager` 的 kernel apply + canvas 绘制整体搬过去；主线程只剩 `feed()`/`onResize()` 桥接
-- **p4.6** `RidgePane.svelte` 的 `<canvas>` 调 `transferControlToOffscreen()` 把控制权移交给 worker；保留主线程的 `pointer-events` 透明覆盖层负责选区/拖拽 hit-test
-- **p4.7** 字体度量：主线程启动时用 `OffscreenCanvas.measureText` 预算 char→advance 表，postMessage 给 worker；cluster width / Emoji ZWJ 在 worker 内复用同表，主线程不再参与 layout
-- **p4.8** 输入路径：键盘 / 鼠标 / 选区主线程 capture 后 `worker.postMessage({type:'input', ...})`；resize 走 `ResizeObserver` → postMessage；停止使用主线程 RAF
-- **p4.9** Channel 接收端直接迁到 worker（PTY 字节通路完全绕开主线程），perf-bench 跑 `p4.2-rust` → 验收 p95 ≤ 25ms 且 FPS ≥ 50
-
-</details>
+---
 
 <details>
-<summary><b>📊 验证流程</b></summary>
+<summary><b>☕ Buy Me a Coffee</b></summary>
 
-每个子任务完成后跑 `pwsh scripts/perf-frame-compare.ps1 -StressSec 25` 与 `pwsh scripts/perf-bench.ps1 -Label p4.x -Backend rust -DurationSec 30`，CSV/JSON 落 `scripts/perf-runs/`。两档全部完成后将 baseline → P4 final 的对比表写入 CHANGELOG。
+<br>
 
-</details>
-
-### 🛰️ 主线一：远程控制 · Remote Control
-
-为 Ridge 增加跨设备远程控制能力，定位为纯 P2P 开源工具——不引入中心化信令、不依赖公网中继。
-
-<details open>
-<summary><b>🟩 Phase 1 · 真实局域网极速直连（LAN-First）</b></summary>
-
-> 聚焦零公网依赖的本地连接，利用 mDNS 实现局域网"开箱即用"。
-
-- **[Backend] mDNS 服务广播**
-  - [ ] 引入 Rust `mdns-sd`，轻量 Daemon 启动时广播 `_ridge._tcp.local.`
-  - [ ] 动态检测本地物理网卡，自动绑定 `192.168.x.x` 及监听端口
-- **[Web-Client] 移动端轻量 Web 控制台**
-  - [ ] 基于 Svelte 的移动端适配页面，验证手机/平板浏览器（Safari/Chrome）下的 WebGPU/WebGL 渲染
-  - [ ] 桌面端生成含本地 IP 的二维码，同 WiFi 下扫码直连 `ws://` 高带宽 WebSocket
-- **[Security] 基础安全校验层（2FA）**
-  - [ ] 引入 TOTP 一次性密码机制
-  - [ ] 首次连接强制输入 6 位动态验证码，即便在 LAN 内也保留底线安全
-
-</details>
-
-<details open>
-<summary><b>🟨 Phase 2 · 极客公网免服务器直连（Tailscale + 动态安全层）</b></summary>
-
-> 借助现有虚拟局域网（VLAN）基础设施，实现零服务器、不限速、跨网络的公网控制。
-
-- **[Backend] Tailscale 网络环境感知**
-  - [ ] Daemon 启动时检测 `tailscale0` 虚拟网卡，抓取分配的 IP 与 MagicDNS 域名（`*.ts.net`）
-  - [ ] Web 服务严格仅监听 `tailscale0` 或物理 LAN 接口，隔离公网常规扫描
-- **[UI/UX] 动态时效配对二维码**
-  - [ ] 桌面端生成含 MagicDNS 域名、端口及高时效 Session Token（≈60s）的快捷连接二维码
-- **[Security] 二次鉴权与长效续期**
-  - [ ] 动态校验码兜底：Token 超时或二次访问时自动弹出 2FA 输入框
-  - [ ] 校验成功后由 Rust 后端下发长效 `AuthToken`，浏览器 `localStorage` 持久化，实现后续无感连接
-- **[Architecture] 纯点对点通信架构定型**
-  - [ ] 删除所有中心化信令 / 中继中转规划
-  - [ ] 确立"用户自建网络环境（LAN/VLAN）+ 客户端安全验证"为核心的纯净 P2P 开源工具属性
-
-</details>
-
----
-
-### 🎨 主线二：次世代渲染优化 · Rendering & Emoji Refinement
-
-继续打造基于 WebGPU 的高性能、像素级精准且支持复杂 Emoji 的终端模拟器；目标对标 Warp 与现代浏览器级别的字符画／变宽字形渲染效果。**当前实现状态：大部分基础架构已就位，详见各 Milestone 内标注。**
-
-<details open>
-<summary><b>📅 Milestone 1 · 几何精度与制表符完美衔接（消除缝隙）</b></summary>
-
-> 解决连续字符画、Claude Code 启动界面等场景的微小间隙，实现严丝合缝的像素级对齐。
-
-- **物理像素网格强制对齐（Pixel Snapping）** ✅
-  - [x] `quantizeCellSize()` 在 `manager.ts` 中将单元格尺寸按 DPR 取整
-  - [x] `vs_main.wgsl` 通过 `frame.viewport` 将像素坐标映射到 NDC，`webgpu.rs::draw_row_texts` 中以整数像素步进定位
-- **制表符／块字符过程化渲染（Procedural Box Drawing）** ✅
-  - [x] Rust 端 `render/mod.rs::procedural_box()` 拦截 `U+2500`~`U+257F` 与 `U+2580`~`U+259F`
-  - [x] 实例标志位 `is_color = 2` 标记程序化矩形
-  - [x] `fs_main.wgsl` 中 `is_color > 1.5` 时跳过纹理采样，直接输出 `fg.rgba`
-  - [x] 非全满线条边缘做 0.5 像素微幅重叠（Overdraw）防止接缝
-
-</details>
-
-<details open>
-<summary><b>📅 Milestone 2 · 逻辑与视觉解耦的流式文本布局（复杂 Emoji）</b></summary>
-
-> 打破等宽网格束缚，完美支持 ZWJ 复合 Emoji，同时保证光标与选区不跑位。
-
-- **文本塑形层（Text Shaping Pass）** 🟡 部分完成
-  - [x] `glyph_rasterizer.rs` 利用浏览器原生 `fillText` 处理 ZWJ / 变体选择子 / RIS 对
-  - [ ] 引入 `rustybuzz` 或 `cosmic-text` 作为离线文本塑形引擎（当前依赖浏览器 canvas 路径）
-- **动态宽度 Quad 注入（Cluster-based Instance）** ✅
-  - [x] `glyph_rasterizer.rs::rasterize()` 返回 `advance` 和 `is_color`
-  - [x] `RasterizedGlyph` 包含自适应位图尺寸（width/height 可大于标准 cell）
-  - [x] `ClusterSpan` 类型在 `cell.rs` 中定义，渲染端可读取 cluster 维度
-- **"两本账"解耦策略（逻辑固化 / 视觉溢出）** 🟡 部分完成
-  - [x] `ClusterSpan` 跟踪多码位 cluster 的列范围
-  - [ ] 渲染端"吞噬"右侧空 Cell + 动态光标宽度（Smart Cursor）待实现
-
-</details>
-
-<details open>
-<summary><b>📅 Milestone 3 · 架构健壮性与性能捍卫（规避重构风险）</b></summary>
-
-> 解决变宽带来的遮挡问题，并防止纹理图集内存暴涨。
-
-- **双通道渲染重构（Two-Pass Rendering）** ✅
-  - [x] `backend.rs` 的 `draw_frame` 默认实现为两通道：先铺背景色（`bg_rgba`），再绘制前景与 Emoji 纹理
-  - [x] WebGPU 端通过 `draw_row_backgrounds` → `draw_row_texts` 两轮提交实现
-  - [x] Premultiplied Alpha BlendState 让溢出笔画自然重叠
-- **动态多级纹理图集（Multi-Size Texture Atlas）** ✅
-  - [x] `glyph_atlas.rs` 以 Texture Array 形式管理图层，含预留层（`ATLAS_RESERVED_LAYERS`）
-  - [x] 变宽字形通过 `atlas_capacity` 控制在固定总层数内，防止 GPU 内存暴涨
-- **快速分支扫描（Fast-Path / Slow-Path）**
-  - [ ] 快速分支：纯 ASCII / 浅色行走单 Cell 渲染，不触发 shaping
-  - [ ] 慢速分支：含变宽 / 彩色字符时触发 cluster-aware 渲染
-
-</details>
-
-## 站点录制 / 截图
-
-GitHub Pages 站点 (`site/`) 里的所有 demo 都是占位符。
-要替换成真正的录屏，看 [`site/RECORDING.md`](./site/RECORDING.md)——
-里面写了用什么录、录什么、放哪里。
-
-## 协议 · License
-
-本项目以 **MIT License** 开源。完整条款见 [`LICENSE`](./LICENSE)。
-
-Released under the [MIT License](./LICENSE).
-
----
+<p align="center">
+  <i>If Ridge has made your workflow smoother, consider buying me a coffee.</i>
+</p>
 
 <div align="center">
-<sub>Built with Tauri 2 · Svelte 5 · Rust · TypeScript</sub>
+
+| WeChat 赞赏 | PayPal |
+|:---:|:---:|
+| ![WeChat Reward]([Image 1]) | ![PayPal Donate]([Image 2]) |
+| 微信扫码赞赏 | PayPal Donate |
+
 </div>
+
+<br>
+
+</details>

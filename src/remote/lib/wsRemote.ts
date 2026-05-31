@@ -9,7 +9,14 @@ function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 
-export type BinaryDeltaListener = (paneId: string, data: Uint8Array) => void;
+export type RawByteListener = (paneId: string, data: Uint8Array) => void;
+export type MetaListener = (paneId: string, title: string | null, cwd: string | null) => void;
+export type PtyResizeListener = (paneId: string, rows: number, cols: number) => void;
+
+// Keep for backward compat — consumers should migrate to onRawBytes.
+export type BinaryDeltaListener = RawByteListener;
+
+const MAX_PANE_OUTPUT_LINES = 5000;
 
 export interface PaneInfo {
   id: string;
@@ -47,7 +54,17 @@ export type WsMessage = {
 } | {
   type: 'delta';
   paneId: string;
-  data: string;  // base64-encoded postcard delta frame
+  data: string;
+} | {
+  type: 'pty-meta';
+  paneId: string;
+  title: string | null;
+  cwd: string | null;
+} | {
+  type: 'pty-resized';
+  paneId: string;
+  rows: number;
+  cols: number;
 } | {
   type: 'files';
   path: string;
@@ -88,6 +105,9 @@ export class RemoteConnection {
   private stateListeners: Set<(s: ConnectionState) => void> = new Set();
   private messageListeners: Set<Listener> = new Set();
   private binaryDeltaListeners: Set<BinaryDeltaListener> = new Set();
+  private rawByteListeners: Set<RawByteListener> = new Set();
+  private metaListeners: Set<MetaListener> = new Set();
+  private resizeListeners: Set<PtyResizeListener> = new Set();
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
@@ -111,6 +131,21 @@ export class RemoteConnection {
   onBinaryDelta(fn: BinaryDeltaListener) {
     this.binaryDeltaListeners.add(fn);
     return () => this.binaryDeltaListeners.delete(fn);
+  }
+
+  onRawBytes(fn: RawByteListener) {
+    this.rawByteListeners.add(fn);
+    return () => this.rawByteListeners.delete(fn);
+  }
+
+  onMetadata(fn: MetaListener) {
+    this.metaListeners.add(fn);
+    return () => this.metaListeners.delete(fn);
+  }
+
+  onPtyResize(fn: PtyResizeListener) {
+    this.resizeListeners.add(fn);
+    return () => this.resizeListeners.delete(fn);
   }
 
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
@@ -138,15 +173,28 @@ export class RemoteConnection {
       if (event.data instanceof ArrayBuffer) {
         const buf = new Uint8Array(event.data);
         const paneId = uuidFromBytes(buf, 0);
-        const deltaBytes = buf.slice(16);
-        this.binaryDeltaListeners.forEach(fn => fn(paneId, deltaBytes));
+        const rawBytes = buf.subarray(16);
+        this.rawByteListeners.forEach(fn => fn(paneId, rawBytes));
         return;
       }
       try {
         const msg = JSON.parse(event.data) as WsMessage;
-        // Route result-type responses to pending request promises.
         if (typeof msg === 'object' && msg !== null) {
           const type = (msg as Record<string, unknown>).type as string;
+
+          // New remote event types — dispatch before result routing.
+          if (type === 'pty-meta') {
+            const m = msg as { paneId: string; title: string | null; cwd: string | null };
+            this.metaListeners.forEach(fn => fn(m.paneId, m.title, m.cwd));
+            return;
+          }
+          if (type === 'pty-resized') {
+            const r = msg as { paneId: string; rows: number; cols: number };
+            this.resizeListeners.forEach(fn => fn(r.paneId, r.rows, r.cols));
+            return;
+          }
+
+          // Route result-type responses to pending request promises.
           const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project';
           if (isResult) {
             const pending = this._pendingRequests.get(type);
@@ -161,6 +209,9 @@ export class RemoteConnection {
           const lines = msg.data.split('\n');
           const existing = this.paneOutputs.get(msg.paneId) || [];
           existing.push(...lines);
+          if (existing.length > MAX_PANE_OUTPUT_LINES) {
+            existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+          }
           this.paneOutputs.set(msg.paneId, existing);
         }
         this.messageListeners.forEach(fn => fn(msg));
@@ -229,9 +280,20 @@ export class RemoteConnection {
   // ───────────────────────────────────────────────────────────────────
 
   disconnect() {
-    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+    if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
     this.setState('disconnected');
     this.paneOutputs.clear();
+    for (const [, pending] of this._pendingRequests) {
+      pending.reject(new Error('disconnected'));
+    }
+    this._pendingRequests.clear();
   }
 
   private setState(s: ConnectionState) {
