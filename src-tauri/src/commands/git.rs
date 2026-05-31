@@ -9,6 +9,17 @@ use tokio::task::JoinError;
 /// git subprocesses never flash a console window in the Tauri GUI app.
 fn git_cmd() -> Command {
     let mut cmd = Command::new("git");
+    // --no-optional-locks (global flag, must precede the subcommand): the SCM
+    // sidebar fans out `git status`/`git diff` across many repos at high
+    // frequency. By default each `git status` opportunistically refreshes and
+    // rewrites the on-disk index, briefly taking index.lock — which contends
+    // with any concurrent external git write (commit/rebase) on the same repo
+    // and can make those fail with "Unable to create index.lock". This flag
+    // suppresses ONLY such optional locks; commands that genuinely need the
+    // index lock (add/commit/checkout) still acquire it normally, so it's safe
+    // to apply to every invocation. Callers add their subcommand after this, so
+    // ordering stays `git --no-optional-locks <subcommand> …`.
+    cmd.arg("--no-optional-locks");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
