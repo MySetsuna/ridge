@@ -80,7 +80,13 @@ fn flush_pending_eof(pending: &mut Vec<u8>) -> String {
 pub struct PtyHandle {
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    pub _child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// 子进程句柄。普通 pane 为 `Some`（关闭即 kill）；**领养的 native 视图**为
+    /// `None`（子进程归 native engine 所有，关视图=detach 不杀）。
+    pub _child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    /// `Some((socket, global_id))` 表示这是某 native 面板的 GUI 视图（领养，共享 PTY）。
+    pub native_ref: Option<(String, usize)>,
+    /// 领养视图的 `BroadcastReader` 取消位：detach 时置位让 reader 线程 EOF 退出。
+    pub native_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Resize-silence deadline in epoch milliseconds. When `> 0` and `now < deadline`,
     /// the PTY reader thread suppresses scrollback writes AND frontend emits to swallow
     /// ConPTY's viewport-replay byte storm. Cleared (set to 0) the moment a prompt OSC

@@ -1,3 +1,4 @@
+pub(crate) mod native;
 mod server;
 
-pub use server::spawn_teammate_server;
+pub use server::ensure_teammate_started;
