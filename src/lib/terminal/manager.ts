@@ -2640,8 +2640,12 @@ export class TerminalManager {
 	 * Forward a keyboard event to the kernel's encoder, push the encoded
 	 * bytes through the registered onData callback. Returns true if the
 	 * event was consumed (caller should preventDefault).
+	 *
+	 * @param isTui When true the TUI owns the keyboard; host Copy on
+	 * Ctrl+C (selection present) is skipped so the TUI always receives
+	 * `\x03`. The caller should pass the result of `isTuiSticky()`.
 	 */
-	handleKeyDown(paneId: string, ev: KeyboardEvent): boolean {
+	handleKeyDown(paneId: string, ev: KeyboardEvent, isTui: boolean = false): boolean {
 		const entry = this.panes.get(paneId);
 		if (!entry || !entry.dataHandler) return false;
 
@@ -2650,13 +2654,19 @@ export class TerminalManager {
 		const ctrl = ev.ctrlKey || (isMac && ev.metaKey);
 
 		// Handle OS native Copy on Ctrl+C / Cmd+C when text is selected.
+		// When a TUI owns the keyboard the Ctrl+C byte always belongs to
+		// the TUI (SIGINT / TUI keybinding). Host copy is still reachable
+		// via Ctrl+Shift+C (handled in RidgePane).
 		const isCtrlC = ctrl && ev.key.toLowerCase() === 'c';
-		if (isCtrlC) {
+		if (isCtrlC && !isTui) {
 			const sel = entry.kernel.getSelectionText();
 			if (sel && sel.length > 0) {
 				// Don't encode \x03, instead copy and clear selection
 				void navigator.clipboard.writeText(sel);
 				entry.kernel.clearSelection();
+				entry.selecting = false;
+				entry.selectionStartAbs = null;
+				entry.selectionEndAbs = null;
 				this.wake();
 				return true;
 			}
