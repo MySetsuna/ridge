@@ -67,6 +67,10 @@
 
   let ro: ResizeObserver | undefined;
   onMount(() => {
+    // `autocorrect` is a non-standard (iOS Safari) attribute missing from
+    // Svelte's textarea typings — set it via the DOM to keep iOS from rewriting
+    // terminal input without tripping svelte-check.
+    hiddenInput?.setAttribute('autocorrect', 'off');
     ro = new ResizeObserver(() => ctrl?.requestResize());
     if (containerEl) ro.observe(containerEl);
     return () => ro?.disconnect();
@@ -393,7 +397,6 @@
     class="hidden-input"
     autocapitalize="off"
     autocomplete="off"
-    autocorrect="off"
     spellcheck="false"
     aria-hidden="true"
     tabindex="-1"
