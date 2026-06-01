@@ -310,6 +310,17 @@ export class TerminalController {
     this.fitPane();
   }
 
+  /** Current grid + pixel size, used by the "lock size" / refresh button to
+   *  claim the shared PTY at this client's viewport (refresh-pane). */
+  getDims(): { rows: number; cols: number; pixelWidth: number; pixelHeight: number } {
+    return {
+      rows: this.rows,
+      cols: this.cols,
+      pixelWidth: Math.round(this.container.clientWidth),
+      pixelHeight: Math.round(this.container.clientHeight),
+    };
+  }
+
   // ── Theme ──
 
   applyTheme(theme: Record<string, string>) {

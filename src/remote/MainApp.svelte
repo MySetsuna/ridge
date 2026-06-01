@@ -25,6 +25,13 @@
   }
 
   function handleRefresh() {
+    // The refresh button locks the shared PTY to this client's current viewport
+    // size (persists until the next claim/refresh from any endpoint), then
+    // re-pulls the pane / workspace lists.
+    if (activePaneId && canvasRef) {
+      const d = canvasRef.getDims();
+      if (d) ws.refreshPane(activePaneId, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+    }
     ws.listPanes();
     refreshWorkspaces();
   }

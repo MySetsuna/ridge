@@ -251,6 +251,13 @@ export class RemoteConnection {
   resizePane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
     this.send({ type: 'resize', paneId, rows, cols, pixelWidth, pixelHeight });
   }
+  /** Claim the shared PTY at this client's viewport size (the "lock size" /
+   *  refresh button). The backend resizes the real PTY + canonical parser and
+   *  broadcasts a full repaint to every viewer; the size persists until the
+   *  next claim/refresh from any endpoint. */
+  refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+    this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight });
+  }
 
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {

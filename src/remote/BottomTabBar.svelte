@@ -109,7 +109,7 @@
 
     <div class="ctrl-sep"></div>
 
-    <button class="ctrl-btn action-btn" onclick={onRefresh} title="刷新">
+    <button class="ctrl-btn action-btn" onclick={onRefresh} title="锁定渲染尺寸到本端并刷新">
       <span class="refresh-icon">↻</span>
     </button>
     <button class="ctrl-btn action-btn" onclick={handleCreateWorkspace} title="新建工作区">
