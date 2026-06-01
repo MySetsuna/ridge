@@ -225,6 +225,7 @@ async fn run_server(
         .route("/api/v1/tmux/send-keys", post(route_tmux_send_keys))
         .route("/api/v1/tmux/select", post(route_tmux_select))
         .route("/api/v1/tmux/kill", post(route_tmux_kill))
+        .route("/api/v1/tmux/list-all-sessions", get(route_tmux_list_all_sessions))
         .with_state(ctx);
 
     if let Err(e) = axum::serve(listener, app).await {
@@ -278,15 +279,41 @@ fn select_split_target(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
     if leaves.is_empty() {
         return None;
     }
+    let total = leaves.len();
+    let avg_area: u32 = {
+        let known: Vec<u32> = leaves
+            .iter()
+            .filter_map(|pid| ws.pane_sizes.get(pid).map(|(r, c)| *r as u32 * *c as u32))
+            .collect();
+        if known.is_empty() {
+            80 * 120
+        } else {
+            known.iter().sum::<u32>() / known.len() as u32
+        }
+    };
     leaves
         .iter()
         .enumerate()
         .map(|(i, pid)| {
-            let (r, c) = ws.pane_sizes.get(pid).copied().unwrap_or((80, 120));
-            (i, r as u32 * c as u32)
+            let area = ws
+                .pane_sizes
+                .get(pid)
+                .map(|(r, c)| *r as u32 * *c as u32)
+                .unwrap_or(avg_area);
+            (i, area, total)
         })
-        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|(i, _)| i)
+        .max_by(|a, b| {
+            a.1.cmp(&b.1).then_with(|| {
+                let a_has_size = ws.pane_sizes.get(&leaves[a.0]).is_some();
+                let b_has_size = ws.pane_sizes.get(&leaves[b.0]).is_some();
+                match (a_has_size, b_has_size) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.0.cmp(&a.0),
+                }
+            })
+        })
+        .map(|(i, _, _)| i)
 }
 
 /// 查找空闲 pane 的 UUID
@@ -451,6 +478,13 @@ struct SplitBody {
     horizontal: bool,
     #[serde(default)]
     command: Option<String>,
+    /// Structured launch: program + args + env, parsed from `env K=V program args`.
+    #[serde(default)]
+    program: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    env: Option<std::collections::HashMap<String, String>>,
     /// `tmux split-window -c start-directory`
     #[serde(default)]
     cwd: Option<String>,
@@ -479,30 +513,75 @@ async fn route_split(
     // 检查是否有空闲 pane 可以复用（如果没有显式指定 pane_index）
     if body.allow_idle_reuse && body.pane_index.is_none() {
         if let Some(idle_idx) = find_idle_pane_index(&ctx.state, wid) {
-            // 找到空闲 pane，标记为 Busy 并返回
             let idle_pane_id = {
                 let map = ctx.state.workspaces.read();
-                let ws = map.get(&wid).unwrap();
-                ws.pane_tree.get_all_leaves().get(idle_idx).copied()
+                map.get(&wid)
+                    .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
             };
             if let Some(pane_id) = idle_pane_id {
-                let mut map = ctx.state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
-                    ws.teammate_tmux_pane_cursor = idle_idx;
+                {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
+                            crate::state::PaneState::Busy
+                        } else {
+                            crate::state::PaneState::Starting
+                        });
+                        ws.teammate_tmux_pane_cursor = idle_idx;
+                        if let Some(name) = body
+                            .window_name
+                            .as_ref()
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                        {
+                            ws.teammate_pane_titles.insert(pane_id, name.to_string());
+                        }
+                    }
                 }
+                let structured_cmd = body.program.as_ref().map(|prog| {
+                    let mut sc = terminal::StructuredPtyCommand {
+                        program: prog.clone(),
+                        args: body.args.clone().unwrap_or_default(),
+                        env: body.env.clone().unwrap_or_default(),
+                    };
+                    #[cfg(windows)]
+                    {
+                        sc = normalize_windows_command(&sc);
+                    }
+                    sc
+                });
+                if let Some(ref sc) = structured_cmd {
+                    let spawn_cwd = body.cwd.as_ref().map(|s| std::path::PathBuf::from(s.trim())).filter(|p| !p.as_os_str().is_empty());
+                    let _ = terminal::ensure_pane_pty_workspace(
+                        &ctx.state, wid, pane_id, None,
+                        spawn_cwd.as_deref(), None, Some(sc.clone()),
+                        Some(idle_idx), None, None,
+                    );
+                } else if let Some(cmd) = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    let data = format!("{cmd}\n");
+                    let _ = terminal::write_pty_bytes_workspace(
+                        &ctx.state, wid, pane_id, data.as_bytes(),
+                    );
+                }
+                let _ = ctx.handle.emit(
+                    "teammate-layout-changed",
+                    serde_json::json!({ "reused": true, "pane_id": pane_id.to_string() }),
+                );
+                let _ = ctx
+                    .handle
+                    .emit("teammate-active-pane-changed", pane_id.to_string());
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "reused_pane_index": idle_idx,
+                        "new_pane_index": idle_idx,
+                        "source_pane_index": idle_idx,
+                        "reused": true,
+                    })),
+                )
+                    .into_response();
             }
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "ok": true,
-                    "reused_pane_index": idle_idx,
-                    "new_pane_index": idle_idx,
-                    "source_pane_index": idle_idx,
-                    "reused": true,
-                })),
-            )
-                .into_response();
         }
     }
 
@@ -609,6 +688,22 @@ async fn route_split(
             };
             let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
+            let structured_cmd = body.program.as_ref().map(|prog| {
+                let mut sc = terminal::StructuredPtyCommand {
+                    program: prog.clone(),
+                    args: body.args.clone().unwrap_or_default(),
+                    env: body.env.clone().unwrap_or_default(),
+                };
+                #[cfg(windows)]
+                {
+                    sc = normalize_windows_command(&sc);
+                }
+                sc
+            });
+
+            let is_structured = structured_cmd.is_some();
+            let initial_cmd = if is_structured { None } else { cmd };
+
             // Bookkeeping + readiness signal. The oneshot lets us *observe*
             // whether the front-end's `activate_pane_pty` actually launched
             // the child, so we can return an honest HTTP status to the agent.
@@ -627,8 +722,8 @@ async fn route_split(
                 new_id,
                 None,
                 cwd.as_deref(),
-                cmd,
-                None,
+                initial_cmd,
+                structured_cmd,
                 Some(new_idx),
                 Some(ready_tx),
                 Some(trace_id.clone()),
@@ -651,12 +746,13 @@ async fn route_split(
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
-                // Mark new pane as Busy
-                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
-                    // Initialize pane size for the new pane (default, will be updated on resize)
+                    let pane_state = if is_structured {
+                        PaneState::Busy
+                    } else {
+                        PaneState::Starting
+                    };
+                    ws.teammate_pane_states.insert(new_id, pane_state);
                     ws.pane_sizes.insert(new_id, (80, 120));
-                // Mark new pane as Busy (has an agent running)
-                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     if let Some(name) = body
                         .window_name
                         .as_ref()
@@ -1528,12 +1624,17 @@ fn tmux_default_rows() -> u16 {
 /// 默认 socket 上参与 find-target 的 GUI 会话（工作区名 + `ridge` 别名）。
 /// 自定义 socket 返回空（与默认 socket 完全隔离）。
 fn gui_sessions_for(ctx: &TeammateCtx, socket: &str) -> Vec<native::GuiSession> {
+    gui_sessions_for_state(&ctx.state, socket)
+}
+
+/// 同 `gui_sessions_for`，但接受 `AppState` 以便 Tauri 命令复用。
+fn gui_sessions_for_state(state: &AppState, socket: &str) -> Vec<native::GuiSession> {
     if socket != "default" {
         return Vec::new();
     }
-    let order = ctx.state.workspace_order.read().clone();
-    let names = ctx.state.workspace_names.read().clone();
-    let map = ctx.state.workspaces.read();
+    let order = state.workspace_order.read().clone();
+    let names = state.workspace_names.read().clone();
+    let map = state.workspaces.read();
     let mut out: Vec<native::GuiSession> = Vec::new();
     for wid in order.iter() {
         if !map.contains_key(wid) {
@@ -1810,25 +1911,26 @@ async fn route_tmux_capture(
 /// 把一个 native 会话「召唤」进工作区 `wid`：为其活动窗口各面板建一个**领养 GUI
 /// pane**（共享 native PTY，不新开 shell），走与普通 pane 完全一致的渲染/输入/
 /// resize 路径。关闭=detach（见 `terminal::kill_pty_if_present`）。返回展示的面板数。
-fn summon_into_workspace(
-    ctx: &TeammateCtx,
+///
+/// 接受 `AppState` + `AppHandle` 而非 `TeammateCtx`，以允许 Tauri 命令直接复用。
+pub(crate) fn summon_into_workspace(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
     socket: &str,
     target: &str,
     wid: Uuid,
 ) -> Result<usize, NativeError> {
-    let gui = gui_sessions_for(ctx, socket);
+    let gui = gui_sessions_for_state(state, socket);
     let panes = native::summon(socket, target, &gui)?;
     let mut shown = 0usize;
     let mut first_new: Option<Uuid> = None;
     for sp in panes {
-        // 已挂在本工作区 → 跳过，避免重复召唤出双份。
         if sp.prev_attachment.map(|(w, _)| w) == Some(wid) {
             continue;
         }
-        // 选发起方工作区内面积最大的 pane 作 split 目标；方向按其形状推断（保持近方形）。
-        let idx = select_split_target(&ctx.state, wid).unwrap_or(0);
+        let idx = select_split_target(state, wid).unwrap_or(0);
         let direction = {
-            let map = ctx.state.workspaces.read();
+            let map = state.workspaces.read();
             map.get(&wid)
                 .and_then(|ws| {
                     let leaves = ws.pane_tree.get_all_leaves();
@@ -1837,7 +1939,7 @@ fn summon_into_workspace(
                 .map(|(rows, cols)| if cols > rows { "horizontal" } else { "vertical" })
                 .unwrap_or("horizontal")
         };
-        let new_id = match pane::teammate_split_pane(&ctx.state, wid, idx, direction) {
+        let new_id = match pane::teammate_split_pane(state, wid, idx, direction) {
             Ok(id) => id,
             Err(_) => continue,
         };
@@ -1858,7 +1960,7 @@ fn summon_into_workspace(
             delta_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         {
-            let mut map = ctx.state.workspaces.write();
+            let mut map = state.workspaces.write();
             if let Some(ws) = map.get_mut(&wid) {
                 ws.terminals.insert(new_id, handle);
                 ws.pane_sizes.insert(new_id, (sp.height.max(1), sp.width.max(1)));
@@ -1872,7 +1974,7 @@ fn summon_into_workspace(
         }
         native::set_attachment(socket, sp.global_id, Some((wid, new_id)));
         spawn_pty_reader(
-            ctx.state.clone(),
+            state.clone(),
             wid,
             new_id,
             Box::new(native::BroadcastReader::new(sp.rx, sp.replay, cancel)),
@@ -1882,11 +1984,10 @@ fn summon_into_workspace(
         }
         shown += 1;
     }
-    let _ = ctx
-        .handle
+    let _ = app_handle
         .emit("teammate-layout-changed", serde_json::json!({ "summoned": shown }));
     if let Some(fid) = first_new {
-        let _ = ctx.handle.emit("teammate-active-pane-changed", fid.to_string());
+        let _ = app_handle.emit("teammate-active-pane-changed", fid.to_string());
     }
     Ok(shown)
 }
@@ -1909,7 +2010,7 @@ async fn route_tmux_summon(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let wid = caller_workspace_id(&ctx, &headers);
-    match summon_into_workspace(&ctx, &body.socket, &body.target, wid) {
+    match summon_into_workspace(&ctx.state, &ctx.handle, &body.socket, &body.target, wid) {
         Ok(shown) => (StatusCode::OK, format!("summoned {shown}")).into_response(),
         Err(e) => native_err_to_response(e),
     }
@@ -2049,4 +2150,17 @@ async fn route_tmux_kill(
         Ok(_) => (StatusCode::OK, "").into_response(),
         Err(e) => native_err_to_response(e),
     }
+}
+
+/// `GET /api/v1/tmux/list-all-sessions` — 跨所有 socket 列出 native 会话摘要，
+/// 供 GUI 侧边栏展示。
+async fn route_tmux_list_all_sessions(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let sessions = native::list_all_sessions();
+    Json(sessions).into_response()
 }

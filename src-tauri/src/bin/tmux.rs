@@ -705,7 +705,10 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             }
             "-t" if i + 1 < rest.len() => {
                 raw_target = Some(rest[i + 1].clone());
-                pane_index = Some(parse_pane_target(&rest[i + 1]));
+                let t = rest[i + 1].trim();
+                if !t.is_empty() {
+                    pane_index = Some(parse_pane_target(t));
+                }
                 i += 1;
             }
             "-c" if i + 1 < rest.len() => {
@@ -792,6 +795,7 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     // GUI 路径：后端在发起方工作区内「先复用空闲 shell 面板，否则在最大 pane 上 split」。
+    let structured = command.as_deref().and_then(|c| parse_structured_launch(c));
     post_split(
         url,
         token,
@@ -800,6 +804,7 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         command,
         cwd,
         print_template.as_deref(),
+        structured.as_ref(),
     )
     .map(|_| ())
 }
@@ -812,24 +817,42 @@ fn post_split(
     command: Option<String>,
     cwd: Option<String>,
     print_template: Option<&str>,
+    structured: Option<&StructuredLaunch>,
 ) -> Result<usize, ()> {
     log_to_file(&format!(
-        "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}",
+        "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}, structured={}",
         horizontal,
         pane_index,
         command,
         cwd,
-        print_template.is_some()
+        print_template.is_some(),
+        structured.is_some()
     ));
     let mut body = serde_json::json!({ "horizontal": horizontal });
     if let Some(p) = pane_index {
         body["pane_index"] = serde_json::json!(p);
     }
-    if let Some(c) = command {
+    if let Some(launch) = structured {
+        body["program"] = serde_json::json!(launch.program);
+        body["args"] = serde_json::json!(launch.args);
+        if !launch.env.is_empty() {
+            body["env"] = serde_json::json!(launch.env);
+        }
+        if let Some(ref c) = launch.cwd {
+            if !c.is_empty() {
+                body["cwd"] = serde_json::json!(c);
+            }
+        }
+        if command.is_some() {
+            body["command"] = serde_json::json!(command.unwrap());
+        }
+    } else if let Some(c) = command {
         body["command"] = serde_json::json!(c);
     }
     if let Some(c) = cwd.filter(|s| !s.is_empty()) {
-        body["cwd"] = serde_json::json!(c);
+        if body.get("cwd").is_none() {
+            body["cwd"] = serde_json::json!(c);
+        }
     }
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
     log_to_file(&format!("post_split: posting to {}", u));
@@ -1731,7 +1754,7 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     // GUI 路径：复用空闲 shell / 在发起方工作区最大 pane 上 split（后端处理）。
-    let new_idx = post_split(url, token, false, pane_index, command, cwd, None)?;
+    let new_idx = post_split(url, token, false, pane_index, command, cwd, None, None)?;
     if let Some(name) = &window_name {
         rename_pane_http(url, token, new_idx, name);
     }

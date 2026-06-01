@@ -25,6 +25,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Local, Utc};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use ridge_term::term::terminal::Terminal;
+use serde::Serialize;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -970,6 +971,42 @@ pub fn list_sessions_lines(socket: &str, fmt: Option<&str>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 跨所有 socket 列出 native 会话的结构化信息，供 GUI 侧边栏展示。
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeSessionInfo {
+    pub socket: String,
+    pub name: String,
+    pub windows: usize,
+    pub panes: usize,
+    pub width: u16,
+    pub height: u16,
+    pub attached: bool,
+}
+
+/// 遍历所有 socket 的所有 native 会话，返回摘要列表。
+pub fn list_all_sessions() -> Vec<NativeSessionInfo> {
+    let srv = registry().lock().unwrap();
+    let mut out = Vec::new();
+    for (socket_name, sock) in &srv.sockets {
+        for s in &sock.sessions {
+            let total_panes: usize = s.windows.iter().map(|w| w.panes.len()).sum();
+            let attached = s.windows.iter().any(|w| {
+                w.panes.iter().any(|p| p.attachment.is_some())
+            });
+            out.push(NativeSessionInfo {
+                socket: socket_name.clone(),
+                name: s.name.clone(),
+                windows: s.windows.len(),
+                panes: total_panes,
+                width: s.width,
+                height: s.height,
+                attached,
+            });
+        }
+    }
+    out
 }
 
 /// `list-panes -t SESSION`：目标会话当前窗口（或全部）每面板一行。

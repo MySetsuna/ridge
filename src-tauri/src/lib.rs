@@ -425,6 +425,20 @@ pub fn run() {
                                 serde_json::json!({}),
                             );
                         }
+                        Some(GlobalEvent::PaneTreeChanged { workspace_id }) => {
+                            let _ = handle.emit(
+                                "pane-tree-changed",
+                                serde_json::json!({
+                                    "workspaceId": workspace_id.to_string(),
+                                }),
+                            );
+                        }
+                        Some(GlobalEvent::WorkspaceListChanged) => {
+                            let _ = handle.emit(
+                                "workspace-list-changed",
+                                serde_json::json!({}),
+                            );
+                        }
                         None => {
                             // timeout — flush all pending per-pane buffers.
                             if !pending_output.is_empty() {
@@ -508,6 +522,8 @@ pub fn run() {
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
+            terminal::list_native_sessions,
+            terminal::summon_native_session,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,

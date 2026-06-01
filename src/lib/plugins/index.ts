@@ -1,5 +1,6 @@
 import { registerSidebarPlugin } from '$lib/stores/sidebarPlugins';
 import GlobalStatusPanel from './globalStatus/GlobalStatusPanel.svelte';
+import NativeSessionsPanel from './nativeSessions/NativeSessionsPanel.svelte';
 
 // `workspace-summary` plugin removed: it last showed only "N pane",
 // which clutters the workspace header for no real value. The Explorer
@@ -13,4 +14,12 @@ registerSidebarPlugin({
   scope: 'global',
   component: GlobalStatusPanel,
   order: 100,
+});
+
+registerSidebarPlugin({
+  id: 'native-sessions',
+  title: 'Native 会话',
+  scope: 'global',
+  component: NativeSessionsPanel,
+  order: 90,
 });
