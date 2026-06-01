@@ -83,6 +83,7 @@
       ctrl.kernelResize(rows, cols);
     }
   }
+  export function getDims() { return ctrl?.getDims() ?? null; }
   export function applyDeltaBase64(b64: string) {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
