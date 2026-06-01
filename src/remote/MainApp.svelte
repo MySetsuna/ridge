@@ -15,6 +15,8 @@
   let activeWorkspaceId = $state<string>('');
   let showKeyboard = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
+  // Active pane's working dir — roots the sidebar at the same place ridge shows.
+  let activeCwd = $state('');
 
   let canvasRef: TerminalCanvas | undefined = $state();
   // Kernel palette derived from the desktop theme; applied to the canvas once it
@@ -81,12 +83,12 @@
         canvasRef?.feedUtf8(data);
       }
     });
-    ws.onMetadata((paneId, title) => {
-      // Title drives the document/tab title directly — the controller has no
-      // title sink of its own. (cwd also arrives in this event but has no
-      // consumer in the remote UI yet, so it's ignored here.)
-      if (paneId === activePaneId && title != null && title.length > 0) {
-        document.title = title;
+    ws.onMetadata((paneId, title, cwd) => {
+      if (paneId === activePaneId) {
+        // Title drives the document/tab title directly.
+        if (title != null && title.length > 0) document.title = title;
+        // cwd roots the sidebar (file tree / git / search) at the pane's dir.
+        if (cwd != null && cwd.length > 0) activeCwd = cwd;
       }
     });
     ws.onPtyResize((paneId, rows, cols) => {
@@ -114,6 +116,12 @@
   $effect(() => {
     if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
   });
+
+  // Seed the sidebar root from the active pane's cwd (pty-meta refines it live).
+  $effect(() => {
+    const p = panes.find((pp) => pp.id === activePaneId);
+    if (p?.cwd) activeCwd = p.cwd;
+  });
 </script>
 
 <div class="app-root">
@@ -133,7 +141,7 @@
 
   {#if sidebarTab !== null}
     <div class="sidebar-overlay" onclick={() => sidebarTab = null} role="presentation"></div>
-    <RemoteSidebar onClose={() => sidebarTab = null} />
+    <RemoteSidebar tab={sidebarTab} cwd={activeCwd} onClose={() => sidebarTab = null} onTabChange={(t) => sidebarTab = t} />
   {/if}
 
   <BottomTabBar
