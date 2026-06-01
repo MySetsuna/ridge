@@ -553,15 +553,12 @@ impl RenderBackend for Canvas2dBackend {
 
         // §B.9 — measure the glyph's natural advance to compute the
         // effective cursor block width (no aspect-fit; natural size).
-        let text: &str = match &cursor.cluster_text {
-            Some(t) if !t.is_empty() => t.as_str(),
-            _ => {
-                let mut buf = [0u8; 4];
-                cursor.ch.encode_utf8(&mut buf)
-            }
+        let text = match &cursor.cluster_text {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => cursor.ch.encode_utf8(&mut [0u8; 4]).to_string(),
         };
         let effective_span = if cursor_span >= 2 {
-            match self.ctx.measure_text(text) {
+            match self.ctx.measure_text(&text) {
                 Ok(m) => (m.width().max(1.0) / cell_w).ceil() as usize,
                 Err(_) => cursor_span,
             }
@@ -581,7 +578,7 @@ impl RenderBackend for Canvas2dBackend {
                         .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_text_color));
                     self.ctx.set_font(&self.font_css);
                     // §B.9 — render at natural size, no aspect-fit.
-                    let _ = self.ctx.fill_text(text, x, y);
+                    let _ = self.ctx.fill_text(&text, x, y);
                 }
             }
             CursorStyle::Bar => {
