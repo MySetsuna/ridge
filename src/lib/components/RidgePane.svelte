@@ -406,6 +406,23 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 		return true;
 	}
 
+	// Windows plain Ctrl+C — copy when a selection exists (then clear it so the
+	// next Ctrl+C reverts to interrupt), otherwise fall through so ^C reaches
+	// the program. Matches Windows Terminal / ConHost's "copy on selection,
+	// else interrupt" default. POSIX keeps the xterm convention (Ctrl+C is
+	// always SIGINT; copy lives on Ctrl+Shift+C).
+	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
+			&& (e.key === 'c' || e.key === 'C')) {
+		const sel = manager.getSelectionText(paneId);
+		if (sel) {
+			void writeText(sel);
+			manager.clearSelection(paneId);
+			e.preventDefault();
+			return true;
+		}
+		// no selection → fall through → ^C flows to the program / TUI
+	}
+
 	// Ctrl+Shift+C — host copy when a selection exists. Falls through
 	// otherwise so a TUI that wants Ctrl+Shift+C as its own hotkey can
 	// still receive it.
@@ -413,6 +430,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 		const sel = manager.getSelectionText(paneId);
 		if (sel) {
 			void writeText(sel);
+			manager.clearSelection(paneId);
 			e.preventDefault();
 			return true;
 		}
