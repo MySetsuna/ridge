@@ -20,3 +20,4 @@ bash.exe.stackdump
 /test-results
 /static/remote
 /packages/ridge-term/pkg
+plotforge.db

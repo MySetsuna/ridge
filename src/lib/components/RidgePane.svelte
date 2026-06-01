@@ -326,10 +326,12 @@ function isTuiSticky(): boolean {
 // Windows Terminal: a small fixed set of modifier+Shift or platform-
 // native combinations is always handled by the host so users can
 // paste / copy / fullscreen even inside a TUI that captures everything
-// else (claude code, opencode, etc.). Plain Ctrl+V / Ctrl+C still flow
-// through to the TUI as bytes — those are TUI semantics (SYN / SIGINT).
+// else (claude code, opencode, etc.). When `isTui` is true, plain
+// Ctrl+V / Ctrl+C flow through to the TUI as bytes — those are TUI
+// semantics (SYN / SIGINT). Ctrl+Shift+V / Ctrl+Shift+C remain the
+// always-available host escape hatches.
 // Returns true when the host claimed the event.
-function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
+function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 	const isWin = /Win/i.test(navigator.platform || '');
 	const mod = e.ctrlKey || (isMac && e.metaKey);
@@ -344,7 +346,8 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	}
 
 	// macOS Cmd+V (no Shift) — host paste, matches every other macOS app.
-	if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+	// Skip when TUI is active so the TUI receives the byte.
+	if (!isTui && isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
@@ -357,7 +360,8 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	// before the byte ever reaches the running process). POSIX
 	// platforms still send SYN to the TUI on plain Ctrl+V; that's the
 	// xterm / gnome-terminal / iTerm2 convention.
-	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
+	// Skip when TUI is active so the TUI receives the byte.
+	if (!isTui && isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
@@ -1088,20 +1092,26 @@ $effect(() => {
 
 		if (isComposing || e.isComposing) return;
 
+		// Compute TUI state before host shortcuts so plain Ctrl+C/V
+		// can be forwarded to the TUI instead of being intercepted
+		// for host copy/paste. Ctrl+Shift+C/V remain host escape
+		// hatches regardless of TUI state.
+		const isTui = isTuiSticky();
+
 		// 2. Host-priority shortcuts (paste / copy-with-selection /
-		// fullscreen / settings). These bypass TUI key forwarding so
-		// users can always paste into claude / opencode / vim — the
-		// TUI never sees Ctrl+Shift+V because the host intercepts
-		// first. See handleHostPriorityShortcut for the full table.
-		if (handleHostPriorityShortcut(e)) return;
+		// fullscreen / settings). When isTui is true, plain Ctrl+V
+		// (Windows) / Cmd+V (macOS) and plain Ctrl+C copy are
+		// skipped so the TUI receives the raw bytes. Ctrl+Shift+V
+		// and Ctrl+Shift+C remain always-available host escape
+		// hatches. See handleHostPriorityShortcut for the full table.
+		if (handleHostPriorityShortcut(e, isTui)) return;
 
 		// 3. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
 		// 注意: TUI 启用鼠标模式 (isMouseReporting) 也意味着键盘应优先给 TUI
 		// 使用 isTuiSticky() 而非直接 OR，避免 claude /theme 这类静态
 		// 菜单在 inline-TUI 2s decay 过期后误判出 TUI 模式。
-		const isTui = isTuiSticky();
 		if (isTui) {
-			if (manager.handleKeyDown(paneId, e)) {
+			if (manager.handleKeyDown(paneId, e, isTui)) {
 				e.preventDefault();
 				return;
 			}
