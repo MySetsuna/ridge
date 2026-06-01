@@ -37,7 +37,10 @@
   });
 </script>
 
-<div class="vk-container">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- preventDefault on pointerdown so tapping a key never blurs the terminal's
+     hidden textarea — that would dismiss the mobile soft keyboard. -->
+<div class="vk-container" onpointerdown={(e) => e.preventDefault()}>
   <div class="vk-row">
     <button
       class="vk-key mod"
@@ -55,14 +58,19 @@
       onclick={() => toggleMod('shift')}
     >Shift</button>
     <span class="vk-sep"></span>
-    <button class="vk-key" onclick={() => sendNamedKey('Tab')}>Tab</button>
     <button class="vk-key" onclick={() => sendNamedKey('Escape')}>Esc</button>
+    <button class="vk-key" onclick={() => sendNamedKey('Tab')}>Tab</button>
+    <button class="vk-key wide" onclick={() => sendNamedKey('Enter')}>⏎ Enter</button>
+    <button class="vk-key" aria-label="Backspace" onclick={() => sendNamedKey('Backspace')}>⌫</button>
   </div>
   <div class="vk-row">
-    <button class="vk-key arrow" onclick={() => sendArrow('Up')}>↑</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Down')}>↓</button>
     <button class="vk-key arrow" onclick={() => sendArrow('Left')}>←</button>
+    <button class="vk-key arrow" onclick={() => sendArrow('Down')}>↓</button>
+    <button class="vk-key arrow" onclick={() => sendArrow('Up')}>↑</button>
     <button class="vk-key arrow" onclick={() => sendArrow('Right')}>→</button>
+    <span class="vk-sep"></span>
+    <button class="vk-key" onclick={() => sendNamedKey('Home')}>Home</button>
+    <button class="vk-key" onclick={() => sendNamedKey('End')}>End</button>
   </div>
 </div>
 
@@ -115,6 +123,9 @@
   .vk-key.arrow {
     min-width: 48px;
     font-size: 16px;
+  }
+  .vk-key.wide {
+    min-width: 66px;
   }
   .vk-sep {
     width: 1px;
