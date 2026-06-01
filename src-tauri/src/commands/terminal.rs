@@ -346,7 +346,7 @@ fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: U
 		pty_log::teammate_replace_pty(workspace_id, pane_id);
 	}
 	if let Some(mut handle) = handle {
-		let _ = handle._child.kill();
+		if let Some(c) = handle._child.as_mut() { let _ = c.kill(); }
 	}
 	state.clear_pty_scrollback(workspace_id, pane_id);
 }
@@ -370,6 +370,9 @@ pub fn ensure_pane_pty_workspace(
 	ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 	trace_id: Option<String>,
 ) -> Result<(), AppError> {
+	// 按需启动 teammate HTTP server（幂等）：必须在下方注入 RIDGE_TEAMMATE_* 之前完成，
+	// 保证 shell 启动时 env 已就绪。已在运行则立即返回（agent 自身 PTY 里再 split 走此快路径）。
+	crate::teammate::ensure_teammate_started(state);
 	let ic = initial_command.map(str::trim).filter(|s| !s.is_empty());
 	let sc = structured_command
 		.map(|s| StructuredPtyCommand {
@@ -542,6 +545,9 @@ pub fn ensure_pane_pty_workspace(
 			cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
 			// Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
 			cmd.env("TMUX_PANE", format!("{pane_slot}"));
+				// 发起方工作区身份：shim 继承后回传 `X-Ridge-Workspace`，让后端把 split/
+				// 复用/接管锁定在「发起 tmux 的会话所在工作区」，而非 GUI 当前聚焦工作区。
+				cmd.env("RIDGE_WORKSPACE_ID", workspace_id.to_string());
 			let log_path = std::env::var("Ridge_TMUX_LOG")
 				.ok()
 				.filter(|s| !s.trim().is_empty());
@@ -777,7 +783,9 @@ pub(crate) fn activate_pane_pty_state(
 	let handle = PtyHandle {
 		master: pending.master.clone(),
 		writer: pending.writer.clone(),
-		_child: child,
+		_child: Some(child),
+			native_ref: None,
+			native_cancel: None,
 		resize_silence_deadline: Arc::new(AtomicI64::new(0)),
 		parser,
 		delta_mode: Arc::new(AtomicBool::new(false)),
@@ -1120,6 +1128,38 @@ pub async fn register_pane_delta_channel(
 
 /// 在指定工作区内移除并结束 PTY（若存在）。
 pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
+	// 领养的 native 视图：关闭 = **detach**（不写 exit、不杀子进程）。从布局树摘除并
+	// 按权威后端状态重渲；native 子进程留在 registry，可再次召唤。
+	let native = {
+		let map = state.workspaces.read();
+		map.get(&workspace_id)
+			.and_then(|ws| ws.terminals.get(&pane_id))
+			.and_then(|h| h.native_ref.clone().map(|nr| (nr, h.native_cancel.clone())))
+	};
+	if let Some(((socket, gid), cancel)) = native {
+		if let Some(c) = cancel {
+			c.store(true, std::sync::atomic::Ordering::Release);
+		}
+		crate::teammate::native::set_attachment(&socket, gid, None);
+		{
+			let mut map = state.workspaces.write();
+			if let Some(ws) = map.get_mut(&workspace_id) {
+				ws.terminals.remove(&pane_id);
+				let _ = ws.pane_tree.close(pane_id);
+				ws.pane_sizes.remove(&pane_id);
+			}
+		}
+		state.clear_pty_scrollback(workspace_id, pane_id);
+		state.unregister_pane_delta_channel(workspace_id, pane_id);
+		if let Some(app) = state.app_handle.get() {
+			use tauri::Emitter;
+			let _ = app.emit(
+				"teammate-layout-changed",
+				serde_json::json!({ "detached_pane": pane_id.to_string() }),
+			);
+		}
+		return;
+	}
 	// P4.1 — drop the delta sender first so a racing `pty-delta-*` emit
 	// from the parser tail can't enqueue against a freshly-dead frontend
 	// handle. Safe to call when no channel is registered.
@@ -1147,7 +1187,7 @@ pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: 
 			b"\x1b[?1049l\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?25h",
 		);
 		let _ = handle.writer.lock().write_all(b"exit\n");
-		let _ = handle._child.kill();
+		if let Some(c) = handle._child.as_mut() { let _ = c.kill(); }
 		let _ = state
 			.event_tx
 			.send(crate::types::GlobalEvent::PaneClosed {

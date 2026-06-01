@@ -435,6 +435,9 @@ pub struct AppState {
     pub pty_scrollback: Arc<RwLock<HashMap<(Uuid, Uuid), PaneScrollback>>>,
     /// 本进程 teammate HTTP 绑定信息；存在时新 PTY 会注入 Ridge_TEAMMATE_*。
     pub teammate_binding: Arc<RwLock<Option<TeammateBinding>>>,
+    /// 进程级 AppHandle，setup 时 stash。teammate HTTP server 改为「按需启动」后，
+    /// `ensure_teammate_started` 用它在首个 PTY 创建时惰性拉起 server（避免压在冷启动路径上）。
+    pub app_handle: Arc<std::sync::OnceLock<tauri::AppHandle>>,
     /// Project store for managing projects
     pub project_store: Option<Arc<ProjectStore>>,
     /// Current active project path
@@ -547,6 +550,7 @@ impl AppState {
             event_tx,
             pty_scrollback: Arc::new(RwLock::new(HashMap::new())),
             teammate_binding: Arc::new(RwLock::new(None)),
+            app_handle: Arc::new(std::sync::OnceLock::new()),
             project_store: None,
             current_project: Arc::new(RwLock::new(None)),
             git_watcher: Arc::new(GitWatcher::new()),
