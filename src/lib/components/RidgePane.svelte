@@ -25,7 +25,7 @@ import { remoteRunning } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
-import { isTuiActive } from '$lib/terminal/tuiGate';
+import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '$lib/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
@@ -177,6 +177,44 @@ function pasteIntoPane(text: string): void {
 	manager.markInputStart(paneId);
 	manager.paste(paneId, text);
 	currentInputBuffer = updateInputBuffer(currentInputBuffer, { type: 'paste', text });
+	// §TUI (2026-06-01): keep the TUI gate alive after a paste so the
+	// sticky-window doesn't decay while the user was interacting with
+	// the context menu (inline-TUI heuristic decays in ~2s). Without
+	// this, a right-click → paste sequence can silently exit TUI mode
+	// and the next arrow key opens shell history instead of going to
+	// the running TUI application (claude code / less / vim).
+	touchTuiSticky();
+	// Restore focus to the IME helper after paste (fall back to the container
+	// only when the helper isn't mounted). The context menu (or async clipboard
+	// readText) can steal focus from the pane; without this, IME composition and
+	// subsequent keystrokes never reach the pane.
+	(imeHelper ?? container)?.focus();
+}
+
+/** Refresh the TUI sticky timestamp when any signal suggests the TUI
+ *  is still alive, preventing the inline-TUI heuristic decay from
+ *  silently exiting TUI mode during user interaction with host UI
+ *  elements (context menu, search bar, Ctrl+C grace window, etc.).
+ *
+ *  Safe to call anywhere inside the pane component.  Checks:
+ *  - Live protocol signals: alt-screen, inline-TUI heuristic, mouse
+ *    reporting — these are unambiguous.
+ *  - DECCKM (app cursor keys): the TUI has explicitly claimed the
+ *    arrow keys.
+ *  - Hidden cursor: most TUIs hide the cursor while rendering; a
+ *    hidden cursor with recent activity is strong evidence the TUI
+ *    is still running (even if `noteCtrlCSent` suppressed the
+ *    inline heuristic for the Ctrl+C grace window). */
+function touchTuiSticky(): void {
+	if (hasLiveTuiSignal({
+		isAltScreen: manager.isAltScreen(paneId),
+		isInlineTuiActive: manager.isInlineTuiActive(paneId),
+		isMouseReporting: manager.isMouseReporting(paneId),
+		isAppCursorKeys: manager.isAppCursorKeys(paneId),
+		cursorVisible: manager.isCursorVisible(paneId),
+	})) {
+		lastTuiActiveTs = performance.now();
+	}
 }
 
 function dispatchBufferEvent(e: KeyboardEvent): void {
@@ -290,11 +328,10 @@ let composingAnchor: ImeAnchor | null = null;
 // pops the shell-history overlay instead of navigating the menu.
 //
 // Sticky: once we see any live TUI signal, treat the pane as TUI
-// for up to TUI_STICKY_MS — but only while the cursor stays hidden.
+// for up to TUI_STICKY_MS_DEFAULT — but only while the cursor stays hidden.
 // Shell prompts always run with the cursor visible, so the moment
 // the user is actually back at a prompt the sticky bit can no
 // longer apply and host shortcuts re-enable as before.
-const TUI_STICKY_MS = 60_000;
 let lastTuiActiveTs = 0;
 // §1.31 (2026-05-19): delegate the decision logic to the pure helper in
 // `$lib/terminal/tuiGate` so it can be unit-tested as a truth table.
@@ -317,7 +354,7 @@ function isTuiSticky(): boolean {
 		cursorVisible: manager.isCursorVisible(paneId),
 		lastTuiActiveTs,
 		now,
-		stickyMs: TUI_STICKY_MS,
+		stickyMs: TUI_STICKY_MS_DEFAULT,
 	});
 }
 
@@ -357,11 +394,12 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// Windows plain Ctrl+V — host paste, matches the default Windows
 	// Terminal / PowerShell / ConHost behaviour where users expect
 	// Ctrl+V to insert clipboard contents into stdin (the host pastes
-	// before the byte ever reaches the running process). POSIX
-	// platforms still send SYN to the TUI on plain Ctrl+V; that's the
-	// xterm / gnome-terminal / iTerm2 convention.
-	// Skip when TUI is active so the TUI receives the byte.
-	if (!isTui && isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
+	// before the byte ever reaches the running process). Unconditional:
+	// even when a TUI is active, Ctrl+V always pastes on Windows —
+	// this is the invariant every Windows terminal user expects.
+	// POSIX platforms still send SYN to the TUI on plain Ctrl+V; that's
+	// the xterm / gnome-terminal / iTerm2 convention.
+	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
@@ -1113,6 +1151,14 @@ $effect(() => {
 		if (isTui) {
 			if (manager.handleKeyDown(paneId, e, isTui)) {
 				e.preventDefault();
+				// §TUI (2026-06-01): every TUI key press refreshes the sticky
+				// timestamp so the inline-TUI heuristic doesn't decay while
+				// the user is actively interacting with the TUI application.
+				// Without this, `noteCtrlCSent` (called on Ctrl+C inside
+				// manager.handleKeyDown) suppresses the inline heuristic for
+				// a grace window, and the very next key press sees no live
+				// TUI signal → isTuiSticky → false → key goes to host.
+				touchTuiSticky();
 				return;
 			}
 		}
@@ -1199,6 +1245,9 @@ $effect(() => {
 		// 落到下方的 scrollback 分支，用户仍能向上翻页 host 历史。
 		if (isTuiSticky() && manager.handleWheel(paneId, e)) {
 			e.preventDefault();
+			// §TUI: keep the TUI gate alive after a wheel event so the
+			// sticky window doesn't decay during scroll-heavy interaction.
+			touchTuiSticky();
 			return;
 		}
 
@@ -1224,6 +1273,13 @@ function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
 	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
 	if (manager.isMouseReporting(paneId)) return;
+	// §TUI: refresh sticky timestamp BEFORE showing the context menu.
+	// While the menu is open no keyboard/wheel events reach the pane,
+	// so the inline-TUI heuristic (2 s decay) can expire during menu
+	// interaction. Bumping lastTuiActiveTs here gives the user the
+	// full sticky window to browse + close the menu without losing
+	// TUI mode.
+	touchTuiSticky();
 	e.preventDefault();
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
@@ -1450,6 +1506,12 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
+	// §TUI: refresh sticky timestamp when the user clicks back into
+	// the pane (e.g., after closing a context menu or interacting with
+	// chrome). Without this, the inline-TUI heuristic may have expired
+	// during the time the pane was unfocused, and the next keystroke
+	// would hit the host path instead of the TUI.
+	touchTuiSticky();
 	// Mouse routing is handled by Manager's pointerDownListener
 	// (addEventListener on the container): TUI mouse reporting active
 	// → encodeMouse → PTY; otherwise → host default (selection, links).
