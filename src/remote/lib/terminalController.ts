@@ -431,7 +431,9 @@ export class TerminalController {
 
   encodeMouse(row: number, col: number, button: number, state: number, shift: boolean, alt: boolean, ctrl: boolean): Uint8Array {
     if (this.destroyed) return new Uint8Array(0);
-    return this.kernel.encodeMouse(row, col, button, state, shift, alt, ctrl);
+    // Kernel signature is encodeMouse(row, col, button, action, shift, ctrl, alt)
+    // — note ctrl before alt. Forward in that order so modifiers aren't swapped.
+    return this.kernel.encodeMouse(row, col, button, state, shift, ctrl, alt);
   }
 
   encodePaste(text: string): Uint8Array {
@@ -455,6 +457,19 @@ export class TerminalController {
 
   getCellSize(): { w: number; h: number } {
     return { w: this.cellW, h: this.cellH };
+  }
+
+  /**
+   * Cursor position in CSS px relative to the canvas top-left. Used to park the
+   * hidden IME textarea at the cursor so the candidate window appears in place.
+   * `cellW`/`cellH` are CSS px (see `fitPane` cols/rows math), so no DPR scaling.
+   */
+  getCursorPixel(): { x: number; y: number; h: number } | null {
+    if (this.destroyed || this.cellW <= 0 || this.cellH <= 0) return null;
+    const row = this.kernel.cursorRow?.() ?? -1;
+    const col = this.kernel.cursorCol?.() ?? -1;
+    if (row < 0 || col < 0) return null;
+    return { x: col * this.cellW, y: row * this.cellH, h: this.cellH };
   }
 
   clientToCell(clientX: number, clientY: number): { row: number; col: number } | null {
