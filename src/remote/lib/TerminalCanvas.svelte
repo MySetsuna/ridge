@@ -84,6 +84,7 @@
     }
   }
   export function getDims() { return ctrl?.getDims() ?? null; }
+  export function applyTheme(theme: Record<string, string>) { ctrl?.applyTheme(theme); }
   export function applyDeltaBase64(b64: string) {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
@@ -419,7 +420,7 @@
 {/if}
 
 <style>
-  .container{position:relative;flex:1;overflow:hidden;background:#0d1117;touch-action:manipulation}
+  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation}
   .term-canvas{display:block;width:100%;height:100%;touch-action:none}
   .term-canvas.hidden{opacity:0}
   /* Invisible input sink parked at the cursor. pointer-events:none keeps it from
@@ -427,11 +428,11 @@
   .hidden-input{position:absolute;top:0;left:0;width:2px;height:1em;margin:0;padding:0;border:0;
     opacity:0;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
     background:transparent;color:transparent;caret-color:transparent;outline:none;font:inherit}
-  .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8b949e;font-size:14px}
+  .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px}
   .selection-actions{position:absolute;bottom:12px;right:12px;display:flex;gap:6px;z-index:10}
   .copy-btn,.dismiss-btn{display:flex;align-items:center;justify-content:center;height:36px;padding:0 14px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s;touch-action:manipulation}
-  .copy-btn{background:#238636;color:#fff}
-  .copy-btn:active{background:#2ea043}
-  .dismiss-btn{background:#21262d;color:#8b949e;min-width:36px}
-  .dismiss-btn:active{background:#30363d}
+  .copy-btn{background:var(--rg-ansi-green);color:#fff}
+  .copy-btn:active{background:var(--rg-ansi-green);opacity:.85}
+  .dismiss-btn{background:var(--rg-surface-2);color:var(--rg-fg-muted);min-width:36px}
+  .dismiss-btn:active{background:var(--rg-border-bright)}
 </style>

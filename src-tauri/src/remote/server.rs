@@ -683,6 +683,18 @@ async fn handle_ws(
         return;
     }
 
+    // §theme: push the desktop's active theme so the remote chrome and the
+    // terminal kernel follow it (passive — a snapshot taken at connect). Best
+    // effort: on any failure the client keeps its own CSS-variable fallbacks.
+    if let Some(entry) = crate::commands::theme::active_theme_entry_no_handle() {
+        let theme_msg = serde_json::json!({
+            "type": "theme",
+            "themeType": entry.theme_type,
+            "colors": entry.colors,
+        });
+        let _ = ws_tx.send(Message::Text(theme_msg.to_string())).await;
+    }
+
     // §state-sep: per-client active workspace. Seeded once from the global
     // active workspace at connect, then owned by THIS client. Switching /
     // creating / closing workspaces from a remote no longer rewrites the

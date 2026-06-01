@@ -117,22 +117,22 @@
       <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="#7fb069" fill-opacity="0.18"/>
       <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"/>
     </svg>
-    <p class="sub" style="color:#8b949e">正在连接远程桌面...</p>
+    <p class="sub">正在连接远程桌面...</p>
   </div>
 {/if}
 
 <style>
-  .screen{position:fixed;inset:0;background:#0d1117;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
+  .screen{position:fixed;inset:0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
   .logo{display:block;width:64px;height:64px;margin:0 auto 16px}
-  h1{font-size:20px;font-weight:600;margin-bottom:4px;color:#e6edf3}
-  .sub{color:#8b949e;font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
-  .card{width:100%;max-width:340px;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;text-align:center}
-  input{width:100%;height:48px;padding:0 16px;border:2px solid #30363d;border-radius:10px;background:#0d1117;color:#e6edf3;font-size:24px;font-weight:700;letter-spacing:8px;text-align:center;outline:none;transition:border-color .2s}
-  input:focus{border-color:#58a6ff}
-  input.has-error{border-color:#f85149}
-  input::placeholder{color:#484f58;letter-spacing:2px;font-size:14px}
-  .error-msg{color:#f85149;font-size:13px;margin-top:8px}
-  button{width:100%;height:48px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .2s;margin-top:16px;background:#238636;color:#fff}
+  h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--rg-fg)}
+  .sub{color:var(--rg-fg-muted);font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
+  .card{width:100%;max-width:340px;background:var(--rg-surface);border:1px solid var(--rg-border-bright);border-radius:12px;padding:24px;text-align:center}
+  input{width:100%;height:48px;padding:0 16px;border:2px solid var(--rg-border-bright);border-radius:10px;background:var(--rg-bg);color:var(--rg-fg);font-size:24px;font-weight:700;letter-spacing:8px;text-align:center;outline:none;transition:border-color .2s}
+  input:focus{border-color:var(--rg-accent)}
+  input.has-error{border-color:var(--rg-ansi-red)}
+  input::placeholder{color:var(--rg-fg-muted);letter-spacing:2px;font-size:14px}
+  .error-msg{color:var(--rg-ansi-red);font-size:13px;margin-top:8px}
+  button{width:100%;height:48px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .2s;margin-top:16px;background:var(--rg-ansi-green);color:#fff}
   button:disabled{opacity:.4;cursor:not-allowed}
-  button:hover:not(:disabled){background:#2ea043}
+  button:hover:not(:disabled){background:var(--rg-ansi-green)}
 </style>

@@ -12,6 +12,7 @@ function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
 export type RawByteListener = (paneId: string, data: Uint8Array) => void;
 export type MetaListener = (paneId: string, title: string | null, cwd: string | null) => void;
 export type PtyResizeListener = (paneId: string, rows: number, cols: number) => void;
+export type ThemeListener = (colors: Record<string, string>, themeType: 'dark' | 'light') => void;
 
 // Keep for backward compat — consumers should migrate to onRawBytes.
 export type BinaryDeltaListener = RawByteListener;
@@ -96,6 +97,10 @@ export type WsMessage = {
   type: 'close-workspace-result';
   success: boolean;
   error?: string;
+} | {
+  type: 'theme';
+  themeType: 'dark' | 'light';
+  colors: Record<string, string>;
 };
 
 type Listener = (msg: WsMessage) => void;
@@ -108,6 +113,8 @@ export class RemoteConnection {
   private rawByteListeners: Set<RawByteListener> = new Set();
   private metaListeners: Set<MetaListener> = new Set();
   private resizeListeners: Set<PtyResizeListener> = new Set();
+  private themeListeners: Set<ThemeListener> = new Set();
+  private _lastTheme: { themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
@@ -147,6 +154,14 @@ export class RemoteConnection {
     this.resizeListeners.add(fn);
     return () => this.resizeListeners.delete(fn);
   }
+
+  /** Theme push from the desktop (sent at connect, cached so a late subscriber
+   *  — e.g. MainApp mounting after auth — can still read it via lastTheme()). */
+  onTheme(fn: ThemeListener) {
+    this.themeListeners.add(fn);
+    return () => this.themeListeners.delete(fn);
+  }
+  lastTheme() { return this._lastTheme; }
 
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
     if (this.ws) this.ws.close();
@@ -191,6 +206,12 @@ export class RemoteConnection {
           if (type === 'pty-resized') {
             const r = msg as { paneId: string; rows: number; cols: number };
             this.resizeListeners.forEach(fn => fn(r.paneId, r.rows, r.cols));
+            return;
+          }
+          if (type === 'theme') {
+            const t = msg as { themeType: 'dark' | 'light'; colors: Record<string, string> };
+            this._lastTheme = { themeType: t.themeType, colors: t.colors };
+            this.themeListeners.forEach(fn => fn(t.colors, t.themeType));
             return;
           }
 
