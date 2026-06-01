@@ -37,6 +37,9 @@ export class TerminalController {
   private blinkDeadline = 0;
   private visible = true;
   private focused = false;
+  // True only while `tick` is executing, so `wake()` never schedules a second
+  // frame on top of the one `scheduleNextFrame` is about to queue.
+  private inTick = false;
 
   // ── Feed coalescing ──
   private feedDeferred: Uint8Array[] = [];
@@ -104,33 +107,45 @@ export class TerminalController {
   }
 
   // ── Render loop: blink-deadline driven, idle sleep when static ──
+  //
+  // A single `tick` is kept alive by exactly one pending wake-up at a time —
+  // either a queued rAF (`rafId`) or an idle-sleep timer (`sleepTimerId`).
+  // When the terminal is static the loop sleeps up to a blink interval; the
+  // crucial part is that any new content/dirty (feed, delta, scroll, IME…)
+  // calls `wake()`, which cancels that sleep and renders on the next frame —
+  // otherwise idle→active transitions stalled up to ~520ms ("慢半拍").
 
   private startRenderLoop() {
-    const frame = () => {
-      if (this.destroyed) return;
-      this.flushDeferred();
-      if (this.needsRender || this.blinkDue()) {
-        if (this.visible) {
-          this.renderHandle.render(this.kernel);
-        }
-        this.needsRender = false;
-      }
-      this.scheduleNextFrame();
-    };
-    this.rafId = requestAnimationFrame(frame);
+    if (this.destroyed) return;
+    if (this.rafId !== null || this.sleepTimerId !== null) return;
+    this.rafId = requestAnimationFrame(this.tick);
   }
+
+  private tick = () => {
+    this.rafId = null;
+    if (this.destroyed) return;
+    this.inTick = true;
+    this.flushDeferred();
+    if (this.needsRender || this.blinkDue()) {
+      if (this.visible) {
+        this.renderHandle.render(this.kernel);
+      }
+      this.needsRender = false;
+    }
+    this.inTick = false;
+    this.scheduleNextFrame();
+  };
 
   private scheduleNextFrame() {
     if (this.destroyed) return;
     const msUntilBlink = this.blinkDeadline - performance.now();
-    if (msUntilBlink <= 0) {
-      this.rafId = requestAnimationFrame(() => this.startRenderLoop());
-    } else if (msUntilBlink < 16) {
-      this.rafId = requestAnimationFrame(() => this.startRenderLoop());
+    if (msUntilBlink < 16) {
+      this.rafId = requestAnimationFrame(this.tick);
     } else {
       this.sleepTimerId = setTimeout(() => {
+        this.sleepTimerId = null;
         if (this.destroyed) return;
-        this.rafId = requestAnimationFrame(() => this.startRenderLoop());
+        this.rafId = requestAnimationFrame(this.tick);
       }, msUntilBlink - 8);
     }
   }
@@ -145,7 +160,24 @@ export class TerminalController {
   }
 
   markDirty() {
-    this.needsRender = true;
+    this.wake(true);
+  }
+
+  /**
+   * Mark the surface dirty (when `dirty`) and ensure a frame is pending. If the
+   * loop is asleep, cancel the sleep timer and render on the next animation
+   * frame; if a frame is already queued, just leave the dirty flag set. No-op
+   * while `tick` runs — `scheduleNextFrame` queues the next wake-up itself.
+   */
+  private wake(dirty = false) {
+    this.needsRender ||= dirty;
+    if (this.destroyed || this.inTick) return;
+    if (this.rafId !== null) return;
+    if (this.sleepTimerId !== null) {
+      clearTimeout(this.sleepTimerId);
+      this.sleepTimerId = null;
+    }
+    this.rafId = requestAnimationFrame(this.tick);
   }
 
   // ── Feed with coalescing and time-budget chunking ──
@@ -190,7 +222,7 @@ export class TerminalController {
       offset += chunk.length;
       if (performance.now() - start > FEED_PER_CALL_BUDGET_MS) {
         this.feedDeferred.push(data.subarray(offset));
-        this.needsRender = true;
+        this.markDirty();
         return;
       }
     }
@@ -198,7 +230,7 @@ export class TerminalController {
     if (resp.length > 0 && this.onStdin) {
       this.onStdin(new TextDecoder().decode(resp));
     }
-    this.needsRender = true;
+    this.markDirty();
   }
 
   private flushDeferred() {
@@ -214,7 +246,7 @@ export class TerminalController {
 
   applyDelta(bytes: Uint8Array) {
     this.kernel.applyDeltaFrame(bytes);
-    this.needsRender = true;
+    this.markDirty();
   }
 
   // ── External resize (called when server notifies of PTY resize) ──
@@ -224,7 +256,7 @@ export class TerminalController {
     this.rows = rows;
     this.cols = cols;
     this.kernel.resize(rows, cols);
-    this.needsRender = true;
+    this.markDirty();
   }
 
   // ── Fit pane with DPR drift detection, cell quantization ──
@@ -259,7 +291,7 @@ export class TerminalController {
         this.onResize?.(this.rows, this.cols, Math.round(w), Math.round(h));
       }
     }
-    this.needsRender = true;
+    this.markDirty();
   }
 
   static quantizeCellSize(px: number): number {
@@ -283,7 +315,7 @@ export class TerminalController {
   applyTheme(theme: Record<string, string>) {
     if (this.destroyed) return;
     this.renderHandle.applyTheme(theme);
-    this.needsRender = true;
+    this.markDirty();
   }
 
   // ── Focus / visibility ──
@@ -291,7 +323,7 @@ export class TerminalController {
   setFocused(f: boolean) {
     this.focused = f;
     this.renderHandle.setFocused(f);
-    this.needsRender = true;
+    this.markDirty();
   }
 
   private setupVisibilityHandler() {
@@ -299,7 +331,7 @@ export class TerminalController {
       if (this.destroyed) return;
       this.visible = !document.hidden;
       if (this.visible) {
-        this.needsRender = true;
+        this.markDirty();
         this.startRenderLoop();
       }
     };
@@ -330,7 +362,7 @@ export class TerminalController {
     const c = this.kernel.cursorCol?.() ?? -1;
     const h = this.renderHandle as unknown as { setPreedit?: (t: string, r: number, c: number) => void };
     h.setPreedit?.(text, r, c);
-    this.needsRender = true;
+    this.markDirty();
   }
 
   endComposition(text: string) {
@@ -346,7 +378,7 @@ export class TerminalController {
     }
     this.imeAnchorRow = -1;
     this.imeAnchorCol = -1;
-    this.needsRender = true;
+    this.markDirty();
   }
 
   get isComposing() { return this._isComposing; }
@@ -359,7 +391,7 @@ export class TerminalController {
     this.selAnchorRow = row;
     this.selAnchorCol = col;
     this.kernel.clearSelection();
-    this.needsRender = true;
+    this.markDirty();
   }
 
   extendSelection(row: number, col: number) {
@@ -368,7 +400,7 @@ export class TerminalController {
       ? row + (this.kernel.scrollOffset() > 0 ? this.kernel.scrollOffset() : 0)
       : row;
     this.kernel.setSelectionAbs(this.selAnchorRow, this.selAnchorCol, absRow, col);
-    this.needsRender = true;
+    this.markDirty();
   }
 
   endSelection() {
@@ -387,7 +419,7 @@ export class TerminalController {
   clearSelection() {
     if (this.destroyed) return;
     this.kernel.clearSelection();
-    this.needsRender = true;
+    this.markDirty();
   }
 
   // ── Key encoding ──
@@ -414,8 +446,8 @@ export class TerminalController {
 
   // ── Scrolling ──
 
-  scrollUp(lines: number) { this.kernel.scrollUp(lines); this.needsRender = true; }
-  scrollDown(lines: number) { this.kernel.scrollDown(lines); this.needsRender = true; }
+  scrollUp(lines: number) { this.kernel.scrollUp(lines); this.markDirty(); }
+  scrollDown(lines: number) { this.kernel.scrollDown(lines); this.markDirty(); }
   scrollOffset(): number { return this.destroyed ? 0 : this.kernel.scrollOffset(); }
   scrollbackLen(): number { return this.destroyed ? 0 : this.kernel.scrollbackLen(); }
 
