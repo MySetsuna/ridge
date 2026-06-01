@@ -25,13 +25,15 @@ import { remoteRunning } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
-import { isTuiActive } from '$lib/terminal/tuiGate';
+import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '$lib/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
+	computeReplaySequence,
 	EMPTY_INPUT_BUFFER,
 	type InputBufferState,
 } from './inputBufferTracker';
+import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
 
 interface Props {
 	paneId: string;
@@ -70,6 +72,100 @@ const manager = TerminalManager.instance();
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
 let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
 
+// §1.34 (2026-05-22) — shell-history overlay state. The popup renders
+// directly on the wasm canvas via `manager.setHistoryOverlay(...)` (not
+// a Svelte DOM element) so it inherits pane focus, theme, cell metrics
+// and DPR for free. See
+// `packages/ridge-term/src/render/renderer.rs::HistoryOverlay` for the
+// renderer state and `webgpu.rs::draw_history_overlay` for the paint.
+let historyOverlayOpen = $state(false);
+let historyOverlayItems = $state<string[]>([]);
+let historyOverlaySelected = $state(-1);
+let historyOverlayAbove = $state(true);
+let historyOverlayAnchor = $state<{ row: number; col: number } | null>(null);
+
+const HISTORY_OVERLAY_MAX_ROWS = 10;
+
+function snapshotHistoryItems(query: string): string[] {
+	const all = dedupKeepFirst(get(terminalHistoryStore));
+	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ROWS);
+}
+
+function pushHistoryOverlay(): void {
+	if (!historyOverlayOpen || !historyOverlayAnchor) return;
+	manager.setHistoryOverlay(
+		paneId,
+		historyOverlayItems,
+		historyOverlaySelected,
+		historyOverlayAnchor.row,
+		historyOverlayAnchor.col,
+		historyOverlayAbove,
+	);
+}
+
+function openHistoryOverlay(): boolean {
+	const anchor = manager.inputAnchorResolved?.(paneId);
+	if (!anchor) return false;
+	const items = snapshotHistoryItems(currentInputBuffer.text);
+	if (items.length === 0) return false;
+	historyOverlayItems = items;
+	historyOverlaySelected = -1;
+	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
+	const rows = manager.rows(paneId);
+	historyOverlayAbove = anchor.row >= rows / 2;
+	historyOverlayOpen = true;
+	pushHistoryOverlay();
+	return true;
+}
+
+function closeHistoryOverlay(): void {
+	if (!historyOverlayOpen) return;
+	historyOverlayOpen = false;
+	historyOverlaySelected = -1;
+	historyOverlayItems = [];
+	historyOverlayAnchor = null;
+	manager.clearHistoryOverlay(paneId);
+}
+
+function commitHistorySelection(execute: boolean): void {
+	if (historyOverlaySelected < 0
+		|| historyOverlaySelected >= historyOverlayItems.length) {
+		closeHistoryOverlay();
+		return;
+	}
+	const cmd = historyOverlayItems[historyOverlaySelected];
+	terminalHistoryStore.add(cmd);
+	// Wipe whatever the user already typed on the line before injecting
+	// the picked command. Prefer the kernel-cell snapshot (robust to Tab
+	// completion / alias expansion); fall back to the keystroke mirror.
+	const snapshot = manager.readShellInputSnapshot(paneId);
+	const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
+	if (replay) manager.write(paneId, replay);
+	manager.write(paneId, execute ? cmd + '\r' : cmd);
+	currentInputBuffer = EMPTY_INPUT_BUFFER;
+	closeHistoryOverlay();
+	imeHelper?.focus();
+}
+
+function moveHistorySelection(delta: number): void {
+	if (!historyOverlayOpen) return;
+	const n = historyOverlayItems.length;
+	if (n === 0) {
+		closeHistoryOverlay();
+		return;
+	}
+	if (delta < 0) {
+		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
+		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
+		else historyOverlaySelected -= 1;
+	} else {
+		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
+		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
+		else historyOverlaySelected += 1;
+	}
+	pushHistoryOverlay();
+}
+
 // §1.32 (2026-05-20) Wave B: paste + key dispatch helpers route every
 // path that mutates the shell line through the unit-tested
 // `inputBufferTracker` state machine so `currentInputBuffer` stays in
@@ -81,6 +177,44 @@ function pasteIntoPane(text: string): void {
 	manager.markInputStart(paneId);
 	manager.paste(paneId, text);
 	currentInputBuffer = updateInputBuffer(currentInputBuffer, { type: 'paste', text });
+	// §TUI (2026-06-01): keep the TUI gate alive after a paste so the
+	// sticky-window doesn't decay while the user was interacting with
+	// the context menu (inline-TUI heuristic decays in ~2s). Without
+	// this, a right-click → paste sequence can silently exit TUI mode
+	// and the next arrow key opens shell history instead of going to
+	// the running TUI application (claude code / less / vim).
+	touchTuiSticky();
+	// Restore focus to the IME helper after paste (fall back to the container
+	// only when the helper isn't mounted). The context menu (or async clipboard
+	// readText) can steal focus from the pane; without this, IME composition and
+	// subsequent keystrokes never reach the pane.
+	(imeHelper ?? container)?.focus();
+}
+
+/** Refresh the TUI sticky timestamp when any signal suggests the TUI
+ *  is still alive, preventing the inline-TUI heuristic decay from
+ *  silently exiting TUI mode during user interaction with host UI
+ *  elements (context menu, search bar, Ctrl+C grace window, etc.).
+ *
+ *  Safe to call anywhere inside the pane component.  Checks:
+ *  - Live protocol signals: alt-screen, inline-TUI heuristic, mouse
+ *    reporting — these are unambiguous.
+ *  - DECCKM (app cursor keys): the TUI has explicitly claimed the
+ *    arrow keys.
+ *  - Hidden cursor: most TUIs hide the cursor while rendering; a
+ *    hidden cursor with recent activity is strong evidence the TUI
+ *    is still running (even if `noteCtrlCSent` suppressed the
+ *    inline heuristic for the Ctrl+C grace window). */
+function touchTuiSticky(): void {
+	if (hasLiveTuiSignal({
+		isAltScreen: manager.isAltScreen(paneId),
+		isInlineTuiActive: manager.isInlineTuiActive(paneId),
+		isMouseReporting: manager.isMouseReporting(paneId),
+		isAppCursorKeys: manager.isAppCursorKeys(paneId),
+		cursorVisible: manager.isCursorVisible(paneId),
+	})) {
+		lastTuiActiveTs = performance.now();
+	}
 }
 
 function dispatchBufferEvent(e: KeyboardEvent): void {
@@ -104,6 +238,12 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			// Enter / Ctrl+U: shell line ends or fully clears; the
 			// next input is a fresh start.
 			manager.clearInputStart(paneId);
+			// Close the history popup on Enter / Ctrl+U — the real
+			// "user intent to submit / abandon" signal. Driving close
+			// from the keystroke side keeps it per-pane by construction
+			// (vs. a global pty-newline event closing popups across
+			// panes on every prompt redraw).
+			closeHistoryOverlay();
 			break;
 		// Other events (backspace / cursor moves / killWord / killToEol)
 		// don't change the input's start position — leave the marker.
@@ -188,11 +328,10 @@ let composingAnchor: ImeAnchor | null = null;
 // pops the shell-history overlay instead of navigating the menu.
 //
 // Sticky: once we see any live TUI signal, treat the pane as TUI
-// for up to TUI_STICKY_MS — but only while the cursor stays hidden.
+// for up to TUI_STICKY_MS_DEFAULT — but only while the cursor stays hidden.
 // Shell prompts always run with the cursor visible, so the moment
 // the user is actually back at a prompt the sticky bit can no
 // longer apply and host shortcuts re-enable as before.
-const TUI_STICKY_MS = 60_000;
 let lastTuiActiveTs = 0;
 // §1.31 (2026-05-19): delegate the decision logic to the pure helper in
 // `$lib/terminal/tuiGate` so it can be unit-tested as a truth table.
@@ -215,7 +354,7 @@ function isTuiSticky(): boolean {
 		cursorVisible: manager.isCursorVisible(paneId),
 		lastTuiActiveTs,
 		now,
-		stickyMs: TUI_STICKY_MS,
+		stickyMs: TUI_STICKY_MS_DEFAULT,
 	});
 }
 
@@ -224,10 +363,12 @@ function isTuiSticky(): boolean {
 // Windows Terminal: a small fixed set of modifier+Shift or platform-
 // native combinations is always handled by the host so users can
 // paste / copy / fullscreen even inside a TUI that captures everything
-// else (claude code, opencode, etc.). Plain Ctrl+V / Ctrl+C still flow
-// through to the TUI as bytes — those are TUI semantics (SYN / SIGINT).
+// else (claude code, opencode, etc.). When `isTui` is true, plain
+// Ctrl+V / Ctrl+C flow through to the TUI as bytes — those are TUI
+// semantics (SYN / SIGINT). Ctrl+Shift+V / Ctrl+Shift+C remain the
+// always-available host escape hatches.
 // Returns true when the host claimed the event.
-function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
+function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 	const isWin = /Win/i.test(navigator.platform || '');
 	const mod = e.ctrlKey || (isMac && e.metaKey);
@@ -242,7 +383,8 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	}
 
 	// macOS Cmd+V (no Shift) — host paste, matches every other macOS app.
-	if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+	// Skip when TUI is active so the TUI receives the byte.
+	if (!isTui && isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
@@ -252,14 +394,33 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 	// Windows plain Ctrl+V — host paste, matches the default Windows
 	// Terminal / PowerShell / ConHost behaviour where users expect
 	// Ctrl+V to insert clipboard contents into stdin (the host pastes
-	// before the byte ever reaches the running process). POSIX
-	// platforms still send SYN to the TUI on plain Ctrl+V; that's the
-	// xterm / gnome-terminal / iTerm2 convention.
+	// before the byte ever reaches the running process). Unconditional:
+	// even when a TUI is active, Ctrl+V always pastes on Windows —
+	// this is the invariant every Windows terminal user expects.
+	// POSIX platforms still send SYN to the TUI on plain Ctrl+V; that's
+	// the xterm / gnome-terminal / iTerm2 convention.
 	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
 		void readText().then((text) => { if (text) pasteIntoPane(text); });
 		e.preventDefault();
 		return true;
+	}
+
+	// Windows plain Ctrl+C — copy when a selection exists (then clear it so the
+	// next Ctrl+C reverts to interrupt), otherwise fall through so ^C reaches
+	// the program. Matches Windows Terminal / ConHost's "copy on selection,
+	// else interrupt" default. POSIX keeps the xterm convention (Ctrl+C is
+	// always SIGINT; copy lives on Ctrl+Shift+C).
+	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
+			&& (e.key === 'c' || e.key === 'C')) {
+		const sel = manager.getSelectionText(paneId);
+		if (sel) {
+			void writeText(sel);
+			manager.clearSelection(paneId);
+			e.preventDefault();
+			return true;
+		}
+		// no selection → fall through → ^C flows to the program / TUI
 	}
 
 	// Ctrl+Shift+C — host copy when a selection exists. Falls through
@@ -269,6 +430,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent): boolean {
 		const sel = manager.getSelectionText(paneId);
 		if (sel) {
 			void writeText(sel);
+			manager.clearSelection(paneId);
 			e.preventDefault();
 			return true;
 		}
@@ -689,6 +851,11 @@ onMount(() => {
 		return;
 	}
 
+	// Populate the shell-history store (Rust merges PowerShell / bash /
+	// zsh history files). Idempotent + cheap; the store keeps a single
+	// shared snapshot so per-pane mounts just refresh it.
+	terminalHistoryStore.fetch();
+
 	if (!isValidPaneId(paneId)) {
 		console.error(
 			'[ridge-pane] mounted with non-UUID paneId:',
@@ -911,6 +1078,11 @@ $effect(() => {
 	if (attached) {
 		manager.setFocused(paneId, isActive);
 	}
+	// Close the history popup when this pane loses focus — otherwise an
+	// inactive pane's overlay lingers on screen after the user clicks
+	// into another pane. Keystrokes already can't reach it (its container
+	// isn't focused), but the visual residue confuses.
+	if (!isActive && historyOverlayOpen) closeHistoryOverlay();
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -926,22 +1098,102 @@ $effect(() => {
 	function onContainerKeyDown(e: KeyboardEvent) {
 		if (!alive || !attached) return;
 
+		// 1. §1.34 — shell-history overlay (wasm canvas) takes the
+		// highest priority while open. Modifier-free ↑ ↓ Enter → ←
+		// Esc are consumed; any other printable / Backspace / Tab key
+		// closes the overlay and falls through so the user's typing
+		// still flows to the shell.
+		if (historyOverlayOpen) {
+			if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+				if (e.key === 'ArrowUp') {
+					moveHistorySelection(-1);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'ArrowDown') {
+					moveHistorySelection(1);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'Enter') {
+					commitHistorySelection(true);
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'ArrowRight') {
+					if (historyOverlaySelected >= 0) {
+						commitHistorySelection(false);
+						e.preventDefault();
+						return;
+					}
+					closeHistoryOverlay();
+					// Fall through so the shell sees ArrowRight.
+				}
+				if (e.key === 'ArrowLeft') {
+					closeHistoryOverlay();
+					e.preventDefault();
+					return;
+				}
+				if (e.key === 'Escape') {
+					closeHistoryOverlay();
+					e.preventDefault();
+					return;
+				} else if (e.key.length === 1
+					|| e.key === 'Backspace'
+					|| e.key === 'Tab') {
+					closeHistoryOverlay();
+				}
+			}
+		}
+
 		if (isComposing || e.isComposing) return;
 
+		// Compute TUI state before host shortcuts so plain Ctrl+C/V
+		// can be forwarded to the TUI instead of being intercepted
+		// for host copy/paste. Ctrl+Shift+C/V remain host escape
+		// hatches regardless of TUI state.
+		const isTui = isTuiSticky();
+
 		// 2. Host-priority shortcuts (paste / copy-with-selection /
-		// fullscreen / settings). These bypass TUI key forwarding so
-		// users can always paste into claude / opencode / vim — the
-		// TUI never sees Ctrl+Shift+V because the host intercepts
-		// first. See handleHostPriorityShortcut for the full table.
-		if (handleHostPriorityShortcut(e)) return;
+		// fullscreen / settings). When isTui is true, plain Ctrl+V
+		// (Windows) / Cmd+V (macOS) and plain Ctrl+C copy are
+		// skipped so the TUI receives the raw bytes. Ctrl+Shift+V
+		// and Ctrl+Shift+C remain always-available host escape
+		// hatches. See handleHostPriorityShortcut for the full table.
+		if (handleHostPriorityShortcut(e, isTui)) return;
 
 		// 3. TUI 模式下，优先透传给终端，TUI 未消费则继续执行
 		// 注意: TUI 启用鼠标模式 (isMouseReporting) 也意味着键盘应优先给 TUI
 		// 使用 isTuiSticky() 而非直接 OR，避免 claude /theme 这类静态
 		// 菜单在 inline-TUI 2s decay 过期后误判出 TUI 模式。
-		const isTui = isTuiSticky();
 		if (isTui) {
-			if (manager.handleKeyDown(paneId, e)) {
+			if (manager.handleKeyDown(paneId, e, isTui)) {
+				e.preventDefault();
+				// §TUI (2026-06-01): every TUI key press refreshes the sticky
+				// timestamp so the inline-TUI heuristic doesn't decay while
+				// the user is actively interacting with the TUI application.
+				// Without this, `noteCtrlCSent` (called on Ctrl+C inside
+				// manager.handleKeyDown) suppresses the inline heuristic for
+				// a grace window, and the very next key press sees no live
+				// TUI signal → isTuiSticky → false → key goes to host.
+				touchTuiSticky();
+				return;
+			}
+		}
+
+		// §1.34: ArrowUp / ArrowDown → open shell-history overlay
+		// (rendered on the wasm canvas). The gate decision lives in the
+		// wasm kernel via `should_allow_shell_history` so any TUI signal
+		// — DECCKM / alt screen / mouse reporting / inline-TUI heuristic
+		// / hidden cursor / 2 s sticky after any of those — short-circuits
+		// to false and the arrow key falls through to the kernel encoder.
+		if (
+			!historyOverlayOpen
+			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+			&& manager.shouldAllowShellHistory(paneId)
+		) {
+			if (openHistoryOverlay()) {
 				e.preventDefault();
 				return;
 			}
@@ -1011,6 +1263,9 @@ $effect(() => {
 		// 落到下方的 scrollback 分支，用户仍能向上翻页 host 历史。
 		if (isTuiSticky() && manager.handleWheel(paneId, e)) {
 			e.preventDefault();
+			// §TUI: keep the TUI gate alive after a wheel event so the
+			// sticky window doesn't decay during scroll-heavy interaction.
+			touchTuiSticky();
 			return;
 		}
 
@@ -1036,6 +1291,13 @@ function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
 	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
 	if (manager.isMouseReporting(paneId)) return;
+	// §TUI: refresh sticky timestamp BEFORE showing the context menu.
+	// While the menu is open no keyboard/wheel events reach the pane,
+	// so the inline-TUI heuristic (2 s decay) can expire during menu
+	// interaction. Bumping lastTuiActiveTs here gives the user the
+	// full sticky window to browse + close the menu without losing
+	// TUI mode.
+	touchTuiSticky();
 	e.preventDefault();
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
@@ -1262,23 +1524,18 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
-	// §multi-size: each client (desktop + every remote) now renders its OWN grid
-	// via a per-sub parser, so desktop interaction no longer needs to "re-claim"
-	// the shared PTY size. The PTY is resized only by an explicit per-pane refresh
-	// (desktop or remote) — see the refresh button below.
-	// ★ TUI mouse reporting takes priority: forward the click to the
-	// running application instead of changing focus. Without this,
-	// clicking inside a TUI with ?1002/?1003 active (vim, tmux) sends
-	// the event to the kernel's pointerDownListener but the Svelte
-	// template handler runs first and steals focus from the IME helper,
-	// breaking the next keystroke.
-	if (manager.isMouseReporting(paneId)) {
-		manager.handlePointerDown(paneId, e);
-		// Don't focus the IME helper — the TUI owns input now, and
-		// the next keydown will still reach onContainerKeyDown via
-		// bubbling from whichever child has focus.
-		return;
-	}
+	// §TUI: refresh sticky timestamp when the user clicks back into
+	// the pane (e.g., after closing a context menu or interacting with
+	// chrome). Without this, the inline-TUI heuristic may have expired
+	// during the time the pane was unfocused, and the next keystroke
+	// would hit the host path instead of the TUI.
+	touchTuiSticky();
+	// Mouse routing is handled by Manager's pointerDownListener
+	// (addEventListener on the container): TUI mouse reporting active
+	// → encodeMouse → PTY; otherwise → host default (selection, links).
+	// This handler only manages focus: the clicked pane's IME helper
+	// must receive DOM focus so subsequent keystrokes reach THIS pane's
+	// onContainerKeyDown, not the previously-focused pane's.
 	// In 'direct' mode the IME helper isn't rendered at all (see below),
 	// so focus the container directly — its keydown handler still
 	// services every printable key without IME composition.
@@ -1286,13 +1543,8 @@ function onContainerPointerDown(e: PointerEvent) {
 		container?.focus();
 		return;
 	}
-	// Focus the IME helper textarea so keystrokes (including IME
-	// composition) flow to us. Falling back to container focus if the
-	// helper isn't mounted yet (early HMR / SSR edge case).
 	if (imeHelper) {
 		imeHelper.focus();
-		// Reposition AFTER focus so the candidate window (if it appears
-		// from a held composition) anchors to the freshly-computed spot.
 		repositionImeHelper();
 	} else {
 		container?.focus();

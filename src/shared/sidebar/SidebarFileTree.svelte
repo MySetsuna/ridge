@@ -79,20 +79,20 @@
 
 <style>
   .ft { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .ft-bar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid #21262d; }
-  .ft-path { flex: 1; min-width: 0; font-size: 11px; color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-  .icon-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; background: none; color: #8b949e; border-radius: 6px; cursor: pointer; }
+  .ft-bar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--rg-border-bright); }
+  .ft-path { flex: 1; min-width: 0; font-size: 11px; color: var(--rg-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .icon-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; background: none; color: var(--rg-fg-muted); border-radius: 6px; cursor: pointer; }
   .icon-btn:disabled { opacity: .35; }
-  .icon-btn:active { background: #21262d; color: #e6edf3; }
+  .icon-btn:active { background: var(--rg-surface-2); color: var(--rg-fg); }
 
   .ft-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 4px; -webkit-overflow-scrolling: touch; }
-  .ft-entry { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; color: #e6edf3; padding: 9px 10px; border-radius: 6px; font-size: 14px; cursor: pointer; text-align: left; }
-  .ft-entry:active { background: #1c2128; }
-  .ft-entry.dir { color: #58a6ff; }
+  .ft-entry { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; color: var(--rg-fg); padding: 9px 10px; border-radius: 6px; font-size: 14px; cursor: pointer; text-align: left; }
+  .ft-entry:active { background: var(--rg-surface-2); }
+  .ft-entry.dir { color: var(--rg-accent); }
   .ft-entry.ignored { opacity: .5; }
-  :global(.ft-entry .ico-dir) { color: #58a6ff; }
-  :global(.ft-entry .ico-file) { color: #8b949e; }
+  :global(.ft-entry .ico-dir) { color: var(--rg-accent); }
+  :global(.ft-entry .ico-file) { color: var(--rg-fg-muted); }
   .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ft-msg { color: #484f58; font-size: 12px; padding: 10px; }
-  .ft-msg.err { color: #f85149; }
+  .ft-msg { color: var(--rg-fg-muted); font-size: 12px; padding: 10px; }
+  .ft-msg.err { color: var(--rg-ansi-red); }
 </style>

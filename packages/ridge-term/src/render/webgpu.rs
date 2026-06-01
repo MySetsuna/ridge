@@ -55,12 +55,8 @@ use super::glyph_atlas::{GlyphEntry, GlyphKey};
 use super::gpu_context::GpuContext;
 use super::surface_host::{ScissorRect, SurfaceHost};
 use crate::render::procedural_box;
-// §B.8 (2026-05-08) — `is_visual_wide_codepoint` no longer consulted
-// by the renderer; runtime measurement of the rasterized glyph's
-// natural advance drives the overflow decision per `draw_row`'s §B.8
-// branch. The function is kept in `wcwidth.rs` for any external
-// callers and for the test that asserts its set definition.
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
+use crate::term::cell::{scan_line_path, RenderPath};
 use crate::term::attr_table::AttrTable;
 
 /// High bit tag for grapheme-cluster glyph IDs so they cannot collide
@@ -501,20 +497,34 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let mut row_bg_instances: Vec<CellInstance> = Vec::new();
 
+        // Consume tracking: columns consumed by a preceding cluster's
+        // visual overflow have their bg covered by the consuming cell's
+        // bg quad — we skip them to prevent an independent bg from
+        // visually cutting the emoji's left side.
+        let render_path = scan_line_path(row.cells, row.clusters);
+        let mut consume_until: usize = 0;
+
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
             }
+
+            // Skip cells consumed by a preceding wide/cluster glyph
+            // whose visual overflow extends past its grid allocation.
+            if col < consume_until {
+                continue;
+            }
+
             let (_attrs, fg, bg) =
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
-            let pixel_x = col as f32 * cell_w;
-            let pixel_x_right = (col + cell_span) as f32 * cell_w;
+            let pixel_x = (col as f32 * cell_w + 0.5).floor();
+            let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
             let cell_w_px = pixel_x_right - pixel_x;
 
-            let pixel_y = row_idx as f32 * cell_h;
-            let pixel_y_bot = (row_idx + 1) as f32 * cell_h;
+            let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
+            let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
             let row_h_int = pixel_y_bot - pixel_y;
 
             // Bg quad: full cell_span × cell_w rectangle.
@@ -527,6 +537,14 @@ impl RenderBackend for WebGpuPaneBackend {
                 bg_rgba: rgba_u8_to_f32(bg),
                 is_color: 0,
             });
+
+            // In the slow path, mark grid-allocated cells as consumed
+            // so the text pass's consume tracking starts correct.
+            // The text pass may extend consume_until further based on
+            // measured glyph width.
+            if render_path == RenderPath::Slow && cell_span > 1 {
+                consume_until = col + cell_span;
+            }
         }
         self.pending_instances.append(&mut row_bg_instances);
     }
@@ -540,28 +558,50 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let mut row_glyph_instances: Vec<CellInstance> = Vec::new();
 
+        let render_path = scan_line_path(row.cells, row.clusters);
+
+        // Consume tracking: when a slow-path glyph's measured pixel width
+        // extends past its grid allocation, subsequent columns are "consumed"
+        // — their text instances are skipped so the cluster's visual overflows
+        // freely without being overdrawn by a narrower cell's glyph.
+        let mut consume_until: usize = 0;
+
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
             }
+
+            // Skip cells consumed by a preceding cluster's visual overflow.
+            // Their background was already drawn in the bg pass (or covered
+            // by the consuming cell's bg quad in the same pass). Skipping
+            // their text prevents double-drawing over the cluster's glyph.
+            if col < consume_until {
+                continue;
+            }
+
             let attrs = attrs_table.get(cell.attr);
             let (_attrs, fg, _bg) =
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
-            let pixel_x = col as f32 * cell_w;
-            let pixel_x_right = (col + cell_span) as f32 * cell_w;
-            let cell_w_px = pixel_x_right - pixel_x;
-
-            let pixel_y = row_idx as f32 * cell_h;
-            let pixel_y_bot = (row_idx + 1) as f32 * cell_h;
+            // Pixel-aligned positions — floor(pos + 0.5) prevents sub-pixel
+            // seams between adjacent cells that would show as hairline gaps.
+            let pixel_x = (col as f32 * cell_w + 0.5).floor();
+            let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
+            let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
             let row_h_int = pixel_y_bot - pixel_y;
 
             if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
                 continue;
             }
 
-            let cluster_text = if !row.clusters.is_empty() {
+            // ── Fast-path skip: for pure ASCII lines, no cluster lookup
+            // is needed. This avoids the linear scan through `row.clusters`
+            // and the per-cell char encoding for the common case of code
+            // and log output, keeping the tight loop minimal.
+            let cluster_text: Option<&str> = if render_path == RenderPath::Fast {
+                None
+            } else if !row.clusters.is_empty() {
                 let target = col.min(u16::MAX as usize) as u16;
                 row.clusters.iter().find(|c| c.col == target).map(|c| c.text.as_ref())
             } else {
@@ -607,21 +647,6 @@ impl RenderBackend for WebGpuPaneBackend {
                     style_flags,
                 };
 
-                // Lookup-first: `rasterize_and_admit` is the miss path
-                // — its docstring says so, and every call advances
-                // `next_free_layer` (or evicts). Without this fast path
-                // every visible-non-space cell rasterizes + writes
-                // texture every frame; `next_free_layer` saturates
-                // within a few frames and `pick_evictable_layer` returns
-                // None (every layer pinned/written this frame) →
-                // `rasterize_and_admit` Err → cell silently skipped →
-                // user sees characters disappear.
-                //
-                // Hit branch also sets `ctx.frame_written[layer]` so
-                // another pane's miss in the same frame can't evict +
-                // overwrite our hit layer via `queue.write_texture`
-                // before this pane's deferred draw samples it (same
-                // cross-pane race the miss path already guards against).
                 let lookup_hit = ctx.atlas.lookup(&key);
                 let entry_opt: Option<GlyphEntry> = match lookup_hit {
                     Some(e) => {
@@ -674,7 +699,7 @@ impl RenderBackend for WebGpuPaneBackend {
                     fg_scaled[3] *= alpha;
                     row_glyph_instances.push(CellInstance {
                         cell_xy: [pixel_x, pixel_y],
-                        cell_size: [cell_w_px, row_h_int],
+                        cell_size: [cell_span as f32 * cell_w, row_h_int],
                         atlas_uv: [0.0, 0.0, 0.0, 0.0],
                         atlas_layer: 0,
                         fg_rgba: fg_scaled,
@@ -683,7 +708,7 @@ impl RenderBackend for WebGpuPaneBackend {
                     });
                     drawn_procedurally = true;
                 } else if let Some(rects) =
-                    procedural_box(ch, pixel_x, pixel_y, cell_w_px, row_h_int)
+                    procedural_box(ch, pixel_x, pixel_y, cell_span as f32 * cell_w, row_h_int)
                 {
                     for r in rects {
                         // Pixel-snap to integer boundaries. When cell_w
@@ -724,6 +749,35 @@ impl RenderBackend for WebGpuPaneBackend {
                 // Glyph quad: at natural advance, anchored at cell left.
                 if let Some(e) = entry {
                     let natural_w = (e.px_w as f32).max(1.0);
+
+                    // ── Consume tracking (Slow-Path only meaningful for
+                    // wide/cluster glyphs; fast-path stays width-1 so
+                    // no overflow is possible).
+                    //
+                    // When a slow-path glyph's measured pixel width extends
+                    // past its grid allocation (cell_span × cell_w), the
+                    // subsequent N columns are "consumed" — their text
+                    // instances must be skipped so the cluster's visual
+                    // overflows freely without being overdrawn by a
+                    // narrower cell's glyph. The floor(pos + 0.5) pixel
+                    // alignment prevents sub-pixel seams in the overflow
+                    // boundary computation.
+                    if render_path == RenderPath::Slow {
+                        let grid_right =
+                            ((col + cell_span) as f32 * cell_w + 0.5).floor();
+                        let measured_right = (pixel_x + natural_w + 0.5).floor();
+                        if measured_right > grid_right {
+                            let overflow_px = measured_right - grid_right;
+                            let overflow_cells =
+                                ((overflow_px / cell_w).ceil() as usize).max(1);
+                            let new_consume_until =
+                                col + cell_span + overflow_cells;
+                            if new_consume_until > consume_until {
+                                consume_until = new_consume_until;
+                            }
+                        }
+                    }
+
                     row_glyph_instances.push(CellInstance {
                         cell_xy: [pixel_x, pixel_y],
                         cell_size: [natural_w, row_h_int],
@@ -740,30 +794,68 @@ impl RenderBackend for WebGpuPaneBackend {
     }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
-        // Cursor reuses the cell pipeline — geometrically just another
-        // colored quad, drawn OVER the row instances pushed earlier.
         use crate::render::backend::CursorStyle;
 
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
         let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
-        let pixel_x = (cursor.col as f32) * cell_w;
+        let pixel_x = (cursor.col as f32 * cell_w + 0.5).floor();
         let cursor_span = cursor.width.max(1) as usize;
-        let pixel_x_right = (cursor.col + cursor_span) as f32 * cell_w;
-        let cell_w_px = pixel_x_right - pixel_x;
-        let pixel_y = (cursor.row as f32) * cell_h;
-        let pixel_y_bot = (cursor.row + 1) as f32 * cell_h;
+        let pixel_x_grid_right =
+            ((cursor.col + cursor_span) as f32 * cell_w + 0.5).floor();
+        let cell_w_grid_px = pixel_x_grid_right - pixel_x;
+        let pixel_y = (cursor.row as f32 * cell_h + 0.5).floor();
+        let pixel_y_bot = ((cursor.row + 1) as f32 * cell_h + 0.5).floor();
         let cell_h_int = pixel_y_bot - pixel_y;
         let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
 
-        // 1) Cursor block (colored rectangle at the appropriate
-        //    style-specific size).
+        // Smart Cursor: when the cursor sits on a cluster-aware cell,
+        // look up the measured glyph width from the atlas and size the
+        // cursor block to the visual extent rather than the grid
+        // allocation. This ensures the cursor block doesn't clip an
+        // emoji that renders wider than 2 cells, and doesn't overhang
+        // a narrow glyph that renders narrower.
+        let cursor_block_w = match &cursor.cluster_text {
+            Some(text) if !text.is_empty() => {
+                let (font_family_hash, font_size_q) = {
+                    let ctx = self.ctx.borrow();
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    std::hash::Hash::hash(&ctx.font_family, &mut h);
+                    (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
+                };
+                let glyph_id = {
+                    use std::hash::Hasher;
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    h.write(text.as_bytes());
+                    let raw = std::hash::Hasher::finish(&h) as u32;
+                    CLUSTER_TAG | (raw & !CLUSTER_TAG)
+                };
+                let key = GlyphKey {
+                    font_family_hash,
+                    font_size_q,
+                    glyph_id,
+                    style_flags: 0,
+                };
+                let measured = self
+                    .ctx
+                    .borrow_mut()
+                    .atlas
+                    .lookup(&key)
+                    .map(|e| (e.px_w as f32).max(1.0));
+                match measured {
+                    Some(w) if w > cell_w_grid_px => w,
+                    _ => cell_w_grid_px,
+                }
+            }
+            _ => cell_w_grid_px,
+        };
+
         let (block_x, block_y, block_w, block_h) = match cursor.style {
-            CursorStyle::Block => (pixel_x, pixel_y, cell_w_px, cell_h_int),
+            CursorStyle::Block => (pixel_x, pixel_y, cursor_block_w, cell_h_int),
             CursorStyle::Bar => (pixel_x, pixel_y, bar_thickness, cell_h_int),
             CursorStyle::Underline => (
                 pixel_x,
                 pixel_y + cell_h_int - bar_thickness,
-                cell_w_px,
+                cursor_block_w,
                 bar_thickness,
             ),
         };
@@ -778,24 +870,38 @@ impl RenderBackend for WebGpuPaneBackend {
             is_color: 0,
         });
 
-        // 2) Inverted glyph (only meaningful for Block). Atlas-hit-only
-        //    — we don't rasterize-on-miss here to keep per-frame work
-        //    bounded. If the glyph isn't cached yet, the next draw_row
-        //    tick will populate it; cursor renders as a solid block this
-        //    frame, then the next frame inverts on top.
+        // Inverted glyph (Block only). Atlas-hit-only — we don't
+        // rasterize-on-miss here. If the glyph isn't cached yet, the
+        // next draw_row tick will populate it; cursor renders as a
+        // solid block this frame, then inverts next frame.
         if matches!(cursor.style, CursorStyle::Block) && cursor.ch != ' ' {
             let (font_family_hash, font_size_q) = {
                 let ctx = self.ctx.borrow();
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&ctx.font_family, &mut h);
-                let font_family_hash = std::hash::Hasher::finish(&h);
-                let font_size_q = (ctx.font_size_px * 100.0).round() as u16;
-                (font_family_hash, font_size_q)
+                (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
+            };
+            // When cluster_text is set, look up the cluster glyph;
+            // otherwise fall back to the single-character glyph.
+            let mut ch_buf = [0u8; 4];
+            let glyph_text: &str = match &cursor.cluster_text {
+                Some(text) if !text.is_empty() => text.as_str(),
+                None | Some(_) => cursor.ch.encode_utf8(&mut ch_buf),
+            };
+            let glyph_id = match &cursor.cluster_text {
+                Some(text) if !text.is_empty() => {
+                    use std::hash::Hasher;
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    h.write(text.as_bytes());
+                    let raw = std::hash::Hasher::finish(&h) as u32;
+                    CLUSTER_TAG | (raw & !CLUSTER_TAG)
+                }
+                _ => cursor.ch as u32,
             };
             let key = GlyphKey {
                 font_family_hash,
                 font_size_q,
-                glyph_id: cursor.ch as u32,
+                glyph_id,
                 style_flags: 0,
             };
             let entry: Option<GlyphEntry> = {
@@ -804,17 +910,6 @@ impl RenderBackend for WebGpuPaneBackend {
             };
             if let Some(entry) = entry {
                 let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
-                // Draw the inverted glyph at its natural advance, NOT
-                // at the full `cell_w_px` (= 2 × cell_w on wide cells).
-                // draw_row_texts (line ~690) uses `natural_w` for the
-                // glyph quad and `bg_rgba = (0,0,0,0)` for the gap on
-                // the right of a wide cell. Using `cell_w_px` here was
-                // stretching the cached CJK / emoji bitmap to 2 cells
-                // wide the moment the cursor landed on a CJK character,
-                // so the user saw the glyph "grow" under the cursor.
-                // The cursor block quad pushed above already paints the
-                // full 2-cell cursor_color region; the inverted glyph
-                // only needs to overlay the actual glyph footprint.
                 let natural_w = (entry.px_w as f32).max(1.0);
                 self.pending_instances.push(CellInstance {
                     cell_xy: [pixel_x, pixel_y],

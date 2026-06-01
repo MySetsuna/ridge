@@ -6,30 +6,30 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  root: path.resolve(__dirname, 'src/mobile'),
+  root: path.resolve(__dirname, 'src/remote'),
   base: '/',
-  // Use a SEPARATE dep-optimization cache from the desktop SvelteKit dev server
-  // (vite.config.js → default node_modules/.vite). Both run at once when remote
-  // control is enabled; sharing one cache makes the mobile server re-optimize
-  // and wipe the desktop's deps (e.g. `qrcode`), 404-ing the desktop's
-  // already-loaded `qrcode.js?v=…` dynamic import.
-  cacheDir: path.resolve(__dirname, 'node_modules/.vite-mobile'),
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
-      // Shared, transport-agnostic UI (e.g. the sidebar components reused
-      // between the desktop SvelteKit app and this plain-Svelte remote app).
-      '@shared': path.resolve(__dirname, 'src/shared'),
+      '$lib': path.resolve(__dirname, 'src/lib'),
     },
   },
   plugins: [
     svelte(),
   ],
   build: {
-    outDir: path.resolve(__dirname, 'static/mobile'),
+    outDir: path.resolve(__dirname, 'static/remote'),
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('ridge-term')) return 'term-wasm';
+          if (id.includes('node_modules/lucide-svelte')) return 'icons';
+        },
+      },
+    },
   },
   optimizeDeps: {
     exclude: ['@ridge/term-wasm'],

@@ -37,6 +37,7 @@
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
+  import { mapLimit, GIT_FANOUT_CONCURRENCY, recommendedGitConcurrency } from '$lib/utils/pLimit';
   import { invalidatePaneGitStatusForRepo } from '$lib/stores/paneGitStatus';
   import { onFsChange, type FsChangedPayload } from '$lib/stores/fsEvents';
   import {
@@ -113,7 +114,14 @@
   let statuses = $derived($scmCacheStore.statuses);
   let discoveryLoading = $state(false);
   let debounceHandle: ReturnType<typeof setTimeout> | undefined;
-  let inFlight: Promise<void> | null = null;
+  /**
+   * Controls the currently-running discovery scan. When the user `cd`s to a
+   * new directory we `abort()` this so the stale scan stops launching further
+   * `get_scm_status` calls instead of grinding through every subrepo of the
+   * directory we already left. A fresh scan installs its own controller; the
+   * abort/replace handshake lives in `runScan` + `abortActiveScan`.
+   */
+  let scanController: AbortController | null = null;
   let unlistenRepoChanged: (() => void) | undefined;
   let unsubCwdWatch: (() => void) | undefined;
   let unsubFsChange: (() => void) | undefined;
@@ -122,30 +130,63 @@
    *  coalescing 250ms ensures one refresh per user operation, not 3–5. */
   const watcherDebounce = new Map<string, ReturnType<typeof setTimeout>>();
 
-  function schedule(run: () => Promise<void>, delayMs = 280): void {
+  /** Cancel the in-flight discovery scan (if any) so it stops issuing git
+   *  calls. Safe to call when nothing is running. */
+  function abortActiveScan(): void {
+    scanController?.abort();
+    scanController = null;
+  }
+
+  /**
+   * Start a discovery scan under a fresh AbortController, superseding any
+   * scan already running. Unlike the old "drop if already running" guard,
+   * a newer cwd context always wins: the previous scan is aborted, not
+   * silently kept alive while its results go stale. The signal threads down
+   * through `discoverRepos` → `mapLimit` so abort halts the fanout mid-flight.
+   */
+  function runScan(force = false): Promise<void> {
+    scanController?.abort();
+    const controller = new AbortController();
+    scanController = controller;
+    return discoverRepos(force, controller.signal).finally(() => {
+      // Only clear the controller if a newer scan hasn't already replaced us.
+      if (scanController === controller) scanController = null;
+    });
+  }
+
+  function schedule(run: () => void, delayMs = 280): void {
     if (debounceHandle !== undefined) clearTimeout(debounceHandle);
     debounceHandle = setTimeout(() => {
       debounceHandle = undefined;
-      const exec = () => {
-        if (inFlight) return; // drop if already running
-        inFlight = run().finally(() => {
-          inFlight = null;
-        });
-      };
       const idle = (globalThis as unknown as { requestIdleCallback?: (cb: () => void) => number })
         .requestIdleCallback;
-      if (typeof idle === 'function') idle(exec);
-      else exec();
+      if (typeof idle === 'function') idle(run);
+      else run();
     }, delayMs);
   }
 
-  async function discoverRepos(force = false): Promise<void> {
-    if (!isTauri()) return;
+  /**
+   * Discover git repos under the current pane cwds and refresh their status.
+   *
+   * `signal` makes the scan cancellable: when the user `cd`s away mid-scan,
+   * `runScan` aborts the previous controller, and every checkpoint here bails
+   * out *before* mutating the cache or launching more git calls. The fanouts
+   * pass the signal into `mapLimit`, so an abort stops the per-repo
+   * `get_scm_status` burst within one worker turn rather than draining the
+   * whole backlog of an already-abandoned directory.
+   */
+  async function discoverRepos(force = false, signal?: AbortSignal): Promise<void> {
+    if (!isTauri() || signal?.aborted) return;
     const cwds = get(paneCwdStore);
     const uniqueCwds = Array.from(new Set(Object.values(cwds).filter(Boolean))).sort();
     const sig = uniqueCwds.join('|');
     const cache = getScmCache();
     if (!force && sig === cache.lastCwdSignature && cache.repoRoots.length > 0) return;
+
+    // Device-adaptive: high-core machines blast through the scan; 2–4 core
+    // laptops keep a core free for the UI so they load progressively without
+    // freezing. The backend git semaphore clamps real git.exe parallelism.
+    const concurrency = recommendedGitConcurrency();
 
     discoveryLoading = true;
     try {
@@ -154,18 +195,27 @@
       // 若用户身处 `repo/src` 这样的深子目录，则不会再把 `repo` 识别成仓库
       // （这是用户明确要求的语义：`git仓库检索不需要向上层文件夹查找，只需要向下`）。
       const found = new Map<string, number>();
-      await Promise.all(
-        uniqueCwds.map(async (cwd) => {
+      await mapLimit(
+        uniqueCwds,
+        concurrency,
+        async (cwd) => {
+          if (signal?.aborted) return;
           try {
             const roots = await invoke<string[]>('find_git_repos_below', { path: cwd, maxDepth: 4 });
+            if (signal?.aborted) return;
             for (const r of roots) {
               found.set(r, (found.get(r) ?? 0) + 1);
             }
           } catch {
             /* ignore */
           }
-        })
+        },
+        { signal }
       );
+      // Bail before touching the cache: writing repo roots for a directory the
+      // user already left would flash stale repos into the sidebar.
+      if (signal?.aborted) return;
+
       const nextRoots = Array.from(found.entries())
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .map(([root]) => root);
@@ -189,10 +239,18 @@
         selectedRepo = nextRoots[0];
       }
 
-      await Promise.all(nextRoots.map((root) => refreshStatus(root)));
+      // Cap concurrent `get_scm_status` fanout: each call spawns ~3 git.exe
+      // and Windows `CreateProcess` is slow enough that a 20-repo parallel
+      // burst saturates tokio's blocking pool, freezing the Explorer sidebar
+      // (which queues behind us). The signal lets a directory switch abort the
+      // remaining per-repo refreshes. See `src/lib/utils/pLimit.ts`.
+      await mapLimit(nextRoots, concurrency, (root) => refreshStatus(root), { signal });
+      if (signal?.aborted) return;
       if (rootsChanged && selectedRepo) await loadGraph(selectedRepo);
     } finally {
-      discoveryLoading = false;
+      // Leave the spinner up if a newer scan superseded us — that scan owns
+      // the flag now and will clear it when it finishes.
+      if (!signal?.aborted) discoveryLoading = false;
     }
   }
 
@@ -894,10 +952,15 @@
   }
 
   // 每次扫描完成后，同步加载各仓库的分支信息（供 header 显示 upstream 状态）。
+  // 历史问题：N 个仓库一次性 `void loadBranches(root)` 会并发触发 N 个
+  // `git branch --all` 进程，与 refreshStatus 的 ~3N 个 git 进程叠加，在
+  // Windows 上 CreateProcess 是瓶颈，整批 spawn 会阻塞 tokio blocking pool
+  // 并把 Explorer 的 get_file_tree 一起拖死。改用 GIT_FANOUT_CONCURRENCY
+  // 控制并发，与后端 git 信号量保持同步。
   $effect(() => {
-    for (const root of repoRoots) {
-      if (!branchLists[root]) void loadBranches(root);
-    }
+    const pending = repoRoots.filter((root) => !branchLists[root]);
+    if (pending.length === 0) return;
+    void mapLimit(pending, GIT_FANOUT_CONCURRENCY, (root) => loadBranches(root));
   });
 
   // ─── Status label / color ──────────────────────────────────────────────────
@@ -1030,7 +1093,7 @@
 onMount(() => {
   const cache = getScmCache();
   if (cache.repoRoots.length === 0) {
-    void discoverRepos();
+    void runScan();
   } else {
     if (!selectedRepo) selectedRepo = cache.repoRoots[0];
     if (selectedRepo && shouldRefreshGraphOnMount(selectedRepo)) {
@@ -1039,16 +1102,33 @@ onMount(() => {
     // 用户隐藏 SCM tab 期间，工作区文件可能已被外部修改但 fs-changed 订阅
     // 已随组件 unmount 释放，cache 里的 status 已陈旧。切回时静默并发刷一次，
     // 不设 loading flag、不显示 spinner —— 数据替换由 setScmRepoStatus 直接生效。
-    void Promise.all(cache.repoRoots.map((r) => refreshStatus(r)));
+    // 并发同样受 GIT_FANOUT_CONCURRENCY 约束，避免多仓库 SCM tab remount
+    // 触发 N 个 get_scm_status 同时启动 ~3N 个 git.exe。
+    void mapLimit(cache.repoRoots, GIT_FANOUT_CONCURRENCY, (r) => refreshStatus(r));
   }
 
-  // 监听 paneCwdStore：出现新的不重复 cwd 时触发 discoverRepos
+  // 监听 paneCwdStore：cwd 集合变化（新增/移除/cd 切换）时重新发现仓库。
+  // 关键修复：用户在终端 `cd` 离开一个多仓库目录后，之前那轮扫描必须立刻
+  // abort —— 否则它会继续把已离开目录下几十个子仓库的 get_scm_status 跑完，
+  // 既浪费 git.exe 又让 sidebar 一直转圈。这里在察觉到任何集合变化的瞬间
+  // 同步 abortActiveScan()，再 debounce 一个新的 runScan（runScan 内部也会
+  // 再 abort 一次，双保险）。
   let knownCwds = new Set(Object.values(get(paneCwdStore)).filter(Boolean));
   unsubCwdWatch = paneCwdStore.subscribe((cwds) => {
-    const current = Object.values(cwds).filter(Boolean);
-    const hasNew = current.some((cwd) => !knownCwds.has(cwd));
-    knownCwds = new Set(current);
-    if (hasNew) schedule(() => discoverRepos());
+    const current = new Set(Object.values(cwds).filter(Boolean));
+    // 集合是否变化：大小不同，或出现了未知 cwd。覆盖新增、移除、cd 切换。
+    let changed = current.size !== knownCwds.size;
+    if (!changed) {
+      for (const cwd of current) {
+        if (!knownCwds.has(cwd)) { changed = true; break; }
+      }
+    }
+    knownCwds = current;
+    if (changed) {
+      // 立即取消正在跑的过期扫描，让 git.exe 与 blocking pool 尽快空出来。
+      abortActiveScan();
+      schedule(() => void runScan());
+    }
   });
 
   // 订阅通用文件系统事件：用户在 Ridge 内或外部编辑/创建/删除工作区文件时，
@@ -1126,6 +1206,9 @@ onMount(() => {
 
   onDestroy(() => {
     if (debounceHandle !== undefined) clearTimeout(debounceHandle);
+    // 组件卸载（用户切走 SCM tab）时，取消正在跑的扫描，别让它在后台继续
+    // 烧 git.exe。
+    abortActiveScan();
     for (const t of watcherDebounce.values()) clearTimeout(t);
     watcherDebounce.clear();
     unlistenRepoChanged?.();
@@ -1134,10 +1217,11 @@ onMount(() => {
   });
 
   async function manualRefresh(): Promise<void> {
-    if (inFlight) return;
-    await discoverRepos(true);
-    await Promise.all(repoRoots.map((root) => refreshStatus(root)));
-    if (selectedRepo) await loadGraph(selectedRepo);
+    // 手动刷新走与 cwd 扫描相同的可取消通道：runScan(force=true) 内部会
+    // abort 上一轮、装新 controller，并用自适应并发刷新所有仓库的 status。
+    // discoverRepos(force) 已经 refresh 全部 roots，无需再重复一遍。
+    await runScan(true);
+    if (selectedRepo && !scanController) await loadGraph(selectedRepo);
   }
 
   // When selectedRepo changes, load graph (using cache when fresh).

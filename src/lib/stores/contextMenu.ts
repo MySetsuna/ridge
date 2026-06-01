@@ -43,6 +43,8 @@ export interface ContextMenuState {
   target: ContextMenuTarget;
   paneId?: string;
   workspaceId?: string;
+  /** Element that had focus before the menu opened; restored on hide. */
+  previousActiveElement?: Element | null;
 }
 
 function createContextMenuStore() {
@@ -71,11 +73,28 @@ function createContextMenuStore() {
         items,
         target,
         paneId,
-        workspaceId
+        workspaceId,
+        previousActiveElement: typeof document !== 'undefined' ? document.activeElement : null,
       });
     },
     hide: () => {
-      update(state => ({ ...state, visible: false }));
+      update(state => {
+        // Restore focus to whichever element had it before the menu opened.
+        // This prevents keyboard input from being silently lost after a
+        // right-click → menu action sequence: the IME helper textarea (or
+        // any other active input) gets focus back so the next keystroke
+        // reaches the correct handler.
+        const prev = state.previousActiveElement as HTMLElement | null;
+        if (prev && prev.isConnected && typeof prev.focus === 'function') {
+          // Use setTimeout to defer focus restoration past Svelte's DOM
+          // removal of the menu element — without this, the browser may
+          // immediately re-steal focus to <body> after our .focus() call.
+          setTimeout(() => {
+            try { prev.focus(); } catch { /* element may have disconnected */ }
+          }, 0);
+        }
+        return { ...state, visible: false, previousActiveElement: undefined };
+      });
     },
     updatePosition: (x: number, y: number) => {
       update(state => ({ ...state, x, y }));

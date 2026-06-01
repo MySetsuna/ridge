@@ -1,4 +1,6 @@
-use crate::fs::{DirectoryPage, FileNode, FileTree, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
+use crate::fs::{
+    DirectoryPage, FileNode, FileTree, ReplaceStats, SearchEngine, SearchOptions, SearchResult,
+};
 use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -27,7 +29,9 @@ pub struct RecentFileInfo {
 
 #[tauri::command]
 pub fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectInfo, String> {
-    let store = state.project_store.as_ref()
+    let store = state
+        .project_store
+        .as_ref()
         .ok_or("Project store not initialized")?;
 
     let project = store
@@ -54,7 +58,9 @@ pub fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectI
 
 #[tauri::command]
 pub fn get_recent_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, String> {
-    let store = state.project_store.as_ref()
+    let store = state
+        .project_store
+        .as_ref()
         .ok_or("Project store not initialized")?;
 
     let projects = store
@@ -78,7 +84,9 @@ pub fn get_recent_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo
 
 #[tauri::command]
 pub fn remove_project(project_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let store = state.project_store.as_ref()
+    let store = state
+        .project_store
+        .as_ref()
         .ok_or("Project store not initialized")?;
 
     store
@@ -91,7 +99,9 @@ pub fn remove_project(project_id: i64, state: State<'_, AppState>) -> Result<(),
 /// 把前端传来的路径统一成系统原生形式，修复 Windows 下 `C:/a/b\c` 这类正/反斜杠混用
 /// 时 `PathBuf::exists()` 偶发返回 false 的问题，也顺手去掉尾部分隔符、trim 空白。
 fn normalize_path_input(input: &str) -> PathBuf {
-    let trimmed = input.trim().trim_end_matches(|c: char| c == '/' || c == '\\');
+    let trimmed = input
+        .trim()
+        .trim_end_matches(|c: char| c == '/' || c == '\\');
     #[cfg(windows)]
     {
         // 统一为反斜杠；Windows API 接受两者，但混用时 Rust stdlib 某些内部路径比较会失败。
@@ -99,10 +109,7 @@ fn normalize_path_input(input: &str) -> PathBuf {
         // 驱动器根（`C:/` / `C:\`）在上面被把尾分隔符削掉后会退化成 `C:`，
         // 而 Windows 里裸的 `C:` 不是"C 盘根"，是"进程最近一次在 C 盘的 cwd"，
         // `read_dir` 会读到 Ridge 自己的运行目录。补回分隔符还原真正的根。
-        if s.len() == 2
-            && s.as_bytes()[0].is_ascii_alphabetic()
-            && s.as_bytes()[1] == b':'
-        {
+        if s.len() == 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' {
             s.push('\\');
         }
         PathBuf::from(s)
@@ -139,8 +146,7 @@ pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNod
 
     let max_depth = depth.unwrap_or(DEFAULT_TREE_DEPTH);
     tokio::task::spawn_blocking(move || {
-        FileTree::build(&root, max_depth)
-            .map_err(|e| format!("Failed to build file tree: {}", e))
+        FileTree::build(&root, max_depth).map_err(|e| format!("Failed to build file tree: {}", e))
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -289,8 +295,7 @@ pub fn read_file(path: String) -> Result<String, String> {
         return Err("Path is not a file".to_string());
     }
 
-    std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+    std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))
 }
 
 #[derive(serde::Serialize)]
@@ -307,14 +312,21 @@ pub struct ReadFileForEditorResult {
 pub async fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResult, String> {
     tokio::task::spawn_blocking(move || {
         let file_path = PathBuf::from(&path);
-        if !file_path.exists() { return Err("File does not exist".to_string()); }
-        if !file_path.is_file() { return Err("Path is not a file".to_string()); }
+        if !file_path.exists() {
+            return Err("File does not exist".to_string());
+        }
+        if !file_path.is_file() {
+            return Err("Path is not a file".to_string());
+        }
 
         let metadata = std::fs::metadata(&file_path).map_err(|e| e.to_string())?;
         let size = metadata.len();
         const MAX: u64 = 5 * 1024 * 1024;
         if size > MAX {
-            return Err(format!("文件过大 ({:.2} MB)，编辑器上限 5 MB", size as f64 / 1024.0 / 1024.0));
+            return Err(format!(
+                "文件过大 ({:.2} MB)，编辑器上限 5 MB",
+                size as f64 / 1024.0 / 1024.0
+            ));
         }
 
         let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
@@ -324,15 +336,27 @@ pub async fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResul
             .iter()
             .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
             .count();
-        let ratio = if probe.is_empty() { 0.0 } else { non_text as f64 / probe.len() as f64 };
+        let ratio = if probe.is_empty() {
+            0.0
+        } else {
+            non_text as f64 / probe.len() as f64
+        };
         let is_binary = has_null || ratio > 0.30;
 
         if is_binary {
-            return Ok(ReadFileForEditorResult { content: String::new(), is_binary: true, size });
+            return Ok(ReadFileForEditorResult {
+                content: String::new(),
+                is_binary: true,
+                size,
+            });
         }
 
         let content = String::from_utf8_lossy(&bytes).into_owned();
-        Ok(ReadFileForEditorResult { content, is_binary: false, size })
+        Ok(ReadFileForEditorResult {
+            content,
+            is_binary: false,
+            size,
+        })
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -342,18 +366,23 @@ pub async fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResul
 /// Made async so auto-save calls don't block the IPC thread.
 #[tauri::command]
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let file_path = PathBuf::from(&path);
-        if let Some(parent) = file_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
-            }
+    tokio::task::spawn_blocking(move || write_file_blocking(path, content))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Synchronous core of [`write_file`]: writes `content` to `path` as UTF-8,
+/// creating parent dirs if missing. `pub(crate)` so the remote server's WS
+/// data-request handler can write files from a `spawn_blocking` context,
+/// mirroring `copy_path_sync` / `move_path_sync`.
+pub(crate) fn write_file_blocking(path: String, content: String) -> Result<(), String> {
+    let file_path = PathBuf::from(&path);
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
         }
-        std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    }
+    std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
 #[tauri::command]
@@ -394,7 +423,8 @@ pub async fn delete_path(path: String) -> Result<(), String> {
         if !target.exists() {
             return Err(format!("路径不存在: {}", path));
         }
-        let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
+        let meta =
+            std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
         if meta.is_dir() {
             std::fs::remove_dir_all(&target).map_err(|e| format!("删除目录失败: {}", e))?;
         } else {
@@ -443,7 +473,11 @@ pub async fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Res
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn copy_path_sync(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
+pub(crate) fn copy_path_sync(
+    from: String,
+    to: String,
+    overwrite: Option<bool>,
+) -> Result<(), String> {
     let from_path = PathBuf::from(&from);
     let to_path = PathBuf::from(&to);
     if !from_path.exists() {
@@ -458,7 +492,8 @@ fn copy_path_sync(from: String, to: String, overwrite: Option<bool>) -> Result<(
             std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
         }
     }
-    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    let meta =
+        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
     if meta.is_dir() {
         // Recursive copy via walkdir. Mirror the tree relative to `from_path`.
         std::fs::create_dir_all(&to_path).map_err(|e| format!("创建目标目录失败: {}", e))?;
@@ -499,7 +534,7 @@ pub async fn move_path(from: String, to: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn move_path_sync(from: String, to: String) -> Result<(), String> {
+pub(crate) fn move_path_sync(from: String, to: String) -> Result<(), String> {
     let from_path = PathBuf::from(&from);
     let to_path = PathBuf::from(&to);
     if !from_path.exists() {
@@ -518,7 +553,8 @@ fn move_path_sync(from: String, to: String) -> Result<(), String> {
     }
     // Cross-device fallback: copy then delete source.
     copy_path_sync(from.clone(), to.clone(), Some(false))?;
-    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    let meta =
+        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
     if meta.is_dir() {
         std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
     } else {
@@ -587,14 +623,26 @@ pub async fn read_opencode_history(
             Some(h) => h,
             None => return Vec::new(),
         };
-        let session_dir = home.join(".local").join("share").join("opencode").join("storage").join("session_diff");
-        let db_path = home.join(".local").join("share").join("opencode").join("storage").join("opencode.db");
+        let session_dir = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("storage")
+            .join("session_diff");
+        let db_path = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("storage")
+            .join("opencode.db");
 
         // Try to open the opencode SQLite database for session metadata
         let conn = Connection::open(&db_path).ok();
 
         // Normalise workspace CWDs for matching
-        let ws_cwds: Vec<String> = workspace_cwds.unwrap_or_default().into_iter()
+        let ws_cwds: Vec<String> = workspace_cwds
+            .unwrap_or_default()
+            .into_iter()
             .map(|c| c.replace('\\', "/"))
             .collect();
 
@@ -610,23 +658,31 @@ pub async fn read_opencode_history(
 
             let offset = offset.unwrap_or(0);
             let limit = limit.unwrap_or(50);
-            
+
             for path in file_paths.into_iter().skip(offset).take(limit) {
                 if path.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                    let session_id = path.path().file_stem().unwrap().to_string_lossy().to_string();
+                    let session_id = path
+                        .path()
+                        .file_stem()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string();
                     let metadata = std::fs::metadata(path.path()).ok();
-                    let updated_at = metadata.and_then(|m| m.modified().ok())
+                    let updated_at = metadata
+                        .and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    
+
                     let mut files = Vec::new();
                     let mut project = String::new();
                     let mut title = "New Session".to_string();
 
                     // Read session metadata from opencode SQLite database
                     if let Some(ref conn) = conn {
-                        if let Ok(mut stmt) = conn.prepare("SELECT s.title, s.directory FROM session s WHERE s.id = ?1") {
+                        if let Ok(mut stmt) = conn
+                            .prepare("SELECT s.title, s.directory FROM session s WHERE s.id = ?1")
+                        {
                             if let Ok(row) = stmt.query_row(rusqlite::params![session_id], |row| {
                                 let db_title: String = row.get(0)?;
                                 let directory: String = row.get(1)?;
@@ -656,19 +712,21 @@ pub async fn read_opencode_history(
                     if project.is_empty() && !ws_cwds.is_empty() && !files.is_empty() {
                         project = infer_project_from_workspace(&files, &ws_cwds);
                     }
-                    
-                    entries.push(OpencodeHistoryEntry { 
-                        session_id, 
-                        title, 
+
+                    entries.push(OpencodeHistoryEntry {
+                        session_id,
+                        title,
                         updated_at,
                         project,
-                        files 
+                        files,
                     });
                 }
             }
         }
         entries
-    }).await.unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 // ─── OpenCode history ─────────────────────────────────────────────────────
@@ -759,7 +817,7 @@ pub async fn get_git_changed_files(
     until: u64,
 ) -> Result<Vec<String>, String> {
     use std::process::Command;
-    
+
     tokio::task::spawn_blocking(move || {
         // Validate CWD exists and is a directory
         let cwd_path = std::path::Path::new(&cwd);
@@ -769,17 +827,24 @@ pub async fn get_git_changed_files(
 
         let since_str = format!("{}", since);
         let until_str = format!("{}", until);
-        
+
         // Use git log to find changed files in the time range
         let output = match Command::new("git")
             .current_dir(&cwd)
             .args(&[
-                "log", 
-                "--since", &since_str, 
-                "--until", &until_str, 
-                "--name-only", 
+                // Match git.rs `git_cmd()`: don't take optional index locks for
+                // this read-only history scan (uniform policy; `log` itself
+                // doesn't lock the index, but keeps every background git read
+                // consistent and future-proof).
+                "--no-optional-locks",
+                "log",
+                "--since",
+                &since_str,
+                "--until",
+                &until_str,
+                "--name-only",
                 "--pretty=format:",
-                "--diff-filter=ACMRT"
+                "--diff-filter=ACMRT",
             ])
             .output()
         {
@@ -797,7 +862,7 @@ pub async fn get_git_changed_files(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        
+
         files.sort();
         files.dedup();
         Ok(files)
@@ -833,7 +898,10 @@ pub async fn read_claude_history(
         .unwrap_or_default()
 }
 
-fn read_claude_history_sync(project_paths: Vec<String>, limit: Option<usize>) -> Vec<ClaudeHistoryEntry> {
+fn read_claude_history_sync(
+    project_paths: Vec<String>,
+    limit: Option<usize>,
+) -> Vec<ClaudeHistoryEntry> {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return Vec::new(),
@@ -858,10 +926,16 @@ fn read_claude_history_sync(project_paths: Vec<String>, limit: Option<usize>) ->
             let display = v.get("display")?.as_str()?.to_string();
             let timestamp = v.get("timestamp")?.as_u64()?;
             let project = v.get("project")?.as_str()?.to_string();
-            let session_id = v.get("sessionId")
+            let session_id = v
+                .get("sessionId")
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string());
-            Some(ClaudeHistoryEntry { display, timestamp, project, session_id })
+            Some(ClaudeHistoryEntry {
+                display,
+                timestamp,
+                project,
+                session_id,
+            })
         })
         .filter(|e| {
             if filters.is_empty() {
@@ -1023,7 +1097,10 @@ mod tests {
         std::fs::write(&from, b"hello").unwrap();
         copy_path(from.clone(), to.clone(), None).await.unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"hello");
-        assert!(std::path::Path::new(&from).exists(), "copy preserves source");
+        assert!(
+            std::path::Path::new(&from).exists(),
+            "copy preserves source"
+        );
     }
 
     #[tokio::test]

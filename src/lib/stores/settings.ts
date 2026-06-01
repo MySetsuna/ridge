@@ -1,7 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { getTheme } from './themes';
-import { refreshRemoteRunning } from './remoteStatus';
 
 export interface UserSettings {
   theme: string;
@@ -14,12 +13,12 @@ export interface UserSettings {
   defaultCwd: string;
   terminalPaddingPx: number;
   terminalScrollbackLines: number;
-  // P4.4 (2026-05-21) â€” removed `parserBackend: 'wasm' | 'rust'` toggle.
+  // P4.4 (2026-05-21) â€?removed `parserBackend: 'wasm' | 'rust'` toggle.
   // The Rust-side PaneParser is now the only path; `set_pane_delta_mode`
   // is still invoked from RidgePane but always with `enabled: true` (and
   // remains used by the R5 self-heal force-reframe in ptyBridge).
-  /// 2026-05-21 â€” terminal IME helper textarea gate.
-  /// 'ime': click â†’ focus invisible IME helper textarea so OS IME
+  /// 2026-05-21 â€?terminal IME helper textarea gate.
+  /// 'ime': click â†?focus invisible IME helper textarea so OS IME
   ///   composition events (CJK input methods) can attach. Each
   ///   keystroke routes through compositionstart/update/end. Default
   ///   for users who type Chinese / Japanese / Korean into shells.
@@ -43,7 +42,7 @@ const DEFAULTS: UserSettings = {
   defaultShell: '',
   terminalFontFamily: '',
   defaultCwd: '',
-  terminalPaddingPx: 2,
+  terminalPaddingPx: 0,
   terminalScrollbackLines: 2000,
   terminalImeMode: 'ime',
   remoteEnabled: false,
@@ -162,7 +161,7 @@ export function setTheme(themeId: string): void {
   // Persist to disk so the next launch's splash can render with the
   // correct loader colors BEFORE any JS has run. Without this the
   // first-frame splash would always fall back to the bootstrap theme.
-  // Fire-and-forget â€” failure to persist only affects the next-launch
+  // Fire-and-forget â€?failure to persist only affects the next-launch
   // splash, never the current session.
   invoke('set_active_theme', { themeId }).catch((e) => {
     console.warn('[settings] set_active_theme persistence failed', e);
@@ -172,18 +171,10 @@ export function setTheme(themeId: string): void {
 export function initSettingsBoot(): void {
   const s = get(store);
   applyTheme(s.theme);
-  // Restore remote control server state if it was enabled on last session, then
-  // sync the live `remoteRunning` flag to the backend's ACTUAL state (the
-  // auto-start may fail to bind, leaving the setting on but the server down).
+  // Restore remote control server state if it was enabled on last session.
   if (s.remoteEnabled) {
-    invoke('set_remote_enabled', { enabled: true })
-      .catch((e) => {
-        console.warn('[settings] remote server auto-start failed', e);
-      })
-      .finally(() => {
-        void refreshRemoteRunning();
-      });
-  } else {
-    void refreshRemoteRunning();
+    invoke('set_remote_enabled', { enabled: true }).catch((e) => {
+      console.warn('[settings] remote server auto-start failed', e);
+    });
   }
 }

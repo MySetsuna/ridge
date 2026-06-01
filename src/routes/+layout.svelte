@@ -3,6 +3,13 @@
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
+  import { setTransport } from '$lib/transport';
+  import { TauriDataProvider } from '$lib/transport/tauri';
+  import { onMount } from 'svelte';
+
+  onMount(() => {
+    setTransport(new TauriDataProvider());
+  });
 
   // §A.7 (2026-05-08): the @fontsource/noto-color-emoji webfont was
   // removed — WebView2 / Chromium versions in the Tauri runtime fail

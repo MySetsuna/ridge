@@ -1,25 +1,4 @@
-import type { SidebarProvider, DirListing, GitInfo, SearchHit } from '@shared/sidebar/types';
-
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
-
-/** Stable, per-device id persisted in localStorage. Sent on connect so the
- *  desktop can label sessions and blacklist a specific device (survives token
- *  rotation). `crypto.randomUUID` needs a secure context (absent on plain-http
- *  LAN), so fall back to a random string. */
-export function getDeviceId(): string {
-  try {
-    let id = localStorage.getItem('wind-remote-device-id');
-    if (!id) {
-      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : 'dev-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-      localStorage.setItem('wind-remote-device-id', id);
-    }
-    return id;
-  } catch {
-    return '';
-  }
-}
 
 function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
   const hex: string[] = [];
@@ -30,7 +9,15 @@ function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 
-export type BinaryDeltaListener = (paneId: string, data: Uint8Array) => void;
+export type RawByteListener = (paneId: string, data: Uint8Array) => void;
+export type MetaListener = (paneId: string, title: string | null, cwd: string | null) => void;
+export type PtyResizeListener = (paneId: string, rows: number, cols: number) => void;
+export type ThemeListener = (colors: Record<string, string>, themeType: 'dark' | 'light') => void;
+
+// Keep for backward compat — consumers should migrate to onRawBytes.
+export type BinaryDeltaListener = RawByteListener;
+
+const MAX_PANE_OUTPUT_LINES = 5000;
 
 export interface PaneInfo {
   id: string;
@@ -68,7 +55,17 @@ export type WsMessage = {
 } | {
   type: 'delta';
   paneId: string;
-  data: string;  // base64-encoded postcard delta frame
+  data: string;
+} | {
+  type: 'pty-meta';
+  paneId: string;
+  title: string | null;
+  cwd: string | null;
+} | {
+  type: 'pty-resized';
+  paneId: string;
+  rows: number;
+  cols: number;
 } | {
   type: 'files';
   path: string;
@@ -101,23 +98,23 @@ export type WsMessage = {
   success: boolean;
   error?: string;
 } | {
-  type: 'create-pane-result';
-  success: boolean;
-  paneId?: string;
-  error?: string;
-} | {
-  type: 'close-pane-result';
-  success: boolean;
-  error?: string;
+  type: 'theme';
+  themeType: 'dark' | 'light';
+  colors: Record<string, string>;
 };
 
 type Listener = (msg: WsMessage) => void;
 
-export class RemoteConnection implements SidebarProvider {
+export class RemoteConnection {
   private ws: WebSocket | null = null;
   private stateListeners: Set<(s: ConnectionState) => void> = new Set();
   private messageListeners: Set<Listener> = new Set();
   private binaryDeltaListeners: Set<BinaryDeltaListener> = new Set();
+  private rawByteListeners: Set<RawByteListener> = new Set();
+  private metaListeners: Set<MetaListener> = new Set();
+  private resizeListeners: Set<PtyResizeListener> = new Set();
+  private themeListeners: Set<ThemeListener> = new Set();
+  private _lastTheme: { themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
@@ -143,6 +140,29 @@ export class RemoteConnection implements SidebarProvider {
     return () => this.binaryDeltaListeners.delete(fn);
   }
 
+  onRawBytes(fn: RawByteListener) {
+    this.rawByteListeners.add(fn);
+    return () => this.rawByteListeners.delete(fn);
+  }
+
+  onMetadata(fn: MetaListener) {
+    this.metaListeners.add(fn);
+    return () => this.metaListeners.delete(fn);
+  }
+
+  onPtyResize(fn: PtyResizeListener) {
+    this.resizeListeners.add(fn);
+    return () => this.resizeListeners.delete(fn);
+  }
+
+  /** Theme push from the desktop (sent at connect, cached so a late subscriber
+   *  — e.g. MainApp mounting after auth — can still read it via lastTheme()). */
+  onTheme(fn: ThemeListener) {
+    this.themeListeners.add(fn);
+    return () => this.themeListeners.delete(fn);
+  }
+  lastTheme() { return this._lastTheme; }
+
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
     if (this.ws) this.ws.close();
     this._host = host;
@@ -151,7 +171,7 @@ export class RemoteConnection implements SidebarProvider {
     let url: string;
     if (auth) {
       const param = authType === 'token' ? 'token' : 'code';
-      url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}&device=${encodeURIComponent(getDeviceId())}`;
+      url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}`;
       if (authType === 'token') this._token = auth;
     } else {
       this.setState('error');
@@ -168,18 +188,35 @@ export class RemoteConnection implements SidebarProvider {
       if (event.data instanceof ArrayBuffer) {
         const buf = new Uint8Array(event.data);
         const paneId = uuidFromBytes(buf, 0);
-        const deltaBytes = buf.slice(16);
-        this.binaryDeltaListeners.forEach(fn => fn(paneId, deltaBytes));
+        const rawBytes = buf.subarray(16);
+        this.rawByteListeners.forEach(fn => fn(paneId, rawBytes));
         return;
       }
       try {
         const msg = JSON.parse(event.data) as WsMessage;
-        // Route result-type responses to pending request promises.
         if (typeof msg === 'object' && msg !== null) {
           const type = (msg as Record<string, unknown>).type as string;
-          const isResult = type.endsWith('-result') || type === 'workspaces'
-            || type === 'current-project' || type === 'files' || type === 'git-status'
-            || type === 'search-results';
+
+          // New remote event types — dispatch before result routing.
+          if (type === 'pty-meta') {
+            const m = msg as { paneId: string; title: string | null; cwd: string | null };
+            this.metaListeners.forEach(fn => fn(m.paneId, m.title, m.cwd));
+            return;
+          }
+          if (type === 'pty-resized') {
+            const r = msg as { paneId: string; rows: number; cols: number };
+            this.resizeListeners.forEach(fn => fn(r.paneId, r.rows, r.cols));
+            return;
+          }
+          if (type === 'theme') {
+            const t = msg as { themeType: 'dark' | 'light'; colors: Record<string, string> };
+            this._lastTheme = { themeType: t.themeType, colors: t.colors };
+            this.themeListeners.forEach(fn => fn(t.colors, t.themeType));
+            return;
+          }
+
+          // Route result-type responses to pending request promises.
+          const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project';
           if (isResult) {
             const pending = this._pendingRequests.get(type);
             if (pending) {
@@ -193,6 +230,9 @@ export class RemoteConnection implements SidebarProvider {
           const lines = msg.data.split('\n');
           const existing = this.paneOutputs.get(msg.paneId) || [];
           existing.push(...lines);
+          if (existing.length > MAX_PANE_OUTPUT_LINES) {
+            existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+          }
           this.paneOutputs.set(msg.paneId, existing);
         }
         this.messageListeners.forEach(fn => fn(msg));
@@ -232,14 +272,12 @@ export class RemoteConnection implements SidebarProvider {
   resizePane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
     this.send({ type: 'resize', paneId, rows, cols, pixelWidth, pixelHeight });
   }
-  /** §multi-size: explicitly re-claim the shared PTY at this device's size + full repaint. */
-  refreshPane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
+  /** Claim the shared PTY at this client's viewport size (the "lock size" /
+   *  refresh button). The backend resizes the real PTY + canonical parser and
+   *  broadcasts a full repaint to every viewer; the size persists until the
+   *  next claim/refresh from any endpoint. */
+  refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
     this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight });
-  }
-  /** §own-active: this client just became the active owner (genuine interaction)
-   *  → resize the shared PTY to this device's size. Last interaction wins. */
-  claimPane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
-    this.send({ type: 'claim-pane', paneId, rows, cols, pixelWidth, pixelHeight });
   }
 
   // ── Workspace operations via WS ───────────────────────────────────
@@ -263,55 +301,27 @@ export class RemoteConnection implements SidebarProvider {
     return (data as Record<string, unknown>).success === true;
   }
 
-  // ── Terminal (pane) operations via WS — §6 ─────────────────────────
-  /** Create a terminal in the current workspace (server picks a balanced split). */
-  async createPane(shell?: string): Promise<string | null> {
-    const data = await this._sendAndWait({ type: 'create-pane', shell: shell || '' }, 'create-pane-result') as Record<string, unknown>;
-    return (data.success && data.paneId) ? String(data.paneId) : null;
-  }
-
-  async closePane(paneId: string): Promise<boolean> {
-    const data = await this._sendAndWait({ type: 'close-pane', paneId }, 'close-pane-result') as Record<string, unknown>;
-    return (data as Record<string, unknown>).success === true;
-  }
-
   async requestCurrentProject(): Promise<string> {
     const data = await this._sendAndWait({ type: 'current-project' }, 'current-project') as Record<string, unknown>;
     return (data as { path: string }).path || '';
   }
   // ───────────────────────────────────────────────────────────────────
 
-  // ── SidebarProvider: shared file/git/search components data source ──
-  async listDir(path: string): Promise<DirListing> {
-    const data = await this._sendAndWait({ type: 'list-files', path: path || '' }, 'files', 8000) as Record<string, unknown>;
-    return {
-      path: String(data.path ?? ''),
-      parent: (data.parent as string | null) ?? null,
-      entries: (data.entries as DirListing['entries']) ?? [],
-    };
-  }
-
-  async gitStatus(): Promise<GitInfo> {
-    const data = await this._sendAndWait({ type: 'list-git-status' }, 'git-status', 12000) as Record<string, unknown>;
-    return {
-      isGitRepo: data.isGitRepo === true,
-      currentBranch: (data.currentBranch as string | null) ?? null,
-      branches: (data.branches as string[]) ?? [],
-      files: (data.files as GitInfo['files']) ?? [],
-      commits: (data.commits as GitInfo['commits']) ?? [],
-    };
-  }
-
-  async search(query: string): Promise<SearchHit[]> {
-    const data = await this._sendAndWait({ type: 'search-files', query }, 'search-results', 20000) as Record<string, unknown>;
-    return (data.results as SearchHit[]) ?? [];
-  }
-  // ───────────────────────────────────────────────────────────────────
-
   disconnect() {
-    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+    if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
     this.setState('disconnected');
     this.paneOutputs.clear();
+    for (const [, pending] of this._pendingRequests) {
+      pending.reject(new Error('disconnected'));
+    }
+    this._pendingRequests.clear();
   }
 
   private setState(s: ConnectionState) {

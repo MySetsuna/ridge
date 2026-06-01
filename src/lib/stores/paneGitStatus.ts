@@ -19,6 +19,7 @@
 
 import { writable, get } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { mapLimit, GIT_FANOUT_CONCURRENCY } from '$lib/utils/pLimit';
 
 export interface PaneGitInfo {
   repoRoot: string;
@@ -244,7 +245,10 @@ export async function invalidatePaneGitStatusForRepo(repoRoot: string): Promise<
  */
 async function refreshAllCachedRepos(): Promise<void> {
   const roots = Array.from(cacheByRepo.keys());
-  await Promise.all(roots.map((root) => invalidatePaneGitStatusForRepo(root)));
+  // Limit concurrency: each invalidate cascades into `get_scm_status` +
+  // `git_diff_summary` per pane, so a 5-minute heartbeat over 20 cached
+  // repos would otherwise stampede git.exe on Windows.
+  await mapLimit(roots, GIT_FANOUT_CONCURRENCY, (root) => invalidatePaneGitStatusForRepo(root));
 }
 
 // Background 5-minute heartbeat — keeps branch/diff counts accurate after

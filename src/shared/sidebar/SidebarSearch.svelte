@@ -73,19 +73,19 @@
 
 <style>
   .search { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .search-bar { display: flex; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid #21262d; }
-  :global(.search-bar .ico) { color: #8b949e; }
-  .search-input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #30363d; border-radius: 8px; background: #0d1117; color: #e6edf3; font-size: 14px; outline: none; }
-  .search-input:focus { border-color: #58a6ff; }
+  .search-bar { display: flex; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid var(--rg-border-bright); }
+  :global(.search-bar .ico) { color: var(--rg-fg-muted); }
+  .search-input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--rg-border-bright); border-radius: 8px; background: var(--rg-bg); color: var(--rg-fg); font-size: 14px; outline: none; }
+  .search-input:focus { border-color: var(--rg-accent); }
 
   .search-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; gap: 1px; }
-  .msg { color: #484f58; font-size: 12px; padding: 10px; }
-  .msg.err { color: #f85149; }
+  .msg { color: var(--rg-fg-muted); font-size: 12px; padding: 10px; }
+  .msg.err { color: var(--rg-ansi-red); }
 
   .hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; background: none; border: none; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
-  .hit:active { background: #1c2128; }
+  .hit:active { background: var(--rg-surface-2); }
   .hit-head { display: flex; align-items: baseline; gap: 8px; }
-  .hit-name { font-size: 13px; color: #e6edf3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hit-loc { font-size: 11px; color: #484f58; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-  .hit-line { font-size: 12px; color: #8b949e; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hit-name { font-size: 13px; color: var(--rg-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hit-loc { font-size: 11px; color: var(--rg-fg-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .hit-line { font-size: 12px; color: var(--rg-fg-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

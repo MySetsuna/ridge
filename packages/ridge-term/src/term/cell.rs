@@ -70,6 +70,47 @@ pub struct HyperlinkSpan {
     pub id: Option<String>,
 }
 
+/// Render path classification for a line of cells. Determines whether
+/// the line can take the fast equal-width path or needs the slow
+/// cluster-aware path with text shaping and consume tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderPath {
+    /// All cells are pure ASCII or standard single-width chars. No clusters,
+    /// no wide characters, no color emoji. Skip complex shaping entirely.
+    Fast,
+    /// Row contains wide chars, clusters, or potential color emoji. Needs
+    /// cluster-aware rendering with consume tracking and measured widths.
+    Slow,
+}
+
+/// Efficient single-line scan that classifies a row's render path.
+///
+/// **Fast-Path**: If every cell is a pure ASCII character (codepoint ≤ 0x7F)
+/// with width 1 and no cluster spans, the line can skip complex text shaping
+/// and consume logic entirely. This is the common case for code and log output.
+///
+/// **Slow-Path**: Triggered when ANY cell has width ≥ 2, a non-ASCII
+/// codepoint, or cluster spans are present. These lines need cluster-aware
+/// rendering with measured glyph widths and right-side cell consume tracking.
+///
+/// The function is deliberately lightweight — no allocations, no lookups,
+/// just a linear scan with early exit on the first non-trivial character.
+pub fn scan_line_path(cells: &[Cell], clusters: &[ClusterSpan]) -> RenderPath {
+    if !clusters.is_empty() {
+        return RenderPath::Slow;
+    }
+    for cell in cells {
+        if cell.width >= 2 {
+            return RenderPath::Slow;
+        }
+        let cp = cell.ch as u32;
+        if cp > 0x7F && cell.ch != '\0' {
+            return RenderPath::Slow;
+        }
+    }
+    RenderPath::Fast
+}
+
 /// §4.7 (2026-05-07) — multi-codepoint grapheme cluster anchored at a
 /// specific column on a row. Used so emoji ZWJ sequences (👨‍👩‍👧),
 /// flag-style RIS pairs (🇺🇸), and emoji-with-VS16 (🏳️‍🌈) survive as

@@ -213,6 +213,50 @@ pub fn set_active_theme(theme_id: String) -> Result<(), String> {
     })
 }
 
+/// Locate `ridge.theme` without an `AppHandle`. The remote-server thread only
+/// holds `AppState`, so it can't use Tauri's resource resolver — but in every
+/// real layout the catalog sits next to the running exe (packaged install and
+/// `target/<profile>/ridge.theme` in dev), with an ancestor walk as a fallback
+/// for unusual repo layouts.
+pub fn find_theme_path_no_handle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let next = dir.join("ridge.theme");
+    if next.exists() {
+        return Some(next);
+    }
+    let mut d = dir;
+    while let Some(parent) = d.parent() {
+        let candidate = parent.join("ridge.theme");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        d = parent;
+    }
+    None
+}
+
+/// AppHandle-free resolution of the desktop's currently active theme, used by
+/// the remote server to push the live theme to browser clients. Reads the same
+/// `active-theme.txt` `set_active_theme` writes and the same `ridge.theme`
+/// catalog `get_theme_data` parses. Returns `None` (remote keeps its own CSS
+/// fallbacks) when either is unavailable.
+pub fn active_theme_entry_no_handle() -> Option<ThemeEntry> {
+    let dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ridge");
+    let theme_id = read_active_theme_id(&dir);
+    let path = find_theme_path_no_handle()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let tf: ThemeFile = serde_json::from_str(&content).ok()?;
+    let mut themes = tf.themes;
+    if themes.is_empty() {
+        return None;
+    }
+    let idx = themes.iter().position(|t| t.id == theme_id).unwrap_or(0);
+    Some(themes.swap_remove(idx))
+}
+
 #[tauri::command]
 pub fn get_theme_data(app: AppHandle) -> ThemeFile {
     if let Some(path) = find_theme_path(&app) {

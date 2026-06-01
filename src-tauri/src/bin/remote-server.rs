@@ -3,7 +3,7 @@
 // Usage (dev):   cargo run --bin remote-server
 // Usage (build): ./target/release/remote-server.exe
 //
-// Serves the built mobile app from <exe-dir>/static/mobile/ (or ./static/mobile/)
+// Serves the built remote app from <exe-dir>/static/remote/ (or ./static/remote/)
 // and provides the remote-control API (TOTP auth, WebSocket, file browser).
 //
 // NOTE: WebSocket terminal control requires the full Ridge Tauri app running.
@@ -81,7 +81,7 @@ async fn root_handler(State(ctx): State<AppCtx>) -> impl IntoResponse {
         Ok(html) => Html(html).into_response(),
         Err(_) => {
             Html(format!(
-                r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p>Mobile UI not built yet.</p><p>Run: <code>pnpm build:mobile</code></p></body></html>"#,
+                r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p>Remote UI not built yet.</p><p>Run: <code>pnpm build:remote</code></p></body></html>"#,
             ))
             .into_response()
         }
@@ -205,15 +205,15 @@ async fn main() {
     println!("Ridge Remote Server v{}", env!("CARGO_PKG_VERSION"));
     println!("Starting...");
 
-    // Resolve static files directory: prefers cwd/static/mobile/ (dev),
-    // then exe-relative static/mobile/ (installed), then fallback.
-    let static_dir = PathBuf::from("static").join("mobile");
+    // Resolve static files directory: prefers cwd/static/remote/ (dev),
+    // then exe-relative static/remote/ (installed), then fallback.
+    let static_dir = PathBuf::from("static").join("remote");
     let static_dir = if static_dir.exists() {
         static_dir
     } else {
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("static").join("mobile")))
+            .and_then(|p| p.parent().map(|d| d.join("static").join("remote")))
             .unwrap_or(static_dir)
     };
 

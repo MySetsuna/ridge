@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Ridge Remote</title>
+<style>
+/* Default --rg-* palette (GitHub-dark). The desktop's active theme is pushed
+   over WS and overrides these via inline styles on <html> (applyThemeVars). */
+:root{
+  --rg-bg:#0d1117;--rg-surface:#161b22;--rg-surface-2:#21262d;
+  --rg-border:#30363d;--rg-border-bright:#30363d;
+  --rg-fg:#e6edf3;--rg-fg-muted:#8b949e;
+  --rg-accent:#58a6ff;--rg-accent-glow:rgba(88,166,255,.15);
+  --rg-ansi-green:#3fb950;--rg-ansi-red:#f85149;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--rg-bg);color:var(--rg-fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;touch-action:manipulation;-webkit-overflow-scrolling:touch}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>
