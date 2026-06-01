@@ -402,11 +402,34 @@ impl RenderBackend for Canvas2dBackend {
         let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
         let h = y_bottom - y_top;
 
+        let mut extra_cells: f64 = 0.0;
+
         for (col, cell) in row.cells.iter().enumerate() {
+            if cell.width == 0 {
+                continue;
+            }
+
             let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
 
-            let x_left = (col as f64 * cell_w).round();
-            let x_right = ((col + cell.width as usize) as f64 * cell_w).round();
+            let mut buf = [0u8; 4];
+            let glyph_str: &str = match row.clusters.iter().find(|c| c.col == col.min(u16::MAX as usize) as u16) {
+                Some(cspan) => &cspan.text,
+                None => cell.ch.encode_utf8(&mut buf),
+            };
+
+            let effective_span: f64 = if cell.width >= 2 {
+                match self.ctx.measure_text(glyph_str) {
+                    Ok(m) => (m.width().max(1.0) / cell_w).ceil(),
+                    Err(_) => cell.width as f64,
+                }
+            } else {
+                cell.width as f64
+            };
+
+            let effective_col = col as f64 + extra_cells;
+
+            let x_left = (effective_col * cell_w).round();
+            let x_right = ((effective_col + effective_span) * cell_w).round();
             let w = x_right - x_left;
 
             if w <= 0.0 {
@@ -419,6 +442,8 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
                 self.ctx.fill_rect(x_left, y_top, w, h);
             }
+
+            extra_cells += effective_span - cell.width as f64;
         }
     }
 
@@ -429,6 +454,8 @@ impl RenderBackend for Canvas2dBackend {
         let y_top = (row.row_index as f64 * cell_h).round();
         let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
         let h = y_bottom - y_top;
+
+        let mut extra_cells: f64 = 0.0;
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
@@ -454,10 +481,6 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.set_font(&self.font_css);
             }
 
-            let x_left = (col as f64 * cell_w).round();
-            let x_right = ((col + cell.width as usize) as f64 * cell_w).round();
-            let w = x_right - x_left;
-
             let cluster = if !row.clusters.is_empty() {
                 let target = col.min(u16::MAX as usize) as u16;
                 row.clusters.iter().find(|c| c.col == target)
@@ -470,72 +493,94 @@ impl RenderBackend for Canvas2dBackend {
                 Some(cspan) => glyph_str = &cspan.text,
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
-            
+
+            let effective_col = col as f64 + extra_cells;
+            let grid_x_left = (effective_col * cell_w).round();
+            let grid_span_w = ((effective_col + cell.width as f64) * cell_w).round() - grid_x_left;
+
+            let effective_span: f64 = if cell.width >= 2 {
+                match self.ctx.measure_text(glyph_str) {
+                    Ok(m) => (m.width().max(1.0) / cell_w).ceil(),
+                    Err(_) => cell.width as f64,
+                }
+            } else {
+                cell.width as f64
+            };
+
             let first_char = glyph_str.chars().next();
             let mut drawn_procedurally = false;
-            
+
             if let Some(ch) = first_char {
-                if let Some(rects) = procedural_box(ch, x_left as f32, y_top as f32, w as f32, h as f32) {
+                if let Some(rects) = procedural_box(ch, grid_x_left as f32, y_top as f32, grid_span_w as f32, h as f32) {
                     for r in rects {
                         self.ctx.fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
                     }
                     drawn_procedurally = true;
                 }
             }
-            
+
             if !drawn_procedurally {
-                let _ = self.ctx.fill_text(glyph_str, x_left, y_top);
+                // §B.9 — render at natural browser size (no aspect-fit).
+                // Wide / emoji glyphs expand beyond their grid span and
+                // push subsequent cells right via extra_cells.
+                let _ = self.ctx.fill_text(glyph_str, grid_x_left, y_top);
             }
+
+            let effective_w = ((effective_col + effective_span) * cell_w).round() - grid_x_left;
 
             if attrs.flags.contains(Flags::UNDERLINE) {
                 let y = y_top + h - 2.0;
-                self.ctx.fill_rect(x_left, y, w, 1.0);
+                self.ctx.fill_rect(grid_x_left, y, effective_w, 1.0);
             }
             if attrs.flags.contains(Flags::STRIKETHROUGH) {
                 let y = y_top + h * 0.5;
-                self.ctx.fill_rect(x_left, y, w, 1.0);
+                self.ctx.fill_rect(grid_x_left, y, effective_w, 1.0);
             }
+
+            extra_cells += effective_span - cell.width as f64;
         }
     }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        let x = (cursor.col as f64 * cell_w + 0.5).floor();
+        let effective_col = cursor.col as f64 + cursor.extra_cells;
+        let x = (effective_col * cell_w + 0.5).floor();
         let y = (cursor.row as f64 * cell_h + 0.5).floor();
         let y_bottom = ((cursor.row + 1) as f64 * cell_h + 0.5).floor();
         let cell_h_int = y_bottom - y;
         let cursor_span = cursor.width.max(1) as usize;
-        let x_grid_right = ((cursor.col + cursor_span) as f64 * cell_w + 0.5).floor();
-        let grid_w = x_grid_right - x;
 
-        // Smart Cursor: measure cluster glyph width from the canvas
-        // font metrics when cluster_text is available.
-        let cursor_w = match &cursor.cluster_text {
-            Some(text) if !text.is_empty() => {
-                let measured = self.ctx.measure_text(text).ok();
-                match measured {
-                    Some(m) if m.width() > grid_w => m.width(),
-                    _ => grid_w,
-                }
+        // §B.9 — measure the glyph's natural advance to compute the
+        // effective cursor block width (no aspect-fit; natural size).
+        let text: &str = match &cursor.cluster_text {
+            Some(t) if !t.is_empty() => t.as_str(),
+            _ => {
+                let mut buf = [0u8; 4];
+                cursor.ch.encode_utf8(&mut buf)
             }
-            _ => grid_w,
         };
+        let effective_span = if cursor_span >= 2 {
+            match self.ctx.measure_text(text) {
+                Ok(m) => (m.width().max(1.0) / cell_w).ceil() as usize,
+                Err(_) => cursor_span,
+            }
+        } else {
+            cursor_span
+        };
+        let x_right = ((effective_col + effective_span as f64) * cell_w + 0.5).floor();
+        let span_w = x_right - x;
 
         self.ctx
             .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_color));
         match cursor.style {
             CursorStyle::Block => {
-                self.ctx.fill_rect(x, y, cursor_w, cell_h_int);
+                self.ctx.fill_rect(x, y, span_w, cell_h_int);
                 if cursor.ch != ' ' && cursor.ch != '\0' {
                     self.ctx
                         .set_fill_style_str(&Self::rgba_to_css(self.theme.cursor_text_color));
                     self.ctx.set_font(&self.font_css);
-                    let mut ch_buf = [0u8; 4];
-                    let text: &str = match &cursor.cluster_text {
-                        Some(t) if !t.is_empty() => t.as_str(),
-                        _ => cursor.ch.encode_utf8(&mut ch_buf),
-                    };
+                    // §B.9 — render at natural size, no aspect-fit.
                     let _ = self.ctx.fill_text(text, x, y);
                 }
             }
@@ -543,7 +588,7 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.fill_rect(x, y, 2.0, cell_h_int);
             }
             CursorStyle::Underline => {
-                self.ctx.fill_rect(x, y + cell_h_int - 2.0, cursor_w, 2.0);
+                self.ctx.fill_rect(x, y + cell_h_int - 2.0, span_w, 2.0);
             }
         }
     }

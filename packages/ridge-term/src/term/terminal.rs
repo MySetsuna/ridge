@@ -559,12 +559,14 @@ impl Terminal {
 
     /// JS-side hook: caller (manager.ts) just wrote ETX `\x03` to the
     /// PTY in response to a user Ctrl+C. Forwards to
-    /// `Grid::note_ctrl_c_sent` which arms the inline-TUI grace window,
-    /// and resets all modes to default so mouse reporting / DECCKM /
-    /// bracketed paste left on by the killed TUI don't leak to the shell.
+    /// `Grid::note_ctrl_c_sent` which arms the inline-TUI grace window.
+    /// Does NOT reset terminal modes — the TUI may still be alive (e.g.
+    /// opencode handles Ctrl+C internally), and unconditionally clearing
+    /// mouse reporting / DECCKM would break mouse control in the TUI.
+    /// Mode cleanup when the TUI actually exits is handled by
+    /// `leave_alt_screen`.
     pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
         self.grid.note_ctrl_c_sent(now_ms);
-        self.modes = Modes::default();
     }
 
     /// Diagnostic accessor — returns the most recent `Grid::resize` calls.
