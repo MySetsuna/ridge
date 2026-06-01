@@ -550,7 +550,7 @@ impl RenderBackend for WebGpuPaneBackend {
                     glyph_id,
                     style_flags: 0,
                 };
-                let entry = self.ctx.borrow().atlas.lookup(&key);
+                let entry = self.ctx.borrow_mut().atlas.lookup(&key);
                 match entry {
                     Some(e) => {
                         let advance_px = (e.px_w as f32).max(1.0);
@@ -843,7 +843,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 glyph_id,
                 style_flags: 0,
             };
-            let entry = self.ctx.borrow().atlas.lookup(&key);
+            let entry = self.ctx.borrow_mut().atlas.lookup(&key);
             match entry {
                 Some(e) => ((e.px_w as f32).max(1.0) / cell_w).ceil() as usize,
                 None => cursor_span,
