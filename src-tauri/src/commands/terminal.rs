@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
+use crate::teammate::native::{self, NativeSessionInfo};
 use crate::state::{AppState, PaneDeltaSender};
 use crate::utils::cwd::resolve_default_cwd;
 use crate::utils::error::AppError;
@@ -1386,4 +1387,23 @@ pub fn get_pane_scrollback_before(
 	let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
 	let workspace_id = state.active_workspace_id();
 	Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
+}
+
+/// 列出所有 native tmux 会话，供侧边栏展示。
+#[tauri::command]
+pub fn list_native_sessions() -> Vec<NativeSessionInfo> {
+	native::list_all_sessions()
+}
+
+/// 召唤一个 native 会话进当前活动工作区。
+#[tauri::command]
+pub async fn summon_native_session(
+	state: State<'_, AppState>,
+	app_handle: tauri::AppHandle,
+	socket: String,
+	target: String,
+) -> Result<usize, String> {
+	let wid = state.active_workspace_id();
+	crate::teammate::server::summon_into_workspace(&state, &app_handle, &socket, &target, wid)
+		.map_err(|e| e.message())
 }

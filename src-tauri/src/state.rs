@@ -506,6 +506,10 @@ pub struct AppState {
     /// for view-only sessions. NOTE: an authenticated remote already has shell
     /// stdin, so this is defence-in-depth, not an isolation boundary.
     pub remote_fs_readonly: Arc<AtomicBool>,
+    /// Broadcast channel for structural changes (pane/workspace add/close/rename)
+    /// that remote WS clients subscribe to. Late joiners skip stale events —
+    /// they pull current state on connect or on demand.
+    pub remote_structural_tx: tokio::sync::broadcast::Sender<crate::types::RemoteStructuralEvent>,
 }
 
 impl AppState {
@@ -570,6 +574,10 @@ impl AppState {
             remote_client_registry: Arc::new(RemoteClientRegistry::default()),
             remote_blacklist: Arc::new(RemoteBlacklist::default()),
             remote_fs_readonly: Arc::new(AtomicBool::new(false)),
+            remote_structural_tx: {
+                let (tx, _) = tokio::sync::broadcast::channel(64);
+                tx
+            },
         }
     }
 

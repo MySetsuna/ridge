@@ -194,7 +194,7 @@ pub fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
 ) {
     let handle = tokio::runtime::Handle::try_current();
-    // Clone the silence-deadline Arc once at thread start (single read-lock acquire),
+    // Clone the silence-deadline Arc once at thread start (single read-lock acquisition),
     // so the per-iteration silence check is a pure atomic load with no map locking.
     // If the handle is gone (race with rapid open+close), fall back to a fresh atomic
     // — silence will simply never activate, which is safe.
@@ -204,6 +204,17 @@ pub fn spawn_pty_reader(
             .and_then(|ws| ws.terminals.get(&pane_id))
             .map(|h| h.resize_silence_deadline.clone())
             .unwrap_or_else(|| Arc::new(AtomicI64::new(0)))
+    };
+    // Snapshot native_ref at spawn time. When a native pane's broadcast closes
+    // (child died or detach), the reader EOF must perform a *full* cleanup
+    // (remove from pane_tree + emit layout-changed) — not the half-cleanup
+    // that `detach_terminal` does, and NOT the `PaneClosed` event that would
+    // cause the frontend to rebuild a new shell inside the dead native pane.
+    let native_ref_info: Option<(String, usize)> = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .and_then(|h| h.native_ref.clone())
     };
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
@@ -473,16 +484,41 @@ pub fn spawn_pty_reader(
                 );
             }
 
-            let _ = rt.block_on(async {
-                state
-                    .event_tx
-                    .send(GlobalEvent::PaneClosed {
-                        workspace_id,
-                        pane_id,
-                    })
-                    .await
-            });
-
-            detach_terminal(&state, workspace_id, pane_id);
+            if let Some((socket, gid)) = &native_ref_info {
+                // Native pane died or was detached: full cleanup — remove from pane_tree,
+                // clear registry attachment, emit layout-changed. Do NOT send PaneClosed
+                // (which would cause the frontend to rebuild a new non-native shell).
+                crate::teammate::native::set_attachment(socket, *gid, None);
+                state.clear_pty_scrollback(workspace_id, pane_id);
+                state.unregister_pane_delta_channel(workspace_id, pane_id);
+                {
+                    let mut map = state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&workspace_id) {
+                        ws.terminals.remove(&pane_id);
+                        let _ = ws.pane_tree.close(pane_id);
+                        ws.pane_sizes.remove(&pane_id);
+                    }
+                }
+                if let Some(app) = state.app_handle.get() {
+                    use tauri::Emitter;
+                    let _ = app.emit(
+                        "teammate-layout-changed",
+                        serde_json::json!({ "detached_pane": pane_id.to_string() }),
+                    );
+                }
+            } else {
+                // Ordinary pane: send PaneClosed so the frontend rebuilds a shell,
+                // then detach the terminal handle.
+                let _ = rt.block_on(async {
+                    state
+                        .event_tx
+                        .send(GlobalEvent::PaneClosed {
+                            workspace_id,
+                            pane_id,
+                        })
+                        .await
+                });
+                detach_terminal(&state, workspace_id, pane_id);
+            }
         });
 }
