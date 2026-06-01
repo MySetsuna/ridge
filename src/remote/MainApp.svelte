@@ -4,6 +4,7 @@
   import BottomTabBar from './BottomTabBar.svelte';
   import RemoteSidebar from './lib/RemoteSidebar.svelte';
   import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
+  import { applyThemeVars, buildKernelTheme } from './lib/theme';
 
   let { ws }: { ws: RemoteConnection } = $props();
   let panes = $state<PaneInfo[]>([]);
@@ -15,6 +16,14 @@
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
 
   let canvasRef: TerminalCanvas | undefined = $state();
+  // Kernel palette derived from the desktop theme; applied to the canvas once it
+  // mounts (the theme push usually arrives before the terminal exists).
+  let kernelTheme: Record<string, string> | null = $state(null);
+
+  function applyTheme(colors: Record<string, string>) {
+    applyThemeVars(colors);
+    kernelTheme = buildKernelTheme(colors);
+  }
 
   function onStdin(data: string) {
     if (activePaneId) ws.sendStdin(activePaneId, data);
@@ -84,6 +93,11 @@
         canvasRef?.resizeKernel(rows, cols);
       }
     });
+    // Theme: apply the snapshot pushed at connect (cached, since it usually
+    // arrives before this listener), then follow any later pushes.
+    const t0 = ws.lastTheme();
+    if (t0) applyTheme(t0.colors);
+    ws.onTheme((colors) => applyTheme(colors));
     ws.listPanes();
     refreshWorkspaces();
     return () => { ws.disconnect(); };
@@ -93,6 +107,11 @@
     if (activePaneId) {
       ws.subscribePane(activePaneId);
     }
+  });
+
+  // Apply the kernel palette once the canvas exists (theme can arrive earlier).
+  $effect(() => {
+    if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
   });
 </script>
 
@@ -129,8 +148,8 @@
 </div>
 
 <style>
-  .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:#0d1117;color:#e6edf3}
-  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b949e;gap:8px}
-  .empty .hint{font-size:12px;color:#484f58}
+  .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--rg-fg-muted);gap:8px}
+  .empty .hint{font-size:12px;color:var(--rg-fg-muted)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
 </style>

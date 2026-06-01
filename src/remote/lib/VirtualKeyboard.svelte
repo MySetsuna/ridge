@@ -80,9 +80,9 @@
     flex-direction: column;
     gap: 4px;
     padding: 6px 8px;
-    background: #161b22;
-    border-top: 1px solid #30363d;
-    border-bottom: 1px solid #30363d;
+    background: var(--rg-surface);
+    border-top: 1px solid var(--rg-border-bright);
+    border-bottom: 1px solid var(--rg-border-bright);
     user-select: none;
     -webkit-user-select: none;
     touch-action: manipulation;
@@ -100,10 +100,10 @@
     min-width: 44px;
     height: 36px;
     padding: 0 10px;
-    border: 1px solid #30363d;
+    border: 1px solid var(--rg-border-bright);
     border-radius: 8px;
-    background: #0d1117;
-    color: #e6edf3;
+    background: var(--rg-bg);
+    color: var(--rg-fg);
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
@@ -112,13 +112,13 @@
     -webkit-tap-highlight-color: transparent;
   }
   .vk-key:active {
-    background: #30363d;
+    background: var(--rg-surface-2);
     transform: scale(.95);
   }
   .vk-key.mod.active {
-    background: rgba(88,166,255,.25);
-    border-color: #58a6ff;
-    color: #58a6ff;
+    background: color-mix(in srgb, var(--rg-accent) 25%, transparent);
+    border-color: var(--rg-accent);
+    color: var(--rg-accent);
   }
   .vk-key.arrow {
     min-width: 48px;
@@ -130,7 +130,7 @@
   .vk-sep {
     width: 1px;
     height: 24px;
-    background: #30363d;
+    background: var(--rg-border-bright);
     margin: 0 2px;
   }
 </style>
