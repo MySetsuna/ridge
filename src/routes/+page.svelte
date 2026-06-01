@@ -25,6 +25,7 @@ self.MonacoEnvironment = {
     return new editorWorker();
   }
 };
+  import { focusActiveTerminal, ownsTabKey } from '$lib/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -84,6 +85,7 @@ self.MonacoEnvironment = {
     workspaceSaveInfoStore,
     activePaneId,
     splitActivePane,
+    splitPane,
     syncPaneLayoutFromBackend,
     refreshWorkspaces,
     workspacesList,
@@ -172,6 +174,7 @@ self.MonacoEnvironment = {
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { TerminalManager } from '$lib/terminal/manager';
+  import { isTuiActive, snapshotLiveSignals } from '$lib/terminal/tuiGate';
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
@@ -372,12 +375,39 @@ function expandSidebar() {
     window.addEventListener('mouseup', onMouseUp);
   }
 
+  // 检查指定 pane 是否处于 TUI 活跃状态（全局级别，不依赖任何组件实例）
+  function isPaneTuiActive(paneId: string): boolean {
+    const mgr = TerminalManager.tryInstance();
+    if (!mgr) return false;
+    // Live-only check (no sticky history): a global shortcut should defer to
+    // the TUI only while it's genuinely active right now.
+    return isTuiActive(snapshotLiveSignals(
+      mgr.isAltScreen(paneId),
+      mgr.isInlineTuiActive(paneId),
+      mgr.isMouseReporting(paneId),
+      mgr.isAppCursorKeys(paneId),
+    ));
+  }
+
   // 键盘快捷键处理
   function handleGlobalKeydown(e: KeyboardEvent) {
     // 全局禁止页面刷新（F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R）
     if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {
       e.preventDefault();
       return;
+    }
+    // Tab 焦点收敛：终端真正的输入目标是每个 pane 的隐藏 IME helper
+    // textarea（或 direct 模式下 tabindex=-1 的容器）。当焦点漂到桌面
+    // chrome（工作区标签、文件树行、工具栏按钮）或 <body> 时，裸 Tab 会
+    // 沿 chrome 的焦点环游走——把用户从没想选的元素逐个“选中”。这里把它
+    // 拽回当前活动终端。`defaultPrevented` 表示已聚焦的 pane 已经把 Tab
+    // 编码进 shell（onContainerKeyDown 两条路径都 preventDefault），故跳过；
+    // 真正的文本输入（搜索 / 重命名 / Monaco 编辑器）保留原生 Tab 行为。
+    if (e.key === 'Tab' && !e.defaultPrevented && !ownsTabKey(document.activeElement)) {
+      if (focusActiveTerminal()) {
+        e.preventDefault();
+        return;
+      }
     }
     // Ctrl+B: 切换侧边栏
     if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
@@ -398,6 +428,13 @@ function expandSidebar() {
     // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
     if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
       const target = e.target as HTMLElement | null;
+      // 当焦点在 TUI 活跃的终端 pane 上时，Ctrl+A 应由 TUI 处理
+      // （如 vim/less 的 Ctrl+A 快捷键），不在此拦截。
+      if (target?.closest?.('[data-rg-pane-id]')) {
+        const paneEl = target.closest('[data-rg-pane-id]') as HTMLElement;
+        const paneId = paneEl.dataset.rgPaneId;
+        if (paneId && isPaneTuiActive(paneId)) return;
+      }
       if (
         target &&
         (target.tagName === 'INPUT' ||
@@ -473,7 +510,11 @@ function expandSidebar() {
 
     // 检查是否点击在窗格标题栏
     if (target.closest('.rg-pane-header')) {
-      return { target: 'pane-header' };
+      const headerEl = target.closest('.rg-pane-header')!;
+      const wrapper = headerEl.closest('.splitpanes__pane') as HTMLElement | null;
+      const paneEl = wrapper?.querySelector('[data-rg-pane-id]') as HTMLElement | null;
+      const paneId = paneEl?.getAttribute('data-rg-pane-id');
+      return { target: 'pane-header', paneId: paneId ?? undefined };
     }
 
     // 检查是否点击在终端或编辑器内容区域
@@ -814,13 +855,13 @@ function expandSidebar() {
             id: 'split-h',
             label: '水平分割',
             icon: Columns,
-            action: () => splitActivePane('horizontal'),
+            action: () => { if (paneId) void splitPane(paneId, 'horizontal'); },
           },
           {
             id: 'split-v',
             label: '垂直分割',
             icon: Rows,
-            action: () => splitActivePane('vertical'),
+            action: () => { if (paneId) void splitPane(paneId, 'vertical'); },
           },
           { divider: true, id: 'divider-1' },
           {
@@ -1379,9 +1420,11 @@ function expandSidebar() {
                 </div>
               </div>
             {/if}
+          {/snippet}
+          {#snippet trailingActions()}
             <button
               type="button"
-              class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
+              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
               title="新建根工作区（独立分屏树与终端）"
               onclick={() => createWorkspace()}
             >
@@ -1402,24 +1445,8 @@ function expandSidebar() {
           </button>
         {/if}
 
-        <!-- 手机远程入口：在开发模式下连接到 Vite dev server，构建模式下显示嵌入式远程服务器信息 -->
-        <button
-          type="button"
-          class="rg-no-drag {toolBtn}{sidebarTab === 'remote' ? ' bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
-          title="手机远程控制"
-          onclick={() => {
-            sidebarTab = 'remote';
-            expandSidebar();
-          }}
-        >
-          <Smartphone class="h-4 w-4" />
-        </button>
-
-        <!-- 编辑器抽屉开关：放在分屏按钮左侧，给"打开文件编辑器"一个常驻入口；
-             toggle 行为——已显示时点一下隐藏，已隐藏时再点一下显示，与
-             FileEditor 头部的左侧收起按钮形成开/关对偶。$fileEditorStore
-             的 `isVisible` 用于切换图标突出态，让用户一眼就能看出当前面板
-             状态。 -->
+<!-- 编辑器抽屉开关：没有打开文件时不展示 -->
+        {#if $fileEditorStore.openFiles.length > 0}
         <button
           type="button"
           class="rg-no-drag {toolBtn} {$fileEditorStore.isVisible ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
@@ -1428,6 +1455,7 @@ function expandSidebar() {
         >
           <PanelRightOpen class="h-4 w-4" />
         </button>
+        {/if}
 
         <!-- 分屏操作按钮 -->
         <div

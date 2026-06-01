@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { RemoteConnection, type ConnectionState, getDeviceId } from './lib/wsRemote';
+  import { RemoteConnection, type ConnectionState } from './lib/wsRemote';
 
   const TOKEN_KEY = 'ridge_remote_token';
 
@@ -27,7 +27,7 @@
     fetch('/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `code=${encodeURIComponent(numeric)}&device=${encodeURIComponent(getDeviceId())}`,
+      body: `code=${encodeURIComponent(numeric)}`,
     })
       .then(r => r.json())
       .then(d => {
@@ -84,7 +84,13 @@
 
 {#if showManual}
   <div class="screen">
-    <div class="logo">R</div>
+    <svg class="logo" viewBox="0 0 32 32" fill="none" aria-label="Ridge mark">
+      <rect x="2.5" y="2.5" width="27" height="27" rx="6" stroke="#7fb069" stroke-width="2"/>
+      <line x1="16" y1="3.5" x2="16" y2="28.5" stroke="#7fb069" stroke-width="2"/>
+      <line x1="3.5" y1="16" x2="28.5" y2="16" stroke="#7fb069" stroke-width="2"/>
+      <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="#7fb069" fill-opacity="0.18"/>
+      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"/>
+    </svg>
     <h1>Ridge Remote</h1>
     <p class="sub">输入桌面端 Ridge 应用中显示的 6 位动态验证码</p>
     <div class="card">
@@ -104,23 +110,29 @@
   </div>
 {:else if loading}
   <div class="screen">
-    <div class="logo">R</div>
-    <p class="sub" style="color:#8b949e">正在连接远程桌面...</p>
+    <svg class="logo" viewBox="0 0 32 32" fill="none" aria-label="Ridge mark">
+      <rect x="2.5" y="2.5" width="27" height="27" rx="6" stroke="#7fb069" stroke-width="2"/>
+      <line x1="16" y1="3.5" x2="16" y2="28.5" stroke="#7fb069" stroke-width="2"/>
+      <line x1="3.5" y1="16" x2="28.5" y2="16" stroke="#7fb069" stroke-width="2"/>
+      <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="#7fb069" fill-opacity="0.18"/>
+      <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"/>
+    </svg>
+    <p class="sub">正在连接远程桌面...</p>
   </div>
 {/if}
 
 <style>
-  .screen{position:fixed;inset:0;background:#0d1117;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
-  .logo{width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#58a6ff,#1f6feb);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px;font-weight:700;color:#fff}
-  h1{font-size:20px;font-weight:600;margin-bottom:4px;color:#e6edf3}
-  .sub{color:#8b949e;font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
-  .card{width:100%;max-width:340px;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;text-align:center}
-  input{width:100%;height:48px;padding:0 16px;border:2px solid #30363d;border-radius:10px;background:#0d1117;color:#e6edf3;font-size:24px;font-weight:700;letter-spacing:8px;text-align:center;outline:none;transition:border-color .2s}
-  input:focus{border-color:#58a6ff}
-  input.has-error{border-color:#f85149}
-  input::placeholder{color:#484f58;letter-spacing:2px;font-size:14px}
-  .error-msg{color:#f85149;font-size:13px;margin-top:8px}
-  button{width:100%;height:48px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .2s;margin-top:16px;background:#238636;color:#fff}
+  .screen{position:fixed;inset:0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
+  .logo{display:block;width:64px;height:64px;margin:0 auto 16px}
+  h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--rg-fg)}
+  .sub{color:var(--rg-fg-muted);font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
+  .card{width:100%;max-width:340px;background:var(--rg-surface);border:1px solid var(--rg-border-bright);border-radius:12px;padding:24px;text-align:center}
+  input{width:100%;height:48px;padding:0 16px;border:2px solid var(--rg-border-bright);border-radius:10px;background:var(--rg-bg);color:var(--rg-fg);font-size:24px;font-weight:700;letter-spacing:8px;text-align:center;outline:none;transition:border-color .2s}
+  input:focus{border-color:var(--rg-accent)}
+  input.has-error{border-color:var(--rg-ansi-red)}
+  input::placeholder{color:var(--rg-fg-muted);letter-spacing:2px;font-size:14px}
+  .error-msg{color:var(--rg-ansi-red);font-size:13px;margin-top:8px}
+  button{width:100%;height:48px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .2s;margin-top:16px;background:var(--rg-ansi-green);color:#fff}
   button:disabled{opacity:.4;cursor:not-allowed}
-  button:hover:not(:disabled){background:#2ea043}
+  button:hover:not(:disabled){background:var(--rg-ansi-green)}
 </style>

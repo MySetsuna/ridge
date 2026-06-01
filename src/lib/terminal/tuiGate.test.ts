@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTuiActive, TUI_STICKY_MS_DEFAULT, type TuiSnapshot } from './tuiGate';
+import { hasLiveTuiSignal, isTuiActive, snapshotLiveSignals, TUI_STICKY_MS_DEFAULT, type TuiSnapshot } from './tuiGate';
 
 /**
  * Truth-table coverage for `isTuiActive` — the single source of truth
@@ -174,5 +174,45 @@ describe('isTuiActive — decision-order regression locks', () => {
 			lastTuiActiveTs: 0,
 		};
 		expect(isTuiActive(s)).toBe(true);
+	});
+});
+
+describe('hasLiveTuiSignal — sticky-refresh predicate', () => {
+	const base = {
+		isAltScreen: false,
+		isInlineTuiActive: false,
+		isMouseReporting: false,
+		isAppCursorKeys: false,
+		cursorVisible: true,
+	};
+
+	it('is false at a normal shell prompt (cursor visible, no signals)', () => {
+		// The key gate: right-click / paste / wheel at a plain prompt must NOT
+		// extend the sticky window, or host shortcuts would leak into shell use.
+		expect(hasLiveTuiSignal(base)).toBe(false);
+	});
+
+	it('is true on any live signal', () => {
+		expect(hasLiveTuiSignal({ ...base, isAltScreen: true })).toBe(true);
+		expect(hasLiveTuiSignal({ ...base, isInlineTuiActive: true })).toBe(true);
+		expect(hasLiveTuiSignal({ ...base, isMouseReporting: true })).toBe(true);
+	});
+
+	it('is true on DECCKM (app owns the arrow keys)', () => {
+		expect(hasLiveTuiSignal({ ...base, isAppCursorKeys: true })).toBe(true);
+	});
+
+	it('is true on a hidden cursor (TUI mid-render / Ctrl+C grace window)', () => {
+		expect(hasLiveTuiSignal({ ...base, cursorVisible: false })).toBe(true);
+	});
+});
+
+describe('snapshotLiveSignals — live-only snapshot for global checks', () => {
+	it('is active on a live signal and inactive otherwise (no sticky history)', () => {
+		expect(isTuiActive(snapshotLiveSignals(false, false, false, false))).toBe(false);
+		expect(isTuiActive(snapshotLiveSignals(true, false, false, false))).toBe(true);
+		expect(isTuiActive(snapshotLiveSignals(false, true, false, false))).toBe(true);
+		expect(isTuiActive(snapshotLiveSignals(false, false, true, false))).toBe(true);
+		expect(isTuiActive(snapshotLiveSignals(false, false, false, true))).toBe(true);
 	});
 });

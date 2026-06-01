@@ -176,19 +176,42 @@ pub fn run() {
                             pane_id,
                             data,
                         }) => {
-                            // Fan-out to remote WS clients via per-pane registry.
+                            // §raw-forward: send raw PTY bytes to all remote
+                            // subs via a single Arc<Vec<u8>> — one allocation
+                            // shared across every subscriber. Remote clients
+                            // run their own wasm vte parser (kernel.feed()),
+                            // eliminating the per-sub PaneParser memory
+                            // amplification and state-drift issues of the
+                            // previous per-sub-delta model.
                             let app_state = handle.state::<AppState>();
                             if app_state.remote_enabled.load(Ordering::Relaxed) {
                                 let reg = app_state.pty_pane_registry.read();
                                 if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
-                                    for sub in &entry.remote_subs {
-                                        let _ = sub.output_tx.try_send(
-                                            crate::types::PtyOutputEvent {
-                                                workspace_id,
-                                                pane_id,
-                                                data: data.clone(),
+                                    if !entry.remote_subs.is_empty() {
+                                        let shared =
+                                            Arc::new(data.as_bytes().to_vec());
+                                        for sub in &entry.remote_subs {
+                                            if sub.raw_tx
+                                                .try_send(crate::types::RemotePtyEvent::RawBytes {
+                                                    workspace_id,
+                                                    pane_id,
+                                                    bytes: Arc::clone(&shared),
+                                                })
+                                                .is_err()
+                                            {
+                                                // Channel full: the dropped bytes leave a
+                                                // hole in the client's vte stream. Flag the
+                                                // sub so the WS task re-syncs (RIS + fresh
+                                                // scrollback) on its next forwarded frame
+                                                // instead of staying silently corrupted.
+                                                sub.desync.store(true, Ordering::Release);
+                                                tracing::warn!(
+                                                    target: "ridge::remote",
+                                                    sub = sub.id,
+                                                    "raw byte channel full; dropping frame, will resync"
+                                                );
                                             }
-                                        );
+                                        }
                                     }
                                 }
                             }
@@ -250,7 +273,6 @@ pub fn run() {
                                             // is registered yet (frontend not
                                             // mounted, or tests).
                                             let st = handle.state::<AppState>();
-                                            let delta_for_remote = bytes.clone();
                                             if let Some(sender) =
                                                 st.get_pane_delta_channel(workspace_id, pane_id)
                                             {
@@ -261,40 +283,6 @@ pub fn run() {
                                                     &format!("pty-delta-{workspace_id}-{label}"),
                                                     bytes,
                                                 );
-                                            }
-                                            if st.remote_enabled.load(Ordering::Relaxed) {
-                                                let reg = st.pty_pane_registry.read();
-                                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
-                                                    for sub in &entry.remote_subs {
-                                                        // §5 — per-sub mobile parser: feed PTY
-                                                        // data through the sub's dedicated parser
-                                                        // and send mobile-sized deltas. Subs
-                                                        // without a parser fall back to the
-                                                        // desktop parser's delta frame.
-                                                        let sub_bytes = if let Some(ref mp) = sub.parser {
-                                                            let mut p = mp.lock();
-                                                            let frame = p.feed_and_diff(data.as_bytes());
-                                                            // Mobile-side DSR/DA replies would
-                                                            // target the wrong PTY, so drop them.
-                                                            let _ = p.take_pending_response();
-                                                            ridge_term::term::delta::encode_frame(
-                                                                &frame,
-                                                            )
-                                                            .ok()
-                                                        } else {
-                                                            None
-                                                        };
-                                                        let bytes = sub_bytes
-                                                            .unwrap_or_else(|| delta_for_remote.clone());
-                                                        let _ = sub.delta_tx.try_send(
-                                                            crate::types::PtyDeltaEvent {
-                                                                workspace_id,
-                                                                pane_id,
-                                                                bytes,
-                                                            },
-                                                        );
-                                                    }
-                                                }
                                             }
                                             drop(st);
                                         }
@@ -378,6 +366,21 @@ pub fn run() {
                                 );
                             }
                             let label = pane_id.to_string();
+                            // Mirror the cwd change to remote subscribers so their
+                            // tab/header tracks the desktop.
+                            let st = handle.state::<AppState>();
+                            if st.remote_enabled.load(Ordering::Relaxed) {
+                                st.broadcast_remote_event(
+                                    workspace_id,
+                                    pane_id,
+                                    crate::types::RemotePtyEvent::Metadata {
+                                        workspace_id,
+                                        pane_id,
+                                        title: None,
+                                        cwd: Some(cwd.clone()),
+                                    },
+                                );
+                            }
                             let _ = handle.emit(
                                 &format!("pane-cwd-changed-{workspace_id}-{label}"),
                                 serde_json::json!({ "cwd": cwd }),
@@ -389,6 +392,22 @@ pub fn run() {
                             title,
                         }) => {
                             let label = pane_id.to_string();
+                            // Mirror the title change to remote subscribers (replaces
+                            // the title that used to ride inside the per-sub delta
+                            // frame before the raw-byte refactor).
+                            let st = handle.state::<AppState>();
+                            if st.remote_enabled.load(Ordering::Relaxed) {
+                                st.broadcast_remote_event(
+                                    workspace_id,
+                                    pane_id,
+                                    crate::types::RemotePtyEvent::Metadata {
+                                        workspace_id,
+                                        pane_id,
+                                        title: Some(title.clone()),
+                                        cwd: None,
+                                    },
+                                );
+                            }
                             let _ = handle.emit(
                                 &format!("pane-title-changed-{workspace_id}-{label}"),
                                 serde_json::json!({ "title": title }),
@@ -560,6 +579,8 @@ pub fn run() {
             commands::remote::get_remote_info,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
+            commands::remote::set_remote_fs_readonly,
+            commands::remote::get_remote_fs_readonly,
             commands::remote::list_remote_sessions,
             commands::remote::disconnect_session,
             commands::remote::add_to_blacklist,

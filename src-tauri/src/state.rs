@@ -10,15 +10,13 @@ use portable_pty::{CommandBuilder, MasterPty, SlavePty};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::engine::parser::PaneParser;
-
 use crate::commands::fs_watch::FsWatcher;
 use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
 use crate::remote::auth::{RemoteAuth, SessionStore};
-use crate::types::{GlobalEvent, PtyDeltaEvent, PtyOutputEvent};
+use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
 /// Two-stage PTY spawn record.
@@ -223,19 +221,13 @@ pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
 pub struct RemotePaneSub {
     pub id: u64,
-    pub output_tx: mpsc::Sender<PtyOutputEvent>,
-    pub delta_tx: mpsc::Sender<PtyDeltaEvent>,
-    /// Per-subscriber dedicated `PaneParser` initialised at the mobile
-    /// client's grid dimensions. When `Some`, PTY output is fed through
-    /// this parser and the resulting (mobile-sized) deltas are sent to
-    /// `delta_tx` instead of the desktop parser's deltas. `None` falls
-    /// back to the legacy behaviour (desktop deltas broadcast).
-    pub parser: Option<Arc<Mutex<PaneParser>>>,
-    /// Mobile client's last-reported grid rows. Captured from `resize`
-    /// WS messages and used to initialise `parser` on subscribe.
-    pub rows: u16,
-    /// Mobile client's last-reported grid cols.
-    pub cols: u16,
+    pub raw_tx: mpsc::Sender<RemotePtyEvent>,
+    /// Set by the PTY fan-out (lib.rs) when a `raw_tx.try_send` is dropped
+    /// because this sub's channel is full. The WS task observes it on the
+    /// next forwarded frame and emits a terminal hard-reset (RIS) + fresh
+    /// scrollback so the client's vte parser re-synchronises instead of
+    /// staying corrupted by the hole in the byte stream.
+    pub desync: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -503,6 +495,14 @@ pub struct AppState {
     /// Persistent blacklist of devices/IPs barred from connecting. Loaded from
     /// `<app_data_dir>/remote-blacklist.json` at startup.
     pub remote_blacklist: Arc<RemoteBlacklist>,
+    /// When `true`, the remote `data-request` dispatcher rejects every mutating
+    /// filesystem/git method (write/delete/rename/create/copy/move + git
+    /// commit/push/pull/reset/checkout/clean/…). Reads stay allowed. Defaults to
+    /// `false` (writable) to preserve the existing remote file-editor behaviour;
+    /// the desktop "Remote Control" panel can flip it via `set_remote_fs_readonly`
+    /// for view-only sessions. NOTE: an authenticated remote already has shell
+    /// stdin, so this is defence-in-depth, not an isolation boundary.
+    pub remote_fs_readonly: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -565,6 +565,7 @@ impl AppState {
             remote_mdns: Arc::new(Mutex::new(None)),
             remote_client_registry: Arc::new(RemoteClientRegistry::default()),
             remote_blacklist: Arc::new(RemoteBlacklist::default()),
+            remote_fs_readonly: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -908,35 +909,19 @@ impl AppState {
         }
     }
 
-    /// §5 — update the grid dimensions of a remote subscriber's dedicated
-    /// `PaneParser` (if one exists). Called from the WS resize handler so
-    /// that subsequent delta frames match the mobile client's new viewport.
-    /// If no parser exists yet for this sub, this is a no-op (the parser
-    /// will be created with the correct dimensions on the next
-    /// `subscribe-pane`).
-    pub fn resize_remote_parser(
-        &self,
-        ws: Uuid,
-        pane: Uuid,
-        sub_id: u64,
-        rows: u16,
-        cols: u16,
-    ) {
-        let mut reg = self.pty_pane_registry.write();
-        let key = (ws, pane);
-        let Some(entry) = reg.get_mut(&key) else {
-            return;
-        };
-        let Some(sub) = entry.remote_subs.iter_mut().find(|s| s.id == sub_id) else {
-            return;
-        };
-        sub.rows = rows;
-        sub.cols = cols;
-        if let Some(ref mp) = sub.parser {
-            let mut p = mp.lock();
-            // resize returns a frame that we must drop — the mobile client
-            // will request the right-size frame via its next output delta.
-            let _ = p.resize(rows, cols);
+    /// Fan a non-byte remote event (title/cwd metadata, PTY resize) out to every
+    /// subscriber of `(ws, pane)`. Cheap: the registry read lock is held only for
+    /// the duration of the `try_send` loop and the event is cloned per sub (a few
+    /// strings at most). Drops are ignored — metadata is advisory, and the next
+    /// update supersedes a lost one. Raw PTY bytes use a dedicated hot path in
+    /// `lib.rs` (single `Arc<Vec<u8>>` shared across subs) and do NOT go through
+    /// here.
+    pub fn broadcast_remote_event(&self, ws: Uuid, pane: Uuid, event: RemotePtyEvent) {
+        let reg = self.pty_pane_registry.read();
+        if let Some(entry) = reg.get(&(ws, pane)) {
+            for sub in &entry.remote_subs {
+                let _ = sub.raw_tx.try_send(event.clone());
+            }
         }
     }
 }

@@ -79,29 +79,29 @@
 
 <style>
   .git { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .git-bar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid #21262d; }
-  .branch { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; color: #d2a8ff; font-size: 12px; }
+  .git-bar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--rg-border-bright); }
+  .branch { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--rg-ansi-magenta, #d2a8ff); font-size: 12px; }
   .branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .icon-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; background: none; color: #8b949e; border-radius: 6px; cursor: pointer; }
-  .icon-btn:active { background: #21262d; color: #e6edf3; }
+  .icon-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; background: none; color: var(--rg-fg-muted); border-radius: 6px; cursor: pointer; }
+  .icon-btn:active { background: var(--rg-surface-2); color: var(--rg-fg); }
 
   .git-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px; -webkit-overflow-scrolling: touch; }
-  .section { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: .5px; margin: 6px 0 4px; }
-  .msg { color: #484f58; font-size: 12px; padding: 6px 2px; display: block; }
-  .msg.err { color: #f85149; }
+  .section { font-size: 11px; color: var(--rg-fg-muted); text-transform: uppercase; letter-spacing: .5px; margin: 6px 0 4px; }
+  .msg { color: var(--rg-fg-muted); font-size: 12px; padding: 6px 2px; display: block; }
+  .msg.err { color: var(--rg-ansi-red); }
 
   .file-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 13px; }
   .badge { flex-shrink: 0; width: 18px; text-align: center; font-size: 11px; font-weight: 700; border-radius: 3px; }
-  .badge.modified { color: #d29922; }
-  .badge.added { color: #3fb950; }
-  .badge.deleted { color: #f85149; }
-  .badge.renamed { color: #58a6ff; }
-  .fpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e6edf3; direction: rtl; text-align: left; }
+  .badge.modified { color: var(--rg-ansi-yellow, #d29922); }
+  .badge.added { color: var(--rg-ansi-green); }
+  .badge.deleted { color: var(--rg-ansi-red); }
+  .badge.renamed { color: var(--rg-accent); }
+  .fpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--rg-fg); direction: rtl; text-align: left; }
   .nums { flex-shrink: 0; display: flex; gap: 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
-  .add { color: #3fb950; }
-  .del { color: #f85149; }
+  .add { color: var(--rg-ansi-green); }
+  .del { color: var(--rg-ansi-red); }
 
-  .commit-row { display: flex; gap: 8px; padding: 3px 2px; font-size: 12px; color: #8b949e; }
-  .hash { color: #d2a8ff; font-family: monospace; flex-shrink: 0; }
+  .commit-row { display: flex; gap: 8px; padding: 3px 2px; font-size: 12px; color: var(--rg-fg-muted); }
+  .hash { color: var(--rg-ansi-magenta, #d2a8ff); font-family: monospace; flex-shrink: 0; }
   .subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

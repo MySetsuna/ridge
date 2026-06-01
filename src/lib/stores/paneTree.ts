@@ -18,7 +18,7 @@ function normalizeSplitRatios(sizes: number[]): number[] {
   return sizes.map((x) => (x / s) * 100);
 }
 
-/** 仅更新 `path` 所指 `Split` 的 `ratios`（path 为空表示根为 Split）。 */
+/** 仅更�?`path` 所�?`Split` �?`ratios`（path 为空表示根为 Split）�?*/
 function applyRatiosAtPath(
   root: PaneNode,
   path: number[],
@@ -39,7 +39,7 @@ function applyRatiosAtPath(
     ),
   };
 }
-/** 占位；首屏 hydrate 前不挂载终端。根 pane 的 id 由后端按工作区生成唯一 UUID。 */
+/** 占位；首�?hydrate 前不挂载终端。根 pane �?id 由后端按工作区生成唯一 UUID�?*/
 export const paneTreeStore = writable<PaneNode>({
   type: 'leaf',
   id: '',
@@ -51,7 +51,7 @@ export const paneTreeStore = writable<PaneNode>({
  * via `setActiveTree` / `updateActiveTree` helpers below. The +page.svelte
  * template iterates this map to render every known workspace's
  * SplitContainer in parallel (CSS display:none for inactive), so workspace
- * tab switches are CSS-only and panes stay mounted across switches —
+ * tab switches are CSS-only and panes stay mounted across switches �?
  * eliminating the black-screen + reload that the prior `{#key
  * activeWorkspaceId}` block forced.
  *
@@ -65,7 +65,7 @@ export const workspacePaneTrees = writable<Map<string, PaneNode>>(new Map());
  * Set the active workspace's tree in BOTH `paneTreeStore` (legacy single-
  * tree consumers like SplitContainer for the active workspace) and the
  * per-workspace cache (new keep-alive renderer). Callers must pass the
- * correct workspace id — usually the just-switched-to one or `get(activeWorkspaceId)`.
+ * correct workspace id �?usually the just-switched-to one or `get(activeWorkspaceId)`.
  */
 function setActiveTree(wsId: string, tree: PaneNode): void {
   paneTreeStore.set(tree);
@@ -104,10 +104,10 @@ export function forgetWorkspaceTree(wsId: string): void {
   });
 }
 
-/** 最近一次点击/聚焦的终端窗格；分屏针对此 id（与 layout 中 leaf id 一致）。 */
+/** 最近一次点�?聚焦的终端窗格；分屏针对�?id（与 layout �?leaf id 一致）�?*/
 export const activePaneId = writable<string>('');
 
-/** 正在拖拽重组的源窗格 id（标题栏 dragstart 设置，dragend 清空）。 */
+/** 正在拖拽重组的源窗格 id（标题栏 dragstart 设置，dragend 清空）�?*/
 export const paneDragSourceId = writable<string | null>(null);
 
 export type DockRegion = 'left' | 'right' | 'top' | 'bottom' | 'center';
@@ -125,8 +125,8 @@ interface SplitterSnapshot {
   ratios: number[];
   isPrimary: boolean;
   dragStart: { x: number; y: number };
-  /** mousedown 时 dragStart 沿轴坐标 - splitter 视觉中心沿轴坐标。
-      用于吸附时的 effectivePointer 偏移补偿，避免 A 被吸附到偏离 B 中线的位置。 */
+  /** mousedown �?dragStart 沿轴坐标 - splitter 视觉中心沿轴坐标�?
+      用于吸附时的 effectivePointer 偏移补偿，避�?A 被吸附到偏离 B 中线的位置�?*/
   mousedownOffsetAxis: number;
 }
 
@@ -147,10 +147,10 @@ export type SplitResizeUiState =
       snapshots: SplitterSnapshot[];
       pendingUpdates: SplitRatioUpdate[];
       snapState: JunctionSnapState | null;
-      /** 未命中联动 gating、但位于吸附阈值内的同向兄弟，用于拖动中视觉吸附 */
+      /** 未命中联�?gating、但位于吸附阈值内的同向兄弟，用于拖动中视觉吸�?*/
       sameAxisAttractors: SplitterRef[];
-      /** Px-anchor 计划：拖主分隔线时，descendant 同向 split 的 absorber
-       *  child 吞下尺寸变化，其余 children 保持 mousedown 时的像素宽度。 */
+      /** Px-anchor 计划：拖主分隔线时，descendant 同向 split �?absorber
+       *  child 吞下尺寸变化，其�?children 保持 mousedown 时的像素宽度�?*/
       pxAnchors: PxAnchorPlan[];
     };
 
@@ -182,29 +182,29 @@ export interface JunctionSnapState {
 export const SNAP_THRESHOLD_PX = 10;
 
 /**
- * 同向兄弟分隔线的垂直距离吸附阈值。
- * 当拖动中的分隔线 A 与另一条同向分隔线 B 的中线（沿 A 的拖动轴方向）距离 ≤ 此值时：
- *   - 视觉上 A 自动吸附到 B 的中线位置（真实改动 ratio，松手后定格）；
- *   - 且若鼠标距离 BC 交点的两条 axis 距离都 ≤ `INTERSECTION_PROXIMITY_PX`，
- *     则触发 A、B 联动拖动。
+ * 同向兄弟分隔线的垂直距离吸附阈值�?
+ * 当拖动中的分隔线 A 与另一条同向分隔线 B 的中线（�?A 的拖动轴方向）距�?�?此值时�?
+ *   - 视觉�?A 自动吸附�?B 的中线位置（真实改动 ratio，松手后定格）；
+ *   - 且若鼠标距离 BC 交点的两�?axis 距离�?�?`INTERSECTION_PROXIMITY_PX`�?
+ *     则触�?A、B 联动拖动�?
  */
 export const SAME_AXIS_ATTRACT_PX = 35;
 
-/** 联动 mousedown 触发距离：鼠标距 BC/ABC 交点欧几里得距离 ≤ 此值时，同向兄弟被纳入联动（圆形热区） */
+/** 联动 mousedown 触发距离：鼠标距 BC/ABC 交点欧几里得距离 �?此值时，同向兄弟被纳入联动（圆形热区） */
 export const INTERSECTION_PROXIMITY_PX = 50;
 
 /**
- * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 ≤ 此值才视为"AB 中线对齐"，
- * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致，让"联动范围 = 以 BC 端点
- * 为圆心的圆"成立 —— 不再因 perpDistance 过大提前 reject 圆内的 mousedown。
+ * 同向联动的中线对齐阈值：主线与候选兄弟线的屏幕中线差 �?此值才视为"AB 中线对齐"�?
+ * 才可能触发联动。与 INTERSECTION_PROXIMITY_PX 一致，�?联动范围 = �?BC 端点
+ * 为圆心的�?成立 —�?不再�?perpDistance 过大提前 reject 圆内�?mousedown�?
  */
 export const SAME_AXIS_ALIGN_EPSILON_PX = 30;
 
 /**
- * 判定鼠标是否落在某个同向兄弟 B 的"BC 交点圆形热区"（半径 INTERSECTION_PROXIMITY_PX）内。
- * 触发条件 (用于 mousedown 联动 gating + hover 高亮)：
- *   - perpDistance(primary, sibling) ≤ SAME_AXIS_ALIGN_EPSILON_PX (中线对齐)
- *   - 鼠标到 B 离鼠标更近端点的欧几里得距离 ≤ INTERSECTION_PROXIMITY_PX
+ * 判定鼠标是否落在某个同向兄弟 B �?BC 交点圆形热区"（半�?INTERSECTION_PROXIMITY_PX）内�?
+ * 触发条件 (用于 mousedown 联动 gating + hover 高亮)�?
+ *   - perpDistance(primary, sibling) �?SAME_AXIS_ALIGN_EPSILON_PX (中线对齐)
+ *   - 鼠标�?B 离鼠标更近端点的欧几里得距离 �?INTERSECTION_PROXIMITY_PX
  */
 export function pointerInCoupleZone(
   primary: SplitterRef,
@@ -233,7 +233,7 @@ export function pointerInCoupleZone(
  * Issue 3: how far the primary must travel along its own axis before same-axis
  * coupled partners are dropped from the active snapshot set, so they stop
  * following and only the primary continues moving.
- * 设置为极大值，使高亮线段在拖动过程中不会掉落
+ * 设置为极大值，使高亮线段在拖动过程中不会掉�?
  */
 const UNSNAP_THRESHOLD_PX = 9999;
 
@@ -242,17 +242,17 @@ const UNSNAP_THRESHOLD_PX = 9999;
  * so the (A|B)/(C|D) §1.12 regression doesn't force us to disable the whole
  * feature.
  *
- * 1. Orthogonal coupling — when the pointer is at a true `+` junction (a
+ * 1. Orthogonal coupling �?when the pointer is at a true `+` junction (a
  *    perpendicular splitter is within ORTHOGONAL_TRIGGER_PX of the pointer at
  *    mousedown), dragging the primary also moves the perpendicular splitter
  *    so the junction stays glued to the cursor. This is the "4-way feel".
  *    Enabling this is what users mean by "联动拖拽".
  *
- * 2. Same-axis coupling — when a parallel sibling splitter is geometrically
+ * 2. Same-axis coupling �?when a parallel sibling splitter is geometrically
  *    aligned with the primary (centre within SAME_AXIS_ALIGN_EPSILON_PX,
  *    endpoint within INTERSECTION_PROXIMITY_PX of the pointer), dragging the
  *    primary also moves the sibling. In a nested `(A|B)/(C|D)` layout at
- *    50/50 ratio C/D is automatically aligned with A/B and gets coupled —
+ *    50/50 ratio C/D is automatically aligned with A/B and gets coupled �?
  *    the §1.12 (2026-05-03) regression. User explicitly does NOT want this.
  *
  * 2026-05-07 (revised twice): user reverted §1.12. They now WANT both forms
@@ -262,7 +262,7 @@ const UNSNAP_THRESHOLD_PX = 9999;
  * when dragging A|B) is accepted as intended behaviour now.
  *
  * Visual attract previews (sameAxisAttractors UI state) and hover detection
- * stay wired regardless — only the actual ratio fan-out is gated.
+ * stay wired regardless �?only the actual ratio fan-out is gated.
  */
 const SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED = true;
 const SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED = true;
@@ -270,16 +270,16 @@ const SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED = true;
 /**
  * Px-anchor: when an outer divider resizes a pane that internally hosts a
  * same-axis split (e.g. dragging A|B in `(C|D)|B`), only the child closest
- * to the moving divider absorbs the delta — siblings keep their absolute
+ * to the moving divider absorbs the delta �?siblings keep their absolute
  * pixel widths instead of all scaling proportionally.
  *
- * Concretely: dragging A|B grows A by ΔPx → D (rightmost child of A, the
- * one adjacent to A|B) absorbs the entire ΔPx → C's pixel width is locked.
+ * Concretely: dragging A|B grows A by ΔPx �?D (rightmost child of A, the
+ * one adjacent to A|B) absorbs the entire ΔPx �?C's pixel width is locked.
  *
  * Only triggers when the inner split's axis matches the primary divider's
  * axis. Recurses into the absorber so deeper nesting (`((C|D)|E)|B`) keeps
  * C and D both anchored. Disabled when the inner split's axis differs
- * (e.g. dragging A|B and A internally is C/D vertical) — proportional
+ * (e.g. dragging A|B and A internally is C/D vertical) �?proportional
  * scaling there is already correct.
  */
 const SPLIT_DRAG_PX_ANCHOR_ENABLED = true;
@@ -289,7 +289,7 @@ export interface PxAnchorPlan {
   splitPath: number[];
   /** Index of the child that absorbs the entire outer-size delta. */
   absorberIndex: number;
-  /** Pixel widths of each child at mousedown — non-absorbers are restored
+  /** Pixel widths of each child at mousedown �?non-absorbers are restored
    *  verbatim each tick, the absorber takes whatever remains. */
   childPxAtMousedown: number[];
   /** Outer pixel size of this split's container at mousedown. */
@@ -314,7 +314,7 @@ export const workspacesList = writable<
   { id: string; index: number; name?: string; displaySeq: number }[]
 >([]);
 
-// 工作区名称映射（用于UI显示）
+// 工作区名称映射（用于UI显示�?
 export const workspaceNames = writable<Record<string, string>>({});
 
 function pathKey(path: number[]): string {
@@ -437,16 +437,16 @@ export interface SameAxisCandidate {
   distance: number;
 }
 
-/** 在 DOM 里按 splitPath + axis 查 .rg-split。
- *  Keep-alive 工作区架构下，所有 workspace 的 SplitContainer 同时挂在 DOM 中，
- *  非活动工作区被 `display:none` 隐藏。多个 workspace 的 root split 都用
- *  `data-split-path=""`，querySelector 只会返回 DOM 顺序里**第一个**——也就是
- *  tab index 0 的 splitRoot。当用户在非 tab-0 的工作区拖拽 splitter 时，
- *  这里若不挑可见的，就会拿到 tab-0 那个 display:none 的 root，clientWidth=0
- *  → basisPx 退化为 1 → drag 立刻把 ratios 推到极端，splitter 看似"不能拖动"。
+/** �?DOM 里按 splitPath + axis �?.rg-split�?
+ *  Keep-alive 工作区架构下，所�?workspace �?SplitContainer 同时挂在 DOM 中，
+ *  非活动工作区�?`display:none` 隐藏。多�?workspace �?root split 都用
+ *  `data-split-path=""`，querySelector 只会返回 DOM 顺序�?*第一�?*——也就是
+ *  tab index 0 �?splitRoot。当用户在非 tab-0 的工作区拖拽 splitter 时，
+ *  这里若不挑可见的，就会拿�?tab-0 那个 display:none �?root，clientWidth=0
+ *  �?basisPx 退化为 1 �?drag 立刻�?ratios 推到极端，splitter 看似"不能拖动"�?
  *
- *  优先取 `offsetParent !== null` 的（display:none 时 offsetParent 为 null），
- *  没有时退回第一个匹配，保留 SSR / 测试场景的旧行为。 */
+ *  优先�?`offsetParent !== null` 的（display:none �?offsetParent �?null），
+ *  没有时退回第一个匹配，保留 SSR / 测试场景的旧行为�?*/
 function findVisibleSplitRoot(splitPath: number[], axis: SplitterAxis): HTMLElement | null {
   if (typeof document === 'undefined') return null;
   const matches = document.querySelectorAll<HTMLElement>(
@@ -459,7 +459,7 @@ function findVisibleSplitRoot(splitPath: number[], axis: SplitterAxis): HTMLElem
   return matches[0] ?? null;
 }
 
-/** 通过 DOM 查询获取分割条在屏幕上的中线坐标（无 DOM 时返回 null）。 */
+/** 通过 DOM 查询获取分割条在屏幕上的中线坐标（无 DOM 时返�?null）�?*/
 export function getSplitterScreenCenter(ref: SplitterRef): number | null {
   if (typeof document === 'undefined') return null;
   const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
@@ -476,11 +476,11 @@ export function getSplitterScreenCenter(ref: SplitterRef): number | null {
 }
 
 /**
- * 返回分隔线沿其"长度方向"的两个端点屏幕坐标。
- * - 水平方向分隔线（axis='x'，拖动轴为 x）：其长度方向沿 y；返回 top/bottom。
- * - 垂直方向分隔线（axis='y'，拖动轴为 y）：其长度方向沿 x；返回 left/right。
+ * 返回分隔线沿�?长度方向"的两个端点屏幕坐标�?
+ * - 水平方向分隔线（axis='x'，拖动轴�?x）：其长度方向沿 y；返�?top/bottom�?
+ * - 垂直方向分隔线（axis='y'，拖动轴�?y）：其长度方向沿 x；返�?left/right�?
  *
- * 注：此处的"端点"即 split 容器沿线方向两端，通常与正交分隔线或容器边界重合。
+ * 注：此处�?端点"�?split 容器沿线方向两端，通常与正交分隔线或容器边界重合�?
  */
 export function getSplitterLineEndpoints(
   ref: SplitterRef
@@ -500,8 +500,8 @@ export function getSplitterLineEndpoints(
 }
 
 /**
- * 在主分割条同方向上、屏幕坐标距离 ≤ threshold 像素的兄弟分割条。
- * 用于：(1) 悬停时识别已对齐的同向分割条；(2) 拖拽中发现新进入吸附区的分割条。
+ * 在主分割条同方向上、屏幕坐标距�?�?threshold 像素的兄弟分割条�?
+ * 用于�?1) 悬停时识别已对齐的同向分割条�?2) 拖拽中发现新进入吸附区的分割条�?
  */
 export function findSameAxisRefs(
   primary: SplitterRef,
@@ -592,7 +592,7 @@ export function buildPxAnchorPlans(
   const ratios = primarySplit.ratios.slice();
   // Pixel size of the pane on each side of the splitter at mousedown.
   // For multi-child splits, these are the widths of the SINGLE pane directly
-  // adjacent to the splitter — not the whole before/after block.
+  // adjacent to the splitter �?not the whole before/after block.
   const beforePaneIdx = primary.splitterIndex;
   const afterPaneIdx = primary.splitterIndex + 1;
   const beforePanePx = primaryBasisPx * (ratios[beforePaneIdx] ?? 0) / 100;
@@ -620,7 +620,7 @@ export function buildPxAnchorPlans(
   ) {
     if (!pane || pane.type !== 'split') return;
     if (pane.children.length < 2) return;
-    // Only anchor when descendant axis matches primary — perpendicular
+    // Only anchor when descendant axis matches primary �?perpendicular
     // descendants stack the other way and proportional scaling is correct.
     const paneAxis = pane.direction === 'horizontal' ? 'x' : 'y';
     if (paneAxis !== primary.axis) return;
@@ -635,7 +635,7 @@ export function buildPxAnchorPlans(
       outerPxAtMousedown: panePx,
       primaryAdjacentSide: side,
     });
-    // Recurse into the absorber — only its outer size changes downstream.
+    // Recurse into the absorber �?only its outer size changes downstream.
     walkSide(
       pane.children[absorberIndex],
       [...panePath, absorberIndex],
@@ -673,7 +673,7 @@ export function pxAnchorRatios(
   if (desiredAbsorberPx >= minAbsorberPx) {
     childPxNew[plan.absorberIndex] = desiredAbsorberPx;
   } else {
-    // Absorber hit the floor — shrink non-absorbers proportionally so the
+    // Absorber hit the floor �?shrink non-absorbers proportionally so the
     // outer size constraint still holds.
     childPxNew[plan.absorberIndex] = minAbsorberPx;
     const remainingPx = Math.max(0, outerPxNew - minAbsorberPx);
@@ -711,7 +711,7 @@ function updatesFromSnapshots(
       if (ref.basisPx <= 1) continue;
       const rawDeltaPx =
         ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
-      // 正交联动轴更容易受手部微抖影响，给更大的 deadzone，减少“乱飘”。
+      // 正交联动轴更容易受手部微抖影响，给更大的 deadzone，减少“乱飘”�?
       const deadzone = isPrimary ? 0.8 : 2.8;
       const deltaPx = Math.abs(rawDeltaPx) <= deadzone ? 0 : rawDeltaPx;
       const deltaPercent = (deltaPx / ref.basisPx) * 100;
@@ -737,12 +737,12 @@ function applyRatioUpdates(
   return next;
 }
 
-/** 拖动 / hover-junction 期间锁定 body cursor，使其不随子元素 hover 变化。
- *   - 'move'：全方向（4-way / orthogonal 联动）
- *   - 'col' / 'row'：双方向（仅沿主轴的 same-axis 联动或单独 resize）
+/** 拖动 / hover-junction 期间锁定 body cursor，使其不随子元素 hover 变化�?
+ *   - 'move'：全方向�?-way / orthogonal 联动�?
+ *   - 'col' / 'row'：双方向（仅沿主轴的 same-axis 联动或单�?resize�?
  *   - null：释放，恢复正常 hover 行为
  *
- * 三个模式互斥：toggle 一个为 true 时其他两个会被关掉。
+ * 三个模式互斥：toggle 一个为 true 时其他两个会被关掉�?
  */
 type SplitResizeCursorMode = 'move' | 'col' | 'row' | null;
 function setGlobalSplitResizeCursor(mode: SplitResizeCursorMode) {
@@ -761,9 +761,9 @@ export function queueSplitResizeJunction(
 ) {
   clearSplitHoverTimer();
   // 去重但保持类型分离：先前实现 dedupeRefs([primary, ...orthos, ...sameAxis])
-  // 然后 [first, ...rest] 把 sameAxis 也塞进 ui.orthogonals，导致
-  // startSplitResizeDrag 中 refs = [primary, ...ui.orthogonals] 把同向兄弟
-  // 无条件加入联动，绕过圆形 gating。这里只去掉 primary 的重复引用。
+  // 然后 [first, ...rest] �?sameAxis 也塞�?ui.orthogonals，导�?
+  // startSplitResizeDrag �?refs = [primary, ...ui.orthogonals] 把同向兄�?
+  // 无条件加入联动，绕过圆形 gating。这里只去掉 primary 的重复引用�?
   const refKey = (r: SplitterRef) =>
     `${pathKey(r.splitPath)}:${r.splitterIndex}:${r.axis}`;
   const primaryKey = refKey(primary);
@@ -790,8 +790,8 @@ export function queueSplitResizeJunction(
       pointer,
       snapState,
     });
-    // 仅在存在 orthogonal（4 方向联动）时切到 move cursor。
-    // sameAxis-only 联动仍是沿主轴双向，保持 splitter 默认 col/row-resize。
+    // 仅在存在 orthogonal�? 方向联动）时切到 move cursor�?
+    // sameAxis-only 联动仍是沿主轴双向，保持 splitter 默认 col/row-resize�?
     if (orthos.length > 0) setGlobalSplitResizeCursor('move');
   }, HOVER_DEBOUNCE_MS);
 }
@@ -830,12 +830,12 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
   }
 
-  // 同向兄弟联动 gating（圆形 15px 区域）：
-  //   (a) 端点完全对齐：B 与 A 的屏幕中线差 ≤ SAME_AXIS_ALIGN_EPSILON_PX
-  //       （B 的端点恰好落在 A 的延长线上）；
-  //   (b) 鼠标到 BC 交点的欧几里得距离 ≤ INTERSECTION_PROXIMITY_PX
-  //       （以 BC 交点为圆心、半径 15px 的圆形热区，不分横纵）。
-  // 两者同时满足，B 才被纳入联动；否则保留为 attractor（仅视觉吸附，不联动）。
+  // 同向兄弟联动 gating（圆�?15px 区域）：
+  //   (a) 端点完全对齐：B �?A 的屏幕中线差 �?SAME_AXIS_ALIGN_EPSILON_PX
+  //       （B 的端点恰好落�?A 的延长线上）�?
+  //   (b) 鼠标�?BC 交点的欧几里得距�?�?INTERSECTION_PROXIMITY_PX
+  //       （以 BC 交点为圆心、半�?15px 的圆形热区，不分横纵）�?
+  // 两者同时满足，B 才被纳入联动；否则保留为 attractor（仅视觉吸附，不联动）�?
   const pointerAlongLine =
     ui.primary.axis === 'x' ? pointer.y : pointer.x;
   const pointerOnAxis = ui.primary.axis === 'x' ? pointer.x : pointer.y;
@@ -863,7 +863,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
       perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
       distToBC <= INTERSECTION_PROXIMITY_PX;
     // When sameAxis coupling is OFF (default), eligible siblings still get
-    // routed to the visual attractor list — the user keeps the highlight
+    // routed to the visual attractor list �?the user keeps the highlight
     // hint without unwanted ratio updates on the sibling split.
     if (eligible && SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) {
       coupledSameAxis.push(sibling);
@@ -875,11 +875,11 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     refs = dedupeRefs([...refs, ...coupledSameAxis]);
   }
 
-  // 4-way junction 全方向跟随：每条 orthogonal C 也可能有自己的同向兄弟 D。
-  // 当 D 与 C 中线对齐 (≤1px) 且鼠标到 CD 端点（即 ABCD 交汇点）的欧几里得
-  // 距离 ≤ INTERSECTION_PROXIMITY_PX 时，D 同样加入联动。
+  // 4-way junction 全方向跟随：每条 orthogonal C 也可能有自己的同向兄�?D�?
+  // �?D �?C 中线对齐 (�?px) 且鼠标到 CD 端点（即 ABCD 交汇点）的欧几里�?
+  // 距离 �?INTERSECTION_PROXIMITY_PX 时，D 同样加入联动�?
   //
-  // Skip the entire loop when sameAxis coupling is off — there's no visual
+  // Skip the entire loop when sameAxis coupling is off �?there's no visual
   // attractor consumer for ortho-sibling proximity (unlike sameAxis), so
   // computing it would be pure waste. Gated on the same-axis flag because
   // ortho-siblings are themselves a parallel-fan-out variant.
@@ -887,7 +887,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   if (SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) for (const ortho of ui.orthogonals) {
     const orthoCenter = getSplitterScreenCenter(ortho);
     if (orthoCenter == null) continue;
-    // ortho.axis ⊥ primary.axis，所以"沿 ortho 拖动轴" = "沿 primary 沿线方向"
+    // ortho.axis �?primary.axis，所�?�?ortho 拖动�? = "�?primary 沿线方向"
     const orthoPointerOnAxis = ortho.axis === 'x' ? pointer.x : pointer.y;
     const orthoPointerAlongLine = ortho.axis === 'x' ? pointer.y : pointer.x;
     const siblings = findSameAxisRefs(ortho, SAME_AXIS_ATTRACT_PX);
@@ -934,8 +934,8 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
         );
       }
     }
-    // 计算 mousedown 时 pointer 相对 splitter 视觉中心的偏移（沿轴方向）。
-    // hit area 11px 但 visual line 仅 1px，鼠标可能偏 ±5px。
+    // 计算 mousedown �?pointer 相对 splitter 视觉中心的偏移（沿轴方向）�?
+    // hit area 11px �?visual line �?1px，鼠标可能偏 ±5px�?
     const splitterCenter = getSplitterScreenCenter(ref);
     const dragStartAxis = ref.axis === 'x' ? pointer.x : pointer.y;
     const mousedownOffsetAxis =
@@ -967,10 +967,10 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     sameAxisAttractors: attractOnlySameAxis,
     pxAnchors,
   });
-  // 拖动期间强制锁定 cursor，使其不随鼠标移出 splitter / 经过其他元素而变化：
-  //   - 含正交联动 → move 全方向
-  //   - 仅同主轴联动或单独 resize → col-resize / row-resize 双方向
-  // 这一帧立即生效，由 finishSplitResizeDrag 在松手时清除。
+  // 拖动期间强制锁定 cursor，使其不随鼠标移�?splitter / 经过其他元素而变化：
+  //   - 含正交联�?�?move 全方�?
+  //   - 仅同主轴联动或单�?resize �?col-resize / row-resize 双方�?
+  // 这一帧立即生效，�?finishSplitResizeDrag 在松手时清除�?
   const hasOrthogonalCoupled = snapshots.some(
     (s) => s.ref.axis !== ui.primary.axis
   );
@@ -1014,17 +1014,17 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
     }
   }
 
-  // 视觉吸附：用户语义"沿 C 方向距 BC 交点 ≤ SAME_AXIS_ATTRACT_PX 时 A 吸附"——
-  // "沿 C 方向" 即沿 A 的拖动轴 (perp to A's line)，所以触发条件是 A 拖动后中线
-  // (= pointer 沿轴位置) 距 B 中线 ≤ SAME_AXIS_ATTRACT_PX，与沿线方向无关。
+  // 视觉吸附：用户语�?�?C 方向�?BC 交点 �?SAME_AXIS_ATTRACT_PX �?A 吸附"—�?
+  // "�?C 方向" 即沿 A 的拖动轴 (perp to A's line)，所以触发条件是 A 拖动后中�?
+  // (= pointer 沿轴位置) �?B 中线 �?SAME_AXIS_ATTRACT_PX，与沿线方向无关�?
   //
-  // 偏移补偿：updatesFromSnapshots 计算 deltaPx = effectivePointer.axis - dragStart.axis，
-  // 而 dragStart.axis 是 mousedown 时的 pointer 坐标，可能偏离 splitter 视觉中心
-  // 多达 ±5px (RgSplitter hit area 11px / 视觉线 1px)。若直接用 B.center 替换，
-  // A 最终位置 = A.start_center + (B.center - dragStart.axis) = B.center - offset，
-  // 导致吸附后 A 偏离 B 中线 offset 像素 (用户报告"基本向上和向左偏")。
-  // 修复：effectivePointer.axis = B.center + offset，让 deltaPx = perpDistance，
-  // A 中线精确落在 B 中线上。
+  // 偏移补偿：updatesFromSnapshots 计算 deltaPx = effectivePointer.axis - dragStart.axis�?
+  // �?dragStart.axis �?mousedown 时的 pointer 坐标，可能偏�?splitter 视觉中心
+  // 多达 ±5px (RgSplitter hit area 11px / 视觉�?1px)。若直接�?B.center 替换�?
+  // A 最终位�?= A.start_center + (B.center - dragStart.axis) = B.center - offset�?
+  // 导致吸附�?A 偏离 B 中线 offset 像素 (用户报告"基本向上和向左偏")�?
+  // 修复：effectivePointer.axis = B.center + offset，让 deltaPx = perpDistance�?
+  // A 中线精确落在 B 中线上�?
   let effectivePointer = pointer;
   if (primary && ui.sameAxisAttractors.length > 0) {
     const axis = primary.ref.axis;
@@ -1042,10 +1042,10 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
       }
     }
     if (bestCenter != null) {
-      // 用 mousedown 时记录的偏移补偿 effectivePointer，使 deltaPx 严格等于
-      // perpDistance(A, B)。snapshot 在 startSplitResizeDrag 时保存的
-      // mousedownOffsetAxis 就是 dragStart.axis - A.center_at_mousedown，
-      // 此时 A 还未拖动，是真正的起始中心。
+      // �?mousedown 时记录的偏移补偿 effectivePointer，使 deltaPx 严格等于
+      // perpDistance(A, B)。snapshot �?startSplitResizeDrag 时保存的
+      // mousedownOffsetAxis 就是 dragStart.axis - A.center_at_mousedown�?
+      // 此时 A 还未拖动，是真正的起始中心�?
       const effectiveAxisCoord = bestCenter + primary.mousedownOffsetAxis;
       effectivePointer =
         axis === 'x'
@@ -1071,7 +1071,7 @@ export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
     for (const plan of ui.pxAnchors) {
       const ratios = pxAnchorRatios(plan, deltaPx);
       // Skip anchor updates whose path collides with an existing primary
-      // update (defensive — shouldn't happen because plans always live on
+      // update (defensive �?shouldn't happen because plans always live on
       // a descendant path strictly deeper than primary's split).
       const collision = updates.some(
         (u) => pathKey(u.path) === pathKey(plan.splitPath)
@@ -1119,9 +1119,9 @@ export function getAllPaneIds(node: PaneNode): string[] {
   return ids;
 }
 
-/** 从 SplitRatioUpdate[] 中提取所有受影响的 leaf pane ids。
- *  每个 update 的 path 指向一个 Split 节点，该 Split 下的所有
- *  leaf panes 在 resize 后尺寸都发生了变化。 */
+/** �?SplitRatioUpdate[] 中提取所有受影响�?leaf pane ids�?
+ *  每个 update �?path 指向一�?Split 节点，该 Split 下的所�?
+ *  leaf panes �?resize 后尺寸都发生了变化�?*/
 export function paneIdsFromRatioUpdates(
   root: PaneNode,
   updates: SplitRatioUpdate[]
@@ -1132,7 +1132,7 @@ export function paneIdsFromRatioUpdates(
     let node: PaneNode = root;
     for (const idx of update.path) {
       if (node.type !== 'split' || idx < 0 || idx >= node.children.length) {
-        node = root; // path misaligned — fall back to root
+        node = root; // path misaligned �?fall back to root
         break;
       }
       node = node.children[idx];
@@ -1145,7 +1145,7 @@ export function paneIdsFromRatioUpdates(
   return [...set];
 }
 
-/** 当前 activePaneId 若不在树内（切换工作区等），回退到第一个 leaf。 */
+/** 当前 activePaneId 若不在树内（切换工作区等），回退到第一�?leaf�?*/
 function reconcileActivePaneId(layout: PaneNode) {
   const ids = getAllPaneIds(layout);
   if (!ids.length) return;
@@ -1154,11 +1154,11 @@ function reconcileActivePaneId(layout: PaneNode) {
 }
 
 /**
- * 比较两棵 pane 树是否结构等价 —— 用于跳过"layout 变化但实际无差异"的 store
- * 触发。split / dock / resize 等操作回填时如果布局未变（例如：split 操作被取消
- * 后回拉一次最新状态），不应让 paneTreeStore 改 reference，否则所有订阅者
- * （SplitContainer / Pane / Explorer）都被迫重算 + 终端 fit + Monaco reflow。
- * 用 JSON 串作为指纹是足够的：树深度有限，序列化 cost 远小于无谓的 DOM 重排。
+ * 比较两棵 pane 树是否结构等�?—�?用于跳过"layout 变化但实际无差异"�?store
+ * 触发。split / dock / resize 等操作回填时如果布局未变（例如：split 操作被取�?
+ * 后回拉一次最新状态），不应让 paneTreeStore �?reference，否则所有订阅�?
+ * （SplitContainer / Pane / Explorer）都被迫重算 + 终端 fit + Monaco reflow�?
+ * �?JSON 串作为指纹是足够的：树深度有限，序列�?cost 远小于无谓的 DOM 重排�?
  */
 function paneLayoutsEquivalent(a: PaneNode, b: PaneNode): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -1204,11 +1204,11 @@ export async function syncPaneLayoutFromBackend() {
     //
     // Two cases this handles:
     //   1. DELETED pane: its cwd key lingers in paneCwdStore after closePane,
-    //      causing Explorer to keep rendering the column. → prune it.
+    //      causing Explorer to keep rendering the column. �?prune it.
     //   2. NEW pane (e.g., split): backend inherits cwd from parent pane so
     //      no `pane-cwd-changed` event fires, meaning the new pane's cwd never
-    //      gets seeded into paneCwdStore. Explorer never sees it → never merges
-    //      it into the shared column. → seed it from the layout.
+    //      gets seeded into paneCwdStore. Explorer never sees it �?never merges
+    //      it into the shared column. �?seed it from the layout.
     const livePaneIds = new Set(getAllPaneIds(layout));
     const prefix = `${active}:`;
     const layoutCwds = extractCwdsFromLayout(layout, active);
@@ -1222,7 +1222,7 @@ export async function syncPaneLayoutFromBackend() {
           if (livePaneIds.has(paneId)) {
             next[k] = v;
           } else {
-            // deleted pane — drop
+            // deleted pane �?drop
             mutated = true;
           }
         } else {
@@ -1239,7 +1239,7 @@ export async function syncPaneLayoutFromBackend() {
       }
       // Identity-preserving early return: when nothing was dropped or
       // seeded, the new object would be byte-for-byte identical to the
-      // existing store. Svelte writable strict-equals — returning `store`
+      // existing store. Svelte writable strict-equals �?returning `store`
       // skips subscriber fire on every layout sync that didn't actually
       // change pane membership (TASKS §1.11 follow-up: this site was
       // missed in 971f7fa, fan-out still firing on every split/close/
@@ -1254,11 +1254,11 @@ export async function syncPaneLayoutFromBackend() {
  * §4a workspace keep-alive: load every workspace's pane tree into the
  * `workspacePaneTrees` cache so the +page.svelte template can mount
  * each workspace's SplitContainer in parallel. Active workspace is
- * skipped — caller already wrote it.
+ * skipped �?caller already wrote it.
  *
  * Failures per-workspace are non-fatal: we just leave that workspace's
  * cache slot unset, which makes its first switch fall back to the prior
- * IPC-driven path. Idempotent — safe to call repeatedly.
+ * IPC-driven path. Idempotent �?safe to call repeatedly.
  */
 async function prefetchAllWorkspaceTrees(
   list: { id: string }[],
@@ -1389,10 +1389,10 @@ export async function splitPane(
   // (source pane, re-mounted at the new tree position) each schedule
   // their own initial fitPane on the next animation frame, but that
   // single RAF races SvelteKit's component mount and the wasm
-  // `manager.ready()` await — when the race goes the wrong way the
+  // `manager.ready()` await �?when the race goes the wrong way the
   // kernel grid stays at its attach-time 24×80 default while the
   // container is already 50 % wide, leaving the visible "黑边/空行"
-  // the user sees as "拆出来的终端不是占满的". Queue a second forced fit
+  // the user sees as "拆出来的终端不是占满�?. Queue a second forced fit
   // two animation frames out so the new RidgePane has reliably finished
   // its async attach pipeline before we ask the manager to size against
   // the settled DOM.
@@ -1403,14 +1403,17 @@ export async function splitPane(
 /**
  * Belt-and-suspenders fit after a split.
  *
- * Two-RAF delay rationale:
- *   - Frame 1: Svelte reconciles the store update and mounts the new
+ * Multi-retry rationale:
+ *   - Frame ~2: Svelte reconciles the store update and mounts the new
  *     RidgePane component. onMount fires; the async `manager.ready()`
- *     await begins.
- *   - Frame 2: `manager.attach(paneId, container, workspaceId)` has
- *     finished, the new entry is in `manager.panes`, and the container
- *     has its post-split bounding rect. `fitPaneNow` runs against the
- *     correct state.
+ *     await begins. Container may still be 0×0.
+ *   - Frame ~5 (50ms): `manager.attach(paneId, container, workspaceId)`
+ *     has finished, the new entry is in `manager.panes`, and the
+ *     container may now have its post-split bounding rect.
+ *   - 150ms / 400ms: fallback windows for slow layout (heavy DOM,
+ *     webfont loading, WebGPU adapter init) — fitPaneNow is a no-op
+ *     when the computed rows×cols haven't changed, so retries are
+ *     cheap until the DOM actually settles.
  *
  * Exported (re-exported below) so unit tests can mock TerminalManager
  * and assert on the per-pane call without going through the full
@@ -1418,12 +1421,16 @@ export async function splitPane(
  */
 function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): void {
   if (typeof requestAnimationFrame === 'undefined') return;
+  const fitBoth = () => {
+    const mgr = TerminalManager.instance();
+    mgr.fitPaneNow(sourcePaneId);
+    mgr.fitPaneNow(newPaneId);
+  };
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const mgr = TerminalManager.instance();
-      mgr.fitPaneNow(sourcePaneId);
-      mgr.fitPaneNow(newPaneId);
-    });
+    requestAnimationFrame(() => fitBoth());
+    setTimeout(() => fitBoth(), 50);
+    setTimeout(() => fitBoth(), 150);
+    setTimeout(() => fitBoth(), 400);
   });
 }
 
@@ -1431,7 +1438,7 @@ function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): vo
  *  scheduling against a mocked TerminalManager. Not for production use. */
 export const __test_scheduleForceFitAfterSplit = scheduleForceFitAfterSplit;
 
-/** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置。 */
+/** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置�?*/
 export async function dockPane(
   sourcePaneId: string,
   targetPaneId: string,
@@ -1447,7 +1454,7 @@ export async function dockPane(
   activePaneId.set(sourcePaneId);
 }
 
-/** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一条 path）。 */
+/** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一�?path）�?*/
 export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
   const norm = normalizeSplitRatios(sizes);
   updateActiveTree(get(activeWorkspaceId), (root) =>
@@ -1462,7 +1469,7 @@ export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
   }
 }
 
-/** 一次性持久化多个 split 的 ratios（用于横纵联动拖拽松手提交）。 */
+/** 一次性持久化多个 split �?ratios（用于横纵联动拖拽松手提交）�?*/
 export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
   if (!updates.length) return;
   updateActiveTree(get(activeWorkspaceId), (root) =>
@@ -1477,7 +1484,7 @@ export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
   }
 }
 
-/** 对当前焦点窗格分屏（若无有效 id 则回退第一个 leaf）。 */
+/** 对当前焦点窗格分屏（若无有效 id 则回退第一�?leaf）�?*/
 export async function splitActivePane(direction: 'horizontal' | 'vertical') {
   let id = get(activePaneId);
   const tree = get(paneTreeStore);
@@ -1495,12 +1502,12 @@ export async function closePane(paneId: string) {
   // is genuinely gone from the backend tree.
   //
   // Order matters:
-  //   1. Tear down PTY bridge → no more pty-output events delivered
+  //   1. Tear down PTY bridge �?no more pty-output events delivered
   //      to a kernel we're about to free.
-  //   2. Manager.detach → frees wasm kernel + render handle.
+  //   2. Manager.detach �?frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  // 拆除 PTY 连接 → 不再投递 pty-output 事件到即将释放的 kernel
+  // 拆除 PTY 连接 �?不再投�?pty-output 事件到即将释放的 kernel
   teardownPtyBridge(paneId);
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {
@@ -1528,16 +1535,16 @@ export async function toggleEditor(paneId: string, filePath?: string) {
   });
 }
 
-/** 关闭工作区 */
+/** 关闭工作�?*/
 export async function closeWorkspace(workspaceId: string) {
   if (!isTauri()) return;
   try {
     await invoke('close_workspace', { workspaceId });
-    // 在拉取新的工作区快照之前就清理本地资源，避免残留：
-    // 1) 拆除该工作区的 pane-cwd 监听；
-    // 2) 从 paneCwdStore 删除所有 `${workspaceId}:*` 键；
+    // 在拉取新的工作区快照之前就清理本地资源，避免残留�?
+    // 1) 拆除该工作区�?pane-cwd 监听�?
+    // 2) �?paneCwdStore 删除所�?`${workspaceId}:*` 键；
     // 3) 清空 fileExplorerStore 在该工作区下的所有列（即资源管理器的文件树列）；
-    //    — SourceControl 的仓库列表由 paneCwdStore 衍生，随之自然收敛。
+    //    �?SourceControl 的仓库列表由 paneCwdStore 衍生，随之自然收敛�?
     const unlisten = activeCwdListeners.get(workspaceId);
     if (unlisten) {
       unlisten();
@@ -1570,16 +1577,16 @@ export async function closeWorkspace(workspaceId: string) {
   }
 }
 
-/** 重新排序工作区。
+/** 重新排序工作区�?
  *
- *  乐观更新：在 await invoke 之前先 **同步** 把 `workspacesList` 改成新顺序，
- *  这样 WorkspaceTabs 的 `$effect`（用 workspacesEqual 判断是否需要重写本地
- *  mirror）能在落位动画后第一个 tick 就 bail，与 FileEditor 的 `setOrder`
- *  同步语义对齐，避免出现"拖完先弹回旧顺序、后端返回再跳到新顺序"的
- *  双 FLIP 闪烁。后端 round-trip 完成后 `refreshWorkspaces` 再次 set，
- *  内容相同 → bail，无视觉副作用。 */
+ *  乐观更新：在 await invoke 之前�?**同步** �?`workspacesList` 改成新顺序，
+ *  这样 WorkspaceTabs �?`$effect`（用 workspacesEqual 判断是否需要重写本�?
+ *  mirror）能在落位动画后第一�?tick �?bail，与 FileEditor �?`setOrder`
+ *  同步语义对齐，避免出�?拖完先弹回旧顺序、后端返回再跳到新顺�?�?
+ *  �?FLIP 闪烁。后�?round-trip 完成�?`refreshWorkspaces` 再次 set�?
+ *  内容相同 �?bail，无视觉副作用�?*/
 export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
-  // 同步乐观更新：仅在边界合法时才动；保留旧序列以便后端失败时回滚。
+  // 同步乐观更新：仅在边界合法时才动；保留旧序列以便后端失败时回滚�?
   let rolledBack: { id: string; index: number; name?: string; displaySeq: number }[] | null = null;
   workspacesList.update((list) => {
     if (
@@ -1591,7 +1598,7 @@ export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
     const next = [...list];
     const [moved] = next.splice(fromIndex, 1);
     next.splice(toIndex, 0, moved);
-    // 重新分配 index 字段，保持与 backend list_workspaces 的语义一致。
+    // 重新分配 index 字段，保持与 backend list_workspaces 的语义一致�?
     return next.map((w, i) => ({ ...w, index: i }));
   });
 
@@ -1600,7 +1607,7 @@ export async function reorderWorkspaces(fromIndex: number, toIndex: number) {
     await invoke('reorder_workspaces', { fromIndex, toIndex });
     await refreshWorkspaces();
   } catch (e) {
-    // 回滚到拖拽前的顺序，让 UI 与后端真实状态保持一致。
+    // 回滚到拖拽前的顺序，�?UI 与后端真实状态保持一致�?
     if (rolledBack) workspacesList.set(rolledBack);
     console.error('reorderWorkspaces', e);
     reportDevIssue({
@@ -1635,7 +1642,7 @@ export async function renameWorkspace(workspaceId: string, name: string) {
 
 // Pane cwds ARE preserved in the .ridge format: the backend PaneTree struct
 // serialises Pane.cwd (Option<PathBuf>) into JSON, so openWorkspaceFromFile
-// → refreshWorkspaces → get_pane_layout → extractCwdsFromLayout restores them.
+// �?refreshWorkspaces �?get_pane_layout �?extractCwdsFromLayout restores them.
 // `SavedWorkspace.paneCwds` below is kept for future use but is currently
 // not populated by list_saved_workspaces (workspace-history path), which is
 // fine because that path is not yet exposed in the frontend restore UI.
@@ -1648,21 +1655,21 @@ export interface SavedWorkspace {
   savedAt: string;
 }
 
-/** Keyed by "${workspaceId}:${paneId}" → cwd string. */
+/** Keyed by "${workspaceId}:${paneId}" �?cwd string. */
 export const paneCwdStore = writable<Record<string, string>>({});
 
-/** Keyed by paneId → 当前展示标题（合并后）。优先级：teammate > OSC > 进程名。 */
+/** Keyed by paneId �?当前展示标题（合并后）。优先级：teammate > OSC > 进程名�?*/
 export const terminalTitles = writable<Record<string, string>>({});
 
-/** Keyed by paneId → 由 OSC 0/1/2 序列报告的标题（shell PS1 / Claude Code 等）。
+/** Keyed by paneId �?�?OSC 0/1/2 序列报告的标题（shell PS1 / Claude Code 等）�?
  *  Pane.svelte 订阅 `pane-title-changed-...` 事件后写入。值非空时覆盖 polling
- *  得到的进程名。 */
+ *  得到的进程名�?*/
 export const paneOscTitleStore = writable<Record<string, string>>({});
 
-/** Keyed by paneId → foreground process name (polled every 1.5s from backend). */
+/** Keyed by paneId �?foreground process name (polled every 1.5s from backend). */
 export const paneForegroundProcessStore = writable<Record<string, string>>({});
 
-/** Per-workspace save info: `{ workspaceId → { file_path, name } }`. Populated by
+/** Per-workspace save info: `{ workspaceId �?{ file_path, name } }`. Populated by
  *  `get_workspace_save_info` / `list_workspace_save_info`. Empty `file_path` means
  *  the workspace has never been saved (UI shows "Save" button); present `file_path`
  *  means it's associated with a .ridge file (UI shows "Delete" button). */
@@ -1695,8 +1702,8 @@ export async function saveWorkspaceToFile(
     name,
     path: path ?? null,
   });
-  // 刷新 workspacesList 以便标签页/Explorer 头部能立刻显示新名字；
-  // refreshWorkspaces 内部已串行调用 refreshWorkspaceSaveInfo()。
+  // 刷新 workspacesList 以便标签�?Explorer 头部能立刻显示新名字�?
+  // refreshWorkspaces 内部已串行调�?refreshWorkspaceSaveInfo()�?
   await refreshWorkspaces();
   return out;
 }
@@ -1729,14 +1736,14 @@ export async function getLastOpenedWorkspacePath(): Promise<string | null> {
 export interface StartupContext {
   cwd: string;
   wind_file_in_cwd: string | null;
-  /** "cli" — process inherited a real working dir from a terminal.
-   *  "menu" — process current_dir equals ridge.exe parent (双击 / 开始菜单).
+  /** "cli" �?process inherited a real working dir from a terminal.
+   *  "menu" �?process current_dir equals ridge.exe parent (双击 / 开始菜�?.
    *  Used to gate auto-restore: cli launch should NOT auto-open the saved
    *  workspace set, since the user signalled intent via the cwd. */
   kind: 'cli' | 'menu';
 }
 
-/** 启动上下文：进程 cwd + cwd 顶层第一个 .ridge 文件（若存在）+ 启动模式。 */
+/** 启动上下文：进程 cwd + cwd 顶层第一�?.ridge 文件（若存在�? 启动模式�?*/
 export async function getStartupContext(): Promise<StartupContext | null> {
   if (!isTauri()) return null;
   try {
@@ -1755,8 +1762,8 @@ export async function listRecentWorkspaces(): Promise<string[]> {
   }
 }
 
-/** 关闭时被后端写下的「下次启动应自动恢复的已保存工作区路径」列表。
- *  非 cli 启动 + 列表非空 → 前端依次 openWorkspaceFromFile，再关掉默认空 workspace。 */
+/** 关闭时被后端写下的「下次启动应自动恢复的已保存工作区路径」列表�?
+ *  �?cli 启动 + 列表非空 �?前端依次 openWorkspaceFromFile，再关掉默认�?workspace�?*/
 export async function getRestoreSet(): Promise<string[]> {
   if (!isTauri()) return [];
   try {
@@ -1772,7 +1779,7 @@ export interface SavedWorkspaceEntry {
   mtime_secs: number;
 }
 
-/** 默认 ~/ridge-workspaces/ 下的所有 .ridge 文件，按 mtime 倒序。 */
+/** 默认 ~/ridge-workspaces/ 下的所�?.ridge 文件，按 mtime 倒序�?*/
 export async function listSavedWorkspaceFiles(): Promise<SavedWorkspaceEntry[]> {
   if (!isTauri()) return [];
   try {
@@ -1819,26 +1826,26 @@ export function collapseCwd(cwd: string): string {
  *  backend's emit and the wasm kernel's OSC 7 parser converge on the
  *  SAME literal even when their wire shapes differ.
  *
- *  - **Backslash → slash**: Git Bash emits "C:/code" while PowerShell
+ *  - **Backslash �?slash**: Git Bash emits "C:/code" while PowerShell
  *    shell-integration emits "C:\\code" for the same directory.
  *  - **Drop leading "/" before a Windows drive letter**: backend
  *    `engine/cwd.rs:138-145` strips a leading `/` after URL parsing
- *    (`file:///C:/...` → `C:/...`), but the wasm parser at
+ *    (`file:///C:/...` �?`C:/...`), but the wasm parser at
  *    `parser.rs::parse_file_uri_path` returns the path verbatim from
- *    the first `/` after the host (`file:///C:/...` → `/C:/...`). Both
+ *    the first `/` after the host (`file:///C:/...` �?`/C:/...`). Both
  *    fire on every OSC 7 emit and ALTERNATELY write to `paneCwdStore`
- *    with strings differing only in the leading slash → identity
- *    guard is defeated → Explorer cwd-effect runs twice per Enter →
+ *    with strings differing only in the leading slash �?identity
+ *    guard is defeated �?Explorer cwd-effect runs twice per Enter �?
  *    file tree flickers. Funnel both writers to the same canonical
- *    form here. (User report 2026-05-05 — root cause of the
+ *    form here. (User report 2026-05-05 �?root cause of the
  *    repeat-flicker traced this round.)
  *  - **Trailing slash trim**: some shells emit OSC 7 with a trailing
- *    "/" once and without it the next time — same identity-guard
+ *    "/" once and without it the next time �?same identity-guard
  *    defeat. Trim except when it IS the root (POSIX "/", Windows "C:/").
  */
 function normalizeCwd(cwd: string): string {
   let out = cwd.replace(/\\/g, '/');
-  // Drop leading "/" before a Windows drive letter ("/C:/..." → "C:/...").
+  // Drop leading "/" before a Windows drive letter ("/C:/..." �?"C:/...").
   // The check is positional: only the very first three chars of "/X:"
   // where X is alphabetic count.
   if (out.length >= 3 && out[0] === '/' && /[A-Z]/i.test(out[1]) && out[2] === ':') {
@@ -1857,12 +1864,12 @@ function normalizeCwd(cwd: string): string {
 /**
  * Merge `additions` into `target`, returning the SAME reference when no
  * value actually changed. Svelte's `writable` uses strict-equality on
- * the value returned from `update(...)` — if we always allocated a new
+ * the value returned from `update(...)` �?if we always allocated a new
  * object via `{...target, ...additions}`, every subscriber would fire
  * on every call, regardless of whether content changed.
  *
  * This matters most on the cwd hot path: shell prompt redraws (Ctrl+C,
- * Enter, every `cd`-then-`cd`-back) emit OSC 7 → `setPaneCwd` →
+ * Enter, every `cd`-then-`cd`-back) emit OSC 7 �?`setPaneCwd` �?
  * `mergePaneCwds`. Without identity preservation, the file tree, SCM,
  * sidebar plugins, etc. all re-run their cwd subscribers on every
  * keystroke that produces a prompt redraw.
@@ -1890,7 +1897,7 @@ export function setPaneCwd(workspaceId: string, paneId: string, cwd: string): vo
   paneCwdStore.update((store) => {
     // Identity-preserving early return: same value means no subscribers
     // need to fire. Critical for the Ctrl+C / Enter prompt-redraw loop
-    // — see mergePaneCwds doc above.
+    // �?see mergePaneCwds doc above.
     if (store[key] === normalized) return store;
     return { ...store, [key]: normalized };
   });
@@ -1963,7 +1970,7 @@ export async function setupPaneCwdListeners(workspaceId: string): Promise<void> 
 
 export const savedWorkspacesList = writable<SavedWorkspace[]>([]);
 
-/** 获取已保存的工作区列表 */
+/** 获取已保存的工作区列�?*/
 export async function loadSavedWorkspaces() {
   if (!isTauri()) return;
   try {
@@ -1993,9 +2000,9 @@ export async function loadSavedWorkspaces() {
   }
 }
 
-/** 保存当前工作区。优先使用工作区已命名的名字作为 history 条目名 / .ridge 文件名；
- *  仅当工作区未命名时由后端 fallback 到时间戳。这样 cwd / 布局变更触发的自动 checkpoint
- *  会按用户给的工作区名归档，而不是堆出一串时间戳。 */
+/** 保存当前工作区。优先使用工作区已命名的名字作为 history 条目�?/ .ridge 文件名；
+ *  仅当工作区未命名时由后端 fallback 到时间戳。这�?cwd / 布局变更触发的自�?checkpoint
+ *  会按用户给的工作区名归档，而不是堆出一串时间戳�?*/
 export async function saveCurrentWorkspace() {
   if (!isTauri()) return;
   try {
@@ -2009,7 +2016,7 @@ export async function saveCurrentWorkspace() {
   }
 }
 
-/** 删除已保存的工作区 */
+/** 删除已保存的工作�?*/
 export async function deleteSavedWorkspace(id: string) {
   if (!isTauri()) return;
   try {

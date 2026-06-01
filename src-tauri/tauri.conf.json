@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "node packages/ridge-term/build.mjs --dev && node scripts/ensure-teammate-shim.mjs && pnpm run dev",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:mobile",
+    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:remote",
     "beforeBundleCommand": "node -e \"setTimeout(()=>process.exit(0),3000)\" && cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml",
     "frontendDist": "../build"
   },
@@ -28,7 +28,7 @@
     ],
     "resources": {
       "../ridge.theme": "ridge.theme",
-      "../static/mobile": "static/mobile"
+      "../static/remote": "static/remote"
     },
     "windows": {
       "nsis": {
