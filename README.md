@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./static/ridge-mark.svg" width="64" height="64" alt="Ridge mark" />
+</p>
+
 # Ridge
 
 <p align="center">
@@ -312,7 +316,7 @@ MIT License. Copyright (c) 2026 Jack Jiang and Ridge contributors.
 
 | WeChat 赞赏 | PayPal |
 |:---:|:---:|
-| ![WeChat Reward]([Image 1]) | ![PayPal Donate]([Image 2]) |
+| ![WeChat Reward](./static/1.jpg) | ![PayPal Donate](./static/2.jpg) |
 | 微信扫码赞赏 | PayPal Donate |
 
 </div>
