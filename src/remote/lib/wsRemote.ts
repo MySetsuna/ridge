@@ -107,6 +107,10 @@ export type WsMessage = {
   success: boolean;
   error?: string;
 } | {
+  type: 'workspace-renamed';
+  workspaceId: string;
+  name: string;
+} | {
   type: 'theme';
   themeType: 'dark' | 'light';
   colors: Record<string, string>;
