@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
+  import TopBar from './TopBar.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
   import RemoteSidebar from './lib/RemoteSidebar.svelte';
   import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
@@ -116,6 +117,8 @@
 </script>
 
 <div class="app-root">
+  <TopBar {panes} bind:activePaneId {workspaces} {activeWorkspaceId} {ws} {wsState} />
+
   {#if panes.length === 0}
     <div class="empty"><p>无活跃终端</p><p class="hint">在桌面端打开一个终端以开始</p></div>
   {:else if activePaneId}
@@ -134,14 +137,9 @@
   {/if}
 
   <BottomTabBar
-    {panes}
-    bind:activePaneId
-    {workspaces}
-    {activeWorkspaceId}
     {ws}
     {sidebarTab}
     onSidebarToggle={handleSidebarToggle}
-    {wsState}
     onRefresh={handleRefresh}
     bind:showKeyboard
   />
