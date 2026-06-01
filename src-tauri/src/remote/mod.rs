@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod mdns;
 mod server;
+mod tls;
 
 use std::net::ToSocketAddrs;
 
