@@ -174,6 +174,7 @@ self.MonacoEnvironment = {
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { TerminalManager } from '$lib/terminal/manager';
+  import { isTuiActive, snapshotLiveSignals } from '$lib/terminal/tuiGate';
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
@@ -374,6 +375,20 @@ function expandSidebar() {
     window.addEventListener('mouseup', onMouseUp);
   }
 
+  // 检查指定 pane 是否处于 TUI 活跃状态（全局级别，不依赖任何组件实例）
+  function isPaneTuiActive(paneId: string): boolean {
+    const mgr = TerminalManager.tryInstance();
+    if (!mgr) return false;
+    // Live-only check (no sticky history): a global shortcut should defer to
+    // the TUI only while it's genuinely active right now.
+    return isTuiActive(snapshotLiveSignals(
+      mgr.isAltScreen(paneId),
+      mgr.isInlineTuiActive(paneId),
+      mgr.isMouseReporting(paneId),
+      mgr.isAppCursorKeys(paneId),
+    ));
+  }
+
   // 键盘快捷键处理
   function handleGlobalKeydown(e: KeyboardEvent) {
     // 全局禁止页面刷新（F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R）
@@ -413,6 +428,13 @@ function expandSidebar() {
     // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
     if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
       const target = e.target as HTMLElement | null;
+      // 当焦点在 TUI 活跃的终端 pane 上时，Ctrl+A 应由 TUI 处理
+      // （如 vim/less 的 Ctrl+A 快捷键），不在此拦截。
+      if (target?.closest?.('[data-rg-pane-id]')) {
+        const paneEl = target.closest('[data-rg-pane-id]') as HTMLElement;
+        const paneId = paneEl.dataset.rgPaneId;
+        if (paneId && isPaneTuiActive(paneId)) return;
+      }
       if (
         target &&
         (target.tagName === 'INPUT' ||

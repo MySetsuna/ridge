@@ -80,6 +80,54 @@ export const TUI_STICKY_MS_DEFAULT = 60_000;
  * See module-level doc for the decision order. Pure function: no
  * side effects, no time reads — all inputs come from the snapshot.
  */
+/**
+ * Convenience: given a live-signal snapshot (the first four fields),
+ * returns a fully-formed TuiSnapshot with `now` set and the sticky
+ * fields zeroed.  Use this when you only need to check "is the kernel
+ * currently reporting any TUI signal right this instant?" and don't
+ * care about the sticky history.
+ */
+export function snapshotLiveSignals(
+	isAltScreen: boolean,
+	isInlineTuiActive: boolean,
+	isMouseReporting: boolean,
+	isAppCursorKeys: boolean,
+): TuiSnapshot {
+	return {
+		isAltScreen,
+		isInlineTuiActive,
+		isMouseReporting,
+		isAppCursorKeys,
+		cursorVisible: true,
+		lastTuiActiveTs: 0,
+		now: performance.now(),
+		stickyMs: TUI_STICKY_MS_DEFAULT,
+	};
+}
+
+/**
+ * Does any signal justify refreshing the sticky timestamp? A superset of the
+ * bare live signals: it also counts DECCKM (the app owns the arrow keys) and a
+ * hidden cursor — a TUI mid-render whose inline heuristic may be momentarily
+ * suppressed (e.g. the Ctrl+C grace window). Returns false at a normal shell
+ * prompt (cursor visible, no signals), so host-UI interaction (context menu,
+ * paste, wheel) there never extends the gate.
+ *
+ * Callers set `lastTuiActiveTs = now` when this is true. Kept pure + here so the
+ * condition is unit-testable instead of re-inlined at every call site.
+ */
+export function hasLiveTuiSignal(
+	s: Pick<TuiSnapshot, 'isAltScreen' | 'isInlineTuiActive' | 'isMouseReporting' | 'isAppCursorKeys' | 'cursorVisible'>,
+): boolean {
+	return (
+		s.isAltScreen ||
+		s.isInlineTuiActive ||
+		s.isMouseReporting ||
+		s.isAppCursorKeys ||
+		!s.cursorVisible
+	);
+}
+
 export function isTuiActive(s: TuiSnapshot): boolean {
 	// 1. DECCKM dominates. The application has explicitly claimed the
 	//    arrow keys; nothing else can override that.
