@@ -92,6 +92,11 @@
           activePaneId = msg.panes.length > 0 ? msg.panes[0].id : null;
         }
       }
+      if (msg.type === 'workspaces') {
+        workspaces = msg.workspaces;
+        const active = workspaces.find(w => w.active);
+        if (active) activeWorkspaceId = active.id;
+      }
       if (msg.type === 'switch-workspace-result') {
         if (msg.success && msg.workspaceId) {
           activeWorkspaceId = msg.workspaceId;
@@ -100,6 +105,11 @@
       }
       if (msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
         refreshWorkspaces();
+      }
+      if (msg.type === 'workspace-renamed') {
+        workspaces = workspaces.map(w =>
+          w.id === msg.workspaceId ? { ...w, name: msg.name } : w
+        );
       }
     });
     ws.onRawBytes((paneId, data) => {

@@ -19,6 +19,8 @@ export class TerminalController {
   private renderHandle: RenderHandle;
   private canvas: HTMLCanvasElement;
   private container: HTMLDivElement;
+  private surfaceHost: SurfaceHostHandle | null;
+  private themeBg: Uint8Array;
   private rafId: number | null = null;
   private sleepTimerId: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
@@ -71,14 +73,17 @@ export class TerminalController {
   private constructor(
     kernel: TerminalKernel,
     renderHandle: RenderHandle,
+    surfaceHost: SurfaceHostHandle | null,
     canvas: HTMLCanvasElement,
     container: HTMLDivElement,
     opts: TermOpts,
   ) {
     this.kernel = kernel;
     this.renderHandle = renderHandle;
+    this.surfaceHost = surfaceHost;
     this.canvas = canvas;
     this.container = container;
+    this.themeBg = new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
     this.fontSize = opts.fontSize ?? 14;
     this.scrollback = opts.scrollback ?? 5000;
     this.fontFamily = opts.fontFamily ?? FONT_STACK;
@@ -94,7 +99,7 @@ export class TerminalController {
     const scrollback = opts.scrollback ?? 5000;
     const kernel = new TerminalKernel(rows, cols, scrollback);
 
-    let surfaceHost: SurfaceHostHandle | undefined;
+    let surfaceHost: SurfaceHostHandle | null = null;
     try {
       surfaceHost = await SurfaceHostHandle.init(canvas);
     } catch {
@@ -103,7 +108,7 @@ export class TerminalController {
     const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, surfaceHost);
     renderHandle.applyDefaultTheme();
 
-    const controller = new TerminalController(kernel, renderHandle, canvas, container, opts);
+    const controller = new TerminalController(kernel, renderHandle, surfaceHost, canvas, container, opts);
     controller.fitPane();
     controller.startRenderLoop();
     controller.setupVisibilityHandler();
@@ -133,7 +138,14 @@ export class TerminalController {
     this.flushDeferred();
     if (this.needsRender || this.blinkDue()) {
       if (this.visible) {
-        this.renderHandle.render(this.kernel);
+        const hostOpened = this.surfaceHost ? this.surfaceHost.beginFrame(this.themeBg) : false;
+        try {
+          this.renderHandle.render(this.kernel);
+        } finally {
+          if (hostOpened) {
+            try { this.surfaceHost!.endFrame(); } catch {}
+          }
+        }
       }
       this.needsRender = false;
     }
@@ -280,6 +292,9 @@ export class TerminalController {
       this.cellW = TerminalController.quantizeCellSize(dims[0]);
       this.cellH = TerminalController.quantizeCellSize(dims[1]);
     }
+    if (this.surfaceHost) {
+      try { this.surfaceHost.resize(w, h, dpr); this.surfaceHost.invalidate(); } catch {}
+    }
 
     if (this.cellW > 0 && this.cellH > 0) {
       const newCols = Math.max(1, Math.floor(w / this.cellW));
@@ -327,6 +342,9 @@ export class TerminalController {
   applyTheme(theme: Record<string, string>) {
     if (this.destroyed) return;
     this.renderHandle.applyTheme(theme);
+    const bg = theme.background ?? theme['ansiBlack'] ?? '#1e1e2e';
+    this.themeBg = cssColorToRgba(bg);
+    if (this.surfaceHost) this.surfaceHost.invalidate();
     this.markDirty();
   }
 
@@ -535,5 +553,34 @@ export class TerminalController {
     }
     this.renderHandle.free();
     this.kernel.free();
+    // SurfaceHostHandle is a JS wrapper around an Rc<RefCell<SurfaceHost>>;
+    // no explicit free needed — GC will collect it when the JS wrapper is dropped.
   }
+}
+
+function cssColorToRgba(css: string): Uint8Array {
+  const c = css.trim();
+  if (c.startsWith('#')) {
+    const hex = c.slice(1);
+    if (hex.length === 3) {
+      const r = parseInt(hex[0] + hex[0], 16);
+      const g = parseInt(hex[1] + hex[1], 16);
+      const b = parseInt(hex[2] + hex[2], 16);
+      return new Uint8Array([r, g, b, 255]);
+    }
+    if (hex.length === 6) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      return new Uint8Array([r, g, b, 255]);
+    }
+    if (hex.length === 8) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      const a = parseInt(hex.slice(6, 8), 16);
+      return new Uint8Array([r, g, b, a]);
+    }
+  }
+  return new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
 }
