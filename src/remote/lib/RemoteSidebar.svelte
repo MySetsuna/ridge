@@ -22,18 +22,18 @@
 <div class="sidebar" role="dialog" aria-label="Sidebar">
   <div class="sb-header">
     <div class="tabs">
-      <button class="tab" class:active={tab === 'files'} onclick={() => setTab('files')} title="文件">
+      <button class="tab" class:active={tab === 'files'} onclick={() => setTab('files')} title="文件" tabindex="-1">
         <Folder class="w-4 h-4" />
       </button>
-      <button class="tab" class:active={tab === 'git'} onclick={() => setTab('git')} title="Git">
+      <button class="tab" class:active={tab === 'git'} onclick={() => setTab('git')} title="Git" tabindex="-1">
         <GitBranch class="w-4 h-4" />
       </button>
-      <button class="tab" class:active={tab === 'search'} onclick={() => setTab('search')} title="搜索">
+      <button class="tab" class:active={tab === 'search'} onclick={() => setTab('search')} title="搜索" tabindex="-1">
         <Search class="w-4 h-4" />
       </button>
     </div>
     <span class="cwd" title={cwd}>{cwd || '/'}</span>
-    <button class="close" onclick={onClose} aria-label="关闭"><X class="w-5 h-5" /></button>
+    <button class="close" onclick={onClose} aria-label="关闭" tabindex="-1"><X class="w-5 h-5" /></button>
   </div>
 
   <div class="sb-body">

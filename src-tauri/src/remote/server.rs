@@ -20,7 +20,6 @@ use axum::{
 };
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -145,11 +144,14 @@ async fn run_remote_server(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     // Fixed port 9527; if occupied, try 9528, 9529, … up to 10 attempts.
+    // Bind a std listener up front: axum-server's `from_tcp_rustls` adopts a
+    // std `TcpListener`, and the plain-HTTP fallback re-wraps it via
+    // `tokio::net::TcpListener::from_std`. Either way we keep the port-probe.
     let base_port: u16 = 9527;
     let mut port = base_port;
-    let listener = loop {
+    let std_listener = loop {
         let addr = format!("0.0.0.0:{}", port);
-        match TcpListener::bind(&addr).await {
+        match std::net::TcpListener::bind(&addr) {
             Ok(l) => break l,
             Err(_) if port < base_port + 10 => {
                 port += 1;
@@ -162,7 +164,12 @@ async fn run_remote_server(
             }
         }
     };
-    let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    if let Err(e) = std_listener.set_nonblocking(true) {
+        tracing::error!(target: "ridge::remote", error = %e, "remote server: set_nonblocking failed");
+        let _ = port_tx.send(None);
+        return;
+    }
+    let port = std_listener.local_addr().map(|a| a.port()).unwrap_or(port);
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
     // Resolve the static files directory. The remote UI is built by
@@ -200,6 +207,10 @@ async fn run_remote_server(
     };
 
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
+    // Captured for the self-signed cert SANs (lan_ip + machine_name are moved
+    // into `ctx` below).
+    let tls_lan_ip = lan_ip.clone();
+    let tls_hostname = machine_name.clone();
 
     let ctx = RemoteCtx {
         port,
@@ -230,17 +241,49 @@ async fn run_remote_server(
         .with_state(ctx);
 
     let _ = port_tx.send(Some(port));
-    let shutdown_signal = shutdown_rx.map(|_| ());
     // §sessions: serve with peer-address connect info so the WS handler can
     // capture each client's real IP (for the session list + blacklist).
-    if let Err(e) = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal)
-    .await
-    {
-        tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
+    let make_svc = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    // Prefer HTTPS: browsers only expose WebGPU in a secure context, so the
+    // LAN page must be served over TLS to unlock the GPU render path. A
+    // self-signed cert is auto-generated on first run (see remote/tls.rs).
+    // If TLS material can't be produced we fall back to plain HTTP so the
+    // server still comes up (WebGPU then stays disabled on remote browsers).
+    match super::tls::resolve_config(&tls_lan_ip, &tls_hostname).await {
+        Some(tls_config) => {
+            tracing::info!(target: "ridge::remote", "Remote server serving HTTPS (TLS)");
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
+                let _ = shutdown_rx.await;
+                shutdown_handle.graceful_shutdown(Some(Duration::from_secs(3)));
+            });
+            if let Err(e) = axum_server::from_tcp_rustls(std_listener, tls_config)
+                .handle(handle)
+                .serve(make_svc)
+                .await
+            {
+                tracing::error!(target: "ridge::remote", error = %e, "remote HTTPS server stopped");
+            }
+        }
+        None => {
+            tracing::warn!(target: "ridge::remote", "Remote TLS unavailable — serving plain HTTP (browser WebGPU disabled)");
+            match tokio::net::TcpListener::from_std(std_listener) {
+                Ok(listener) => {
+                    let shutdown_signal = shutdown_rx.map(|_| ());
+                    if let Err(e) = axum::serve(listener, make_svc)
+                        .with_graceful_shutdown(shutdown_signal)
+                        .await
+                    {
+                        tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(target: "ridge::remote", error = %e, "remote server: failed to adopt listener for HTTP fallback");
+                }
+            }
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
+import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 
 export interface TermOpts {
@@ -13,7 +13,6 @@ const FEED_CHUNK_BYTES = 16 * 1024;
 const FEED_PER_CALL_BUDGET_MS = 4;
 const COALESCE_WINDOW_MS = 8;
 const RESIZE_DEBOUNCE_MS = 500;
-const CURSOR_BLINK_INTERVAL_MS = 530;
 
 export class TerminalController {
   private kernel: TerminalKernel;
@@ -34,7 +33,6 @@ export class TerminalController {
 
   // ── Dirty-detection render loop ──
   private needsRender = true;
-  private blinkDeadline = 0;
   private visible = true;
   private focused = false;
   // True only while `tick` is executing, so `wake()` never schedules a second
@@ -95,7 +93,14 @@ export class TerminalController {
     const cols = 80;
     const scrollback = opts.scrollback ?? 5000;
     const kernel = new TerminalKernel(rows, cols, scrollback);
-    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas);
+
+    let surfaceHost: SurfaceHostHandle | undefined;
+    try {
+      surfaceHost = await SurfaceHostHandle.init(canvas);
+    } catch {
+      // WebGPU adapter unavailable — will fall back to Canvas2D
+    }
+    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, surfaceHost);
     renderHandle.applyDefaultTheme();
 
     const controller = new TerminalController(kernel, renderHandle, canvas, container, opts);
@@ -138,25 +143,21 @@ export class TerminalController {
 
   private scheduleNextFrame() {
     if (this.destroyed) return;
-    const msUntilBlink = this.blinkDeadline - performance.now();
-    if (msUntilBlink < 16) {
+    const msUntilBlink = this.renderHandle.nextBlinkDeadlineMs(this.kernel, Date.now());
+    const capped = Math.min(msUntilBlink, 1000);
+    if (capped < 16) {
       this.rafId = requestAnimationFrame(this.tick);
     } else {
       this.sleepTimerId = setTimeout(() => {
         this.sleepTimerId = null;
         if (this.destroyed) return;
         this.rafId = requestAnimationFrame(this.tick);
-      }, msUntilBlink - 8);
+      }, capped - 8);
     }
   }
 
   private blinkDue(): boolean {
-    const now = performance.now();
-    if (now >= this.blinkDeadline) {
-      this.blinkDeadline = now + CURSOR_BLINK_INTERVAL_MS;
-      return true;
-    }
-    return false;
+    return this.renderHandle.nextBlinkDeadlineMs(this.kernel, Date.now()) < 16;
   }
 
   markDirty() {
@@ -393,6 +394,11 @@ export class TerminalController {
   }
 
   get isComposing() { return this._isComposing; }
+
+  get backendName(): string {
+    const h = this.renderHandle as unknown as { backendName?: () => string };
+    return h.backendName?.() ?? 'Canvas2D';
+  }
 
   // ── Selection ──
 
