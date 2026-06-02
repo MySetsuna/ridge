@@ -985,25 +985,18 @@ export class TerminalManager {
 		let cssY = cr.top - hr.top + padT;
 		let cssW = Math.max(0, cr.width - padL - padR);
 		let cssH = Math.max(0, cr.height - padT - padB);
-		// Shrink the scissor to cells-exact dimensions and re-center it
-		// inside the content-box. Without this, `floor(cssH / cellH)`
-		// leaves up to `cellH - 1` px of `term-bg` painted *below* the
-		// last row inside the scissor — the user sees that as
-		// "底部还有很多空余" because the renderer's bg fill is wider
-		// than the actual rows. By collapsing the scissor to
-		// `cellW*cols × cellH*rows`, the unused content-box area
-		// reverts to whatever the host canvas was on (workspace bg,
-		// since the canvas itself is transparent there), giving a tight
-		// inset that visually matches the user's `paddingPx` setting.
+		// Shrink the scissor to cells-exact dimensions, anchored to the
+		// content-box origin (no centering). §E1 (2026-06-02): prior
+		// versions re-centered the scissor, which created asymmetric
+		// padding at the left edge. By keeping the scissor at the
+		// content-box top-left, the first column/row renders flush
+		// against the pane border. CellsW × cellsH keeps the scissor
+		// tight — residual right/bottom space shows as workspace bg.
 		if (entry.cellW > 0 && entry.cellH > 0) {
 			const cols = Math.max(1, Math.floor(cssW / entry.cellW));
 			const rows = Math.max(1, Math.floor(cssH / entry.cellH));
-			const cellsW = cols * entry.cellW;
-			const cellsH = rows * entry.cellH;
-			cssX += (cssW - cellsW) / 2;
-			cssY += (cssH - cellsH) / 2;
-			cssW = cellsW;
-			cssH = cellsH;
+			cssW = cols * entry.cellW;
+			cssH = rows * entry.cellH;
 		}
 		// Add small epsilon to device-pixel width/height to avoid 1px
 		// clipping on right/bottom edges due to sub-pixel rounding.
@@ -3965,18 +3958,12 @@ export class TerminalManager {
 		// flagged. Canvas2D mode skips this — its canvas is sized to
 		// the container directly with no padding budget to redistribute.
 		if (this._isHostMode(entry)) {
-			const cellsW = cols * entry.cellW;
-			const padAll = Math.max(0, (containerWCss - cellsW) / 2);
-			rows = Math.max(1, Math.floor((containerHCss - 2 * padAll) / entry.cellH));
-			entry.container.style.padding = `${padAll}px`;
-			// Record the ACTUAL written CSS padding separately from the
-			// user-preference value. `pickAt` etc. need the on-screen
-			// value to align overlays with the visible cursor, while
-			// the NEXT fitPane needs the user's basePad as a floor
-			// (otherwise basePad drifts toward padAll on every fit and
-			// the container shifts a few px each run — visible as the
-			// "shell prompt loads then nudges downward" jolt at startup).
-			entry.lastFitPaddingPx = padAll;
+			// §E1 (2026-06-02): no symmetric padding redistribution.
+			// Cells start flush against the container's content-box
+			// origin so the left edge has zero gap. Any residual
+			// right/bottom space (< 1 cell) displays as workspace bg.
+			rows = Math.max(1, Math.floor(containerHCss / entry.cellH));
+			entry.lastFitPaddingPx = entry.lastAppliedPaddingPx ?? 0;
 			this._recomputeViewport(entry);
 		} else {
 			entry.handle?.resize(wCss, hCss, dpr);
