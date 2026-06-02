@@ -3,11 +3,12 @@
   import { TerminalController } from './terminalController';
   import VirtualKeyboard from './VirtualKeyboard.svelte';
 
-  let { paneId, onStdin, onResize, showKeyboard = false }: {
+  let { paneId, onStdin, onResize, showKeyboard = false, backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     showKeyboard?: boolean;
+    backendName?: string;
   } = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -26,6 +27,9 @@
 
   const td = new TextDecoder();
 
+  // Keyboard offset (mobile: pushes canvas up via transform)
+  let keyboardOffset = $state(0);
+
   // Touch state
   let touchStartY = 0;
   let touchStartX = 0;
@@ -43,6 +47,7 @@
     ctrl.onResize = (r, c, pw, ph) => {
       if (paneId && onResize) onResize(paneId, r, c, pw, ph);
     };
+    backendName = ctrl.backendName;
     ready = true;
     ctrl.setFocused(true);
     focusInput();
@@ -110,6 +115,21 @@
   }
 
   // ── Touch ──
+
+  /** Send a mouse wheel event (or scroll scrollback) matching handleWheel(). */
+  function touchWheel(deltaY: number, clientX: number, clientY: number) {
+    if (!ctrl) return;
+    if (ctrl.isMouseReporting()) {
+      const cell = ctrl.clientToCell(clientX, clientY) ?? { row: 0, col: 0 };
+      const btn = deltaY < 0 ? 64 : 65; // wheel up / down
+      const bytes = ctrl.encodeMouse(cell.row, cell.col, btn, 0, false, false, false);
+      if (bytes.length > 0) onStdin(td.decode(bytes));
+    } else {
+      const lines = deltaY > 0 ? 3 : -3;
+      if (lines < 0) ctrl.scrollUp(-lines); else ctrl.scrollDown(lines);
+    }
+  }
+
   function handleTouchStart(e: TouchEvent) {
     if (!ctrl) return;
     if (e.touches.length === 2) {
@@ -135,6 +155,11 @@
       if (cell) {
         ctrl.startSelection(cell.row, cell.col);
         hasSelection = ctrl.hasSelection();
+        // Forward mouse press to TUI if it wants it
+        if (ctrl.isMouseReporting()) {
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
+          if (bytes.length > 0) onStdin(td.decode(bytes));
+        }
         try { navigator.vibrate(15); } catch {}
       }
     }, 400);
@@ -162,7 +187,15 @@
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         e.preventDefault();
         const cell = ctrl.clientToCell(e.touches[0].clientX, e.touches[0].clientY);
-        if (cell) { ctrl.extendSelection(cell.row, cell.col); hasSelection = ctrl.hasSelection(); }
+        if (cell) {
+          ctrl.extendSelection(cell.row, cell.col);
+          hasSelection = ctrl.hasSelection();
+          // Forward mouse drag to TUI if it wants it
+          if (ctrl.isMouseReporting()) {
+            const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false);
+            if (bytes.length > 0) onStdin(td.decode(bytes));
+          }
+        }
         return;
       }
       if (didLongPress) return;
@@ -170,9 +203,7 @@
       if (Math.abs(dy) > 10 && longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
       touchScrollAccum += dy;
       if (Math.abs(touchScrollAccum) > 30) {
-        const lines = touchScrollAccum > 0 ? -3 : 3;
-        if (lines < 0) ctrl.scrollUp(-lines);
-        else ctrl.scrollDown(lines);
+        touchWheel(touchScrollAccum, e.touches[0].clientX, e.touches[0].clientY);
         touchScrollAccum = 0;
       }
       touchStartY = e.touches[0].clientY;
@@ -182,7 +213,23 @@
   function handleTouchEnd(e: TouchEvent) {
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
     if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; return; }
-    if (ctrl?.isSelecting) { ctrl.endSelection(); hasSelection = ctrl.hasSelection(); touchScrollAccum = 0; return; }
+    if (ctrl?.isSelecting) {
+      ctrl.endSelection();
+      hasSelection = ctrl.hasSelection();
+      touchScrollAccum = 0;
+      // Forward mouse release to TUI if it wants it
+      if (ctrl.isMouseReporting()) {
+        const touch = e.changedTouches[0];
+        if (touch) {
+          const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
+          if (cell) {
+            const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false);
+            if (bytes.length > 0) onStdin(td.decode(bytes));
+          }
+        }
+      }
+      return;
+    }
     if (didLongPress) { didLongPress = false; touchScrollAccum = 0; return; }
     const elapsed = Date.now() - touchStartTime;
     if (elapsed < 250 && ctrl) {
@@ -191,11 +238,11 @@
         const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
         if (cell && ctrl.isMouseReporting()) {
           const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
-          if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+          if (bytes.length > 0) onStdin(td.decode(bytes));
           requestAnimationFrame(() => {
             if (ctrl) {
               const releaseBytes = ctrl.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
-              if (releaseBytes.length > 0) onStdin(new TextDecoder().decode(releaseBytes));
+              if (releaseBytes.length > 0) onStdin(td.decode(releaseBytes));
             }
           });
         }
@@ -371,6 +418,26 @@
       return () => clearInterval(poll);
     }
   });
+
+  $effect(() => {
+    if (ctrl && paneId) {
+      ctrl.markDirty();
+      ctrl.requestResizeImmediate();
+    }
+  });
+
+  // Track keyboard show/hide via visualViewport
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    function onViewportResize() {
+      const kh = window.innerHeight - (vv!.height || 0);
+      keyboardOffset = kh > 0 ? kh : 0;
+    }
+    vv.addEventListener('resize', onViewportResize);
+    onViewportResize();
+    return () => vv.removeEventListener('resize', onViewportResize);
+  });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -383,6 +450,7 @@
   onmouseup={handleMouseUp}
   onwheel={handleWheel}
   oncontextmenu={handleContextMenu}
+  style="transform: translateY(-{keyboardOffset}px)"
 >
   {#if !ready}
     <div class="loading">初始化终端引擎…</div>
@@ -419,17 +487,18 @@
 </div>
 
 {#if showKeyboard}
-  <VirtualKeyboard onKey={handleVirtualKey} />
+  <VirtualKeyboard {keyboardOffset} onKey={handleVirtualKey} />
 {/if}
 
 <style>
-  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation}
+  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation;transition:transform .2s ease}
   .term-canvas{display:block;width:100%;height:100%;touch-action:none}
   .term-canvas.hidden{opacity:0}
-  /* Invisible input sink parked at the cursor. pointer-events:none keeps it from
-     stealing canvas clicks; opacity/transparent colors keep it unseen. */
-  .hidden-input{position:absolute;top:0;left:0;width:2px;height:1em;margin:0;padding:0;border:0;
-    opacity:0;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
+  /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
+     from stealing canvas clicks. Opacity must be >0 so the IME candidate window
+     (Windows 拼音 / 搜狗 / 微软 IME) anchors to a detectable element. */
+  .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;
+    opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
     background:transparent;color:transparent;caret-color:transparent;outline:none;font:inherit}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px}
   .selection-actions{position:absolute;bottom:12px;right:12px;display:flex;gap:6px;z-index:10}

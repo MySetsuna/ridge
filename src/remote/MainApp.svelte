@@ -22,6 +22,7 @@
   // Kernel palette derived from the desktop theme; applied to the canvas once it
   // mounts (the theme push usually arrives before the terminal exists).
   let kernelTheme: Record<string, string> | null = $state(null);
+  let backendName = $state('Canvas2D');
 
   function applyTheme(colors: Record<string, string>) {
     applyThemeVars(colors);
@@ -37,15 +38,31 @@
   }
 
   function handleRefresh() {
-    // The refresh button locks the shared PTY to this client's current viewport
-    // size (persists until the next claim/refresh from any endpoint), then
-    // re-pulls the pane / workspace lists.
     if (activePaneId && canvasRef) {
       const d = canvasRef.getDims();
       if (d) ws.refreshPane(activePaneId, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
     }
     ws.listPanes();
     refreshWorkspaces();
+  }
+
+  let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let _refreshSeq = 0;
+
+  function refreshActivePane() {
+    if (!activePaneId || !canvasRef) return;
+    const pid = activePaneId;
+    const d = canvasRef.getDims();
+    if (!d) return;
+    // Debounce: coalesce rapid calls
+    if (_refreshTimer) clearTimeout(_refreshTimer);
+    _refreshTimer = setTimeout(() => {
+      _refreshTimer = null;
+      const cur = ws.lastRefreshSeq();
+      if (cur <= _refreshSeq) return; // stale, a newer call already went through
+      _refreshSeq = cur;
+      ws.refreshPane(pid, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+    }, 100);
   }
 
   async function refreshWorkspaces() {
@@ -70,12 +87,29 @@
     ws.onMessage((msg) => {
       if (msg.type === 'panes') {
         panes = msg.panes;
-        if (!activePaneId && msg.panes.length > 0) {
-          activePaneId = msg.panes[0].id;
+        const paneIds = msg.panes.map(p => p.id);
+        if (!activePaneId || !paneIds.includes(activePaneId)) {
+          activePaneId = msg.panes.length > 0 ? msg.panes[0].id : null;
         }
       }
-      if (msg.type === 'switch-workspace-result' || msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
+      if (msg.type === 'workspaces') {
+        workspaces = msg.workspaces;
+        const active = workspaces.find(w => w.active);
+        if (active) activeWorkspaceId = active.id;
+      }
+      if (msg.type === 'switch-workspace-result') {
+        if (msg.success && msg.workspaceId) {
+          activeWorkspaceId = msg.workspaceId;
+        }
         refreshWorkspaces();
+      }
+      if (msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
+        refreshWorkspaces();
+      }
+      if (msg.type === 'workspace-renamed') {
+        workspaces = workspaces.map(w =>
+          w.id === msg.workspaceId ? { ...w, name: msg.name } : w
+        );
       }
     });
     ws.onRawBytes((paneId, data) => {
@@ -112,6 +146,12 @@
     }
   });
 
+  $effect(() => {
+    if (activePaneId && canvasRef) {
+      refreshActivePane();
+    }
+  });
+
   // Apply the kernel palette once the canvas exists (theme can arrive earlier).
   $effect(() => {
     if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
@@ -125,13 +165,14 @@
 </script>
 
 <div class="app-root">
-  <TopBar {panes} bind:activePaneId {workspaces} {activeWorkspaceId} {ws} {wsState} />
+  <TopBar {panes} bind:activePaneId {workspaces} bind:activeWorkspaceId {ws} {wsState} />
 
   {#if panes.length === 0}
     <div class="empty"><p>无活跃终端</p><p class="hint">在桌面端打开一个终端以开始</p></div>
   {:else if activePaneId}
     <TerminalCanvas
       bind:this={canvasRef}
+      bind:backendName
       paneId={activePaneId ?? null}
       {onStdin}
       {onResize}
@@ -147,9 +188,11 @@
   <BottomTabBar
     {ws}
     {sidebarTab}
+    {backendName}
     onSidebarToggle={handleSidebarToggle}
     onRefresh={handleRefresh}
     bind:showKeyboard
+    onCreateWorkspace={(wsId) => { activeWorkspaceId = wsId; refreshWorkspaces(); }}
   />
 </div>
 

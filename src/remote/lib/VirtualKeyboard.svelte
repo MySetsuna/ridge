@@ -5,8 +5,9 @@
     shift: boolean;
   }
 
-  let { onKey }: {
+  let { onKey, keyboardOffset = 0 }: {
     onKey: (key: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
+    keyboardOffset?: number;
   } = $props();
 
   let mods = $state<ModState>({ ctrl: false, alt: false, shift: false });
@@ -40,7 +41,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- preventDefault on pointerdown so tapping a key never blurs the terminal's
      hidden textarea — that would dismiss the mobile soft keyboard. -->
-<div class="vk-container" onpointerdown={(e) => e.preventDefault()}>
+<div class="vk-container" style="transform: translateY(-{keyboardOffset}px)" onpointerdown={(e) => e.preventDefault()}>
   <div class="vk-row">
     <button
       class="vk-key mod"
@@ -86,6 +87,7 @@
     user-select: none;
     -webkit-user-select: none;
     touch-action: manipulation;
+    transition: transform .2s ease;
   }
   .vk-row {
     display: flex;

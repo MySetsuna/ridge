@@ -100,7 +100,9 @@ fn main() {
             process::exit(0);
         }
     }
-    if args.len() < 2 {
+    let (socket_id, sub_idx) = parse_global_flags(&args);
+    let _ = SOCKET.set(socket_id);
+    if sub_idx >= args.len() {
         log_to_file("missing subcommand");
         eprintln!("tmux: missing subcommand");
         process::exit(1);
@@ -109,11 +111,12 @@ fn main() {
     let token = env::var("RIDGE_TEAMMATE_TOKEN").unwrap_or_default();
     if url.is_empty() || token.is_empty() {
         log_to_file("missing RIDGE_TEAMMATE_URL/TOKEN");
-        eprintln!("tmux: set RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN (Ridge injects these in PTY)");
+        eprintln!("tmux: RIDGE_TEAMMATE_URL/TOKEN not set (run tmux inside Ridge)");
         process::exit(1);
     }
-    let sub = args[1].as_str();
-    let rest = &args[2..];
+    let sub = args[sub_idx].as_str();
+    let rest = &args[sub_idx + 1..];
+    log_to_file(&format!("socket={} sub={sub}", socket()));
     let r = match sub {
         // ========== Pane Management ==========
         "split-window" | "splitw" => cmd_split(rest, &url, &token),
@@ -143,12 +146,12 @@ fn main() {
 
         // ========== Session Management ==========
         "new-session" | "new" => cmd_new_session(rest, &url, &token),
-        "has-session" | "has" => cmd_has_session(rest),
+        "has-session" | "has" => cmd_has_session(rest, &url, &token),
         "list-sessions" | "ls" => cmd_list_sessions(rest, &url, &token),
-        "attach-session" | "attach" => cmd_attach_session(rest),
+        "attach-session" | "attach" => cmd_attach_session(rest, &url, &token),
         "detach-client" | "detach" => cmd_detach_client(rest),
-        "kill-session" => cmd_kill_session(rest),
-        "kill-server" => cmd_kill_server(),
+        "kill-session" => cmd_kill_session(rest, &url, &token),
+        "kill-server" => cmd_kill_server(&url, &token),
         "switch-client" | "switchc" => cmd_switch_client(rest),
         "rename-session" => cmd_rename_session(rest),
         "lock-server" | "lock" => cmd_lock_server(),
@@ -223,7 +226,202 @@ fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
         "X-Ridge-Token",
         reqwest::header::HeaderValue::from_str(token).expect("token header"),
     );
+    // 发起方工作区身份（由 Ridge PTY 注入 `RIDGE_WORKSPACE_ID`，shim 子进程继承）：
+    // 让后端把 GUI-bridge 的 split/复用/接管锁定在「发起 tmux 的会话所在工作区」。
+    if let Ok(ws) = env::var("RIDGE_WORKSPACE_ID") {
+        let ws = ws.trim();
+        if !ws.is_empty() {
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(ws) {
+                m.insert("X-Ridge-Workspace", v);
+            }
+        }
+    }
     m
+}
+
+// ===================== 全局标志 / socket / 路由助手 =====================
+
+static SOCKET: OnceLock<String> = OnceLock::new();
+
+/// 当前 socket 命名空间键：`default` / `L:<name>` / `S:<path>`。
+fn socket() -> &'static str {
+    SOCKET.get().map(String::as_str).unwrap_or("default")
+}
+
+/// 解析子命令前的全局标志，返回 (socket_id, 子命令在 args 中的起始下标)。
+/// 处理 `-L name` / `-S path`，并吞掉常见的无关全局开关（`-f` 配置、`-2/-u/-v/-q`、
+/// `-C/-CC` 控制模式、`-T type`、全局 `-c`）。遇到第一个非全局标志即子命令。
+fn parse_global_flags(args: &[String]) -> (String, usize) {
+    let mut sock = "default".to_string();
+    let mut i = 1; // args[0] = 程序名
+    while i < args.len() {
+        match args[i].as_str() {
+            "-L" if i + 1 < args.len() => {
+                sock = format!("L:{}", args[i + 1]);
+                i += 2;
+            }
+            "-S" if i + 1 < args.len() => {
+                sock = format!("S:{}", args[i + 1]);
+                i += 2;
+            }
+            // 带取值、与 socket 无关的全局标志：跳过标志 + 取值。
+            "-f" | "-T" | "-c" if i + 1 < args.len() => i += 2,
+            // 无取值的全局开关。
+            "-2" | "-8" | "-u" | "-v" | "-q" | "-N" | "-D" | "-C" | "-CC" => i += 1,
+            // 第一个非全局标志 → 子命令。
+            _ => break,
+        }
+    }
+    (sock, i)
+}
+
+/// 目标是否「会话限定」（需走 native 解析）：`=NAME` 或带非数字会话名。
+/// 纯 `%N` / 纯数字 / 空 视为 GUI 当前会话的 pane（默认 socket 走 GUI 遗留路径）。
+fn target_is_session_qualified(raw: &str) -> bool {
+    let t = raw.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if let Some(r) = t.strip_prefix('=') {
+        return !r.trim().is_empty();
+    }
+    if t.starts_with('%') {
+        return false;
+    }
+    let end = t.find(|c| c == ':' || c == '.').unwrap_or(t.len());
+    let cand = &t[..end];
+    !cand.is_empty() && cand.parse::<usize>().is_err()
+}
+
+/// 是否路由到 native 引擎：自定义 socket（`-L`/`-S`）一律 native；默认 socket 仅当
+/// 目标会话限定时 native，否则走 GUI 遗留路径。
+fn use_native(target: Option<&str>) -> bool {
+    socket() != "default" || target.map(target_is_session_qualified).unwrap_or(false)
+}
+
+fn tmux_api(url: &str, path: &str) -> String {
+    format!("{}/api/v1/tmux/{}", url.trim_end_matches('/'), path)
+}
+
+/// GET，返回 (status, body)；网络失败 None。
+fn http_get(u: String, token: &str) -> Option<(u16, String)> {
+    let res = client().get(u).headers(auth_headers(token)).send().ok()?;
+    let status = res.status().as_u16();
+    Some((status, res.text().unwrap_or_default()))
+}
+
+/// POST JSON，返回 (status, body)；网络失败 None。
+fn http_post(u: String, token: &str, body: serde_json::Value) -> Option<(u16, String)> {
+    let res = client()
+        .post(u)
+        .headers(auth_headers(token))
+        .json(&body)
+        .send()
+        .ok()?;
+    let status = res.status().as_u16();
+    Some((status, res.text().unwrap_or_default()))
+}
+
+/// 极简 query 值编码。
+fn q(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 抽取 `-t VALUE`；缺失时兜底取第一个非 flag 实参。
+fn extract_target(rest: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == "-t" && i + 1 < rest.len() {
+            return Some(rest[i + 1].clone());
+        }
+        i += 1;
+    }
+    rest.iter().find(|a| !a.starts_with('-')).cloned()
+}
+
+/// 抽取 `-F VALUE`。
+fn extract_f(rest: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == "-F" && i + 1 < rest.len() {
+            return Some(rest[i + 1].clone());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// native `select`（记账）。返回 `Some(result)` 表示已处理（或硬失败），`None` 表示
+/// 命中 GUI 会话（409）应回退 GUI 路径。
+fn native_select(url: &str, token: &str, target: &str) -> Option<Result<(), ()>> {
+    let body = serde_json::json!({ "socket": socket(), "target": target });
+    match http_post(tmux_api(url, "select"), token, body) {
+        Some((200, _)) => Some(Ok(())),
+        Some((409, _)) => None,
+        Some((_, msg)) => {
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
+            Some(Err(()))
+        }
+        None => Some(Err(())),
+    }
+}
+
+/// native `kill`（scope ∈ pane/window/session/server）。语义同 `native_select`。
+fn native_kill(url: &str, token: &str, target: &str, scope: &str) -> Option<Result<(), ()>> {
+    let body = serde_json::json!({ "socket": socket(), "target": target, "scope": scope });
+    match http_post(tmux_api(url, "kill"), token, body) {
+        Some((200, _)) => Some(Ok(())),
+        Some((409, _)) => None,
+        Some((_, msg)) => {
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
+            Some(Err(()))
+        }
+        None => Some(Err(())),
+    }
+}
+
+/// 启动本 shim 的父进程可执行文件路径（通常正是调用 `tmux` 的那个 shell）。
+fn parent_process_exe() -> Option<String> {
+    let me = sysinfo::get_current_pid().ok()?;
+    let sys = sysinfo::System::new_all();
+    let parent = sys.process(me)?.parent()?;
+    let exe = sys.process(parent)?.exe()?;
+    let s = exe.to_string_lossy().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// 解析 native 面板应使用的 shell。
+///
+/// 关键：优先用「启动本 shim 的父进程 exe」——正是调用脚本所用的那个 shell（如 git-bash
+/// 的 `bash.exe`，一个 Windows 后端可直接 spawn 的真实路径）。这样无头面板与调用脚本用
+/// 同一个 shell 二进制，`/tmp` 等路径解析完全一致（`$SHELL` 在 git-bash 里是 `/usr/bin/bash`
+/// 这种 MSYS 路径，Windows 后端无法直接 spawn）。父进程不是 shell 时回退 `$SHELL`。
+fn resolve_shell() -> Option<String> {
+    if let Some(p) = parent_process_exe() {
+        let low = p.to_ascii_lowercase();
+        let is_shell = ["bash", "zsh", "sh", "pwsh", "powershell", "cmd", "fish", "dash"]
+            .iter()
+            .any(|name| {
+                low.ends_with(&format!("{name}.exe")) || low.ends_with(&format!("/{name}"))
+            });
+        if is_shell {
+            return Some(p);
+        }
+    }
+    env::var("SHELL").ok().filter(|s| !s.trim().is_empty())
 }
 
 fn parse_pane_target(s: &str) -> usize {
@@ -316,15 +514,6 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
         out = out.replace(k, &v);
     }
     out
-}
-
-/// Find an idle pane that can be reused.
-/// Returns the pane index if an idle pane is found, None otherwise.
-/// Currently returns None - idle pane detection can be implemented later
-/// by querying the Ridge API for pane state.
-fn find_idle_pane(_url: &str, _token: &str) -> Option<usize> {
-    // TODO: Implement idle pane detection via Ridge API
-    None
 }
 
 fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
@@ -446,11 +635,13 @@ fn render_tmux_format_dynamic(fmt: &str, pane_index: usize, url: &str, token: &s
 fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut pane_index = current_pane_index_from_env();
     let mut format = "#{pane_id}".to_string();
+    let mut raw_target: Option<String> = None;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
             "-p" => {}
             "-t" if i + 1 < rest.len() => {
+                raw_target = Some(rest[i + 1].clone());
                 pane_index = parse_pane_target(&rest[i + 1]);
                 i += 1;
             }
@@ -461,6 +652,32 @@ fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()
         }
         i += 1;
     }
+
+    // 会话限定目标 / 自定义 socket → native display-message（按解析到的目标渲染 `-F`）。
+    if use_native(raw_target.as_deref()) {
+        let u = format!(
+            "{}?socket={}&target={}&format={}",
+            tmux_api(url, "display-message"),
+            q(socket()),
+            q(raw_target.as_deref().unwrap_or("")),
+            q(&format)
+        );
+        match http_get(u, token) {
+            Some((200, body)) => {
+                println!("{body}");
+                return Ok(());
+            }
+            Some((409, _)) => {}
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
+
     println!("{}", render_tmux_format_dynamic(&format, pane_index, url, token));
     Ok(())
 }
@@ -471,6 +688,7 @@ const SPLIT_WINDOW_PRINT_DEFAULT: &str = "#{session_name}:#{window_index}.#{pane
 fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut horizontal = false;
     let mut pane_index: Option<usize> = None;
+    let mut raw_target: Option<String> = None;
     let mut print_pane = false;
     let mut output_format: Option<String> = None;
     let mut cwd: Option<String> = None;
@@ -486,7 +704,11 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
                 i += 1;
             }
             "-t" if i + 1 < rest.len() => {
-                pane_index = Some(parse_pane_target(&rest[i + 1]));
+                raw_target = Some(rest[i + 1].clone());
+                let t = rest[i + 1].trim();
+                if !t.is_empty() {
+                    pane_index = Some(parse_pane_target(t));
+                }
                 i += 1;
             }
             "-c" if i + 1 < rest.len() => {
@@ -531,6 +753,7 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let print_template = if print_pane {
         Some(
             output_format
+                .clone()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| SPLIT_WINDOW_PRINT_DEFAULT.to_string()),
         )
@@ -538,25 +761,52 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         None
     };
 
- // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
- let idle_pane_index = if pane_index.is_none() {
- find_idle_pane(url, token)
- } else {
- None
- };
+    // 会话限定目标 / 自定义 socket → native split（在该会话窗口里起新的无头面板）。
+    // 命中 GUI 会话（409）则回退到下方 GUI split。
+    if use_native(raw_target.as_deref()) {
+        let shell = resolve_shell();
+        let body = serde_json::json!({
+            "socket": socket(),
+            "target": raw_target.clone().unwrap_or_default(),
+            "horizontal": horizontal,
+            "new_window": false,
+            "cwd": cwd.clone(),
+            "shell": shell,
+            "command": command.clone(),
+            "print": print_pane,
+            "print_format": output_format.clone(),
+        });
+        match http_post(tmux_api(url, "split-window"), token, body) {
+            Some((200, out)) => {
+                if !out.is_empty() {
+                    println!("{out}");
+                }
+                return Ok(());
+            }
+            Some((409, _)) => {}
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
 
- // 如果找到空闲 pane，使用它而不是创建新的
- let target_pane_index = idle_pane_index.or(pane_index);
-
+    // GUI 路径：后端在发起方工作区内「先复用空闲 shell 面板，否则在最大 pane 上 split」。
+    let structured = command.as_deref().and_then(|c| parse_structured_launch(c));
     post_split(
         url,
         token,
         horizontal,
-        target_pane_index,
+        pane_index,
         command,
         cwd,
         print_template.as_deref(),
-    ).map(|_| ())
+        structured.as_ref(),
+    )
+    .map(|_| ())
 }
 
 fn post_split(
@@ -567,24 +817,42 @@ fn post_split(
     command: Option<String>,
     cwd: Option<String>,
     print_template: Option<&str>,
+    structured: Option<&StructuredLaunch>,
 ) -> Result<usize, ()> {
     log_to_file(&format!(
-        "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}",
+        "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}, structured={}",
         horizontal,
         pane_index,
         command,
         cwd,
-        print_template.is_some()
+        print_template.is_some(),
+        structured.is_some()
     ));
     let mut body = serde_json::json!({ "horizontal": horizontal });
     if let Some(p) = pane_index {
         body["pane_index"] = serde_json::json!(p);
     }
-    if let Some(c) = command {
+    if let Some(launch) = structured {
+        body["program"] = serde_json::json!(launch.program);
+        body["args"] = serde_json::json!(launch.args);
+        if !launch.env.is_empty() {
+            body["env"] = serde_json::json!(launch.env);
+        }
+        if let Some(ref c) = launch.cwd {
+            if !c.is_empty() {
+                body["cwd"] = serde_json::json!(c);
+            }
+        }
+        if command.is_some() {
+            body["command"] = serde_json::json!(command.unwrap());
+        }
+    } else if let Some(c) = command {
         body["command"] = serde_json::json!(c);
     }
     if let Some(c) = cwd.filter(|s| !s.is_empty()) {
-        body["cwd"] = serde_json::json!(c);
+        if body.get("cwd").is_none() {
+            body["cwd"] = serde_json::json!(c);
+        }
     }
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
     log_to_file(&format!("post_split: posting to {}", u));
@@ -628,12 +896,14 @@ fn post_split(
 fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut pane = 0usize;
     let mut lines = 80usize;
+    let mut raw_target: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
             "-p" | "-e" | "-C" | "-E" | "-a" | "-q" => {}
             "-S" => {}
             "-t" if i + 1 < rest.len() => {
+                raw_target = Some(rest[i + 1].clone());
                 pane = parse_pane_target(&rest[i + 1]);
                 i += 1;
             }
@@ -645,6 +915,33 @@ fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
+
+    // 会话限定目标 / 自定义 socket → native capture-pane（grid-backed 当前屏；
+    // 编排方据此回读子代理输出）。命中 GUI 会话则回退原 GUI 路径。
+    if use_native(raw_target.as_deref()) {
+        let u = format!(
+            "{}?socket={}&target={}&lines={}",
+            tmux_api(url, "capture-pane"),
+            q(socket()),
+            q(raw_target.as_deref().unwrap_or("")),
+            lines
+        );
+        match http_get(u, token) {
+            Some((200, body)) => {
+                println!("{body}");
+                return Ok(());
+            }
+            Some((409, _)) => {} // 命中 GUI 会话 → 回退 GUI 路径
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
+
     let u = format!(
         "{}/api/v1/capture-pane?pane={}&lines={}",
         url.trim_end_matches('/'),
@@ -875,10 +1172,12 @@ fn post_spawn_process(
 fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     // `-t ""` 或未出现 `-t` 时与 tmux 一致：发往当前窗格（由 teammate HTTP 侧 `teammate_tmux_pane_cursor` 记录）。
     let mut target = SendTarget::TmuxCurrent;
+    let mut raw_target: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         if rest[i] == "-t" && i + 1 < rest.len() {
             let v = rest[i + 1].trim();
+            raw_target = Some(v.to_string());
             if v.is_empty() {
                 target = SendTarget::TmuxCurrent;
             } else {
@@ -888,6 +1187,11 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             continue;
         }
         if rest[i].starts_with('-') {
+            // `-N count` 带值；其余无值开关（-l/-H/-R/-M）跳过。
+            if rest[i] == "-N" && i + 1 < rest.len() {
+                i += 2;
+                continue;
+            }
             i += 1;
             continue;
         }
@@ -898,6 +1202,28 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         buf.extend(tmux_key_to_bytes(w));
     }
     let text = String::from_utf8_lossy(&buf).into_owned();
+
+    // 会话限定目标 / 自定义 socket → native send-keys（写目标面板 master）。
+    // 命中 GUI 会话（409）则回退到下方 GUI 路径。
+    if use_native(raw_target.as_deref()) {
+        let body = serde_json::json!({
+            "socket": socket(),
+            "target": raw_target.clone().unwrap_or_default(),
+            "text": text,
+        });
+        match http_post(tmux_api(url, "send-keys"), token, body) {
+            Some((200, _)) => return Ok(()),
+            Some((409, _)) => {}
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
+
     let candidate = text.trim_end_matches(['\r', '\n']).trim();
     // Structured launch: trigger regardless of trailing Enter. Claude Code often sends
     // the command and Enter in separate `send-keys` calls; waiting for the Enter would
@@ -942,10 +1268,12 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut pane_index = current_pane_index_from_env();
     let mut format: Option<String> = None;
     let mut all_panes = false;
+    let mut raw_target: Option<String> = None;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
             "-t" if i + 1 < rest.len() => {
+                raw_target = Some(rest[i + 1].clone());
                 pane_index = parse_pane_target(&rest[i + 1]);
                 i += 1;
             }
@@ -960,6 +1288,38 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
+
+    // 会话限定目标 / 自定义 socket → native list-panes（真实面板 id + `-F` 渲染）。
+    // 这条必须正确：验收脚本用 `list-panes -t =S -F '#{session_name}'` 作破坏性操作前的守卫。
+    if use_native(raw_target.as_deref()) {
+        let mut u = format!(
+            "{}?socket={}&target={}",
+            tmux_api(url, "list-panes"),
+            q(socket()),
+            q(raw_target.as_deref().unwrap_or(""))
+        );
+        if let Some(f) = &format {
+            u.push_str(&format!("&format={}", q(f)));
+        }
+        if all_panes {
+            u.push_str("&all=1");
+        }
+        match http_get(u, token) {
+            Some((200, body)) => {
+                println!("{body}");
+                return Ok(());
+            }
+            Some((409, _)) => {} // 命中 GUI 会话 → 回退 GUI 路径
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
+
     if let Some(fmt) = format {
         if all_panes {
             println!("{}", render_tmux_format_dynamic(&fmt, 0, url, token));
@@ -987,6 +1347,13 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 // ========== Pane Management Commands ==========
 
 fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    // 会话限定目标 / 自定义 socket → native select（绝不落到 GUI，保护其他工作区）。
+    let raw_t = extract_target(rest);
+    if use_native(raw_t.as_deref()) {
+        if let Some(r) = native_select(url, token, raw_t.as_deref().unwrap_or("")) {
+            return r;
+        }
+    }
     let mut pane_index: Option<usize> = None;
     let mut direction: Option<&str> = None;
     let mut i = 0;
@@ -1058,6 +1425,14 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 }
 
 fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    // 会话限定目标 / 自定义 socket → native kill-pane。**必须**先于 GUI 路径：否则
+    // `-L sock kill-pane` 会误杀 GUI 工作区里的真实面板。
+    let raw_t = extract_target(rest);
+    if use_native(raw_t.as_deref()) {
+        if let Some(r) = native_kill(url, token, raw_t.as_deref().unwrap_or(""), "pane") {
+            return r;
+        }
+    }
     let mut pane_index: Option<usize> = None;
     let mut kill_all = false;
     let mut i = 0;
@@ -1310,6 +1685,7 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut window_name: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut pane_index: Option<usize> = None;
+    let mut raw_target: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1325,6 +1701,7 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             "-a" => {} // after index
             "-t" if i + 1 < rest.len() => {
                 let t = rest[i + 1].trim();
+                raw_target = Some(t.to_string());
                 // Only treat as pane index if numeric or %N — session names are ignored
                 if t.parse::<usize>().is_ok() || t.starts_with('%') {
                     pane_index = Some(parse_pane_target(t));
@@ -1340,25 +1717,44 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         i += 1;
     }
 
-    // Create new pane in a new window - just use split for now.
-    // `window_name` (from `-n`) is captured for diagnostics; forwarding it as
-    // a teammate pane title requires a separate post_split path that we haven't
-    // wired yet — logging keeps the assignment intentional and observable.
     log_to_file(&format!(
-        "new-window: name={:?}, cwd={:?}, pane_index={:?}, command={:?}",
-        window_name, cwd, pane_index, command
+        "new-window: name={window_name:?}, cwd={cwd:?}, target={raw_target:?}, socket={}",
+        socket()
     ));
-    // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
-    let idle_pane_index = if pane_index.is_none() {
-        find_idle_pane(url, token)
-    } else {
-        None
-    };
 
-    // 如果找到空闲 pane，使用它而不是创建新的
-    let target_pane_index = idle_pane_index.or(pane_index);
+    // 会话限定目标 / 自定义 socket → native new-window（在该会话里新建窗口+面板）。
+    if use_native(raw_target.as_deref()) {
+        let shell = resolve_shell();
+        let body = serde_json::json!({
+            "socket": socket(),
+            "target": raw_target.clone().unwrap_or_default(),
+            "new_window": true,
+            "window_name": window_name.clone(),
+            "cwd": cwd.clone(),
+            "shell": shell,
+            "command": command.clone(),
+            "print": false,
+        });
+        match http_post(tmux_api(url, "split-window"), token, body) {
+            Some((200, out)) => {
+                if !out.is_empty() {
+                    println!("{out}");
+                }
+                return Ok(());
+            }
+            Some((409, _)) => {}
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
 
-    let new_idx = post_split(url, token, false, target_pane_index, command, cwd, None)?;
+    // GUI 路径：复用空闲 shell / 在发起方工作区最大 pane 上 split（后端处理）。
+    let new_idx = post_split(url, token, false, pane_index, command, cwd, None, None)?;
     if let Some(name) = &window_name {
         rename_pane_http(url, token, new_idx, name);
     }
@@ -1385,7 +1781,13 @@ fn cmd_select_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()
     Ok(())
 }
 
-fn cmd_kill_window(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
+fn cmd_kill_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let raw_t = extract_target(rest);
+    if use_native(raw_t.as_deref()) {
+        if let Some(r) = native_kill(url, token, raw_t.as_deref().unwrap_or(""), "window") {
+            return r;
+        }
+    }
     let mut window_index: Option<&str> = None;
     let mut i = 0;
     while i < rest.len() {
@@ -1558,100 +1960,178 @@ fn cmd_last_window(rest: &[String]) -> Result<(), ()> {
 // ========== Session Management Commands ==========
 
 fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
-    let mut session_name: Option<String> = None;
-    let mut detached = false;
-    let mut pane_index: Option<usize> = None;
+    // 具名/后台会话一律落到 native 引擎（无头 PTY，按 socket 隔离）。
+    let mut name: Option<String> = None;
+    let mut window_name: Option<String> = None;
+    let mut cwd: Option<String> = None;
+    let mut width: u16 = 80;
+    let mut height: u16 = 24;
+    let mut attach_or_create = false;
+    let mut print = false;
+    let mut print_format: Option<String> = None;
+    let mut cmd_start: Option<usize> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
-            "-n" if i + 1 < rest.len() => {
+            "-d" => {}
+            "-A" => attach_or_create = true,
+            "-P" => print = true,
+            "-s" if i + 1 < rest.len() => {
+                name = Some(rest[i + 1].clone());
                 i += 1;
             }
-            "-d" => detached = true,
-            "-s" if i + 1 < rest.len() => {
-                session_name = Some(rest[i + 1].to_string());
+            "-n" if i + 1 < rest.len() => {
+                window_name = Some(rest[i + 1].clone());
                 i += 1;
             }
             "-c" if i + 1 < rest.len() => {
+                cwd = Some(rest[i + 1].clone());
                 i += 1;
             }
-            "-t" | "-T" if i + 1 < rest.len() => {
-                // Target pane index
-                pane_index = Some(parse_pane_target(&rest[i + 1]));
+            "-x" if i + 1 < rest.len() => {
+                width = rest[i + 1].parse().unwrap_or(width);
                 i += 1;
             }
+            "-y" if i + 1 < rest.len() => {
+                height = rest[i + 1].parse().unwrap_or(height);
+                i += 1;
+            }
+            "-F" if i + 1 < rest.len() => {
+                print_format = Some(rest[i + 1].clone());
+                i += 1;
+            }
+            "-e" | "-t" | "-T" if i + 1 < rest.len() => {
+                i += 1; // env / group target，忽略取值
+            }
+            "--" => {
+                i += 1;
+                if i < rest.len() {
+                    cmd_start = Some(i);
+                }
+                break;
+            }
+            s if s.starts_with('-') => {}
             _ => {
-                // Command to run
+                cmd_start = Some(i);
                 break;
             }
         }
         i += 1;
     }
-    log_to_file(&format!("new-session: name={:?}, detached={}", session_name, detached));
+    let command = cmd_start
+        .map(|j| rest[j..].join(" "))
+        .filter(|s| !s.is_empty());
+    let shell = resolve_shell();
+    log_to_file(&format!("new-session: name={name:?} {width}x{height} socket={}", socket()));
 
-    // tmux new-session creates window 0 with one pane by default.
-    // We need to create at least one pane to match tmux semantics.
-    // The split creates a new pane (pane 1) and returns success.
-    // Claude Code will use this as the working pane for the team session.
- // 如果没有指定 pane_index，先检查是否有空闲 pane 可复用
- let idle_pane_index = if pane_index.is_none() {
- find_idle_pane(url, token)
- } else {
- None
- };
-
- // 如果找到空闲 pane，使用它而不是创建新的
- let target_pane_index = idle_pane_index.or(pane_index);
-
-    post_split(url, token, false, target_pane_index, None, None, None).map(|_| ())
+    let body = serde_json::json!({
+        "socket": socket(),
+        "name": name,
+        "window_name": window_name,
+        "cwd": cwd,
+        "width": width,
+        "height": height,
+        "shell": shell,
+        "command": command,
+        "attach_or_create": attach_or_create,
+        "print": print,
+        "print_format": print_format,
+    });
+    match http_post(tmux_api(url, "new-session"), token, body) {
+        Some((200, out)) => {
+            if !out.is_empty() {
+                println!("{out}");
+            }
+            Ok(())
+        }
+        Some((_, msg)) => {
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
+            Err(())
+        }
+        None => {
+            eprintln!("tmux: new-session: server unreachable");
+            Err(())
+        }
+    }
 }
 
-fn cmd_has_session(rest: &[String]) -> Result<(), ()> {
-    let mut session_name = "ridge";
-    let mut i = 0;
-    while i < rest.len() {
-        if !rest[i].starts_with('-') {
-            session_name = &rest[i];
+fn cmd_has_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let target = extract_target(rest).unwrap_or_default();
+    log_to_file(&format!("has-session: target={target:?} socket={}", socket()));
+    let u = format!(
+        "{}?socket={}&target={}",
+        tmux_api(url, "has-session"),
+        q(socket()),
+        q(&target)
+    );
+    match http_get(u, token) {
+        Some((200, _)) => Ok(()),
+        Some((_, msg)) => {
+            // 存在退 0、不存在退非 0（并把错误打到 stderr）。
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
+            Err(())
         }
-        i += 1;
+        None => Err(()),
     }
-    log_to_file(&format!("has-session: {}", session_name));
-    // Just return success - we always have a session
-    Ok(())
 }
 
 fn cmd_list_sessions(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
-    if url.is_empty() || token.is_empty() {
-        eprintln!("tmux: list-sessions needs RIDGE_TEAMMATE_URL and RIDGE_TEAMMATE_TOKEN");
-        return Err(());
+    // 合并 GUI 工作区会话 + 该 socket 的 native 会话，遵循 `-F`。
+    let format = extract_f(rest);
+    let mut u = format!("{}?socket={}", tmux_api(url, "list-sessions"), q(socket()));
+    if let Some(f) = &format {
+        u.push_str(&format!("&format={}", q(f)));
     }
-    let _ = rest;
-    let u = format!("{}/api/v1/list-sessions", url.trim_end_matches('/'));
-    let res = client()
-        .get(u)
-        .headers(auth_headers(token))
-        .send()
-        .map_err(|e| eprintln!("tmux: {e}"))?;
-    if !res.status().is_success() {
-        eprintln!("tmux: list-sessions {}", res.status());
-        return Err(());
+    match http_get(u, token) {
+        Some((200, body)) => {
+            if !body.is_empty() {
+                println!("{body}");
+            }
+            Ok(())
+        }
+        Some((_, msg)) => {
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
+            Err(())
+        }
+        None => {
+            eprintln!("tmux: list-sessions: server unreachable");
+            Err(())
+        }
     }
-    let text = res.text().map_err(|e| eprintln!("tmux: {e}"))?;
-    print!("{text}");
-    Ok(())
 }
 
-fn cmd_attach_session(rest: &[String]) -> Result<(), ()> {
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "-t" if i + 1 < rest.len() => {
-                i += 1;
+/// `attach`（改造语义）：不在终端里接管渲染，而是通知 Ridge 把目标 native 会话
+/// **召唤进发起方工作区的 GUI 分屏**（实时可见可交互）。自定义 socket / 会话限定
+/// 目标走 summon；默认 socket 非会话目标维持 no-op（harness 兼容）。
+fn cmd_attach_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let raw_target = extract_target(rest);
+    if use_native(raw_target.as_deref()) {
+        let body = serde_json::json!({
+            "socket": socket(),
+            "target": raw_target.as_deref().unwrap_or(""),
+        });
+        match http_post(tmux_api(url, "summon"), token, body) {
+            Some((200, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Ok(());
             }
-            "-d" => {} // detach other clients
-            _ => {}
+            Some((409, _)) => {} // 命中 GUI 会话 → 回退（无操作）
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
         }
-        i += 1;
     }
     Ok(())
 }
@@ -1671,24 +2151,42 @@ fn cmd_detach_client(rest: &[String]) -> Result<(), ()> {
     Ok(())
 }
 
-fn cmd_kill_session(rest: &[String]) -> Result<(), ()> {
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "-t" if i + 1 < rest.len() => {
-                i += 1;
+fn cmd_kill_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let target = extract_target(rest).unwrap_or_default();
+    log_to_file(&format!("kill-session: target={target:?} socket={}", socket()));
+    let body = serde_json::json!({ "socket": socket(), "target": target, "scope": "session" });
+    match http_post(tmux_api(url, "kill"), token, body) {
+        Some((200, _)) => Ok(()),
+        // 409 = 命中 GUI 会话（如 ridge）：保守 no-op，保护用户真实会话。
+        Some((409, _)) => Ok(()),
+        Some((_, msg)) => {
+            if !msg.is_empty() {
+                eprintln!("{msg}");
             }
-            "-a" => {} // kill all but current
-            _ => {}
+            Err(())
         }
-        i += 1;
+        None => Err(()),
     }
-    Ok(())
 }
 
-fn cmd_kill_server() -> Result<(), ()> {
-    log_to_file("kill-server requested");
-    Ok(())
+fn cmd_kill_server(url: &str, token: &str) -> Result<(), ()> {
+    log_to_file(&format!("kill-server socket={}", socket()));
+    // 自定义 socket：清空该 socket 上的 native 会话（独立 server 语义）。
+    // 默认 socket：保守 no-op —— 绝不连带销毁 GUI 工作区/真实会话。
+    if socket() == "default" {
+        return Ok(());
+    }
+    let body = serde_json::json!({ "socket": socket(), "scope": "server" });
+    match http_post(tmux_api(url, "kill"), token, body) {
+        Some((200, _)) => Ok(()),
+        Some((_, msg)) => {
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
+            Err(())
+        }
+        None => Err(()),
+    }
 }
 
 fn cmd_switch_client(rest: &[String]) -> Result<(), ()> {
@@ -1737,8 +2235,9 @@ fn cmd_start_server() -> Result<(), ()> {
 
 // ========== List Commands ==========
 
-fn cmd_list_windows(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
+fn cmd_list_windows(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut format: Option<String> = None;
+    let mut raw_target: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1747,13 +2246,40 @@ fn cmd_list_windows(rest: &[String], _url: &str, _token: &str) -> Result<(), ()>
                 i += 1;
             }
             "-t" if i + 1 < rest.len() => {
-                // Target session/window
+                raw_target = Some(rest[i + 1].clone());
                 i += 1;
             }
             "-a" => {} // all sessions
             _ => {}
         }
         i += 1;
+    }
+
+    // 会话限定目标 / 自定义 socket → native list-windows。
+    if use_native(raw_target.as_deref()) {
+        let mut u = format!(
+            "{}?socket={}&target={}",
+            tmux_api(url, "list-windows"),
+            q(socket()),
+            q(raw_target.as_deref().unwrap_or(""))
+        );
+        if let Some(f) = &format {
+            u.push_str(&format!("&format={}", q(f)));
+        }
+        match http_get(u, token) {
+            Some((200, body)) => {
+                println!("{body}");
+                return Ok(());
+            }
+            Some((409, _)) => {}
+            Some((_, msg)) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
     }
 
     if let Some(fmt) = format {
@@ -2176,4 +2702,54 @@ fn cmd_find_window(rest: &[String]) -> Result<(), ()> {
         i += 1;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn global_flags_default_socket() {
+        let (s, i) = parse_global_flags(&args(&["tmux", "new-session", "-d"]));
+        assert_eq!(s, "default");
+        assert_eq!(i, 1);
+    }
+
+    #[test]
+    fn global_flags_dash_l() {
+        let (s, i) = parse_global_flags(&args(&["tmux", "-L", "mysock", "new-session"]));
+        assert_eq!(s, "L:mysock");
+        assert_eq!(i, 3);
+    }
+
+    #[test]
+    fn global_flags_dash_s_with_switch() {
+        let (s, i) = parse_global_flags(&args(&["tmux", "-2", "-S", "/tmp/x.sock", "ls"]));
+        assert_eq!(s, "S:/tmp/x.sock");
+        assert_eq!(i, 4);
+    }
+
+    #[test]
+    fn session_qualified_cases() {
+        assert!(target_is_session_qualified("=probe"));
+        assert!(target_is_session_qualified("probe"));
+        assert!(target_is_session_qualified("probe.0"));
+        assert!(target_is_session_qualified("probe:1.2"));
+        assert!(!target_is_session_qualified("%3"));
+        assert!(!target_is_session_qualified("0"));
+        assert!(!target_is_session_qualified(""));
+        assert!(!target_is_session_qualified(":1.2"));
+        assert!(!target_is_session_qualified(".1"));
+    }
+
+    #[test]
+    fn pane_target_forms() {
+        assert_eq!(parse_pane_target("%2"), 2);
+        assert_eq!(parse_pane_target("sess:1.3"), 3);
+        assert_eq!(parse_pane_target("4"), 4);
+    }
 }

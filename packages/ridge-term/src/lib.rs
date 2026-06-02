@@ -1444,6 +1444,17 @@ mod renderer_js {
             out.extend_from_slice(&t.tui_bg);
             out.into_boxed_slice()
         }
+
+        /// Return the active rendering backend name: `"WebGPU"` or `"Canvas2D"`.
+        /// Used by the remote page to show a small indicator badge.
+        #[wasm_bindgen(js_name = backendName)]
+        pub fn backend_name(&self) -> String {
+            match self.renderer.backend() {
+                AnyBackend::Canvas2d(_) => "Canvas2D".to_string(),
+                #[cfg(feature = "webgpu")]
+                AnyBackend::Webgpu(_) => "WebGPU".to_string(),
+            }
+        }
     }
 
     // ──────────────────────────────────────────────────────────────

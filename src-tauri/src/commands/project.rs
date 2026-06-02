@@ -5,7 +5,10 @@ use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use tauri::State;
+use tokio::sync::Semaphore;
+use tokio::task::JoinError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectInfo {
@@ -96,6 +99,44 @@ pub fn remove_project(project_id: i64, state: State<'_, AppState>) -> Result<(),
     Ok(())
 }
 
+// ── Filesystem-operation semaphore ─────────────────────────────────────────
+//
+// Independent from GIT_SEMAPHORE (git.rs) so that file-tree walks never queue
+// behind git subprocesses. Sizing from available parallelism: high-core
+// workstations can satisfy many sidebar expand requests at once while keeping
+// low-core laptops responsive.
+fn fs_max_concurrent() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(4, 32)
+}
+
+static FS_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn fs_semaphore() -> Arc<Semaphore> {
+    FS_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(fs_max_concurrent())))
+        .clone()
+}
+
+async fn spawn_fs_blocking<F, T>(f: F) -> Result<T, JoinError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let sem = fs_semaphore();
+    let permit = sem
+        .acquire_owned()
+        .await
+        .expect("fs semaphore should never be closed");
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+}
+
 /// 把前端传来的路径统一成系统原生形式，修复 Windows 下 `C:/a/b\c` 这类正/反斜杠混用
 /// 时 `PathBuf::exists()` 偶发返回 false 的问题，也顺手去掉尾部分隔符、trim 空白。
 fn normalize_path_input(input: &str) -> PathBuf {
@@ -145,7 +186,7 @@ pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNod
     }
 
     let max_depth = depth.unwrap_or(DEFAULT_TREE_DEPTH);
-    tokio::task::spawn_blocking(move || {
+    spawn_fs_blocking(move || {
         FileTree::build(&root, max_depth).map_err(|e| format!("Failed to build file tree: {}", e))
     })
     .await
@@ -168,7 +209,7 @@ pub async fn get_directory_children(
 
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(DEFAULT_CHILDREN_PAGE_SIZE);
-    tokio::task::spawn_blocking(move || {
+    spawn_fs_blocking(move || {
         FileTree::page_children(&dir, offset, limit)
             .map_err(|e| format!("Failed to get directory contents: {}", e))
     })

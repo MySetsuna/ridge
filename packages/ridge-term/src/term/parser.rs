@@ -830,14 +830,17 @@ impl<'a> Performer<'a> {
                 self.grid.enter_alt_screen(true);
                 self.grid.cursor_to(0, 0);
             }
-            ModeEffect::LeaveAltScreen => self.grid.leave_alt_screen(),
+            ModeEffect::LeaveAltScreen => {
+                *self.modes = Modes::default();
+                self.grid.leave_alt_screen();
+            }
             ModeEffect::LeaveAltScreenRestoreCursor => {
-                // Switch back to primary first so saved_cursor_mut accesses
-                // the primary screen's saved slot (set by ?1049h above).
-                // Restores full cursor state (DECRC equivalent), including
-                // origin mode, pending-wrap, and app_cursor_keys, so TUIs
-                // that toggled DECOM or DECCKM inside the alt screen don't
-                // leak those states to primary.
+                // Reset TUI-specific modes (mouse reporting, bracketed paste,
+                // cursor blink, etc.) back to default before restoring the
+                // primary screen. Only `app_cursor_keys` and `origin` are
+                // carried over from the pre-TUI saved state — everything
+                // else should be clean for the shell.
+                *self.modes = Modes::default();
                 self.grid.leave_alt_screen();
                 if let Some(s) = *self.grid.saved_cursor_mut() {
                     self.modes.origin = s.origin;

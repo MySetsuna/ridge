@@ -638,12 +638,13 @@ pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> 
 
 fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let path = Path::new(&repo_root);
-    if !path.join(".git").exists() {
-        return Err(format!("Not a git repo: {}", repo_root));
-    }
+    let repo_path = path
+        .ancestors()
+        .find(|p| p.join(".git").exists())
+        .ok_or_else(|| format!("Not a git repo: {}", repo_root))?;
     let output = git_cmd()
         .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
-        .current_dir(path)
+        .current_dir(repo_path)
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -652,7 +653,7 @@ fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let (branch_from_status, ahead, behind, has_upstream, mut staged, mut changes, untracked) =
         parse_porcelain_v1(&stdout);
-    let branch = branch_from_status.or_else(|| get_current_branch(path));
+    let branch = branch_from_status.or_else(|| get_current_branch(repo_path));
 
     // Two parallel-style numstat calls: working-tree (index ↔ tree) for the
     // unstaged "更改" group, and `--cached` (HEAD ↔ index) for the staged
@@ -662,7 +663,7 @@ fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     // cheaper than the per-file path the modal used to take.
     let unstaged_counts = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "--"])
-        .current_dir(path)
+        .current_dir(repo_path)
         .output()
         .ok()
         .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
@@ -670,7 +671,7 @@ fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
         .unwrap_or_default();
     let staged_counts = git_cmd()
         .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
-        .current_dir(path)
+        .current_dir(repo_path)
         .output()
         .ok()
         .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
@@ -1566,24 +1567,29 @@ fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<C
 }
 
 fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
-    let repo_path = Path::new(&cwd);
+    let search_path = Path::new(&cwd);
 
-    // 检查是否是 git 仓库
-    let git_dir = repo_path.join(".git");
-    if !git_dir.exists() {
-        return Ok(GitRepoInfo {
-            is_git_repo: false,
-            commits: vec![],
-            branches: vec![],
-            current_branch: None,
-            diff: GitDiffStatus {
-                files: vec![],
-                total_additions: 0,
-                total_deletions: 0,
+    // Walk up the directory tree to find the .git directory
+    let repo_path = match search_path
+        .ancestors()
+        .find(|p| p.join(".git").exists())
+    {
+        Some(p) => p,
+        None => {
+            return Ok(GitRepoInfo {
                 is_git_repo: false,
-            },
-        });
-    }
+                commits: vec![],
+                branches: vec![],
+                current_branch: None,
+                diff: GitDiffStatus {
+                    files: vec![],
+                    total_additions: 0,
+                    total_deletions: 0,
+                    is_git_repo: false,
+                },
+            });
+        }
+    };
 
     // 获取提交历史（限制 50 条）
     let commits = get_git_log(repo_path, 50);

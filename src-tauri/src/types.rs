@@ -28,6 +28,16 @@ pub enum RemotePtyEvent {
     },
 }
 
+/// Structural change broadcast to all connected remote WS clients.
+/// Sent via tokio::sync::broadcast so late joiners skip stale events (they'll
+/// pull the current state on connect).
+#[derive(Clone, Debug)]
+pub enum RemoteStructuralEvent {
+    PanesChanged { workspace_id: Uuid },
+    WorkspacesChanged,
+    WorkspaceRenamed { workspace_id: Uuid, name: String },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PaneMode {
     Terminal,
@@ -73,4 +83,13 @@ pub enum GlobalEvent {
         workspace_id: Uuid,
         pane_id: Uuid,
     },
+    /// Pane tree changed (split/close) in a workspace — desktop frontend should
+    /// refresh its paneTree store. Emitted by both Tauri commands (desktop
+    /// actions) and remote WS handlers.
+    PaneTreeChanged {
+        workspace_id: Uuid,
+    },
+    /// Workspace list changed (add/close/rename) — desktop frontend should
+    /// refresh its workspace data.
+    WorkspaceListChanged,
 }

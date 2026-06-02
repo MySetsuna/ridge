@@ -16,6 +16,10 @@ use crate::commands::{pane, terminal};
 use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
+use super::native::{self, NativeError};
+use crate::engine::parser::PaneParser;
+use crate::engine::pty::{spawn_pty_reader, PtyHandle};
+
 #[derive(Clone)]
 struct TeammateCtx {
     state: AppState,
@@ -38,6 +42,26 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
         .is_some_and(|v| v == token)
 }
 
+/// 取「发起方所在工作区」：优先 `X-Ridge-Workspace` 头（shim 从 PTY 注入的
+/// `RIDGE_WORKSPACE_ID` 继承并回传），解析为存在的工作区则用之；否则回退到 GUI
+/// 当前活动工作区（非 teammate 调用者）。
+///
+/// 不变量：teammate 的「建/复用/接管面板」只在此工作区内进行，**绝不跨工作区** ——
+/// 即便用户已把 GUI 切到别的工作区，agent 的 split 也落在它自己所在的工作区。
+fn caller_workspace_id(ctx: &TeammateCtx, headers: &HeaderMap) -> uuid::Uuid {
+    if let Some(v) = headers
+        .get("x-ridge-workspace")
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Ok(id) = uuid::Uuid::parse_str(v.trim()) {
+            if ctx.state.workspaces.read().contains_key(&id) {
+                return id;
+            }
+        }
+    }
+    ctx.state.active_workspace_id()
+}
+
 /// 后台线程跑 Axum，避免阻塞 Tauri 主循环。
 /// `ready` 在 HTTP 已绑定且 `teammate_binding` 写入后发送一次，供 setup 等待首个 PTY 注入环境变量。
 ///
@@ -51,6 +75,31 @@ pub fn spawn_teammate_server(
     ready: Option<std::sync::mpsc::Sender<()>>,
 ) {
     spawn_teammate_inner(handle, state, ready, 0);
+}
+
+/// 「按需启动」：首个 PTY 创建时调用，幂等地拉起 teammate HTTP server 并阻塞等其绑定，
+/// 保证 `RIDGE_TEAMMATE_*` 在 shell 启动前就绪。已绑定则立即返回（绝大多数调用走此快路径，
+/// 包括 agent 在自己的 teammate PTY 里再发 split —— 那时 server 早已在跑）。
+pub fn ensure_teammate_started(state: &AppState) {
+    if state.teammate_binding.read().is_some() {
+        return;
+    }
+    static START_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _guard = START_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+    // 双检查：等锁期间可能已被并发的 PTY 创建启动。
+    if state.teammate_binding.read().is_some() {
+        return;
+    }
+    let Some(handle) = state.app_handle.get().cloned() else {
+        // setup 尚未 stash handle（理论上不会发生）；放弃惰性启动，留待下次 PTY 创建。
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_teammate_server(handle, state.clone(), Some(tx));
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
 }
 
 const TEAMMATE_RESTART_MAX: u32 = 5;
@@ -67,7 +116,9 @@ fn spawn_teammate_inner(
         .name("ridge-teammate-http".into())
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                let rt = match tokio::runtime::Builder::new_multi_thread()
+                // 控制面 QPS 极低（偶发的 split/send-keys/list），单线程运行时足矣：
+                // 把多线程运行时按核数摊出的 N 条常驻空闲 worker 线程塌成 1 条，显著降占用。
+                let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
@@ -160,6 +211,21 @@ async fn run_server(
         .route("/api/v1/register-agent", post(route_register_agent))
         .route("/api/v1/release-pane", post(route_release_pane))
         .route("/api/v1/find-idle-pane", get(route_find_idle_pane))
+        // Native tmux engine (headless, socket-namespaced sessions)
+        .route("/api/v1/tmux/new-session", post(route_tmux_new_session))
+        .route("/api/v1/tmux/has-session", get(route_tmux_has_session))
+        .route("/api/v1/tmux/resolve", get(route_tmux_resolve))
+        .route("/api/v1/tmux/list-sessions", get(route_tmux_list_sessions))
+        .route("/api/v1/tmux/list-panes", get(route_tmux_list_panes))
+        .route("/api/v1/tmux/capture-pane", get(route_tmux_capture))
+        .route("/api/v1/tmux/list-windows", get(route_tmux_list_windows))
+        .route("/api/v1/tmux/display-message", get(route_tmux_display_message))
+        .route("/api/v1/tmux/split-window", post(route_tmux_split_window))
+        .route("/api/v1/tmux/summon", post(route_tmux_summon))
+        .route("/api/v1/tmux/send-keys", post(route_tmux_send_keys))
+        .route("/api/v1/tmux/select", post(route_tmux_select))
+        .route("/api/v1/tmux/kill", post(route_tmux_kill))
+        .route("/api/v1/tmux/list-all-sessions", get(route_tmux_list_all_sessions))
         .with_state(ctx);
 
     if let Err(e) = axum::serve(listener, app).await {
@@ -169,106 +235,85 @@ async fn run_server(
 
 // ========== Agent-Pane Management Helpers ==========
 
-/// 查找空闲 pane（返回 pane index）
+/// 查找可复用的「空闲 shell 模式」pane（返回 pane index）。
+///
+/// 复用判定（按需求）：`mode == Terminal`（shell 面板）**且** 非 `Busy`。
+///  - Editor 模式面板不是 shell，跳过；
+///  - 未登记到 `teammate_pane_states` 的面板（用户手动开、停在提示符的空闲 shell）视为可复用，
+///    这样「直接接管空闲 shell」也覆盖手动留下的终端。
+/// 仅在传入的 `wid`（发起方工作区）内查找，绝不跨工作区。
 fn find_idle_pane_index(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
     let map = state.workspaces.read();
-    let Some(ws) = map.get(&wid) else {
-        return None;
-    };
+    let ws = map.get(&wid)?;
     let leaves = ws.pane_tree.get_all_leaves();
     for (idx, pane_id) in leaves.iter().enumerate() {
-        if let Some(pane_state) = ws.teammate_pane_states.get(pane_id) {
-            if *pane_state == crate::state::PaneState::Idle {
-                return Some(idx);
-            }
+        let is_terminal = matches!(
+            ws.pane_tree.panes.get(pane_id).map(|p| &p.mode),
+            Some(crate::types::PaneMode::Terminal)
+        );
+        if !is_terminal {
+            continue;
+        }
+        let busy = matches!(
+            ws.teammate_pane_states.get(pane_id),
+            Some(crate::state::PaneState::Busy)
+        );
+        if !busy {
+            return Some(idx);
         }
     }
     None
 }
 
-/// CWD normalisation matching `engine/pty.rs::normalize_cwd_str`. Inlined
-/// here to keep the helper module-private; the two callsites must stay in
-/// sync if the rule ever changes (forward-slashes on Windows, identity
-/// elsewhere).
-fn normalize_cwd_for_match(raw: &str) -> String {
-    #[cfg(windows)]
-    {
-        raw.replace('\\', "/")
-    }
-    #[cfg(not(windows))]
-    {
-        raw.to_string()
-    }
-}
-
-/// Pick the leaf-pane index that should be split when a teammate split
-/// request lands without an explicit `-t`. Priority:
+/// 选择需要 split 时的目标叶子 pane index（无显式 `-t` 时）。
 ///
-/// 1. **CWD match + idle**: a pane whose current cwd equals `target_cwd`
-///    AND whose `teammate_pane_state` is `Idle` is the best candidate —
-///    splitting it keeps the agent in its preferred directory and avoids
-///    bumping a busy peer.
-/// 2. **CWD match (any state)**: failing that, any pane with the same cwd
-///    works — agents often expect their split to inherit the cwd.
-/// 3. **Largest area**: no cwd match → split the biggest pane so the new
-///    pane has more room to breathe. Tie-break by preferring the highest
-///    leaf index (most recently created), which feels less disruptive.
+/// 需求：**永远在「发起方工作区内面积最大的 pane」上 split**。并列相同面积时取最小
+/// 叶子序号，保证跨 resize 稳定（最上方的 pane 一致胜出）。cwd 继承不在这里处理 ——
+/// 由 `route_split` 另行从源 pane 或显式 `-c` 解析，故此处只管「选最大」。
 ///
-/// Returns `None` only if the workspace has no leaves at all.
-fn select_split_target(
-    state: &AppState,
-    wid: uuid::Uuid,
-    target_cwd: Option<&std::path::Path>,
-) -> Option<usize> {
+/// 仅在传入的 `wid`（发起方工作区）内选择，绝不跨工作区。`None` 仅当工作区无叶子。
+fn select_split_target(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
     let map = state.workspaces.read();
     let ws = map.get(&wid)?;
     let leaves = ws.pane_tree.get_all_leaves();
     if leaves.is_empty() {
         return None;
     }
-
-    let target_norm = target_cwd.map(|p| normalize_cwd_for_match(&p.to_string_lossy()));
-
-    // Tier 1+2: scan for cwd-matched panes; remember whether each is idle.
-    let cwd_match: Vec<(usize, uuid::Uuid, bool)> = leaves
-        .iter()
-        .enumerate()
-        .filter_map(|(i, pid)| {
-            let pane_norm = normalize_cwd_for_match(
-                &ws.pane_tree.panes.get(pid)?.cwd.as_ref()?.to_string_lossy(),
-            );
-            if Some(&pane_norm) == target_norm.as_ref() {
-                let is_idle = matches!(
-                    ws.teammate_pane_states.get(pid),
-                    Some(crate::state::PaneState::Idle)
-                );
-                Some((i, *pid, is_idle))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if !cwd_match.is_empty() {
-        return cwd_match
+    let total = leaves.len();
+    let avg_area: u32 = {
+        let known: Vec<u32> = leaves
             .iter()
-            .find(|(_, _, idle)| *idle)
-            .or_else(|| cwd_match.first())
-            .map(|(i, _, _)| *i);
-    }
-
-    // Tier 3: pick the largest pane by character area. Tie-break by
-    // preferring the LOWEST leaf index — keeps the split target stable
-    // across resize events (top-most pane wins consistently).
+            .filter_map(|pid| ws.pane_sizes.get(pid).map(|(r, c)| *r as u32 * *c as u32))
+            .collect();
+        if known.is_empty() {
+            80 * 120
+        } else {
+            known.iter().sum::<u32>() / known.len() as u32
+        }
+    };
     leaves
         .iter()
         .enumerate()
         .map(|(i, pid)| {
-            let (r, c) = ws.pane_sizes.get(pid).copied().unwrap_or((80, 120));
-            (i, r as u32 * c as u32)
+            let area = ws
+                .pane_sizes
+                .get(pid)
+                .map(|(r, c)| *r as u32 * *c as u32)
+                .unwrap_or(avg_area);
+            (i, area, total)
         })
-        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|(i, _)| i)
+        .max_by(|a, b| {
+            a.1.cmp(&b.1).then_with(|| {
+                let a_has_size = ws.pane_sizes.get(&leaves[a.0]).is_some();
+                let b_has_size = ws.pane_sizes.get(&leaves[b.0]).is_some();
+                match (a_has_size, b_has_size) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.0.cmp(&a.0),
+                }
+            })
+        })
+        .map(|(i, _, _)| i)
 }
 
 /// 查找空闲 pane 的 UUID
@@ -334,7 +379,7 @@ async fn route_register_agent(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     // 找到对应的 pane_id
     let pane_id = if let Some(idx) = body.pane_index {
@@ -376,7 +421,7 @@ async fn route_release_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     let pane_id = if let Some(ref pid_str) = body.pane_id {
         match uuid::Uuid::parse_str(pid_str) {
@@ -407,7 +452,7 @@ async fn route_find_idle_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     if let Some(idx) = find_idle_pane_index(&ctx.state, wid) {
         (
@@ -433,6 +478,13 @@ struct SplitBody {
     horizontal: bool,
     #[serde(default)]
     command: Option<String>,
+    /// Structured launch: program + args + env, parsed from `env K=V program args`.
+    #[serde(default)]
+    program: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    env: Option<std::collections::HashMap<String, String>>,
     /// `tmux split-window -c start-directory`
     #[serde(default)]
     cwd: Option<String>,
@@ -456,44 +508,88 @@ async fn route_split(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     // 检查是否有空闲 pane 可以复用（如果没有显式指定 pane_index）
     if body.allow_idle_reuse && body.pane_index.is_none() {
         if let Some(idle_idx) = find_idle_pane_index(&ctx.state, wid) {
-            // 找到空闲 pane，标记为 Busy 并返回
             let idle_pane_id = {
                 let map = ctx.state.workspaces.read();
-                let ws = map.get(&wid).unwrap();
-                ws.pane_tree.get_all_leaves().get(idle_idx).copied()
+                map.get(&wid)
+                    .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
             };
             if let Some(pane_id) = idle_pane_id {
-                let mut map = ctx.state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
-                    ws.teammate_tmux_pane_cursor = idle_idx;
+                {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
+                            crate::state::PaneState::Busy
+                        } else {
+                            crate::state::PaneState::Starting
+                        });
+                        ws.teammate_tmux_pane_cursor = idle_idx;
+                        if let Some(name) = body
+                            .window_name
+                            .as_ref()
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                        {
+                            ws.teammate_pane_titles.insert(pane_id, name.to_string());
+                        }
+                    }
                 }
+                let structured_cmd = body.program.as_ref().map(|prog| {
+                    let mut sc = terminal::StructuredPtyCommand {
+                        program: prog.clone(),
+                        args: body.args.clone().unwrap_or_default(),
+                        env: body.env.clone().unwrap_or_default(),
+                    };
+                    #[cfg(windows)]
+                    {
+                        sc = normalize_windows_command(&sc);
+                    }
+                    sc
+                });
+                if let Some(ref sc) = structured_cmd {
+                    let spawn_cwd = body.cwd.as_ref().map(|s| std::path::PathBuf::from(s.trim())).filter(|p| !p.as_os_str().is_empty());
+                    let _ = terminal::ensure_pane_pty_workspace(
+                        &ctx.state, wid, pane_id, None,
+                        spawn_cwd.as_deref(), None, Some(sc.clone()),
+                        Some(idle_idx), None, None,
+                    );
+                } else if let Some(cmd) = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    let data = format!("{cmd}\n");
+                    let _ = terminal::write_pty_bytes_workspace(
+                        &ctx.state, wid, pane_id, data.as_bytes(),
+                    );
+                }
+                let _ = ctx.handle.emit(
+                    "teammate-layout-changed",
+                    serde_json::json!({ "reused": true, "pane_id": pane_id.to_string() }),
+                );
+                let _ = ctx
+                    .handle
+                    .emit("teammate-active-pane-changed", pane_id.to_string());
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "reused_pane_index": idle_idx,
+                        "new_pane_index": idle_idx,
+                        "source_pane_index": idle_idx,
+                        "reused": true,
+                    })),
+                )
+                    .into_response();
             }
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "ok": true,
-                    "reused_pane_index": idle_idx,
-                    "new_pane_index": idle_idx,
-                    "source_pane_index": idle_idx,
-                    "reused": true,
-                })),
-            )
-                .into_response();
         }
     }
 
     // Split target selection:
     // 1. If explicit pane_index from -t flag → use it.
-    // 2. Else delegate to `select_split_target`: prefer cwd-matched + idle,
-    //    fall back to cwd-matched (any state), fall back to largest-area
-    //    pane. Direction is then inferred from the chosen pane's shape so
-    //    the resulting two panes stay roughly square.
+    // 2. Else delegate to `select_split_target`: 永远选「发起方工作区内面积最大的
+    //    pane」。Direction is then inferred from the chosen pane's shape so the
+    //    resulting two panes stay roughly square.
     let (idx, inferred_direction) = {
         let map = ctx.state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
@@ -511,8 +607,8 @@ async fn route_split(
         } else {
             // Drop the read lock so `select_split_target` can take its own.
             drop(map);
-            let target_path = body.cwd.as_deref().map(std::path::Path::new);
-            let target_idx = select_split_target(&ctx.state, wid, target_path).unwrap_or(0);
+            // 永远在发起方工作区内「面积最大的 pane」上 split（cwd 继承在下方另行处理）。
+            let target_idx = select_split_target(&ctx.state, wid).unwrap_or(0);
 
             // Re-acquire to read the chosen pane's shape for direction inference.
             let map = ctx.state.workspaces.read();
@@ -592,6 +688,22 @@ async fn route_split(
             };
             let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
+            let structured_cmd = body.program.as_ref().map(|prog| {
+                let mut sc = terminal::StructuredPtyCommand {
+                    program: prog.clone(),
+                    args: body.args.clone().unwrap_or_default(),
+                    env: body.env.clone().unwrap_or_default(),
+                };
+                #[cfg(windows)]
+                {
+                    sc = normalize_windows_command(&sc);
+                }
+                sc
+            });
+
+            let is_structured = structured_cmd.is_some();
+            let initial_cmd = if is_structured { None } else { cmd };
+
             // Bookkeeping + readiness signal. The oneshot lets us *observe*
             // whether the front-end's `activate_pane_pty` actually launched
             // the child, so we can return an honest HTTP status to the agent.
@@ -610,8 +722,8 @@ async fn route_split(
                 new_id,
                 None,
                 cwd.as_deref(),
-                cmd,
-                None,
+                initial_cmd,
+                structured_cmd,
                 Some(new_idx),
                 Some(ready_tx),
                 Some(trace_id.clone()),
@@ -634,12 +746,13 @@ async fn route_split(
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
-                // Mark new pane as Busy
-                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
-                    // Initialize pane size for the new pane (default, will be updated on resize)
+                    let pane_state = if is_structured {
+                        PaneState::Busy
+                    } else {
+                        PaneState::Starting
+                    };
+                    ws.teammate_pane_states.insert(new_id, pane_state);
                     ws.pane_sizes.insert(new_id, (80, 120));
-                // Mark new pane as Busy (has an agent running)
-                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     if let Some(name) = body
                         .window_name
                         .as_ref()
@@ -772,7 +885,7 @@ async fn route_capture(
         .get("lines")
         .and_then(|s| s.parse().ok())
         .unwrap_or(80);
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
     let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane) {
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -825,7 +938,7 @@ async fn route_send_keys(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
     let pane_idx = if body.use_tmux_current_pane {
         ctx.state
             .workspaces
@@ -869,7 +982,7 @@ async fn route_spawn_process(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
     let pane_idx = if body.use_tmux_current_pane {
         ctx.state
             .workspaces
@@ -965,7 +1078,7 @@ async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Qu
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let want_json = q.get("json").map(|s| s == "1").unwrap_or(false);
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     let (lines, json_body) = {
         let map = ctx.state.workspaces.read();
@@ -1048,7 +1161,7 @@ async fn route_select_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     log_stderr_server(&format!("select-pane: index={:?}, last={:?}", body.pane_index, body.last));
 
@@ -1126,7 +1239,7 @@ async fn route_kill_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     if let Some(idx) = body.pane_index {
         match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
@@ -1201,7 +1314,7 @@ async fn route_new_window(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
     let cwd = body
         .cwd
         .as_ref()
@@ -1329,7 +1442,7 @@ async fn route_rename_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
     let name = body.name.trim().to_string();
 
     let target_idx = body.pane_index.unwrap_or_else(|| {
@@ -1372,7 +1485,7 @@ async fn route_list_windows(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let want_json = q.get("json").map(|s| s == "1").unwrap_or(false);
-    let wid = ctx.state.active_workspace_id();
+    let wid = caller_workspace_id(&ctx, &headers);
 
     let (line, json_body) = {
         let map = ctx.state.workspaces.read();
@@ -1482,4 +1595,572 @@ async fn route_list_clients(State(ctx): State<TeammateCtx>, headers: HeaderMap) 
 
 fn log_stderr_server(msg: &str) {
     eprintln!("[ridge-teammate] {}", msg);
+}
+
+// ===================== Native tmux engine routes =====================
+//
+// 这些端点把 shim 的「具名/后台会话」请求落到进程内的 `native` 引擎（无头 PTY，
+// 按 socket 命名空间隔离）。默认 socket 上解析时会把 GUI 工作区会话也纳入候选，
+// 使 `ls`/`has-session`/`resolve` 同时认 GUI 与 native；命中 GUI 会话则回 409 让 shim 回退。
+
+fn default_socket() -> String {
+    "default".to_string()
+}
+
+fn q_socket(q: &std::collections::HashMap<String, String>) -> String {
+    q.get("socket")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(default_socket)
+}
+
+fn tmux_default_cols() -> u16 {
+    80
+}
+fn tmux_default_rows() -> u16 {
+    24
+}
+
+/// 默认 socket 上参与 find-target 的 GUI 会话（工作区名 + `ridge` 别名）。
+/// 自定义 socket 返回空（与默认 socket 完全隔离）。
+fn gui_sessions_for(ctx: &TeammateCtx, socket: &str) -> Vec<native::GuiSession> {
+    gui_sessions_for_state(&ctx.state, socket)
+}
+
+/// 同 `gui_sessions_for`，但接受 `AppState` 以便 Tauri 命令复用。
+fn gui_sessions_for_state(state: &AppState, socket: &str) -> Vec<native::GuiSession> {
+    if socket != "default" {
+        return Vec::new();
+    }
+    let order = state.workspace_order.read().clone();
+    let names = state.workspace_names.read().clone();
+    let map = state.workspaces.read();
+    let mut out: Vec<native::GuiSession> = Vec::new();
+    for wid in order.iter() {
+        if !map.contains_key(wid) {
+            continue;
+        }
+        let label = tmux_list_sessions_label(*wid, names.get(wid).map(String::as_str));
+        out.push(native::GuiSession { name: label });
+    }
+    if !out.iter().any(|g| g.name == "ridge") {
+        out.push(native::GuiSession {
+            name: "ridge".to_string(),
+        });
+    }
+    out
+}
+
+/// GUI 工作区会话的 `ls` 行（默认/`-F`），供合并到 native `list-sessions` 之前。
+fn gui_session_lines(ctx: &TeammateCtx, fmt: Option<&str>) -> Vec<String> {
+    let active = ctx.state.active_workspace_id();
+    let order = ctx.state.workspace_order.read().clone();
+    let names = ctx.state.workspace_names.read().clone();
+    let map = ctx.state.workspaces.read();
+    let mut lines = Vec::new();
+    for wid in order.iter() {
+        let Some(ws) = map.get(wid) else {
+            continue;
+        };
+        let label = tmux_list_sessions_label(*wid, names.get(wid).map(String::as_str));
+        let (cols, rows) = workspace_first_pty_size(ws);
+        let attached = *wid == active;
+        let line = match fmt {
+            Some(f) => f
+                .replace("#{session_name}", &label)
+                .replace("#{session_attached}", if attached { "1" } else { "0" })
+                .replace("#{session_windows}", "1")
+                .replace("#{session_width}", &cols.to_string())
+                .replace("#{session_height}", &rows.to_string())
+                .replace("#S", &label),
+            None => {
+                let created_local: DateTime<Local> =
+                    DateTime::<Utc>::from(ws.created_at).with_timezone(&Local);
+                let date_str = created_local.format("%a %b %d %H:%M:%S %Y").to_string();
+                let mut line = format!("{label}: 1 windows (created {date_str}) [{cols}x{rows}]");
+                if attached {
+                    line.push_str(" (attached)");
+                }
+                line
+            }
+        };
+        lines.push(line);
+    }
+    lines
+}
+
+fn native_err_to_response(e: NativeError) -> axum::response::Response {
+    match e {
+        // 命中 GUI 会话：让 shim 回退到 GUI 路径。
+        NativeError::Gui(name) => (StatusCode::CONFLICT, format!("gui:{name}")).into_response(),
+        NativeError::NotFound(m) | NativeError::Ambiguous(m) | NativeError::NoServer(m) => {
+            (StatusCode::NOT_FOUND, m).into_response()
+        }
+        NativeError::Duplicate(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        NativeError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct TmuxNewSessionBody {
+    #[serde(default = "default_socket")]
+    socket: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    window_name: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default = "tmux_default_cols")]
+    width: u16,
+    #[serde(default = "tmux_default_rows")]
+    height: u16,
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    attach_or_create: bool,
+    #[serde(default)]
+    print: bool,
+    #[serde(default)]
+    print_format: Option<String>,
+}
+
+async fn route_tmux_new_session(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<TmuxNewSessionBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let gui = gui_sessions_for(&ctx, &body.socket);
+    let print = if body.print {
+        Some(body.print_format.clone())
+    } else {
+        None
+    };
+    let req = native::NewSessionReq {
+        socket: body.socket,
+        name: body.name,
+        window_name: body.window_name,
+        cwd: body.cwd,
+        width: body.width,
+        height: body.height,
+        shell: body.shell,
+        command: body.command,
+        attach_or_create: body.attach_or_create,
+        print,
+    };
+    match native::new_session(req, &gui) {
+        Ok(out) => (StatusCode::OK, out).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+async fn route_tmux_has_session(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let target = q.get("target").cloned().unwrap_or_default();
+    let gui = gui_sessions_for(&ctx, &socket);
+    match native::has_session(&socket, &target, &gui) {
+        Ok(_) => (StatusCode::OK, "").into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+async fn route_tmux_resolve(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let target = q.get("target").cloned().unwrap_or_default();
+    let gui = gui_sessions_for(&ctx, &socket);
+    match native::resolve(&socket, &target, &gui) {
+        Ok(r) => Json(serde_json::json!({
+            "found": true,
+            "kind": "native",
+            "socket": r.socket,
+            "session": r.session,
+            "window": r.window_index,
+            "pane": r.pane_index,
+            "pane_id": format!("%{}", r.pane_global_id),
+        }))
+        .into_response(),
+        Err(NativeError::Gui(name)) => Json(serde_json::json!({
+            "found": true,
+            "kind": "gui",
+            "session": name,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "found": false, "error": e.message() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn route_tmux_list_sessions(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let format = q.get("format").cloned().filter(|s| !s.is_empty());
+    let mut lines: Vec<String> = Vec::new();
+    if socket == "default" {
+        lines.extend(gui_session_lines(&ctx, format.as_deref()));
+    }
+    lines.extend(native::list_sessions_lines(&socket, format.as_deref()));
+    (StatusCode::OK, lines.join("\n")).into_response()
+}
+
+async fn route_tmux_list_panes(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let target = q.get("target").cloned().unwrap_or_default();
+    let format = q.get("format").cloned().filter(|s| !s.is_empty());
+    let all = q.get("all").map(|s| s == "1").unwrap_or(false);
+    let gui = gui_sessions_for(&ctx, &socket);
+    match native::list_panes_lines(&socket, &target, &gui, format.as_deref(), all) {
+        Ok(lines) => (StatusCode::OK, lines.join("\n")).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+async fn route_tmux_list_windows(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let target = q.get("target").cloned().unwrap_or_default();
+    let format = q.get("format").cloned().filter(|s| !s.is_empty());
+    let gui = gui_sessions_for(&ctx, &socket);
+    match native::list_windows_lines(&socket, &target, &gui, format.as_deref()) {
+        Ok(lines) => (StatusCode::OK, lines.join("\n")).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+async fn route_tmux_display_message(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let target = q.get("target").cloned().unwrap_or_default();
+    let format = q
+        .get("format")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "#{pane_id}".to_string());
+    let gui = gui_sessions_for(&ctx, &socket);
+    match native::display_message(&socket, &target, &gui, &format) {
+        Ok(out) => (StatusCode::OK, out).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+/// `capture-pane -p`：渲染目标 native 面板当前屏为纯文本。`lines` 可选，取末 n 行。
+async fn route_tmux_capture(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let socket = q_socket(&q);
+    let target = q.get("target").cloned().unwrap_or_default();
+    let lines = q.get("lines").and_then(|s| s.parse::<usize>().ok());
+    let gui = gui_sessions_for(&ctx, &socket);
+    match native::capture(&socket, &target, &gui, lines) {
+        Ok(out) => (StatusCode::OK, out).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+/// 把一个 native 会话「召唤」进工作区 `wid`：为其活动窗口各面板建一个**领养 GUI
+/// pane**（共享 native PTY，不新开 shell），走与普通 pane 完全一致的渲染/输入/
+/// resize 路径。关闭=detach（见 `terminal::kill_pty_if_present`）。返回展示的面板数。
+///
+/// 接受 `AppState` + `AppHandle` 而非 `TeammateCtx`，以允许 Tauri 命令直接复用。
+pub(crate) fn summon_into_workspace(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    socket: &str,
+    target: &str,
+    wid: Uuid,
+) -> Result<usize, NativeError> {
+    let gui = gui_sessions_for_state(state, socket);
+    let panes = native::summon(socket, target, &gui)?;
+    let mut shown = 0usize;
+    let mut first_new: Option<Uuid> = None;
+    for sp in panes {
+        if sp.prev_attachment.map(|(w, _)| w) == Some(wid) {
+            continue;
+        }
+        let idx = select_split_target(state, wid).unwrap_or(0);
+        let direction = {
+            let map = state.workspaces.read();
+            map.get(&wid)
+                .and_then(|ws| {
+                    let leaves = ws.pane_tree.get_all_leaves();
+                    leaves.get(idx).and_then(|pid| ws.pane_sizes.get(pid).copied())
+                })
+                .map(|(rows, cols)| if cols > rows { "horizontal" } else { "vertical" })
+                .unwrap_or("horizontal")
+        };
+        let new_id = match pane::teammate_split_pane(state, wid, idx, direction) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parser = Arc::new(parking_lot::Mutex::new(PaneParser::new(
+            sp.height.max(1),
+            sp.width.max(1),
+            2000,
+        )));
+        let handle = PtyHandle {
+            master: sp.master,
+            writer: sp.writer,
+            _child: None,
+            native_ref: Some((socket.to_string(), sp.global_id)),
+            native_cancel: Some(cancel.clone()),
+            resize_silence_deadline: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            parser,
+            delta_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        {
+            let mut map = state.workspaces.write();
+            if let Some(ws) = map.get_mut(&wid) {
+                ws.terminals.insert(new_id, handle);
+                ws.pane_sizes.insert(new_id, (sp.height.max(1), sp.width.max(1)));
+                ws.teammate_pane_titles.insert(new_id, format!("%{}", sp.global_id));
+                if let Some(ref dir) = sp.cwd {
+                    if let Some(p) = ws.pane_tree.panes.get_mut(&new_id) {
+                        p.cwd = Some(dir.clone().into());
+                    }
+                }
+            }
+        }
+        native::set_attachment(socket, sp.global_id, Some((wid, new_id)));
+        spawn_pty_reader(
+            state.clone(),
+            wid,
+            new_id,
+            Box::new(native::BroadcastReader::new(sp.rx, sp.replay, cancel)),
+        );
+        if first_new.is_none() {
+            first_new = Some(new_id);
+        }
+        shown += 1;
+    }
+    let _ = app_handle
+        .emit("teammate-layout-changed", serde_json::json!({ "summoned": shown }));
+    if let Some(fid) = first_new {
+        let _ = app_handle.emit("teammate-active-pane-changed", fid.to_string());
+    }
+    Ok(shown)
+}
+
+#[derive(Deserialize)]
+struct TmuxSummonBody {
+    #[serde(default = "default_socket")]
+    socket: String,
+    #[serde(default)]
+    target: String,
+}
+
+/// `attach`（改造语义）：把目标 native 会话召唤进**发起方工作区**的 GUI 分屏。
+async fn route_tmux_summon(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<TmuxSummonBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = caller_workspace_id(&ctx, &headers);
+    match summon_into_workspace(&ctx.state, &ctx.handle, &body.socket, &body.target, wid) {
+        Ok(shown) => (StatusCode::OK, format!("summoned {shown}")).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TmuxSplitBody {
+    #[serde(default = "default_socket")]
+    socket: String,
+    #[serde(default)]
+    target: String,
+    /// 无头会话不需要方向，仅作占位以兼容客户端。
+    #[serde(default)]
+    #[allow(dead_code)]
+    horizontal: bool,
+    #[serde(default)]
+    new_window: bool,
+    #[serde(default)]
+    window_name: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    print: bool,
+    #[serde(default)]
+    print_format: Option<String>,
+}
+
+async fn route_tmux_split_window(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<TmuxSplitBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let gui = gui_sessions_for(&ctx, &body.socket);
+    let print = if body.print {
+        Some(body.print_format.as_deref())
+    } else {
+        None
+    };
+    match native::add_pane(
+        &body.socket,
+        &body.target,
+        &gui,
+        body.new_window,
+        body.window_name.as_deref(),
+        body.cwd.as_deref(),
+        body.shell.as_deref(),
+        body.command.as_deref(),
+        print,
+    ) {
+        Ok(out) => (StatusCode::OK, out).into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TmuxSendKeysBody {
+    #[serde(default = "default_socket")]
+    socket: String,
+    #[serde(default)]
+    target: String,
+    #[serde(default)]
+    text: String,
+}
+
+async fn route_tmux_send_keys(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<TmuxSendKeysBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let gui = gui_sessions_for(&ctx, &body.socket);
+    match native::send_keys(&body.socket, &body.target, &gui, &body.text) {
+        Ok(_) => (StatusCode::OK, "").into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TmuxSelectBody {
+    #[serde(default = "default_socket")]
+    socket: String,
+    #[serde(default)]
+    target: String,
+}
+
+async fn route_tmux_select(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<TmuxSelectBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let gui = gui_sessions_for(&ctx, &body.socket);
+    match native::select(&body.socket, &body.target, &gui) {
+        Ok(_) => (StatusCode::OK, "").into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TmuxKillBody {
+    #[serde(default = "default_socket")]
+    socket: String,
+    #[serde(default)]
+    target: String,
+    /// "session"（默认）| "pane" | "window" | "server"
+    #[serde(default)]
+    scope: String,
+}
+
+async fn route_tmux_kill(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<TmuxKillBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let gui = gui_sessions_for(&ctx, &body.socket);
+    let res = match body.scope.as_str() {
+        "server" => native::kill_server(&body.socket),
+        "pane" => native::kill_pane(&body.socket, &body.target, &gui),
+        "window" => native::kill_window(&body.socket, &body.target, &gui),
+        _ => native::kill_session(&body.socket, &body.target, &gui),
+    };
+    match res {
+        Ok(_) => (StatusCode::OK, "").into_response(),
+        Err(e) => native_err_to_response(e),
+    }
+}
+
+/// `GET /api/v1/tmux/list-all-sessions` — 跨所有 socket 列出 native 会话摘要，
+/// 供 GUI 侧边栏展示。
+async fn route_tmux_list_all_sessions(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let sessions = native::list_all_sessions();
+    Json(sessions).into_response()
 }
