@@ -1,4 +1,4 @@
-import init, { TerminalKernel, RenderHandle } from '@ridge/term-wasm';
+import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 
 export interface TermOpts {
@@ -13,13 +13,14 @@ const FEED_CHUNK_BYTES = 16 * 1024;
 const FEED_PER_CALL_BUDGET_MS = 4;
 const COALESCE_WINDOW_MS = 8;
 const RESIZE_DEBOUNCE_MS = 500;
-const CURSOR_BLINK_INTERVAL_MS = 530;
 
 export class TerminalController {
   private kernel: TerminalKernel;
   private renderHandle: RenderHandle;
   private canvas: HTMLCanvasElement;
   private container: HTMLDivElement;
+  private surfaceHost: SurfaceHostHandle | null;
+  private themeBg: Uint8Array;
   private rafId: number | null = null;
   private sleepTimerId: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
@@ -34,7 +35,6 @@ export class TerminalController {
 
   // ── Dirty-detection render loop ──
   private needsRender = true;
-  private blinkDeadline = 0;
   private visible = true;
   private focused = false;
   // True only while `tick` is executing, so `wake()` never schedules a second
@@ -73,14 +73,17 @@ export class TerminalController {
   private constructor(
     kernel: TerminalKernel,
     renderHandle: RenderHandle,
+    surfaceHost: SurfaceHostHandle | null,
     canvas: HTMLCanvasElement,
     container: HTMLDivElement,
     opts: TermOpts,
   ) {
     this.kernel = kernel;
     this.renderHandle = renderHandle;
+    this.surfaceHost = surfaceHost;
     this.canvas = canvas;
     this.container = container;
+    this.themeBg = new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
     this.fontSize = opts.fontSize ?? 14;
     this.scrollback = opts.scrollback ?? 5000;
     this.fontFamily = opts.fontFamily ?? FONT_STACK;
@@ -95,10 +98,17 @@ export class TerminalController {
     const cols = 80;
     const scrollback = opts.scrollback ?? 5000;
     const kernel = new TerminalKernel(rows, cols, scrollback);
-    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas);
+
+    let surfaceHost: SurfaceHostHandle | null = null;
+    try {
+      surfaceHost = await SurfaceHostHandle.init(canvas);
+    } catch {
+      // WebGPU adapter unavailable — will fall back to Canvas2D
+    }
+    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, surfaceHost);
     renderHandle.applyDefaultTheme();
 
-    const controller = new TerminalController(kernel, renderHandle, canvas, container, opts);
+    const controller = new TerminalController(kernel, renderHandle, surfaceHost, canvas, container, opts);
     controller.fitPane();
     controller.startRenderLoop();
     controller.setupVisibilityHandler();
@@ -128,7 +138,14 @@ export class TerminalController {
     this.flushDeferred();
     if (this.needsRender || this.blinkDue()) {
       if (this.visible) {
-        this.renderHandle.render(this.kernel);
+        const hostOpened = this.surfaceHost ? this.surfaceHost.beginFrame(this.themeBg) : false;
+        try {
+          this.renderHandle.render(this.kernel);
+        } finally {
+          if (hostOpened) {
+            try { this.surfaceHost!.endFrame(); } catch {}
+          }
+        }
       }
       this.needsRender = false;
     }
@@ -138,25 +155,21 @@ export class TerminalController {
 
   private scheduleNextFrame() {
     if (this.destroyed) return;
-    const msUntilBlink = this.blinkDeadline - performance.now();
-    if (msUntilBlink < 16) {
+    const msUntilBlink = this.renderHandle.nextBlinkDeadlineMs(this.kernel, Date.now());
+    const capped = Math.min(msUntilBlink, 1000);
+    if (capped < 16) {
       this.rafId = requestAnimationFrame(this.tick);
     } else {
       this.sleepTimerId = setTimeout(() => {
         this.sleepTimerId = null;
         if (this.destroyed) return;
         this.rafId = requestAnimationFrame(this.tick);
-      }, msUntilBlink - 8);
+      }, capped - 8);
     }
   }
 
   private blinkDue(): boolean {
-    const now = performance.now();
-    if (now >= this.blinkDeadline) {
-      this.blinkDeadline = now + CURSOR_BLINK_INTERVAL_MS;
-      return true;
-    }
-    return false;
+    return this.renderHandle.nextBlinkDeadlineMs(this.kernel, Date.now()) < 16;
   }
 
   markDirty() {
@@ -279,6 +292,9 @@ export class TerminalController {
       this.cellW = TerminalController.quantizeCellSize(dims[0]);
       this.cellH = TerminalController.quantizeCellSize(dims[1]);
     }
+    if (this.surfaceHost) {
+      try { this.surfaceHost.resize(w, h, dpr); this.surfaceHost.invalidate(); } catch {}
+    }
 
     if (this.cellW > 0 && this.cellH > 0) {
       const newCols = Math.max(1, Math.floor(w / this.cellW));
@@ -326,6 +342,9 @@ export class TerminalController {
   applyTheme(theme: Record<string, string>) {
     if (this.destroyed) return;
     this.renderHandle.applyTheme(theme);
+    const bg = theme.background ?? theme['ansiBlack'] ?? '#1e1e2e';
+    this.themeBg = cssColorToRgba(bg);
+    if (this.surfaceHost) this.surfaceHost.invalidate();
     this.markDirty();
   }
 
@@ -393,6 +412,11 @@ export class TerminalController {
   }
 
   get isComposing() { return this._isComposing; }
+
+  get backendName(): string {
+    const h = this.renderHandle as unknown as { backendName?: () => string };
+    return h.backendName?.() ?? 'Canvas2D';
+  }
 
   // ── Selection ──
 
@@ -529,5 +553,34 @@ export class TerminalController {
     }
     this.renderHandle.free();
     this.kernel.free();
+    // SurfaceHostHandle is a JS wrapper around an Rc<RefCell<SurfaceHost>>;
+    // no explicit free needed — GC will collect it when the JS wrapper is dropped.
   }
+}
+
+function cssColorToRgba(css: string): Uint8Array {
+  const c = css.trim();
+  if (c.startsWith('#')) {
+    const hex = c.slice(1);
+    if (hex.length === 3) {
+      const r = parseInt(hex[0] + hex[0], 16);
+      const g = parseInt(hex[1] + hex[1], 16);
+      const b = parseInt(hex[2] + hex[2], 16);
+      return new Uint8Array([r, g, b, 255]);
+    }
+    if (hex.length === 6) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      return new Uint8Array([r, g, b, 255]);
+    }
+    if (hex.length === 8) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      const a = parseInt(hex.slice(6, 8), 16);
+      return new Uint8Array([r, g, b, a]);
+    }
+  }
+  return new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
 }

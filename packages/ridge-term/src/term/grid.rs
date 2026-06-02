@@ -94,10 +94,14 @@ impl Screen {
 /// is active and only on idle) would add a `DeferredReflow` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ResizeBranch {
-    /// Naive truncate/pad on both screens. The only branch §1.25 takes;
-    /// `ResizeDiag::is_alt` disambiguates whether alt was active and
-    /// therefore whether the §1.22 wipe ran.
+    /// Naive truncate/pad on both screens. Used for alt screen and
+    /// same-width resizes.
     Naive,
+    /// Primary screen history rows were reflowed at the new column width
+    /// before naive resize (which then only handles row-count changes
+    /// and cursor-area rows). `ResizeDiag::is_alt` is always false when
+    /// this branch fires.
+    Reflowed,
 }
 
 /// One entry in the resize trace ring. Captured per `Grid::resize` call.
@@ -117,6 +121,9 @@ pub struct ResizeDiag {
     /// cur_col + every row below cursor cleared, rows above preserved).
     /// Used for plain shell resizes — keeps prior command output visible.
     pub cleared_below_cursor: bool,
+    /// Whether the history rows were reflowed at the new column width.
+    /// Only true for primary-screen width changes outside inline TUI.
+    pub reflowed: bool,
     /// Whether the §A.3 inline-TUI **full** primary wipe fired (entire
     /// visible primary region cleared + cursor homed, scrollback
     /// preserved). Used when an Ink-style app (Claude Code's input box)
@@ -148,6 +155,14 @@ const INLINE_TUI_DECAY_MS: i64 = 2_000;
 /// Past 3 s, real surviving TUIs (those that trapped SIGINT) get
 /// re-classified normally on their next abs-positioning CSI.
 const CTRL_C_GRACE_MS: i64 = 3_000;
+
+/// How long after Ctrl+C to suppress `\x1b[2J` (ED All) from the shell
+/// or prompt tools. Prevents the automatic clear that PSReadLine / TUI
+/// cleanup sends after the user kills a foreground TUI — without this,
+/// the primary screen content (prior command output) is erased on top
+/// of the normal alt-screen exit, and the user sees a blank prompt as
+/// if everything before the TUI was lost.
+const ED_SUPPRESS_AFTER_CTRL_C_MS: i64 = 500;
 
 pub struct Grid {
     rows: usize,
@@ -199,20 +214,16 @@ pub struct Grid {
     /// if cursor-hidden + recent abs-CSI would normally classify the
     /// pane as inline-TUI mode.
     ///
-    /// Why: when a user kills an Ink-style TUI with Ctrl+C, the TUI
-    /// has no chance to emit `?25h` (show cursor), so `cursor_visible`
-    /// stays `false`. PSReadLine then emits `CHA \x1b[G` on every
-    /// keystroke of the user's next command — an absolute-positioning
-    /// CSI that keeps `last_abs_csi_at_ms` perpetually fresh. The
-    /// three heuristic conditions stay satisfied forever and the
-    /// shell-history IME helper / popup never re-enables.
-    ///
-    /// Grace window short-circuits this: for a few seconds post-Ctrl+C
-    /// we assume any TUI we were running has been killed. If it
-    /// trapped SIGINT and is still running, it'll re-emit CSIs and
-    /// the heuristic re-engages cleanly once the grace expires.
-    /// Sentinel 0 = no Ctrl+C ever observed.
+    /// Also drives `ed_suppressed_until_ms`: within
+    /// `ED_SUPPRESS_AFTER_CTRL_C_MS` of this timestamp, any
+    /// `erase_in_display(All)` is silently suppressed, preventing the
+    /// shell/TUI from clearing the primary screen right after Ctrl+C.
     last_ctrl_c_at_ms: i64,
+    /// Wall-clock deadline (unix epoch ms) for suppressing ED All.
+    /// 0 = not suppressed. Set by `note_ctrl_c_sent`, checked by
+    /// `erase_in_display(EraseMode::All)`.
+    ed_suppressed_until_ms: i64,
+    /// §1.33 (2026-05-22) — wall-clock ms (unix epoch) of the most
     /// §1.33 (2026-05-22) — wall-clock ms (unix epoch) of the most
     /// recent observation that ANY TUI-relevant mode signal became
     /// active. Bumped from the parser as soon as `?1h` (DECCKM),
@@ -252,6 +263,7 @@ impl Grid {
             last_abs_csi_col: 0,
             last_redraw_csi_at_ms: 0,
             last_ctrl_c_at_ms: 0,
+            ed_suppressed_until_ms: 0,
             last_tui_signal_at_ms: 0,
             pen: Attrs::DEFAULT,
         }
@@ -324,6 +336,7 @@ impl Grid {
     /// motivation. Caller passes wall-clock ms.
     pub fn note_ctrl_c_sent(&mut self, now_ms: i64) {
         self.last_ctrl_c_at_ms = now_ms;
+        self.ed_suppressed_until_ms = now_ms + ED_SUPPRESS_AFTER_CTRL_C_MS;
     }
 
     /// §1.33 (2026-05-22) — record that the parser just observed a
@@ -619,10 +632,21 @@ impl Grid {
         let rows_changed = rows != self.rows;
         let dim_changed = cols_changed || rows_changed;
 
-        // §1.25: no reflow ever. Both screens take the naive path.
+        // §Reflow (2026-06-01): when column width changes on primary screen
+        // outside inline-TUI mode, reflow history rows (before cursor) at
+        // the new width so wrapped content isn't naively truncated. This
+        // runs BEFORE naive_resize_screen so cell data is preserved for
+        // redistribution. The cursor row and below (input area) are not
+        // reflowed — they get naive truncate/pad via naive_resize_screen.
+        let reflowed = cols_changed && !self.is_alt && !inline_tui_active
+            && self.primary.cursor.row > 0;
+        if reflowed {
+            self.reflow_primary_screen(old_cols, cols);
+        }
+
         Self::naive_resize_screen(&mut self.primary, rows, cols);
         Self::naive_resize_screen(&mut self.alt, rows, cols);
-        let branch = ResizeBranch::Naive;
+        let branch = if reflowed { ResizeBranch::Reflowed } else { ResizeBranch::Naive };
 
         // §1.22 (2026-05-05): when CURRENTLY viewing alt screen at resize,
         // clear the alt buffer so the application's SIGWINCH-driven redraw
@@ -797,6 +821,7 @@ impl Grid {
             branch,
             wipe_fired,
             cleared_below_cursor,
+            reflowed,
             inline_tui_wipe,
             inline_tui_active,
         });
@@ -851,6 +876,186 @@ impl Grid {
                 screen.scroll_bottom = last;
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Reflow (primary screen only)
+    // ------------------------------------------------------------------
+
+    /// Reflow history rows (rows before the cursor) at the new column
+    /// width. Groups consecutive rows into paragraphs using the `wrapped`
+    /// flag, flattens each paragraph's cells, and re-splits at `new_cols`.
+    /// Replaces the history portion of `self.primary.rows` and adjusts
+    /// the cursor row by the row-count delta.
+    ///
+    /// Preserves hyperlink and cluster metadata (OSC 8, grapheme clusters)
+    /// relative to each new row's column offsets. Runs BEFORE
+    /// `naive_resize_screen` so the cell data of old-width rows is still
+    /// intact for redistribution.
+    fn reflow_primary_screen(&mut self, old_cols: usize, new_cols: usize) {
+        debug_assert!(old_cols != new_cols);
+        let screen = &mut self.primary;
+        let old_cursor_row = screen.cursor.row;
+        if old_cursor_row == 0 {
+            return;
+        }
+
+        // ── 1. Build paragraphs from rows [0..old_cursor_row) ──────────
+        // A paragraph is a group of rows where every row except the last
+        // has `wrapped = true`. Each paragraph represents one visual line
+        // (which may be soft-wrapped across multiple grid rows).
+        struct Paragraph {
+            rows: std::ops::Range<usize>,
+        }
+        let mut paragraphs: Vec<Paragraph> = Vec::new();
+        let mut i = 0;
+        while i < old_cursor_row {
+            let start = i;
+            while i + 1 < old_cursor_row && screen.rows[i].wrapped {
+                i += 1;
+            }
+            // i is the last row of this paragraph (may equal start for
+            // single-row paragraphs). Advance past it.
+            paragraphs.push(Paragraph { rows: start..i + 1 });
+            i += 1;
+        }
+
+        if paragraphs.is_empty() {
+            return;
+        }
+
+        // ── 2. Reflow each paragraph ──────────────────────────────────
+        // Flatten cells, trim trailing blanks, re-split at new_cols.
+        struct ReflowedPara {
+            /// One `Vec<Cell>` per output row.
+            rows: Vec<Vec<Cell>>,
+            // Hyperlinks and clusters from the original paragraph are
+            // dropped on reflow (OSC 8 links are ephemeral; the cell's
+            // first codepoint in `cell.ch` renders fine without clusters).
+        }
+        let mut reflowed: Vec<ReflowedPara> = Vec::with_capacity(paragraphs.len());
+
+        for para in &paragraphs {
+            // Collect cells from all rows in this paragraph.
+            let mut flat: Vec<Cell> = Vec::new();
+            for r in para.rows.clone() {
+                flat.extend_from_slice(&screen.rows[r].cells);
+            }
+            // Trim trailing blanks from the paragraph as a whole.
+            while flat.last().map_or(false, |c| c.is_blank()) {
+                flat.pop();
+            }
+            if flat.is_empty() {
+                // Empty paragraph → single blank row.
+                reflowed.push(ReflowedPara {
+                    rows: vec![vec![Cell::EMPTY; new_cols]],
+                });
+                continue;
+            }
+            // Re-split at new_cols.
+            let num = (flat.len() + new_cols - 1) / new_cols;
+            let mut para_rows: Vec<Vec<Cell>> = Vec::with_capacity(num);
+            for r in 0..num {
+                let start_off = r * new_cols;
+                let end_off = std::cmp::min(start_off + new_cols, flat.len());
+                let mut row_cells = vec![Cell::EMPTY; new_cols];
+                for (j, cell) in flat[start_off..end_off].iter().enumerate() {
+                    row_cells[j] = *cell;
+                }
+                para_rows.push(row_cells);
+            }
+            reflowed.push(ReflowedPara { rows: para_rows });
+        }
+
+        // ── 3. Replace rows ───────────────────────────────────────────
+        let new_history_count: usize = reflowed.iter().map(|p| p.rows.len()).sum();
+        let old_history_count = old_cursor_row;
+        let cursor_delta = new_history_count as isize - old_history_count as isize;
+        let cursor_area_count = self.rows - old_cursor_row;
+        let total_rows = self.rows;
+
+        // Compute how many rows we need for the full screen post-reflow.
+        let needed = new_history_count + cursor_area_count;
+
+        // Strip the original cursor-area rows from the screen.
+        let cursor_area: Vec<Row> = screen.rows.drain(old_cursor_row..).collect();
+
+        // Drain the history area too (we'll replace it entirely).
+        screen.rows.clear();
+
+        if needed <= total_rows {
+            // Room for everything. Fill from top: reflowed history followed
+            // by cursor-area rows, then blank padding below.
+            let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
+            for para in &reflowed {
+                let pn = para.rows.len();
+                for (r_idx, cells) in para.rows.iter().enumerate() {
+                    let mut row = Row::new(new_cols);
+                    row.cells.clone_from_slice(cells);
+                    row.wrapped = r_idx < pn - 1;
+                    new_rows.push(row);
+                }
+            }
+            for orig in &cursor_area {
+                let row = orig.clone();
+                new_rows.push(row);
+            }
+            while new_rows.len() < total_rows {
+                new_rows.push(Row::new(new_cols));
+            }
+            screen.rows = new_rows;
+        } else {
+            // Content exceeds visible rows — drop oldest paragraphs until
+            // it fits. Then fill from top.
+            let excess = needed - total_rows;
+            let mut drop = 0usize;
+            let mut accumulated = 0usize;
+            for para in &reflowed {
+                let n = para.rows.len();
+                if accumulated + n <= excess {
+                    accumulated += n;
+                    drop += 1;
+                } else {
+                    break;
+                }
+            }
+            // Drop `drop` paragraphs from the beginning (oldest).
+            let remaining: Vec<&ReflowedPara> = reflowed.iter().skip(drop).collect();
+
+            // Recompute history count after dropping.
+            let remaining_count: usize = remaining.iter().map(|p| p.rows.len()).sum();
+            // Cursor area might also need trimming.
+            let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
+            for para in &remaining {
+                let pn = para.rows.len();
+                for (r_idx, cells) in para.rows.iter().enumerate() {
+                    let mut row = Row::new(new_cols);
+                    row.cells.clone_from_slice(cells);
+                    row.wrapped = r_idx < pn - 1;
+                    new_rows.push(row);
+                }
+            }
+            // Fill remaining space with cursor rows, then trim cursor
+            // rows from the bottom if needed.
+            let space_for_cursor = total_rows - remaining_count;
+            for orig in cursor_area.iter().take(space_for_cursor) {
+                let row = orig.clone();
+                new_rows.push(row);
+            }
+            while new_rows.len() < total_rows {
+                new_rows.push(Row::new(new_cols));
+            }
+            screen.rows = new_rows;
+        }
+
+        // ── 4. Adjust cursor ──────────────────────────────────────────
+        // The cursor was at old_cursor_row in the original layout. After
+        // reflow, history might take more/fewer rows, so we slide the
+        // cursor by the delta, clamped to valid bounds.
+        let new_cursor = (old_cursor_row as isize + cursor_delta).max(0) as usize;
+        screen.cursor.row = new_cursor.min(total_rows.saturating_sub(1));
+        screen.cursor.col = screen.cursor.col.min(new_cols.saturating_sub(1));
+        screen.cursor.pending_wrap = false;
     }
 
     // ------------------------------------------------------------------
@@ -1315,6 +1520,19 @@ impl Grid {
                 self.erase_row_range(cur_row, 0, cur_col + 1);
             }
             EraseMode::All => {
+                // §Ctrl+C-ED (2026-06-01): suppress ED All within a short
+                // window after Ctrl+C so the shell/TUI cleanup `\x1b[2J`
+                // doesn't wipe the primary screen's prior output. Resets
+                // the suppression flag so a later deliberate clear always
+                // works — only one windowed erase is suppressed per Ctrl+C.
+                if self.ed_suppressed_until_ms > 0 {
+                    let now = super::clock::now_ms();
+                    if now < self.ed_suppressed_until_ms {
+                        self.ed_suppressed_until_ms = 0;
+                        return;
+                    }
+                    self.ed_suppressed_until_ms = 0;
+                }
                 for r in &mut self.screen_mut().rows {
                     r.fill_blank(bce);
                 }

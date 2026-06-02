@@ -1101,10 +1101,26 @@ function expandSidebar() {
         }
       );
 
+      // Remote-initiated pane/workspace changes: refresh the desktop UI.
+      const unlistenPaneTreeChanged = await listen<{ workspaceId: string }>(
+        'pane-tree-changed',
+        () => {
+          void syncPaneLayoutFromBackend();
+        }
+      );
+      const unlistenWorkspaceListChanged = await listen(
+        'workspace-list-changed',
+        () => {
+          void refreshWorkspaces();
+        }
+      );
+
       const prevUnlisten = unlisten;
       unlisten = () => {
         prevUnlisten?.();
         unlistenActive();
+        unlistenPaneTreeChanged();
+        unlistenWorkspaceListChanged();
       };
       } catch (err) {
         console.error('[boot] init failed', err);

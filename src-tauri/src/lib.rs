@@ -70,13 +70,10 @@ pub fn run() {
             let app_data_dir = app_data_dir.clone();
             move |app| {
                 let handle = app.handle().clone();
-                let (teammate_ready_tx, teammate_ready_rx) = std::sync::mpsc::channel();
-                teammate::spawn_teammate_server(
-                    handle.clone(),
-                    teammate_state.clone(),
-                    Some(teammate_ready_tx),
-                );
-                let _ = teammate_ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+                // teammate HTTP server 改为「按需启动」：不在冷启动路径上拉起，仅 stash
+                // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
+                // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
+                let _ = teammate_state.app_handle.set(handle.clone());
 
                 // Build the main window programmatically (rather than declaring
                 // it in `tauri.conf.json`) so we can attach an
@@ -428,6 +425,20 @@ pub fn run() {
                                 serde_json::json!({}),
                             );
                         }
+                        Some(GlobalEvent::PaneTreeChanged { workspace_id }) => {
+                            let _ = handle.emit(
+                                "pane-tree-changed",
+                                serde_json::json!({
+                                    "workspaceId": workspace_id.to_string(),
+                                }),
+                            );
+                        }
+                        Some(GlobalEvent::WorkspaceListChanged) => {
+                            let _ = handle.emit(
+                                "workspace-list-changed",
+                                serde_json::json!({}),
+                            );
+                        }
                         None => {
                             // timeout — flush all pending per-pane buffers.
                             if !pending_output.is_empty() {
@@ -511,6 +522,8 @@ pub fn run() {
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
+            terminal::list_native_sessions,
+            terminal::summon_native_session,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,

@@ -61,8 +61,13 @@
   }
 
   function buildLinkUri(lanIp: string, port: number): string {
+    // Dev: the SPA is served by Vite (plain HTTP on :5174), not the Rust
+    // server — WebGPU stays Canvas2D in dev, which is fine for UI work.
+    // Prod: the Rust server serves HTTPS (self-signed) so browsers get a
+    // secure context and the WebGPU render path. First connection per device
+    // shows a one-time cert warning to click through.
     if (dev) return `http://${lanIp}:5174/`;
-    return `http://${lanIp}:${port}/`;
+    return `https://${lanIp}:${port}/`;
   }
 
   async function refreshRemoteInfo() {
@@ -241,6 +246,11 @@
           <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">② 扫码打开远程页面</p>
           <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={140} />
           <p class="text-[9px] text-[var(--rg-fg-muted)]">手机浏览器扫码 → 输入验证码 → 连接</p>
+          {#if !dev}
+            <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">
+              首次连接会提示「证书不安全」，点「高级 → 继续访问」即可（启用 HTTPS 才能开 WebGPU 加速）
+            </p>
+          {/if}
           <button onclick={copyLink} class="text-[10px] text-[var(--rg-accent)] hover:underline" title="复制链接">
             {copySuccess ? '链接已复制 ✓' : '复制链接'}
           </button>

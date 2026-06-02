@@ -356,6 +356,13 @@ fn split_pane_inner(
     }
     drop(map);
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
+    // Broadcast pane tree change to remote clients and desktop frontend.
+    let _ = state.remote_structural_tx.send(
+        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: wid }
+    );
+    let _ = state.event_tx.try_send(
+        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: wid }
+    );
     Ok(SplitPaneResult {
         pane_id: new_pane_id.to_string(),
         initial_cwd: parent_cwd,
@@ -497,6 +504,13 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
     }
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
+    // Broadcast pane tree change to remote clients and desktop frontend.
+    let _ = state.remote_structural_tx.send(
+        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: wid }
+    );
+    let _ = state.event_tx.try_send(
+        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: wid }
+    );
     Ok(())
 }
 

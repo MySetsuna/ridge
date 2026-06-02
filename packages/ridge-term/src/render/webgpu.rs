@@ -497,20 +497,18 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let mut row_bg_instances: Vec<CellInstance> = Vec::new();
 
-        // Consume tracking: columns consumed by a preceding cluster's
-        // visual overflow have their bg covered by the consuming cell's
-        // bg quad — we skip them to prevent an independent bg from
-        // visually cutting the emoji's left side.
+        // Consume tracking: columns consumed by a preceding wide cell's
+        // grid allocation have their bg covered — we skip them to
+        // prevent an independent bg from visually cutting the emoji.
         let render_path = scan_line_path(row.cells, row.clusters);
         let mut consume_until: usize = 0;
+        let mut extra_cells: f64 = 0.0;
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
             }
 
-            // Skip cells consumed by a preceding wide/cluster glyph
-            // whose visual overflow extends past its grid allocation.
             if col < consume_until {
                 continue;
             }
@@ -519,15 +517,61 @@ impl RenderBackend for WebGpuPaneBackend {
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
-            let pixel_x = (col as f32 * cell_w + 0.5).floor();
-            let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
+
+            // §B.9 — compute effective span for wide cells via atlas
+            // lookup (px_w). Falls back to cell_span on cache miss
+            // (first frame catches up on frame 2).
+            let effective_span = if cell_span >= 2 {
+                let cluster_text = if !row.clusters.is_empty() {
+                    let target = col.min(u16::MAX as usize) as u16;
+                    row.clusters.iter().find(|c| c.col == target).map(|c| c.text.as_ref())
+                } else {
+                    None
+                };
+                let (font_family_hash, font_size_q) = {
+                    let ctx = self.ctx.borrow();
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    std::hash::Hash::hash(&ctx.font_family, &mut h);
+                    (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
+                };
+                let glyph_id = match cluster_text {
+                    Some(text) => {
+                        use std::hash::Hasher;
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        h.write(text.as_bytes());
+                        let raw = std::hash::Hasher::finish(&h) as u32;
+                        CLUSTER_TAG | (raw & !CLUSTER_TAG)
+                    }
+                    None => cell.ch as u32,
+                };
+                let key = GlyphKey {
+                    font_family_hash,
+                    font_size_q,
+                    glyph_id,
+                    style_flags: 0,
+                };
+                let entry = self.ctx.borrow_mut().atlas.lookup(&key);
+                match entry {
+                    Some(e) => {
+                        let advance_px = (e.px_w as f32).max(1.0);
+                        (advance_px / cell_w).ceil() as usize
+                    }
+                    None => cell_span,
+                }
+            } else {
+                cell_span
+            };
+
+            let effective_span_f = effective_span as f64;
+            let effective_col = col as f64 + extra_cells;
+            let pixel_x = (effective_col as f32 * cell_w + 0.5).floor();
+            let pixel_x_right = ((effective_col + effective_span_f) as f32 * cell_w + 0.5).floor();
             let cell_w_px = pixel_x_right - pixel_x;
 
             let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
             let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
             let row_h_int = pixel_y_bot - pixel_y;
 
-            // Bg quad: full cell_span × cell_w rectangle.
             row_bg_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
                 cell_size: [cell_w_px, row_h_int],
@@ -538,13 +582,11 @@ impl RenderBackend for WebGpuPaneBackend {
                 is_color: 0,
             });
 
-            // In the slow path, mark grid-allocated cells as consumed
-            // so the text pass's consume tracking starts correct.
-            // The text pass may extend consume_until further based on
-            // measured glyph width.
             if render_path == RenderPath::Slow && cell_span > 1 {
                 consume_until = col + cell_span;
             }
+
+            extra_cells += effective_span_f - cell.width as f64;
         }
         self.pending_instances.append(&mut row_bg_instances);
     }
@@ -560,22 +602,12 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let render_path = scan_line_path(row.cells, row.clusters);
 
-        // Consume tracking: when a slow-path glyph's measured pixel width
-        // extends past its grid allocation, subsequent columns are "consumed"
-        // — their text instances are skipped so the cluster's visual overflows
-        // freely without being overdrawn by a narrower cell's glyph.
-        let mut consume_until: usize = 0;
+        // §B.9 — cumulative extra cells from wide-cluster expansion.
+        // Tracks the visual column offset for each grid column.
+        let mut extra_cells: f64 = 0.0;
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
-                continue;
-            }
-
-            // Skip cells consumed by a preceding cluster's visual overflow.
-            // Their background was already drawn in the bg pass (or covered
-            // by the consuming cell's bg quad in the same pass). Skipping
-            // their text prevents double-drawing over the cluster's glyph.
-            if col < consume_until {
                 continue;
             }
 
@@ -584,9 +616,11 @@ impl RenderBackend for WebGpuPaneBackend {
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
+
             // Pixel-aligned positions — floor(pos + 0.5) prevents sub-pixel
             // seams between adjacent cells that would show as hairline gaps.
-            let pixel_x = (col as f32 * cell_w + 0.5).floor();
+            let effective_col_f = col as f32 + extra_cells as f32;
+            let pixel_x = (effective_col_f * cell_w + 0.5).floor();
             let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
             let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
             let row_h_int = pixel_y_bot - pixel_y;
@@ -746,41 +780,23 @@ impl RenderBackend for WebGpuPaneBackend {
             }
 
             if !drawn_procedurally {
-                // Glyph quad: at natural advance, anchored at cell left.
+                // §B.9 — glyph quad at natural size with effective column.
+                // Wide/color glyphs keep their native advance (no aspect-fit
+                // scaling), pushing subsequent cells right via extra_cells.
                 if let Some(e) = entry {
                     let natural_w = (e.px_w as f32).max(1.0);
-
-                    // ── Consume tracking (Slow-Path only meaningful for
-                    // wide/cluster glyphs; fast-path stays width-1 so
-                    // no overflow is possible).
-                    //
-                    // When a slow-path glyph's measured pixel width extends
-                    // past its grid allocation (cell_span × cell_w), the
-                    // subsequent N columns are "consumed" — their text
-                    // instances must be skipped so the cluster's visual
-                    // overflows freely without being overdrawn by a
-                    // narrower cell's glyph. The floor(pos + 0.5) pixel
-                    // alignment prevents sub-pixel seams in the overflow
-                    // boundary computation.
-                    if render_path == RenderPath::Slow {
-                        let grid_right =
-                            ((col + cell_span) as f32 * cell_w + 0.5).floor();
-                        let measured_right = (pixel_x + natural_w + 0.5).floor();
-                        if measured_right > grid_right {
-                            let overflow_px = measured_right - grid_right;
-                            let overflow_cells =
-                                ((overflow_px / cell_w).ceil() as usize).max(1);
-                            let new_consume_until =
-                                col + cell_span + overflow_cells;
-                            if new_consume_until > consume_until {
-                                consume_until = new_consume_until;
-                            }
-                        }
-                    }
+                    let (gx, gw) = if is_color_flag == 1 || cell_span >= 2 {
+                        let span = (natural_w / cell_w).ceil() as usize;
+                        let ex = (effective_col_f * cell_w + 0.5).floor();
+                        extra_cells += span as f64 - cell_span as f64;
+                        (ex, natural_w)
+                    } else {
+                        (pixel_x, natural_w)
+                    };
 
                     row_glyph_instances.push(CellInstance {
-                        cell_xy: [pixel_x, pixel_y],
-                        cell_size: [natural_w, row_h_int],
+                        cell_xy: [gx, pixel_y],
+                        cell_size: [gw, row_h_int],
                         atlas_uv: e.uv,
                         atlas_layer: e.layer as u32,
                         fg_rgba: rgba_u8_to_f32(fg),
@@ -798,64 +814,61 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
         let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
-        let pixel_x = (cursor.col as f32 * cell_w + 0.5).floor();
+        let effective_col = cursor.col as f64 + cursor.extra_cells;
+        let pixel_x = (effective_col as f32 * cell_w + 0.5).floor();
         let cursor_span = cursor.width.max(1) as usize;
-        let pixel_x_grid_right =
-            ((cursor.col + cursor_span) as f32 * cell_w + 0.5).floor();
-        let cell_w_grid_px = pixel_x_grid_right - pixel_x;
-        let pixel_y = (cursor.row as f32 * cell_h + 0.5).floor();
-        let pixel_y_bot = ((cursor.row + 1) as f32 * cell_h + 0.5).floor();
-        let cell_h_int = pixel_y_bot - pixel_y;
-        let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
 
-        // Smart Cursor: when the cursor sits on a cluster-aware cell,
-        // look up the measured glyph width from the atlas and size the
-        // cursor block to the visual extent rather than the grid
-        // allocation. This ensures the cursor block doesn't clip an
-        // emoji that renders wider than 2 cells, and doesn't overhang
-        // a narrow glyph that renders narrower.
-        let cursor_block_w = match &cursor.cluster_text {
-            Some(text) if !text.is_empty() => {
-                let (font_family_hash, font_size_q) = {
-                    let ctx = self.ctx.borrow();
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    std::hash::Hash::hash(&ctx.font_family, &mut h);
-                    (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
-                };
-                let glyph_id = {
+        // §B.9 — measure effective span via atlas lookup (px_w).
+        // Falls back to cell_span on cache miss (next frame catches up).
+        let effective_span = if cursor_span >= 2 {
+            let (font_family_hash, font_size_q) = {
+                let ctx = self.ctx.borrow();
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&ctx.font_family, &mut h);
+                (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
+            };
+            let glyph_id = match &cursor.cluster_text {
+                Some(text) if !text.is_empty() => {
                     use std::hash::Hasher;
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     h.write(text.as_bytes());
                     let raw = std::hash::Hasher::finish(&h) as u32;
                     CLUSTER_TAG | (raw & !CLUSTER_TAG)
-                };
-                let key = GlyphKey {
-                    font_family_hash,
-                    font_size_q,
-                    glyph_id,
-                    style_flags: 0,
-                };
-                let measured = self
-                    .ctx
-                    .borrow_mut()
-                    .atlas
-                    .lookup(&key)
-                    .map(|e| (e.px_w as f32).max(1.0));
-                match measured {
-                    Some(w) if w > cell_w_grid_px => w,
-                    _ => cell_w_grid_px,
                 }
+                _ => cursor.ch as u32,
+            };
+            let key = GlyphKey {
+                font_family_hash,
+                font_size_q,
+                glyph_id,
+                style_flags: 0,
+            };
+            let entry = self.ctx.borrow_mut().atlas.lookup(&key);
+            match entry {
+                Some(e) => ((e.px_w as f32).max(1.0) / cell_w).ceil() as usize,
+                None => cursor_span,
             }
-            _ => cell_w_grid_px,
+        } else {
+            cursor_span
         };
 
+        let effective_span_f = effective_span as f64;
+        let pixel_x_right =
+            ((effective_col + effective_span_f) as f32 * cell_w + 0.5).floor();
+        let span_w = pixel_x_right - pixel_x;
+
+        let pixel_y = (cursor.row as f32 * cell_h + 0.5).floor();
+        let pixel_y_bot = ((cursor.row + 1) as f32 * cell_h + 0.5).floor();
+        let cell_h_int = pixel_y_bot - pixel_y;
+        let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
+
         let (block_x, block_y, block_w, block_h) = match cursor.style {
-            CursorStyle::Block => (pixel_x, pixel_y, cursor_block_w, cell_h_int),
+            CursorStyle::Block => (pixel_x, pixel_y, span_w, cell_h_int),
             CursorStyle::Bar => (pixel_x, pixel_y, bar_thickness, cell_h_int),
             CursorStyle::Underline => (
                 pixel_x,
                 pixel_y + cell_h_int - bar_thickness,
-                cursor_block_w,
+                span_w,
                 bar_thickness,
             ),
         };
@@ -881,13 +894,6 @@ impl RenderBackend for WebGpuPaneBackend {
                 std::hash::Hash::hash(&ctx.font_family, &mut h);
                 (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
             };
-            // When cluster_text is set, look up the cluster glyph;
-            // otherwise fall back to the single-character glyph.
-            let mut ch_buf = [0u8; 4];
-            let glyph_text: &str = match &cursor.cluster_text {
-                Some(text) if !text.is_empty() => text.as_str(),
-                None | Some(_) => cursor.ch.encode_utf8(&mut ch_buf),
-            };
             let glyph_id = match &cursor.cluster_text {
                 Some(text) if !text.is_empty() => {
                     use std::hash::Hasher;
@@ -911,8 +917,10 @@ impl RenderBackend for WebGpuPaneBackend {
             if let Some(entry) = entry {
                 let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
                 let natural_w = (entry.px_w as f32).max(1.0);
+                // §B.9 — natural size at effective column, no aspect-fit.
+                let gx = (effective_col as f32 * cell_w + 0.5).floor();
                 self.pending_instances.push(CellInstance {
-                    cell_xy: [pixel_x, pixel_y],
+                    cell_xy: [gx, pixel_y],
                     cell_size: [natural_w, cell_h_int],
                     atlas_uv: entry.uv,
                     atlas_layer: entry.layer as u32,
@@ -1041,6 +1049,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 }
                 let pixel_x = (col + cell_offset) as f32 * cell_w;
                 let natural_w = (e.px_w as f32).max(1.0);
+                // §B.9 — natural size, no aspect-fit
                 self.pending_instances.push(CellInstance {
                     cell_xy: [pixel_x, pixel_y],
                     cell_size: [natural_w, cell_h],
@@ -1236,6 +1245,7 @@ impl RenderBackend for WebGpuPaneBackend {
                     }
                     let pixel_x = inner_x + (cell_offset as f32) * cell_w;
                     let natural_w = (e.px_w as f32).max(1.0);
+                    // §B.9 — natural size, no aspect-fit
                     self.pending_instances.push(CellInstance {
                         cell_xy: [pixel_x, row_y],
                         cell_size: [natural_w, cell_h],

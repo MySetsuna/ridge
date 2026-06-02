@@ -94,9 +94,22 @@ export type WsMessage = {
   success: boolean;
   workspaceId?: string;
 } | {
+  type: 'create-pane-result';
+  success: boolean;
+  paneId?: string;
+  error?: string;
+} | {
+  type: 'close-pane-result';
+  success: boolean;
+  error?: string;
+} | {
   type: 'close-workspace-result';
   success: boolean;
   error?: string;
+} | {
+  type: 'workspace-renamed';
+  workspaceId: string;
+  name: string;
 } | {
   type: 'theme';
   themeType: 'dark' | 'light';
@@ -119,6 +132,7 @@ export class RemoteConnection {
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
   private _reqCounter = 0;
+  private _refreshSeq = 0;
   private _host: string = '';
   private _port: number = 0;
   private _token: string = '';
@@ -171,7 +185,11 @@ export class RemoteConnection {
     let url: string;
     if (auth) {
       const param = authType === 'token' ? 'token' : 'code';
-      url = `ws://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}`;
+      // Match the page's scheme: an HTTPS-served page must use wss:// (mixed
+      // content blocks ws:// from https://). TLS is what unlocks WebGPU on the
+      // LAN, so this is the common path in production.
+      const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      url = `${wsScheme}://${host}:${port}/ws?${param}=${encodeURIComponent(auth)}`;
       if (authType === 'token') this._token = auth;
     } else {
       this.setState('error');
@@ -275,10 +293,15 @@ export class RemoteConnection {
   /** Claim the shared PTY at this client's viewport size (the "lock size" /
    *  refresh button). The backend resizes the real PTY + canonical parser and
    *  broadcasts a full repaint to every viewer; the size persists until the
-   *  next claim/refresh from any endpoint. */
+   *  next claim/refresh from any endpoint.
+   *
+   *  Each call increments a monotonic sequence counter so the backend can
+   *  ignore stale requests when multiple remotes contend for the size lock. */
   refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight });
+    this._refreshSeq++;
+    this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight, seq: this._refreshSeq });
   }
+  lastRefreshSeq(): number { return this._refreshSeq; }
 
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
@@ -294,6 +317,16 @@ export class RemoteConnection {
   async createWorkspace(name?: string): Promise<string | null> {
     const data = await this._sendAndWait({ type: 'create-workspace', name: name || '' }, 'create-workspace-result') as Record<string, unknown>;
     return (data.success && data.workspaceId) ? String(data.workspaceId) : null;
+  }
+
+  async createPane(shell?: string): Promise<string | null> {
+    const data = await this._sendAndWait({ type: 'create-pane', shell: shell || '' }, 'create-pane-result') as Record<string, unknown>;
+    return (data.success && data.paneId) ? String(data.paneId) : null;
+  }
+
+  async closePane(paneId: string): Promise<boolean> {
+    const data = await this._sendAndWait({ type: 'close-pane', paneId }, 'close-pane-result') as Record<string, unknown>;
+    return (data as Record<string, unknown>).success === true;
   }
 
   async closeWorkspace(workspaceId: string): Promise<boolean> {

@@ -33,7 +33,7 @@ fn get_foreground_process_impl(
     let handle = ws.terminals.get(&pane_id)?;
 
     // Get the shell PID from the child process
-    let shell_pid = handle._child.process_id()?;
+    let shell_pid = handle._child.as_ref().and_then(|c| c.process_id())?;
 
     drop(map); // release lock before doing I/O
 
@@ -175,7 +175,7 @@ pub async fn get_pane_cwd(
         let map = state.workspaces.read();
         map.get(&workspace_id)
             .and_then(|ws| ws.terminals.get(&pane_id))
-            .and_then(|handle| handle._child.process_id())
+            .and_then(|handle| handle._child.as_ref().and_then(|c| c.process_id()))
     };
     let Some(shell_pid) = shell_pid else { return Ok(None) };
 
@@ -234,7 +234,7 @@ pub(crate) fn current_pane_cwd_live(
         let map = state.workspaces.read();
         map.get(&workspace_id)
             .and_then(|ws| ws.terminals.get(&pane_id))
-            .and_then(|handle| handle._child.process_id())
+            .and_then(|handle| handle._child.as_ref().and_then(|c| c.process_id()))
     }?;
     get_process_cwd(shell_pid)
 }
