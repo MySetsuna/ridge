@@ -550,6 +550,7 @@ async fn workspace_create_handler(
                 teammate_agent_pane_map: HashMap::new(),
                 associated_file_path: None,
                 pending_spawns: HashMap::new(),
+                pty_generation: HashMap::new(),
                 teammate_metrics: crate::state::TeammateMetrics::default(),
                 display_seq: seq,
             },
@@ -944,6 +945,7 @@ async fn handle_ws(
                                 teammate_agent_pane_map: HashMap::new(),
                                 associated_file_path: None,
                                 pending_spawns: HashMap::new(),
+                                pty_generation: HashMap::new(),
                                 teammate_metrics: crate::state::TeammateMetrics::default(),
                                 display_seq: seq,
                             });

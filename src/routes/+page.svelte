@@ -167,6 +167,7 @@ self.MonacoEnvironment = {
 
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
+  import { parseLayoutChange, type LayoutChange } from '$lib/teammate/layoutEvent';
   import { get } from 'svelte/store';
 
   import { onMount, tick } from 'svelte';
@@ -1072,21 +1073,47 @@ function expandSidebar() {
         isMaximized = await getCurrentWindow().isMaximized();
       });
 
-      unlisten = await listen('teammate-layout-changed', () => {
-        void (async () => {
-          await syncPaneLayoutFromBackend();
-          if (!dev) return;
-          requestAnimationFrame(() => {
-            const storeCount = getAllPaneIds(get(paneTreeStore)).length;
-            const domCount = document.querySelectorAll('.rg-pane-root').length;
-            if (storeCount > 0 && domCount !== storeCount) {
-              reportDevIssue({
-                title: 'Layout sync mismatch',
-                message: `teammate-layout-changed 后 store panes=${storeCount}, mounted panes=${domCount}`,
-              });
-            }
-          });
-        })();
+      // Re-sync the pane layout from authoritative backend state, then (in dev)
+      // flag any store/DOM pane-count drift. Shared action for every kind.
+      const applyLayoutSync = async (change: LayoutChange) => {
+        await syncPaneLayoutFromBackend();
+        if (!dev) return;
+        requestAnimationFrame(() => {
+          const storeCount = getAllPaneIds(get(paneTreeStore)).length;
+          const domCount = document.querySelectorAll('.rg-pane-root').length;
+          if (storeCount > 0 && domCount !== storeCount) {
+            reportDevIssue({
+              title: 'Layout sync mismatch',
+              message: `teammate-layout-changed[${change.kind}] 后 store panes=${storeCount}, mounted panes=${domCount}`,
+            });
+          }
+        });
+      };
+      // Dispatch seam keyed on the envelope `kind`. Today every kind re-syncs
+      // from backend state; the P1 follow-ups specialize individual branches
+      // (split/reused → deterministic await-Channel-then-fit per 5b; state →
+      // agent badge flip per #6) without changing this contract.
+      const handleLayoutChange = async (change: LayoutChange) => {
+        switch (change.kind) {
+          case 'split':
+          case 'reused':
+          case 'detached':
+          case 'removed':
+          case 'state':
+            await applyLayoutSync(change);
+            break;
+          default: {
+            // Exhaustiveness guard: if a new LayoutChangeKind is added to the
+            // envelope, TS errors here until this switch handles it. Unreachable
+            // at runtime (parseLayoutChange degrades unknown kinds to 'state').
+            const _exhaustive: never = change.kind;
+            void _exhaustive;
+            await applyLayoutSync(change);
+          }
+        }
+      };
+      unlisten = await listen('teammate-layout-changed', (event) => {
+        void handleLayoutChange(parseLayoutChange(event.payload));
       });
 
       const unlistenActive = await listen<string>(

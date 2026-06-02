@@ -248,6 +248,40 @@ fn socket() -> &'static str {
     SOCKET.get().map(String::as_str).unwrap_or("default")
 }
 
+/// socket 路径归一化：去空白、`\`→`/`、小写（Windows 路径大小写不敏感），
+/// 便于把 `-S <path>` 与 `$TMUX` 第一段做等价比较。
+fn norm_socket_path(p: &str) -> String {
+    let t = p.trim();
+    // 平台相关：Windows 路径大小写 + `\`/`/` 不敏感；Unix 路径大小写/分隔符敏感，
+    // 保持原样（避免把两个仅大小写不同的 Unix socket 误判为同一个）。
+    if cfg!(windows) {
+        t.replace('\\', "/").to_ascii_lowercase()
+    } else {
+        t.to_string()
+    }
+}
+
+/// 给 `-S <path>` 归类 socket：若 `<path>` 等于 `$TMUX` 第一段（GUI 自己的
+/// teammate socket），归为 `default`（GUI 路径）；否则 `S:<path>`（native 引擎）。
+///
+/// 背景：Claude Code 的 TmuxBackend 在 `teammateMode=tmux` 下，会从 `$TMUX`
+/// 解析出 socket 并**显式** `-S <socket> display-message -t <pane> -p '#{window_id}'`
+/// 来定位当前 pane/window，随后 `-S <socket> split-window ...` 起 teammate 分屏。
+/// 这个 `<socket>` 正是 GUI 自己的 socket，必须走 GUI 路径；旧逻辑把任何 `-S`
+/// 一律当 native，导致该 socket 下查不到 native 会话而硬失败、分屏起不来
+/// （宿主报 "Could not determine current tmux pane/window"）。
+fn socket_id_for_dash_s(path: &str, tmux_env: Option<&str>) -> String {
+    let is_gui_socket = tmux_env
+        .and_then(|e| e.split(',').next())
+        .map(|gui| !path.trim().is_empty() && norm_socket_path(gui) == norm_socket_path(path))
+        .unwrap_or(false);
+    if is_gui_socket {
+        "default".to_string()
+    } else {
+        format!("S:{path}")
+    }
+}
+
 /// 解析子命令前的全局标志，返回 (socket_id, 子命令在 args 中的起始下标)。
 /// 处理 `-L name` / `-S path`，并吞掉常见的无关全局开关（`-f` 配置、`-2/-u/-v/-q`、
 /// `-C/-CC` 控制模式、`-T type`、全局 `-c`）。遇到第一个非全局标志即子命令。
@@ -261,7 +295,10 @@ fn parse_global_flags(args: &[String]) -> (String, usize) {
                 i += 2;
             }
             "-S" if i + 1 < args.len() => {
-                sock = format!("S:{}", args[i + 1]);
+                // GUI 自己的 socket（== `$TMUX` 第一段）走 default/GUI 路径；
+                // 其它自定义 socket 才进 native 引擎。
+                let tmux_env = env::var("TMUX").ok();
+                sock = socket_id_for_dash_s(&args[i + 1], tmux_env.as_deref());
                 i += 2;
             }
             // 带取值、与 socket 无关的全局标志：跳过标志 + 取值。
@@ -285,7 +322,10 @@ fn target_is_session_qualified(raw: &str) -> bool {
     if let Some(r) = t.strip_prefix('=') {
         return !r.trim().is_empty();
     }
-    if t.starts_with('%') {
+    // tmux 对象 id 记号：`%` 窗格 / `@` 窗口 / `$` 会话——均指向当前（GUI）服务器
+    // 对象，而非 native 编排用的「具名会话」，因此一律按 GUI 路径处理。
+    // （Claude Code 拿到 `#{window_id}=@0` 后会 `list-panes -t @0` 数窗格数量。）
+    if t.starts_with(|c: char| matches!(c, '%' | '@' | '$')) {
         return false;
     }
     let end = t.find(|c| c == ':' || c == '.').unwrap_or(t.len());
@@ -685,7 +725,19 @@ fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()
 /// tmux `cmd-split-window.c`：`split-window -P` 且未指定 `-F` 时的默认模板。
 const SPLIT_WINDOW_PRINT_DEFAULT: &str = "#{session_name}:#{window_index}.#{pane_index}";
 
-fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+/// Parsed `split-window` flags (pure; no I/O) so routing + request-body shape
+/// stay unit-testable. Field set mirrors the tmux flags the shim honors.
+struct SplitArgs {
+    horizontal: bool,
+    pane_index: Option<usize>,
+    raw_target: Option<String>,
+    print_pane: bool,
+    output_format: Option<String>,
+    cwd: Option<String>,
+    command: Option<String>,
+}
+
+fn parse_split_args(rest: &[String]) -> SplitArgs {
     let mut horizontal = false;
     let mut pane_index: Option<usize> = None;
     let mut raw_target: Option<String> = None;
@@ -740,15 +792,89 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         i += 1;
     }
 
-    let command = shell_start
-        .and_then(|j| {
-            let s = rest[j..].join(" ");
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
+    let command = shell_start.and_then(|j| {
+        let s = rest[j..].join(" ");
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    });
+
+    SplitArgs {
+        horizontal,
+        pane_index,
+        raw_target,
+        print_pane,
+        output_format,
+        cwd,
+        command,
+    }
+}
+
+/// Build the `/api/v1/split-window` request body (pure; no I/O).
+///
+/// `auto_place=true`（GUI 路径）发显式 `auto_place` 标志并**丢弃**样板 `-t`/`-h`
+/// （省略 `pane_index`、`horizontal` 置 false），避免后端 auto_place 分支被旁路。
+/// `auto_place=false`（native 回退 / new-window）如实转发 `pane_index`/`horizontal`。
+fn build_split_body(
+    auto_place: bool,
+    horizontal: bool,
+    pane_index: Option<usize>,
+    command: Option<&str>,
+    cwd: Option<&str>,
+    structured: Option<&StructuredLaunch>,
+) -> serde_json::Value {
+    let mut body = if auto_place {
+        // auto_place 下后端自行选择目标+方向：调用方传入的 `horizontal`/`pane_index`
+        // 是 harness 样板，此处**有意忽略**（不透传），只发显式 `auto_place` + 中性
+        // `horizontal:false`。
+        serde_json::json!({ "auto_place": true, "horizontal": false })
+    } else {
+        let mut b = serde_json::json!({ "horizontal": horizontal });
+        if let Some(p) = pane_index {
+            b["pane_index"] = serde_json::json!(p);
+        }
+        b
+    };
+    if let Some(launch) = structured {
+        // 结构化 launch（`env K=V program …`）= agent 启动意图（F1）：显式置 `is_agent`，
+        // 后端据此把面板提升为 Busy（启动即 Busy/id 可空）。裸 shell / 普通命令不置。
+        body["is_agent"] = serde_json::json!(true);
+        body["program"] = serde_json::json!(launch.program);
+        body["args"] = serde_json::json!(launch.args);
+        if !launch.env.is_empty() {
+            body["env"] = serde_json::json!(launch.env);
+        }
+        if let Some(ref c) = launch.cwd {
+            if !c.is_empty() {
+                body["cwd"] = serde_json::json!(c);
             }
-        });
+        }
+        if let Some(c) = command {
+            body["command"] = serde_json::json!(c);
+        }
+    } else if let Some(c) = command {
+        body["command"] = serde_json::json!(c);
+    }
+    if let Some(c) = cwd.filter(|s| !s.is_empty()) {
+        if body.get("cwd").is_none() {
+            body["cwd"] = serde_json::json!(c);
+        }
+    }
+    body
+}
+
+fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let SplitArgs {
+        horizontal,
+        pane_index,
+        raw_target,
+        print_pane,
+        output_format,
+        cwd,
+        command,
+    } = parse_split_args(rest);
 
     let print_template = if print_pane {
         Some(
@@ -794,66 +920,27 @@ fn cmd_split(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         }
     }
 
-    // GUI 路径：后端在发起方工作区内「先复用空闲 shell 面板，否则在最大 pane 上 split」。
+    // GUI 路径：显式 auto_place 契约——后端在发起方工作区内自动放置（idle 复用 →
+    // 最大 pane → 最长边），丢弃 harness 样板 -t/-h；native 路径不经此处。
     let structured = command.as_deref().and_then(|c| parse_structured_launch(c));
-    post_split(
-        url,
-        token,
+    let body = build_split_body(
+        true,
         horizontal,
         pane_index,
-        command,
-        cwd,
-        print_template.as_deref(),
+        command.as_deref(),
+        cwd.as_deref(),
         structured.as_ref(),
-    )
-    .map(|_| ())
+    );
+    post_split(url, token, body, print_template.as_deref()).map(|_| ())
 }
 
 fn post_split(
     url: &str,
     token: &str,
-    horizontal: bool,
-    pane_index: Option<usize>,
-    command: Option<String>,
-    cwd: Option<String>,
+    body: serde_json::Value,
     print_template: Option<&str>,
-    structured: Option<&StructuredLaunch>,
 ) -> Result<usize, ()> {
-    log_to_file(&format!(
-        "post_split: horizontal={}, pane_index={:?}, command={:?}, cwd={:?}, print={}, structured={}",
-        horizontal,
-        pane_index,
-        command,
-        cwd,
-        print_template.is_some(),
-        structured.is_some()
-    ));
-    let mut body = serde_json::json!({ "horizontal": horizontal });
-    if let Some(p) = pane_index {
-        body["pane_index"] = serde_json::json!(p);
-    }
-    if let Some(launch) = structured {
-        body["program"] = serde_json::json!(launch.program);
-        body["args"] = serde_json::json!(launch.args);
-        if !launch.env.is_empty() {
-            body["env"] = serde_json::json!(launch.env);
-        }
-        if let Some(ref c) = launch.cwd {
-            if !c.is_empty() {
-                body["cwd"] = serde_json::json!(c);
-            }
-        }
-        if command.is_some() {
-            body["command"] = serde_json::json!(command.unwrap());
-        }
-    } else if let Some(c) = command {
-        body["command"] = serde_json::json!(c);
-    }
-    if let Some(c) = cwd.filter(|s| !s.is_empty()) {
-        if body.get("cwd").is_none() {
-            body["cwd"] = serde_json::json!(c);
-        }
-    }
+    log_to_file(&format!("post_split: body={}", body));
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
     log_to_file(&format!("post_split: posting to {}", u));
     let res = match client()
@@ -1125,13 +1212,13 @@ fn normalize_structured_launch(mut launch: StructuredLaunch) -> StructuredLaunch
     launch
 }
 
-fn post_spawn_process(
-    url: &str,
-    token: &str,
-    target: &SendTarget,
-    launch: &StructuredLaunch,
-) -> Result<(), ()> {
+/// Build the `/api/v1/spawn-process` request body (pure; no I/O). spawn-process
+/// is only ever reached from a structured `env K=V program …` launch
+/// (`cmd_send_keys` → `parse_structured_launch`), i.e. always an agent start, so
+/// `is_agent` is unconditionally true here (F1 意图位)。
+fn build_spawn_process_body(target: &SendTarget, launch: &StructuredLaunch) -> serde_json::Value {
     let mut body = serde_json::json!({
+        "is_agent": true,
         "cwd": &launch.cwd,
         "program": &launch.program,
         "args": &launch.args,
@@ -1144,6 +1231,16 @@ fn post_spawn_process(
             body["use_tmux_current_pane"] = serde_json::json!(false);
         }
     }
+    body
+}
+
+fn post_spawn_process(
+    url: &str,
+    token: &str,
+    target: &SendTarget,
+    launch: &StructuredLaunch,
+) -> Result<(), ()> {
+    let body = build_spawn_process_body(target, launch);
     let u = format!("{}/api/v1/spawn-process", url.trim_end_matches('/'));
     log_to_file(&format!("spawn-process: posting to {}", u));
     let res = client()
@@ -1754,7 +1851,9 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     // GUI 路径：复用空闲 shell / 在发起方工作区最大 pane 上 split（后端处理）。
-    let new_idx = post_split(url, token, false, pane_index, command, cwd, None, None)?;
+    // new-window 不属 T1 auto_place 范围 → 沿用显式 pane_index 转发（auto_place=false）。
+    let body = build_split_body(false, false, pane_index, command.as_deref(), cwd.as_deref(), None);
+    let new_idx = post_split(url, token, body, None)?;
     if let Some(name) = &window_name {
         rename_pane_http(url, token, new_idx, name);
     }
@@ -2703,6 +2802,15 @@ fn cmd_find_window(rest: &[String]) -> Result<(), ()> {
     }
     Ok(())
 }
+
+// socket 路由（`-S <socket>` → default/native 归类）的单测放在独立文件
+// `tmux/socket_routing_tests.rs`，与实现分离。作为本 bin 的 `#[cfg(test)]` 子模块
+// 编译，因此能访问 `super` 的私有函数。
+// `#[path]` 指向 `tmux/` 子目录：该目录无 `main.rs`，不会被 Cargo 当作独立 bin；
+// 直接放在 `src/bin/` 同级会被自动发现为另一个 bin 目标而编译失败。
+#[cfg(test)]
+#[path = "tmux/socket_routing_tests.rs"]
+mod socket_routing_tests;
 
 #[cfg(test)]
 mod tests {

@@ -114,6 +114,13 @@ pub struct Workspace {
     /// Keyed by pane id. See `PendingSpawn` for the rationale behind splitting
     /// `openpty` from `spawn_command` into two stages.
     pub pending_spawns: HashMap<Uuid, PendingSpawn>,
+    /// Monotonic per-pane PTY generation. Bumped on every teardown/replace
+    /// (`teardown_pane_pty_if_present`) BEFORE the old child is killed, so a
+    /// reader that captured an older generation at spawn knows, on EOF, that it
+    /// is no longer the pane's current PTY — and must NOT run the child-exit→Idle
+    /// demotion (which would clobber a freshly-spawned agent's Busy during the
+    /// [teardown, new-PTY-live) window). See `engine::pty` reader cleanup.
+    pub pty_generation: HashMap<Uuid, u64>,
     /// Per-workspace counters for teammate-initiated splits (success / failure
     /// reasons). Surfaced read-only via `get_teammate_metrics`.
     pub teammate_metrics: TeammateMetrics,
@@ -541,6 +548,7 @@ impl AppState {
                 teammate_agent_pane_map: HashMap::new(),
                 associated_file_path: None,
                 pending_spawns: HashMap::new(),
+                pty_generation: HashMap::new(),
                 teammate_metrics: TeammateMetrics::default(),
                 display_seq: 1,
             },

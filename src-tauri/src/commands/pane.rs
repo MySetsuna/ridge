@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::commands::terminal;
 use crate::engine::pane_tree::{DockRegion, PaneNode as EnginePaneNode, SplitDirection};
 use crate::state::AppState;
+use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::{GlobalEvent, PaneMode};
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
@@ -396,25 +397,36 @@ pub(crate) fn teammate_pane_uuid_at_index(
 pub async fn register_teammate_agent(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
+    workspace_id: String,
     pane_id: String,
     agent_id: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
     let pane_uuid = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let wid = state.active_workspace_id();
-    {
-        let mut map = state.workspaces.write();
-        let ws = map
-            .get_mut(&wid)
-            .ok_or_else(|| "无活动工作区".to_string())?;
-        if !ws.pane_tree.panes.contains_key(&pane_uuid) {
-            return Err(format!("pane {pane_id} not in active workspace"));
-        }
-        ws.teammate_agent_pane_map.insert(agent_id, pane_uuid);
-        ws.teammate_pane_states
-            .insert(pane_uuid, crate::state::PaneState::Busy);
+    // 解耦 active_workspace_id（T5）：在面板**所属**工作区上注册，调用方显式传入。
+    let wid = Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
+    register_teammate_agent_in(&state, wid, pane_uuid, agent_id)?;
+    let _ = app.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+    Ok(())
+}
+
+/// Core of `register_teammate_agent`, decoupled from Tauri `State`/`AppHandle`
+/// (T5) so the workspace-targeting invariant — operate on the **passed** `wid`,
+/// never `active_workspace_id` — is unit-testable.
+pub(crate) fn register_teammate_agent_in(
+    state: &AppState,
+    wid: Uuid,
+    pane_uuid: Uuid,
+    agent_id: String,
+) -> Result<(), String> {
+    let mut map = state.workspaces.write();
+    let ws = map.get_mut(&wid).ok_or_else(|| "工作区不存在".to_string())?;
+    if !ws.pane_tree.panes.contains_key(&pane_uuid) {
+        return Err(format!("pane {pane_uuid} not in workspace {wid}"));
     }
-    let _ = app.emit("teammate-layout-changed", ());
+    ws.teammate_agent_pane_map.insert(agent_id, pane_uuid);
+    ws.teammate_pane_states
+        .insert(pane_uuid, crate::state::PaneState::Busy);
     Ok(())
 }
 
@@ -424,21 +436,30 @@ pub async fn register_teammate_agent(
 pub async fn release_teammate_agent(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
+    workspace_id: String,
     pane_id: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
     let pane_uuid = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let wid = state.active_workspace_id();
-    {
-        let mut map = state.workspaces.write();
-        let ws = map
-            .get_mut(&wid)
-            .ok_or_else(|| "无活动工作区".to_string())?;
-        ws.teammate_pane_states
-            .insert(pane_uuid, crate::state::PaneState::Idle);
-        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
-    }
-    let _ = app.emit("teammate-layout-changed", ());
+    // 解耦 active_workspace_id（T5）：在面板**所属**工作区上释放，调用方显式传入。
+    let wid = Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
+    release_teammate_agent_in(&state, wid, pane_uuid)?;
+    let _ = app.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+    Ok(())
+}
+
+/// Core of `release_teammate_agent`, decoupled from Tauri `State`/`AppHandle`
+/// (T5): operate on the **passed** `wid`, never `active_workspace_id`.
+pub(crate) fn release_teammate_agent_in(
+    state: &AppState,
+    wid: Uuid,
+    pane_uuid: Uuid,
+) -> Result<(), String> {
+    let mut map = state.workspaces.write();
+    let ws = map.get_mut(&wid).ok_or_else(|| "工作区不存在".to_string())?;
+    ws.teammate_pane_states
+        .insert(pane_uuid, crate::state::PaneState::Idle);
+    ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
     Ok(())
 }
 
@@ -520,7 +541,9 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
 ///   wide pane → `Horizontal` (left/right);  tall pane → `Vertical` (top/bottom).
 /// (Per SplitContainer: horizontal → 左右 / splits width, vertical → 上下.)
 /// Cells are ~2× taller than wide, so rows are weighted accordingly.
-fn choose_balanced_split(ws: &crate::state::Workspace) -> Option<(Uuid, SplitDirection)> {
+pub(crate) fn choose_balanced_split(
+    ws: &crate::state::Workspace,
+) -> Option<(Uuid, SplitDirection)> {
     let sizes: Vec<(Uuid, u16, u16)> = ws
         .pane_tree
         .get_all_leaves()
@@ -750,5 +773,86 @@ mod balanced_split_tests {
         let (chosen, _) =
             balanced_split_decision(&[(small, 10, 40), (big, 40, 100)]).unwrap();
         assert_eq!(chosen, big, "must split the largest-area pane");
+    }
+
+    #[test]
+    fn equal_area_tie_breaks_to_last_leaf_deterministically() {
+        // M2: 等面积时 `area >= best_area` 让循环取**最后**（最大序号）叶子 ——
+        // 确定性、跨 resize 稳定。route_split 与 summon 统一复用本判定后 tie-break
+        // 一致；保留 `>=` 不改 remote 行为。
+        let first = Uuid::new_v4();
+        let last = Uuid::new_v4();
+        let (chosen, _) =
+            balanced_split_decision(&[(first, 24, 80), (last, 24, 80)]).unwrap();
+        assert_eq!(
+            chosen, last,
+            "equal area → deterministic last (highest-index) leaf"
+        );
+    }
+}
+
+#[cfg(test)]
+mod workspace_decoupling_tests {
+    //! T5: register/release_teammate_agent operate on the EXPLICIT workspace id
+    //! (decoupled from `active_workspace_id`). These cover the AC「非活动工作区面
+    //! 板的状态操作落在正确 workspace」without Tauri State/AppHandle.
+    use super::{register_teammate_agent_in, release_teammate_agent_in};
+    use crate::state::{AppState, PaneState};
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    fn test_state() -> AppState {
+        let (tx, _rx) = mpsc::channel(8);
+        AppState::new(tx)
+    }
+
+    /// First leaf of a workspace's pane tree (the seeded root pane).
+    fn root_pane(state: &AppState, wid: Uuid) -> Uuid {
+        state.workspaces.read().get(&wid).unwrap().pane_tree.get_all_leaves()[0]
+    }
+
+    #[test]
+    fn register_targets_the_passed_workspace() {
+        let state = test_state();
+        let wid = state.active_workspace_id();
+        let pane = root_pane(&state, wid);
+        register_teammate_agent_in(&state, wid, pane, "agent-1".into()).unwrap();
+        let map = state.workspaces.read();
+        let ws = map.get(&wid).unwrap();
+        assert!(matches!(ws.teammate_pane_states.get(&pane), Some(PaneState::Busy)));
+        assert_eq!(ws.teammate_agent_pane_map.get("agent-1"), Some(&pane));
+    }
+
+    #[test]
+    fn register_rejects_unknown_workspace_without_active_fallback() {
+        let state = test_state();
+        let unknown = Uuid::new_v4(); // not in the workspace map
+        let pane = Uuid::new_v4();
+        let err = register_teammate_agent_in(&state, unknown, pane, "agent-1".into())
+            .expect_err("unknown workspace must be rejected");
+        // Decoupling proof: keyed on the PASSED wid (unknown → workspace error),
+        // NOT silently falling back to the (existing) active workspace.
+        assert!(err.contains("工作区不存在"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn release_targets_the_passed_workspace() {
+        let state = test_state();
+        let wid = state.active_workspace_id();
+        let pane = root_pane(&state, wid);
+        register_teammate_agent_in(&state, wid, pane, "agent-1".into()).unwrap();
+        release_teammate_agent_in(&state, wid, pane).unwrap();
+        let map = state.workspaces.read();
+        let ws = map.get(&wid).unwrap();
+        assert!(matches!(ws.teammate_pane_states.get(&pane), Some(PaneState::Idle)));
+        assert!(ws.teammate_agent_pane_map.is_empty());
+    }
+
+    #[test]
+    fn release_rejects_unknown_workspace() {
+        let state = test_state();
+        let err = release_teammate_agent_in(&state, Uuid::new_v4(), Uuid::new_v4())
+            .expect_err("unknown workspace must be rejected");
+        assert!(err.contains("工作区不存在"), "unexpected error: {err}");
     }
 }
