@@ -1648,13 +1648,4 @@
     cursor: nwse-resize;
   }
 
-  /* Monaco 光标错位修复：body 上设置了 font-feature-settings 和
-     text-rendering: optimizeLegibility，这些属性会级联到 Monaco
-     内部 DOM，导致光标位置度量与实际渲染不一致。
-     在此处重置 Monaco 宿主容器及其后代的这些属性。 */
-  .rg-monaco-host,
-  .rg-monaco-host :global(*) {
-    font-feature-settings: normal !important;
-    text-rendering: auto !important;
-  }
 </style>

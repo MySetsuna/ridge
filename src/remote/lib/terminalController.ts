@@ -105,7 +105,12 @@ export class TerminalController {
     } catch {
       // WebGPU adapter unavailable — will fall back to Canvas2D
     }
-    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, surfaceHost);
+    // `newWithWebgpuFirst` consumes its `host` argument
+    // (wasm-bindgen `Option<T>` moves the JS wrapper into Rust and frees
+    // it on return). Clone the wrapper so the controller's stored handle
+    // stays alive across the render loop.
+    const hostArg = surfaceHost?.clone() ?? surfaceHost;
+    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, hostArg);
     renderHandle.applyDefaultTheme();
 
     const controller = new TerminalController(kernel, renderHandle, surfaceHost, canvas, container, opts);

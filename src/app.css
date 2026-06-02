@@ -192,3 +192,11 @@ body.rg-os-dragging * {
   content-visibility: auto;
   contain-intrinsic-size: 0 22px;
 }
+
+/* Monaco 光标错位修复：body 上设置的 font-feature-settings /
+   text-rendering 会级联到 Monaco 内部 DOM，导致光标位置度量与实际渲染
+   不一致。在此重置 Monaco 宿主容器（继承属性自动级联到后代）。 */
+.rg-monaco-host {
+  font-feature-settings: normal !important;
+  text-rendering: auto !important;
+}
