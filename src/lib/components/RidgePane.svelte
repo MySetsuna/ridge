@@ -18,7 +18,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
-import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
+import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning } from '$lib/stores/remoteStatus';
@@ -810,7 +810,7 @@ function onPtyResize(
 	// it on plain primary — the kernel grid only narrows AFTER the
 	// backend ConPTY resize completes, eliminating the in-flight byte
 	// race that used to cause border characters to wrap on shrink.
-	return invoke('resize_pane', { paneId, rows, cols, isAlt, isInlineTui }).then(
+	return invoke('resize_pane', { workspaceId, paneId, rows, cols, isAlt, isInlineTui }).then(
 		() => undefined,
 		(err) => {
 			console.error('resize_pane', err);
@@ -952,6 +952,12 @@ onMount(() => {
 		// window are fed into the parked kernel rather than dropped.
 		// `pane-pty-closed` rebuild (create_pane + activate_pane_pty)
 		// also lives in the bridge.
+		//
+		// ORDERING CONTRACT (5b): this `ensurePtyBridge` MUST run BEFORE the
+		// `enableDeltaModeThenFit` call in step 7 — it registers the pty-delta
+		// Channel that setPaneDeltaMode + the deterministic post-fit Resize delta
+		// depend on. enableDeltaModeThenFit asserts `hasPtyBridge` and warns if
+		// this ordering is ever broken.
 		await ensurePtyBridge(paneId, workspaceId);
 		if (!alive) return;
 
@@ -1005,8 +1011,17 @@ onMount(() => {
 		// call flips the gate after the pane has activated, at which
 		// point the channel (registered by ptyBridge) starts
 		// receiving delta frames.
+		// 5b — deterministic fit AFTER the pty-delta Channel gate opens. P4.4
+		// routes kernel grid resize solely through apply_delta(Resize), gated on
+		// the Channel (registered by ensurePtyBridge above) + delta_mode. Awaiting
+		// setPaneDeltaMode before fitPaneNow closes the attach-rAF-fit race that
+		// left teammate panes stuck at 80×24 (they don't go through GUI split's
+		// scheduleForceFitAfterSplit). 0×0/hidden workspaces still fall back to the
+		// becomes-visible re-fit + kernel-grid self-heal. See bug_split_kernel_race.
 		if (alive) {
-			void setPaneDeltaMode(paneId, true);
+			void enableDeltaModeThenFit(paneId, () => {
+				if (alive) manager.fitPaneNow(paneId);
+			});
 		}
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
@@ -1016,9 +1031,9 @@ onMount(() => {
 });
 
 // P4.4 (2026-05-21) — removed the parserBackend live-switch effect.
-// With Rust path unconditional, the initial `setPaneDeltaMode(paneId, true)`
-// in the onMount IIFE is the only call site needed. No more 200ms fade
-// mask — there is no backend to switch to.
+// With Rust path unconditional, the onMount IIFE's `enableDeltaModeThenFit`
+// (which enables delta_mode then fits) is the only call site needed. No more
+// 200ms fade mask — there is no backend to switch to.
 
 // §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
 // used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`

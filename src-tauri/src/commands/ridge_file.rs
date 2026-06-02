@@ -546,6 +546,7 @@ pub fn open_workspace_from_file(
                 teammate_agent_pane_map: HashMap::new(),
                 associated_file_path: Some(file_path.clone()),
                 pending_spawns: HashMap::new(),
+                pty_generation: HashMap::new(),
                 teammate_metrics: crate::state::TeammateMetrics::default(),
                 display_seq: seq,
             },

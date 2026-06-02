@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
+use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::teammate::native::{self, NativeSessionInfo};
 use crate::state::{AppState, PaneDeltaSender};
 use crate::utils::cwd::resolve_default_cwd;
@@ -340,8 +341,20 @@ fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> Str
 fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
 	let handle = {
 		let mut map = state.workspaces.write();
-		map.get_mut(&workspace_id)
-			.and_then(|ws| ws.terminals.remove(&pane_id))
+		map.get_mut(&workspace_id).and_then(|ws| {
+			let h = ws.terminals.remove(&pane_id);
+			if h.is_some() {
+				// Bump the pane's PTY generation the instant we tear down the old
+				// PTY — BEFORE the child is killed below — so the old reader, on
+				// its (async) EOF, sees a newer generation and skips the
+				// child-exit→Idle demotion (it is no longer the pane's current
+				// PTY). This closes the [teardown, new-PTY-live) window where a
+				// reuse/spawn-process agent's just-set Busy would otherwise be
+				// clobbered to Idle. See `engine::pty` reader cleanup.
+				*ws.pty_generation.entry(pane_id).or_insert(0) += 1;
+			}
+			h
+		})
 	};
 	if handle.is_some() {
 		pty_log::teammate_replace_pty(workspace_id, pane_id);
@@ -537,6 +550,14 @@ pub fn ensure_pane_pty_workspace(
 			));
 		}
 		(Some(bind), _) => {
+			// ── INVARIANT (H1 fail-closed 依赖，勿拆) ───────────────────────────
+			// shim-on-PATH 注入与 `RIDGE_WORKSPACE_ID` 注入**必须同处此 arm**：凡能拿到
+			// `tmux` shim（→ 可发 teammate HTTP 放置请求）的 PTY，必同时被注入
+			// `RIDGE_WORKSPACE_ID`（→ shim 回传 `X-Ridge-Workspace` 头）。后端放置路由
+			// 据此 fail-closed（缺头即拒，不回退 active_workspace_id，见
+			// `teammate/server.rs::caller_workspace_id_strict`）。若把这两条 env 注入拆到
+			// 不同 arm / 条件，会出现「有 shim 却无 workspace 头」的 PTY → 合法 spawn 被
+			// 误拒。新增任何 agent 启动路径都必须经过本 arm。
 			let shim_dir = prepend_path_with_wind_tmux_shim(&mut cmd);
 			cmd.env("RIDGE_TEAMMATE_URL", bind.base_url.as_str());
 			cmd.env("RIDGE_TEAMMATE_TOKEN", bind.token.as_str());
@@ -760,8 +781,8 @@ pub(crate) fn activate_pane_pty_state(
 			// the workspace from authoritative backend state).
 			if let Some(app) = app {
 				let _ = app.emit(
-					"teammate-layout-changed",
-					serde_json::json!({ "trace_id": trace_id, "activate_failed": true }),
+					TEAMMATE_LAYOUT_CHANGED,
+					LayoutChange::removed_with_trace(pane_id.to_string(), trace_id),
 				);
 			}
 			return Err(AppError::PtyError(msg));
@@ -905,6 +926,7 @@ fn write_to_pty_inner(
 pub async fn resize_pane(
 	state: State<'_, AppState>,
 	app: tauri::AppHandle,
+	workspace_id: String,
 	pane_id: String,
 	rows: u16,
 	cols: u16,
@@ -914,6 +936,7 @@ pub async fn resize_pane(
 	resize_pane_inner(
 		state,
 		app,
+		workspace_id,
 		pane_id,
 		rows,
 		cols,
@@ -926,6 +949,7 @@ pub async fn resize_pane(
 fn resize_pane_inner(
 	state: State<'_, AppState>,
 	app: tauri::AppHandle,
+	workspace_id: String,
 	pane_id: String,
 	rows: u16,
 	cols: u16,
@@ -933,13 +957,16 @@ fn resize_pane_inner(
 	is_inline_tui: bool,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
+    // 解耦 active_workspace_id（T5）：resize 落在面板**所属**工作区（前端按 pane 传入），
+    // 而非 GUI 当前聚焦工作区——保证非活动工作区/远程多工作区下也命中正确 pane。
+    let wid = Uuid::parse_str(&workspace_id)
+        .map_err(|_| AppError::PtyError("invalid workspace_id".into()))?;
     // ConPTY / portable-pty: zero or absurd dimensions can break the session.
 // 限制尺寸在合理范围内，防止极端尺寸导致 session 中断
 	const MAX_SAFE_ROWS: u16 = 500;
 	const MAX_SAFE_COLS: u16 = 500;
     let rows = rows.max(1).min(MAX_SAFE_ROWS);
     let cols = cols.max(1).min(MAX_SAFE_COLS);
-    let wid = state.active_workspace_id();
 
     // Perform the resize within a limited scope so we can drop the read lock
     let resize_result: Result<(), AppError> = {
@@ -1155,8 +1182,8 @@ pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: 
 		if let Some(app) = state.app_handle.get() {
 			use tauri::Emitter;
 			let _ = app.emit(
-				"teammate-layout-changed",
-				serde_json::json!({ "detached_pane": pane_id.to_string() }),
+				TEAMMATE_LAYOUT_CHANGED,
+				LayoutChange::detached(pane_id.to_string()),
 			);
 		}
 		return;

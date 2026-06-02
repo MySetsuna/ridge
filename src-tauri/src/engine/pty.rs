@@ -11,6 +11,7 @@ use crate::engine::cwd;
 use crate::engine::parser::PaneParser;
 use crate::engine::title;
 use crate::state::AppState;
+use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
 
@@ -215,6 +216,17 @@ pub fn spawn_pty_reader(
         map.get(&workspace_id)
             .and_then(|ws| ws.terminals.get(&pane_id))
             .and_then(|h| h.native_ref.clone())
+    };
+    // Capture this PTY's generation at spawn. On EOF we compare against the
+    // pane's current generation; if it advanced, the pane was torn down and
+    // replaced (this reader is stale) → skip the child-exit→Idle demotion so a
+    // freshly-spawned agent's Busy is never clobbered. See
+    // `teardown_pane_pty_if_present`.
+    let my_pty_generation: u64 = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.pty_generation.get(&pane_id).copied())
+            .unwrap_or(0)
     };
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
@@ -497,13 +509,18 @@ pub fn spawn_pty_reader(
                         ws.terminals.remove(&pane_id);
                         let _ = ws.pane_tree.close(pane_id);
                         ws.pane_sizes.remove(&pane_id);
+                        // DF=②: 销毁叶子前清 teammate 生命周期状态/映射，避免反向泄漏出
+                        // 指向已不存在 pane 的孤儿条目。
+                        ws.teammate_pane_states.remove(&pane_id);
+                        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+                        ws.pty_generation.remove(&pane_id);
                     }
                 }
                 if let Some(app) = state.app_handle.get() {
                     use tauri::Emitter;
                     let _ = app.emit(
-                        "teammate-layout-changed",
-                        serde_json::json!({ "detached_pane": pane_id.to_string() }),
+                        TEAMMATE_LAYOUT_CHANGED,
+                        LayoutChange::detached(pane_id.to_string()),
                     );
                 }
             } else {
@@ -519,6 +536,53 @@ pub fn spawn_pty_reader(
                         .await
                 });
                 detach_terminal(&state, workspace_id, pane_id);
+                // DF=② (child-exit → Idle): an agent (or shell) in a *teammate*
+                // pane exited (reader EOF). Demote the pane to Idle and drop its
+                // agent mapping so need-1 can re-use it and the AGENT badge
+                // clears. SKIP when a PendingSpawn is queued for this pane — that
+                // means we're mid-replacement (e.g. an agent spawn-process tore
+                // down the prior shell and queued the agent), and flipping to
+                // Idle here would clobber the incoming agent's just-set Busy.
+                // Only flip EXISTING teammate panes (never add an entry for a
+                // plain GUI pane). Driven purely by Ridge's own EOF signal — no
+                // dependency on the harness calling release-pane.
+                let flipped_to_idle = {
+                    let mut map = state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&workspace_id) {
+                        // Genuine exit ONLY if this reader is still the pane's
+                        // current PTY (generation unchanged since spawn) AND no
+                        // replacement is queued. A bumped generation means the
+                        // pane was torn down + replaced (e.g. reuse/spawn-process
+                        // installed an agent) → this is the OLD shell reader; we
+                        // MUST NOT demote, or we'd clobber the new agent's Busy
+                        // permanently. Generation closes the [teardown, register)
+                        // window the pending_spawns check alone missed; the
+                        // pending_spawns term stays as belt-and-suspenders.
+                        let current_gen =
+                            ws.pty_generation.get(&pane_id).copied().unwrap_or(0);
+                        let is_current_pty = current_gen == my_pty_generation;
+                        let being_replaced = ws.pending_spawns.contains_key(&pane_id);
+                        if is_current_pty
+                            && !being_replaced
+                            && ws.teammate_pane_states.contains_key(&pane_id)
+                        {
+                            ws.teammate_pane_states
+                                .insert(pane_id, crate::state::PaneState::Idle);
+                            ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if flipped_to_idle {
+                    if let Some(app) = state.app_handle.get() {
+                        use tauri::Emitter;
+                        let _ = app.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+                    }
+                }
             }
         });
 }

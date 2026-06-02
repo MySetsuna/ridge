@@ -1,0 +1,9 @@
+{
+  "_comment": "Shared single source of truth for the teammate-layout-changed envelope wire shape (T0). Exercised by BOTH the Rust serializer (src-tauri/src/teammate/layout_event.rs golden_envelopes_round_trip) and the front-end parser (src/lib/teammate/layoutEvent.test.ts). Keeping one canonical fixture means the cross-end contract stays in lock-step even though the Rust lib unit-test harness can't launch on every host (0xc0000139) — the runnable vitest side validates the same shapes. Entry key = case name; value = exact JSON the backend emits. Add a case here when adding a LayoutChange variant.",
+  "split": { "kind": "split", "trace_id": "trace-1" },
+  "reused": { "kind": "reused", "pane_id": "pane-1" },
+  "detached": { "kind": "detached", "pane_id": "pane-1" },
+  "removed_bare": { "kind": "removed", "pane_id": "pane-1" },
+  "removed_with_trace": { "kind": "removed", "pane_id": "pane-1", "trace_id": "trace-9" },
+  "state": { "kind": "state" }
+}

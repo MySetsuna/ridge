@@ -16,7 +16,9 @@ use crate::commands::{pane, terminal};
 use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
+use super::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use super::native::{self, NativeError};
+use crate::engine::pane_tree::SplitDirection;
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle};
 
@@ -42,24 +44,91 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
         .is_some_and(|v| v == token)
 }
 
-/// 取「发起方所在工作区」：优先 `X-Ridge-Workspace` 头（shim 从 PTY 注入的
-/// `RIDGE_WORKSPACE_ID` 继承并回传），解析为存在的工作区则用之；否则回退到 GUI
-/// 当前活动工作区（非 teammate 调用者）。
+/// teammate 放置被拒原因（H1 fail-closed）：用于区分排障文案 + 指标判别。
+#[derive(Debug)]
+enum WorkspaceReject {
+    /// `X-Ridge-Workspace` 头缺失或非法 UUID → `RIDGE_WORKSPACE_ID` 未传播到 agent env。
+    MissingOrInvalidHeader,
+    /// 头合法但指向的工作区已不存在（发起工作区在 agent 存活期间被关闭）。
+    UnknownWorkspace(uuid::Uuid),
+}
+
+/// 严格解析「发起方所在工作区」：**fail-closed**，不回退 `active_workspace_id()`。
+/// 仅当 `X-Ridge-Workspace` 头存在、是合法 UUID、且指向一个**活着的**工作区时才返回。
 ///
-/// 不变量：teammate 的「建/复用/接管面板」只在此工作区内进行，**绝不跨工作区** ——
-/// 即便用户已把 GUI 切到别的工作区，agent 的 split 也落在它自己所在的工作区。
-fn caller_workspace_id(ctx: &TeammateCtx, headers: &HeaderMap) -> uuid::Uuid {
-    if let Some(v) = headers
+/// 前提（已核验，见 `commands/terminal.rs` `(Some(bind), _)` arm）：能拿到 shim 的
+/// PTY 必同时被注入 `RIDGE_WORKSPACE_ID` → 合法 teammate 调用恒带本头；fail-closed 只
+/// 拒绝「env 被剥离 / 非 teammate / 发起工作区已关闭」等异常，不误杀正常 spawn。
+fn caller_workspace_id_strict(
+    ctx: &TeammateCtx,
+    headers: &HeaderMap,
+) -> Result<uuid::Uuid, WorkspaceReject> {
+    let id = parse_workspace_header(headers)?;
+    if ctx.state.workspaces.read().contains_key(&id) {
+        Ok(id)
+    } else {
+        Err(WorkspaceReject::UnknownWorkspace(id))
+    }
+}
+
+/// Pure header parse (no state): `X-Ridge-Workspace` → UUID, else MissingOrInvalid.
+/// Existence check lives in `caller_workspace_id_strict`. Split out so the
+/// missing/invalid-vs-valid classification is unit-testable without a full ctx.
+fn parse_workspace_header(headers: &HeaderMap) -> Result<uuid::Uuid, WorkspaceReject> {
+    let raw = headers
         .get("x-ridge-workspace")
         .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(WorkspaceReject::MissingOrInvalidHeader)?;
+    uuid::Uuid::parse_str(raw).map_err(|_| WorkspaceReject::MissingOrInvalidHeader)
+}
+
+/// 宽松解析：缺头/无效时回退 GUI 活动工作区。
+///
+/// 【使用约束，勿误用】**仅限只读 / 装饰性路由**（list-panes、capture、list-windows、
+/// select-pane[改 cursor]、rename-pane[改标题]——误 targeting 至多读/装饰错对象，无害）。
+/// **破坏性（kill-pane）/ 注入（send-keys）/ 建-pane（split、spawn-process、new-window、
+/// summon）/ 状态（register/release）路由必须改用 `caller_workspace_id_strict` +
+/// `workspace_reject_response` 走 fail-closed**——partial-env-strip 异常下回退 active_ws
+/// 会造成真实误操作（删错 pane / 写错 PTY / 在错工作区建 pane）。新增任何破坏性路由
+/// 务必用 strict，勿顺手用本函数。
+fn caller_workspace_id_or_active(ctx: &TeammateCtx, headers: &HeaderMap) -> uuid::Uuid {
+    caller_workspace_id_strict(ctx, headers).unwrap_or_else(|_| ctx.state.active_workspace_id())
+}
+
+/// 把 `WorkspaceReject` 映射成明确的 HTTP 错误 + 递增可观测指标 + 结构化日志。
+/// 指标记在 GUI 当前活动工作区（被拒调用本身没有合法工作区可归属）。
+fn workspace_reject_response(
+    ctx: &TeammateCtx,
+    reject: WorkspaceReject,
+) -> axum::response::Response {
+    let (metric_key, status, msg) = match reject {
+        WorkspaceReject::MissingOrInvalidHeader => (
+            "workspace_rejected_missing_header",
+            StatusCode::BAD_REQUEST,
+            "teammate placement rejected: missing or invalid X-Ridge-Workspace header \
+             (RIDGE_WORKSPACE_ID not propagated to agent env)"
+                .to_string(),
+        ),
+        WorkspaceReject::UnknownWorkspace(id) => (
+            "workspace_rejected_unknown",
+            StatusCode::CONFLICT,
+            format!("teammate placement rejected: originating workspace {id} no longer exists"),
+        ),
+    };
+    let wid = ctx.state.active_workspace_id();
     {
-        if let Ok(id) = uuid::Uuid::parse_str(v.trim()) {
-            if ctx.state.workspaces.read().contains_key(&id) {
-                return id;
-            }
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            *ws.teammate_metrics
+                .failures
+                .entry(metric_key.into())
+                .or_insert(0) += 1;
         }
     }
-    ctx.state.active_workspace_id()
+    tracing::warn!(target: "ridge::teammate", reason = metric_key, "{msg}");
+    (status, msg).into_response()
 }
 
 /// 后台线程跑 Axum，避免阻塞 Tauri 主循环。
@@ -265,57 +334,6 @@ fn find_idle_pane_index(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
     None
 }
 
-/// 选择需要 split 时的目标叶子 pane index（无显式 `-t` 时）。
-///
-/// 需求：**永远在「发起方工作区内面积最大的 pane」上 split**。并列相同面积时取最小
-/// 叶子序号，保证跨 resize 稳定（最上方的 pane 一致胜出）。cwd 继承不在这里处理 ——
-/// 由 `route_split` 另行从源 pane 或显式 `-c` 解析，故此处只管「选最大」。
-///
-/// 仅在传入的 `wid`（发起方工作区）内选择，绝不跨工作区。`None` 仅当工作区无叶子。
-fn select_split_target(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
-    let map = state.workspaces.read();
-    let ws = map.get(&wid)?;
-    let leaves = ws.pane_tree.get_all_leaves();
-    if leaves.is_empty() {
-        return None;
-    }
-    let total = leaves.len();
-    let avg_area: u32 = {
-        let known: Vec<u32> = leaves
-            .iter()
-            .filter_map(|pid| ws.pane_sizes.get(pid).map(|(r, c)| *r as u32 * *c as u32))
-            .collect();
-        if known.is_empty() {
-            80 * 120
-        } else {
-            known.iter().sum::<u32>() / known.len() as u32
-        }
-    };
-    leaves
-        .iter()
-        .enumerate()
-        .map(|(i, pid)| {
-            let area = ws
-                .pane_sizes
-                .get(pid)
-                .map(|(r, c)| *r as u32 * *c as u32)
-                .unwrap_or(avg_area);
-            (i, area, total)
-        })
-        .max_by(|a, b| {
-            a.1.cmp(&b.1).then_with(|| {
-                let a_has_size = ws.pane_sizes.get(&leaves[a.0]).is_some();
-                let b_has_size = ws.pane_sizes.get(&leaves[b.0]).is_some();
-                match (a_has_size, b_has_size) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => b.0.cmp(&a.0),
-                }
-            })
-        })
-        .map(|(i, _, _)| i)
-}
-
 /// 查找空闲 pane 的 UUID
 #[allow(dead_code)] // internal helper kept for upcoming auto-assign-pane logic
 fn find_idle_pane_uuid(state: &AppState, wid: uuid::Uuid) -> Option<uuid::Uuid> {
@@ -379,7 +397,11 @@ async fn route_register_agent(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // H1 fail-closed：发起工作区头缺失/无效/已关闭 → 拒绝，绝不回退活动工作区。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
 
     // 找到对应的 pane_id
     let pane_id = if let Some(idx) = body.pane_index {
@@ -402,7 +424,7 @@ async fn route_register_agent(
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
-    let _ = ctx.handle.emit("teammate-layout-changed", ());
+    let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
     (StatusCode::OK, Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })))
         .into_response()
 }
@@ -421,7 +443,11 @@ async fn route_release_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // H1 fail-closed：拒绝跨工作区释放（不回退活动工作区）。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
 
     let pane_id = if let Some(ref pid_str) = body.pane_id {
         match uuid::Uuid::parse_str(pid_str) {
@@ -441,7 +467,7 @@ async fn route_release_pane(
 
     release_pane(&ctx.state, wid, pane_id);
     // Emit layout-changed so the frontend drops the "busy" indicator.
-    let _ = ctx.handle.emit("teammate-layout-changed", ());
+    let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
@@ -452,7 +478,7 @@ async fn route_find_idle_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    let wid = caller_workspace_id_or_active(&ctx, &headers);
 
     if let Some(idx) = find_idle_pane_index(&ctx.state, wid) {
         (
@@ -494,10 +520,82 @@ struct SplitBody {
     /// 是否允许复用空闲 pane（默认 true）
     #[serde(default = "default_true")]
     allow_idle_reuse: bool,
+    /// 显式自动放置契约（DA=A1）：GUI 路径置 true → 后端忽略 `pane_index`/
+    /// `horizontal`，一律自动放置（idle 复用 → 最大 pane → 最长边推断方向）。
+    /// 取代「`pane_index=None` 隐式编码自动」的二义性；native 路径不传 → false。
+    #[serde(default)]
+    auto_place: bool,
+    /// F1 agent 意图位（DE=启动即 Busy）：shim 在结构化 `env … program` launch 上置 true →
+    /// 后端把该面板提升为 `Busy`。裸 shell / 普通命令为 false（保持 Starting）。
+    #[serde(default)]
+    is_agent: bool,
+    /// 可选 agent 元数据；能解析则写入 `teammate_agent_pane_map`，否则 Busy 无 id。
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// F4 看门狗宽限期：teammate split 创建的面板若过此时长仍 `Starting`（F1 提升信号
+/// 始终未到），由看门狗据其自身 PTY 决断。> 激活超时(3s) + 余量，< 30s 孤儿看门狗。
+const STARTING_WATCHDOG_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// F4 安全网（P2）：解决「F1 提升信号缺失 → 面板长期卡 Starting」。宽限期后若面板仍
+/// `Starting`，据其**自身** PTY 决断：有存活子进程 ⇒ 提升 `Busy`（agent 在跑、信号丢
+/// 了）；无存活子进程 ⇒ 清 badge（孤儿 Starting）。
+///
+/// 严格只操作面板**所属工作区** `wid`，**绝不读** `active_workspace_id`（跨工作区安全）。
+/// 跳过：① 已被 F1(Busy)/child-exit(Idle/清除) 解决的面板；② 仍在 `pending_spawns`（未激活，
+/// 归 30s 孤儿看门狗管，不抢）。仅覆盖**新 split** 的 Starting（harness 主路径
+/// split→spawn-process 的提升缺失场景）；reuse 命中既有 shell 不在此范围。
+fn spawn_starting_watchdog(state: AppState, handle: tauri::AppHandle, wid: Uuid, pid: Uuid) {
+    tokio::spawn(async move {
+        tokio::time::sleep(STARTING_WATCHDOG_GRACE).await;
+        let resolved = {
+            let mut map = state.workspaces.write();
+            let Some(ws) = map.get_mut(&wid) else {
+                return;
+            };
+            // 已被 F1 / child-exit 解决 → 不动。
+            if !matches!(ws.teammate_pane_states.get(&pid), Some(PaneState::Starting)) {
+                return;
+            }
+            // 尚未激活（PendingSpawn 仍在）→ 30s 孤儿看门狗负责，本看门狗不抢。
+            if ws.pending_spawns.contains_key(&pid) {
+                return;
+            }
+            let has_live_child = ws
+                .terminals
+                .get_mut(&pid)
+                .and_then(|h| h._child.as_mut())
+                .map(|c| matches!(c.try_wait(), Ok(None))) // Ok(None) = 仍在运行
+                .unwrap_or(false);
+            if has_live_child {
+                // 权衡（reviewer LOW，文档化接受）：teammate 域里 Starting 面板≈「等
+                // agent 提升」，存活子进程几乎必是 agent → 标 Busy 正确。极窄例外：用户
+                // 在 ridge 直接敲**裸** `tmux split-window`（无后续 spawn-process）→ 滞留
+                // 的纯 shell 会被标 Busy（误标）。触发面极窄（用户极少直敲裸 tmux），接受。
+                ws.teammate_pane_states.insert(pid, PaneState::Busy);
+                *ws.teammate_metrics
+                    .failures
+                    .entry("watchdog_promoted_busy".into())
+                    .or_insert(0) += 1;
+            } else {
+                ws.teammate_pane_states.remove(&pid);
+                ws.teammate_agent_pane_map.retain(|_, v| *v != pid);
+                *ws.teammate_metrics
+                    .failures
+                    .entry("watchdog_cleared_starting".into())
+                    .or_insert(0) += 1;
+            }
+            true
+        };
+        if resolved {
+            let _ = handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+        }
+    });
 }
 
 async fn route_split(
@@ -508,10 +606,18 @@ async fn route_split(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // H1 fail-closed（DB）：发起工作区头缺失/无效/已关闭 → 拒绝该 split，绝不回退
+    // GUI 活动工作区（避免跨区误放）。合法 teammate 恒带头，详见 caller_workspace_id_strict。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
 
-    // 检查是否有空闲 pane 可以复用（如果没有显式指定 pane_index）
-    if body.allow_idle_reuse && body.pane_index.is_none() {
+    // 自动放置（DA=A1）下才尝试复用空闲 pane。显式契约：只看 `auto_place`，
+    // 不再用 `pane_index.is_none()` 隐式编码意图（消除「缺省未传 vs 显式自动」二义性）。
+    // 【有意行为变更，team-lead 已裁决】new-window GUI 回退走 `auto_place=false` →
+    // 不再复用空闲 pane，一律在最大 pane 上新建（new-window 语义本就是「新建」）。
+    if body.allow_idle_reuse && body.auto_place {
         if let Some(idle_idx) = find_idle_pane_index(&ctx.state, wid) {
             let idle_pane_id = {
                 let map = ctx.state.workspaces.read();
@@ -519,14 +625,44 @@ async fn route_split(
                     .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
             };
             if let Some(pane_id) = idle_pane_id {
+                // BLOCK① 裁决：agent 复用**必须**走结构化 spawn（独立 PTY，退出即 EOF→Idle）。
+                // 仅带 command 字符串、无结构化 program 的 agent 意图 → 拒绝 + 记 metric，
+                // 不静默写进既有 shell（无 EOF 陷阱、会卡 Busy）。F4 看门狗（P2）兜底。
+                if body.is_agent && body.program.is_none() {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+                        *ws.teammate_metrics
+                            .failures
+                            .entry("agent_reuse_requires_structured".into())
+                            .or_insert(0) += 1;
+                    }
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "agent reuse rejected: structured program/args/env required (no command-only agent spawn)",
+                    )
+                        .into_response();
+                }
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
-ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
-                            crate::state::PaneState::Busy
-                        } else {
-                            crate::state::PaneState::Starting
-                        });
+                        // F1（征用空闲 pane，核心）：agent 意图（结构化）或内嵌 program →
+                        // 立即 Busy（启动即 Busy）+ 写映射。
+                        // 【AC6.6 修复】非-agent 复用（裸 split 命中 idle pane）**不置 Starting**：
+                        // reuse 分支只 emit 后 return、不挂看门狗，置 Starting 会**永久卡 Starting**。
+                        // 无 agent 进入 = 该 idle pane 语义上仍 Idle → 保持其原状态不动。
+                        // normal harness 流（裸 split→reuse→spawn-process）由 spawn-process 的
+                        // F1 提升为 Busy，不受影响。
+                        if body.is_agent || body.program.is_some() {
+                            ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+                            if let Some(aid) = body
+                                .agent_id
+                                .as_ref()
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                            {
+                                ws.teammate_agent_pane_map.insert(aid.to_string(), pane_id);
+                            }
+                        }
                         ws.teammate_tmux_pane_cursor = idle_idx;
                         if let Some(name) = body
                             .window_name
@@ -564,8 +700,8 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
                     );
                 }
                 let _ = ctx.handle.emit(
-                    "teammate-layout-changed",
-                    serde_json::json!({ "reused": true, "pane_id": pane_id.to_string() }),
+                    TEAMMATE_LAYOUT_CHANGED,
+                    LayoutChange::reused(pane_id.to_string()),
                 );
                 let _ = ctx
                     .handle
@@ -585,12 +721,12 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
         }
     }
 
-    // Split target selection:
-    // 1. If explicit pane_index from -t flag → use it.
-    // 2. Else delegate to `select_split_target`: 永远选「发起方工作区内面积最大的
-    //    pane」。Direction is then inferred from the chosen pane's shape so the
-    //    resulting two panes stay roughly square.
-    let (idx, inferred_direction) = {
+    // Target + direction selection (single source of truth):
+    // 1. 显式定向（非 auto_place 且带 `-t`）→ 尊重 `pane_index`；方向按 `-h`（默认 vertical）。
+    // 2. auto_place（及非定向回退）→ 复用 `choose_balanced_split`：选「面积最大叶子」并按
+    //    **加权最长边**（cell 高≈2×宽）推断方向，与 `balanced_split_decision` 单测口径一致。
+    //    避免出现「裸 cols>rows」与 balanced 加权两套不一致公式（H-DIR）。
+    let (idx, direction, direction_inferred) = {
         let map = ctx.state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
             return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
@@ -598,42 +734,24 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
         let leaves = ws.pane_tree.get_all_leaves();
         let pane_count = leaves.len();
 
-        if let Some(explicit_idx) = body.pane_index {
-            if explicit_idx < pane_count {
-                (explicit_idx, false)
-            } else {
+        if let Some(explicit_idx) = body.pane_index.filter(|_| !body.auto_place) {
+            if explicit_idx >= pane_count {
                 return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
             }
+            let dir = if body.horizontal { "horizontal" } else { "vertical" };
+            (explicit_idx, dir, false)
         } else {
-            // Drop the read lock so `select_split_target` can take its own.
-            drop(map);
-            // 永远在发起方工作区内「面积最大的 pane」上 split（cwd 继承在下方另行处理）。
-            let target_idx = select_split_target(&ctx.state, wid).unwrap_or(0);
-
-            // Re-acquire to read the chosen pane's shape for direction inference.
-            let map = ctx.state.workspaces.read();
-            let Some(ws) = map.get(&wid) else {
-                return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
-            };
-            let leaves = ws.pane_tree.get_all_leaves();
-            let (rows, cols) = leaves
-                .get(target_idx)
-                .and_then(|pid| ws.pane_sizes.get(pid).copied())
-                .unwrap_or((80, 120));
-            let inferred = cols > rows; // wider than tall → horizontal (left/right) split
-
-            (target_idx, inferred)
-        }
-    };
-
-    // Direction: explicit takes precedence, otherwise use inferred
-    let direction = if body.horizontal {
-        "horizontal"
-    } else {
-        if inferred_direction {
-            "horizontal"
-        } else {
-            "vertical"
+            match pane::choose_balanced_split(ws) {
+                Some((uuid, sdir)) => {
+                    let idx = leaves.iter().position(|p| *p == uuid).unwrap_or(0);
+                    let dir = match sdir {
+                        SplitDirection::Horizontal => "horizontal",
+                        SplitDirection::Vertical => "vertical",
+                    };
+                    (idx, dir, true)
+                }
+                None => (0, "vertical", true),
+            }
         }
     };
 
@@ -746,12 +864,23 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
-                    let pane_state = if is_structured {
+                    // F1（新 split 入口）：agent 意图（结构化）或内嵌-program → 启动即 Busy；
+                    // 否则 Starting（harness 主路径：split 无 cmd → Starting，随后 spawn-process
+                    // 提升）。与 idle-reuse 共用同一判定。
+                    let pane_state = if body.is_agent || is_structured {
                         PaneState::Busy
                     } else {
                         PaneState::Starting
                     };
                     ws.teammate_pane_states.insert(new_id, pane_state);
+                    if let Some(aid) = body
+                        .agent_id
+                        .as_ref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        ws.teammate_agent_pane_map.insert(aid.to_string(), new_id);
+                    }
                     ws.pane_sizes.insert(new_id, (80, 120));
                     if let Some(name) = body
                         .window_name
@@ -765,8 +894,8 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
                 }
             }
             let _ = ctx.handle.emit(
-                "teammate-layout-changed",
-                serde_json::json!({ "trace_id": trace_id }),
+                TEAMMATE_LAYOUT_CHANGED,
+                LayoutChange::split(trace_id.clone()),
             );
             let _ = ctx
                 .handle
@@ -784,6 +913,10 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
             let watch_handle = ctx.handle.clone();
             let watch_wid = wid;
             let watch_pid = new_id;
+            // Carry the originating split's trace id so the watchdog-drained
+            // `removed` event correlates with the split that created the pane
+            // (L3 — cross-stack log/diagnostics).
+            let watch_trace = trace_id.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let cleaned = {
@@ -803,11 +936,19 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
                 };
                 if cleaned {
                     let _ = watch_handle.emit(
-                        "teammate-layout-changed",
-                        serde_json::Value::Null,
+                        TEAMMATE_LAYOUT_CHANGED,
+                        LayoutChange::removed_with_trace(watch_pid.to_string(), watch_trace),
                     );
                 }
             });
+
+            // F4 安全网（P2）：仅当本面板创建为 `Starting`（非 agent / 非内嵌结构化 →
+            // 等待后续 spawn-process 提升）时挂看门狗，宽限期后若提升信号仍缺失则据
+            // 自身 PTY 决断（live child→Busy / 否则清 badge）。is_agent/内嵌结构化已是
+            // Busy，无需看门狗。
+            if !(body.is_agent || is_structured) {
+                spawn_starting_watchdog(ctx.state.clone(), ctx.handle.clone(), wid, new_id);
+            }
 
             // Wait up to 3s for the front-end to mount + fit + activate.
             // tokio::time::timeout wraps the recv future; the outer Result
@@ -828,7 +969,7 @@ ws.teammate_pane_states.insert(pane_id, if body.program.is_some() {
                             "new_pane_id": new_id.to_string(),
                             "new_pane_index": new_idx,
                             "source_pane_index": idx,
-                            "direction_inferred": inferred_direction,
+                            "direction_inferred": direction_inferred,
                             "trace_id": trace_id,
                         })),
                     )
@@ -885,7 +1026,7 @@ async fn route_capture(
         .get("lines")
         .and_then(|s| s.parse().ok())
         .unwrap_or(80);
-    let wid = caller_workspace_id(&ctx, &headers);
+    let wid = caller_workspace_id_or_active(&ctx, &headers);
     let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane) {
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -938,7 +1079,12 @@ async fn route_send_keys(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // T5 MEDIUM（隔离完整性）：send-keys 是**注入**路由（写错 pane PTY 会真伤害）→
+    // fail-closed，不回退 active_workspace_id。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
     let pane_idx = if body.use_tmux_current_pane {
         ctx.state
             .workspaces
@@ -972,6 +1118,12 @@ struct SpawnProcessBody {
     args: Vec<String>,
     #[serde(default)]
     env: std::collections::HashMap<String, String>,
+    /// F1 agent 意图位：spawn-process 恒由结构化 launch 触发 → shim 置 true。
+    #[serde(default)]
+    is_agent: bool,
+    /// 可选 agent 元数据；能解析则写入 `teammate_agent_pane_map`。
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 async fn route_spawn_process(
@@ -982,7 +1134,12 @@ async fn route_spawn_process(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // H1 fail-closed：spawn-process 是真实 agent 落点 → 发起工作区头缺失/无效/已关闭
+    // 即拒绝，绝不回退活动工作区（避免把 agent 起到错误工作区）。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
     let pane_idx = if body.use_tmux_current_pane {
         ctx.state
             .workspaces
@@ -1034,7 +1191,19 @@ async fn route_spawn_process(
         let mut map = ctx.state.workspaces.write();
         if let Some(ws) = map.get_mut(&wid) {
             ws.teammate_tmux_pane_cursor = pane_idx;
+            // F1（harness 主路径核心）：send-keys 结构化 agent 落入既有 Starting 面板 →
+            // 立即提升为 Busy（启动即 Busy）。有 agent_id 则写映射，供 badge/退出清理。
+            if body.is_agent {
+                ws.teammate_pane_states.insert(pid, PaneState::Busy);
+                if let Some(aid) = body.agent_id.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    ws.teammate_agent_pane_map.insert(aid.to_string(), pid);
+                }
+            }
         }
+    }
+    // 提升后 emit，让前端 re-sync 渲染 AGENT badge（T0 封套 generic state）。
+    if body.is_agent {
+        let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
     }
     let _ = ctx
         .handle
@@ -1078,7 +1247,7 @@ async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Qu
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let want_json = q.get("json").map(|s| s == "1").unwrap_or(false);
-    let wid = caller_workspace_id(&ctx, &headers);
+    let wid = caller_workspace_id_or_active(&ctx, &headers);
 
     let (lines, json_body) = {
         let map = ctx.state.workspaces.read();
@@ -1161,7 +1330,7 @@ async fn route_select_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    let wid = caller_workspace_id_or_active(&ctx, &headers);
 
     log_stderr_server(&format!("select-pane: index={:?}, last={:?}", body.pane_index, body.last));
 
@@ -1239,7 +1408,11 @@ async fn route_kill_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // T5 MEDIUM（隔离完整性）：kill-pane 是**破坏性**路由（删错 pane）→ fail-closed。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
 
     if let Some(idx) = body.pane_index {
         match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
@@ -1258,7 +1431,9 @@ async fn route_kill_pane(
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
-                let _ = ctx.handle.emit("teammate-layout-changed", ());
+                let _ = ctx
+                    .handle
+                    .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::removed(pid.to_string()));
                 (StatusCode::OK, "ok").into_response()
             }
             Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -1314,7 +1489,11 @@ async fn route_new_window(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
-    let wid = caller_workspace_id(&ctx, &headers);
+    // H1 fail-closed：new-window 也是放置路由 → 发起工作区头缺失/无效/已关闭即拒绝。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
     let cwd = body
         .cwd
         .as_ref()
@@ -1377,7 +1556,7 @@ async fn route_new_window(
                     }
                 }
             }
-            let _ = ctx.handle.emit("teammate-layout-changed", ());
+            let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
             let _ = ctx
                 .handle
                 .emit("teammate-active-pane-changed", new_id.to_string());
@@ -1442,7 +1621,7 @@ async fn route_rename_pane(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    let wid = caller_workspace_id_or_active(&ctx, &headers);
     let name = body.name.trim().to_string();
 
     let target_idx = body.pane_index.unwrap_or_else(|| {
@@ -1464,7 +1643,7 @@ async fn route_rename_pane(
                     }
                 }
             }
-            let _ = ctx.handle.emit("teammate-layout-changed", ());
+            let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
             (StatusCode::OK, "ok").into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -1485,7 +1664,7 @@ async fn route_list_windows(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let want_json = q.get("json").map(|s| s == "1").unwrap_or(false);
-    let wid = caller_workspace_id(&ctx, &headers);
+    let wid = caller_workspace_id_or_active(&ctx, &headers);
 
     let (line, json_body) = {
         let map = ctx.state.workspaces.read();
@@ -1928,16 +2107,22 @@ pub(crate) fn summon_into_workspace(
         if sp.prev_attachment.map(|(w, _)| w) == Some(wid) {
             continue;
         }
-        let idx = select_split_target(state, wid).unwrap_or(0);
-        let direction = {
+        // 与 route_split 同一来源：`choose_balanced_split`（最大面积叶子 + 加权最长边
+        // 方向），统一 tie-break，消除 summon 残留的「裸 cols>rows」公式（H-DIR#2 / M1）。
+        let (idx, direction) = {
             let map = state.workspaces.read();
             map.get(&wid)
                 .and_then(|ws| {
+                    let (uuid, sdir) = pane::choose_balanced_split(ws)?;
                     let leaves = ws.pane_tree.get_all_leaves();
-                    leaves.get(idx).and_then(|pid| ws.pane_sizes.get(pid).copied())
+                    let idx = leaves.iter().position(|p| *p == uuid).unwrap_or(0);
+                    let dir = match sdir {
+                        SplitDirection::Horizontal => "horizontal",
+                        SplitDirection::Vertical => "vertical",
+                    };
+                    Some((idx, dir))
                 })
-                .map(|(rows, cols)| if cols > rows { "horizontal" } else { "vertical" })
-                .unwrap_or("horizontal")
+                .unwrap_or((0, "horizontal"))
         };
         let new_id = match pane::teammate_split_pane(state, wid, idx, direction) {
             Ok(id) => id,
@@ -1984,8 +2169,7 @@ pub(crate) fn summon_into_workspace(
         }
         shown += 1;
     }
-    let _ = app_handle
-        .emit("teammate-layout-changed", serde_json::json!({ "summoned": shown }));
+    let _ = app_handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
     if let Some(fid) = first_new {
         let _ = app_handle.emit("teammate-active-pane-changed", fid.to_string());
     }
@@ -2009,7 +2193,12 @@ async fn route_tmux_summon(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let wid = caller_workspace_id(&ctx, &headers);
+    // T5 MEDIUM（隔离完整性）：summon **建 pane** 路由（在错工作区领养 native pane）→
+    // fail-closed。
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
     match summon_into_workspace(&ctx.state, &ctx.handle, &body.socket, &body.target, wid) {
         Ok(shown) => (StatusCode::OK, format!("summoned {shown}")).into_response(),
         Err(e) => native_err_to_response(e),
@@ -2163,4 +2352,60 @@ async fn route_tmux_list_all_sessions(
     }
     let sessions = native::list_all_sessions();
     Json(sessions).into_response()
+}
+
+#[cfg(test)]
+mod workspace_header_tests {
+    //! T4 (H1 fail-closed): the missing/invalid-vs-valid classification of the
+    //! `X-Ridge-Workspace` header is pure (no ctx/state), so it is unit-testable
+    //! here. The "workspace exists vs closed" branch lives in
+    //! `caller_workspace_id_strict` and needs a live workspace map → covered by
+    //! integration / end-to-end (AC4.1/4.3).
+    use super::{parse_workspace_header, WorkspaceReject};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    fn headers_with(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-ridge-workspace", HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    #[test]
+    fn missing_header_is_rejected() {
+        let h = HeaderMap::new();
+        assert!(matches!(
+            parse_workspace_header(&h),
+            Err(WorkspaceReject::MissingOrInvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn empty_or_whitespace_header_is_rejected() {
+        assert!(matches!(
+            parse_workspace_header(&headers_with("   ")),
+            Err(WorkspaceReject::MissingOrInvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn non_uuid_header_is_rejected() {
+        assert!(matches!(
+            parse_workspace_header(&headers_with("not-a-uuid")),
+            Err(WorkspaceReject::MissingOrInvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn valid_uuid_header_parses() {
+        let id = uuid::Uuid::new_v4();
+        let parsed = parse_workspace_header(&headers_with(&id.to_string())).unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        let id = uuid::Uuid::new_v4();
+        let parsed = parse_workspace_header(&headers_with(&format!("  {id}  "))).unwrap();
+        assert_eq!(parsed, id);
+    }
 }
