@@ -1,0 +1,29 @@
+[package]
+name = "ridge-core"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime-agnostic command + workspace domain core shared by the desktop (Tauri) host and the headless ridge-cli host. Zero Tauri dependency."
+license = "MIT"
+
+# Standalone library crate. The single hard rule: NO Tauri dependency, and in
+# particular NO `tauri::async_runtime` — background tasks depend on `tokio`
+# directly so the headless `ridge-cli` binary never pulls in webview/wgpu/wasm.
+# See docs/plans/unified-remote-architecture-handoff-final.md §4 D4/D7/D8/D11,
+# §5.1, and §7 R3.
+
+[lib]
+name = "ridge_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Background task spawning (file watcher / git polling) goes through the `Ctx`
+# spawner; the default in-process spawner uses tokio DIRECTLY (never
+# `tauri::async_runtime`). See §5.1 "后台任务派发".
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+# Library error type — typed errors with thiserror (rules/rust/coding-style.md).
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "sync", "macros", "rt-multi-thread", "time"] }

@@ -22,3 +22,8 @@ bash.exe.stackdump
 /static/remote
 /packages/ridge-term/pkg
 plotforge.db
+
+# Rust workspace build output. S1 (ridge-core extraction) added a virtual
+# workspace root, relocating the cargo target dir from `src-tauri/target` to the
+# repo root (`src-tauri/.gitignore` still covers the old path).
+/target

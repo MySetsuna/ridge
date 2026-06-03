@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod core_bridge;
 pub mod mdns;
 mod server;
 mod tls;
