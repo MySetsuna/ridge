@@ -5,21 +5,25 @@
 // `listen()`, `Channel`, `getCurrentWindow()`, dialog and clipboard directly.
 // In a browser there is no Tauri runtime, so the web-remote build aliases
 // `@tauri-apps/api/*` (+ the two plugins) to the shim modules in this folder,
-// and every shim routes through this singleton over the SAME LAN remote
-// WebSocket the mobile SPA already uses (`RemoteConnection`).
+// and every shim routes through this singleton.
 //
-// Wire protocol (host = src-tauri/src/remote/server.rs):
-//   • invoke  →  { type:'invoke-request', cmd, args, _reqId }
-//                reply { type:'invoke-result', _reqId, _result } | { ..., _error }
-//   • events  ←  { type:'event', name, payload }   (host push)
-//   • PTY out ←  binary frame: paneId(16 bytes) || raw bytes (existing fan-out)
+// Transport layering (handoff plan §5.3, D6/D7): the bridge no longer talks to
+// a concrete `RemoteConnection`. It depends on
+//   • the L2 shared `RpcClient` for invoke/notify/events (correlation, timeout,
+//     cancel and reconnect-reject live there, written once), and
+//   • the L1 `ChannelTransport.onPaneBytes` for the raw PTY byte fan-out.
+// Adapters (LAN-WS today, cloud-WebRTC later) implement the L1 primitives and
+// own any wire translation. The bridge is transport-agnostic.
 //
-// The reply/event frames carry a `type` field on purpose: RemoteConnection's
-// onmessage does `type.endsWith('-result')` unconditionally, which throws (and
-// silently drops the frame) when `type` is undefined. Stamping a type keeps the
-// frame flowing to `onMessage` listeners where we correlate by `_reqId`.
+// Logical wire (host = src-tauri/src/remote/server.rs, via the LAN-WS adapter):
+//   • invoke  →  RpcClient.request(method, params)  (adapter maps to the host's
+//                legacy invoke-request/invoke-result envelope; behavior unchanged)
+//   • events  ←  host push `{type:'event', name, payload}` (notification-style),
+//                surfaced to L2's notification dispatch via the adapter.
+//   • PTY out ←  binary frame (paneId || raw bytes) → onPaneBytes → pty-output.
 
-import { RemoteConnection } from '../../../remote/lib/wsRemote';
+import { RpcClient } from '../remote/rpcClient';
+import type { ChannelTransport, ControlFrame, Unsubscribe } from '../remote/types';
 
 /** Tauri's event payload shape, replicated so listeners are drop-in compatible. */
 export interface TauriEvent<T> {
@@ -31,61 +35,65 @@ export interface TauriEvent<T> {
 export type EventCallback<T> = (event: TauriEvent<T>) => void;
 export type UnlistenFn = () => void;
 
-interface Pending {
-  resolve: (v: unknown) => void;
-  reject: (e: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 const INVOKE_TIMEOUT_MS = 20_000;
 
 class TauriBridge {
-  private conn: RemoteConnection | null = null;
-  private reqId = 0;
+  private transport: ChannelTransport | null = null;
+  private rpc: RpcClient | null = null;
   private listenerId = 0;
-  private pending = new Map<number, Pending>();
   // Exact-name event listeners, fed by host `{type:'event'}` pushes.
   private eventListeners = new Map<string, Map<number, EventCallback<unknown>>>();
   // PTY-output listeners, keyed by paneId, fed by the binary raw-byte fan-out.
   private ptyListeners = new Map<string, Map<number, EventCallback<{ data: string }>>>();
+  // Panes we've subscribed to, so we can re-subscribe after a reconnect.
+  private subscribedPanes = new Set<string>();
   private decoder = new TextDecoder();
+  private disposers: Unsubscribe[] = [];
 
-  /** True once a connection has been attached (after auth succeeds). */
+  /** True once a transport has been attached (after auth succeeds). */
   get ready(): boolean {
-    return this.conn !== null;
+    return this.transport !== null;
   }
 
-  connection(): RemoteConnection {
-    if (!this.conn) throw new Error('Tauri bridge not connected');
-    return this.conn;
-  }
+  /** Install an authenticated L1 transport. Called once from the web-remote
+   *  boot in +layout.svelte after the handshake succeeds. The boot builds the
+   *  adapter (e.g. `createLanWsTransport(conn)`) so the bridge stays free of any
+   *  concrete-transport dependency. */
+  attach(transport: ChannelTransport): void {
+    this.transport = transport;
+    this.rpc = new RpcClient(transport, { defaultTimeoutMs: INVOKE_TIMEOUT_MS });
 
-  /** Install the authenticated RemoteConnection. Called once from the
-   *  web-remote boot in +layout.svelte after the TOTP handshake succeeds. */
-  attach(conn: RemoteConnection): void {
-    this.conn = conn;
-    conn.onMessage((msg) => this.handleMessage(msg as Record<string, unknown>));
-    conn.onRawBytes((paneId, bytes) => this.dispatchRawBytes(paneId, bytes));
+    // Raw PTY bytes ride the L1 binary fan-out → pty-output-* listeners.
+    this.disposers.push(transport.onPaneBytes((paneId, bytes) => this.dispatchRawBytes(paneId, bytes)));
+
+    // Host event pushes arrive as `{type:'event', name, payload}` control frames
+    // (legacy notification shape, passed through by the adapter). Tap the raw
+    // control stream so we keep delivering them to exact-name listeners.
+    this.disposers.push(
+      transport.onControl((frame) => this.handleControlFrame(frame)),
+    );
+
+    // Re-subscribe panes after a reconnect (raw-byte snapshot re-pull, D10).
+    this.disposers.push(
+      this.rpc.onReconnected(() => {
+        for (const paneId of this.subscribedPanes) {
+          this.rpc?.notify('subscribe-pane', { paneId });
+        }
+      }),
+    );
+
     // Opt into global workspace semantics: the desktop UI in a browser is a peer
     // desktop and switches workspaces via the real `switch_workspace` command, so
     // the host must track the GLOBAL active workspace for this client (not the
     // mobile per-client view). See `use_global_ws` in remote/server.rs.
-    conn.send({ type: 'use-global-workspace' });
+    this.rpc.notify('use-global-workspace');
   }
 
   // ── invoke ────────────────────────────────────────────────────────────────
   invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
-    const conn = this.conn;
-    if (!conn) return Promise.reject(new Error(`invoke('${cmd}') before bridge connected`));
-    const id = ++this.reqId;
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`invoke('${cmd}') timed out`));
-      }, INVOKE_TIMEOUT_MS);
-      this.pending.set(id, { resolve: (v) => resolve(v as T), reject, timer });
-      conn.send({ type: 'invoke-request', cmd, args, _reqId: id });
-    });
+    const rpc = this.rpc;
+    if (!rpc) return Promise.reject(new Error(`invoke('${cmd}') before bridge connected`));
+    return rpc.request<T>(cmd, args);
   }
 
   // ── events ──────────────────────────────────────────────────────────────
@@ -116,26 +124,17 @@ class TauriBridge {
   /** Start the host streaming raw PTY bytes for a pane (replaces the desktop's
    *  Tauri `Channel` + `register_pane_delta_channel` path). */
   subscribePane(paneId: string): void {
-    this.conn?.subscribePane(paneId);
+    this.subscribedPanes.add(paneId);
+    this.rpc?.notify('subscribe-pane', { paneId });
   }
 
   // ── internal dispatch ─────────────────────────────────────────────────────
-  private handleMessage(msg: Record<string, unknown>): void {
-    const type = msg.type;
-    if (type === 'invoke-result' && typeof msg._reqId === 'number') {
-      const req = this.pending.get(msg._reqId);
-      if (!req) return;
-      clearTimeout(req.timer);
-      this.pending.delete(msg._reqId);
-      if (msg._error !== undefined && msg._error !== null) {
-        req.reject(new Error(String(msg._error)));
-      } else {
-        req.resolve(msg._result ?? null);
-      }
-      return;
-    }
-    if (type === 'event' && typeof msg.name === 'string') {
-      this.emitLocal(msg.name, msg.payload);
+  /** Host pushes events as `{type:'event', name, payload}` control frames. JSON-RPC
+   *  responses are consumed by the RpcClient before this runs, so we only act on
+   *  the event push shape. */
+  private handleControlFrame(frame: ControlFrame): void {
+    if (frame.type === 'event' && typeof frame.name === 'string') {
+      this.emitLocal(frame.name, frame.payload);
     }
   }
 

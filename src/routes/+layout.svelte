@@ -35,6 +35,7 @@
   async function startWebRemoteBoot() {
     const { RemoteConnection } = await import('../remote/lib/wsRemote');
     const { bridge } = await import('$lib/transport/tauriShim/bridge');
+    const { createLanWsTransport } = await import('$lib/transport/remote/lanWsAdapter');
     const TOKEN_KEY = 'ridge_remote_token';
     const conn = new RemoteConnection();
 
@@ -42,7 +43,10 @@
     const port = parseInt(location.port) || (location.protocol === 'https:' ? 443 : 80);
 
     const finish = () => {
-      bridge.attach(conn);
+      // Wrap the authenticated RemoteConnection in the L1 LAN-WS adapter; the
+      // bridge depends on the transport interface (L2 RPC + L1 pane bytes), not
+      // on RemoteConnection directly (handoff plan §5.3, D6/D7).
+      bridge.attach(createLanWsTransport(conn));
       // DataProvider consumers (FS/git/search) ride the same shimmed invoke.
       setTransport(new TauriDataProvider());
       ready = true;
