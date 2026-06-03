@@ -14,7 +14,14 @@
 - **host（被控端）**：被远程控制的机器。两种形态：
   - 桌面端 Ridge（Tauri，本仓库 `C:\code\wind`）
   - 无头服务器 `ridge-cli`（本仓库 `packages/ridge-cli`）
-- **controller（控制端）**：发起控制的浏览器（手机/另一台电脑）。复用现有移动端 SPA。
+- **controller（控制端）**：发起控制的浏览器（手机/另一台电脑）。两种 SPA 形态：
+  - **移动 controller**：手机浏览器复用现有移动端 SPA（轻量、单 pane 视图）。
+  - **桌面 controller**：桌面浏览器加载**完整桌面 SPA**（`web-remote-dist`，完整 IDE 面板）。
+    LAN 下由 host 的 LAN server 按 User-Agent 分流下发；cloud 下该桌面 SPA 经**公网源**下发
+    （ridge-cloud 后端在主域名兜底返回静态资源，参 §10；或 CDN），再经 WebRTC E2EE 连 host。
+    > 评审 2026-06-03：原契约仅写"复用现有移动端 SPA"，未覆盖 cloud 下"桌面浏览器完整控制"形态。
+    > 现接纳**桌面 controller**：其 SPA 经公网下发（区别于 LAN 同机直发），与 host 经 D9 版本/能力握手对账。
+    > 取页工程（code-split / 内容指纹版本化缓存）与 §10 静态托管的衔接细节，待跨团队确认。
 - **signaling relay（信令复读机）**：ridge-cloud 后端的 `/ws`，**纯转发 SDP/ICE，绝不解密任何数据**。
 - **账户模型（重要简化）**：host 和 controller **必须是同一个账户**。
   即：只有账户拥有者本人能控制自己名下的设备。不支持跨账户分享（v1 范围外）。
@@ -194,7 +201,33 @@ host 永远是 answerer。
 > **relay/TURN 永远看不到明文。** 加密在 DataChannel 之上再叠一层（不依赖 DTLS）。
 
 - DataChannel：`label="ridge"`，`ordered:true`，`maxRetransmits:null`（可靠有序）。
-- 内层明文 = 现有 `postcard` 二进制增量协议帧（PTY 输出 / resize / 输入等，保持现有 schema 不变）。
+- 内层明文 = **统一线协议帧**，按 **1 字节通道前缀 mux**（沿用 ridge-cli `protocol.rs`）：
+  - `0x10 = PANE_RAW`：PTY **裸字节**（paneId 前缀 + raw bytes），客户端 wasm 终端内核 `kernel.feed()` 自行解析。
+  - `0x11 = JSON`：带外 JSON 文本（控制消息、事件、invoke 请求/响应），UTF-8。
+  > 评审 2026-06-03：原契约写"内层明文 = postcard 二进制增量协议帧，保持 schema 不变"。但 LAN
+  > (`RemotePtyEvent::RawBytes`) 与 ridge-cli (`protocol.rs` `0x10`) 实际已收敛到 **raw-byte**；
+  > per-sub postcard delta 方案因每 sub ~11MB `PaneParser` 导致 OOM、丢帧致状态脱节而被弃用
+  > （见 `.kiro/specs/remote-raw-byte/`）。故 pane payload 改为 **raw-byte（`0x10`）+ 带外 JSON（`0x11`）**。
+  > raw-byte **不可重放**，故迟到订阅/重连须先下发屏幕快照（见 §7.4 D10）。（待跨团队确认）
+
+### 7.0 invoke / 控制信封：JSON-RPC 2.0（`0x11` JSON 通道内）
+
+> 评审 2026-06-03：invoke 信封从自定义 `type`/`_reqId` 改为 **JSON-RPC 2.0** 标准信封，取得现成的
+> 错误/通知/取消语义、生态工具，减少自造与 bikeshedding。控制消息（订阅/事件/元数据）与 invoke
+> 请求/响应**共用同一 `0x11` JSON 通道**，靠 JSON-RPC 的 `id`/`method` 区分。（待跨团队确认）
+
+**统一信封约定（前后端、LAN-WS 与 cloud-WebRTC、桌面 host 与 ridge-cli 必须逐字一致）**：
+- 请求：`{ "jsonrpc":"2.0", "id":<num|str>, "method":<str>, "params":<obj> }`
+- 成功响应：`{ "jsonrpc":"2.0", "id":<同请求>, "result":<any> }`
+- 错误响应：`{ "jsonrpc":"2.0", "id":<同请求>, "error":{ "code":<int>, "message":<str>, "data"?:<any> } }`
+- 单向控制消息 / 事件下发：**notification**（无 `id`）：`{ "jsonrpc":"2.0", "method":<str>, "params":<obj> }`
+- 取消长任务：method `"$/cancel"`，`params:{ "id":<目标请求的 id> }`（notification，无自身 `id`）。
+
+说明：
+- 业务错误码（§2 的 `UNAUTHORIZED`/`NOT_FOUND`/… 字符串枚举）映射进 JSON-RPC `error.data`，
+  `error.code`（int）按 JSON-RPC 规范用于协议级错误；业务语义不丢失（§2 信封仍用于 §4 的 HTTP API）。
+- 订阅/切换/元数据/事件（如 `subscribe-pane`、`switch-workspace`、`fs-changed`）走 notification。
+- 每个 request 必带超时（client 侧 reject）；重连后 in-flight request 一律 reject，再重订阅 + 重拉快照（见 §7.4）。
 
 ### 7.1 握手（DataChannel open 后，最先交换的两条**二进制**消息）
 - 每端生成临时 X25519 密钥对，发送：`0x01 || ephemeral_pub(32 bytes)`。
@@ -215,6 +248,43 @@ host 永远是 answerer。
   - **Rust（ridge-cli，以及 Rust 侧 host）**：`x25519-dalek` + `hkdf` + `sha2` + `chacha20poly1305`
   - **浏览器/WebView（Svelte）**：`@noble/curves`(x25519) + `@noble/hashes`(hkdf/sha256) + `@noble/ciphers`(chacha20poly1305)
     - 注：WebCrypto 无 ChaCha20，必须用 noble；X25519 也统一走 noble 以保证与 Rust 字节级一致。
+
+### 7.3 版本 / 能力握手（D9）
+
+> 评审 2026-06-03：新增 **D9**。controller SPA（cloud 经公网下发、可独立更新）与 host（随桌面/CLI
+> 版本走）必然版本漂移；不协商会导致协议/命令静默错配。故 E2EE 握手（§7.1）完成、业务帧开始前，
+> 双方先交换一帧版本/能力声明，取交集后降级或明确拒绝。（待跨团队确认）
+
+- 时机：在 §7.1 的 X25519/HKDF 完成、§7.2 加密生效**之后**、任何业务帧（pane 流 / invoke）**之前**，
+  作为首条 `0x11` JSON notification 交换：
+  ```json
+  { "jsonrpc":"2.0", "method":"$/hello",
+    "params":{ "protocolVersion":1, "capabilities":["pane","invoke","fs","git","search","workspace","theme"] } }
+  ```
+- 协商规则：
+  - `protocolVersion` 取双方都支持的**最高公共版本**；无公共版本 → 发送
+    `{ "jsonrpc":"2.0","method":"$/bye","params":{ "reason":"protocol-version-mismatch" } }` 后关闭，
+    controller 侧据此提示用户升级。
+  - `capabilities` 取**交集**：controller 侧把缺失能力对应的 IDE 面板灰掉 / 隐藏（而非运行时报错）。
+- `capabilities` 是数据驱动的能力位，与 §8.x 的 host 特权命令准入（白名单作为数据，统一项目 D8）正交：
+  握手交集决定 controller **能看到**哪些面板；准入白名单决定 host **允许执行**哪些命令。两者都不得放行
+  host 特权命令（`get_remote_info`/`set_remote_enabled`/`enter_deep_root_mode` 等）。
+
+### 7.4 attach 屏幕快照（D10）
+
+> 评审 2026-06-03：新增 **D10**。§7 改用 raw-byte 后字节流**不可重放**，迟到订阅 / 重连的 controller
+> 拿不到历史，会看到空屏/错乱。故 host 侧为**每个 pane 维护一份当前屏幕缓冲**（screen buffer），
+> attach 时先下发快照，随后才续 raw 流。这也是后续在 cloud 高延迟腿上引入"屏幕状态同步"的地基。（待跨团队确认）
+
+- `subscribe-pane`（`0x11` JSON request）的**首个响应**为**屏幕快照**（screen snapshot），随后才是 `0x10`
+  raw 续流。快照可以是当前屏幕的渲染序列（含光标位置、alt-screen 状态、滚动区等终端状态），
+  controller 收到后先 `kernel.feed(snapshot)` 重建屏幕，再消费后续 raw 增量。
+- host 侧职责：为每个活跃 pane 维护 per-pane 屏幕缓冲（可复用终端 alt-screen / repaint 能力），
+  随 PTY 输出滚动更新；新 controller attach 或既有 controller 重连时按当前缓冲生成快照。
+- 重连同理：bridge 重连后对每个先前订阅的 pane 重发 `subscribe-pane`，先收快照再续流；
+  重连前的所有 in-flight invoke request 一律 reject（见 §7.0）。
+- 每 pane 的**锁定渲染尺寸**为该 pane 的共享属性，随 attach 快照一并下发；`resize` 是任意 controller
+  可发的显式共享命令（last-write-wins，notification），不再由 controller viewport 自动触发。
 
 ---
 
@@ -244,9 +314,15 @@ host 永远是 answerer。
 
 - 桌面端现有 LAN 远控（`src-tauri/src/remote/*`、`src/lib/remote/wsClient.ts`、`src/remote/lib/wsRemote.ts`）
   **保持不动**；云端模式是新增的并行 provider，不替换 LAN 模式。
-- ridge-cli **path-依赖** `src-tauri` 的 lib，复用 `engine::pty`、`fs::search`、`fs::tree`，
-  **不复制**这些模块；若需要把它们设为 `pub`，仅做最小可见性调整并在报告中列出。
-- `postcard` 增量协议帧 schema 不改；E2EE 只是在其外层加密。
+- ridge-cli 复用 `engine::pty`、`fs::search`、`fs::tree`，**不复制**这些模块。
+  > 评审 2026-06-03：现状 ridge-cli **path-依赖** `src-tauri` 的 lib，会把 Tauri 依赖拖进 headless 二进制。
+  > 统一项目（D4）将抽出运行时无关的 **`ridge-core` crate** 承载这些复用模块 + 命令 handler + 工作区/分屏
+  > 领域模型，ridge-cli 改链接 `ridge-core` 取代对 src-tauri lib 的 path-依赖。归属规则见 §11。（待跨团队确认）
+  - 过渡期若仍需把 src-tauri 模块设为 `pub`，仅做最小可见性调整并在报告中列出。
+- pane 字节流为 **raw-byte（`0x10`）**，E2EE（§7.1/§7.2）只在其外层加密；不再使用 `postcard` 增量协议帧。
+  > 评审 2026-06-03：原契约写"`postcard` 增量协议帧 schema 不改"。LAN 与 ridge-cli 实际已收敛 raw-byte
+  > （delta 方案因 per-sub ~11MB `PaneParser` OOM 被弃用，见 `.kiro/specs/remote-raw-byte/`）。
+  > 故此条与 §7 一并改为 raw-byte；控制/invoke 改走 §7.0 的 JSON-RPC 2.0 信封。（待跨团队确认）
 
 ---
 
@@ -274,8 +350,34 @@ host 永远是 answerer。
 | A. 云端后端 | `C:\code\ridge-cloud` | 除 `web/` 外的一切 | `web/` |
 | B. RemotePanel + E2EE provider | `C:\code\wind` | `src/`（含改 `RemotePanel.svelte`、新增 `src/lib/remote/cloud/*`）、根 `package.json`(加依赖) | `src-tauri/`、`packages/` |
 | C. Deep Root Mode | `C:\code\wind` | `src-tauri/src/`（新增 `deep_root.rs` 等 + 改 `lib.rs`）、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、`src-tauri/capabilities/*` | `src/`、根 `package.json`、`packages/` |
-| D. ridge-cli | `C:\code\wind` | `packages/ridge-cli/` | 其它一切（path 依赖 src-tauri，不改其代码，最多报告所需 `pub`） |
+| D. ridge-cli | `C:\code\wind` | `packages/ridge-cli/` | 其它一切（依赖 `ridge-core`，不改 `src-tauri/`、`packages/ridge-core/` 代码，最多报告所需 `pub`） |
 | E. Web 管理面板 | `C:\code\ridge-cloud` | `web/` | 仓库其它路径 |
+| **F. ridge-core crate（新）** | `C:\code\wind` | **`packages/ridge-core/`**（运行时无关：命令 handler + 工作区/分屏领域模型 + `Ctx` 抽象 + 能力策略层 + 复用的 pty/fs 模块），及为接入 `ridge-core` 而改的 `src-tauri/Cargo.toml`、根 `Cargo.toml`(workspace 成员) | `src/`、`web/`、`packages/ridge-cli/` 内部实现 |
+
+> 评审 2026-06-03：新增 **F. ridge-core crate**，并明确**打破现 §11 的 B=src/ C=src-tauri/ D=packages 边界后的新归属规则**。（待跨团队确认）
+>
+> 评审 2026-06-03（GM 决策 **D-GM-1**）：`ridge-core` 落在 **`packages/ridge-core/`**（与 sibling `packages/ridge-cli`、`packages/ridge-term` 平级），**不**新增独立 `crates/` 源码根 —— S1 实现已在此位置 `cargo check` 通过，复用现有 `packages/` 根更一致、零代码搬迁成本。（待跨团队确认）
+>
+> **背景**：统一项目 D4 要把 `src-tauri/src/commands/*` 的 handler + 工作区/分屏领域模型抽成运行时无关的
+> `ridge-core` crate，由桌面 host（src-tauri 薄封装）与 headless host（ridge-cli）共用，并取代 ridge-cli
+> 现状对 src-tauri lib 的 path-依赖（消除 Tauri 污染 headless 二进制，见 §9）。这越过了原 §11 中
+> "B 只写 `src/`、C 只写 `src-tauri/`、D 只写 `packages/`" 的边界。
+>
+> **新归属规则**（打破边界后的冲突避免约定）：
+> 1. **复用 `packages/` 源码根**：`ridge-core` 落在 `packages/ridge-core/`，与 `packages/ridge-cli`、
+>    `packages/ridge-term`（独立二进制）同级，作为**唯一**的运行时无关 Rust 共享层；**不**新增独立 `crates/` 源码根（GM D-GM-1）。
+> 2. **`packages/ridge-core/` 子树仅由 F 拥有**：B、C 的"禁止触碰"已含整个 `packages/`；D 仅拥有 `packages/ridge-cli/`，一律不得写 `packages/ridge-core/`。
+>    src-tauri 与 ridge-cli 通过 `Cargo.toml` 依赖声明接入 `ridge-core`，不复制其代码。
+> 3. **handler 迁移的所有权移交**：从 `src-tauri/src/commands/*` 迁入 `packages/ridge-core/` 的 handler，
+>    其所有权随之从 C 移交 F；C 在 src-tauri 侧只保留**薄封装**（Tauri command → 构造 `Ctx` → 调
+>    `ridge_core::dispatch`）。迁移以"每功能点一 commit"推进，避免 C/F 同时大改同一逻辑产生冲突。
+> 4. **workspace 清单的共享写权**：根 `Cargo.toml`（workspace 成员列表）与 `src-tauri/Cargo.toml`
+>    （依赖 `ridge-core`）是 C 与 F 的**共享接触点**，仅允许追加 `ridge-core` 相关条目，改动须在 PR 描述中
+>    显式列出，由 GM 把关合并顺序。
+> 5. **`ridge-core` 零 Tauri 依赖硬约束**：F 实现 `Ctx`（状态 + 事件发射 trait + 后台任务派发**直依 `tokio`**、
+>    不经 `tauri::async_runtime` + 错误映射），保证 headless 二进制不被 Tauri 污染（见 §9、统一计划 R3）。
 
 - B 调用 `invoke('enter_deep_root_mode')` / `invoke('restore_from_deep_root')`（C 实现），属契约调用，无文件冲突。
 - A 与 E 同处 `ridge-cloud` 仓库但子树互斥（A 不进 `web/`，E 只进 `web/`）。仓库与 `web/` 目录由编排者预先建好。
+- C 与 F 同处 `C:\code\wind` 但源码根互斥（C 写 `src-tauri/src/`，F 写 `packages/ridge-core/`）；
+  二者唯一共享接触点是 `src-tauri/Cargo.toml` 与根 `Cargo.toml` 的 `ridge-core` 依赖/成员声明（见上规则 4）。
