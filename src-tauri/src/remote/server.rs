@@ -2211,7 +2211,7 @@ async fn dispatch_invoke_request(
     state: &AppState,
 ) -> serde_json::Value {
     use crate::commands::{
-        fs_watch, git, pane, project, ridge_file, settings, terminal, theme, watch, workspace,
+        fs_watch, git, pane, project, ridge_file, terminal, watch, workspace,
     };
     use tauri::Manager;
 
@@ -2285,6 +2285,25 @@ async fn dispatch_invoke_request(
     }
     fn plain<T: Serialize>(v: T) -> serde_json::Value {
         serde_json::json!({ "_result": v })
+    }
+    // S1: map a `ridge_core::dispatch` result onto the legacy WS envelope.
+    // `Ok(value)` → `{ "_result": value }`; `Err(core_err)` → `{ "_error":
+    // message }` (the same human string the legacy handlers produced). The
+    // structured JSON-RPC `{code,message,data}` object is reserved for S2's
+    // RPC layer; the current WS envelope only carries a message.
+    // TODO(S3): the legacy LAN WS `_error` envelope is message-only, so
+    // `ridge_core::CoreError`'s structured JSON-RPC code/data (capability_denied
+    // 1001, read_only 1002, …) is collapsed to a string here and the client
+    // re-tags it as INTERNAL_ERROR (-32603). When S3 makes the LAN host
+    // JSON-RPC-native, emit `e.to_json_rpc()` (full {code,message,data}) instead
+    // of `_error`, and assert the round-trip in the S7 conformance suite.
+    fn core_result_to_envelope(
+        r: Result<serde_json::Value, ridge_core::CoreError>,
+    ) -> serde_json::Value {
+        match r {
+            Ok(v) => serde_json::json!({ "_result": v }),
+            Err(e) => serde_json::json!({ "_error": e.to_command_string() }),
+        }
     }
 
     // Most commands need a real Tauri context. The stashed handle gives us both
@@ -2379,10 +2398,16 @@ async fn dispatch_invoke_request(
         "get_startup_context" => val(ridge_file::get_startup_context(handle.state())),
         "browse_directory" => val(ridge_file::browse_directory(opt_s(args, "path"))),
 
-        // ── Theme / settings ──
-        "get_theme_data" => plain(theme::get_theme_data(handle.clone())),
-        "set_active_theme" => unit(theme::set_active_theme(s(args, "themeId"))),
-        "set_user_default_cwd" => unit(settings::set_user_default_cwd(handle.state(), opt_s(args, "path"))),
+        // ── Theme / settings (S1: migrated into ridge-core) ──
+        // These three handlers now live in `ridge_core`; route them through
+        // the unified `ridge_core::dispatch` so the LAN host shares the exact
+        // same implementation + capability gate (D8) the headless host will.
+        // The core's `{code,message,data}` error maps onto the legacy
+        // `{_result|_error}` WS envelope below — wire behaviour is unchanged.
+        "get_theme_data" | "set_active_theme" | "set_user_default_cwd" => {
+            let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+            core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
+        }
 
         // ── Search ──
         "text_search" => val(project::text_search(

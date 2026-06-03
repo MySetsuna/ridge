@@ -90,6 +90,14 @@ notify-debouncer-mini = "0.4"
 # without surprise rebuilds when P3.3 lands.
 ridge-term = { path = "../packages/ridge-term", default-features = false }
 
+# S1 (2026-06-03): the runtime-agnostic command + domain core. The desktop
+# `#[tauri::command]` handlers in the vertical slice (settings + theme) became
+# thin wrappers that construct a `ridge_core::Ctx` and call
+# `ridge_core::dispatch`. Zero Tauri dependency lives in ridge-core, so this
+# dep does not pull anything new into the desktop binary's graph beyond
+# serde/serde_json/tokio/thiserror/tracing (all already present).
+ridge-core = { path = "../packages/ridge-core" }
+
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)
 # encodes frames to Vec<u8>, emits via Tauri events; the wasm consumer
