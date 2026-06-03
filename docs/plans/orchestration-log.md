@@ -58,6 +58,9 @@
 | D-GM-4 | S3 协议落地策略（直接 flip vs 向后兼容） | **向后兼容加法式**：host 同时认 legacy 与 JSON-RPC 帧、按形态对称回复；adapter 默认 legacy 翻译，收到 host `$/hello` 回复后才升级原生 JSON-RPC。legacy `dispatch_invoke_request` 一字未动 | 现网 LAN 远控不可运行时验证，破坏性 flip 风险过高；加法式让老 web-remote-dist/移动端零改动仍工作 | 2026-06-04 |
 | D-GM-5 | `$/bye`（D9 版本不匹配）是否强制关 socket | **不强制关**：host 发 `$/bye`，client 标记 rejected + 提示升级，由 client 决定 UX | 契约 §7.3「降级或明确拒绝并提示」；非破坏性 | 2026-06-04 |
 | D-GM-6 | D10 全量 per-pane 屏幕缓冲归属 | S3 仅交付 `PaneSnapshotFrame` 消息类型 + subscribe 接入点 + 实现要点；**全量屏缓冲实现切到 S5**（与 pane 流改造、D11 共享尺寸耦合） | 量大且与 S5 领域模型咬合；避免 S3 膨胀 | 2026-06-04 |
+| D-GM-7 | cloud `0x10` PANE_RAW 的 paneId 字节布局 | 采用 **`0x10 \|\| paneIdLen(u8) \|\| paneId(UTF-8) \|\| raw`**（S4 cloud 适配器已实现）；已登记契约 §7。ridge-cli `protocol.rs`(单 pane 无 paneId) + 桌面 host 编码器须按此对齐（对齐债，LAN 走 WS binary 不用此 mux 故不影响现网） | 多 pane 需自描述帧头；登记 SSOT 防三方漂移(R1) | 2026-06-04 |
+| D-GM-8 | JSON-RPC 应用错误码空间 | ridge-core `CoreError` 用 **1000-1006**（避开 JSON-RPC 保留区 `-32768..-32000`）+ 标准 `-32601/-32602`；已登记契约 §7.0 码表（含 S8 新增 1006 outside_sandbox）。新增码须登记此表 | 防 S1/S3/S8 三方码值漂移(R1) | 2026-06-04 |
+| D-GM-9 | headless 沙箱激活时点（Manager LOW gap，R10） | S5 MVP（只读 search/tree、fail-soft）**接受 headless_ctx 暂不 `.with_roots()`（沙箱 no-op）**；但把"`headless_ctx` 绑定工作区根 ⇒ `.with_roots()`"列为 **fs 写命令迁入 ridge-cli 的前置硬门**，避免写命令上线时整机 fs 裸奔 | 当前 exploit 路径未通（S4-host 未打通 + 无写命令）；硬门前置防回归 | 2026-06-04 |
 
 ## 执行进度
 
@@ -84,8 +87,29 @@
   - 验收：`cargo check -p ridge` / `--tests` 0err/0warn、clippy 新增段 0 警告、`cargo test -p ridge-core` 20 passed、`pnpm exec vitest run transport/` **58 passed**（GM 独立复跑确认）、`pnpm check` 0/0。
   - 移交：桌面浏览器经 LAN 端到端运行回归（老客户端仍 invoke、握手后 error 带 code/data、事件风暴不卡、$/cancel 取消搜索）须用户 rebuild 验证。
 
-### Wave 3（下一步，并行 {S4,S5,S6}；本会话能推 S5 最实）
-- **S5 headless ridge-cli 完整 IDE**（依赖 S1+S3 ✓）：ridge-cli 链 `ridge-core`、补 D11 领域模型、承接 S1 台账剩余 11 文件迁移（git.rs 最易=0 State/AppHandle）、落 D10 全量屏缓冲。**Rust，cargo check 可验，本会话最有产出。**
-- **S4 cloud 桌面 host**：cloud-WebRTC 适配器 + onFrame 接通 + E2EE 密钥认证；现状是 scaffold（onFrame 空、host WebRTC 在 WebView），终态迁 Rust——大且部分需运行时/WebRTC e2e。
-- **S6 cloud 入口**：跨仓库 `C:\code\ridge-cloud` + CDN/code-split——**跨 repo，超出本仓库范围**。
-- **S8 安全/可观测**：能力数据化(✓S1)、fs 沙箱、tracing+相关 id、shim 全量审计——可增量推进。
+### Wave 3 完成（S4-client / S5-MVP / S8 / R12，2026-06-04）—— Manager 合并复核全 PASS，零跨切面漂移
+
+- [x] **S5 headless ridge-cli MVP（tree+search 切片）**：`fs::{search,tree}`(901行) 下沉 ridge-core 单一真源，src-tauri re-export（行为不变）；ridge-core dispatch 增只读 fs/search/tree 命令面 + D8 白名单；ridge-cli 接 `ridge_core::dispatch`、废除 `fs_reuse` 重复实现，**`cargo tree -p ridge-cli` 无 tauri（R3 实证消除）**。验收：cargo check ×3 crate 0err、`cargo test -p ridge-core` 40 / `-p ridge-cli` 29 passed。
+- [x] **S4 cloud-WebRTC L1 适配器（客户端切片）**：`cloudWebrtcAdapter`+`cloudMux`（1 字节前缀 mux，paneId 帧头 D-GM-7），E2EE/auth 由 provider 负责；同一 bridge+RpcClient 可跑 WebRTC。验收：svelte-check 0、vitest transport/ 88 passed。
+- [x] **S8 安全切片**：fs root-scoping 沙箱（`OutsideSandbox` code 1006，空根=不限制向后兼容）+ shim 全量审计报告（`s8-shim-audit.md`）。验收：cargo test -p ridge-core 57 passed。
+- [x] **R12**：补 `@tauri-apps/plugin-opener` shim + vite alias + 修 `linkResolver` 远控外链静默失效。验收：pnpm check 0、opener.test 4 passed。
+- [x] **契约 SSOT 登记**：D-GM-7 paneId 布局、D-GM-8 错误码表（防 R1 漂移）。
+- [x] **Manager 合并复核**（`wave23-gap-report.md`）：S3/S4/S5/S8/R12 全 PASS，跨切面一致性矩阵（错误码 1000-1006 / D9 capabilities `[pane,invoke,fs,git,search,workspace,theme]` / D8 白名单 / paneId 债 / 向后兼容）**逐值零漂移**；唯一 LOW = D-GM-9（headless 沙箱 no-op，已记硬门）。
+
+### 验证总账（本会话内可达上限）
+- **静态/单元/构建全绿**：cargo check（ridge-core/ridge/ridge-cli）、cargo test（ridge-core 57 / ridge-cli 29）、vitest transport 88 + opener 4、svelte-check 0/0、**`pnpm build:desktop-web` 生产构建 exit 0**（1m44s，写出 web-remote-dist）。
+- **chrome-devtools 前端 e2e 烟测**：本地静态服 web-remote-dist → 真浏览器加载 → 门面正确渲染（"Ridge Remote"+TOTP 输入）、**console 0 error/0 warn**；证据 `docs/plans/wave1-3-webremote-smoke.png`。说明：旧 ridge.exe=旧后端，无法反映新后端改动；本烟测验证前端 shipping bundle 加载/路由/别名运行时无误，**不替代后端运行时回归**。
+
+## 本会话结束态（"结束"）：已驱动至自治可行边界
+
+**已交付并提交（develop，本地未 push，共 ~12 笔 commit）**：S0 契约 · S1 ridge-core 地基 · S2 Transport 分层 · S3 协议骨干 · S4 cloud 客户端适配器 · S5 headless MVP · S8 安全 · R12 · 契约登记 · GM 编排/台账/gap 报告。**8 个子项均有已验证的实质增量。**
+
+**必须用户在本机 rebuild 验证（本机 rebuild 杀会话 + cdylib 0xc0000139，无法在会话内运行）**：
+1. 桌面 app 全功能回归（S1 settings/theme 薄封装 + S5 fs 下沉零行为变化）。
+2. `tauri build` / wasm-pack 产物（workspace 根 + target 迁移 + ridge-term profile hoist）；通过后清理旧 per-crate Cargo.lock（D-GM-3）。
+3. LAN 浏览器远控端到端（S3 双形态 invoke、$/hello 握手、error 带 code/data、事件背压、$/cancel、R12 外链）。
+
+**真正的外部阻塞（非本仓库/需运行时基建，非本会话可完成）**：
+- **S4-host**：onFrame 接通 + host 侧 paneId 编码器对齐 + Rust(webrtc-rs) 迁移 + **E2EE 密钥认证核实（尚无实现核实）**——需 live cloud relay + WebRTC e2e。
+- **S6 cloud 入口**：跨仓库 `C:\code\ridge-cloud`（CDN/code-split/兜底下发）——超出 `C:\code\wind` 范围。
+- **剩余 handler 迁移**：git/terminal/workspace/pane（绑 D11 领域模型）+ 全量 D10 屏缓冲 + fs **写**命令（前置 D-GM-9 沙箱硬门）——见 `s1-migration-ledger.md`，留后续会话（Rust，cargo check 可验）。
