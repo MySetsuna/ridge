@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::batching::BatchingBuffer;
 use crate::e2ee::{Dir, Handshake, Session as CryptoSession};
-use crate::fs_reuse::{self, SearchOptions};
+use crate::fs_reuse;
 use crate::protocol::{self, ControlMsg, HostMsg};
 use crate::pty::PtyBridge;
 use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
@@ -203,17 +203,14 @@ impl RemoteSession {
                 use_regex,
                 case_sensitive,
             } => {
-                let opts = SearchOptions {
-                    use_regex,
-                    case_sensitive,
-                    ..Default::default()
-                };
-                let results = fs_reuse::search_text(std::path::Path::new(&root), &query, &opts);
+                // §S5: 经 `ridge_core::dispatch("search", …)` 复用桌面同款引擎。
+                let results = fs_reuse::search(&root, &query, use_regex, case_sensitive);
                 let reply = protocol::frame_host_json(&HostMsg::SearchResult { results });
                 let sealed = crypto.seal(&reply)?;
                 tx.send(sealed).await.ok();
             }
             ControlMsg::Tree { path } => {
+                // §S5: 经 `ridge_core::dispatch("get_directory_children", …)` 复用。
                 let reply = match fs_reuse::list_dir(std::path::Path::new(&path)) {
                     Ok(entries) => HostMsg::Tree { entries },
                     Err(e) => HostMsg::Error {

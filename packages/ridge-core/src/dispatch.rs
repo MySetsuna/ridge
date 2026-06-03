@@ -36,6 +36,7 @@ use serde_json::Value;
 use crate::commands::{settings, theme};
 use crate::ctx::Ctx;
 use crate::error::{CoreError, CoreResult};
+use crate::fs::commands as fs_commands;
 
 /// Path-bearing argument keys swept for `..` traversal, identical to the legacy
 /// desktop dispatcher's list.
@@ -73,6 +74,34 @@ fn opt_s(args: &Value, key: &str) -> Option<String> {
     args.get(key).and_then(|x| x.as_str()).map(String::from)
 }
 
+/// Extract a string arg, defaulting to `""` when absent (mirrors the legacy
+/// LAN dispatcher's `s()` extractor, so empty-arg behaviour is identical).
+fn s(args: &Value, key: &str) -> String {
+    args.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Extract an optional bool arg.
+fn opt_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|x| x.as_bool())
+}
+
+/// Extract an optional `usize` arg.
+fn opt_usize(args: &Value, key: &str) -> Option<usize> {
+    args.get(key).and_then(|x| x.as_u64()).map(|n| n as usize)
+}
+
+/// Extract an optional string-array arg (e.g. include/exclude globs).
+fn opt_vec_s(args: &Value, key: &str) -> Option<Vec<String>> {
+    args.get(key).and_then(|x| x.as_array()).map(|a| {
+        a.iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect()
+    })
+}
+
 /// Dispatch one request to the matching migrated handler.
 ///
 /// See module docs for the order of admission / guard / table checks.
@@ -103,6 +132,50 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             settings::set_user_default_cwd(ctx, opt_s(&args, "path"))?;
             Ok(Value::Null)
         }
+
+        // ── Read-only filesystem (S5) ──
+        // `get_file_tree` / `get_directory_children` / `read_file` /
+        // `path_exists` / `read_file_for_editor` are line-for-line ports of the
+        // matching read-only commands in `src-tauri/src/commands/project.rs`.
+        "get_file_tree" => {
+            let node = fs_commands::get_file_tree(&s(&args, "path"), opt_usize(&args, "depth"))?;
+            serde_json::to_value(node).map_err(CoreError::internal)
+        }
+        "get_directory_children" => {
+            let page = fs_commands::get_directory_children(
+                &s(&args, "path"),
+                opt_usize(&args, "offset"),
+                opt_usize(&args, "limit"),
+            )?;
+            serde_json::to_value(page).map_err(CoreError::internal)
+        }
+        "read_file" => {
+            let text = fs_commands::read_file(&s(&args, "path"))?;
+            Ok(Value::String(text))
+        }
+        "path_exists" => Ok(Value::Bool(fs_commands::path_exists(&s(&args, "path")))),
+        "read_file_for_editor" => {
+            let res = fs_commands::read_file_for_editor(&s(&args, "path"))?;
+            serde_json::to_value(res).map_err(CoreError::internal)
+        }
+
+        // ── Search (S5) ──
+        // `text_search` is the desktop/LAN WS command name; `search` is the
+        // alias the headless ridge-cli control protocol uses (`ControlMsg::
+        // Search`). Both route through the single `fs::commands::search` port.
+        "text_search" | "search" => {
+            let sargs = fs_commands::TextSearchArgs {
+                case_sensitive: opt_bool(&args, "caseSensitive"),
+                use_regex: opt_bool(&args, "useRegex"),
+                whole_word: opt_bool(&args, "wholeWord"),
+                max_results: opt_usize(&args, "maxResults"),
+                include_globs: opt_vec_s(&args, "includeGlobs"),
+                exclude_globs: opt_vec_s(&args, "excludeGlobs"),
+            };
+            let results = fs_commands::search(&s(&args, "root"), &s(&args, "query"), &sargs)?;
+            serde_json::to_value(results).map_err(CoreError::internal)
+        }
+
         other => Err(CoreError::MethodNotFound(other.to_string())),
     }
 }
@@ -172,14 +245,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, Value::Null);
-        assert_eq!(*store.last.lock().unwrap(), Some(Some(PathBuf::from("/work"))));
+        assert_eq!(
+            *store.last.lock().unwrap(),
+            Some(Some(PathBuf::from("/work")))
+        );
     }
 
     #[test]
     fn allowed_but_unmigrated_method_is_method_not_found() {
         let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
-        // `read_file` is in the remote allow-list but not yet migrated.
-        let err = dispatch("read_file", serde_json::json!({"path": "x"}), &ctx).unwrap_err();
+        // `write_file` is in the remote allow-list but not yet migrated (only
+        // the read-only fs commands are, as of S5).
+        let err = dispatch("write_file", serde_json::json!({"path": "x"}), &ctx).unwrap_err();
         assert_eq!(err.kind_tag(), "method_not_found");
+    }
+
+    #[test]
+    fn read_only_fs_commands_are_migrated() {
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        // `path_exists` on a path that doesn't exist returns `false` (infallible),
+        // proving the arm is wired (a non-migrated method would be MethodNotFound).
+        let out = dispatch(
+            "path_exists",
+            serde_json::json!({ "path": "definitely/not/here/xyz" }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out, serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn search_alias_routes_to_same_handler() {
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        // Both `search` and `text_search` reach the same port; a missing root
+        // yields the legacy "Root path does not exist" message under either name.
+        for method in ["search", "text_search"] {
+            let err = dispatch(
+                method,
+                serde_json::json!({ "root": "no/such/root/zzz", "query": "x" }),
+                &ctx,
+            )
+            .unwrap_err();
+            assert_eq!(err.kind_tag(), "internal");
+            assert!(err.to_command_string().contains("Root path does not exist"));
+        }
     }
 }

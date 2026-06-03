@@ -2509,18 +2509,21 @@ async fn dispatch_invoke_request(
     }
 
     match cmd {
-        // ── Filesystem ──
-        "get_file_tree" => {
-            val(project::get_file_tree(s(args, "path"), usize_opt(args, "depth")).await)
+        // ── Filesystem (read-only: S5 migrated into ridge-core) ──
+        // `get_file_tree` / `get_directory_children` / `path_exists` /
+        // `read_file` / `read_file_for_editor` now live in `ridge_core::fs::
+        // commands`; route them through the unified `ridge_core::dispatch` so the
+        // LAN host shares the exact same implementation + capability gate (D8)
+        // the headless host uses. The core error maps onto the legacy
+        // `{_result|_error}` envelope below — wire behaviour is unchanged.
+        "get_file_tree"
+        | "get_directory_children"
+        | "path_exists"
+        | "read_file"
+        | "read_file_for_editor" => {
+            let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+            core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
         }
-        "get_directory_children" => val(project::get_directory_children(
-            s(args, "path"),
-            usize_opt(args, "offset"),
-            usize_opt(args, "limit"),
-        )
-        .await),
-        "path_exists" => val(project::path_exists(s(args, "path")).await),
-        "read_file" => val(project::read_file(s(args, "path"))),
         "write_file" => unit(project::write_file(s(args, "path"), s(args, "content")).await),
         "apply_file_edits" => match from_arg::<Vec<project::TextEdit>>(args, "edits") {
             Ok(edits) => unit(project::apply_file_edits(s(args, "path"), edits).await),
@@ -2535,7 +2538,7 @@ async fn dispatch_invoke_request(
         ),
         "move_path" => unit(project::move_path(s(args, "from"), s(args, "to")).await),
         "reveal_in_file_manager" => unit(project::reveal_in_file_manager(s(args, "path"))),
-        "read_file_for_editor" => val(project::read_file_for_editor(s(args, "path")).await),
+        // `read_file_for_editor` is handled by the read-only ridge-core arm above.
         "get_current_project" => val(project::get_current_project(handle.state())),
 
         // ── Filesystem / git watchers (live fs-changed / scm refresh) ──
@@ -2700,18 +2703,13 @@ async fn dispatch_invoke_request(
             core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
         }
 
-        // ── Search ──
-        "text_search" => val(project::text_search(
-            s(args, "root"),
-            s(args, "query"),
-            bool_opt(args, "caseSensitive"),
-            bool_opt(args, "useRegex"),
-            bool_opt(args, "wholeWord"),
-            usize_opt(args, "maxResults"),
-            Some(vec_s(args, "includeGlobs")),
-            Some(vec_s(args, "excludeGlobs")),
-        )
-        .await),
+        // ── Search ── (S5: `text_search` migrated into ridge-core)
+        // Routes through the unified dispatch (the `search` alias shares the
+        // same handler). camelCase arg keys are read by the core directly.
+        "text_search" => {
+            let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+            core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
+        }
         "filename_search" => {
             val(project::filename_search(s(args, "root"), s(args, "pattern")).await)
         }
@@ -2847,8 +2845,20 @@ const HOST_CAPABILITIES: &[&str] = &[
 /// `dispatch_invoke_request`). For these the JSON-RPC leg passes the FULL
 /// `CoreError::to_json_rpc()` `{code,message,data}` object through — resolving
 /// the legacy "message-only" error-code loss documented at decision **D-GM-2**.
-const CORE_MIGRATED_METHODS: &[&str] =
-    &["get_theme_data", "set_active_theme", "set_user_default_cwd"];
+const CORE_MIGRATED_METHODS: &[&str] = &[
+    // S1
+    "get_theme_data",
+    "set_active_theme",
+    "set_user_default_cwd",
+    // S5 — read-only filesystem + search
+    "get_file_tree",
+    "get_directory_children",
+    "path_exists",
+    "read_file",
+    "read_file_for_editor",
+    "text_search",
+    "search",
+];
 
 /// Dispatch one **JSON-RPC** invoke. Returns `Ok(result_value)` or
 /// `Err(json_rpc_error_object)` where the error object is `{code,message,data}`.

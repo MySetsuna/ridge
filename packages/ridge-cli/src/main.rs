@@ -10,6 +10,7 @@
 
 mod batching;
 mod config;
+mod core_host;
 mod daemon;
 mod device_flow;
 mod e2ee;

@@ -1,21 +1,23 @@
-//! 文件搜索 + 文件树（契约 §9：复用 `src-tauri/src/fs/{search,tree}.rs`）。
+//! 文件搜索 + 文件树的**线形 DTO + 到 `ridge-core` 的桥接**（契约 §9 / §11.D）。
 //!
-//! TODO(reuse, 契约 §9/§11.D): 理想做法是 `path` 依赖 `ridge_lib` 并直接调用
-//! `ridge_lib::fs::SearchEngine` / `ridge_lib::fs::FileTree`。但目前
-//! `src-tauri/src/lib.rs` 把模块声明为私有（`mod fs;`），从外部 crate 不可见。
-//! 需要的最小 `pub` 调整（已在交付报告中列出）：
-//!   - `src-tauri/src/lib.rs`: `mod fs;` → `pub mod fs;`
-//! 一旦上游放开可见性，删除本文件、改用 path 依赖即可（签名已对齐）。
+//! S5 起，搜索 / 列目录的**算法不再在本文件复刻**。`ridge-cli` 现在 `path` 依赖
+//! `ridge-core`，经 `ridge_core::dispatch("search" / "get_directory_children", …)`
+//! 复用与桌面端**完全相同**的 `fs::search` / `fs::tree` 实现（单一真源）。
 //!
-//! 在那之前，这里用与上游**完全相同的纯依赖**（`ignore` = ripgrep walker、
-//! `glob`、`regex`）做一份签名兼容的薄复刻，不引入任何新算法。
+//! 本文件只保留两件事：
+//!   1. `HostMsg` 仍引用的**线形 DTO**（`SearchResult` / `FileNode`）——保持
+//!      controller↔host 的 JSON 帧 schema 字节级不变（不破坏现网 controller）。
+//!   2. 一层**映射**：把 `ridge-core` 富类型结果裁剪回上述精简 DTO。
+//!
+//! `ridge-core` 是 zero-Tauri 的纯 crate（`cargo tree -p ridge-cli` 无 `tauri`），
+//! 所以无头二进制仍然精简。
 
-use ignore::WalkBuilder;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// 单条搜索命中（与 `ridge_lib::fs::SearchResult` 同形）。
+use crate::core_host::headless_ctx;
+
+/// 单条搜索命中（controller↔host 线形 DTO；保持原 schema，不含 `match_text`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub file: String,
@@ -24,29 +26,7 @@ pub struct SearchResult {
     pub content: String,
 }
 
-/// 搜索选项（精简自上游 `SearchOptions`，保留远控需要的字段）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchOptions {
-    pub case_sensitive: bool,
-    pub use_regex: bool,
-    pub whole_word: bool,
-    pub include_hidden: bool,
-    pub max_results: usize,
-}
-
-impl Default for SearchOptions {
-    fn default() -> Self {
-        Self {
-            case_sensitive: false,
-            use_regex: false,
-            whole_word: false,
-            include_hidden: false,
-            max_results: 1000,
-        }
-    }
-}
-
-/// 文件树节点（与 `ridge_lib::fs::FileNode` 兼容的精简形）。
+/// 文件树节点（线形 DTO；保持原 schema：仅 name / path / is_dir）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
     pub name: String,
@@ -54,107 +34,71 @@ pub struct FileNode {
     pub is_dir: bool,
 }
 
-/// 永远忽略的 OS 垃圾文件（对齐上游 `FileTree::should_ignore`）。
-fn should_ignore(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    matches!(name.as_str(), ".DS_Store" | "Thumbs.db")
-}
+/// `get_directory_children` 的列目录上限。原 `list_dir` 返回全部子项不分页，
+/// 这里给一个足够大的 limit 让 `page_children` 一次返回全部，保持原行为。
+const LIST_DIR_LIMIT: usize = usize::MAX;
 
-fn build_pattern(query: &str, opts: &SearchOptions) -> Result<Regex, String> {
-    let flags = if opts.case_sensitive { "" } else { "(?i)" };
-    if opts.use_regex {
-        Regex::new(&format!("{flags}{query}")).map_err(|e| format!("invalid regex: {e}"))
-    } else {
-        let escaped = regex::escape(query);
-        let pat = if opts.whole_word {
-            format!(r"\b{escaped}\b")
-        } else {
-            escaped
-        };
-        Regex::new(&format!("{flags}{pat}")).map_err(|e| format!("invalid regex: {e}"))
-    }
-}
-
-fn is_binary(path: &Path) -> bool {
-    const BIN: &[&str] = &[
-        "exe", "dll", "so", "dylib", "bin", "obj", "o", "a", "lib", "png", "jpg", "jpeg", "gif",
-        "bmp", "ico", "webp", "mp3", "mp4", "wav", "avi", "mov", "mkv", "webm", "zip", "tar", "gz",
-        "rar", "7z", "xz", "pdf", "ttf", "otf", "woff", "woff2", "eot", "db", "sqlite", "sqlite3",
-    ];
-    path.extension()
-        .map(|e| BIN.contains(&e.to_string_lossy().to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-/// ripgrep 级文本搜索：尊重 `.gitignore` / `.ignore`（`ignore` crate，与上游同引擎）。
-pub fn search_text(root: &Path, query: &str, opts: &SearchOptions) -> Vec<SearchResult> {
-    let mut results = Vec::new();
-    let pattern = match build_pattern(query, opts) {
-        Ok(p) => p,
-        Err(_) => return results,
-    };
-
-    for entry in WalkBuilder::new(root)
-        .follow_links(false)
-        .hidden(!opts.include_hidden)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(true)
-        .require_git(false)
-        .build()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
-    {
-        let path = entry.path();
-        if should_ignore(path) || is_binary(path) {
-            continue;
-        }
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for (idx, line) in content.lines().enumerate() {
-                if let Some(m) = pattern.find(line) {
-                    results.push(SearchResult {
-                        file: path.to_string_lossy().to_string(),
-                        line: idx + 1,
-                        column: m.start() + 1,
-                        content: line.to_string(),
-                    });
-                    if results.len() >= opts.max_results {
-                        return results;
-                    }
-                }
-            }
-        }
-    }
-    results
-}
-
-/// 列出目录的一层子项（目录优先，字母序）。文件树的远控最小面。
-pub fn list_dir(path: &Path) -> std::io::Result<Vec<FileNode>> {
-    let mut out: Vec<FileNode> = Vec::new();
-    for entry in std::fs::read_dir(path)?.flatten() {
-        let p = entry.path();
-        if should_ignore(&p) {
-            continue;
-        }
-        out.push(FileNode {
-            name: p
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            path: p.to_string_lossy().to_string(),
-            is_dir: p.is_dir(),
-        });
-    }
-    out.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+/// ripgrep 级文本搜索：经 `ridge_core::dispatch("search", …)` 复用桌面同款引擎。
+///
+/// `use_regex` / `case_sensitive` 透传；命中结果裁剪回精简 `SearchResult`
+/// （丢弃 `ridge-core` 的 `match_text`，保持线形 schema 不变）。dispatch 失败
+/// （能力拒绝 / 路径穿越 / 根不存在等）时返回空结果，与原 fail-soft 行为一致。
+pub fn search(root: &str, query: &str, use_regex: bool, case_sensitive: bool) -> Vec<SearchResult> {
+    let ctx = headless_ctx();
+    let args = serde_json::json!({
+        "root": root,
+        "query": query,
+        "useRegex": use_regex,
+        "caseSensitive": case_sensitive,
     });
-    Ok(out)
+    let value = match ridge_core::dispatch("search", args, &ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(target: "ridge_cli::fs", error = %e, "search dispatch failed");
+            return Vec::new();
+        }
+    };
+    // `ridge-core` 返回 `Vec<fs::search::SearchResult>`；裁剪到本地 DTO。
+    serde_json::from_value::<Vec<ridge_core::fs::search::SearchResult>>(value)
+        .map(|hits| {
+            hits.into_iter()
+                .map(|h| SearchResult {
+                    file: h.file,
+                    line: h.line,
+                    column: h.column,
+                    content: h.content,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 列目录的一层子项（目录优先，字母序）：经
+/// `ridge_core::dispatch("get_directory_children", …)` 复用桌面同款 `fs::tree`。
+///
+/// 返回 `io::Result` 以保持 `session.rs` 现有错误分支（host 不泄露内部路径）。
+/// dispatch 错误映射为 `io::Error`（保留人类可读 message）。
+pub fn list_dir(path: &Path) -> std::io::Result<Vec<FileNode>> {
+    let ctx = headless_ctx();
+    let args = serde_json::json!({
+        "path": path.to_string_lossy(),
+        "offset": 0,
+        "limit": LIST_DIR_LIMIT,
+    });
+    let value = ridge_core::dispatch("get_directory_children", args, &ctx)
+        .map_err(|e| std::io::Error::other(e.to_command_string()))?;
+    // `ridge-core` 返回 `DirectoryPage`；取 entries 裁剪到本地 DTO。
+    let page: ridge_core::fs::tree::DirectoryPage = serde_json::from_value(value)
+        .map_err(|e| std::io::Error::other(format!("decode directory page: {e}")))?;
+    Ok(page
+        .entries
+        .into_iter()
+        .map(|n| FileNode {
+            name: n.name,
+            path: n.path,
+            is_dir: n.is_dir,
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -173,11 +117,10 @@ mod tests {
     }
 
     #[test]
-    fn search_finds_literal_match() {
+    fn search_finds_literal_match_via_core() {
         let dir = tmp("search");
         std::fs::write(dir.join("a.txt"), "hello world\nfoo bar\n").unwrap();
-        let opts = SearchOptions::default();
-        let hits = search_text(&dir, "foo", &opts);
+        let hits = search(&dir.to_string_lossy(), "foo", false, false);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].line, 2);
         assert_eq!(hits[0].column, 1);
@@ -185,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_sorts_dirs_first() {
+    fn list_dir_sorts_dirs_first_via_core() {
         let dir = tmp("list");
         std::fs::write(dir.join("z.txt"), "").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
