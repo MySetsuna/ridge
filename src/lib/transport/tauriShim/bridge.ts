@@ -82,11 +82,25 @@ class TauriBridge {
       }),
     );
 
+    // D9 handshake (contract §7.3): greet the host first so protocol version +
+    // capabilities are negotiated before any pane/invoke traffic. On the LAN-WS
+    // leg the host's `$/hello` reply also upgrades the adapter to native
+    // JSON-RPC (full invoke-error code/data). An old host that never replies
+    // simply keeps the legacy envelope — the SPA still works.
+    this.rpc.hello();
+
     // Opt into global workspace semantics: the desktop UI in a browser is a peer
     // desktop and switches workspaces via the real `switch_workspace` command, so
     // the host must track the GLOBAL active workspace for this client (not the
     // mobile per-client view). See `use_global_ws` in remote/server.rs.
     this.rpc.notify('use-global-workspace');
+  }
+
+  /** True if the host advertised `capability` in the D9 `$/hello` intersection
+   *  (optimistically `true` until the handshake completes). The SPA uses this to
+   *  grey out IDE panels the host does not serve. */
+  hasCapability(capability: string): boolean {
+    return this.rpc?.hasCapability(capability) ?? true;
   }
 
   // ── invoke ────────────────────────────────────────────────────────────────

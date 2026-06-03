@@ -91,9 +91,36 @@ describe('LanWsAdapter — outbound JSON-RPC → legacy wire', () => {
     expect(conn.last()).toEqual({ type: 'subscribe-pane', paneId: 'abc' });
   });
 
-  it('maps a $/cancel notification to a legacy cancel frame', () => {
+  it('forwards a $/cancel notification natively (host JSON-RPC leg handles it)', () => {
+    // §S3: `$/`-control methods always pass through as native JSON-RPC so the
+    // host's JSON-RPC leg processes them; they are NOT downgraded to a legacy
+    // `{type:'cancel'}` frame (the legacy host had no such handler anyway).
     adapter.sendControl({ jsonrpc: '2.0', method: '$/cancel', params: { id: 5 } });
-    expect(conn.last()).toEqual({ type: 'cancel', _reqId: 5 });
+    expect(conn.last()).toEqual({ jsonrpc: '2.0', method: '$/cancel', params: { id: 5 } });
+  });
+
+  it('forwards a $/hello notification natively', () => {
+    adapter.sendControl({
+      jsonrpc: '2.0',
+      method: '$/hello',
+      params: { protocolVersion: 1, capabilities: ['invoke'] },
+    });
+    expect(conn.last()).toEqual({
+      jsonrpc: '2.0',
+      method: '$/hello',
+      params: { protocolVersion: 1, capabilities: ['invoke'] },
+    });
+  });
+
+  it('upgrades to native JSON-RPC after the host $/hello reply, so invoke errors carry code/data', () => {
+    // Before negotiation: legacy translation (byte-for-byte unchanged).
+    adapter.sendControl({ jsonrpc: '2.0', id: 1, method: 'read_file', params: { path: '/a' } });
+    expect(conn.last()).toEqual({ type: 'invoke-request', cmd: 'read_file', args: { path: '/a' }, _reqId: 1 });
+    // Host proves it speaks JSON-RPC.
+    conn.deliverMessage({ jsonrpc: '2.0', method: '$/hello', params: { protocolVersion: 1, capabilities: ['invoke'] } });
+    // After negotiation: native pass-through (full error fidelity).
+    adapter.sendControl({ jsonrpc: '2.0', id: 2, method: 'read_file', params: { path: '/b' } });
+    expect(conn.last()).toEqual({ jsonrpc: '2.0', id: 2, method: 'read_file', params: { path: '/b' } });
   });
 
   it('passes through an already-legacy control frame unchanged', () => {
@@ -136,6 +163,24 @@ describe('LanWsAdapter — inbound legacy → JSON-RPC', () => {
     const evt = { type: 'event', name: 'fs-changed', payload: { path: '/x' } };
     conn.deliverMessage(evt);
     expect(frames).toContainEqual(evt);
+  });
+
+  it('passes a native JSON-RPC error response through with full code/data (D-GM-2 fix)', () => {
+    // The S3 host's JSON-RPC leg emits a structured error; the adapter must NOT
+    // re-wrap it (which would lose code/data) — it forwards verbatim to L2.
+    const errResp = {
+      jsonrpc: '2.0',
+      id: 9,
+      error: { code: 1001, message: 'command not available remotely: x', data: { kind: 'capability_denied' } },
+    };
+    conn.deliverMessage(errResp);
+    expect(frames).toContainEqual(errResp);
+  });
+
+  it('passes a native JSON-RPC success response through verbatim', () => {
+    const okResp = { jsonrpc: '2.0', id: 10, result: { ok: true } };
+    conn.deliverMessage(okResp);
+    expect(frames).toContainEqual(okResp);
   });
 });
 

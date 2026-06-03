@@ -373,8 +373,14 @@ fn wants_desktop_ui(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            const MOBILE: [&str; 6] =
-                ["android", "iphone", "ipad", "ipod", "mobile", "windows phone"];
+            const MOBILE: [&str; 6] = [
+                "android",
+                "iphone",
+                "ipad",
+                "ipod",
+                "mobile",
+                "windows phone",
+            ];
             !MOBILE.iter().any(|m| ua.contains(m))
         }
     };
@@ -1061,6 +1067,18 @@ async fn handle_ws(
     // Mobile clients never set it and keep their independent per-client view.
     let mut use_global_ws = false;
 
+    // §S3 $/cancel registry (JSON-RPC leg only). Invokes on a single connection
+    // are processed serially inside this loop, so there is no concurrent in-flight
+    // request to abort mid-flight on the same socket. This set records ids the
+    // client asked to cancel; a request whose id was pre-cancelled (a client that
+    // pipelines `$/cancel` ahead of, or racing, its request) is short-circuited
+    // with a "cancelled" error and never runs the backing command. Long tasks that
+    // cannot be interrupted simply run to completion — the guard guarantees we
+    // never crash and never send a stale result for a cancelled id. Bounded so a
+    // hostile client cannot grow it without limit.
+    let mut cancelled_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    const MAX_CANCELLED_IDS: usize = 1024;
+
     // Periodic health check: if remote control is toggled off, or this client
     // is force-disconnected / blacklisted (kill_flag), close the WS so the
     // mobile client gets a clean disconnect. Polled at 1s so an admin-triggered
@@ -1097,6 +1115,114 @@ async fn handle_ws(
                         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
                             continue;
                         };
+
+                        // §S3 JSON-RPC 2.0 leg (additive). A frame is JSON-RPC iff
+                        // `jsonrpc == "2.0"`; otherwise it is a legacy control frame and
+                        // falls straight through to the `match parsed["type"]` below
+                        // (old clients are byte-for-byte unchanged). JSON-RPC requests and
+                        // `$/`-methods are fully handled here and `continue`; JSON-RPC
+                        // notifications for ordinary control methods are normalised into
+                        // the legacy `{type, …params}` shape and DELIBERATELY fall through
+                        // so they reuse the exact same handlers (no duplicated logic).
+                        let parsed = if parsed.get("jsonrpc").and_then(|v| v.as_str()) == Some("2.0") {
+                            let method = parsed.get("method").and_then(|m| m.as_str()).map(String::from);
+                            let has_id = parsed.get("id").map(|i| !i.is_null()).unwrap_or(false);
+                            let empty = serde_json::json!({});
+                            let params = parsed.get("params").unwrap_or(&empty).clone();
+
+                            match (method.as_deref(), has_id) {
+                                // ── D9 version + capability handshake ──
+                                (Some("$/hello"), _) => {
+                                    let reply = negotiate_hello(&params);
+                                    let _ = ws_tx.send(Message::Text(reply.to_string())).await;
+                                    continue;
+                                }
+                                // ── $/cancel: register the target id (notification, no id) ──
+                                (Some("$/cancel"), _) => {
+                                    if let Some(target) = params.get("id").and_then(|i| i.as_u64()) {
+                                        if cancelled_ids.len() < MAX_CANCELLED_IDS {
+                                            cancelled_ids.insert(target);
+                                        }
+                                        tracing::debug!(target: "ridge::remote", target, "received $/cancel");
+                                    }
+                                    continue;
+                                }
+                                // ── JSON-RPC request (has id) → dispatch + JSON-RPC reply ──
+                                (Some(m), true) => {
+                                    let id = parsed.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                                    let id_u64 = id.as_u64();
+
+                                    // §rate-limit: shared token bucket with the legacy leg.
+                                    if dr_window_start.elapsed() >= DR_WINDOW {
+                                        dr_window_start = Instant::now();
+                                        dr_count = 0;
+                                    }
+                                    dr_count += 1;
+                                    if dr_count > DR_MAX_PER_WINDOW {
+                                        tracing::warn!(target: "ridge::remote", client_id, cmd = %m, "invoke (json-rpc) rate limit exceeded; rejecting");
+                                        let err = serde_json::json!({
+                                            "code": JSON_RPC_INTERNAL_ERROR,
+                                            "message": "rate limited: too many invoke requests",
+                                            "data": { "kind": "rate_limited" },
+                                        });
+                                        let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, err).to_string())).await;
+                                        continue;
+                                    }
+
+                                    // §cancel: a request whose id was already cancelled never runs.
+                                    if let Some(uid) = id_u64 {
+                                        if cancelled_ids.remove(&uid) {
+                                            let err = serde_json::json!({
+                                                "code": JSON_RPC_INTERNAL_ERROR,
+                                                "message": "request cancelled",
+                                                "data": { "kind": "cancelled" },
+                                            });
+                                            let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, err).to_string())).await;
+                                            continue;
+                                        }
+                                    }
+
+                                    let reply = match dispatch_invoke_jsonrpc(m, &params, &ctx.state).await {
+                                        Ok(result) => jsonrpc_result(&id, result),
+                                        Err(error) => jsonrpc_error(&id, error),
+                                    };
+                                    // §cancel: if the client cancelled while the (serial) dispatch
+                                    // was running, drop the stale result instead of sending it.
+                                    let cancelled = id_u64.map(|uid| cancelled_ids.remove(&uid)).unwrap_or(false);
+                                    if !cancelled {
+                                        let _ = ws_tx.send(Message::Text(reply.to_string())).await;
+                                    }
+                                    continue;
+                                }
+                                // ── JSON-RPC notification (no id) → reuse legacy handlers ──
+                                (Some(m), false) => {
+                                    // Normalise `{jsonrpc, method, params}` → `{type: method,
+                                    // …params}` so the legacy `match` below handles it once.
+                                    let mut flat = match params {
+                                        serde_json::Value::Object(map) => map,
+                                        _ => serde_json::Map::new(),
+                                    };
+                                    flat.insert("type".to_string(), serde_json::json!(m));
+                                    serde_json::Value::Object(flat)
+                                }
+                                // Malformed JSON-RPC (no method): reply error if it had an id.
+                                (None, _) => {
+                                    if has_id {
+                                        let id = parsed.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                                        let err = serde_json::json!({
+                                            "code": JSON_RPC_INVALID_REQUEST,
+                                            "message": "missing method",
+                                            "data": { "kind": "invalid_request" },
+                                        });
+                                        let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, err).to_string())).await;
+                                    }
+                                    continue;
+                                }
+                            }
+                        } else {
+                            parsed
+                        };
+
                         let _ = match parsed["type"].as_str() {
                             Some("ping") => {
                                 ws_tx.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await
@@ -1192,6 +1318,14 @@ async fn handle_ws(
                                         },
                                     );
 
+                                    // §D10 接入点 (integration point) — S5 per-pane screen
+                                    // buffer: emit a `PaneSnapshotFrame` (rendered screen +
+                                    // locked size) HERE, before the raw scrollback below, so a
+                                    // late/reconnecting controller repaints exact terminal state
+                                    // (cursor/alt-screen/scroll-region) ahead of the live raw
+                                    // stream. See the D10 SCAFFOLD block near `PaneSnapshotFrame`.
+                                    // Today we ship raw scrollback only (a working precursor).
+                                    //
                                     // Send recent scrollback as raw bytes so the client
                                     // kernel can replay history via feed().
                                     //
@@ -1867,12 +2001,56 @@ async fn handle_ws(
                     ui_evt = ui_event_rx.recv() => {
                         // §web-remote: relay a host Tauri event to the desktop browser's
                         // `listen()` shim. Broadcast to every client; the mobile SPA drops it.
-                        if let Ok(ev) = ui_evt {
-                            let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                "type": "event",
-                                "name": ev.name,
-                                "payload": ev.payload,
-                            }).to_string())).await;
+                        //
+                        // §S3 backpressure + coalesce (§5.2 / R8): `git checkout`,
+                        // dependency installs etc. produce event STORMS (many
+                        // `fs-changed`/scm-refresh in a tick). The broadcast bus is already
+                        // bounded (capacity 256, drop-oldest on lag — the Lagged arm), but
+                        // forwarding each event 1:1 to a slow WS client can still stall the
+                        // socket. So after the first event we DRAIN everything currently
+                        // queued without awaiting and COALESCE by event name (latest payload
+                        // wins, insertion order preserved), collapsing a burst into one send
+                        // per distinct event name. A slow client thus sees the *final* state,
+                        // never an unbounded backlog.
+                        if let Ok(first) = ui_evt {
+                            // Insertion-ordered de-dup: name → payload, with a parallel order vec.
+                            let mut order: Vec<String> = Vec::new();
+                            let mut latest: std::collections::HashMap<String, serde_json::Value> =
+                                std::collections::HashMap::new();
+                            let mut push = |name: String, payload: serde_json::Value| {
+                                if !latest.contains_key(&name) {
+                                    order.push(name.clone());
+                                }
+                                latest.insert(name, payload);
+                            };
+                            push(first.name, first.payload);
+                            // Drain everything already buffered (non-blocking); stop on empty.
+                            // Bounded by the broadcast capacity (256), so this cannot spin.
+                            loop {
+                                match ui_event_rx.try_recv() {
+                                    Ok(ev) => push(ev.name, ev.payload),
+                                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                        // Skipped some — the coalesced latest-state below still
+                                        // converges the client; keep draining what remains.
+                                        continue;
+                                    }
+                                    Err(_) => break, // Empty or Closed → done draining.
+                                }
+                            }
+                            let mut send_failed = false;
+                            for name in order {
+                                if let Some(payload) = latest.remove(&name) {
+                                    if ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "event",
+                                        "name": name,
+                                        "payload": payload,
+                                    }).to_string())).await.is_err() {
+                                        send_failed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if send_failed { break; }
                         }
                     }
                     _ = health_interval.tick() => {
@@ -2210,9 +2388,7 @@ async fn dispatch_invoke_request(
     args: &serde_json::Value,
     state: &AppState,
 ) -> serde_json::Value {
-    use crate::commands::{
-        fs_watch, git, pane, project, ridge_file, terminal, watch, workspace,
-    };
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
     use tauri::Manager;
 
     // §read-only gate (defence-in-depth for view-only sessions).
@@ -2232,7 +2408,11 @@ async fn dispatch_invoke_request(
         }
     }
     if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
-        if arr.iter().filter_map(|x| x.as_str()).any(path_has_traversal) {
+        if arr
+            .iter()
+            .filter_map(|x| x.as_str())
+            .any(path_has_traversal)
+        {
             return serde_json::json!({ "_error": "path traversal rejected" });
         }
     }
@@ -2265,11 +2445,19 @@ async fn dispatch_invoke_request(
     fn vec_s(v: &serde_json::Value, k: &str) -> Vec<String> {
         v.get(k)
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     }
-    fn from_arg<T: serde::de::DeserializeOwned>(v: &serde_json::Value, k: &str) -> Result<T, String> {
-        serde_json::from_value(v.get(k).cloned().unwrap_or(serde_json::Value::Null)).map_err(|e| e.to_string())
+    fn from_arg<T: serde::de::DeserializeOwned>(
+        v: &serde_json::Value,
+        k: &str,
+    ) -> Result<T, String> {
+        serde_json::from_value(v.get(k).cloned().unwrap_or(serde_json::Value::Null))
+            .map_err(|e| e.to_string())
     }
     fn val<T: Serialize>(r: Result<T, String>) -> serde_json::Value {
         match r {
@@ -2289,14 +2477,16 @@ async fn dispatch_invoke_request(
     // S1: map a `ridge_core::dispatch` result onto the legacy WS envelope.
     // `Ok(value)` → `{ "_result": value }`; `Err(core_err)` → `{ "_error":
     // message }` (the same human string the legacy handlers produced). The
-    // structured JSON-RPC `{code,message,data}` object is reserved for S2's
-    // RPC layer; the current WS envelope only carries a message.
-    // TODO(S3): the legacy LAN WS `_error` envelope is message-only, so
-    // `ridge_core::CoreError`'s structured JSON-RPC code/data (capability_denied
-    // 1001, read_only 1002, …) is collapsed to a string here and the client
-    // re-tags it as INTERNAL_ERROR (-32603). When S3 makes the LAN host
-    // JSON-RPC-native, emit `e.to_json_rpc()` (full {code,message,data}) instead
-    // of `_error`, and assert the round-trip in the S7 conformance suite.
+    // structured JSON-RPC `{code,message,data}` object is reserved for the
+    // JSON-RPC leg.
+    //
+    // §S3 (D-GM-2 resolved): the JSON-RPC leg now transmits the FULL structured
+    // error. `dispatch_invoke_jsonrpc` calls `CoreError::to_json_rpc()` for
+    // migrated core methods, so capability_denied=1001 / read_only=1002 /
+    // path_traversal=1003 / … reach the client intact (asserted by the S7
+    // conformance suite). This LEGACY leg stays message-only on purpose: old
+    // clients (web-remote-dist, mobile SPA) consume the bare `_error` string and
+    // must not change. Paired anchor: `lanWsAdapter.handleInbound`.
     fn core_result_to_envelope(
         r: Result<serde_json::Value, ridge_core::CoreError>,
     ) -> serde_json::Value {
@@ -2320,8 +2510,15 @@ async fn dispatch_invoke_request(
 
     match cmd {
         // ── Filesystem ──
-        "get_file_tree" => val(project::get_file_tree(s(args, "path"), usize_opt(args, "depth")).await),
-        "get_directory_children" => val(project::get_directory_children(s(args, "path"), usize_opt(args, "offset"), usize_opt(args, "limit")).await),
+        "get_file_tree" => {
+            val(project::get_file_tree(s(args, "path"), usize_opt(args, "depth")).await)
+        }
+        "get_directory_children" => val(project::get_directory_children(
+            s(args, "path"),
+            usize_opt(args, "offset"),
+            usize_opt(args, "limit"),
+        )
+        .await),
         "path_exists" => val(project::path_exists(s(args, "path")).await),
         "read_file" => val(project::read_file(s(args, "path"))),
         "write_file" => unit(project::write_file(s(args, "path"), s(args, "content")).await),
@@ -2333,7 +2530,9 @@ async fn dispatch_invoke_request(
         "delete_path" => unit(project::delete_path(s(args, "path")).await),
         "create_file" => unit(project::create_file(s(args, "path"))),
         "create_directory" => unit(project::create_directory(s(args, "path"))),
-        "copy_path" => unit(project::copy_path(s(args, "from"), s(args, "to"), bool_opt(args, "overwrite")).await),
+        "copy_path" => unit(
+            project::copy_path(s(args, "from"), s(args, "to"), bool_opt(args, "overwrite")).await,
+        ),
         "move_path" => unit(project::move_path(s(args, "from"), s(args, "to")).await),
         "reveal_in_file_manager" => unit(project::reveal_in_file_manager(s(args, "path"))),
         "read_file_for_editor" => val(project::read_file_for_editor(s(args, "path")).await),
@@ -2341,22 +2540,42 @@ async fn dispatch_invoke_request(
 
         // ── Filesystem / git watchers (live fs-changed / scm refresh) ──
         "start_watching_paths" => match from_arg::<Vec<fs_watch::WatchSpec>>(args, "roots") {
-            Ok(roots) => unit(fs_watch::start_watching_paths(roots, handle.clone(), handle.state()).await),
+            Ok(roots) => {
+                unit(fs_watch::start_watching_paths(roots, handle.clone(), handle.state()).await)
+            }
             Err(e) => serde_json::json!({ "_error": format!("invalid roots: {e}") }),
         },
-        "start_watching_repos" => unit(watch::start_watching_repos(vec_s(args, "roots"), handle.clone(), handle.state()).await),
+        "start_watching_repos" => unit(
+            watch::start_watching_repos(vec_s(args, "roots"), handle.clone(), handle.state()).await,
+        ),
 
         // ── Pane / terminal ──
         "get_pane_layout" => val(pane::get_pane_layout(handle.state())),
-        "get_pane_layout_for" => val(pane::get_pane_layout_for(handle.state(), s(args, "workspaceId"))),
-        "split_pane" => val(pane::split_pane(handle.state(), s(args, "paneId"), s(args, "direction")).await),
-        "dock_pane" => unit(pane::dock_pane(handle.state(), s(args, "sourcePaneId"), s(args, "targetPaneId"), s(args, "region")).await),
+        "get_pane_layout_for" => val(pane::get_pane_layout_for(
+            handle.state(),
+            s(args, "workspaceId"),
+        )),
+        "split_pane" => {
+            val(pane::split_pane(handle.state(), s(args, "paneId"), s(args, "direction")).await)
+        }
+        "dock_pane" => unit(
+            pane::dock_pane(
+                handle.state(),
+                s(args, "sourcePaneId"),
+                s(args, "targetPaneId"),
+                s(args, "region"),
+            )
+            .await,
+        ),
         "close_pane" => unit(pane::close_pane(handle.state(), s(args, "paneId")).await),
         "toggle_mode" => match from_arg(args, "mode") {
             Ok(mode) => unit(pane::toggle_mode(handle.state(), s(args, "paneId"), mode).await),
             Err(e) => serde_json::json!({ "_error": format!("invalid mode: {e}") }),
         },
-        "set_split_ratios_at_path" => match (from_arg::<Vec<usize>>(args, "path"), from_arg::<Vec<f32>>(args, "ratios")) {
+        "set_split_ratios_at_path" => match (
+            from_arg::<Vec<usize>>(args, "path"),
+            from_arg::<Vec<f32>>(args, "ratios"),
+        ) {
             (Ok(p), Ok(r)) => unit(pane::set_split_ratios_at_path(handle.state(), p, r).await),
             _ => serde_json::json!({ "_error": "invalid split-ratio args" }),
         },
@@ -2364,37 +2583,109 @@ async fn dispatch_invoke_request(
             Ok(updates) => unit(pane::set_split_ratios_batch(handle.state(), updates).await),
             Err(e) => serde_json::json!({ "_error": format!("invalid updates: {e}") }),
         },
-        "create_pane" => unit(terminal::create_pane(handle.state(), s(args, "paneId"), opt_s(args, "shell")).await),
-        "activate_pane_pty" => unit(terminal::activate_pane_pty(handle.state(), handle.clone(), s(args, "workspaceId"), s(args, "paneId"), u16_opt(args, "rows"), u16_opt(args, "cols")).await),
-        "change_pane_shell" => unit(terminal::change_pane_shell(handle.state(), s(args, "paneId"), s(args, "shell")).await),
-        "write_to_pty" => unit(terminal::write_to_pty(handle.state(), s(args, "paneId"), s(args, "data")).await),
-        "resize_pane" => unit(terminal::resize_pane(handle.state(), handle.clone(), s(args, "workspaceId"), s(args, "paneId"), u16_arg(args, "rows"), u16_arg(args, "cols"), bool_opt(args, "isAlt"), bool_opt(args, "isInlineTui")).await),
+        "create_pane" => unit(
+            terminal::create_pane(handle.state(), s(args, "paneId"), opt_s(args, "shell")).await,
+        ),
+        "activate_pane_pty" => unit(
+            terminal::activate_pane_pty(
+                handle.state(),
+                handle.clone(),
+                s(args, "workspaceId"),
+                s(args, "paneId"),
+                u16_opt(args, "rows"),
+                u16_opt(args, "cols"),
+            )
+            .await,
+        ),
+        "change_pane_shell" => unit(
+            terminal::change_pane_shell(handle.state(), s(args, "paneId"), s(args, "shell")).await,
+        ),
+        "write_to_pty" => {
+            unit(terminal::write_to_pty(handle.state(), s(args, "paneId"), s(args, "data")).await)
+        }
+        "resize_pane" => unit(
+            terminal::resize_pane(
+                handle.state(),
+                handle.clone(),
+                s(args, "workspaceId"),
+                s(args, "paneId"),
+                u16_arg(args, "rows"),
+                u16_arg(args, "cols"),
+                bool_opt(args, "isAlt"),
+                bool_opt(args, "isInlineTui"),
+            )
+            .await,
+        ),
         "detect_available_shells" => plain(terminal::detect_available_shells()),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
 
         // ── Workspace (live) ──
         "get_active_workspace_id" => val(workspace::get_active_workspace_id(handle.state())),
-        "switch_workspace" => unit(workspace::switch_workspace(handle.state(), s(args, "workspaceId"))),
-        "create_workspace" => val(workspace::create_workspace(handle.state(), opt_s(args, "name"))),
-        "close_workspace" => unit(workspace::close_workspace(handle.state(), s(args, "workspaceId"))),
-        "rename_workspace" => unit(workspace::rename_workspace(handle.state(), s(args, "workspaceId"), s(args, "name"))),
-        "reorder_workspaces" => unit(workspace::reorder_workspaces(handle.state(), usize_arg(args, "fromIndex"), usize_arg(args, "toIndex"))),
+        "switch_workspace" => unit(workspace::switch_workspace(
+            handle.state(),
+            s(args, "workspaceId"),
+        )),
+        "create_workspace" => val(workspace::create_workspace(
+            handle.state(),
+            opt_s(args, "name"),
+        )),
+        "close_workspace" => unit(workspace::close_workspace(
+            handle.state(),
+            s(args, "workspaceId"),
+        )),
+        "rename_workspace" => unit(workspace::rename_workspace(
+            handle.state(),
+            s(args, "workspaceId"),
+            s(args, "name"),
+        )),
+        "reorder_workspaces" => unit(workspace::reorder_workspaces(
+            handle.state(),
+            usize_arg(args, "fromIndex"),
+            usize_arg(args, "toIndex"),
+        )),
 
         // ── Workspace (persistence / .ridge) ──
-        "save_workspace" => val(workspace::save_workspace(handle.clone(), handle.state(), opt_s(args, "name"))),
+        "save_workspace" => val(workspace::save_workspace(
+            handle.clone(),
+            handle.state(),
+            opt_s(args, "name"),
+        )),
         "list_saved_workspaces" => val(workspace::list_saved_workspaces(handle.clone())),
-        "delete_saved_workspace" => unit(workspace::delete_saved_workspace(handle.clone(), s(args, "id"))),
-        "rename_saved_workspace" => unit(workspace::rename_saved_workspace(handle.clone(), s(args, "id"), s(args, "name"))),
+        "delete_saved_workspace" => unit(workspace::delete_saved_workspace(
+            handle.clone(),
+            s(args, "id"),
+        )),
+        "rename_saved_workspace" => unit(workspace::rename_saved_workspace(
+            handle.clone(),
+            s(args, "id"),
+            s(args, "name"),
+        )),
         "list_workspace_save_info" => val(ridge_file::list_workspace_save_info(handle.state())),
-        "delete_workspace_file" => unit(ridge_file::delete_workspace_file(handle.clone(), handle.state(), s(args, "workspaceId"))),
+        "delete_workspace_file" => unit(ridge_file::delete_workspace_file(
+            handle.clone(),
+            handle.state(),
+            s(args, "workspaceId"),
+        )),
         "get_default_workspace_save_dir" => val(ridge_file::get_default_workspace_save_dir()),
         "list_saved_workspace_files" => val(ridge_file::list_saved_workspace_files()),
-        "save_workspace_to_file" => val(ridge_file::save_workspace_to_file(handle.clone(), handle.state(), s(args, "workspaceId"), s(args, "name"), opt_s(args, "path"))),
-        "open_workspace_from_file" => val(ridge_file::open_workspace_from_file(handle.clone(), handle.state(), s(args, "path"))),
+        "save_workspace_to_file" => val(ridge_file::save_workspace_to_file(
+            handle.clone(),
+            handle.state(),
+            s(args, "workspaceId"),
+            s(args, "name"),
+            opt_s(args, "path"),
+        )),
+        "open_workspace_from_file" => val(ridge_file::open_workspace_from_file(
+            handle.clone(),
+            handle.state(),
+            s(args, "path"),
+        )),
         "get_restore_set" => val(ridge_file::get_restore_set(handle.clone())),
         "list_recent_workspaces" => val(ridge_file::list_recent_workspaces(handle.clone())),
         "clear_recent_workspaces" => unit(ridge_file::clear_recent_workspaces(handle.clone())),
-        "get_last_opened_workspace_path" => val(ridge_file::get_last_opened_workspace_path(handle.clone())),
+        "get_last_opened_workspace_path" => {
+            val(ridge_file::get_last_opened_workspace_path(handle.clone()))
+        }
         "get_startup_context" => val(ridge_file::get_startup_context(handle.state())),
         "browse_directory" => val(ridge_file::browse_directory(opt_s(args, "path"))),
 
@@ -2419,41 +2710,408 @@ async fn dispatch_invoke_request(
             usize_opt(args, "maxResults"),
             Some(vec_s(args, "includeGlobs")),
             Some(vec_s(args, "excludeGlobs")),
-        ).await),
-        "filename_search" => val(project::filename_search(s(args, "root"), s(args, "pattern")).await),
-        "text_search_diagnostics" => plain(project::text_search_diagnostics(Some(vec_s(args, "includeGlobs")), Some(vec_s(args, "excludeGlobs")))),
-        "replace_in_files" => val(project::replace_in_files(s(args, "root"), s(args, "search"), s(args, "replace"), vec_s(args, "files"), bool_opt(args, "caseSensitive"), bool_opt(args, "useRegex")).await),
+        )
+        .await),
+        "filename_search" => {
+            val(project::filename_search(s(args, "root"), s(args, "pattern")).await)
+        }
+        "text_search_diagnostics" => plain(project::text_search_diagnostics(
+            Some(vec_s(args, "includeGlobs")),
+            Some(vec_s(args, "excludeGlobs")),
+        )),
+        "replace_in_files" => val(project::replace_in_files(
+            s(args, "root"),
+            s(args, "search"),
+            s(args, "replace"),
+            vec_s(args, "files"),
+            bool_opt(args, "caseSensitive"),
+            bool_opt(args, "useRegex"),
+        )
+        .await),
 
         // ── Git (read) ──
         "find_git_repo_root" => plain(git::find_git_repo_root(s(args, "path"))),
-        "find_git_repos_below" => plain(git::find_git_repos_below(s(args, "path"), usize_opt(args, "maxDepth")).await),
+        "find_git_repos_below" => {
+            plain(git::find_git_repos_below(s(args, "path"), usize_opt(args, "maxDepth")).await)
+        }
         "get_scm_status" => val(git::get_scm_status(s(args, "repoRoot")).await),
         "get_git_info_with_cwd" => val(git::get_git_info_with_cwd(s(args, "cwd")).await),
-        "get_git_commits_paginated" => val(git::get_git_commits_paginated(s(args, "repoRoot"), u32_arg(args, "offset"), u32_arg(args, "limit")).await),
+        "get_git_commits_paginated" => val(git::get_git_commits_paginated(
+            s(args, "repoRoot"),
+            u32_arg(args, "offset"),
+            u32_arg(args, "limit"),
+        )
+        .await),
         "git_list_branches" => val(git::git_list_branches(s(args, "repoRoot")).await),
         "git_diff_summary" => val(git::git_diff_summary(s(args, "repoRoot")).await),
-        "git_get_file_versions" => val(git::git_get_file_versions(s(args, "repoRoot"), s(args, "path"), bool_opt(args, "cached")).await),
+        "git_get_file_versions" => val(git::git_get_file_versions(
+            s(args, "repoRoot"),
+            s(args, "path"),
+            bool_opt(args, "cached"),
+        )
+        .await),
         "git_op_in_progress" => plain(git::git_op_in_progress(s(args, "repoRoot"))),
         "git_fetch" => unit(git::git_fetch(s(args, "repoRoot")).await),
 
         // ── Git (mutating; mirrors dispatch_data_request) ──
         "git_stage" => unit(git::git_stage(s(args, "repoRoot"), vec_s(args, "paths")).await),
         "git_unstage" => unit(git::git_unstage(s(args, "repoRoot"), vec_s(args, "paths")).await),
-        "git_commit" => unit(git::git_commit(s(args, "repoRoot"), s(args, "message"), bool_opt(args, "amend")).await),
+        "git_commit" => unit(
+            git::git_commit(
+                s(args, "repoRoot"),
+                s(args, "message"),
+                bool_opt(args, "amend"),
+            )
+            .await,
+        ),
         "git_pull" => unit(git::git_pull(s(args, "repoRoot")).await),
         "git_push" => unit(git::git_push(s(args, "repoRoot"), bool_opt(args, "setUpstream")).await),
         "git_sync" => unit(git::git_sync(s(args, "repoRoot")).await),
-        "git_checkout" => unit(git::git_checkout(s(args, "repoRoot"), s(args, "branch"), bool_opt(args, "create"), None).await),
+        "git_checkout" => unit(
+            git::git_checkout(
+                s(args, "repoRoot"),
+                s(args, "branch"),
+                bool_opt(args, "create"),
+                None,
+            )
+            .await,
+        ),
         "git_revert" => unit(git::git_revert(s(args, "repoRoot"), s(args, "hash")).await),
         "git_cherry_pick" => unit(git::git_cherry_pick(s(args, "repoRoot"), s(args, "hash")).await),
-        "git_reset" => unit(git::git_reset(s(args, "repoRoot"), s(args, "commit"), s(args, "mode")).await),
-        "git_create_tag" => unit(git::git_create_tag(s(args, "repoRoot"), s(args, "name"), None, opt_s(args, "message")).await),
+        "git_reset" => {
+            unit(git::git_reset(s(args, "repoRoot"), s(args, "commit"), s(args, "mode")).await)
+        }
+        "git_create_tag" => unit(
+            git::git_create_tag(
+                s(args, "repoRoot"),
+                s(args, "name"),
+                None,
+                opt_s(args, "message"),
+            )
+            .await,
+        ),
         "git_discard" => unit(git::git_discard(s(args, "repoRoot"), vec_s(args, "paths")).await),
-        "git_clean_untracked" => unit(git::git_clean_untracked(s(args, "repoRoot"), Vec::new()).await),
+        "git_clean_untracked" => {
+            unit(git::git_clean_untracked(s(args, "repoRoot"), Vec::new()).await)
+        }
 
         other => {
             tracing::warn!(target: "ridge::remote", cmd = %other, "invoke-request: command not in allowlist");
             serde_json::json!({ "_error": format!("command not available remotely: {}", other) })
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// §S3 unified line protocol — JSON-RPC 2.0 leg (additive, backward-compatible).
+//
+// The LAN host historically spoke a bespoke envelope: invoke as
+// `{type:'invoke-request', cmd, args, _reqId}` → `{type:'invoke-result',
+// _reqId, _result|_error}`, control as flat `{type:'…', …}` frames. That LEGACY
+// leg is left byte-for-byte unchanged (web-remote-dist + the mobile SPA depend
+// on it). This section adds a *parallel* JSON-RPC 2.0 leg per the S0 contract
+// (`docs/contracts/ridge-cloud-protocol.md` §7.0/§7.3/§7.4):
+//
+//   request       { "jsonrpc":"2.0", "id":…, "method":…, "params":… }
+//   success resp  { "jsonrpc":"2.0", "id":…, "result":… }
+//   error resp    { "jsonrpc":"2.0", "id":…, "error":{ code, message, data } }
+//   notification  { "jsonrpc":"2.0", "method":…, "params":… }   (no id)
+//   $/hello       D9 version + capability handshake
+//   $/cancel      cancel an in-flight request by id
+//
+// The host replies in the SAME shape it received: a JSON-RPC request gets a
+// JSON-RPC response; a legacy invoke-request gets the legacy result. A frame is
+// treated as JSON-RPC iff `parsed["jsonrpc"] == "2.0"`.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Protocol version this host implements (D9). The controller SPA negotiates
+/// the highest common version; v1 is the only version today.
+const REMOTE_PROTOCOL_VERSION: u64 = 1;
+
+/// Capabilities this host advertises in the `$/hello` handshake (D9). The
+/// controller intersects this with its own set and greys out missing panels.
+/// `pane`/`invoke` are transport-level; the rest mirror the command families in
+/// `REMOTE_ALLOWLIST` (the capability *gate* for execution is still D8 — these
+/// only drive which controller panels are shown, per S0 contract §7.3).
+const HOST_CAPABILITIES: &[&str] = &[
+    "pane",
+    "invoke",
+    "fs",
+    "git",
+    "search",
+    "workspace",
+    "theme",
+];
+
+/// Methods already migrated into `ridge-core` (mirrors the dedicated arm in
+/// `dispatch_invoke_request`). For these the JSON-RPC leg passes the FULL
+/// `CoreError::to_json_rpc()` `{code,message,data}` object through — resolving
+/// the legacy "message-only" error-code loss documented at decision **D-GM-2**.
+const CORE_MIGRATED_METHODS: &[&str] =
+    &["get_theme_data", "set_active_theme", "set_user_default_cwd"];
+
+/// Dispatch one **JSON-RPC** invoke. Returns `Ok(result_value)` or
+/// `Err(json_rpc_error_object)` where the error object is `{code,message,data}`.
+///
+/// §D-GM-2: for `ridge-core`-migrated methods the error is produced by
+/// `CoreError::to_json_rpc()`, so the structured `code` (capability_denied=1001,
+/// read_only=1002, path_traversal=1003, …) and `data.kind` survive end-to-end —
+/// no longer collapsed to a bare message. For not-yet-migrated legacy methods
+/// the backing handler only produces a `String`, so its error maps to the
+/// JSON-RPC `INTERNAL_ERROR` (-32603) code with that message preserved; the
+/// `code`/`data` fidelity improves automatically as each handler migrates into
+/// `ridge-core` (S1 ledger).
+async fn dispatch_invoke_jsonrpc(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+) -> Result<serde_json::Value, serde_json::Value> {
+    // JSON-RPC-native path for migrated core commands: pass `to_json_rpc()`
+    // through verbatim (the D-GM-2 fix).
+    if CORE_MIGRATED_METHODS.contains(&cmd) {
+        let handle = match state.app_handle.get() {
+            Some(h) => h.clone(),
+            None => {
+                return Err(serde_json::json!({
+                    "code": ridge_core::error::CODE_HOST_UNAVAILABLE,
+                    "message": "host application handle not ready",
+                    "data": { "kind": "host_unavailable" },
+                }))
+            }
+        };
+        // Defence-in-depth read-only gate, identical to the legacy leg.
+        if is_mutating_invoke(cmd) && state.remote_fs_readonly.load(Ordering::Relaxed) {
+            return Err(ridge_core::CoreError::ReadOnly.to_json_rpc());
+        }
+        let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+        return ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_json_rpc());
+    }
+
+    // Legacy methods: reuse the single source of command routing
+    // (`dispatch_invoke_request`) and translate its `{_result|_error}` envelope
+    // into the JSON-RPC result/error shape. Un-migrated handlers only carry a
+    // message, so the error code is the generic INTERNAL_ERROR (-32603).
+    let envelope = dispatch_invoke_request(cmd, args, state).await;
+    if let Some(err) = envelope.get("_error") {
+        let message = err.as_str().unwrap_or("command failed").to_string();
+        Err(serde_json::json!({
+            "code": JSON_RPC_INTERNAL_ERROR,
+            "message": message,
+            "data": { "kind": "internal" },
+        }))
+    } else {
+        Ok(envelope
+            .get("_result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+}
+
+/// Standard JSON-RPC 2.0 reserved error codes used by the host leg.
+const JSON_RPC_INVALID_REQUEST: i64 = -32600;
+const JSON_RPC_INTERNAL_ERROR: i64 = -32603;
+
+/// Build a JSON-RPC success response frame.
+fn jsonrpc_result(id: &serde_json::Value, result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
+}
+
+/// Build a JSON-RPC error response frame from a `{code,message,data}` object.
+fn jsonrpc_error(id: &serde_json::Value, error: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error })
+}
+
+/// Negotiate the `$/hello` handshake (D9). Given the controller's announced
+/// `protocolVersion` + `capabilities`, return either the host's reply
+/// `$/hello` notification (on a compatible version) or a `$/bye` notification
+/// (no common version) for the caller to send. Capabilities are intersected so
+/// the controller greys out panels this host does not serve.
+fn negotiate_hello(params: &serde_json::Value) -> serde_json::Value {
+    let peer_version = params
+        .get("protocolVersion")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    // Highest common version. v1 host supports exactly {1}; the common max with
+    // any peer that also supports v1 is 1, otherwise there is no overlap.
+    if peer_version < REMOTE_PROTOCOL_VERSION {
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/bye",
+            "params": { "reason": "protocol-version-mismatch" },
+        });
+    }
+    let peer_caps: std::collections::HashSet<String> = params
+        .get("capabilities")
+        .and_then(|c| c.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let agreed: Vec<&str> = HOST_CAPABILITIES
+        .iter()
+        .copied()
+        .filter(|c| peer_caps.is_empty() || peer_caps.contains(*c))
+        .collect();
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "$/hello",
+        "params": {
+            "protocolVersion": REMOTE_PROTOCOL_VERSION,
+            "capabilities": agreed,
+        },
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// §S3 · D10 attach screen-snapshot — SCAFFOLD ONLY (full per-pane screen buffer
+// is deferred to S5; see contract §7.4). raw-byte (`0x10`) PTY output is NOT
+// replayable, so a controller that attaches late or reconnects cannot recover
+// history from the live stream. D10's terminal answer: the host keeps a
+// per-pane SCREEN BUFFER and, on `subscribe-pane`, sends a SNAPSHOT first, then
+// resumes the raw stream.
+//
+// CURRENT STATE (partial precursor, already shipping): `subscribe-pane` replays
+// up to 64 KiB of recent scrollback as raw bytes before the live stream (see the
+// `subscribe-pane` arm + the desync-resync path). That gives the kernel enough
+// to repaint, which is why the LAN leg works today. It is byte-scrollback, NOT a
+// rendered screen snapshot, so it does not capture alt-screen state / cursor /
+// scroll-region precisely.
+//
+// SCAFFOLD this section defines (no behaviour change yet):
+//   • [`PaneSnapshotFrame`] — the JSON control-frame shape a future host will
+//     emit as the FIRST response to `subscribe-pane`, before raw `0x10` bytes.
+//   • The接入点 (integration point) is marked inline in the `subscribe-pane`
+//     handler with `// §D10 接入点`.
+//
+// FOLLOW-UP IMPLEMENTATION NOTES (S5 / per-pane screen buffer):
+//   1. State: add a per-pane rendered-screen buffer on the PTY handle (reuse the
+//      existing `parser` / vte `Terminal` — `terminals[pane].parser` already
+//      tracks screen state for `title()`; expose a `screen_snapshot()` that emits
+//      a repaint sequence incl. cursor pos, alt-screen flag, scroll region).
+//   2. Emit: in the `subscribe-pane` arm, BEFORE the scrollback send, push a
+//      `PaneSnapshotFrame` carrying that repaint sequence + the pane's LOCKED
+//      render size (D11 shared property — see `lockedRows`/`lockedCols`).
+//   3. Reconnect: the L2 client (rpcClient.onReconnected) re-sends
+//      `subscribe-pane` per previously-subscribed pane; the host replies snapshot
+//      → raw, exactly as a fresh attach (already wired client-side, bridge.ts).
+//   4. Bound: the screen buffer is O(rows×cols), naturally bounded — unlike the
+//      abandoned per-sub 11 MB delta PaneParser (the OOM that motivated raw-byte).
+//   5. Multi-client (D11): the screen buffer is a SHARED pane property; every
+//      attaching controller gets the same snapshot. Locked size rides the snapshot.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// **D10 SCAFFOLD** — the JSON control frame a future host emits as the first
+/// response to `subscribe-pane`, carrying the current rendered screen so a
+/// late/reconnecting controller can repaint before consuming the live raw
+/// stream. Defined now so the wire shape is fixed for S5; not yet emitted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)] // Wire-shape scaffold; emitted by S5's per-pane screen buffer.
+pub struct PaneSnapshotFrame {
+    /// Discriminator on the control channel: always `"pane-snapshot"`.
+    #[serde(rename = "type")]
+    pub frame_type: String,
+    /// Pane this snapshot belongs to (UUID string).
+    #[serde(rename = "paneId")]
+    pub pane_id: String,
+    /// Terminal repaint sequence (raw escape bytes, base64) reconstructing the
+    /// current screen: cursor position, alt-screen state, scroll region, content.
+    /// The controller feeds this to its wasm kernel before the raw `0x10` stream.
+    pub screen: String,
+    /// The pane's LOCKED render size (D11 shared property). `None` until a
+    /// controller has claimed a size. Rides the snapshot so every attaching
+    /// controller renders at the same grid.
+    #[serde(rename = "lockedRows", skip_serializing_if = "Option::is_none")]
+    pub locked_rows: Option<u16>,
+    #[serde(rename = "lockedCols", skip_serializing_if = "Option::is_none")]
+    pub locked_cols: Option<u16>,
+}
+
+#[cfg(test)]
+mod jsonrpc_tests {
+    //! Pure host-side wire-shape tests for the §S3 JSON-RPC leg. These cover the
+    //! envelope builders and the D9 `$/hello` negotiation without needing a live
+    //! `AppState` / Tauri runtime, so they compile + run under `cargo test -p
+    //! ridge`. (On this machine the cdylib `cargo test` crashes 0xc0000139, so
+    //! they are verified by `cargo check` here and runnable by the user post-
+    //! rebuild; the S7 TS conformance suite covers the same negotiation E2E.)
+    use super::*;
+
+    #[test]
+    fn jsonrpc_result_frame_shape() {
+        let f = jsonrpc_result(&serde_json::json!(7), serde_json::json!({"ok": true}));
+        assert_eq!(f["jsonrpc"], "2.0");
+        assert_eq!(f["id"], serde_json::json!(7));
+        assert_eq!(f["result"], serde_json::json!({"ok": true}));
+        assert!(f.get("error").is_none());
+    }
+
+    #[test]
+    fn jsonrpc_error_frame_carries_code_message_data() {
+        let err =
+            ridge_core::CoreError::CapabilityDenied("set_remote_enabled".into()).to_json_rpc();
+        let f = jsonrpc_error(&serde_json::json!(3), err);
+        assert_eq!(f["id"], serde_json::json!(3));
+        assert_eq!(f["error"]["code"], serde_json::json!(1001));
+        assert_eq!(f["error"]["data"]["kind"], "capability_denied");
+        assert!(f["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("set_remote_enabled"));
+    }
+
+    #[test]
+    fn hello_negotiates_capability_intersection() {
+        let reply = negotiate_hello(&serde_json::json!({
+            "protocolVersion": 1,
+            "capabilities": ["pane", "invoke", "fs"],
+        }));
+        assert_eq!(reply["method"], "$/hello");
+        assert_eq!(reply["params"]["protocolVersion"], serde_json::json!(1));
+        let caps: Vec<&str> = reply["params"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        // Only the host∩client subset is agreed.
+        assert!(caps.contains(&"fs"));
+        assert!(caps.contains(&"invoke"));
+        assert!(!caps.contains(&"git")); // client did not request it
+    }
+
+    #[test]
+    fn hello_empty_capabilities_means_all_host_caps() {
+        // A peer that omits capabilities gets the host's full set (it can drive all).
+        let reply = negotiate_hello(&serde_json::json!({ "protocolVersion": 1 }));
+        let caps = reply["params"]["capabilities"].as_array().unwrap();
+        assert_eq!(caps.len(), HOST_CAPABILITIES.len());
+    }
+
+    #[test]
+    fn hello_version_mismatch_sends_bye() {
+        let reply = negotiate_hello(&serde_json::json!({
+            "protocolVersion": 0,
+            "capabilities": ["pane"],
+        }));
+        assert_eq!(reply["method"], "$/bye");
+        assert_eq!(reply["params"]["reason"], "protocol-version-mismatch");
+    }
+
+    #[test]
+    fn pane_snapshot_frame_serializes_to_contract_shape() {
+        let snap = PaneSnapshotFrame {
+            frame_type: "pane-snapshot".into(),
+            pane_id: "p1".into(),
+            screen: "AAAA".into(),
+            locked_rows: Some(24),
+            locked_cols: Some(80),
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["type"], "pane-snapshot");
+        assert_eq!(v["paneId"], "p1");
+        assert_eq!(v["lockedRows"], serde_json::json!(24));
+        assert_eq!(v["lockedCols"], serde_json::json!(80));
     }
 }
