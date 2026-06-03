@@ -19,7 +19,15 @@
 //! 2. **Path-traversal guard** — any `..` in a path-bearing arg is rejected
 //!    with [`CoreError::PathTraversal`] (mirrors the legacy `path_has_traversal`
 //!    sweep over `path`/`from`/`to`/`repoRoot`/`root`/`cwd`/`paths`).
-//! 3. **Method table** — the `match` over migrated handlers. A method that is
+//! 3. **Sandbox / root-scoping guard (D8 / §5.6, R10)** — when the host has
+//!    injected workspace roots via
+//!    [`CapabilitySet::with_roots`](crate::capability::CapabilitySet::with_roots),
+//!    every path-bearing arg must resolve **inside** some allowed root, else
+//!    [`CoreError::OutsideSandbox`]. With **no roots configured the guard is a
+//!    no-op** (unrestricted), preserving today's desktop / LAN behaviour. This
+//!    is what stops a remote `fs` command on the headless host from escaping the
+//!    workspace into `~/.ssh` / `/etc`.
+//! 4. **Method table** — the `match` over migrated handlers. A method that is
 //!    *allowed* but **not yet migrated** returns [`CoreError::MethodNotFound`];
 //!    during the migration window the host bridge keeps serving those from the
 //!    legacy dispatcher (see `s1-migration-ledger.md`), so this never regresses
@@ -37,10 +45,32 @@ use crate::commands::{settings, theme};
 use crate::ctx::Ctx;
 use crate::error::{CoreError, CoreResult};
 use crate::fs::commands as fs_commands;
+use crate::sandbox::RootScope;
 
 /// Path-bearing argument keys swept for `..` traversal, identical to the legacy
 /// desktop dispatcher's list.
 const PATH_KEYS: &[&str] = &["path", "from", "to", "repoRoot", "root", "cwd"];
+
+/// Visit every path-bearing string argument (the scalar [`PATH_KEYS`] plus each
+/// element of the `paths` array), short-circuiting on the first `Err` from
+/// `visit`. Both the traversal guard and the sandbox guard walk the exact same
+/// argument surface, so they share this iterator.
+fn for_each_path_arg<F>(args: &Value, mut visit: F) -> CoreResult<()>
+where
+    F: FnMut(&str) -> CoreResult<()>,
+{
+    for key in PATH_KEYS {
+        if let Some(v) = args.get(*key).and_then(|x| x.as_str()) {
+            visit(v)?;
+        }
+    }
+    if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
+        for v in arr.iter().filter_map(|x| x.as_str()) {
+            visit(v)?;
+        }
+    }
+    Ok(())
+}
 
 /// True if `value` contains a `..` path-traversal segment. Mirrors the legacy
 /// `path_has_traversal`: a `..` bounded by path separators (or string ends).
@@ -50,23 +80,30 @@ pub fn path_has_traversal(value: &str) -> bool {
 
 /// Reject the request if any path-bearing arg contains traversal.
 fn traversal_guard(args: &Value) -> CoreResult<()> {
-    for key in PATH_KEYS {
-        if let Some(v) = args.get(*key).and_then(|x| x.as_str()) {
-            if path_has_traversal(v) {
-                return Err(CoreError::PathTraversal);
-            }
+    for_each_path_arg(args, |v| {
+        if path_has_traversal(v) {
+            Err(CoreError::PathTraversal)
+        } else {
+            Ok(())
         }
+    })
+}
+
+/// Reject the request if any path-bearing arg resolves **outside** the host's
+/// granted workspace roots (D8 / §5.6, R10). A no-op when `scope` is
+/// unrestricted (empty roots), so this never changes behaviour for hosts that
+/// inject no roots — the backward-compatible desktop / LAN default.
+fn sandbox_guard(args: &Value, scope: &RootScope) -> CoreResult<()> {
+    if scope.is_unrestricted() {
+        return Ok(()); // fast path: sandbox off
     }
-    if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
-        if arr
-            .iter()
-            .filter_map(|x| x.as_str())
-            .any(path_has_traversal)
-        {
-            return Err(CoreError::PathTraversal);
+    for_each_path_arg(args, |v| {
+        if scope.is_allowed(v) {
+            Ok(())
+        } else {
+            Err(CoreError::OutsideSandbox)
         }
-    }
-    Ok(())
+    })
 }
 
 /// Extract an optional string arg (camelCase keys, as the frontend sends).
@@ -115,7 +152,10 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
     // 2. Path-traversal guard.
     traversal_guard(&args)?;
 
-    // 3. Method table (vertical slice: settings + theme).
+    // 3. Sandbox / root-scoping guard (D8 / §5.6, R10). No-op when unrestricted.
+    sandbox_guard(&args, ctx.capabilities().root_scope())?;
+
+    // 4. Method table (vertical slice: settings + theme).
     match method {
         "get_theme_data" => {
             let tf = theme::get_theme_data();
@@ -272,6 +312,104 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, serde_json::Value::Bool(false));
+    }
+
+    // ── Sandbox / root-scoping at the dispatch boundary (D8 / §5.6, R10) ──
+
+    #[test]
+    fn sandbox_rejects_path_outside_roots() {
+        let caps = CapabilitySet::remote_default().with_roots(["/work/project"]);
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), caps);
+        let err = dispatch(
+            "read_file",
+            serde_json::json!({ "path": "/etc/passwd" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "outside_sandbox");
+    }
+
+    #[test]
+    fn sandbox_rejects_dotdot_escape_to_outside_root() {
+        // `..` survives only if it does not contain a literal `..` segment; here
+        // we use an absolute sibling so the traversal guard does not pre-empt,
+        // proving the sandbox guard itself does the containment work.
+        let caps = CapabilitySet::remote_default().with_roots(["/work/project"]);
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), caps);
+        let err = dispatch(
+            "get_file_tree",
+            serde_json::json!({ "path": "/work/other-secret" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "outside_sandbox");
+    }
+
+    #[test]
+    fn sandbox_literal_dotdot_is_still_path_traversal() {
+        // A literal `..` segment is caught by the traversal guard *before* the
+        // sandbox guard runs, so it surfaces as path_traversal (defence in depth).
+        let caps = CapabilitySet::remote_default().with_roots(["/work/project"]);
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), caps);
+        let err = dispatch(
+            "read_file",
+            serde_json::json!({ "path": "/work/project/../secret" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "path_traversal");
+    }
+
+    #[test]
+    fn sandbox_allows_path_inside_root() {
+        // A real temp dir as the root; a path inside it passes the sandbox and
+        // reaches the handler (which returns the normal "not a file" error, NOT
+        // outside_sandbox — proving the guard let it through).
+        let td = std::env::temp_dir().join(format!(
+            "ridge-core-dispatch-sandbox-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&td).unwrap();
+        let root = td.to_string_lossy().into_owned();
+        let inside = td.join("nope.txt").to_string_lossy().into_owned();
+
+        let caps = CapabilitySet::remote_default().with_roots([root]);
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), caps);
+        let err = dispatch("read_file", serde_json::json!({ "path": inside }), &ctx).unwrap_err();
+        // Inside the root ⇒ NOT outside_sandbox; handler ran and said "missing".
+        assert_eq!(err.kind_tag(), "internal");
+        assert!(err.to_command_string().contains("does not exist"));
+
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    #[test]
+    fn no_roots_means_unrestricted_backward_compatible() {
+        // remote_default() with NO roots injected = today's behaviour: an
+        // absolute outside path is NOT a sandbox error (handler runs normally).
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let err = dispatch(
+            "read_file",
+            serde_json::json!({ "path": "/definitely/not/here/xyz.txt" }),
+            &ctx,
+        )
+        .unwrap_err();
+        // Reaches the handler (missing file) rather than being sandbox-rejected.
+        assert_eq!(err.kind_tag(), "internal");
+    }
+
+    #[test]
+    fn sandbox_guards_paths_array_too() {
+        let caps = CapabilitySet::remote_default().with_roots(["/work/project"]);
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), caps);
+        // `delete_path` is allow-listed; the `paths` array carries an escapee.
+        let err = dispatch(
+            "delete_path",
+            serde_json::json!({ "paths": ["/work/project/a.txt", "/etc/hosts"] }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "outside_sandbox");
     }
 
     #[test]
