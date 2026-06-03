@@ -29,7 +29,6 @@
 import { RemoteConnection, type ConnectionState } from '../../../remote/lib/wsRemote';
 import { JSON_RPC_ERRORS, makeError } from './jsonRpc';
 import {
-  CANCEL_METHOD,
   type ChannelTransport,
   type ControlFrame,
   type ControlListener,
@@ -55,6 +54,15 @@ export class LanWsAdapter implements ChannelTransport {
   private controlListeners = new Set<ControlListener>();
   private paneListeners = new Set<PaneBytesListener>();
   private detachers: Unsubscribe[] = [];
+  // §S3 negotiated upgrade: starts in legacy-translation mode so requests ride
+  // the old `invoke-request`/`invoke-result` envelope (byte-for-byte unchanged).
+  // `$/`-control methods (`$/hello`, `$/cancel`) ALWAYS pass through as native
+  // JSON-RPC so the host's JSON-RPC leg handles them. When the host's `$/hello`
+  // reply confirms it speaks JSON-RPC natively, we flip to `jsonRpcNative` and
+  // pass ALL frames through untouched — so invoke errors then carry the full
+  // `{code,message,data}` (the D-GM-2 fix on the LAN leg). A host that never
+  // replies to `$/hello` (old build) keeps the legacy translation forever.
+  private jsonRpcNative = false;
 
   constructor(conn: RemoteConnection) {
     this.conn = conn;
@@ -111,22 +119,32 @@ export class LanWsAdapter implements ChannelTransport {
   }
 
   // ── translation ─────────────────────────────────────────────────────────────
-  /** JSON-RPC (or already-legacy) frame → the legacy wire object the host reads. */
+  /** JSON-RPC (or already-legacy) frame → the wire object the host reads.
+   *
+   *  - A `$/`-control method (`$/hello`, `$/cancel`) is ALWAYS sent natively so
+   *    the host's JSON-RPC leg handles it (the legacy leg has no concept of it).
+   *  - Once `jsonRpcNative` (host confirmed JSON-RPC via its `$/hello` reply),
+   *    EVERY JSON-RPC frame is sent natively → invoke errors carry full
+   *    `{code,message,data}`.
+   *  - Otherwise an invoke request/notification is translated to the legacy
+   *    `invoke-request` / flat control frame (byte-for-byte unchanged). */
   private toWire(frame: ControlFrame): ControlFrame {
     if (frame.jsonrpc !== '2.0') return frame; // already a legacy control frame
 
-    const { method, id, params } = frame as {
-      method?: string;
+    const { method } = frame as { method?: string };
+    // `$/`-control + post-negotiation: forward the JSON-RPC envelope verbatim.
+    if ((typeof method === 'string' && method.startsWith('$/')) || this.jsonRpcNative) {
+      return frame;
+    }
+
+    const { id, params } = frame as {
       id?: JsonRpcId;
       params?: unknown;
     };
+    // ($/-control methods, incl. `$/cancel`, already returned natively above.)
 
     // Request (has id + method) → invoke-request.
     if (typeof method === 'string' && id !== undefined) {
-      if (method === CANCEL_METHOD) {
-        const target = (params as { id?: JsonRpcId } | undefined)?.id;
-        return { type: 'cancel', _reqId: target };
-      }
       return {
         type: 'invoke-request',
         cmd: method,
@@ -137,10 +155,6 @@ export class LanWsAdapter implements ChannelTransport {
 
     // Notification (method, no id).
     if (typeof method === 'string') {
-      if (method === CANCEL_METHOD) {
-        const target = (params as { id?: JsonRpcId } | undefined)?.id;
-        return { type: 'cancel', _reqId: target };
-      }
       // Spread params so legacy control messages keep their flat shape
       // (e.g. `{type:'use-global-workspace'}`, `{type:'subscribe-pane', paneId}`).
       const flat = (params as Record<string, unknown> | undefined) ?? {};
@@ -150,15 +164,37 @@ export class LanWsAdapter implements ChannelTransport {
     return frame;
   }
 
-  /** Inbound legacy frame → JSON-RPC response (for L2) or pass-through. */
+  /** Inbound frame → control frame for L2.
+   *
+   *  Three shapes can arrive:
+   *    1. A native JSON-RPC frame (`jsonrpc:"2.0"`) — the S3 host's JSON-RPC leg
+   *       (responses with `{code,message,data}` errors, `$/hello`/`$/bye`
+   *       notifications). PASS THROUGH VERBATIM so the structured error reaches
+   *       L2's `RpcRemoteError` intact (this is the D-GM-2 fix on the client
+   *       side: no re-wrapping, full code/data preserved).
+   *    2. A legacy `invoke-result` (older host, or any host replying to a frame
+   *       we sent as legacy invoke-request) — translate to a JSON-RPC response.
+   *       The legacy `_error` is a bare string, so it still degrades to
+   *       INTERNAL_ERROR here; that is the unavoidable legacy-leg limit and is
+   *       why the host JSON-RPC leg exists. Paired anchor:
+   *       server.rs `core_result_to_envelope`.
+   *    3. A generic host push (`{type:'event', …}`) — pass through verbatim.
+   */
   private handleInbound(msg: ControlFrame): void {
+    // (1) Native JSON-RPC frame from the S3 host — forward untouched.
+    if (msg.jsonrpc === '2.0') {
+      // The host's `$/hello` reply proves it speaks JSON-RPC natively → upgrade
+      // so subsequent invoke requests ride the native envelope (full error
+      // code/data). `$/bye` (version mismatch) does NOT upgrade.
+      if (msg.method === '$/hello') {
+        this.jsonRpcNative = true;
+      }
+      this.emitControl(msg);
+      return;
+    }
+    // (2) Legacy invoke-result → JSON-RPC response.
     if (msg.type === 'invoke-result' && (typeof msg._reqId === 'number' || typeof msg._reqId === 'string')) {
       const id = msg._reqId as JsonRpcId;
-      // TODO(S3): legacy `_error` is a bare string, so ridge-core's structured
-      // JSON-RPC code/data is lost and everything degrades to INTERNAL_ERROR
-      // (-32603). Once S3 makes the LAN host JSON-RPC-native it will send a real
-      // `{code,message,data}` error object — forward it verbatim instead of
-      // re-wrapping here. Paired anchor: server.rs `core_result_to_envelope`.
       const frame: ControlFrame =
         msg._error !== undefined && msg._error !== null
           ? {
@@ -170,8 +206,8 @@ export class LanWsAdapter implements ChannelTransport {
       this.emitControl(frame);
       return;
     }
-    // Generic host push (`{type:'event', name, payload}` etc.) → pass through so
-    // callers that translate these (the bridge) still receive them verbatim.
+    // (3) Generic host push (`{type:'event', name, payload}` etc.) → pass through
+    // so callers that translate these (the bridge) still receive them verbatim.
     this.emitControl(msg);
   }
 

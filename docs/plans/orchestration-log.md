@@ -55,6 +55,9 @@
 | D-GM-1 | ridge-core crate 落点（S0 契约写 `crates/`，S1 实现落 `packages/`，冲突） | **`packages/ridge-core/`**（与 sibling `packages/ridge-cli`/`ridge-term` 平级）。GM 已改契约 §11 全部 `crates/ridge-core`→`packages/ridge-core`（grep 验证 0 残留） | S1 已在此编译通过，搬迁=纯返工；`packages/` 是既有 crate 根，更一致；改文档成本最低 | 2026-06-03 |
 | D-GM-2 | 错误码端到端损耗（Manager HIGH：CoreError 码表经 LAN 腿被压成 message-only） | **S1 码表是为 S3 前置准备；LAN 腿在 S3 把 host 升级 JSON-RPC-native 前不透传 code/data**，属计划内。已在两损耗点（`server.rs::core_result_to_envelope`、`lanWsAdapter.handleInbound`）加 `TODO(S3)` 锚点；S7 conformance 对 code 的断言须等 S3 收口后开启 | 根因是 legacy WS 信封 message-only，非 S1/S2 实现缺陷；加锚点防遗忘 | 2026-06-04 |
 | D-GM-3 | 新 workspace 根的 lock/target 卫生 | 提交新根 `Cargo.lock` + 根 `.gitignore` 增 `/target`；**暂不** `git rm` 三个旧 per-crate lock（`src-tauri`/`ridge-cli`/`ridge-term`，workspace 模式下被 cargo 忽略、无害）——待用户 `tauri build`/wasm-pack 验证 workspace 后再清理 | 删 tracked 文件是破坏性操作，且 workspace 方案本身待构建验证；保守留存 | 2026-06-04 |
+| D-GM-4 | S3 协议落地策略（直接 flip vs 向后兼容） | **向后兼容加法式**：host 同时认 legacy 与 JSON-RPC 帧、按形态对称回复；adapter 默认 legacy 翻译，收到 host `$/hello` 回复后才升级原生 JSON-RPC。legacy `dispatch_invoke_request` 一字未动 | 现网 LAN 远控不可运行时验证，破坏性 flip 风险过高；加法式让老 web-remote-dist/移动端零改动仍工作 | 2026-06-04 |
+| D-GM-5 | `$/bye`（D9 版本不匹配）是否强制关 socket | **不强制关**：host 发 `$/bye`，client 标记 rejected + 提示升级，由 client 决定 UX | 契约 §7.3「降级或明确拒绝并提示」；非破坏性 | 2026-06-04 |
+| D-GM-6 | D10 全量 per-pane 屏幕缓冲归属 | S3 仅交付 `PaneSnapshotFrame` 消息类型 + subscribe 接入点 + 实现要点；**全量屏缓冲实现切到 S5**（与 pane 流改造、D11 共享尺寸耦合） | 量大且与 S5 领域模型咬合；避免 S3 膨胀 | 2026-06-04 |
 
 ## 执行进度
 
@@ -69,6 +72,20 @@
 - **S1 桌面运行回归**：本机 rebuild 杀会话 + cdylib `0xc0000139`，会话内只到 `cargo check`；settings/theme 三命令运行时回归（启动主题、默认 cwd、远控 invoke）须用户在本机 rebuild 验证。
 - **workspace 构建验证**：`tauri build` / wasm-pack 产物布局（target 迁根、ridge-term release profile hoist）须用户确认；通过后再清理 3 个旧 per-crate Cargo.lock（D-GM-3）。
 
-### Wave 2（下一步，依赖已就绪）
-- **S3 统一线协议**（依赖 S0+S1+S2 ✓ 已满足）：把 LAN host 升级 JSON-RPC-native（透传 CoreError code/data，解除 D-GM-2 锚点）、落 D9 握手 + D10 快照实体 + RPC 超时/取消/背压；protocol conformance 套件（S7）跨 LAN-WS 与 cloud-WebRTC 同跑。
-- 之后 Wave 3 {S4,S5,S6}；S5 可承接 S1 台账的剩余 11 文件迁移（尤其 workspace/pane/terminal 绑 D11 领域模型）。
+### Wave 2 完成（S3，2026-06-04）—— 向后兼容、GM 独立复跑 conformance 全绿
+
+- [x] **S3 统一线协议骨干**（owner s3-protocol）：
+  - server.rs **invoke 双形态收发**（legacy + JSON-RPC，对称回复，legacy 路由一字未动）。
+  - **D-GM-2 解除**（JSON-RPC 腿透传 `CoreError.to_json_rpc()` 的 `{code,message,data}`；两处 TODO(S3) 锚点更新；legacy 腿仍 message-only）。
+  - **D9 `$/hello`** 握手（host `negotiate_hello` + client `rpcClient.hello()`/reconnect 重握手/`hasCapability`）。
+  - **`$/cancel`**（per-conn 取消登记）、**事件背压**（broadcast arm coalesce 同名取最新，防 §5.2/R8 OOM）。
+  - **D10 scaffold**：`PaneSnapshotFrame` 类型 + subscribe 接入点 + S5 实现要点（全量屏缓冲切 S5，D-GM-6）。
+  - **S7 conformance（LAN-WS arm）**：`conformance.test.ts`(17) + `lanWsAdapter.test.ts`(+5) + Rust `jsonrpc_tests`(6)。
+  - 验收：`cargo check -p ridge` / `--tests` 0err/0warn、clippy 新增段 0 警告、`cargo test -p ridge-core` 20 passed、`pnpm exec vitest run transport/` **58 passed**（GM 独立复跑确认）、`pnpm check` 0/0。
+  - 移交：桌面浏览器经 LAN 端到端运行回归（老客户端仍 invoke、握手后 error 带 code/data、事件风暴不卡、$/cancel 取消搜索）须用户 rebuild 验证。
+
+### Wave 3（下一步，并行 {S4,S5,S6}；本会话能推 S5 最实）
+- **S5 headless ridge-cli 完整 IDE**（依赖 S1+S3 ✓）：ridge-cli 链 `ridge-core`、补 D11 领域模型、承接 S1 台账剩余 11 文件迁移（git.rs 最易=0 State/AppHandle）、落 D10 全量屏缓冲。**Rust，cargo check 可验，本会话最有产出。**
+- **S4 cloud 桌面 host**：cloud-WebRTC 适配器 + onFrame 接通 + E2EE 密钥认证；现状是 scaffold（onFrame 空、host WebRTC 在 WebView），终态迁 Rust——大且部分需运行时/WebRTC e2e。
+- **S6 cloud 入口**：跨仓库 `C:\code\ridge-cloud` + CDN/code-split——**跨 repo，超出本仓库范围**。
+- **S8 安全/可观测**：能力数据化(✓S1)、fs 沙箱、tracing+相关 id、shim 全量审计——可增量推进。
