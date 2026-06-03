@@ -157,7 +157,10 @@ mod tests {
     #[test]
     fn json_rpc_codes_are_stable_per_variant() {
         assert_eq!(CoreError::ReadOnly.json_rpc_code(), CODE_READ_ONLY);
-        assert_eq!(CoreError::PathTraversal.json_rpc_code(), CODE_PATH_TRAVERSAL);
+        assert_eq!(
+            CoreError::PathTraversal.json_rpc_code(),
+            CODE_PATH_TRAVERSAL
+        );
         assert_eq!(
             CoreError::MethodNotFound("x".into()).json_rpc_code(),
             CODE_METHOD_NOT_FOUND
@@ -173,7 +176,10 @@ mod tests {
         let obj = CoreError::CapabilityDenied("set_remote_enabled".into()).to_json_rpc();
         assert_eq!(obj["code"], json!(CODE_CAPABILITY_DENIED));
         assert_eq!(obj["data"]["kind"], json!("capability_denied"));
-        assert!(obj["message"].as_str().unwrap().contains("set_remote_enabled"));
+        assert!(obj["message"]
+            .as_str()
+            .unwrap()
+            .contains("set_remote_enabled"));
     }
 
     #[test]

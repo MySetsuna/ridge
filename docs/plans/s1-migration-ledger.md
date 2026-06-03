@@ -12,17 +12,32 @@
 
 ---
 
-## 0. 已迁移（本会话垂直片，样板）
+## 0. 已迁移（垂直片 + S5 只读 fs/search 切片，样板）
 
 | 文件 | handler | Tauri 耦合（迁前） | 迁移手法 | 状态 |
 |---|---|---|---|---|
 | `settings.rs` | `set_user_default_cwd`(1) | `State<AppState>` ×1 | 抽 `UserDefaultCwdStore` trait（host 在 `AppState` 上实现）；handler 经 `Ctx` 下传写入 | ✅ 已迁，`cargo check` 绿，单测绿 |
 | `theme.rs` | `get_theme_data`、`set_active_theme`(2) | `AppHandle` ×6（均内部 helper） | 端口 handle-free 解析（exe 同目录 + 祖先回溯）+ `data_local_dir` 持久化进 ridge-core；`get_theme_data` 桌面侧保留 `AppHandle` 的 `Resource` 解析（更全），`set_active_theme` 纯委托 | ✅ 已迁 |
+| **`fs/{search,tree}.rs`**（382+519 行，**零 Tauri**） | `SearchEngine`/`FileTree`/`FileTreeContext` 全量 | 无（已是纯逻辑） | **整文件下沉**进 `packages/ridge-core/src/fs/{search,tree}.rs`（逐行端口，含全部既有单测）；src-tauri `fs/{search,tree}.rs` 改为 `pub use ridge_core::fs::...` 薄 re-export，`crate::fs::*` / `crate::fs::{search,tree}::*` 引用零改动 | ✅ S5 已迁，`cargo check -p ridge` 0err/0warn |
+| **`project.rs`（只读片）** | `get_file_tree`、`get_directory_children`、`read_file`、`path_exists`、`read_file_for_editor`、`text_search`(6) | 无 State/AppHandle（纯 fs，全 async） | handler body 逐行端口进 `ridge_core::fs::commands`（纯同步 fn，含 `normalize_path_input` + 深度/页宽默认常量 + 5MB/二进制探测）；桌面 `#[tauri::command]` 保留签名 + `spawn_(fs_)blocking` offload，body 委托 `ridge_core::fs::commands::*`，错误 `to_command_string()` 回 `Result<_,String>` | ✅ S5 已迁 |
 
 迁移后 `src-tauri` 三处变成薄封装：
 - `commands/settings.rs::set_user_default_cwd` → 构 `Ctx` 调 `ridge_core::commands::settings::set_user_default_cwd`，错误 `to_command_string()` 映射回 `Result<(),String>`。
 - `commands/theme.rs::set_active_theme` → 委托 `ridge_core::commands::theme::set_active_theme`。
 - `remote/server.rs::dispatch_invoke_request` 的这三命令 → 走 `ridge_core::dispatch(cmd,args,ctx)`，经 `core_result_to_envelope` 映射回 `{_result|_error}` WS 信封。
+
+**S5 追加薄封装（只读 fs/search）**：
+- `commands/project.rs` 的 6 个只读命令 body 委托 `ridge_core::fs::commands::*`（签名/async/offload 不变）；`normalize_path_input` 本地副本删除（已下沉，单一真源）；`ReadFileForEditorResult` 改为 `ridge_core` 类型别名（线形不变）。
+- `remote/server.rs::dispatch_invoke_request` 的 `get_file_tree | get_directory_children | path_exists | read_file | read_file_for_editor` 与 `text_search` arm → 改走 `ridge_core::dispatch` + `core_result_to_envelope`（与 theme/settings 同模式；旧 `match` 内联臂删除）。
+- `CORE_MIGRATED_METHODS` 增 7 项（含 `search` 别名），使 JSON-RPC 腿透传 `to_json_rpc()` 的 `{code,message,data}`（D-GM-2 同款修复扩展到这批命令）。
+- 注：`dispatch_data_request`（首个 legacy 数据请求分发器）的 fs arm **保持调用 `project::*`**（这些已内部委托 core），避免动 legacy 数据请求路径，行为不变。
+- `fs::tree::FileTree` 仍以 `crate::fs::tree::FileTree` 子模块路径可达（`server.rs` 唯一消费者用此路径）；mod 级便捷 re-export 撤掉以消未用告警。
+
+**ridge-cli 接入（headless host 统一）**：
+- `packages/ridge-cli/Cargo.toml` 加 `ridge-core = { path = "../ridge-core" }`；`cargo tree -p ridge-cli` 实证**无 tauri**、含 `ridge-core`。
+- 新增 `core_host.rs`：`headless_ctx()` 构最小 Ctx（空 `HeadlessState` + no-op `EventSink` + `TokioSpawner` + `CapabilitySet::remote_default()`，与桌面同款 D8 白名单）。
+- `fs_reuse.rs` **删除重复算法**（`search_text`/`list_dir`/`build_pattern`/`is_binary`/`should_ignore`/`SearchOptions`），仅保留 `HostMsg` 线形 DTO（`SearchResult`/`FileNode`）+ 一层映射，经 `ridge_core::dispatch("search"/"get_directory_children")` 复用桌面同款引擎（结果裁剪回精简 DTO，wire schema 字节不变）。
+- `session.rs` 的 `ControlMsg::{Search,Tree}` 处理改调 `fs_reuse::search` / `fs_reuse::list_dir`（内部走 dispatch）。`Tree` 错误仍经 `kind_str()` → "io error"（不泄露路径，比 core 含路径的 message 更安全；这是相对 legacy 的一处**良性** message 收敛，下文移交标注）。
 
 **桌面行为零变化依据**：handler 逻辑逐行端口（trim/empty 归一、`active-theme.txt` 路径与默认 fallback、空目录 catalog 回退、错误串原样），桌面 `#[tauri::command]` 签名保持（仅 `set_user_default_cwd` 增加按名解析的 `app: AppHandle` 参数，Tauri 按参数名注入、前端按名传参，不影响调用）。**注意：本会话上限是 `cargo check` + ridge-core 纯逻辑单测；运行 app 的完整桌面回归须由用户在本机 rebuild 验证**（见报告移交项）。
 
@@ -55,7 +70,7 @@
 | 文件 | cmd | State | AppHandle | 事件 | 策略 | 风险 |
 |---|---|---|---|---|---|---|
 | **`git.rs`** | 32 | 0 | 0 | emit×3（mutating 后 `scm` refresh） | **最易**：纯 `git2`/进程调用，零 Tauri 状态。整文件端口进 `ridge_core::commands::git`；3 处事件改经 `Ctx::events().broadcast("scm-...", ...)`（`EventScope::Broadcast`，D11 共享）。`ridge-core` 需加 `git2` 依赖（纯 crate，无 Tauri） | 低。git2 依赖体积；mutating 命令的 read-only gate 需在 dispatch 入口接管（见 §3） |
-| **`project.rs`** | 25 | 4 | 0 | 0 | 大半是纯 fs（`read_file`/`get_file_tree`/`text_search`/`replace_in_files`…，已在 LAN 白名单且全 async）。4 个 State 命令（`open_project`/`get_recent_projects`/`remove_project`/`get_current_project`）只用 `project_store`(rusqlite) + `current_project`。抽 `ProjectStore` 端口 trait + `CurrentProject` 端口；纯 fs 命令直接端口 | 低-中。`text_search`/`replace_in_files` 依赖 `ignore`/`glob`/`regex`（纯 crate，ridge-cli 已用同款）；rusqlite 依赖只在 project-store 端口实现侧，不进 ridge-core |
+| **`project.rs`** | 25 | 4 | 0 | 0 | **只读片（6 个：`read_file`/`get_file_tree`/`get_directory_children`/`path_exists`/`read_file_for_editor`/`text_search`）✅ S5 已迁**（端口进 `ridge_core::fs::commands`，桌面薄委托）。**剩余未迁**：① fs **写**命令（`write_file`/`apply_file_edits`/`rename_path`/`delete_path`/`create_*`/`copy_path`/`move_path`/`reveal_in_file_manager`）—— 需先落 §3.1 read-only gate 下沉到 dispatch 入口；② `filename_search`/`text_search_diagnostics`/`replace_in_files`（搜索写/诊断，同 read-only gate 前置）；③ 4 个 State 命令（`open_project`/`get_recent_projects`/`remove_project`/`get_current_project`）需抽 `ProjectStore`(rusqlite) + `CurrentProject` 端口；④ history 类（opencode/claude，纯 fs，可随时迁） | 低。`ignore`/`glob`/`regex` 已进 ridge-core（与 ridge-cli 同款）；rusqlite 端口实现侧不进 core |
 | **`process.rs`** | 2 | 2 | 0 | 0 | `get_pane_foreground_process`/`get_pane_cwd`：用 `sysinfo` + 从 AppState 取 PTY pid。抽"按 pane 取 pid"端口 trait | 低 |
 
 ### 2.2 需抽状态 + 事件（吃 AppState/AppHandle，绑工作区/PTY 领域）
@@ -82,7 +97,7 @@
 
 1. **read-only gate 归属**：当前 `dispatch_invoke_request` 入口的 `is_mutating_invoke` 读 `AppState::remote_fs_readonly` 做准入。迁移 git/project 写命令时，须把"read-only 拒绝"语义下沉到 ridge-core dispatch 入口（候选：`CapabilitySet` 增 `readonly: bool` 维度，或 `Ctx` 增 read-only 标志，dispatch 对 mutating method 检查）。本会话垂直片（settings/theme）无 mutating 写，故未触及；**git/project 迁移前必须先定此设计**，否则远控 read-only 会话会破防。映射到 `CoreError::ReadOnly`（已就位）。
 2. **路径穿越守卫**：已在 `dispatch.rs::traversal_guard` 实现（与 legacy `path_has_traversal` 同语义），git/project/fs 命令迁入后自动受保护，无需各自重写。
-3. **能力白名单同步**：`REMOTE_ALLOWLIST` 已含全部 ~85 个远控命令名。每迁一个 handler 进 dispatch 方法表，白名单**无需改**（名字已在）；未迁的命令在白名单内但 dispatch 返回 `MethodNotFound` → host bridge 现状是 LAN `match` 继续服务（见 §4 共存策略）。
+3. **能力白名单同步**：`REMOTE_ALLOWLIST` 已含全部远控命令名。每迁一个 handler 进 dispatch 方法表，白名单**无需改**（名字已在）；未迁的命令在白名单内但 dispatch 返回 `MethodNotFound` → host bridge 现状是 LAN `match` 继续服务（见 §4 共存策略）。**S5 例外**：新增 `search` 别名（headless `ControlMsg::Search` 的 dispatch 名，与 `text_search` 同 handler），已加入 `REMOTE_ALLOWLIST` + 有别名路由单测。S5 只读 6 命令均非 mutating，故 §3.1 read-only gate **未触及**（host 侧 `is_mutating_invoke` 对它们返回 false，行为不变）。
 4. **事件 trait 双路由落地**：D11 广播 vs 单连接的实际 host 实现（`DesktopEventSink` 现把 `Connection` 也走 `AppHandle::emit`，因为桌面 IPC 只有一个隐式连接）——浏览器多连接的精确单连接路由待 S3/S4 传输层带上 connection id 后补全。
 
 ---
@@ -99,8 +114,8 @@ dispatch 方法表与 LAN `dispatch_invoke_request` 的 `match` **并存**：已
 
 | 分组 | 文件 | handler 合计 | 备注 |
 |---|---|---|---|
-| 已迁（垂直片） | 2 | 3 | settings + theme |
-| 易迁（纯 fs/git/无状态） | 3 | 59 | git(32) + project(25) + process(2) |
+| 已迁（垂直片 + S5） | 2.5 | 9 | settings(1) + theme(2) + project 只读片(6)；另 `fs/{search,tree}.rs` 全量下沉（非 `#[command]` 计数，但是 search/tree 真源） |
+| 易迁剩余（纯 fs/git/无状态） | 3 | 53 | git(32) + project 剩余(19=25−6) + process(2) |
 | 需抽状态+事件 | 5 | 47 | workspace(16) + pane(10) + terminal(15) + fs_watch(1) + watch(1) + ridge_file(14)〔注：合计含 ridge_file〕 |
 | 不迁（host 特权） | 1 | 10 | remote(10)；另 deep_root 3 个不在 commands/ |
 | **总计（commands/）** | **12** | **~135** | 与 GM census 一致 |

@@ -26,6 +26,12 @@ name = "ridge-cli"
 path = "src/main.rs"
 
 [dependencies]
+# Shared runtime-agnostic command + fs core (S5). The headless host now reaches
+# the SAME `fs::search` / `fs::tree` implementation the desktop uses, through
+# `ridge_core::dispatch`, instead of the old signature-compatible local replica
+# in `fs_reuse.rs`. `ridge-core` is Tauri-free (verified: `cargo tree -p
+# ridge-cli` shows no `tauri`), so this keeps the headless binary lean.
+ridge-core = { path = "../ridge-core" }
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
 # CLI

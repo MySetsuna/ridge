@@ -155,6 +155,9 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "set_user_default_cwd",
     // ── Search ──
     "text_search",
+    // `search` is the alias the headless ridge-cli control protocol
+    // (`ControlMsg::Search`) dispatches under; same handler as `text_search`.
+    "search",
     "filename_search",
     "text_search_diagnostics",
     "replace_in_files",

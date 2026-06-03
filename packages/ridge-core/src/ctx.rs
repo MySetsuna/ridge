@@ -307,7 +307,8 @@ mod tests {
     fn event_scope_routing_is_recorded() {
         let (ctx, sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all());
         let ctx = ctx.with_connection("conn-1");
-        ctx.events().broadcast("pane-added", serde_json::json!({"id": 1}));
+        ctx.events()
+            .broadcast("pane-added", serde_json::json!({"id": 1}));
         ctx.events().emit(
             EventScope::Connection,
             ctx.connection(),

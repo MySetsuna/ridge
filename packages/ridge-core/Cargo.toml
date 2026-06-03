@@ -24,6 +24,12 @@ tokio = { version = "1", features = ["rt", "sync", "macros"] }
 # Library error type — typed errors with thiserror (rules/rust/coding-style.md).
 thiserror = "1"
 tracing = "0.1"
+# Filesystem search / tree core (S5). Same battle-tested pure crates the
+# desktop `src-tauri/src/fs` used before the migration — the `ignore` walker is
+# ripgrep's engine. NONE pull Tauri, so the "zero Tauri" rule above holds.
+ignore = "0.4"
+glob = "0.3"
+regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "sync", "macros", "rt-multi-thread", "time"] }

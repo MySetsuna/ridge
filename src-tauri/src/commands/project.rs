@@ -1,6 +1,4 @@
-use crate::fs::{
-    DirectoryPage, FileNode, FileTree, ReplaceStats, SearchEngine, SearchOptions, SearchResult,
-};
+use crate::fs::{DirectoryPage, FileNode, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
 use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -137,57 +135,23 @@ where
     .await
 }
 
-/// 把前端传来的路径统一成系统原生形式，修复 Windows 下 `C:/a/b\c` 这类正/反斜杠混用
-/// 时 `PathBuf::exists()` 偶发返回 false 的问题，也顺手去掉尾部分隔符、trim 空白。
-fn normalize_path_input(input: &str) -> PathBuf {
-    let trimmed = input
-        .trim()
-        .trim_end_matches(|c: char| c == '/' || c == '\\');
-    #[cfg(windows)]
-    {
-        // 统一为反斜杠；Windows API 接受两者，但混用时 Rust stdlib 某些内部路径比较会失败。
-        let mut s = trimmed.replace('/', "\\");
-        // 驱动器根（`C:/` / `C:\`）在上面被把尾分隔符削掉后会退化成 `C:`，
-        // 而 Windows 里裸的 `C:` 不是"C 盘根"，是"进程最近一次在 C 盘的 cwd"，
-        // `read_dir` 会读到 Ridge 自己的运行目录。补回分隔符还原真正的根。
-        if s.len() == 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' {
-            s.push('\\');
-        }
-        PathBuf::from(s)
-    }
-    #[cfg(not(windows))]
-    {
-        // 对 POSIX 根 `/` 做同样的守卫：trim_end_matches 会把它削成空串。
-        if trimmed.is_empty() && input.contains('/') {
-            PathBuf::from("/")
-        } else {
-            PathBuf::from(trimmed)
-        }
-    }
-}
+// `normalize_path_input` moved to `ridge_core::fs::commands` in S5 (used by the
+// migrated tree / children / path_exists ports). The desktop commands delegate
+// to those, so the local copy is gone — single source of truth.
 
-/// Default lazy-load depth for the Explorer's initial tree request. Just
-/// the root + its direct children; descendants load on first expand via
-/// `get_directory_children`. Was 5 in the eager-load era.
-const DEFAULT_TREE_DEPTH: usize = 1;
-/// Default page size for `get_directory_children`. Set to balance "see
-/// most directories in one shot" against "first paint stays snappy on
-/// `node_modules`-class folders" (~ 1500 entries → 8 pages).
-const DEFAULT_CHILDREN_PAGE_SIZE: usize = 200;
+// Lazy-load depth + page size defaults now live in `ridge_core::fs::commands`
+// (the single source of truth, used by both hosts). The read-only command
+// bodies below delegate to that core; the desktop wrapper keeps owning the
+// `spawn_fs_blocking` offload (FS semaphore) so concurrency behaviour is
+// unchanged.
 
 #[tauri::command]
 pub async fn get_file_tree(path: String, depth: Option<usize>) -> Result<FileNode, String> {
-    let root = normalize_path_input(&path);
-    if !root.exists() {
-        return Err(format!("Path does not exist: {}", root.display()));
-    }
-    if !root.is_dir() {
-        return Err(format!("Path is not a directory: {}", root.display()));
-    }
-
-    let max_depth = depth.unwrap_or(DEFAULT_TREE_DEPTH);
+    // §S5: delegate to the migrated `ridge_core` port (behaviour identical —
+    // same normalise → exists → is_dir checks and error strings). The host
+    // keeps the `spawn_fs_blocking` offload (FS semaphore).
     spawn_fs_blocking(move || {
-        FileTree::build(&root, max_depth).map_err(|e| format!("Failed to build file tree: {}", e))
+        ridge_core::fs::commands::get_file_tree(&path, depth).map_err(|e| e.to_command_string())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -199,19 +163,10 @@ pub async fn get_directory_children(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<DirectoryPage, String> {
-    let dir = normalize_path_input(&path);
-    if !dir.exists() {
-        return Err(format!("Path does not exist: {}", dir.display()));
-    }
-    if !dir.is_dir() {
-        return Err(format!("Path is not a directory: {}", dir.display()));
-    }
-
-    let offset = offset.unwrap_or(0);
-    let limit = limit.unwrap_or(DEFAULT_CHILDREN_PAGE_SIZE);
+    // §S5: delegate to the migrated `ridge_core` port.
     spawn_fs_blocking(move || {
-        FileTree::page_children(&dir, offset, limit)
-            .map_err(|e| format!("Failed to get directory contents: {}", e))
+        ridge_core::fs::commands::get_directory_children(&path, offset, limit)
+            .map_err(|e| e.to_command_string())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -228,24 +183,22 @@ pub async fn text_search(
     include_globs: Option<Vec<String>>,
     exclude_globs: Option<Vec<String>>,
 ) -> Result<Vec<SearchResult>, String> {
-    let root_path = PathBuf::from(&root);
-    if !root_path.exists() {
-        return Err("Root path does not exist".to_string());
-    }
-
-    let options = SearchOptions {
-        case_sensitive: case_sensitive.unwrap_or(false),
-        use_regex: use_regex.unwrap_or(false),
-        whole_word: whole_word.unwrap_or(false),
-        include_hidden: false,
-        max_results: max_results.unwrap_or(1000),
-        include_globs: include_globs.unwrap_or_default(),
-        exclude_globs: exclude_globs.unwrap_or_default(),
+    // §S5: delegate to the migrated `ridge_core` port (same exists check, same
+    // SearchOptions defaults, same gitignore-aware walk + error string). The
+    // host keeps the `spawn_blocking` offload.
+    let args = ridge_core::fs::commands::TextSearchArgs {
+        case_sensitive,
+        use_regex,
+        whole_word,
+        max_results,
+        include_globs,
+        exclude_globs,
     };
-
-    tokio::task::spawn_blocking(move || Ok(SearchEngine::search_text(&root_path, &query, &options)))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+    tokio::task::spawn_blocking(move || {
+        ridge_core::fs::commands::search(&root, &query, &args).map_err(|e| e.to_command_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Companion command returning ONLY the bad globs from the same options.
@@ -328,76 +281,23 @@ pub async fn replace_in_files(
 
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
-    let file_path = PathBuf::from(&path);
-    if !file_path.exists() {
-        return Err("File does not exist".to_string());
-    }
-    if !file_path.is_file() {
-        return Err("Path is not a file".to_string());
-    }
-
-    std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))
+    // §S5: delegate to the migrated `ridge_core` port (same checks + strings).
+    ridge_core::fs::commands::read_file(&path).map_err(|e| e.to_command_string())
 }
 
-#[derive(serde::Serialize)]
-pub struct ReadFileForEditorResult {
-    pub content: String,
-    pub is_binary: bool,
-    pub size: u64,
-}
+/// The editor-read result shape. **Migrated to `ridge-core` in S5** — aliased
+/// to the core type so the wire JSON (`{content, is_binary, size}`) and any
+/// `project::ReadFileForEditorResult` reference stay identical.
+pub type ReadFileForEditorResult = ridge_core::fs::commands::ReadFileForEditorResult;
 
 /// Read a file for the editor: detects binary files (via NULL-byte heuristic) and
 /// enforces a 5 MB ceiling to keep the UI responsive. Returns content as UTF-8 lossy
 /// so editors never crash on malformed bytes — the save path enforces valid UTF-8.
 #[tauri::command]
 pub async fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResult, String> {
+    // §S5: delegate to the migrated `ridge_core` port; host keeps the offload.
     tokio::task::spawn_blocking(move || {
-        let file_path = PathBuf::from(&path);
-        if !file_path.exists() {
-            return Err("File does not exist".to_string());
-        }
-        if !file_path.is_file() {
-            return Err("Path is not a file".to_string());
-        }
-
-        let metadata = std::fs::metadata(&file_path).map_err(|e| e.to_string())?;
-        let size = metadata.len();
-        const MAX: u64 = 5 * 1024 * 1024;
-        if size > MAX {
-            return Err(format!(
-                "文件过大 ({:.2} MB)，编辑器上限 5 MB",
-                size as f64 / 1024.0 / 1024.0
-            ));
-        }
-
-        let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-        let probe = &bytes[..bytes.len().min(8192)];
-        let has_null = probe.iter().any(|&b| b == 0);
-        let non_text = probe
-            .iter()
-            .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
-            .count();
-        let ratio = if probe.is_empty() {
-            0.0
-        } else {
-            non_text as f64 / probe.len() as f64
-        };
-        let is_binary = has_null || ratio > 0.30;
-
-        if is_binary {
-            return Ok(ReadFileForEditorResult {
-                content: String::new(),
-                is_binary: true,
-                size,
-            });
-        }
-
-        let content = String::from_utf8_lossy(&bytes).into_owned();
-        Ok(ReadFileForEditorResult {
-            content,
-            is_binary: false,
-            size,
-        })
+        ridge_core::fs::commands::read_file_for_editor(&path).map_err(|e| e.to_command_string())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -447,8 +347,7 @@ pub struct TextEdit {
 /// error so the caller falls back to a full `write_file`.
 pub async fn apply_file_edits(path: String, edits: Vec<TextEdit>) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        let content =
-            std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
         let mut units: Vec<u16> = content.encode_utf16().collect();
         for e in &edits {
             let start = e.range_offset;
@@ -1044,8 +943,8 @@ fn read_claude_history_sync(
 
 #[tauri::command]
 pub async fn path_exists(path: String) -> Result<bool, String> {
-    let p = normalize_path_input(&path);
-    Ok(p.exists())
+    // §S5: delegate to the migrated `ridge_core` port (same normalisation).
+    Ok(ridge_core::fs::commands::path_exists(&path))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

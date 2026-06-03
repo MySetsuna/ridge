@@ -4981,6 +4981,7 @@ dependencies = [
  "rand 0.8.6",
  "regex",
  "reqwest 0.12.28",
+ "ridge-core",
  "serde",
  "serde_json",
  "sha2",
@@ -4996,6 +4997,9 @@ dependencies = [
 name = "ridge-core"
 version = "0.1.0"
 dependencies = [
+ "glob",
+ "ignore",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

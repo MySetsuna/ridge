@@ -93,8 +93,7 @@ mod tests {
     #[test]
     fn handler_writes_normalised_path_through_store() {
         let store = Arc::new(FakeStore::default());
-        let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(HostStateAccessor(store.clone()));
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(store.clone()));
         let (ctx, _sink) = ctx_with_state(accessor, CapabilitySet::allow_all());
 
         set_user_default_cwd(&ctx, Some("  /tmp/work  ".into())).unwrap();
