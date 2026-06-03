@@ -173,3 +173,9 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
 - ridge-cloud 实现 + 本地提交 `fff01da`：host-label 路由 `app.remo2ridge.duckdns.org` → `desktop-app/`（刷新为 CSP-fixed web-remote-dist）；主域名/`/api`/`/ws` 不变；指纹缓存；Dockerfile 纳入 desktop-app。`cargo check`(ridge-cloud) 0err。
 - **app.* DNS+TLS 已就绪**（duckdns 通配 + `*.remo2ridge.duckdns.org` 证书；curl app.* = 200/cert valid）——无需额外 ops。
 - **部署受阻（非本次代码问题）**：`git push dokku main` 被拒（non-fast-forward）；fetch 后发现**本地 clone 与已部署 dokku/main 历史分叉**（ahead 4 / behind 1、根 commit 不同 = E 组曾 force-push/re-init）。生产仓强行 reconcile 风险高（可能破坏在线服务或丢 E 组已部署 web/）——**未强推**，已恢复 E 组 stash、服务 health 200 完好。S6 部署 = 待与 E 组对齐 ridge-cloud 历史后 `git push dokku main`（代码 + DNS/cert 均就绪）。
+
+### D-GM-11 pane PTY 流（终端经云）—— 双向已接通（commit `26b3207`）
+- **输出方向**（host→controller）：`cloudPaneSource.ts` 订阅 host 的 `pty-output-{ws}-{pane}` Tauri event → UTF-8 字节 → `cloudHostBridge.paneOutputSource` → `0x10` 帧（与 LAN RawBytes 字节级一致）；CloudPanel 注入。纯前端、无 Rust。svelte-check 0、cloud vitest 60 passed。
+- **输入方向**（controller→host）：**已天然打通，无需额外接线** —— 桌面终端组件（`RidgePane.svelte:784`、`manager.ts:1777`）经 `invoke('write_to_pty',{paneId,data})` 发按键；cloud 模式下该 invoke 被隧道成 JSON-RPC invoke → `cloudHostBridge` 既有 invoke 路由 → host 本地 `invoke('write_to_pty')` 写入 PTY。
+- ⇒ **cloud IDE 功能面完整**：fs/git/search invoke（live 验证）+ 文件树（live 验证）+ 终端输出/输入（已接线，待 live 双端实测）。
+- 剩余（非核心功能）：① 首帧 scrollback（D10，控制端订阅后才见输出、不回放历史，cosmetic）；② live 双端终端 e2e 实测（时序 finicky）。
