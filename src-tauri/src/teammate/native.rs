@@ -186,13 +186,22 @@ fn parse_target(raw: &str) -> ParsedTarget {
     // `%N` 全局面板 id。
     if let Some(n) = t.strip_prefix('%') {
         if let Ok(id) = n.parse::<usize>() {
-            return ParsedTarget { exact, session: None, window: None, pane: None, pane_global: Some(id) };
+            return ParsedTarget {
+                exact,
+                session: None,
+                window: None,
+                pane: None,
+                pane_global: Some(id),
+            };
         }
     }
 
     let parse_win_pane = |s: &str| -> (Option<usize>, Option<usize>) {
         if let Some(dot) = s.rfind('.') {
-            (s[..dot].parse::<usize>().ok(), s[dot + 1..].parse::<usize>().ok())
+            (
+                s[..dot].parse::<usize>().ok(),
+                s[dot + 1..].parse::<usize>().ok(),
+            )
         } else {
             (s.parse::<usize>().ok(), None)
         }
@@ -202,8 +211,18 @@ fn parse_target(raw: &str) -> ParsedTarget {
         let sess = &t[..colon];
         let right = &t[colon + 1..];
         let (window, pane) = parse_win_pane(right);
-        let session = if sess.is_empty() { None } else { Some(sess.to_string()) };
-        return ParsedTarget { exact, session, window, pane, pane_global: None };
+        let session = if sess.is_empty() {
+            None
+        } else {
+            Some(sess.to_string())
+        };
+        return ParsedTarget {
+            exact,
+            session,
+            window,
+            pane,
+            pane_global: None,
+        };
     }
 
     // 无冒号：`NAME.P`（如验收用的 `S.0`）或纯会话名。
@@ -222,8 +241,18 @@ fn parse_target(raw: &str) -> ParsedTarget {
         }
     }
 
-    let session = if t.is_empty() { None } else { Some(t.to_string()) };
-    ParsedTarget { exact, session, window: None, pane: None, pane_global: None }
+    let session = if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    };
+    ParsedTarget {
+        exact,
+        session,
+        window: None,
+        pane: None,
+        pane_global: None,
+    }
 }
 
 /// 极简 glob：支持 `*`（任意串）与 `?`（任一字符）。
@@ -271,14 +300,20 @@ fn match_session_name<'a>(
         return Ok(hit.as_str());
     }
     if exact {
-        return Err(NativeError::NotFound(format!("can't find session: {query}")));
+        return Err(NativeError::NotFound(format!(
+            "can't find session: {query}"
+        )));
     }
     // 2) fnmatch（仅当 query 像 pattern）
     if is_pattern(query) {
         let hits: Vec<&String> = candidates.iter().filter(|c| glob_match(query, c)).collect();
         match hits.len() {
             1 => return Ok(hits[0].as_str()),
-            n if n > 1 => return Err(NativeError::Ambiguous(format!("ambiguous session: {query}"))),
+            n if n > 1 => {
+                return Err(NativeError::Ambiguous(format!(
+                    "ambiguous session: {query}"
+                )))
+            }
             _ => {}
         }
     }
@@ -286,15 +321,23 @@ fn match_session_name<'a>(
     let pre: Vec<&String> = candidates.iter().filter(|c| c.starts_with(query)).collect();
     match pre.len() {
         1 => return Ok(pre[0].as_str()),
-        n if n > 1 => return Err(NativeError::Ambiguous(format!("ambiguous session: {query}"))),
+        n if n > 1 => {
+            return Err(NativeError::Ambiguous(format!(
+                "ambiguous session: {query}"
+            )))
+        }
         _ => {}
     }
     // 4) 子串
     let sub: Vec<&String> = candidates.iter().filter(|c| c.contains(query)).collect();
     match sub.len() {
         1 => Ok(sub[0].as_str()),
-        n if n > 1 => Err(NativeError::Ambiguous(format!("ambiguous session: {query}"))),
-        _ => Err(NativeError::NotFound(format!("can't find session: {query}"))),
+        n if n > 1 => Err(NativeError::Ambiguous(format!(
+            "ambiguous session: {query}"
+        ))),
+        _ => Err(NativeError::NotFound(format!(
+            "can't find session: {query}"
+        ))),
     }
 }
 
@@ -326,7 +369,12 @@ fn spawn_pane(
 ) -> Result<Pane, NativeError> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows: height.max(1), cols: width.max(1), pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: height.max(1),
+            cols: width.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| NativeError::Internal(format!("openpty: {e}")))?;
 
     let prog = shell
@@ -426,7 +474,11 @@ fn candidate_names(srv: &NativeServer, socket: &str, gui: &[GuiSession]) -> Vec<
 }
 
 /// 解析目标到具体 native 会话/窗口/面板。命中 GUI 会话返回 `Gui(name)`。
-pub fn resolve(socket: &str, target: &str, gui: &[GuiSession]) -> Result<ResolvedNative, NativeError> {
+pub fn resolve(
+    socket: &str,
+    target: &str,
+    gui: &[GuiSession],
+) -> Result<ResolvedNative, NativeError> {
     let srv = registry().lock().unwrap();
     resolve_locked(&srv, socket, target, gui)
 }
@@ -439,7 +491,9 @@ fn resolve_locked(
 ) -> Result<ResolvedNative, NativeError> {
     // 自定义 socket 上没有任何 server（从未起过会话）→ 按 tmux 报 "no server"。
     if socket != "default" && !srv.sockets.contains_key(socket) {
-        return Err(NativeError::NoServer(format!("no server running on {socket}")));
+        return Err(NativeError::NoServer(format!(
+            "no server running on {socket}"
+        )));
     }
     let pt = parse_target(target);
 
@@ -472,7 +526,9 @@ fn resolve_locked(
 
     let names = candidate_names(srv, socket, gui);
     if names.is_empty() {
-        return Err(NativeError::NotFound(format!("can't find session: {query}")));
+        return Err(NativeError::NotFound(format!(
+            "can't find session: {query}"
+        )));
     }
     let hit = match_session_name(query, pt.exact, &names)?;
 
@@ -491,12 +547,18 @@ fn resolve_locked(
         .find(|x| x.name == hit)
         .ok_or_else(|| NativeError::NotFound(format!("can't find session: {query}")))?;
 
-    let wi = pt.window.unwrap_or(s.active_window).min(s.windows.len().saturating_sub(1));
+    let wi = pt
+        .window
+        .unwrap_or(s.active_window)
+        .min(s.windows.len().saturating_sub(1));
     let w = s
         .windows
         .get(wi)
         .ok_or_else(|| NativeError::NotFound(format!("can't find window: {wi}")))?;
-    let pi = pt.pane.unwrap_or(w.active_pane).min(w.panes.len().saturating_sub(1));
+    let pi = pt
+        .pane
+        .unwrap_or(w.active_pane)
+        .min(w.panes.len().saturating_sub(1));
     let p = w
         .panes
         .get(pi)
@@ -522,7 +584,9 @@ fn sock_has_session(srv: &NativeServer, socket: &str, name: &str) -> bool {
 pub fn has_session(socket: &str, target: &str, gui: &[GuiSession]) -> NativeResult {
     let srv = registry().lock().unwrap();
     if socket != "default" && !srv.sockets.contains_key(socket) {
-        return Err(NativeError::NoServer(format!("no server running on {socket}")));
+        return Err(NativeError::NoServer(format!(
+            "no server running on {socket}"
+        )));
     }
     let pt = parse_target(target);
     let Some(query) = pt.session.as_deref() else {
@@ -578,7 +642,12 @@ pub fn new_session(req: NewSessionReq, gui: &[GuiSession]) -> NativeResult {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| basename(req.shell.as_deref().unwrap_or("shell")));
 
-    let window = Window { id: window_id, name: win_name, panes: vec![pane], active_pane: 0 };
+    let window = Window {
+        id: window_id,
+        name: win_name,
+        panes: vec![pane],
+        active_pane: 0,
+    };
     let session = Session {
         id: session_id,
         name: name.clone(),
@@ -588,7 +657,11 @@ pub fn new_session(req: NewSessionReq, gui: &[GuiSession]) -> NativeResult {
         width: req.width,
         height: req.height,
     };
-    srv.sockets.entry(req.socket.clone()).or_default().sessions.push(session);
+    srv.sockets
+        .entry(req.socket.clone())
+        .or_default()
+        .sessions
+        .push(session);
 
     Ok(render_new_session_print(&req.print, &name, 0, pane_id))
 }
@@ -651,7 +724,12 @@ pub fn add_pane(
         if new_window {
             let idx = s.windows.len();
             let name = window_name.unwrap_or("shell").to_string();
-            s.windows.push(Window { id: new_win_id, name, panes: vec![pane], active_pane: 0 });
+            s.windows.push(Window {
+                id: new_win_id,
+                name,
+                panes: vec![pane],
+                active_pane: 0,
+            });
             s.active_window = idx;
             (idx, 0usize)
         } else {
@@ -743,7 +821,11 @@ pub fn capture(
 
 /// 去掉尾部全空行（与 tmux `capture-pane` 默认一致），可选取末 `n` 行后 join。纯逻辑。
 fn finalize_capture(mut rows_text: Vec<String>, lines: Option<usize>) -> String {
-    while rows_text.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+    while rows_text
+        .last()
+        .map(|l| l.trim().is_empty())
+        .unwrap_or(false)
+    {
         rows_text.pop();
     }
     if let Some(n) = lines {
@@ -836,7 +918,12 @@ pub struct BroadcastReader {
 
 impl BroadcastReader {
     pub fn new(rx: broadcast::Receiver<Vec<u8>>, replay: Vec<u8>, cancel: Arc<AtomicBool>) -> Self {
-        Self { rx, buf: VecDeque::new(), replay: replay.into(), cancel }
+        Self {
+            rx,
+            buf: VecDeque::new(),
+            replay: replay.into(),
+            cancel,
+        }
     }
 
     fn drain_into(src: &mut VecDeque<u8>, out: &mut [u8]) -> usize {
@@ -908,7 +995,10 @@ fn session_vars(s: &Session, attached: bool) -> Vec<(&'static str, String)> {
     vec![
         ("#{session_name}", s.name.clone()),
         ("#{session_id}", format!("${}", s.id)),
-        ("#{session_attached}", if attached { "1" } else { "0" }.to_string()),
+        (
+            "#{session_attached}",
+            if attached { "1" } else { "0" }.to_string(),
+        ),
         ("#{session_windows}", s.windows.len().to_string()),
         ("#{session_width}", s.width.to_string()),
         ("#{session_height}", s.height.to_string()),
@@ -929,11 +1019,17 @@ fn pane_vars(
         ("#{window_index}", wi.to_string()),
         ("#{window_id}", format!("@{}", w.id)),
         ("#{window_name}", w.name.clone()),
-        ("#{window_active}", if wi == s.active_window { "1" } else { "0" }.to_string()),
+        (
+            "#{window_active}",
+            if wi == s.active_window { "1" } else { "0" }.to_string(),
+        ),
         ("#{window_panes}", w.panes.len().to_string()),
         ("#{pane_id}", format!("%{}", p.global_id)),
         ("#{pane_index}", pi.to_string()),
-        ("#{pane_active}", if pi == w.active_pane { "1" } else { "0" }.to_string()),
+        (
+            "#{pane_active}",
+            if pi == w.active_pane { "1" } else { "0" }.to_string(),
+        ),
         ("#{pane_width}", p.width.to_string()),
         ("#{pane_height}", p.height.to_string()),
         ("#{pane_current_path}", p.cwd.clone().unwrap_or_default()),
@@ -992,9 +1088,10 @@ pub fn list_all_sessions() -> Vec<NativeSessionInfo> {
     for (socket_name, sock) in &srv.sockets {
         for s in &sock.sessions {
             let total_panes: usize = s.windows.iter().map(|w| w.panes.len()).sum();
-            let attached = s.windows.iter().any(|w| {
-                w.panes.iter().any(|p| p.attachment.is_some())
-            });
+            let attached = s
+                .windows
+                .iter()
+                .any(|w| w.panes.iter().any(|p| p.attachment.is_some()));
             out.push(NativeSessionInfo {
                 socket: socket_name.clone(),
                 name: s.name.clone(),
@@ -1095,19 +1192,17 @@ pub fn list_windows_lines(
 }
 
 /// `display-message -p -F` 针对已解析目标渲染一行。
-pub fn display_message(
-    socket: &str,
-    target: &str,
-    gui: &[GuiSession],
-    fmt: &str,
-) -> NativeResult {
+pub fn display_message(socket: &str, target: &str, gui: &[GuiSession], fmt: &str) -> NativeResult {
     let srv = registry().lock().unwrap();
     let r = resolve_locked(&srv, socket, target, gui)?;
     let s = find_session(&srv, socket, &r.session)
         .ok_or_else(|| NativeError::NotFound(format!("can't find session: {}", r.session)))?;
     let w = &s.windows[r.window_index];
     let p = &w.panes[r.pane_index];
-    Ok(render_format(fmt, &pane_vars(s, r.window_index, w, r.pane_index, p)))
+    Ok(render_format(
+        fmt,
+        &pane_vars(s, r.window_index, w, r.pane_index, p),
+    ))
 }
 
 // ===================== 销毁 =====================
@@ -1141,7 +1236,11 @@ pub fn kill_pane(socket: &str, target: &str, gui: &[GuiSession]) -> NativeResult
             }
         }
         // 窗口空了则移除；会话空了则在释放 `s` 借用后再删。
-        if s.windows.get(r.window_index).map(|w| w.panes.is_empty()).unwrap_or(false) {
+        if s.windows
+            .get(r.window_index)
+            .map(|w| w.panes.is_empty())
+            .unwrap_or(false)
+        {
             s.windows.remove(r.window_index);
             if s.active_window >= s.windows.len() {
                 s.active_window = s.windows.len().saturating_sub(1);
@@ -1217,7 +1316,11 @@ fn kill_session_panes(s: &mut Session) {
 // ===================== 小工具 =====================
 
 fn find_session<'a>(srv: &'a NativeServer, socket: &str, name: &str) -> Option<&'a Session> {
-    srv.sockets.get(socket)?.sessions.iter().find(|s| s.name == name)
+    srv.sockets
+        .get(socket)?
+        .sessions
+        .iter()
+        .find(|s| s.name == name)
 }
 
 fn find_session_mut<'a>(
@@ -1225,12 +1328,20 @@ fn find_session_mut<'a>(
     socket: &str,
     name: &str,
 ) -> Option<&'a mut Session> {
-    srv.sockets.get_mut(socket)?.sessions.iter_mut().find(|s| s.name == name)
+    srv.sockets
+        .get_mut(socket)?
+        .sessions
+        .iter_mut()
+        .find(|s| s.name == name)
 }
 
 fn basename(p: &str) -> String {
     let p = p.replace('\\', "/");
-    p.rsplit('/').next().unwrap_or(&p).trim_end_matches(".exe").to_string()
+    p.rsplit('/')
+        .next()
+        .unwrap_or(&p)
+        .trim_end_matches(".exe")
+        .to_string()
 }
 
 // ===================== 单元测试（纯逻辑） =====================

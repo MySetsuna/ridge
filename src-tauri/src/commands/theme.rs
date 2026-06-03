@@ -147,8 +147,7 @@ pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String 
         .or_else(|| tf.themes.first());
     let (loader_json, bg_json, colors_json, id_json) = match entry {
         Some(t) => {
-            let loader = serde_json::to_string(&t.loader)
-                .unwrap_or_else(|_| "null".to_string());
+            let loader = serde_json::to_string(&t.loader).unwrap_or_else(|_| "null".to_string());
             let bg = t
                 .colors
                 .get("bg")
@@ -161,8 +160,7 @@ pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String 
             // first launch (no localStorage cache) shows a flash of
             // browser-default white between splash dismiss and the
             // async `initThemeSystem → initSettingsBoot` chain landing.
-            let colors = serde_json::to_string(&t.colors)
-                .unwrap_or_else(|_| "null".to_string());
+            let colors = serde_json::to_string(&t.colors).unwrap_or_else(|_| "null".to_string());
             let id = serde_json::to_string(&t.id).unwrap_or_else(|_| "null".to_string());
             (loader, bg, colors, id)
         }

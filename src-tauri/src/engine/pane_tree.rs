@@ -1,10 +1,10 @@
 // src-tauri/src/engine/pane_tree.rs
+use crate::types::PaneMode;
+use crate::utils::error::AppError;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use crate::types::PaneMode;
-use crate::utils::error::AppError;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SplitDirection {
@@ -28,7 +28,7 @@ pub enum PaneNode {
     Split {
         direction: SplitDirection,
         children: Vec<PaneNode>,
-        ratios: Vec<f32>,          // 每个 child 占父节点的百分比（总和=100）
+        ratios: Vec<f32>, // 每个 child 占父节点的百分比（总和=100）
     },
 }
 
@@ -49,7 +49,7 @@ pub struct Pane {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneTree {
     pub root: PaneNode,
-    pub panes: HashMap<Uuid, Pane>,   // 所有 Leaf 的元数据（Fiber 风格的 alternate 存储）
+    pub panes: HashMap<Uuid, Pane>, // 所有 Leaf 的元数据（Fiber 风格的 alternate 存储）
 }
 
 impl PaneTree {
@@ -57,7 +57,15 @@ impl PaneTree {
     pub fn new() -> Self {
         let root_id = Uuid::new_v4();
         let mut panes = HashMap::new();
-        panes.insert(root_id, Pane { id: root_id, mode: PaneMode::Terminal, cwd: None, shell_kind: None });
+        panes.insert(
+            root_id,
+            Pane {
+                id: root_id,
+                mode: PaneMode::Terminal,
+                cwd: None,
+                shell_kind: None,
+            },
+        );
 
         Self {
             root: PaneNode::Leaf(root_id),
@@ -80,13 +88,17 @@ impl PaneTree {
                 Some(PaneNode::Split {
                     direction,
                     children: vec![
-                        PaneNode::Leaf(*id),           // 旧 Leaf 保留
-                        PaneNode::Leaf(new_pane_id),   // 新 Leaf
+                        PaneNode::Leaf(*id),         // 旧 Leaf 保留
+                        PaneNode::Leaf(new_pane_id), // 新 Leaf
                     ],
                     ratios: vec![50.0, 50.0],
                 })
             }
-            PaneNode::Split { direction: d, children, ratios } => {
+            PaneNode::Split {
+                direction: d,
+                children,
+                ratios,
+            } => {
                 // 递归遍历 children（Fiber 的 child/sibling 遍历）
                 let mut new_children = Vec::with_capacity(children.len());
                 let mut found = false;
@@ -121,14 +133,18 @@ impl PaneTree {
         let new_pane_id = Uuid::new_v4();
 
         // 创建新的 Wip 树
-        if let Some(new_root) = Self::reconcile_split(&self.root, target_id, direction, new_pane_id) {
+        if let Some(new_root) = Self::reconcile_split(&self.root, target_id, direction, new_pane_id)
+        {
             self.root = new_root;
-            self.panes.insert(new_pane_id, Pane {
-                id: new_pane_id,
-                mode: PaneMode::Terminal,
-                cwd: None,
-                shell_kind: None,
-            });
+            self.panes.insert(
+                new_pane_id,
+                Pane {
+                    id: new_pane_id,
+                    mode: PaneMode::Terminal,
+                    cwd: None,
+                    shell_kind: None,
+                },
+            );
             Ok(new_pane_id)
         } else {
             Err(AppError::PaneNotFound(target_id))
@@ -139,7 +155,10 @@ impl PaneTree {
     #[allow(dead_code)] // public API; callers do ratio updates via set_split_ratios_at_path
     pub fn resize(&mut self, pane_id: Uuid, new_ratio: f32) -> Result<(), AppError> {
         fn recurse(node: &mut PaneNode, pane_id: Uuid, new_ratio: f32) -> bool {
-            if let PaneNode::Split { children, ratios, .. } = node {
+            if let PaneNode::Split {
+                children, ratios, ..
+            } = node
+            {
                 for (i, child) in children.iter_mut().enumerate() {
                     if let PaneNode::Leaf(id) = &*child {
                         if *id == pane_id {
@@ -282,7 +301,10 @@ impl PaneTree {
 
     /// 从树中摘掉指定 Leaf（不删 `panes` 元数据、不关 PTY）。
     fn remove_leaf_from_structure(node: &mut PaneNode, pane_id: Uuid) -> bool {
-        if let PaneNode::Split { children, ratios, .. } = node {
+        if let PaneNode::Split {
+            children, ratios, ..
+        } = node
+        {
             let mut i = 0;
             while i < children.len() {
                 let hit = matches!(
@@ -567,78 +589,98 @@ impl PaneTree {
 }
 #[cfg(test)]
 mod tests {
-use super::*;
+    use super::*;
 
-#[test]
-fn pane_serde_roundtrip_without_cwd() {
-    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None, shell_kind: None };
-    let json = serde_json::to_string(&pane).unwrap();
-    let deserialized: Pane = serde_json::from_str(&json).unwrap();
-    assert!(deserialized.cwd.is_none());
-    assert_eq!(deserialized.id, pane.id);
-}
-
-#[test]
-fn pane_serde_roundtrip_with_unix_cwd() {
-    let pane = Pane {
-        id: Uuid::new_v4(),
-        mode: PaneMode::Terminal,
-        cwd: Some(PathBuf::from("/home/user/projects")),
-        shell_kind: None,
-    };
-    let json = serde_json::to_string(&pane).unwrap();
-    assert!(json.contains("/home/user/projects"));
-    let deserialized: Pane = serde_json::from_str(&json).unwrap();
-    assert_eq!(deserialized.cwd.as_ref().unwrap().to_str(), Some("/home/user/projects"));
-}
-
-#[test]
-fn pane_serde_roundtrip_with_windows_cwd() {
-    let pane = Pane {
-        id: Uuid::new_v4(),
-        mode: PaneMode::Terminal,
-        cwd: Some(PathBuf::from("C:/Users/Alice/code")),
-        shell_kind: None,
-    };
-    let json = serde_json::to_string(&pane).unwrap();
-    let deserialized: Pane = serde_json::from_str(&json).unwrap();
-    assert_eq!(deserialized.cwd.as_ref().unwrap().to_str(), Some("C:/Users/Alice/code"));
-}
-
-#[test]
-fn pane_deserializes_cwd_field_explicitly() {
-    let json = r#"{"id":"00000000-0000-0000-0000-000000000001","mode":"Terminal","cwd":"/tmp/test"}"#;
-    let deserialized: Pane = serde_json::from_str(json).unwrap();
-    assert_eq!(deserialized.cwd.as_ref().unwrap().to_str(), Some("/tmp/test"));
-}
-
-#[test]
-fn pane_deserializes_missing_cwd_as_none() {
-    let json = r#"{"id":"00000000-0000-0000-0000-000000000001","mode":"Terminal"}"#;
-    let deserialized: Pane = serde_json::from_str(json).unwrap();
-    assert!(deserialized.cwd.is_none());
-}
-
-#[test]
-fn pane_serializes_cwd_none_omitted_by_skip_serializing() {
-    let pane = Pane { id: Uuid::new_v4(), mode: PaneMode::Terminal, cwd: None, shell_kind: None };
-    let json = serde_json::to_string(&pane).unwrap();
-    assert!(!json.contains("cwd"));
-}
-
-#[test]
-fn pane_tree_new_has_no_cwd() {
-    let tree = PaneTree::new();
-    for pane in tree.panes.values() {
-        assert!(pane.cwd.is_none());
+    #[test]
+    fn pane_serde_roundtrip_without_cwd() {
+        let pane = Pane {
+            id: Uuid::new_v4(),
+            mode: PaneMode::Terminal,
+            cwd: None,
+            shell_kind: None,
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        let deserialized: Pane = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.cwd.is_none());
+        assert_eq!(deserialized.id, pane.id);
     }
-}
 
-#[test]
-fn pane_tree_split_preserves_cwd_none_on_new_pane() {
-    let mut tree = PaneTree::new();
-    let root_id = tree.get_all_leaves()[0];
-    let new_id = tree.split(root_id, SplitDirection::Horizontal).unwrap();
-    assert!(tree.panes.get(&new_id).unwrap().cwd.is_none());
-}
+    #[test]
+    fn pane_serde_roundtrip_with_unix_cwd() {
+        let pane = Pane {
+            id: Uuid::new_v4(),
+            mode: PaneMode::Terminal,
+            cwd: Some(PathBuf::from("/home/user/projects")),
+            shell_kind: None,
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        assert!(json.contains("/home/user/projects"));
+        let deserialized: Pane = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.cwd.as_ref().unwrap().to_str(),
+            Some("/home/user/projects")
+        );
+    }
+
+    #[test]
+    fn pane_serde_roundtrip_with_windows_cwd() {
+        let pane = Pane {
+            id: Uuid::new_v4(),
+            mode: PaneMode::Terminal,
+            cwd: Some(PathBuf::from("C:/Users/Alice/code")),
+            shell_kind: None,
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        let deserialized: Pane = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.cwd.as_ref().unwrap().to_str(),
+            Some("C:/Users/Alice/code")
+        );
+    }
+
+    #[test]
+    fn pane_deserializes_cwd_field_explicitly() {
+        let json =
+            r#"{"id":"00000000-0000-0000-0000-000000000001","mode":"Terminal","cwd":"/tmp/test"}"#;
+        let deserialized: Pane = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            deserialized.cwd.as_ref().unwrap().to_str(),
+            Some("/tmp/test")
+        );
+    }
+
+    #[test]
+    fn pane_deserializes_missing_cwd_as_none() {
+        let json = r#"{"id":"00000000-0000-0000-0000-000000000001","mode":"Terminal"}"#;
+        let deserialized: Pane = serde_json::from_str(json).unwrap();
+        assert!(deserialized.cwd.is_none());
+    }
+
+    #[test]
+    fn pane_serializes_cwd_none_omitted_by_skip_serializing() {
+        let pane = Pane {
+            id: Uuid::new_v4(),
+            mode: PaneMode::Terminal,
+            cwd: None,
+            shell_kind: None,
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        assert!(!json.contains("cwd"));
+    }
+
+    #[test]
+    fn pane_tree_new_has_no_cwd() {
+        let tree = PaneTree::new();
+        for pane in tree.panes.values() {
+            assert!(pane.cwd.is_none());
+        }
+    }
+
+    #[test]
+    fn pane_tree_split_preserves_cwd_none_on_new_pane() {
+        let mut tree = PaneTree::new();
+        let root_id = tree.get_all_leaves()[0];
+        let new_id = tree.split(root_id, SplitDirection::Horizontal).unwrap();
+        assert!(tree.panes.get(&new_id).unwrap().cwd.is_none());
+    }
 }

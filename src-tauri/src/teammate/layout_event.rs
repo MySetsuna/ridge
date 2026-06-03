@@ -161,8 +161,7 @@ mod tests {
     /// variant from the golden entry's own fields, re-serialize, and assert it
     /// equals the entry byte-for-byte — proving the Rust emitter and the golden
     /// (hence the front-end) agree on the wire shape. See M1.
-    const GOLDEN_JSON: &str =
-        include_str!("../../../src/lib/teammate/layoutChange.golden.json");
+    const GOLDEN_JSON: &str = include_str!("../../../src/lib/teammate/layoutChange.golden.json");
 
     #[test]
     fn golden_envelopes_round_trip() {
@@ -173,7 +172,9 @@ mod tests {
             if name.starts_with('_') {
                 continue; // metadata (e.g. `_comment`), not an envelope
             }
-            let kind = entry["kind"].as_str().unwrap_or_else(|| panic!("case {name}: no kind"));
+            let kind = entry["kind"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {name}: no kind"));
             let pane_id = entry.get("pane_id").and_then(|v| v.as_str());
             let trace_id = entry.get("trace_id").and_then(|v| v.as_str());
             let change = match kind {
@@ -181,19 +182,24 @@ mod tests {
                 "reused" => LayoutChange::reused(pane_id.expect("reused needs pane_id")),
                 "detached" => LayoutChange::detached(pane_id.expect("detached needs pane_id")),
                 "removed" => match trace_id {
-                    Some(t) => LayoutChange::removed_with_trace(
-                        pane_id.expect("removed needs pane_id"),
-                        t,
-                    ),
+                    Some(t) => {
+                        LayoutChange::removed_with_trace(pane_id.expect("removed needs pane_id"), t)
+                    }
                     None => LayoutChange::removed(pane_id.expect("removed needs pane_id")),
                 },
                 "state" => LayoutChange::state(),
                 other => panic!("case {name}: golden has unknown kind {other}"),
             };
             let reserialized = serde_json::to_value(&change).unwrap();
-            assert_eq!(&reserialized, entry, "golden case {name} round-trip mismatch");
+            assert_eq!(
+                &reserialized, entry,
+                "golden case {name} round-trip mismatch"
+            );
             checked += 1;
         }
-        assert!(checked >= 6, "expected ≥6 golden envelopes, checked {checked}");
+        assert!(
+            checked >= 6,
+            "expected ≥6 golden envelopes, checked {checked}"
+        );
     }
 }

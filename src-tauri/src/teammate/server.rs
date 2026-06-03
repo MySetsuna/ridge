@@ -7,9 +7,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use chrono::{DateTime, Local, Utc};
 use uuid::Uuid;
 
 use crate::commands::{pane, terminal};
@@ -266,12 +266,12 @@ async fn run_server(
         .route("/api/v1/send-keys", post(route_send_keys))
         .route("/api/v1/spawn-process", post(route_spawn_process))
         .route("/api/v1/list-panes", get(route_list_panes))
-    // Pane management
-    .route("/api/v1/select-pane", post(route_select_pane))
-    .route("/api/v1/kill-pane", post(route_kill_pane))
-    .route("/api/v1/resize-pane", post(route_resize_pane))
-    // Window management
-    .route("/api/v1/new-window", post(route_new_window))
+        // Pane management
+        .route("/api/v1/select-pane", post(route_select_pane))
+        .route("/api/v1/kill-pane", post(route_kill_pane))
+        .route("/api/v1/resize-pane", post(route_resize_pane))
+        // Window management
+        .route("/api/v1/new-window", post(route_new_window))
         .route("/api/v1/rename-pane", post(route_rename_pane))
         .route("/api/v1/list-windows", get(route_list_windows))
         .route("/api/v1/list-sessions", get(route_list_sessions))
@@ -288,13 +288,19 @@ async fn run_server(
         .route("/api/v1/tmux/list-panes", get(route_tmux_list_panes))
         .route("/api/v1/tmux/capture-pane", get(route_tmux_capture))
         .route("/api/v1/tmux/list-windows", get(route_tmux_list_windows))
-        .route("/api/v1/tmux/display-message", get(route_tmux_display_message))
+        .route(
+            "/api/v1/tmux/display-message",
+            get(route_tmux_display_message),
+        )
         .route("/api/v1/tmux/split-window", post(route_tmux_split_window))
         .route("/api/v1/tmux/summon", post(route_tmux_summon))
         .route("/api/v1/tmux/send-keys", post(route_tmux_send_keys))
         .route("/api/v1/tmux/select", post(route_tmux_select))
         .route("/api/v1/tmux/kill", post(route_tmux_kill))
-        .route("/api/v1/tmux/list-all-sessions", get(route_tmux_list_all_sessions))
+        .route(
+            "/api/v1/tmux/list-all-sessions",
+            get(route_tmux_list_all_sessions),
+        )
         .with_state(ctx);
 
     if let Err(e) = axum::serve(listener, app).await {
@@ -356,8 +362,10 @@ fn find_idle_pane_uuid(state: &AppState, wid: uuid::Uuid) -> Option<uuid::Uuid> 
 fn register_agent_to_pane(state: &AppState, wid: uuid::Uuid, agent_id: &str, pane_id: uuid::Uuid) {
     let mut map = state.workspaces.write();
     if let Some(ws) = map.get_mut(&wid) {
-        ws.teammate_agent_pane_map.insert(agent_id.to_string(), pane_id);
-        ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+        ws.teammate_agent_pane_map
+            .insert(agent_id.to_string(), pane_id);
+        ws.teammate_pane_states
+            .insert(pane_id, crate::state::PaneState::Busy);
     }
 }
 
@@ -365,7 +373,8 @@ fn register_agent_to_pane(state: &AppState, wid: uuid::Uuid, agent_id: &str, pan
 fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) {
     let mut map = state.workspaces.write();
     if let Some(ws) = map.get_mut(&wid) {
-        ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Idle);
+        ws.teammate_pane_states
+            .insert(pane_id, crate::state::PaneState::Idle);
         // 清理 agent 映射
         ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
     }
@@ -424,8 +433,13 @@ async fn route_register_agent(
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
-    let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
-    (StatusCode::OK, Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })))
+    let _ = ctx
+        .handle
+        .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })),
+    )
         .into_response()
 }
 
@@ -467,7 +481,9 @@ async fn route_release_pane(
 
     release_pane(&ctx.state, wid, pane_id);
     // Emit layout-changed so the frontend drops the "busy" indicator.
-    let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+    let _ = ctx
+        .handle
+        .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
@@ -653,7 +669,8 @@ async fn route_split(
                         // normal harness 流（裸 split→reuse→spawn-process）由 spawn-process 的
                         // F1 提升为 Busy，不受影响。
                         if body.is_agent || body.program.is_some() {
-                            ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+                            ws.teammate_pane_states
+                                .insert(pane_id, crate::state::PaneState::Busy);
                             if let Some(aid) = body
                                 .agent_id
                                 .as_ref()
@@ -687,16 +704,35 @@ async fn route_split(
                     sc
                 });
                 if let Some(ref sc) = structured_cmd {
-                    let spawn_cwd = body.cwd.as_ref().map(|s| std::path::PathBuf::from(s.trim())).filter(|p| !p.as_os_str().is_empty());
+                    let spawn_cwd = body
+                        .cwd
+                        .as_ref()
+                        .map(|s| std::path::PathBuf::from(s.trim()))
+                        .filter(|p| !p.as_os_str().is_empty());
                     let _ = terminal::ensure_pane_pty_workspace(
-                        &ctx.state, wid, pane_id, None,
-                        spawn_cwd.as_deref(), None, Some(sc.clone()),
-                        Some(idle_idx), None, None,
+                        &ctx.state,
+                        wid,
+                        pane_id,
+                        None,
+                        spawn_cwd.as_deref(),
+                        None,
+                        Some(sc.clone()),
+                        Some(idle_idx),
+                        None,
+                        None,
                     );
-                } else if let Some(cmd) = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                } else if let Some(cmd) = body
+                    .command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
                     let data = format!("{cmd}\n");
                     let _ = terminal::write_pty_bytes_workspace(
-                        &ctx.state, wid, pane_id, data.as_bytes(),
+                        &ctx.state,
+                        wid,
+                        pane_id,
+                        data.as_bytes(),
                     );
                 }
                 let _ = ctx.handle.emit(
@@ -738,7 +774,11 @@ async fn route_split(
             if explicit_idx >= pane_count {
                 return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
             }
-            let dir = if body.horizontal { "horizontal" } else { "vertical" };
+            let dir = if body.horizontal {
+                "horizontal"
+            } else {
+                "vertical"
+            };
             (explicit_idx, dir, false)
         } else {
             match pane::choose_balanced_split(ws) {
@@ -796,7 +836,8 @@ async fn route_split(
             let new_idx = {
                 let map = ctx.state.workspaces.read();
                 let Some(ws) = map.get(&wid) else {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing").into_response();
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing")
+                        .into_response();
                 };
                 ws.pane_tree
                     .get_all_leaves()
@@ -804,7 +845,11 @@ async fn route_split(
                     .position(|u| *u == new_id)
                     .unwrap_or(0)
             };
-            let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let cmd = body
+                .command
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
 
             let structured_cmd = body.program.as_ref().map(|prog| {
                 let mut sc = terminal::StructuredPtyCommand {
@@ -851,7 +896,10 @@ async fn route_split(
                     if let Some(ws) = map.get_mut(&wid) {
                         let _ = ws.pane_tree.close(new_id);
                         ws.pane_sizes.remove(&new_id);
-                        *ws.teammate_metrics.failures.entry("phase1_failed".into()).or_insert(0) += 1;
+                        *ws.teammate_metrics
+                            .failures
+                            .entry("phase1_failed".into())
+                            .or_insert(0) += 1;
                     }
                 }
                 return (
@@ -888,8 +936,7 @@ async fn route_split(
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                     {
-                        ws.teammate_pane_titles
-                            .insert(new_id, name.to_string());
+                        ws.teammate_pane_titles.insert(new_id, name.to_string());
                     }
                 }
             }
@@ -925,7 +972,10 @@ async fn route_split(
                         if ws.pending_spawns.remove(&watch_pid).is_some() {
                             let _ = ws.pane_tree.close(watch_pid);
                             ws.pane_sizes.remove(&watch_pid);
-                            *ws.teammate_metrics.failures.entry("watchdog_30s".into()).or_insert(0) += 1;
+                            *ws.teammate_metrics
+                                .failures
+                                .entry("watchdog_30s".into())
+                                .or_insert(0) += 1;
                             true
                         } else {
                             false
@@ -979,7 +1029,10 @@ async fn route_split(
                     {
                         let mut map = ctx.state.workspaces.write();
                         if let Some(ws) = map.get_mut(&wid) {
-                            *ws.teammate_metrics.failures.entry("activate_failed".into()).or_insert(0) += 1;
+                            *ws.teammate_metrics
+                                .failures
+                                .entry("activate_failed".into())
+                                .or_insert(0) += 1;
                         }
                     }
                     (
@@ -995,7 +1048,10 @@ async fn route_split(
                     {
                         let mut map = ctx.state.workspaces.write();
                         if let Some(ws) = map.get_mut(&wid) {
-                            *ws.teammate_metrics.failures.entry("activate_timeout_3s".into()).or_insert(0) += 1;
+                            *ws.teammate_metrics
+                                .failures
+                                .entry("activate_timeout_3s".into())
+                                .or_insert(0) += 1;
                         }
                     }
                     (
@@ -1018,14 +1074,8 @@ async fn route_capture(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    let pane: usize = q
-        .get("pane")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let lines: usize = q
-        .get("lines")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(80);
+    let pane: usize = q.get("pane").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let lines: usize = q.get("lines").and_then(|s| s.parse().ok()).unwrap_or(80);
     let wid = caller_workspace_id_or_active(&ctx, &headers);
     let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane) {
         Ok(u) => u,
@@ -1195,7 +1245,12 @@ async fn route_spawn_process(
             // 立即提升为 Busy（启动即 Busy）。有 agent_id 则写映射，供 badge/退出清理。
             if body.is_agent {
                 ws.teammate_pane_states.insert(pid, PaneState::Busy);
-                if let Some(aid) = body.agent_id.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                if let Some(aid) = body
+                    .agent_id
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
                     ws.teammate_agent_pane_map.insert(aid.to_string(), pid);
                 }
             }
@@ -1203,14 +1258,15 @@ async fn route_spawn_process(
     }
     // 提升后 emit，让前端 re-sync 渲染 AGENT badge（T0 封套 generic state）。
     if body.is_agent {
-        let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+        let _ = ctx
+            .handle
+            .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
     }
     let _ = ctx
         .handle
         .emit("teammate-active-pane-changed", pid.to_string());
     (StatusCode::OK, "ok").into_response()
 }
-
 
 #[cfg(windows)]
 fn normalize_windows_command(
@@ -1242,7 +1298,11 @@ fn normalize_windows_command(
     out
 }
 
-async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Query(q): Query<std::collections::HashMap<String, String>>) -> impl IntoResponse {
+async fn route_list_panes(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
@@ -1284,11 +1344,7 @@ async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Qu
 
         let json_body = ListPanesJsonBody {
             active_index: if leaves.is_empty() { 0 } else { active_index },
-            pane_count: if leaves.is_empty() {
-                1
-            } else {
-                pane_count
-            },
+            pane_count: if leaves.is_empty() { 1 } else { pane_count },
             panes: leaves
                 .iter()
                 .enumerate()
@@ -1297,7 +1353,10 @@ async fn route_list_panes(State(ctx): State<TeammateCtx>, headers: HeaderMap, Qu
                     pane_id: format!("%{i}"),
                     uuid: u.to_string(),
                     title: ws.teammate_pane_titles.get(u).cloned(),
-                    cwd: ws.pane_tree.panes.get(u)
+                    cwd: ws
+                        .pane_tree
+                        .panes
+                        .get(u)
                         .and_then(|p| p.cwd.as_ref())
                         .map(|c| c.to_string_lossy().replace('\\', "/")),
                 })
@@ -1332,7 +1391,10 @@ async fn route_select_pane(
     }
     let wid = caller_workspace_id_or_active(&ctx, &headers);
 
-    log_stderr_server(&format!("select-pane: index={:?}, last={:?}", body.pane_index, body.last));
+    log_stderr_server(&format!(
+        "select-pane: index={:?}, last={:?}",
+        body.pane_index, body.last
+    ));
 
     // Handle last-pane: swap with previous pane
     if body.last == Some(true) && body.pane_index.is_none() {
@@ -1353,13 +1415,19 @@ async fn route_select_pane(
         };
 
         if let Some(pid) = new_pane_id {
-            let _ = ctx.handle.emit("teammate-active-pane-changed", pid.to_string());
+            let _ = ctx
+                .handle
+                .emit("teammate-active-pane-changed", pid.to_string());
         }
 
-        return (StatusCode::OK, Json(serde_json::json!({
-            "ok": true,
-            "pane_index": new_cursor
-        }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "pane_index": new_cursor
+            })),
+        )
+            .into_response();
     }
 
     // Standard select-pane with explicit index
@@ -1390,10 +1458,14 @@ async fn route_select_pane(
                 .emit("teammate-active-pane-changed", pid.to_string());
         }
 
-        (StatusCode::OK, Json(serde_json::json!({
-            "ok": true,
-            "pane_index": idx
-        }))).into_response()
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "pane_index": idx
+            })),
+        )
+            .into_response()
     } else {
         // No index or direction — acknowledge silently (handles -e/-d/-Z modifier-only calls)
         (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
@@ -1431,9 +1503,10 @@ async fn route_kill_pane(
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
-                let _ = ctx
-                    .handle
-                    .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::removed(pid.to_string()));
+                let _ = ctx.handle.emit(
+                    TEAMMATE_LAYOUT_CHANGED,
+                    LayoutChange::removed(pid.to_string()),
+                );
                 (StatusCode::OK, "ok").into_response()
             }
             Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -1499,14 +1572,19 @@ async fn route_new_window(
         .as_ref()
         .map(|s| std::path::PathBuf::from(s.trim()))
         .filter(|p| !p.as_os_str().is_empty());
-    let cmd = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let cmd = body
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     match pane::teammate_split_pane(&ctx.state, wid, 0, "vertical") {
         Ok(new_id) => {
             let new_idx = {
                 let map = ctx.state.workspaces.read();
                 let Some(ws) = map.get(&wid) else {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing").into_response();
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing")
+                        .into_response();
                 };
                 ws.pane_tree
                     .get_all_leaves()
@@ -1541,22 +1619,23 @@ async fn route_new_window(
             {
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
-                ws.last_pane_index = Some(ws.teammate_tmux_pane_cursor);
+                    ws.last_pane_index = Some(ws.teammate_tmux_pane_cursor);
                     ws.teammate_tmux_pane_cursor = new_idx;
-                // Mark new pane as Busy
-                ws.teammate_pane_states.insert(new_id, PaneState::Busy);
+                    // Mark new pane as Busy
+                    ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     if let Some(name) = body
                         .window_name
                         .as_ref()
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                     {
-                        ws.teammate_pane_titles
-                            .insert(new_id, name.to_string());
+                        ws.teammate_pane_titles.insert(new_id, name.to_string());
                     }
                 }
             }
-            let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+            let _ = ctx
+                .handle
+                .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
             let _ = ctx
                 .handle
                 .emit("teammate-active-pane-changed", new_id.to_string());
@@ -1625,7 +1704,9 @@ async fn route_rename_pane(
     let name = body.name.trim().to_string();
 
     let target_idx = body.pane_index.unwrap_or_else(|| {
-        ctx.state.workspaces.read()
+        ctx.state
+            .workspaces
+            .read()
             .get(&wid)
             .map(|ws| ws.teammate_tmux_pane_cursor)
             .unwrap_or(0)
@@ -1643,7 +1724,9 @@ async fn route_rename_pane(
                     }
                 }
             }
-            let _ = ctx.handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+            let _ = ctx
+                .handle
+                .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
             (StatusCode::OK, "ok").into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -1682,7 +1765,11 @@ async fn route_list_windows(
             .get(active_pane_index)
             .and_then(|u| ws.teammate_pane_titles.get(u))
             .cloned()
-            .or_else(|| leaves.iter().find_map(|u| ws.teammate_pane_titles.get(u).cloned()))
+            .or_else(|| {
+                leaves
+                    .iter()
+                    .find_map(|u| ws.teammate_pane_titles.get(u).cloned())
+            })
             .unwrap_or_else(|| "ridge".to_string());
         let line = format!(
             "0: {}* ({} panes) [80x24] @0 (active)",
@@ -1725,7 +1812,10 @@ fn tmux_list_sessions_label(id: Uuid, user_name: Option<&str>) -> String {
             })
             .collect::<String>()
     });
-    let cleaned = from_user.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let cleaned = from_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(s) = cleaned {
         return s.to_string();
     }
@@ -1734,7 +1824,10 @@ fn tmux_list_sessions_label(id: Uuid, user_name: Option<&str>) -> String {
     format!("ws{}", &compact[..n])
 }
 
-async fn route_list_sessions(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
+async fn route_list_sessions(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
@@ -1750,12 +1843,11 @@ async fn route_list_sessions(State(ctx): State<TeammateCtx>, headers: HeaderMap)
         };
         let label = tmux_list_sessions_label(*wid, names.get(wid).map(String::as_str));
         let (cols, rows) = workspace_first_pty_size(ws);
-        let created_local: DateTime<Local> = DateTime::<Utc>::from(ws.created_at).with_timezone(&Local);
+        let created_local: DateTime<Local> =
+            DateTime::<Utc>::from(ws.created_at).with_timezone(&Local);
         let date_str = created_local.format("%a %b %d %H:%M:%S %Y").to_string();
         // Ridge 每个工作区对应 tmux 的一个 session、一个 window（多 pane 为分屏）。
-        let mut line = format!(
-            "{label}: 1 windows (created {date_str}) [{cols}x{rows}]"
-        );
+        let mut line = format!("{label}: 1 windows (created {date_str}) [{cols}x{rows}]");
         if *wid == active {
             line.push_str(" (attached)");
         }
@@ -1765,7 +1857,10 @@ async fn route_list_sessions(State(ctx): State<TeammateCtx>, headers: HeaderMap)
     (StatusCode::OK, lines.join("\n")).into_response()
 }
 
-async fn route_list_clients(State(ctx): State<TeammateCtx>, headers: HeaderMap) -> impl IntoResponse {
+async fn route_list_clients(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
@@ -2148,8 +2243,10 @@ pub(crate) fn summon_into_workspace(
             let mut map = state.workspaces.write();
             if let Some(ws) = map.get_mut(&wid) {
                 ws.terminals.insert(new_id, handle);
-                ws.pane_sizes.insert(new_id, (sp.height.max(1), sp.width.max(1)));
-                ws.teammate_pane_titles.insert(new_id, format!("%{}", sp.global_id));
+                ws.pane_sizes
+                    .insert(new_id, (sp.height.max(1), sp.width.max(1)));
+                ws.teammate_pane_titles
+                    .insert(new_id, format!("%{}", sp.global_id));
                 if let Some(ref dir) = sp.cwd {
                     if let Some(p) = ws.pane_tree.panes.get_mut(&new_id) {
                         p.cwd = Some(dir.clone().into());

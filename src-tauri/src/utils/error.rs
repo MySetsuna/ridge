@@ -14,5 +14,7 @@ pub enum AppError {
 }
 
 impl From<AppError> for String {
-    fn from(e: AppError) -> Self { e.to_string() }
+    fn from(e: AppError) -> Self {
+        e.to_string()
+    }
 }

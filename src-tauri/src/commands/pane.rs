@@ -58,12 +58,14 @@ fn engine_node_to_layout(
 ) -> LayoutNode {
     match node {
         EnginePaneNode::Leaf(id) => {
-            let agent_state = pane_states.get(id).map(|s| match s {
-                crate::state::PaneState::Idle => "idle",
-                crate::state::PaneState::Busy => "busy",
-                crate::state::PaneState::Starting => "starting",
-            }
-            .to_string());
+            let agent_state = pane_states.get(id).map(|s| {
+                match s {
+                    crate::state::PaneState::Idle => "idle",
+                    crate::state::PaneState::Busy => "busy",
+                    crate::state::PaneState::Starting => "starting",
+                }
+                .to_string()
+            });
             LayoutNode::Leaf {
                 id: id.to_string(),
                 title: titles.get(id).cloned(),
@@ -90,7 +92,14 @@ fn engine_node_to_layout(
                 children: children
                     .iter()
                     .map(|c| {
-                        engine_node_to_layout(c, split_counter, titles, panes, pane_states, agent_by_pane)
+                        engine_node_to_layout(
+                            c,
+                            split_counter,
+                            titles,
+                            panes,
+                            pane_states,
+                            agent_by_pane,
+                        )
                     })
                     .collect(),
                 ratios: ratios.clone(),
@@ -121,8 +130,8 @@ fn get_pane_layout_for_inner(
     state: &State<'_, AppState>,
     workspace_id: &str,
 ) -> Result<LayoutNode, String> {
-    let wid = Uuid::parse_str(workspace_id)
-        .map_err(|e| format!("workspace_id 不是合法 UUID: {e}"))?;
+    let wid =
+        Uuid::parse_str(workspace_id).map_err(|e| format!("workspace_id 不是合法 UUID: {e}"))?;
     let map = state.workspaces.read();
     let ws = map
         .get(&wid)
@@ -186,10 +195,8 @@ pub async fn set_split_ratios_batch(
     let ws = map
         .get_mut(&wid)
         .ok_or_else(|| "无活动工作区".to_string())?;
-    let pairs: Vec<(Vec<usize>, Vec<f32>)> = updates
-        .into_iter()
-        .map(|u| (u.path, u.ratios))
-        .collect();
+    let pairs: Vec<(Vec<usize>, Vec<f32>)> =
+        updates.into_iter().map(|u| (u.path, u.ratios)).collect();
     ws.pane_tree
         .set_split_ratios_batch(&pairs)
         .map_err(|e| e.to_string())?;
@@ -238,7 +245,9 @@ pub async fn dock_pane(
 
     if source_wid == target_wid {
         let mut map = state.workspaces.write();
-        let ws = map.get_mut(&source_wid).ok_or_else(|| "工作区已消失".to_string())?;
+        let ws = map
+            .get_mut(&source_wid)
+            .ok_or_else(|| "工作区已消失".to_string())?;
         ws.pane_tree
             .dock_pane(source, target, region)
             .map_err(|e| e.to_string())?;
@@ -252,7 +261,9 @@ pub async fn dock_pane(
 
     // 1. 从 source workspace 摘下 leaf + 取走 pane 元数据 / PTY / 标题。
     let (pane_meta, pty_handle, pane_size, teammate_title, source_now_empty) = {
-        let src_ws = map.get_mut(&source_wid).ok_or_else(|| "source 工作区已消失".to_string())?;
+        let src_ws = map
+            .get_mut(&source_wid)
+            .ok_or_else(|| "source 工作区已消失".to_string())?;
         let leaves = src_ws.pane_tree.get_all_leaves();
         if !leaves.contains(&source) {
             return Err("source pane 不是叶子节点".into());
@@ -270,7 +281,9 @@ pub async fn dock_pane(
 
     // 2. 注入 target workspace：先放元数据 / PTY，再把 leaf 拼到 target 节点边上。
     {
-        let tgt_ws = map.get_mut(&target_wid).ok_or_else(|| "target 工作区已消失".to_string())?;
+        let tgt_ws = map
+            .get_mut(&target_wid)
+            .ok_or_else(|| "target 工作区已消失".to_string())?;
         if let Some(meta) = pane_meta {
             tgt_ws.pane_tree.panes.insert(source, meta);
         }
@@ -358,12 +371,12 @@ fn split_pane_inner(
     drop(map);
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     // Broadcast pane tree change to remote clients and desktop frontend.
-    let _ = state.remote_structural_tx.send(
-        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: wid }
-    );
-    let _ = state.event_tx.try_send(
-        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: wid }
-    );
+    let _ = state
+        .remote_structural_tx
+        .send(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: wid });
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::PaneTreeChanged { workspace_id: wid });
     Ok(SplitPaneResult {
         pane_id: new_pane_id.to_string(),
         initial_cwd: parent_cwd,
@@ -420,7 +433,9 @@ pub(crate) fn register_teammate_agent_in(
     agent_id: String,
 ) -> Result<(), String> {
     let mut map = state.workspaces.write();
-    let ws = map.get_mut(&wid).ok_or_else(|| "工作区不存在".to_string())?;
+    let ws = map
+        .get_mut(&wid)
+        .ok_or_else(|| "工作区不存在".to_string())?;
     if !ws.pane_tree.panes.contains_key(&pane_uuid) {
         return Err(format!("pane {pane_uuid} not in workspace {wid}"));
     }
@@ -456,7 +471,9 @@ pub(crate) fn release_teammate_agent_in(
     pane_uuid: Uuid,
 ) -> Result<(), String> {
     let mut map = state.workspaces.write();
-    let ws = map.get_mut(&wid).ok_or_else(|| "工作区不存在".to_string())?;
+    let ws = map
+        .get_mut(&wid)
+        .ok_or_else(|| "工作区不存在".to_string())?;
     ws.teammate_pane_states
         .insert(pane_uuid, crate::state::PaneState::Idle);
     ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
@@ -512,7 +529,9 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
     terminal::kill_pty_if_present(&*state, wid, pane_id).await;
     {
         let mut map = state.workspaces.write();
-        let ws = map.get_mut(&wid).ok_or_else(|| "无活动工作区".to_string())?;
+        let ws = map
+            .get_mut(&wid)
+            .ok_or_else(|| "无活动工作区".to_string())?;
         // Drop every teammate map entry tied to this pane so rebuilt layouts
         // don't leak a dead `agent_state=busy` marker or a stale title.
         ws.teammate_pane_titles.remove(&pane_id);
@@ -526,12 +545,12 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
     }
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     // Broadcast pane tree change to remote clients and desktop frontend.
-    let _ = state.remote_structural_tx.send(
-        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: wid }
-    );
-    let _ = state.event_tx.try_send(
-        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: wid }
-    );
+    let _ = state
+        .remote_structural_tx
+        .send(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: wid });
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::PaneTreeChanged { workspace_id: wid });
     Ok(())
 }
 
@@ -770,8 +789,7 @@ mod balanced_split_tests {
     fn picks_largest_area_leaf() {
         let small = Uuid::new_v4();
         let big = Uuid::new_v4();
-        let (chosen, _) =
-            balanced_split_decision(&[(small, 10, 40), (big, 40, 100)]).unwrap();
+        let (chosen, _) = balanced_split_decision(&[(small, 10, 40), (big, 40, 100)]).unwrap();
         assert_eq!(chosen, big, "must split the largest-area pane");
     }
 
@@ -782,8 +800,7 @@ mod balanced_split_tests {
         // 一致；保留 `>=` 不改 remote 行为。
         let first = Uuid::new_v4();
         let last = Uuid::new_v4();
-        let (chosen, _) =
-            balanced_split_decision(&[(first, 24, 80), (last, 24, 80)]).unwrap();
+        let (chosen, _) = balanced_split_decision(&[(first, 24, 80), (last, 24, 80)]).unwrap();
         assert_eq!(
             chosen, last,
             "equal area → deterministic last (highest-index) leaf"
@@ -808,7 +825,13 @@ mod workspace_decoupling_tests {
 
     /// First leaf of a workspace's pane tree (the seeded root pane).
     fn root_pane(state: &AppState, wid: Uuid) -> Uuid {
-        state.workspaces.read().get(&wid).unwrap().pane_tree.get_all_leaves()[0]
+        state
+            .workspaces
+            .read()
+            .get(&wid)
+            .unwrap()
+            .pane_tree
+            .get_all_leaves()[0]
     }
 
     #[test]
@@ -819,7 +842,10 @@ mod workspace_decoupling_tests {
         register_teammate_agent_in(&state, wid, pane, "agent-1".into()).unwrap();
         let map = state.workspaces.read();
         let ws = map.get(&wid).unwrap();
-        assert!(matches!(ws.teammate_pane_states.get(&pane), Some(PaneState::Busy)));
+        assert!(matches!(
+            ws.teammate_pane_states.get(&pane),
+            Some(PaneState::Busy)
+        ));
         assert_eq!(ws.teammate_agent_pane_map.get("agent-1"), Some(&pane));
     }
 
@@ -844,7 +870,10 @@ mod workspace_decoupling_tests {
         release_teammate_agent_in(&state, wid, pane).unwrap();
         let map = state.workspaces.read();
         let ws = map.get(&wid).unwrap();
-        assert!(matches!(ws.teammate_pane_states.get(&pane), Some(PaneState::Idle)));
+        assert!(matches!(
+            ws.teammate_pane_states.get(&pane),
+            Some(PaneState::Idle)
+        ));
         assert!(ws.teammate_agent_pane_map.is_empty());
     }
 

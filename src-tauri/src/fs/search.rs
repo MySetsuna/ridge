@@ -279,7 +279,9 @@ impl SearchEngine {
             let content = match fs::read_to_string(path) {
                 Ok(c) => c,
                 Err(e) => {
-                    stats.errors.push(format!("Failed to read {}: {}", file_path, e));
+                    stats
+                        .errors
+                        .push(format!("Failed to read {}: {}", file_path, e));
                     continue;
                 }
             };
@@ -299,7 +301,9 @@ impl SearchEngine {
                         stats.replacements += 1;
                     }
                     Err(e) => {
-                        stats.errors.push(format!("Failed to write {}: {}", file_path, e));
+                        stats
+                            .errors
+                            .push(format!("Failed to write {}: {}", file_path, e));
                     }
                 }
             }
@@ -311,8 +315,7 @@ impl SearchEngine {
     fn build_pattern(query: &str, options: &SearchOptions) -> Result<Regex, String> {
         if options.use_regex {
             let flags = if options.case_sensitive { "" } else { "(?i)" };
-            Regex::new(&format!("{}{}", flags, query))
-                .map_err(|e| format!("Invalid regex: {}", e))
+            Regex::new(&format!("{}{}", flags, query)).map_err(|e| format!("Invalid regex: {}", e))
         } else {
             let escaped = regex::escape(query);
             let pattern = if options.whole_word {
@@ -328,13 +331,10 @@ impl SearchEngine {
 
     fn is_binary(path: &Path) -> bool {
         let binary_extensions = [
-            "exe", "dll", "so", "dylib", "bin", "obj", "o", "a", "lib",
-            "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "webp",
-            "mp3", "mp4", "wav", "avi", "mov", "mkv", "webm",
-            "zip", "tar", "gz", "rar", "7z", "xz",
-            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-            "ttf", "otf", "woff", "woff2", "eot",
-            "db", "sqlite", "sqlite3",
+            "exe", "dll", "so", "dylib", "bin", "obj", "o", "a", "lib", "png", "jpg", "jpeg",
+            "gif", "bmp", "ico", "svg", "webp", "mp3", "mp4", "wav", "avi", "mov", "mkv", "webm",
+            "zip", "tar", "gz", "rar", "7z", "xz", "pdf", "doc", "docx", "xls", "xlsx", "ppt",
+            "pptx", "ttf", "otf", "woff", "woff2", "eot", "db", "sqlite", "sqlite3",
         ];
 
         if let Some(ext) = path.extension() {

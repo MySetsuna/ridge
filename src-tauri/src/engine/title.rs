@@ -46,10 +46,16 @@ struct Terminator {
 fn find_terminator(body: &[u8]) -> Option<Terminator> {
     for (i, &b) in body.iter().enumerate() {
         if b == 0x07 {
-            return Some(Terminator { position: i, len: 1 });
+            return Some(Terminator {
+                position: i,
+                len: 1,
+            });
         }
         if b == 0x1b && body.get(i + 1).copied() == Some(b'\\') {
-            return Some(Terminator { position: i, len: 2 });
+            return Some(Terminator {
+                position: i,
+                len: 2,
+            });
         }
     }
     None
