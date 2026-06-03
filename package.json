@@ -7,6 +7,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "build:remote": "vite build --config vite.remote.config.js",
+    "build:desktop-web": "node scripts/build-desktop-web.mjs",
     "dev:remote": "node scripts/start-remote-dev.mjs",
     "build:remote-server": "cargo build --release --bin remote-server --manifest-path src-tauri/Cargo.toml",
     "build:remote-server:dev": "cargo build --bin remote-server --manifest-path src-tauri/Cargo.toml",
@@ -33,6 +34,9 @@
   "license": "MIT",
   "dependencies": {
     "@gitgraph/js": "^1.4.0",
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "@ridge/split": "workspace:*",
     "@ridge/term-wasm": "link:packages/ridge-term/pkg",
     "@tailwindcss/vite": "^4.2.2",
