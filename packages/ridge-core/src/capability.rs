@@ -16,19 +16,31 @@
 //! own privileged surface (e.g. the desktop `#[tauri::command]` IPC).
 
 use std::collections::HashSet;
+use std::path::Path;
 
-/// The set of method names a connection is permitted to dispatch.
+use crate::sandbox::RootScope;
+
+/// The set of method names a connection is permitted to dispatch, plus the
+/// filesystem [`RootScope`] sandbox that bounds path-bearing commands.
 ///
 /// Immutable after construction (build with [`CapabilitySet::from_methods`] or
-/// the [`remote_default`](CapabilitySet::remote_default) preset). Membership is
-/// the only question dispatch asks.
+/// the [`remote_default`](CapabilitySet::remote_default) preset, then optionally
+/// [`with_roots`](CapabilitySet::with_roots) to enable the fs sandbox).
+/// Membership and root-containment are the two questions dispatch asks.
+///
+/// The sandbox is **off by default** (empty roots = unrestricted), so existing
+/// desktop / LAN behaviour is unchanged until a host explicitly injects roots
+/// (D8 / §5.6, R10).
 #[derive(Debug, Clone, Default)]
 pub struct CapabilitySet {
     allowed: HashSet<String>,
+    roots: RootScope,
 }
 
 impl CapabilitySet {
     /// Build a capability set from an explicit list of allowed method names.
+    /// The fs sandbox starts **unrestricted**; enable it with
+    /// [`with_roots`](CapabilitySet::with_roots).
     pub fn from_methods<I, S>(methods: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -36,24 +48,49 @@ impl CapabilitySet {
     {
         Self {
             allowed: methods.into_iter().map(Into::into).collect(),
+            roots: RootScope::unrestricted(),
         }
     }
 
     /// A capability set that allows **everything** — for the in-process
     /// desktop IPC path, where admission is already enforced by Tauri's own
     /// command registration (only registered `#[tauri::command]`s are callable).
+    /// The fs sandbox is unrestricted (the desktop owns the whole machine).
     pub fn allow_all() -> Self {
         Self {
             allowed: HashSet::new(),
+            roots: RootScope::unrestricted(),
         }
         .with_allow_all()
     }
 
-    fn with_allow_all(self) -> Self {
+    fn with_allow_all(mut self) -> Self {
         // Represented by the sentinel below; see `is_allowed`.
-        Self {
-            allowed: ["*".to_string()].into_iter().collect(),
-        }
+        self.allowed = ["*".to_string()].into_iter().collect();
+        self
+    }
+
+    /// Enable the filesystem sandbox by scoping path-bearing commands to the
+    /// given workspace roots (D8 / §5.6, R10). Consuming-builder style so it
+    /// composes with the presets: `CapabilitySet::remote_default().with_roots([..])`.
+    ///
+    /// Passing an **empty** iterator leaves the sandbox unrestricted (the
+    /// backward-compatible default), so a host can unconditionally call this
+    /// with whatever roots it has — zero roots simply means "don't sandbox".
+    /// The cloud headless host injects its workspace root(s) here; the desktop
+    /// host may leave it unset.
+    pub fn with_roots<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        self.roots = RootScope::from_roots(roots);
+        self
+    }
+
+    /// The filesystem sandbox scope. Empty ⇒ unrestricted (backward compatible).
+    pub fn root_scope(&self) -> &RootScope {
+        &self.roots
     }
 
     /// True if `method` is permitted under this set.
@@ -225,5 +262,34 @@ mod tests {
         assert!(caps.is_allowed("a"));
         assert!(caps.is_allowed("b"));
         assert!(!caps.is_allowed("c"));
+    }
+
+    #[test]
+    fn sandbox_is_unrestricted_by_default() {
+        // All presets start with the sandbox off (backward compatible).
+        assert!(CapabilitySet::remote_default()
+            .root_scope()
+            .is_unrestricted());
+        assert!(CapabilitySet::allow_all().root_scope().is_unrestricted());
+        assert!(CapabilitySet::from_methods(["a"])
+            .root_scope()
+            .is_unrestricted());
+        assert!(CapabilitySet::default().root_scope().is_unrestricted());
+    }
+
+    #[test]
+    fn with_roots_enables_the_sandbox_and_preserves_methods() {
+        let caps = CapabilitySet::remote_default().with_roots(["/work/project"]);
+        assert!(!caps.root_scope().is_unrestricted());
+        // Method admission is untouched by adding roots.
+        assert!(caps.is_allowed("read_file"));
+        assert!(!caps.is_allowed("set_remote_enabled"));
+    }
+
+    #[test]
+    fn with_empty_roots_stays_unrestricted() {
+        // A host can call with_roots unconditionally; zero roots = no sandbox.
+        let caps = CapabilitySet::remote_default().with_roots(Vec::<String>::new());
+        assert!(caps.root_scope().is_unrestricted());
     }
 }

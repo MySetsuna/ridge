@@ -26,6 +26,7 @@
 //! | `PathTraversal`          | `1003`          | path-bearing arg contained `..`           |
 //! | `HostUnavailable`        | `1004`          | host state/handle not ready               |
 //! | `Io`                     | `1005`          | filesystem / IO failure                   |
+//! | `OutsideSandbox`         | `1006`          | path-bearing arg resolved outside allowed roots |
 //! | `Internal`               | `1000`          | uncategorised command failure             |
 //!
 //! `code` is stable across hosts (desktop and ridge-cli emit the same codes for
@@ -46,6 +47,9 @@ pub const CODE_PATH_TRAVERSAL: i64 = 1003;
 pub const CODE_HOST_UNAVAILABLE: i64 = 1004;
 /// JSON-RPC application error code: filesystem / IO failure.
 pub const CODE_IO: i64 = 1005;
+/// JSON-RPC application error code: path-bearing arg resolved outside the
+/// host-granted workspace roots (fs sandbox / root-scoping, D8 / §5.6, R10).
+pub const CODE_OUTSIDE_SANDBOX: i64 = 1006;
 /// JSON-RPC spec code: method not found.
 pub const CODE_METHOD_NOT_FOUND: i64 = -32601;
 /// JSON-RPC spec code: invalid params.
@@ -73,6 +77,11 @@ pub enum CoreError {
     /// A path-bearing argument contained a `..` traversal segment.
     #[error("path traversal rejected")]
     PathTraversal,
+
+    /// A path-bearing argument resolved to a location outside the workspace
+    /// roots the host granted (fs sandbox / root-scoping, D8 / §5.6, R10).
+    #[error("path outside permitted workspace roots")]
+    OutsideSandbox,
 
     /// The host could not provide the state/handle the command needs.
     #[error("host unavailable: {0}")]
@@ -106,6 +115,7 @@ impl CoreError {
             CoreError::CapabilityDenied(_) => CODE_CAPABILITY_DENIED,
             CoreError::ReadOnly => CODE_READ_ONLY,
             CoreError::PathTraversal => CODE_PATH_TRAVERSAL,
+            CoreError::OutsideSandbox => CODE_OUTSIDE_SANDBOX,
             CoreError::HostUnavailable(_) => CODE_HOST_UNAVAILABLE,
             CoreError::Io(_) => CODE_IO,
             CoreError::Internal(_) => CODE_INTERNAL,
@@ -140,6 +150,7 @@ impl CoreError {
             CoreError::CapabilityDenied(_) => "capability_denied",
             CoreError::ReadOnly => "read_only",
             CoreError::PathTraversal => "path_traversal",
+            CoreError::OutsideSandbox => "outside_sandbox",
             CoreError::HostUnavailable(_) => "host_unavailable",
             CoreError::Io(_) => "io",
             CoreError::Internal(_) => "internal",
@@ -169,6 +180,11 @@ mod tests {
             CoreError::CapabilityDenied("x".into()).json_rpc_code(),
             CODE_CAPABILITY_DENIED
         );
+        assert_eq!(
+            CoreError::OutsideSandbox.json_rpc_code(),
+            CODE_OUTSIDE_SANDBOX
+        );
+        assert_eq!(CoreError::OutsideSandbox.kind_tag(), "outside_sandbox");
     }
 
     #[test]
