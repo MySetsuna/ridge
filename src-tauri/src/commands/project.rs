@@ -426,6 +426,55 @@ pub(crate) fn write_file_blocking(path: String, content: String) -> Result<(), S
     std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
+/// A single Monaco `IModelContentChange`. Offsets/lengths are **UTF-16 code
+/// units** (JS string semantics), NOT bytes or Unicode scalar values.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEdit {
+    pub range_offset: usize,
+    pub range_length: usize,
+    pub text: String,
+}
+
+/// Apply a sequence of Monaco content changes to a file — incremental save for
+/// the low-bandwidth desktop-UI-in-browser mode (send a few-byte edit instead of
+/// the whole file). Edits MUST arrive in Monaco's emission order (chronological
+/// across change events, and within each event the order Monaco gave them); each
+/// edit's offsets are interpreted against the running content after all prior
+/// edits — exactly mirroring the editor. Offsets are UTF-16 code units, so we
+/// splice in UTF-16 space and re-encode to UTF-8 (correct for non-ASCII, e.g.
+/// the Chinese comments throughout this codebase). On any out-of-range edit we
+/// error so the caller falls back to a full `write_file`.
+pub async fn apply_file_edits(path: String, edits: Vec<TextEdit>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+        let mut units: Vec<u16> = content.encode_utf16().collect();
+        for e in &edits {
+            let start = e.range_offset;
+            let end = e
+                .range_offset
+                .checked_add(e.range_length)
+                .ok_or_else(|| "edit length overflow".to_string())?;
+            if start > end || end > units.len() {
+                return Err(format!(
+                    "edit out of range: {}..{} (len {})",
+                    start,
+                    end,
+                    units.len()
+                ));
+            }
+            let repl: Vec<u16> = e.text.encode_utf16().collect();
+            units.splice(start..end, repl);
+        }
+        let new_content =
+            String::from_utf16(&units).map_err(|e| format!("UTF-16 解码失败: {}", e))?;
+        std::fs::write(&path, new_content).map_err(|e| format!("写入文件失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[tauri::command]
 pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let project = state.current_project.read();

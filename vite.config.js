@@ -1,16 +1,48 @@
 // vite.config.js
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import path from 'path';
+import { fileURLToPath } from 'url';
 // @ts-ignore — @tailwindcss/vite v4 ships ESM-only with package `exports`
 // that tsconfig `moduleResolution: "Node"` cannot resolve; resolved fine at
 // runtime by vite's bundler-style resolver.
 import tailwindcss from '@tailwindcss/vite';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// §web-remote: `RIDGE_WEB_REMOTE=1 vite build` produces a static SPA of the FULL
+// desktop UI for serving to plain browsers by the LAN remote server. Every
+// `@tauri-apps/api/*` import is redirected to the WS-backed shims in
+// src/lib/transport/tauriShim so the desktop code runs untouched outside Tauri.
+// In the normal Tauri build the flag is unset and none of this applies.
+const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
+/** @param {string} f */
+const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
+/** @type {Record<string, string>} */
+const webRemoteAliases = {};
+if (WEB_REMOTE) {
+  webRemoteAliases['@tauri-apps/api/core'] = shim('core.ts');
+  webRemoteAliases['@tauri-apps/api/event'] = shim('event.ts');
+  webRemoteAliases['@tauri-apps/api/window'] = shim('window.ts');
+  webRemoteAliases['@tauri-apps/plugin-dialog'] = shim('dialog.ts');
+  webRemoteAliases['@tauri-apps/plugin-clipboard-manager'] = shim('clipboard.ts');
+}
 
 export default defineConfig({
   plugins: [
     sveltekit(),
     tailwindcss(), // 如果你使用了 Tailwind
   ],
+
+  define: {
+    // Build-time flag read by +layout.svelte and the shims. `false` in the
+    // Tauri build lets the whole web-remote branch tree-shake away.
+    'import.meta.env.RIDGE_WEB_REMOTE': JSON.stringify(WEB_REMOTE),
+  },
+
+  resolve: {
+    alias: webRemoteAliases,
+  },
 
   // 路径别名在 svelte.config.js 的 kit.alias 中配置（与 SvelteKit / TS 一致）
 

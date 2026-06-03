@@ -2,6 +2,7 @@
 node_modules
 /build
 /dist
+/web-remote-dist
 /release
 /.webview2-*
 *.log

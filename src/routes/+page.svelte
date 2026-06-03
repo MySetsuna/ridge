@@ -174,6 +174,11 @@ self.MonacoEnvironment = {
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  // §web-remote: true only in the desktop-UI-in-browser build (vite define).
+  // Used to hide surfaces that make no sense when the desktop page is itself
+  // being served to a remote browser: the "remote control" sidebar entry (you
+  // ARE the remote) and the native window controls (no OS window to drive).
+  const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
   import { TerminalManager } from '$lib/terminal/manager';
   import { isTuiActive, snapshotLiveSignals } from '$lib/terminal/tuiGate';
 
@@ -1226,6 +1231,7 @@ function expandSidebar() {
          and accent/Bot when on, giving a single button that both tells the
          user the current state and lets them flip it without spelunking
          through nested settings. -->
+    {#if !webRemote}
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'remote' ? actBtnOn : ''}"
@@ -1234,6 +1240,7 @@ function expandSidebar() {
     >
       <Smartphone class="h-5 w-5" />
     </button>
+    {/if}
     <button
       type="button"
       class="{actBtn} mt-auto"
@@ -1282,9 +1289,11 @@ function expandSidebar() {
         </div>
 
         <!-- Remote tab -->
+        {#if !webRemote}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'remote' ? '' : 'hidden'}">
           <RemotePanel />
         </div>
+        {/if}
 
         <!-- Files tab (default) -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'files' ? '' : 'hidden'}">
@@ -1545,7 +1554,7 @@ function expandSidebar() {
 
         <!-- 窗口控制按钮（右侧）：wf-no-drag 避免与标题栏拖动区域冲突 -->
       </div>
-      <div class="rg-no-drag flex items-center gap-1 shrink-0">
+      <div class="rg-no-drag flex items-center gap-1 shrink-0" class:hidden={webRemote}>
         <button
           type="button"
           class={winCtrlBtn}
