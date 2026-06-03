@@ -317,16 +317,21 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
     let tmux_name = if cfg!(windows) { "tmux.exe" } else { "tmux" };
 
     // Dev builds: use the pre-built shim in dist/teammate-shim/ under the workspace root.
-    // current_exe() = …/src-tauri/target/debug/ridge.exe → go up 4 levels to workspace root.
+    // The cargo target dir moved to the workspace root (target/<profile>/ridge.exe) when
+    // ridge-core was extracted, so don't assume a fixed depth — walk ancestors of the exe
+    // until a `dist/teammate-shim` dir is found.
     #[cfg(debug_assertions)]
     let shim_dir = {
         let exe = std::env::current_exe().ok()?;
-        let workspace = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())?;
-        workspace.join("dist").join("teammate-shim")
+        let mut cur = exe.parent();
+        loop {
+            let d = cur?;
+            let candidate = d.join("dist").join("teammate-shim");
+            if candidate.is_dir() {
+                break candidate;
+            }
+            cur = d.parent();
+        }
     };
 
     // Release builds: look for tmux(.exe) beside the installed Ridge binary.
