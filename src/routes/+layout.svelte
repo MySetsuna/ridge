@@ -29,8 +29,38 @@
       setTransport(new TauriDataProvider());
       return;
     }
+    // §cloud: `?cloudHost=<device>&u=<username>` enters cloud-controller mode
+    // (connect to the host over the WebRTC relay) instead of the LAN TOTP flow.
+    if (new URLSearchParams(location.search).has('cloudHost')) {
+      void startCloudControllerBootMode();
+      return;
+    }
     void startWebRemoteBoot();
   });
+
+  // Cloud controller boot: bootCloudControllerFromUrl wires the controller
+  // WebRTC provider → L1 adapter → bridge → DataProvider internally; we only
+  // flip `ready` once the relay/WebRTC/E2EE handshake reaches `connected`.
+  async function startCloudControllerBootMode() {
+    const { bootCloudControllerFromUrl } = await import('$lib/remote/cloud/cloudControllerBoot');
+    phase = 'connecting';
+    const handle = bootCloudControllerFromUrl(location.search, {
+      onState: (s) => {
+        if (s === 'connected') {
+          ready = true;
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+          }
+        } else if (s === 'error') {
+          phase = 'error';
+          errorMsg = errorMsg || 'Cloud 连接失败';
+        }
+      },
+      onError: (msg) => { phase = 'error'; errorMsg = msg; },
+    });
+    // Missing cloud params / user token → fall back to the LAN TOTP flow.
+    if (!handle) void startWebRemoteBoot();
+  }
 
   async function startWebRemoteBoot() {
     const { RemoteConnection } = await import('../remote/lib/wsRemote');
