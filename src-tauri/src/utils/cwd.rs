@@ -41,10 +41,7 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
 
 /// Resolve the default cwd for a fresh workspace.
 /// Priority: cli_cwd > user_cwd > home > "." fallback.
-pub fn resolve_default_cwd(
-    cli_cwd: Option<&Path>,
-    user_cwd: Option<&Path>,
-) -> PathBuf {
+pub fn resolve_default_cwd(cli_cwd: Option<&Path>, user_cwd: Option<&Path>) -> PathBuf {
     if let Some(p) = cli_cwd {
         if p.is_dir() {
             return p.to_path_buf();

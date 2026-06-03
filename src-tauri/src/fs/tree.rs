@@ -360,8 +360,14 @@ mod tests {
         // Pre-rewrite, this list was hidden. The new policy surfaces them
         // (the UI grays them via .gitignore matching, never hiding).
         for name in [
-            ".git", "node_modules", "target", "dist", ".env", ".log",
-            "build.exe", ".gitignore",
+            ".git",
+            "node_modules",
+            "target",
+            "dist",
+            ".env",
+            ".log",
+            "build.exe",
+            ".gitignore",
         ] {
             assert!(
                 !FileTree::should_ignore(Path::new(name)),
@@ -416,10 +422,16 @@ mod tests {
         std::fs::write(td.path.join("root.log"), b"").unwrap();
 
         let ctx = FileTreeContext::for_path(&td.path.join("sub"));
-        assert_eq!(ctx.matches(&td.path.join("sub/keep.log"), false), Some(false));
+        assert_eq!(
+            ctx.matches(&td.path.join("sub/keep.log"), false),
+            Some(false)
+        );
 
         let ctx_root = FileTreeContext::for_path(&td.path);
-        assert_eq!(ctx_root.matches(&td.path.join("root.log"), false), Some(true));
+        assert_eq!(
+            ctx_root.matches(&td.path.join("root.log"), false),
+            Some(true)
+        );
     }
 
     #[test]
@@ -488,8 +500,11 @@ mod tests {
         std::fs::write(td.path.join("kept.txt"), b"").unwrap();
 
         let page = FileTree::page_children(&td.path, 0, 10).unwrap();
-        let by_name: std::collections::HashMap<_, _> =
-            page.entries.iter().map(|e| (e.name.clone(), e.is_ignored)).collect();
+        let by_name: std::collections::HashMap<_, _> = page
+            .entries
+            .iter()
+            .map(|e| (e.name.clone(), e.is_ignored))
+            .collect();
         assert_eq!(by_name.get("ignored.log"), Some(&Some(true)));
         assert_eq!(by_name.get("kept.txt"), Some(&Some(false)));
     }

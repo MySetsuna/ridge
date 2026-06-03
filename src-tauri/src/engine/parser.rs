@@ -197,9 +197,13 @@ impl PaneParser {
         // canonical dimensions BEFORE applying the bootstrap cells. Without
         // this, a remote client rendering the SHARED canonical grid (see
         // remote/server.rs subscribe-pane) could OOB on the first frame.
-        frame
-            .deltas
-            .insert(0, GridDelta::Resize { rows: rows as u16, cols: cols as u16 });
+        frame.deltas.insert(
+            0,
+            GridDelta::Resize {
+                rows: rows as u16,
+                cols: cols as u16,
+            },
+        );
         frame
     }
 
@@ -313,7 +317,9 @@ impl PaneParser {
         // After K evictions, the previously-counted rows shifted down
         // by K. last_logical_len is what scrollback_len() would have
         // been now if nothing new were added.
-        let last_logical_len = self.last_scrollback_len.saturating_sub(evicted_since as usize);
+        let last_logical_len = self
+            .last_scrollback_len
+            .saturating_sub(evicted_since as usize);
         if now_len > last_logical_len {
             let new_n = now_len - last_logical_len;
             let mut lines: Vec<Vec<DeltaCell>> = Vec::with_capacity(new_n);
@@ -570,12 +576,21 @@ mod tests {
             .iter()
             .filter(|d| matches!(d, GridDelta::Cells { .. }))
             .collect();
-        assert_eq!(cell_deltas.len(), 1, "exactly one Cells delta expected; got {:?}", frame.deltas);
+        assert_eq!(
+            cell_deltas.len(),
+            1,
+            "exactly one Cells delta expected; got {:?}",
+            frame.deltas
+        );
         match cell_deltas[0] {
             GridDelta::Cells { row, col, cells } => {
                 assert_eq!(*row, 0);
                 assert_eq!(*col, 2, "diff must start at the column of the changed cell");
-                assert_eq!(cells.len(), 1, "diff must contain ONE cell, not the whole row");
+                assert_eq!(
+                    cells.len(),
+                    1,
+                    "diff must contain ONE cell, not the whole row"
+                );
                 assert_eq!(cells[0].ch, 'X');
             }
             _ => unreachable!(),
@@ -589,18 +604,27 @@ mod tests {
         // span col 2..=5 (4 cells), not the whole 10-cell row.
         let mut p = make_parser(2, 10);
         let _ = p.feed_and_diff(b"          "); // 10 spaces, prime snapshot
-        // Move to (1,3) write 'A', move to (1,6) write 'B'.
+                                                // Move to (1,3) write 'A', move to (1,6) write 'B'.
         let frame = p.feed_and_diff(b"\x1b[1;3HA\x1b[1;6HB");
         let cell_deltas: Vec<&GridDelta> = frame
             .deltas
             .iter()
             .filter(|d| matches!(d, GridDelta::Cells { .. }))
             .collect();
-        assert_eq!(cell_deltas.len(), 1, "single contiguous span expected; got {:?}", frame.deltas);
+        assert_eq!(
+            cell_deltas.len(),
+            1,
+            "single contiguous span expected; got {:?}",
+            frame.deltas
+        );
         match cell_deltas[0] {
             GridDelta::Cells { row: _, col, cells } => {
                 assert_eq!(*col, 2, "span starts at first changed col");
-                assert_eq!(cells.len(), 4, "span ends at last changed col (3+1+1+1 = 4)");
+                assert_eq!(
+                    cells.len(),
+                    4,
+                    "span ends at last changed col (3+1+1+1 = 4)"
+                );
                 assert_eq!(cells[0].ch, 'A');
                 assert_eq!(cells[3].ch, 'B');
             }
@@ -660,15 +684,10 @@ mod tests {
         let mut p = make_parser(3, 5);
         let _ = p.feed_and_diff(b"");
         let hidden = p.feed_and_diff(b"\x1b[?25l");
-        let saw_hidden = hidden.deltas.iter().any(|d| {
-            matches!(
-                d,
-                GridDelta::Cursor {
-                    visible: false,
-                    ..
-                }
-            )
-        });
+        let saw_hidden = hidden
+            .deltas
+            .iter()
+            .any(|d| matches!(d, GridDelta::Cursor { visible: false, .. }));
         assert!(
             saw_hidden,
             "expected Cursor(visible=false) on DECRST 25; got {:?}",
@@ -684,10 +703,15 @@ mod tests {
         let _ = p.feed_and_diff(b"");
         // After first feed bracketed_paste was OFF (default).
         let frame = p.feed_and_diff(b"\x1b[?2004h");
-        let saw_paste_on = frame
-            .deltas
-            .iter()
-            .any(|d| matches!(d, GridDelta::ModeChange { mode: 2004, on: true }));
+        let saw_paste_on = frame.deltas.iter().any(|d| {
+            matches!(
+                d,
+                GridDelta::ModeChange {
+                    mode: 2004,
+                    on: true
+                }
+            )
+        });
         assert!(
             saw_paste_on,
             "expected ModeChange(2004, on=true) on ?2004h; got {:?}",
@@ -695,10 +719,13 @@ mod tests {
         );
         let off_frame = p.feed_and_diff(b"\x1b[?2004l");
         assert!(
-            off_frame
-                .deltas
-                .iter()
-                .any(|d| matches!(d, GridDelta::ModeChange { mode: 2004, on: false })),
+            off_frame.deltas.iter().any(|d| matches!(
+                d,
+                GridDelta::ModeChange {
+                    mode: 2004,
+                    on: false
+                }
+            )),
             "expected ModeChange(2004, on=false) on ?2004l; got {:?}",
             off_frame.deltas,
         );
@@ -718,7 +745,10 @@ mod tests {
             mirror.apply_delta(d);
         }
         assert!(mirror.modes().mouse_sgr, "mirror must have mouse_sgr=true");
-        assert!(mirror.modes().mouse_normal, "mirror must have mouse_normal=true");
+        assert!(
+            mirror.modes().mouse_normal,
+            "mirror must have mouse_normal=true"
+        );
     }
 
     #[test]
@@ -745,15 +775,12 @@ mod tests {
         let mut p = make_parser(2, 5);
         let _ = p.feed_and_diff(b"X");
         let frame = p.resize(3, 6);
-        let first = frame.deltas.first().expect("resize frame must be non-empty");
+        let first = frame
+            .deltas
+            .first()
+            .expect("resize frame must be non-empty");
         assert!(
-            matches!(
-                first,
-                GridDelta::Resize {
-                    rows: 3,
-                    cols: 6,
-                }
-            ),
+            matches!(first, GridDelta::Resize { rows: 3, cols: 6 }),
             "expected first delta to be Resize{{rows:3,cols:6}}; got {:?}",
             first
         );
@@ -910,8 +937,20 @@ mod tests {
                     let b_attrs = baseline.grid().attrs.get(b_cell.attr);
                     let m_attrs = mirror.grid().attrs.get(m_cell.attr);
                     assert_eq!(
-                        (b_cell.ch, b_attrs.fg, b_attrs.bg, b_attrs.flags, b_cell.width),
-                        (m_cell.ch, m_attrs.fg, m_attrs.bg, m_attrs.flags, m_cell.width),
+                        (
+                            b_cell.ch,
+                            b_attrs.fg,
+                            b_attrs.bg,
+                            b_attrs.flags,
+                            b_cell.width
+                        ),
+                        (
+                            m_cell.ch,
+                            m_attrs.fg,
+                            m_attrs.bg,
+                            m_attrs.flags,
+                            m_cell.width
+                        ),
                         "cell mismatch at row={} col={} after chunk {:?}",
                         r,
                         c,

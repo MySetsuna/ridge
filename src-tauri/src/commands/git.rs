@@ -141,13 +141,11 @@ fn get_git_branches(repo_path: &Path) -> Vec<String> {
         .output();
 
     match output {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        }
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         _ => vec![],
     }
 }
@@ -279,11 +277,7 @@ fn parse_git_log(output: &str) -> Vec<CommitNode> {
         let parents: Vec<String> = if parts[1].trim().is_empty() {
             vec![]
         } else {
-            parts[1]
-                .trim()
-                .split(' ')
-                .map(|s| s.to_string())
-                .collect()
+            parts[1].trim().split(' ').map(|s| s.to_string()).collect()
         };
 
         commits.push(CommitNode {
@@ -317,12 +311,7 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
         FIELD_SEP, RECORD_SEP
     );
     let output = git_cmd()
-        .args([
-            "log",
-            "--decorate=full",
-            &format!("-{}", limit),
-            &pretty,
-        ])
+        .args(["log", "--decorate=full", &format!("-{}", limit), &pretty])
         .current_dir(repo_path)
         .output();
 
@@ -340,7 +329,9 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
                     .output();
 
                 if let Ok(head_output) = head_output {
-                    let head_hash = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
+                    let head_hash = String::from_utf8_lossy(&head_output.stdout)
+                        .trim()
+                        .to_string();
                     for commit in &mut commits {
                         if commit.parents.contains(&head_hash) || commit.hash == head_hash {
                             commit.branch = Some(branch.clone());
@@ -402,16 +393,33 @@ fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<Stri
     // at that path directly; we prefer the monorepo-happy-path default.
     const SKIP_DIRS: &[&str] = &[
         // JS / TS
-        "node_modules", ".pnpm-store", ".yarn", ".next", ".nuxt",
-        ".svelte-kit", ".parcel-cache", ".turbo", ".vite",
+        "node_modules",
+        ".pnpm-store",
+        ".yarn",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".parcel-cache",
+        ".turbo",
+        ".vite",
         // Rust
         "target",
         // Python
-        ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
         // JVM / Gradle / Android
-        ".gradle", ".kotlin",
+        ".gradle",
+        ".kotlin",
         // General build outputs
-        "dist", "build", "out", "coverage", ".cache",
+        "dist",
+        "build",
+        "out",
+        "coverage",
+        ".cache",
         // Vendor / package manager caches
         "vendor",
         // IDE / tooling metadata
@@ -514,7 +522,17 @@ pub struct ScmRepoStatus {
 /// has a non-empty upstream segment after `...` — e.g. `## main` (no `...`)
 /// and `## main...` (empty rhs) both mean "no upstream tracking ref", while
 /// `## main...origin/main` means "tracking origin/main".
-fn parse_porcelain_v1(stdout: &str) -> (Option<String>, u32, u32, bool, Vec<ScmFile>, Vec<ScmFile>, Vec<ScmFile>) {
+fn parse_porcelain_v1(
+    stdout: &str,
+) -> (
+    Option<String>,
+    u32,
+    u32,
+    bool,
+    Vec<ScmFile>,
+    Vec<ScmFile>,
+    Vec<ScmFile>,
+) {
     let mut branch: Option<String> = None;
     let mut ahead = 0u32;
     let mut behind = 0u32;
@@ -555,7 +573,9 @@ fn parse_porcelain_v1(stdout: &str) -> (Option<String>, u32, u32, bool, Vec<ScmF
             }
             continue;
         }
-        if line.len() < 3 { continue; }
+        if line.len() < 3 {
+            continue;
+        }
         let x = line.as_bytes()[0] as char;
         let y = line.as_bytes()[1] as char;
         let path_part = &line[3..];
@@ -598,7 +618,15 @@ fn parse_porcelain_v1(stdout: &str) -> (Option<String>, u32, u32, bool, Vec<ScmF
         }
     }
 
-    (branch, ahead, behind, has_upstream, staged, changes, untracked)
+    (
+        branch,
+        ahead,
+        behind,
+        has_upstream,
+        staged,
+        changes,
+        untracked,
+    )
 }
 
 /// Parse `git diff --numstat` output into `path → (additions, deletions)`.
@@ -666,7 +694,13 @@ fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
         .current_dir(repo_path)
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                Some(o.stdout)
+            } else {
+                None
+            }
+        })
         .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
         .unwrap_or_default();
     let staged_counts = git_cmd()
@@ -674,7 +708,13 @@ fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
         .current_dir(repo_path)
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                Some(o.stdout)
+            } else {
+                None
+            }
+        })
         .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
         .unwrap_or_default();
     for f in &mut changes {
@@ -714,9 +754,17 @@ fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     let path = Path::new(&repo_root);
     let mut cmd = git_cmd();
     cmd.arg("add");
-    if paths.is_empty() { cmd.arg("--all"); } else { for p in &paths { cmd.arg(p); } }
+    if paths.is_empty() {
+        cmd.arg("--all");
+    } else {
+        for p in &paths {
+            cmd.arg(p);
+        }
+    }
     let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
-    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
     Ok(())
 }
 
@@ -736,16 +784,26 @@ fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
         // reset HEAD 不带路径只会重置索引到 HEAD——先拿到 diff --cached 的文件列表
         let cached = git_cmd()
             .args(["diff", "--cached", "--name-only"])
-            .current_dir(path).output().map_err(|e| e.to_string())?;
-        if !cached.status.success() { return Err(String::from_utf8_lossy(&cached.stderr).to_string()); }
+            .current_dir(path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !cached.status.success() {
+            return Err(String::from_utf8_lossy(&cached.stderr).to_string());
+        }
         for l in String::from_utf8_lossy(&cached.stdout).lines() {
-            if !l.trim().is_empty() { cmd.arg(l); }
+            if !l.trim().is_empty() {
+                cmd.arg(l);
+            }
         }
     } else {
-        for p in &paths { cmd.arg(p); }
+        for p in &paths {
+            cmd.arg(p);
+        }
     }
     let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
-    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
     Ok(())
 }
 
@@ -758,13 +816,19 @@ pub async fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), St
 }
 
 fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    if paths.is_empty() { return Err("Refusing to discard all — specify paths".to_string()); }
+    if paths.is_empty() {
+        return Err("Refusing to discard all — specify paths".to_string());
+    }
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args(["checkout", "--"])
         .args(&paths)
-        .current_dir(path).output().map_err(|e| e.to_string())?;
-    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).to_string()); }
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
     Ok(())
 }
 
@@ -798,22 +862,34 @@ fn git_clean_untracked_sync(repo_root: String, paths: Vec<String>) -> Result<(),
 /// 创建 commit（使用 -m message）。未 stage 的更改不会被提交。
 /// amend=true 时等价 `git commit --amend -m`，用于修改最近一次提交。
 #[tauri::command]
-pub async fn git_commit(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
+pub async fn git_commit(
+    repo_root: String,
+    message: String,
+    amend: Option<bool>,
+) -> Result<(), String> {
     spawn_git_blocking(move || git_commit_sync(repo_root, message, amend))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
 fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> Result<(), String> {
-    if message.trim().is_empty() { return Err("Commit message is empty".to_string()); }
+    if message.trim().is_empty() {
+        return Err("Commit message is empty".to_string());
+    }
     let path = Path::new(&repo_root);
     let mut cmd = git_cmd();
     cmd.args(["commit", "-m", &message]);
-    if amend.unwrap_or(false) { cmd.arg("--amend"); }
+    if amend.unwrap_or(false) {
+        cmd.arg("--amend");
+    }
     let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
-        return Err(if s.is_empty() { String::from_utf8_lossy(&out.stdout).to_string() } else { s });
+        return Err(if s.is_empty() {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        } else {
+            s
+        });
     }
     Ok(())
 }
@@ -855,17 +931,31 @@ fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> 
     let mut result: Vec<BranchInfo> = Vec::new();
     for line in stdout.lines() {
         let line = line.trim_end();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         // 跳过 remotes/origin/HEAD -> origin/main 这种 symbolic ref
-        if line.contains(" -> ") { continue; }
+        if line.contains(" -> ") {
+            continue;
+        }
         let mut parts = line.splitn(3, '\t');
         let name = parts.next().unwrap_or("").to_string();
         let head_mark = parts.next().unwrap_or("");
-        let upstream = parts.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        if name.is_empty() { continue; }
+        let upstream = parts
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if name.is_empty() {
+            continue;
+        }
         let is_current = head_mark == "*";
         let is_remote = name.starts_with("origin/") || name.starts_with("remotes/");
-        result.push(BranchInfo { name, is_current, is_remote, upstream });
+        result.push(BranchInfo {
+            name,
+            is_current,
+            is_remote,
+            upstream,
+        });
     }
     Ok(result)
 }
@@ -912,7 +1002,11 @@ fn git_checkout_sync(
     let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
-        return Err(if s.is_empty() { String::from_utf8_lossy(&out.stdout).to_string() } else { s });
+        return Err(if s.is_empty() {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        } else {
+            s
+        });
     }
     Ok(())
 }
@@ -1012,9 +1106,7 @@ fn git_sync_sync(repo_root: String) -> Result<(), String> {
         let stdout = String::from_utf8_lossy(&probe.stdout);
         let (_branch, _ahead, _behind, has_upstream, _, _, _) = parse_porcelain_v1(&stdout);
         if !has_upstream {
-            return Err(
-                "当前分支没有设置上游远端；请先执行 Push with Upstream。".into(),
-            );
+            return Err("当前分支没有设置上游远端；请先执行 Push with Upstream。".into());
         }
     }
 
@@ -1201,7 +1293,10 @@ fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
     if !out.status.success() {
         // Return zeros instead of erroring — pre-first-commit repos fail here,
         // and the pill should simply show nothing rather than surface a toast.
-        return Ok(GitDiffSummary { added: 0, removed: 0 });
+        return Ok(GitDiffSummary {
+            added: 0,
+            removed: 0,
+        });
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut added: u32 = 0;
@@ -1266,7 +1361,10 @@ pub async fn git_get_commit_files(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_get_commit_files_sync(repo_root: String, hash: String) -> Result<Vec<CommitFileEntry>, String> {
+fn git_get_commit_files_sync(
+    repo_root: String,
+    hash: String,
+) -> Result<Vec<CommitFileEntry>, String> {
     if hash.is_empty() {
         return Err("missing commit hash".to_string());
     }
@@ -1274,7 +1372,14 @@ fn git_get_commit_files_sync(repo_root: String, hash: String) -> Result<Vec<Comm
     // `--name-status -m`：处理 merge commit 的合并视图；`-r` 递归不要折叠成目录。
     // `--pretty=format:` 抑制头部输出，只保留文件状态行。
     let out = git_cmd()
-        .args(["show", "--name-status", "-m", "-r", "--pretty=format:", &hash])
+        .args([
+            "show",
+            "--name-status",
+            "-m",
+            "-r",
+            "--pretty=format:",
+            &hash,
+        ])
         .current_dir(path)
         .output()
         .map_err(|e| e.to_string())?;
@@ -1293,7 +1398,11 @@ fn git_get_commit_files_sync(repo_root: String, hash: String) -> Result<Vec<Comm
         let mut parts = line.split('\t');
         let status_raw = parts.next().unwrap_or("");
         // 取首字母作为简化状态（M/A/D/R/C/T/U）。
-        let status = status_raw.chars().next().map(|c| c.to_string()).unwrap_or_default();
+        let status = status_raw
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
         let p = parts.last().unwrap_or("").to_string();
         if p.is_empty() || status.is_empty() {
             continue;
@@ -1386,11 +1495,7 @@ fn git_create_tag_sync(
 
 /// `git reset` 三种模式：soft / mixed / hard。`hard` 是不可逆操作，前端必须二次确认。
 #[tauri::command]
-pub async fn git_reset(
-    repo_root: String,
-    hash: String,
-    mode: String,
-) -> Result<(), String> {
+pub async fn git_reset(repo_root: String, hash: String, mode: String) -> Result<(), String> {
     spawn_git_blocking(move || git_reset_sync(repo_root, hash, mode))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
@@ -1470,10 +1575,7 @@ fn git_get_file_versions_sync(
         let abs = repo.join(&path);
         if let (Ok(repo_abs), Ok(target_abs)) = (repo.canonicalize(), abs.canonicalize()) {
             if !target_abs.starts_with(&repo_abs) {
-                return Err(format!(
-                    "path escapes repo root: {}",
-                    abs.display()
-                ));
+                return Err(format!("path escapes repo root: {}", abs.display()));
             }
         }
         match std::fs::read(&abs) {
@@ -1488,17 +1590,27 @@ fn git_get_file_versions_sync(
 
 /// 文件 diff。`cached=true` 返回已暂存 diff (HEAD vs index)；false 返回工作区 diff (index vs working tree)。
 #[tauri::command]
-pub async fn git_diff_file(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
+pub async fn git_diff_file(
+    repo_root: String,
+    path: String,
+    cached: Option<bool>,
+) -> Result<String, String> {
     spawn_git_blocking(move || git_diff_file_sync(repo_root, path, cached))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_diff_file_sync(repo_root: String, path: String, cached: Option<bool>) -> Result<String, String> {
+fn git_diff_file_sync(
+    repo_root: String,
+    path: String,
+    cached: Option<bool>,
+) -> Result<String, String> {
     let repo = Path::new(&repo_root);
     let mut cmd = git_cmd();
     cmd.args(["--no-pager", "diff", "--no-color", "--unified=3"]);
-    if cached.unwrap_or(false) { cmd.arg("--cached"); }
+    if cached.unwrap_or(false) {
+        cmd.arg("--cached");
+    }
     cmd.arg("--");
     cmd.arg(&path);
     let out = cmd.current_dir(repo).output().map_err(|e| e.to_string())?;
@@ -1570,10 +1682,7 @@ fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
     let search_path = Path::new(&cwd);
 
     // Walk up the directory tree to find the .git directory
-    let repo_path = match search_path
-        .ancestors()
-        .find(|p| p.join(".git").exists())
-    {
+    let repo_path = match search_path.ancestors().find(|p| p.join(".git").exists()) {
         Some(p) => p,
         None => {
             return Ok(GitRepoInfo {

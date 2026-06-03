@@ -59,7 +59,11 @@ fn log_file_append(line: &str) {
     let _ = LOG_PATH_ONCE.get_or_init(|| {
         // 必须直接写文件：若这里再调用 `log_file_append`，会重入同一个 `OnceLock` 并死锁，
         // 导致 `tmux -V` 等首条日志路径上永远到不了版本分支。
-        let msg = format!("[tmux-shim][{}] file-log={}", now_ts(), actual_path.display());
+        let msg = format!(
+            "[tmux-shim][{}] file-log={}",
+            now_ts(),
+            actual_path.display()
+        );
         if let Ok(mut f) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -452,11 +456,18 @@ fn parent_process_exe() -> Option<String> {
 fn resolve_shell() -> Option<String> {
     if let Some(p) = parent_process_exe() {
         let low = p.to_ascii_lowercase();
-        let is_shell = ["bash", "zsh", "sh", "pwsh", "powershell", "cmd", "fish", "dash"]
-            .iter()
-            .any(|name| {
-                low.ends_with(&format!("{name}.exe")) || low.ends_with(&format!("/{name}"))
-            });
+        let is_shell = [
+            "bash",
+            "zsh",
+            "sh",
+            "pwsh",
+            "powershell",
+            "cmd",
+            "fish",
+            "dash",
+        ]
+        .iter()
+        .any(|name| low.ends_with(&format!("{name}.exe")) || low.ends_with(&format!("/{name}")));
         if is_shell {
             return Some(p);
         }
@@ -566,7 +577,11 @@ fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
     for pane in panes {
         let title = pane.get("title").and_then(|t| t.as_str()).unwrap_or("");
         if title == name {
-            if let Some(idx) = pane.get("index").and_then(|v| v.as_u64()).map(|v| v as usize) {
+            if let Some(idx) = pane
+                .get("index")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+            {
                 best = Some(match best {
                     Some(prev) => prev.max(idx),
                     None => idx,
@@ -580,8 +595,16 @@ fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
 fn rename_pane_http(url: &str, token: &str, pane_index: usize, name: &str) {
     let u = format!("{}/api/v1/rename-pane", url.trim_end_matches('/'));
     let body = serde_json::json!({ "pane_index": pane_index, "name": name });
-    match client().post(u).headers(auth_headers(token)).json(&body).send() {
-        Ok(res) => log_to_file(&format!("rename_pane: pane={pane_index} name={name} status={}", res.status())),
+    match client()
+        .post(u)
+        .headers(auth_headers(token))
+        .json(&body)
+        .send()
+    {
+        Ok(res) => log_to_file(&format!(
+            "rename_pane: pane={pane_index} name={name} status={}",
+            res.status()
+        )),
         Err(e) => log_to_file(&format!("rename_pane: HTTP error: {e}")),
     }
 }
@@ -603,7 +626,9 @@ fn resolve_named_pane_target(v: &str, url: &str, token: &str) -> SendTarget {
         if let Ok(idx) = after_colon.parse::<usize>() {
             return SendTarget::Index(idx);
         }
-        log_to_file(&format!("resolve_named_pane_target: lookup name={after_colon:?}"));
+        log_to_file(&format!(
+            "resolve_named_pane_target: lookup name={after_colon:?}"
+        ));
         if let Some(idx) = find_pane_by_name(url, token, after_colon) {
             return SendTarget::Index(idx);
         }
@@ -655,14 +680,22 @@ fn render_tmux_format_dynamic(fmt: &str, pane_index: usize, url: &str, token: &s
         .headers(auth_headers(token))
         .send()
         .ok()
-        .and_then(|r| if r.status().is_success() { r.json::<ListPanesJson>().ok() } else { None });
+        .and_then(|r| {
+            if r.status().is_success() {
+                r.json::<ListPanesJson>().ok()
+            } else {
+                None
+            }
+        });
 
     if let Some(data) = resp {
         if needs_pane_count {
             out = out.replace("#{window_panes}", &data.pane_count.to_string());
         }
         if needs_cwd {
-            let cwd = data.panes.iter()
+            let cwd = data
+                .panes
+                .iter()
                 .find(|p| p.index == pane_index)
                 .and_then(|p| p.cwd.clone())
                 .unwrap_or_default();
@@ -718,7 +751,10 @@ fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()
         }
     }
 
-    println!("{}", render_tmux_format_dynamic(&format, pane_index, url, token));
+    println!(
+        "{}",
+        render_tmux_format_dynamic(&format, pane_index, url, token)
+    );
     Ok(())
 }
 
@@ -1421,7 +1457,10 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         if all_panes {
             println!("{}", render_tmux_format_dynamic(&fmt, 0, url, token));
         } else {
-            println!("{}", render_tmux_format_dynamic(&fmt, pane_index, url, token));
+            println!(
+                "{}",
+                render_tmux_format_dynamic(&fmt, pane_index, url, token)
+            );
         }
         return Ok(());
     }
@@ -1481,9 +1520,9 @@ fn cmd_select_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
                 // Set window style - just acknowledge
                 i += 1;
             }
-            "-g" => {} // get (show) style
+            "-g" => {}        // get (show) style
             "-e" | "-d" => {} // enable/disable input
-            "-Z" => {} // zoom
+            "-Z" => {}        // zoom
             _ => {}
         }
         i += 1;
@@ -1545,7 +1584,10 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         i += 1;
     }
 
-    log_to_file(&format!("kill-pane: pane={:?}, kill_all={}", pane_index, kill_all));
+    log_to_file(&format!(
+        "kill-pane: pane={:?}, kill_all={}",
+        pane_index, kill_all
+    ));
 
     // -a (kill all panes) is intentionally a no-op in Ridge: there is no
     // "kill all" concept that maps cleanly, and Claude Code rarely issues it.
@@ -1629,7 +1671,7 @@ fn cmd_last_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
                 i += 1;
             }
             "-e" | "-d" => {} // enable/disable
-            "-Z" => {} // zoom
+            "-Z" => {}        // zoom
             _ => {}
         }
         i += 1;
@@ -1663,7 +1705,10 @@ fn cmd_swap_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_to_file(&format!("swap-pane: source={:?}, dest={:?}", source_pane, dest_pane));
+    log_to_file(&format!(
+        "swap-pane: source={:?}, dest={:?}",
+        source_pane, dest_pane
+    ));
     Ok(())
 }
 
@@ -1736,7 +1781,10 @@ fn cmd_respawn_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()>
         }
         i += 1;
     }
-    log_to_file(&format!("respawn-pane: pane={:?}, command={:?}", pane_index, command));
+    log_to_file(&format!(
+        "respawn-pane: pane={:?}, command={:?}",
+        pane_index, command
+    ));
     Ok(())
 }
 
@@ -1852,7 +1900,14 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 
     // GUI 路径：复用空闲 shell / 在发起方工作区最大 pane 上 split（后端处理）。
     // new-window 不属 T1 auto_place 范围 → 沿用显式 pane_index 转发（auto_place=false）。
-    let body = build_split_body(false, false, pane_index, command.as_deref(), cwd.as_deref(), None);
+    let body = build_split_body(
+        false,
+        false,
+        pane_index,
+        command.as_deref(),
+        cwd.as_deref(),
+        None,
+    );
     let new_idx = post_split(url, token, body, None)?;
     if let Some(name) = &window_name {
         rename_pane_http(url, token, new_idx, name);
@@ -1922,7 +1977,10 @@ fn cmd_rename_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> 
         }
         i += 1;
     }
-    log_to_file(&format!("rename-window: pane={:?}, name={:?}", pane_index, new_name));
+    log_to_file(&format!(
+        "rename-window: pane={:?}, name={:?}",
+        pane_index, new_name
+    ));
 
     let name = new_name.unwrap_or_default();
     let u = format!("{}/api/v1/rename-pane", url.trim_end_matches('/'));
@@ -1958,7 +2016,10 @@ fn cmd_move_window(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_to_file(&format!("move-window: source={:?}, dest={:?}", source_index, dest_index));
+    log_to_file(&format!(
+        "move-window: source={:?}, dest={:?}",
+        source_index, dest_index
+    ));
     Ok(())
 }
 
@@ -1995,7 +2056,10 @@ fn cmd_select_layout(rest: &[String]) -> Result<(), ()> {
         }
         i += 1;
     }
-    log_to_file(&format!("select-layout: window={:?}, layout={:?}", window_index, layout));
+    log_to_file(&format!(
+        "select-layout: window={:?}, layout={:?}",
+        window_index, layout
+    ));
     Ok(())
 }
 
@@ -2121,7 +2185,10 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         .map(|j| rest[j..].join(" "))
         .filter(|s| !s.is_empty());
     let shell = resolve_shell();
-    log_to_file(&format!("new-session: name={name:?} {width}x{height} socket={}", socket()));
+    log_to_file(&format!(
+        "new-session: name={name:?} {width}x{height} socket={}",
+        socket()
+    ));
 
     let body = serde_json::json!({
         "socket": socket(),
@@ -2158,7 +2225,10 @@ fn cmd_new_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
 
 fn cmd_has_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let target = extract_target(rest).unwrap_or_default();
-    log_to_file(&format!("has-session: target={target:?} socket={}", socket()));
+    log_to_file(&format!(
+        "has-session: target={target:?} socket={}",
+        socket()
+    ));
     let u = format!(
         "{}?socket={}&target={}",
         tmux_api(url, "has-session"),
@@ -2252,7 +2322,10 @@ fn cmd_detach_client(rest: &[String]) -> Result<(), ()> {
 
 fn cmd_kill_session(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let target = extract_target(rest).unwrap_or_default();
-    log_to_file(&format!("kill-session: target={target:?} socket={}", socket()));
+    log_to_file(&format!(
+        "kill-session: target={target:?} socket={}",
+        socket()
+    ));
     let body = serde_json::json!({ "socket": socket(), "target": target, "scope": "session" });
     match http_post(tmux_api(url, "kill"), token, body) {
         Some((200, _)) => Ok(()),
@@ -2414,7 +2487,11 @@ fn cmd_list_clients(rest: &[String]) -> Result<(), ()> {
     if let Some(fmt) = format {
         // Format: #{client_tty}, #{client_session_name}, etc.
         // For now, just return nothing - no clients attached
-        println!("{}", fmt.replace("#{client_tty}", "").replace("#{client_session_name}", "ridge"));
+        println!(
+            "{}",
+            fmt.replace("#{client_tty}", "")
+                .replace("#{client_session_name}", "ridge")
+        );
         return Ok(());
     }
 
@@ -2445,7 +2522,8 @@ fn cmd_list_keys(rest: &[String]) -> Result<(), ()> {
 
 fn cmd_list_commands(_rest: &[String]) -> Result<(), ()> {
     // List all tmux commands
-    println!("\
+    println!(
+        "\
 split-window (splitw)\n\
 select-pane (selectp)\n\
 kill-pane (killp)\n\
@@ -2455,7 +2533,8 @@ capture-pane (capturep)\n\
 list-panes (lsp)\n\
 list-windows (lsw)\n\
 new-window (neww)\n\
-list-sessions (ls)");
+list-sessions (ls)"
+    );
     Ok(())
 }
 

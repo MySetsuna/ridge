@@ -102,7 +102,10 @@ fn get_foreground_process_name(shell_pid: u32) -> Option<String> {
     }
 
     // Pick the child with highest PID (rough proxy for most recently spawned)
-    children.into_iter().max_by_key(|(pid, _)| *pid).map(|(_, name)| name)
+    children
+        .into_iter()
+        .max_by_key(|(pid, _)| *pid)
+        .map(|(_, name)| name)
 }
 
 #[cfg(windows)]
@@ -130,15 +133,15 @@ fn get_foreground_process_name(shell_pid: u32) -> Option<String> {
         .iter()
         .filter(|(_, name, _)| {
             let lower = name.to_lowercase();
-            let base = lower
-                .trim_end_matches(".exe")
-                .trim_end_matches(".com");
+            let base = lower.trim_end_matches(".exe").trim_end_matches(".com");
             !shell_names.contains(&base)
         })
         .collect();
 
     let best = if !non_shell_children.is_empty() {
-        non_shell_children.into_iter().max_by_key(|(_, _, start)| *start)
+        non_shell_children
+            .into_iter()
+            .max_by_key(|(_, _, start)| *start)
     } else {
         children.iter().max_by_key(|(_, _, start)| *start)
     };
@@ -177,7 +180,9 @@ pub async fn get_pane_cwd(
             .and_then(|ws| ws.terminals.get(&pane_id))
             .and_then(|handle| handle._child.as_ref().and_then(|c| c.process_id()))
     };
-    let Some(shell_pid) = shell_pid else { return Ok(None) };
+    let Some(shell_pid) = shell_pid else {
+        return Ok(None);
+    };
 
     let cwd_opt = get_process_cwd(shell_pid).map(normalize_cwd);
 
@@ -198,11 +203,13 @@ pub async fn get_pane_cwd(
         if changed {
             // 除了写回 tree，还发一次 PaneCwdChanged：下游（Explorer/SCM）的监听器
             // 不再需要等 2.5s 的轮询返回值才知道 cwd 变了 —— 事件路径立刻到达。
-            let _ = state.event_tx.try_send(crate::types::GlobalEvent::PaneCwdChanged {
-                workspace_id,
-                pane_id,
-                cwd: cwd.clone(),
-            });
+            let _ = state
+                .event_tx
+                .try_send(crate::types::GlobalEvent::PaneCwdChanged {
+                    workspace_id,
+                    pane_id,
+                    cwd: cwd.clone(),
+                });
             crate::commands::ridge_file::schedule_auto_save(&*state, workspace_id);
         }
     }
@@ -244,8 +251,13 @@ fn get_process_cwd(shell_pid: u32) -> Option<String> {
     // Read /proc/<shell_pid>/cwd symlink. If the shell has a foreground child (e.g.
     // `vim` open in a subdir), we prefer the child's cwd so the explorer tracks it.
     let pick = |pid: u32| -> Option<String> {
-        let link = std::path::Path::new("/proc").join(pid.to_string()).join("cwd");
-        std::fs::read_link(&link).ok()?.to_str().map(|s| s.to_string())
+        let link = std::path::Path::new("/proc")
+            .join(pid.to_string())
+            .join("cwd");
+        std::fs::read_link(&link)
+            .ok()?
+            .to_str()
+            .map(|s| s.to_string())
     };
 
     // Prefer the most-recently-spawned direct child's cwd, fallback to shell's own.
@@ -263,11 +275,19 @@ fn get_process_cwd(shell_pid: u32) -> Option<String> {
                     _ => continue,
                 };
                 let status_path = entry.path().join("status");
-                let Ok(mut f) = std::fs::File::open(&status_path) else { continue };
+                let Ok(mut f) = std::fs::File::open(&status_path) else {
+                    continue;
+                };
                 let mut content = String::new();
-                if f.read_to_string(&mut content).is_err() { continue }
-                let Some(ppid_line) = content.lines().find(|l| l.starts_with("PPid:")) else { continue };
-                let Some(ppid_str) = ppid_line.split_whitespace().nth(1) else { continue };
+                if f.read_to_string(&mut content).is_err() {
+                    continue;
+                }
+                let Some(ppid_line) = content.lines().find(|l| l.starts_with("PPid:")) else {
+                    continue;
+                };
+                let Some(ppid_str) = ppid_line.split_whitespace().nth(1) else {
+                    continue;
+                };
                 if ppid_str == shell_pid_str {
                     best_child = match best_child {
                         Some(prev) if prev > pid => Some(prev),
@@ -277,7 +297,9 @@ fn get_process_cwd(shell_pid: u32) -> Option<String> {
             }
         }
         if let Some(child_pid) = best_child {
-            if let Some(cwd) = pick(child_pid) { return Some(cwd); }
+            if let Some(cwd) = pick(child_pid) {
+                return Some(cwd);
+            }
         }
     }
     pick(shell_pid)
@@ -300,13 +322,17 @@ fn get_process_cwd(shell_pid: u32) -> Option<String> {
             let name = process.name().to_string_lossy().to_string();
             let lower = name.to_lowercase();
             let base = lower.trim_end_matches(".exe").trim_end_matches(".com");
-            if shell_names.contains(&base) { continue }
+            if shell_names.contains(&base) {
+                continue;
+            }
             let cwd = process.cwd().map(|p| p.to_string_lossy().to_string());
             children.push((*pid, process.start_time(), cwd));
         }
     }
     if let Some((_, _, Some(cwd))) = children.into_iter().max_by_key(|(_, t, _)| *t) {
-        if !cwd.is_empty() { return Some(cwd); }
+        if !cwd.is_empty() {
+            return Some(cwd);
+        }
     }
 
     // Fallback: shell's own cwd

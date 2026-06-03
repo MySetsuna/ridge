@@ -19,7 +19,10 @@ fn tmux_env_for(sock: &str) -> String {
 fn matching_gui_socket_routes_default() {
     // `-S` 路径 == `$TMUX` 第一段 → GUI 自己的 socket → default 路径。
     let sock = "/run/ridge/teammate.sock";
-    assert_eq!(socket_id_for_dash_s(sock, Some(&tmux_env_for(sock))), "default");
+    assert_eq!(
+        socket_id_for_dash_s(sock, Some(&tmux_env_for(sock))),
+        "default"
+    );
 }
 
 #[test]
@@ -27,7 +30,10 @@ fn foreign_socket_stays_native() {
     // 与 `$TMUX` 不同的编排子 socket → 仍走 native 引擎。
     let env = tmux_env_for("/run/ridge/teammate.sock");
     let foreign = "/run/other/orchestrator.sock";
-    assert_eq!(socket_id_for_dash_s(foreign, Some(&env)), format!("S:{foreign}"));
+    assert_eq!(
+        socket_id_for_dash_s(foreign, Some(&env)),
+        format!("S:{foreign}")
+    );
 }
 
 #[test]
@@ -173,7 +179,14 @@ fn spawn_process_body_uses_tmux_current_pane_target() {
 fn structured_split_body_marks_is_agent() {
     // split 内嵌结构化 agent（`env K=V program`）→ is_agent=true（AC6.6 内嵌-program）。
     let launch = parse_structured_launch("env FOO=bar claude --x").expect("structured");
-    let body = build_split_body(true, false, None, Some("env FOO=bar claude --x"), None, Some(&launch));
+    let body = build_split_body(
+        true,
+        false,
+        None,
+        Some("env FOO=bar claude --x"),
+        None,
+        Some(&launch),
+    );
     assert_eq!(body["is_agent"], serde_json::json!(true));
     assert_eq!(body["program"], serde_json::json!("claude"));
 }

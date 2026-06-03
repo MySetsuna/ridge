@@ -135,15 +135,14 @@ pub fn parse_cwd_from_output(output: &str) -> Option<PathBuf> {
         // get `/C:/...`, and `PathBuf::from("/C:/code")` becomes `\C:\code`
         // — not a valid absolute path. Drop the leading `/` when the next
         // segment is a drive letter so the result is a real Windows path.
-        if stripped.len() >= 3
-            && stripped[1].is_ascii_alphabetic()
-            && stripped[2] == b':'
-        {
+        if stripped.len() >= 3 && stripped[1].is_ascii_alphabetic() && stripped[2] == b':' {
             return Some(PathBuf::from(
                 String::from_utf8_lossy(&stripped[1..]).into_owned(),
             ));
         }
-        return Some(PathBuf::from(String::from_utf8_lossy(stripped).into_owned()));
+        return Some(PathBuf::from(
+            String::from_utf8_lossy(stripped).into_owned(),
+        ));
     }
 
     // Find the host separator: first '/' or '\\' after stripping.
@@ -166,10 +165,14 @@ pub fn parse_cwd_from_output(output: &str) -> Option<PathBuf> {
         && after_sep[1].is_ascii_alphabetic()
         && after_sep[2] == b':'
     {
-        return Some(PathBuf::from(String::from_utf8_lossy(&after_sep[1..]).into_owned()));
+        return Some(PathBuf::from(
+            String::from_utf8_lossy(&after_sep[1..]).into_owned(),
+        ));
     }
 
-    Some(PathBuf::from(String::from_utf8_lossy(after_sep).into_owned()))
+    Some(PathBuf::from(
+        String::from_utf8_lossy(after_sep).into_owned(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,9 +207,7 @@ mod tests {
     #[test]
     fn parses_windows_path() {
         // file://host/C:\Users\Alice\code — backslash is the Windows path separator
-        let result = parse_cwd_from_output(
-            "\x1b]7;file://host/C:\\Users\\Alice\\code\x07",
-        );
+        let result = parse_cwd_from_output("\x1b]7;file://host/C:\\Users\\Alice\\code\x07");
         assert_eq!(
             result.map(|p| p.to_string_lossy().into_owned()),
             Some("C:\\Users\\Alice\\code".to_string())
@@ -237,9 +238,7 @@ mod tests {
     #[test]
     fn parses_path_with_spaces_encoded_as_percent() {
         // "%20" is URL-encoded space — parser returns raw bytes as-is
-        let result = parse_cwd_from_output(
-            "\x1b]7;file://host/home/user/My%20Documents\x07",
-        );
+        let result = parse_cwd_from_output("\x1b]7;file://host/home/user/My%20Documents\x07");
         assert_eq!(
             result.map(|p| p.to_string_lossy().into_owned()),
             Some("/home/user/My%20Documents".to_string())
@@ -292,16 +291,10 @@ mod tests {
     #[test]
     fn returns_none_when_no_closing_terminator() {
         // Missing terminator entirely
-        assert!(parse_cwd_from_output(
-            "\x1b]7;file://host/home/user/projects"
-        )
-        .is_none());
+        assert!(parse_cwd_from_output("\x1b]7;file://host/home/user/projects").is_none());
 
         // Wrong terminator byte
-        assert!(parse_cwd_from_output(
-            "\x1b]7;file://host/home/user\x1b[0m"
-        )
-        .is_none());
+        assert!(parse_cwd_from_output("\x1b]7;file://host/home/user\x1b[0m").is_none());
     }
 
     #[test]
@@ -352,9 +345,7 @@ mod tests {
 
     #[test]
     fn parses_7bit_safe_variant() {
-        let result = parse_cwd_from_output(
-            "\x1b]7;file://host/Projects/MyApp\x1b\\",
-        );
+        let result = parse_cwd_from_output("\x1b]7;file://host/Projects/MyApp\x1b\\");
         assert_eq!(
             result.map(|p| p.to_string_lossy().into_owned()),
             Some("/Projects/MyApp".to_string())
