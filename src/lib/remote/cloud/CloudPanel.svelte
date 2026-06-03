@@ -13,6 +13,7 @@
   import { cloudAuth } from './auth';
   import { ApiError } from './apiClient';
   import { RidgeCloudProvider } from './ridgeCloudProvider';
+  import { CloudHostBridge } from './cloudHostBridge';
   import type { CloudConnectionState } from './connectionProvider';
 
   const authState = $derived($cloudAuth);
@@ -20,6 +21,9 @@
   const hasDevice = $derived(!!authState.deviceToken && !!authState.deviceName);
 
   let provider: RidgeCloudProvider | null = null;
+  // host=answerer 应用层桥：把 provider 解密后的明文帧 demux → 本地执行 invoke
+  // / $/hello 协商 / pane 流推回（契约 §5.1/§7）。
+  let hostBridge: CloudHostBridge | null = null;
   let connState = $state<CloudConnectionState>('disconnected');
   let connError = $state('');
 
@@ -81,15 +85,24 @@
       connError = '设备尚未激活';
       return;
     }
+    // 先建 host 桥：sendFrame 闭包延迟读取 provider（构造完成后再被调用）。
+    // host 是 Tauri 桌面 app → 注入真实 `invoke` 执行本地命令（契约 §0/§5.1）。
+    const bridge = new CloudHostBridge({
+      invoke: (method, params) => invoke(method, params),
+      sendFrame: (plaintext) => provider?.sendFrame(plaintext),
+      // pane 流接入点：host WebRTC 仍在 WebView/TS 期间，真实 PTY 源经 Tauri
+      // event 桥接入（待 S5/host 迁 Rust 后接通）；v1 暂不注入 → 桥仅登记订阅意图。
+      // keyBindingVerifier：§5.5 公钥↔设备身份绑定，待 cloud 后端提供带外校验通道后注入。
+    });
+    hostBridge = bridge;
+
     provider = new RidgeCloudProvider(
       { deviceToken: s.deviceToken, username: s.user.username },
       {
         onState: (st) => { connState = st; },
         onError: (msg) => { connError = msg; },
-        onFrame: () => {
-          // v1 scaffold：明文 postcard 帧上抛点。终态由渲染/PTY 桥消费。
-          // 此处留空，集成者把 onFrame 接到既有 delta 解析管线。
-        },
+        // host=answerer：把解密后的明文帧交给 host 桥（demux → 本地执行 → 回结果）。
+        onFrame: (plaintext) => bridge.handleFrame(plaintext),
       },
     );
     try {
@@ -103,6 +116,8 @@
   async function disconnect(): Promise<void> {
     provider?.disconnect();
     provider = null;
+    hostBridge?.reset();
+    hostBridge = null;
     connState = 'disconnected';
     await notifyCloudActive(false);
   }
