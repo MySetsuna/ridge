@@ -157,3 +157,14 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
 - **唯一阻塞 = 本机 WebView2 无外网**（环境问题，非代码/架构）：WebView2 内 `fetch` 连 `example.com`/relay 全 `Failed to fetch`，而 shell `curl` 同域名 200；`--no-proxy-server` 也未解 → 本机 ShellCrash/Tailscale 代理/DNS/防火墙对 WebView2 进程的网络拦截。
   ⇒ **cloud 闭环代码完成 + 集成正确接线（host 识别设备并发起连接）；live WebRTC e2e 受本机 WebView2 外网阻塞**，需在 WebView2 有外网的机器/网络上跑，或修本机 WebView2 网络（环境项，超出 unified-remote 范围）。
 - **仍为文档化的后续**：pane PTY 流真实接入（D-GM-11）、E2EE 公钥↔身份绑定（D-GM-10，跨仓库）。
+
+### 🎉 Live cloud e2e 打通（2026-06-04）—— 根因是 CSP，非机器网络
+
+补充发现纠正了之前的"WebView2 无外网"误判：根因是 **SPA `app.html` 的 CSP `connect-src` 只允许 `'self'/ipc/ws://localhost`**，拦掉了一切外网 fetch/WSS（连 example.com 都 fail）。修复 `connect-src` 加 cloud relay 域名（commit，已提交）后：
+- **host WebView2 fetch relay → 200**（CSP 解禁实证）。
+- **device pairing live 打通**：premium 升级 + `/device` 流 → device JWT（room `s4hostb-s4test`）。
+- **host 经云连上信令**（建立加速连接 → 连接中，等待 controller）。
+- **controller（浏览器，由无后端的静态服务器 :8810 托管，`?cloudHost=s4hostb&u=s4test` 进 cloud 模式）经 relay + WebRTC + E2EE 连上 host** → bridge `$/hello` 协商 → **`get_file_tree` invoke 经云往返，controller 渲染出 host 的真实仓库文件树**（`.baseline/.codegraph/.kiro/packages/src-tauri/web-remote-dist` 等 = C:/code/wind 实际内容）。
+  - **铁证**：controller 由纯静态文件服务器托管（无 backend/WS/invoke 能力），其显示的 host 文件树只可能来自 cloud→host 的 WebRTC 连接。⇒ **cloud 功能闭环 invoke 往返 live 验证通过**。
+- 证据截图：`docs/plans/cloud-e2e-controller.png`。
+- **次要待办（非阻塞）**：① 展开 `docs` 子目录时 `get_directory_children`（懒加载）经云返回"空目录"——cloud 路径下子目录懒加载的小 bug（根树 `get_file_tree` 正常），待查参数传递；② D-GM-11 pane PTY 流、D-GM-10 E2EE 身份绑定仍为后续；③ 注意：live e2e 需 host+controller 同时在线（host 信令空闲会超时断），编排时序敏感。
