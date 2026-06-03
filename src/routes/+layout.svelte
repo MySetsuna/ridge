@@ -1,5 +1,5 @@
 <!-- src/routes/+layout.svelte -->
-<script>
+<script lang="ts">
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
@@ -17,6 +17,7 @@
   // Auth/connect state for the web-remote gate. `ready` blocks the page outlet
   // until the bridge is attached, so the desktop UI never calls `invoke()`
   // before the WS is live.
+  let { children } = $props();
   let ready = $state(!WEB_REMOTE);
   let phase = $state('connecting'); // 'connecting' | 'need-code' | 'error'
   let code = $state('');
@@ -53,7 +54,7 @@
       }
     };
 
-    const connectWith = (token) => {
+    const connectWith = (token: string) => {
       loading = true;
       errorMsg = '';
       const unsub = conn.onStateChange((s) => {
@@ -121,7 +122,7 @@
 
 {#if ready}
   <div class="min-h-screen min-h-[100dvh] bg-[var(--rg-bg)] text-[var(--rg-fg)] antialiased">
-    <slot />
+    {@render children()}
   </div>
 {:else}
   <div class="wr-gate">
