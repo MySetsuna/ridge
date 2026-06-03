@@ -61,6 +61,8 @@
 | D-GM-7 | cloud `0x10` PANE_RAW 的 paneId 字节布局 | 采用 **`0x10 \|\| paneIdLen(u8) \|\| paneId(UTF-8) \|\| raw`**（S4 cloud 适配器已实现）；已登记契约 §7。ridge-cli `protocol.rs`(单 pane 无 paneId) + 桌面 host 编码器须按此对齐（对齐债，LAN 走 WS binary 不用此 mux 故不影响现网） | 多 pane 需自描述帧头；登记 SSOT 防三方漂移(R1) | 2026-06-04 |
 | D-GM-8 | JSON-RPC 应用错误码空间 | ridge-core `CoreError` 用 **1000-1006**（避开 JSON-RPC 保留区 `-32768..-32000`）+ 标准 `-32601/-32602`；已登记契约 §7.0 码表（含 S8 新增 1006 outside_sandbox）。新增码须登记此表 | 防 S1/S3/S8 三方码值漂移(R1) | 2026-06-04 |
 | D-GM-9 | headless 沙箱激活时点（Manager LOW gap，R10） | S5 MVP（只读 search/tree、fail-soft）**接受 headless_ctx 暂不 `.with_roots()`（沙箱 no-op）**；但把"`headless_ctx` 绑定工作区根 ⇒ `.with_roots()`"列为 **fs 写命令迁入 ridge-cli 的前置硬门**，避免写命令上线时整机 fs 裸奔 | 当前 exploit 路径未通（S4-host 未打通 + 无写命令）；硬门前置防回归 | 2026-06-04 |
+| D-GM-10 | S4-host E2EE 公钥↔设备身份绑定（§5.5/R10，安全） | **本期不做完整绑定**：当前为 **relay-trust**（依赖 signaling 把双方撮合进同一 room，cloud 后端被攻陷理论可 MITM）。host 桥已留 `KeyBindingVerifier` 接入点（v1 默认 relay-trust、向后兼容）。完整方案=协议级跨仓库变更（契约 §7.1 握手增身份签名字段 + ridge-cloud 发布对端身份验证材料接口 + e2ee.ts 校验），列为独立跨仓库 track。**诚实标注：cloud E2EE 当前非 MITM-resistant** | 完整绑定跨 wind/ridge-cloud 两仓库 + 契约改，需专门 track；不在 S4-host 单切片内 | 2026-06-04 |
+| D-GM-11 | S4-host cloud pane 流（PTY over WebRTC） | 本期 host 桥实现 invoke 往返 + $/hello + $/cancel + pane 编码器(D-GM-7)，但**真实 PTY 源未注入**（`paneOutputSource` 占位）。pane 流接入需 Tauri-event 桥（碰 src-tauri）或待 host WebRTC 迁 Rust（契约 §8 终态）——留后续 | host WebView/TS 期 PTY fan-out 需经 Tauri event 桥；与终态 Rust 迁移耦合；invoke 路径先行更稳 | 2026-06-04 |
 
 ## 执行进度
 
@@ -127,3 +129,21 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
   - ✅ 事件推送带 S3 `coalesced` 字段（背压路径活）。
   - `text_search` 参数名为 `root`（非 `path`），命令本身正常（与 project.rs 行为一致）。
 ⇒ **S1/S3/S5 在运行时验证通过**。剩 `tauri build` 完整 bundle（installer，非阻塞）+ S4-host/S6 见下。
+
+## Phase D — 现存 e2e + perf 回归（用户追加，2026-06-04）
+
+- **单元套件 `pnpm test`（vitest 全量）**：**577 passed / 5 failed**。5 个失败全在 `src/lib/terminal/{workerRendererSingleton,renderWorker,workerRendererBridge}.test.ts`（P4.9 worker-rendering）。
+  - **研究结论**：`isWorkerRenderingEnabled()` 实现**故意 `return false`**（源码 NOTE：worker 渲染在其自带 wasm kernel 能产出真实像素前默认关闭）；这 5 个测试断言默认 `true`，是**独立的 P4 render-decouple 在制功能**（worktree `p4-ipc-render-decouple`）的测试**跑在实现之前**。
+  - **与本次 unified-remote 改动无关**（S2/S3 executor 早已 stash 复验为既有失败）；**本次改动新增失败数 = 0**。
+  - **不修复（正确判断）**：把默认翻成 `true` 以满足测试会**破坏终端渲染**（worker 还没 wasm kernel），是错误修复；正确解 = 落地完整 P4.9（独立多会话工作）或把超前测试标 skip（属 P4 团队 TDD，不应越界动）。故保留现状并诚实记录。
+- **playwright e2e（`pnpm e2e`，tests/e2e 浏览器 smoke）**：首跑 8✓/1✗（test#1 左栏 `toBeVisible` 10s 超时，因 vite 在我构建后冷启动 re-optimize deps；test#3 用同一批 rail 按钮却通过）→ **暖跑全绿 9 passed**，确认是冷启动瞬时 flake，非回归（我的 `+layout.svelte` 改动只影响 WEB_REMOTE 分支、不碰普通 dev 渲染）。
+- **wdio e2e:shell（tauri-driver 驱动原生 app）**：**首跑 0/10 全失败 = "never left about:blank"**。研究结论分两层：
+  - **(我的回归，已修)** workspace 重定位把 target 移到根，但 `wdio.conf.ts` 仍指 `src-tauri/target/release/ridge.exe`（旧二进制）+ perf 脚本进程过滤仍按 `src-tauri\target\` → 已全部修复（commit `7be7381`：wdio binary path、perf-bench/compare 过滤、package clean、terminal.rs 调试 shim 走 ancestor walk、README）。
+  - **(预存在、非我的回归)** 即便指向正确的新 release 二进制，仍 about:blank：根因是 wdio.conf §1.35 注释记录的 **WebView2 user-data 独占锁 / about:blank 导航挂起**（与已安装 `C:\Program Files\ridge\ridge.exe` 共享 identifier）。我**重新启用了被前人调试时移除的 `WEBVIEW2_USER_DATA_FOLDER` 隔离**，但 about:blank 仍在（139 次轮询）→ 确认是更深的 tauri-driver/WebView2(148) BiDi 自动化导航挂起，**前人正在调试、超出 unified-remote 范围、非本次回归**。
+  - **app 本身已验证**：Phase A 手动启动 + chrome-devtools 全 UI + LAN WSS e2e 全绿，证明应用与我的改动在运行时正确；失败仅在 tauri-driver 自动化壳。
+- **perf（perf-bench/compare/frame）**：`e2e:perf` 走同一 wdio 原生壳 → 同 about:blank 阻塞；我已修进程过滤使其能定位 app，但壳的导航挂起预存在。我的改动是后端协议层（非渲染热路径），perf 影响概率低。**诚实标注：perf 对比受 wdio 壳预存在问题阻塞，未取得新基线。**
+
+### Phase D 结论
+- **单元 + playwright e2e 证明本次 unified-remote 改动零回归**（577✓ / 9✓；5 个 vitest 失败=预存在 P4.9 WIP；1 个 playwright 失败=冷启动 flake，暖跑全绿）。
+- **我的 workspace 重定位引入的 e2e/perf 路径回归已全部修复并提交**（`7be7381`）。
+- **wdio/perf 原生壳的 about:blank 是预存在、在调试中的 WebView2/tauri-driver 工具链问题，非本次回归**；app 运行时正确性已由 Phase A 实证覆盖。
