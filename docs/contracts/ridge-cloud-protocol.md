@@ -202,7 +202,8 @@ host 永远是 answerer。
 
 - DataChannel：`label="ridge"`，`ordered:true`，`maxRetransmits:null`（可靠有序）。
 - 内层明文 = **统一线协议帧**，按 **1 字节通道前缀 mux**（沿用 ridge-cli `protocol.rs`）：
-  - `0x10 = PANE_RAW`：PTY **裸字节**（paneId 前缀 + raw bytes），客户端 wasm 终端内核 `kernel.feed()` 自行解析。
+  - `0x10 = PANE_RAW`：PTY **裸字节**，帧布局 **`0x10 || paneIdLen(u8) || paneId(UTF-8) || rawBytes`**；客户端按 paneId 路由后由 wasm 终端内核 `kernel.feed()` 解析。
+    > 评审 2026-06-04（GM **D-GM-7**）：明确多 pane 的 paneId 字节布局为 `paneIdLen(1B)+paneId+raw`（S4 cloud 适配器已按此实现）。ridge-cli `protocol.rs` 现状 `0x10` 为单 pane 无 paneId，须按此对齐；LAN / cloud / 桌面 host 三方编码器统一此布局。（待跨团队确认）
   - `0x11 = JSON`：带外 JSON 文本（控制消息、事件、invoke 请求/响应），UTF-8。
   > 评审 2026-06-03：原契约写"内层明文 = postcard 二进制增量协议帧，保持 schema 不变"。但 LAN
   > (`RemotePtyEvent::RawBytes`) 与 ridge-cli (`protocol.rs` `0x10`) 实际已收敛到 **raw-byte**；
@@ -226,6 +227,21 @@ host 永远是 answerer。
 说明：
 - 业务错误码（§2 的 `UNAUTHORIZED`/`NOT_FOUND`/… 字符串枚举）映射进 JSON-RPC `error.data`，
   `error.code`（int）按 JSON-RPC 规范用于协议级错误；业务语义不丢失（§2 信封仍用于 §4 的 HTTP API）。
+- **ridge-core 应用级错误码表**（`CoreError::to_json_rpc()`，跨 host/传输稳定，S7 conformance 可断言）：
+
+  | code | kind | 含义 |
+  |---|---|---|
+  | -32601 | method_not_found | 未知 method（JSON-RPC 标准保留码） |
+  | -32602 | invalid_args | 参数无效（JSON-RPC 标准保留码） |
+  | 1000 | internal | 内部错误 |
+  | 1001 | capability_denied | 命令不在能力白名单（D8） |
+  | 1002 | read_only | 只读会话拒绝写命令 |
+  | 1003 | path_traversal | 路径含 `..` 逃逸 |
+  | 1004 | host_unavailable | 宿主状态不可用 |
+  | 1005 | io | IO 错误 |
+  | 1006 | outside_sandbox | 路径越出工作区根白名单（R10 / §5.6） |
+
+  > 评审 2026-06-04（GM **D-GM-8**）：应用码取正数 1000+ 避开 JSON-RPC 保留区 `-32768..-32000`；JSON-RPC 腿透传完整 `{code,message,data:{kind}}`，legacy LAN 腿仍 message-only（D-GM-2）。新增码须在此表登记，防三方漂移（R1）。（待跨团队确认）
 - 订阅/切换/元数据/事件（如 `subscribe-pane`、`switch-workspace`、`fs-changed`）走 notification。
 - 每个 request 必带超时（client 侧 reject）；重连后 in-flight request 一律 reject，再重订阅 + 重拉快照（见 §7.4）。
 
