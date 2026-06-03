@@ -21,3 +21,9 @@ export {
 } from './remote/types';
 export { RpcClient } from './remote/rpcClient';
 export { LanWsAdapter, createLanWsTransport } from './remote/lanWsAdapter';
+export {
+  CloudWebrtcAdapter,
+  createCloudWebrtcTransport,
+  createCloudWebrtcTransportWith,
+} from './remote/cloudWebrtcAdapter';
+export { CHANNEL, encodeJsonFrame, encodePaneFrame, demuxFrame } from './remote/cloudMux';
