@@ -8,12 +8,14 @@
   //   命令暂不存在时用 try/catch 容错，不报错。
 
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { Globe, Wifi, WifiOff, Loader2, Sprout, Power, Plus } from 'lucide-svelte';
   import * as auth from './auth';
   import { cloudAuth } from './auth';
   import { ApiError } from './apiClient';
   import { RidgeCloudProvider } from './ridgeCloudProvider';
   import { CloudHostBridge } from './cloudHostBridge';
+  import { createCloudPaneSource } from './cloudPaneSource';
   import type { CloudConnectionState } from './connectionProvider';
 
   const authState = $derived($cloudAuth);
@@ -90,8 +92,14 @@
     const bridge = new CloudHostBridge({
       invoke: (method, params) => invoke(method, params),
       sendFrame: (plaintext) => provider?.sendFrame(plaintext),
-      // pane 流接入点：host WebRTC 仍在 WebView/TS 期间，真实 PTY 源经 Tauri
-      // event 桥接入（待 S5/host 迁 Rust 后接通）；v1 暂不注入 → 桥仅登记订阅意图。
+      // pane 流接入点（D-GM-11）：host 跑在 WebView，webview 本就经 Tauri event
+      // `pty-output-{ws}-{pane}` 收到与 LAN `RawBytes` 同源的裸 PTY 字节。本源订阅
+      // 该 event、把 payload.data 编回字节经 onOutput 推出 → 桥编 0x10 发回 controller
+      // （controller 端走与 LAN 一致的 onPaneBytes→kernel.feed）。纯前端，不动 Rust。
+      paneOutputSource: createCloudPaneSource({
+        listen,
+        getActiveWorkspaceId: () => invoke<string>('get_active_workspace_id'),
+      }),
       // keyBindingVerifier：§5.5 公钥↔设备身份绑定，待 cloud 后端提供带外校验通道后注入。
     });
     hostBridge = bridge;
