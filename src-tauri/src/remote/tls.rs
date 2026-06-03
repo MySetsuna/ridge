@@ -8,23 +8,49 @@
 //! WebGPU render path.
 //!
 //! There is no public CA that will issue a cert for a private LAN IP, so we
-//! auto-generate a long-lived **self-signed** cert on first run (rcgen, ring
-//! backend) with the LAN IP + hostname baked in as SANs. Browsers show a
-//! one-time "not private" warning per device (encrypted, just untrusted);
-//! after the user proceeds once, the exception is remembered.
+//! run our own. On first run we generate a long-lived **local root CA** and
+//! a short-lived **leaf** cert (signed by that CA) with the LAN IP + hostname
+//! baked in as SANs. The server presents the leaf; the CA is offered for
+//! download on the verification page (`/ridge-ca.crt`). A device that trusts
+//! the CA **once** stops warning for every present and future leaf — even
+//! after the LAN IP changes and the leaf rotates — because the trust anchor
+//! is the CA, not the leaf. This is the "mkcert" model.
 //!
-//! Cert lifecycle (under `%LOCALAPPDATA%\ridge\remote-tls\`):
-//! - `cert.pem` + `key.pem` + `meta.txt` present, `meta.txt` matches the
-//!   current `lan_ip\nhostname` → reuse (our auto cert, still valid).
-//! - `meta.txt` *missing* but cert+key present → treat as a **user-provided**
-//!   cert (e.g. mkcert / corporate CA); reuse verbatim, never overwrite.
-//! - `meta.txt` present but stale (LAN IP changed) or files missing →
-//!   regenerate so the SAN keeps matching the address clients connect to.
+//! Apple platforms refuse TLS server (leaf) certs whose validity exceeds
+//! ~398 days, so the leaf is issued for [`LEAF_VALID_DAYS`] and proactively
+//! rotated once it passes [`LEAF_RENEW_DAYS`]. The CA, being a manually
+//! trusted anchor rather than a server cert, is long-lived ([`CA_VALID_DAYS`]).
+//!
+//! Material under `%LOCALAPPDATA%\ridge\remote-tls\`:
+//! - `ca-key.pem`  — root CA private key (generated once, reused forever).
+//! - `ca.pem` / `ca.der` — root CA cert (stable; what the user downloads/trusts).
+//! - `cert.pem` / `key.pem` — current server leaf cert + key.
+//! - `meta.txt`   — `lan_ip\nhostname\n<created_unix>`; tracks what the leaf
+//!   SANs were built for and when, driving rotation.
+//!
+//! User-provided cert escape hatch (unchanged): if `cert.pem` + `key.pem`
+//! exist with **no** `meta.txt` and **no** `ca-key.pem`, they are treated as a
+//! user-supplied cert (mkcert / corporate CA) and reused verbatim, never
+//! overwritten.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum_server::tls_rustls::RustlsConfig;
+use rcgen::{
+    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose, SanType, SerialNumber,
+};
+use time::{Duration as TimeDuration, OffsetDateTime};
+
+/// Root CA validity — long, because it is a manually trusted anchor, not a
+/// server cert subject to the ~398-day platform ceiling.
+const CA_VALID_DAYS: i64 = 3650;
+/// Leaf validity — kept under Apple's ~398-day TLS server-cert limit.
+const LEAF_VALID_DAYS: i64 = 397;
+/// Rotate the leaf once it is older than this (well before expiry).
+const LEAF_RENEW_DAYS: u64 = 350;
 
 /// Directory holding the remote server's TLS material.
 fn tls_dir() -> PathBuf {
@@ -34,9 +60,35 @@ fn tls_dir() -> PathBuf {
         .join("remote-tls")
 }
 
-/// Resolve a `RustlsConfig` for the remote server, generating a self-signed
-/// cert for `lan_ip` / `hostname` if one isn't already cached (or if the
-/// cached auto cert no longer matches the current LAN IP).
+/// Root CA certificate in DER form, for the `/ridge-ca.crt` download endpoint
+/// (iOS / Android / Windows install the CA as a trust anchor in this form).
+///
+/// Returns `None` before the server has generated a CA, or when the install is
+/// running a user-provided cert with no Ridge CA.
+pub fn ca_cert_der() -> Option<Vec<u8>> {
+    let dir = tls_dir();
+    if let Ok(der) = std::fs::read(dir.join("ca.der")) {
+        if !der.is_empty() {
+            return Some(der);
+        }
+    }
+    // Fallback for installs predating ca.der: decode the PEM body.
+    let pem = std::fs::read_to_string(dir.join("ca.pem")).ok()?;
+    pem_to_der(&pem)
+}
+
+/// Root CA certificate in PEM form, for desktop trust-store import.
+pub fn ca_cert_pem() -> Option<String> {
+    let pem = std::fs::read_to_string(tls_dir().join("ca.pem")).ok()?;
+    if pem.trim().is_empty() {
+        return None;
+    }
+    Some(pem)
+}
+
+/// Resolve a `RustlsConfig` for the remote server, ensuring a local CA exists
+/// and minting a fresh CA-signed leaf for `lan_ip` / `hostname` whenever the
+/// cached leaf is missing, stale (LAN IP / hostname changed), or aged out.
 ///
 /// Returns `None` (caller falls back to plain HTTP) if cert material can't be
 /// produced or parsed — TLS is best-effort, the server must still come up.
@@ -50,24 +102,30 @@ pub async fn resolve_config(lan_ip: &str, hostname: &str) -> Option<RustlsConfig
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
     let meta_path = dir.join("meta.txt");
-    let meta_now = format!("{lan_ip}\n{hostname}");
+    let ca_key_path = dir.join("ca-key.pem");
 
-    let have_pair = cert_path.exists() && key_path.exists();
-    let user_provided = have_pair && !meta_path.exists();
-    let auto_fresh = have_pair
-        && std::fs::read_to_string(&meta_path)
-            .map(|m| m.trim() == meta_now.trim())
-            .unwrap_or(false);
-
-    let (cert_pem, key_pem) = if user_provided || auto_fresh {
-        match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
-            (Ok(c), Ok(k)) => (c, k),
-            _ => generate_and_persist(&dir, lan_ip, hostname, &meta_now)?,
+    // User-provided cert: cert+key present, but no meta and no Ridge CA → treat
+    // as a user-supplied cert (mkcert / corporate). Reuse verbatim.
+    let have_leaf = cert_path.exists() && key_path.exists();
+    if have_leaf && !meta_path.exists() && !ca_key_path.exists() {
+        if let (Ok(c), Ok(k)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+            return build_config(c, k).await;
         }
-    } else {
-        generate_and_persist(&dir, lan_ip, hostname, &meta_now)?
-    };
+    }
 
+    // Ridge-managed CA + leaf.
+    if let Some((cert_pem, key_pem)) = ensure_ca_and_leaf(&dir, lan_ip, hostname) {
+        return build_config(cert_pem.into_bytes(), key_pem.into_bytes()).await;
+    }
+
+    // Last-ditch fallback: serve whatever cert/key pair is on disk.
+    match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+        (Ok(c), Ok(k)) => build_config(c, k).await,
+        _ => None,
+    }
+}
+
+async fn build_config(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Option<RustlsConfig> {
     match RustlsConfig::from_pem(cert_pem, key_pem).await {
         Ok(cfg) => Some(cfg),
         Err(e) => {
@@ -77,60 +135,208 @@ pub async fn resolve_config(lan_ip: &str, hostname: &str) -> Option<RustlsConfig
     }
 }
 
-/// Generate a fresh self-signed cert+key, persist them (plus the SAN meta) to
-/// `dir`, and return the PEM bytes. Returns `None` on any generation/IO error.
-fn generate_and_persist(
-    dir: &std::path::Path,
-    lan_ip: &str,
-    hostname: &str,
-    meta_now: &str,
-) -> Option<(Vec<u8>, Vec<u8>)> {
-    let (cert_pem, key_pem) = match generate_self_signed(lan_ip, hostname) {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::error!(target: "ridge::remote", error = %e, "remote TLS: cert generation failed");
+/// Ensure a local CA exists, then return a (leaf cert PEM, leaf key PEM) pair —
+/// reusing the cached leaf when still valid for the current address, otherwise
+/// minting and persisting a fresh CA-signed leaf. Returns `None` on any
+/// unrecoverable generation error.
+fn ensure_ca_and_leaf(dir: &Path, lan_ip: &str, hostname: &str) -> Option<(String, String)> {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::error!(target: "ridge::remote", error = %e, "remote TLS: mkdir failed");
+        // Persistence will fail, but we can still mint an in-memory leaf below.
+    }
+
+    let (ca_cert, ca_key) = load_or_create_ca(dir)?;
+
+    // Reuse the cached leaf when its SANs still match and it is not aged out.
+    if leaf_should_reuse(dir, lan_ip, hostname) {
+        if let (Ok(cert), Ok(key)) = (
+            std::fs::read_to_string(dir.join("cert.pem")),
+            std::fs::read_to_string(dir.join("key.pem")),
+        ) {
+            return Some((cert, key));
+        }
+    }
+
+    let (leaf_pem, leaf_key_pem) = match generate_leaf(lan_ip, hostname, &ca_cert, &ca_key) {
+        Some(pair) => pair,
+        None => {
+            tracing::error!(target: "ridge::remote", "remote TLS: leaf generation failed");
             return None;
         }
     };
 
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        tracing::error!(target: "ridge::remote", error = %e, "remote TLS: mkdir failed");
-        return None;
-    }
-    // Best-effort persistence: if writing fails we still return the in-memory
-    // PEM so the server can come up over TLS this session.
-    let _ = std::fs::write(dir.join("cert.pem"), &cert_pem);
-    let _ = std::fs::write(dir.join("key.pem"), &key_pem);
-    let _ = std::fs::write(dir.join("meta.txt"), meta_now);
-    tracing::info!(target: "ridge::remote", lan_ip, hostname, "remote TLS: generated self-signed cert");
+    let _ = std::fs::write(dir.join("cert.pem"), &leaf_pem);
+    let _ = std::fs::write(dir.join("key.pem"), &leaf_key_pem);
+    let _ = std::fs::write(dir.join("meta.txt"), leaf_meta(lan_ip, hostname));
+    tracing::info!(target: "ridge::remote", lan_ip, hostname, "remote TLS: issued CA-signed leaf cert");
 
-    Some((cert_pem.into_bytes(), key_pem.into_bytes()))
+    Some((leaf_pem, leaf_key_pem))
 }
 
-/// Build a self-signed cert valid for the LAN IP, loopback, localhost, the
-/// machine hostname, and the mDNS `ridge-local.local` target.
-fn generate_self_signed(lan_ip: &str, hostname: &str) -> Result<(String, String), rcgen::Error> {
-    use rcgen::{CertificateParams, DnType, KeyPair, SanType};
+/// Load the persisted root CA, or create and persist one on first run.
+///
+/// The CA private key is the durable trust root: it is generated once and
+/// reused forever. The CA *certificate* is regenerated in memory each call
+/// from that key with a fixed distinguished name, so it can act as the
+/// `signed_by` issuer; the downloadable `ca.pem` / `ca.der` are written only
+/// once (on first creation) and stay byte-stable for the device's trust store.
+///
+/// Security note: `ca-key.pem` is the keystone — anyone who reads it can mint
+/// certs your trusting devices accept. It lives under `%LOCALAPPDATA%`, which
+/// is ACL-restricted to the current Windows user, so other users can't read it;
+/// we rely on that per-user boundary rather than narrowing the ACL further.
+/// A process running *as the same user* can still read it (same trust boundary
+/// as the user's SSH/browser key stores).
+fn load_or_create_ca(dir: &Path) -> Option<(Certificate, KeyPair)> {
+    let ca_key_path = dir.join("ca-key.pem");
 
-    // DNS-style SANs go through `new`; IP SANs are pushed explicitly so they
-    // land as `SanType::IpAddress` rather than being misread as DNS names.
+    let ca_key = if ca_key_path.exists() {
+        match std::fs::read_to_string(&ca_key_path).ok().and_then(|p| KeyPair::from_pem(&p).ok()) {
+            Some(kp) => kp,
+            None => {
+                tracing::error!(target: "ridge::remote", "remote TLS: CA key unreadable; regenerating");
+                let kp = KeyPair::generate().ok()?;
+                let _ = std::fs::write(&ca_key_path, kp.serialize_pem());
+                // Force a fresh anchor so the new key's cert is the one served.
+                let _ = std::fs::remove_file(dir.join("ca.pem"));
+                let _ = std::fs::remove_file(dir.join("ca.der"));
+                kp
+            }
+        }
+    } else {
+        let kp = KeyPair::generate().ok()?;
+        let _ = std::fs::write(&ca_key_path, kp.serialize_pem());
+        kp
+    };
+
+    let ca_cert = ca_params()?.self_signed(&ca_key).ok()?;
+
+    // Persist the downloadable anchor exactly once so it stays byte-stable.
+    let ca_pem_path = dir.join("ca.pem");
+    if !ca_pem_path.exists() {
+        let _ = std::fs::write(&ca_pem_path, ca_cert.pem());
+    }
+    let ca_der_path = dir.join("ca.der");
+    if !ca_der_path.exists() {
+        let _ = std::fs::write(&ca_der_path, ca_cert.der().as_ref());
+    }
+
+    Some((ca_cert, ca_key))
+}
+
+/// Parameters for the local root CA. The distinguished name is fixed (no LAN
+/// IP / hostname) so the trust anchor stays identical across IP changes and
+/// restarts; only the leaf carries the address-specific SANs.
+fn ca_params() -> Option<CertificateParams> {
+    let mut params = CertificateParams::new(Vec::new()).ok()?;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "Ridge Remote Local CA");
+    params
+        .distinguished_name
+        .push(DnType::OrganizationName, "Ridge");
+    // pathLenConstraint=0: this CA only ever signs the end-entity leaf below,
+    // never a subordinate CA — keep the trust it grants as narrow as possible.
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - TimeDuration::days(1);
+    params.not_after = now + TimeDuration::days(CA_VALID_DAYS);
+    // Fixed serial: this is a single self-signed root that is always its own
+    // issuer, so RFC 5280's per-issuer serial uniqueness is trivially met. The
+    // serial must stay stable across restarts anyway (we regenerate the CA cert
+    // in memory each run but persist `ca.pem`/`ca.der` only once — see
+    // `load_or_create_ca`). The leaves issued *by* this CA get rcgen's random
+    // serials.
+    params.serial_number = Some(SerialNumber::from(1u64));
+    Some(params)
+}
+
+/// Mint a leaf cert (LAN IP, loopback, localhost, hostname, mDNS name as SANs)
+/// signed by the local CA. EKU=serverAuth and a sub-398-day validity keep it
+/// acceptable to Apple's TLS policy once the CA is trusted.
+fn generate_leaf(
+    lan_ip: &str,
+    hostname: &str,
+    ca_cert: &Certificate,
+    ca_key: &KeyPair,
+) -> Option<(String, String)> {
     let mut dns: Vec<String> = vec!["localhost".to_string(), "ridge-local.local".to_string()];
     if !hostname.is_empty() && hostname != "localhost" {
         dns.push(hostname.to_string());
     }
-    let mut params = CertificateParams::new(dns)?;
+    let mut params = CertificateParams::new(dns).ok()?;
     params
         .distinguished_name
         .push(DnType::CommonName, "Ridge Remote Control");
-
     params
         .subject_alt_names
         .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     if let Ok(ip) = lan_ip.parse::<IpAddr>() {
         params.subject_alt_names.push(SanType::IpAddress(ip));
     }
+    params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    params.use_authority_key_identifier_extension = true;
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - TimeDuration::days(1);
+    params.not_after = now + TimeDuration::days(LEAF_VALID_DAYS);
 
-    let key_pair = KeyPair::generate()?;
-    let cert = params.self_signed(&key_pair)?;
-    Ok((cert.pem(), key_pair.serialize_pem()))
+    let leaf_key = KeyPair::generate().ok()?;
+    let leaf_cert = params.signed_by(&leaf_key, ca_cert, ca_key).ok()?;
+    Some((leaf_cert.pem(), leaf_key.serialize_pem()))
+}
+
+/// `lan_ip\nhostname\n<created_unix>` — the leaf provenance marker.
+fn leaf_meta(lan_ip: &str, hostname: &str) -> String {
+    format!("{lan_ip}\n{hostname}\n{}", now_unix())
+}
+
+/// Reuse the cached leaf only if its address still matches and it has not aged
+/// past [`LEAF_RENEW_DAYS`] (and the files are actually present).
+fn leaf_should_reuse(dir: &Path, lan_ip: &str, hostname: &str) -> bool {
+    let Ok(meta) = std::fs::read_to_string(dir.join("meta.txt")) else {
+        return false;
+    };
+    let lines: Vec<&str> = meta.lines().collect();
+    if lines.len() < 3 || lines[0] != lan_ip || lines[1] != hostname {
+        return false;
+    }
+    let created: u64 = lines[2].trim().parse().unwrap_or(0);
+    let now = now_unix();
+    // Clock moved backwards (or unparseable) → regenerate defensively.
+    if created == 0 || now < created {
+        return false;
+    }
+    let age_days = (now - created) / 86_400;
+    age_days < LEAF_RENEW_DAYS && dir.join("cert.pem").exists() && dir.join("key.pem").exists()
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Decode the first PEM block's base64 body into DER bytes.
+fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let body: String = pem
+        .lines()
+        .skip_while(|l| !l.starts_with("-----BEGIN"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("-----END"))
+        .collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()
 }

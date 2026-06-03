@@ -38,15 +38,18 @@ axum = { version = "0.7", features = ["ws"] }
 # Remote-control HTTPS. Browsers only expose WebGPU (`navigator.gpu`) in a
 # "secure context" (https/wss/localhost), so reaching the GPU path from a
 # phone/desktop browser over the LAN requires the remote server to serve
-# TLS. We terminate TLS via axum-server's rustls integration and
-# auto-generate a self-signed cert (rcgen) on first run (see remote/tls.rs).
-# Crypto backend is `ring`, NOT rustls 0.23's default `aws-lc-rs`: the
-# crates.io `ring` release bundles pregenerated assembly, so Windows MSVC
-# builds need no nasm/cmake (aws-lc-rs would). `tls-rustls-no-provider`
-# lets us install the ring provider ourselves.
+# TLS. We terminate TLS via axum-server's rustls integration and, on first
+# run, auto-generate a local root CA + a CA-signed leaf cert (rcgen) so the
+# CA can be installed/trusted once per device to silence the browser warning
+# (see remote/tls.rs). Crypto backend is `ring`, NOT rustls 0.23's default
+# `aws-lc-rs`: the crates.io `ring` release bundles pregenerated assembly, so
+# Windows MSVC builds need no nasm/cmake (aws-lc-rs would).
+# `tls-rustls-no-provider` lets us install the ring provider ourselves.
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "crypto"] }
+# Certificate validity windows for the remote TLS CA/leaf (see remote/tls.rs).
+time = { version = "0.3", default-features = false, features = ["std"] }
 futures = "0.3"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
