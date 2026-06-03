@@ -1,10 +1,10 @@
 <script lang="ts">
   // Ridge Cloud — Pro 升级 / 登录 玻璃拟物 Modal（契约 §4.1/§4.2）。
   //
-  // 三条路径（契约要求）：
-  //   [ 立即订阅 ]     → 外链 Lemon Squeezy（占位 URL）
-  //   [ 国内赞助激活 ] → 外链占位 + 卡密输入（调 /auth/activate-key）
-  //   [ 本地登录 ]     → 邮箱密码登录（/auth/login）
+  // 结算方式按地区自动选默认（方案 1，detectPreferredRegion），可手动切换：
+  //   国内 → [ 国内卡密激活 ] 主推（面包多购买 → /auth/activate-key）
+  //   海外 → [ 立即订阅 ]    主推（外链 Lemon Squeezy）
+  //   [ 本地登录 ] → 邮箱密码登录（/auth/login），始终可用
   //
   // 设计：glassmorphism with real depth（design-quality），避免模板感：
   //   层次（标题 scale 对比）、blur+边缘高光、hover/focus 态、语义化色彩。
@@ -13,6 +13,7 @@
   import * as auth from './auth';
   import { cloudAuth } from './auth';
   import { ApiError } from './apiClient';
+  import { detectPreferredRegion, type Region } from './region';
 
   interface Props {
     open: boolean;
@@ -23,12 +24,16 @@
 
   let { open = $bindable(), onClose, onReady }: Props = $props();
 
-  // 外链占位（编排者后续替换为真实链接）。
+  // 外链占位（运营后续替换为真实链接）。
   const LEMON_SQUEEZY_URL = 'https://ridge.lemonsqueezy.com/buy/PLACEHOLDER';
-  const SPONSOR_URL = 'https://afdian.com/a/PLACEHOLDER';
+  const MBD_URL = 'https://mbd.pub/o/PLACEHOLDER';
 
   type Tab = 'highlights' | 'login' | 'activate';
   let tab = $state<Tab>('highlights');
+
+  // 方案 1：按语言/时区自动选默认结算地区，用户可随时切换。
+  const recommended: Region = detectPreferredRegion();
+  let region = $state<Region>(recommended);
 
   // 登录表单
   let email = $state('');
@@ -197,29 +202,73 @@
             {/each}
           </ul>
 
+          <!-- 结算方式切换：默认按地区自动选中，可手动切换 -->
+          <div class="mb-1.5 flex gap-1 rounded-lg bg-black/20 p-1 text-xs" role="tablist" aria-label="结算方式">
+            {#each [['cn', '🇨🇳 国内 · 卡密'], ['intl', '🌐 海外 · 信用卡']] as [key, label] (key)}
+              <button
+                role="tab"
+                aria-selected={region === key}
+                onclick={() => { region = key as Region; }}
+                class="flex-1 rounded-md px-2 py-1.5 font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50
+                  {region === key
+                    ? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)] shadow-sm'
+                    : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+              >
+                {label}{#if recommended === key}<span class="ml-1 text-[10px] text-[var(--rg-accent)]">推荐</span>{/if}
+              </button>
+            {/each}
+          </div>
+          <p class="mb-4 text-[11px] text-[var(--rg-fg-muted)]">已按你的语言与时区自动选择，可随时切换。</p>
+
           <div class="space-y-2">
-            <button
-              onclick={() => openExternal(LEMON_SQUEEZY_URL)}
-              class="group flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-              style="background: linear-gradient(135deg, var(--rg-accent) 0%, color-mix(in oklch, var(--rg-accent) 70%, #7c3aed) 100%); box-shadow: 0 8px 24px -8px var(--rg-accent);"
-            >
-              <Zap class="h-4 w-4" /> 立即订阅
-              <ExternalLink class="h-3.5 w-3.5 opacity-70 transition-transform group-hover:translate-x-0.5" />
-            </button>
-            <div class="flex gap-2">
+            {#if region === 'cn'}
+              <!-- 国内主推：面包多卡密 -->
               <button
                 onclick={() => { tab = 'activate'; }}
-                class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                class="group flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                style="background: linear-gradient(135deg, var(--rg-accent) 0%, color-mix(in oklch, var(--rg-accent) 70%, #7c3aed) 100%); box-shadow: 0 8px 24px -8px var(--rg-accent);"
               >
-                国内赞助激活
+                <KeyRound class="h-4 w-4" /> 国内卡密激活
               </button>
+              <div class="flex gap-2">
+                <button
+                  onclick={() => openExternal(LEMON_SQUEEZY_URL)}
+                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                >
+                  海外信用卡订阅
+                </button>
+                <button
+                  onclick={() => { tab = 'login'; }}
+                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                >
+                  本地登录
+                </button>
+              </div>
+            {:else}
+              <!-- 海外主推：Lemon Squeezy 信用卡 -->
               <button
-                onclick={() => { tab = 'login'; }}
-                class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                onclick={() => openExternal(LEMON_SQUEEZY_URL)}
+                class="group flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                style="background: linear-gradient(135deg, var(--rg-accent) 0%, color-mix(in oklch, var(--rg-accent) 70%, #7c3aed) 100%); box-shadow: 0 8px 24px -8px var(--rg-accent);"
               >
-                本地登录
+                <Zap class="h-4 w-4" /> 立即订阅
+                <ExternalLink class="h-3.5 w-3.5 opacity-70 transition-transform group-hover:translate-x-0.5" />
               </button>
-            </div>
+              <div class="flex gap-2">
+                <button
+                  onclick={() => { tab = 'activate'; }}
+                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                >
+                  国内卡密激活
+                </button>
+                <button
+                  onclick={() => { tab = 'login'; }}
+                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                >
+                  本地登录
+                </button>
+              </div>
+            {/if}
           </div>
         {:else if tab === 'login'}
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doLogin(); }}>
@@ -257,9 +306,9 @@
         {:else}
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doActivate(); }}>
             <p class="text-xs leading-relaxed text-[var(--rg-fg-muted)]">
-              在赞助平台获取卡密后，于此输入激活 Pro。
-              <button type="button" onclick={() => openExternal(SPONSOR_URL)} class="text-[var(--rg-accent)] hover:underline">
-                前往赞助页 ↗
+              在面包多购买卡密后，于此输入激活 Pro。
+              <button type="button" onclick={() => openExternal(MBD_URL)} class="text-[var(--rg-accent)] hover:underline">
+                前往面包多 ↗
               </button>
             </p>
             {#if !loggedIn}
