@@ -168,3 +168,8 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
   - **铁证**：controller 由纯静态文件服务器托管（无 backend/WS/invoke 能力），其显示的 host 文件树只可能来自 cloud→host 的 WebRTC 连接。⇒ **cloud 功能闭环 invoke 往返 live 验证通过**。
 - 证据截图：`docs/plans/cloud-e2e-controller.png`。
 - **次要待办（非阻塞）**：① 展开 `docs` 子目录时 `get_directory_children`（懒加载）经云返回"空目录"——cloud 路径下子目录懒加载的小 bug（根树 `get_file_tree` 正常），待查参数传递；② D-GM-11 pane PTY 流、D-GM-10 E2EE 身份绑定仍为后续；③ 注意：live e2e 需 host+controller 同时在线（host 信令空闲会超时断），编排时序敏感。
+
+### S6 公网下发部署 —— 代码完成 + 本地提交，部署受阻于 ridge-cloud 远端历史分叉
+- ridge-cloud 实现 + 本地提交 `fff01da`：host-label 路由 `app.remo2ridge.duckdns.org` → `desktop-app/`（刷新为 CSP-fixed web-remote-dist）；主域名/`/api`/`/ws` 不变；指纹缓存；Dockerfile 纳入 desktop-app。`cargo check`(ridge-cloud) 0err。
+- **app.* DNS+TLS 已就绪**（duckdns 通配 + `*.remo2ridge.duckdns.org` 证书；curl app.* = 200/cert valid）——无需额外 ops。
+- **部署受阻（非本次代码问题）**：`git push dokku main` 被拒（non-fast-forward）；fetch 后发现**本地 clone 与已部署 dokku/main 历史分叉**（ahead 4 / behind 1、根 commit 不同 = E 组曾 force-push/re-init）。生产仓强行 reconcile 风险高（可能破坏在线服务或丢 E 组已部署 web/）——**未强推**，已恢复 E 组 stash、服务 health 200 完好。S6 部署 = 待与 E 组对齐 ridge-cloud 历史后 `git push dokku main`（代码 + DNS/cert 均就绪）。
