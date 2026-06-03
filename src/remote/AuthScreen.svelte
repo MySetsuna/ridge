@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { RemoteConnection, type ConnectionState } from './lib/wsRemote';
+  import CertTrustGuide from './CertTrustGuide.svelte';
 
   const TOKEN_KEY = 'ridge_remote_token';
 
@@ -107,6 +108,7 @@
         {loading ? '验证中...' : '验证并连接'}
       </button>
     </div>
+    <CertTrustGuide />
   </div>
 {:else if loading}
   <div class="screen">
