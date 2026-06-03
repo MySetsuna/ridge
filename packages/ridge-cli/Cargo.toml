@@ -1,0 +1,79 @@
+[package]
+name = "ridge-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Ridge headless remote host for Linux/VPS — device pairing, E2EE WebRTC PTY bridge"
+license = "MIT"
+default-run = "ridge-cli"
+
+# Standalone crate. This intentionally does NOT depend on the Tauri `ridge`
+# binary crate (which pulls webview/wasm/wgpu). It reuses the same battle-tested
+# pure crates (`ignore`, `glob`, `regex`, `portable-pty`) the desktop app uses.
+#
+# Reuse note (contract §9 / §11.D): the desktop reusable logic lives in
+# `src-tauri/src/fs/{search,tree}.rs` and `src-tauri/src/engine/pty.rs`. Those
+# modules are declared PRIVATE in `src-tauri/src/lib.rs` (`mod fs;`, `mod
+# engine;` — only `pub mod remote;` is exported), so a `path` dependency on
+# `ridge_lib` cannot reach them today. Additionally `engine::pty` is hard-wired
+# to the Tauri `AppState` (window events, workspaces map) and is not usable
+# headless. We therefore reuse the *pure dependency crates* directly and keep a
+# thin, signature-compatible local wrapper for fs search/tree (see
+# `src/fs_reuse.rs`, marked TODO). The minimal `pub` adjustments that WOULD let
+# us drop the wrapper are listed in the delivery report.
+
+[[bin]]
+name = "ridge-cli"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+# HTTP client (rustls, no native OpenSSL — VPS-friendly)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Errors / logging
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Config paths (~/.config/ridge on Linux)
+directories = "5"
+# PTY — same crate + version the desktop app uses (src-tauri uses 0.8)
+portable-pty = "0.8"
+# Sync primitives (same as src-tauri)
+parking_lot = "0.12"
+
+# E2EE (contract §7 — byte-for-byte compatible with the browser noble stack)
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+
+# Signaling WebSocket client (rustls)
+tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+# Byte buffers (matches the `bytes` re-exported by the webrtc data channel API)
+bytes = "1"
+
+# fs reuse (same crates as src-tauri/src/fs)
+ignore = "0.4"
+glob = "0.3"
+regex = "1"
+
+# Host-side WebRTC (contract §0/§8 terminal architecture). Feature-gated so the
+# device-code flow + E2EE + PTY + batching + signaling all build even if the
+# heavy webrtc dependency tree is unavailable in a constrained CI. On by
+# default; disable with `--no-default-features` to get the trait-stub path.
+webrtc = { version = "0.11", optional = true }
+
+[features]
+default = ["rtc"]
+# Real host-side WebRTC peer connection via the `webrtc` crate.
+rtc = ["dep:webrtc"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "time"] }

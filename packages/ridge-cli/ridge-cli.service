@@ -1,0 +1,60 @@
+# Ridge CLI — 无头远控守护进程的 systemd 用户/系统服务模板。
+#
+# 安装（系统级，开机自启）:
+#   sudo cp ridge-cli /usr/local/bin/ridge-cli
+#   sudo useradd --system --create-home --home-dir /var/lib/ridge --shell /usr/sbin/nologin ridge
+#   # 先以该用户完成一次配对（device JWT 写入其 ~/.config/ridge/auth.json）:
+#   sudo -u ridge -H /usr/local/bin/ridge-cli remote --enable
+#   sudo cp ridge-cli.service /etc/systemd/system/ridge-cli.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ridge-cli
+#   journalctl -u ridge-cli -f      # 查看日志
+#
+# 或用户级（无需 root，登录会话内）:
+#   mkdir -p ~/.config/systemd/user
+#   cp ridge-cli.service ~/.config/systemd/user/ridge-cli.service
+#   # 删掉下面的 User=/Group= 两行后:
+#   systemctl --user daemon-reload && systemctl --user enable --now ridge-cli
+#   loginctl enable-linger "$USER"   # 让服务在登出后仍存活
+
+[Unit]
+Description=Ridge headless remote host (ridge-cli daemon)
+Documentation=https://remo2ridge.duckdns.org
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 系统级运行身份（用户级安装时删除这两行）。
+User=ridge
+Group=ridge
+
+ExecStart=/usr/local/bin/ridge-cli remote --daemon
+# 低能耗后台：失败重启 + 退避，避免崩溃风暴。
+Restart=on-failure
+RestartSec=5s
+
+# 日志级别（journald 收集）。可调成 debug 排障。
+Environment=RUST_LOG=info,ridge_cli=info
+
+# ── 资源 / 安全收敛（低能耗后台）──────────────────────────────
+# 降低 CPU 优先级，远控守护不该和前台争抢。
+Nice=10
+CPUWeight=20
+# 内存软上限（按需调整）。
+MemoryMax=256M
+
+# 沙箱加固：守护只需要读自己的 auth.json + 拉起用户 shell。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# 允许写入配置目录（device JWT）与用户家目录（shell 会话）。
+# 系统级时配置目录在 /var/lib/ridge/.config/ridge。
+ReadWritePaths=%h
+
+[Install]
+WantedBy=multi-user.target
