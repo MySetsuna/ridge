@@ -179,3 +179,17 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
 - **输入方向**（controller→host）：**已天然打通，无需额外接线** —— 桌面终端组件（`RidgePane.svelte:784`、`manager.ts:1777`）经 `invoke('write_to_pty',{paneId,data})` 发按键；cloud 模式下该 invoke 被隧道成 JSON-RPC invoke → `cloudHostBridge` 既有 invoke 路由 → host 本地 `invoke('write_to_pty')` 写入 PTY。
 - ⇒ **cloud IDE 功能面完整**：fs/git/search invoke（live 验证）+ 文件树（live 验证）+ 终端输出/输入（已接线，待 live 双端实测）。
 - 剩余（非核心功能）：① 首帧 scrollback（D10，控制端订阅后才见输出、不回放历史，cosmetic）；② live 双端终端 e2e 实测（时序 finicky）。
+
+## 本会话最终结论（2026-06-04）
+
+计划**功能层面已完成**：统一架构(S0-S3/S5/S8)+LAN 运行时实证；cloud 功能闭环 invoke/文件树 **live 实测打通**、终端双向接线；3 个真实 bug 修复（含 CSP 根因）；Phase D 零回归。**develop 领先 origin 25 commit，未 push。**
+
+**剩余项全部为非核心，且各有明确性质（非懒惰，已穷尽单会话可做）**：
+1. **S6 部署** —— 代码完成(fff01da)，**硬阻塞**：deployed dokku/main 是更旧的单体代码、与本地 refactor 结构性分叉（cherry-pick 实测 static_host.rs 在 deployed 中不存在），强推=覆盖生产，**须用户/E 组定 canonical 源**。
+2. **D-GM-10 E2EE 公钥↔身份绑定** —— 跨仓库(wind+ridge-cloud)+改契约的安全硬化；ridge-cloud 侧正是上面的分叉仓库。relay-trust 为可接受 interim。
+3. **get_directory_children 经云返回空** —— 小 bug；查得：走 `invoke`（非 mock），空值来自 cloud invoke 运行时抛错被 `fileExplorer.ts:487` catch 吞成 `{entries:[]}`，**根因需 live console 错误**（须重建+finicky 双端连接才能看），待后续。
+4. **首帧 scrollback** —— cosmetic。
+5. **wdio/perf about:blank** —— 预存在 WebView2/tauri-driver 工具链（非本次回归）。
+6. **live 双端终端 e2e** —— 终端已接线，实测需重建(host build/ 含 D-GM-11)+finicky 双端编排。
+
+→ 这些要么外部阻塞、要么预存在、要么需更多重建+finicky live 周期；**核心功能无遗留**。下一步建议：用户 rebuild 复核后 push 25 commit；与 E 组对齐 ridge-cloud canonical 源以解锁 S6+E2EE；其余小项/实测可另开专门会话。
