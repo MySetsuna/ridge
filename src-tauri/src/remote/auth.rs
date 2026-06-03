@@ -197,7 +197,9 @@ impl SessionStore {
     }
 
     fn cleanup_expired(&self) {
-        self.tokens.lock().retain(|_, created| created.elapsed() < SESSION_TTL);
+        self.tokens
+            .lock()
+            .retain(|_, created| created.elapsed() < SESSION_TTL);
     }
 }
 

@@ -1,10 +1,12 @@
 mod commands;
 mod db;
+mod deep_root;
 mod engine;
 mod fs;
 pub mod remote;
 mod state;
 mod teammate;
+mod tray;
 mod types;
 mod utils;
 
@@ -13,12 +15,14 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
-use tokio::sync::mpsc;
-use crate::commands::{fs_watch, git, pane, process, project, settings, terminal, theme, watch, ridge_file, workspace};
+use crate::commands::{
+    fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme, watch, workspace,
+};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tokio::sync::mpsc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,7 +40,9 @@ pub fn run() {
 
     let db_path = app_data_dir.join("projects.db");
     let project_store = ProjectStore::new(&db_path)
-        .map_err(|e| tracing::error!(target: "ridge::init", error = %e, "project store init failed"))
+        .map_err(
+            |e| tracing::error!(target: "ridge::init", error = %e, "project store init failed"),
+        )
         .ok();
 
     let mut app_state = AppState::new(event_tx);
@@ -52,15 +58,32 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_dialog::init())
+    // Deep Root Mode（§8.1）：进入深根时发原生系统通知（NotificationExt）。
+    .plugin(tauri_plugin_notification::init())
         // §4 关闭即将退出 → 同步把当前所有已保存（`associated_file_path != None`）
         // 工作区路径写到 `restore_workspaces.json`，下次非 cli 启动时由前端
         // `get_restore_set` 取回并自动 reopen。这里必须同步：spawn 异步任务在
         // 进程退出前可能跑不完。
         .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 let state = app.state::<AppState>();
-                // 确保远程服务器被停止
+                // §4 阻止误退出（Deep Root Mode）：点窗口关闭按钮默认**隐藏到托盘**，
+                // 而非退出进程 —— 否则用户误关窗口会连同远控通道 / teammate / pane
+                // 生命周期一并销毁。仅当「彻底退出 Ridge」托盘项已置 `quitting` 标志
+                // 时才放行真正的退出（此时跑保存恢复集 + 停远控的收尾逻辑）。
+                if !state.quitting.load(std::sync::atomic::Ordering::Acquire) {
+                    api.prevent_close();
+                    if let Err(e) = window.hide() {
+                        tracing::warn!(
+                            target: "ridge::deep_root",
+                            error = %e,
+                            "hide-to-tray on close-requested failed"
+                        );
+                    }
+                    return;
+                }
+                // 真正退出路径：与改动前行为一致 —— 停远程服务器 + 同步保存恢复集。
                 crate::commands::remote::stop_remote_server(&state);
                 ridge_file::save_restore_set(app, &state);
             }
@@ -74,6 +97,27 @@ pub fn run() {
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
                 // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
                 let _ = teammate_state.app_handle.set(handle.clone());
+
+                // §web-remote: mirror teammate layout / active-pane events to
+                // desktop-browser remote clients in ONE place. `listen_any`
+                // catches every emit of these events regardless of which handle
+                // emitted them (there are ~21 scattered emit sites), so we don't
+                // touch the teammate code. The JSON payload is re-published onto
+                // the remote UI event bus → relayed as a `{type:'event'}` frame →
+                // dispatched by the browser's `listen()` shim. No feedback loop:
+                // forwarding publishes to the broadcast bus, never back to `emit`.
+                {
+                    use tauri::Listener;
+                    for name in ["teammate-layout-changed", "teammate-active-pane-changed"] {
+                        let fwd = handle.clone();
+                        app.listen_any(name, move |event| {
+                            let payload: serde_json::Value =
+                                serde_json::from_str(event.payload())
+                                    .unwrap_or(serde_json::Value::Null);
+                            crate::remote::forward_event(&fwd, name, payload);
+                        });
+                    }
+                }
 
                 // Build the main window programmatically (rather than declaring
                 // it in `tauri.conf.json`) so we can attach an
@@ -94,6 +138,12 @@ pub fn run() {
                     .initialization_script(&splash_init_script)
                     .build()?;
                 window.show()?;
+
+                // Deep Root Mode（§8.1）：构建系统托盘（恢复工作台 / 彻底退出）。
+                // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
+                if let Err(e) = crate::tray::build_tray(app) {
+                    tracing::error!(target: "ridge::tray", error = %e, "tray init failed");
+                }
 
             tauri::async_runtime::spawn(async move {
                 use std::collections::HashMap;
@@ -599,6 +649,10 @@ pub fn run() {
             commands::remote::add_to_blacklist,
             commands::remote::list_blacklist,
             commands::remote::remove_from_blacklist,
+            // Deep Root Mode（§8.1）
+            deep_root::enter_deep_root_mode,
+            deep_root::restore_from_deep_root,
+            deep_root::set_cloud_remote_active,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -79,7 +79,8 @@ pub enum PaneState {
     /// 有 agent 运行中
     Busy,
     /// Pane 正在启动中（agent register 已发但 PTY 还没收到首条 prompt 输出时使用）
-    #[allow(dead_code)] // half-built: enum + serialization (commands/pane.rs:60-64) + TS union + UI badge (SplitContainer.svelte:592-599) all in place, but teammate/server.rs:register_agent_to_pane goes Idle→Busy directly. See TASKS §1.14.
+    #[allow(dead_code)]
+    // half-built: enum + serialization (commands/pane.rs:60-64) + TS union + UI badge (SplitContainer.svelte:592-599) all in place, but teammate/server.rs:register_agent_to_pane goes Idle→Busy directly. See TASKS §1.14.
     Starting,
 }
 
@@ -201,8 +202,7 @@ impl PaneScrollback {
     /// call; we snapshot into a Vec<Arc<Vec<u8>>> so the caller can read
     /// without holding the outer RwLock longer than needed.
     pub fn snapshot_blocks(&self) -> Vec<(u64, Arc<Vec<u8>>)> {
-        let mut out: Vec<(u64, Arc<Vec<u8>>)> =
-            Vec::with_capacity(self.blocks.len() + 1);
+        let mut out: Vec<(u64, Arc<Vec<u8>>)> = Vec::with_capacity(self.blocks.len() + 1);
         for (i, b) in self.blocks.iter().enumerate() {
             out.push((self.block_start_seqs[i], Arc::clone(b)));
         }
@@ -291,15 +291,18 @@ impl RemoteClientRegistry {
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let kill_flag = Arc::new(AtomicBool::new(false));
-        self.clients.lock().insert(id, RemoteClientInfo {
+        self.clients.lock().insert(
             id,
-            connected_at: std::time::SystemTime::now(),
-            remote_addr: addr,
-            user_agent: ua,
-            device_id,
-            token,
-            kill_flag: Arc::clone(&kill_flag),
-        });
+            RemoteClientInfo {
+                id,
+                connected_at: std::time::SystemTime::now(),
+                remote_addr: addr,
+                user_agent: ua,
+                device_id,
+                token,
+                kill_flag: Arc::clone(&kill_flag),
+            },
+        );
         (id, kill_flag)
     }
 
@@ -320,7 +323,8 @@ impl RemoteClientRegistry {
     pub fn kick(&self, id: u64) -> bool {
         let map = self.clients.lock();
         if let Some(info) = map.get(&id) {
-            info.kill_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            info.kill_flag
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             true
         } else {
             false
@@ -385,7 +389,9 @@ impl RemoteBlacklist {
     /// True if this device id or IP is blacklisted (empty values never match).
     pub fn is_blocked(&self, device_id: &str, ip: &str) -> bool {
         self.entries.lock().iter().any(|e| {
-            e.device_id.as_deref().is_some_and(|d| !d.is_empty() && d == device_id)
+            e.device_id
+                .as_deref()
+                .is_some_and(|d| !d.is_empty() && d == device_id)
                 || e.ip.as_deref().is_some_and(|i| !i.is_empty() && i == ip)
         })
     }
@@ -517,6 +523,20 @@ pub struct AppState {
     /// that remote WS clients subscribe to. Late joiners skip stale events —
     /// they pull current state on connect or on demand.
     pub remote_structural_tx: tokio::sync::broadcast::Sender<crate::types::RemoteStructuralEvent>,
+    /// Broadcast bus for generic Tauri events forwarded to desktop-browser remote
+    /// clients (the "desktop UI in a browser" mode). Any host event source that
+    /// the desktop UI subscribes to via `listen()` (fs-changed, teammate-*, …)
+    /// publishes here; the WS handler relays each as a `{type:'event'}` frame.
+    pub remote_ui_event_tx: tokio::sync::broadcast::Sender<crate::types::RemoteUiEvent>,
+    /// Deep Root Mode（§8）—— 「是否存在活跃云端远控会话」标志。云端 WebRTC/E2EE
+    /// provider 活在 WebView（v1），Rust 侧无法直接观测连接状态，故由前端在
+    /// DataChannel open/close 时通过 `set_cloud_remote_active` 命令上报到此处。
+    /// `enter_deep_root_mode` 据此做前置校验：无活跃远控时拒绝进入深根。
+    pub cloud_remote_active: Arc<AtomicBool>,
+    /// Deep Root Mode（§8）—— 「正在真正退出」标志。默认 `false`：窗口 close-requested
+    /// 时拦截关闭并隐藏到托盘（避免误退出）。仅托盘「彻底退出 Ridge」会先置 `true`
+    /// 再 `app.exit(0)`，让 close-requested 处理放行真正的退出（保存恢复集 + 停远控）。
+    pub quitting: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -586,6 +606,12 @@ impl AppState {
                 let (tx, _) = tokio::sync::broadcast::channel(64);
                 tx
             },
+            remote_ui_event_tx: {
+                let (tx, _) = tokio::sync::broadcast::channel(256);
+                tx
+            },
+            cloud_remote_active: Arc::new(AtomicBool::new(false)),
+            quitting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -873,12 +899,7 @@ impl AppState {
     /// Retrieve the most recent PTY scrollback bytes for a pane, up to
     /// `max_bytes`. Used to seed a newly-created mobile `PaneParser` so its
     /// state mirrors the desktop parser before the first delta frame is sent.
-    pub fn get_recent_scrollback_for(
-        &self,
-        ws: Uuid,
-        pane: Uuid,
-        max_bytes: usize,
-    ) -> Vec<u8> {
+    pub fn get_recent_scrollback_for(&self, ws: Uuid, pane: Uuid, max_bytes: usize) -> Vec<u8> {
         let sb = self.pty_scrollback.read();
         let Some(scrollback) = sb.get(&(ws, pane)) else {
             return Vec::new();
@@ -1205,15 +1226,9 @@ mod pty_delta_channel_tests {
         state.register_pane_delta_channel(ws, pane_a, sender_a);
         state.register_pane_delta_channel(ws, pane_b, sender_b);
 
-        state
-            .get_pane_delta_channel(ws, pane_a)
-            .expect("pane_a")(vec![0]);
-        state
-            .get_pane_delta_channel(ws, pane_a)
-            .expect("pane_a")(vec![0, 0]);
-        state
-            .get_pane_delta_channel(ws, pane_b)
-            .expect("pane_b")(vec![0]);
+        state.get_pane_delta_channel(ws, pane_a).expect("pane_a")(vec![0]);
+        state.get_pane_delta_channel(ws, pane_a).expect("pane_a")(vec![0, 0]);
+        state.get_pane_delta_channel(ws, pane_b).expect("pane_b")(vec![0]);
 
         assert_eq!(count_a.load(Ordering::SeqCst), 2);
         assert_eq!(count_b.load(Ordering::SeqCst), 1);
