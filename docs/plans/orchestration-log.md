@@ -113,3 +113,17 @@
 - **S4-host**：onFrame 接通 + host 侧 paneId 编码器对齐 + Rust(webrtc-rs) 迁移 + **E2EE 密钥认证核实（尚无实现核实）**——需 live cloud relay + WebRTC e2e。
 - **S6 cloud 入口**：跨仓库 `C:\code\ridge-cloud`（CDN/code-split/兜底下发）——超出 `C:\code\wind` 范围。
 - **剩余 handler 迁移**：git/terminal/workspace/pane（绑 D11 领域模型）+ 全量 D10 屏缓冲 + fs **写**命令（前置 D-GM-9 沙箱硬门）——见 `s1-migration-ledger.md`，留后续会话（Rust，cargo check 可验）。
+
+## Phase A 运行时验证已完成（2026-06-04，用户授权本机构建+实跑，已不再是 rebuild 门）
+
+GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 托管，构建/启动 ridge 不杀会话）：
+- **release 构建**：先修复 S1 workspace 重锁导致的 tauri 生态版本漂移（pin 回 2.10.x 全族，commit `ce8c72a`），`pnpm tauri build --no-bundle` exit 0，产出内嵌前端 ridge.exe（19.5MB）。
+- **桌面回归**（chrome-devtools 接 WebView2 CDP :9222）：新后端启动，文件树（S5 迁入 ridge-core 的 fs 命令）、git（develop ↑14）、终端全部正常 → **S1/S5 桌面零行为变化实证**。
+- **LAN web-remote e2e**（新后端 :9527 + TOTP 鉴权 + node WSS 客户端）：
+  - ✅ D9 `$/hello` 握手：host 回 `{protocolVersion:1, capabilities:[pane,invoke,fs,git,search,workspace,theme]}`。
+  - ✅ JSON-RPC invoke 迁移命令 `path_exists` → `{result:true}`（S3 JSON-RPC-native leg + ridge_core::dispatch + S5 命令 全链路）。
+  - ✅ **D-GM-2 结构化错误码实证**：迁移命令 `read_file` 带 `..` → `{error:{code:1003,data:{kind:"path_traversal"},message:"path traversal rejected"}}`；`get_remote_info`（非迁移、host 特权）被 legacy allowlist 早挡 → `-32603 internal`（符合预期）。
+  - ✅ legacy `invoke-request` 向后兼容 → `{_result:true}`（D-GM-4 实证）。
+  - ✅ 事件推送带 S3 `coalesced` 字段（背压路径活）。
+  - `text_search` 参数名为 `root`（非 `path`），命令本身正常（与 project.rs 行为一致）。
+⇒ **S1/S3/S5 在运行时验证通过**。剩 `tauri build` 完整 bundle（installer，非阻塞）+ S4-host/S6 见下。
