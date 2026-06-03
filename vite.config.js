@@ -26,6 +26,7 @@ if (WEB_REMOTE) {
   webRemoteAliases['@tauri-apps/api/window'] = shim('window.ts');
   webRemoteAliases['@tauri-apps/plugin-dialog'] = shim('dialog.ts');
   webRemoteAliases['@tauri-apps/plugin-clipboard-manager'] = shim('clipboard.ts');
+  webRemoteAliases['@tauri-apps/plugin-opener'] = shim('opener.ts');
 }
 
 export default defineConfig({

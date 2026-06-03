@@ -206,7 +206,11 @@ async function openExternalWithTrust(href: string, trustBase?: string): Promise<
 }
 
 async function openShell(href: string): Promise<void> {
-  if (!isTauri()) {
+  // 区分"原生 Tauri vs 浏览器"用构建标志 RIDGE_WEB_REMOTE，而非 isTauri()：
+  // 远控 shim 的 isTauri() 恒为 true（见 tauriShim/core.ts），若用它判据则
+  // window.open 兜底永不执行，外链在远控浏览器里点了无反应。普通 Tauri 构建
+  // 下该标志为 false，此分支被 tree-shake，原生行为不变（仍走 opener 插件）。
+  if (import.meta.env.RIDGE_WEB_REMOTE === true) {
     window.open(href, '_blank', 'noopener,noreferrer');
     return;
   }
@@ -215,5 +219,7 @@ async function openShell(href: string): Promise<void> {
     await openUrl(href);
   } catch (err) {
     console.warn('[linkResolver] openUrl failed', href, err);
+    // import/openUrl 失败时仍尝试浏览器兜底，避免静默失效。
+    window.open(href, '_blank', 'noopener,noreferrer');
   }
 }
