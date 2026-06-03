@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>Ridge Remote</title>
+<!-- PWA: installable, offline-capable, auto-updating (see vite.remote.config.js
+     + src/remote/main.ts). The <link rel="manifest"> is injected at build time
+     by vite-plugin-pwa. -->
+<meta name="theme-color" content="#0d1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ridge">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
 /* Default --rg-* palette (GitHub-dark). The desktop's active theme is pushed
    over WS and overrides these via inline styles on <html> (applyThemeVars). */

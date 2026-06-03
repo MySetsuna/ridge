@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -16,6 +17,64 @@ export default defineConfig({
   },
   plugins: [
     svelte(),
+    // PWA: offline-cache the static shell + assets, auto-update on new release.
+    // The Rust remote server (src-tauri/src/remote/server.rs) serves the emitted
+    // sw.js / manifest.webmanifest / icons via its SPA fallback with the right
+    // cache headers (sw.js + manifest = no-cache so updates are detected).
+    VitePWA({
+      // 'prompt' (not 'autoUpdate'): the generated SW *waits* and fires
+      // onNeedRefresh instead of reloading immediately. We drive the update
+      // ourselves from main.ts — silently, but timed so it never interrupts an
+      // active terminal session (reload happens when the tab is backgrounded).
+      registerType: 'prompt',
+      injectRegister: false, // registered manually in src/remote/main.ts
+      // Icons / favicon live in src/remote/public and need precaching too.
+      includeAssets: ['favicon.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'],
+      manifest: {
+        name: 'Ridge Remote',
+        short_name: 'Ridge',
+        description: 'Ridge 远程终端控制台',
+        lang: 'zh-CN',
+        start_url: '/',
+        scope: '/',
+        display: 'standalone',
+        orientation: 'any',
+        background_color: '#0d1117',
+        theme_color: '#0d1117',
+        icons: [
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        // Precache the built shell + assets, including the terminal wasm.
+        globPatterns: ['**/*.{js,css,html,wasm,svg,png,ico,webp,woff,woff2,webmanifest}'],
+        // The term-wasm bundle is large; raise the precache size ceiling.
+        maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
+        cleanupOutdatedCaches: true,
+        // Inline the Workbox runtime into sw.js so there is no extra hashed
+        // workbox-*.js root file for the server to special-case.
+        inlineWorkboxRuntime: true,
+        // Offline SPA navigations fall back to the cached shell, EXCEPT for the
+        // API / WS / cert / download routes which must always hit the network.
+        navigateFallback: 'index.html',
+        navigateFallbackDenylist: [
+          /^\/ws/,
+          /^\/info/,
+          /^\/verify/,
+          /^\/health/,
+          /^\/status/,
+          /^\/session/,
+          /^\/workspace/,
+          /^\/ridge-ca/,
+          /^\/assets\//,
+        ],
+      },
+      // No service worker during `pnpm dev:remote` — avoids stale-cache pain
+      // while iterating; the SW only ships in the production build.
+      devOptions: { enabled: false },
+    }),
   ],
   build: {
     outDir: path.resolve(__dirname, 'static/remote'),
@@ -48,6 +107,8 @@ export default defineConfig({
       '/health': { target: 'http://127.0.0.1:9527' },
       '/status': { target: 'http://127.0.0.1:9527' },
       '/workspace': { target: 'http://127.0.0.1:9527' },
+      '/ridge-ca.crt': { target: 'http://127.0.0.1:9527' },
+      '/ridge-ca.pem': { target: 'http://127.0.0.1:9527' },
     },
   },
 });
