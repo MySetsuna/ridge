@@ -45,12 +45,13 @@ param(
   # don't pollute the CPU sum.
   [string[]]$RootProcessNames = @('ridge', 'wind'),
   # Substring filter on `Win32_Process.ExecutablePath` for the root match.
-  # Defaults to the in-tree `src-tauri\target\` so a developer running
-  # the installed v0.0.2 release IN PARALLEL with `pnpm tauri dev` doesn't
-  # accidentally include the installed instance in the sample. Pass an
-  # empty string to disable (count every ridge/wind regardless of where
-  # it lives).
-  [string]$RootPathSubstring = 'src-tauri\target\',
+  # Defaults to `\target\release` — matches both the legacy `src-tauri\target\release`
+  # and the workspace-root `target\release` layout (ridge-core extraction relocated
+  # the cargo target dir to the repo root) — so a developer running the installed
+  # release IN PARALLEL with `pnpm tauri dev` doesn't accidentally include the
+  # installed instance in the sample. Pass an empty string to disable (count every
+  # ridge/wind regardless of where it lives).
+  [string]$RootPathSubstring = '\target\release',
   # Explicit PID(s) to exclude from the sample tree even if their name
   # matches. Belt-and-suspenders against `RootPathSubstring` missing an
   # edge case. Mostly useful when both the installed and the dev binary

@@ -94,14 +94,15 @@ function Invoke-PerfRound {
 
   # Poll for the test ridge.exe to appear (tauri-driver spawns it as a
   # child of msedgedriver). The presence of a ridge.exe whose path
-  # contains src-tauri\target\release is the signal that the spec's
-  # `before` hook is running.
+  # contains \target\release is the signal that the spec's `before` hook
+  # is running. (`\target\release` matches both the legacy
+  # `src-tauri\target\release` and the workspace-root `target\release` layout.)
   Write-Host "[$Backend] Waiting up to 45s for test ridge.exe to spawn..."
   $deadline = (Get-Date).AddSeconds(45)
   $testRidgeUp = $false
   while ((Get-Date) -lt $deadline) {
     $r = Get-CimInstance Win32_Process -Filter "Name='ridge.exe'" -ErrorAction SilentlyContinue |
-         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.IndexOf('src-tauri\target\release', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }
+         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.IndexOf('\target\release', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }
     if ($r) {
       Write-Host "[$Backend] Test ridge.exe up (PID $($r.ProcessId -join ','))"
       $testRidgeUp = $true
