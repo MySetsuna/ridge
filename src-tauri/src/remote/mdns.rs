@@ -35,10 +35,14 @@ pub fn spawn_mdns_broadcast(port: u16) -> (thread::JoinHandle<()>, Arc<AtomicBoo
             // Announce immediately, then every 60 seconds (with 1s
             // granularity so stop signal is respected promptly).
             loop {
-                if flag.load(Ordering::Relaxed) { break; }
+                if flag.load(Ordering::Relaxed) {
+                    break;
+                }
                 let _ = socket.send_to(&packet, mdns_addr);
                 for _ in 0..60 {
-                    if flag.load(Ordering::Relaxed) { return; }
+                    if flag.load(Ordering::Relaxed) {
+                        return;
+                    }
                     thread::sleep(Duration::from_secs(1));
                 }
             }
@@ -67,23 +71,20 @@ fn build_mdns_packet(port: u16) -> Vec<u8> {
 
     // ── Answer: PTR record ──
     // Name: _ridge._tcp.local. (compressed)
-    p.push(0x0C); p.push(0x1C); // Compression pointer to name at offset 0x001C
+    p.push(0x0C);
+    p.push(0x1C); // Compression pointer to name at offset 0x001C
     p.extend(&0x000Cu16.to_be_bytes()); // Type: PTR
     p.extend(&0x8001u16.to_be_bytes()); // Class: IN + cache-flush
     p.extend(&120u32.to_be_bytes()); // TTL: 120 seconds
-    // PTR target name: Ridge Remote Control._ridge._tcp.local.
+                                     // PTR target name: Ridge Remote Control._ridge._tcp.local.
     let instance = b"Ridge Remote Control";
-    let ptr_data = encode_dns_name_parts(&[
-        instance,
-        b"_ridge",
-        b"_tcp",
-        b"local",
-    ]);
+    let ptr_data = encode_dns_name_parts(&[instance, b"_ridge", b"_tcp", b"local"]);
     p.extend(&(ptr_data.len() as u16).to_be_bytes());
     p.extend(&ptr_data);
 
     // ── Authority: NSEC (proves no other services from this host) ──
-    p.push(0x0C); p.push(0x1C); // Pointer to _ridge._tcp.local.
+    p.push(0x0C);
+    p.push(0x1C); // Pointer to _ridge._tcp.local.
     p.extend(&0x002Fu16.to_be_bytes()); // Type: NSEC
     p.extend(&0x8001u16.to_be_bytes()); // Class: IN + cache-flush
     p.extend(&120u32.to_be_bytes()); // TTL: 120
@@ -94,7 +95,8 @@ fn build_mdns_packet(port: u16) -> Vec<u8> {
     p.extend(&nsec_data);
 
     // ── Additional: SRV record ──
-    p.push(0x0C); p.push(0x1C); // Pointer to _ridge._tcp.local.
+    p.push(0x0C);
+    p.push(0x1C); // Pointer to _ridge._tcp.local.
     p.extend(&0x0021u16.to_be_bytes()); // Type: SRV
     p.extend(&0x8001u16.to_be_bytes()); // Class: IN + cache-flush
     p.extend(&120u32.to_be_bytes()); // TTL: 120

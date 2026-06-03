@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
-use tauri::State;
 use sysinfo::System;
+use tauri::State;
 
 use crate::remote::mdns;
 use crate::state::AppState;
@@ -114,7 +114,11 @@ pub fn add_to_blacklist(state: State<AppState>, id: u64) -> bool {
     if let Some(ref t) = info.token {
         state.remote_session_store.invalidate(t);
     }
-    let device_id = if info.device_id.is_empty() { None } else { Some(info.device_id.clone()) };
+    let device_id = if info.device_id.is_empty() {
+        None
+    } else {
+        Some(info.device_id.clone())
+    };
     let ip = if info.remote_addr.is_empty() || info.remote_addr == "unknown" {
         None
     } else {
@@ -170,7 +174,7 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
     *state.remote_shutdown.lock() = Some(shutdown_tx);
     *state.remote_mdns.lock() = Some((mdns_handle, mdns_stop));
 
-    // In dev mode, spawn Vite dev server for the mobile app
+    // In dev mode, spawn the Vite dev server for the remote app
     if cfg!(debug_assertions) {
         let current_dir = std::env::current_dir().expect("failed to get current dir");
         let project_root = if current_dir.ends_with("src-tauri") {
@@ -182,8 +186,12 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
         tracing::info!(target: "ridge::remote", "Spawning Vite in Root: {:?}", project_root);
 
         // 使用 npx 直接调用 vite，避开 pnpm 脚本的 shell 问题
-        let mut cmd = std::process::Command::new(if cfg!(target_os = "windows") { "npx.cmd" } else { "npx" });
-        cmd.args(["vite", "dev", "--config", "vite.mobile.config.js"]);
+        let mut cmd = std::process::Command::new(if cfg!(target_os = "windows") {
+            "npx.cmd"
+        } else {
+            "npx"
+        });
+        cmd.args(["vite", "dev", "--config", "vite.remote.config.js"]);
 
         match cmd
             .current_dir(&project_root)

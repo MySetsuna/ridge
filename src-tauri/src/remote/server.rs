@@ -35,6 +35,10 @@ struct RemoteCtx {
     state: AppState,
     auth: Arc<RemoteAuth>,
     static_dir: PathBuf,
+    /// Full desktop SPA build (`web-remote-dist/`, from `pnpm build:desktop-web`),
+    /// served to desktop browsers (UA-forked). Empty/missing → desktop UA falls
+    /// back to the mobile SPA in `static_dir`.
+    desktop_dir: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +210,33 @@ async fn run_remote_server(
             .unwrap_or_else(|| PathBuf::from("static").join("remote"))
     };
 
+    // Desktop SPA build (`web-remote-dist/`), resolved like static_dir. Lives
+    // OUTSIDE `static/` so the SvelteKit static-adapter doesn't recurse.
+    let desktop_dir = {
+        let candidates: Vec<PathBuf> = vec![
+            PathBuf::from("web-remote-dist"),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("web-remote-dist")))
+                .unwrap_or_default(),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| {
+                    p.parent()?
+                        .parent()?
+                        .parent()?
+                        .parent()?
+                        .join("web-remote-dist")
+                        .into()
+                })
+                .unwrap_or_default(),
+        ];
+        candidates
+            .into_iter()
+            .find(|p| p.join("index.html").exists())
+            .unwrap_or_else(|| PathBuf::from("web-remote-dist"))
+    };
+
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
     // Captured for the self-signed cert SANs (lan_ip + machine_name are moved
     // into `ctx` below).
@@ -219,6 +250,7 @@ async fn run_remote_server(
         state,
         auth,
         static_dir,
+        desktop_dir,
     };
 
     let app = Router::new()
@@ -230,10 +262,22 @@ async fn run_remote_server(
         .route("/status", get(status_handler))
         .route("/verify", get(verify_handler_get).post(verify_handler_post))
         .route("/session", get(session_handler))
+        // Host file bytes for the desktop UI's convertFileSrc shim (token-auth'd).
+        .route("/file", get(file_handler))
+        // Local-CA download for the verification page's "trust this device"
+        // flow — public (no token): the CA is public key material, and the
+        // user needs it *before* authenticating to silence the warning.
+        .route("/ridge-ca.crt", get(ca_crt_handler))
+        .route("/ridge-ca.pem", get(ca_pem_handler))
         .route("/workspace/list", get(workspace_list_handler))
         .route("/workspace/switch", post(workspace_switch_handler))
         .route("/workspace/create", post(workspace_create_handler))
         .route("/workspace/close", post(workspace_close_handler))
+        // PWA + SPA fallback: serve root-level static files emitted by the
+        // remote build (sw.js, manifest.webmanifest, icons, …) and fall back to
+        // index.html for client-side routes. Self-gates on `remote_enabled`
+        // because `route_layer` middleware does not wrap the fallback.
+        .fallback(spa_fallback_handler)
         .route_layer(axum::middleware::from_fn_with_state(
             ctx.clone(),
             remote_gate,
@@ -305,17 +349,260 @@ async fn remote_gate(
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-async fn root_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
-    let index_path = ctx.static_dir.join("index.html");
-    match tokio::fs::read_to_string(&index_path).await {
-        Ok(html) => Html(html).into_response(),
+#[derive(Deserialize)]
+struct UiQuery {
+    /// Manual override for the UA fork (`?ui=desktop` / `?ui=mobile`), for
+    /// testing and edge browsers.
+    ui: Option<String>,
+}
+
+/// Decide which UI build to serve: the FULL desktop SPA for desktop browsers,
+/// the lightweight mobile SPA otherwise. `?ui=` overrides. Falls back to the
+/// mobile build if the desktop build (`web-remote-dist`) isn't present.
+fn wants_desktop_ui(
+    ctx: &RemoteCtx,
+    headers: &axum::http::HeaderMap,
+    ui_override: Option<&str>,
+) -> bool {
+    let prefer_desktop = match ui_override {
+        Some("desktop") => true,
+        Some("mobile") => false,
+        _ => {
+            let ua = headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            const MOBILE: [&str; 6] =
+                ["android", "iphone", "ipad", "ipod", "mobile", "windows phone"];
+            !MOBILE.iter().any(|m| ua.contains(m))
+        }
+    };
+    prefer_desktop && ctx.desktop_dir.join("index.html").exists()
+}
+
+/// The UI build directory for this request (desktop vs mobile).
+fn ui_dir<'a>(
+    ctx: &'a RemoteCtx,
+    headers: &axum::http::HeaderMap,
+    ui_override: Option<&str>,
+) -> &'a PathBuf {
+    if wants_desktop_ui(ctx, headers, ui_override) {
+        &ctx.desktop_dir
+    } else {
+        &ctx.static_dir
+    }
+}
+
+async fn root_handler(
+    State(ctx): State<RemoteCtx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<UiQuery>,
+) -> impl IntoResponse {
+    serve_index(ui_dir(&ctx, &headers, q.ui.as_deref())).await
+}
+
+/// Serve `index.html` with `Cache-Control: no-cache` so a freshly deployed
+/// build (new hashed asset names, new service worker) is always picked up on
+/// the next visit instead of being pinned by a stale cached shell.
+async fn serve_index(dir: &std::path::Path) -> axum::response::Response {
+    let index_path = dir.join("index.html");
+    match tokio::fs::read(&index_path).await {
+        Ok(bytes) => axum::response::Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(axum::http::header::CACHE_CONTROL, "no-cache")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
         Err(_) => {
             // Fallback: embed a basic page directing the user to build the remote app
-            Html(format!(
+            Html(
                 r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p>Remote UI not built yet.</p><p>Run: <code>pnpm build:remote</code></p></body></html>"#,
-            ))
+            )
             .into_response()
         }
+    }
+}
+
+/// Serve the local root CA as a DER `.crt` — the form iOS / Android / Windows
+/// expect when installing a certificate as a trust anchor.
+///
+/// Deliberately no `Content-Disposition: attachment`: on iOS the bare
+/// `application/x-x509-ca-cert` response triggers the "install configuration
+/// profile" prompt, whereas forcing a download can route it to Files instead.
+/// Android / desktop get a sensible filename from the `.crt` URL and the
+/// front-end anchor's `download` attribute (see CertTrustGuide.svelte).
+async fn ca_crt_handler() -> impl IntoResponse {
+    match super::tls::ca_cert_der() {
+        Some(der) => axum::response::Response::builder()
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-x509-ca-cert",
+            )
+            .header(axum::http::header::CACHE_CONTROL, "no-store")
+            .body(axum::body::Body::from(der))
+            .unwrap(),
+        None => (StatusCode::NOT_FOUND, "no CA certificate available").into_response(),
+    }
+}
+
+/// Serve the local root CA as PEM — for desktop trust-store import.
+async fn ca_pem_handler() -> impl IntoResponse {
+    match super::tls::ca_cert_pem() {
+        Some(pem) => axum::response::Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, "application/x-pem-file")
+            .header(
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"ridge-remote-ca.pem\"",
+            )
+            .header(axum::http::header::CACHE_CONTROL, "no-store")
+            .body(axum::body::Body::from(pem))
+            .unwrap(),
+        None => (StatusCode::NOT_FOUND, "no CA certificate available").into_response(),
+    }
+}
+
+/// Fallback for any unmatched GET: serve a root-level static file from the
+/// build output (service worker, web manifest, PWA icons, favicon, …), or fall
+/// back to the SPA shell. Path-traversal-guarded and gated on `remote_enabled`.
+async fn spa_fallback_handler(
+    State(ctx): State<RemoteCtx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<UiQuery>,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Remote control disabled").into_response();
+    }
+
+    // §UA fork: a desktop browser resolves root-level files (and the SvelteKit
+    // `_app/*` bundle) against the desktop build; the mobile SPA against
+    // static_dir. The chosen dir is also the SPA shell for unknown client routes.
+    let base = ui_dir(&ctx, &headers, q.ui.as_deref());
+
+    // axum percent-decodes `uri.path()` before we see it, so a `%2e%2e`
+    // traversal arrives as a literal `..`. First-line string guard rejects the
+    // obvious escapes (`..`, drive-absolute `C:\`, leading `/`, backslashes)…
+    let rel = uri.path().trim_start_matches('/');
+    let safe = !rel.is_empty()
+        && !rel.contains("..")
+        && !rel.contains('\\')
+        && !rel.contains(':')
+        && !rel.starts_with('/');
+    if !safe {
+        return serve_index(base).await;
+    }
+
+    // …then a canonical-path containment check is the authoritative guard: the
+    // resolved target (symlinks + `.` segments collapsed) must live inside the
+    // chosen UI dir. `canonicalize` fails for non-existent paths, which naturally
+    // routes unknown SPA client-side routes to the shell.
+    let candidate = base.join(rel);
+    let within = match (
+        tokio::fs::canonicalize(&candidate).await,
+        tokio::fs::canonicalize(base).await,
+    ) {
+        (Ok(real), Ok(root)) => real.starts_with(&root).then_some(real),
+        _ => None,
+    };
+    let Some(real) = within else {
+        return serve_index(base).await;
+    };
+
+    match tokio::fs::read(&real).await {
+        Ok(bytes) => {
+            // SvelteKit emits content-hashed bundles under `_app/immutable/` —
+            // safe to cache forever; everything else revalidates.
+            let (content_type, cache_control) = if rel.starts_with("_app/immutable/") {
+                if rel.ends_with(".css") {
+                    ("text/css", "max-age=31536000, immutable")
+                } else if rel.ends_with(".wasm") {
+                    ("application/wasm", "max-age=31536000, immutable")
+                } else {
+                    ("application/javascript", "max-age=31536000, immutable")
+                }
+            } else {
+                root_asset_headers(rel)
+            };
+            axum::response::Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, content_type)
+                .header(axum::http::header::CACHE_CONTROL, cache_control)
+                .body(axum::body::Body::from(bytes))
+                .unwrap()
+        }
+        Err(_) => serve_index(base).await,
+    }
+}
+
+/// Serve a single host file by absolute path for the desktop UI's
+/// `convertFileSrc` shim (Markdown preview images, etc.). Token-authenticated
+/// via query param (an `<img src>` can't set an Authorization header) and
+/// traversal-guarded. Only reachable while remote control is enabled
+/// (route_layer gate).
+#[derive(Deserialize)]
+struct FileQuery {
+    path: String,
+    token: Option<String>,
+}
+
+async fn file_handler(
+    State(ctx): State<RemoteCtx>,
+    Query(q): Query<FileQuery>,
+) -> impl IntoResponse {
+    let authed = q
+        .token
+        .as_deref()
+        .map(|t| ctx.state.remote_session_store.validate_token(t))
+        .unwrap_or(false);
+    if !authed {
+        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+    }
+    if q.path.split(['/', '\\']).any(|c| c == "..") {
+        return (StatusCode::BAD_REQUEST, "bad path").into_response();
+    }
+    let full = PathBuf::from(&q.path);
+    if !full.is_file() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match tokio::fs::read(&full).await {
+        Ok(bytes) => {
+            let name = full.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let (content_type, _) = root_asset_headers(name);
+            axum::response::Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, content_type)
+                .header(axum::http::header::CACHE_CONTROL, "private, max-age=60")
+                .body(axum::body::Body::from(bytes))
+                .unwrap()
+        }
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "read error").into_response(),
+    }
+}
+
+/// Content-type + cache policy for root-level build artifacts. The service
+/// worker and manifest must revalidate (`no-cache`) so new versions are
+/// detected; immutable hashed bundles live under `/assets` (see `assets_handler`).
+fn root_asset_headers(path: &str) -> (&'static str, &'static str) {
+    if path == "sw.js" || path.ends_with("/sw.js") {
+        ("application/javascript", "no-cache")
+    } else if path.ends_with(".webmanifest") {
+        ("application/manifest+json", "no-cache")
+    } else if path.ends_with(".js") {
+        ("application/javascript", "no-cache")
+    } else if path.ends_with(".json") {
+        ("application/json", "no-cache")
+    } else if path.ends_with(".css") {
+        ("text/css", "max-age=86400")
+    } else if path.ends_with(".png") {
+        ("image/png", "max-age=86400")
+    } else if path.ends_with(".svg") {
+        ("image/svg+xml", "max-age=86400")
+    } else if path.ends_with(".ico") {
+        ("image/x-icon", "max-age=86400")
+    } else if path.ends_with(".webp") {
+        ("image/webp", "max-age=86400")
+    } else if path.ends_with(".wasm") {
+        ("application/wasm", "max-age=86400")
+    } else {
+        ("application/octet-stream", "max-age=3600")
     }
 }
 
@@ -374,7 +661,9 @@ async fn status_handler(State(ctx): State<RemoteCtx>) -> Json<StatusResponse> {
 
 /// GET /verify serves the mobile Svelte app (same as /).
 async fn verify_handler_get(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
-    root_handler(State(ctx)).await
+    // The /verify page is the mobile auth flow — always the mobile SPA shell.
+    // (The desktop SPA carries its own auth gate in +layout.svelte.)
+    serve_index(&ctx.static_dir).await
 }
 
 async fn verify_handler_post(
@@ -703,8 +992,15 @@ async fn handle_ws(
     const DR_WINDOW: Duration = Duration::from_secs(5);
     const DR_MAX_PER_WINDOW: u32 = 120;
 
-    // Track which (ws, pane) this client is currently subscribed to.
+    // Track which (ws, pane) this client is currently subscribed to. The mobile
+    // SPA views ONE pane at a time, so `current_pane` is a single slot that
+    // subscribe-pane replaces. The desktop UI in a browser shows SPLITS (many
+    // panes at once); when `use_global_ws` is set it keeps every subscribed pane
+    // live in `subscribed_panes` instead (raw frames are pane-prefixed, so the
+    // client demuxes them). Both are unregistered on workspace change / disconnect.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
+    let mut subscribed_panes: std::collections::HashSet<(Uuid, Uuid)> =
+        std::collections::HashSet::new();
 
     // Client-reported viewport grid dimensions, updated by the `resize` WS
     // message. Used for the first-connect auto-claim and the refresh button.
@@ -714,6 +1010,9 @@ async fn handle_ws(
     // Subscribe to structural change broadcasts (pane/workspace add/close/rename)
     // so this client can push updated lists to the remote frontend without polling.
     let mut structural_rx = ctx.state.remote_structural_tx.subscribe();
+    // §web-remote: generic host → desktop-browser event relay (fs-changed, …).
+    // The mobile SPA ignores `{type:'event'}` frames, so this is harmless to it.
+    let mut ui_event_rx = ctx.state.remote_ui_event_tx.subscribe();
     // §own-active: there is NO connect-time auto-claim. A remote endpoint resizes
     // the shared PTY only when it becomes the active owner — i.e. on a genuine
     // user interaction (`claim-pane`) or the explicit refresh button
@@ -751,6 +1050,17 @@ async fn handle_ws(
     // (list-panes / subscribe / stdin / resize / output+delta filters) use it.
     let mut active_ws_id = ctx.state.active_workspace_id();
 
+    // §web-remote global-workspace mode. The desktop-UI-in-browser client is a
+    // second *peer desktop*: it switches workspaces through the real global
+    // `switch_workspace` command (invoke-request), not the per-client WS
+    // `switch-workspace` message. So when this flag is set (the client sends
+    // `use-global-workspace` right after connect), `active_ws_id` is kept in sync
+    // with the GLOBAL active workspace at the top of every loop iteration — which
+    // runs before any incoming message/event is handled (incl. the subscribe-pane
+    // that follows a switch), so all readers below see the right workspace.
+    // Mobile clients never set it and keep their independent per-client view.
+    let mut use_global_ws = false;
+
     // Periodic health check: if remote control is toggled off, or this client
     // is force-disconnected / blacklisted (kill_flag), close the WS so the
     // mobile client gets a clean disconnect. Polled at 1s so an admin-triggered
@@ -760,640 +1070,57 @@ async fn handle_ws(
 
     // Message loop: forward PTY output to WS client, relay keystrokes back.
     loop {
-        tokio::select! {
-            msg = ws_rx.next() => {
-                let Some(Ok(Message::Text(text))) = msg else {
-                    break;
-                };
-                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
-                    continue;
-                };
-                let _ = match parsed["type"].as_str() {
-                    Some("ping") => {
-                        ws_tx.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await
-                    }
-                    Some("list-panes") => {
-                        let mut pane_list = {
-                            let workspaces = ctx.state.workspaces.read();
-                            let Some(ws) = workspaces.get(&active_ws_id) else {
-                                drop(workspaces);
-                                continue;
-                            };
-                            let mut list = Vec::new();
-                            for (pane_id, handle) in &ws.terminals {
-                                // §6: prefer the live OSC window title (matches the
-                                // desktop pane header's variable title), then the
-                                // teammate-assigned name, then the shell kind.
-                                let osc_title = handle.parser.lock().title()
-                                    .filter(|t| !t.trim().is_empty());
-                                let title = osc_title
-                                    .or_else(|| ws.teammate_pane_titles.get(pane_id).cloned())
-                                    .or_else(|| ws.pane_tree.panes.get(pane_id).and_then(|n| n.shell_kind.clone()))
-                                    .unwrap_or_else(|| "terminal".to_string());
-                                list.push(serde_json::json!({
-                                    "id": pane_id.to_string(),
-                                    "title": title,
-                                    "cwd": ws.pane_tree.panes.get(pane_id)
-                                        .and_then(|n| n.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
-                                        .unwrap_or_default(),
-                                }));
-                            }
-                            for (pane_id, _) in &ws.pending_spawns {
-                                list.push(serde_json::json!({
-                                    "id": pane_id.to_string(),
-                                    "title": "pending...",
-                                    "cwd": "",
-                                }));
-                            }
-                            list
-                        };
-                        pane_list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
-                        ws_tx.send(Message::Text(serde_json::json!({"type":"panes","panes":pane_list}).to_string())).await
-                    }
-                    Some("subscribe-pane") => {
-                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
-                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            // Unregister from current pane.
-                            if let Some((ws, p)) = current_pane.take() {
-                                ctx.state.unregister_remote_sub(ws, p, sub_id);
-                            }
-                            let new_key = (active_ws_id, pane_id);
-
-                            // Ensure the canonical parser is in delta mode so
-                            // the desktop frontend continues receiving deltas.
-                            {
-                                let workspaces = ctx.state.workspaces.read();
-                                if let Some(h) = workspaces
-                                    .get(&active_ws_id)
-                                    .and_then(|ws| ws.terminals.get(&pane_id))
-                                {
-                                    h.delta_mode.store(true, Ordering::Release);
-                                }
-                            }
-
-                            // Fresh subscription starts in-sync.
-                            desync.store(false, Ordering::Release);
-                            ctx.state.register_remote_sub(
-                                active_ws_id, pane_id,
-                                RemotePaneSub {
-                                    id: sub_id,
-                                    raw_tx: raw_tx.clone(),
-                                    desync: desync.clone(),
-                                },
-                            );
-                            current_pane = Some(new_key);
-
-                            // Send recent scrollback as raw bytes so the client
-                            // kernel can replay history via feed().
-                            //
-                            // Ordering note: we register BEFORE snapshotting the
-                            // scrollback on purpose. This guarantees no GAP — every
-                            // chunk is either in this snapshot or delivered live (or,
-                            // in a sub-microsecond window, both → a harmless duplicate
-                            // that a vte repaint absorbs). The reverse order would
-                            // trade the benign dup for a dropped chunk, which is worse
-                            // for a mirror. True dedup would require coupling the PTY
-                            // reader's scrollback-append + fan-out under one lock — not
-                            // worth the hot-path cost.
-                            let history = ctx.state.get_recent_scrollback_for(
-                                active_ws_id, pane_id, 65536,
-                            );
-                            if !history.is_empty() {
-                                let mut payload =
-                                    Vec::with_capacity(16 + history.len());
-                                payload.extend_from_slice(pane_id.as_bytes());
-                                payload.extend_from_slice(&history);
-                                let _ =
-                                    ws_tx.send(Message::Binary(payload.into())).await;
-                            }
-                        }
-                        Ok(())
-                    }
-                    Some("current-project") => {
-                        let path = ctx.state.current_project.read().clone()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "current-project",
-                            "path": path,
-                        }).to_string())).await
-                    }
-                    Some("list-workspaces") => {
-                        let ws_list = {
-                            let order = ctx.state.workspace_order.read();
-                            let names = ctx.state.workspace_names.read();
-                            let map = ctx.state.workspaces.read();
-                            // §state-sep: the `active` flag reflects THIS client's
-                            // selection, not the global one.
-                            let active = active_ws_id;
-                            order.iter().map(|id| {
-                                // §unify: unnamed workspaces fall back to "工作区 {display_seq}",
-                                // matching the desktop WorkspaceSidebar label.
-                                let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
-                                serde_json::json!({
-                                    "id": id.to_string(),
-                                    "name": names.get(id).cloned()
-                                        .unwrap_or_else(|| format!("工作区 {}", display_seq)),
-                                    "displaySeq": display_seq,
-                                    "active": *id == active,
-                                })
-                            }).collect::<Vec<_>>()
-                        };
-                        ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "workspaces",
-                            "workspaces": ws_list,
-                        }).to_string())).await
-                    }
-                    Some("switch-workspace") => {
-                        let id_str = parsed["workspaceId"].as_str().unwrap_or("");
-                        let result = if let Ok(id) = Uuid::parse_str(id_str) {
-                            let exists = ctx.state.workspaces.read().contains_key(&id);
-                            if exists {
-                                // §state-sep: switch THIS client only — do not touch
-                                // the global active_workspace. Drop the current pane
-                                // subscription so the old workspace's stream stops; the
-                                // client re-subscribes after its next list-panes.
-                                if let Some((ws, p)) = current_pane.take() {
-                                    ctx.state.unregister_remote_sub(ws, p, sub_id);
-                                }
-                                active_ws_id = id;
-                                serde_json::json!({ "type": "switch-workspace-result", "success": true, "workspaceId": id.to_string() })
-                            } else {
-                                serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "workspace not found" })
-                            }
-                        } else {
-                            serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "invalid workspace id" })
-                        };
-                        ws_tx.send(Message::Text(result.to_string())).await
-                    }
-                    Some("create-workspace") => {
-                        let name = parsed["name"].as_str().and_then(|n| if n.is_empty() { None } else { Some(n.to_string()) });
-                        let id = Uuid::new_v4();
-                        let seq = ctx.state.allocate_workspace_seq();
-                        {
-                            use std::collections::HashMap;
-                            let mut map = ctx.state.workspaces.write();
-                            map.insert(id, crate::state::Workspace {
-                                pane_tree: crate::engine::pane_tree::PaneTree::new(),
-                                terminals: HashMap::new(),
-                                teammate_tmux_pane_cursor: 0,
-                                teammate_pane_titles: HashMap::new(),
-                                pane_sizes: HashMap::new(),
-                                last_pane_index: None,
-                                created_at: std::time::SystemTime::now(),
-                                teammate_pane_states: HashMap::new(),
-                                teammate_agent_pane_map: HashMap::new(),
-                                associated_file_path: None,
-                                pending_spawns: HashMap::new(),
-                                pty_generation: HashMap::new(),
-                                teammate_metrics: crate::state::TeammateMetrics::default(),
-                                display_seq: seq,
-                            });
-                        }
-                        ctx.state.workspace_order.write().push(id);
-                        // §state-sep: the new workspace is shared data (visible to all),
-                        // but only THIS client jumps to it. Other clients / the desktop
-                        // stay on their own selection.
-                        if let Some((ws, p)) = current_pane.take() {
-                            ctx.state.unregister_remote_sub(ws, p, sub_id);
-                        }
-                        active_ws_id = id;
-                        if let Some(ref n) = name {
-                            ctx.state.workspace_names.write().insert(id, n.clone());
-                        }
-                        let send = ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "create-workspace-result",
-                            "success": true,
-                            "workspaceId": id.to_string(),
-                        }).to_string())).await;
-                        // Broadcast structural change to all remote clients and desktop.
-                        let _ = ctx.state.remote_structural_tx.send(
-                            crate::types::RemoteStructuralEvent::WorkspacesChanged
-                        );
-                        let _ = ctx.state.event_tx.try_send(
-                            crate::types::GlobalEvent::WorkspaceListChanged
-                        );
-                        send
-                    }
-                    Some("close-workspace") => {
-                        let id_str = parsed["workspaceId"].as_str().unwrap_or("");
-                        let mut success = false;
-                        let result = if let Ok(id) = Uuid::parse_str(id_str) {
-                            {
-                                let order = ctx.state.workspace_order.read();
-                                if order.len() <= 1 {
-                                    serde_json::json!({ "type": "close-workspace-result", "success": false, "error": "cannot close last workspace" })
-                                } else {
-                                    drop(order);
-                                    ctx.state.workspaces.write().remove(&id);
-                                    ctx.state.workspace_order.write().retain(|w| *w != id);
-                                    ctx.state.workspace_names.write().remove(&id);
-                                    // Closing a workspace destroys shared data: if the
-                                    // DESKTOP (global active) was viewing it, move the
-                                    // global off so the desktop doesn't point at a dead
-                                    // workspace. This is unavoidable — you can't view a
-                                    // workspace that no longer exists.
-                                    if *ctx.state.active_workspace.read() == id {
-                                        let first = ctx.state.workspace_order.read().first().cloned();
-                                        if let Some(first_id) = first {
-                                            *ctx.state.active_workspace.write() = first_id;
-                                        }
-                                    }
-                                    // §state-sep: if THIS client was on the closed
-                                    // workspace, fall back to the first remaining one
-                                    // (independently of the desktop / other clients).
-                                    if active_ws_id == id {
-                                        if let Some((ws, p)) = current_pane.take() {
-                                            ctx.state.unregister_remote_sub(ws, p, sub_id);
-                                        }
-                                        if let Some(first_id) = ctx.state.workspace_order.read().first().cloned() {
-                                            active_ws_id = first_id;
-                                        }
-                                    }
-                                    success = true;
-                                    serde_json::json!({ "type": "close-workspace-result", "success": true })
-                                }
-                            }
-                        } else {
-                            serde_json::json!({ "type": "close-workspace-result", "success": false, "error": "invalid workspace id" })
-                        };
-                        let send = ws_tx.send(Message::Text(result.to_string())).await;
-                        if success {
-                            let _ = ctx.state.remote_structural_tx.send(
-                                crate::types::RemoteStructuralEvent::WorkspacesChanged
-                            );
-                            let _ = ctx.state.event_tx.try_send(
-                                crate::types::GlobalEvent::WorkspaceListChanged
-                            );
-                        }
-                        send
-                    }
-                    Some("stdin") => {
-                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
-                        let data_str = parsed["data"].as_str().unwrap_or("");
-                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            let workspaces = ctx.state.workspaces.read();
-                            if let Some(ws) = workspaces.get(&active_ws_id) {
-                                if let Some(handle) = ws.terminals.get(&pane_id) {
-                                    let mut writer = handle.writer.lock();
-                                    let _ = writer.write_all(data_str.as_bytes());
-                                    let _ = writer.flush();
-                                }
-                            }
-                        }
-                        // no response needed
-                        Ok(())
-                    }
-                    Some("resize") => {
-                        // The client renders at the canonical PTY grid (driven by
-                        // `pty-resized` from claim/refresh), so a viewport-only resize
-                        // doesn't touch the shared PTY or the client kernel. We just
-                        // record the clamped size as the fallback used by the next
-                        // claim/refresh. The `.min(500)` is a defensive bound against a
-                        // malformed viewport, not the anti-OOM guard it was when each
-                        // sub owned a `rows × cols` parser.
-                        let _pane_id_str = parsed["paneId"].as_str().unwrap_or("");
-                        let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
-                        let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
-                        mobile_rows = rows.max(1).min(500);
-                        mobile_cols = cols.max(1).min(500);
-                        Ok(())
-                    }
-                    // §own-active: this client becomes the active size owner. Both
-                    // the implicit "I just interacted" claim (`claim-pane`) and the
-                    // explicit refresh button (`refresh-pane`) resize the shared PTY +
-                    // canonical parser to this client's viewport and broadcast a full
-                    // repaint to every viewer (desktop included). Last interaction wins.
-                    Some("refresh-pane") | Some("claim-pane") => {
-                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
-                        let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
-                        let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
-                        let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
-                        let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
-                        mobile_rows = rows;
-                        mobile_cols = cols;
-                        if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                            apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
-                        }
-                        Ok(())
-                    }
-Some("create-pane") => {
-                        // §6: create a terminal in THIS client's active workspace
-                        // using the balanced-split chooser, then immediately activate
-                        // it (Phase 2) at this client's viewport size. Remote clients
-                        // can't call the front-end `activate_pane_pty` Tauri command,
-                        // so without this the pane would sit in `pending_spawns`
-                        // forever ("pending..."). Once live it streams to every viewer
-                        // via the PTY fan-out on subscribe.
-                        let shell = parsed["shell"].as_str()
-                            .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
-                        let mut success = false;
-                        let result = match crate::commands::pane::remote_create_pane(&ctx.state, active_ws_id, shell) {
-                            Ok(new_id) => match crate::commands::terminal::activate_pane_pty_state(
-                                &ctx.state, None, active_ws_id, new_id,
-                                Some(mobile_rows), Some(mobile_cols),
-                            ) {
-                                Ok(()) => {
-                                    success = true;
-                                    serde_json::json!({
-                                        "type": "create-pane-result", "success": true, "paneId": new_id.to_string()
-                                    })
-                                }
-                                Err(e) => serde_json::json!({
-                                    "type": "create-pane-result", "success": false, "error": e.to_string()
-                                }),
-                            },
-                            Err(e) => serde_json::json!({
-                                "type": "create-pane-result", "success": false, "error": e.to_string()
-                            }),
-                        };
-                        let send = ws_tx.send(Message::Text(result.to_string())).await;
-                        if success {
-                            let _ = ctx.state.remote_structural_tx.send(
-                                crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: active_ws_id }
-                            );
-                            let _ = ctx.state.event_tx.try_send(
-                                crate::types::GlobalEvent::PaneTreeChanged { workspace_id: active_ws_id }
-                            );
-                        }
-                        send
-                    }
-                    Some("close-pane") => {
-                        let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
-                        let mut success = false;
-                        let result = match Uuid::parse_str(pane_id_str) {
-                            Ok(pane_id) => match crate::commands::pane::remote_close_pane(&ctx.state, active_ws_id, pane_id).await {
-                                Ok(()) => {
-                                    success = true;
-                                    serde_json::json!({ "type": "close-pane-result", "success": true })
-                                }
-                                Err(e) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": e.to_string() }),
-                            },
-                            Err(_) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": "invalid pane id" }),
-                        };
-                        let send = ws_tx.send(Message::Text(result.to_string())).await;
-                        if success {
-                            let _ = ctx.state.remote_structural_tx.send(
-                                crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: active_ws_id }
-                            );
-                            let _ = ctx.state.event_tx.try_send(
-                                crate::types::GlobalEvent::PaneTreeChanged { workspace_id: active_ws_id }
-                            );
-                        }
-send
-                    }
-                    Some("list-files") => {
-                        let path_str = parsed["path"].as_str().unwrap_or("").to_string();
-                        // §unify: base dir follows the subscribed pane's cwd (same as the
-                        // desktop file tree), falling back to the active project, then home.
-                        let base_dir = current_pane
-                            .and_then(|(ws_id, pane_id)| {
-                                let map = ctx.state.workspaces.read();
-                                map.get(&ws_id)
-                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
-                                    .and_then(|n| n.cwd.clone())
-                            })
-                            .or_else(|| ctx.state.current_project.read().clone())
-                            .or_else(dirs::home_dir)
-                            .unwrap_or_else(|| PathBuf::from("."));
-                        let result = tokio::task::spawn_blocking(move || {
-                            // Empty/"/" → base dir; absolute → as-is; else relative to base.
-                            let target = if path_str.is_empty() || path_str == "/" {
-                                base_dir.clone()
-                            } else {
-                                let p = PathBuf::from(&path_str);
-                                if p.is_absolute() { p } else { base_dir.join(&path_str) }
-                            };
-                            // §unify: reuse the desktop file-tree pager so gitignore marking,
-                            // OS-junk filtering and dir-first sorting match the desktop UI.
-                            let page = crate::fs::tree::FileTree::page_children(&target, 0, 5000)
-                                .unwrap_or(crate::fs::tree::DirectoryPage {
-                                    entries: Vec::new(),
-                                    total: 0,
-                                    offset: 0,
-                                    has_more: false,
-                                });
-                            let parent = target.parent().map(|p| p.to_string_lossy().to_string());
-                            serde_json::json!({
-                                "type": "files",
-                                "path": target.to_string_lossy().to_string(),
-                                "parent": parent,
-                                "entries": page.entries,
-                            })
-                        }).await;
-                        match result {
-                            Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
-                            Err(e) => {
-                                tracing::warn!(target: "ridge::remote", error = %e, "list-files blocking task failed");
-                                Ok(())
-                            }
-                        }
-                    }
-                    Some("list-remote-clients") => {
-                        let clients = ctx.state.remote_client_registry.list();
-                        let list: Vec<serde_json::Value> = clients.iter().map(|c| {
-                            let elapsed = c.connected_at.elapsed()
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            serde_json::json!({
-                                "id": c.id,
-                                "connectedAt": elapsed,
-                                "remoteAddr": c.remote_addr,
-                                "userAgent": c.user_agent,
-                            })
-                        }).collect();
-                        ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "remote-clients",
-                            "clients": list,
-                        }).to_string())).await
-                    }
-                    Some("kick-remote-client") => {
-                        let target_id = parsed["id"].as_u64().unwrap_or(0);
-                        let kicked = ctx.state.remote_client_registry.kick(target_id);
-                        ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "kick-remote-client-result",
-                            "success": kicked,
-                            "clientId": target_id,
-                        }).to_string())).await
-                    }
-                    Some("list-git-status") => {
-                        // §unify: same cwd resolution as list-files (subscribed pane → project → home).
-                        let base_dir = current_pane
-                            .and_then(|(ws_id, pane_id)| {
-                                let map = ctx.state.workspaces.read();
-                                map.get(&ws_id)
-                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
-                                    .and_then(|n| n.cwd.clone())
-                            })
-                            .or_else(|| ctx.state.current_project.read().clone())
-                            .or_else(dirs::home_dir)
-                            .unwrap_or_else(|| PathBuf::from("."));
-                        let result = tokio::task::spawn_blocking(move || {
-                            // §unify: reuse the desktop git module so branch / commits / diff
-                            // come from the exact same source as the desktop Git panel.
-                            let info = crate::commands::git::git_info_for_path(&base_dir);
-                            serde_json::json!({
-                                "type": "git-status",
-                                "isGitRepo": info.is_git_repo,
-                                "currentBranch": info.current_branch,
-                                "branches": info.branches,
-                                "files": info.diff.files,
-                                "commits": info.commits,
-                            })
-                        }).await;
-                        match result {
-                            Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
-                            Err(e) => {
-                                tracing::warn!(target: "ridge::remote", error = %e, "list-git-status blocking task failed");
-                                Ok(())
-                            }
-                        }
-                    }
-                    Some("search-files") => {
-                        let query = parsed["query"].as_str().unwrap_or("").to_string();
-                        // §unify: search root follows the subscribed pane's cwd (same as desktop).
-                        let root = current_pane
-                            .and_then(|(ws_id, pane_id)| {
-                                let map = ctx.state.workspaces.read();
-                                map.get(&ws_id)
-                                    .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
-                                    .and_then(|n| n.cwd.clone())
-                            })
-                            .or_else(|| ctx.state.current_project.read().clone())
-                            .or_else(dirs::home_dir)
-                            .unwrap_or_else(|| PathBuf::from("."));
-                        let results = if query.trim().is_empty() {
-                            Vec::new()
-                        } else {
-                            // §unify: reuse the desktop text_search engine (gitignore-aware ripgrep walk).
-                            crate::commands::project::text_search(
-                                root.to_string_lossy().to_string(),
-                                query.clone(),
-                                None, None, None, Some(200), None, None,
-                            )
-                            .await
-                            .unwrap_or_default()
-                        };
-                        ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "search-results",
-                            "query": query,
-                            "results": results,
-                        }).to_string())).await
-                    }
-                    Some("data-request") => {
-                        // Backs the remote `WsDataProvider` (src/lib/transport/ws.ts).
-                        // An authenticated remote already has shell stdin, so this
-                        // mirrors the desktop `TauriDataProvider` 1:1 within the SAME
-                        // trust boundary. Guards layered on top: a per-connection rate
-                        // limit (below), a read-only toggle + path-traversal rejection
-                        // + audit log of mutations (in `dispatch_data_request`). The
-                        // reply carries `_reqId` plus `_result` (ok) or `_error` (fail).
-                        let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
-                        let method = parsed["method"].as_str().unwrap_or("").to_string();
-
-                        // §rate-limit: refill the window, then count this request.
-                        if dr_window_start.elapsed() >= DR_WINDOW {
-                            dr_window_start = Instant::now();
-                            dr_count = 0;
-                        }
-                        dr_count += 1;
-                        if dr_count > DR_MAX_PER_WINDOW {
-                            tracing::warn!(
-                                target: "ridge::remote",
-                                client_id, method = %method,
-                                "data-request rate limit exceeded; rejecting"
-                            );
-                            let reply = serde_json::json!({
-                                "_reqId": req_id,
-                                "_error": "rate limited: too many data requests",
-                            });
-                            ws_tx.send(Message::Text(reply.to_string())).await
-                        } else {
-                            let mut reply =
-                                dispatch_data_request(&method, &parsed, &ctx.state).await;
-                            if let Some(obj) = reply.as_object_mut() {
-                                obj.insert("_reqId".to_string(), serde_json::json!(req_id));
-                            }
-                            ws_tx.send(Message::Text(reply.to_string())).await
-                        }
-                    }
-                    _ => {
-                        ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
-                    }
-                };
-            }
-            event = raw_rx.recv() => {
-                match event {
-                    Some(crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes }) => {
-                        if workspace_id == active_ws_id {
-                            // §resync: if the fan-out dropped frames for this sub, the
-                            // client's vte stream has a hole that would corrupt every
-                            // subsequent parse. Reset the terminal (RIS) and replay
-                            // fresh scrollback before the current bytes so the parser
-                            // re-synchronises — but throttle it (see RESYNC_MIN_INTERVAL)
-                            // so a sustained-overload loop can't amplify congestion. We
-                            // only CONSUME the desync flag when we actually resync; if
-                            // throttled it stays set for a later frame to handle.
-                            if desync.load(Ordering::Acquire) {
-                                let now = Instant::now();
-                                let throttled = last_resync
-                                    .is_some_and(|t| now.duration_since(t) < RESYNC_MIN_INTERVAL);
-                                if !throttled {
-                                    desync.store(false, Ordering::Release);
-                                    last_resync = Some(now);
-                                    let history = ctx.state.get_recent_scrollback_for(
-                                        workspace_id, pane_id, 65536,
-                                    );
-                                    let mut resync = Vec::with_capacity(18 + history.len());
-                                    resync.extend_from_slice(pane_id.as_bytes());
-                                    resync.extend_from_slice(b"\x1bc"); // RIS — full reset
-                                    resync.extend_from_slice(&history);
-                                    if ws_tx.send(Message::Binary(resync.into())).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            let mut payload = Vec::with_capacity(16 + bytes.len());
-                            payload.extend_from_slice(pane_id.as_bytes());
-                            payload.extend_from_slice(&bytes);
-                            if ws_tx.send(Message::Binary(payload.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Some(crate::types::RemotePtyEvent::Metadata { workspace_id, pane_id, title, cwd }) => {
-                        if workspace_id == active_ws_id {
-                            let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                "type": "pty-meta",
-                                "paneId": pane_id.to_string(),
-                                "title": title,
-                                "cwd": cwd,
-                            }).to_string())).await;
-                        }
-                    }
-                    Some(crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols }) => {
-                        if workspace_id == active_ws_id {
-                            let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                "type": "pty-resized",
-                                "paneId": pane_id.to_string(),
-                                "rows": rows,
-                                "cols": cols,
-                            }).to_string())).await;
-                        }
-                    }
-                    None => break,
+        // §web-remote: keep `active_ws_id` mirrored to the global active workspace
+        // for desktop-browser peers. Runs whenever the loop iterates (i.e. before
+        // handling each message/event), so a global switch via invoke-request is
+        // reflected before the browser's following subscribe-pane is processed.
+        if use_global_ws {
+            let g = ctx.state.active_workspace_id();
+            if g != active_ws_id {
+                // Drop the stale subscriptions; the browser re-subscribes the new
+                // workspace's panes on its own re-render. Their bytes are filtered
+                // by `workspace_id == active_ws_id`, so nothing leaks across.
+                for (ws, p) in subscribed_panes.drain() {
+                    ctx.state.unregister_remote_sub(ws, p, sub_id);
                 }
+                if let Some((ws, p)) = current_pane.take() {
+                    ctx.state.unregister_remote_sub(ws, p, sub_id);
+                }
+                active_ws_id = g;
             }
-            structural = structural_rx.recv() => {
-                match structural {
-                    Ok(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id }) => {
-                        if workspace_id == active_ws_id {
-                            // Re-enumerate panes for this workspace and push to client.
-                            let pane_list = {
-                                let workspaces = ctx.state.workspaces.read();
-                                if let Some(ws) = workspaces.get(&active_ws_id) {
+        }
+        tokio::select! {
+                    msg = ws_rx.next() => {
+                        let Some(Ok(Message::Text(text))) = msg else {
+                            break;
+                        };
+                        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+                            continue;
+                        };
+                        let _ = match parsed["type"].as_str() {
+                            Some("ping") => {
+                                ws_tx.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await
+                            }
+                            Some("use-global-workspace") => {
+                                // §web-remote: desktop-browser peer opts into global
+                                // workspace semantics (see use_global_ws above). Seed
+                                // immediately so the first list/subscribe is correct.
+                                use_global_ws = true;
+                                active_ws_id = ctx.state.active_workspace_id();
+                                Ok(())
+                            }
+                            Some("list-panes") => {
+                                let mut pane_list = {
+                                    let workspaces = ctx.state.workspaces.read();
+                                    let Some(ws) = workspaces.get(&active_ws_id) else {
+                                        drop(workspaces);
+                                        continue;
+                                    };
                                     let mut list = Vec::new();
                                     for (pane_id, handle) in &ws.terminals {
+                                        // §6: prefer the live OSC window title (matches the
+                                        // desktop pane header's variable title), then the
+                                        // teammate-assigned name, then the shell kind.
                                         let osc_title = handle.parser.lock().title()
                                             .filter(|t| !t.trim().is_empty());
                                         let title = osc_title
@@ -1415,74 +1142,766 @@ send
                                             "cwd": "",
                                         }));
                                     }
-                                    list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
                                     list
-                                } else {
-                                    Vec::new()
+                                };
+                                pane_list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+                                ws_tx.send(Message::Text(serde_json::json!({"type":"panes","panes":pane_list}).to_string())).await
+                            }
+                            Some("subscribe-pane") => {
+                                let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                                if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                                    let new_key = (active_ws_id, pane_id);
+                                    // Mobile: single-pane view — replace the previous
+                                    // subscription. Desktop (global): keep every split
+                                    // pane subscribed; register each pane once.
+                                    let do_register = if use_global_ws {
+                                        subscribed_panes.insert(new_key)
+                                    } else {
+                                        if let Some((ws, p)) = current_pane.take() {
+                                            ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                        }
+                                        current_pane = Some(new_key);
+                                        true
+                                    };
+                                    if !do_register {
+                                        // Already subscribed (idempotent re-subscribe) —
+                                        // skip re-registering and re-sending scrollback.
+                                        continue;
+                                    }
+
+                                    // Ensure the canonical parser is in delta mode so
+                                    // the desktop frontend continues receiving deltas.
+                                    {
+                                        let workspaces = ctx.state.workspaces.read();
+                                        if let Some(h) = workspaces
+                                            .get(&active_ws_id)
+                                            .and_then(|ws| ws.terminals.get(&pane_id))
+                                        {
+                                            h.delta_mode.store(true, Ordering::Release);
+                                        }
+                                    }
+
+                                    // Fresh subscription starts in-sync.
+                                    desync.store(false, Ordering::Release);
+                                    ctx.state.register_remote_sub(
+                                        active_ws_id, pane_id,
+                                        RemotePaneSub {
+                                            id: sub_id,
+                                            raw_tx: raw_tx.clone(),
+                                            desync: desync.clone(),
+                                        },
+                                    );
+
+                                    // Send recent scrollback as raw bytes so the client
+                                    // kernel can replay history via feed().
+                                    //
+                                    // Ordering note: we register BEFORE snapshotting the
+                                    // scrollback on purpose. This guarantees no GAP — every
+                                    // chunk is either in this snapshot or delivered live (or,
+                                    // in a sub-microsecond window, both → a harmless duplicate
+                                    // that a vte repaint absorbs). The reverse order would
+                                    // trade the benign dup for a dropped chunk, which is worse
+                                    // for a mirror. True dedup would require coupling the PTY
+                                    // reader's scrollback-append + fan-out under one lock — not
+                                    // worth the hot-path cost.
+                                    let history = ctx.state.get_recent_scrollback_for(
+                                        active_ws_id, pane_id, 65536,
+                                    );
+                                    if !history.is_empty() {
+                                        let mut payload =
+                                            Vec::with_capacity(16 + history.len());
+                                        payload.extend_from_slice(pane_id.as_bytes());
+                                        payload.extend_from_slice(&history);
+                                        let _ =
+                                            ws_tx.send(Message::Binary(payload.into())).await;
+                                    }
                                 }
-                            };
+                                Ok(())
+                            }
+                            Some("current-project") => {
+                                let path = ctx.state.current_project.read().clone()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "current-project",
+                                    "path": path,
+                                }).to_string())).await
+                            }
+                            Some("list-workspaces") => {
+                                let ws_list = {
+                                    let order = ctx.state.workspace_order.read();
+                                    let names = ctx.state.workspace_names.read();
+                                    let map = ctx.state.workspaces.read();
+                                    // §state-sep: the `active` flag reflects THIS client's
+                                    // selection, not the global one.
+                                    let active = active_ws_id;
+                                    order.iter().map(|id| {
+                                        // §unify: unnamed workspaces fall back to "工作区 {display_seq}",
+                                        // matching the desktop WorkspaceSidebar label.
+                                        let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
+                                        serde_json::json!({
+                                            "id": id.to_string(),
+                                            "name": names.get(id).cloned()
+                                                .unwrap_or_else(|| format!("工作区 {}", display_seq)),
+                                            "displaySeq": display_seq,
+                                            "active": *id == active,
+                                        })
+                                    }).collect::<Vec<_>>()
+                                };
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "workspaces",
+                                    "workspaces": ws_list,
+                                }).to_string())).await
+                            }
+                            Some("switch-workspace") => {
+                                let id_str = parsed["workspaceId"].as_str().unwrap_or("");
+                                let result = if let Ok(id) = Uuid::parse_str(id_str) {
+                                    let exists = ctx.state.workspaces.read().contains_key(&id);
+                                    if exists {
+                                        // §state-sep: switch THIS client only — do not touch
+                                        // the global active_workspace. Drop the current pane
+                                        // subscription so the old workspace's stream stops; the
+                                        // client re-subscribes after its next list-panes.
+                                        if let Some((ws, p)) = current_pane.take() {
+                                            ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                        }
+                                        active_ws_id = id;
+                                        serde_json::json!({ "type": "switch-workspace-result", "success": true, "workspaceId": id.to_string() })
+                                    } else {
+                                        serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "workspace not found" })
+                                    }
+                                } else {
+                                    serde_json::json!({ "type": "switch-workspace-result", "success": false, "error": "invalid workspace id" })
+                                };
+                                ws_tx.send(Message::Text(result.to_string())).await
+                            }
+                            Some("create-workspace") => {
+                                let name = parsed["name"].as_str().and_then(|n| if n.is_empty() { None } else { Some(n.to_string()) });
+                                let id = Uuid::new_v4();
+                                let seq = ctx.state.allocate_workspace_seq();
+                                {
+                                    use std::collections::HashMap;
+                                    let mut map = ctx.state.workspaces.write();
+                                    map.insert(id, crate::state::Workspace {
+                                        pane_tree: crate::engine::pane_tree::PaneTree::new(),
+                                        terminals: HashMap::new(),
+                                        teammate_tmux_pane_cursor: 0,
+                                        teammate_pane_titles: HashMap::new(),
+                                        pane_sizes: HashMap::new(),
+                                        last_pane_index: None,
+                                        created_at: std::time::SystemTime::now(),
+                                        teammate_pane_states: HashMap::new(),
+                                        teammate_agent_pane_map: HashMap::new(),
+                                        associated_file_path: None,
+                                        pending_spawns: HashMap::new(),
+                                        pty_generation: HashMap::new(),
+                                        teammate_metrics: crate::state::TeammateMetrics::default(),
+                                        display_seq: seq,
+                                    });
+                                }
+                                ctx.state.workspace_order.write().push(id);
+                                // §state-sep: the new workspace is shared data (visible to all),
+                                // but only THIS client jumps to it. Other clients / the desktop
+                                // stay on their own selection.
+                                if let Some((ws, p)) = current_pane.take() {
+                                    ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                }
+                                active_ws_id = id;
+                                if let Some(ref n) = name {
+                                    ctx.state.workspace_names.write().insert(id, n.clone());
+                                }
+                                let send = ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "create-workspace-result",
+                                    "success": true,
+                                    "workspaceId": id.to_string(),
+                                }).to_string())).await;
+                                // Broadcast structural change to all remote clients and desktop.
+                                let _ = ctx.state.remote_structural_tx.send(
+                                    crate::types::RemoteStructuralEvent::WorkspacesChanged
+                                );
+                                let _ = ctx.state.event_tx.try_send(
+                                    crate::types::GlobalEvent::WorkspaceListChanged
+                                );
+                                send
+                            }
+                            Some("close-workspace") => {
+                                let id_str = parsed["workspaceId"].as_str().unwrap_or("");
+                                let mut success = false;
+                                let result = if let Ok(id) = Uuid::parse_str(id_str) {
+                                    {
+                                        let order = ctx.state.workspace_order.read();
+                                        if order.len() <= 1 {
+                                            serde_json::json!({ "type": "close-workspace-result", "success": false, "error": "cannot close last workspace" })
+                                        } else {
+                                            drop(order);
+                                            ctx.state.workspaces.write().remove(&id);
+                                            ctx.state.workspace_order.write().retain(|w| *w != id);
+                                            ctx.state.workspace_names.write().remove(&id);
+                                            // Closing a workspace destroys shared data: if the
+                                            // DESKTOP (global active) was viewing it, move the
+                                            // global off so the desktop doesn't point at a dead
+                                            // workspace. This is unavoidable — you can't view a
+                                            // workspace that no longer exists.
+                                            if *ctx.state.active_workspace.read() == id {
+                                                let first = ctx.state.workspace_order.read().first().cloned();
+                                                if let Some(first_id) = first {
+                                                    *ctx.state.active_workspace.write() = first_id;
+                                                }
+                                            }
+                                            // §state-sep: if THIS client was on the closed
+                                            // workspace, fall back to the first remaining one
+                                            // (independently of the desktop / other clients).
+                                            if active_ws_id == id {
+                                                if let Some((ws, p)) = current_pane.take() {
+                                                    ctx.state.unregister_remote_sub(ws, p, sub_id);
+                                                }
+                                                if let Some(first_id) = ctx.state.workspace_order.read().first().cloned() {
+                                                    active_ws_id = first_id;
+                                                }
+                                            }
+                                            success = true;
+                                            serde_json::json!({ "type": "close-workspace-result", "success": true })
+                                        }
+                                    }
+                                } else {
+                                    serde_json::json!({ "type": "close-workspace-result", "success": false, "error": "invalid workspace id" })
+                                };
+                                let send = ws_tx.send(Message::Text(result.to_string())).await;
+                                if success {
+                                    let _ = ctx.state.remote_structural_tx.send(
+                                        crate::types::RemoteStructuralEvent::WorkspacesChanged
+                                    );
+                                    let _ = ctx.state.event_tx.try_send(
+                                        crate::types::GlobalEvent::WorkspaceListChanged
+                                    );
+                                }
+                                send
+                            }
+                            Some("stdin") => {
+                                let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                                let data_str = parsed["data"].as_str().unwrap_or("");
+                                if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                                    let workspaces = ctx.state.workspaces.read();
+                                    if let Some(ws) = workspaces.get(&active_ws_id) {
+                                        if let Some(handle) = ws.terminals.get(&pane_id) {
+                                            let mut writer = handle.writer.lock();
+                                            let _ = writer.write_all(data_str.as_bytes());
+                                            let _ = writer.flush();
+                                        }
+                                    }
+                                }
+                                // no response needed
+                                Ok(())
+                            }
+                            Some("resize") => {
+                                // The client renders at the canonical PTY grid (driven by
+                                // `pty-resized` from claim/refresh), so a viewport-only resize
+                                // doesn't touch the shared PTY or the client kernel. We just
+                                // record the clamped size as the fallback used by the next
+                                // claim/refresh. The `.min(500)` is a defensive bound against a
+                                // malformed viewport, not the anti-OOM guard it was when each
+                                // sub owned a `rows × cols` parser.
+                                let _pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                                let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
+                                let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
+                                mobile_rows = rows.max(1).min(500);
+                                mobile_cols = cols.max(1).min(500);
+                                Ok(())
+                            }
+                            // §own-active: this client becomes the active size owner. Both
+                            // the implicit "I just interacted" claim (`claim-pane`) and the
+                            // explicit refresh button (`refresh-pane`) resize the shared PTY +
+                            // canonical parser to this client's viewport and broadcast a full
+                            // repaint to every viewer (desktop included). Last interaction wins.
+                            Some("refresh-pane") | Some("claim-pane") => {
+                                let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                                let rows = parsed["rows"].as_u64().unwrap_or(mobile_rows as u64) as u16;
+                                let cols = parsed["cols"].as_u64().unwrap_or(mobile_cols as u64) as u16;
+                                let pixel_width = parsed["pixelWidth"].as_u64().unwrap_or(cols as u64 * 8) as u16;
+                                let pixel_height = parsed["pixelHeight"].as_u64().unwrap_or(rows as u64 * 16) as u16;
+                                mobile_rows = rows;
+                                mobile_cols = cols;
+                                if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                                    apply_pane_resize(&ctx, active_ws_id, pane_id, rows, cols, pixel_width, pixel_height);
+                                }
+                                Ok(())
+                            }
+        Some("create-pane") => {
+                                // §6: create a terminal in THIS client's active workspace
+                                // using the balanced-split chooser, then immediately activate
+                                // it (Phase 2) at this client's viewport size. Remote clients
+                                // can't call the front-end `activate_pane_pty` Tauri command,
+                                // so without this the pane would sit in `pending_spawns`
+                                // forever ("pending..."). Once live it streams to every viewer
+                                // via the PTY fan-out on subscribe.
+                                let shell = parsed["shell"].as_str()
+                                    .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+                                let mut success = false;
+                                let result = match crate::commands::pane::remote_create_pane(&ctx.state, active_ws_id, shell) {
+                                    Ok(new_id) => match crate::commands::terminal::activate_pane_pty_state(
+                                        &ctx.state, None, active_ws_id, new_id,
+                                        Some(mobile_rows), Some(mobile_cols),
+                                    ) {
+                                        Ok(()) => {
+                                            success = true;
+                                            serde_json::json!({
+                                                "type": "create-pane-result", "success": true, "paneId": new_id.to_string()
+                                            })
+                                        }
+                                        Err(e) => serde_json::json!({
+                                            "type": "create-pane-result", "success": false, "error": e.to_string()
+                                        }),
+                                    },
+                                    Err(e) => serde_json::json!({
+                                        "type": "create-pane-result", "success": false, "error": e.to_string()
+                                    }),
+                                };
+                                let send = ws_tx.send(Message::Text(result.to_string())).await;
+                                if success {
+                                    let _ = ctx.state.remote_structural_tx.send(
+                                        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: active_ws_id }
+                                    );
+                                    let _ = ctx.state.event_tx.try_send(
+                                        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: active_ws_id }
+                                    );
+                                }
+                                send
+                            }
+                            Some("close-pane") => {
+                                let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                                let mut success = false;
+                                let result = match Uuid::parse_str(pane_id_str) {
+                                    Ok(pane_id) => match crate::commands::pane::remote_close_pane(&ctx.state, active_ws_id, pane_id).await {
+                                        Ok(()) => {
+                                            success = true;
+                                            serde_json::json!({ "type": "close-pane-result", "success": true })
+                                        }
+                                        Err(e) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": e.to_string() }),
+                                    },
+                                    Err(_) => serde_json::json!({ "type": "close-pane-result", "success": false, "error": "invalid pane id" }),
+                                };
+                                let send = ws_tx.send(Message::Text(result.to_string())).await;
+                                if success {
+                                    let _ = ctx.state.remote_structural_tx.send(
+                                        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: active_ws_id }
+                                    );
+                                    let _ = ctx.state.event_tx.try_send(
+                                        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: active_ws_id }
+                                    );
+                                }
+        send
+                            }
+                            Some("list-files") => {
+                                let path_str = parsed["path"].as_str().unwrap_or("").to_string();
+                                // §unify: base dir follows the subscribed pane's cwd (same as the
+                                // desktop file tree), falling back to the active project, then home.
+                                let base_dir = current_pane
+                                    .and_then(|(ws_id, pane_id)| {
+                                        let map = ctx.state.workspaces.read();
+                                        map.get(&ws_id)
+                                            .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                            .and_then(|n| n.cwd.clone())
+                                    })
+                                    .or_else(|| ctx.state.current_project.read().clone())
+                                    .or_else(dirs::home_dir)
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                let result = tokio::task::spawn_blocking(move || {
+                                    // Empty/"/" → base dir; absolute → as-is; else relative to base.
+                                    let target = if path_str.is_empty() || path_str == "/" {
+                                        base_dir.clone()
+                                    } else {
+                                        let p = PathBuf::from(&path_str);
+                                        if p.is_absolute() { p } else { base_dir.join(&path_str) }
+                                    };
+                                    // §unify: reuse the desktop file-tree pager so gitignore marking,
+                                    // OS-junk filtering and dir-first sorting match the desktop UI.
+                                    let page = crate::fs::tree::FileTree::page_children(&target, 0, 5000)
+                                        .unwrap_or(crate::fs::tree::DirectoryPage {
+                                            entries: Vec::new(),
+                                            total: 0,
+                                            offset: 0,
+                                            has_more: false,
+                                        });
+                                    let parent = target.parent().map(|p| p.to_string_lossy().to_string());
+                                    serde_json::json!({
+                                        "type": "files",
+                                        "path": target.to_string_lossy().to_string(),
+                                        "parent": parent,
+                                        "entries": page.entries,
+                                    })
+                                }).await;
+                                match result {
+                                    Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
+                                    Err(e) => {
+                                        tracing::warn!(target: "ridge::remote", error = %e, "list-files blocking task failed");
+                                        Ok(())
+                                    }
+                                }
+                            }
+                            Some("list-remote-clients") => {
+                                let clients = ctx.state.remote_client_registry.list();
+                                let list: Vec<serde_json::Value> = clients.iter().map(|c| {
+                                    let elapsed = c.connected_at.elapsed()
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    serde_json::json!({
+                                        "id": c.id,
+                                        "connectedAt": elapsed,
+                                        "remoteAddr": c.remote_addr,
+                                        "userAgent": c.user_agent,
+                                    })
+                                }).collect();
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "remote-clients",
+                                    "clients": list,
+                                }).to_string())).await
+                            }
+                            Some("kick-remote-client") => {
+                                let target_id = parsed["id"].as_u64().unwrap_or(0);
+                                let kicked = ctx.state.remote_client_registry.kick(target_id);
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "kick-remote-client-result",
+                                    "success": kicked,
+                                    "clientId": target_id,
+                                }).to_string())).await
+                            }
+                            Some("list-git-status") => {
+                                // §unify: same cwd resolution as list-files (subscribed pane → project → home).
+                                let base_dir = current_pane
+                                    .and_then(|(ws_id, pane_id)| {
+                                        let map = ctx.state.workspaces.read();
+                                        map.get(&ws_id)
+                                            .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                            .and_then(|n| n.cwd.clone())
+                                    })
+                                    .or_else(|| ctx.state.current_project.read().clone())
+                                    .or_else(dirs::home_dir)
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                let result = tokio::task::spawn_blocking(move || {
+                                    // §unify: reuse the desktop git module so branch / commits / diff
+                                    // come from the exact same source as the desktop Git panel.
+                                    let info = crate::commands::git::git_info_for_path(&base_dir);
+                                    serde_json::json!({
+                                        "type": "git-status",
+                                        "isGitRepo": info.is_git_repo,
+                                        "currentBranch": info.current_branch,
+                                        "branches": info.branches,
+                                        "files": info.diff.files,
+                                        "commits": info.commits,
+                                    })
+                                }).await;
+                                match result {
+                                    Ok(msg) => ws_tx.send(Message::Text(msg.to_string())).await,
+                                    Err(e) => {
+                                        tracing::warn!(target: "ridge::remote", error = %e, "list-git-status blocking task failed");
+                                        Ok(())
+                                    }
+                                }
+                            }
+                            Some("search-files") => {
+                                let query = parsed["query"].as_str().unwrap_or("").to_string();
+                                // §unify: search root follows the subscribed pane's cwd (same as desktop).
+                                let root = current_pane
+                                    .and_then(|(ws_id, pane_id)| {
+                                        let map = ctx.state.workspaces.read();
+                                        map.get(&ws_id)
+                                            .and_then(|ws| ws.pane_tree.panes.get(&pane_id))
+                                            .and_then(|n| n.cwd.clone())
+                                    })
+                                    .or_else(|| ctx.state.current_project.read().clone())
+                                    .or_else(dirs::home_dir)
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                let results = if query.trim().is_empty() {
+                                    Vec::new()
+                                } else {
+                                    // §unify: reuse the desktop text_search engine (gitignore-aware ripgrep walk).
+                                    crate::commands::project::text_search(
+                                        root.to_string_lossy().to_string(),
+                                        query.clone(),
+                                        None, None, None, Some(200), None, None,
+                                    )
+                                    .await
+                                    .unwrap_or_default()
+                                };
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "search-results",
+                                    "query": query,
+                                    "results": results,
+                                }).to_string())).await
+                            }
+                            Some("data-request") => {
+                                // Backs the remote `WsDataProvider` (src/lib/transport/ws.ts).
+                                // An authenticated remote already has shell stdin, so this
+                                // mirrors the desktop `TauriDataProvider` 1:1 within the SAME
+                                // trust boundary. Guards layered on top: a per-connection rate
+                                // limit (below), a read-only toggle + path-traversal rejection
+                                // + audit log of mutations (in `dispatch_data_request`). The
+                                // reply carries `_reqId` plus `_result` (ok) or `_error` (fail).
+                                let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
+                                let method = parsed["method"].as_str().unwrap_or("").to_string();
+
+                                // §rate-limit: refill the window, then count this request.
+                                if dr_window_start.elapsed() >= DR_WINDOW {
+                                    dr_window_start = Instant::now();
+                                    dr_count = 0;
+                                }
+                                dr_count += 1;
+                                if dr_count > DR_MAX_PER_WINDOW {
+                                    tracing::warn!(
+                                        target: "ridge::remote",
+                                        client_id, method = %method,
+                                        "data-request rate limit exceeded; rejecting"
+                                    );
+                                    let reply = serde_json::json!({
+                                        "_reqId": req_id,
+                                        "_error": "rate limited: too many data requests",
+                                    });
+                                    ws_tx.send(Message::Text(reply.to_string())).await
+                                } else {
+                                    let mut reply =
+                                        dispatch_data_request(&method, &parsed, &ctx.state).await;
+                                    if let Some(obj) = reply.as_object_mut() {
+                                        obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                                    }
+                                    ws_tx.send(Message::Text(reply.to_string())).await
+                                }
+                            }
+                            Some("invoke-request") => {
+                                // Backs the browser-side Tauri `invoke()` shim
+                                // (src/lib/transport/tauriShim/core.ts) used when the FULL
+                                // desktop UI is served to a desktop browser. Same trust
+                                // boundary, rate limit, read-only gate, traversal guard and
+                                // audit as `data-request`; the explicit allowlist in
+                                // `dispatch_invoke_request` is the security boundary (unknown
+                                // cmd → error), so host-privileged / remote-admin commands
+                                // (get_remote_info, set_remote_enabled, deep-root, …) stay
+                                // unreachable. The reply carries `type:'invoke-result'` so it
+                                // survives RemoteConnection's onmessage routing.
+                                let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
+                                let cmd = parsed["cmd"].as_str().unwrap_or("").to_string();
+                                if dr_window_start.elapsed() >= DR_WINDOW {
+                                    dr_window_start = Instant::now();
+                                    dr_count = 0;
+                                }
+                                dr_count += 1;
+                                if dr_count > DR_MAX_PER_WINDOW {
+                                    tracing::warn!(target: "ridge::remote", client_id, cmd = %cmd, "invoke-request rate limit exceeded; rejecting");
+                                    let reply = serde_json::json!({
+                                        "type": "invoke-result", "_reqId": req_id,
+                                        "_error": "rate limited: too many invoke requests",
+                                    });
+                                    ws_tx.send(Message::Text(reply.to_string())).await
+                                } else {
+                                    let empty = serde_json::json!({});
+                                    let args = parsed.get("args").unwrap_or(&empty);
+                                    let mut reply = dispatch_invoke_request(&cmd, args, &ctx.state).await;
+                                    if let Some(obj) = reply.as_object_mut() {
+                                        obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                                        obj.insert("type".to_string(), serde_json::json!("invoke-result"));
+                                    }
+                                    ws_tx.send(Message::Text(reply.to_string())).await
+                                }
+                            }
+                            _ => {
+                                ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
+                            }
+                        };
+                    }
+                    event = raw_rx.recv() => {
+                        match event {
+                            Some(crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes }) => {
+                                if workspace_id == active_ws_id {
+                                    // §resync: if the fan-out dropped frames for this sub, the
+                                    // client's vte stream has a hole that would corrupt every
+                                    // subsequent parse. Reset the terminal (RIS) and replay
+                                    // fresh scrollback before the current bytes so the parser
+                                    // re-synchronises — but throttle it (see RESYNC_MIN_INTERVAL)
+                                    // so a sustained-overload loop can't amplify congestion. We
+                                    // only CONSUME the desync flag when we actually resync; if
+                                    // throttled it stays set for a later frame to handle.
+                                    if desync.load(Ordering::Acquire) {
+                                        let now = Instant::now();
+                                        let throttled = last_resync
+                                            .is_some_and(|t| now.duration_since(t) < RESYNC_MIN_INTERVAL);
+                                        if !throttled {
+                                            desync.store(false, Ordering::Release);
+                                            last_resync = Some(now);
+                                            let history = ctx.state.get_recent_scrollback_for(
+                                                workspace_id, pane_id, 65536,
+                                            );
+                                            let mut resync = Vec::with_capacity(18 + history.len());
+                                            resync.extend_from_slice(pane_id.as_bytes());
+                                            resync.extend_from_slice(b"\x1bc"); // RIS — full reset
+                                            resync.extend_from_slice(&history);
+                                            if ws_tx.send(Message::Binary(resync.into())).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let mut payload = Vec::with_capacity(16 + bytes.len());
+                                    payload.extend_from_slice(pane_id.as_bytes());
+                                    payload.extend_from_slice(&bytes);
+                                    if ws_tx.send(Message::Binary(payload.into())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Some(crate::types::RemotePtyEvent::Metadata { workspace_id, pane_id, title, cwd }) => {
+                                if workspace_id == active_ws_id {
+                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "pty-meta",
+                                        "paneId": pane_id.to_string(),
+                                        "title": title,
+                                        "cwd": cwd.clone(),
+                                    }).to_string())).await;
+                                    // §web-remote: desktop UI listens to pane-cwd-changed-{ws}-{pane}.
+                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "event",
+                                        "name": format!("pane-cwd-changed-{}-{}", workspace_id, pane_id),
+                                        "payload": { "cwd": cwd },
+                                    }).to_string())).await;
+                                }
+                            }
+                            Some(crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols }) => {
+                                if workspace_id == active_ws_id {
+                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "pty-resized",
+                                        "paneId": pane_id.to_string(),
+                                        "rows": rows,
+                                        "cols": cols,
+                                    }).to_string())).await;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    structural = structural_rx.recv() => {
+                        match structural {
+                            Ok(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id }) => {
+                                if workspace_id == active_ws_id {
+                                    // Re-enumerate panes for this workspace and push to client.
+                                    let pane_list = {
+                                        let workspaces = ctx.state.workspaces.read();
+                                        if let Some(ws) = workspaces.get(&active_ws_id) {
+                                            let mut list = Vec::new();
+                                            for (pane_id, handle) in &ws.terminals {
+                                                let osc_title = handle.parser.lock().title()
+                                                    .filter(|t| !t.trim().is_empty());
+                                                let title = osc_title
+                                                    .or_else(|| ws.teammate_pane_titles.get(pane_id).cloned())
+                                                    .or_else(|| ws.pane_tree.panes.get(pane_id).and_then(|n| n.shell_kind.clone()))
+                                                    .unwrap_or_else(|| "terminal".to_string());
+                                                list.push(serde_json::json!({
+                                                    "id": pane_id.to_string(),
+                                                    "title": title,
+                                                    "cwd": ws.pane_tree.panes.get(pane_id)
+                                                        .and_then(|n| n.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
+                                                        .unwrap_or_default(),
+                                                }));
+                                            }
+                                            for (pane_id, _) in &ws.pending_spawns {
+                                                list.push(serde_json::json!({
+                                                    "id": pane_id.to_string(),
+                                                    "title": "pending...",
+                                                    "cwd": "",
+                                                }));
+                                            }
+                                            list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+                                            list
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    };
+                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "panes", "panes": pane_list
+                                    }).to_string())).await;
+                                    // §web-remote: desktop UI re-syncs layout on pane-tree-changed.
+                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "event",
+                                        "name": "pane-tree-changed",
+                                        "payload": { "workspaceId": active_ws_id.to_string() },
+                                    }).to_string())).await;
+                                }
+                            }
+                            Ok(crate::types::RemoteStructuralEvent::WorkspacesChanged) => {
+                                // Push updated workspace list.
+                                let ws_list = {
+                                    let order = ctx.state.workspace_order.read();
+                                    let names = ctx.state.workspace_names.read();
+                                    let map = ctx.state.workspaces.read();
+                                    let active = active_ws_id;
+                                    order.iter().map(|id| {
+                                        let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
+                                        serde_json::json!({
+                                            "id": id.to_string(),
+                                            "name": names.get(id).cloned()
+                                                .unwrap_or_else(|| format!("工作区 {}", display_seq)),
+                                            "displaySeq": display_seq,
+                                            "active": *id == active,
+                                        })
+                                    }).collect::<Vec<_>>()
+                                };
+                                let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "workspaces", "workspaces": ws_list
+                                }).to_string())).await;
+                                // §web-remote: desktop UI refreshes on workspace-list-changed.
+                                let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "event", "name": "workspace-list-changed", "payload": {},
+                                }).to_string())).await;
+                            }
+                            Ok(crate::types::RemoteStructuralEvent::WorkspaceRenamed { workspace_id, name }) => {
+                                let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "workspace-renamed",
+                                    "workspaceId": workspace_id.to_string(),
+                                    "name": name,
+                                }).to_string())).await;
+                                let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "event", "name": "workspace-list-changed", "payload": {},
+                                }).to_string())).await;
+                            }
+                            Err(_) => {
+                                // Lagged — skip; the next request-response cycle will fix it.
+                            }
+                        }
+                    }
+                    ui_evt = ui_event_rx.recv() => {
+                        // §web-remote: relay a host Tauri event to the desktop browser's
+                        // `listen()` shim. Broadcast to every client; the mobile SPA drops it.
+                        if let Ok(ev) = ui_evt {
                             let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                "type": "panes", "panes": pane_list
+                                "type": "event",
+                                "name": ev.name,
+                                "payload": ev.payload,
                             }).to_string())).await;
                         }
                     }
-                    Ok(crate::types::RemoteStructuralEvent::WorkspacesChanged) => {
-                        // Push updated workspace list.
-                        let ws_list = {
-                            let order = ctx.state.workspace_order.read();
-                            let names = ctx.state.workspace_names.read();
-                            let map = ctx.state.workspaces.read();
-                            let active = active_ws_id;
-                            order.iter().map(|id| {
-                                let display_seq = map.get(id).map(|w| w.display_seq).unwrap_or(0);
-                                serde_json::json!({
-                                    "id": id.to_string(),
-                                    "name": names.get(id).cloned()
-                                        .unwrap_or_else(|| format!("工作区 {}", display_seq)),
-                                    "displaySeq": display_seq,
-                                    "active": *id == active,
-                                })
-                            }).collect::<Vec<_>>()
-                        };
-                        let _ = ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "workspaces", "workspaces": ws_list
-                        }).to_string())).await;
-                    }
-                    Ok(crate::types::RemoteStructuralEvent::WorkspaceRenamed { workspace_id, name }) => {
-                        let _ = ws_tx.send(Message::Text(serde_json::json!({
-                            "type": "workspace-renamed",
-                            "workspaceId": workspace_id.to_string(),
-                            "name": name,
-                        }).to_string())).await;
-                    }
-                    Err(_) => {
-                        // Lagged — skip; the next request-response cycle will fix it.
-                    }
-                }
-            }
-            _ = health_interval.tick() => {
-                if !ctx.state.remote_enabled.load(Ordering::Relaxed)
-                    || kill_flag.load(Ordering::Relaxed)
-                {
-                    let reason = if kill_flag.load(Ordering::Relaxed) {
-                        "Disconnected by admin"
-                    } else {
-                        "Remote control disabled"
-                    };
-                    let _ = ws_tx.send(Message::Close(Some(
-                        axum::extract::ws::CloseFrame {
-                            code: 1000,
-                            reason: std::borrow::Cow::Borrowed(reason),
+                    _ = health_interval.tick() => {
+                        if !ctx.state.remote_enabled.load(Ordering::Relaxed)
+                            || kill_flag.load(Ordering::Relaxed)
+                        {
+                            let reason = if kill_flag.load(Ordering::Relaxed) {
+                                "Disconnected by admin"
+                            } else {
+                                "Remote control disabled"
+                            };
+                            let _ = ws_tx.send(Message::Close(Some(
+                                axum::extract::ws::CloseFrame {
+                                    code: 1000,
+                                    reason: std::borrow::Cow::Borrowed(reason),
+                                }
+                            ))).await;
+                            break;
                         }
-                    ))).await;
-                    break;
+                    }
                 }
-            }
-        }
     }
 
-    // Clean up: unregister from all subscribed panes.
+    // Clean up: unregister from all subscribed panes (single-pane mobile slot +
+    // the multi-pane desktop set).
     if let Some((ws, pane)) = current_pane.take() {
+        ctx.state.unregister_remote_sub(ws, pane, sub_id);
+    }
+    for (ws, pane) in subscribed_panes.drain() {
         ctx.state.unregister_remote_sub(ws, pane, sub_id);
     }
     ctx.state.remote_client_registry.unregister(client_id);
@@ -1767,5 +2186,249 @@ async fn search_files_result(state: &AppState, query: String, path: String) -> s
             serde_json::json!({ "_result": mapped })
         }
         Err(e) => serde_json::json!({ "_error": e }),
+    }
+}
+
+/// FS/git-write commands gated by the remote read-only toggle. Structural
+/// pane/workspace ops are interactive control (not filesystem writes), so they
+/// stay allowed even in a read-only session.
+fn is_mutating_invoke(cmd: &str) -> bool {
+    is_mutating_method(cmd) || matches!(cmd, "replace_in_files" | "apply_file_edits")
+}
+
+/// Dispatches one browser `invoke-request` to the matching desktop command. The
+/// real `#[tauri::command]` functions are called directly with a `State` /
+/// `AppHandle` derived from the process-stashed handle (`AppState.app_handle`),
+/// so behaviour is identical to the desktop IPC path. This is an ALLOWLIST:
+/// unknown commands — including deliberately-excluded host-privileged ones
+/// (`get_remote_info` exposes the live TOTP; `set_remote_enabled` /
+/// `disconnect_session` / blacklist are remote-admin; `enter_deep_root_mode` /
+/// `set_cloud_remote_active` / `summon_native_session` are host-only) — return
+/// an error and never reach a handler.
+async fn dispatch_invoke_request(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+) -> serde_json::Value {
+    use crate::commands::{
+        fs_watch, git, pane, project, ridge_file, settings, terminal, theme, watch, workspace,
+    };
+    use tauri::Manager;
+
+    // §read-only gate (defence-in-depth for view-only sessions).
+    if is_mutating_invoke(cmd) {
+        if state.remote_fs_readonly.load(Ordering::Relaxed) {
+            tracing::warn!(target: "ridge::remote::fs", cmd, "rejected mutating invoke: remote is read-only");
+            return serde_json::json!({ "_error": "remote filesystem is read-only" });
+        }
+        tracing::info!(target: "ridge::remote::fs", cmd, "remote mutating invoke");
+    }
+    // §traversal guard: reject `..` in any path-bearing field.
+    for key in ["path", "from", "to", "repoRoot", "root", "cwd"] {
+        if let Some(v) = args.get(key).and_then(|x| x.as_str()) {
+            if path_has_traversal(v) {
+                return serde_json::json!({ "_error": "path traversal rejected" });
+            }
+        }
+    }
+    if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
+        if arr.iter().filter_map(|x| x.as_str()).any(path_has_traversal) {
+            return serde_json::json!({ "_error": "path traversal rejected" });
+        }
+    }
+
+    // ── arg extractors (frontend sends Tauri-style camelCase keys) ──
+    fn s(v: &serde_json::Value, k: &str) -> String {
+        v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    }
+    fn opt_s(v: &serde_json::Value, k: &str) -> Option<String> {
+        v.get(k).and_then(|x| x.as_str()).map(String::from)
+    }
+    fn usize_opt(v: &serde_json::Value, k: &str) -> Option<usize> {
+        v.get(k).and_then(|x| x.as_u64()).map(|n| n as usize)
+    }
+    fn usize_arg(v: &serde_json::Value, k: &str) -> usize {
+        v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as usize
+    }
+    fn u16_opt(v: &serde_json::Value, k: &str) -> Option<u16> {
+        v.get(k).and_then(|x| x.as_u64()).map(|n| n as u16)
+    }
+    fn u16_arg(v: &serde_json::Value, k: &str) -> u16 {
+        v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u16
+    }
+    fn u32_arg(v: &serde_json::Value, k: &str) -> u32 {
+        v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u32
+    }
+    fn bool_opt(v: &serde_json::Value, k: &str) -> Option<bool> {
+        v.get(k).and_then(|x| x.as_bool())
+    }
+    fn vec_s(v: &serde_json::Value, k: &str) -> Vec<String> {
+        v.get(k)
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+    fn from_arg<T: serde::de::DeserializeOwned>(v: &serde_json::Value, k: &str) -> Result<T, String> {
+        serde_json::from_value(v.get(k).cloned().unwrap_or(serde_json::Value::Null)).map_err(|e| e.to_string())
+    }
+    fn val<T: Serialize>(r: Result<T, String>) -> serde_json::Value {
+        match r {
+            Ok(v) => serde_json::json!({ "_result": v }),
+            Err(e) => serde_json::json!({ "_error": e }),
+        }
+    }
+    fn unit(r: Result<(), String>) -> serde_json::Value {
+        match r {
+            Ok(()) => serde_json::json!({ "_result": null }),
+            Err(e) => serde_json::json!({ "_error": e }),
+        }
+    }
+    fn plain<T: Serialize>(v: T) -> serde_json::Value {
+        serde_json::json!({ "_result": v })
+    }
+
+    // Most commands need a real Tauri context. The stashed handle gives us both
+    // a managed `State<AppState>` (same Arcs as `state`) and an `AppHandle`.
+    let handle = match state.app_handle.get() {
+        Some(h) => h.clone(),
+        None => return serde_json::json!({ "_error": "host application handle not ready" }),
+    };
+    // `handle.state::<AppState>()` panics if AppState isn't managed; guard once so
+    // a misconfigured host degrades to an error instead of aborting the WS task.
+    if handle.try_state::<AppState>().is_none() {
+        return serde_json::json!({ "_error": "host application state unavailable" });
+    }
+
+    match cmd {
+        // ── Filesystem ──
+        "get_file_tree" => val(project::get_file_tree(s(args, "path"), usize_opt(args, "depth")).await),
+        "get_directory_children" => val(project::get_directory_children(s(args, "path"), usize_opt(args, "offset"), usize_opt(args, "limit")).await),
+        "path_exists" => val(project::path_exists(s(args, "path")).await),
+        "read_file" => val(project::read_file(s(args, "path"))),
+        "write_file" => unit(project::write_file(s(args, "path"), s(args, "content")).await),
+        "apply_file_edits" => match from_arg::<Vec<project::TextEdit>>(args, "edits") {
+            Ok(edits) => unit(project::apply_file_edits(s(args, "path"), edits).await),
+            Err(e) => serde_json::json!({ "_error": format!("invalid edits: {e}") }),
+        },
+        "rename_path" => unit(project::rename_path(s(args, "from"), s(args, "to"))),
+        "delete_path" => unit(project::delete_path(s(args, "path")).await),
+        "create_file" => unit(project::create_file(s(args, "path"))),
+        "create_directory" => unit(project::create_directory(s(args, "path"))),
+        "copy_path" => unit(project::copy_path(s(args, "from"), s(args, "to"), bool_opt(args, "overwrite")).await),
+        "move_path" => unit(project::move_path(s(args, "from"), s(args, "to")).await),
+        "reveal_in_file_manager" => unit(project::reveal_in_file_manager(s(args, "path"))),
+        "read_file_for_editor" => val(project::read_file_for_editor(s(args, "path")).await),
+        "get_current_project" => val(project::get_current_project(handle.state())),
+
+        // ── Filesystem / git watchers (live fs-changed / scm refresh) ──
+        "start_watching_paths" => match from_arg::<Vec<fs_watch::WatchSpec>>(args, "roots") {
+            Ok(roots) => unit(fs_watch::start_watching_paths(roots, handle.clone(), handle.state()).await),
+            Err(e) => serde_json::json!({ "_error": format!("invalid roots: {e}") }),
+        },
+        "start_watching_repos" => unit(watch::start_watching_repos(vec_s(args, "roots"), handle.clone(), handle.state()).await),
+
+        // ── Pane / terminal ──
+        "get_pane_layout" => val(pane::get_pane_layout(handle.state())),
+        "get_pane_layout_for" => val(pane::get_pane_layout_for(handle.state(), s(args, "workspaceId"))),
+        "split_pane" => val(pane::split_pane(handle.state(), s(args, "paneId"), s(args, "direction")).await),
+        "dock_pane" => unit(pane::dock_pane(handle.state(), s(args, "sourcePaneId"), s(args, "targetPaneId"), s(args, "region")).await),
+        "close_pane" => unit(pane::close_pane(handle.state(), s(args, "paneId")).await),
+        "toggle_mode" => match from_arg(args, "mode") {
+            Ok(mode) => unit(pane::toggle_mode(handle.state(), s(args, "paneId"), mode).await),
+            Err(e) => serde_json::json!({ "_error": format!("invalid mode: {e}") }),
+        },
+        "set_split_ratios_at_path" => match (from_arg::<Vec<usize>>(args, "path"), from_arg::<Vec<f32>>(args, "ratios")) {
+            (Ok(p), Ok(r)) => unit(pane::set_split_ratios_at_path(handle.state(), p, r).await),
+            _ => serde_json::json!({ "_error": "invalid split-ratio args" }),
+        },
+        "set_split_ratios_batch" => match from_arg(args, "updates") {
+            Ok(updates) => unit(pane::set_split_ratios_batch(handle.state(), updates).await),
+            Err(e) => serde_json::json!({ "_error": format!("invalid updates: {e}") }),
+        },
+        "create_pane" => unit(terminal::create_pane(handle.state(), s(args, "paneId"), opt_s(args, "shell")).await),
+        "activate_pane_pty" => unit(terminal::activate_pane_pty(handle.state(), handle.clone(), s(args, "workspaceId"), s(args, "paneId"), u16_opt(args, "rows"), u16_opt(args, "cols")).await),
+        "change_pane_shell" => unit(terminal::change_pane_shell(handle.state(), s(args, "paneId"), s(args, "shell")).await),
+        "write_to_pty" => unit(terminal::write_to_pty(handle.state(), s(args, "paneId"), s(args, "data")).await),
+        "resize_pane" => unit(terminal::resize_pane(handle.state(), handle.clone(), s(args, "workspaceId"), s(args, "paneId"), u16_arg(args, "rows"), u16_arg(args, "cols"), bool_opt(args, "isAlt"), bool_opt(args, "isInlineTui")).await),
+        "detect_available_shells" => plain(terminal::detect_available_shells()),
+        "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
+
+        // ── Workspace (live) ──
+        "get_active_workspace_id" => val(workspace::get_active_workspace_id(handle.state())),
+        "switch_workspace" => unit(workspace::switch_workspace(handle.state(), s(args, "workspaceId"))),
+        "create_workspace" => val(workspace::create_workspace(handle.state(), opt_s(args, "name"))),
+        "close_workspace" => unit(workspace::close_workspace(handle.state(), s(args, "workspaceId"))),
+        "rename_workspace" => unit(workspace::rename_workspace(handle.state(), s(args, "workspaceId"), s(args, "name"))),
+        "reorder_workspaces" => unit(workspace::reorder_workspaces(handle.state(), usize_arg(args, "fromIndex"), usize_arg(args, "toIndex"))),
+
+        // ── Workspace (persistence / .ridge) ──
+        "save_workspace" => val(workspace::save_workspace(handle.clone(), handle.state(), opt_s(args, "name"))),
+        "list_saved_workspaces" => val(workspace::list_saved_workspaces(handle.clone())),
+        "delete_saved_workspace" => unit(workspace::delete_saved_workspace(handle.clone(), s(args, "id"))),
+        "rename_saved_workspace" => unit(workspace::rename_saved_workspace(handle.clone(), s(args, "id"), s(args, "name"))),
+        "list_workspace_save_info" => val(ridge_file::list_workspace_save_info(handle.state())),
+        "delete_workspace_file" => unit(ridge_file::delete_workspace_file(handle.clone(), handle.state(), s(args, "workspaceId"))),
+        "get_default_workspace_save_dir" => val(ridge_file::get_default_workspace_save_dir()),
+        "list_saved_workspace_files" => val(ridge_file::list_saved_workspace_files()),
+        "save_workspace_to_file" => val(ridge_file::save_workspace_to_file(handle.clone(), handle.state(), s(args, "workspaceId"), s(args, "name"), opt_s(args, "path"))),
+        "open_workspace_from_file" => val(ridge_file::open_workspace_from_file(handle.clone(), handle.state(), s(args, "path"))),
+        "get_restore_set" => val(ridge_file::get_restore_set(handle.clone())),
+        "list_recent_workspaces" => val(ridge_file::list_recent_workspaces(handle.clone())),
+        "clear_recent_workspaces" => unit(ridge_file::clear_recent_workspaces(handle.clone())),
+        "get_last_opened_workspace_path" => val(ridge_file::get_last_opened_workspace_path(handle.clone())),
+        "get_startup_context" => val(ridge_file::get_startup_context(handle.state())),
+        "browse_directory" => val(ridge_file::browse_directory(opt_s(args, "path"))),
+
+        // ── Theme / settings ──
+        "get_theme_data" => plain(theme::get_theme_data(handle.clone())),
+        "set_active_theme" => unit(theme::set_active_theme(s(args, "themeId"))),
+        "set_user_default_cwd" => unit(settings::set_user_default_cwd(handle.state(), opt_s(args, "path"))),
+
+        // ── Search ──
+        "text_search" => val(project::text_search(
+            s(args, "root"),
+            s(args, "query"),
+            bool_opt(args, "caseSensitive"),
+            bool_opt(args, "useRegex"),
+            bool_opt(args, "wholeWord"),
+            usize_opt(args, "maxResults"),
+            Some(vec_s(args, "includeGlobs")),
+            Some(vec_s(args, "excludeGlobs")),
+        ).await),
+        "filename_search" => val(project::filename_search(s(args, "root"), s(args, "pattern")).await),
+        "text_search_diagnostics" => plain(project::text_search_diagnostics(Some(vec_s(args, "includeGlobs")), Some(vec_s(args, "excludeGlobs")))),
+        "replace_in_files" => val(project::replace_in_files(s(args, "root"), s(args, "search"), s(args, "replace"), vec_s(args, "files"), bool_opt(args, "caseSensitive"), bool_opt(args, "useRegex")).await),
+
+        // ── Git (read) ──
+        "find_git_repo_root" => plain(git::find_git_repo_root(s(args, "path"))),
+        "find_git_repos_below" => plain(git::find_git_repos_below(s(args, "path"), usize_opt(args, "maxDepth")).await),
+        "get_scm_status" => val(git::get_scm_status(s(args, "repoRoot")).await),
+        "get_git_info_with_cwd" => val(git::get_git_info_with_cwd(s(args, "cwd")).await),
+        "get_git_commits_paginated" => val(git::get_git_commits_paginated(s(args, "repoRoot"), u32_arg(args, "offset"), u32_arg(args, "limit")).await),
+        "git_list_branches" => val(git::git_list_branches(s(args, "repoRoot")).await),
+        "git_diff_summary" => val(git::git_diff_summary(s(args, "repoRoot")).await),
+        "git_get_file_versions" => val(git::git_get_file_versions(s(args, "repoRoot"), s(args, "path"), bool_opt(args, "cached")).await),
+        "git_op_in_progress" => plain(git::git_op_in_progress(s(args, "repoRoot"))),
+        "git_fetch" => unit(git::git_fetch(s(args, "repoRoot")).await),
+
+        // ── Git (mutating; mirrors dispatch_data_request) ──
+        "git_stage" => unit(git::git_stage(s(args, "repoRoot"), vec_s(args, "paths")).await),
+        "git_unstage" => unit(git::git_unstage(s(args, "repoRoot"), vec_s(args, "paths")).await),
+        "git_commit" => unit(git::git_commit(s(args, "repoRoot"), s(args, "message"), bool_opt(args, "amend")).await),
+        "git_pull" => unit(git::git_pull(s(args, "repoRoot")).await),
+        "git_push" => unit(git::git_push(s(args, "repoRoot"), bool_opt(args, "setUpstream")).await),
+        "git_sync" => unit(git::git_sync(s(args, "repoRoot")).await),
+        "git_checkout" => unit(git::git_checkout(s(args, "repoRoot"), s(args, "branch"), bool_opt(args, "create"), None).await),
+        "git_revert" => unit(git::git_revert(s(args, "repoRoot"), s(args, "hash")).await),
+        "git_cherry_pick" => unit(git::git_cherry_pick(s(args, "repoRoot"), s(args, "hash")).await),
+        "git_reset" => unit(git::git_reset(s(args, "repoRoot"), s(args, "commit"), s(args, "mode")).await),
+        "git_create_tag" => unit(git::git_create_tag(s(args, "repoRoot"), s(args, "name"), None, opt_s(args, "message")).await),
+        "git_discard" => unit(git::git_discard(s(args, "repoRoot"), vec_s(args, "paths")).await),
+        "git_clean_untracked" => unit(git::git_clean_untracked(s(args, "repoRoot"), Vec::new()).await),
+
+        other => {
+            tracing::warn!(target: "ridge::remote", cmd = %other, "invoke-request: command not in allowlist");
+            serde_json::json!({ "_error": format!("command not available remotely: {}", other) })
+        }
     }
 }
