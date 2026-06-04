@@ -396,27 +396,42 @@ export class TerminalController {
 
   updateComposition(text: string) {
     if (this.destroyed) return;
-    const r = this.kernel.cursorRow?.() ?? -1;
-    const c = this.kernel.cursorCol?.() ?? -1;
+    const cell = this.inputAnchorCell();
+    const r = cell?.row ?? (this.kernel.cursorRow?.() ?? -1);
+    const c = cell?.col ?? (this.kernel.cursorCol?.() ?? -1);
     const h = this.renderHandle as unknown as { setPreedit?: (t: string, r: number, c: number) => void };
     h.setPreedit?.(text, r, c);
     this.markDirty();
   }
 
-  endComposition(text: string) {
+  /** Clear the preedit overlay + composition state. Does NOT emit the committed
+   *  text — the caller decides whether to send, so the Svelte layer can dedup
+   *  against the trailing `input` event mobile IMEs fire after compositionend. */
+  finishComposition() {
     this._isComposing = false;
     if (this.destroyed) return;
     const h = this.renderHandle as unknown as { clearPreedit?: () => void };
     h.clearPreedit?.();
-    if (text) {
-      const bytes = this.kernel.encodePaste(text);
-      if (bytes.length > 0 && this.onStdin) {
-        this.onStdin(new TextDecoder().decode(bytes));
-      }
-    }
     this.imeAnchorRow = -1;
     this.imeAnchorCol = -1;
     this.markDirty();
+  }
+
+  /** Encode committed text as a bracketed paste and emit it exactly once. */
+  commitText(text: string) {
+    if (this.destroyed || !text) return;
+    const bytes = this.kernel.encodePaste(text);
+    if (bytes.length > 0 && this.onStdin) {
+      this.onStdin(new TextDecoder().decode(bytes));
+    }
+  }
+
+  /** @deprecated Split into {@link finishComposition} + {@link commitText} so the
+   *  caller can dedup the trailing mobile-IME `input` event. Kept for callers
+   *  that don't need that distinction. */
+  endComposition(text: string) {
+    this.finishComposition();
+    this.commitText(text);
   }
 
   get isComposing() { return this._isComposing; }
@@ -503,16 +518,61 @@ export class TerminalController {
   }
 
   /**
+   * Resolve the *input* cell — not the live cursor. In alt-screen / inline-TUI
+   * mode the live cursor walks all over during redraws (spinners, status bars,
+   * log-update rewrites), which makes an anchored IME box "float". The last
+   * absolute-positioning CSI is where Ink / claude / opencode park the cursor at
+   * the end of every frame — i.e. the real input cell — so prefer it (ignoring
+   * age) while a TUI is active. Mirrors the desktop `manager.ts` inputAnchorCell
+   * resolver so the remote IME box behaves like the native app's.
+   */
+  private inputAnchorCell(): { row: number; col: number } | null {
+    if (this.destroyed) return null;
+    const k = this.kernel as unknown as {
+      cursorRow?: () => number;
+      cursorCol?: () => number;
+      lastAbsCsiPosition?: () => { row: number; col: number; atMs: number } | null;
+      isAltScreen?: () => boolean;
+      isInlineTuiMode?: () => boolean;
+    };
+    const ABS_CSI_DECAY_MS = 2_000;
+    const readCsi = () => { try { return k.lastAbsCsiPosition?.() ?? null; } catch { return null; } };
+    let isAlt = false, isInlineTui = false;
+    try { isAlt = k.isAltScreen?.() === true; } catch { /* older bundle */ }
+    try { isInlineTui = k.isInlineTuiMode?.() === true; } catch { /* older bundle */ }
+    // 1) TUI: the last absolute CSI is the stable input cell, even when idle.
+    if (isAlt || isInlineTui) {
+      const csi = readCsi();
+      if (csi) return { row: csi.row, col: csi.col };
+    }
+    // 2) Anchor captured at compositionstart (locks the box during shell input).
+    if (this.imeAnchorRow >= 0 && this.imeAnchorCol >= 0) {
+      return { row: this.imeAnchorRow, col: this.imeAnchorCol };
+    }
+    // 3) A recent absolute CSI, demoted to live cursor once it goes stale.
+    const csi = readCsi();
+    if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
+      return { row: csi.row, col: csi.col };
+    }
+    // 4) Live cursor fallback.
+    const row = k.cursorRow?.() ?? -1;
+    const col = k.cursorCol?.() ?? -1;
+    if (row < 0 || col < 0) return null;
+    return { row, col };
+  }
+
+  /**
    * Cursor position in CSS px relative to the canvas top-left. Used to park the
    * hidden IME textarea at the cursor so the candidate window appears in place.
    * `cellW`/`cellH` are CSS px (see `fitPane` cols/rows math), so no DPR scaling.
+   * Routes through {@link inputAnchorCell} so the box stays pinned to the TUI's
+   * real input cell instead of following the live cursor during redraws.
    */
   getCursorPixel(): { x: number; y: number; h: number } | null {
     if (this.destroyed || this.cellW <= 0 || this.cellH <= 0) return null;
-    const row = this.kernel.cursorRow?.() ?? -1;
-    const col = this.kernel.cursorCol?.() ?? -1;
-    if (row < 0 || col < 0) return null;
-    return { x: col * this.cellW, y: row * this.cellH, h: this.cellH };
+    const cell = this.inputAnchorCell();
+    if (!cell) return null;
+    return { x: cell.col * this.cellW, y: cell.row * this.cellH, h: this.cellH };
   }
 
   clientToCell(clientX: number, clientY: number): { row: number; col: number } | null {
