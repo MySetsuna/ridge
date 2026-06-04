@@ -43,6 +43,10 @@ pub enum ControlMsg {
     },
     /// 列目录（契约 §9 复用 fs::tree）。
     Tree { path: String },
+    /// 云远控二次验证（契约 §4）：controller 把用户从 host TUI 读到的 6 位
+    /// TOTP 回传。serde tag = `t` + kebab-case ⇒ 线上形如
+    /// `{"t":"totp-verify","code":"123456"}`，与契约 §4 / 浏览器 controller 对齐。
+    TotpVerify { code: String },
 }
 
 /// host→controller 的带外响应（JSON，channel::JSON 之后）。
@@ -59,6 +63,9 @@ pub enum HostMsg {
     },
     /// 错误（人类可读，不泄露内部路径细节）。
     Error { message: String },
+    /// 云远控二次验证结果（契约 §4）。serde tag = `t` + kebab-case ⇒ 线上形如
+    /// `{"t":"totp-result","ok":true}`，与契约 §4 / 浏览器 controller 对齐。
+    TotpResult { ok: bool },
 }
 
 /// 给一段 PTY 输出加上通道前缀。
@@ -114,5 +121,31 @@ mod tests {
         let f = frame_pty_output(b"abc");
         assert_eq!(f[0], channel::PTY_OUTPUT);
         assert_eq!(&f[1..], b"abc");
+    }
+
+    /// 契约 §4：controller→host 的 totp-verify 必须解析成
+    /// `{"t":"totp-verify","code":"…"}`。锁死跨实现对齐的 tag/字段名。
+    #[test]
+    fn totp_verify_parses_contract_shape() {
+        let m: ControlMsg =
+            serde_json::from_str(r#"{"t":"totp-verify","code":"123456"}"#).unwrap();
+        match m {
+            ControlMsg::TotpVerify { code } => assert_eq!(code, "123456"),
+            _ => panic!("expected totp-verify"),
+        }
+    }
+
+    /// 契约 §4：host→controller 的 totp-result 必须序列化成
+    /// `{"t":"totp-result","ok":true}`（注意 kebab-case 的 `t` tag）。
+    #[test]
+    fn totp_result_serializes_contract_shape() {
+        let json = serde_json::to_string(&HostMsg::TotpResult { ok: true }).unwrap();
+        assert!(json.contains("\"t\":\"totp-result\""), "got: {json}");
+        assert!(json.contains("\"ok\":true"), "got: {json}");
+        // frame helper 须在 JSON 前置 channel::JSON 通道字节。
+        let framed = frame_host_json(&HostMsg::TotpResult { ok: false });
+        assert_eq!(framed[0], channel::JSON);
+        let body: HostMsg = serde_json::from_slice(&framed[1..]).unwrap();
+        matches!(body, HostMsg::TotpResult { ok: false });
     }
 }

@@ -55,6 +55,13 @@ pub fn run() {
     let teammate_state = app_state.clone();
 
     tauri::Builder::default()
+        // 公网登录授权（契约 §1）：single-instance 必须最先注册——浏览器唤起
+        // `ridge://auth/focus` 时 Windows 会启动第二个进程，此插件把它的 argv 转交
+        // 给首个实例并触发下面的回调，我们据此聚焦主窗口并广播 auth-focus 事件。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            crate::deep_root::focus_main_window(app);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_dialog::init())
@@ -143,6 +150,33 @@ pub fn run() {
                 // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
                 if let Err(e) = crate::tray::build_tray(app) {
                     tracing::error!(target: "ridge::tray", error = %e, "tray init failed");
+                }
+
+                // 公网登录授权（契约 §1/§2.3）：注册 `ridge://` 运行时处理器。
+                //   - register_all()：Linux/Windows 运行时绑定 scheme（dev 下尤其必要）。
+                //   - on_open_url：网页授权后 `ridge://auth/focus` 唤起 → 聚焦主窗口 +
+                //     广播 `ridge://auth-focus` 事件，前端据此立即触发一次轮询。
+                //   URI 仅作信号，绝不携带 JWT/敏感数据（token 一律走轮询接口）。
+                {
+                    use tauri_plugin_deep_link::DeepLinkExt;
+                    if let Err(e) = app.deep_link().register_all() {
+                        tracing::warn!(
+                            target: "ridge::deep_link",
+                            error = %e,
+                            "deep-link scheme runtime registration failed (continuing)"
+                        );
+                    }
+                    let dl_handle = app.handle().clone();
+                    app.deep_link().on_open_url(move |event| {
+                        let urls: Vec<String> =
+                            event.urls().iter().map(|u| u.to_string()).collect();
+                        tracing::info!(
+                            target: "ridge::deep_link",
+                            ?urls,
+                            "deep link opened"
+                        );
+                        crate::deep_root::focus_main_window(&dl_handle);
+                    });
                 }
 
             tauri::async_runtime::spawn(async move {
@@ -640,6 +674,7 @@ pub fn run() {
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
             commands::remote::get_remote_info,
+            commands::remote::verify_remote_totp,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
             commands::remote::set_remote_fs_readonly,

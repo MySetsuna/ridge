@@ -100,6 +100,8 @@ OPTIONS:
     --daemon           以守护进程运行：连接信令、等待 controller、桥接本地 shell
     --shell <SHELL>    指定要拉起的 shell（默认按平台探测：$SHELL → bash → sh）
     --cwd <CWD>        会话 shell 的工作目录（默认 $HOME / 当前目录）
+    --root <ROOT>      fs 服务根沙箱：限定 controller 可读的目录子树
+                       [env: RIDGE_REMOTE_ROOT]
     -h, --help         Print help
 ```
 
@@ -111,8 +113,17 @@ OPTIONS:
 | `--daemon` | flag | 加载已保存凭据 → 拉取 ICE servers → 连信令 WS（role=host）→ 等 controller 接入 → 建立 WebRTC DataChannel + E2EE → 桥接本地 shell PTY。信令断开后按指数退避自动重连。 |
 | `--shell` | 可选字符串 | 覆盖默认 shell，例如 `--shell /bin/zsh`。 |
 | `--cwd` | 可选字符串 | 覆盖 PTY 会话的起始工作目录，例如 `--cwd /srv/app`。 |
+| `--root` | 可选字符串 | **fs 服务根沙箱**（D-GM-9）：把 controller 经 `search` / 列目录可触达的路径限定在该子树内，避免公网 host 暴露 `~/.ssh`、`/etc/passwd` 等。也可由 `RIDGE_REMOTE_ROOT` 环境变量提供（空/全空白视为未设）。 |
 
 **`--enable` 与 `--daemon` 可组合使用**：配对成功后立即进入守护模式。
+
+**fs 服务根沙箱（`--root` / `RIDGE_REMOTE_ROOT`）**：headless host 跑在公网 VPS 上时，
+controller 的 `search` / 列目录命令默认会被关进一个服务根，**优先级 `--root` > `--cwd` >
+进程当前目录**——即便不显式配置，裸 `ridge-cli remote --daemon` 也只暴露其启动目录而非整机
+文件系统（secure-by-default）。落在服务根之外的路径由 `ridge_core` 的 `sandbox_guard` 在
+`dispatch` 入口统一拒绝。需要放开为整机时显式设 `--root /`（不推荐）；当服务根最终为空
+（连当前目录都不可读）时日志会打 `WARN` 提示 fs 不受限。该沙箱仅约束 `remote` 子命令的
+**只读 fs 命令**，与 PTY shell 自身能访问的路径无关。
 
 #### 示例：配对（首次）
 
@@ -153,6 +164,10 @@ ridge-cli remote --enable
 ridge-cli remote --daemon
 # 指定 shell 和工作目录
 ridge-cli remote --daemon --shell /bin/zsh --cwd /srv/app
+# 把 controller 可读的 fs 限定在某子树（公网 VPS 推荐）
+ridge-cli remote --daemon --root /srv/app
+# 经环境变量注入服务根（适配 systemd EnvironmentFile）
+RIDGE_REMOTE_ROOT=/srv/app ridge-cli remote --daemon
 # 一步配对+启动
 ridge-cli remote --enable --daemon
 ```

@@ -31,8 +31,17 @@
 export const CHANNEL = {
   /** Raw PTY bytes for a pane. */
   PANE_RAW: 0x10,
-  /** UTF-8 JSON (control / event / invoke). */
+  /** UTF-8 JSON (control / event / invoke — the JSON-RPC 2.0 business envelope). */
   JSON: 0x11,
+  /**
+   * UTF-8 JSON session-CONTROL frames (contract §4): distinct from the 0x11
+   * JSON-RPC business channel so the host can gate business frames while still
+   * processing the TOTP handshake on a separate, always-open channel. Carries
+   * `{ t: 'totp-verify', code }` (controller→host) and `{ t: 'totp-result', ok }`
+   * (host→controller). Forward-compatible: more `t`-tagged control messages can
+   * ride this channel later without touching the RPC/pane framing.
+   */
+  CONTROL: 0x12,
 } as const;
 
 /** Max bytes a paneId may occupy on the wire (1-byte length prefix). */
@@ -41,17 +50,31 @@ export const MAX_PANE_ID_BYTES = 255;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-/** A demuxed inbound frame: either a JSON control frame (parsed) or pane bytes. */
+/** A demuxed inbound frame: a JSON-RPC control frame, a session-control frame, or pane bytes. */
 export type DemuxResult =
   | { kind: 'json'; json: unknown }
+  | { kind: 'control'; json: unknown }
   | { kind: 'pane'; paneId: string; bytes: Uint8Array }
   | { kind: 'unknown'; tag: number };
 
-/** Encode a JSON control frame: `0x11 || utf8(JSON.stringify(value))`. */
+/** Encode a JSON-RPC business frame: `0x11 || utf8(JSON.stringify(value))`. */
 export function encodeJsonFrame(value: unknown): Uint8Array {
   const body = textEncoder.encode(JSON.stringify(value));
   const out = new Uint8Array(1 + body.length);
   out[0] = CHANNEL.JSON;
+  out.set(body, 1);
+  return out;
+}
+
+/**
+ * Encode a session-CONTROL frame (contract §4): `0x12 || utf8(JSON.stringify(value))`.
+ * Same JSON encoding as {@link encodeJsonFrame} but on the 0x12 channel, so it is
+ * routed to the TOTP handshake handler rather than the JSON-RPC business handler.
+ */
+export function encodeControlFrame(value: unknown): Uint8Array {
+  const body = textEncoder.encode(JSON.stringify(value));
+  const out = new Uint8Array(1 + body.length);
+  out[0] = CHANNEL.CONTROL;
   out.set(body, 1);
   return out;
 }
@@ -90,6 +113,12 @@ export function demuxFrame(frame: Uint8Array): DemuxResult {
     const text = textDecoder.decode(frame.subarray(1));
     const json: unknown = JSON.parse(text); // caller catches parse errors
     return { kind: 'json', json };
+  }
+
+  if (tag === CHANNEL.CONTROL) {
+    const text = textDecoder.decode(frame.subarray(1));
+    const json: unknown = JSON.parse(text); // caller catches parse errors
+    return { kind: 'control', json };
   }
 
   if (tag === CHANNEL.PANE_RAW) {

@@ -10,6 +10,7 @@
   // §cloud: 公网加速（Pro）— 新增并行 provider，不替换 LAN 模式（契约 §9）。
   import CloudProModal from './cloud/CloudProModal.svelte';
   import CloudPanel from './cloud/CloudPanel.svelte';
+  import MinimizeButton from './MinimizeButton.svelte';
   import * as cloudAuth from './cloud/auth';
   import { cloudAuth as cloudAuthStore } from './cloud/auth';
 
@@ -344,6 +345,13 @@
           <p class="text-sm text-[var(--rg-fg-muted)]">{$t('remote.fetchingInfo')}</p>
         </div>
       {/if}
+    {/if}
+
+    <!-- 最小化·后台保活（契约 §8）：LAN tab 也展示同一按钮。LAN 远控启用时启用；
+         注意 Wave 1 的 enter_deep_root_mode 仍有 cloud_remote_active 前置，LAN-only
+         活跃点击可能被 Rust 拒绝 → 走 onMinimizeError 提示（W2 放宽前置）。 -->
+    {#if remoteEnabled}
+      <MinimizeButton active={remoteEnabled} onError={(m) => (connectError = m || tr('cloud.errMinimizeFailed'))} />
     {/if}
 
     {#if connectError}

@@ -13,7 +13,7 @@
 //! 所以无头二进制仍然精简。
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::core_host::headless_ctx;
 
@@ -43,8 +43,17 @@ const LIST_DIR_LIMIT: usize = usize::MAX;
 /// `use_regex` / `case_sensitive` 透传；命中结果裁剪回精简 `SearchResult`
 /// （丢弃 `ridge-core` 的 `match_text`，保持线形 schema 不变）。dispatch 失败
 /// （能力拒绝 / 路径穿越 / 根不存在等）时返回空结果，与原 fail-soft 行为一致。
-pub fn search(root: &str, query: &str, use_regex: bool, case_sensitive: bool) -> Vec<SearchResult> {
-    let ctx = headless_ctx();
+///
+/// `roots` 是 host 的服务根沙箱（D-GM-9）：`root` 落在其外时 dispatch 因
+/// `sandbox_guard` 拒绝 → 空结果。空 `roots` = 不限制（向后兼容）。
+pub fn search(
+    roots: &[PathBuf],
+    root: &str,
+    query: &str,
+    use_regex: bool,
+    case_sensitive: bool,
+) -> Vec<SearchResult> {
+    let ctx = headless_ctx(roots);
     let args = serde_json::json!({
         "root": root,
         "query": query,
@@ -78,8 +87,11 @@ pub fn search(root: &str, query: &str, use_regex: bool, case_sensitive: bool) ->
 ///
 /// 返回 `io::Result` 以保持 `session.rs` 现有错误分支（host 不泄露内部路径）。
 /// dispatch 错误映射为 `io::Error`（保留人类可读 message）。
-pub fn list_dir(path: &Path) -> std::io::Result<Vec<FileNode>> {
-    let ctx = headless_ctx();
+///
+/// `roots` 是 host 的服务根沙箱（D-GM-9）：`path` 落在其外时 dispatch 因
+/// `sandbox_guard` 拒绝 → `io::Error`。空 `roots` = 不限制（向后兼容）。
+pub fn list_dir(roots: &[PathBuf], path: &Path) -> std::io::Result<Vec<FileNode>> {
+    let ctx = headless_ctx(roots);
     let args = serde_json::json!({
         "path": path.to_string_lossy(),
         "offset": 0,
@@ -120,7 +132,9 @@ mod tests {
     fn search_finds_literal_match_via_core() {
         let dir = tmp("search");
         std::fs::write(dir.join("a.txt"), "hello world\nfoo bar\n").unwrap();
-        let hits = search(&dir.to_string_lossy(), "foo", false, false);
+        // Serve the temp dir as the sole root so the sandbox admits it.
+        let roots = [dir.clone()];
+        let hits = search(&roots, &dir.to_string_lossy(), "foo", false, false);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].line, 2);
         assert_eq!(hits[0].column, 1);
@@ -132,9 +146,36 @@ mod tests {
         let dir = tmp("list");
         std::fs::write(dir.join("z.txt"), "").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        let entries = list_dir(&dir).unwrap();
+        let roots = [dir.clone()];
+        let entries = list_dir(&roots, &dir).unwrap();
         assert_eq!(entries[0].name, "sub");
         assert!(entries[0].is_dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_dir_outside_serving_root_is_denied() {
+        // The serving root is `served`; a sibling `secret` dir must be unreachable.
+        let served = tmp("served");
+        let secret = tmp("secret");
+        std::fs::write(secret.join("creds"), "token").unwrap();
+        let roots = [served.clone()];
+        let denied = list_dir(&roots, &secret);
+        assert!(
+            denied.is_err(),
+            "listing a path outside the serving root must be rejected by the sandbox"
+        );
+        let _ = std::fs::remove_dir_all(&served);
+        let _ = std::fs::remove_dir_all(&secret);
+    }
+
+    #[test]
+    fn empty_roots_remain_unrestricted() {
+        // Backward-compat: no serving root → no confinement (whole-FS, legacy).
+        let dir = tmp("unrestricted");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let entries = list_dir(&[], &dir).unwrap();
+        assert!(entries.iter().any(|e| e.name == "sub" && e.is_dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

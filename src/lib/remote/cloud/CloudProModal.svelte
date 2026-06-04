@@ -8,11 +8,11 @@
   //
   // 设计：glassmorphism with real depth（design-quality），避免模板感。
 
-  import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2 } from 'lucide-svelte';
+  import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2, Globe, CalendarCheck } from 'lucide-svelte';
   import * as auth from './auth';
   import { cloudAuth } from './auth';
   import { ApiError } from './apiClient';
-  import { t, tr, billingRegion } from '$lib/i18n';
+  import { t, tr, locale, billingRegion } from '$lib/i18n';
 
   interface Props {
     open: boolean;
@@ -23,9 +23,9 @@
 
   let { open = $bindable(), onClose, onReady }: Props = $props();
 
-  // 外链占位（运营后续替换为真实链接）。
+  // 爱发电（zh，契约 §7 真实链接）；海外订阅 Lemon Squeezy 仍为占位待运营填。
   const LEMON_SQUEEZY_URL = 'https://ridge.lemonsqueezy.com/buy/PLACEHOLDER';
-  const MBD_URL = 'https://mbd.pub/o/PLACEHOLDER';
+  const MBD_URL = 'https://ifdian.net/a/ridge';
 
   type Tab = 'highlights' | 'login' | 'activate';
   let tab = $state<Tab>('highlights');
@@ -45,8 +45,57 @@
   let licenseKey = $state('');
   let activateUsername = $state('');
 
+  // 浏览器登录授权（§2.3）：主登录方式；邮箱密码作为兜底（默认折叠）。
+  let browserBusy = $state(false);
+  let showLocalLogin = $state(false);
+  let authorizeUrl = $state('');
+  let browserAbort: AbortController | null = null;
+
   let busy = $state(false);
   let errorMsg = $state('');
+
+  // §5 每日签到：free 用户每日得 2h 免费公网远控。成功/已签到/永久 premium 各有反馈。
+  let checkinBusy = $state(false);
+  let checkinMsg = $state('');
+
+  /** 把签到到期秒级 unix 格式化为本地化「至 HH:mm」展示。 */
+  function formatGrantedUntil(expiresAt: number | null): string {
+    if (expiresAt == null) return '';
+    const ms = expiresAt < 1e12 ? expiresAt * 1000 : expiresAt;
+    const intlLocale = $locale === 'zh' ? 'zh-CN' : 'en-US';
+    return new Date(ms).toLocaleString(intlLocale, {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  async function doCheckin(): Promise<void> {
+    if (checkinBusy) return;
+    errorMsg = '';
+    checkinMsg = '';
+    checkinBusy = true;
+    try {
+      const res = await auth.checkin();
+      if (res.ok) {
+        // 成功授予 2h 临时 premium → 展示授予截止时间；onReady 让上层据新 premium 态联动。
+        checkinMsg = tr('cloudPro.checkinGranted', { until: formatGrantedUntil(res.premiumExpiresAt) });
+        onReady();
+      } else if (res.reason === 'permanent') {
+        // 已是永久/买断 premium：签到入口本应隐藏，兜底联动一次。
+        checkinMsg = '';
+        onReady();
+      } else {
+        // reason==='already'：今日已签到。
+        checkinMsg = tr('cloudPro.checkinAlready');
+      }
+    } catch (e) {
+      handleError(e);
+    } finally {
+      checkinBusy = false;
+    }
+  }
 
   function handleError(e: unknown): void {
     if (e instanceof ApiError) {
@@ -69,6 +118,45 @@
     } finally {
       busy = false;
     }
+  }
+
+  // §2.3 浏览器登录授权：打开默认浏览器 → 轮询拿 user JWT。`ridge://auth/focus`
+  // 唤起桌面端后由 Rust 广播 `ridge://auth-focus`，桥接为 onWake 立即触发一次轮询。
+  async function doBrowserLogin(): Promise<void> {
+    if (browserBusy) return;
+    errorMsg = '';
+    authorizeUrl = '';
+    browserBusy = true;
+    browserAbort = new AbortController();
+    try {
+      await auth.loginViaBrowser({
+        signal: browserAbort.signal,
+        onProgress: (p) => { authorizeUrl = p.authorizeUrl; },
+        onWake: (cb) => listenAuthFocus(cb),
+      });
+      onReady();
+      close();
+    } catch (e) {
+      // 用户主动取消（关弹窗）不报错。
+      if (e instanceof ApiError && e.code === 'INVALID_INPUT') return;
+      handleError(e);
+    } finally {
+      browserBusy = false;
+      browserAbort = null;
+      authorizeUrl = '';
+    }
+  }
+
+  // 把 Tauri `ridge://auth-focus` 事件桥接为「立即再轮询」唤醒。纯浏览器
+  // （web-remote shim）下 listen 不可用时静默退化为按 interval 轮询。
+  function listenAuthFocus(cb: () => void): () => void {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    import('@tauri-apps/api/event')
+      .then((m) => m.listen('ridge://auth-focus', () => cb()))
+      .then((un) => { if (cancelled) un(); else unlisten = un; })
+      .catch(() => { /* 非 Tauri 环境，退化为定时轮询 */ });
+    return () => { cancelled = true; unlisten?.(); };
   }
 
   async function doActivate(): Promise<void> {
@@ -94,10 +182,16 @@
 
   function close(): void {
     errorMsg = '';
+    // 关弹窗即取消进行中的浏览器登录轮询（loginViaBrowser 会抛 INVALID_INPUT，已忽略）。
+    browserAbort?.abort();
     onClose();
   }
 
   const loggedIn = $derived(auth.isLoggedIn($cloudAuth));
+  // premium 已激活（按缓存 plan）。已激活则不展示任何升级/签到入口（契约 §5/§7）。
+  const premiumActive = $derived(auth.isPremium($cloudAuth));
+  // 签到入口：已登录且非 premium 才展示（free 路径）。
+  const showCheckin = $derived(loggedIn && !premiumActive);
 
   // 可见 tab 列表随语言变化：外文隐藏「卡密激活」。
   const tabs = $derived(
@@ -233,39 +327,95 @@
               </button>
             {/if}
           </div>
+
+          <!-- §5 每日签到（free 路径，与上方订阅/卡密升级入口并存）：已登录且非 premium 才展示。 -->
+          {#if showCheckin}
+            <div class="mt-4 rounded-xl border border-dashed border-[var(--rg-border)] p-3">
+              <p class="mb-2 text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloudPro.checkinHint')}</p>
+              <button
+                type="button"
+                onclick={() => void doCheckin()}
+                disabled={checkinBusy}
+                class="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--rg-accent)]/40 py-2 text-sm font-semibold text-[var(--rg-accent)] transition-all hover:bg-[var(--rg-accent)]/10 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+              >
+                {#if checkinBusy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<CalendarCheck class="h-4 w-4" />{/if}
+                {$t('cloudPro.checkinBtn')}
+              </button>
+              {#if checkinMsg}
+                <p class="mt-2 text-center text-[11px] text-green-400">{checkinMsg}</p>
+              {/if}
+            </div>
+          {/if}
         {:else if tab === 'login'}
-          <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doLogin(); }}>
-            <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginEmail')}</span>
-              <input
-                bind:value={email}
-                type="email"
-                autocomplete="email"
-                required
-                class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/60 focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
-                placeholder="you@example.com"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginPassword')}</span>
-              <input
-                bind:value={password}
-                type="password"
-                autocomplete="current-password"
-                required
-                class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
-                placeholder="••••••••"
-              />
-            </label>
+          <!-- §2.3 主登录：浏览器授权（类似 Claude Code 登录）。 -->
+          <div class="space-y-3">
             <button
-              type="submit"
-              disabled={busy}
+              type="button"
+              onclick={() => void doBrowserLogin()}
+              disabled={browserBusy}
               class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--rg-accent)] py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
             >
-              {#if busy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<LogIn class="h-4 w-4" />{/if}
-              {$t('cloudPro.loginSubmit')}
+              {#if browserBusy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<Globe class="h-4 w-4" />{/if}
+              {$t('cloudPro.loginBrowser')}
             </button>
-          </form>
+            {#if browserBusy}
+              <p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{$t('cloudPro.loginBrowserWaiting')}</p>
+              {#if authorizeUrl}
+                <button
+                  type="button"
+                  onclick={() => openExternal(authorizeUrl)}
+                  class="block w-full text-center text-[11px] text-[var(--rg-accent)] hover:underline"
+                >
+                  {$t('cloudPro.loginBrowserFallback')}
+                </button>
+              {/if}
+            {:else}
+              <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloudPro.loginBrowserHint')}</p>
+            {/if}
+
+            <!-- 兜底：邮箱密码登录（默认折叠）。 -->
+            <button
+              type="button"
+              onclick={() => { showLocalLogin = !showLocalLogin; errorMsg = ''; }}
+              class="w-full text-center text-[11px] text-[var(--rg-fg-muted)] underline-offset-2 hover:text-[var(--rg-fg)] hover:underline"
+            >
+              {$t('cloudPro.loginLocalToggle')}
+            </button>
+            {#if showLocalLogin}
+              <form class="space-y-3 border-t border-[var(--rg-border)]/60 pt-3" onsubmit={(e) => { e.preventDefault(); void doLogin(); }}>
+                <label class="block">
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginEmail')}</span>
+                  <input
+                    bind:value={email}
+                    type="email"
+                    autocomplete="email"
+                    required
+                    class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/60 focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                    placeholder="you@example.com"
+                  />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginPassword')}</span>
+                  <input
+                    bind:value={password}
+                    type="password"
+                    autocomplete="current-password"
+                    required
+                    class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                    placeholder="••••••••"
+                  />
+                </label>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  class="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--rg-border)] py-2 text-sm font-medium text-[var(--rg-fg)] transition-all hover:border-[var(--rg-accent)]/40 hover:bg-white/5 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                >
+                  {#if busy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<LogIn class="h-4 w-4" />{/if}
+                  {$t('cloudPro.loginSubmit')}
+                </button>
+              </form>
+            {/if}
+          </div>
         {:else}
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doActivate(); }}>
             <p class="text-xs leading-relaxed text-[var(--rg-fg-muted)]">

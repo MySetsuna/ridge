@@ -70,6 +70,12 @@ export type RenderWorkerRequest =
 			// P4.6 will populate this with the OffscreenCanvas transferable.
 			// For P4.5 the worker accepts the message but no-ops it.
 			canvas?: OffscreenCanvas;
+			// Font measurement args: the worker calls `RenderHandle.configure`
+			// on the newly-bound canvas and returns real cell metrics in the
+			// `ready` response (cellW / cellH).
+			font?: string;
+			fontSizePx?: number;
+			dpr?: number;
 	  }
 	| {
 			type: 'applyDelta';
@@ -87,6 +93,11 @@ export type RenderWorkerRequest =
 			rows: number;
 			cols: number;
 			dpr: number;
+			// CSS dimensions of the container (clientWidth / clientHeight).
+			// The worker uses these to resize its backing buffer to match
+			// the actual DOM box before painting.
+			wCss?: number;
+			hCss?: number;
 	  }
 	| {
 			type: 'destroy';
@@ -97,6 +108,15 @@ export type RenderWorkerRequest =
 			// Optional opaque token the worker echoes back in the pong.
 			// Useful for latency / healthcheck probes.
 			token?: string;
+	  }
+	| {
+			type: 'setFont';
+			paneId: string;
+			// Font family, font size in px, and device-pixel-ratio for
+			// the worker's `RenderHandle.configure()` call.
+			family: string;
+			sizePx: number;
+			dpr: number;
 	  };
 
 /** Responses sent from the worker back to the main thread. */
@@ -107,6 +127,12 @@ export type RenderWorkerResponse =
 			// What the worker actually wired up — may differ from the
 			// requested backend if e.g. WebGPU was unavailable.
 			backend: RendererBackend;
+			// Real cell metrics measured by `RenderHandle.configure()`.
+			// Present when the worker was given font/fontSizePx/dpr
+			// (typically via `bindCanvas`). The bridge reads these back
+			// to update `entry.cellW / cellH` and trigger a fit.
+			cellW?: number;
+			cellH?: number;
 	  }
 	| {
 			type: 'destroyed';
@@ -145,6 +171,7 @@ export function isRenderWorkerRequest(value: unknown): value is RenderWorkerRequ
 		t === 'feed' ||
 		t === 'resize' ||
 		t === 'destroy' ||
-		t === 'ping'
+		t === 'ping' ||
+		t === 'setFont'
 	);
 }

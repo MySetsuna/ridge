@@ -47,10 +47,40 @@
 
 use std::sync::atomic::Ordering;
 
-use tauri::{Manager, Runtime, State, WebviewWindow};
+use tauri::{Emitter, Manager, Runtime, State, WebviewWindow};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::state::AppState;
+
+/// 前端监听的「登录授权已批准、请立即轮询」事件名（契约 §1）。`ridge://auth/focus`
+/// 唤起后由 [`focus_main_window`] 广播；`CloudProModal` 的 `loginViaBrowser` 轮询循环
+/// 收到后立即触发一次 poll，免去等待下一个轮询间隔。
+pub const AUTH_FOCUS_EVENT: &str = "ridge://auth-focus";
+
+/// 把主窗口拉回前台（show + unminimize + set_focus）并广播 [`AUTH_FOCUS_EVENT`]。
+///
+/// 供 deep-link 的 `on_open_url`（`ridge://auth/focus`）与 single-instance 回调复用：
+/// 浏览器授权批准后唤起桌面端时调用。窗口若处在「最小化省资源」（hide）态会一并恢复。
+/// 每一步失败仅记录，不中断后续步骤——尽力把用户带回前台并触发轮询。
+pub fn focus_main_window<R: Runtime>(app: &impl Manager<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        tracing::warn!(target: "ridge::deep_root", "auth focus: main window not found");
+        return;
+    };
+    if let Err(e) = window.unminimize() {
+        tracing::debug!(target: "ridge::deep_root", error = %e, "auth focus: unminimize");
+    }
+    if let Err(e) = window.show() {
+        tracing::warn!(target: "ridge::deep_root", error = %e, "auth focus: show failed");
+    }
+    if let Err(e) = window.set_focus() {
+        tracing::warn!(target: "ridge::deep_root", error = %e, "auth focus: set_focus failed");
+    }
+    if let Err(e) = window.emit(AUTH_FOCUS_EVENT, ()) {
+        tracing::warn!(target: "ridge::deep_root", error = %e, "auth focus: emit failed");
+    }
+    tracing::info!(target: "ridge::deep_root", "auth focus: brought main window to front");
+}
 
 /// 进入深根模式时发送的原生系统通知文案（据实，**不含**「内存降低 90%」之类的承诺，
 /// 因为 v1 是 hide 而非 destroy —— 见模块文档）。

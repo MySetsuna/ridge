@@ -7,6 +7,7 @@ import {
   CHANNEL,
   MAX_PANE_ID_BYTES,
   demuxFrame,
+  encodeControlFrame,
   encodeJsonFrame,
   encodePaneFrame,
 } from './cloudMux';
@@ -24,6 +25,29 @@ describe('cloudMux — JSON (0x11) framing', () => {
     const value = { jsonrpc: '2.0', method: '$/hello', params: { protocolVersion: 1 } };
     const result = demuxFrame(encodeJsonFrame(value));
     expect(result).toEqual({ kind: 'json', json: value });
+  });
+});
+
+describe('cloudMux — CONTROL (0x12) framing (§4 TOTP)', () => {
+  it('prefixes a control frame with 0x12 and UTF-8 body', () => {
+    const frame = encodeControlFrame({ t: 'totp-verify', code: '123456' });
+    expect(frame[0]).toBe(CHANNEL.CONTROL);
+    expect(new TextDecoder().decode(frame.subarray(1))).toBe(
+      JSON.stringify({ t: 'totp-verify', code: '123456' }),
+    );
+  });
+
+  it('round-trips a control object through encode → demux as kind:control', () => {
+    const value = { t: 'totp-result', ok: true };
+    expect(demuxFrame(encodeControlFrame(value))).toEqual({ kind: 'control', json: value });
+  });
+
+  it('keeps CONTROL (0x12) distinct from the JSON-RPC business channel (0x11)', () => {
+    // Same payload on each channel demuxes to different kinds — the gate relies
+    // on this separation to allow TOTP while rejecting business frames.
+    const payload = { t: 'totp-verify', code: '000000' };
+    expect(demuxFrame(encodeControlFrame(payload)).kind).toBe('control');
+    expect(demuxFrame(encodeJsonFrame(payload)).kind).toBe('json');
   });
 });
 
