@@ -6,6 +6,7 @@
   import { dev } from '$app/environment';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
+  import { t, tr } from '$lib/i18n';
   // §cloud: 公网加速（Pro）— 新增并行 provider，不替换 LAN 模式（契约 §9）。
   import CloudProModal from './cloud/CloudProModal.svelte';
   import CloudPanel from './cloud/CloudPanel.svelte';
@@ -74,7 +75,7 @@
 
   function deviceLabel(s: SessionDto): string {
     if (s.deviceId) return s.deviceId.slice(0, 8);
-    return s.remoteAddr || '未知设备';
+    return s.remoteAddr || tr('remote.unknownDevice');
   }
 
   async function refreshSessions() {
@@ -121,7 +122,7 @@
         await refreshSessions();
       }
     } catch (e: unknown) {
-      connectError = e instanceof Error ? e.message : '切换失败';
+      connectError = e instanceof Error ? e.message : tr('remote.toggleFailed');
       void refreshRemoteRunning();
     }
   }
@@ -162,7 +163,7 @@
   <div class="flex items-center justify-between px-3 h-10 border-b border-[var(--rg-border)] shrink-0">
     <h2 class="text-xs font-semibold text-[var(--rg-fg)] uppercase tracking-wider flex items-center gap-1.5">
       <Smartphone class="w-3.5 h-3.5" />
-      远程控制 ({machineName})
+      {$t('remote.title', { name: machineName })}
     </h2>
   </div>
 
@@ -176,7 +177,7 @@
             ? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)] shadow-sm'
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
       >
-        <Wifi class="h-3.5 w-3.5" /> 局域网 / 自建网
+        <Wifi class="h-3.5 w-3.5" /> {$t('remote.modeLan')}
       </button>
       <button
         onclick={() => selectMode('cloud')}
@@ -185,7 +186,7 @@
             ? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)] shadow-sm'
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
       >
-        <Zap class="h-3.5 w-3.5 text-[var(--rg-accent)]" /> 官方公网加速
+        <Zap class="h-3.5 w-3.5 text-[var(--rg-accent)]" /> {$t('remote.modeCloud')}
         {#if !cloudReady}<span class="rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] text-[var(--rg-accent)]">Pro</span>{/if}
       </button>
     </div>
@@ -207,24 +208,25 @@
       >
         {#if remoteEnabled}
           <Power class="w-4 h-4" />
-          远程控制已启用
+          {$t('remote.enabledLabel')}
           <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
         {:else}
           <PowerOff class="w-4 h-4" />
-          启动远程控制
+          {$t('remote.startLabel')}
         {/if}
       </button>
       {#if remoteEnabled}
         <p class="text-[10px] text-[var(--rg-fg-muted)] text-center">
           {#if dev}
-            开发模式 · 运行 <code class="bg-[var(--rg-surface)] px-1 rounded">pnpm dev:remote</code> 启动手机端
+            {@const devParts = $t('remote.devHint').split('{cmd}')}
+            {devParts[0]}<code class="bg-[var(--rg-surface)] px-1 rounded">pnpm dev:remote</code>{devParts[1] ?? ''}
           {:else}
-            手机浏览器扫码或访问
-            <button onclick={copyLink} class="inline bg-transparent border-none p-0 cursor-pointer" title="点击复制链接">
+            {$t('remote.accessHintPrefix')}
+            <button onclick={copyLink} class="inline bg-transparent border-none p-0 cursor-pointer" title={$t('remote.copyLinkTitle')}>
               <code class="bg-[var(--rg-surface)] px-1 rounded hover:bg-[var(--rg-accent)]/10 transition-colors">{buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0)}</code>
             </button>
-            <button onclick={copyLink} class="ml-1 text-[var(--rg-accent)] hover:underline text-[10px]" title="复制链接">
-              {copySuccess ? '已复制' : '复制'}
+            <button onclick={copyLink} class="ml-1 text-[var(--rg-accent)] hover:underline text-[10px]" title={$t('remote.copy')}>
+              {copySuccess ? $t('remote.copied') : $t('remote.copy')}
             </button>
           {/if}
         </p>
@@ -235,36 +237,36 @@
       <!-- §sessions: connected devices (live, via Tauri) -->
       <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
         <h3 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">
-          已连接设备 ({sessions.length})
+          {$t('remote.connectedDevices', { count: sessions.length })}
         </h3>
         {#each sessions as s (s.id)}
           <div class="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-[var(--rg-surface)] transition-colors">
             <div class="min-w-0 flex-1">
               <p class="text-xs text-[var(--rg-fg)] truncate" title={s.deviceId}>{deviceLabel(s)}</p>
               <p class="text-[10px] text-[var(--rg-fg-muted)]">
-                {s.remoteAddr} · 已连接 {Math.floor(s.connectedSecs / 60)} 分
+                {$t('remote.connectedFor', { addr: s.remoteAddr, min: Math.floor(s.connectedSecs / 60) })}
               </p>
             </div>
             <div class="shrink-0 ml-2 flex items-center gap-1">
               <button
                 onclick={() => disconnectSession(s.id)}
                 class="px-2 py-1 rounded text-[10px] font-medium border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
-                title="断开后该设备需重新输入验证码才能连接"
+                title={$t('remote.disconnectTitle')}
               >
-                断开
+                {$t('remote.disconnectBtn')}
               </button>
               <button
                 onclick={() => blacklistSession(s.id)}
                 class="px-2 py-1 rounded text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
-                title="加入黑名单：失效 token 并禁止重连，直到从黑名单移除"
+                title={$t('remote.blockTitle')}
               >
-                拉黑
+                {$t('remote.blockBtn')}
               </button>
             </div>
           </div>
         {/each}
         {#if sessions.length === 0}
-          <p class="text-[11px] text-[var(--rg-fg-muted)] py-1">暂无连接</p>
+          <p class="text-[11px] text-[var(--rg-fg-muted)] py-1">{$t('remote.noConnections')}</p>
         {/if}
       </div>
 
@@ -272,22 +274,22 @@
       {#if blacklist.length > 0}
         <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
           <h3 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">
-            黑名单 ({blacklist.length})
+            {$t('remote.blacklist', { count: blacklist.length })}
           </h3>
           {#each blacklist as b (b.id)}
             <div class="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-[var(--rg-surface)] transition-colors">
               <div class="min-w-0 flex-1">
                 <p class="text-xs text-[var(--rg-fg)] truncate">{b.label}</p>
                 <p class="text-[10px] text-[var(--rg-fg-muted)] truncate">
-                  {b.device_id ? '设备 ' + b.device_id.slice(0, 8) : ''}{b.device_id && b.ip ? ' · ' : ''}{b.ip ?? ''}
+                  {b.device_id ? $t('remote.blacklistDevice', { id: b.device_id.slice(0, 8) }) : ''}{b.device_id && b.ip ? ' · ' : ''}{b.ip ?? ''}
                 </p>
               </div>
               <button
                 onclick={() => unblacklist(b.id)}
                 class="shrink-0 ml-2 px-2 py-1 rounded text-[10px] font-medium border border-[var(--rg-border)] text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/10 transition-colors"
-                title="从黑名单移除，允许该设备重新连接"
+                title={$t('remote.unblockTitle')}
               >
-                移除
+                {$t('remote.unblockBtn')}
               </button>
             </div>
           {/each}
@@ -297,39 +299,39 @@
       {#if remoteInfo?.ready}
         <!-- QR Code: TOTP authenticator setup -->
         <div class="flex flex-col items-center gap-1 py-1">
-          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">① 扫码绑定身份验证器</p>
+          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">{$t('remote.qrBindAuth')}</p>
           <QrCode value={remoteInfo.otpauthUri} size={140} />
         </div>
 
         <!-- QR Code: Link to mobile web page -->
         <div class="flex flex-col items-center gap-1 py-1">
-          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">② 扫码打开远程页面</p>
+          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">{$t('remote.qrOpenPage')}</p>
           <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={140} />
-          <p class="text-[9px] text-[var(--rg-fg-muted)]">手机浏览器扫码 → 输入验证码 → 连接</p>
+          <p class="text-[9px] text-[var(--rg-fg-muted)]">{$t('remote.qrScanFlow')}</p>
           {#if !dev}
             <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">
-              首次连接会提示「证书不安全」，点「高级 → 继续访问」即可（启用 HTTPS 才能开 WebGPU 加速）
+              {$t('remote.certWarn')}
             </p>
           {/if}
-          <button onclick={copyLink} class="text-[10px] text-[var(--rg-accent)] hover:underline" title="复制链接">
-            {copySuccess ? '链接已复制 ✓' : '复制链接'}
+          <button onclick={copyLink} class="text-[10px] text-[var(--rg-accent)] hover:underline" title={$t('remote.copyLink')}>
+            {copySuccess ? $t('remote.linkCopied') : $t('remote.copyLink')}
           </button>
         </div>
 
         <!-- Connection info -->
         <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
           <div class="flex justify-between text-xs">
-            <span class="text-[var(--rg-fg-muted)]">移动端访问入口</span>
+            <span class="text-[var(--rg-fg-muted)]">{$t('remote.mobileEntry')}</span>
             <button onclick={copyLink} class="text-[var(--rg-accent)] font-mono hover:underline cursor-pointer bg-transparent border-none p-0">
               {remoteInfo.lanIp}:{dev ? '5174' : remoteInfo.port}
             </button>
           </div>
           <div class="flex justify-between text-xs">
-            <span class="text-[var(--rg-fg-muted)]">后端 WebSocket 端口</span>
+            <span class="text-[var(--rg-fg-muted)]">{$t('remote.wsPort')}</span>
             <span class="text-[var(--rg-fg)] font-mono">{remoteInfo.port}</span>
           </div>
           <div class="flex justify-between text-xs">
-            <span class="text-[var(--rg-fg-muted)]">TOTP 验证码</span>
+            <span class="text-[var(--rg-fg-muted)]">{$t('remote.totpCode')}</span>
             <span class="text-[var(--rg-fg)] font-mono font-bold tracking-wider text-base">{remoteInfo.totpCode}</span>
           </div>
         </div>
@@ -339,7 +341,7 @@
           <div class="w-12 h-12 rounded-full bg-[var(--rg-accent)]/10 flex items-center justify-center">
             <RefreshCw class="w-6 h-6 text-[var(--rg-accent)] animate-spin" />
           </div>
-          <p class="text-sm text-[var(--rg-fg-muted)]">正在获取远程服务器信息...</p>
+          <p class="text-sm text-[var(--rg-fg-muted)]">{$t('remote.fetchingInfo')}</p>
         </div>
       {/if}
     {/if}

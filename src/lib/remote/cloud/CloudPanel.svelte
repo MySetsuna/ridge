@@ -17,6 +17,7 @@
   import { CloudHostBridge } from './cloudHostBridge';
   import { createCloudPaneSource } from './cloudPaneSource';
   import type { CloudConnectionState } from './connectionProvider';
+  import { t, tr } from '$lib/i18n';
 
   const authState = $derived($cloudAuth);
   const domain = $derived(auth.publicEntryDomain(authState));
@@ -34,25 +35,17 @@
   let deviceNameInput = $state('');
   let pairingHint = $state('');
 
-  const stateLabel: Record<CloudConnectionState, string> = {
-    disconnected: '未连接',
-    connecting: '连接中…',
-    handshaking: '安全握手中…',
-    connected: '已连接',
-    error: '连接出错',
-  };
+  const stateLabel = $derived<Record<CloudConnectionState, string>>({
+    disconnected: $t('cloud.stateDisconnected'),
+    connecting: $t('cloud.stateConnecting'),
+    handshaking: $t('cloud.stateHandshaking'),
+    connected: $t('cloud.stateConnected'),
+    error: $t('cloud.stateError'),
+  });
 
   function codeToMessage(code: string): string {
-    const map: Record<string, string> = {
-      NOT_PREMIUM: '账号未开通 Pro',
-      USERNAME_REQUIRED: '请先设置用户名',
-      DEVICE_NAME_TAKEN: '设备名已被占用',
-      PAIRING_EXPIRED: '配对超时，请重试',
-      RATE_LIMITED: '操作过于频繁，请稍后再试',
-      NETWORK: '网络连接失败',
-      INTERNAL: '服务器内部错误',
-    };
-    return map[code] ?? '操作失败，请重试';
+    const msg = tr(`errors.${code}`);
+    return msg === `errors.${code}` ? tr('errors.GENERIC') : msg;
   }
 
   // 跨 agent 命令：通知 Rust 侧云端远控活跃状态（契约 §8.1）。容错。
@@ -70,11 +63,11 @@
     pairingHint = '';
     try {
       await auth.activateThisDevice(deviceNameInput.trim(), (p) => {
-        pairingHint = `配对码 ${p.pairingCode}（${p.expiresIn}s 内有效）`;
+        pairingHint = tr('cloud.pairingHint', { code: p.pairingCode, sec: p.expiresIn });
       });
       pairingHint = '';
     } catch (e) {
-      connError = e instanceof ApiError ? codeToMessage(e.code) : '激活失败，请重试';
+      connError = e instanceof ApiError ? codeToMessage(e.code) : tr('cloud.errActivateFailed');
     } finally {
       activating = false;
     }
@@ -84,7 +77,7 @@
     connError = '';
     const s = auth.snapshot();
     if (!s.deviceToken || !s.deviceName || !s.user?.username) {
-      connError = '设备尚未激活';
+      connError = tr('cloud.errDeviceNotActivated');
       return;
     }
     // 先建 host 桥：sendFrame 闭包延迟读取 provider（构造完成后再被调用）。
@@ -117,7 +110,7 @@
       await provider.connect(s.deviceName);
       await notifyCloudActive(true);
     } catch (e) {
-      connError = e instanceof Error ? e.message : '连接失败';
+      connError = e instanceof Error ? e.message : tr('cloud.errConnectFailed');
     }
   }
 
@@ -135,7 +128,7 @@
     try {
       await invoke('enter_deep_root_mode');
     } catch (e) {
-      connError = e instanceof Error ? e.message : '进入深根模式失败（命令可能尚未就绪）';
+      connError = e instanceof Error ? e.message : tr('cloud.errDeepRootFailed');
     }
   }
 
@@ -151,22 +144,22 @@
   >
     <div class="mb-2 flex items-center gap-2">
       <Globe class="h-4 w-4 text-[var(--rg-accent)]" />
-      <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">专属公网入口</span>
+      <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('cloud.publicEntry')}</span>
     </div>
     {#if domain}
       <code class="block break-all text-sm font-medium text-[var(--rg-fg)]">{domain}</code>
     {:else}
-      <p class="text-xs text-[var(--rg-fg-muted)]">激活设备后生成专属域名</p>
+      <p class="text-xs text-[var(--rg-fg-muted)]">{$t('cloud.entryPending')}</p>
     {/if}
   </div>
 
   {#if !hasDevice}
     <!-- 设备激活 -->
     <div class="rounded-xl border border-[var(--rg-border)] bg-[var(--rg-surface)]/50 p-4 space-y-3">
-      <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">激活本机为云端设备</h3>
+      <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('cloud.activateTitle')}</h3>
       <input
         bind:value={deviceNameInput}
-        placeholder="设备名 3-30 位（如 my-laptop）"
+        placeholder={$t('cloud.deviceNamePlaceholder')}
         class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
       />
       <button
@@ -175,7 +168,7 @@
         class="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--rg-accent)] py-2 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50"
       >
         {#if activating}<Loader2 class="h-4 w-4 animate-spin" />{:else}<Plus class="h-4 w-4" />{/if}
-        激活设备
+        {$t('cloud.activateBtn')}
       </button>
       {#if pairingHint}
         <p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{pairingHint}</p>
@@ -185,7 +178,7 @@
     <!-- 连接控制 + 状态 -->
     <div class="rounded-xl border border-[var(--rg-border)] bg-[var(--rg-surface)]/50 p-4 space-y-3">
       <div class="flex items-center justify-between">
-        <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">连接状态</span>
+        <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('cloud.connStatus')}</span>
         <span class="flex items-center gap-1.5 text-xs font-medium {isConnected ? 'text-green-400' : isBusy ? 'text-amber-400' : 'text-[var(--rg-fg-muted)]'}">
           {#if isConnected}<Wifi class="h-3.5 w-3.5" />{:else if isBusy}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<WifiOff class="h-3.5 w-3.5" />{/if}
           {stateLabel[connState]}
@@ -197,14 +190,14 @@
           onclick={disconnect}
           class="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--rg-border)] py-2 text-sm font-medium text-[var(--rg-fg)] transition-colors hover:border-red-500/40 hover:text-red-400"
         >
-          <Power class="h-4 w-4" /> 断开
+          <Power class="h-4 w-4" /> {$t('cloud.disconnect')}
         </button>
       {:else}
         <button
           onclick={connect}
           class="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--rg-accent)] py-2 text-sm font-semibold text-white transition-all hover:brightness-110"
         >
-          <Wifi class="h-4 w-4" /> 建立加速连接
+          <Wifi class="h-4 w-4" /> {$t('cloud.connect')}
         </button>
       {/if}
     </div>
@@ -213,15 +206,15 @@
     <button
       onclick={enterDeepRoot}
       disabled={!isConnected}
-      title={isConnected ? '隐藏本地渲染窗口，保持远程通道活跃' : '需先建立云端连接'}
+      title={isConnected ? $t('cloud.deepRootTipOn') : $t('cloud.deepRootTipOff')}
       class="group flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm font-medium transition-all disabled:opacity-40
         border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/50"
     >
       <Sprout class="h-4 w-4 transition-transform group-hover:scale-110" />
-      进入深根模式 🌱
+      {$t('cloud.deepRoot')}
     </button>
     <p class="text-center text-[10px] leading-relaxed text-[var(--rg-fg-muted)]">
-      深根模式会隐藏本地渲染窗口，远程通道保持活跃；从托盘可恢复工作台。
+      {$t('cloud.deepRootDesc')}
     </p>
   {/if}
 

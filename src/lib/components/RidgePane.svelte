@@ -16,6 +16,7 @@
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { t, tr } from '$lib/i18n';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
@@ -1284,6 +1285,17 @@ $effect(() => {
 			return;
 		}
 
+		// ★ Alternate-scroll fallback: alt-screen TUI that DIDN'T enable
+		// mouse reporting (less / man / git log / fzf / claude /theme menu).
+		// handleWheel returned false above (no mouse mode); there's no host
+		// scrollback on alt screen, so without this the wheel is dead. Send
+		// arrow-key presses instead — the xterm `alternateScroll` default.
+		if (manager.wheelAltScroll(paneId, e)) {
+			e.preventDefault();
+			touchTuiSticky();
+			return;
+		}
+
 		// Only intercept when there's actually scrollback to scroll through.
 		const { total } = manager.scrollState(paneId);
 		if (total === 0) return;
@@ -1317,14 +1329,14 @@ function onContextMenu(e: MouseEvent) {
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
 		...(sel
-			? [{ id: 'term-copy', label: '复制', action: () => { void writeText(sel); } }]
+			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: () => { void writeText(sel); } }]
 			: []),
-		{ id: 'term-paste', label: '粘贴', action: () => {
-			void readText().then((t) => { if (t) pasteIntoPane(t); });
+		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: () => {
+			void readText().then((txt) => { if (txt) pasteIntoPane(txt); });
 		}},
 		{ id: 'term-sep1', divider: true },
-		{ id: 'term-select-all', label: '全选', action: () => manager.selectAll(paneId) },
-		{ id: 'term-clear', label: '清空', action: () => {
+		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
+		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: () => {
 			// §B.2 (2026-05-08) — full physical clear: grid + scrollback +
 			// cursor home, all in-kernel without a PTY round trip. Pre-fix
 			// this sent only Ctrl+L which the shell translated into ED 2 +
@@ -1352,14 +1364,14 @@ function onContextMenu(e: MouseEvent) {
 		// them (sets `height` → flex-col), so "向下拆分" passes 'vertical'.
 		// The previous mapping was inverted — see RgPane.svelte's
 		// `dim = direction === 'horizontal' ? 'width' : 'height'`.
-		{ id: 'term-split-right', label: '向右拆分', action: () => {
+		{ id: 'term-split-right', label: tr('workspace.ctxSplitRight'), action: () => {
 			void splitPane(paneId, 'horizontal');
 		}},
-		{ id: 'term-split-down', label: '向下拆分', action: () => {
+		{ id: 'term-split-down', label: tr('workspace.ctxSplitDown'), action: () => {
 			void splitPane(paneId, 'vertical');
 		}},
 		{ id: 'term-sep3', divider: true },
-		{ id: 'term-close', label: '关闭面板', action: () => {
+		{ id: 'term-close', label: tr('workspace.ctxClosePanel'), action: () => {
 			void closePane(paneId);
 		}},
 	], 'terminal', paneId, workspaceId);
@@ -1586,7 +1598,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	class:bell-flash={bellFlash}
 	style="background: var(--rg-term-bg); contain: strict;"
 	role="application"
-	aria-label="终端"
+	aria-label={$t('workspace.terminalAriaLabel')}
 	tabindex="-1"
 	data-rg-pane-id={paneId}
 	data-rg-pane-active={false}
@@ -1609,7 +1621,7 @@ function onContainerMouseDown(e: MouseEvent) {
 			bind:this={imeHelper}
 			class="rg-ime-helper"
 			class:is-composing={isComposing}
-			aria-label="终端输入"
+			aria-label={$t('workspace.terminalInputAriaLabel')}
 			autocomplete="off"
 			autocapitalize="off"
 			spellcheck="false"
@@ -1630,9 +1642,9 @@ function onContainerMouseDown(e: MouseEvent) {
 		<button
 			type="button"
 			class="rg-jump-bottom"
-			title="滚动到最新输出 (End)"
+			title={$t('workspace.scrollToBottom')}
 			onclick={jumpToBottom}
-			aria-label="滚动到最新输出"
+			aria-label={$t('workspace.scrollToBottom')}
 		>
 			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 				<path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1648,9 +1660,9 @@ function onContainerMouseDown(e: MouseEvent) {
 		<button
 			type="button"
 			class="rg-remote-refresh"
-			title="按本端尺寸刷新（远程控制开启时可用）"
+			title={$t('workspace.refreshForRemote')}
 			onclick={refreshForRemote}
-			aria-label="按本端尺寸刷新"
+			aria-label={$t('workspace.refreshForRemoteLabel')}
 		>
 			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 				<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
@@ -1701,7 +1713,7 @@ function onContainerMouseDown(e: MouseEvent) {
 			bind:this={searchInputEl}
 			class="rg-search-input"
 			type="text"
-			placeholder="在终端中查找…"
+			placeholder={$t('workspace.searchPlaceholder')}
 			bind:value={searchQuery}
 			oninput={refreshSearch}
 			onkeydown={onSearchInputKey}
@@ -1710,7 +1722,7 @@ function onContainerMouseDown(e: MouseEvent) {
 			{#if searchQuery.length === 0}
 				—
 			{:else if searchInfo.count === 0}
-				无匹配
+				{$t('workspace.searchNoMatch')}
 			{:else}
 				{searchInfo.activeIndex + 1}/{searchInfo.count}
 			{/if}
@@ -1718,22 +1730,22 @@ function onContainerMouseDown(e: MouseEvent) {
 		<button
 			class="rg-search-btn"
 			class:active={searchCaseSensitive}
-			title="区分大小写"
+			title={$t('workspace.searchCaseSensitive')}
 			onclick={() => { searchCaseSensitive = !searchCaseSensitive; refreshSearch(); }}
 		>Aa</button>
 		<button
 			class="rg-search-btn"
-			title="上一个 (Shift+Enter)"
+			title={$t('workspace.searchPrev')}
 			onclick={() => { manager.searchPrev(paneId); searchInfo = manager.searchInfo(paneId); }}
 		>↑</button>
 		<button
 			class="rg-search-btn"
-			title="下一个 (Enter)"
+			title={$t('workspace.searchNext')}
 			onclick={() => { manager.searchNext(paneId); searchInfo = manager.searchInfo(paneId); }}
 		>↓</button>
 		<button
 			class="rg-search-btn"
-			title="关闭 (Esc)"
+			title={$t('workspace.searchClose')}
 			onclick={closeSearchBar}
 		>×</button>
 	</div>

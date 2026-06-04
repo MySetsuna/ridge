@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Plus, Folder, GitBranch, Search, Keyboard, RefreshCw } from 'lucide-svelte';
+  import { t } from '$lib/i18n';
   import type { RemoteConnection } from './lib/wsRemote';
 
   let { ws, sidebarTab = null as 'files' | 'git' | 'search' | null, onSidebarToggle,
@@ -29,30 +30,30 @@
 <div class="actionbar">
   <!-- Sidebar toggles -->
   <div class="group">
-    <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title="文件" tabindex="-1">
+    <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title={$t('mobile.filesTitle')} tabindex="-1">
       <Folder class="w-4 h-4" />
     </button>
     <button class="ctrl-btn" class:active={sidebarTab === 'git'} onclick={() => onSidebarToggle?.('git')} title="Git" tabindex="-1">
       <GitBranch class="w-4 h-4" />
     </button>
-    <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title="搜索" tabindex="-1">
+    <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title={$t('mobile.searchTitle')} tabindex="-1">
       <Search class="w-4 h-4" />
     </button>
   </div>
 
   <!-- View controls -->
   <div class="group">
-    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title="虚拟键盘" tabindex="-1">
+    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
       <Keyboard class="w-4 h-4" />
     </button>
-    <button class="ctrl-btn" onclick={onRefresh} title="锁定渲染尺寸到本端并刷新" tabindex="-1">
+    <button class="ctrl-btn" onclick={onRefresh} title={$t('mobile.lockAndRefresh')} tabindex="-1">
       <RefreshCw class="w-4 h-4" />
     </button>
   </div>
 
   <!-- Workspace -->
   <div class="group">
-    <button class="ctrl-btn" onclick={handleCreateWorkspace} title="新建工作区" tabindex="-1">
+    <button class="ctrl-btn" onclick={handleCreateWorkspace} title={$t('mobile.newWorkspace')} tabindex="-1">
       <Plus class="w-4 h-4" />
     </button>
   </div>

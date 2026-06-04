@@ -36,6 +36,7 @@
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
 	import { overlayScroll } from '$lib/actions/overlayScroll';
+	import { t, tr } from '$lib/i18n';
 
 	interface Props {
 		workspaceId: string;
@@ -432,7 +433,7 @@
 			for (const d of sourceDirs) await refreshColumnsCovering(d);
 		}
 		if (errors.length > 0) {
-			await alertDialog({ title: '粘贴失败', message: `${errors.length} 项粘贴失败:\n${errors.join('\n')}`, danger: true });
+			await alertDialog({ title: tr('explorer.pasteFailed'), message: tr('explorer.pasteFailedMessage', { count: errors.length, details: errors.join('\n') }), danger: true });
 		}
 	}
 
@@ -557,7 +558,7 @@
 	}
 
 	function getPaneLabel(paneId: string, paneTitles: Record<string, string>): string {
-		return paneTitles[paneId] || $terminalTitles[paneId] || '终端';
+		return paneTitles[paneId] || $terminalTitles[paneId] || tr('explorer.terminalFallback');
 	}
 
 	const totalColumns = $derived($explorerWorkspaceGroups.reduce((n, g) => n + g.columns.length, 0));
@@ -589,16 +590,16 @@
 
 	async function handleDelete(wsId: string, filePath: string | null | undefined) {
 		const confirmed = await confirmDialog({
-			title: '删除工作区文件',
-			message: `从磁盘删除已保存的工作区文件？\n\n${filePath || '(未知路径)'}\n\n此操作只删除 .ridge 文件，不会关闭当前工作区。`,
-			okLabel: '删除',
+			title: tr('explorer.deleteWorkspaceFileTitle'),
+			message: tr('explorer.deleteWorkspaceFileMessage', { filePath: filePath || tr('explorer.unknownPath') }),
+			okLabel: tr('explorer.deleteLabel'),
 			danger: true,
 		});
 		if (!confirmed) return;
 		try {
 			await deleteWorkspaceFile(wsId);
 		} catch (e) {
-			await alertDialog({ title: '删除失败', message: String(e), danger: true });
+			await alertDialog({ title: tr('explorer.deleteWorkspaceFileFailed'), message: String(e), danger: true });
 		}
 	}
 
@@ -631,9 +632,9 @@
 		<div class="flex-1 flex items-center justify-center">
 			<div class="text-center">
 				<FolderOpen class="mx-auto h-12 w-12 text-[var(--rg-fg-muted)] mb-4" />
-				<p class="text-[13px] text-[var(--rg-fg-muted)]">无活动终端</p>
+				<p class="text-[13px] text-[var(--rg-fg-muted)]">{$t('explorer.noActiveTerminal')}</p>
 				<p class="text-[12px] text-[var(--rg-fg-muted)] mt-1">
-					打开终端后将在此显示文件树
+					{$t('explorer.openTerminalHint')}
 				</p>
 			</div>
 		</div>
@@ -679,7 +680,7 @@
 						<button
 							type="button"
 							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] transition-all"
-							title="保存工作区为 .ridge 文件"
+							title={$t('explorer.saveWorkspaceFile')}
 							onclick={(e) => {
 								e.stopPropagation();
 								openSaveDialog(group.workspaceId, group.workspaceName);
@@ -691,7 +692,7 @@
 						<button
 							type="button"
 							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-red-400 hover:bg-[var(--rg-surface)] transition-all"
-							title={`删除已保存的 .ridge 文件\n${info.file_path}`}
+							title={$t('explorer.deleteWorkspaceFile', { filePath: info.file_path })}
 							onclick={(e) => {
 								e.stopPropagation();
 								void handleDelete(group.workspaceId, info.file_path);
@@ -752,7 +753,7 @@
 										e.stopPropagation();
 										void handleRefresh(col.id);
 									}}
-									title={`刷新 ${col.cwd}`}
+									title={$t('explorer.refreshCwd', { cwd: col.cwd })}
 								>
 									<RefreshCw class="h-2.5 w-2.5 {refreshingColumns.has(col.id) ? 'animate-spin' : ''}" />
 								</button>
@@ -781,7 +782,7 @@
 							{#if !isColCollapsed}
 								<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
 								{#if slowLoading.has(col.id)}
-									<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label="加载中"></div>
+									<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
 								{/if}
 
 								<!-- File tree body: cwd 下文件平铺。 -->
@@ -805,7 +806,7 @@
 												/>
 											{/each}
 										{:else}
-											<div class="px-4 py-2 text-[12px] text-[var(--rg-fg-muted)]">空目录</div>
+											<div class="px-4 py-2 text-[12px] text-[var(--rg-fg-muted)]">{$t('explorer.emptyDirectory')}</div>
 										{/if}
 									{/if}
 								</div>

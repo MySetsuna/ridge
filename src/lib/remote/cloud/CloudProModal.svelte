@@ -1,19 +1,18 @@
 <script lang="ts">
   // Ridge Cloud — Pro 升级 / 登录 玻璃拟物 Modal（契约 §4.1/§4.2）。
   //
-  // 结算方式按地区自动选默认（方案 1，detectPreferredRegion），可手动切换：
-  //   国内 → [ 国内卡密激活 ] 主推（面包多购买 → /auth/activate-key）
-  //   海外 → [ 立即订阅 ]    主推（外链 Lemon Squeezy）
-  //   [ 本地登录 ] → 邮箱密码登录（/auth/login），始终可用
+  // 付费方案完全由界面语言（locale）决定，互斥展示，不再手动切换地区：
+  //   中文(zh)   → 仅「面包多卡密激活」（亮点页主推 + 卡密激活 tab）
+  //   English(en) → 仅「Lemon Squeezy 信用卡订阅」（亮点页主推，外链）
+  //   [ 本地登录 ] → 邮箱密码登录（/auth/login），两种语言均可用
   //
-  // 设计：glassmorphism with real depth（design-quality），避免模板感：
-  //   层次（标题 scale 对比）、blur+边缘高光、hover/focus 态、语义化色彩。
+  // 设计：glassmorphism with real depth（design-quality），避免模板感。
 
   import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2 } from 'lucide-svelte';
   import * as auth from './auth';
   import { cloudAuth } from './auth';
   import { ApiError } from './apiClient';
-  import { detectPreferredRegion, type Region } from './region';
+  import { t, tr, billingRegion } from '$lib/i18n';
 
   interface Props {
     open: boolean;
@@ -31,9 +30,13 @@
   type Tab = 'highlights' | 'login' | 'activate';
   let tab = $state<Tab>('highlights');
 
-  // 方案 1：按语言/时区自动选默认结算地区，用户可随时切换。
-  const recommended: Region = detectPreferredRegion();
-  let region = $state<Region>(recommended);
+  // 中文走面包多卡密；外文走海外订阅。完全由语言派生。
+  const isCn = $derived($billingRegion === 'cn');
+
+  // 切语言导致从「卡密激活」tab 变得不可用时，回落到亮点页。
+  $effect(() => {
+    if (!isCn && tab === 'activate') tab = 'highlights';
+  });
 
   // 登录表单
   let email = $state('');
@@ -45,28 +48,13 @@
   let busy = $state(false);
   let errorMsg = $state('');
 
-  function codeToMessage(code: string): string {
-    const map: Record<string, string> = {
-      UNAUTHORIZED: '账号或密码错误',
-      FORBIDDEN: '没有权限',
-      NOT_FOUND: '账号不存在',
-      INVALID_INPUT: '输入有误，请检查',
-      INVALID_KEY: '卡密无效',
-      KEY_ALREADY_USED: '卡密已被使用',
-      USERNAME_TAKEN: '该用户名已被占用',
-      USERNAME_REQUIRED: '请先设置用户名',
-      NOT_PREMIUM: '该账号尚未开通 Pro',
-      DEVICE_NAME_TAKEN: '设备名已存在',
-      RATE_LIMITED: '操作过于频繁，请稍后再试',
-      NETWORK: '网络连接失败，请检查网络',
-      BAD_RESPONSE: '服务器响应异常',
-      INTERNAL: '服务器内部错误',
-    };
-    return map[code] ?? '操作失败，请重试';
-  }
-
   function handleError(e: unknown): void {
-    errorMsg = e instanceof ApiError ? codeToMessage(e.code) : '操作失败，请重试';
+    if (e instanceof ApiError) {
+      const msg = tr(`errors.${e.code}`);
+      errorMsg = msg === `errors.${e.code}` ? tr('errors.GENERIC') : msg;
+    } else {
+      errorMsg = tr('errors.GENERIC');
+    }
   }
 
   async function doLogin(): Promise<void> {
@@ -110,6 +98,13 @@
   }
 
   const loggedIn = $derived(auth.isLoggedIn($cloudAuth));
+
+  // 可见 tab 列表随语言变化：外文隐藏「卡密激活」。
+  const tabs = $derived(
+    isCn
+      ? ([['highlights', $t('cloudPro.tabHighlights')], ['login', $t('cloudPro.tabLogin')], ['activate', $t('cloudPro.tabActivate')]] as const)
+      : ([['highlights', $t('cloudPro.tabHighlights')], ['login', $t('cloudPro.tabLogin')]] as const)
+  );
 </script>
 
 {#if open}
@@ -146,7 +141,7 @@
       <button
         onclick={close}
         class="absolute right-3 top-3 z-10 grid h-7 w-7 place-items-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-white/10 hover:text-[var(--rg-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
-        aria-label="关闭"
+        aria-label={$t('cloudPro.closeLabel')}
       >
         <X class="h-4 w-4" />
       </button>
@@ -162,15 +157,15 @@
           </div>
           <div class="min-w-0">
             <h2 id="cloud-pro-title" class="text-lg font-semibold leading-tight text-[var(--rg-fg)]">
-              官方公网加速 · Pro
+              {$t('cloudPro.title')}
             </h2>
-            <p class="text-xs text-[var(--rg-fg-muted)]">随时随地，安全直连你的设备</p>
+            <p class="text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.subtitle')}</p>
           </div>
         </div>
 
         <!-- tabs -->
         <div class="mb-5 flex gap-1 rounded-lg bg-black/20 p-1 text-xs">
-          {#each [['highlights', 'Pro 亮点'], ['login', '本地登录'], ['activate', '卡密激活']] as [key, label] (key)}
+          {#each tabs as [key, label] (key)}
             <button
               onclick={() => { tab = key as Tab; errorMsg = ''; }}
               class="flex-1 rounded-md px-2 py-1.5 font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50
@@ -186,9 +181,9 @@
         {#if tab === 'highlights'}
           <ul class="mb-5 space-y-3">
             {#each [
-              ['一键穿透', '无需公网 IP、无需端口转发，自动 NAT 穿透直连'],
-              ['专属二级域名', '{设备}-{用户名}.remo2ridge.duckdns.org，记得住、分享方便'],
-              ['端到端加密', 'X25519 + ChaCha20-Poly1305，中继与 TURN 都看不到明文'],
+              [$t('cloudPro.feat1Title'), $t('cloudPro.feat1Desc')],
+              [$t('cloudPro.feat2Title'), $t('cloudPro.feat2Desc')],
+              [$t('cloudPro.feat3Title'), $t('cloudPro.feat3Desc')],
             ] as [title, desc] (title)}
               <li class="flex gap-3">
                 <span class="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-[var(--rg-accent)]" style="background: color-mix(in oklch, var(--rg-accent) 16%, transparent);">
@@ -202,78 +197,46 @@
             {/each}
           </ul>
 
-          <!-- 结算方式切换：默认按地区自动选中，可手动切换 -->
-          <div class="mb-1.5 flex gap-1 rounded-lg bg-black/20 p-1 text-xs" role="tablist" aria-label="结算方式">
-            {#each [['cn', '🇨🇳 国内 · 卡密'], ['intl', '🌐 海外 · 信用卡']] as [key, label] (key)}
-              <button
-                role="tab"
-                aria-selected={region === key}
-                onclick={() => { region = key as Region; }}
-                class="flex-1 rounded-md px-2 py-1.5 font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50
-                  {region === key
-                    ? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)] shadow-sm'
-                    : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
-              >
-                {label}{#if recommended === key}<span class="ml-1 text-[10px] text-[var(--rg-accent)]">推荐</span>{/if}
-              </button>
-            {/each}
-          </div>
-          <p class="mb-4 text-[11px] text-[var(--rg-fg-muted)]">已按你的语言与时区自动选择，可随时切换。</p>
-
+          <!-- 付费方案由语言决定，互斥展示 -->
           <div class="space-y-2">
-            {#if region === 'cn'}
-              <!-- 国内主推：面包多卡密 -->
+            {#if isCn}
+              <!-- 中文：面包多卡密 -->
               <button
                 onclick={() => { tab = 'activate'; }}
                 class="group flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                 style="background: linear-gradient(135deg, var(--rg-accent) 0%, color-mix(in oklch, var(--rg-accent) 70%, #7c3aed) 100%); box-shadow: 0 8px 24px -8px var(--rg-accent);"
               >
-                <KeyRound class="h-4 w-4" /> 国内卡密激活
+                <KeyRound class="h-4 w-4" /> {$t('cloudPro.cnPrimary')}
               </button>
-              <div class="flex gap-2">
-                <button
-                  onclick={() => openExternal(LEMON_SQUEEZY_URL)}
-                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
-                >
-                  海外信用卡订阅
-                </button>
-                <button
-                  onclick={() => { tab = 'login'; }}
-                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
-                >
-                  本地登录
-                </button>
-              </div>
+              <button
+                onclick={() => { tab = 'login'; }}
+                class="w-full rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+              >
+                {$t('cloudPro.tabLogin')}
+              </button>
             {:else}
-              <!-- 海外主推：Lemon Squeezy 信用卡 -->
+              <!-- 外文：Lemon Squeezy 信用卡 -->
               <button
                 onclick={() => openExternal(LEMON_SQUEEZY_URL)}
                 class="group flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                 style="background: linear-gradient(135deg, var(--rg-accent) 0%, color-mix(in oklch, var(--rg-accent) 70%, #7c3aed) 100%); box-shadow: 0 8px 24px -8px var(--rg-accent);"
               >
-                <Zap class="h-4 w-4" /> 立即订阅
+                <Zap class="h-4 w-4" /> {$t('cloudPro.intlPrimary')}
                 <ExternalLink class="h-3.5 w-3.5 opacity-70 transition-transform group-hover:translate-x-0.5" />
               </button>
-              <div class="flex gap-2">
-                <button
-                  onclick={() => { tab = 'activate'; }}
-                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
-                >
-                  国内卡密激活
-                </button>
-                <button
-                  onclick={() => { tab = 'login'; }}
-                  class="flex-1 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
-                >
-                  本地登录
-                </button>
-              </div>
+              <p class="px-1 text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloudPro.intlHint')}</p>
+              <button
+                onclick={() => { tab = 'login'; }}
+                class="w-full rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+              >
+                {$t('cloudPro.tabLogin')}
+              </button>
             {/if}
           </div>
         {:else if tab === 'login'}
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doLogin(); }}>
             <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">邮箱</span>
+              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginEmail')}</span>
               <input
                 bind:value={email}
                 type="email"
@@ -284,7 +247,7 @@
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">密码</span>
+              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginPassword')}</span>
               <input
                 bind:value={password}
                 type="password"
@@ -300,24 +263,24 @@
               class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--rg-accent)] py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
             >
               {#if busy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<LogIn class="h-4 w-4" />{/if}
-              登录
+              {$t('cloudPro.loginSubmit')}
             </button>
           </form>
         {:else}
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doActivate(); }}>
             <p class="text-xs leading-relaxed text-[var(--rg-fg-muted)]">
-              在面包多购买卡密后，于此输入激活 Pro。
+              {$t('cloudPro.activateBuyHint')}
               <button type="button" onclick={() => openExternal(MBD_URL)} class="text-[var(--rg-accent)] hover:underline">
-                前往面包多 ↗
+                {$t('cloudPro.cnGoMbd')}
               </button>
             </p>
             {#if !loggedIn}
               <p class="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
-                请先在「本地登录」标签登录账号，再激活卡密。
+                {$t('cloudPro.activateNeedLogin')}
               </p>
             {/if}
             <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">卡密</span>
+              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.licenseKey')}</span>
               <input
                 bind:value={licenseKey}
                 required
@@ -326,11 +289,11 @@
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">用户名（如尚未设置，可一并设定）</span>
+              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.activateUsername')}</span>
               <input
                 bind:value={activateUsername}
                 class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
-                placeholder="3-20 位小写字母或数字"
+                placeholder={$t('cloudPro.activateUsernamePlaceholder')}
               />
             </label>
             <button
@@ -339,7 +302,7 @@
               class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--rg-accent)] py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
             >
               {#if busy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<KeyRound class="h-4 w-4" />{/if}
-              激活
+              {$t('cloudPro.activateSubmit')}
             </button>
           </form>
         {/if}

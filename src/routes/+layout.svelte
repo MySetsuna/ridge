@@ -6,6 +6,7 @@
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
+  import { t, tr } from '$lib/i18n';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -53,7 +54,7 @@
           }
         } else if (s === 'error') {
           phase = 'error';
-          errorMsg = errorMsg || 'Cloud 连接失败';
+          errorMsg = errorMsg || tr('main.remoteGateErrCloud');
         }
       },
       onError: (msg) => { phase = 'error'; errorMsg = msg; },
@@ -101,7 +102,7 @@
           unsub();
           try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
           phase = 'need-code';
-          errorMsg = '连接失败，请重新输入验证码';
+          errorMsg = tr('main.remoteGateErrReconnect');
         }
       });
       conn.connect(host, port, token, 'token');
@@ -135,12 +136,12 @@
             connectWith(d.token);
           } else {
             loading = false;
-            errorMsg = d.message || '验证码无效';
+            errorMsg = d.message || tr('main.remoteGateErrInvalidCode');
           }
         })
         .catch(() => {
           loading = false;
-          errorMsg = '网络错误，请重试';
+          errorMsg = tr('main.remoteGateErrNetwork');
         });
     };
   }
@@ -162,22 +163,22 @@
   <div class="wr-gate">
     {#if phase === 'need-code'}
       <h1>Ridge Remote</h1>
-      <p class="wr-sub">输入桌面端 Ridge 应用中显示的 6 位动态验证码</p>
+      <p class="wr-sub">{$t('main.remoteGateSubtitle')}</p>
       <div class="wr-card">
         <input
           type="text" inputmode="numeric" maxlength={6}
-          placeholder="输入 6 位验证码"
+          placeholder={$t('main.remoteGatePlaceholder')}
           value={code}
           oninput={(e) => { code = e.currentTarget.value.replace(/\D/g, '').slice(0, 6); errorMsg = ''; }}
           onkeydown={(e) => { if (e.key === 'Enter') submitCode(); }}
         />
         {#if errorMsg}<p class="wr-error">{errorMsg}</p>{/if}
         <button onclick={() => submitCode()} disabled={code.length < 6 || loading}>
-          {loading ? '验证中...' : '验证并连接'}
+          {loading ? $t('main.remoteGateVerifying') : $t('main.remoteGateConnect')}
         </button>
       </div>
     {:else}
-      <p class="wr-sub">正在连接远程桌面...</p>
+      <p class="wr-sub">{$t('main.remoteGateConnecting')}</p>
       {#if errorMsg}<p class="wr-error">{errorMsg}</p>{/if}
     {/if}
   </div>
