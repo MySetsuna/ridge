@@ -32,10 +32,17 @@ path = "src/main.rs"
 # in `fs_reuse.rs`. `ridge-core` is Tauri-free (verified: `cargo tree -p
 # ridge-cli` shows no `tauri`), so this keeps the headless binary lean.
 ridge-core = { path = "../ridge-core" }
+# Headless tmux session engine + its teammate-protocol HTTP router (S-decouple).
+# Lets `ridge-cli tmux` host the SAME native engine the desktop uses, so a `tmux`
+# shim on this host can create/manage headless sessions. The `http` feature
+# pulls a small axum server; the engine itself is Tauri-free.
+ridge-tmux = { path = "../ridge-tmux", features = ["http"] }
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
-# CLI
-clap = { version = "4", features = ["derive"] }
+# CLI. `env` lets the `tmux` subcommand read --port/--bind/--token from
+# RIDGE_TMUX_* env vars (so a systemd EnvironmentFile can supply them without
+# putting the token on the command line, where `ps` would leak it).
+clap = { version = "4", features = ["derive", "env"] }
 # HTTP client (rustls, no native OpenSSL — VPS-friendly)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Serialization

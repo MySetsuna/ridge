@@ -43,12 +43,29 @@ Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelt
 └───────────────────────────────────────────────────────────┘
 ```
 
-### Packages (pnpm monorepo)
+### Shared-core architecture (unified remote)
 
-| Package | Description |
-|---------|-------------|
-| `packages/ridge-term` | Rust terminal kernel: VT parser, grid, scrollback, selection, search, Canvas2D/WebGPU render backends. Compiled to WASM. |
-| `packages/rg-split` | Pure-render split-pane layout component. Zero internal state; the store is the single source of truth. |
+Pure domain logic is lifted out of the Tauri `src-tauri` crate into standalone,
+**Tauri-free** workspace crates so the same code can run in any host — the
+desktop app, the standalone `remote-server`, or the headless `ridge-cli`
+(Linux/VPS). The desktop keeps its existing module paths via thin `pub use`
+re-exports, so each relocation is a **zero-behavior-change** move:
+
+- `ridge-core` — the command/`dispatch` + capability-policy core (already
+  absorbed `fs/search` + `fs/tree`).
+- `ridge-term` — the terminal kernel (VT parser + grid + render backends).
+- `ridge-tmux` — the headless tmux session engine (see [Collaboration](#collaboration-agents--tmux)).
+
+### Packages & crates (Cargo virtual workspace + pnpm monorepo)
+
+| Crate / package | Tauri-free | Description |
+|-----------------|:---:|-------------|
+| `src-tauri` (`ridge`) | — | Desktop Tauri host: command handlers, engine, remote + teammate servers. Bins: `ridge` (app), `tmux` (shim), `remote-server`. |
+| `packages/ridge-core` | ✓ | Runtime-agnostic command + workspace domain core: one `dispatch()` entry, one capability allow-list, shared by every host. |
+| `packages/ridge-tmux` | ✓ | Headless, socket-namespaced **tmux session engine** (in-process PTY registry behind the `tmux` shim). Extracted from `teammate/native.rs`; its optional `http` feature exposes the shared `/api/v1/tmux/*` router mounted by **both** the desktop server and `ridge-cli tmux`. |
+| `packages/ridge-term` | ✓ | Rust terminal kernel: VT parser, grid, scrollback, selection, search, Canvas2D/WebGPU backends. Compiled to WASM (lean on native via `default-features = false`). |
+| `packages/ridge-cli` | ✓ | Headless remote host for Linux/VPS: device pairing + E2EE WebRTC PTY bridge (`remote`), and a headless tmux engine host (`tmux`). Reuses `ridge-core` + `ridge-tmux` (zero Tauri). |
+| `packages/rg-split` | n/a | Pure-render split-pane layout component (frontend). Zero internal state; the store is the single source of truth. |
 
 ---
 
@@ -87,18 +104,24 @@ Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelt
 - Replace-in-files across matches
 - Text-search diagnostics sidebar
 
-### Collaboration
+### Collaboration (agents & tmux)
 - **Teammate server** (local HTTP API): external agents (Claude Code, etc.) can list/create/close panes, read pane CWD, and manage workspace layout
-- **tmux shim**: binary named `tmux` that translates standard tmux CLI commands into Ridge teammate HTTP calls — drop-in for Claude Code `teammateMode: tmux`
+- **tmux shim**: a binary named `tmux` that translates standard tmux CLI into Ridge teammate HTTP calls — drop-in for Claude Code `teammateMode: tmux`. It routes through **two paths**:
+  - **GUI-bridge** (default socket, pane/numeric targets): `split-window` and take-over map onto **visible** workspace split panes — what an agent team works in directly
+  - **Native engine** (`-L`/`-S` custom socket, or named sessions): **headless**, socket-namespaced PTY sessions that run without occupying a pane, with faithful tmux `find-target` resolution, `capture-pane`, and `send-keys`
+- **Native sessions** sidebar (desktop): lists the headless sessions and *summons* one into the current workspace as an adopted pane (shares the live PTY — no new shell)
+- The native engine is the standalone, Tauri-free **`ridge-tmux`** crate. Its `/api/v1/tmux/*` router is shared *verbatim* by the desktop teammate server and by **`ridge-cli tmux`** (a headless-host subcommand) — so the same `tmux` shim drives headless sessions whether the host is the desktop app or a bare Linux/VPS box. Only GUI `summon` stays desktop-side
 - Agent statistics dashboard in Settings panel
 
 ### Remote Control
-- **LAN-first** mobile web app served by the Tauri backend (standalone server also available)
-- TOTP-based authentication (RFC 6238, no external crate)
-- mDNS service discovery (`_ridge._tcp.local.`) on port 5353
-- Per-device blacklist, session management
-- Remote sidebar reuses the same shared TypeScript components (`src/shared/sidebar/`) as the desktop app
-- WebSocket binary terminal feed with per-client mobile parser instances
+Two browser surfaces, both served by the Rust backend:
+- **Mobile console** (`src/remote`): a lightweight standalone PWA tuned for phones (virtual keyboard, canvas terminal), offline-cached via a service worker
+- **Desktop-in-browser** (`RIDGE_WEB_REMOTE` build): the *full* desktop SPA built for a plain browser, with every `@tauri-apps/*` call redirected to WS-backed shims (`src/lib/transport/tauriShim/*`) so the desktop code runs untouched outside Tauri
+
+Shared plumbing:
+- **LAN-first**: TOTP authentication (RFC 6238, no external crate), mDNS discovery (`_ridge._tcp.local.` on port 5353), per-device blacklist, session management
+- WebSocket binary terminal feed with per-client parser instances; the remote sidebar reuses the same shared components (`src/shared/sidebar/`) as the desktop app
+- **Headless host** (`packages/ridge-cli`): a Linux/VPS binary with device pairing and an **E2EE WebRTC** PTY bridge (`ridge-cli remote`) — Ridge remote control with no desktop app running. `ridge-cli tmux` additionally hosts the headless tmux engine on the box, so an agent there can drive headless sessions through the `tmux` shim
 
 ### Theming
 - Three built-in themes with CSS custom properties
@@ -107,7 +130,7 @@ Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelt
 
 ### Plugins
 - Lightweight sidebar plugin system with global and workspace scopes
-- Built-in plugins: global status panel
+- Built-in plugins: **global status** panel; **Native sessions** panel (desktop-only — lists headless `ridge-tmux` sessions and summons them into the workspace; gated out of the web-remote build, where its host-only commands aren't available)
 
 ---
 
@@ -274,8 +297,10 @@ src-tauri/
 │   │   ├── server.rs           # Axum HTTP + WebSocket server, PTY fan-out
 │   │   ├── auth.rs             # TOTP (RFC 6238) implementation
 │   │   └── mdns.rs             # mDNS broadcaster (_ridge._tcp.local.)
-│   ├── teammate/               # Agent collaboration
-│   │   └── server.rs           # Local HTTP API for external agents
+│   ├── teammate/               # Agent collaboration (tmux shim backend)
+│   │   ├── server.rs           # Local HTTP API: GUI-bridge routes + native-engine routes
+│   │   ├── native.rs           # Thin re-export of the ridge-tmux headless engine
+│   │   └── layout_event.rs     # Teammate layout-change events
 │   ├── db/
 │   │   └── projects.rs         # SQLite project store
 │   ├── utils/                  # Error types, logging, PTY log, pane_id helpers

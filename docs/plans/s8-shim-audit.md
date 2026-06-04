@@ -1,5 +1,10 @@
 # S8 · shim 全量审计报告（R12）
 
+> **✅ 已收口（2026-06-04 复核）**：本报告 §3/§4 标记的唯一缺口 `plugin-opener` 现已修复——
+> `src/lib/transport/tauriShim/opener.ts` shim 存在、`vite.config.js` 已加 alias、
+> `linkResolver.ts openShell()` 已改用 `RIDGE_WEB_REMOTE` 构建标志并补了 `window.open` 兜底。
+> 下文 §3.1「高危·可达降级失效」描述的是**修复前**状态，保留作为历史记录。
+
 > 横切·安全切片 S8 任务 B。对照上游计划 §5.5 / §5.6 / §7 R12（"复用整个桌面 SPA ⇒ shim
 > 必须覆盖 SPA 触达的全部 `@tauri-apps/api` 调用点，否则远控模式运行时报错"）。
 > 范围：只读 `src/`（桌面 SPA），对照 `src/lib/transport/tauriShim/*` 与 `vite.config.js`

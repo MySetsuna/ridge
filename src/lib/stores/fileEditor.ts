@@ -423,13 +423,31 @@ function createStore() {
         isImage,
         imageUrl,
       };
-      update((s) => ({
-        ...s,
-        openFiles: [...s.openFiles, file],
-        activePath: path,
-        isVisible: true,
-        pendingReveal: reveal ?? s.pendingReveal,
-      }));
+      update((s) => {
+        // Re-check inside the atomic updater: `openFile` awaited an async
+        // disk read between the earlier `existing` lookup and here, so a
+        // concurrent `openFile(path)` (e.g. a rapid double-click) may have
+        // already appended this tab. Appending again would put two entries
+        // with the same `path` into `openFiles`, and the editor tab strip's
+        // keyed `{#each ... (it.id)}` (id === path) throws
+        // `each_key_duplicate` and drops/misrenders tabs. Activate the
+        // existing tab instead of inserting a duplicate.
+        if (s.openFiles.some((f) => f.path === path)) {
+          return {
+            ...s,
+            activePath: path,
+            isVisible: true,
+            pendingReveal: reveal ?? s.pendingReveal,
+          };
+        }
+        return {
+          ...s,
+          openFiles: [...s.openFiles, file],
+          activePath: path,
+          isVisible: true,
+          pendingReveal: reveal ?? s.pendingReveal,
+        };
+      });
     },
 
     /** SearchSidebar 在 results 数组变化时整体写入；空数组等价 clear。 */

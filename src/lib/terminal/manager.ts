@@ -2729,6 +2729,50 @@ export class TerminalManager {
 	}
 
 	/**
+	 * Alternate-scroll fallback: when a full-screen (alt-screen) application
+	 * is active but has NOT enabled DEC mouse reporting, translate the wheel
+	 * into cursor-key presses so pagers / menus that only read arrow keys
+	 * (less, man, git log, fzf, claude /theme menu, …) scroll on wheel. This
+	 * mirrors the `alternateScroll` resource enabled by default in xterm,
+	 * Windows Terminal, iTerm2 and kitty.
+	 *
+	 * Returns true (caller should `preventDefault`) only when bytes were
+	 * actually emitted. Conditions, all required:
+	 *   - alt-screen active (a TUI owns the primary→alt swap),
+	 *   - mouse reporting OFF (else `handleWheel` already owns the event),
+	 *   - there is no in-kernel scrollback to scroll instead (alt screen has
+	 *     none, but guard anyway so primary-screen scrollback keeps winning).
+	 *
+	 * Arrow encoding is delegated to `kernel.encodeKey('ArrowUp'/'ArrowDown')`
+	 * so DECCKM (app-cursor-keys mode `\x1bOA` vs `\x1b[A`) is honoured by the
+	 * same code path as a real keypress — no second encoding to drift.
+	 *
+	 * One arrow press per ~`WHEEL_LINES_DIVISOR` px of deltaY, clamped to a
+	 * small max so a fast flick can't fire dozens of presses in one event.
+	 */
+	wheelAltScroll(paneId: string, ev: WheelEvent): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry || !entry.dataHandler) return false;
+		if (!entry.kernel.isAltScreen()) return false;
+		if (entry.kernel.mouseReportingModes() !== 0) return false;
+		const delta = ev.deltaY;
+		if (delta === 0) return false;
+		// deltaMode 1 = lines, 2 = pages; treat their units as ~1 press each,
+		// deltaMode 0 = pixels → 1 press per WHEEL_LINES_DIVISOR px.
+		const WHEEL_LINES_DIVISOR = 30;
+		const MAX_PRESSES_PER_EVENT = 5;
+		const magnitude = ev.deltaMode === 0 ? Math.abs(delta) / WHEEL_LINES_DIVISOR : Math.abs(delta);
+		const presses = Math.max(1, Math.min(MAX_PRESSES_PER_EVENT, Math.round(magnitude)));
+		const key = delta < 0 ? 'ArrowUp' : 'ArrowDown';
+		const oneArrow = entry.kernel.encodeKey(key, false, false, false, false);
+		if (oneArrow.length === 0) return false;
+		const seq = new Uint8Array(oneArrow.length * presses);
+		for (let i = 0; i < presses; i++) seq.set(oneArrow, i * oneArrow.length);
+		entry.dataHandler(seq);
+		return true;
+	}
+
+	/**
 	 * Paste text into the pane. Wraps in bracketed-paste markers if mode 2004
 	 * is active. Pushes through onData.
 	 */
@@ -3779,7 +3823,7 @@ export class TerminalManager {
 	 * fit until the user stops resizing.
 	 *
 	 * Trigger to "settle now" is either of:
-	 *   a. `RESIZE_SETTLE_MS` (1000 ms) elapses with no further
+	 *   a. `RESIZE_SETTLE_MS` (500 ms) elapses with no further
 	 *      viewportChanged events — user paused mid-drag.
 	 *   b. A global `pointerup` lands — user released the splitter /
 	 *      window-edge handle (see `_ensureResizeReleaseListener`).

@@ -69,9 +69,13 @@ struct StatusResponse {
 struct InfoResponse {
     port: u16,
     lan_ip: String,
-    otpauth_uri: String,
     ready: bool,
     machine_name: String,
+    // SECURITY: the `otpauth://` URI embeds the raw TOTP *secret seed*. It is
+    // intentionally NOT exposed over this HTTP endpoint — anyone who can reach
+    // `/info` (pre-auth, on the LAN) could otherwise derive every future code,
+    // defeating TOTP. The desktop pairing QR reads the URI in-process via the
+    // `get_remote_info` Tauri command (see RemotePanel.svelte), never over HTTP.
 }
 
 #[derive(Serialize)]
@@ -648,11 +652,10 @@ async fn assets_handler(
 
 async fn info_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     let enabled = ctx.state.remote_enabled.load(Ordering::Relaxed);
-    let uri = ctx.auth.otpauth_uri(&ctx.machine_name);
+    // NOTE: do NOT include the otpauth URI / TOTP secret here (see InfoResponse).
     Json(InfoResponse {
         port: ctx.port,
         lan_ip: ctx.lan_ip.clone(),
-        otpauth_uri: uri,
         ready: enabled,
         machine_name: ctx.machine_name.clone(),
     })
@@ -2623,6 +2626,12 @@ async fn dispatch_invoke_request(
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
 
         // ── Workspace (live) ──
+        // `list_workspaces` is read-only and required by the desktop SPA
+        // controller's boot (`refreshWorkspaces`): without it the web-remote
+        // controller's `invoke('list_workspaces')` throws "command not available
+        // remotely", aborting workspace init and stranding the controller on
+        // "请先选择一个工作区". Mirrors `get_active_workspace_id` (val + State).
+        "list_workspaces" => val(workspace::list_workspaces(handle.state())),
         "get_active_workspace_id" => val(workspace::get_active_workspace_id(handle.state())),
         "switch_workspace" => unit(workspace::switch_workspace(
             handle.state(),
