@@ -169,6 +169,18 @@
     const t0 = ws.lastTheme();
     if (t0) applyTheme(t0.colors);
     ws.onTheme((colors) => applyTheme(colors));
+    // Reconnect resync: a reconnect opens a brand-new host socket that holds no
+    // pane subscription, and the local kernel still shows the stale pre-drop
+    // screen. Reset it (RIS) so the host's scrollback replay + full repaint paint
+    // a correct, current view instead of appending under stale content, then
+    // re-establish the subscription, workspace state, and viewport size claim.
+    ws.onReconnect(() => {
+      canvasRef?.feed('\x1bc');
+      ws.listPanes();
+      if (activePaneId) ws.subscribePane(activePaneId);
+      refreshWorkspaces();
+      refreshActivePane();
+    });
     ws.listPanes();
     refreshWorkspaces();
     return () => { ws.disconnect(); };
