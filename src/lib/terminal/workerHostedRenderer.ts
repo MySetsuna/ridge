@@ -135,31 +135,12 @@ export class WorkerHostedRenderer {
 	/**
 	 * Hand the OffscreenCanvas to the worker. The transferable list is
 	 * the caller's responsibility — pass `[canvas]` so the underlying
-	 * surface actually moves into the worker.
-	 *
-	 * §p4 ITER 5 (2026-05-22) — optional `measure` asks the worker to
-	 * `configure(font, sizePx, dpr)` the new renderer and return cell
-	 * metrics in the `ready` response so the host can seed its per-pane
-	 * `entry.cellW / cellH` from real font measurements instead of the
-	 * 8 × 16 placeholder the worker-path attach() uses.
+	 * surface actually moves into the worker. P4.6 keeps this as a no-op
+	 * on the worker side; P4.7 will wire wasm renderer attachment.
 	 */
-	bindCanvas(
-		paneId: string,
-		canvas?: OffscreenCanvas,
-		measure?: { font: string; fontSizePx: number; dpr: number },
-	): Promise<RenderWorkerResponse> {
+	bindCanvas(paneId: string, canvas?: OffscreenCanvas): Promise<RenderWorkerResponse> {
 		const transfer = canvas ? ([canvas] as Transferable[]) : undefined;
-		return this.send(
-			{
-				type: 'bindCanvas',
-				paneId,
-				canvas,
-				font: measure?.font,
-				fontSizePx: measure?.fontSizePx,
-				dpr: measure?.dpr,
-			},
-			transfer,
-		);
+		return this.send({ type: 'bindCanvas', paneId, canvas }, transfer);
 	}
 
 	/**
@@ -182,39 +163,8 @@ export class WorkerHostedRenderer {
 		return this.send({ type: 'feed', paneId, data });
 	}
 
-	/**
-	 * §p4 ITER 8 (2026-05-22) — push a font change into the worker
-	 * pane. The worker calls `RenderHandle.configure(...)` and returns
-	 * the new cell metrics in the `ready` response; the host uses
-	 * them to re-seed entry.cellW / cellH.
-	 */
-	setFont(
-		paneId: string,
-		font: string,
-		fontSizePx: number,
-		dpr: number,
-	): Promise<RenderWorkerResponse> {
-		return this.send({ type: 'setFont', paneId, font, fontSizePx, dpr });
-	}
-
-	/**
-	 * Resize the worker-owned pane.
-	 *
-	 * §p4 ITER 7 (2026-05-22) — `cssW` / `cssH` (CSS pixels) are
-	 * optional; when supplied the worker's renderer also calls
-	 * `RenderHandle.resize(cssW, cssH, dpr)` to re-size the backing
-	 * buffer. Omit them for kernel-grid-only resizes (e.g. shadow
-	 * mode before a canvas is bound).
-	 */
-	resize(
-		paneId: string,
-		rows: number,
-		cols: number,
-		dpr: number,
-		cssW?: number,
-		cssH?: number,
-	): Promise<RenderWorkerResponse> {
-		return this.send({ type: 'resize', paneId, rows, cols, dpr, cssW, cssH });
+	resize(paneId: string, rows: number, cols: number, dpr: number): Promise<RenderWorkerResponse> {
+		return this.send({ type: 'resize', paneId, rows, cols, dpr });
 	}
 
 	destroy(paneId: string): Promise<RenderWorkerResponse> {

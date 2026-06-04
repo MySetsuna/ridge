@@ -20,37 +20,34 @@
  * The factory itself is small enough to keep all production logic here
  * without introducing yet another abstraction.
  *
- * Integration status (2026-05-24) — ALL four steps implemented:
- *   1. ✅ `TerminalManager` reads `isWorkerRenderingEnabled()` on pane attach.
- *   2. ✅ When enabled, manager proxies through `workerRendererBridge`.
- *   3. ✅ `manager.attach` calls `canvas.transferControlToOffscreen()`
- *      and ships the OffscreenCanvas to the worker via `bindCanvas`.
- *   4. ✅ Legacy main-thread path stays as fallback when flag is off
- *      or worker fails to spin up.
+ * Integration plan (still TODO, see project memo):
+ *   1. `TerminalManager` reads `isWorkerRenderingEnabled()` on pane attach.
+ *   2. When enabled, the manager calls `getWorkerRenderer()` and proxies
+ *      `applyDeltaFrame()`/`resize()` through it instead of running the
+ *      kernel on the main thread.
+ *   3. `RidgePane.svelte` calls `canvas.transferControlToOffscreen()` and
+ *      ships the OffscreenCanvas to the renderer via `bindCanvas`.
+ *   4. The legacy main-thread path stays as the fallback for the period
+ *      while the feature flag is opt-in.
  */
 
 import { WorkerHostedRenderer, type WorkerLike } from './workerHostedRenderer';
 
 /** Read the opt-in flag in a type-safe way. Checks (in order):
- *    1. `globalThis.__RIDGE_USE_WORKER === true` — explicit opt-in.
- *    2. `globalThis.__RIDGE_USE_WORKER === false` — explicit opt-out.
- *    3. `localStorage.RIDGE_USE_WORKER === '0'` — persistent opt-out.
- *  Returns true otherwise (P4.9: enabled by default). localStorage access
- *  is wrapped in try/catch because workers and SSR may not expose it. */
+ *    1. `globalThis.__RIDGE_USE_WORKER === true` — easiest at the JS console.
+ *    2. `localStorage.RIDGE_USE_WORKER === '1' | 'true'` — survives reloads,
+ *       and (most importantly) is settable BEFORE app boot by an e2e harness.
+ *  Returns false otherwise. localStorage access is wrapped in try/catch
+ *  because workers and SSR may not expose it. */
 export function isWorkerRenderingEnabled(): boolean {
 	const g = globalThis as unknown as { __RIDGE_USE_WORKER?: unknown };
 	if (g.__RIDGE_USE_WORKER === true) return true;
-	if (g.__RIDGE_USE_WORKER === false) return false;
 	try {
 		const v = globalThis.localStorage?.getItem('RIDGE_USE_WORKER');
-		if (v === '0') return false;
+		if (v === '1' || v === 'true') return true;
 	} catch {
 		/* SSR / worker / sandboxed origin — localStorage unavailable */
 	}
-	// P4.9 NOTE: worker rendering is disabled by default until the
-	// render worker has its own wasm kernel and can produce real pixels.
-	// Enable via `window.__RIDGE_USE_WORKER = true` or
-	// `localStorage.RIDGE_USE_WORKER = '1'` for development.
 	return false;
 }
 
