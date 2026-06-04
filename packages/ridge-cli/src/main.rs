@@ -7,6 +7,14 @@
 //! 架构：设备码流(§4.4) → device JWT 持久化(§3) → 信令 WS(§5, role=host) →
 //!       WebRTC answerer(§0) → DataChannel 上叠 X25519+ChaCha20Poly1305(§7) →
 //!       16ms 攒批的 PTY 桥（复用 portable-pty + fs 搜索/树）。
+//!
+//! 线协议（统一远控 S3 / 契约 §11.1）：controller↔host **收敛到桌面 host 同款** mux
+//! + JSON-RPC 2.0，于是同一个浏览器 controller（`cloudControllerBoot`）既驱动桌面端
+//! 也驱动本 cli host。入站 E2EE 明文按 1 字节通道前缀 demux（`mux.rs`）：通道 0x11
+//! 是 JSON-RPC 请求/通知（`rpc.rs` 路由到 PTY / fs），通道 0x12 是 TOTP 控制帧
+//! （`protocol.rs`）。出站 PTY 字节走 0x10 PANE_RAW（带 paneId），JSON-RPC 响应走
+//! 0x11，TOTP 结果走 0x12。cli 经 `$/hello` 只公告 terminal/pty + fs(search/tree)
+//! 能力，controller 据此优雅灰掉 IDE 面板（git/workspace/theme/invoke）。
 
 mod batching;
 mod config;
@@ -17,8 +25,10 @@ mod e2ee;
 mod envelope;
 mod fs_reuse;
 mod ice;
+mod mux;
 mod protocol;
 mod pty;
+mod rpc;
 mod rtc;
 mod session;
 mod signaling;

@@ -79,7 +79,11 @@ pub fn headless_ctx(roots: &[PathBuf]) -> Ctx {
 /// Blank/whitespace-only strings are treated as unset so an exported but empty
 /// `RIDGE_REMOTE_ROOT=` does not silently select an invalid root.
 pub fn resolve_serving_roots(explicit: Option<&str>, cwd: Option<&str>) -> Vec<PathBuf> {
-    let pick = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from);
+    let pick = |s: Option<&str>| {
+        s.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+    };
 
     if let Some(root) = pick(explicit) {
         return vec![root];

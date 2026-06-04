@@ -5,8 +5,8 @@
 //! 复用与桌面端**完全相同**的 `fs::search` / `fs::tree` 实现（单一真源）。
 //!
 //! 本文件只保留两件事：
-//!   1. `HostMsg` 仍引用的**线形 DTO**（`SearchResult` / `FileNode`）——保持
-//!      controller↔host 的 JSON 帧 schema 字节级不变（不破坏现网 controller）。
+//!   1. JSON-RPC `search` / `get_directory_children` 结果仍序列化的**线形 DTO**
+//!      （`SearchResult` / `FileNode`）——保持 controller↔host 的 JSON schema 不变。
 //!   2. 一层**映射**：把 `ridge-core` 富类型结果裁剪回上述精简 DTO。
 //!
 //! `ridge-core` 是 zero-Tauri 的纯 crate（`cargo tree -p ridge-cli` 无 `tauri`），
