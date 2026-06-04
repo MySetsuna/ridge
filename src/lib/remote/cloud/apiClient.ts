@@ -29,6 +29,9 @@ export type ApiErrorCode =
   | 'SIGNATURE_INVALID'
   | 'RATE_LIMITED'
   | 'INTERNAL'
+  // 浏览器登录授权（契约 §2.1）
+  | 'AUTH_REQUEST_NOT_FOUND'
+  | 'AUTH_REQUEST_EXPIRED'
   // 传输层兜底（非后端枚举，仅前端用于网络/解析失败）
   | 'NETWORK'
   | 'BAD_RESPONSE';
@@ -50,6 +53,10 @@ type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; m
 export interface DeviceDto {
   name: string;
   createdAt: number;
+  /** 主机当前是否在线（接入）。仅 GET /devices 填充；其它内嵌处缺省/false。 */
+  online?: boolean;
+  /** 主机最近一次接入的秒级 unix 时间戳；缺省表示从未上线。 */
+  lastSeenAt?: number;
 }
 
 /** 用户形状（契约 §4.1，前后端共用）。 */
@@ -87,6 +94,33 @@ export interface DeviceActivateResult {
   public_entry: string;
 }
 
+/** 浏览器登录授权 — 发起结果（契约 §2.1 `POST /auth/request`）。 */
+export interface AuthRequestResult {
+  request_code: string;
+  poll_token: string;
+  authorize_url: string;
+  expires_in: number;
+  interval: number;
+}
+
+/** 浏览器登录授权 — 轮询结果（契约 §2.1 `POST /auth/poll`）。 */
+export type AuthPollResult =
+  | { status: 'pending' }
+  | { status: 'expired' }
+  | { status: 'approved'; token: string; user: UserDto };
+
+/**
+ * 每日签到结果（契约 §5 `POST /me/checkin`）。
+ * - ok=true：本次签到成功，授予 2h 临时 premium 窗口，premiumExpiresAt 为到期秒级 unix。
+ * - ok=false + reason='already'：今日已签到（premiumExpiresAt 为当前窗口，可能为 null）。
+ * - ok=false + reason='permanent'：已是永久/买断 premium，无需签到（premiumExpiresAt=null）。
+ */
+export interface CheckinResult {
+  ok: boolean;
+  reason?: 'already' | 'permanent';
+  premiumExpiresAt: number | null;
+}
+
 /** 把后端 error.code 字符串安全收敛到枚举（未知归 INTERNAL）。 */
 function coerceCode(raw: string): ApiErrorCode {
   const known: ApiErrorCode[] = [
@@ -94,6 +128,7 @@ function coerceCode(raw: string): ApiErrorCode {
     'KEY_ALREADY_USED', 'USERNAME_TAKEN', 'USERNAME_REQUIRED', 'NOT_PREMIUM',
     'PAIRING_EXPIRED', 'PAIRING_NOT_FOUND', 'DEVICE_NAME_TAKEN',
     'SIGNATURE_INVALID', 'RATE_LIMITED', 'INTERNAL',
+    'AUTH_REQUEST_NOT_FOUND', 'AUTH_REQUEST_EXPIRED',
   ];
   return (known as string[]).includes(raw) ? (raw as ApiErrorCode) : 'INTERNAL';
 }
@@ -161,12 +196,31 @@ export function setUsername(token: string, username: string): Promise<{ user: Us
   return request<{ user: UserDto }>('/auth/set-username', { method: 'POST', token, body: { username } });
 }
 
+// ─── §5 每日签到（free 用户每日 2h 免费公网远控）─────────────────────────────
+
+/** 每日签到：授予 2h 临时 premium（已签到/永久 premium 不重复授予）。 */
+export function checkin(token: string): Promise<CheckinResult> {
+  return request<CheckinResult>('/me/checkin', { method: 'POST', token });
+}
+
 // ─── §4.2 国内卡密激活 ─────────────────────────────────────────────────────
 
 export function activateKey(token: string, key: string, username?: string): Promise<AuthResult> {
   const body: { key: string; username?: string } = { key };
   if (username) body.username = username;
   return request<AuthResult>('/auth/activate-key', { method: 'POST', token, body });
+}
+
+// ─── §2.1 浏览器登录授权（device-code 形状，产出 user JWT，token 不进 URL）──────
+
+/** 发起登录授权：拿 request_code + poll_token + authorize_url（host 用 opener 打开）。 */
+export function authRequest(client: 'desktop' | 'cli'): Promise<AuthRequestResult> {
+  return request<AuthRequestResult>('/auth/request', { method: 'POST', body: { client } });
+}
+
+/** 轮询登录授权结果：approved 时携带一次性 user JWT + user。 */
+export function authPoll(pollToken: string): Promise<AuthPollResult> {
+  return request<AuthPollResult>('/auth/poll', { method: 'POST', body: { poll_token: pollToken } });
 }
 
 // ─── §4.4 设备配对（Device Code Flow，桌面自助激活）────────────────────────

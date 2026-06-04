@@ -18,6 +18,7 @@
 //! grows to implement their state traits (the seam is here, mirroring the
 //! desktop `core_bridge.rs`).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ridge_core::{CapabilitySet, ConnectionId, Ctx, EventScope, EventSink, TokioSpawner};
@@ -43,14 +44,82 @@ impl EventSink for NoopSink {
 }
 
 /// Build a per-request `ridge_core::Ctx` for the headless host, carrying the
-/// canonical remote allow-list (D8).
-pub fn headless_ctx() -> Ctx {
+/// canonical remote allow-list (D8) **and** the filesystem serving-root sandbox
+/// (D8/§5.6, D-GM-9).
+///
+/// `roots` bounds every path-bearing fs command (`search`, `get_directory_children`,
+/// `get_file_tree`, …) to those subtrees — enforced once inside
+/// [`ridge_core::dispatch`] via `sandbox_guard`. An **empty** slice means
+/// unrestricted (the backward-compatible no-op); on a public VPS the daemon is
+/// expected to pass at least one root so a controller can never read
+/// `~/.ssh` / `/etc/passwd` off the host. Build the slice with
+/// [`resolve_serving_roots`].
+pub fn headless_ctx(roots: &[PathBuf]) -> Ctx {
     let state: Arc<dyn ridge_core::CoreState> = Arc::new(HeadlessState);
     let events: Arc<dyn EventSink> = Arc::new(NoopSink);
     Ctx::new(
         state,
         events,
         Arc::new(TokioSpawner),
-        CapabilitySet::remote_default(),
+        CapabilitySet::remote_default().with_roots(roots.iter()),
     )
+}
+
+/// Resolve the filesystem serving root(s) for the headless `remote` daemon.
+///
+/// Precedence (first non-empty wins), secure-by-default:
+///   1. `explicit` — operator's `--root` / `RIDGE_REMOTE_ROOT` (authoritative override).
+///   2. `cwd` — the session shell's working dir (`--cwd`): the project the
+///      operator is already serving, a natural fs boundary.
+///   3. the process current dir — so a bare `ridge remote --daemon` still confines
+///      fs to where it launched instead of exposing the whole host filesystem.
+///   4. empty `Vec` — only if even the current dir is unreadable; the caller is
+///      expected to log a warning, since empty = unrestricted (whole FS exposed).
+///
+/// Blank/whitespace-only strings are treated as unset so an exported but empty
+/// `RIDGE_REMOTE_ROOT=` does not silently select an invalid root.
+pub fn resolve_serving_roots(explicit: Option<&str>, cwd: Option<&str>) -> Vec<PathBuf> {
+    let pick = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from);
+
+    if let Some(root) = pick(explicit) {
+        return vec![root];
+    }
+    if let Some(root) = pick(cwd) {
+        return vec![root];
+    }
+    if let Ok(here) = std::env::current_dir() {
+        return vec![here];
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_root_wins_over_cwd() {
+        let roots = resolve_serving_roots(Some("/srv/explicit"), Some("/home/cwd"));
+        assert_eq!(roots, vec![PathBuf::from("/srv/explicit")]);
+    }
+
+    #[test]
+    fn falls_back_to_cwd_when_no_explicit_root() {
+        let roots = resolve_serving_roots(None, Some("/home/cwd"));
+        assert_eq!(roots, vec![PathBuf::from("/home/cwd")]);
+    }
+
+    #[test]
+    fn blank_values_are_treated_as_unset() {
+        // Whitespace-only explicit + cwd → both skipped, falls through to current_dir.
+        let roots = resolve_serving_roots(Some("   "), Some(""));
+        assert_eq!(roots, vec![std::env::current_dir().unwrap()]);
+    }
+
+    #[test]
+    fn defaults_to_current_dir_when_nothing_set() {
+        // Secure-by-default: a bare daemon still confines fs to where it launched.
+        let roots = resolve_serving_roots(None, None);
+        assert_eq!(roots, vec![std::env::current_dir().unwrap()]);
+    }
 }

@@ -47,6 +47,11 @@ export interface KernelHandle {
 export interface RendererHandle {
 	render(): void;
 	free(): void;
+	/** Re-measure cell metrics with a new font config. Returns the
+	 *  quantized cellW / cellH computed from the renderer's font
+	 *  measurement. When absent the worker returns a `ready` ack
+	 *  without cell metrics (the host treats it as no-op). */
+	configure?(family: string, sizePx: number, dpr: number): { cellW: number; cellH: number };
 }
 
 /** Dependency-injection seam for the wasm kernel and (optionally) the
@@ -335,6 +340,46 @@ export function handleRequest(
 			}
 			state.delete(request.paneId);
 			return { type: 'destroyed', paneId: request.paneId };
+		}
+
+		case 'setFont': {
+			const pane = state.get(request.paneId);
+			if (!pane) {
+				return {
+					type: 'error',
+					paneId: request.paneId,
+					code: 'pane_not_initialized',
+					message: `setFont before init for pane ${request.paneId}`,
+				};
+			}
+			let cellW: number | undefined;
+			let cellH: number | undefined;
+			if (pane.renderer?.configure) {
+				try {
+					const metrics = pane.renderer.configure(
+						request.family,
+						request.sizePx,
+						request.dpr,
+					);
+					cellW = metrics.cellW;
+					cellH = metrics.cellH;
+				} catch {
+					// renderer.configure threw — surface as error but don't crash
+					return {
+						type: 'error',
+						paneId: request.paneId,
+						code: 'resize_failed',
+						message: `setFont configure failed for pane ${request.paneId}`,
+					};
+				}
+			}
+			return {
+				type: 'ready',
+				paneId: request.paneId,
+				backend: pane.backend,
+				cellW,
+				cellH,
+			};
 		}
 	}
 }

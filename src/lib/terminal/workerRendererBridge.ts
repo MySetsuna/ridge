@@ -93,7 +93,18 @@ export interface WorkerRendererBridge {
 	 *  module-level note). */
 	applyDelta(paneId: string, bytes: Uint8Array): void;
 	/** Mirror a resize. */
-	resize(paneId: string, rows: number, cols: number, dpr: number): void;
+	resize(paneId: string, rows: number, cols: number, dpr: number, wCss?: number, hCss?: number): void;
+	/** Reconfigure font on an already-initialized pane. The worker
+	 *  re-measures via `RenderHandle.configure` and returns cellW/cellH
+	 *  in its `ready` response. The callback is invoked on resolution
+	 *  so the manager can update its metrics cache. */
+	setFont(
+		paneId: string,
+		family: string,
+		sizePx: number,
+		dpr: number,
+		onMetrics: (cellW: number, cellH: number) => void,
+	): void;
 	/** Mirror a pane teardown. No-op if the pane was never attached. */
 	destroy(paneId: string): void;
 }
@@ -182,12 +193,28 @@ export const workerRendererBridge: WorkerRendererBridge = {
 		}
 	},
 
-	resize(paneId, rows, cols, dpr): void {
+	resize(paneId, rows, cols, dpr, wCss, hCss): void {
 		const r = active();
 		if (!r) return;
-		r.resize(paneId, rows, cols, dpr).catch((err) =>
+		r.resize(paneId, rows, cols, dpr, wCss, hCss).catch((err) =>
 			warn(`resize ${paneId}`, err),
 		);
+	},
+
+	setFont(paneId, family, sizePx, dpr, onMetrics): void {
+		const r = active();
+		if (!r) return;
+		r.setFont(paneId, family, sizePx, dpr)
+			.then((response) => {
+				if (
+					response.type === 'ready' &&
+					typeof response.cellW === 'number' &&
+					typeof response.cellH === 'number'
+				) {
+					onMetrics(response.cellW, response.cellH);
+				}
+			})
+			.catch((err) => warn(`setFont ${paneId}`, err));
 	},
 
 	destroy(paneId): void {

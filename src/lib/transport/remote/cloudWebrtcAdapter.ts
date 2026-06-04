@@ -30,7 +30,7 @@
 //   • The host onFrame pipeline + Rust WebRTC migration — that is S4-host
 //     runtime work; this is the pure-TS client leg.
 
-import { demuxFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
+import { demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
 import type {
   CloudConnectionCallbacks,
   CloudConnectionState,
@@ -78,6 +78,13 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   private controlListeners = new Set<ControlListener>();
   private paneListeners = new Set<PaneBytesListener>();
   private stateListeners = new Set<StateListener>();
+  /**
+   * Listeners for the 0x12 session-CONTROL channel (contract §4 TOTP handshake).
+   * Kept separate from {@link controlListeners} (the 0x11 JSON-RPC business
+   * channel) so the cloud-controller boot can gate readiness on `totp-result`
+   * without entangling the L2 RPC client.
+   */
+  private sessionControlListeners = new Set<(frame: Record<string, unknown>) => void>();
 
   // Mirror of the provider state. The provider sets callbacks at construction;
   // the boot code hands it `adapter.callbacks` so the adapter is the single
@@ -119,6 +126,18 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   onControl(cb: ControlListener): Unsubscribe {
     this.controlListeners.add(cb);
     return () => this.controlListeners.delete(cb);
+  }
+
+  // ── §4 session-CONTROL channel (0x12): TOTP handshake ────────────────────────
+  /** Send a session-control frame (e.g. `{ t: 'totp-verify', code }`) on 0x12. */
+  sendSessionControl(frame: Record<string, unknown>): void {
+    this.provider.sendFrame(encodeControlFrame(frame));
+  }
+
+  /** Subscribe to inbound 0x12 session-control frames (e.g. `{ t: 'totp-result', ok }`). */
+  onSessionControl(cb: (frame: Record<string, unknown>) => void): Unsubscribe {
+    this.sessionControlListeners.add(cb);
+    return () => this.sessionControlListeners.delete(cb);
   }
 
   // ── L1: pane bytes ──────────────────────────────────────────────────────────
@@ -171,6 +190,12 @@ export class CloudWebrtcAdapter implements ChannelTransport {
           this.emitControl(result.json as ControlFrame);
         }
         return;
+      case 'control':
+        // The 0x12 channel is the §4 session-control envelope (TOTP handshake).
+        if (result.json !== null && typeof result.json === 'object') {
+          this.emitSessionControl(result.json as Record<string, unknown>);
+        }
+        return;
       case 'pane':
         this.emitPaneBytes(result.paneId, result.bytes);
         return;
@@ -213,11 +238,22 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     }
   }
 
+  private emitSessionControl(frame: Record<string, unknown>): void {
+    for (const cb of this.sessionControlListeners) {
+      try {
+        cb(frame);
+      } catch (e) {
+        console.error('[cloudWebrtcAdapter] session-control listener threw', e);
+      }
+    }
+  }
+
   /** Detach all listeners (does not disconnect the provider). */
   dispose(): void {
     this.controlListeners.clear();
     this.paneListeners.clear();
     this.stateListeners.clear();
+    this.sessionControlListeners.clear();
   }
 }
 

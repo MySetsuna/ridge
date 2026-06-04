@@ -13,10 +13,15 @@
 // 这是 host 侧 `cloudHostBridge.ts`（answerer）的对端：controller 经此发 invoke /
 // pane 订阅 / $/hello，host 桥本地真实执行后回结果（端到端打通）。
 //
+// 触发方式（优先级从高到低）：
+//   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
+//   2. 租户域名: `{device}-{username}.remo2ridge.duckdns.org`（从 hostname 自动解析）
+//   解析规则与 ridge-cloud 后端 validation.rs §1.1/§1.2 逐字一致。
+//
 // 设计要点（与 LAN boot 在 +layout.svelte 对称）：
 //   - 本模块只做"已鉴权传输 → bridge"接线，不解析 mux、不碰 E2EE（都在 provider/adapter）。
 //   - user JWT / hostDevice / username 由调用方提供；URL 入口从 localStorage（auth.ts
-//     的 cloudAuth）取 user token，从 URL query 取 hostDevice/username 覆盖默认。
+//     的 cloudAuth）取 user token，从 URL query 或 hostname 取 hostDevice/username 覆盖默认。
 //   - 幂等：重复 boot 返回同一句柄（避免重复 attach / 多条 WebRTC）。
 
 import { bridge } from '$lib/transport/tauriShim/bridge';
@@ -51,9 +56,18 @@ export interface CloudControllerHandle {
   readonly adapter: CloudWebrtcAdapter;
   /** 目标 host 的 device_name。 */
   readonly hostDevice: string;
+  /**
+   * §4 云端 TOTP 二次验证：经 CONTROL 通道（0x12）发 `{ t:'totp-verify', code }`，
+   * 等 host 回 `{ t:'totp-result', ok }`。resolve(ok)。超时（默认 10s）→ reject。
+   * 连上（'connected'）后、标记 ready 前由 gate 调用。
+   */
+  verifyTotp(code: string, timeoutMs?: number): Promise<boolean>;
   /** 断开并释放（幂等）：close 适配器（→ provider.disconnect）。 */
   disconnect(): void;
 }
+
+/** §4 controller→host TOTP 验证默认超时（ms）。 */
+const TOTP_VERIFY_TIMEOUT_MS = 10_000;
 
 /** 进程内单例句柄：保证幂等（重复 boot 不重复 attach / 不开多条 WebRTC）。 */
 let active: CloudControllerHandle | null = null;
@@ -109,6 +123,9 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   const handle: CloudControllerHandle = {
     adapter,
     hostDevice: params.hostDevice,
+    verifyTotp(code, timeoutMs = TOTP_VERIFY_TIMEOUT_MS) {
+      return verifyTotpOverControl(adapter, code, timeoutMs);
+    },
     disconnect() {
       adapter.close();
       adapter.dispose();
@@ -117,6 +134,37 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   };
   active = handle;
   return handle;
+}
+
+/**
+ * §4 一次性 TOTP 握手：在 CONTROL 通道发 `totp-verify`，等首个 `totp-result`。
+ * 纯函数（注入 adapter 以便单测）：监听 → 发码 → resolve(ok) / 超时 reject，
+ * 完成即退订（无悬挂监听）。
+ */
+export function verifyTotpOverControl(
+  adapter: CloudWebrtcAdapter,
+  code: string,
+  timeoutMs = TOTP_VERIFY_TIMEOUT_MS,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsub = adapter.onSessionControl((frame) => {
+      if (frame.t !== 'totp-result') return; // 忽略其它 CONTROL 帧
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      unsub();
+      resolve(frame.ok === true);
+    });
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      unsub();
+      reject(new Error('TOTP 验证超时'));
+    }, timeoutMs);
+    adapter.sendSessionControl({ t: 'totp-verify', code });
+  });
 }
 
 /** 当前活跃的 cloud-controller 句柄（无则 null）。 */
@@ -144,8 +192,77 @@ export function parseCloudControllerUrl(
   return { hostDevice, username };
 }
 
+// ── 租户域名解析（与 ridge-cloud validation.rs §1.1/§1.2 逐字一致）─────────────
+
 /**
- * URL 驱动入口：若当前 URL 带 `?cloudHost=...`，则以 cloud-controller 形态接线并连接。
+ * 契约 §1.2 保留字：这些首段 label 不做租户解析（按系统路由）。
+ * 与 ridge-cloud `validation.rs` 的 `RESERVED_LABELS` 逐字同步。
+ */
+const RESERVED_LABELS = new Set([
+  'www', 'api', 'ws', 'app', 'admin', 'static', 'cdn', 'mail',
+]);
+
+/**
+ * 契约 §1.1 username 校验：`^[a-z0-9]{3,20}$`（小写字母+数字，不含连字符，3–20 位）。
+ */
+const USERNAME_RE = /^[a-z0-9]{3,20}$/;
+
+/**
+ * 契约 §1.1 device_name 校验：`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`，3–30 位，
+ * 禁止 `--`，禁止首尾连字符。
+ */
+const DEVICE_NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+
+function isValidUsername(s: string): boolean {
+  return USERNAME_RE.test(s);
+}
+
+function isValidDeviceName(s: string): boolean {
+  return s.length >= 3 && s.length <= 30 && !s.includes('--') && DEVICE_NAME_RE.test(s);
+}
+
+/**
+ * 从 hostname 解析租户域名，提取 device_name 和 username。
+ *
+ * 例：`my-laptop-alice.remo2ridge.duckdns.org` → `{ hostDevice: "my-laptop", username: "alice" }`。
+ *
+ * 解析算法（契约 §1.2，与 ridge-cloud `validation.rs` 的 `parse_tenant_label` 一致）：
+ * 1. 取 hostname 首段 label（第一个 `.` 之前，已小写）。
+ * 2. 若 label 为保留字 → 返回 null。
+ * 3. 按 label 中**最后一个 `-`** 切分为 device 和 username。
+ * 4. 分别用 §1.1 正则校验；任一不过 → 返回 null。
+ */
+export function parseCloudControllerHostname(
+  hostname: string,
+): { hostDevice: string; username: string } | null {
+  // 去端口、取首段 label、规范化小写。
+  const withoutPort = hostname.split(':')[0];
+  const label = withoutPort.split('.')[0].toLowerCase();
+  if (!label) return null;
+
+  // 保留字 → 非租户。
+  if (RESERVED_LABELS.has(label)) return null;
+
+  // 按最后一个 '-' 切分。
+  const lastDash = label.lastIndexOf('-');
+  if (lastDash < 0) return null;
+
+  const device = label.slice(0, lastDash);
+  const username = label.slice(lastDash + 1);
+
+  if (!isValidDeviceName(device) || !isValidUsername(username)) return null;
+
+  return { hostDevice: device, username };
+}
+
+/**
+ * URL 驱动入口：按优先级从 URL query / hostname 解析目标设备，以 cloud-controller
+ * 形态接线并连接。
+ *
+ * 解析顺序：
+ *   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定，最高优先级）
+ *   2. hostname: `{device}-{username}.remo2ridge.duckdns.org`（租户域名自动解析）
+ *
  * 返回句柄；非 cloud-controller 模式或缺凭据返回 null（调用方据此回退到 LAN boot）。
  *
  * 由 +layout.svelte 的 web-remote boot 在浏览器环境调用（SSR 下 location 不可用，
@@ -154,18 +271,39 @@ export function parseCloudControllerUrl(
 export function bootCloudControllerFromUrl(
   search: string,
   ui?: Pick<CloudControllerBootParams, 'onState' | 'onError'>,
+  hostname?: string,
 ): CloudControllerHandle | null {
-  const parsed = parseCloudControllerUrl(search);
-  if (!parsed) return null;
-  try {
-    return startCloudControllerBoot({
-      hostDevice: parsed.hostDevice,
-      username: parsed.username,
-      onState: ui?.onState,
-      onError: ui?.onError,
-    });
-  } catch {
-    // 缺 token/username：交由调用方回退（不静默吞）。
-    return null;
+  // 1. 先尝试 URL query 参数（显式指定）。
+  const fromQuery = parseCloudControllerUrl(search);
+  if (fromQuery) {
+    try {
+      return startCloudControllerBoot({
+        hostDevice: fromQuery.hostDevice,
+        username: fromQuery.username,
+        onState: ui?.onState,
+        onError: ui?.onError,
+      });
+    } catch {
+      return null;
+    }
   }
+
+  // 2. 再尝试 hostname 解析（租户域名自动发现）。
+  if (hostname) {
+    const fromHost = parseCloudControllerHostname(hostname);
+    if (fromHost) {
+      try {
+        return startCloudControllerBoot({
+          hostDevice: fromHost.hostDevice,
+          username: fromHost.username,
+          onState: ui?.onState,
+          onError: ui?.onError,
+        });
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  return null;
 }

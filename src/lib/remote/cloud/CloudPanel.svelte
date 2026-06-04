@@ -7,9 +7,12 @@
   //   - 深根按钮       → invoke('enter_deep_root_mode')
   //   命令暂不存在时用 try/catch 容错，不报错。
 
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { Globe, Wifi, WifiOff, Loader2, Sprout, Power, Plus } from 'lucide-svelte';
+  import { Globe, Wifi, WifiOff, Loader2, Power, Plus } from 'lucide-svelte';
+  import QrCode from '../QrCode.svelte';
+  import MinimizeButton from '../MinimizeButton.svelte';
   import * as auth from './auth';
   import { cloudAuth } from './auth';
   import { ApiError } from './apiClient';
@@ -29,6 +32,20 @@
   let hostBridge: CloudHostBridge | null = null;
   let connState = $state<CloudConnectionState>('disconnected');
   let connError = $state('');
+
+  // §4 云端 TOTP 展示：复用 LAN 的 get_remote_info（同一本机 RemoteAuth → 同一
+  // 6 位 code + otpauth URI），仅在 cloud 会话活跃时展示，供用户读出输入到 controller。
+  let remoteInfo = $state<{ totpCode: string; otpauthUri: string } | null>(null);
+  let totpTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshRemoteInfo(): Promise<void> {
+    try {
+      const info = await invoke<{ totpCode: string; otpauthUri: string }>('get_remote_info');
+      remoteInfo = { totpCode: info.totpCode, otpauthUri: info.otpauthUri };
+    } catch {
+      /* 桌面端命令缺失（如 web-remote 环境）时容错忽略 */
+    }
+  }
 
   // 设备激活
   let activating = $state(false);
@@ -93,6 +110,10 @@
         listen,
         getActiveWorkspaceId: () => invoke<string>('get_active_workspace_id'),
       }),
+      // §4 云端 TOTP 二次验证：注入本机 RemoteAuth 校验（与 LAN 同源 RFC6238，
+      // ±1 窗口）。controller 经 CONTROL 通道发来 6 位 code，host 桥在放行业务帧
+      // 前调此命令；未通过则拒绝 invoke/pane。
+      totpVerifier: (code) => invoke<boolean>('verify_remote_totp', { code }),
       // keyBindingVerifier：§5.5 公钥↔设备身份绑定，待 cloud 后端提供带外校验通道后注入。
     });
     hostBridge = bridge;
@@ -123,17 +144,30 @@
     await notifyCloudActive(false);
   }
 
-  // 进入深根模式（契约 §8.1）：仅当存在活跃云端远控会话时由 Rust 侧放行。
-  async function enterDeepRoot(): Promise<void> {
-    try {
-      await invoke('enter_deep_root_mode');
-    } catch (e) {
-      connError = e instanceof Error ? e.message : tr('cloud.errDeepRootFailed');
-    }
+  // 「最小化·后台保活」失败回调（契约 §8）：复用 enter_deep_root_mode，由
+  // MinimizeButton 触发；前置校验失败（无活跃远控）等错误经此 inline 提示。
+  function onMinimizeError(): void {
+    connError = tr('cloud.errMinimizeFailed');
   }
 
   const isConnected = $derived(connState === 'connected');
   const isBusy = $derived(connState === 'connecting' || connState === 'handshaking');
+
+  // §4：cloud 会话活跃（连接中/已连接）时拉取并轮询 TOTP（与 RemotePanel 同 5s 节奏，
+  // 远小于 30s 周期，确保展示的 code 始终有效）；空闲时停轮询并清空展示。
+  const sessionActive = $derived(isConnected || isBusy);
+  $effect(() => {
+    if (sessionActive) {
+      void refreshRemoteInfo();
+      totpTimer ??= setInterval(refreshRemoteInfo, 5000);
+    } else {
+      if (totpTimer) { clearInterval(totpTimer); totpTimer = null; }
+      remoteInfo = null;
+    }
+    return () => { if (totpTimer) { clearInterval(totpTimer); totpTimer = null; } };
+  });
+
+  onMount(() => () => { if (totpTimer) clearInterval(totpTimer); });
 </script>
 
 <div class="space-y-4">
@@ -202,20 +236,25 @@
       {/if}
     </div>
 
-    <!-- 深根模式 -->
-    <button
-      onclick={enterDeepRoot}
-      disabled={!isConnected}
-      title={isConnected ? $t('cloud.deepRootTipOn') : $t('cloud.deepRootTipOff')}
-      class="group flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm font-medium transition-all disabled:opacity-40
-        border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/50"
-    >
-      <Sprout class="h-4 w-4 transition-transform group-hover:scale-110" />
-      {$t('cloud.deepRoot')}
-    </button>
-    <p class="text-center text-[10px] leading-relaxed text-[var(--rg-fg-muted)]">
-      {$t('cloud.deepRootDesc')}
-    </p>
+    <!-- §4 云端 TOTP 展示：会话活跃时显示本机 6 位 code + 绑定 QR（复用 LAN 布局），
+         供用户读出输入到打开子域的浏览器 controller。 -->
+    {#if sessionActive && remoteInfo}
+      <div class="rounded-xl border border-[var(--rg-border)] bg-[var(--rg-surface)]/50 p-4 space-y-3">
+        <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('cloud.totpTitle')}</h3>
+        <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.totpHint')}</p>
+        <div class="flex flex-col items-center gap-1 py-1">
+          <p class="text-[10px] text-[var(--rg-fg-muted)] mb-1">{$t('remote.qrBindAuth')}</p>
+          <QrCode value={remoteInfo.otpauthUri} size={140} />
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-[var(--rg-fg-muted)]">{$t('remote.totpCode')}</span>
+          <span class="font-mono text-base font-bold tracking-wider text-[var(--rg-fg)]">{remoteInfo.totpCode}</span>
+        </div>
+      </div>
+    {/if}
+
+    <!-- 最小化·后台保活（契约 §8）：云端已连接时启用 -->
+    <MinimizeButton active={isConnected} onError={onMinimizeError} />
   {/if}
 
   {#if connError}

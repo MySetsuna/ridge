@@ -16,19 +16,24 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use tokio::sync::mpsc;
 
+use std::path::PathBuf;
+
 use crate::batching::BatchingBuffer;
+use crate::core_host;
 use crate::e2ee::{Dir, Handshake, Session as CryptoSession};
 use crate::fs_reuse;
 use crate::protocol::{self, ControlMsg, HostMsg};
 use crate::pty::PtyBridge;
 use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
 use crate::signaling::{SignalMsg, SignalSender};
+use crate::totp::RemoteTotp;
 
 /// 一个 controller 会话的生命周期（从 offer 到断开）。
 pub struct RemoteSession;
 
 impl RemoteSession {
-    /// 跑一个完整会话直到对端断开或出错。`shell` / `cwd` 决定本地 shell。
+    /// 跑一个完整会话直到对端断开或出错。`shell` / `cwd` 决定本地 shell；
+    /// `root` 覆盖 fs 服务根沙箱（D-GM-9，缺省回退 `cwd` → 进程当前目录）。
     pub async fn run(
         peer: &impl HostPeer,
         ice_urls: Vec<String>,
@@ -36,7 +41,24 @@ impl RemoteSession {
         signal_rx: &mut mpsc::Receiver<SignalMsg>,
         shell: Option<String>,
         cwd: Option<String>,
+        root: Option<String>,
     ) -> Result<()> {
+        // fs 服务根沙箱（D-GM-9）：本会话所有 search / list_dir 命令限定于此。
+        // 一次解析、整会话复用。空 = 不限制（向后兼容）——公网 host 上要警示。
+        let roots: Vec<PathBuf> = core_host::resolve_serving_roots(root.as_deref(), cwd.as_deref());
+        if roots.is_empty() {
+            tracing::warn!(
+                target: "ridge_cli::session",
+                "fs serving root unset and CWD unreadable; filesystem commands are UNRESTRICTED \
+                 (set --root / RIDGE_REMOTE_ROOT to confine)"
+            );
+        } else {
+            tracing::info!(
+                target: "ridge_cli::session",
+                roots = ?roots,
+                "fs commands confined to serving root(s)"
+            );
+        }
         // 1. 建立 answerer 的信令输入/输出泵接口。
         let (inbound_tx, inbound_rx) = mpsc::channel::<PeerInbound>(64);
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<PeerOutbound>(64);
@@ -70,6 +92,13 @@ impl RemoteSession {
             Err(_) => bail!("E2EE handshake timed out"),
         };
         let mut crypto = handshake.into_session(peer_pub, Dir::HostToController)?;
+
+        // 4b. 云远控二次验证（契约 §4）：每会话一份随机 TOTP，打到 TUI 让用户
+        //     读出并在浏览器 controller 输入。未验证前业务帧（输入/resize/搜索/树）
+        //     被门控，只有 `totp-verify` 会被处理（见 handle_inbound）。
+        let totp = RemoteTotp::new();
+        let mut verified = false;
+        Self::print_totp_prompt(&totp);
 
         // 5. 主循环：攒批 PTY 输出、解密控制消息、把 answer/ICE 转发到信令。
         let mut batch = BatchingBuffer::new();
@@ -111,7 +140,7 @@ impl RemoteSession {
                 maybe_in = dc_io.rx.recv() => {
                     match maybe_in {
                         Some(frame) => {
-                            if let Err(e) = Self::handle_inbound(&frame, &mut crypto, &pty, &dc_io.tx).await {
+                            if let Err(e) = Self::handle_inbound(&frame, &mut crypto, &pty, &dc_io.tx, &roots, &totp, &mut verified).await {
                                 tracing::warn!(target: "ridge_cli::session", error = %e, "inbound frame rejected");
                             }
                         }
@@ -180,16 +209,83 @@ impl RemoteSession {
         Ok(())
     }
 
+    /// 把本会话的 6 位 TOTP + otpauth URI 打到 stderr（与本 crate 其余日志一致，
+    /// systemd → journald），引导用户读出并在浏览器 controller 输入（契约 §4）。
+    fn print_totp_prompt(totp: &RemoteTotp) {
+        // ANSI 装饰，与 device_flow 配对码风格一致（非 TTY 时只是裸字符，无害）。
+        const CYAN: &str = "\x1b[36m";
+        const YELLOW: &str = "\x1b[33m";
+        const BOLD: &str = "\x1b[1m";
+        const DIM: &str = "\x1b[2m";
+        const RESET: &str = "\x1b[0m";
+
+        let label = hostname_label();
+        let code = totp.current_code();
+        let uri = totp.otpauth_uri(&label);
+        let period = RemoteTotp::period_secs();
+
+        eprintln!();
+        eprintln!("{CYAN}{BOLD}  ╔══════════════════════════════════════════════╗{RESET}");
+        eprintln!("{CYAN}{BOLD}  ║       RIDGE · 云远控二次验证 (TOTP)            ║{RESET}");
+        eprintln!("{CYAN}{BOLD}  ╚══════════════════════════════════════════════╝{RESET}");
+        eprintln!();
+        eprintln!("  {DIM}在浏览器控制端输入下面的 6 位验证码以解锁控制：{RESET}");
+        eprintln!();
+        eprintln!("        {YELLOW}{BOLD}▎ {code} ▎{RESET}");
+        eprintln!();
+        eprintln!("  {DIM}每 {period}s 刷新；验证前控制端无法操作本机 shell。{RESET}");
+        eprintln!("  {DIM}otpauth: {uri}{RESET}");
+        eprintln!();
+    }
+
     /// 解密一帧 controller→host，按控制消息分派。
+    /// `roots` 是 fs 服务根沙箱（D-GM-9），透传给 search / list_dir。
+    ///
+    /// 云远控二次验证门控（契约 §4）：`verified` 为 false 时，业务帧
+    /// （Input/Resize/Search/Tree）一律拒绝，只处理 `TotpVerify`：本机
+    /// `totp.verify(code)` → 回 `{"t":"totp-result","ok":…}`，ok 后置位 `verified`，
+    /// 之后才放行业务帧。这样 controller 在通过 TOTP 前无法驱动 shell。
+    #[allow(clippy::too_many_arguments)]
     async fn handle_inbound(
         frame: &[u8],
         crypto: &mut CryptoSession,
         pty: &PtyBridge,
         tx: &mpsc::Sender<Vec<u8>>,
+        roots: &[PathBuf],
+        totp: &RemoteTotp,
+        verified: &mut bool,
     ) -> Result<()> {
         let plaintext = crypto.open(frame)?;
         let msg: ControlMsg = serde_json::from_slice(&plaintext)
             .map_err(|e| anyhow!("control message parse failed: {e}"))?;
+
+        // TOTP 验证帧：无论是否已验证都处理（已验证后重发是无害幂等的）。
+        if let ControlMsg::TotpVerify { code } = &msg {
+            let ok = totp.verify(code);
+            if ok {
+                *verified = true;
+                tracing::info!(
+                    target: "ridge_cli::session",
+                    "controller passed TOTP; control channel unlocked"
+                );
+            } else {
+                tracing::warn!(
+                    target: "ridge_cli::session",
+                    "controller submitted an invalid TOTP code"
+                );
+            }
+            let reply = protocol::frame_host_json(&HostMsg::TotpResult { ok });
+            let sealed = crypto.seal(&reply)?;
+            tx.send(sealed).await.ok();
+            return Ok(());
+        }
+
+        // 未验证 → 拒绝一切业务帧（不写 PTY、不查 fs），避免 controller 在
+        // 通过 TOTP 前驱动 shell 或探测文件系统。
+        if !*verified {
+            bail!("control frame rejected: TOTP verification required");
+        }
+
         match msg {
             ControlMsg::Input { data } => {
                 pty.write_input(data.as_bytes())?;
@@ -197,6 +293,8 @@ impl RemoteSession {
             ControlMsg::Resize { cols, rows } => {
                 pty.resize(cols, rows)?;
             }
+            // 已在上面提前返回；这里仅为穷尽匹配。
+            ControlMsg::TotpVerify { .. } => unreachable!("handled above"),
             ControlMsg::Search {
                 root,
                 query,
@@ -204,14 +302,14 @@ impl RemoteSession {
                 case_sensitive,
             } => {
                 // §S5: 经 `ridge_core::dispatch("search", …)` 复用桌面同款引擎。
-                let results = fs_reuse::search(&root, &query, use_regex, case_sensitive);
+                let results = fs_reuse::search(roots, &root, &query, use_regex, case_sensitive);
                 let reply = protocol::frame_host_json(&HostMsg::SearchResult { results });
                 let sealed = crypto.seal(&reply)?;
                 tx.send(sealed).await.ok();
             }
             ControlMsg::Tree { path } => {
                 // §S5: 经 `ridge_core::dispatch("get_directory_children", …)` 复用。
-                let reply = match fs_reuse::list_dir(std::path::Path::new(&path)) {
+                let reply = match fs_reuse::list_dir(roots, std::path::Path::new(&path)) {
                     Ok(entries) => HostMsg::Tree { entries },
                     Err(e) => HostMsg::Error {
                         // 不泄露内部细节（rust/security.md）。
@@ -239,4 +337,15 @@ impl IoErrorKindStr for std::io::Error {
             _ => "io error",
         }
     }
+}
+
+/// 主机名（用于 otpauth label，仅展示用）。读 `HOSTNAME`/`COMPUTERNAME` 环境变量，
+/// 缺失则回退 `ridge-host`。无额外依赖。
+fn hostname_label() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "ridge-host".to_string())
 }

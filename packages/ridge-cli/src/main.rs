@@ -22,6 +22,7 @@ mod pty;
 mod rtc;
 mod session;
 mod signaling;
+mod totp;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -64,6 +65,12 @@ struct RemoteArgs {
     /// 会话 shell 的工作目录（默认 $HOME / 当前目录）。
     #[arg(long)]
     cwd: Option<String>,
+
+    /// fs 服务根沙箱（D-GM-9）：限定 controller 可读的目录子树，避免公网 host
+    /// 暴露 ~/.ssh、/etc/passwd 等。缺省回退 `--cwd` → 进程当前目录；显式设为
+    /// `/` 可放开为整机（不推荐）。
+    #[arg(long, env = "RIDGE_REMOTE_ROOT")]
+    root: Option<String>,
 }
 
 #[derive(Args)]
@@ -149,14 +156,14 @@ async fn run_remote(args: RemoteArgs) -> Result<()> {
         // --enable 同时带 --daemon 时，配对成功后直接进入守护。
         if args.daemon {
             tracing::info!(target: "ridge_cli", device = %auth.device_name, "pairing complete; entering daemon");
-            return daemon::run(args.shell, args.cwd).await;
+            return daemon::run(args.shell, args.cwd, args.root).await;
         }
         eprintln!("配对完成。运行 `ridge-cli remote --daemon` 开始守护。");
         return Ok(());
     }
 
     if args.daemon {
-        return daemon::run(args.shell, args.cwd).await;
+        return daemon::run(args.shell, args.cwd, args.root).await;
     }
 
     // 既不 --enable 也不 --daemon：打印用法。

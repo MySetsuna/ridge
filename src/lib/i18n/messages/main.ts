@@ -11,6 +11,12 @@ export const zh: Record<string, string> = {
   remoteGateErrNetwork: '网络错误，请重试',
   remoteGateErrCloud: 'Cloud 连接失败',
 
+  // §4 云端 TOTP 二次验证（控制端）
+  totpGateSubtitle: '已建立加密连接。请输入桌面端 Ridge「官方公网加速」页面显示的 6 位动态验证码',
+  totpGateVerify: '验证并控制',
+  totpGateErrInvalid: '验证码无效，请重新输入',
+  totpGateErrNetwork: '验证超时或失败，请重试',
+
   // sidebar nav tooltips
   navFiles: '文件',
   navSearch: '搜索 (Ctrl+Shift+F)',
@@ -109,6 +115,10 @@ export const en: Record<string, string> = {
   remoteGateConnect: 'Verify & Connect',
   remoteGateConnecting: 'Connecting to remote desktop...',
   remoteGateErrReconnect: 'Connection failed, please enter the code again',
+  totpGateSubtitle: 'Encrypted connection established. Enter the 6-digit code shown on the "Public Accelerate" page in the Ridge desktop app',
+  totpGateVerify: 'Verify & Control',
+  totpGateErrInvalid: 'Invalid code, please try again',
+  totpGateErrNetwork: 'Verification timed out or failed, please try again',
   remoteGateErrInvalidCode: 'Invalid code',
   remoteGateErrNetwork: 'Network error, please try again',
   remoteGateErrCloud: 'Cloud connection failed',

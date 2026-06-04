@@ -22,8 +22,9 @@ use crate::signaling::{SignalMsg, Signaling};
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const MIN_BACKOFF: Duration = Duration::from_secs(2);
 
-/// 跑 daemon。`shell` / `cwd` 透传给每个会话的 PTY。
-pub async fn run(shell: Option<String>, cwd: Option<String>) -> Result<()> {
+/// 跑 daemon。`shell` / `cwd` 透传给每个会话的 PTY；`root` 透传为 fs 服务根沙箱
+/// （D-GM-9，缺省回退 `cwd` → 进程当前目录）。
+pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String>) -> Result<()> {
     let auth = config::load_auth()
         .context("failed to load credentials")?
         .context("no device credentials — run `ridge-cli remote --enable` first")?;
@@ -42,7 +43,7 @@ pub async fn run(shell: Option<String>, cwd: Option<String>) -> Result<()> {
 
     let mut backoff = MIN_BACKOFF;
     loop {
-        match serve_once(&http, &auth, shell.clone(), cwd.clone()).await {
+        match serve_once(&http, &auth, shell.clone(), cwd.clone(), root.clone()).await {
             Ok(()) => {
                 // 信令正常断开：重置退避后立即重连。
                 backoff = MIN_BACKOFF;
@@ -67,6 +68,7 @@ async fn serve_once(
     auth: &AuthFile,
     shell: Option<String>,
     cwd: Option<String>,
+    root: Option<String>,
 ) -> Result<()> {
     let ice_urls = ice::fetch_ice_urls(http, &auth.token).await;
     let mut signaling = Signaling::connect(&auth.signaling_ws_url())
@@ -107,6 +109,7 @@ async fn serve_once(
                 &mut signaling.incoming,
                 shell.clone(),
                 cwd.clone(),
+                root.clone(),
             )
             .await
             {

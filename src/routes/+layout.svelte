@@ -20,7 +20,7 @@
   // before the WS is live.
   let { children } = $props();
   let ready = $state(!WEB_REMOTE);
-  let phase = $state('connecting'); // 'connecting' | 'need-code' | 'error'
+  let phase = $state('connecting'); // 'connecting' | 'need-code' | 'need-totp' | 'error'
   let code = $state('');
   let errorMsg = $state('');
   let loading = $state(false);
@@ -30,37 +30,51 @@
       setTransport(new TauriDataProvider());
       return;
     }
-    // §cloud: `?cloudHost=<device>&u=<username>` enters cloud-controller mode
-    // (connect to the host over the WebRTC relay) instead of the LAN TOTP flow.
-    if (new URLSearchParams(location.search).has('cloudHost')) {
-      void startCloudControllerBootMode();
-      return;
-    }
-    void startWebRemoteBoot();
+    // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
+    //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
+    //   2. 租户域名: `{device}-{username}.remo2ridge.duckdns.org`（自动从 hostname 解析）
+    // 非 cloud 模式则走 LAN TOTP 流程。
+    void startCloudControllerBootMode();
   });
 
-  // Cloud controller boot: bootCloudControllerFromUrl wires the controller
-  // WebRTC provider → L1 adapter → bridge → DataProvider internally; we only
-  // flip `ready` once the relay/WebRTC/E2EE handshake reaches `connected`.
+  // Cloud controller boot: bootCloudControllerFromUrl tries both URL query
+  // params and hostname-based tenant detection; wires the controller WebRTC
+  // provider → L1 adapter → bridge → DataProvider internally; flips `ready`
+  // once the relay/WebRTC/E2EE handshake reaches `connected`.
+  //
+  // 回退策略：
+  // - 租户域名（`{device}-{username}.remo2ridge.duckdns.org`）上 cloud 接线失败
+  //   （无 user token / host 不在线）→ 重定向到 `remo2ridge.duckdns.org` 登录/激活
+  // - 主域名上 cloud 接线失败 → 回退 LAN TOTP 流程
   async function startCloudControllerBootMode() {
-    const { bootCloudControllerFromUrl } = await import('$lib/remote/cloud/cloudControllerBoot');
+    const { bootCloudControllerFromUrl, parseCloudControllerHostname } =
+      await import('$lib/remote/cloud/cloudControllerBoot');
     phase = 'connecting';
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
         if (s === 'connected') {
-          ready = true;
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-          }
+          // §4 云端 TOTP 二次验证：连上（E2EE 完成）后**先**提示输入 host 展示的
+          // 6 位 code，验证通过才标记 ready（驱动桌面 UI）。
+          phase = 'need-totp';
+          errorMsg = '';
+          loading = false;
         } else if (s === 'error') {
           phase = 'error';
           errorMsg = errorMsg || tr('main.remoteGateErrCloud');
         }
       },
       onError: (msg) => { phase = 'error'; errorMsg = msg; },
-    });
-    // Missing cloud params / user token → fall back to the LAN TOTP flow.
-    if (!handle) void startWebRemoteBoot();
+    }, location.hostname);
+    cloudHandle = handle;
+    if (!handle) {
+      // 租户域名上无凭据 / host 不在线 → 回主域名登录。
+      if (parseCloudControllerHostname(location.hostname)) {
+        window.location.replace(`https://remo2ridge.duckdns.org/?redirect=${encodeURIComponent(location.href)}`);
+        return;
+      }
+      // 主域名上非 cloud 模式 → 回退 LAN TOTP。
+      void startWebRemoteBoot();
+    }
   }
 
   async function startWebRemoteBoot() {
@@ -148,6 +162,38 @@
 
   let submitCode = () => {};
 
+  // §4 云端 TOTP：boot 句柄（连上后用于经 CONTROL 通道发码验证）。
+  let cloudHandle: import('$lib/remote/cloud/cloudControllerBoot').CloudControllerHandle | null = null;
+
+  // §4 controller 端 TOTP 提交：把 6 位 code 经 CONTROL 通道发给 host 验证；
+  // ok → 标记 ready（放行桌面 UI）；fail/超时 → 错误提示 + 允许重试。
+  function submitTotp() {
+    const numeric = code.replace(/\D/g, '').slice(0, 6);
+    if (numeric.length < 6 || loading || !cloudHandle) return;
+    loading = true;
+    errorMsg = '';
+    cloudHandle
+      .verifyTotp(numeric)
+      .then((ok) => {
+        loading = false;
+        if (ok) {
+          code = '';
+          ready = true;
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+          }
+        } else {
+          code = '';
+          errorMsg = tr('main.totpGateErrInvalid');
+        }
+      })
+      .catch(() => {
+        loading = false;
+        code = '';
+        errorMsg = tr('main.totpGateErrNetwork');
+      });
+  }
+
   // §A.7 (2026-05-08): the @fontsource/noto-color-emoji webfont was
   // removed — WebView2 / Chromium versions in the Tauri runtime fail
   // to render Noto's COLRv1 outlines via canvas `fillText`. Removing
@@ -175,6 +221,23 @@
         {#if errorMsg}<p class="wr-error">{errorMsg}</p>{/if}
         <button onclick={() => submitCode()} disabled={code.length < 6 || loading}>
           {loading ? $t('main.remoteGateVerifying') : $t('main.remoteGateConnect')}
+        </button>
+      </div>
+    {:else if phase === 'need-totp'}
+      <!-- §4 云端 TOTP 二次验证：连上后输入 host（桌面端 Cloud tab）展示的 6 位 code。 -->
+      <h1>Ridge Remote</h1>
+      <p class="wr-sub">{$t('main.totpGateSubtitle')}</p>
+      <div class="wr-card">
+        <input
+          type="text" inputmode="numeric" maxlength={6}
+          placeholder={$t('main.remoteGatePlaceholder')}
+          value={code}
+          oninput={(e) => { code = e.currentTarget.value.replace(/\D/g, '').slice(0, 6); errorMsg = ''; }}
+          onkeydown={(e) => { if (e.key === 'Enter') submitTotp(); }}
+        />
+        {#if errorMsg}<p class="wr-error">{errorMsg}</p>{/if}
+        <button onclick={() => submitTotp()} disabled={code.length < 6 || loading}>
+          {loading ? $t('main.remoteGateVerifying') : $t('main.totpGateVerify')}
         </button>
       </div>
     {:else}

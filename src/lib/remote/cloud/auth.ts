@@ -11,7 +11,7 @@
 
 import { writable, type Writable } from 'svelte/store';
 import * as api from './apiClient';
-import type { UserDto } from './apiClient';
+import type { CheckinResult, UserDto } from './apiClient';
 
 const LS_USER_TOKEN = 'ridge.cloud.userToken';
 const LS_USER = 'ridge.cloud.user';
@@ -115,11 +115,148 @@ export async function login(email: string, password: string): Promise<CloudAuthS
   return update((s) => ({ ...s, userToken: token, user }));
 }
 
+// ─── §2.3 浏览器登录授权（host 轮询拿 user JWT，token 不进 URL）──────────────
+
+export interface BrowserLoginProgress {
+  /** 已打开的浏览器授权地址（UI 可展示「未自动打开？点此」回退链接）。 */
+  authorizeUrl: string;
+  /** 配对码（仅作展示/排障，token 永远走轮询拿）。 */
+  requestCode: string;
+}
+
+export interface BrowserLoginOptions {
+  /** 拿到 authorize_url 后回调（用于 UI 展示回退链接 / 配对码）。 */
+  onProgress?: (p: BrowserLoginProgress) => void;
+  /** 取消轮询。 */
+  signal?: AbortSignal;
+  /**
+   * 「立即轮询」唤醒源。`ridge://auth/focus` 把桌面端拉回前台后，Rust 侧广播
+   * `ridge://auth-focus` 事件；调用方把该事件桥接为 onWake(cb)，授权批准后免去
+   * 等待下一个轮询间隔。返回取消订阅函数。
+   */
+  onWake?: (cb: () => void) => () => void;
+}
+
+/**
+ * 浏览器登录授权（契约 §2.3）：
+ *   1. POST /auth/request {client:'desktop'} → request_code + poll_token + authorize_url
+ *   2. opener 打开 authorize_url（默认浏览器；不可用时退回 window.open）
+ *   3. 每 interval s 轮询 POST /auth/poll {poll_token}，直到 approved / expired / 超时
+ *   4. approved → 把 {token,user} 写入 cloudAuth（与 login() 一致）
+ *
+ * token 绝不经 `ridge://` URL 传递——URI 仅作「唤起回前台」信号（§1）。
+ */
+export async function loginViaBrowser(opts: BrowserLoginOptions = {}): Promise<CloudAuthState> {
+  const { onProgress, signal, onWake } = opts;
+
+  // 1. 发起授权请求。
+  const req = await api.authRequest('desktop');
+  onProgress?.({ authorizeUrl: req.authorize_url, requestCode: req.request_code });
+
+  // 2. 用默认浏览器打开授权页。
+  await openExternalUrl(req.authorize_url);
+
+  // 3. 轮询直到批准 / 过期 / 超时。
+  const intervalMs = Math.max(1, req.interval) * 1000;
+  const deadline = Date.now() + Math.min(POLL_TIMEOUT_MS, req.expires_in * 1000);
+
+  // `ridge://auth-focus` 事件 → 提前结束当前等待，立即再轮询一次。
+  let wake: (() => void) | null = null;
+  const unsubWake = onWake?.(() => wake?.());
+
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
+      if (Date.now() > deadline) throw new api.ApiError('AUTH_REQUEST_EXPIRED', '登录授权超时');
+
+      const poll = await api.authPoll(req.poll_token);
+      if (poll.status === 'approved') {
+        return update((s) => ({ ...s, userToken: poll.token, user: poll.user }));
+      }
+      if (poll.status === 'expired') {
+        throw new api.ApiError('AUTH_REQUEST_EXPIRED', '登录授权已过期');
+      }
+      await waitable(intervalMs, signal, (resolve) => { wake = resolve; });
+      wake = null;
+    }
+  } finally {
+    unsubWake?.();
+  }
+}
+
+/** opener 优先打开外链；不可用（如纯浏览器 web-remote）时退回 window.open。 */
+async function openExternalUrl(url: string): Promise<void> {
+  try {
+    const m = await import('@tauri-apps/plugin-opener');
+    await m.openUrl(url);
+  } catch {
+    try {
+      window.open(url, '_blank', 'noopener');
+    } catch {
+      /* 无 window（测试/SSR），忽略——UI 仍展示回退链接 */
+    }
+  }
+}
+
+/**
+ * 可被「唤醒」的延时：等满 ms 自动 resolve；signal abort 则 reject；register 暴露一个
+ * 提前 resolve 的钩子（接到 ridge://auth-focus 时立即再轮询，免等下一个间隔）。
+ */
+function waitable(
+  ms: number,
+  signal: AbortSignal | undefined,
+  register: (resolve: () => void) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(id);
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(id);
+      reject(new api.ApiError('INVALID_INPUT', '已取消'));
+    };
+    const id = setTimeout(finish, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    register(finish);
+  });
+}
+
 export async function refreshMe(): Promise<CloudAuthState> {
   const state = readInitialState();
   if (!state.userToken) throw new api.ApiError('UNAUTHORIZED', '未登录');
   const { user } = await api.getMe(state.userToken);
   return update((s) => ({ ...s, user }));
+}
+
+// ─── §5 每日签到（free 用户每日 2h 免费公网远控）─────────────────────────────
+
+/**
+ * 每日签到（契约 §5）：调 POST /me/checkin 授予 2h 临时 premium，然后 refreshMe()
+ * 重新拉取 /me 刷新 plan/premium 展示态。返回后端结果（含 premiumExpiresAt + reason），
+ * 供 UI 展示「已授予至…」/「今日已签到」/「已是永久 premium」。
+ *
+ * 注意：成功后 user.plan 变为 'premium'，cloudAuth 据此联动隐藏升级/签到入口。
+ */
+export async function checkin(): Promise<CheckinResult> {
+  const state = readInitialState();
+  if (!state.userToken) throw new api.ApiError('UNAUTHORIZED', '未登录');
+  const result = await api.checkin(state.userToken);
+  // 签到成功（或已签到/永久）后重新拉取 /me 以同步 plan/premium 展示态；
+  // 刷新失败不影响签到结果回报（UI 仍按 result 展示）。
+  try {
+    await refreshMe();
+  } catch {
+    /* /me 刷新失败容错：不阻断签到结果回报 */
+  }
+  return result;
 }
 
 export function logout(): void {

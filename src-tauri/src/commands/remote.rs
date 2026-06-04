@@ -25,6 +25,19 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
     }))
 }
 
+/// §cloud-TOTP (contract §4): verify a controller-supplied 6-digit TOTP code
+/// against the host's local `RemoteAuth` (the SAME RFC6238 secret the LAN flow
+/// uses) — the ±1 time window is applied inside `RemoteAuth::verify`.
+///
+/// Used by the cloud host bridge (`cloudHostBridge.ts`) to gate the E2EE data
+/// channel: while unverified, business invokes/pane-subscribes are rejected;
+/// the controller sends its code over the CONTROL channel, the bridge calls
+/// this command, and a `true` result lifts the gate for that connection.
+#[tauri::command]
+pub fn verify_remote_totp(state: State<AppState>, code: &str) -> bool {
+    state.remote_auth.verify(code)
+}
+
 #[tauri::command]
 pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
     let prev = state.remote_enabled.swap(enabled, Ordering::Relaxed);

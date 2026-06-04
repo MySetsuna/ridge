@@ -32,6 +32,12 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 # Deep Root Mode（§8.1）：进入深根时发原生系统通知（Rust 端 NotificationExt）。
 tauri-plugin-notification = "2"
+# 公网登录授权（契约 §1/§2.3）：注册自定义 scheme `ridge://`，网页授权批准后
+# `ridge://auth/focus` 把桌面端拉回前台并触发一次轮询。URI 仅作信号，绝不携带 token。
+tauri-plugin-deep-link = "2"
+# 配合 deep-link：Windows 上第二个实例（由浏览器唤起 `ridge://`）把 argv 转交首个
+# 实例并聚焦，避免重复开窗（single-instance 必须在 builder 链最前注册）。
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }

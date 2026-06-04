@@ -137,10 +137,28 @@ export class WorkerHostedRenderer {
 	 * the caller's responsibility — pass `[canvas]` so the underlying
 	 * surface actually moves into the worker. P4.6 keeps this as a no-op
 	 * on the worker side; P4.7 will wire wasm renderer attachment.
+	 *
+	 * `fontOpts` (optional) supplies font measurement args that the worker
+	 * passes to `RenderHandle.configure()` on the newly-bound canvas,
+	 * returning real cell metrics in the `ready` response.
 	 */
-	bindCanvas(paneId: string, canvas?: OffscreenCanvas): Promise<RenderWorkerResponse> {
+	bindCanvas(
+		paneId: string,
+		canvas?: OffscreenCanvas,
+		fontOpts?: { font?: string; fontSizePx?: number; dpr?: number },
+	): Promise<RenderWorkerResponse> {
 		const transfer = canvas ? ([canvas] as Transferable[]) : undefined;
-		return this.send({ type: 'bindCanvas', paneId, canvas }, transfer);
+		return this.send(
+			{
+				type: 'bindCanvas',
+				paneId,
+				canvas,
+				font: fontOpts?.font,
+				fontSizePx: fontOpts?.fontSizePx,
+				dpr: fontOpts?.dpr,
+			},
+			transfer,
+		);
 	}
 
 	/**
@@ -163,8 +181,29 @@ export class WorkerHostedRenderer {
 		return this.send({ type: 'feed', paneId, data });
 	}
 
-	resize(paneId: string, rows: number, cols: number, dpr: number): Promise<RenderWorkerResponse> {
-		return this.send({ type: 'resize', paneId, rows, cols, dpr });
+	resize(
+		paneId: string,
+		rows: number,
+		cols: number,
+		dpr: number,
+		wCss?: number,
+		hCss?: number,
+	): Promise<RenderWorkerResponse> {
+		return this.send({ type: 'resize', paneId, rows, cols, dpr, wCss, hCss });
+	}
+
+	/**
+	 * Reconfigure the font on an already-initialized pane. The worker
+	 * calls `RenderHandle.configure(family, sizePx, dpr)` and returns
+	 * cell metrics in the `ready` response (cellW / cellH).
+	 */
+	setFont(
+		paneId: string,
+		family: string,
+		sizePx: number,
+		dpr: number,
+	): Promise<RenderWorkerResponse> {
+		return this.send({ type: 'setFont', paneId, family, sizePx, dpr });
 	}
 
 	destroy(paneId: string): Promise<RenderWorkerResponse> {

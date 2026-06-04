@@ -20,6 +20,7 @@ import { CloudHostBridge, negotiateHello, toJsonRpcError } from './cloudHostBrid
 import {
   CHANNEL,
   demuxFrame,
+  encodeControlFrame,
   encodeJsonFrame,
   encodePaneFrame,
 } from '../../transport/remote/cloudMux';
@@ -33,6 +34,7 @@ function makeRig(opts: {
   invoke?: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   paneOutputSource?: ConstructorParameters<typeof CloudHostBridge>[0]['paneOutputSource'];
   keyBindingVerifier?: (pub: Uint8Array) => boolean;
+  totpVerifier?: (code: string) => Promise<boolean>;
 } = {}) {
   const sent: Uint8Array[] = [];
   const invoke =
@@ -42,16 +44,25 @@ function makeRig(opts: {
     sendFrame: (b) => sent.push(b),
     paneOutputSource: opts.paneOutputSource,
     keyBindingVerifier: opts.keyBindingVerifier,
+    totpVerifier: opts.totpVerifier,
     log: () => {}, // silence diagnostics in tests
   });
 
   /** Push a JSON-RPC control frame as the controller would (0x11). */
   const sendJson = (value: unknown) => bridge.handleFrame(encodeJsonFrame(value));
+  /** Push a §4 session-CONTROL frame as the controller would (0x12). */
+  const sendControl = (value: unknown) => bridge.handleFrame(encodeControlFrame(value));
   /** Decode every host-sent JSON frame the test has captured so far. */
   const sentJson = () =>
     sent
       .map((f) => demuxFrame(f))
       .filter((r): r is { kind: 'json'; json: unknown } => r.kind === 'json')
+      .map((r) => r.json as Record<string, unknown>);
+  /** Decode every host-sent CONTROL frame (0x12). */
+  const sentControl = () =>
+    sent
+      .map((f) => demuxFrame(f))
+      .filter((r): r is { kind: 'control'; json: unknown } => r.kind === 'control')
       .map((r) => r.json as Record<string, unknown>);
   /** Decode every host-sent PANE_RAW frame. */
   const sentPane = () =>
@@ -59,7 +70,7 @@ function makeRig(opts: {
       .map((f) => demuxFrame(f))
       .filter((r): r is { kind: 'pane'; paneId: string; bytes: Uint8Array } => r.kind === 'pane');
 
-  return { bridge, sent, invoke, sendJson, sentJson, sentPane };
+  return { bridge, sent, invoke, sendJson, sendControl, sentJson, sentControl, sentPane };
 }
 
 describe('CloudHostBridge — JSON-RPC invoke routing', () => {
@@ -318,6 +329,99 @@ describe('CloudHostBridge — reset', () => {
     resolveInvoke('late');
     await Promise.resolve();
     expect(rig.sentJson()).toHaveLength(0);
+  });
+});
+
+describe('CloudHostBridge — §4 cloud TOTP gate (CONTROL channel 0x12)', () => {
+  it('rejects business invokes before verification (id → JSON-RPC error, invoke not run)', async () => {
+    const invoke = vi.fn(async () => 'should-not-run');
+    const rig = makeRig({ invoke, totpVerifier: vi.fn(async () => true) });
+
+    rig.sendJson({ jsonrpc: '2.0', id: 9, method: 'path_exists' });
+    await Promise.resolve();
+
+    expect(invoke).not.toHaveBeenCalled();
+    const reply = rig.sentJson().find((f) => f.id === 9);
+    expect(reply).toBeDefined();
+    expect((reply as { error?: { data?: { kind?: string } } }).error?.data?.kind).toBe(
+      'totp-required',
+    );
+  });
+
+  it('drops unverified pane subscriptions (no PTY stream registered)', async () => {
+    const unsub = vi.fn();
+    const paneOutputSource = vi.fn(() => unsub);
+    const rig = makeRig({ paneOutputSource, totpVerifier: vi.fn(async () => true) });
+
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
+    await Promise.resolve();
+
+    expect(paneOutputSource).not.toHaveBeenCalled();
+  });
+
+  it('verifies a correct code over CONTROL, replies totp-result{ok:true}, then allows invokes', async () => {
+    const totpVerifier = vi.fn(async (code: string) => code === '123456');
+    const invoke = vi.fn(async () => 'ran');
+    const rig = makeRig({ invoke, totpVerifier });
+
+    rig.sendControl({ t: 'totp-verify', code: '123456' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(totpVerifier).toHaveBeenCalledWith('123456');
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: true });
+    // The result rode the CONTROL channel byte, NOT the JSON-RPC byte.
+    expect(rig.sent.find((f) => f[0] === CHANNEL.CONTROL)).toBeDefined();
+
+    // Now a business invoke is allowed through.
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists' });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+  });
+
+  it('rejects a wrong code: totp-result{ok:false}, gate stays closed', async () => {
+    const totpVerifier = vi.fn(async () => false);
+    const invoke = vi.fn(async () => 'ran');
+    const rig = makeRig({ invoke, totpVerifier });
+
+    rig.sendControl({ t: 'totp-verify', code: '000000' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: false });
+
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists' });
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('treats a throwing verifier as a failed verification (ok:false, no throw)', async () => {
+    const rig = makeRig({
+      totpVerifier: vi.fn(async () => {
+        throw new Error('verify boom');
+      }),
+    });
+    rig.sendControl({ t: 'totp-verify', code: '123456' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: false });
+  });
+
+  it('with no verifier configured, business frames pass without TOTP (backward compat)', async () => {
+    const invoke = vi.fn(async () => 'ran');
+    const rig = makeRig({ invoke }); // no totpVerifier
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists' });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+  });
+
+  it('re-arms the gate on reset (reconnect requires fresh TOTP)', async () => {
+    const totpVerifier = vi.fn(async () => true);
+    const invoke = vi.fn(async () => 'ran');
+    const rig = makeRig({ invoke, totpVerifier });
+
+    rig.sendControl({ t: 'totp-verify', code: '123456' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+
+    rig.bridge.reset();
+
+    // After reset, business frames are gated again.
+    rig.sendJson({ jsonrpc: '2.0', id: 2, method: 'path_exists' });
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 

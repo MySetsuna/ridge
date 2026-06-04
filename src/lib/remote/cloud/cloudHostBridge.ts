@@ -26,7 +26,13 @@
 // 不在本桥职责内（归属别处）：E2EE 加解密（provider 内部，§7.2）、JWT/设备配对
 // 鉴权（auth.ts + provider），以及把 host WebRTC 迁到 Rust(webrtc-rs)（契约 §8 终态）。
 
-import { CHANNEL, demuxFrame, encodeJsonFrame, encodePaneFrame } from '../../transport/remote/cloudMux';
+import {
+  CHANNEL,
+  demuxFrame,
+  encodeControlFrame,
+  encodeJsonFrame,
+  encodePaneFrame,
+} from '../../transport/remote/cloudMux';
 
 /** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
 export const HOST_PROTOCOL_VERSION = 1;
@@ -95,6 +101,15 @@ export type Unsubscribe = () => void;
  */
 export type KeyBindingVerifier = (peerPublicKey: Uint8Array) => boolean;
 
+/**
+ * 云端 TOTP 二次验证钩子（契约 §4）。controller 经 CONTROL 通道发来 6 位 code，
+ * 桥用本机 `RemoteAuth::verify(code)`（±1 窗口，与 LAN 同源）判定。生产环境注入
+ * `(code) => invoke('verify_remote_totp', { code })`；测试注入 mock。
+ *
+ * 未注入时桥**默认放行**（verified=true，向后兼容已有 cloud 连接路径，不回归）。
+ */
+export type TotpVerifier = (code: string) => Promise<boolean>;
+
 export interface CloudHostBridgeConfig {
   /** 执行本地命令（注入 Tauri `invoke` 或 mock）。 */
   invoke: InvokeFn;
@@ -107,6 +122,12 @@ export interface CloudHostBridgeConfig {
    * 不过即拒会话。未提供保持 relay-trust 现状。
    */
   keyBindingVerifier?: KeyBindingVerifier;
+  /**
+   * 可选：云端 TOTP 二次验证（契约 §4）。提供则桥在验证通过前**门控业务帧**
+   * （拒绝 invoke / pane 订阅），仅放行 CONTROL 通道的 totp 握手。未提供则默认
+   * 放行（verified=true），保持既有 cloud 连接路径不回归。
+   */
+  totpVerifier?: TotpVerifier;
   /** 可选：诊断日志回调（默认 console）。 */
   log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 }
@@ -130,6 +151,7 @@ export class CloudHostBridge {
   private readonly sendFrame: SendFrameFn;
   private readonly paneOutputSource?: PaneOutputSource;
   private readonly keyBindingVerifier?: KeyBindingVerifier;
+  private readonly totpVerifier?: TotpVerifier;
   private readonly log: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 
   /** 在途 invoke（id → 令牌），供 $/cancel 尽力中止。 */
@@ -138,12 +160,21 @@ export class CloudHostBridge {
   private readonly paneSubs = new Map<string, Unsubscribe>();
   /** 会话是否已被 §5.5 绑定校验拒绝（拒绝后丢弃一切业务帧）。 */
   private rejected = false;
+  /**
+   * §4 云端 TOTP 门控旗标：本连接是否已通过 TOTP 二次验证。
+   *   - 注入了 `totpVerifier` ⇒ 默认 false，验证通过前拒绝业务帧（仅放行 CONTROL 握手）。
+   *   - 未注入 `totpVerifier` ⇒ 默认 true（向后兼容，不门控）。
+   */
+  private verified: boolean;
 
   constructor(config: CloudHostBridgeConfig) {
     this.invoke = config.invoke;
     this.sendFrame = config.sendFrame;
     this.paneOutputSource = config.paneOutputSource;
     this.keyBindingVerifier = config.keyBindingVerifier;
+    this.totpVerifier = config.totpVerifier;
+    // 未注入 TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。
+    this.verified = !config.totpVerifier;
     this.log =
       config.log ??
       ((level, message, detail) => {
@@ -198,7 +229,21 @@ export class CloudHostBridge {
     }
 
     switch (result.kind) {
+      case 'control':
+        // §4 CONTROL 通道（0x12）：TOTP 握手。**门控前唯一放行**的通道。
+        if (result.json !== null && typeof result.json === 'object') {
+          void this.handleSessionControl(result.json as Record<string, unknown>);
+        } else {
+          this.log('warn', 'non-object CONTROL frame ignored');
+        }
+        return;
       case 'json':
+        // §4 门控：未通过 TOTP 验证前拒绝业务 JSON-RPC（带 id 的回错误帧，
+        // 否则静默丢弃 notification）。
+        if (!this.verified) {
+          this.rejectUnverified(result.json);
+          return;
+        }
         if (result.json !== null && typeof result.json === 'object') {
           void this.handleControl(result.json as Record<string, unknown>);
         } else {
@@ -213,6 +258,63 @@ export class CloudHostBridge {
         // 前向兼容：未知通道 tag → 忽略。
         return;
     }
+  }
+
+  // ── §4 云端 TOTP 二次验证（CONTROL 通道 0x12）──────────────────────────────────
+  /**
+   * 处理一帧 CONTROL 信封。当前仅 `totp-verify`：
+   *   controller → host: `{ t: 'totp-verify', code }`
+   *   host → controller: `{ t: 'totp-result', ok }`
+   * 校验经注入的 `totpVerifier`（生产 = `verify_remote_totp` 命令，本机 RemoteAuth）。
+   * ok ⇒ 置 `verified=true`，放行后续业务帧。
+   */
+  private async handleSessionControl(frame: Record<string, unknown>): Promise<void> {
+    if (frame.t !== 'totp-verify') {
+      this.log('warn', `unknown CONTROL frame t=${String(frame.t)}; ignored`);
+      return;
+    }
+    const code = typeof frame.code === 'string' ? frame.code : '';
+    // 未注入校验器（不门控）：任何 code 都视为通过（与构造时 verified=true 一致）。
+    if (!this.totpVerifier) {
+      this.verified = true;
+      this.sendSessionControl({ t: 'totp-result', ok: true });
+      return;
+    }
+    let ok = false;
+    try {
+      ok = await this.totpVerifier(code);
+    } catch (e) {
+      this.log('error', 'TOTP verifier threw; treating as failed', e);
+      ok = false;
+    }
+    if (ok) this.verified = true;
+    this.sendSessionControl({ t: 'totp-result', ok });
+  }
+
+  /**
+   * 门控期收到业务 JSON-RPC：带 id 的 request 回一个 JSON-RPC error（让 controller
+   * 端 promise reject，而非悬挂）；notification（无 id）静默丢弃。
+   */
+  private rejectUnverified(json: unknown): void {
+    if (json !== null && typeof json === 'object') {
+      const id = (json as { id?: unknown }).id;
+      if (typeof id === 'number' || typeof id === 'string') {
+        this.sendControl(
+          jsonrpcError(id, {
+            code: JSON_RPC_INVALID_REQUEST,
+            message: 'TOTP verification required',
+            data: { kind: 'totp-required' },
+          }),
+        );
+        return;
+      }
+    }
+    this.log('warn', 'business frame dropped before TOTP verification');
+  }
+
+  /** 把一帧 CONTROL 信封编码为 0x12 帧并发出。 */
+  private sendSessionControl(frame: Record<string, unknown>): void {
+    this.sendFrame(encodeControlFrame(frame));
   }
 
   /** 处理一帧 0x11 JSON 控制信封（JSON-RPC 2.0）。 */
@@ -422,6 +524,8 @@ export class CloudHostBridge {
     for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
     this.paneSubs.clear();
     this.rejected = false;
+    // §4：重连须重新 TOTP 验证（注入了校验器时 re-arm 门控）。
+    this.verified = !this.totpVerifier;
   }
 }
 
