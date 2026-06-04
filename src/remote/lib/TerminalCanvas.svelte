@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { t } from '$lib/i18n';
   import { TerminalController } from './terminalController';
   import VirtualKeyboard from './VirtualKeyboard.svelte';
 
@@ -426,17 +427,36 @@
     }
   });
 
-  // Track keyboard show/hide via visualViewport
+  // Track keyboard show/hide via visualViewport AND drive the auto-refit.
+  //
+  // The container ResizeObserver catches box changes, but a real-device /
+  // CDP-emulated viewport change (orientation, browser-chrome collapse, address
+  // bar show/hide) changes the *visible* viewport without always resizing the
+  // flex container synchronously — so without this the canvas can stay clipped
+  // until a manual refresh. requestResize() recomputes dims from the post-layout
+  // rect + current DPR and, when the grid changed, claims the new size on the
+  // host (full reflow). It's debounced + idempotent, so keyboard show/hide that
+  // doesn't change the grid is a cheap no-op.
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     function onViewportResize() {
       const kh = window.innerHeight - (vv!.height || 0);
       keyboardOffset = kh > 0 ? kh : 0;
+      ctrl?.requestResize();
     }
     vv.addEventListener('resize', onViewportResize);
     onViewportResize();
     return () => vv.removeEventListener('resize', onViewportResize);
+  });
+
+  // orientationchange fires the most disruptive grid change; the visualViewport
+  // 'resize' may lag a frame behind the new layout on some browsers, so refit
+  // explicitly too (idempotent + debounced — at most one extra fitPane).
+  $effect(() => {
+    function onOrientation() { ctrl?.requestResize(); }
+    window.addEventListener('orientationchange', onOrientation);
+    return () => window.removeEventListener('orientationchange', onOrientation);
   });
 </script>
 
@@ -453,7 +473,7 @@
   style="transform: translateY(-{keyboardOffset}px)"
 >
   {#if !ready}
-    <div class="loading">初始化终端引擎…</div>
+    <div class="loading">{$t('mobile.initializingTerminal')}</div>
   {/if}
   <canvas bind:this={canvasEl} class="term-canvas" class:hidden={!ready}></canvas>
 
@@ -480,7 +500,7 @@
 
   {#if ready && hasSelection}
     <div class="selection-actions">
-      <button class="copy-btn" onclick={handleCopy}>{copySuccess ? '✓ 已复制' : '复制'}</button>
+      <button class="copy-btn" onclick={handleCopy}>{copySuccess ? $t('mobile.copied') : $t('mobile.copy')}</button>
       <button class="dismiss-btn" onclick={() => { ctrl?.clearSelection(); hasSelection = false; }}>✕</button>
     </div>
   {/if}
