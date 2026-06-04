@@ -1,151 +1,60 @@
-//! 内层业务协议（E2EE 明文载荷）。
+//! 会话控制帧 + host→controller 业务响应载荷（E2EE 明文，mux 之内）。
 //!
-//! 契约 §7 规定内层明文 = 现有 `postcard` 二进制增量协议帧，但那套 schema 归
-//! 桌面端 / ridge-term 所有（`packages/ridge-term`），且 controller 跑自己的 wasm
-//! vte 解析器消费**原始 PTY 字节**（参见 src-tauri/src/lib.rs 的
-//! `RemotePtyEvent::RawBytes` 路径——桌面端正是把裸字节转发给远端，远端
-//! `kernel.feed()` 自行解析）。
+//! 统一远控 S3（契约 §11.1）后，cli host 的 controller↔host 线协议**收敛到桌面同款**：
+//!   - 业务面（终端输入/resize、搜索、文件树）走 [`crate::rpc`] 的 JSON-RPC 2.0（0x11）。
+//!   - PTY 输出走 [`crate::mux`] 的 PANE_RAW（0x10）。
+//!   - 本文件只保留**会话控制帧**（契约 §4 TOTP 握手，0x12 通道）的线形类型。
 //!
-//! 因此无头 host 侧采用同样的“裸字节转发”模型：
-//! - host→controller：PTY 输出原始字节（经 §7 攒批 + E2EE）。
-//! - controller→host：控制消息（键盘输入、resize、文件搜索 / 文件树请求）。
-//!
-//! 这里用一个最小 JSON tagged 协议描述 controller→host 的控制面，host→controller
-//! 的 PTY 字节走二进制（前缀 1 字节通道标识）。两者都在 E2EE 之内。
+//! 旧的裸 `ControlMsg` / `HostMsg`（无通道字节的 controller→host JSON + 0x10/0x11
+//! 输出）已被 mux + JSON-RPC 取代——那套只有 terminal/wasm-vte controller 能讲，
+//! 没有浏览器 controller 对端（§11.1 根因），故移除。
 
 use serde::{Deserialize, Serialize};
 
-/// host→controller 二进制帧的首字节通道标识。controller 据此区分裸 PTY 字节
-/// 与（未来的）带外消息。
-pub mod channel {
-    /// 后续字节是 PTY 原始输出。
-    pub const PTY_OUTPUT: u8 = 0x10;
-    /// 后续字节是 UTF-8 JSON（host→controller 的带外响应，如搜索结果）。
-    pub const JSON: u8 = 0x11;
-}
-
-/// controller→host 的控制消息（JSON 明文，在 E2EE 之内）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 0x12 CONTROL 通道帧（契约 §4）。`t` tag + kebab-case，与桌面
+/// `cloudHostBridge.ts` / 浏览器 controller 逐字段一致：
+///   - controller → host: `{"t":"totp-verify","code":"123456"}`
+///   - host → controller: `{"t":"totp-result","ok":true}`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "t", rename_all = "kebab-case")]
-pub enum ControlMsg {
-    /// 键盘 / 粘贴输入，写入 PTY。
-    Input { data: String },
-    /// 终端尺寸变化。
-    Resize { cols: u16, rows: u16 },
-    /// ripgrep 级文本搜索（契约 §9 复用 fs::search）。
-    Search {
-        root: String,
-        query: String,
-        #[serde(default)]
-        use_regex: bool,
-        #[serde(default)]
-        case_sensitive: bool,
-    },
-    /// 列目录（契约 §9 复用 fs::tree）。
-    Tree { path: String },
-    /// 云远控二次验证（契约 §4）：controller 把用户从 host TUI 读到的 6 位
-    /// TOTP 回传。serde tag = `t` + kebab-case ⇒ 线上形如
-    /// `{"t":"totp-verify","code":"123456"}`，与契约 §4 / 浏览器 controller 对齐。
+pub enum SessionControl {
+    /// controller 把用户从 host TUI 读到的 6 位 TOTP 回传。
     TotpVerify { code: String },
-}
-
-/// host→controller 的带外响应（JSON，channel::JSON 之后）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "t", rename_all = "kebab-case")]
-pub enum HostMsg {
-    /// 搜索结果。
-    SearchResult {
-        results: Vec<crate::fs_reuse::SearchResult>,
-    },
-    /// 目录列表。
-    Tree {
-        entries: Vec<crate::fs_reuse::FileNode>,
-    },
-    /// 错误（人类可读，不泄露内部路径细节）。
-    Error { message: String },
-    /// 云远控二次验证结果（契约 §4）。serde tag = `t` + kebab-case ⇒ 线上形如
-    /// `{"t":"totp-result","ok":true}`，与契约 §4 / 浏览器 controller 对齐。
+    /// host 回二次验证结果。
     TotpResult { ok: bool },
-}
-
-/// 给一段 PTY 输出加上通道前缀。
-pub fn frame_pty_output(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + bytes.len());
-    out.push(channel::PTY_OUTPUT);
-    out.extend_from_slice(bytes);
-    out
-}
-
-/// 给一条 host JSON 消息加上通道前缀。
-pub fn frame_host_json(msg: &HostMsg) -> Vec<u8> {
-    let json = serde_json::to_vec(msg).unwrap_or_default();
-    let mut out = Vec::with_capacity(1 + json.len());
-    out.push(channel::JSON);
-    out.extend_from_slice(&json);
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn control_msg_roundtrip() {
-        let m = ControlMsg::Resize {
-            cols: 120,
-            rows: 40,
-        };
-        let s = serde_json::to_string(&m).unwrap();
-        assert!(s.contains("\"t\":\"resize\""));
-        let back: ControlMsg = serde_json::from_str(&s).unwrap();
-        matches!(
-            back,
-            ControlMsg::Resize {
-                cols: 120,
-                rows: 40
-            }
-        );
-    }
-
-    #[test]
-    fn input_msg_parses() {
-        let m: ControlMsg = serde_json::from_str(r#"{"t":"input","data":"ls\n"}"#).unwrap();
-        match m {
-            ControlMsg::Input { data } => assert_eq!(data, "ls\n"),
-            _ => panic!("expected input"),
-        }
-    }
-
-    #[test]
-    fn pty_output_framing_prefixes_channel() {
-        let f = frame_pty_output(b"abc");
-        assert_eq!(f[0], channel::PTY_OUTPUT);
-        assert_eq!(&f[1..], b"abc");
-    }
-
     /// 契约 §4：controller→host 的 totp-verify 必须解析成
     /// `{"t":"totp-verify","code":"…"}`。锁死跨实现对齐的 tag/字段名。
     #[test]
     fn totp_verify_parses_contract_shape() {
-        let m: ControlMsg =
+        let m: SessionControl =
             serde_json::from_str(r#"{"t":"totp-verify","code":"123456"}"#).unwrap();
-        match m {
-            ControlMsg::TotpVerify { code } => assert_eq!(code, "123456"),
-            _ => panic!("expected totp-verify"),
-        }
+        assert_eq!(
+            m,
+            SessionControl::TotpVerify {
+                code: "123456".into()
+            }
+        );
     }
 
     /// 契约 §4：host→controller 的 totp-result 必须序列化成
-    /// `{"t":"totp-result","ok":true}`（注意 kebab-case 的 `t` tag）。
+    /// `{"t":"totp-result","ok":true}`（kebab-case 的 `t` tag）。
     #[test]
     fn totp_result_serializes_contract_shape() {
-        let json = serde_json::to_string(&HostMsg::TotpResult { ok: true }).unwrap();
+        let json = serde_json::to_string(&SessionControl::TotpResult { ok: true }).unwrap();
         assert!(json.contains("\"t\":\"totp-result\""), "got: {json}");
         assert!(json.contains("\"ok\":true"), "got: {json}");
-        // frame helper 须在 JSON 前置 channel::JSON 通道字节。
-        let framed = frame_host_json(&HostMsg::TotpResult { ok: false });
-        assert_eq!(framed[0], channel::JSON);
-        let body: HostMsg = serde_json::from_slice(&framed[1..]).unwrap();
-        matches!(body, HostMsg::TotpResult { ok: false });
+    }
+
+    #[test]
+    fn totp_result_roundtrips() {
+        let back: SessionControl =
+            serde_json::from_str(r#"{"t":"totp-result","ok":false}"#).unwrap();
+        assert_eq!(back, SessionControl::TotpResult { ok: false });
     }
 }

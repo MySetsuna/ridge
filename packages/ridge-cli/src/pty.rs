@@ -129,11 +129,28 @@ fn resolve_shell(shell: Option<&str>) -> String {
     }
     #[cfg(windows)]
     {
-        for cand in ["pwsh.exe", "powershell.exe", "cmd.exe"] {
-            return cand.to_string();
+        // 探测 PATH 上实际存在的 shell（原实现无条件返回 pwsh.exe，在未装 PowerShell
+        // Core 的精简 Windows host / CI 上会 spawn 失败）。cmd.exe 由 COMSPEC 兜底，
+        // 在所有 Windows 上都存在。
+        for cand in ["pwsh.exe", "powershell.exe"] {
+            if which_on_path(cand) {
+                return cand.to_string();
+            }
         }
-        "cmd.exe".to_string()
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "cmd.exe".to_string())
     }
+}
+
+/// 在 `PATH` 的各目录里查可执行名是否存在（仅 Windows resolver 用）。无额外依赖。
+#[cfg(windows)]
+fn which_on_path(exe: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(exe).is_file())
 }
 
 /// 在独立**阻塞**线程里读 PTY，把字节块 `try_send` 进通道。对齐上游 `engine::pty`
