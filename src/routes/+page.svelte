@@ -25,6 +25,7 @@ self.MonacoEnvironment = {
     return new editorWorker();
   }
 };
+  import { t, tr } from '$lib/i18n';
   import { focusActiveTerminal, ownsTabKey } from '$lib/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
@@ -137,7 +138,7 @@ self.MonacoEnvironment = {
     try {
       await openWorkspaceFromFile(path);
     } catch (err) {
-      await alertDialog({ title: '打开失败', message: String(err), danger: true });
+      await alertDialog({ title: tr('main.dlgOpenFailTitle'), message: String(err), danger: true });
     }
   }
 
@@ -147,13 +148,13 @@ self.MonacoEnvironment = {
       const picked = await openDialog({
         multiple: false,
         filters: [{ name: 'Ridge Workspace', extensions: ['ridge'] }],
-        title: '打开 .ridge 工作区',
+        title: tr('main.openRidgeDialogTitle'),
       });
       if (typeof picked === 'string' && picked) {
         await openWorkspaceFromFile(picked);
       }
     } catch (err) {
-      await alertDialog({ title: '打开失败', message: String(err), danger: true });
+      await alertDialog({ title: tr('main.dlgOpenFailTitle'), message: String(err), danger: true });
     }
   }
 
@@ -482,8 +483,7 @@ function expandSidebar() {
   function openDevIssueHelp() {
     reportDevIssue({
       title: 'Ridge Dev',
-      message:
-        '排障入口：切换工作区报错请先看运行 ridge / cargo tauri dev 的终端日志（搜索 [ridge][pty]）。Claude split 需在 Ridge 内建终端中运行，并确保 tmux shim 在 PATH 上。若出现 0xc0000142 这类进程级崩溃，需同时查看 Windows 事件查看器（应用程序日志）。',
+      message: tr('main.dlgDevIssueMsg'),
     });
   }
 
@@ -564,7 +564,7 @@ function expandSidebar() {
     try {
       await closePane(pid);
     } catch (e) {
-      await alertDialog({ title: '关闭失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('main.dlgCloseFailTitle'), message: String(e), danger: true });
     }
   }
 
@@ -575,9 +575,9 @@ function expandSidebar() {
     const ids = getAllPaneIds(rootNode).filter((id) => id !== keep);
     if (ids.length === 0) return;
     const ok = await confirmDialog({
-      title: '关闭其它窗格',
-      message: `将关闭 ${ids.length} 个窗格，仅保留当前窗格。继续？`,
-      okLabel: '关闭',
+      title: tr('main.dlgCloseOthersTitle'),
+      message: tr('main.dlgCloseOthersMsg', { count: ids.length }),
+      okLabel: tr('main.dlgCloseOthersOk'),
       danger: true,
     });
     if (!ok) return;
@@ -590,21 +590,45 @@ function expandSidebar() {
     }
   }
 
+  /** 全零 UUID —— 后端在没有活动工作区的退化状态下会序列化为此值；与空串一并
+   *  视作「无活动工作区」。 */
+  const NIL_WORKSPACE_ID = '00000000-0000-0000-0000-000000000000';
+
+  /** 启动兜底：保证当前一定有一个活动工作区。远程控制器（桌面 SPA）连接后若因
+   *  竞态/异常仍无活动工作区，则采用 host 工作区列表里的第一个；列表为空才新建，
+   *  避免用户被卡在「请先选择一个工作区」而无法操作。仅在缺失时介入，正常路径零开销。 */
+  async function ensureActiveWorkspace(): Promise<void> {
+    const current = get(activeWorkspaceId);
+    if (current && current !== NIL_WORKSPACE_ID) return;
+    try {
+      const list = get(workspacesList);
+      if (list.length > 0) {
+        await switchWorkspace(list[0].id);
+      } else {
+        await createWorkspace();
+      }
+      // 切换/新建后重新拉取，使顶部工作区下拉与活动 id 同步。
+      await refreshWorkspaces();
+    } catch (e) {
+      console.warn('ensureActiveWorkspace failed', e);
+    }
+  }
+
   async function renameActiveWorkspace(): Promise<void> {
     const wid = get(activeWorkspaceId);
     if (!wid) return;
     const ws = get(workspacesList).find((w) => w.id === wid);
     const newName = await promptDialog({
-      title: '重命名工作区',
-      message: '输入新的工作区名称：',
+      title: tr('main.dlgRenameTitle'),
+      message: tr('main.dlgRenameMsg'),
       defaultValue: ws?.name ?? '',
-      placeholder: '工作区名称',
+      placeholder: tr('main.dlgRenamePlaceholder'),
     });
     if (!newName?.trim()) return;
     try {
       await renameWorkspace(wid, newName.trim());
     } catch (e) {
-      await alertDialog({ title: '重命名失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('main.dlgRenameFailTitle'), message: String(e), danger: true });
     }
   }
 
@@ -632,8 +656,8 @@ function expandSidebar() {
     }
     if (!repoRoot) {
       await alertDialog({
-        title: `${label} 失败`,
-        message: '当前工作区中没有任何 pane 处于 git 仓库内。',
+        title: tr('main.dlgGitOpFailed', { label }),
+        message: tr('main.dlgNoGitRepo'),
         danger: true,
       });
       return;
@@ -645,7 +669,7 @@ function expandSidebar() {
         new CustomEvent('ridge:scm-focus-repo', { detail: repoRoot })
       );
     } catch (e) {
-      await alertDialog({ title: `${label} 失败`, message: String(e), danger: true });
+      await alertDialog({ title: tr('main.dlgGitOpFailed', { label }), message: String(e), danger: true });
     }
   }
 
@@ -655,7 +679,7 @@ function expandSidebar() {
     const wid = get(activeWorkspaceId);
     const cwd = get(paneCwdStore)[`${wid}:${pid}`] ?? '';
     if (!cwd) {
-      void alertDialog({ title: '复制路径', message: '该 pane 还未上报 cwd。' });
+      void alertDialog({ title: tr('main.dlgCopyCwdTitle'), message: tr('main.dlgCopyCwdMsg') });
       return;
     }
     navigator.clipboard?.writeText(cwd).catch(() => {
@@ -687,14 +711,14 @@ function expandSidebar() {
         items.push(
           {
             id: 'split-h',
-            label: '水平分割',
+            label: tr('main.ctxSplitH'),
             icon: Columns,
             shortcut: 'Ctrl+Shift+H',
             action: () => splitActivePane('horizontal'),
           },
           {
             id: 'split-v',
-            label: '垂直分割',
+            label: tr('main.ctxSplitV'),
             icon: Rows,
             shortcut: 'Ctrl+Shift+V',
             action: () => splitActivePane('vertical'),
@@ -702,34 +726,34 @@ function expandSidebar() {
           { divider: true, id: 'divider-1' },
           {
             id: 'close',
-            label: '关闭当前窗格',
+            label: tr('main.ctxClosePane'),
             icon: X,
             shortcut: 'Ctrl+W',
             action: () => void closeCurrentPane(paneId),
           },
           {
             id: 'close-others',
-            label: '关闭其他窗格',
+            label: tr('main.ctxCloseOthers'),
             icon: Trash2,
             action: () => void closeOtherPanes(paneId),
           },
           { divider: true, id: 'divider-2' },
           {
             id: 'focus',
-            label: '聚焦当前窗格',
+            label: tr('main.ctxFocusPane'),
             icon: Maximize2,
             action: () => activePaneId.set(paneId || ''),
           },
           { divider: true, id: 'divider-3' },
           {
             id: 'copy-cwd',
-            label: '复制 cwd 路径',
+            label: tr('main.ctxCopyCwd'),
             icon: Copy,
             action: () => copyPaneCwd(paneId),
           },
           {
             id: 'reveal',
-            label: '在文件管理器中显示 cwd',
+            label: tr('main.ctxRevealCwd'),
             icon: FolderOpen,
             action: () => revealPaneCwd(paneId),
           }
@@ -740,13 +764,13 @@ function expandSidebar() {
         items.push(
           {
             id: 'split-h',
-            label: '水平分割',
+            label: tr('main.ctxSplitH'),
             icon: Columns,
             action: () => splitActivePane('horizontal'),
           },
           {
             id: 'split-v',
-            label: '垂直分割',
+            label: tr('main.ctxSplitV'),
             icon: Rows,
             action: () => splitActivePane('vertical'),
           }
@@ -758,7 +782,7 @@ function expandSidebar() {
         items.push(
           {
             id: 'files',
-            label: '文件浏览器',
+            label: tr('main.ctxFiles'),
             icon: FolderOpen,
             action: () => {
               sidebarTab = 'files';
@@ -768,7 +792,7 @@ function expandSidebar() {
           },
           {
             id: 'search',
-            label: '搜索',
+            label: tr('main.ctxSearch'),
             icon: Search,
             action: () => {
               sidebarTab = 'search';
@@ -778,7 +802,7 @@ function expandSidebar() {
           },
           {
             id: 'git',
-            label: '源代码管理',
+            label: tr('main.ctxGit'),
             icon: GitBranch,
             action: () => {
               sidebarTab = 'git';
@@ -793,13 +817,13 @@ function expandSidebar() {
         items.push(
           {
             id: 'new-ws',
-            label: '新建工作区',
+            label: tr('main.ctxNewWorkspace'),
             icon: Plus,
             action: () => createWorkspace(),
           },
           {
             id: 'rename',
-            label: '重命名工作区',
+            label: tr('main.ctxRenameWorkspace'),
             icon: MoreHorizontal,
             action: () => void renameActiveWorkspace(),
           },
@@ -807,7 +831,7 @@ function expandSidebar() {
           // 保存工作区入口在 Explorer 头部已有，菜单里不重复（避免双入口）。
           {
             id: 'close-ws',
-            label: '关闭当前工作区',
+            label: tr('main.ctxCloseWorkspace'),
             icon: X,
             // activeWorkspaceId is a store; read the current id at invocation time.
             action: () => closeWorkspace(get(activeWorkspaceId)),
@@ -819,7 +843,7 @@ function expandSidebar() {
         items.push(
           {
             id: 'open-scm',
-            label: '打开源代码管理',
+            label: tr('main.ctxOpenScm'),
             icon: GitBranch,
             action: () => {
               sidebarTab = 'git';
@@ -859,33 +883,33 @@ function expandSidebar() {
         items.push(
           {
             id: 'split-h',
-            label: '水平分割',
+            label: tr('main.ctxSplitH'),
             icon: Columns,
             action: () => { if (paneId) void splitPane(paneId, 'horizontal'); },
           },
           {
             id: 'split-v',
-            label: '垂直分割',
+            label: tr('main.ctxSplitV'),
             icon: Rows,
             action: () => { if (paneId) void splitPane(paneId, 'vertical'); },
           },
           { divider: true, id: 'divider-1' },
           {
             id: 'copy-cwd',
-            label: '复制 cwd 路径',
+            label: tr('main.ctxCopyCwd'),
             icon: Copy,
             action: () => copyPaneCwd(paneId),
           },
           {
             id: 'reveal',
-            label: '在文件管理器中显示',
+            label: tr('main.ctxReveal'),
             icon: FolderOpen,
             action: () => revealPaneCwd(paneId),
           },
           { divider: true, id: 'divider-2' },
           {
             id: 'close',
-            label: '关闭窗格',
+            label: tr('main.ctxCloseOnlyPane'),
             icon: X,
             action: () => void closeCurrentPane(paneId),
           }
@@ -896,7 +920,7 @@ function expandSidebar() {
         items.push(
           {
             id: 'new-ws',
-            label: '新建工作区',
+            label: tr('main.ctxNewWorkspace'),
             icon: Plus,
             action: () => createWorkspace(),
           }
@@ -1059,6 +1083,12 @@ function expandSidebar() {
       } catch (err) {
         console.warn('startup workspace resolution failed', err);
       }
+      // §web-remote 默认工作区兜底：远程控制器（桌面 SPA over LAN/cloud）连接后
+      // 必须始终落在一个工作区上，绝不停留在「请先选择一个工作区」。host 启动时
+      // 一定持有一个全局活动工作区，但若 refreshWorkspaces 期间发生竞态/异常导致
+      // activeWorkspaceId 仍为空，这里主动恢复：优先切到列表里的第一个工作区
+      // （即采用 host 当前工作区），列表为空才新建一个，确保用户可立即操作。
+      await ensureActiveWorkspace();
       await loadSavedWorkspaces();
       await refreshWorkspaceSaveInfo();
 
@@ -1204,7 +1234,7 @@ function expandSidebar() {
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'files' ? actBtnOn : ''}"
-      title="文件"
+      title={$t('main.navFiles')}
       onclick={() => { sidebarTab = 'files'; expandSidebar(); }}
     >
       <FolderOpen class="h-5 w-5" />
@@ -1212,7 +1242,7 @@ function expandSidebar() {
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'search' ? actBtnOn : ''}"
-      title="搜索 (Ctrl+Shift+F)"
+      title={$t('main.navSearch')}
       onclick={() => { sidebarTab = 'search'; expandSidebar(); }}
     >
       <Search class="h-5 w-5" />
@@ -1235,7 +1265,7 @@ function expandSidebar() {
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'remote' ? actBtnOn : ''}"
-      title="远程控制"
+      title={$t('main.navRemote')}
       onclick={() => { sidebarTab = 'remote'; expandSidebar(); }}
     >
       <Smartphone class="h-5 w-5" />
@@ -1244,7 +1274,7 @@ function expandSidebar() {
     <button
       type="button"
       class="{actBtn} mt-auto"
-      title="设置（外观、字体、搜索、扩展）"
+      title={$t('main.navSettings')}
       onclick={() => (settingsPanelOpen = true)}
     >
       <Settings class="h-4 w-4" />
@@ -1274,7 +1304,7 @@ function expandSidebar() {
             data-tauri-drag-region
             class="px-3 h-11 items-center flex shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]"
           >
-            源代码管理
+            {$t('main.sidebarGitHeader')}
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             <SourceControl />
@@ -1301,7 +1331,7 @@ function expandSidebar() {
             data-tauri-drag-region
             class="px-3 h-11 items-center flex justify-between shrink-0 border-b border-[var(--rg-border)] text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] relative"
           >
-            <span>资源管理器</span>
+            <span>{$t('main.sidebarExplorerHeader')}</span>
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeWorkspaceId}
@@ -1310,7 +1340,7 @@ function expandSidebar() {
               <div
                 class="p-4 text-[13px] leading-relaxed text-[var(--rg-fg-muted)]"
               >
-                请先选择一个工作区
+                {$t('main.noWorkspaceSelected')}
               </div>
             {/if}
           </div>
@@ -1339,7 +1369,7 @@ function expandSidebar() {
     class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : '-right-1'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
     role="separator"
   aria-orientation="vertical"
-  aria-label={sidebarCollapsed ? '拖动展开侧边栏' : '拖动调整侧边栏宽度'}
+  aria-label={sidebarCollapsed ? $t('main.sidebarResizeExpand') : $t('main.sidebarResizeAdjust')}
   tabindex="0"
   onmousedown={(e) => {
     if (sidebarCollapsed) {
@@ -1400,8 +1430,8 @@ function expandSidebar() {
               bind:this={savedBtn}
               type="button"
               class="shrink-0 flex h-8 w-8 mr-1 items-center justify-center rounded-lg border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
-              title="已保存工作区"
-              aria-label="已保存工作区"
+              title={$t('main.savedWorkspacesBtn')}
+              aria-label={$t('main.savedWorkspacesBtn')}
               onclick={() => void loadSavedAndToggle()}
             >
               <Bookmark class="h-4 w-4" />
@@ -1422,19 +1452,19 @@ function expandSidebar() {
                   onmousedown={(e) => e.stopPropagation()}
                 >
                   <div class="flex items-center justify-between h-7 px-3 bg-[var(--rg-surface)]/60 border-b border-[var(--rg-border)]/60 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-                    <span>已保存工作区</span>
+                    <span>{$t('main.savedWorkspacesTitle')}</span>
                     <button
                       type="button"
                       class="text-[10px] normal-case tracking-normal hover:text-[var(--rg-fg)]"
-                      title="从任意 .ridge 文件打开（OS 文件选择器）"
+                      title={$t('main.savedWorkspacesBrowseTitle')}
                       onclick={() => { savedOpen = false; void pickAndOpenWorkspace(); }}
                     >
-                      浏览…
+                      {$t('main.savedWorkspacesBrowse')}
                     </button>
                   </div>
                   <div class="max-h-[260px] overflow-y-auto">
                     {#if savedList.length === 0}
-                      <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">~/ridge-workspaces 下暂无 .ridge 文件</div>
+                      <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('main.savedWorkspacesEmpty')}</div>
                     {:else}
                       {#each savedList as s (s.path)}
                         <div class="group flex items-center justify-between w-full px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors normal-case tracking-normal">
@@ -1450,7 +1480,7 @@ function expandSidebar() {
                           <button
                             type="button"
                             class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--rg-surface)] hover:text-red-500 transition-colors"
-                            title="删除工作区"
+                            title={$t('main.savedWorkspacesDelete')}
                             onclick={(e) => {
                               e.stopPropagation();
                               const info = Object.values($workspaceSaveInfoStore).find(
@@ -1477,7 +1507,7 @@ function expandSidebar() {
             <button
               type="button"
               class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
-              title="新建根工作区（独立分屏树与终端）"
+              title={$t('main.newWorkspaceBtn')}
               onclick={() => createWorkspace()}
             >
               <span class="text-lg leading-none">+</span>
@@ -1490,7 +1520,7 @@ function expandSidebar() {
           <button
             type="button"
             class="rg-no-drag shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium border border-red-500/30 text-red-300/90 hover:bg-red-500/10 transition-colors"
-            title="开发排障入口"
+            title={$t('main.devIssueTooltip')}
             onclick={openDevIssueHelp}
           >
             Dev Issue
@@ -1502,7 +1532,7 @@ function expandSidebar() {
         <button
           type="button"
           class="rg-no-drag {toolBtn} {$fileEditorStore.isVisible ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-accent)]' : ''}"
-          title={$fileEditorStore.isVisible ? '收起文件编辑器' : '展开文件编辑器'}
+          title={$fileEditorStore.isVisible ? $t('main.editorHide') : $t('main.editorShow')}
           onclick={() => fileEditorStore.toggleVisibility()}
         >
           <PanelRightOpen class="h-4 w-4" />
@@ -1516,7 +1546,7 @@ function expandSidebar() {
           <button
             type="button"
             class={toolBtn}
-            title="左右分屏（当前选中窗格）"
+            title={$t('main.splitHorizontal')}
             data-testid="add-pane-btn"
             onclick={() => void splitActivePane('horizontal')}
           >
@@ -1535,7 +1565,7 @@ function expandSidebar() {
           <button
             type="button"
             class={toolBtn}
-            title="上下分屏（当前选中窗格）"
+            title={$t('main.splitVertical')}
             onclick={() => void splitActivePane('vertical')}
           >
             <svg
@@ -1558,7 +1588,7 @@ function expandSidebar() {
         <button
           type="button"
           class={winCtrlBtn}
-          title="最小化"
+          title={$t('main.winMinimize')}
           onclick={handleMinimize}
         >
           <svg
@@ -1574,7 +1604,7 @@ function expandSidebar() {
         <button
           type="button"
           class={winCtrlBtn}
-          title={isMaximized ? '还原' : '最大化'}
+          title={isMaximized ? $t('main.winRestore') : $t('main.winMaximize')}
           onclick={handleMaximize}
         >
           {#if isMaximized}
@@ -1603,7 +1633,7 @@ function expandSidebar() {
         <button
           type="button"
           class="{winCtrlBtn} hover:bg-red-500/20 hover:text-red-400"
-          title="关闭"
+          title={$t('main.winClose')}
           onclick={handleClose}
         >
           <svg

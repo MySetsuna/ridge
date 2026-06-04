@@ -12,7 +12,10 @@ export const FONT_STACK = '"JetBrains Mono","Cascadia Code","SF Mono",ui-monospa
 const FEED_CHUNK_BYTES = 16 * 1024;
 const FEED_PER_CALL_BUDGET_MS = 4;
 const COALESCE_WINDOW_MS = 8;
-const RESIZE_DEBOUNCE_MS = 500;
+// Coalesce a burst of resize signals (orientation change, browser-chrome
+// show/hide, keyboard) into a single fitPane, but stay snappy — the user wants
+// automatic 自适应全屏, not a slow lag. Kept ≤120ms per the resize-fix brief.
+const RESIZE_DEBOUNCE_MS = 100;
 
 export class TerminalController {
   private kernel: TerminalKernel;

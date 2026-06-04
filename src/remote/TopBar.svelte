@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Plus, X } from 'lucide-svelte';
+  import { t, tr } from '$lib/i18n';
   import type { PaneInfo, WorkspaceInfo, RemoteConnection, ConnectionState } from './lib/wsRemote';
 
   let { panes, activePaneId = $bindable(), workspaces = [], activeWorkspaceId = $bindable(), ws,
@@ -37,12 +38,23 @@
     ws.listPanes();
   }
 
+  let addPaneError = $state('');
+
   async function handleAddPane() {
     if (!ws) return;
-    const newId = await ws.createPane();
-    if (newId) {
-      activePaneId = newId;
-      ws.listPanes();
+    addPaneError = '';
+    try {
+      const newId = await ws.createPane();
+      if (newId) {
+        activePaneId = newId;
+        ws.listPanes();
+      } else {
+        addPaneError = tr('mobile.createTerminalFail');
+      }
+    } catch (e) {
+      // 不静默吞掉创建失败：记录并通过按钮 title 暴露给用户。
+      addPaneError = e instanceof Error ? e.message : tr('mobile.createTerminalFail');
+      console.error('createPane failed', e);
     }
   }
 
@@ -89,16 +101,16 @@
         disabled={wsSwitching}
       >
         {#each workspaces as wsp (wsp.id)}
-          <option value={wsp.id}>{wsp.name || '工作区'}</option>
+          <option value={wsp.id}>{wsp.name || $t('mobile.workspaceDefault')}</option>
         {/each}
       </select>
       {#if workspaces.length > 1}
-        <button class="ws-close-btn" onclick={(e) => handleCloseWorkspace(e, activeWorkspaceId!)} title="关闭工作区" tabindex="-1">
+        <button class="ws-close-btn" onclick={(e) => handleCloseWorkspace(e, activeWorkspaceId!)} title={$t('mobile.closeWorkspace')} tabindex="-1">
           <X class="w-3 h-3" />
         </button>
       {/if}
     {:else}
-      <span class="empty-msg">无工作区</span>
+      <span class="empty-msg">{$t('mobile.noWorkspace')}</span>
     {/if}
   </div>
 
@@ -110,11 +122,11 @@
         onchange={(e) => activePaneId = (e.target as HTMLSelectElement).value}
       >
         {#each panes as pane (pane.id)}
-          <option value={pane.id}>{pane.title || '终端'}</option>
+          <option value={pane.id}>{pane.title || $t('mobile.terminalDefault')}</option>
         {/each}
       </select>
       {#if panes.length > 1}
-        <button class="pane-close-inline" onclick={() => activePaneId && handleRemovePane(activePaneId)} title="关闭终端" tabindex="-1">
+        <button class="pane-close-inline" onclick={() => activePaneId && handleRemovePane(activePaneId)} title={$t('mobile.closeTerminal')} tabindex="-1">
           <X class="w-3 h-3" />
         </button>
       {/if}
@@ -126,7 +138,7 @@
           onclick={() => activePaneId = pane.id}
         >
           <span class="dot">▸</span>
-          <span class="label">{pane.title || '终端'}</span>
+          <span class="label">{pane.title || $t('mobile.terminalDefault')}</span>
           {#if panes.length > 1}
             <span class="pane-close" role="button" tabindex="-1"
               onclick={(e) => { e.stopPropagation(); handleRemovePane(pane.id); }}
@@ -137,10 +149,10 @@
         </button>
       {/each}
       {#if panes.length === 0}
-        <span class="empty-msg">无终端</span>
+        <span class="empty-msg">{$t('mobile.noTerminal')}</span>
       {/if}
     {/if}
-    <button class="add-pane-btn" onclick={handleAddPane} title="新建终端">
+    <button class="add-pane-btn" class:err={addPaneError} onclick={handleAddPane} title={addPaneError || $t('mobile.newTerminalBtn')}>
       <Plus class="w-4 h-4" />
     </button>
   </div>
@@ -173,6 +185,7 @@
   .pane-close:active{background:rgba(255,255,255,.1);opacity:1}
   .add-pane-btn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer;transition:all .15s;flex-shrink:0;margin-left:4px}
   .add-pane-btn:active{background:var(--rg-surface-2);color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}
+  .add-pane-btn.err{border-color:var(--rg-ansi-red);color:var(--rg-ansi-red)}
   .empty-msg{color:var(--rg-fg-muted);font-size:11px;padding:2px 4px}
 
   .status-dot{font-size:9px;color:var(--rg-fg-muted);flex-shrink:0;line-height:1;margin-left:auto}

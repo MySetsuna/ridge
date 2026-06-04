@@ -287,6 +287,10 @@ export class RemoteConnection {
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
   listGitStatus() { this.send({ type: 'list-git-status' }); }
   sendStdin(paneId: string, data: string) { this.send({ type: 'stdin', paneId, data }); }
+  /** @deprecated Host-side bookkeeping only — records a fallback size but never
+   *  reflows the shared PTY (no `pty-resized` broadcast), so the remote stays
+   *  clipped. The automatic resize path now uses {@link claimPane} so a viewport
+   *  change actually reflows the host. Kept for protocol completeness. */
   resizePane(paneId: string, rows: number, cols: number, pixelWidth?: number, pixelHeight?: number) {
     this.send({ type: 'resize', paneId, rows, cols, pixelWidth, pixelHeight });
   }
@@ -300,6 +304,16 @@ export class RemoteConnection {
   refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
     this._refreshSeq++;
     this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight, seq: this._refreshSeq });
+  }
+  /** Implicit "I just interacted / my viewport changed" size claim. Same host
+   *  effect as refreshPane (resizes the real PTY + canonical parser and
+   *  broadcasts a full repaint via `pty-resized`), but reserved for the
+   *  automatic viewport-driven resize path so a genuine layout change reflows
+   *  the host PTY — `resize` alone is host-side bookkeeping that never reflows.
+   *  Shares the monotonic seq counter so the host can drop stale claims. */
+  claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+    this._refreshSeq++;
+    this.send({ type: 'claim-pane', paneId, rows, cols, pixelWidth, pixelHeight, seq: this._refreshSeq });
   }
   lastRefreshSeq(): number { return this._refreshSeq; }
 

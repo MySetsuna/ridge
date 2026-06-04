@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t, tr } from '$lib/i18n';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
   import TopBar from './TopBar.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
@@ -17,6 +18,9 @@
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
   // Active pane's working dir — roots the sidebar at the same place ridge shows.
   let activeCwd = $state('');
+  // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
+  let creatingPane = $state(false);
+  let createError = $state('');
 
   let canvasRef: TerminalCanvas | undefined = $state();
   // Kernel palette derived from the desktop theme; applied to the canvas once it
@@ -33,8 +37,15 @@
     if (activePaneId) ws.sendStdin(activePaneId, data);
   }
 
+  // Automatic refit (ResizeObserver / visualViewport): the controller fires this
+  // only when the grid actually changed (cols/rows/DPR delta), i.e. a genuine
+  // viewport change that needs the host to reflow. A bare `resize` is host-side
+  // bookkeeping that never touches the PTY, so the remote stayed clipped/garbled
+  // until the manual refresh button. `claimPane` runs the SAME host path as that
+  // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
+  // 自适应全屏 reflow without the manual tap.
   function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    ws.resizePane(paneId, rows, cols, pixelWidth, pixelHeight);
+    ws.claimPane(paneId, rows, cols, pixelWidth, pixelHeight);
   }
 
   function handleRefresh() {
@@ -79,6 +90,29 @@
       sidebarTab = null;
     } else {
       sidebarTab = tab;
+    }
+  }
+
+  // 远程端自建终端：请求 host 创建 pane，成功后刷新列表并把新 pane 设为活动项
+  // （onMessage 的 'panes' 分支会在 listPanes 回包后把 activePaneId 兜底为首个，
+  //  这里显式置为新 id 以确保即使有多个 pane 也聚焦到刚建的那个）。失败时把错误
+  // 文案显示给用户，绝不静默吞掉。
+  async function handleCreatePane() {
+    if (creatingPane) return;
+    creatingPane = true;
+    createError = '';
+    try {
+      const newId = await ws.createPane();
+      if (newId) {
+        activePaneId = newId;
+        ws.listPanes();
+      } else {
+        createError = tr('mobile.createTerminalFailRetry');
+      }
+    } catch (e) {
+      createError = e instanceof Error ? e.message : tr('mobile.createTerminalFail');
+    } finally {
+      creatingPane = false;
     }
   }
 
@@ -168,7 +202,13 @@
   <TopBar {panes} bind:activePaneId {workspaces} bind:activeWorkspaceId {ws} {wsState} />
 
   {#if panes.length === 0}
-    <div class="empty"><p>无活跃终端</p><p class="hint">在桌面端打开一个终端以开始</p></div>
+    <div class="empty">
+      <p>{$t('mobile.noActiveTerminal')}</p>
+      <button class="create-btn" onclick={handleCreatePane} disabled={creatingPane}>
+        {creatingPane ? $t('mobile.creating') : $t('mobile.newTerminal')}
+      </button>
+      {#if createError}<p class="create-error">{createError}</p>{/if}
+    </div>
   {:else if activePaneId}
     <TerminalCanvas
       bind:this={canvasRef}
@@ -198,7 +238,10 @@
 
 <style>
   .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
-  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--rg-fg-muted);gap:8px}
-  .empty .hint{font-size:12px;color:var(--rg-fg-muted)}
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--rg-fg-muted);gap:12px}
+  .create-btn{padding:8px 20px;border:1px solid var(--rg-accent);border-radius:8px;background:color-mix(in srgb,var(--rg-accent) 14%,transparent);color:var(--rg-fg);font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
+  .create-btn:active{background:color-mix(in srgb,var(--rg-accent) 26%,transparent)}
+  .create-btn:disabled{opacity:.5;cursor:not-allowed}
+  .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
 </style>
