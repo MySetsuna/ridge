@@ -40,6 +40,7 @@
   import { alertDialog } from './RidgeDialog.svelte';
   import { Copy, FolderOpen } from 'lucide-svelte';
   import { dndzone, SOURCES } from 'svelte-dnd-action';
+  import { t, tr } from '$lib/i18n';
 
   /** 默认 monospace 栈：用户自定义 fontFamily 留空时回退到这一串。 */
   const DEFAULT_MONO =
@@ -291,7 +292,7 @@
     // 切走当前正在显示的 path 之前先存 view state，避免被新加载覆盖。
     if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
     try {
-      if (!isTauri()) throw new Error('需要 Tauri 环境');
+      if (!isTauri()) throw new Error(tr('editor.requiresTauri'));
       const v = args.commit
         ? await invoke<{ original: string; modified: string }>(
             'git_get_file_versions_at_commit',
@@ -439,8 +440,13 @@
       if (c.path === currentModelPath) {
         // 同一个 tab 内的 content 漂移：只在 store 里的 content 与 model 不一致
         // 时才 setValue（会清空 undo），常见于外部文件修改回灌。
+        // setValue 会把光标/滚动重置到顶部 —— 如果用户正停在这个 tab 上看着
+        // （外部 clean reconcile），位置被弹到第 1 行体验很差。围绕 setValue
+        // 存/还原 view state，让滚动与光标尽量留在原处。
         if (editor.getValue() !== c.content) {
+          const vs = editor.saveViewState();
           editor.setValue(c.content);
+          if (vs) editor.restoreViewState(vs);
         }
         return;
       }
@@ -697,66 +703,66 @@
         if (!navigator.clipboard?.writeText) throw new Error('clipboard API unavailable');
         await navigator.clipboard.writeText(text);
       } catch (err) {
-        await alertDialog({ title: '复制失败', message: `${label}: ${err}`, danger: true });
+        await alertDialog({ title: tr('editor.ctxCopyFailed'), message: `${label}: ${err}`, danger: true });
       }
     };
 
     const items: ContextMenuItem[] = [
       {
         id: 'close',
-        label: '关闭',
+        label: tr('editor.ctxClose'),
         shortcut: 'Ctrl+W',
         icon: X,
         action: () => void fileEditorStore.closeFile(path),
       },
       {
         id: 'close-others',
-        label: '关闭其他',
+        label: tr('editor.ctxCloseOthers'),
         disabled: !hasOthers,
         action: () => void fileEditorStore.closeOthers(path),
       },
       {
         id: 'close-right',
-        label: '关闭右侧',
+        label: tr('editor.ctxCloseRight'),
         disabled: !hasRight,
         action: () => void fileEditorStore.closeToRight(path),
       },
       {
         id: 'close-saved',
-        label: '关闭已保存',
+        label: tr('editor.ctxCloseSaved'),
         disabled: !hasSaved,
         action: () => fileEditorStore.closeSaved(),
       },
       {
         id: 'close-all',
-        label: '关闭全部',
+        label: tr('editor.ctxCloseAll'),
         action: () => void fileEditorStore.closeAll(),
       },
       { id: 'div1', divider: true },
       {
         id: 'copy-path',
-        label: '复制路径',
+        label: tr('editor.ctxCopyPath'),
         icon: Copy,
         disabled: isDiff,
-        action: () => void copyToClipboard(path, '复制路径'),
+        action: () => void copyToClipboard(path, tr('editor.ctxCopyPath')),
       },
       {
         id: 'copy-name',
-        label: '复制文件名',
+        label: tr('editor.ctxCopyName'),
         icon: Copy,
         disabled: isDiff,
-        action: () => void copyToClipboard(file.name, '复制文件名'),
+        action: () => void copyToClipboard(file.name, tr('editor.ctxCopyName')),
       },
       { id: 'div2', divider: true },
       {
         id: 'reveal',
-        label: '在文件资源管理器中显示',
+        label: tr('editor.ctxReveal'),
         icon: FolderOpen,
         disabled: isDiff || !isTauri(),
         action: () => {
           if (!isTauri()) return;
           void invoke('reveal_in_file_manager', { path }).catch(async (err) => {
-            await alertDialog({ title: '打开失败', message: String(err), danger: true });
+            await alertDialog({ title: tr('editor.ctxOpenFailed'), message: String(err), danger: true });
           });
         },
       },
@@ -776,7 +782,17 @@
   // items.length 少，库的 index 计算错位 → 拖完丢 tab。
   $effect(() => {
     if (dndInProgress) return;
-    const files = editorState.openFiles;
+    // De-dup by path before keying the tab `{#each ... (it.id)}`: the store's
+    // `openFile` guards against duplicate-path inserts, but a defensive pass
+    // here makes a duplicate key (`each_key_duplicate`, which drops/misrenders
+    // tabs) unreachable from the render layer even if some future code path
+    // slips a dup into `openFiles`. First occurrence wins.
+    const seen = new Set<string>();
+    const files = editorState.openFiles.filter((f) => {
+      if (seen.has(f.path)) return false;
+      seen.add(f.path);
+      return true;
+    });
     untrack(() => {
       const paths = files.map((f) => f.path);
       if (!sameIdSeq(dndItems, paths)) {
@@ -1095,7 +1111,7 @@
       : ''}"
     role="toolbar"
     tabindex="-1"
-    aria-label="编辑器工具栏"
+    aria-label={$t('editor.toolbarAriaLabel')}
     onmousedown={editorState.displayMode === 'floating'
       ? onFloatingDragStart
       : undefined}
@@ -1104,7 +1120,7 @@
       <button
         type="button"
         class="rg-no-drag flex h-7 w-7 shrink-0 items-center justify-center text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors border-r border-[var(--rg-border)]"
-        title="收起编辑器面板"
+        title={$t('editor.collapsePanel')}
         onmousedown={(e) => e.stopPropagation()}
         onclick={hidePanel}
       >
@@ -1123,9 +1139,9 @@
         <span class="truncate flex-1" title={current.path}>{current.path}</span>
         <span class="shrink-0">{current.language}</span>
         {#if current.isDirty}
-          <span class="shrink-0 text-[var(--rg-accent)]">● 未保存</span>
+          <span class="shrink-0 text-[var(--rg-accent)]">{$t('editor.unsaved')}</span>
         {:else}
-          <span class="shrink-0">已保存</span>
+          <span class="shrink-0">{$t('editor.saved')}</span>
         {/if}
       {/if}
     </div>
@@ -1140,7 +1156,7 @@
           <button
             type="button"
             class="flex h-6 w-7 items-center justify-center text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors {diffRenderSideBySide ? 'bg-[var(--rg-accent)]/20 text-[var(--rg-accent)]' : ''}"
-            title="并排 diff"
+            title={$t('editor.diffSideBySide')}
             onclick={() => (diffRenderSideBySide = true)}
           >
             <Columns class="h-3.5 w-3.5" />
@@ -1148,7 +1164,7 @@
           <button
             type="button"
             class="flex h-6 w-7 items-center justify-center text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors {!diffRenderSideBySide ? 'bg-[var(--rg-accent)]/20 text-[var(--rg-accent)]' : ''}"
-            title="内联 diff"
+            title={$t('editor.diffInline')}
             onclick={() => (diffRenderSideBySide = false)}
           >
             <AlignLeft class="h-3.5 w-3.5" />
@@ -1157,7 +1173,7 @@
           <button
             type="button"
             class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
-            title="重新加载 diff"
+            title={$t('editor.diffReload')}
             onclick={() => { if (current?.diffArgs) void loadDiff(current.diffArgs, current.path, true); }}
           >
           <RotateCw class="h-3.5 w-3.5 {diffLoading ? 'animate-spin' : ''}" />
@@ -1166,7 +1182,7 @@
         <button
           type="button"
           class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          title="查找 (Ctrl+F)"
+          title={$t('editor.find')}
           disabled={!current}
           onclick={triggerFind}
         >
@@ -1175,7 +1191,7 @@
         <button
           type="button"
           class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          title="保存 (Ctrl+S)"
+          title={$t('editor.save')}
           disabled={!current?.isDirty}
           onclick={() => fileEditorStore.saveActive()}
         >
@@ -1189,7 +1205,7 @@
           class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors {settingsOpen
             ? 'bg-[var(--rg-surface)] text-[var(--rg-fg)]'
             : ''}"
-          title="设置"
+          title={$t('editor.settings')}
           onclick={() => (settingsOpen = !settingsOpen)}
         >
           <Settings class="h-3.5 w-3.5" />
@@ -1204,7 +1220,7 @@
             <div
               class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]"
             >
-              显示模式
+              {$t('editor.displayMode')}
             </div>
             <button
               type="button"
@@ -1214,7 +1230,7 @@
                 : 'text-[var(--rg-fg)]'}"
               onclick={() => setMode('embedded')}
             >
-              <PanelRight class="h-3.5 w-3.5" /> 嵌入模式
+              <PanelRight class="h-3.5 w-3.5" /> {$t('editor.modeEmbedded')}
               {#if editorState.displayMode === 'embedded'}<span
                   class="ml-auto text-[10px]">✓</span
                 >{/if}
@@ -1227,7 +1243,7 @@
                 : 'text-[var(--rg-fg)]'}"
               onclick={() => setMode('drawer')}
             >
-              <PanelRightOpen class="h-3.5 w-3.5" /> 抽屉模式
+              <PanelRightOpen class="h-3.5 w-3.5" /> {$t('editor.modeDrawer')}
               {#if editorState.displayMode === 'drawer'}<span
                   class="ml-auto text-[10px]">✓</span
                 >{/if}
@@ -1240,7 +1256,7 @@
                 : 'text-[var(--rg-fg)]'}"
               onclick={() => setMode('floating')}
             >
-              <Pin class="h-3.5 w-3.5" /> 悬浮 Pin 模式
+              <Pin class="h-3.5 w-3.5" /> {$t('editor.modeFloating')}
               {#if editorState.displayMode === 'floating'}<span
                   class="ml-auto text-[10px]">✓</span
                 >{/if}
@@ -1255,14 +1271,14 @@
                 revertActive();
               }}
             >
-              <RotateCcw class="h-3.5 w-3.5" /> 放弃修改（重新从磁盘加载）
+              <RotateCcw class="h-3.5 w-3.5" /> {$t('editor.revertFile')}
             </button>
             <button
               type="button"
               class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors text-[var(--rg-fg)]"
               onclick={() => closeAll()}
             >
-              <XCircle class="h-3.5 w-3.5" /> 关闭全部标签
+              <XCircle class="h-3.5 w-3.5" /> {$t('editor.closeAllTabs')}
             </button>
             <button
               type="button"
@@ -1272,7 +1288,7 @@
                 hidePanel();
               }}
             >
-              隐藏编辑器面板
+              {$t('editor.hidePanel')}
             </button>
           </div>
         {/if}
@@ -1285,7 +1301,7 @@
         <button
           type="button"
           class="rg-no-drag flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-red-500/10 hover:text-red-300 transition-colors"
-          title="关闭浮动窗口（保留打开的文件）"
+          title={$t('editor.closeFloating')}
           onmousedown={(e) => e.stopPropagation()}
           onclick={hidePanel}
         >
@@ -1331,18 +1347,18 @@
             class="truncate max-w-[160px] {f.external === 'deleted'
               ? 'text-red-500 line-through decoration-red-500/70'
               : ''}"
-            title={f.external === 'deleted' ? `${f.name} 已被外部删除` : f.name}
+            title={f.external === 'deleted' ? $t('editor.externalDeleted', { name: f.name }) : f.name}
           >{f.name}</span>
           {#if f.external === 'deleted'}
             <span
               class="text-[10px] px-1 py-px rounded bg-red-500/15 text-red-500 leading-none"
-              title="文件已被外部删除"
-            >已删除</span>
+              title={$t('editor.externalDeletedTitle')}
+            >{$t('editor.deletedBadge')}</span>
           {/if}
           {#if f.isDirty}
             <span
               class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--rg-accent)]"
-              title="未保存"
+              title={$t('editor.unsavedDot')}
             ></span>
           {/if}
           <span
@@ -1358,7 +1374,7 @@
             onkeydown={(e) =>
               (e.key === 'Enter' || e.key === ' ') &&
               closeTab(e as unknown as MouseEvent, f.path)}
-            title="关闭"
+            title={$t('editor.closeTab')}
           >
             <X class="h-3 w-3" />
           </span>
@@ -1388,7 +1404,7 @@
     <!-- Diff loading / error overlays -->
     {#if isDiffTab && diffLoading}
       <div class="absolute top-2 right-3 text-[10px] text-[var(--rg-fg-muted)] bg-[var(--rg-surface)]/80 px-2 py-0.5 rounded pointer-events-none">
-        加载中…
+        {$t('editor.diffLoading')}
       </div>
     {/if}
     {#if isDiffTab && diffError}
@@ -1450,8 +1466,8 @@
                  text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]/85 hover:border-[var(--rg-accent)]/40
                  transition-colors shadow-lg shadow-black/20"
         title={inPreviewMode
-          ? '切换到源码编辑 (Markdown)'
-          : '切换到预览 (Markdown)'}
+          ? $t('editor.switchToSource')
+          : $t('editor.switchToPreview')}
         onclick={() =>
           fileEditorStore.setViewMode(
             current!.path,
@@ -1460,10 +1476,10 @@
       >
         {#if inPreviewMode}
           <Code2 class="h-3.5 w-3.5" />
-          <span>源码</span>
+          <span>{$t('editor.sourceLabel')}</span>
         {:else}
           <Eye class="h-3.5 w-3.5" />
-          <span>预览</span>
+          <span>{$t('editor.previewLabel')}</span>
         {/if}
       </button>
     {/if}
@@ -1478,7 +1494,7 @@
         : ''}"
       role="separator"
       aria-orientation="vertical"
-      aria-label="调整编辑器宽度"
+      aria-label={$t('editor.resizeEditorWidth')}
       onmousedown={onDrawerResizeStart}
     ></div>
   {/if}
@@ -1494,7 +1510,7 @@
     <div
       class="rg-float-handle rg-h-n"
       role="separator"
-      aria-label="从上边调整"
+      aria-label={$t('editor.resizeTop')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'n')}
       onkeydown={(e) => onFloatingResizeKey(e, 'n')}
@@ -1504,7 +1520,7 @@
     <div
       class="rg-float-handle rg-h-s"
       role="separator"
-      aria-label="从下边调整"
+      aria-label={$t('editor.resizeBottom')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 's')}
       onkeydown={(e) => onFloatingResizeKey(e, 's')}
@@ -1514,7 +1530,7 @@
     <div
       class="rg-float-handle rg-h-e"
       role="separator"
-      aria-label="从右边调整"
+      aria-label={$t('editor.resizeRight')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'e')}
       onkeydown={(e) => onFloatingResizeKey(e, 'e')}
@@ -1524,7 +1540,7 @@
     <div
       class="rg-float-handle rg-h-w"
       role="separator"
-      aria-label="从左边调整"
+      aria-label={$t('editor.resizeLeft')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'w')}
       onkeydown={(e) => onFloatingResizeKey(e, 'w')}
@@ -1534,7 +1550,7 @@
     <div
       class="rg-float-handle rg-h-ne"
       role="separator"
-      aria-label="右上"
+      aria-label={$t('editor.resizeNE')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'ne')}
       onkeydown={(e) => onFloatingResizeKey(e, 'ne')}
@@ -1544,7 +1560,7 @@
     <div
       class="rg-float-handle rg-h-nw"
       role="separator"
-      aria-label="左上"
+      aria-label={$t('editor.resizeNW')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'nw')}
       onkeydown={(e) => onFloatingResizeKey(e, 'nw')}
@@ -1554,7 +1570,7 @@
     <div
       class="rg-float-handle rg-h-se"
       role="separator"
-      aria-label="右下"
+      aria-label={$t('editor.resizeSE')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'se')}
       onkeydown={(e) => onFloatingResizeKey(e, 'se')}
@@ -1564,7 +1580,7 @@
     <div
       class="rg-float-handle rg-h-sw"
       role="separator"
-      aria-label="左下"
+      aria-label={$t('editor.resizeSW')}
       tabindex="0"
       onmousedown={(e) => onFloatingResizeStart(e, 'sw')}
       onkeydown={(e) => onFloatingResizeKey(e, 'sw')}

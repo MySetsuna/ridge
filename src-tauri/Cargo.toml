@@ -98,6 +98,13 @@ ridge-term = { path = "../packages/ridge-term", default-features = false }
 # serde/serde_json/tokio/thiserror/tracing (all already present).
 ridge-core = { path = "../packages/ridge-core" }
 
+# S-decouple: the headless tmux session engine, extracted out of
+# `teammate/native.rs` into a standalone Tauri-free crate so the SAME engine
+# the desktop uses can run in the headless `ridge-cli` host. The desktop keeps
+# its `crate::teammate::native::*` paths via a thin `pub use ridge_tmux::*;`
+# re-export. Pure deps only (portable-pty + ridge-term Terminal), no new Tauri.
+ridge-tmux = { path = "../packages/ridge-tmux", features = ["http"] }
+
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)
 # encodes frames to Vec<u8>, emits via Tauri events; the wasm consumer

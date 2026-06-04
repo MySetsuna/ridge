@@ -16,10 +16,20 @@ registerSidebarPlugin({
   order: 100,
 });
 
-registerSidebarPlugin({
-  id: 'native-sessions',
-  title: 'Native 会话',
-  scope: 'global',
-  component: NativeSessionsPanel,
-  order: 90,
-});
+// `native-sessions` surfaces the headless tmux engine (teammate/native.rs) and
+// its summon-into-workspace action. Both backing commands (`list_native_sessions`
+// / `summon_native_session`) are host-only — the latter is explicitly excluded
+// from the remote invoke allowlist (remote/server.rs), and the former has no
+// allowlist arm — so over web-remote the panel can only ever render an empty,
+// non-actionable section. Gate it to the desktop build to avoid that dead zone.
+const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+if (!webRemote) {
+  registerSidebarPlugin({
+    id: 'native-sessions',
+    title: 'Native 会话',
+    scope: 'global',
+    component: NativeSessionsPanel,
+    order: 90,
+  });
+}

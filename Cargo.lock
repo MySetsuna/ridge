@@ -5158,6 +5158,7 @@ dependencies = [
  "reqwest 0.12.28",
  "ridge-core",
  "ridge-term",
+ "ridge-tmux",
  "rusqlite",
  "rustls",
  "serde",
@@ -5199,6 +5200,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "ridge-core",
+ "ridge-tmux",
  "serde",
  "serde_json",
  "sha2",
@@ -5241,6 +5243,21 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "ridge-tmux"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "parking_lot",
+ "portable-pty",
+ "ridge-term",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -16,6 +16,7 @@ members = [
     "packages/ridge-core",
     "packages/ridge-cli",
     "packages/ridge-term",
+    "packages/ridge-tmux",
 ]
 
 # Workspace members cannot declare their own `[profile.*]` — only the workspace
