@@ -20,8 +20,6 @@
   let hiddenInput: HTMLTextAreaElement | undefined = $state();
   let ctrl: TerminalController | null = null;
   let ready = $state(false);
-  let hasSelection = $state(false);
-  let copySuccess = $state(false);
 
   // Mouse drag-select state (desktop; only when the app isn't grabbing mouse).
   let mouseSelecting = false;
@@ -31,15 +29,19 @@
   // Keyboard offset (mobile: pushes canvas up via transform)
   let keyboardOffset = $state(0);
 
-  // Touch state
+  // Touch state. Gesture model: two-finger pan = scroll; single-finger tap =
+  // focus (+ click in mouse-reporting apps); single-finger drag = selection
+  // (forwarded to the TUI as mouse events in mouse-reporting mode, local kernel
+  // selection otherwise).
   let touchStartY = 0;
   let touchStartX = 0;
   let touchScrollAccum = 0;
-  let lastTouchDistance = 0;
   let isTwoFinger = false;
+  let twoFingerLastY = 0;
+  let singleDragging = false;
   let touchStartTime = 0;
-  let didLongPress = false;
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  const TOUCH_DRAG_THRESHOLD_PX = 8;
+  const TOUCH_TAP_MAX_MS = 250;
 
   onMount(async () => {
     if (!canvasEl || !containerEl) return;
@@ -131,13 +133,19 @@
     }
   }
 
+  /** Centroid Y of a two-finger touch, used for pan-scroll tracking. */
+  function twoFingerCentroidY(e: TouchEvent): number {
+    return (e.touches[0].clientY + e.touches[1].clientY) / 2;
+  }
+
   function handleTouchStart(e: TouchEvent) {
     if (!ctrl) return;
     if (e.touches.length === 2) {
+      // Two fingers → pan-scroll. Track the centroid; suppress native pan/zoom.
       isTwoFinger = true;
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      lastTouchDistance = Math.sqrt(dx * dx + dy * dy);
+      singleDragging = false;
+      twoFingerLastY = twoFingerCentroidY(e);
+      touchScrollAccum = 0;
       e.preventDefault();
       return;
     }
@@ -146,123 +154,100 @@
     touchStartX = e.touches[0].clientX;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
-    didLongPress = false;
-    const touch = e.touches[0];
-    if (longPressTimer) clearTimeout(longPressTimer);
-    longPressTimer = setTimeout(() => {
-      if (!ctrl || isTwoFinger) return;
-      didLongPress = true;
-      const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
-      if (cell) {
-        ctrl.startSelection(cell.row, cell.col);
-        hasSelection = ctrl.hasSelection();
-        // Forward mouse press to TUI if it wants it
-        if (ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        }
-        try { navigator.vibrate(15); } catch {}
-      }
-    }, 400);
+    singleDragging = false;
   }
 
   function handleTouchMove(e: TouchEvent) {
     if (!ctrl) return;
-    if (e.touches.length === 2 && isTwoFinger) {
-      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const delta = lastTouchDistance - dist;
-      if (Math.abs(delta) > 3) {
-        const lines = Math.round(delta / 20);
-        if (lines < 0) ctrl.scrollUp(-lines);
-        else ctrl.scrollDown(lines);
-        lastTouchDistance = dist;
-      }
+    // Two-finger pan = scroll (wheel for mouse-reporting apps, scrollback else).
+    if (isTwoFinger && e.touches.length === 2) {
       e.preventDefault();
-      return;
-    }
-    if (e.touches.length === 1 && !isTwoFinger) {
-      if (ctrl.isSelecting) {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-        e.preventDefault();
-        const cell = ctrl.clientToCell(e.touches[0].clientX, e.touches[0].clientY);
-        if (cell) {
-          ctrl.extendSelection(cell.row, cell.col);
-          hasSelection = ctrl.hasSelection();
-          // Forward mouse drag to TUI if it wants it
-          if (ctrl.isMouseReporting()) {
-            const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false);
-            if (bytes.length > 0) onStdin(td.decode(bytes));
-          }
-        }
-        return;
-      }
-      if (didLongPress) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      if (Math.abs(dy) > 10 && longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      touchScrollAccum += dy;
-      if (Math.abs(touchScrollAccum) > 30) {
+      const y = twoFingerCentroidY(e);
+      touchScrollAccum += twoFingerLastY - y; // fingers up → scroll content down
+      twoFingerLastY = y;
+      if (Math.abs(touchScrollAccum) > 24) {
         touchWheel(touchScrollAccum, e.touches[0].clientX, e.touches[0].clientY);
         touchScrollAccum = 0;
       }
-      touchStartY = e.touches[0].clientY;
+      return;
+    }
+    if (e.touches.length !== 1 || isTwoFinger) return;
+    const t = e.touches[0];
+    const cell = ctrl.clientToCell(t.clientX, t.clientY);
+    if (!cell) return;
+    // Single-finger drag = selection. Begin once past the movement threshold so
+    // a stationary tap still registers as a tap, not a zero-length selection.
+    if (!singleDragging) {
+      const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
+      if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
+      singleDragging = true;
+      const start = ctrl.clientToCell(touchStartX, touchStartY) ?? cell;
+      if (ctrl.isMouseReporting()) {
+        // Forward a mouse press at the drag origin — the TUI owns the selection.
+        const b = ctrl.encodeMouse(start.row, start.col, 0, 0, false, false, false);
+        if (b.length > 0) onStdin(td.decode(b));
+      } else {
+        ctrl.startSelection(start.row, start.col);
+      }
+    }
+    e.preventDefault();
+    if (ctrl.isMouseReporting()) {
+      const b = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // motion w/ button
+      if (b.length > 0) onStdin(td.decode(b));
+    } else {
+      ctrl.extendSelection(cell.row, cell.col);
     }
   }
 
   function handleTouchEnd(e: TouchEvent) {
-    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
     if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; return; }
-    if (ctrl?.isSelecting) {
-      ctrl.endSelection();
-      hasSelection = ctrl.hasSelection();
-      touchScrollAccum = 0;
-      // Forward mouse release to TUI if it wants it
-      if (ctrl.isMouseReporting()) {
-        const touch = e.changedTouches[0];
-        if (touch) {
-          const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
-          if (cell) {
-            const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false);
-            if (bytes.length > 0) onStdin(td.decode(bytes));
-          }
+    const touch = e.changedTouches[0];
+    if (singleDragging) {
+      singleDragging = false;
+      const cell = touch ? ctrl?.clientToCell(touch.clientX, touch.clientY) : null;
+      if (ctrl?.isMouseReporting()) {
+        if (cell) {
+          const b = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false); // release
+          if (b.length > 0) onStdin(td.decode(b));
         }
+      } else {
+        ctrl?.endSelection();
       }
       return;
     }
-    if (didLongPress) { didLongPress = false; touchScrollAccum = 0; return; }
+    // Tap: focus (raise the soft keyboard) + click-through in mouse-reporting apps.
     const elapsed = Date.now() - touchStartTime;
-    if (elapsed < 250 && ctrl) {
-      const touch = e.changedTouches[0];
+    if (elapsed < TOUCH_TAP_MAX_MS && ctrl) {
       if (touch) {
         const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
         if (cell && ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
+          const press = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
+          if (press.length > 0) onStdin(td.decode(press));
           requestAnimationFrame(() => {
             if (ctrl) {
-              const releaseBytes = ctrl.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
-              if (releaseBytes.length > 0) onStdin(td.decode(releaseBytes));
+              const rel = ctrl.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
+              if (rel.length > 0) onStdin(td.decode(rel));
             }
           });
         }
       }
-      // A tap focuses the hidden textarea, which raises the mobile soft keyboard.
       focusInput();
     }
-    isTwoFinger = false; touchScrollAccum = 0;
-  }
-
-  // ── Copy / Selection ──
-  async function handleCopy() {
-    if (!ctrl || !ctrl.hasSelection()) return;
-    const text = ctrl.getSelectionText();
-    if (!text) return;
-    try { await navigator.clipboard.writeText(text); copySuccess = true; setTimeout(() => copySuccess = false, 1500); } catch {}
   }
 
   // ── Composition (IME) + plain text input, both via the hidden textarea ──
+  //
+  // Mobile IMEs commit text via BOTH `compositionend` and a trailing `input`
+  // event, and the two can arrive in either order. We send the commit exactly
+  // once with a content-matched, time-windowed dedup that — crucially — only
+  // arms around composition, so genuinely repeated typing (e.g. "aa") is never
+  // dropped.
+  const IME_DUP_WINDOW_MS = 200;
+  let imeCommitExpect = '';     // commit from compositionend; the matching trailing `input` is a dup
+  let imeCommitExpectTime = 0;
+  let lastInputText = '';       // text just emitted by `input`; a matching compositionend is a dup
+  let lastInputTime = 0;
+
   function handleCompositionStart() {
     ctrl?.startComposition();
     parkInputAtCursor();
@@ -271,10 +256,21 @@
     ctrl?.updateComposition(e.data);
   }
   function handleCompositionEnd(e: CompositionEvent) {
-    ctrl?.endComposition(e.data);
-    // Clear before the trailing `input` event fires so the committed text isn't
-    // sent twice (compositionend already emitted it via endComposition).
+    ctrl?.finishComposition();
+    const data = e.data ?? '';
+    // Clear the textarea so a late `input` can't resend the committed text.
     if (hiddenInput) hiddenInput.value = '';
+    if (!data) return;
+    // If an `input` already emitted this exact commit (some IMEs fire `input`
+    // before `compositionend`), don't send it again.
+    if (data === lastInputText && Date.now() - lastInputTime < IME_DUP_WINDOW_MS) {
+      lastInputText = '';
+      return;
+    }
+    ctrl?.commitText(data);
+    // Arm dedup for the trailing `input` event that normally follows.
+    imeCommitExpect = data;
+    imeCommitExpectTime = Date.now();
   }
 
   // Fires for plain typed / predicted / autocorrected text that isn't an IME
@@ -286,7 +282,15 @@
     const ta = e.target as HTMLTextAreaElement;
     const text = ta.value;
     ta.value = '';
-    if (text) onStdin(text);
+    if (!text) return;
+    // Drop the trailing duplicate `input` that follows a composition commit.
+    if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS) {
+      imeCommitExpect = '';
+      return;
+    }
+    onStdin(text);
+    lastInputText = text;
+    lastInputTime = Date.now();
   }
 
   // ── Keyboard ──
@@ -296,6 +300,21 @@
     // Unmodified printable keys flow into the hidden textarea; its `input` event
     // emits them (keeps IME + mobile prediction working, avoids double-send).
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+    // Clipboard: handle paste/copy before the generic ctrl/meta passthrough.
+    // Ctrl/Cmd+V reads the clipboard directly — the hidden input's native paste
+    // only fires when it happens to hold focus, so desktop paste was unreliable.
+    // Ctrl/Cmd+C (incl. Ctrl+Shift+C) copies an active selection; with no
+    // selection it falls through to send ^C (interrupt), as a terminal should.
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault();
+      void pasteFromClipboard();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && ctrl.hasSelection()) {
+      e.preventDefault();
+      void copySelection();
+      return;
+    }
     const specialKeys: Record<string, string> = { Enter: '\r', Escape: '\x1b', Tab: '\t', Insert: '\x1b[2~' };
     const shiftSpecial: Record<string, string> = { Tab: '\x1b[Z' };
     if (e.shiftKey && shiftSpecial[e.key]) { e.preventDefault(); onStdin(shiftSpecial[e.key]); return; }
@@ -330,13 +349,40 @@
     }
   }
 
+  /** Encode arbitrary text as a bracketed paste and forward it to the host. */
+  function sendPaste(text: string) {
+    if (!ctrl || !text) return;
+    const bytes = ctrl.encodePaste(text);
+    if (bytes.length > 0) onStdin(td.decode(bytes));
+  }
+
+  /** Read the system clipboard and paste it. Driven by Ctrl/Cmd+V — the keydown
+   *  is the user gesture the Clipboard API requires, and the LAN serves over TLS
+   *  (secure context), so readText() is permitted. */
+  async function pasteFromClipboard() {
+    if (!ctrl) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) sendPaste(text);
+    } catch { /* clipboard blocked: no permission / insecure context */ }
+  }
+
+  /** Copy the active selection to the system clipboard (desktop Ctrl/Cmd+C). */
+  async function copySelection() {
+    if (!ctrl) return;
+    const text = ctrl.getSelectionText();
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
+    ctrl.clearSelection();
+  }
+
+  // Native paste fallback (right-click → paste, middle-click) on the focused
+  // hidden textarea. Ctrl/Cmd+V is handled in handleKeydown instead.
   function handlePaste(e: ClipboardEvent) {
     if (!paneId || !ctrl) return;
     e.preventDefault();
     const text = e.clipboardData?.getData('text') ?? '';
-    if (!text) return;
-    const bytes = ctrl.encodePaste(text);
-    if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+    sendPaste(text);
   }
 
   // ── Mouse (desktop) ──
@@ -357,7 +403,6 @@
       e.preventDefault();
       mouseSelecting = true;
       ctrl.startSelection(cell.row, cell.col);
-      hasSelection = ctrl.hasSelection();
     }
   }
 
@@ -365,7 +410,7 @@
     if (!ctrl) return;
     if (mouseSelecting) {
       const cell = ctrl.clientToCell(e.clientX, e.clientY);
-      if (cell) { ctrl.extendSelection(cell.row, cell.col); hasSelection = ctrl.hasSelection(); }
+      if (cell) ctrl.extendSelection(cell.row, cell.col);
       return;
     }
     // Drag with a button held while the app captures the mouse → motion report.
@@ -389,7 +434,6 @@
     } else if (mouseSelecting) {
       mouseSelecting = false;
       ctrl.endSelection();
-      hasSelection = ctrl.hasSelection();
     }
   }
 
@@ -412,13 +456,6 @@
     // Hand right-click to mouse-capturing apps; otherwise leave the native menu.
     if (ctrl?.isMouseReporting()) e.preventDefault();
   }
-
-  $effect(() => {
-    if (ready && ctrl) {
-      const poll = setInterval(() => { hasSelection = ctrl?.hasSelection() ?? false; }, 300);
-      return () => clearInterval(poll);
-    }
-  });
 
   $effect(() => {
     if (ctrl && paneId) {
@@ -497,13 +534,6 @@
     onfocus={() => ctrl?.setFocused(true)}
     onblur={() => ctrl?.setFocused(false)}
   ></textarea>
-
-  {#if ready && hasSelection}
-    <div class="selection-actions">
-      <button class="copy-btn" onclick={handleCopy}>{copySuccess ? $t('mobile.copied') : $t('mobile.copy')}</button>
-      <button class="dismiss-btn" onclick={() => { ctrl?.clearSelection(); hasSelection = false; }}>✕</button>
-    </div>
-  {/if}
 </div>
 
 {#if showKeyboard}
@@ -521,10 +551,4 @@
     opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
     background:transparent;color:transparent;caret-color:transparent;outline:none;font:inherit}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px}
-  .selection-actions{position:absolute;bottom:12px;right:12px;display:flex;gap:6px;z-index:10}
-  .copy-btn,.dismiss-btn{display:flex;align-items:center;justify-content:center;height:36px;padding:0 14px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s;touch-action:manipulation}
-  .copy-btn{background:var(--rg-ansi-green);color:#fff}
-  .copy-btn:active{background:var(--rg-ansi-green);opacity:.85}
-  .dismiss-btn{background:var(--rg-surface-2);color:var(--rg-fg-muted);min-width:36px}
-  .dismiss-btn:active{background:var(--rg-border-bright)}
 </style>
