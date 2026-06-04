@@ -33,7 +33,7 @@
  */
 // @ts-nocheck
 import { browser, expect } from '@wdio/globals';
-import { waitForAppReady, firstPaneId, clearVisibleGrid, waitForVisibleText } from './helpers';
+import { waitForAppReady, firstPaneId } from './helpers';
 
 describe('worker-mirror shadow path (flag on, worker can\'t paint yet)', () => {
   before(async () => {
@@ -76,20 +76,19 @@ describe('worker-mirror shadow path (flag on, worker can\'t paint yet)', () => {
   it('legacy main-thread render still echoes PTY bytes', async () => {
     const paneId = await firstPaneId();
 
-    // §1.35: clear screen + home cursor BEFORE the feed so the async
-    // shell prompt doesn't clobber the start of "hello from worker
-    // mirror" (see clearVisibleGrid docs).
-    await clearVisibleGrid(paneId);
     await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__windE2E.feedPty(id, 'hello from worker mirror\\n');
     }, paneId!);
-    await waitForVisibleText(paneId, 'hello from worker mirror');
+
+    // One RAF tick for the feed to land on the kernel.
+    await browser.pause(50);
 
     const text: string[] = await browser.execute((id) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (window as any).__windE2E.visibleText(id) as string[];
     }, paneId!);
+
     expect(text.join('\\n')).toContain('hello from worker mirror');
   });
 
