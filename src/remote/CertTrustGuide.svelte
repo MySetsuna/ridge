@@ -7,6 +7,8 @@
   // from the server at /ridge-ca.crt (DER, for mobile install) and /ridge-ca.pem
   // (for desktop trust stores).
 
+  import { t, tr } from '$lib/i18n';
+
   type Platform = 'ios' | 'android' | 'desktop';
 
   function detectPlatform(): Platform {
@@ -25,24 +27,24 @@
   // Over plain HTTP there is no cert to trust — installing one won't help.
   const secure = typeof window !== 'undefined' ? window.isSecureContext : true;
 
-  const steps: Record<Platform, string[]> = {
+  const stepKeys: Record<Platform, string[]> = {
     ios: [
-      '点击下方「下载证书」，在弹窗中选择「允许」下载描述文件。',
-      '打开「设置 → 通用 → VPN 与设备管理」，安装「Ridge Remote Local CA」描述文件。',
-      '打开「设置 → 通用 → 关于本机 → 证书信任设置」，为「Ridge Remote Local CA」打开完全信任。',
-      '返回浏览器刷新本页，地址栏的「不安全」警告即消除。',
+      'mobile.certIosStep1',
+      'mobile.certIosStep2',
+      'mobile.certIosStep3',
+      'mobile.certIosStep4',
     ],
     android: [
-      '点击下方「下载证书」保存 ridge-remote-ca.crt。',
-      '打开「设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书」（部分机型在「从存储设备安装」）。',
-      '选择刚下载的 ridge-remote-ca.crt 完成安装。',
-      '返回浏览器刷新本页。',
+      'mobile.certAndroidStep1',
+      'mobile.certAndroidStep2',
+      'mobile.certAndroidStep3',
+      'mobile.certAndroidStep4',
     ],
     desktop: [
-      'Windows：下载 .crt → 双击 → 安装证书 → 选择「受信任的根证书颁发机构」→ 完成。',
-      'macOS：下载 .pem → 用「钥匙串访问」导入到「系统」→ 双击证书并设为「始终信任」。',
-      'Linux/其他：将 .pem 导入浏览器或系统的受信任根证书。',
-      '重启浏览器后刷新本页。',
+      'mobile.certDesktopStep1',
+      'mobile.certDesktopStep2',
+      'mobile.certDesktopStep3',
+      'mobile.certDesktopStep4',
     ],
   };
 </script>
@@ -50,27 +52,24 @@
 <div class="cert">
   <button class="toggle" onclick={() => (open = !open)} aria-expanded={open}>
     <span class="lock">🔒</span>
-    <span>浏览器提示「不安全」？安装证书消除警告</span>
+    <span>{$t('mobile.certToggleLabel')}</span>
     <span class="chev" class:rot={open}>▾</span>
   </button>
 
   {#if open}
     <div class="panel">
-      <p class="intro">
-        本机使用自动生成的本地证书加密远程连接。安装并信任一次后，
-        浏览器不再提示「不安全」，并解锁完整功能（含 GPU 加速终端渲染）。
-      </p>
+      <p class="intro">{$t('mobile.certIntro')}</p>
 
       {#if !secure}
+        {@const parts = $t('mobile.certInsecure').split('{code}')}
         <p class="insecure">
-          当前为 HTTP 连接，证书暂不可用。请确认桌面端已启用 HTTPS 后通过
-          <code>https://</code> 地址重新打开本页。
+          {parts[0]}<code>https://</code>{parts[1] ?? ''}
         </p>
       {/if}
 
       <ol class="steps">
-        {#each steps[platform] as step}
-          <li>{step}</li>
+        {#each stepKeys[platform] as key}
+          <li>{$t(key)}</li>
         {/each}
       </ol>
 
@@ -78,9 +77,9 @@
         {#if platform === 'ios'}
           <!-- iOS: a plain navigation triggers the profile-install prompt;
                a `download` attribute can route it to Files instead. -->
-          <a class="dl primary" href="/ridge-ca.crt">下载证书</a>
+          <a class="dl primary" href="/ridge-ca.crt">{$t('mobile.downloadCert')}</a>
         {:else}
-          <a class="dl primary" href="/ridge-ca.crt" download="ridge-remote-ca.crt">下载证书 (.crt)</a>
+          <a class="dl primary" href="/ridge-ca.crt" download="ridge-remote-ca.crt">{$t('mobile.downloadCertCrt')}</a>
         {/if}
         <a class="dl ghost" href="/ridge-ca.pem" download="ridge-remote-ca.pem">.pem</a>
       </div>

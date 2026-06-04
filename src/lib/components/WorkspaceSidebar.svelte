@@ -1,6 +1,7 @@
 <script lang="ts">
  import { GripVertical, Layout, Plus, Save, X } from 'lucide-svelte';
  import { showContextMenu } from '$lib/stores/contextMenu';
+ import { t, tr } from '$lib/i18n';
 
  interface WorkspaceItem {
  id: string;
@@ -78,16 +79,16 @@
  showContextMenu(e.clientX, e.clientY, [
  {
  id: 'rename',
- label: '重命名',
+ label: tr('explorer.ctxRenameWorkspace'),
  action: () => {
  editingId = ws.id;
- editingName = ws.name || `工作区 ${ws.displaySeq}`;
+ editingName = ws.name || tr('explorer.workspaceDefault', { seq: ws.displaySeq });
  }
  },
  { id: 'divider1', divider: true },
  {
  id: 'delete',
- label: '删除',
+ label: tr('explorer.ctxDeleteWorkspace'),
  disabled: workspaces.length <= 1,
  action: () => onDelete(ws.id)
  }
@@ -113,16 +114,16 @@
  }
 
  function getWorkspaceName(ws: WorkspaceItem): string {
- return ws.name || `工作区 ${ws.displaySeq}`;
+ return ws.name || tr('explorer.workspaceDefault', { seq: ws.displaySeq });
  }
 </script>
 
 <div class="flex flex-col h-full rg-sidebar">
  <!-- 头部 -->
  <div class="h-11 px-3 shrink-0 border-b border-[var(--rg-border)] flex items-center justify-between">
- <span class="text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">工作区</span>
+ <span class="text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('explorer.workspacesHeader')}</span>
   <div class="flex items-center gap-1">
-  <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title="保存工作区" onclick={onSave}>
+  <button type="button" class="p-1.5 rounded hover:bg-white/[0.06]" title={$t('explorer.saveWorkspaceTitle')} onclick={onSave}>
     <Save class="h-4 w-4" />
   </button>
   </div>
@@ -132,7 +133,7 @@
  <div class="flex-1 overflow-auto p-2">
  {#if workspaces.length === 0}
  <div class="text-[13px] leading-relaxed text-[var(--rg-fg-muted)] py-8 text-center">
- 暂无工作区
+ {$t('explorer.noWorkspaces')}
  </div>
  {:else}
  {#each workspaces as ws, i (ws.id)}
@@ -182,7 +183,7 @@
  <button
  type="button"
  class="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-white/[0.06] transition-all"
- title="关闭工作区"
+ title={$t('explorer.closeWorkspaceTitle')}
  onclick={(e) => {
  e.stopPropagation();
  onDelete(ws.id);
@@ -197,11 +198,11 @@
   <button
     type="button"
     class="flex items-center gap-2 w-full rounded-lg px-2 py-2 text-[13px] text-[var(--rg-fg-muted)] hover:bg-white/[0.04] hover:text-[var(--rg-fg)] transition-colors mt-1"
-    title="新建工作区"
+    title={$t('explorer.newWorkspaceTitle')}
     onclick={onCreate}
   >
     <Plus class="h-4 w-4 shrink-0" />
-    <span>新建工作区</span>
+    <span>{$t('explorer.newWorkspaceLabel')}</span>
   </button>
   </div>
 </div>

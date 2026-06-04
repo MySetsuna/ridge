@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Search } from 'lucide-svelte';
   import type { SidebarProvider, SearchHit } from './types';
+  import { t } from '$lib/i18n';
 
   let { provider, onOpenFile }: {
     provider: SidebarProvider;
@@ -44,7 +45,7 @@
     <input
       class="search-input"
       type="search"
-      placeholder="搜索文件内容…"
+      placeholder={$t('ui.sidebarSearchPlaceholder')}
       value={query}
       oninput={onInput}
     />
@@ -54,9 +55,9 @@
     {#if error}
       <span class="msg err">{error}</span>
     {:else if loading}
-      <span class="msg">搜索中…</span>
+      <span class="msg">{$t('ui.sidebarSearching')}</span>
     {:else if query.trim().length >= 2 && results.length === 0}
-      <span class="msg">无匹配结果</span>
+      <span class="msg">{$t('ui.sidebarNoResults')}</span>
     {:else}
       {#each results as r, i (r.file + ':' + r.line + ':' + r.column + ':' + i)}
         <button class="hit" onclick={() => onOpenFile?.(r.file, r.line)}>

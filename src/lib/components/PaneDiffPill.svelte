@@ -17,6 +17,7 @@
 
   import { Plus, Minus, FileText } from 'lucide-svelte';
   import { paneGitStatusStore, type PaneGitInfo } from '$lib/stores/paneGitStatus';
+  import { t } from '$lib/i18n';
 
   interface Props {
     paneId: string;
@@ -58,7 +59,7 @@
 {#if info && info.branch}
   <button
     type="button"
-    title={`改动文件：${info.dirtyFiles}\n+${info.added} -${info.removed}\n点击在源代码管理中查看此仓库`}
+    title={$t('scm.diffPillTooltip', { dirtyFiles: info.dirtyFiles, added: info.added, removed: info.removed })}
     class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] border transition-colors max-w-[200px]
       {isClean
         ? 'bg-[var(--rg-surface)]/40 border-[var(--rg-border)]/60 text-[var(--rg-fg-muted)]/70 hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]/80'

@@ -7,6 +7,7 @@
   import { Activity } from 'lucide-svelte';
   import { paneTreeStore } from '$lib/stores/paneTree';
   import type { PaneNode } from '$lib/types';
+  import { t } from '$lib/i18n';
 
   interface Props {
     /** Supplied by SidebarPluginRegion for scope='workspace'. */
@@ -28,7 +29,7 @@
 </script>
 
 <div class="px-3 py-1 flex items-center gap-2 text-[10px] text-[var(--rg-fg-muted)] border-b border-[var(--rg-border)]/40 bg-[var(--rg-surface-2)]/20">
-  <span class="flex items-center gap-1 ml-auto" title="当前工作区 pane 数">
+  <span class="flex items-center gap-1 ml-auto" title={$t('main.workspacePaneCountTitle')}>
     <Activity class="h-3 w-3" />
     <span class="font-mono">{localLeaves.length}</span>
     <span>pane</span>

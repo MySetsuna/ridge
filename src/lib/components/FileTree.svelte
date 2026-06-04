@@ -23,6 +23,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import type { FileNode } from '$lib/stores/project';
 	import { searchInFolder } from '$lib/stores/searchState';
+	import { t, tr } from '$lib/i18n';
 	import FileTree from './FileTree.svelte';
 
 	interface Props {
@@ -206,7 +207,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				// no error message shown.
 				fileExplorerStore.collapseOnLoadError(columnId, node.path);
 			} else {
-				childrenError = '加载失败，请重试';
+				childrenError = tr('explorer.loadFailed');
 			}
 			hasLoaded = true;
 		} finally {
@@ -316,7 +317,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		// Refuse self-drop / drop of an ancestor onto a descendant.
 		for (const p of paths) {
 			if (p === node.path || node.path.startsWith(p + '/') || node.path.startsWith(p + '\\')) {
-				await alertDialog({ title: '拖放失败', message: '不能把路径拖到它自己或其子目录中', danger: true });
+				await alertDialog({ title: tr('explorer.dndFailed'), message: tr('explorer.dndSelfDropMessage'), danger: true });
 
 				return;
 			}
@@ -359,7 +360,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			for (const d of sourceDirs) await refreshColumnsCovering(d);
 		}
 		if (errors.length > 0) {
-			await alertDialog({ title: '拖放失败', message: `${errors.length} 项拖放失败:\n${errors.join('\n')}`, danger: true });
+			await alertDialog({ title: tr('explorer.dndFailed'), message: tr('explorer.dndFailedMessage', { count: errors.length, details: errors.join('\n') }), danger: true });
 		}
 	}
 
@@ -450,23 +451,23 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 
 		const items = node.is_dir
 			? [
-					{ id: 'new-file', label: '新建文件', action: () => beginCreate('file') },
-					{ id: 'new-folder', label: '新建文件夹', action: () => beginCreate('folder') },
+					{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => beginCreate('file') },
+					{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => beginCreate('folder') },
 					{ id: 'divider1', divider: true },
-			{ id: 'copy', label: '复制', action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: '复制相对路径', action: () => copyToClipboard(getRelativePath(node.path)) },
-					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
-					{ id: 'search-in-folder', label: '在文件夹中搜索', action: () => searchInFolder(node.path) },
+			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
+					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
+					{ id: 'search-in-folder', label: tr('explorer.ctxSearchInFolder'), action: () => searchInFolder(node.path) },
 					{ id: 'divider2', divider: true },
-					{ id: 'rename', label: '重命名', action: () => beginRename() },
-					{ id: 'delete', label: '删除', action: () => void deleteItem() },
+					{ id: 'rename', label: tr('explorer.ctxRename'), action: () => beginRename() },
+					{ id: 'delete', label: tr('explorer.ctxDelete'), action: () => void deleteItem() },
 				]
 			: [
-					{ id: 'open', label: '打开', action: () => void openFile() },
-			{ id: 'copy', label: '复制', action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: '复制相对路径', action: () => copyToClipboard(getRelativePath(node.path)) },
-					{ id: 'reveal', label: '在文件管理器中显示', action: () => void revealInExplorer() },
+					{ id: 'open', label: tr('explorer.ctxOpen'), action: () => void openFile() },
+			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
+					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
 					{ id: 'divider', divider: true },
-					{ id: 'rename', label: '重命名', action: () => beginRename() },
-					{ id: 'delete', label: '删除', action: () => void deleteItem() },
+					{ id: 'rename', label: tr('explorer.ctxRename'), action: () => beginRename() },
+					{ id: 'delete', label: tr('explorer.ctxDelete'), action: () => void deleteItem() },
 				];
 
 		showContextMenu(e.clientX, e.clientY, items);
@@ -548,7 +549,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					await invoke('rename_path', { from: node.path, to: target });
 					await refreshColumnTree();
 				} catch (e) {
-					await alertDialog({ title: '重命名失败', message: String(e), danger: true });
+					await alertDialog({ title: tr('explorer.renameFailed'), message: String(e), danger: true });
 					return;
 				}
 			} else if (currentEditing === 'create-file' || currentEditing === 'create-folder') {
@@ -564,7 +565,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					await refreshColumnTree();
 					if (isFile) await fileEditorStore.openFile(target);
 				} catch (e) {
-					await alertDialog({ title: '创建失败', message: `${isFile ? '创建文件' : '创建目录'}失败: ${e}`, danger: true });
+					await alertDialog({ title: tr('explorer.createFailed'), message: isFile ? tr('explorer.createFileFailedMessage', { error: String(e) }) : tr('explorer.createDirFailedMessage', { error: String(e) }), danger: true });
 					return;
 				}
 			}
@@ -596,7 +597,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		try {
 			await invoke('reveal_in_file_manager', { path: node.path });
 		} catch (e) {
-			await alertDialog({ title: '操作失败', message: `打开文件管理器失败: ${e}`, danger: true });
+			await alertDialog({ title: tr('explorer.revealFailed'), message: tr('explorer.revealFailedMessage', { error: String(e) }), danger: true });
 		}
 	}
 
@@ -613,12 +614,12 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		const targets = multi ? Array.from(selectedPaths) : [node.path];
 		const label =
 			targets.length > 1
-				? `${targets.length} 项（含 "${node.name}"）`
+				? tr('explorer.deleteMultiLabel', { count: targets.length, name: node.name })
 				: `"${node.name}"`;
 		const confirmed = await confirmDialog({
-			title: '删除文件',
-			message: `确认删除 ${label}？此操作不可撤销。`,
-			okLabel: '删除',
+			title: tr('explorer.deleteFileTitle'),
+			message: tr('explorer.deleteFileMessage', { label }),
+			okLabel: tr('explorer.deleteFileLabel'),
 			danger: true,
 		});
 		if (!confirmed) return;
@@ -636,8 +637,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		await refreshColumnTree();
 		if (errors.length > 0) {
 			await alertDialog({
-				title: '部分删除失败',
-				message: `${errors.length} 项删除失败:\n${errors.join('\n')}`,
+				title: tr('explorer.deletePartialFailed'),
+				message: tr('explorer.deletePartialFailedMessage', { count: errors.length, details: errors.join('\n') }),
 				danger: true,
 			});
 		}
@@ -739,7 +740,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 							type="text"
 							bind:this={editInput}
 							bind:value={editValue}
-							placeholder={editing === 'create-file' ? '新文件名' : '新文件夹名'}
+							placeholder={editing === 'create-file' ? $t('explorer.newFileName') : $t('explorer.newFolderName')}
 							class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--rg-fg)]"
 							onkeydown={onEditKeydown}
 							onblur={onEditBlur}
@@ -779,7 +780,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 						class="px-2 py-1 text-[12px] text-[var(--rg-fg-muted)]"
 						style="padding-left: {(depth + 1) * 8}px"
 					>
-						空目录
+						{$t('explorer.emptyDirectory')}
 					</div>
 				{/if}
 			{/if}
@@ -799,9 +800,9 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 						<span class="w-4 h-4"></span>
 						<span class="w-4 h-4"></span>
 						{#if childrenLoading}
-							加载中…
+							{$t('explorer.loadingEllipsis')}
 						{:else}
-							加载更多 (剩余 {Math.max(0, childrenTotalCount - childrenLoadedTotal)})
+							{$t('explorer.loadMore', { remaining: Math.max(0, childrenTotalCount - childrenLoadedTotal) })}
 						{/if}
 					</button>
 				</div>

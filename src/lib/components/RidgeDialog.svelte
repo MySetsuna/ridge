@@ -105,6 +105,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { X, AlertTriangle } from 'lucide-svelte';
+  import { tr } from '$lib/i18n';
 
   let dialog = $state<PendingDialog | null>(null);
   let inputValue = $state('');
@@ -185,10 +186,10 @@
   // OK label resolution: explicit > kind-default
   function okLabel(): string {
     if (dialog?.opts.okLabel) return dialog.opts.okLabel;
-    if (dialog?.kind === 'alert') return '知道了';
-    if (dialog?.kind === 'confirm') return '确认';
-    if (dialog?.kind === 'choice') return '确认';
-    return '提交';
+    if (dialog?.kind === 'alert') return tr('ui.dialogOkAlert');
+    if (dialog?.kind === 'confirm') return tr('ui.dialogOkConfirm');
+    if (dialog?.kind === 'choice') return tr('ui.dialogOkChoice');
+    return tr('ui.dialogOkPrompt');
   }
 </script>
 
@@ -206,7 +207,7 @@
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={dialog.opts.title ?? '对话框'}
+      aria-label={dialog.opts.title ?? tr('ui.dialogAriaLabel')}
       tabindex="-1"
       class="w-[min(420px,92vw)] flex flex-col bg-[var(--rg-bg-raised)] border border-[var(--rg-border)] rounded-lg shadow-2xl overflow-hidden"
       onclick={(e) => e.stopPropagation()}
@@ -218,11 +219,11 @@
           {#if dialog.opts.danger}
             <AlertTriangle class="h-3.5 w-3.5 text-amber-400 shrink-0" />
           {/if}
-          <span class="text-[12px] font-semibold flex-1 truncate">{dialog.opts.title ?? '提示'}</span>
+          <span class="text-[12px] font-semibold flex-1 truncate">{dialog.opts.title ?? tr('ui.dialogDefaultTitle')}</span>
           <button
             type="button"
             class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
-            title="关闭 (Esc)"
+            title={tr('ui.dialogCloseTitle')}
             onclick={onCancel}
           >
             <X class="h-3.5 w-3.5" />
@@ -256,7 +257,7 @@
             class="px-2.5 py-1 rounded text-[11px] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             onclick={onCancel}
           >
-            {dialog.opts.cancelLabel ?? '取消'}
+            {dialog.opts.cancelLabel ?? tr('ui.dialogCancel')}
           </button>
         {/if}
         {#if dialog.kind === 'choice' && dialog.opts.secondaryLabel}

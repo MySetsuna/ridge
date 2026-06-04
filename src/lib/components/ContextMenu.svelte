@@ -1,6 +1,7 @@
 <script lang="ts">
   import { contextMenu, hideContextMenu, type ContextMenuItem, type ContextMenuTarget } from '$lib/stores/contextMenu';
   import { onMount, tick } from 'svelte';
+  import { tr } from '$lib/i18n';
 
   let menuRef: HTMLDivElement | undefined = $state();
   let openSubmenuId: string | null = $state(null);
@@ -226,14 +227,14 @@
 
   function targetLabel(target: ContextMenuTarget): string {
     const labels: Record<ContextMenuTarget, string> = {
-      terminal: '终端',
-      editor: '编辑器',
-      'pane-header': '窗格标题',
-      splitter: '分割条',
-      sidebar: '侧边栏',
-      'workspace-tabs': '工作区标签',
-      'git-graph': 'Git 图谱',
-      'pane-content': '窗格内容',
+      terminal: tr('ui.targetTerminal'),
+      editor: tr('ui.targetEditor'),
+      'pane-header': tr('ui.targetPaneHeader'),
+      splitter: tr('ui.targetSplitter'),
+      sidebar: tr('ui.targetSidebar'),
+      'workspace-tabs': tr('ui.targetWorkspaceTabs'),
+      'git-graph': tr('ui.targetGitGraph'),
+      'pane-content': tr('ui.targetPaneContent'),
       unknown: ''
     };
     return labels[target] || '';

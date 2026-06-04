@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke, isTauri } from '@tauri-apps/api/core';
+  import { t, tr } from '$lib/i18n';
   import { ChevronDown, Terminal } from 'lucide-svelte';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { activeWorkspaceId } from '$lib/stores/paneTree';
@@ -54,7 +55,7 @@
       if (found) return found.label;
     }
     if (shells.length > 0) return shells[0].label;
-    return '终端';
+    return tr('workspace.shellFallback');
   }
 
   async function selectShell(shell: ShellInfo) {
@@ -89,7 +90,7 @@
       bind:this={btnEl}
       type="button"
       class="flex h-6 items-center gap-1 px-1.5 rounded text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]/60 transition-colors"
-      title="切换终端类型"
+      title={$t('workspace.shellSwitchTitle')}
       disabled={changing}
       onclick={toggle}
     >
@@ -128,7 +129,7 @@
           >
             <span class="flex-1 truncate">{s.label}</span>
             {#if s.program === $settingsStore.defaultShell}
-              <span class="text-[9px] text-[var(--rg-accent)]/70 uppercase tracking-wider">当前</span>
+              <span class="text-[9px] text-[var(--rg-accent)]/70 uppercase tracking-wider">{$t('workspace.shellCurrent')}</span>
             {/if}
           </button>
         {/each}

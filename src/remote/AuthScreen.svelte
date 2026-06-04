@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t, tr } from '$lib/i18n';
   import { RemoteConnection, type ConnectionState } from './lib/wsRemote';
   import CertTrustGuide from './CertTrustGuide.svelte';
 
@@ -37,12 +38,12 @@
           connectWithToken(host, port, d.token);
         } else {
           loading = false;
-          error = d.message || '验证码无效';
+          error = d.message || tr('mobile.invalidCode');
         }
       })
       .catch(() => {
         loading = false;
-        error = '网络错误，请重试';
+        error = tr('mobile.networkError');
       });
   }
 
@@ -56,7 +57,7 @@
       } else if (s === 'error') {
         loading = false;
         localStorage.removeItem(TOKEN_KEY);
-        error = '连接失败，请重新输入验证码';
+        error = tr('mobile.connectFail');
         showManual = true;
         unsubState?.();
       }
@@ -93,19 +94,19 @@
       <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"/>
     </svg>
     <h1>Ridge Remote</h1>
-    <p class="sub">输入桌面端 Ridge 应用中显示的 6 位动态验证码</p>
+    <p class="sub">{$t('mobile.authSubtitle')}</p>
     <div class="card">
       <input
         bind:this={inputEl}
         type="text" inputmode="numeric" maxlength={6}
-        placeholder="输入 6 位验证码"
+        placeholder={$t('mobile.codePlaceholder')}
         oninput={(e) => { code = (e.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6); error = ''; }}
         onkeydown={(e) => { if (e.key === 'Enter') submitCode(); }}
         class:has-error={!!error}
       />
       {#if error}<p class="error-msg">{error}</p>{/if}
       <button onclick={submitCode} disabled={code.length < 6 || loading}>
-        {loading ? '验证中...' : '验证并连接'}
+        {loading ? $t('mobile.verifying') : $t('mobile.verifyAndConnect')}
       </button>
     </div>
     <CertTrustGuide />
@@ -119,7 +120,7 @@
       <rect x="4.5" y="4.5" width="9.5" height="9.5" rx="2" fill="#7fb069" fill-opacity="0.18"/>
       <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"/>
     </svg>
-    <p class="sub">正在连接远程桌面...</p>
+    <p class="sub">{$t('mobile.connecting')}</p>
   </div>
 {/if}
 

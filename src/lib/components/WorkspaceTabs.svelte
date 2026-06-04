@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, untrack, type Snippet } from 'svelte';
+  import { t, tr } from '$lib/i18n';
   import {
     showContextMenu,
     type ContextMenuItem,
@@ -111,16 +112,16 @@
     const items: ContextMenuItem[] = [
       {
         id: 'rename',
-        label: '重命名',
+        label: tr('workspace.tabRename'),
         action: () => {
           editingId = ws.id;
-          editingName = ws.name || `工作区 ${ws.displaySeq}`;
+          editingName = ws.name || tr('workspace.tabDefaultName', { seq: String(ws.displaySeq) });
         },
       },
       { id: 'divider1', divider: true },
       {
         id: 'close',
-        label: '关闭',
+        label: tr('workspace.tabClose'),
         disabled: workspaces.length <= 1,
         action: () => onClose(ws.id),
       },
@@ -147,7 +148,7 @@
   }
 
   function getWorkspaceName(ws: WorkspaceInfo): string {
-    return ws.name || `工作区 ${ws.displaySeq}`;
+    return ws.name || tr('workspace.tabDefaultName', { seq: String(ws.displaySeq) });
   }
 
   /** 浮动副本视觉强化 + 锁定 Y 轴：tab 拖拽时只能水平移动，Y 始终保持在
@@ -279,7 +280,7 @@
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
             : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}
           {hoverTimerWsId === ws.id ? 'ring-2 ring-[var(--rg-accent)]/60' : ''}"
-        title={editingId === ws.id ? undefined : `切换到 ${getWorkspaceName(ws)}`}
+        title={editingId === ws.id ? undefined : $t('workspace.tabSwitchTo', { name: getWorkspaceName(ws) })}
         onclick={() => { if (editingId !== ws.id) onSwitch(ws.id); }}
         onkeydown={(e) => handleSelectKeydown(e, ws)}
         oncontextmenu={(e) => handleContextMenu(e, ws)}
@@ -309,7 +310,7 @@
         <button
               type="button"
               class="ml-1 opacity-60 hover:opacity-100 hover:text-red-400 transition-opacity"
-              title="关闭工作区"
+              title={$t('workspace.tabCloseWorkspace')}
               onmousedown={blockDragStart}
               ontouchstart={blockDragStart}
               onpointerdown={blockDragStart}

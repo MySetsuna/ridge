@@ -1,6 +1,7 @@
 <script lang="ts">
   import { GitBranch, RefreshCw } from 'lucide-svelte';
   import type { SidebarProvider, GitInfo } from './types';
+  import { t } from '$lib/i18n';
 
   let { provider }: { provider: SidebarProvider } = $props();
 
@@ -35,22 +36,22 @@
   <div class="git-bar">
     <span class="branch" title={info.currentBranch ?? ''}>
       <GitBranch class="w-4 h-4 shrink-0" />
-      <span class="branch-name">{info.currentBranch || (info.isGitRepo ? 'detached' : '非 Git 仓库')}</span>
+      <span class="branch-name">{info.currentBranch || (info.isGitRepo ? 'detached' : $t('scm.notGitRepo'))}</span>
     </span>
-    <button class="icon-btn" onclick={load} title="刷新"><RefreshCw class="w-4 h-4" /></button>
+    <button class="icon-btn" onclick={load} title={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
   </div>
 
   <div class="git-body">
     {#if error}
       <span class="msg err">{error}</span>
     {:else if loading && info.files.length === 0 && info.commits.length === 0}
-      <span class="msg">加载中…</span>
+      <span class="msg">{$t('scm.loading')}</span>
     {:else if !info.isGitRepo}
-      <span class="msg">当前目录不是 Git 仓库</span>
+      <span class="msg">{$t('scm.notGitRepoMsg')}</span>
     {:else}
-      <p class="section">变更 ({info.files.length})</p>
+      <p class="section">{$t('scm.changesCount', { count: info.files.length })}</p>
       {#if info.files.length === 0}
-        <span class="msg">工作区干净</span>
+        <span class="msg">{$t('scm.workingTreeClean')}</span>
       {:else}
         {#each info.files as f (f.path)}
           <div class="file-row">
@@ -65,7 +66,7 @@
       {/if}
 
       {#if info.commits.length > 0}
-        <p class="section" style="margin-top:12px">最近提交</p>
+        <p class="section" style="margin-top:12px">{$t('scm.recentCommits')}</p>
         {#each info.commits as c (c.hash)}
           <div class="commit-row">
             <span class="hash">{c.hash.slice(0, 7)}</span>

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { MonitorDot } from 'lucide-svelte';
+  import { t } from '$lib/i18n';
 
   interface NativeSessionInfo {
     socket: string;
@@ -53,7 +54,7 @@
   <div class="flex items-center justify-between px-3 h-8 border-b border-[var(--rg-border)] shrink-0">
     <h2 class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider flex items-center gap-1.5">
       <MonitorDot class="w-3.5 h-3.5" />
-      Native 会话
+      {$t('main.nativeSessionsHeader')}
       {#if sessions.length > 0}
         <span class="text-[var(--rg-fg-muted)]">({sessions.length})</span>
       {/if}
@@ -61,7 +62,7 @@
     <button
       onclick={refreshSessions}
       class="text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors"
-      title="刷新"
+      title={$t('main.nativeSessionsRefresh')}
     >
       <svg class="w-3 h-3 {loading ? 'animate-spin' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 12a9 9 0 1 1-6.219-8.56" />
@@ -72,7 +73,7 @@
   <div class="flex-1 overflow-auto p-2 space-y-1">
     {#if sessions.length === 0}
       <p class="text-[10px] text-[var(--rg-fg-muted)] text-center py-4">
-        暂无 native 会话
+        {$t('main.nativeSessionsEmpty')}
       </p>
     {:else}
       {#each sessions as s (s.socket + ':' + s.name)}
@@ -82,15 +83,15 @@
             <p class="text-[10px] text-[var(--rg-fg-muted)]">
               {#if s.socket !== 'default'}<span class="font-mono">{s.socket}</span> · {/if}
               {s.windows}w · {s.panes}p · {s.width}×{s.height}
-              {#if s.attached}<span class="text-green-400 ml-1">已挂载</span>{/if}
+              {#if s.attached}<span class="text-green-400 ml-1">{$t('main.nativeSessionsAttached')}</span>{/if}
             </p>
           </div>
           <button
             onclick={() => summonSession(s.socket, s.name)}
             class="shrink-0 px-2 py-0.5 rounded text-[10px] font-medium border border-[var(--rg-accent)]/30 text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/10 transition-colors opacity-0 group-hover:opacity-100"
-            title="召唤进当前工作区"
+            title={$t('main.nativeSessionsSummon')}
           >
-            打开
+            {$t('main.nativeSessionsOpen')}
           </button>
         </div>
       {/each}
