@@ -215,32 +215,26 @@ self.MonacoEnvironment = {
     });
     const parent = node.parentElement;
     let observer: ResizeObserver | undefined;
-    let pendingRaf = 0;
-    let pendingDims: { wCss: number; hCss: number } | null = null;
     if (parent) {
+      // §fix(resize-sync): resize the host canvas + recompute ALL pane scissors
+      // SYNCHRONOUSLY in the ResizeObserver callback (which already fires after
+      // layout, before paint). The previous version deferred this to the NEXT
+      // animation frame, so during a continuous sidebar/window drag the rendered
+      // terminal lagged the (instantly-moved) pane DOM by one frame → the whole
+      // terminal looked shifted left / clipped on the right+bottom, snapping back
+      // only on release. The host canvas is `position:absolute` (resizing it can
+      // never resize the observed parent), so a synchronous resize here cannot
+      // trigger a ResizeObserver feedback loop. ResizeObserver already coalesces
+      // to one fire per frame per element, so this is at most once-per-frame work.
       observer = new ResizeObserver((entries) => {
-        // Capture dims from the ResizeObserver entry (no layout query).
-        // Stash on outer scope so the RAF callback below uses the LATEST
-        // observed dims even when several observer fires coalesce into
-        // one RAF tick.
         const e = entries[entries.length - 1];
-        if (e) pendingDims = { wCss: e.contentRect.width, hCss: e.contentRect.height };
-        if (pendingRaf !== 0) return;
-        pendingRaf = requestAnimationFrame(() => {
-          pendingRaf = 0;
-          if (pendingDims) {
-            manager.resizeHost(pendingDims);
-            pendingDims = null;
-          } else {
-            manager.resizeHost();
-          }
-        });
+        if (e) manager.resizeHost({ wCss: e.contentRect.width, hCss: e.contentRect.height });
+        else manager.resizeHost();
       });
       observer.observe(parent);
     }
     return {
       destroy() {
-        if (pendingRaf !== 0) cancelAnimationFrame(pendingRaf);
         observer?.disconnect();
         manager.detachHost();
       },
