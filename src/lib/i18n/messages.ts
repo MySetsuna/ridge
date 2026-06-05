@@ -65,6 +65,8 @@ const zh: Dict = {
   cloud: {
     publicEntry: '专属公网入口',
     entryPending: '激活设备后生成专属域名',
+    openRemoteBtn: '在浏览器打开公网远控',
+    openRemoteHint: '在任意设备的浏览器打开该子域，再输入下方 TOTP 即可远程控制本机',
     activateTitle: '激活本机为云端设备',
     deviceNamePlaceholder: '设备名 3-30 位（如 my-laptop）',
     activateBtn: '激活设备',
@@ -245,6 +247,8 @@ const en: Dict = {
   cloud: {
     publicEntry: 'Dedicated public entry',
     entryPending: 'Activate a device to generate your subdomain',
+    openRemoteBtn: 'Open public remote in browser',
+    openRemoteHint: 'Open this subdomain in any browser, then enter the TOTP below to control this machine',
     activateTitle: 'Activate this machine as a cloud device',
     deviceNamePlaceholder: 'Device name, 3–30 chars (e.g. my-laptop)',
     activateBtn: 'Activate device',

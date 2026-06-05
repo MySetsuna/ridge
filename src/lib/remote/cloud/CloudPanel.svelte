@@ -10,7 +10,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { Globe, Wifi, WifiOff, Loader2, Power, Plus } from 'lucide-svelte';
+  import { Globe, Wifi, WifiOff, Loader2, Power, Plus, ExternalLink } from 'lucide-svelte';
   import QrCode from '../QrCode.svelte';
   import MinimizeButton from '../MinimizeButton.svelte';
   import * as auth from './auth';
@@ -44,6 +44,23 @@
       remoteInfo = { totpCode: info.totpCode, otpauthUri: info.otpauthUri };
     } catch {
       /* 桌面端命令缺失（如 web-remote 环境）时容错忽略 */
+    }
+  }
+
+  // 在默认浏览器打开该设备专属子域（controller 入口，契约 §3 流程第 5 步）。
+  // 打开后用户在子域页面输入下方 TOTP 即可真正控制本机。opener 缺失时回退 window.open。
+  async function openPublicRemote(): Promise<void> {
+    if (!domain) return;
+    const url = `https://${domain}`;
+    try {
+      const opener = await import('@tauri-apps/plugin-opener');
+      await opener.openUrl(url);
+    } catch {
+      try {
+        window.open(url, '_blank', 'noopener');
+      } catch {
+        /* 无可用打开方式时静默（避免抛到 UI） */
+      }
     }
   }
 
@@ -182,6 +199,13 @@
     </div>
     {#if domain}
       <code class="block break-all text-sm font-medium text-[var(--rg-fg)]">{domain}</code>
+      <button
+        onclick={openPublicRemote}
+        class="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--rg-accent)]/40 bg-[var(--rg-accent)]/10 py-2 text-sm font-semibold text-[var(--rg-accent)] transition-all hover:bg-[var(--rg-accent)]/20"
+      >
+        <ExternalLink class="h-4 w-4" /> {$t('cloud.openRemoteBtn')}
+      </button>
+      <p class="mt-1.5 text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.openRemoteHint')}</p>
     {:else}
       <p class="text-xs text-[var(--rg-fg-muted)]">{$t('cloud.entryPending')}</p>
     {/if}
