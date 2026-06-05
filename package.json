@@ -12,6 +12,7 @@
     "build:remote-server": "cargo build --release --bin remote-server --manifest-path src-tauri/Cargo.toml",
     "build:remote-server:dev": "cargo build --bin remote-server --manifest-path src-tauri/Cargo.toml",
     "build:teammate-shim": "cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml && node scripts/copy-teammate-shim.mjs",
+    "build:cli": "cargo build --release -p ridge-cli",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
