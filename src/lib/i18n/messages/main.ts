@@ -22,6 +22,9 @@ export const zh: Record<string, string> = {
   navSearch: '搜索 (Ctrl+Shift+F)',
   navRemote: '远程控制',
   navSettings: '设置（外观、字体、搜索、扩展）',
+  navAccount: '账户',
+  accountLogout: '退出登录',
+  accountNoName: '已登录',
 
   // sidebar panel headers
   sidebarGitHeader: '源代码管理',
@@ -128,6 +131,9 @@ export const en: Record<string, string> = {
   navSearch: 'Search (Ctrl+Shift+F)',
   navRemote: 'Remote Control',
   navSettings: 'Settings (Appearance, Font, Search, Extensions)',
+  navAccount: 'Account',
+  accountLogout: 'Log out',
+  accountNoName: 'Signed in',
 
   // sidebar panel headers
   sidebarGitHeader: 'Source Control',

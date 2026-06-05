@@ -11,9 +11,19 @@ use std::path::PathBuf;
 /// 默认 Base zone（契约 §1）。可被 `RIDGE_BASE_DOMAIN` 环境变量覆盖（便于自托管 / 测试）。
 pub const DEFAULT_BASE_DOMAIN: &str = "remo2ridge.duckdns.org";
 
-/// 取 Base zone。优先环境变量 `RIDGE_BASE_DOMAIN`，否则契约默认值。
+/// 取 Base zone。优先级：运行时 `RIDGE_BASE_DOMAIN` 环境变量 > 编译期烘焙的
+/// `RIDGE_BASE_DOMAIN`（option_env!，debug 包用 scripts/tauri-build-debug.mjs 设
+/// `localhost:5173` 一并烘焙进 CLI）> 契约默认值。
 pub fn base_domain() -> String {
-    std::env::var("RIDGE_BASE_DOMAIN").unwrap_or_else(|_| DEFAULT_BASE_DOMAIN.to_string())
+    if let Ok(v) = std::env::var("RIDGE_BASE_DOMAIN") {
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    match option_env!("RIDGE_BASE_DOMAIN") {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => DEFAULT_BASE_DOMAIN.to_string(),
+    }
 }
 
 /// HTTP API 根（契约 §4）：`https://{base}/api/v1`。

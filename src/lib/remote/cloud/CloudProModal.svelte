@@ -9,9 +9,10 @@
   // 设计：glassmorphism with real depth（design-quality），避免模板感。
 
   import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2, Globe, CalendarCheck } from 'lucide-svelte';
+  import { portal } from '$lib/actions/portal';
   import * as auth from './auth';
   import { cloudAuth } from './auth';
-  import { ApiError } from './apiClient';
+  import { ApiError, BASE_DOMAIN } from './apiClient';
   import { t, tr, locale, billingRegion } from '$lib/i18n';
 
   interface Props {
@@ -43,7 +44,6 @@
   let password = $state('');
   // 卡密
   let licenseKey = $state('');
-  let activateUsername = $state('');
 
   // 浏览器登录授权（§2.3）：主登录方式；邮箱密码作为兜底（默认折叠）。
   let browserBusy = $state(false);
@@ -163,7 +163,8 @@
     errorMsg = '';
     busy = true;
     try {
-      await auth.activateKey(licenseKey.trim().toUpperCase(), activateUsername.trim() || undefined);
+      // 用户名一律取自登录态（不再让用户在激活时重复填写）。
+      await auth.activateKey(licenseKey.trim().toUpperCase());
       onReady();
       close();
     } catch (e) {
@@ -202,8 +203,11 @@
 </script>
 
 {#if open}
-  <!-- backdrop -->
+  <!-- backdrop — `use:portal` 把整个遮罩移到 <body>，逃出远控侧边栏的
+       backdrop-filter 包含块（否则 position:fixed 会以侧边栏而非整窗为参照系，
+       弹窗被困在侧栏内）。与 SettingsPanel 一样以整个客户端为参照居中。 -->
   <div
+    use:portal={{ id: 'cloud-pro-modal' }}
     class="fixed inset-0 z-[200] flex items-center justify-center p-4"
     style="background: color-mix(in oklch, var(--rg-bg) 55%, transparent); backdrop-filter: blur(6px);"
     role="presentation"
@@ -276,7 +280,7 @@
           <ul class="mb-5 space-y-3">
             {#each [
               [$t('cloudPro.feat1Title'), $t('cloudPro.feat1Desc')],
-              [$t('cloudPro.feat2Title'), $t('cloudPro.feat2Desc')],
+              [$t('cloudPro.feat2Title'), $t('cloudPro.feat2Desc', { base: BASE_DOMAIN })],
               [$t('cloudPro.feat3Title'), $t('cloudPro.feat3Desc')],
             ] as [title, desc] (title)}
               <li class="flex gap-3">
@@ -436,14 +440,6 @@
                 required
                 class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 font-mono text-sm uppercase tracking-wider text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
                 placeholder="RIDGE-XXXX-XXXX-XXXX"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.activateUsername')}</span>
-              <input
-                bind:value={activateUsername}
-                class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
-                placeholder={$t('cloudPro.activateUsernamePlaceholder')}
               />
             </label>
             <button

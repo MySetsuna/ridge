@@ -6,8 +6,18 @@
 // 客户端按 error.code 返回结构化错误，UI 据 code 映射本地化文案（不直接拼接
 // 后端 message）。
 
-/** Base zone（契约 §1）。集中为一个常量便于改。 */
-export const BASE_DOMAIN = 'remo2ridge.duckdns.org';
+/**
+ * Base zone（契约 §1）。集中为一个常量便于改 —— 所有 cloud 消费者（API、信令 WS、
+ * controller 入口域名、ridgeCloudProvider/controllerCloudProvider/cloudControllerBoot）
+ * 都从这里取，单点改即全量生效。
+ *
+ * 默认指向生产 base。**debug 包**通过构建期 `RIDGE_CLOUD_BASE_DOMAIN`（vite define，
+ * 见 vite.config.js + scripts/tauri-build-debug.mjs）注入，例如 `localhost:5173`，
+ * 把整个 ridge-cloud 客户端指向本地 cloud。子域信令 `{device}-{username}.localhost`
+ * 在 Chromium/WebView2 会自动解析到 127.0.0.1，故子域模型在 localhost 同样可用。
+ */
+const ENV_BASE_DOMAIN = (import.meta.env.RIDGE_CLOUD_BASE_DOMAIN as string | undefined) || '';
+export const BASE_DOMAIN = ENV_BASE_DOMAIN || 'remo2ridge.duckdns.org';
 
 /** 主域名 API 根（契约 §4：全部挂在主域名 /api/v1）。 */
 export const API_BASE = `https://${BASE_DOMAIN}/api/v1`;
