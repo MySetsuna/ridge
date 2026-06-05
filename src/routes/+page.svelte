@@ -39,6 +39,8 @@ self.MonacoEnvironment = {
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import { Smartphone } from 'lucide-svelte';
+  // 云端登录态：侧栏头像 + 账户气泡。
+  import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
@@ -78,6 +80,7 @@ self.MonacoEnvironment = {
     Search,
     PanelRightOpen,
     RefreshCw,
+    LogOut,
   } from 'lucide-svelte';
 // 删除相关的最近工作区定义和函数
   import {
@@ -302,6 +305,30 @@ self.MonacoEnvironment = {
   // 设置面板开关。Settings 按钮打开后，所有可配置项（主题、字体、搜索、扩展）
   // 都集中在 SettingsPanel 内 —— 鼠标无需在多个角落寻找各自的入口。
   let settingsPanelOpen = $state(false);
+
+  // 账户头像气泡（云端登录态）。头像在活动栏设置按钮上方，仅登录后显示。
+  // UserDto 无 avatar 字段 → 一律用 username/email 首字母占位。
+  let accountOpen = $state(false);
+  let accountBtn: HTMLButtonElement | undefined = $state();
+  let accountPopupStyle = $state('');
+  const cloudUser = $derived($cloudAuth.user);
+  const cloudLoggedIn = $derived(!!$cloudAuth.userToken);
+  function accountInitial(): string {
+    const n = (cloudUser?.username || cloudUser?.email || '').trim();
+    return n ? n.charAt(0).toUpperCase() : '?';
+  }
+  function toggleAccount(): void {
+    if (!accountOpen && accountBtn) {
+      const r = accountBtn.getBoundingClientRect();
+      // 头像贴左侧活动栏 → 气泡弹到其右侧，底部与头像底对齐、向上生长。
+      accountPopupStyle = `bottom:${Math.round(window.innerHeight - r.bottom)}px;left:${Math.round(r.right + 8)}px`;
+    }
+    accountOpen = !accountOpen;
+  }
+  function doCloudLogout(): void {
+    cloudLogout();
+    accountOpen = false;
+  }
 
   // 从 localStorage 加载侧边栏设置
   function loadSidebarSettings() {
@@ -1271,14 +1298,29 @@ function expandSidebar() {
       <Smartphone class="h-5 w-5" />
     </button>
     {/if}
-    <button
-      type="button"
-      class="{actBtn} mt-auto"
-      title={$t('main.navSettings')}
-      onclick={() => (settingsPanelOpen = true)}
-    >
-      <Settings class="h-4 w-4" />
-    </button>
+    <!-- 底部簇：登录后头像（在设置按钮上方）+ 设置按钮，整体锚定到 rail 底部。 -->
+    <div class="mt-auto flex flex-col items-center gap-1.5">
+      {#if !webRemote && cloudLoggedIn}
+        <button
+          bind:this={accountBtn}
+          type="button"
+          class="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--rg-border)] bg-[var(--rg-accent)]/15 text-sm font-semibold text-[var(--rg-accent)] transition-all hover:ring-1 hover:ring-[var(--rg-accent)]/40 {accountOpen ? 'ring-1 ring-[var(--rg-accent)]/50' : ''}"
+          title={cloudUser?.username || cloudUser?.email || $t('main.navAccount')}
+          aria-label={$t('main.navAccount')}
+          onclick={toggleAccount}
+        >
+          {accountInitial()}
+        </button>
+      {/if}
+      <button
+        type="button"
+        class={actBtn}
+        title={$t('main.navSettings')}
+        onclick={() => (settingsPanelOpen = true)}
+      >
+        <Settings class="h-4 w-4" />
+      </button>
+    </div>
   </aside>
   <SettingsPanel open={settingsPanelOpen} onClose={() => (settingsPanelOpen = false)} />
 
@@ -1706,6 +1748,41 @@ function expandSidebar() {
      以下组件使用 position:fixed，必须作为根 <div> 的兄弟节点而非其子节点，
      确保它们不受根容器任何 CSS transform / backdrop-filter / overflow 限制，
      始终以整个应用窗口为参照系居中或定位。 -->
+
+<!-- 账户气泡：作为根 <div> 兄弟节点，position:fixed 以整窗为参照（不受活动栏
+     backdrop-filter 影响）。点击遮罩或退出登录后关闭。 -->
+{#if accountOpen && cloudLoggedIn}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    role="presentation"
+    class="fixed inset-0 z-[9989]"
+    onmousedown={() => (accountOpen = false)}
+  >
+    <!-- svelte-ignore a11y_interactive_supports_focus -->
+    <div
+      style={accountPopupStyle}
+      class="rg-popup fixed w-[240px] max-w-[80vw] overflow-hidden"
+      role="menu"
+      onmousedown={(e) => e.stopPropagation()}
+    >
+      <div class="border-b border-[var(--rg-border)]/60 px-3 py-2.5">
+        <p class="truncate text-xs font-medium text-[var(--rg-fg)]">
+          {cloudUser?.username || $t('main.accountNoName')}
+        </p>
+        {#if cloudUser?.email}
+          <p class="truncate text-[10px] text-[var(--rg-fg-muted)]">{cloudUser.email}</p>
+        {/if}
+      </div>
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--rg-fg)] transition-colors hover:bg-[var(--rg-surface)] hover:text-red-400"
+        onclick={doCloudLogout}
+      >
+        <LogOut class="h-3.5 w-3.5" /> {$t('main.accountLogout')}
+      </button>
+    </div>
+  </div>
+{/if}
 
 <!-- alert / confirm / prompt 替代浏览器原生 dialog -->
 <WindDialog />

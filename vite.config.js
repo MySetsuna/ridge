@@ -39,6 +39,11 @@ export default defineConfig({
     // Build-time flag read by +layout.svelte and the shims. `false` in the
     // Tauri build lets the whole web-remote branch tree-shake away.
     'import.meta.env.RIDGE_WEB_REMOTE': JSON.stringify(WEB_REMOTE),
+    // Build-time ridge-cloud base override (apiClient.ts BASE_DOMAIN). Empty in
+    // normal builds → client falls back to the production base. The debug build
+    // (scripts/tauri-build-debug.mjs) sets RIDGE_CLOUD_BASE_DOMAIN=localhost:5173
+    // so the packaged app talks to a local ridge-cloud instance.
+    'import.meta.env.RIDGE_CLOUD_BASE_DOMAIN': JSON.stringify(process.env.RIDGE_CLOUD_BASE_DOMAIN || ''),
   },
 
   resolve: {
