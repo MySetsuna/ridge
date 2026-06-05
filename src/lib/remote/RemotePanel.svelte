@@ -337,8 +337,10 @@
       </button>
     </div>
 
-    <!-- ② 共享 TOTP（LAN 与公网同一本机 RemoteAuth）：任一通道活跃即展示 -->
-    {#if (remoteEnabled || isOnline) && remoteInfo?.ready}
+    <!-- ② 共享 TOTP（LAN 与公网同一本机 RemoteAuth）：任一通道活跃即展示。
+         按 remoteInfo 存在性(非 .ready)判断 —— totpCode 来自本机 RemoteAuth,与
+         LAN remote_enabled 无关;公网-only(未开 LAN)时 controller 同样需要它。 -->
+    {#if (remoteEnabled || isOnline) && remoteInfo}
       <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
         <div class="flex items-center justify-between">
           <span class="text-[10px] font-semibold text-[var(--rg-fg-muted)] uppercase tracking-wider">{$t('remote.totpCode')}</span>
