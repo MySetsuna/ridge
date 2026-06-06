@@ -758,9 +758,12 @@
         id: 'reveal',
         label: tr('editor.ctxReveal'),
         icon: FolderOpen,
-        disabled: isDiff || !isTauri(),
+        // §web-remote: reveal opens a file manager on the HOST desktop — invisible
+        // to a remote/mobile viewer. isTauri() is true under the shim, so gate on
+        // the build flag instead to disable it in web-remote.
+        disabled: isDiff || !isTauri() || import.meta.env.RIDGE_WEB_REMOTE === true,
         action: () => {
-          if (!isTauri()) return;
+          if (!isTauri() || import.meta.env.RIDGE_WEB_REMOTE === true) return;
           void invoke('reveal_in_file_manager', { path }).catch(async (err) => {
             await alertDialog({ title: tr('editor.ctxOpenFailed'), message: String(err), danger: true });
           });
@@ -1087,7 +1090,9 @@
     // drawer: anchored to the right, **below the 44px header bar** so the
     // titlebar + workspace tabs remain visible/interactive (用户反馈：抽屉不能遮挡顶部 header)。
     const TOP_OFFSET = 44;
-    return `position: fixed; top: ${TOP_OFFSET}px; right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 200;`;
+    // §safe-area: drop the drawer below the header, which itself grows by the
+    // top safe-area inset (Dynamic Island / notch) in web-remote on mobile.
+    return `position: fixed; top: calc(${TOP_OFFSET}px + env(safe-area-inset-top, 0px)); right: 0; bottom: 0; width: ${editorState.drawerWidth}px; z-index: 200;`;
   });
 </script>
 
@@ -1364,7 +1369,7 @@
           <span
             role="button"
             tabindex="0"
-            class="flex h-4 w-4 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-bg)]/50 hover:text-[var(--rg-fg)] {f.isDirty
+            class="rg-tab-close flex h-4 w-4 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-bg)]/50 hover:text-[var(--rg-fg)] {f.isDirty
               ? ''
               : 'opacity-0 group-hover:opacity-100'} transition-opacity"
             onmousedown={blockEditorTabDragStart}

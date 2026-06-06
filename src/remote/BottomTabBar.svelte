@@ -1,30 +1,37 @@
 <script lang="ts">
-  import { Plus, Folder, GitBranch, Search, Keyboard, RefreshCw } from 'lucide-svelte';
+  import { Folder, GitBranch, Search, Keyboard, RefreshCw } from 'lucide-svelte';
   import { t } from '$lib/i18n';
-  import type { RemoteConnection } from './lib/wsRemote';
+  import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
+  import WorkspaceTree from './lib/WorkspaceTree.svelte';
 
-  let { ws, sidebarTab = null as 'files' | 'git' | 'search' | null, onSidebarToggle,
-    onRefresh, onCreateWorkspace, showKeyboard = $bindable(false), backendName = 'Canvas2D'
+  // §item1：底部导航条最右用「工作区/终端」树形级联控件取代原渲染类型标签
+  // (engine-badge)；工作区与终端的切换/新建/关闭全部收敛到该控件内。渲染引擎
+  // 名称作为树弹层底部的小字保留，不再单独占位。
+  let {
+    ws,
+    sidebarTab = null as 'files' | 'git' | 'search' | null,
+    onSidebarToggle,
+    onRefresh,
+    showKeyboard = $bindable(false),
+    backendName = 'Canvas2D',
+    panes = [],
+    activePaneId = $bindable(null),
+    workspaces = [],
+    activeWorkspaceId = $bindable(''),
+    onWorkspacesChanged,
   }: {
     ws?: RemoteConnection;
     sidebarTab?: 'files' | 'git' | 'search' | null;
     onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
     onRefresh?: () => void;
-    onCreateWorkspace?: (wsId: string) => void;
     showKeyboard?: boolean;
     backendName?: string;
+    panes?: PaneInfo[];
+    activePaneId?: string | null;
+    workspaces?: WorkspaceInfo[];
+    activeWorkspaceId?: string;
+    onWorkspacesChanged?: () => void;
   } = $props();
-
-  async function handleCreateWorkspace() {
-    if (!ws) return;
-    const id = await ws.createWorkspace();
-    if (id) {
-      await ws.switchWorkspace(id);
-      await ws.createPane();
-      ws.listPanes();
-      onCreateWorkspace?.(id);
-    }
-  }
 </script>
 
 <div class="actionbar">
@@ -51,21 +58,24 @@
     </button>
   </div>
 
-  <!-- Workspace -->
-  <div class="group">
-    <button class="ctrl-btn" onclick={handleCreateWorkspace} title={$t('mobile.newWorkspace')} tabindex="-1">
-      <Plus class="w-4 h-4" />
-    </button>
-  </div>
-
-  <span class="engine-badge" tabindex="-1">{backendName}</span>
+  <!-- 工作区 / 终端 树形级联（最右，原渲染类型标签位置） -->
+  <WorkspaceTree
+    {panes}
+    bind:activePaneId
+    {workspaces}
+    bind:activeWorkspaceId
+    {ws}
+    {backendName}
+    {onWorkspacesChanged}
+  />
 </div>
 
 <style>
-  .actionbar{display:flex;align-items:center;justify-content:space-around;gap:4px;padding:6px 12px;background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
-  .group{display:flex;align-items:center;gap:6px}
+  /* §safe-area: 底部内边距叠加 env(safe-area-inset-bottom)，让操作条避开 iPhone
+     底部 home indicator；无安全区时 inset 为 0，等同 6px。 */
+  .actionbar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 12px calc(6px + env(safe-area-inset-bottom,0px));background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
+  .group{display:flex;align-items:center;gap:6px;flex-shrink:0}
   .ctrl-btn{display:flex;align-items:center;justify-content:center;width:42px;height:36px;background:none;border:1px solid transparent;border-radius:8px;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
   .ctrl-btn:active{background:var(--rg-surface-2);color:var(--rg-fg)}
   .ctrl-btn.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 12%, transparent);border-color:color-mix(in srgb, var(--rg-accent) 40%, transparent)}
-  .engine-badge{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--rg-surface-2);color:var(--rg-fg-muted);line-height:1.4;flex-shrink:0}
 </style>

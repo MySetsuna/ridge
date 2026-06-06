@@ -1446,8 +1446,13 @@ function expandSidebar() {
   <!-- 主内容区 -->
   <div class="flex-1 flex flex-col min-w-0 min-h-0">
     <!-- 顶部标题栏 -->
+    <!-- §safe-area: height grows by env(safe-area-inset-top) so the workspace
+         tabs clear the iPhone Dynamic Island / notch when the desktop IDE is
+         served to a mobile browser (web-remote). On desktop the inset is 0 →
+         identical 44px header. -->
     <header
-      class="h-11 flex items-center gap-2 px-2 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md min-w-0"
+      class="flex items-center gap-2 px-2 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md min-w-0"
+      style="height: calc(2.75rem + env(safe-area-inset-top, 0px)); padding-top: env(safe-area-inset-top, 0px);"
       data-tauri-drag-region
     >
       <!-- 左侧元素组 -->
