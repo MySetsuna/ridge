@@ -379,12 +379,19 @@
       theme: monacoTheme,
       automaticLayout: true,
       fontFamily: editorFontFamily,
-      fontSize: editorFontSize,
+      fontSize: coarsePointer ? Math.max(editorFontSize, 15) : editorFontSize,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       tabSize: 2,
       wordWrap: 'on',
       padding: { top: 8, bottom: 8 },
+      // §C1 touch-friendly options on coarse-pointer devices.
+      ...(coarsePointer ? {
+        scrollbar: { verticalScrollbarSize: 16, horizontalScrollbarSize: 16 },
+        folding: false,
+        lineNumbersMinChars: 3,
+        overviewRulerLanes: 0,
+      } : {}),
     });
     currentModelPath = current?.path ?? null;
     if (current) {
@@ -1075,9 +1082,21 @@
   });
 
   // ─── Style computations ────────────────────────────────────────────────────
+  // §C1 touch (coarse pointer): Monaco's drawer/floating chrome is mouse-only and
+  // a narrow drawer is unusable on a phone. Detect once (pointer type is stable
+  // per device) and force a full-screen, touch-friendly editor on touch devices.
+  const coarsePointer = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
+
   const containerStyle = $derived.by(() => {
     if (!editorState.isVisible || editorState.openFiles.length === 0)
       return 'display: none;';
+    // §C1 touch: full-screen overlay below the Dynamic Island / status bar so the
+    // code is actually readable/editable (the collapse button still closes it).
+    if (coarsePointer) {
+      return 'position: fixed; left: 0; right: 0; bottom: 0; top: env(safe-area-inset-top, 0px); z-index: 200;';
+    }
     if (editorState.displayMode === 'floating') {
       const r = editorState.floatingRect;
       return `position: fixed; left: ${r.x}px; top: ${r.y}px; width: ${r.w}px; height: ${r.h}px; z-index: 200;`;
@@ -1491,7 +1510,8 @@
   </div>
 
   <!-- ═══ Drawer / Embedded left-edge resizer ═══ -->
-  {#if editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded'}
+  <!-- §C1 hidden on touch (mouse-only drag; the editor is full-screen there). -->
+  {#if (editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded') && !coarsePointer}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[var(--rg-accent)]/40 transition-colors {isResizingDrawer
@@ -1509,7 +1529,7 @@
          Svelte 的 `a11y_no_noninteractive_*` 规则不认识 role=separator + 互补
          keydown 这个合法的 "window splitter" 模式，所以为每个 handle 显式抑制。
          参考 WAI-ARIA authoring practices: separator 可聚焦并响应 Arrow 键。 -->
-  {#if editorState.displayMode === 'floating'}
+  {#if editorState.displayMode === 'floating' && !coarsePointer}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
