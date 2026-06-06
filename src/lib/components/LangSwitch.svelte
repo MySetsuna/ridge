@@ -1,6 +1,6 @@
 <script lang="ts">
   // 语言切换器：中文 / English 二档分段控件。
-  // 切换语言同时驱动付费方案展示（zh→面包多卡密，en→海外信用卡订阅）。
+  // 切换语言同时驱动付费方案展示（zh→爱发电卡密，en→海外信用卡订阅）。
   import { locale, setLocale, t, LOCALES, type Locale } from '$lib/i18n';
 
   const fullLabel: Record<Locale, string> = { zh: '中文', en: 'English' };
