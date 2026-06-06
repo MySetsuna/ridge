@@ -9,6 +9,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   root: path.resolve(__dirname, 'src/remote'),
   base: '/',
+  // Isolate the dep-optimize cache from the MAIN dev server. Both Vite roots
+  // resolve their default cacheDir to the project-root `node_modules/.vite`
+  // (the nearest package.json), so when `set_remote_enabled` spawns this remote
+  // dev server in debug mode it would re-optimize and invalidate the main
+  // window's cached deps → `504 (Outdated Optimize Dep)` → SvelteKit 500. A
+  // dedicated cacheDir keeps the two from clobbering each other.
+  cacheDir: path.resolve(__dirname, 'node_modules/.vite-remote'),
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),

@@ -54,13 +54,21 @@ pub fn run() {
         .set_path_and_load(app_data_dir.join("remote-blacklist.json"));
     let teammate_state = app_state.clone();
 
-    tauri::Builder::default()
-        // 公网登录授权（契约 §1）：single-instance 必须最先注册——浏览器唤起
-        // `ridge://auth/focus` 时 Windows 会启动第二个进程，此插件把它的 argv 转交
-        // 给首个实例并触发下面的回调，我们据此聚焦主窗口并广播 auth-focus 事件。
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    let mut builder = tauri::Builder::default();
+    // 公网登录授权（契约 §1）：single-instance 必须最先注册——浏览器唤起
+    // `ridge://auth/focus` 时 Windows 会启动第二个进程，此插件把它的 argv 转交
+    // 给首个实例并触发下面的回调，我们据此聚焦主窗口并广播 auth-focus 事件。
+    //
+    // 例外：设置 `RIDGE_DISABLE_SINGLE_INSTANCE` 时跳过注册——专供
+    // `tauri:dev:cdp` 让一个带 CDP 的调试实例与已安装的正式版并存联调
+    // （正式版持有 single-instance 锁；调试实例若也注册会被立即聚焦并退出）。
+    // 仅该 dev 工作流设置此变量；正式构建从不设置，启动行为完全不变。
+    if std::env::var_os("RIDGE_DISABLE_SINGLE_INSTANCE").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             crate::deep_root::focus_main_window(app);
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
