@@ -1,5 +1,6 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
+import { DEFAULT_TERM_FONT, withEmojiFallback } from '$lib/terminal/fontStack';
 
 export interface TermOpts {
   fontSize?: number;
@@ -7,7 +8,11 @@ export interface TermOpts {
   fontFamily?: string;
 }
 
-export const FONT_STACK = '"JetBrains Mono","Cascadia Code","SF Mono",ui-monospace,Consolas,"SimHei","Heiti SC","Microsoft YaHei","Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",monospace';
+// Re-exported from the shared source (./fontStack) so the desktop renderer and
+// the web-remote controller stay byte-identical on emoji ordering — bundled
+// Noto first → flags + Warp-level emoji on the remote too (the remote app must
+// also @font-face the font; see src/remote index + /fonts/NotoColorEmoji.ttf).
+export const FONT_STACK = DEFAULT_TERM_FONT;
 
 const FEED_CHUNK_BYTES = 16 * 1024;
 const FEED_PER_CALL_BUDGET_MS = 4;
@@ -89,7 +94,8 @@ export class TerminalController {
     this.themeBg = new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
     this.fontSize = opts.fontSize ?? 14;
     this.scrollback = opts.scrollback ?? 5000;
-    this.fontFamily = opts.fontFamily ?? FONT_STACK;
+    // Normalize so a caller-supplied font still gets the Noto-first emoji chain.
+    this.fontFamily = withEmojiFallback(opts.fontFamily ?? '');
   }
 
   static async create(canvas: HTMLCanvasElement, container: HTMLDivElement, opts: TermOpts = {}): Promise<TerminalController> {
