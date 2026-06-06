@@ -1168,23 +1168,43 @@ export async function syncPaneLayoutFromBackend() {
   if (!isTauri()) return;
   let layout: PaneNode;
   try {
+    // §pane-delete-refresh fix: key the layout write on the HOST's authoritative
+    // active workspace id, NOT the local `activeWorkspaceId` store. The keep-alive
+    // renderer (+page.svelte) mounts each workspace's SplitContainer from
+    // `workspacePaneTrees.get(ws.id)`; if the local store ever diverges from the
+    // host's active id (notably over web-remote, where the store is seeded
+    // asynchronously), `setActiveTree(localId, …)` writes the WRONG key and the
+    // rendered tree stays stale — a closed pane lingers and its title falls back
+    // to the default. Re-deriving the id from the host (mirrors refreshWorkspaces)
+    // guarantees the refresh lands in the rendered key. On desktop the host id
+    // already equals the store, so this is just one extra (cheap) IPC.
     layout = await invoke<PaneNode>('get_pane_layout');
-    const current = get(paneTreeStore);
-    const wsId = get(activeWorkspaceId);
-    if (!paneLayoutsEquivalent(current, layout)) {
-      setActiveTree(wsId, layout);
-    } else if (wsId) {
-      // Layout structure unchanged but ensure cache has an entry (first
-      // time we see this workspace, e.g. after refreshWorkspaces).
-      const cache = get(workspacePaneTrees);
-      if (!cache.has(wsId)) {
-        workspacePaneTrees.update((m) => {
-          const m2 = new Map(m);
-          m2.set(wsId, layout);
-          return m2;
-        });
-      }
+    // Prefer the host's authoritative active workspace id for the render key,
+    // but fall back to the local store if the host is unreachable or returns an
+    // unexpected (non-string/empty) value — never clobber the store with a
+    // non-string result (keeps behaviour correct on desktop and in tests).
+    let wsId = get(activeWorkspaceId);
+    try {
+      const hostActive = await invoke<string>('get_active_workspace_id');
+      if (typeof hostActive === 'string' && hostActive) wsId = hostActive;
+    } catch {
+      /* keep local store value */
     }
+    const cached = (wsId ? get(workspacePaneTrees).get(wsId) : undefined) ?? get(paneTreeStore);
+    if (!paneLayoutsEquivalent(cached, layout)) {
+      setActiveTree(wsId, layout);
+    } else if (wsId && !get(workspacePaneTrees).has(wsId)) {
+      // Layout structure unchanged but the cache lacks an entry (first time we
+      // see this workspace, e.g. after refreshWorkspaces) — seed cache only.
+      workspacePaneTrees.update((m) => {
+        const m2 = new Map(m);
+        m2.set(wsId, layout);
+        return m2;
+      });
+    }
+    // Keep the local store in lock-step with the host so downstream consumers
+    // (and the cwd-prune block below) operate on the correct workspace.
+    if (wsId && get(activeWorkspaceId) !== wsId) activeWorkspaceId.set(wsId);
     reconcileActivePaneId(layout);
   } catch (e) {
     console.error('syncPaneLayoutFromBackend', e);

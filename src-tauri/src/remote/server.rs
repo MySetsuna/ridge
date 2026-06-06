@@ -2757,6 +2757,14 @@ async fn dispatch_invoke_request(
             bool_opt(args, "cached"),
         )
         .await),
+        // §web-remote: commit-diff tabs (FileEditor `loadDiff` with a commit hash)
+        // were missing from the allowlist → "command not available remotely".
+        "git_get_file_versions_at_commit" => val(git::git_get_file_versions_at_commit(
+            s(args, "repoRoot"),
+            s(args, "path"),
+            s(args, "hash"),
+        )
+        .await),
         "git_op_in_progress" => plain(git::git_op_in_progress(s(args, "repoRoot"))),
         "git_fetch" => unit(git::git_fetch(s(args, "repoRoot")).await),
 

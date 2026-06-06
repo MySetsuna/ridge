@@ -23,6 +23,16 @@ export const zh: Record<string, string> = {
   lockAndRefresh: '锁定渲染尺寸到本端并刷新',
   newWorkspace: '新建工作区',
 
+  // WorkspaceTree（工作区/终端树形级联）
+  treeTitle: '工作区 / 终端',
+  treeOpen: '工作区与终端',
+  treeNoWorkspace: '无工作区',
+  treeNoTerminal: '该工作区暂无终端',
+  treeNewWorkspace: '新建工作区',
+  treeNewTerminal: '新建终端',
+  treeSwitchHint: '点击切换工作区查看其终端',
+  renderEngine: '渲染引擎',
+
   // AuthScreen
   authSubtitle: '输入桌面端 Ridge 应用中显示的 6 位动态验证码',
   codePlaceholder: '输入 6 位验证码',
@@ -97,6 +107,16 @@ export const en: Record<string, string> = {
   virtualKeyboard: 'Virtual keyboard',
   lockAndRefresh: 'Lock render size to this device and refresh',
   newWorkspace: 'New workspace',
+
+  // WorkspaceTree (workspace / terminal cascade)
+  treeTitle: 'Workspaces / Terminals',
+  treeOpen: 'Workspaces & terminals',
+  treeNoWorkspace: 'No workspaces',
+  treeNoTerminal: 'No terminals in this workspace',
+  treeNewWorkspace: 'New workspace',
+  treeNewTerminal: 'New terminal',
+  treeSwitchHint: 'Tap to switch workspace and view its terminals',
+  renderEngine: 'Render engine',
 
   // AuthScreen
   authSubtitle: 'Enter the 6-digit one-time code shown in the Ridge desktop app',

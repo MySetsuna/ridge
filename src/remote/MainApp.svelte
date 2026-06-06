@@ -211,7 +211,7 @@
 </script>
 
 <div class="app-root">
-  <TopBar {panes} bind:activePaneId {workspaces} bind:activeWorkspaceId {ws} {wsState} />
+  <TopBar {panes} {activePaneId} {workspaces} {activeWorkspaceId} {wsState} />
 
   {#if panes.length === 0}
     <div class="empty">
@@ -244,7 +244,11 @@
     onSidebarToggle={handleSidebarToggle}
     onRefresh={handleRefresh}
     bind:showKeyboard
-    onCreateWorkspace={(wsId) => { activeWorkspaceId = wsId; refreshWorkspaces(); }}
+    {panes}
+    bind:activePaneId
+    {workspaces}
+    bind:activeWorkspaceId
+    onWorkspacesChanged={refreshWorkspaces}
   />
 </div>
 
