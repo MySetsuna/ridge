@@ -1354,13 +1354,18 @@ mod renderer_js {
         }
 
         /// §1.34 (2026-05-22) — install the shell-history popup overlay.
-        /// `items` is a JS array of strings (filtered, newest first).
-        /// `selected_index` is `-1` for "no row picked" or
-        /// `0..items.len()-1` for a selected row. `(anchor_row,
-        /// anchor_col)` is the input anchor in viewport cell coords;
-        /// `place_above` chooses growth direction. The 10-row visible
-        /// cap is hard-coded inside the kernel so the JS caller can't
-        /// request a floor-to-ceiling panel.
+        /// `items` is the JS-pre-windowed VISIBLE slice (filtered, newest
+        /// first). `selected_index` is `-1` for "no row picked" or a
+        /// slice-relative `0..items.len()-1`. `(anchor_row, anchor_col)`
+        /// is the input anchor in viewport cell coords; `place_above`
+        /// chooses growth direction.
+        ///
+        /// §history-scroll — `total_items` is the FULL filtered count and
+        /// `first_visible` is the index of `items[0]` within it; the
+        /// renderer draws a scrollbar thumb from these when the list is
+        /// longer than the window (Warp-style: many entries reachable by
+        /// scrolling, with a position indicator). JS owns the windowing so
+        /// the renderer just paints the slice + the thumb.
         #[wasm_bindgen(js_name = setHistoryOverlay)]
         pub fn set_history_overlay(
             &mut self,
@@ -1369,8 +1374,13 @@ mod renderer_js {
             anchor_row: u32,
             anchor_col: u32,
             place_above: bool,
+            total_items: u32,
+            first_visible: u32,
         ) {
             let items: Vec<String> = items.iter().filter_map(|v| v.as_string()).collect();
+            // JS pre-windows to the visible slice; render all of it (capped
+            // to a sane ceiling as a floor-to-ceiling guard).
+            let max_visible_rows = items.len().min(40);
             self.renderer
                 .set_history_overlay(crate::render::renderer::HistoryOverlay {
                     items,
@@ -1378,7 +1388,9 @@ mod renderer_js {
                     anchor_row: anchor_row as usize,
                     anchor_col: anchor_col as usize,
                     place_above,
-                    max_visible_rows: 10,
+                    max_visible_rows,
+                    total_items: total_items as usize,
+                    first_visible: first_visible as usize,
                 });
         }
 

@@ -94,11 +94,10 @@ describe('filterByPrefix', () => {
 		expect(filterByPrefix(items, '  ')).toEqual([]);
 	});
 
-	it('returns matches in ascending length order with original-index tiebreaker', () => {
-		// 'echo foo' (len 8) and 'echo bar' (len 8) tie on length; the
-		// one earlier in the input list wins the tiebreak so the user
-		// always sees the most-recent invocation first (store is
-		// newest-first).
+	it('returns matches newest-first, preserving input (store) order', () => {
+		// The store is newest-first; the filter preserves that order so the
+		// most recently run command stays at the top (Warp-style). Here
+		// 'echo foo' precedes 'echo bar' because it's newer in `items`.
 		expect(filterByPrefix(items, 'echo')).toEqual(['echo foo', 'echo bar', 'ECHO mixed']);
 	});
 
@@ -106,8 +105,19 @@ describe('filterByPrefix', () => {
 		expect(filterByPrefix(items, 'Echo')).toEqual(['echo foo', 'echo bar', 'ECHO mixed']);
 	});
 
-	it('returns shorter matches before longer ones', () => {
-		// 'ls' (len 2) before 'ls -la' (len 6).
+	it('orders by recency, NOT by length — a newer long command beats an older short one', () => {
+		// Newest-first input: the long 'git commit …' is newer than the bare
+		// 'git', so it must stay first even though it's longer. (The old
+		// length-sort would have surfaced 'git' first — the bug the user hit:
+		// the command they most likely want got buried below shorter ones.)
+		const recencyItems = ['git commit -m "msg"', 'git push', 'git'];
+		expect(filterByPrefix(recencyItems, 'git')).toEqual([
+			'git commit -m "msg"',
+			'git push',
+			'git',
+		]);
+		// In the shared list 'ls' precedes 'ls -la' purely by input order
+		// (here that happens to coincide with length).
 		expect(filterByPrefix(items, 'ls')).toEqual(['ls', 'ls -la']);
 	});
 
@@ -148,9 +158,8 @@ describe('dedupKeepFirst ∘ filterByPrefix composition', () => {
 	});
 
 	it('preserves newest-first ordering for the visible result', () => {
-		// Store invariant: index 0 is newest. After dedup + filter the
-		// shorter command sorts first (length tiebreak), and within
-		// length the originally-newer entry wins.
+		// Store invariant: index 0 is newest. dedup + filter preserve that
+		// order, so the most recent matching command stays first.
 		const store = ['echo foo', 'echo bar', 'echo foo', 'ls'];
 		const out = filterByPrefix(dedupKeepFirst(store), 'echo');
 		expect(out).toEqual(['echo foo', 'echo bar']);

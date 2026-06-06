@@ -3197,6 +3197,8 @@ export class TerminalManager {
 		anchorRow: number,
 		anchorCol: number,
 		placeAbove: boolean,
+		totalItems: number,
+		firstVisible: number,
 	): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
@@ -3207,9 +3209,21 @@ export class TerminalManager {
 				anchorRow: number,
 				anchorCol: number,
 				placeAbove: boolean,
+				totalItems: number,
+				firstVisible: number,
 			) => void;
 		};
-		h.setHistoryOverlay?.([...items], selectedIndex, anchorRow, anchorCol, placeAbove);
+		// `items` is the JS-windowed VISIBLE slice; `selectedIndex` is
+		// slice-relative; `totalItems`/`firstVisible` drive the scrollbar.
+		h.setHistoryOverlay?.(
+			[...items],
+			selectedIndex,
+			anchorRow,
+			anchorCol,
+			placeAbove,
+			totalItems,
+			firstVisible,
+		);
 		this.wake();
 	}
 

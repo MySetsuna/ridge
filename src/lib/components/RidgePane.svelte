@@ -88,27 +88,55 @@ let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
 // `packages/ridge-term/src/render/renderer.rs::HistoryOverlay` for the
 // renderer state and `webgpu.rs::draw_history_overlay` for the paint.
 let historyOverlayOpen = $state(false);
+// FULL filtered candidate list, newest-first. The renderer is fed a WINDOW
+// (slice) of this; `historyOverlaySelected` indexes into the full list.
 let historyOverlayItems = $state<string[]>([]);
 let historyOverlaySelected = $state(-1);
 let historyOverlayAbove = $state(true);
 let historyOverlayAnchor = $state<{ row: number; col: number } | null>(null);
+// §history-scroll — window start within the full list + window height.
+let historyOverlayFirstVisible = $state(0);
+let historyOverlayWindow = $state(12);
 
-const HISTORY_OVERLAY_MAX_ROWS = 10;
+// Hard ceiling on the visible window. The popup also can't exceed the space
+// above/below the anchor; everything beyond is reachable by scrolling (a
+// scrollbar shows position). The wasm renderer independently caps to 40.
+const HISTORY_OVERLAY_MAX_WINDOW = 16;
+// Cap the in-memory candidate list so a huge shell history doesn't bloat each
+// push; 500 recent matches is far more than anyone scrolls through.
+const HISTORY_OVERLAY_MAX_ITEMS = 500;
 
 function snapshotHistoryItems(query: string): string[] {
 	const all = dedupKeepFirst(get(terminalHistoryStore));
-	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ROWS);
+	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ITEMS);
+}
+
+// Window height = as many rows as fit above/below the anchor, capped — a
+// Warp-style "show many, scroll for the rest" popup instead of a fixed 10.
+function computeHistoryWindow(anchorRow: number, placeAbove: boolean): number {
+	const rows = manager.rows(paneId) || 24;
+	const avail = placeAbove ? anchorRow : Math.max(0, rows - anchorRow - 1);
+	return Math.max(3, Math.min(HISTORY_OVERLAY_MAX_WINDOW, avail));
 }
 
 function pushHistoryOverlay(): void {
 	if (!historyOverlayOpen || !historyOverlayAnchor) return;
+	const total = historyOverlayItems.length;
+	const win = Math.min(historyOverlayWindow, total);
+	// Clamp the window start so it never runs past the end of the list.
+	const first = Math.max(0, Math.min(historyOverlayFirstVisible, Math.max(0, total - win)));
+	historyOverlayFirstVisible = first;
+	const slice = historyOverlayItems.slice(first, first + win);
+	const sliceSelected = historyOverlaySelected >= 0 ? historyOverlaySelected - first : -1;
 	manager.setHistoryOverlay(
 		paneId,
-		historyOverlayItems,
-		historyOverlaySelected,
+		slice,
+		sliceSelected,
 		historyOverlayAnchor.row,
 		historyOverlayAnchor.col,
 		historyOverlayAbove,
+		total,
+		first,
 	);
 }
 
@@ -119,9 +147,11 @@ function openHistoryOverlay(): boolean {
 	if (items.length === 0) return false;
 	historyOverlayItems = items;
 	historyOverlaySelected = -1;
+	historyOverlayFirstVisible = 0;
 	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
 	const rows = manager.rows(paneId);
 	historyOverlayAbove = anchor.row >= rows / 2;
+	historyOverlayWindow = computeHistoryWindow(anchor.row, historyOverlayAbove);
 	historyOverlayOpen = true;
 	pushHistoryOverlay();
 	return true;
@@ -132,6 +162,7 @@ function closeHistoryOverlay(): void {
 	historyOverlayOpen = false;
 	historyOverlaySelected = -1;
 	historyOverlayItems = [];
+	historyOverlayFirstVisible = 0;
 	historyOverlayAnchor = null;
 	manager.clearHistoryOverlay(paneId);
 }
@@ -163,14 +194,28 @@ function moveHistorySelection(delta: number): void {
 		closeHistoryOverlay();
 		return;
 	}
+	// Newest-first list (index 0 = most recent). ArrowUp (delta<0) recalls
+	// the most recent command FIRST then walks toward older — shell
+	// convention + the user's "newest prioritized". ArrowDown is the reverse.
 	if (delta < 0) {
-		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
-		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
-		else historyOverlaySelected -= 1;
-	} else {
+		// back in time: prompt → newest → older → oldest → prompt
 		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
 		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
 		else historyOverlaySelected += 1;
+	} else {
+		// forward in time: prompt → oldest → newer → newest → prompt
+		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
+		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
+		else historyOverlaySelected -= 1;
+	}
+	// §history-scroll — keep the selection inside the visible window.
+	const win = Math.min(historyOverlayWindow, n);
+	if (historyOverlaySelected === -1) {
+		historyOverlayFirstVisible = 0;
+	} else if (historyOverlaySelected < historyOverlayFirstVisible) {
+		historyOverlayFirstVisible = historyOverlaySelected;
+	} else if (historyOverlaySelected >= historyOverlayFirstVisible + win) {
+		historyOverlayFirstVisible = historyOverlaySelected - win + 1;
 	}
 	pushHistoryOverlay();
 }
