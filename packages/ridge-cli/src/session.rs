@@ -695,7 +695,7 @@ mod tests {
         let roots = vec![dir.clone()];
 
         // controller 用 dir1 seal 一帧明文（已 mux 编码）。
-        let mut seal =
+        let seal =
             |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
 
         // 1) $/hello（门控前放行）：host 应回一帧 0x11 $/hello，能力为 cli 子集。

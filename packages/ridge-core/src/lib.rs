@@ -36,6 +36,7 @@ pub mod dispatch;
 pub mod error;
 pub mod fs;
 pub mod sandbox;
+pub mod totp;
 
 // ── Curated public surface ──
 pub use capability::{CapabilitySet, REMOTE_ALLOWLIST};
@@ -43,3 +44,4 @@ pub use ctx::{ConnectionId, CoreState, Ctx, EventScope, EventSink, TaskSpawner, 
 pub use dispatch::dispatch;
 pub use error::{CoreError, CoreResult};
 pub use sandbox::RootScope;
+pub use totp::RemoteTotp;

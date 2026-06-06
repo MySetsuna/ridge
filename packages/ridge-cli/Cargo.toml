@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Ridge headless remote host for Linux/VPS — device pairing, E2EE WebRTC PTY bridge"
 license = "MIT"
-default-run = "ridge-cli"
+# 可执行名为 `rdg`（短名，便于在终端直接调用）。包名仍保留 `ridge-cli`
+# 以维持工作区成员路径 / `cargo build -p ridge-cli` 调用不变。
+default-run = "rdg"
 
 # Standalone crate. This intentionally does NOT depend on the Tauri `ridge`
 # binary crate (which pulls webview/wasm/wgpu). It reuses the same battle-tested
@@ -22,7 +24,7 @@ default-run = "ridge-cli"
 # us drop the wrapper are listed in the delivery report.
 
 [[bin]]
-name = "ridge-cli"
+name = "rdg"
 path = "src/main.rs"
 
 [dependencies]
@@ -69,6 +71,14 @@ rand = "0.8"
 # Signaling WebSocket client (rustls)
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+# LAN controller (E4): build a rustls ClientConfig that ACCEPTS the desktop LAN
+# host's self-signed cert (validated via CDP, see scripts/cdp-lan-probe.mjs).
+# `ring` (not aws-lc-rs) to match the existing tree — no C toolchain on Windows.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# 交互式 TUI（E2）：终端 raw 模式 + alt screen + 异步键盘事件流。passthrough 模型
+# （ssh/mosh 同款）——把远端/本地 PTY 的 ANSI 字节直接透传到本地终端，由本地终端
+# 原生渲染（不在此重做网格渲染；GUI canvas 渲染是另一回事，见 §B.9）。
+crossterm = { version = "0.28", features = ["event-stream"] }
 # Byte buffers (matches the `bytes` re-exported by the webrtc data channel API)
 bytes = "1"
 
