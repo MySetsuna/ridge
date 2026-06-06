@@ -1,8 +1,8 @@
-//! ridge-cli — Ridge 无头远控 host（面向无图形界面的 Linux/VPS）。
+//! rdg — Ridge 无头远控 host（面向无图形界面的 Linux/VPS）。可执行名 `rdg`。
 //!
 //! 用法：
-//!   ridge-cli remote --enable    设备码配对，持久化 device JWT
-//!   ridge-cli remote --daemon    后台运行，等 controller 接入并桥接 PTY
+//!   rdg remote --enable    设备码配对，持久化 device JWT
+//!   rdg remote --daemon    后台运行，等 controller 接入并桥接 PTY
 //!
 //! 架构：设备码流(§4.4) → device JWT 持久化(§3) → 信令 WS(§5, role=host) →
 //!       WebRTC answerer(§0) → DataChannel 上叠 X25519+ChaCha20Poly1305(§7) →
@@ -33,29 +33,53 @@ mod rtc;
 mod session;
 mod signaling;
 mod totp;
+mod tui;
+
+use std::io::IsTerminal;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "ridge-cli",
+    name = "rdg",
     version,
     about = "Ridge headless remote host for Linux/VPS"
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// 交互式 TUI（默认）：在终端里跑一个可交互会话。无子命令时即进入此模式。
+    /// 本轮承载本地 shell（passthrough）；LAN/公网控制端将接入同一界面（见
+    /// docs/plans/rdg-interactive-tui-and-lan.md）。
+    Tui(TuiArgs),
+
     /// 远程控制：配对（--enable）或后台守护（--daemon）。
     Remote(RemoteArgs),
+
+    /// 作为**控制端**连接桌面 LAN host（E4）：WS + 自签 TLS，订阅 pane 后
+    /// passthrough 进交互式 TUI（与本地 shell 同一界面）。鉴权用 `--code <TOTP>`
+    /// （桌面"远程控制"面板显示）或 `--token <session>`。
+    Connect(ConnectArgs),
 
     /// 在本机托管无头 tmux 会话引擎（teammate 协议子集，复用桌面同款 `ridge-tmux`），
     /// 供 PATH 上的 `tmux` shim 连接——让无头会话直接在本 host 运行。
     Tmux(TmuxArgs),
+}
+
+#[derive(Args)]
+struct TuiArgs {
+    /// 指定要拉起的 shell（默认按平台探测）。
+    #[arg(long)]
+    shell: Option<String>,
+
+    /// 会话 shell 的工作目录（默认 $HOME / 当前目录）。
+    #[arg(long)]
+    cwd: Option<String>,
 }
 
 #[derive(Args)]
@@ -84,6 +108,29 @@ struct RemoteArgs {
 }
 
 #[derive(Args)]
+struct ConnectArgs {
+    /// 目标 host：`ip` 或 `ip:port`（缺省端口 9527）。
+    host: String,
+
+    /// TOTP 一次性码（桌面"远程控制"面板显示）。`--code` 与 `--token` 二选一。
+    #[arg(long)]
+    code: Option<String>,
+
+    /// 已配对的会话 token（替代 TOTP）。
+    #[arg(long)]
+    token: Option<String>,
+
+    /// 不进交互 TUI，跑一次无头协议自检（连接→订阅→回显校验）后退出。
+    /// 用于在非 TTY 环境对真实桌面 host 验证驱动（TLS/握手/帧）。
+    #[arg(long)]
+    probe: bool,
+
+    /// probe 模式收集输出的秒数。
+    #[arg(long, default_value_t = 5)]
+    probe_seconds: u64,
+}
+
+#[derive(Args)]
 struct TmuxArgs {
     /// 监听端口（默认 0 = 由系统分配，启动后打印实际端口）。
     /// 可由 RIDGE_TMUX_PORT 提供（命令行 > 环境变量 > 默认）。
@@ -108,8 +155,27 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Remote(args) => run_remote(args).await,
-        Command::Tmux(args) => run_tmux(args).await,
+        Some(Command::Tui(args)) => tui::run_local(args.shell, args.cwd).await,
+        Some(Command::Remote(args)) => run_remote(args).await,
+        Some(Command::Connect(args)) => {
+            if args.probe {
+                tui::run_lan_probe(args.host, args.code, args.token, args.probe_seconds).await
+            } else {
+                tui::run_lan(args.host, args.code, args.token).await
+            }
+        }
+        Some(Command::Tmux(args)) => run_tmux(args).await,
+        // 无子命令：交互式终端则进 TUI；非交互（管道/systemd）则打印用法，避免乱跑。
+        None => {
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                tui::run_local(None, None).await
+            } else {
+                eprintln!(
+                    "用法：rdg [tui|remote|tmux]。无子命令时在交互终端进入 TUI。\n详见 `rdg --help`。"
+                );
+                Ok(())
+            }
+        }
     }
 }
 
@@ -168,7 +234,7 @@ async fn run_remote(args: RemoteArgs) -> Result<()> {
             tracing::info!(target: "ridge_cli", device = %auth.device_name, "pairing complete; entering daemon");
             return daemon::run(args.shell, args.cwd, args.root).await;
         }
-        eprintln!("配对完成。运行 `ridge-cli remote --daemon` 开始守护。");
+        eprintln!("配对完成。运行 `rdg remote --daemon` 开始守护。");
         return Ok(());
     }
 
@@ -177,7 +243,7 @@ async fn run_remote(args: RemoteArgs) -> Result<()> {
     }
 
     // 既不 --enable 也不 --daemon：打印用法。
-    eprintln!("请指定 --enable（配对）或 --daemon（守护）。详见 `ridge-cli remote --help`。");
+    eprintln!("请指定 --enable（配对）或 --daemon（守护）。详见 `rdg remote --help`。");
     Ok(())
 }
 

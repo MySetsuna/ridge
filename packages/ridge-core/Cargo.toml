@@ -30,6 +30,11 @@ tracing = "0.1"
 ignore = "0.4"
 glob = "0.3"
 regex = "1"
+# Canonical TOTP (RFC 6238, HMAC-SHA256) shared by desktop + headless cli +
+# (future) LAN host. Pure crates, no Tauri. `rand` uses the OS entropy source
+# for the per-process secret. See `totp.rs`.
+sha2 = "0.10"
+rand = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "sync", "macros", "rt-multi-thread", "time"] }
