@@ -9,7 +9,9 @@ const version = pkg.version;
 const productName = 'ridge';
 const arch = 'x64';
 
-const bundleDir = path.join(root, 'src-tauri', 'target', 'release', 'bundle');
+// 工作区合并（S1 ridge-core 抽取）后，src-tauri 成为虚拟工作区成员，
+// 产物目录从 src-tauri/target 移到工作区根 target/。bundle 现位于 <root>/target/release/bundle。
+const bundleDir = path.join(root, 'target', 'release', 'bundle');
 const outputDir = path.join(root, 'release');
 
 if (!fs.existsSync(outputDir)) {

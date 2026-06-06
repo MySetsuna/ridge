@@ -36,7 +36,8 @@
     "resources": {
       "../ridge.theme": "ridge.theme",
       "../static/remote": "static/remote",
-      "../web-remote-dist": "web-remote-dist"
+      "../web-remote-dist": "web-remote-dist",
+      "../target/release/rdg.exe": "rdg.exe"
     },
     "windows": {
       "nsis": {

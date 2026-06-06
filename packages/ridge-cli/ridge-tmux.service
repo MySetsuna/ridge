@@ -1,6 +1,6 @@
 # Ridge tmux engine — 无头 tmux 会话引擎的 systemd 服务模板。
 #
-# 用途：在一台无图形界面的机器（VPS）上常驻 `ridge-cli tmux`，让本机上的 agent
+# 用途：在一台无图形界面的机器（VPS）上常驻 `rdg tmux`，让本机上的 agent
 # （Claude Code 等）经 PATH 上的 `tmux` shim 创建/管理无头 tmux 会话。引擎与桌面端
 # 逐字节同源。详见 docs/ridge-vps-agent.md。
 #
@@ -9,7 +9,7 @@
 # 干活（编译/读写仓库/联网装包），所以沙箱更轻、不限速。
 #
 # 安装（系统级，开机自启）:
-#   sudo cp ridge-cli /usr/local/bin/ridge-cli
+#   sudo cp rdg /usr/local/bin/rdg
 #   sudo useradd --system --create-home --home-dir /var/lib/ridge --shell /bin/bash ridge
 #   sudo install -d -m 0750 -o ridge -g ridge /etc/ridge
 #   sudo install -m 0600 -o ridge -g ridge ridge-tmux.env.example /etc/ridge/tmux.env
@@ -28,7 +28,7 @@
 #   loginctl enable-linger "$USER"      # 让服务在登出后仍存活
 
 [Unit]
-Description=Ridge headless tmux session engine (ridge-cli tmux)
+Description=Ridge headless tmux session engine (rdg tmux)
 Documentation=https://remo2ridge.duckdns.org
 After=network-online.target
 Wants=network-online.target
@@ -45,7 +45,7 @@ EnvironmentFile=-/etc/ridge/tmux.env
 
 # 不在命令行写 --token：那样 token 会出现在 `ps`/journald 里。改由上面的 EnvironmentFile
 # 提供 RIDGE_TMUX_TOKEN，CLI 直接读取。
-ExecStart=/usr/local/bin/ridge-cli tmux
+ExecStart=/usr/local/bin/rdg tmux
 
 # 失败重启 + 退避，避免崩溃风暴。
 Restart=on-failure
