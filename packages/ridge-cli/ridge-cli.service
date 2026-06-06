@@ -1,10 +1,10 @@
 # Ridge CLI — 无头远控守护进程的 systemd 用户/系统服务模板。
 #
 # 安装（系统级，开机自启）:
-#   sudo cp ridge-cli /usr/local/bin/ridge-cli
+#   sudo cp rdg /usr/local/bin/rdg
 #   sudo useradd --system --create-home --home-dir /var/lib/ridge --shell /usr/sbin/nologin ridge
 #   # 先以该用户完成一次配对（device JWT 写入其 ~/.config/ridge/auth.json）:
-#   sudo -u ridge -H /usr/local/bin/ridge-cli remote --enable
+#   sudo -u ridge -H /usr/local/bin/rdg remote --enable
 #   sudo cp ridge-cli.service /etc/systemd/system/ridge-cli.service
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now ridge-cli
@@ -29,7 +29,7 @@ Type=simple
 User=ridge
 Group=ridge
 
-ExecStart=/usr/local/bin/ridge-cli remote --daemon
+ExecStart=/usr/local/bin/rdg remote --daemon
 # 低能耗后台：失败重启 + 退避，避免崩溃风暴。
 Restart=on-failure
 RestartSec=5s

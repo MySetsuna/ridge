@@ -1,6 +1,8 @@
 /**
  * 将 tmux 从 Cargo target/release 复制到 dist/teammate-shim/，
- * 与主程序安装包（src-tauri/target/release/bundle/）输出目录区分。
+ * 与主程序安装包（target/release/bundle/）输出目录区分。
+ *
+ * 注：工作区合并（S1）后产物目录在工作区根 target/，不再是 src-tauri/target/。
  */
 import { copyFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
@@ -8,7 +10,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
-const releaseDir = join(root, 'src-tauri', 'target', 'release');
+const releaseDir = join(root, 'target', 'release');
 const binName = process.platform === 'win32' ? 'tmux.exe' : 'tmux';
 const targetName = binName;
 const from = join(releaseDir, binName);

@@ -5,6 +5,8 @@
   Pop $0
 !macroend
 
+; 把安装目录加入用户 PATH。安装目录内同时含 ridge.exe（桌面 GUI）与 rdg.exe
+; （无头 CLI，作为 bundle 资源随包安装），故安装后 `ridge` 与 `rdg` 两命令均可直接调用。
 !macro NSIS_HOOK_POSTINSTALL
   Push $0
   Push $1
