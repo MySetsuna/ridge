@@ -15,6 +15,16 @@
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
+/* Bundled color-emoji font → Warp-level emoji incl. country flags on the
+   remote too (matches the desktop; see src/lib/terminal/fontStack.ts for the
+   shared stack ordering). Self-hosted COLRv1, served by the LAN host from
+   /fonts/NotoColorEmoji.ttf (src/remote/public/fonts → static/remote/fonts).
+   The terminal glyph rasterizer (Canvas2D fillText) picks it up once loaded. */
+@font-face{
+  font-family:'Noto Color Emoji';
+  src:url('/fonts/NotoColorEmoji.ttf') format('truetype');
+  font-display:swap;
+}
 /* Default --rg-* palette (GitHub-dark). The desktop's active theme is pushed
    over WS and overrides these via inline styles on <html> (applyThemeVars). */
 :root{
@@ -30,6 +40,12 @@ html,body{height:100%;overflow:hidden;background:var(--rg-bg);color:var(--rg-fg)
 </head>
 <body>
 <div id="app"></div>
+<script>
+  // Preload the bundled color-emoji font so the terminal rasterizer uses it
+  // before the first emoji is rasterized-and-cached (the controller also
+  // re-fits on `document.fonts` loadingdone). Fire-and-forget.
+  try { document.fonts && document.fonts.load('64px "Noto Color Emoji"', '🇯🇵😀👍'); } catch (e) {}
+</script>
 <script type="module" src="./main.ts"></script>
 </body>
 </html>

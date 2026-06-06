@@ -38,6 +38,7 @@ import { settingsStore } from '../stores/settings';
 import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
 import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
+import { DEFAULT_TERM_FONT } from './fontStack';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -582,19 +583,12 @@ export class TerminalManager {
 					// rendering with system Segoe UI Emoji worked before
 					// Noto's unicode-range gate kicked in). System emoji
 					// fonts (Segoe UI Emoji on Windows, Apple Color
-					// Emoji: "Noto Color Emoji" is BUNDLED (see app.html
-					// @font-face + /fonts/NotoColorEmoji.ttf) and placed
-					// AHEAD of the system emoji fonts so every emoji —
-					// crucially incl. country flags, which Windows' Segoe
-					// UI Emoji lacks — renders from the same complete,
-					// Warp-level color font on every platform. Apple/Segoe
-					// stay as fallbacks for the (brief) window before the
-					// bundled face finishes loading, and for codepoints a
-					// future Noto build might miss. Text codepoints fall to
-					// the mono/CJK fonts first (Noto has no Latin/CJK), so
-					// only true emoji resolve to Noto.
-					fontFamily:
-						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", monospace',
+					// Shared canonical stack (see ./fontStack): bundled
+					// "Noto Color Emoji" ahead of OS emoji fonts so flags +
+					// all emoji render Warp-level on every platform. This
+					// default is normally overridden by themeBridge's first
+					// `pushFont`, but kept correct for the pre-bridge frame.
+					fontFamily: DEFAULT_TERM_FONT,
 					fontSizePx: 15,
 					scrollbackLines: 2000,
 					preferWebgpu,
