@@ -1,7 +1,7 @@
 // Ridge Cloud — RemoteConnectionProvider 接口（契约 §0 拓扑、§7 E2EE 帧）
 //
-// 这是云端公网加速通道的抽象传输层。它与既有 LAN 远控（wsClient.ts /
-// wsRemote.ts）是**并行**的 provider，不替换 LAN 逻辑。
+// 这是云端公网加速通道的抽象传输层。它与既有 LAN 远控（src/remote/lib/wsRemote.ts）
+// 是**并行**的 provider，不替换 LAN 逻辑。
 //
 // 设计要点（契约 §7.2）：
 //   - 内层明文 = 既有 postcard 二进制增量帧（PTY 输出 / resize / 输入等），

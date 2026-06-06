@@ -3,7 +3,7 @@
  *
  * 设计要点：
  * - 仅两档：'zh'（中文）/ 'en'（英文/海外）。"中文 vs 外文(英文等)" 的二元划分。
- * - 结算地区由 locale 派生（见 billingRegion）：zh → 面包多卡密，en → 海外信用卡。
+ * - 结算地区由 locale 派生（见 billingRegion）：zh → 爱发电卡密，en → 海外信用卡。
  *   语言即决定付费方案展示，用户不再单独切换结算地区。
  * - Tauri webview 同样暴露 navigator / Intl / localStorage，可直接复用。
  */
@@ -12,7 +12,7 @@ import { writable, derived, get } from 'svelte/store';
 export type Locale = 'zh' | 'en';
 export const LOCALES: readonly Locale[] = ['zh', 'en'];
 
-/** 结算地区：cn=面包多卡密，intl=海外信用卡。完全由 locale 派生。 */
+/** 结算地区：cn=爱发电卡密，intl=海外信用卡。完全由 locale 派生。 */
 export type Region = 'cn' | 'intl';
 
 const STORAGE_KEY = 'ridge.locale';
@@ -64,5 +64,5 @@ export function setLocale(next: Locale): void {
   locale.set(next);
 }
 
-/** 结算地区：zh → cn（面包多），en → intl（海外）。 */
+/** 结算地区：zh → cn（爱发电），en → intl（海外）。 */
 export const billingRegion = derived(locale, ($l): Region => ($l === 'zh' ? 'cn' : 'intl'));

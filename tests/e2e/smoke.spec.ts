@@ -248,3 +248,90 @@ test.describe('P1 boot + resize regression guards', () => {
     expect(after - before).toBeLessThanOrEqual(1);
   });
 });
+
+/**
+ * §fix(resize-scissor) — host canvas scissor immediate update regression guards.
+ *
+ * The fix decouples GPU scissor (cheap, must track DOM in real-time during
+ * splitter/sidebar drag) from kernel grid resize + PTY SIGWINCH (expensive,
+ * must be debounced to avoid grid-drift on in-flight bytes). This test block
+ * verifies the host canvas resize path (ResizeObserver → resizeHost →
+ * _recomputeViewport) survives rapid viewport changes without errors.
+ *
+ * The per-pane `viewportChanged` path (pane-splitter-drag scissor) is
+ * tested in `tests/e2e-shell/resize-scissor.spec.ts` (WebDriverIO, requires
+ * Tauri backend). This block covers the window/sidebar-resize host path
+ * that runs in pure-browser mode.
+ */
+test.describe('host canvas scissor resize regression guards', () => {
+  test('host canvas element data-rg-host exists in DOM after boot', async ({ page }) => {
+    await bootSpa(page);
+    // SvelteKit hydration in browser mode (no Tauri backend) may take
+    // a few extra ticks after the splash dismisses before the static
+    // canvas element lands in the tree. Use waitFor with a generous
+    // timeout — the canvas is a static element in +page.svelte and
+    // will always render once Svelte finishes its mount cycle.
+    await page.waitForSelector('canvas[data-rg-host]', { timeout: 10_000 });
+  });
+
+  test('rapid viewport resize does not throw or detach the host canvas', async ({ page }) => {
+    // Simulates the "sidebar drag" scenario: resize fires
+    // synchronously in the ResizeObserver callback (the §fix
+    // changed it from RAF-deferred to inline). Three quick resizes
+    // should not cause the host canvas to detach or trigger unhandled
+    // errors. The test gates on `[data-rg-host]` staying attached
+    // across every size — if resizeHost threw and tore down the
+    // canvas, this locator fails.
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(String(e)));
+    await bootSpa(page);
+    const hostCanvas = page.locator('canvas[data-rg-host]').first();
+    await expect(hostCanvas).toBeAttached({ timeout: 5_000 });
+
+    // Three quick size changes, each separated by 80 ms — faster than
+    // the ~16 ms per-frame budget, so ResizeObserver coalescing may
+    // merge some but the callback must not throw.
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.waitForTimeout(80);
+    await page.setViewportSize({ width: 900, height: 600 });
+    await page.waitForTimeout(80);
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.waitForTimeout(200);
+
+    // Host canvas must still be in the DOM — a thrown resizeHost
+    // would have torn it down in its destroy() path.
+    await expect(hostCanvas).toBeAttached();
+
+    // Filter Tauri-missing errors (expected in browser mode).
+    const unexpected = pageErrors.filter((e) => {
+      return (
+        !e.includes('__TAURI__') &&
+        !e.includes('tauri://') &&
+        !e.includes('WebSocket') &&
+        !e.includes("reading 'call'") &&
+        !e.includes('invoke')
+      );
+    });
+    expect(unexpected).toEqual([]);
+  });
+
+  test('host canvas has non-zero dimensions after boot', async ({ page }) => {
+    // The canvas must be sized to fill its parent (the workspace area).
+    // Zero dimensions after boot mean resizeHost never ran or the
+    // ResizeObserver is broken — that would prevent ANY terminal pixel
+    // from rendering.
+    await bootSpa(page);
+    const dims = await page.evaluate(() => {
+      const c = document.querySelector('canvas[data-rg-host]') as HTMLCanvasElement | null;
+      if (!c) return { w: 0, h: 0 };
+      return { w: c.width, h: c.height };
+    });
+    // In browser mode without Tauri the boot sequence is:
+    // 1. DOM mounts → ResizeObserver fires → resizeHost → canvas sized
+    // 2. attachHost may fail (no WebGPU) but the canvas is still sized
+    //    by the resizeHost path above
+    // Width > 0 proves the resize pipeline ran at least once.
+    expect(dims.w).toBeGreaterThan(0);
+    expect(dims.h).toBeGreaterThan(0);
+  });
+});

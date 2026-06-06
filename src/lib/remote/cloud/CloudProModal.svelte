@@ -2,7 +2,7 @@
   // Ridge Cloud — Pro 升级 / 登录 玻璃拟物 Modal（契约 §4.1/§4.2）。
   //
   // 付费方案完全由界面语言（locale）决定，互斥展示，不再手动切换地区：
-  //   中文(zh)   → 仅「面包多卡密激活」（亮点页主推 + 卡密激活 tab）
+  //   中文(zh)   → 仅「爱发电订阅 / 卡密激活」（亮点页主推 + 卡密激活 tab）
   //   English(en) → 仅「Lemon Squeezy 信用卡订阅」（亮点页主推，外链）
   //   [ 本地登录 ] → 邮箱密码登录（/auth/login），两种语言均可用
   //
@@ -26,12 +26,12 @@
 
   // 爱发电（zh，契约 §7 真实链接）；海外订阅 Lemon Squeezy 仍为占位待运营填。
   const LEMON_SQUEEZY_URL = 'https://ridge.lemonsqueezy.com/buy/PLACEHOLDER';
-  const MBD_URL = 'https://ifdian.net/a/ridge';
+  const AFDIAN_URL = 'https://ifdian.net/a/ridge';
 
   type Tab = 'highlights' | 'login' | 'activate';
   let tab = $state<Tab>('highlights');
 
-  // 中文走面包多卡密；外文走海外订阅。完全由语言派生。
+  // 中文走爱发电订阅/卡密；外文走海外订阅。完全由语言派生。
   const isCn = $derived($billingRegion === 'cn');
 
   // 切语言导致从「卡密激活」tab 变得不可用时，回落到亮点页。
@@ -298,7 +298,7 @@
           <!-- 付费方案由语言决定，互斥展示 -->
           <div class="space-y-2">
             {#if isCn}
-              <!-- 中文：面包多卡密 -->
+              <!-- 中文：爱发电订阅 / 卡密 -->
               <button
                 onclick={() => { tab = 'activate'; }}
                 class="group flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
@@ -424,7 +424,7 @@
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doActivate(); }}>
             <p class="text-xs leading-relaxed text-[var(--rg-fg-muted)]">
               {$t('cloudPro.activateBuyHint')}
-              <button type="button" onclick={() => openExternal(MBD_URL)} class="text-[var(--rg-accent)] hover:underline">
+              <button type="button" onclick={() => openExternal(AFDIAN_URL)} class="text-[var(--rg-accent)] hover:underline">
                 {$t('cloudPro.cnGoMbd')}
               </button>
             </p>
