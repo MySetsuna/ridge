@@ -276,6 +276,22 @@ export class TerminalController {
     this.markDirty();
   }
 
+  /** Hard-isolate the local kernel when switching to a different pane. Drops any
+   *  buffered/deferred bytes from the previous pane, resets the screen / cursor /
+   *  modes (RIS), and physically clears the scrollback ring (clearScrollback also
+   *  clears the selection and snaps the viewport to the live grid). The new pane's
+   *  host scrollback replay (sent on subscribe) then paints a clean, isolated
+   *  view — without this the previous pane's scrollback bleeds into the new one. */
+  resetForSwitch() {
+    if (this.destroyed) return;
+    this.coalesceBuffer.length = 0;
+    if (this.coalesceTimer) { clearTimeout(this.coalesceTimer); this.coalesceTimer = null; }
+    this.feedDeferred.length = 0;
+    this.kernel.feed(new TextEncoder().encode('\x1bc')); // RIS — reset screen/cursor/modes
+    this.kernel.clearScrollback();                       // physically drop scrollback ring
+    this.markDirty();
+  }
+
   // ── External resize (called when server notifies of PTY resize) ──
 
   kernelResize(rows: number, cols: number) {
@@ -514,6 +530,8 @@ export class TerminalController {
 
   scrollUp(lines: number) { this.kernel.scrollUp(lines); this.markDirty(); }
   scrollDown(lines: number) { this.kernel.scrollDown(lines); this.markDirty(); }
+  /** Snap the viewport to the live grid (bottom of scrollback). */
+  scrollToBottom() { if (this.destroyed) return; this.kernel.scrollToBottom(); this.markDirty(); }
   scrollOffset(): number { return this.destroyed ? 0 : this.kernel.scrollOffset(); }
   scrollbackLen(): number { return this.destroyed ? 0 : this.kernel.scrollbackLen(); }
 
