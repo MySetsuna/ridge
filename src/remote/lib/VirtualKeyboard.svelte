@@ -1,41 +1,35 @@
 <script lang="ts">
-  interface ModState {
-    ctrl: boolean;
-    alt: boolean;
-    shift: boolean;
-  }
+  // §2 修复：Ctrl/Alt/Shift 改用 modState 的共享 sticky 修饰键，使其能与**设备
+  // 软键盘打出的普通字符**组成快捷键（旧实现的本地 mods 只作用于本栏命名键，
+  // 软键盘字符走 TerminalCanvas.handleInput 读不到 → 组合键失效）。一次性语义：
+  // 武装后下一个键（命名键或软键盘字符）消费即释放（见 modState consumeMods）。
+  import { stickyMods, toggleMod, peekMods, clearMods } from './modState.svelte';
 
-  let { onKey, keyboardOffset = 0 }: {
+  let { onKey, keyboardOffset = 0, onArm }: {
     onKey: (key: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
     keyboardOffset?: number;
+    // 武装某修饰键时回调（让 TerminalCanvas 聚焦隐藏输入、确保软键盘已升起来
+    // 接住下一个组成 chord 的字符）。
+    onArm?: () => void;
   } = $props();
 
-  let mods = $state<ModState>({ ctrl: false, alt: false, shift: false });
-
-  function toggleMod(m: 'ctrl' | 'alt' | 'shift') {
-    mods = { ...mods, [m]: !mods[m] };
+  function tapMod(m: 'ctrl' | 'alt' | 'shift') {
+    const wasOn = stickyMods[m];
+    toggleMod(m);
+    if (!wasOn) onArm?.();
   }
 
   function sendNamedKey(key: string) {
-    onKey(key, mods.ctrl, mods.alt, mods.shift);
-    mods = { ctrl: false, alt: false, shift: false };
+    const m = peekMods();
+    onKey(key, m.ctrl, m.alt, m.shift);
+    clearMods();
   }
 
   function sendArrow(dir: string) {
-    onKey('Arrow' + dir, mods.ctrl, mods.alt, mods.shift);
-    mods = { ctrl: false, alt: false, shift: false };
+    const m = peekMods();
+    onKey('Arrow' + dir, m.ctrl, m.alt, m.shift);
+    clearMods();
   }
-
-  $effect(() => {
-    function handleGlobalKey(e: KeyboardEvent) {
-      if (['Control', 'Alt', 'Shift'].includes(e.key)) return;
-      if (mods.ctrl || mods.alt || mods.shift) {
-        mods = { ctrl: false, alt: false, shift: false };
-      }
-    }
-    window.addEventListener('keydown', handleGlobalKey);
-    return () => window.removeEventListener('keydown', handleGlobalKey);
-  });
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -45,18 +39,18 @@
   <div class="vk-row">
     <button
       class="vk-key mod"
-      class:active={mods.ctrl}
-      onclick={() => toggleMod('ctrl')}
+      class:active={stickyMods.ctrl}
+      onclick={() => tapMod('ctrl')}
     >Ctrl</button>
     <button
       class="vk-key mod"
-      class:active={mods.alt}
-      onclick={() => toggleMod('alt')}
+      class:active={stickyMods.alt}
+      onclick={() => tapMod('alt')}
     >Alt</button>
     <button
       class="vk-key mod"
-      class:active={mods.shift}
-      onclick={() => toggleMod('shift')}
+      class:active={stickyMods.shift}
+      onclick={() => tapMod('shift')}
     >Shift</button>
     <span class="vk-sep"></span>
     <button class="vk-key" onclick={() => sendNamedKey('Escape')}>Esc</button>
