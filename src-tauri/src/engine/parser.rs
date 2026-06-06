@@ -327,7 +327,7 @@ impl PaneParser {
             for i in start..now_len {
                 if let Some(row) = self.terminal.grid().scrollback.get(i) {
                     let mut row_cells: Vec<DeltaCell> = Vec::with_capacity(row.cells.len());
-                    for cell in &row.cells {
+                    for (ci, cell) in row.cells.iter().enumerate() {
                         let attrs = self.terminal.grid().attrs.get(cell.attr);
                         row_cells.push(DeltaCell {
                             ch: cell.ch,
@@ -335,6 +335,10 @@ impl PaneParser {
                             bg: attrs.bg,
                             flags: attrs.flags,
                             width: cell.width,
+                            // §emoji-cluster — carry the multi-codepoint
+                            // cluster so scrolled-back emoji keep ZWJ/skin/
+                            // flag composition on the wasm mirror.
+                            cluster: row.cluster_at(ci).map(|cs| cs.text.clone()),
                         });
                     }
                     lines.push(row_cells);
@@ -371,6 +375,12 @@ impl PaneParser {
                     bg: attrs.bg,
                     flags: attrs.flags,
                     width: cell.width,
+                    // §emoji-cluster — anchor cell carries the full grapheme
+                    // cluster (👨‍👩‍👧 / 👍🏽 / 🇯🇵 / ❤️) so the wasm renderer
+                    // paints the composed glyph instead of just `ch` (the
+                    // base codepoint). The per-cell diff treats a changed
+                    // cluster as a cell change (DeltaCell: PartialEq).
+                    cluster: live_row.cluster_at(c).map(|cs| cs.text.clone()),
                 });
             }
             // Snapshot row may be shorter than cols if we resized below

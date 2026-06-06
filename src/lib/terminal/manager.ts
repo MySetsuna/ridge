@@ -582,16 +582,19 @@ export class TerminalManager {
 					// rendering with system Segoe UI Emoji worked before
 					// Noto's unicode-range gate kicked in). System emoji
 					// fonts (Segoe UI Emoji on Windows, Apple Color
-					// Emoji on macOS, Noto Color Emoji where it's
-					// installed system-wide on Linux) are reliable
-					// across the runtimes we ship to and look identical
-					// to the bundled Noto on Windows / macOS. "Noto
-					// Color Emoji" stays in the chain as a SYSTEM font
-					// lookup — harmless when not installed (the browser
-					// just falls through), helpful on Linux distros
-					// that ship it.
+					// Emoji: "Noto Color Emoji" is BUNDLED (see app.html
+					// @font-face + /fonts/NotoColorEmoji.ttf) and placed
+					// AHEAD of the system emoji fonts so every emoji —
+					// crucially incl. country flags, which Windows' Segoe
+					// UI Emoji lacks — renders from the same complete,
+					// Warp-level color font on every platform. Apple/Segoe
+					// stay as fallbacks for the (brief) window before the
+					// bundled face finishes loading, and for codepoints a
+					// future Noto build might miss. Text codepoints fall to
+					// the mono/CJK fonts first (Noto has no Latin/CJK), so
+					// only true emoji resolve to Noto.
 					fontFamily:
-						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace',
+						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", monospace',
 					fontSizePx: 15,
 					scrollbackLines: 2000,
 					preferWebgpu,
@@ -3819,39 +3822,46 @@ export class TerminalManager {
 	}
 
 	/**
-	 * Container-size changed. Trailing-edge debounce: hold the actual
-	 * fit until the user stops resizing.
+	 * Container-size changed.
 	 *
-	 * Trigger to "settle now" is either of:
+	 * **Scissor (visual clip region) — immediate.**
+	 * The GPU scissor rectangle is a trivial arithmetic update (DOM
+	 * rect → device-pixel clamp → `setViewportOffset` + `resize_surface`,
+	 * the latter short-circuits when dims haven't changed). Deferring it
+	 * creates visible right/bottom clipping during drag that only snaps
+	 * back on release — the symptom first reported as "随 pane resize
+	 * 下/右遮挡、松手恢复".
+	 *
+	 * **Kernel grid resize + PTY SIGWINCH — debounced.**
+	 * Resizing the kernel grid mid-drag is actively dangerous: in-flight
+	 * PTY bytes carry absolute cursor positions valid only under one
+	 * given grid. Collapsing the whole drag into a single trailing-edge
+	 * `fitPane` at settle is the correct strategy — it eliminates the
+	 * "TUI drawing 错位 / 不完整" symptom that the prior 120 ms debounce
+	 * produced when a partial re-fit landed during continuous motion and
+	 * drift accumulated as the user kept dragging.
+	 *
+	 * Settle triggers (either):
 	 *   a. `RESIZE_SETTLE_MS` (500 ms) elapses with no further
-	 *      viewportChanged events — user paused mid-drag.
+	 *      `viewportChanged` events — user paused mid-drag.
 	 *   b. A global `pointerup` lands — user released the splitter /
 	 *      window-edge handle (see `_ensureResizeReleaseListener`).
 	 *
-	 * Until one of those fires we do NOTHING — no scissor update, no
-	 * kernel grid resize, no PTY SIGWINCH. The visual terminal stays
-	 * exactly where it was at drag start while CSS reflows the
-	 * container around it. This matches the explicit UX ask: "during
-	 * resize the terminal content should not follow in real time; only
-	 * when the mouse pauses for 1 s OR the user releases the button
-	 * should the content snap into place against the divider".
-	 *
-	 * The previous 120 ms debounce eagerly fit on every brief pause
-	 * mid-drag, producing the "TUI drawing 错位 / 不完整" symptom: a
-	 * partial re-fit landed during continuous motion, then drift
-	 * accumulated as the user kept dragging.
-	 *
-	 * Kernel + PTY race-correctness still applies: in-flight bytes
-	 * carry absolute cursor positions valid only under one given grid,
-	 * so collapsing the whole drag into a single end-of-drag fit is
-	 * strictly safer than the prior behaviour.
-	 *
-	 * Initial fit at attach() bypasses the debounce — synchronous
+	 * Initial fit at `attach()` bypasses the debounce — synchronous
 	 * resize, no concurrent in-flight bytes.
 	 */
 	viewportChanged(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
+
+		// Immediate: recompute GPU scissor + viewport offset so the
+		// terminal visual region tracks the DOM container in real time
+		// during splitter-sidebar drag. Expensive kernel resize is
+		// deferred to the debounced `fitPane` below.
+		this._recomputeViewport(entry);
+		this._invalidateHost();
+		this.wake();
+
 		this._ensureResizeReleaseListener();
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);

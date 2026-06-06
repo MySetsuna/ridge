@@ -214,7 +214,11 @@ impl Terminal {
         use crate::term::delta::{CursorShape as DeltaCursorShape, GridDelta};
         match delta {
             GridDelta::Cells { row, col, cells } => {
-                let triples: Vec<(char, Attrs, u8)> = cells
+                // §emoji-cluster — carry `cluster` alongside (ch, attrs,
+                // width) so `write_delta_cells` can restore the row's
+                // cluster sidecar; without it skin-tone/ZWJ/flag clusters
+                // collapse to the base codepoint on the desktop delta path.
+                let quads: Vec<(char, Attrs, u8, Option<Box<str>>)> = cells
                     .iter()
                     .map(|dc| {
                         (
@@ -225,11 +229,12 @@ impl Terminal {
                                 flags: dc.flags,
                             },
                             dc.width,
+                            dc.cluster.clone(),
                         )
                     })
                     .collect();
                 self.grid
-                    .write_delta_cells(*row as usize, *col as usize, &triples);
+                    .write_delta_cells(*row as usize, *col as usize, &quads);
             }
             GridDelta::Cursor {
                 row,
@@ -322,6 +327,12 @@ impl Terminal {
                             flags: dc.flags,
                         });
                         row.cells[i] = Cell::new(dc.ch, attr_id, dc.width);
+                        // §emoji-cluster — scrolled-back emoji clusters
+                        // render via the same `cluster_at` path, so carry
+                        // the sidecar onto the ring row too.
+                        if let Some(text) = &dc.cluster {
+                            row.set_cluster(i, text.clone());
+                        }
                     }
                     let _ = self.grid.scrollback.push(row);
                 }
@@ -684,6 +695,7 @@ mod tests {
                 bg: Color::DEFAULT,
                 flags: Flags::empty(),
                 width: 1,
+                cluster: None,
             })
             .collect();
         let line_b: Vec<DeltaCell> = "BETA "
@@ -694,6 +706,7 @@ mod tests {
                 bg: Color::DEFAULT,
                 flags: Flags::empty(),
                 width: 1,
+                cluster: None,
             })
             .collect();
         t.apply_delta(&GridDelta::ScrollbackAppend {
