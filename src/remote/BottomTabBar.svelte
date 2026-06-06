@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Folder, GitBranch, Search, Keyboard, RefreshCw } from 'lucide-svelte';
+  import { Folder, GitBranch, Search, Keyboard, RefreshCw, MousePointer2 } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
   import WorkspaceTree from './lib/WorkspaceTree.svelte';
@@ -13,6 +13,7 @@
     onSidebarToggle,
     onRefresh,
     showKeyboard = $bindable(false),
+    selectionMode = $bindable(false),
     backendName = 'Canvas2D',
     panes = [],
     activePaneId = $bindable(null),
@@ -25,6 +26,7 @@
     onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
     onRefresh?: () => void;
     showKeyboard?: boolean;
+    selectionMode?: boolean;
     backendName?: string;
     panes?: PaneInfo[];
     activePaneId?: string | null;
@@ -52,6 +54,9 @@
   <div class="group">
     <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
       <Keyboard class="w-4 h-4" />
+    </button>
+    <button class="ctrl-btn" class:active={selectionMode} onclick={() => selectionMode = !selectionMode} title={$t('mobile.selectionToggle')} tabindex="-1">
+      <MousePointer2 class="w-4 h-4" />
     </button>
     <button class="ctrl-btn" onclick={onRefresh} title={$t('mobile.lockAndRefresh')} tabindex="-1">
       <RefreshCw class="w-4 h-4" />

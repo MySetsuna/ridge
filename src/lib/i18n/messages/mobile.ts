@@ -20,6 +20,7 @@ export const zh: Record<string, string> = {
   filesTitle: '文件',
   searchTitle: '搜索',
   virtualKeyboard: '虚拟键盘',
+  selectionToggle: '选择模式（手指滑动选中文本）',
   lockAndRefresh: '锁定渲染尺寸到本端并刷新',
   newWorkspace: '新建工作区',
 
@@ -105,6 +106,7 @@ export const en: Record<string, string> = {
   filesTitle: 'Files',
   searchTitle: 'Search',
   virtualKeyboard: 'Virtual keyboard',
+  selectionToggle: 'Selection mode (drag to select text)',
   lockAndRefresh: 'Lock render size to this device and refresh',
   newWorkspace: 'New workspace',
 

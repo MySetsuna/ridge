@@ -15,6 +15,9 @@
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
   let showKeyboard = $state(false);
+  // §selection: explicit selection mode (toggled in BottomTabBar). When on, a
+  // single-finger drag selects; when off it scrolls (no accidental selection).
+  let selectionMode = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
   // Active pane's working dir — roots the sidebar at the same place ridge shows.
   let activeCwd = $state('');
@@ -333,6 +336,7 @@
       {onStdin}
       {onResize}
       {showKeyboard}
+      {selectionMode}
     />
   {/if}
 
@@ -348,6 +352,7 @@
     onSidebarToggle={handleSidebarToggle}
     onRefresh={handleRefresh}
     bind:showKeyboard
+    bind:selectionMode
     {panes}
     bind:activePaneId
     {workspaces}
