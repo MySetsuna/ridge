@@ -3,6 +3,7 @@
   import { t } from '$lib/i18n';
   import { TerminalController } from './terminalController';
   import VirtualKeyboard from './VirtualKeyboard.svelte';
+  import { anyMod, consumeMods } from './modState.svelte';
 
   let { paneId, onStdin, onResize, showKeyboard = false, backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
@@ -248,6 +249,13 @@
   let lastInputText = '';       // text just emitted by `input`; a matching compositionend is a dup
   let lastInputTime = 0;
 
+  // §1 英文「逐字实时发送 + 空格提交再发整词」去重：滚动记录最近经 `input` 实际
+  // 发出的字面文本；compositionend 若发现提交内容正是刚实发文本的尾部，就不再
+  // 重复提交（iOS 英文预测会逐字 input 后在 commit 时把整词再发一次）。
+  const RECENT_SENT_WINDOW_MS = 1200;
+  let recentSent = '';
+  let recentSentTime = 0;
+
   function handleCompositionStart() {
     ctrl?.startComposition();
     parkInputAtCursor();
@@ -261,6 +269,15 @@
     // Clear the textarea so a late `input` can't resend the committed text.
     if (hiddenInput) hiddenInput.value = '';
     if (!data) return;
+    // §1 If the live `input` stream already emitted these exact characters
+    // (iOS English predictive streams each letter, then fires compositionend
+    // with the whole word on space), committing again duplicates the word.
+    // `trimEnd()` tolerates the space `input` landing before OR after
+    // compositionend; clear the buffer on a hit so the re-commit is skipped.
+    if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS && recentSent.trimEnd().endsWith(data)) {
+      recentSent = '';
+      return;
+    }
     // If an `input` already emitted this exact commit (some IMEs fire `input`
     // before `compositionend`), don't send it again.
     if (data === lastInputText && Date.now() - lastInputTime < IME_DUP_WINDOW_MS) {
@@ -283,14 +300,42 @@
     const text = ta.value;
     ta.value = '';
     if (!text) return;
-    // Drop the trailing duplicate `input` that follows a composition commit.
+    const inputType = (e as InputEvent).inputType || '';
+    // §1 Robust IME-commit dedup: after `compositionend` the browser re-inserts
+    // the committed text as a non-composing `input` whose inputType is
+    // `insertCompositionText`. handleCompositionEnd already sent it via
+    // commitText, so swallow this echo by TYPE — independent of the fragile
+    // content/time window that mis-fires on slow mobile (→ 大量重复语句).
+    if (inputType === 'insertCompositionText') return;
+    // Fallback content/time window for IMEs that report a plain inputType.
     if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS) {
       imeCommitExpect = '';
+      return;
+    }
+    // §1 Autocorrect / predictive replacement (iOS fires this on space /
+    // punctuation to swap the typed word for a suggestion). The literal
+    // characters were already streamed live, so applying the replacement
+    // duplicates the word; terminals shouldn't silently rewrite input → drop it
+    // and keep what the user literally typed.
+    if (inputType === 'insertReplacementText') return;
+    // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character
+    // instead of sending the literal text. One-shot: consumed after this key, so
+    // the floating Ctrl/Alt/Shift finally combine with soft-keyboard characters.
+    if (anyMod()) {
+      const sm = consumeMods();
+      for (const ch of text) {
+        const bytes = ctrl.encodeKey(ch, sm.ctrl, sm.alt, sm.shift, false);
+        onStdin(bytes.length > 0 ? td.decode(bytes) : ch);
+      }
       return;
     }
     onStdin(text);
     lastInputText = text;
     lastInputTime = Date.now();
+    // Track the literal stream so a following compositionend can detect it
+    // already sent these chars (see handleCompositionEnd §1).
+    recentSent = (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS ? recentSent : '') + text;
+    recentSentTime = Date.now();
   }
 
   // ── Keyboard ──
@@ -537,7 +582,7 @@
 </div>
 
 {#if showKeyboard}
-  <VirtualKeyboard {keyboardOffset} onKey={handleVirtualKey} />
+  <VirtualKeyboard {keyboardOffset} onKey={handleVirtualKey} onArm={focusInput} />
 {/if}
 
 <style>
