@@ -12,6 +12,26 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400..600;1,14..32,400..600&family=JetBrains+Mono:ital,wght@0,400..600;1,400..600&display=swap"
     rel="stylesheet" />
+  <!-- Bundled color-emoji font → Warp-level emoji incl. country flags
+       (Windows' Segoe UI Emoji has no flag glyphs). Self-hosted COLRv1
+       (vector, crisp at any cell size); `font-src 'self'` in the CSP above
+       already permits it. Declared HERE in the document head (not only in
+       app.css) and kicked via the Font Loading API so the terminal's glyph
+       rasterizer (Canvas2D `fillText`, see ridge-term glyph_rasterizer.rs)
+       sees the face before the first emoji glyph is rasterized-and-cached. -->
+  <style>
+    @font-face {
+      font-family: 'Noto Color Emoji';
+      src: url('/fonts/NotoColorEmoji.ttf') format('truetype');
+      font-display: swap;
+    }
+  </style>
+  <script>
+    // Fire-and-forget preload; the rasterizer's font stack lists "Noto Color
+    // Emoji" ahead of the system emoji fonts, so once this resolves every
+    // emoji (and flag) rasterizes from the bundled Noto.
+    try { document.fonts && document.fonts.load('64px "Noto Color Emoji"', '🇯🇵😀👍'); } catch (e) {}
+  </script>
   %sveltekit.head%
   <style>
     #brand-loader {

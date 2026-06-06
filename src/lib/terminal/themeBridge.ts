@@ -152,16 +152,48 @@ export function setupTerminalThemeBridge(): () => void {
 	let _lastFontFamily: string | null = null;
 	let _lastFontSize: number | null = null;
 
+	// Color-emoji fallback chain, BUNDLED "Noto Color Emoji" first so every
+	// emoji — incl. country flags, which Windows' Segoe UI Emoji lacks —
+	// renders from the same complete Warp-level color font on all platforms
+	// (see app.html @font-face + /fonts/NotoColorEmoji.ttf). OS fonts stay as
+	// fallbacks. This is the SINGLE source of the terminal's emoji ordering —
+	// the renderer reads the string built here (manager.ts's default is
+	// overridden by the first `pushFont`).
+	const EMOJI_FALLBACK = "'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji'";
+	const DEFAULT_MONO = `'Cascadia Code','Cascadia Mono',Consolas,ui-monospace,${EMOJI_FALLBACK},monospace`;
+	const EMOJI_FAMILY_NAMES = new Set([
+		'noto color emoji',
+		'apple color emoji',
+		'segoe ui emoji',
+	]);
+
+	/// Normalize any terminal font-family string so it ends with the
+	/// canonical Noto-first emoji chain + a generic fallback. Strips any
+	/// emoji families the input already names (regardless of their order,
+	/// e.g. an old Noto-last stack) and any trailing generic, then appends
+	/// the chain — so a user-chosen mono font (which may carry no emoji
+	/// fonts at all) still gets color emoji, and a stale Noto-last stack
+	/// is corrected to Noto-first.
+	const withEmojiFallback = (family: string): string => {
+		const trimmed = family.trim();
+		if (trimmed === '') return DEFAULT_MONO;
+		const kept = trimmed
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean)
+			.filter((p) => {
+				const bare = p.replace(/^["']|["']$/g, '').toLowerCase();
+				return !EMOJI_FAMILY_NAMES.has(bare) && bare !== 'monospace';
+			});
+		return `${kept.join(',')},${EMOJI_FALLBACK},monospace`;
+	};
+
 	const pushFont = (family: string, size: number) => {
 		if (family === _lastFontFamily && size === _lastFontSize) return;
 		_lastFontFamily = family;
 		_lastFontSize = size;
-		
-		const resolvedFamily = family.trim() !== '' 
-			? family 
-			: "'Cascadia Code','Cascadia Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace";
-		
-		manager.setFont(resolvedFamily, size);
+
+		manager.setFont(withEmojiFallback(family), size);
 	};
 
 	// Initial push: the store fires immediately on subscribe. settings.ts's
