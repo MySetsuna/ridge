@@ -15,7 +15,7 @@
   import MinimizeButton from './MinimizeButton.svelte';
   import * as cloudAuth from './cloud/auth';
   import { cloudAuth as cloudAuthStore } from './cloud/auth';
-  import { ApiError, listDevices, type DeviceDto } from './cloud/apiClient';
+  import { ApiError, listDevices, BASE_DOMAIN, type DeviceDto } from './cloud/apiClient';
   import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from './cloud/ridgeCloudProvider';
   import { CloudHostBridge } from './cloud/cloudHostBridge';
   import { createCloudPaneSource } from './cloud/cloudPaneSource';
@@ -28,6 +28,9 @@
   // 公网入口子域 + 是否已激活设备。
   const publicDomain = $derived(cloudAuth.publicEntryDomain(cloudState));
   const hasDevice = $derived(!!cloudState.deviceToken && !!cloudState.deviceName);
+  // 用户名是激活设备/拼公网入口域名的前置。**入口在 ridge-cloud（网页账户页），
+  // 桌面端只读取**：缺用户名时引导去网页设置，绝不在桌面端再提供输入。
+  const hasUsername = $derived(!!cloudState.user?.username);
 
   // ── LAN（局域网/自建网）状态 ─────────────────────────────────────────────
   // Reflect the persisted/auto-restored state on mount (and stay in sync with
@@ -183,15 +186,49 @@
     if (!s.userToken) { devices = []; return; }
     try { const res = await listDevices(s.userToken); devices = res.devices ?? []; } catch { /* 保留上次列表 */ }
   }
-  // 在默认浏览器打开该设备专属子域（controller 入口，契约 §3 流程第 5 步）。
-  async function openPublicRemote(): Promise<void> {
-    if (!publicDomain) return;
-    const url = `https://${publicDomain}`;
+  // opener 优先在默认浏览器打开外链；不可用（纯浏览器/测试）时退回 window.open。
+  // 公网远控入口、设备子域、账户页等多处共用，集中一处避免重复。
+  async function openExternal(url: string): Promise<void> {
     try {
       const opener = await import('@tauri-apps/plugin-opener');
       await opener.openUrl(url);
     } catch {
       try { window.open(url, '_blank', 'noopener'); } catch { /* 静默 */ }
+    }
+  }
+  // 在默认浏览器打开本机专属子域（controller 入口，契约 §3 流程第 5 步）。
+  async function openPublicRemote(): Promise<void> {
+    if (!publicDomain) return;
+    await openExternal(`https://${publicDomain}`);
+  }
+  // 某云端设备的公网远控入口子域（契约 §1：{device}-{username}.{base}）。
+  // 用户名取自登录态（桌面端只读取，不提供设置）；缺用户名无法成域时返回 null。
+  function deviceRemoteUrl(name: string): string | null {
+    const username = cloudState.user?.username;
+    if (!username) return null;
+    return `https://${name}-${username}.${BASE_DOMAIN}`;
+  }
+  // 点击云端设备：在默认浏览器打开其公网远控连接。
+  async function openDeviceRemote(name: string): Promise<void> {
+    const url = deviceRemoteUrl(name);
+    if (url) await openExternal(url);
+  }
+  // §username: 用户名只能在 ridge-cloud 网页账户页设置（设置一次、不可改），桌面端
+  // 只读取。缺用户名时在浏览器打开账户页引导设置，回来后「刷新」重拉 /me 同步。
+  let refreshingUser = $state(false);
+  async function openCloudAccount(): Promise<void> {
+    await openExternal(`https://${BASE_DOMAIN}/`);
+  }
+  async function refreshCloudUser(): Promise<void> {
+    if (refreshingUser) return;
+    connectError = '';
+    refreshingUser = true;
+    try {
+      await cloudAuth.refreshMe();
+    } catch (e) {
+      connectError = e instanceof ApiError ? codeToMessage(e.code) : tr('cloud.errGeneric');
+    } finally {
+      refreshingUser = false;
     }
   }
   async function activateDevice(): Promise<void> {
@@ -418,6 +455,23 @@
           >
             <Zap class="h-4 w-4" /> {$t('cloud.enablePublic')}
           </button>
+        {:else if !hasUsername}
+          <!-- 已就绪但未设用户名：入口在 ridge-cloud（网页账户页），桌面端只引导、不提供输入 -->
+          <p class="text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloud.usernameRequiredHint')}</p>
+          <button
+            onclick={openCloudAccount}
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--rg-accent)] py-2 text-sm font-semibold text-white transition-all hover:brightness-110"
+          >
+            <ExternalLink class="h-4 w-4" /> {$t('cloud.goSetUsername')}
+          </button>
+          <button
+            onclick={refreshCloudUser}
+            disabled={refreshingUser}
+            class="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 disabled:opacity-50"
+          >
+            {#if refreshingUser}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<RefreshCw class="h-3.5 w-3.5" />{/if}
+            {$t('cloud.refreshAfterSet')}
+          </button>
         {:else if !hasDevice}
           <!-- 已就绪但未激活设备：输设备名激活 -->
           <input
@@ -540,20 +594,38 @@
       </div>
     {/if}
 
-    <!-- ⑥ 云端已注册设备（GET /devices）：本账户名下设备及在线状态 -->
+    <!-- ⑥ 云端已注册设备（GET /devices）：本账户名下设备及在线状态。
+         高亮「本机」（cloudState.deviceName）；点击任一设备在默认浏览器打开其公网远控。 -->
     {#if devices.length > 0}
       <div class="bg-[var(--rg-surface)]/50 rounded-lg p-3 space-y-2">
         <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('cloud.cloudDevicesTitle')}</h3>
         {#each devices as d (d.name)}
-          <div class="flex items-center justify-between py-1 px-1">
-            <span class="text-xs text-[var(--rg-fg)] truncate flex items-center gap-1.5">
-              <Monitor class="h-3.5 w-3.5 text-[var(--rg-fg-muted)]" /> {d.name}
+          {@const isThisMachine = d.name === cloudState.deviceName}
+          <button
+            type="button"
+            onclick={() => openDeviceRemote(d.name)}
+            disabled={!hasUsername}
+            title={$t('cloud.openDeviceRemoteTitle')}
+            class="group flex w-full items-center justify-between gap-2 rounded-md py-1.5 px-2 text-left transition-colors disabled:cursor-default disabled:opacity-60
+              {isThisMachine
+                ? 'border border-[var(--rg-accent)]/40 bg-[var(--rg-accent)]/10'
+                : 'border border-transparent hover:bg-[var(--rg-surface)]'}"
+          >
+            <span class="min-w-0 flex items-center gap-1.5">
+              <Monitor class="h-3.5 w-3.5 shrink-0 {isThisMachine ? 'text-[var(--rg-accent)]' : 'text-[var(--rg-fg-muted)]'}" />
+              <span class="truncate text-xs text-[var(--rg-fg)] {isThisMachine ? 'font-medium' : ''}">{d.name}</span>
+              {#if isThisMachine}
+                <span class="shrink-0 rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] font-medium text-[var(--rg-accent)]">{$t('cloud.thisMachine')}</span>
+              {/if}
+              {#if hasUsername}
+                <ExternalLink class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)] opacity-0 transition-opacity group-hover:opacity-100" />
+              {/if}
             </span>
-            <span class="text-[10px] flex items-center gap-1 {d.online ? 'text-green-400' : 'text-[var(--rg-fg-muted)]'}">
+            <span class="shrink-0 text-[10px] flex items-center gap-1 {d.online ? 'text-green-400' : 'text-[var(--rg-fg-muted)]'}">
               <span class="w-1.5 h-1.5 rounded-full {d.online ? 'bg-green-400' : 'bg-[var(--rg-fg-muted)]'}"></span>
               {d.online ? $t('cloud.deviceOnline') : $t('cloud.deviceOffline')}
             </span>
-          </div>
+          </button>
         {/each}
       </div>
     {/if}
