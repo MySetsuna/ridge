@@ -115,6 +115,17 @@ export async function login(email: string, password: string): Promise<CloudAuthS
   return update((s) => ({ ...s, userToken: token, user }));
 }
 
+/**
+ * 跨子域 fragment 交接落盘（方案 B）：主域登录后经 `#token=<jwt>` 回跳到租户子域，
+ * 控制端 boot 在此把 user token 写入本子域 localStorage，使 cloud 远控接线可发起。
+ *
+ * 只落 token：user 对象按需由 refreshMe()/`/me` 补齐；租户域下 username 由 hostname 提供
+ * （见 cloudControllerBoot 的 parseCloudControllerHostname），故此处无须 user 即可 boot。
+ */
+export function persistHandoffToken(token: string): void {
+  update((s) => ({ ...s, userToken: token }));
+}
+
 // ─── §2.3 浏览器登录授权（host 轮询拿 user JWT，token 不进 URL）──────────────
 
 export interface BrowserLoginProgress {
