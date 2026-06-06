@@ -68,6 +68,14 @@ let attached = $state(false);
 
 const manager = TerminalManager.instance();
 
+// §web-remote: compile-time flag for the desktop-in-browser SPA build
+// (`RIDGE_WEB_REMOTE=1 vite build`, defined in vite.config.js). When true,
+// this pane is a CONTROLLER viewing the host's PTY over the LAN-WS shim, so
+// the per-pane "re-claim my size" affordance must be available even though
+// the host-side `remoteRunning` store is false on the controller. See
+// tauriShim/core.ts — browser-only surfaces gate on this flag, not isTauri().
+const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+
 // §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
 // ArrowLeft / Home / Delete / mid-line edits preserve the buffer
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
@@ -1407,8 +1415,11 @@ function jumpToBottom() {
 
 // §multi-size: when remote control is on, the desktop and remote devices
 // share ONE PTY size. A remote device that claims/refreshes can shrink this
-// pane's grid; this button re-claims the PTY at THIS desktop pane's size and
-// forces a full repaint. Only shown while remote control is enabled.
+// pane's grid; this button re-claims the PTY at THIS pane's size and forces a
+// full repaint. Shown on the host while the remote server runs ($remoteRunning)
+// AND on the desktop-in-browser controller (WEB_REMOTE) — there fitPaneNow's
+// resize_pane tunnels over the LAN-WS shim, so it is exactly how a browser pane
+// tells the host PTY its own dimensions.
 function refreshForRemote() {
 	if (!alive || !attached) return;
 	manager.fitPaneNow(paneId);
@@ -1653,10 +1664,14 @@ function onContainerMouseDown(e: MouseEvent) {
 		</button>
 	{/if}
 
-	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while the
-	     remote server is actually RUNNING (not merely the persisted setting) —
-	     otherwise this pane is the sole viewer and fitPane already owns the size. -->
-	{#if $remoteRunning}
+	<!-- §multi-size: re-claim PTY at this pane's size + repaint. Shown when this
+	     desktop hosts a live remote server ($remoteRunning) OR when this IS the
+	     desktop-in-browser controller (WEB_REMOTE) — in both cases multiple
+	     viewers share one PTY and a viewer must be able to claim it at its own
+	     size. A lone local pane needs no button (fitPane already owns the size).
+	     On the browser controller this is the only way to push the pane's
+	     dimensions to the host PTY. -->
+	{#if $remoteRunning || WEB_REMOTE}
 		<button
 			type="button"
 			class="rg-remote-refresh"
