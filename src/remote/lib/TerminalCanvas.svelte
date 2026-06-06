@@ -27,8 +27,16 @@
 
   const td = new TextDecoder();
 
-  // Keyboard offset (mobile: pushes canvas up via transform)
+  // Keyboard offset (mobile): the canvas is pushed up by `keyboardOffset` — a
+  // DYNAMIC amount that lifts only as far as needed to keep the input cursor
+  // clear of the soft keyboard (full lift when the cursor sits at the bottom of
+  // the screen, none when it's already above the keyboard, partial in between).
+  // `keyboardHeight` is the full soft-keyboard height, used to dock the quick-key
+  // bar just above the soft keyboard regardless of the canvas's dynamic lift.
   let keyboardOffset = $state(0);
+  let keyboardHeight = $state(0);
+  const VK_BAR_HEIGHT = 96;    // approx quick-key bar height (2 rows + padding)
+  const KB_CURSOR_MARGIN = 12; // gap kept between the cursor bottom and the keyboard
 
   // Touch state. Gesture model: two-finger pan = scroll; single-finger tap =
   // focus (+ click in mouse-reporting apps); single-finger drag = selection
@@ -89,7 +97,7 @@
   export function feed(data: string) {
     if (ctrl) ctrl.feed(new TextEncoder().encode(data));
   }
-  export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); }
+  export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); scheduleKbRecompute(); }
   export function applyDelta(bytes: Uint8Array) { ctrl?.applyDelta(bytes); }
   export function resizeKernel(rows: number, cols: number) {
     if (ctrl) {
@@ -104,6 +112,10 @@
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     ctrl?.applyDelta(bytes);
   }
+  /** Wipe the local kernel (screen + scrollback) so the next pane's content can't
+   *  bleed in. Called by the host on pane switch / reconnect; the new pane's
+   *  scrollback replay repaints a clean, isolated view. */
+  export function resetForSwitch() { ctrl?.resetForSwitch(); }
 
   // ── Virtual Keyboard ──
   function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
@@ -519,12 +531,54 @@
   // rect + current DPR and, when the grid changed, claims the new size on the
   // host (full reflow). It's debounced + idempotent, so keyboard show/hide that
   // doesn't change the grid is a cheap no-op.
+  // ── Dynamic keyboard avoidance ──
+  // Lift the canvas only as far as needed to keep the input cursor clear of the
+  // soft keyboard: full lift when the cursor sits at the bottom of the screen,
+  // none when it's already above the keyboard, partial in between.
+  function computeCanvasOffset(kbHeight: number): number {
+    if (kbHeight <= 0) return 0;
+    const vv = window.visualViewport;
+    if (!vv || !ctrl || !canvasEl) return kbHeight;
+    const cur = ctrl.getCursorPixel();
+    if (!cur) return kbHeight; // cursor position unknown → safe full lift
+    // Canvas natural top in viewport coords (undo the current upward transform).
+    const rect = canvasEl.getBoundingClientRect();
+    const naturalTop = rect.top + keyboardOffset;
+    const cursorBottom = naturalTop + cur.y + cur.h;
+    // Obstruction top = soft-keyboard top (vv.height), minus the quick-key bar
+    // height when it's shown (the bar sits above the soft keyboard).
+    const obstructionTop = (vv.height || 0) - (showKeyboard ? VK_BAR_HEIGHT : 0);
+    const need = cursorBottom + KB_CURSOR_MARGIN - obstructionTop;
+    return Math.max(0, Math.min(kbHeight, need));
+  }
+
+  function updateKeyboardMetrics() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const kh = Math.max(0, window.innerHeight - (vv.height || 0));
+    const wasUp = keyboardHeight > 0;
+    keyboardHeight = kh;
+    keyboardOffset = computeCanvasOffset(kh);
+    // §B keyboard just raised → snap to the live grid so the prompt is visible.
+    if (kh > 0 && !wasUp) ctrl?.scrollToBottom();
+  }
+
+  // Recompute the dynamic offset when the cursor likely moved (input / output)
+  // while the keyboard is up — visualViewport 'resize' only fires on show/hide.
+  let _kbRaf = 0;
+  function scheduleKbRecompute() {
+    if (keyboardHeight <= 0 || _kbRaf) return;
+    _kbRaf = requestAnimationFrame(() => {
+      _kbRaf = 0;
+      keyboardOffset = computeCanvasOffset(keyboardHeight);
+    });
+  }
+
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     function onViewportResize() {
-      const kh = window.innerHeight - (vv!.height || 0);
-      keyboardOffset = kh > 0 ? kh : 0;
+      updateKeyboardMetrics();
       ctrl?.requestResize();
     }
     vv.addEventListener('resize', onViewportResize);
@@ -582,7 +636,7 @@
 </div>
 
 {#if showKeyboard}
-  <VirtualKeyboard {keyboardOffset} onKey={handleVirtualKey} onArm={focusInput} />
+  <VirtualKeyboard keyboardOffset={keyboardHeight} onKey={handleVirtualKey} onArm={focusInput} />
 {/if}
 
 <style>

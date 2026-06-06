@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
   import TopBar from './TopBar.svelte';
@@ -27,6 +27,64 @@
   // mounts (the theme push usually arrives before the terminal exists).
   let kernelTheme: Record<string, string> | null = $state(null);
   let backendName = $state('Canvas2D');
+
+  // §terminal-isolation + scrollback-cache: the local kernel is a single shared
+  // instance, so switching panes MUST wipe it (resetForSwitch) — otherwise the
+  // previous pane's scrollback bleeds into the new one (上滚串台). We also keep
+  // each pane's raw byte stream so a switch repaints instantly from cache, and
+  // mirror the active pane to sessionStorage so a reload restores instantly
+  // before the host reconnects. The host re-sends ≤64KB scrollback on
+  // (re)subscribe; we tail-match it against the cache to avoid double-painting.
+  const PANE_BUF_CAP = 256 * 1024;
+  const SS_CAP = 48 * 1024;
+  const paneBuffers = new Map<string, Uint8Array>();
+  let subscribedPaneId: string | null = null;
+  let expectReplayPane: string | null = null;
+  let ssMirrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function ssKey(id: string) { return `rg-remote-sb:${id}`; }
+  function bytesToB64(b: Uint8Array): string {
+    let s = '';
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s);
+  }
+  function b64ToBytes(s: string): Uint8Array {
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function bytesEndsWith(hay: Uint8Array, tail: Uint8Array): boolean {
+    if (tail.length === 0) return true;
+    if (tail.length > hay.length) return false;
+    const off = hay.length - tail.length;
+    for (let i = 0; i < tail.length; i++) if (hay[off + i] !== tail[i]) return false;
+    return true;
+  }
+  function appendPaneBuffer(id: string, data: Uint8Array): void {
+    const prev = paneBuffers.get(id);
+    let next: Uint8Array;
+    if (!prev) { next = data.slice(); }
+    else { next = new Uint8Array(prev.length + data.length); next.set(prev); next.set(data, prev.length); }
+    if (next.length > PANE_BUF_CAP) next = next.slice(next.length - PANE_BUF_CAP);
+    paneBuffers.set(id, next);
+  }
+  function loadPaneFromSession(id: string): Uint8Array | null {
+    try { const s = sessionStorage.getItem(ssKey(id)); return s ? b64ToBytes(s) : null; }
+    catch { return null; }
+  }
+  function scheduleSessionMirror(id: string) {
+    if (ssMirrorTimer) return;
+    ssMirrorTimer = setTimeout(() => {
+      ssMirrorTimer = null;
+      const buf = paneBuffers.get(id);
+      if (!buf) return;
+      try {
+        const tail = buf.length > SS_CAP ? buf.subarray(buf.length - SS_CAP) : buf;
+        sessionStorage.setItem(ssKey(id), bytesToB64(tail));
+      } catch { /* quota exceeded / disabled — ignore */ }
+    }, 600);
+  }
 
   function applyTheme(colors: Record<string, string>) {
     applyThemeVars(colors);
@@ -147,9 +205,26 @@
       }
     });
     ws.onRawBytes((paneId, data) => {
-      if (paneId === activePaneId) {
+      // The host streams only the subscribed (active) pane; ignore stragglers.
+      if (paneId !== activePaneId) return;
+      if (expectReplayPane === paneId) {
+        // First chunk after (re)subscribe = the host's on-subscribe scrollback
+        // replay. If our cache already ends with it we pre-painted it on switch
+        // → drop the redundant replay. Otherwise the pane changed while we were
+        // away (or the cache was empty/short) → wipe + repaint authoritatively.
+        expectReplayPane = null;
+        const cached = paneBuffers.get(paneId);
+        if (cached && bytesEndsWith(cached, data)) return;
+        canvasRef?.resetForSwitch();
         canvasRef?.feedUtf8(data);
+        paneBuffers.set(paneId, data.length > PANE_BUF_CAP ? data.slice(data.length - PANE_BUF_CAP) : data.slice());
+        scheduleSessionMirror(paneId);
+        return;
       }
+      // Live output.
+      appendPaneBuffer(paneId, data);
+      canvasRef?.feedUtf8(data);
+      scheduleSessionMirror(paneId);
     });
     ws.onMetadata((paneId, title, cwd) => {
       if (paneId === activePaneId) {
@@ -175,9 +250,19 @@
     // a correct, current view instead of appending under stale content, then
     // re-establish the subscription, workspace state, and viewport size claim.
     ws.onReconnect(() => {
-      canvasRef?.feed('\x1bc');
+      // Reconnect opens a fresh host socket with no pane subscription; the local
+      // kernel still shows the stale pre-drop screen. Wipe it, pre-paint the
+      // cache for instant feedback, then re-subscribe — the host replays the
+      // pane's scrollback, reconciled in onRawBytes (expectReplayPane).
+      canvasRef?.resetForSwitch();
+      const pid = activePaneId;
+      if (pid) {
+        const cached = paneBuffers.get(pid);
+        if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
+        expectReplayPane = pid;
+        ws.subscribePane(pid);
+      }
       ws.listPanes();
-      if (activePaneId) ws.subscribePane(activePaneId);
       refreshWorkspaces();
       refreshActivePane();
     });
@@ -186,10 +271,29 @@
     return () => { ws.disconnect(); };
   });
 
+  // Pane switch: isolate the kernel + (re)subscribe. Reacts to activePaneId only;
+  // canvas ops run untracked so the canvas's async mount doesn't re-trigger a
+  // re-subscribe (which would double the host scrollback replay).
   $effect(() => {
-    if (activePaneId) {
-      ws.subscribePane(activePaneId);
-    }
+    const pid = activePaneId;
+    if (!pid) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
+    untrack(() => {
+      if (pid === subscribedPaneId) return;
+      subscribedPaneId = pid;
+      // §isolation: wipe the kernel so the previous pane can't bleed into this one.
+      canvasRef?.resetForSwitch();
+      // Instant pre-paint from cache (in-memory; else sessionStorage on reload).
+      let cached = paneBuffers.get(pid);
+      if (!cached) {
+        const restored = loadPaneFromSession(pid);
+        if (restored) { paneBuffers.set(pid, restored); cached = restored; }
+      }
+      if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
+      // The host replays this pane's scrollback on subscribe — reconcile it
+      // against the cache in onRawBytes to avoid double-painting.
+      expectReplayPane = pid;
+      ws.subscribePane(pid);
+    });
   });
 
   $effect(() => {
