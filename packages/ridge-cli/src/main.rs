@@ -25,6 +25,7 @@ mod e2ee;
 mod envelope;
 mod fs_reuse;
 mod ice;
+mod login_flow;
 mod mux;
 mod protocol;
 mod pty;
@@ -58,6 +59,11 @@ enum Command {
     /// docs/plans/rdg-interactive-tui-and-lan.md）。
     Tui(TuiArgs),
 
+    /// 账号密码登录并直接激活本机：邮箱+密码登录 → （按需设用户名）→ 绑定设备，
+    /// 拿到 device 凭据写入 ~/.config/ridge/auth.json。免去设备码 + 浏览器回环。
+    /// 带 `--daemon` 时激活后直接进入守护。
+    Login(LoginArgs),
+
     /// 远程控制：配对（--enable）或后台守护（--daemon）。
     Remote(RemoteArgs),
 
@@ -80,6 +86,25 @@ struct TuiArgs {
     /// 会话 shell 的工作目录（默认 $HOME / 当前目录）。
     #[arg(long)]
     cwd: Option<String>,
+}
+
+#[derive(Args)]
+struct LoginArgs {
+    /// 激活成功后直接进入守护（等价于随后再跑 `rdg remote --daemon`）。
+    #[arg(long)]
+    daemon: bool,
+
+    /// 指定要拉起的 shell（仅在 --daemon 时生效）。
+    #[arg(long)]
+    shell: Option<String>,
+
+    /// 会话 shell 的工作目录（仅在 --daemon 时生效）。
+    #[arg(long)]
+    cwd: Option<String>,
+
+    /// fs 服务根沙箱（仅在 --daemon 时生效，见 `remote --daemon` 的 --root）。
+    #[arg(long, env = "RIDGE_REMOTE_ROOT")]
+    root: Option<String>,
 }
 
 #[derive(Args)]
@@ -156,6 +181,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Tui(args)) => tui::run_local(args.shell, args.cwd).await,
+        Some(Command::Login(args)) => run_login(args).await,
         Some(Command::Remote(args)) => run_remote(args).await,
         Some(Command::Connect(args)) => {
             if args.probe {
@@ -171,7 +197,7 @@ async fn main() -> Result<()> {
                 tui::run_local(None, None).await
             } else {
                 eprintln!(
-                    "用法：rdg [tui|remote|tmux]。无子命令时在交互终端进入 TUI。\n详见 `rdg --help`。"
+                    "用法：rdg [tui|login|remote|connect|tmux]。无子命令时在交互终端进入 TUI。\n详见 `rdg --help`。"
                 );
                 Ok(())
             }
@@ -223,6 +249,18 @@ fn gen_token() -> String {
             std::char::from_digit(nibble as u32, 16).unwrap_or('0')
         })
         .collect()
+}
+
+/// 账号密码登录 + 自助激活本机（替代设备码浏览器回环）。成功后写入设备凭据；
+/// 带 `--daemon` 则直接进入守护。
+async fn run_login(args: LoginArgs) -> Result<()> {
+    let client = reqwest::Client::builder().build()?;
+    let auth = login_flow::run_login(&client).await?;
+    if args.daemon {
+        tracing::info!(target: "ridge_cli", device = %auth.device_name, "activation complete; entering daemon");
+        return daemon::run(args.shell, args.cwd, args.root).await;
+    }
+    Ok(())
 }
 
 async fn run_remote(args: RemoteArgs) -> Result<()> {
