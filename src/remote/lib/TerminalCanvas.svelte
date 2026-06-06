@@ -5,11 +5,15 @@
   import VirtualKeyboard from './VirtualKeyboard.svelte';
   import { anyMod, consumeMods } from './modState.svelte';
 
-  let { paneId, onStdin, onResize, showKeyboard = false, backendName = $bindable('Canvas2D') }: {
+  let { paneId, onStdin, onResize, showKeyboard = false, selectionMode = false, backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     showKeyboard?: boolean;
+    // §selection: when on, single-finger drag selects (Shell: kernel selection +
+    // copy pill; TUI: forwards mouse so the TUI runs its own selection). When
+    // off, single-finger drag scrolls and never selects (two-finger always scrolls).
+    selectionMode?: boolean;
     backendName?: string;
   } = $props();
 
@@ -45,12 +49,21 @@
   let touchStartY = 0;
   let touchStartX = 0;
   let touchScrollAccum = 0;
+  let touchLastY = 0;
   let isTwoFinger = false;
   let twoFingerLastY = 0;
-  let singleDragging = false;
+  let singleDragging = false;   // selectionMode OFF: a single-finger scroll drag
   let touchStartTime = 0;
   const TOUCH_DRAG_THRESHOLD_PX = 8;
   const TOUCH_TAP_MAX_MS = 250;
+
+  // §selection drag state.
+  let selDragging = false;                 // a selection drag is in progress
+  let hasSelectionState = $state(false);    // drives the floating copy pill (Shell only)
+  let lastSelCell: { row: number; col: number } | null = null;
+  let edgeScrollTimer: ReturnType<typeof setInterval> | null = null;
+  let edgeScrollDir = 0;                    // -1 = up, +1 = down, 0 = none
+  const EDGE_ZONE_PX = 48;
 
   onMount(async () => {
     if (!canvasEl || !containerEl) return;
@@ -66,7 +79,18 @@
   });
 
   function focusInput() {
-    hiddenInput?.focus({ preventScroll: true });
+    const el = hiddenInput;
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    // §A iOS sometimes drops focus on the tiny invisible textarea — the soft
+    // keyboard flashes open then closes (needed a second tap). Re-assert focus on
+    // the next frame and give it a caret (setSelectionRange) so the keyboard
+    // reliably stays up even when nothing is selected / the field is empty.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      if (document.activeElement !== el) el.focus({ preventScroll: true });
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignore */ }
+    });
   }
 
   /** Park the hidden textarea at the cursor so the IME candidate window shows
@@ -80,7 +104,10 @@
     hiddenInput.style.height = `${Math.round(p.h)}px`;
   }
 
-  onDestroy(() => { ctrl?.destroy(); });
+  onDestroy(() => { stopEdgeScrollTimer(); ctrl?.destroy(); });
+
+  // §A raise the soft keyboard when the user opens the quick-key bar.
+  $effect(() => { if (showKeyboard) focusInput(); });
 
   let ro: ResizeObserver | undefined;
   onMount(() => {
@@ -151,10 +178,50 @@
     return (e.touches[0].clientY + e.touches[1].clientY) / 2;
   }
 
+  // ── Selection (explicit selectionMode) ──
+
+  /** While selecting near the top/bottom edge, keep scrolling so the selection
+   *  can extend past the visible area; re-extend to the last finger cell each tick. */
+  function startEdgeScroll(dir: number) {
+    if (edgeScrollDir === dir) return;
+    edgeScrollDir = dir;
+    if (edgeScrollTimer) { clearInterval(edgeScrollTimer); edgeScrollTimer = null; }
+    if (dir === 0) return;
+    edgeScrollTimer = setInterval(() => {
+      if (!ctrl || edgeScrollDir === 0) return;
+      if (edgeScrollDir < 0) ctrl.scrollUp(1); else ctrl.scrollDown(1);
+      if (lastSelCell && !ctrl.isMouseReporting()) ctrl.extendSelection(lastSelCell.row, lastSelCell.col);
+    }, 60);
+  }
+  function stopEdgeScrollTimer() {
+    if (edgeScrollTimer) { clearInterval(edgeScrollTimer); edgeScrollTimer = null; }
+    edgeScrollDir = 0;
+  }
+
+  /** Abort an in-progress selection drag (e.g. a second finger landed → scroll). */
+  function cancelSelectionDrag() {
+    selDragging = false;
+    stopEdgeScrollTimer();
+    lastSelCell = null;
+    if (ctrl && !ctrl.isMouseReporting()) { ctrl.clearSelection(); hasSelectionState = false; }
+  }
+
+  /** Copy the current (Shell) selection to the clipboard and clear it. */
+  async function copyAndClear() {
+    if (!ctrl) return;
+    const text = ctrl.getSelectionText();
+    if (text) { try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ } }
+    ctrl.clearSelection();
+    hasSelectionState = false;
+  }
+
   function handleTouchStart(e: TouchEvent) {
     if (!ctrl) return;
-    if (e.touches.length === 2) {
-      // Two fingers → pan-scroll. Track the centroid; suppress native pan/zoom.
+    if (e.touches.length >= 2) {
+      // Two fingers → pan-scroll ONLY. Cancel any in-progress single-finger
+      // selection so a finger-down-then-second-finger never leaves a stray
+      // selection (§C: two-finger must never select).
+      if (selDragging) cancelSelectionDrag();
       isTwoFinger = true;
       singleDragging = false;
       twoFingerLastY = twoFingerCentroidY(e);
@@ -165,9 +232,11 @@
     if (e.touches.length !== 1) return;
     touchStartY = e.touches[0].clientY;
     touchStartX = e.touches[0].clientX;
+    touchLastY = e.touches[0].clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
     singleDragging = false;
+    selDragging = false;
   }
 
   function handleTouchMove(e: TouchEvent) {
@@ -188,35 +257,66 @@
     const t = e.touches[0];
     const cell = ctrl.clientToCell(t.clientX, t.clientY);
     if (!cell) return;
-    // Single-finger drag = selection. Begin once past the movement threshold so
-    // a stationary tap still registers as a tap, not a zero-length selection.
-    if (!singleDragging) {
-      const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
-      if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
-      singleDragging = true;
-      const start = ctrl.clientToCell(touchStartX, touchStartY) ?? cell;
+    const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
+
+    if (selectionMode) {
+      // §D Selection drag: Shell → kernel selection (+ copy pill); TUI → forward
+      // mouse press/motion so the TUI program runs its own selection.
+      if (!selDragging) {
+        if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
+        selDragging = true;
+        const start = ctrl.clientToCell(touchStartX, touchStartY) ?? cell;
+        if (ctrl.isMouseReporting()) {
+          const b = ctrl.encodeMouse(start.row, start.col, 0, 0, false, false, false);
+          if (b.length > 0) onStdin(td.decode(b));
+        } else {
+          ctrl.startSelection(start.row, start.col);
+        }
+      }
+      e.preventDefault();
+      lastSelCell = cell;
       if (ctrl.isMouseReporting()) {
-        // Forward a mouse press at the drag origin — the TUI owns the selection.
-        const b = ctrl.encodeMouse(start.row, start.col, 0, 0, false, false, false);
+        const b = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // motion w/ button
         if (b.length > 0) onStdin(td.decode(b));
       } else {
-        ctrl.startSelection(start.row, start.col);
+        ctrl.extendSelection(cell.row, cell.col);
+        hasSelectionState = true;
       }
+      // §D Edge auto-scroll while selecting.
+      const rect = canvasEl?.getBoundingClientRect();
+      if (rect) {
+        if (t.clientY < rect.top + EDGE_ZONE_PX) startEdgeScroll(-1);
+        else if (t.clientY > rect.bottom - EDGE_ZONE_PX) startEdgeScroll(1);
+        else stopEdgeScrollTimer();
+      }
+      return;
+    }
+
+    // §C selectionMode OFF: single-finger drag = scroll, never select.
+    if (!singleDragging) {
+      if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
+      singleDragging = true;
+      touchScrollAccum = 0;
+      touchLastY = t.clientY;
     }
     e.preventDefault();
-    if (ctrl.isMouseReporting()) {
-      const b = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // motion w/ button
-      if (b.length > 0) onStdin(td.decode(b));
-    } else {
-      ctrl.extendSelection(cell.row, cell.col);
+    touchScrollAccum += touchLastY - t.clientY;
+    touchLastY = t.clientY;
+    if (Math.abs(touchScrollAccum) > 24) {
+      touchWheel(touchScrollAccum, t.clientX, t.clientY);
+      touchScrollAccum = 0;
     }
   }
 
   function handleTouchEnd(e: TouchEvent) {
     if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; return; }
     const touch = e.changedTouches[0];
-    if (singleDragging) {
-      singleDragging = false;
+    // §D End a selection drag: TUI → mouse release; Shell → finalize selection
+    // (the copy pill then offers copy). Edge auto-scroll stops.
+    if (selDragging) {
+      selDragging = false;
+      stopEdgeScrollTimer();
+      lastSelCell = null;
       const cell = touch ? ctrl?.clientToCell(touch.clientX, touch.clientY) : null;
       if (ctrl?.isMouseReporting()) {
         if (cell) {
@@ -225,12 +325,23 @@
         }
       } else {
         ctrl?.endSelection();
+        hasSelectionState = !!ctrl?.hasSelection();
       }
       return;
     }
-    // Tap: focus (raise the soft keyboard) + click-through in mouse-reporting apps.
+    // §C A single-finger scroll drag (selectionMode off) — just end it.
+    if (singleDragging) { singleDragging = false; return; }
+    // Tap.
     const elapsed = Date.now() - touchStartTime;
     if (elapsed < TOUCH_TAP_MAX_MS && ctrl) {
+      // §D Light tap clears an existing selection (and re-raises the keyboard).
+      if (hasSelectionState || ctrl.hasSelection()) {
+        ctrl.clearSelection();
+        hasSelectionState = false;
+        focusInput();
+        return;
+      }
+      // Otherwise: focus (raise the soft keyboard) + click-through in TUI apps.
       if (touch) {
         const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
         if (cell && ctrl.isMouseReporting()) {
@@ -491,6 +602,7 @@
     } else if (mouseSelecting) {
       mouseSelecting = false;
       ctrl.endSelection();
+      hasSelectionState = !!ctrl.hasSelection();
     }
   }
 
@@ -633,6 +745,18 @@
     onfocus={() => ctrl?.setFocused(true)}
     onblur={() => ctrl?.setFocused(false)}
   ></textarea>
+
+  <!-- §D Floating copy pill — shown while a Shell-mode selection exists. Stops
+       touch propagation so tapping it copies instead of clearing the selection
+       (the container's tap handler clears). -->
+  {#if hasSelectionState}
+    <button
+      class="copy-pill"
+      onclick={copyAndClear}
+      ontouchstart={(e) => e.stopPropagation()}
+      ontouchend={(e) => e.stopPropagation()}
+    >{$t('mobile.copy')}</button>
+  {/if}
 </div>
 
 {#if showKeyboard}
@@ -650,4 +774,6 @@
     opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
     background:transparent;color:transparent;caret-color:transparent;outline:none;font:inherit}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px}
+  .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
+  .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}
 </style>
