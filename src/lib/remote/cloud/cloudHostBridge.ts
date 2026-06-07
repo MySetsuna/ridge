@@ -65,6 +65,14 @@ const JSON_RPC_METHOD_NOT_FOUND = -32601;
 const JSON_RPC_INTERNAL_ERROR = -32603;
 
 /**
+ * SECURITY (audit #3): 单桥 `totp-verify` 失败上限。达到后锁死本连接的 TOTP 通道
+ * （后续 `totp-verify` 一律回 `{ok:false,locked:true}` 不再调校验器），杜绝经永开的
+ * CONTROL 通道对 6 位码（±90s 窗口）爆破。重连建新桥 / `reset()` 后才清零（硬上限，
+ * 无指数退避——爆破面已封死，无需更复杂的退避）。
+ */
+const MAX_TOTP_ATTEMPTS = 5;
+
+/**
  * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
  * 返回任意 result；抛错则映射成 JSON-RPC error。
  */
@@ -168,6 +176,11 @@ export class CloudHostBridge {
    *   - 未注入 `totpVerifier` ⇒ 默认 true（向后兼容，不门控）。
    */
   private verified: boolean;
+  /**
+   * SECURITY (audit #3): 本连接累计 TOTP 失败次数；≥ {@link MAX_TOTP_ATTEMPTS} 即锁死
+   * TOTP 通道（防 CONTROL 通道爆破）。`reset()` 清零。
+   */
+  private totpFailures = 0;
 
   constructor(config: CloudHostBridgeConfig) {
     this.invoke = config.invoke;
@@ -282,6 +295,17 @@ export class CloudHostBridge {
       this.sendSessionControl({ t: 'totp-result', ok: true });
       return;
     }
+    // 已通过：不再消耗尝试次数（幂等放行）。
+    if (this.verified) {
+      this.sendSessionControl({ t: 'totp-result', ok: true });
+      return;
+    }
+    // SECURITY (audit #3): 失败次数达上限 → 锁死，不再调校验器（防 CONTROL 通道爆破）。
+    if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
+      this.log('warn', 'TOTP locked out (too many failed attempts); rejecting');
+      this.sendSessionControl({ t: 'totp-result', ok: false, locked: true });
+      return;
+    }
     let ok = false;
     try {
       ok = await this.totpVerifier(code);
@@ -289,8 +313,14 @@ export class CloudHostBridge {
       this.log('error', 'TOTP verifier threw; treating as failed', e);
       ok = false;
     }
-    if (ok) this.verified = true;
-    this.sendSessionControl({ t: 'totp-result', ok });
+    if (ok) {
+      this.verified = true;
+    } else {
+      // SECURITY (audit #3): 每次失败累加；达上限后本桥后续 totp-verify 直接锁死。
+      this.totpFailures += 1;
+    }
+    const locked = !ok && this.totpFailures >= MAX_TOTP_ATTEMPTS;
+    this.sendSessionControl({ t: 'totp-result', ok, ...(locked ? { locked: true } : {}) });
   }
 
   /**
@@ -506,6 +536,10 @@ export class CloudHostBridge {
    */
   pushPaneOutput(paneId: string, raw: Uint8Array): void {
     if (this.rejected) return;
+    // SECURITY (audit #3): never leak pane bytes before TOTP passes. handleSubscribePane
+    // already gates subscription, but guard the push path too (defense in depth) so a
+    // pre-verification race / direct caller can't emit PTY output ahead of the gate.
+    if (!this.verified) return;
     try {
       this.sendFrame(encodePaneFrame(paneId, raw));
     } catch (e) {
@@ -547,6 +581,8 @@ export class CloudHostBridge {
     this.rejected = false;
     // §4：重连须重新 TOTP 验证（注入了校验器时 re-arm 门控）。
     this.verified = !this.totpVerifier;
+    // SECURITY (audit #3): 重连清零失败计数（新桥/新连接重新获得满额尝试次数）。
+    this.totpFailures = 0;
   }
 }
 

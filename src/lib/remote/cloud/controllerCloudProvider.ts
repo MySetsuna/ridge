@@ -42,6 +42,7 @@ import {
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
+import { MAX_PANE_FRAME_BYTES } from '../../transport/remote/cloudMux';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -239,6 +240,9 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     if (!this.bindingAccepted) return;
     try {
       const plaintext = this.session.open(bytes);
+      // SECURITY (audit #4): drop oversized decrypted frames before they reach the
+      // adapter's demux/JSON.parse so a peer can't OOM/stall the UI thread.
+      if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
       this.cb.onFrame?.(plaintext);
     } catch (e: unknown) {
       // 解密/重放失败：丢弃该帧但不一定断连（契约要求拒绝该帧）。

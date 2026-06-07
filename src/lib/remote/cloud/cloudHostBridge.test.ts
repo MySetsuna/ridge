@@ -425,6 +425,106 @@ describe('CloudHostBridge — §4 cloud TOTP gate (CONTROL channel 0x12)', () =>
   });
 });
 
+describe('CloudHostBridge — §4 TOTP brute-force lockout (audit #3)', () => {
+  it('locks out after 5 failed totp-verify and stops calling the verifier', async () => {
+    const totpVerifier = vi.fn(async () => false); // always wrong
+    const rig = makeRig({ totpVerifier });
+
+    // 5 failed attempts: each returns ok:false; the 5th flips the lock on.
+    for (let i = 0; i < 5; i++) {
+      rig.sendControl({ t: 'totp-verify', code: '000000' });
+      // eslint-disable-next-line no-await-in-loop
+      await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(i + 1));
+    }
+    expect(totpVerifier).toHaveBeenCalledTimes(5);
+    // The 5th reply already carries locked:true (failures hit the cap).
+    expect(rig.sentControl()[4]).toEqual({ t: 'totp-result', ok: false, locked: true });
+
+    // A 6th attempt is rejected WITHOUT invoking the verifier (brute-force closed).
+    rig.sendControl({ t: 'totp-verify', code: '111111' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(6));
+    expect(totpVerifier).toHaveBeenCalledTimes(5); // unchanged — not consulted
+    expect(rig.sentControl()[5]).toEqual({ t: 'totp-result', ok: false, locked: true });
+  });
+
+  it('does not consume attempts once verified (idempotent pass)', async () => {
+    const totpVerifier = vi.fn(async (code: string) => code === '123456');
+    const rig = makeRig({ totpVerifier });
+
+    rig.sendControl({ t: 'totp-verify', code: '123456' }); // pass
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: true });
+
+    // A later (e.g. duplicate) totp-verify still says ok and never re-runs the verifier.
+    rig.sendControl({ t: 'totp-verify', code: 'whatever' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(2));
+    expect(rig.sentControl()[1]).toEqual({ t: 'totp-result', ok: true });
+    expect(totpVerifier).toHaveBeenCalledTimes(1); // not consulted again
+  });
+
+  it('a correct code BEFORE the cap still passes (lockout only after N failures)', async () => {
+    const totpVerifier = vi.fn(async (code: string) => code === '123456');
+    const invoke = vi.fn(async () => 'ran');
+    const rig = makeRig({ invoke, totpVerifier });
+
+    // 4 wrong, then the correct one (still under the 5-failure cap).
+    for (let i = 0; i < 4; i++) {
+      rig.sendControl({ t: 'totp-verify', code: '000000' });
+      // eslint-disable-next-line no-await-in-loop
+      await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(i + 1));
+    }
+    rig.sendControl({ t: 'totp-verify', code: '123456' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(5));
+    expect(rig.sentControl()[4]).toEqual({ t: 'totp-result', ok: true });
+
+    // Verified → business invokes flow.
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists' });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+  });
+
+  it('clears the lockout on reset (reconnect gets fresh attempts)', async () => {
+    const totpVerifier = vi.fn(async () => false);
+    const rig = makeRig({ totpVerifier });
+
+    for (let i = 0; i < 5; i++) {
+      rig.sendControl({ t: 'totp-verify', code: '000000' });
+      // eslint-disable-next-line no-await-in-loop
+      await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(i + 1));
+    }
+    expect(totpVerifier).toHaveBeenCalledTimes(5);
+
+    rig.bridge.reset();
+
+    // After reset, the verifier is consulted again (counter zeroed).
+    rig.sendControl({ t: 'totp-verify', code: '000000' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(6));
+    expect(totpVerifier).toHaveBeenCalledTimes(6);
+  });
+
+  it('pushPaneOutput never emits pane bytes before TOTP verification (verified guard)', () => {
+    const rig = makeRig({ totpVerifier: vi.fn(async () => true) });
+    // Direct push before any verification → must be dropped (verified=false).
+    rig.bridge.pushPaneOutput('pane-1', new TextEncoder().encode('secret pty'));
+    expect(rig.sentPane()).toHaveLength(0);
+  });
+
+  it('pushPaneOutput emits once verified', async () => {
+    const rig = makeRig({ totpVerifier: vi.fn(async () => true) });
+    rig.sendControl({ t: 'totp-verify', code: '123456' });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+
+    rig.bridge.pushPaneOutput('pane-1', new TextEncoder().encode('pty'));
+    expect(rig.sentPane()).toHaveLength(1);
+    expect(rig.sentPane()[0].paneId).toBe('pane-1');
+  });
+
+  it('pushPaneOutput emits with no verifier configured (backward compat, no gating)', () => {
+    const rig = makeRig(); // no totpVerifier → verified=true from construction
+    rig.bridge.pushPaneOutput('pane-1', new TextEncoder().encode('pty'));
+    expect(rig.sentPane()).toHaveLength(1);
+  });
+});
+
 describe('toJsonRpcError (exported helper)', () => {
   it('passes a structured core error through, dropping undefined data', () => {
     expect(toJsonRpcError({ code: 1001, message: 'denied' })).toEqual({

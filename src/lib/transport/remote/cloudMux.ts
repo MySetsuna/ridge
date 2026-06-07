@@ -47,6 +47,16 @@ export const CHANNEL = {
 /** Max bytes a paneId may occupy on the wire (1-byte length prefix). */
 export const MAX_PANE_ID_BYTES = 255;
 
+// SECURITY (audit #4): cap a decrypted plaintext frame's size BEFORE it is
+// JSON-parsed / TextDecoder-decoded. A connected peer can otherwise send an
+// arbitrarily large frame and OOM / stall the UI thread. Two caps because the
+// channels differ: JSON/CONTROL envelopes are small (control / invoke), while
+// PANE_RAW carries bursty PTY output that can legitimately be larger.
+/** Max bytes for a JSON (0x11) / CONTROL (0x12) frame — control envelopes are small. */
+export const MAX_JSON_FRAME_BYTES = 4 * 1024 * 1024; // 4 MiB
+/** Max bytes for a PANE_RAW (0x10) frame — PTY bursts may be larger than control. */
+export const MAX_PANE_FRAME_BYTES = 16 * 1024 * 1024; // 16 MiB
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -110,18 +120,25 @@ export function demuxFrame(frame: Uint8Array): DemuxResult {
   const tag = frame[0];
 
   if (tag === CHANNEL.JSON) {
+    // SECURITY (audit #4): drop oversized JSON frames before the expensive
+    // TextDecoder/JSON.parse (match the "drop bad frame" stance — do not throw).
+    if (frame.length > MAX_JSON_FRAME_BYTES) return { kind: 'unknown', tag };
     const text = textDecoder.decode(frame.subarray(1));
     const json: unknown = JSON.parse(text); // caller catches parse errors
     return { kind: 'json', json };
   }
 
   if (tag === CHANNEL.CONTROL) {
+    // SECURITY (audit #4): same size cap as the JSON business channel.
+    if (frame.length > MAX_JSON_FRAME_BYTES) return { kind: 'unknown', tag };
     const text = textDecoder.decode(frame.subarray(1));
     const json: unknown = JSON.parse(text); // caller catches parse errors
     return { kind: 'control', json };
   }
 
   if (tag === CHANNEL.PANE_RAW) {
+    // SECURITY (audit #4): drop oversized pane-raw frames (larger cap than JSON).
+    if (frame.length > MAX_PANE_FRAME_BYTES) return { kind: 'unknown', tag };
     // Need at least the tag + the length byte.
     if (frame.length < 2) return { kind: 'unknown', tag };
     const idLen = frame[1];

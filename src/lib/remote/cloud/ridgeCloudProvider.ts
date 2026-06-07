@@ -36,6 +36,7 @@ import {
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
+import { MAX_PANE_FRAME_BYTES } from '../../transport/remote/cloudMux';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -343,6 +344,9 @@ export class RidgeCloudHost {
     if (!conn.session || !conn.bridge) return;
     try {
       const plaintext = conn.session.open(bytes);
+      // SECURITY (audit #4): drop oversized decrypted frames before demux/JSON.parse
+      // so a connected peer can't OOM/stall the UI thread (match "drop bad frame").
+      if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
       conn.bridge.handleFrame(plaintext);
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
