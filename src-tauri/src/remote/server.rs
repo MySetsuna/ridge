@@ -1283,6 +1283,8 @@ async fn handle_ws(
                                 Ok(())
                             }
                             Some("list-panes") => {
+                                // Self-heal: drop PTYs/pending no longer in the tree before listing.
+                                crate::commands::terminal::reap_orphan_panes_all(&ctx.state).await;
                                 let pane_list = {
                                     let workspaces = ctx.state.workspaces.read();
                                     let Some(ws) = workspaces.get(&active_ws_id) else {
@@ -1933,6 +1935,8 @@ async fn handle_ws(
                         match structural {
                             Ok(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id }) => {
                                 if workspace_id == active_ws_id {
+                                    // Self-heal orphaned PTYs/pending before re-enumerating.
+                                    crate::commands::terminal::reap_orphan_panes_all(&ctx.state).await;
                                     // Re-enumerate panes for this workspace and push to client.
                                     let pane_list = {
                                         let workspaces = ctx.state.workspaces.read();
