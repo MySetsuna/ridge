@@ -38,7 +38,7 @@ import {
   type EphemeralKeyPair,
 } from './e2ee';
 import { getIceServers, type IceServer } from './apiClient';
-import { BASE_DOMAIN } from './apiClient';
+import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 
 /** DataChannel 标签（契约 §1.1 / §7：label="ridge"）。 */
 const DC_LABEL = 'ridge';
@@ -243,7 +243,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private openSignaling(hostDevice: string): void {
     const label = this.roomLabel(hostDevice);
     const url =
-      `wss://${label}.${this.config.baseDomain}/ws` +
+      `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
       `?token=${encodeURIComponent(this.config.userToken)}&role=controller`;
 
     let ws: WebSocket;
