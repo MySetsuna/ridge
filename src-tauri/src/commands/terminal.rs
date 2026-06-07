@@ -320,6 +320,17 @@ pub fn ensure_pane_pty_workspace(
         let ws = map
             .get(&workspace_id)
             .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+        // §orphan-guard: only ever spawn a PTY for a pane that is a CURRENT
+        // pane_tree LEAF. Every legitimate create path makes the pane a leaf first
+        // (split/restore/workspace-init add it to the tree before this is called).
+        // A pane that is NOT a leaf was closed/reaped — a stale desktop layout (or
+        // a racing rebuild) trying to (re)spawn its PTY is exactly what creates
+        // orphan terminals/pending that diverge from the tree and re-appear after
+        // reap. Skip silently so the orphan can't be resurrected.
+        if !ws.pane_tree.get_all_leaves().contains(&pane_id) {
+            pty_log::create_skip(workspace_id, pane_id);
+            return Ok(());
+        }
         if ws.terminals.contains_key(&pane_id) {
             if has_explicit_launch {
                 drop(map);
@@ -1084,7 +1095,8 @@ pub(crate) async fn reap_orphan_panes(state: &AppState, workspace_id: Uuid) -> u
         set.into_iter().collect()
     };
     for id in &orphans {
-        kill_pty_if_present(state, workspace_id, *id).await;
+        // emit_pane_closed=false: reaping must be silent (see kill_pty_if_present).
+        kill_pty_if_present(state, workspace_id, *id, false).await;
     }
     orphans.len()
 }
@@ -1103,7 +1115,12 @@ pub(crate) async fn reap_orphan_panes_all(state: &AppState) -> usize {
 }
 
 /// 在指定工作区内移除并结束 PTY（若存在）。
-pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
+pub async fn kill_pty_if_present(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    emit_pane_closed: bool,
+) {
     // 领养的 native 视图：关闭 = **detach**（不写 exit、不杀子进程）。从布局树摘除并
     // 按权威后端状态重渲；native 子进程留在 registry，可再次召唤。
     let native = {
@@ -1172,13 +1189,20 @@ pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: 
         if let Some(c) = handle._child.as_mut() {
             let _ = c.kill();
         }
-        let _ = state
-            .event_tx
-            .send(crate::types::GlobalEvent::PaneClosed {
-                workspace_id,
-                pane_id,
-            })
-            .await;
+        // §reap: an orphan reap passes emit_pane_closed=false. Emitting PaneClosed
+        // makes the desktop frontend rebuild a shell for the pane; for a non-leaf
+        // orphan that rebuild re-creates the orphan (pending) → reap never converges.
+        // Explicit closes pass true (the pane is gone from the tree, so the frontend
+        // re-renders without it instead of rebuilding).
+        if emit_pane_closed {
+            let _ = state
+                .event_tx
+                .send(crate::types::GlobalEvent::PaneClosed {
+                    workspace_id,
+                    pane_id,
+                })
+                .await;
+        }
     }
 }
 
@@ -1337,7 +1361,7 @@ async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<
     if !exists {
         return Err(AppError::PaneNotFound(pane_id));
     }
-    kill_pty_if_present(&*state, wid, pane_id).await;
+    kill_pty_if_present(&*state, wid, pane_id, true).await;
     Ok(())
 }
 

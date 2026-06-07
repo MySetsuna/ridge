@@ -528,7 +528,7 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
     if !leaves.contains(&pane_id) {
         return Err(AppError::PaneNotFound(pane_id).to_string());
     }
-    terminal::kill_pty_if_present(&*state, wid, pane_id).await;
+    terminal::kill_pty_if_present(&*state, wid, pane_id, true).await;
     {
         let mut map = state.workspaces.write();
         let ws = map
@@ -701,7 +701,7 @@ pub(crate) async fn remote_close_pane(
     if !leaves.contains(&pane_id) {
         return Err(AppError::PaneNotFound(pane_id));
     }
-    terminal::kill_pty_if_present(state, ws_id, pane_id).await;
+    terminal::kill_pty_if_present(state, ws_id, pane_id, true).await;
     {
         let mut map = state.workspaces.write();
         let ws = map

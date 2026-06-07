@@ -57,14 +57,18 @@ await page.reload({ waitUntil: 'domcontentloaded' }); await sleep(2000); await p
 // create + close a pane after reconnect
 await openTree(); { const n = await page.locator('.pane-row').count(); await page.locator('.pane-new').first().evaluate((el) => el.click()); for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) await sleep(200); } await step('7 create-pane-after-reconnect');
 
-// final: deterministic reap via the manual command (independent of WS triggers),
-// then read — proves whether reap_all can actually clear every orphan.
+// final: two-pass reap. Pass1 clears orphans; pass2 must find 0 — if the
+// reap→PaneClosed→frontend-rebuild cycle still existed, pass2 would re-find them.
+const reap = async () => (await cdpCall('Runtime.evaluate', { expression: "window.__TAURI__.core.invoke('remote_reap_orphans')", awaitPromise: true, returnByValue: true }))?.result?.result?.value;
 await sleep(1500);
-const reaped = await cdpCall('Runtime.evaluate', { expression: "window.__TAURI__.core.invoke('remote_reap_orphans')", awaitPromise: true, returnByValue: true });
-log(`manual reap_all count: ${reaped?.result?.result?.value}`);
-await sleep(1000);
+const r1 = await reap();
+await sleep(1500);
+const r2 = await reap();
+log(`reap pass1=${r1}  pass2=${r2} (pass2 must be 0: no re-creation cycle)`);
+await sleep(1500);
 const finalDbg = await getDebug();
-log(`FINAL (after manual reap)    → ${fmt(finalDbg)}`);
+log(`FINAL                        → ${fmt(finalDbg)}`);
 const stillOrphan = finalDbg.some((w) => w.terminals > w.leaves || w.pending > w.leaves);
-log(`RESULT: ${stillOrphan ? 'FAIL ❌ orphan persists after reap (reap cannot clear it)' : 'PASS ✅ all orphans cleared (reap converges)'}`);
-log('done'); await ctx.close(); cdpWs.close(); process.exit(stillOrphan ? 1 : 0);
+const fail = stillOrphan || r2 > 0;
+log(`RESULT: ${fail ? 'FAIL ❌ orphan persists / re-created (cycle not broken)' : 'PASS ✅ reap converges, no re-creation cycle'}`);
+log('done'); await ctx.close(); cdpWs.close(); process.exit(fail ? 1 : 0);
