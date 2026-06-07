@@ -6,6 +6,8 @@ import { describe, it, expect } from 'vitest';
 import {
   CHANNEL,
   MAX_PANE_ID_BYTES,
+  MAX_JSON_FRAME_BYTES,
+  MAX_PANE_FRAME_BYTES,
   demuxFrame,
   encodeControlFrame,
   encodeJsonFrame,
@@ -124,5 +126,46 @@ describe('cloudMux — demux edge cases', () => {
   it('throws (caller catches) on malformed JSON', () => {
     const frame = new Uint8Array([CHANNEL.JSON, 0x7b, 0x7b]); // "{{"
     expect(() => demuxFrame(frame)).toThrow();
+  });
+});
+
+describe('cloudMux — oversized frame DoS cap (audit #4)', () => {
+  it('drops an oversized JSON (0x11) frame without parsing or throwing', () => {
+    // tag byte + a body that pushes past the JSON cap.
+    const frame = new Uint8Array(MAX_JSON_FRAME_BYTES + 1);
+    frame[0] = CHANNEL.JSON;
+    // Body is all-zero (not valid JSON) — proves we drop BEFORE JSON.parse runs
+    // (a parse attempt on this body would throw, not return 'unknown').
+    expect(demuxFrame(frame)).toEqual({ kind: 'unknown', tag: CHANNEL.JSON });
+  });
+
+  it('drops an oversized CONTROL (0x12) frame without parsing or throwing', () => {
+    const frame = new Uint8Array(MAX_JSON_FRAME_BYTES + 1);
+    frame[0] = CHANNEL.CONTROL;
+    expect(demuxFrame(frame)).toEqual({ kind: 'unknown', tag: CHANNEL.CONTROL });
+  });
+
+  it('drops an oversized PANE_RAW (0x10) frame', () => {
+    const frame = new Uint8Array(MAX_PANE_FRAME_BYTES + 1);
+    frame[0] = CHANNEL.PANE_RAW;
+    expect(demuxFrame(frame)).toEqual({ kind: 'unknown', tag: CHANNEL.PANE_RAW });
+  });
+
+  it('accepts a JSON frame exactly at the cap', () => {
+    // Build a valid-JSON body padded to exactly MAX_JSON_FRAME_BYTES total frame size.
+    const overhead = 1 + '{"p":""}'.length; // tag + JSON minus the padding string
+    const pad = 'x'.repeat(MAX_JSON_FRAME_BYTES - overhead);
+    const frame = encodeJsonFrame({ p: pad });
+    expect(frame.length).toBe(MAX_JSON_FRAME_BYTES);
+    expect(demuxFrame(frame)).toEqual({ kind: 'json', json: { p: pad } });
+  });
+
+  it('accepts a PANE_RAW frame just under the cap', () => {
+    const raw = new Uint8Array(MAX_PANE_FRAME_BYTES - 2 - 1); // tag + idLen + 1-byte id
+    raw.fill(7);
+    const frame = encodePaneFrame('p', raw);
+    expect(frame.length).toBeLessThanOrEqual(MAX_PANE_FRAME_BYTES);
+    const result = demuxFrame(frame);
+    expect(result.kind).toBe('pane');
   });
 });
