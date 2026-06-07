@@ -13,11 +13,14 @@
 //!   `OSC 633`）起始偏移扫描。
 //! - [`cwd`] —— **OSC 7** 工作目录探测。
 //! - [`title`] —— **OSC 0/1/2** 窗口标题探测。
+//! - [`chunk`] —— 把以上拼成**每块归约**（ConPTY resize 静默门 + 信号扫描），
+//!   即读循环里与 AppState 无关的核心。
 //!
 //! 这些解析器原本散落在 `engine::{cwd,title,pty}` 且 `engine` 是 `src-tauri` 的
 //! crate-private 模块，外部 crate（`ridge-cli`）不可见；下沉到 `ridge-core` 后，
 //! 无头 host 也能据此向 controller 上报 cwd / title / prompt 信号。
 
+pub mod chunk;
 pub mod cwd;
 pub mod decode;
 pub mod prompt;

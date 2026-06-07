@@ -12,9 +12,8 @@ use crate::state::AppState;
 use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
+use ridge_core::pty::cwd;
 use ridge_core::pty::decode::{flush_pending_eof, take_decoded_utf8};
-use ridge_core::pty::prompt::find_prompt_osc;
-use ridge_core::pty::{cwd, title};
 
 /// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠）。逻辑单一真源在
 /// `ridge_core::commands::process::normalize_cwd`（与 OS 探测路径同一份实现），
@@ -218,59 +217,34 @@ pub fn spawn_pty_reader(
                             if raw.is_empty() {
                                 continue;
                             }
-                            // Resize silence: while ConPTY is replaying its viewport
-                            // post-`ResizePseudoConsole`, drop bytes from BOTH scrollback
-                            // and frontend emit until the next prompt OSC (FinalTerm
-                            // OSC 133;A / VS Code OSC 633;A) tells us the shell is back
-                            // at a clean prompt. Hard timeout (800ms) auto-releases for
-                            // shells without shell-integration so we don't permanently
-                            // mute the pane.
+                            // Resize-silence gate + signal scan (ConPTY resize-replay
+                            // drop → prompt/title/cwd) is the AppState-agnostic core of
+                            // this loop, extracted to `ridge_core::pty::chunk` so the
+                            // headless host can reuse the SAME reduction. The thread,
+                            // scrollback, event routing, carryover backpressure and EOF
+                            // cleanup below stay here (AppState-bound). `data_for_cwd`/
+                            // `bytes_for_title` are no longer needed — `signals` carries
+                            // the precomputed prompt/title/cwd. Behaviour is byte-for-byte
+                            // the original gate (see chunk::process + its tests).
                             let deadline = silence_deadline.load(Ordering::Acquire);
-                            let silenced = deadline > 0 && now_epoch_ms() < deadline;
-                            let data = if silenced {
-                                match find_prompt_osc(&raw) {
-                                    Some(off) => {
-                                        // Prompt OSC found — release silence and keep
-                                        // only the post-OSC tail. Pre-OSC bytes are
-                                        // ConPTY reflow noise; dropping them is the
-                                        // whole point of this gate.
-                                        silence_deadline.store(0, Ordering::Release);
-                                        raw[off..].to_string()
-                                    }
-                                    None => {
-                                        // Still inside reflow storm; drop bytes.
-                                        // (Original outputs were already captured into
-                                        // scrollback BEFORE the resize, so this drop
-                                        // doesn't lose user-visible history.)
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                // Either never silenced, or silenced-but-timed-out.
-                                // Reset deadline opportunistically so the next iteration
-                                // doesn't redo the time math.
-                                if deadline > 0 {
-                                    silence_deadline.store(0, Ordering::Release);
-                                }
-                                raw
+                            let outcome =
+                                ridge_core::pty::chunk::process(raw, deadline, now_epoch_ms());
+                            if outcome.clear_silence {
+                                silence_deadline.store(0, Ordering::Release);
+                            }
+                            let Some(signals) = outcome.emit else {
+                                // Dropped inside the ConPTY resize-replay window.
+                                continue;
                             };
+                            let data = signals.text;
                             if data.is_empty() {
                                 continue;
                             }
-                            let data_for_cwd = data.clone();
-                            let bytes_for_title = data.as_bytes().to_vec();
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
-                            // BUG-1 follow-up: scan for shell-integration prompt
-                            // mark (FinalTerm OSC 133;A / VS Code OSC 633;A) BEFORE
-                            // the try_send below moves `data`. We only need the
-                            // boolean — the offset that find_prompt_osc returns
-                            // isn't useful here. The actual emit happens after
-                            // try_send so the cheaper `Ok` path stays hot.
-                            // NOTE: in the silence-release case `data` is the
-                            // post-OSC tail (the marker was stripped), so this
-                            // scan misses that one chunk — the frontend's 800ms
-                            // debounce fallback covers it.
-                            let prompt_seen = find_prompt_osc(&data).is_some();
+                            // Precomputed by chunk::process. NOTE: in the silence-release
+                            // case `data` is the post-OSC tail (marker stripped), so this
+                            // is false there — the frontend's 800ms debounce covers it.
+                            let prompt_seen = signals.prompt_seen;
                             // BUG-3: non-blocking try_send + carryover. If the
                             // global event_rx is full, stash the (combined)
                             // payload back into carryover for retry on the
@@ -313,12 +287,10 @@ pub fn spawn_pty_reader(
                                         .await;
                                 });
                             }
-                            // T1：扫描 OSC 0/1/2 标题序列。shell 提示符、Claude Code、
-                            // ssh 等都用这条机制设置窗口标题，emit 后前端按 teammate >
-                            // OSC > 进程名 优先级合并展示。
-                            if let Some(title_text) =
-                                title::parse_title_from_output(&bytes_for_title)
-                            {
+                            // T1：OSC 0/1/2 标题（由 chunk::process 扫出）。shell 提示符、
+                            // Claude Code、ssh 等都用这条机制设置窗口标题，emit 后前端按
+                            // teammate > OSC > 进程名 优先级合并展示。
+                            if let Some(title_text) = signals.title {
                                 let event_tx = state.event_tx.clone();
                                 let _ = rt.block_on(async move {
                                     let _ = event_tx
@@ -330,7 +302,7 @@ pub fn spawn_pty_reader(
                                         .await;
                                 });
                             }
-                            if let Some(cwd) = cwd::parse_cwd_from_output(&data_for_cwd) {
+                            if let Some(cwd) = signals.cwd {
                                 // Normalize path separators on Windows so every code path
                                 // (main-loop OSC 7, EOF flush, process-poll) stores and
                                 // emits the SAME string for the same directory.
