@@ -31,7 +31,17 @@ cargo run --bin ridge-cloud
 
 `scripts/cdp-dirchildren-probe.mjs`（dev:cdp）实测 host `get_directory_children` offset 0/3/6 **分页正确**（total=92）。叠加 S7 conformance（cloudWebrtcAdapter+rpcClient invoke 往返 32 测全过）→ **host OK + transport OK**。故 B1「经云返回空」是 **controller/UI 侧窄边角**（疑 `fileExplorer.ts:490` catch 吞 cloud invoke 错误/超时，或 FileTree 懒加载追加），且可能自 2026-06-04 多次提交后已修。
 
-## 3. 全 WebRTC e2e 仍需接线（host↔controller）
+## 3. 全 WebRTC e2e（✅ 已跑通 2026-06-07）
+
+> 更新：单 realm WebRTC harness 已实现并跑通（`src/lib/remote/cloud/__cloudE2eHarness.ts`
+> + `scripts/cdp-cloud-seed.mjs`）。**B1 证伪**（dir-children 经云分页正确 total=92），
+> 并**实测确认审计 ①-1 RCE**（云控制端经 `get_remote_info` 读到宿主 LAN TOTP 密钥）。
+> 详见 `remote-cloud-security-audit-2026-06-07.md` §5.5。所需的两处使能改动已落地：
+> (1) cloud scheme 按回环判定 http/ws（`apiClient.ts`，commit 4e2022a）；
+> (2) `app.html` CSP connect-src 放行 `http://localhost:* ws://*.localhost:*`。
+> 下面是当时的接线计划，保留供参考。
+
+### （历史）当时仍需接线项
 
 要真机复现 B1 / 验 B2/B3，需把 host(wind) + controller(浏览器) 接到本地 relay：
 

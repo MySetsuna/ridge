@@ -72,6 +72,29 @@
 6. **②-H-1/H-2**：room key 改用 `user_id`+device（用设备名禁用的分隔符如 `/`）；cid 改 per-room 随机。
 7. 其余 HIGH/MEDIUM 见各表。
 
+## 5.5 实测验证（本会话单 realm WebRTC e2e harness）
+
+用 `src/lib/remote/cloud/__cloudE2eHarness.ts` + `scripts/cdp-cloud-seed.mjs` 在 dev:cdp
+真 Tauri webview 里跑通了完整云链路（host+controller 同 realm，经本地 ridge-cloud relay
+互连），结论：
+
+- **B1（dir-children 经云返回空）= 证伪**：`get_directory_children` 经云分页**完全正确**
+  （offset 0/3/6 各返回不同条目 .baseline/.codegraph/.kiro，total=92，has_more=true）。
+  叠加 connected=true + D9 能力协商 `[pane,invoke,fs,git,search,workspace,theme]`。
+  → 「空」不在 host/transport/E2EE/dispatch，是 controller UI 懒加载窄边角（疑已修）。
+  这是**整条云栈 + scheme 改动 + CSP 放行的首次端到端实跑验证**。
+- **①-1（CRITICAL，云桥无白名单）= 实测确认**：controller 经云调 `get_remote_info` →
+  host **原样返回 LAN 远控 TOTP 密钥**（`otpauth://...secret=2S37Z5RT44AKGY3IUC7T2RGVC3PMOYEF`）。
+  即云控制端可读取宿主的 LAN 配对密钥（→ 推导所有 LAN 远控码）并可调任意命令（RCE）。
+  这条 LAN allowlist 明确排除的命令，经云桥畅通无阻 → **必须在分发前修复**。
+- 顺带实测确认：审计列的 E2EE crypto / D9 协商 / mux / relay 路由 / premium 门控（DB）
+  在真链路上工作正常（PASS 项得到运行时背书）。
+
+复现：`node scripts/cdp-cloud-seed.mjs`（起 premium 用户+设备，:5050 须在跑）→ 取 token →
+CDP `import('/src/lib/remote/cloud/__cloudE2eHarness.ts')` 调 `runCloudDirChildrenE2E(...)`
+（带 `exploit:{method:'get_remote_info'}` 即复现 RCE 验证）。前置：dev:cdp 以
+`RIDGE_CLOUD_BASE_DOMAIN=localhost:5050` 启动 + app.html CSP 已放行 localhost。
+
 ## 5. 复核提示
 
 - 本审计由 agent 多视角生成，CRITICAL 项（尤其 ①-1 云桥无白名单、③-C3 只读不挡 stdin）建议人工对照源码二次确认后再动手——这些断言已交叉引用 `server.rs`/`capability.rs`/`dispatch.rs`，可信度较高，但修复前值得 5 分钟复核。
