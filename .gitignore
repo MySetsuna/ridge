@@ -13,6 +13,12 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .claude/scheduled_tasks.lock
+# Git worktrees live here (runtime scratch checkouts of other branches). Keep
+# them out of git AND out of content scanners (Tailwind v4 auto-source detection
+# respects .gitignore) — otherwise a worktree's duplicate src/site assets get
+# scanned, and removing a worktree leaves dangling asset refs that 500 the dev
+# server (e.g. ENOENT on a worktree's ridge-mark.svg from the CSS pipeline).
+.claude/worktrees/
 .aider*
 scripts/perf-runs/
 bash.exe.stackdump
