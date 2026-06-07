@@ -70,6 +70,20 @@ export default defineConfig({
     fs: {
       allow: ['..'], // 允许访问 src-tauri 等上级目录
     },
+    // 排除构建产物目录，避免 cargo/构建 churn 触发 vite 文件监视器崩溃。
+    // cargo dev 构建（build.rs）会重写 target/debug/web-remote-dist、
+    // target/debug/static/remote 等；vite 监视这些产物时，Windows
+    // ReadDirectoryChangesW 在目录被删除/重建瞬间会抛 UNKNOWN(errno -4094)，
+    // 整个 dev server 崩溃退出。这些都是构建产物（已 gitignore），dev server
+    // 无需监视。node_modules/.git 仍由 vite 默认忽略。
+    watch: {
+      ignored: [
+        '**/target/**',
+        '**/release/**',
+        '**/web-remote-dist/**',
+        '**/build/**',
+      ],
+    },
   },
 
   // 构建配置
