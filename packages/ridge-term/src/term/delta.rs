@@ -46,6 +46,17 @@ pub struct DeltaCell {
     /// Mirrors `term::cell::Cell::width`: 0 = continuation half of a
     /// wide cell, 1 = normal, 2 = first half of wide.
     pub width: u8,
+    /// §emoji-cluster — the multi-codepoint extended grapheme cluster
+    /// anchored at this cell, when one exists (emoji ZWJ sequences
+    /// 👨‍👩‍👧, skin-tone 👍🏽, RIS flags 🇯🇵, VS16 ❤️). `None` for the
+    /// overwhelmingly-common single-codepoint case — `ch` alone is then
+    /// authoritative. Without this the native-parse → delta → wasm-grid
+    /// path on the desktop collapsed every cluster to its first
+    /// codepoint (`ch`), so skin-tones/ZWJ/flags rendered as the base
+    /// glyph only. Mirror side calls `Row::set_cluster` on `Some`.
+    /// postcard cost: +1 byte (the `Option` tag) per cell in the common
+    /// `None` case.
+    pub cluster: Option<Box<str>>,
 }
 
 impl DeltaCell {
@@ -56,6 +67,7 @@ impl DeltaCell {
             bg: Color::DEFAULT,
             flags: Flags::empty(),
             width: 1,
+            cluster: None,
         }
     }
 }
@@ -142,7 +154,11 @@ pub struct DeltaFrame {
 }
 
 impl DeltaFrame {
-    pub const PROTOCOL_VERSION: u16 = 1;
+    // v2 (§emoji-cluster): `DeltaCell.cluster` added so multi-codepoint
+    // grapheme clusters survive the native→wasm delta hop. Native parser
+    // and wasm consumer compile from this same source and ship together,
+    // so the version bump is a fail-fast guard against a skewed bundle.
+    pub const PROTOCOL_VERSION: u16 = 2;
 
     pub fn new(pane_seq: u64, deltas: Vec<GridDelta>) -> Self {
         Self {
@@ -212,6 +228,17 @@ mod tests {
                         bg: Color::DEFAULT,
                         flags: Flags::empty(),
                         width: 1,
+                        cluster: None,
+                    }, DeltaCell {
+                        // §emoji-cluster — a width-2 cell carrying a ZWJ
+                        // family cluster; round-trip must preserve the
+                        // multi-codepoint `cluster` string verbatim.
+                        ch: '\u{1F468}', // 👨 (first codepoint)
+                        fg: Color::DEFAULT,
+                        bg: Color::DEFAULT,
+                        flags: Flags::empty(),
+                        width: 2,
+                        cluster: Some("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".into()),
                     }],
                 },
                 GridDelta::Cursor {

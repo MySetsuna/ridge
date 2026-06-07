@@ -67,14 +67,12 @@ export type RenderWorkerRequest =
 	| {
 			type: 'bindCanvas';
 			paneId: string;
-			// P4.6 populates this with the OffscreenCanvas transferable.
+			// P4.6 will populate this with the OffscreenCanvas transferable.
+			// For P4.5 the worker accepts the message but no-ops it.
 			canvas?: OffscreenCanvas;
-			// §p4 ITER 5 (2026-05-22) — when the host wants the worker
-			// to measure cell metrics on the renderer's behalf, supply
-			// the font CSS, size in CSS px, and dpr. The bindCanvas
-			// `ready` response will then carry `cellW` / `cellH`. All
-			// optional so legacy callers (and the shadow path before a
-			// renderer is bound) still work.
+			// Font measurement args: the worker calls `RenderHandle.configure`
+			// on the newly-bound canvas and returns real cell metrics in the
+			// `ready` response (cellW / cellH).
 			font?: string;
 			fontSizePx?: number;
 			dpr?: number;
@@ -95,37 +93,30 @@ export type RenderWorkerRequest =
 			rows: number;
 			cols: number;
 			dpr: number;
-			// §p4 ITER 7 (2026-05-22) — CSS dimensions of the canvas
-			// surface. When supplied, the worker's renderer calls
-			// `RenderHandle.resize(cssW, cssH, dpr)` to re-size the
-			// backing buffer and re-derive cell quantization. The
-			// wasm kernel grid is still sized from `rows / cols`.
-			// Optional so legacy callers (and shadow-mode resizes
-			// before a renderer is bound) still work.
-			cssW?: number;
-			cssH?: number;
+			// CSS dimensions of the container (clientWidth / clientHeight).
+			// The worker uses these to resize its backing buffer to match
+			// the actual DOM box before painting.
+			wCss?: number;
+			hCss?: number;
 	  }
 	| {
 			type: 'destroy';
 			paneId: string;
 	  }
 	| {
-			// §p4 ITER 8 (2026-05-22) — push a font/size/dpr change
-			// into the worker-owned RenderHandle so the worker re-
-			// measures cell metrics. The `ready` response carries
-			// `cellW` / `cellH` so the host can re-seed entry.cellW /
-			// cellH and trigger a fitPane against the new metrics.
-			type: 'setFont';
-			paneId: string;
-			font: string;
-			fontSizePx: number;
-			dpr: number;
-	  }
-	| {
 			type: 'ping';
 			// Optional opaque token the worker echoes back in the pong.
 			// Useful for latency / healthcheck probes.
 			token?: string;
+	  }
+	| {
+			type: 'setFont';
+			paneId: string;
+			// Font family, font size in px, and device-pixel-ratio for
+			// the worker's `RenderHandle.configure()` call.
+			family: string;
+			sizePx: number;
+			dpr: number;
 	  };
 
 /** Responses sent from the worker back to the main thread. */
@@ -136,14 +127,10 @@ export type RenderWorkerResponse =
 			// What the worker actually wired up — may differ from the
 			// requested backend if e.g. WebGPU was unavailable.
 			backend: RendererBackend;
-			// §p4 ITER 5 (2026-05-22) — populated by the `bindCanvas`
-			// ack ONLY when the caller passed font / fontSizePx / dpr
-			// AND the worker successfully created a renderer AND the
-			// renderer exposed a measurable `configure(...)`. Other
-			// `ready` acks (init / applyDelta / resize / feed) leave
-			// these undefined. The main thread uses them to seed
-			// `entry.cellW / cellH` so the first fitPane doesn't fly
-			// on the 8 × 16 placeholder.
+			// Real cell metrics measured by `RenderHandle.configure()`.
+			// Present when the worker was given font/fontSizePx/dpr
+			// (typically via `bindCanvas`). The bridge reads these back
+			// to update `entry.cellW / cellH` and trigger a fit.
 			cellW?: number;
 			cellH?: number;
 	  }
@@ -184,7 +171,7 @@ export function isRenderWorkerRequest(value: unknown): value is RenderWorkerRequ
 		t === 'feed' ||
 		t === 'resize' ||
 		t === 'destroy' ||
-		t === 'setFont' ||
-		t === 'ping'
+		t === 'ping' ||
+		t === 'setFont'
 	);
 }

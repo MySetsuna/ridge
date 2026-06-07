@@ -7,74 +7,20 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use crate::engine::cwd;
 use crate::engine::parser::PaneParser;
-use crate::engine::title;
 use crate::state::AppState;
+use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
+use ridge_core::pty::cwd;
+use ridge_core::pty::decode::{flush_pending_eof, take_decoded_utf8};
 
-const PTY_READ_UTF8_PENDING_MAX: usize = 64 * 1024;
-
-/// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠），与 `process::normalize_cwd` 对齐，
-/// 避免 `paneCwdStore` 上出现 `C:\code\ridge` 与 `C:/code/ridge` 两个键并存的别名。
+/// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠）。逻辑单一真源在
+/// `ridge_core::commands::process::normalize_cwd`（与 OS 探测路径同一份实现），
+/// 这里仅做 `&str → String` 适配，避免 `paneCwdStore` 上出现 `C:\code\ridge` 与
+/// `C:/code/ridge` 两个键并存的别名。
 fn normalize_cwd_str(raw: &str) -> String {
-    #[cfg(windows)]
-    {
-        raw.replace('\\', "/")
-    }
-    #[cfg(not(windows))]
-    {
-        raw.to_string()
-    }
-}
-
-/// Extend `pending` with `chunk`, then drain leading complete UTF-8 into `String`.
-/// Incomplete trailing bytes remain in `pending` for the next read.
-fn take_decoded_utf8(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
-    if !chunk.is_empty() {
-        pending.extend_from_slice(chunk);
-    }
-    if pending.len() > PTY_READ_UTF8_PENDING_MAX {
-        let bytes = std::mem::replace(pending, Vec::new());
-        return String::from_utf8_lossy(&bytes).into_owned();
-    }
-    let mut out = String::new();
-    loop {
-        if pending.is_empty() {
-            break;
-        }
-        match std::str::from_utf8(pending) {
-            Ok(s) => {
-                out.push_str(s);
-                pending.clear();
-                break;
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if valid > 0 {
-                    out.push_str(unsafe { std::str::from_utf8_unchecked(&pending[..valid]) });
-                    pending.drain(..valid);
-                    continue;
-                }
-                if let Some(elen) = e.error_len() {
-                    out.push_str(&String::from_utf8_lossy(&pending[..elen]));
-                    pending.drain(..elen);
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-    out
-}
-
-fn flush_pending_eof(pending: &mut Vec<u8>) -> String {
-    if pending.is_empty() {
-        return String::new();
-    }
-    let bytes = std::mem::replace(pending, Vec::new());
-    String::from_utf8_lossy(&bytes).into_owned()
+    ridge_core::commands::process::normalize_cwd(raw.to_string())
 }
 
 pub struct PtyHandle {
@@ -144,33 +90,6 @@ fn now_epoch_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 在 `data` 中查找最早出现的 shell-integration prompt OSC 起始字节偏移。
-///
-/// 检测下列序列起始（任一前 7 字节，不要求匹配 ST/BEL 终止符 —— xterm.js 会
-/// 在收到流后自行解析完整序列）：
-/// - `\x1b]133;A` / `\x1b]133;B` / `\x1b]133;P` — FinalTerm 语义 prompt 协议
-/// - `\x1b]633;A` / `\x1b]633;B` / `\x1b]633;P` — VS Code shell-integration 扩展
-///
-/// 返回首个命中的字节偏移（基于原 `data: &str` 的字节位置，可安全用于
-/// `data[off..]` 切片）。若未命中，返回 `None`。
-fn find_prompt_osc(data: &str) -> Option<usize> {
-    const MARKERS: [&str; 6] = [
-        "\x1b]133;A",
-        "\x1b]133;B",
-        "\x1b]133;P",
-        "\x1b]633;A",
-        "\x1b]633;B",
-        "\x1b]633;P",
-    ];
-    let mut earliest: Option<usize> = None;
-    for m in MARKERS.iter() {
-        if let Some(idx) = data.find(m) {
-            earliest = Some(earliest.map_or(idx, |e| e.min(idx)));
-        }
-    }
-    earliest
-}
-
 /// 从工作区表里摘掉该 pane 的 PTY（读线程结束或异常时用）。不影响其它 pane 的表项。
 fn detach_terminal(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
     state.clear_pty_scrollback(workspace_id, pane_id);
@@ -215,6 +134,17 @@ pub fn spawn_pty_reader(
         map.get(&workspace_id)
             .and_then(|ws| ws.terminals.get(&pane_id))
             .and_then(|h| h.native_ref.clone())
+    };
+    // Capture this PTY's generation at spawn. On EOF we compare against the
+    // pane's current generation; if it advanced, the pane was torn down and
+    // replaced (this reader is stale) → skip the child-exit→Idle demotion so a
+    // freshly-spawned agent's Busy is never clobbered. See
+    // `teardown_pane_pty_if_present`.
+    let my_pty_generation: u64 = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.pty_generation.get(&pane_id).copied())
+            .unwrap_or(0)
     };
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
@@ -287,59 +217,34 @@ pub fn spawn_pty_reader(
                             if raw.is_empty() {
                                 continue;
                             }
-                            // Resize silence: while ConPTY is replaying its viewport
-                            // post-`ResizePseudoConsole`, drop bytes from BOTH scrollback
-                            // and frontend emit until the next prompt OSC (FinalTerm
-                            // OSC 133;A / VS Code OSC 633;A) tells us the shell is back
-                            // at a clean prompt. Hard timeout (800ms) auto-releases for
-                            // shells without shell-integration so we don't permanently
-                            // mute the pane.
+                            // Resize-silence gate + signal scan (ConPTY resize-replay
+                            // drop → prompt/title/cwd) is the AppState-agnostic core of
+                            // this loop, extracted to `ridge_core::pty::chunk` so the
+                            // headless host can reuse the SAME reduction. The thread,
+                            // scrollback, event routing, carryover backpressure and EOF
+                            // cleanup below stay here (AppState-bound). `data_for_cwd`/
+                            // `bytes_for_title` are no longer needed — `signals` carries
+                            // the precomputed prompt/title/cwd. Behaviour is byte-for-byte
+                            // the original gate (see chunk::process + its tests).
                             let deadline = silence_deadline.load(Ordering::Acquire);
-                            let silenced = deadline > 0 && now_epoch_ms() < deadline;
-                            let data = if silenced {
-                                match find_prompt_osc(&raw) {
-                                    Some(off) => {
-                                        // Prompt OSC found — release silence and keep
-                                        // only the post-OSC tail. Pre-OSC bytes are
-                                        // ConPTY reflow noise; dropping them is the
-                                        // whole point of this gate.
-                                        silence_deadline.store(0, Ordering::Release);
-                                        raw[off..].to_string()
-                                    }
-                                    None => {
-                                        // Still inside reflow storm; drop bytes.
-                                        // (Original outputs were already captured into
-                                        // scrollback BEFORE the resize, so this drop
-                                        // doesn't lose user-visible history.)
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                // Either never silenced, or silenced-but-timed-out.
-                                // Reset deadline opportunistically so the next iteration
-                                // doesn't redo the time math.
-                                if deadline > 0 {
-                                    silence_deadline.store(0, Ordering::Release);
-                                }
-                                raw
+                            let outcome =
+                                ridge_core::pty::chunk::process(raw, deadline, now_epoch_ms());
+                            if outcome.clear_silence {
+                                silence_deadline.store(0, Ordering::Release);
+                            }
+                            let Some(signals) = outcome.emit else {
+                                // Dropped inside the ConPTY resize-replay window.
+                                continue;
                             };
+                            let data = signals.text;
                             if data.is_empty() {
                                 continue;
                             }
-                            let data_for_cwd = data.clone();
-                            let bytes_for_title = data.as_bytes().to_vec();
                             state.append_pty_scrollback(workspace_id, pane_id, &data);
-                            // BUG-1 follow-up: scan for shell-integration prompt
-                            // mark (FinalTerm OSC 133;A / VS Code OSC 633;A) BEFORE
-                            // the try_send below moves `data`. We only need the
-                            // boolean — the offset that find_prompt_osc returns
-                            // isn't useful here. The actual emit happens after
-                            // try_send so the cheaper `Ok` path stays hot.
-                            // NOTE: in the silence-release case `data` is the
-                            // post-OSC tail (the marker was stripped), so this
-                            // scan misses that one chunk — the frontend's 800ms
-                            // debounce fallback covers it.
-                            let prompt_seen = find_prompt_osc(&data).is_some();
+                            // Precomputed by chunk::process. NOTE: in the silence-release
+                            // case `data` is the post-OSC tail (marker stripped), so this
+                            // is false there — the frontend's 800ms debounce covers it.
+                            let prompt_seen = signals.prompt_seen;
                             // BUG-3: non-blocking try_send + carryover. If the
                             // global event_rx is full, stash the (combined)
                             // payload back into carryover for retry on the
@@ -382,12 +287,10 @@ pub fn spawn_pty_reader(
                                         .await;
                                 });
                             }
-                            // T1：扫描 OSC 0/1/2 标题序列。shell 提示符、Claude Code、
-                            // ssh 等都用这条机制设置窗口标题，emit 后前端按 teammate >
-                            // OSC > 进程名 优先级合并展示。
-                            if let Some(title_text) =
-                                title::parse_title_from_output(&bytes_for_title)
-                            {
+                            // T1：OSC 0/1/2 标题（由 chunk::process 扫出）。shell 提示符、
+                            // Claude Code、ssh 等都用这条机制设置窗口标题，emit 后前端按
+                            // teammate > OSC > 进程名 优先级合并展示。
+                            if let Some(title_text) = signals.title {
                                 let event_tx = state.event_tx.clone();
                                 let _ = rt.block_on(async move {
                                     let _ = event_tx
@@ -399,7 +302,7 @@ pub fn spawn_pty_reader(
                                         .await;
                                 });
                             }
-                            if let Some(cwd) = cwd::parse_cwd_from_output(&data_for_cwd) {
+                            if let Some(cwd) = signals.cwd {
                                 // Normalize path separators on Windows so every code path
                                 // (main-loop OSC 7, EOF flush, process-poll) stores and
                                 // emits the SAME string for the same directory.
@@ -497,13 +400,18 @@ pub fn spawn_pty_reader(
                         ws.terminals.remove(&pane_id);
                         let _ = ws.pane_tree.close(pane_id);
                         ws.pane_sizes.remove(&pane_id);
+                        // DF=②: 销毁叶子前清 teammate 生命周期状态/映射，避免反向泄漏出
+                        // 指向已不存在 pane 的孤儿条目。
+                        ws.teammate_pane_states.remove(&pane_id);
+                        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+                        ws.pty_generation.remove(&pane_id);
                     }
                 }
                 if let Some(app) = state.app_handle.get() {
                     use tauri::Emitter;
                     let _ = app.emit(
-                        "teammate-layout-changed",
-                        serde_json::json!({ "detached_pane": pane_id.to_string() }),
+                        TEAMMATE_LAYOUT_CHANGED,
+                        LayoutChange::detached(pane_id.to_string()),
                     );
                 }
             } else {
@@ -519,6 +427,53 @@ pub fn spawn_pty_reader(
                         .await
                 });
                 detach_terminal(&state, workspace_id, pane_id);
+                // DF=② (child-exit → Idle): an agent (or shell) in a *teammate*
+                // pane exited (reader EOF). Demote the pane to Idle and drop its
+                // agent mapping so need-1 can re-use it and the AGENT badge
+                // clears. SKIP when a PendingSpawn is queued for this pane — that
+                // means we're mid-replacement (e.g. an agent spawn-process tore
+                // down the prior shell and queued the agent), and flipping to
+                // Idle here would clobber the incoming agent's just-set Busy.
+                // Only flip EXISTING teammate panes (never add an entry for a
+                // plain GUI pane). Driven purely by Ridge's own EOF signal — no
+                // dependency on the harness calling release-pane.
+                let flipped_to_idle = {
+                    let mut map = state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&workspace_id) {
+                        // Genuine exit ONLY if this reader is still the pane's
+                        // current PTY (generation unchanged since spawn) AND no
+                        // replacement is queued. A bumped generation means the
+                        // pane was torn down + replaced (e.g. reuse/spawn-process
+                        // installed an agent) → this is the OLD shell reader; we
+                        // MUST NOT demote, or we'd clobber the new agent's Busy
+                        // permanently. Generation closes the [teardown, register)
+                        // window the pending_spawns check alone missed; the
+                        // pending_spawns term stays as belt-and-suspenders.
+                        let current_gen =
+                            ws.pty_generation.get(&pane_id).copied().unwrap_or(0);
+                        let is_current_pty = current_gen == my_pty_generation;
+                        let being_replaced = ws.pending_spawns.contains_key(&pane_id);
+                        if is_current_pty
+                            && !being_replaced
+                            && ws.teammate_pane_states.contains_key(&pane_id)
+                        {
+                            ws.teammate_pane_states
+                                .insert(pane_id, crate::state::PaneState::Idle);
+                            ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if flipped_to_idle {
+                    if let Some(app) = state.app_handle.get() {
+                        use tauri::Emitter;
+                        let _ = app.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+                    }
+                }
             }
         });
 }

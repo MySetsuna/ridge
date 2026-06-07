@@ -45,8 +45,8 @@ describe('workerRendererSingleton', () => {
 		vi.restoreAllMocks();
 	});
 
-	it('isWorkerRenderingEnabled defaults to true (P4.9)', () => {
-		expect(isWorkerRenderingEnabled()).toBe(true);
+	it('isWorkerRenderingEnabled defaults to false', () => {
+		expect(isWorkerRenderingEnabled()).toBe(false);
 	});
 
 	it('reads the global flag', () => {
@@ -77,7 +77,7 @@ describe('workerRendererSingleton', () => {
 		};
 		(globalThis as unknown as { localStorage: typeof ls }).localStorage = ls;
 		try {
-			expect(isWorkerRenderingEnabled()).toBe(true);
+			expect(isWorkerRenderingEnabled()).toBe(false);
 			ls.setItem('RIDGE_USE_WORKER', '1');
 			expect(isWorkerRenderingEnabled()).toBe(true);
 			ls.setItem('RIDGE_USE_WORKER', 'true');
@@ -85,7 +85,7 @@ describe('workerRendererSingleton', () => {
 			ls.setItem('RIDGE_USE_WORKER', '0');
 			expect(isWorkerRenderingEnabled()).toBe(false);
 			ls.removeItem('RIDGE_USE_WORKER');
-			expect(isWorkerRenderingEnabled()).toBe(true);
+			expect(isWorkerRenderingEnabled()).toBe(false);
 		} finally {
 			delete (globalThis as unknown as { localStorage?: unknown }).localStorage;
 		}
@@ -106,8 +106,7 @@ describe('workerRendererSingleton', () => {
 		}
 	});
 
-	it('getWorkerRenderer returns null when the flag is off (opt-out)', () => {
-		setFlag(false);
+	it('getWorkerRenderer returns null when the flag is off', () => {
 		__setWorkerFactory(() => makeFakeWorker());
 		expect(getWorkerRenderer()).toBeNull();
 	});

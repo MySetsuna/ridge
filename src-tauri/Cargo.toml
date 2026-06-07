@@ -1,6 +1,6 @@
 [package]
 name = "ridge"
-version = "0.0.3"
+version = "0.0.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -23,10 +23,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+# `tray-icon`：Deep Root Mode（§8）的系统托盘所需（tauri::tray::TrayIconBuilder）。
+# 托盘图标复用 `app.default_window_icon()`（已是解码后的 RGBA `Image`），故无需
+# 额外的 `image-ico` 解码特性。
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
+# Deep Root Mode（§8.1）：进入深根时发原生系统通知（Rust 端 NotificationExt）。
+tauri-plugin-notification = "2"
+# 公网登录授权（契约 §1/§2.3）：注册自定义 scheme `ridge://`，网页授权批准后
+# `ridge://auth/focus` 把桌面端拉回前台并触发一次轮询。URI 仅作信号，绝不携带 token。
+tauri-plugin-deep-link = "2"
+# 配合 deep-link：Windows 上第二个实例（由浏览器唤起 `ridge://`）把 argv 转交首个
+# 实例并聚焦，避免重复开窗（single-instance 必须在 builder 链最前注册）。
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
@@ -38,17 +49,26 @@ axum = { version = "0.7", features = ["ws"] }
 # Remote-control HTTPS. Browsers only expose WebGPU (`navigator.gpu`) in a
 # "secure context" (https/wss/localhost), so reaching the GPU path from a
 # phone/desktop browser over the LAN requires the remote server to serve
-# TLS. We terminate TLS via axum-server's rustls integration and
-# auto-generate a self-signed cert (rcgen) on first run (see remote/tls.rs).
-# Crypto backend is `ring`, NOT rustls 0.23's default `aws-lc-rs`: the
-# crates.io `ring` release bundles pregenerated assembly, so Windows MSVC
-# builds need no nasm/cmake (aws-lc-rs would). `tls-rustls-no-provider`
-# lets us install the ring provider ourselves.
+# TLS. We terminate TLS via axum-server's rustls integration and, on first
+# run, auto-generate a local root CA + a CA-signed leaf cert (rcgen) so the
+# CA can be installed/trusted once per device to silence the browser warning
+# (see remote/tls.rs). Crypto backend is `ring`, NOT rustls 0.23's default
+# `aws-lc-rs`: the crates.io `ring` release bundles pregenerated assembly, so
+# Windows MSVC builds need no nasm/cmake (aws-lc-rs would).
+# `tls-rustls-no-provider` lets us install the ring provider ourselves.
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "crypto"] }
+# Certificate validity windows for the remote TLS CA/leaf (see remote/tls.rs).
+time = { version = "0.3", default-features = false, features = ["std"] }
 futures = "0.3"
 sha2 = "0.10"
+# SECURITY (audit C2): OS CSPRNG for the remote TOTP secret seed + session
+# tokens. Replaces the former non-cryptographic `SimpleRng` xorshift (seeded
+# from `nanos ^ pid`, low entropy → predictable secret/token). `getrandom 0.2`
+# is already in the dependency tree transitively (via ring/rustls); declaring
+# it directly pins the same major and pulls in no new transitive crates.
+getrandom = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -81,6 +101,21 @@ notify-debouncer-mini = "0.4"
 # so a fresh `cargo build` confirms the dependency graph resolves
 # without surprise rebuilds when P3.3 lands.
 ridge-term = { path = "../packages/ridge-term", default-features = false }
+
+# S1 (2026-06-03): the runtime-agnostic command + domain core. The desktop
+# `#[tauri::command]` handlers in the vertical slice (settings + theme) became
+# thin wrappers that construct a `ridge_core::Ctx` and call
+# `ridge_core::dispatch`. Zero Tauri dependency lives in ridge-core, so this
+# dep does not pull anything new into the desktop binary's graph beyond
+# serde/serde_json/tokio/thiserror/tracing (all already present).
+ridge-core = { path = "../packages/ridge-core" }
+
+# S-decouple: the headless tmux session engine, extracted out of
+# `teammate/native.rs` into a standalone Tauri-free crate so the SAME engine
+# the desktop uses can run in the headless `ridge-cli` host. The desktop keeps
+# its `crate::teammate::native::*` paths via a thin `pub use ridge_tmux::*;`
+# re-export. Pure deps only (portable-pty + ridge-term Terminal), no new Tauri.
+ridge-tmux = { path = "../packages/ridge-tmux", features = ["http"] }
 
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)

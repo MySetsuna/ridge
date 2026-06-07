@@ -38,6 +38,7 @@ import { settingsStore } from '../stores/settings';
 import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
 import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
+import { DEFAULT_TERM_FONT } from './fontStack';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -582,16 +583,12 @@ export class TerminalManager {
 					// rendering with system Segoe UI Emoji worked before
 					// Noto's unicode-range gate kicked in). System emoji
 					// fonts (Segoe UI Emoji on Windows, Apple Color
-					// Emoji on macOS, Noto Color Emoji where it's
-					// installed system-wide on Linux) are reliable
-					// across the runtimes we ship to and look identical
-					// to the bundled Noto on Windows / macOS. "Noto
-					// Color Emoji" stays in the chain as a SYSTEM font
-					// lookup — harmless when not installed (the browser
-					// just falls through), helpful on Linux distros
-					// that ship it.
-					fontFamily:
-						'"JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, "SimHei", "Heiti SC", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", monospace',
+					// Shared canonical stack (see ./fontStack): bundled
+					// "Noto Color Emoji" ahead of OS emoji fonts so flags +
+					// all emoji render Warp-level on every platform. This
+					// default is normally overridden by themeBridge's first
+					// `pushFont`, but kept correct for the pre-bridge frame.
+					fontFamily: DEFAULT_TERM_FONT,
 					fontSizePx: 15,
 					scrollbackLines: 2000,
 					preferWebgpu,
@@ -985,25 +982,18 @@ export class TerminalManager {
 		let cssY = cr.top - hr.top + padT;
 		let cssW = Math.max(0, cr.width - padL - padR);
 		let cssH = Math.max(0, cr.height - padT - padB);
-		// Shrink the scissor to cells-exact dimensions and re-center it
-		// inside the content-box. Without this, `floor(cssH / cellH)`
-		// leaves up to `cellH - 1` px of `term-bg` painted *below* the
-		// last row inside the scissor — the user sees that as
-		// "底部还有很多空余" because the renderer's bg fill is wider
-		// than the actual rows. By collapsing the scissor to
-		// `cellW*cols × cellH*rows`, the unused content-box area
-		// reverts to whatever the host canvas was on (workspace bg,
-		// since the canvas itself is transparent there), giving a tight
-		// inset that visually matches the user's `paddingPx` setting.
+		// Shrink the scissor to cells-exact dimensions, anchored to the
+		// content-box origin (no centering). §E1 (2026-06-02): prior
+		// versions re-centered the scissor, which created asymmetric
+		// padding at the left edge. By keeping the scissor at the
+		// content-box top-left, the first column/row renders flush
+		// against the pane border. CellsW × cellsH keeps the scissor
+		// tight — residual right/bottom space shows as workspace bg.
 		if (entry.cellW > 0 && entry.cellH > 0) {
 			const cols = Math.max(1, Math.floor(cssW / entry.cellW));
 			const rows = Math.max(1, Math.floor(cssH / entry.cellH));
-			const cellsW = cols * entry.cellW;
-			const cellsH = rows * entry.cellH;
-			cssX += (cssW - cellsW) / 2;
-			cssY += (cssH - cellsH) / 2;
-			cssW = cellsW;
-			cssH = cellsH;
+			cssW = cols * entry.cellW;
+			cssH = rows * entry.cellH;
 		}
 		// Add small epsilon to device-pixel width/height to avoid 1px
 		// clipping on right/bottom edges due to sub-pixel rounding.
@@ -2736,6 +2726,50 @@ export class TerminalManager {
 	}
 
 	/**
+	 * Alternate-scroll fallback: when a full-screen (alt-screen) application
+	 * is active but has NOT enabled DEC mouse reporting, translate the wheel
+	 * into cursor-key presses so pagers / menus that only read arrow keys
+	 * (less, man, git log, fzf, claude /theme menu, …) scroll on wheel. This
+	 * mirrors the `alternateScroll` resource enabled by default in xterm,
+	 * Windows Terminal, iTerm2 and kitty.
+	 *
+	 * Returns true (caller should `preventDefault`) only when bytes were
+	 * actually emitted. Conditions, all required:
+	 *   - alt-screen active (a TUI owns the primary→alt swap),
+	 *   - mouse reporting OFF (else `handleWheel` already owns the event),
+	 *   - there is no in-kernel scrollback to scroll instead (alt screen has
+	 *     none, but guard anyway so primary-screen scrollback keeps winning).
+	 *
+	 * Arrow encoding is delegated to `kernel.encodeKey('ArrowUp'/'ArrowDown')`
+	 * so DECCKM (app-cursor-keys mode `\x1bOA` vs `\x1b[A`) is honoured by the
+	 * same code path as a real keypress — no second encoding to drift.
+	 *
+	 * One arrow press per ~`WHEEL_LINES_DIVISOR` px of deltaY, clamped to a
+	 * small max so a fast flick can't fire dozens of presses in one event.
+	 */
+	wheelAltScroll(paneId: string, ev: WheelEvent): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry || !entry.dataHandler) return false;
+		if (!entry.kernel.isAltScreen()) return false;
+		if (entry.kernel.mouseReportingModes() !== 0) return false;
+		const delta = ev.deltaY;
+		if (delta === 0) return false;
+		// deltaMode 1 = lines, 2 = pages; treat their units as ~1 press each,
+		// deltaMode 0 = pixels → 1 press per WHEEL_LINES_DIVISOR px.
+		const WHEEL_LINES_DIVISOR = 30;
+		const MAX_PRESSES_PER_EVENT = 5;
+		const magnitude = ev.deltaMode === 0 ? Math.abs(delta) / WHEEL_LINES_DIVISOR : Math.abs(delta);
+		const presses = Math.max(1, Math.min(MAX_PRESSES_PER_EVENT, Math.round(magnitude)));
+		const key = delta < 0 ? 'ArrowUp' : 'ArrowDown';
+		const oneArrow = entry.kernel.encodeKey(key, false, false, false, false);
+		if (oneArrow.length === 0) return false;
+		const seq = new Uint8Array(oneArrow.length * presses);
+		for (let i = 0; i < presses; i++) seq.set(oneArrow, i * oneArrow.length);
+		entry.dataHandler(seq);
+		return true;
+	}
+
+	/**
 	 * Paste text into the pane. Wraps in bracketed-paste markers if mode 2004
 	 * is active. Pushes through onData.
 	 */
@@ -3163,6 +3197,8 @@ export class TerminalManager {
 		anchorRow: number,
 		anchorCol: number,
 		placeAbove: boolean,
+		totalItems: number,
+		firstVisible: number,
 	): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
@@ -3173,9 +3209,21 @@ export class TerminalManager {
 				anchorRow: number,
 				anchorCol: number,
 				placeAbove: boolean,
+				totalItems: number,
+				firstVisible: number,
 			) => void;
 		};
-		h.setHistoryOverlay?.([...items], selectedIndex, anchorRow, anchorCol, placeAbove);
+		// `items` is the JS-windowed VISIBLE slice; `selectedIndex` is
+		// slice-relative; `totalItems`/`firstVisible` drive the scrollbar.
+		h.setHistoryOverlay?.(
+			[...items],
+			selectedIndex,
+			anchorRow,
+			anchorCol,
+			placeAbove,
+			totalItems,
+			firstVisible,
+		);
 		this.wake();
 	}
 
@@ -3782,39 +3830,46 @@ export class TerminalManager {
 	}
 
 	/**
-	 * Container-size changed. Trailing-edge debounce: hold the actual
-	 * fit until the user stops resizing.
+	 * Container-size changed.
 	 *
-	 * Trigger to "settle now" is either of:
-	 *   a. `RESIZE_SETTLE_MS` (1000 ms) elapses with no further
-	 *      viewportChanged events — user paused mid-drag.
+	 * **Scissor (visual clip region) — immediate.**
+	 * The GPU scissor rectangle is a trivial arithmetic update (DOM
+	 * rect → device-pixel clamp → `setViewportOffset` + `resize_surface`,
+	 * the latter short-circuits when dims haven't changed). Deferring it
+	 * creates visible right/bottom clipping during drag that only snaps
+	 * back on release — the symptom first reported as "随 pane resize
+	 * 下/右遮挡、松手恢复".
+	 *
+	 * **Kernel grid resize + PTY SIGWINCH — debounced.**
+	 * Resizing the kernel grid mid-drag is actively dangerous: in-flight
+	 * PTY bytes carry absolute cursor positions valid only under one
+	 * given grid. Collapsing the whole drag into a single trailing-edge
+	 * `fitPane` at settle is the correct strategy — it eliminates the
+	 * "TUI drawing 错位 / 不完整" symptom that the prior 120 ms debounce
+	 * produced when a partial re-fit landed during continuous motion and
+	 * drift accumulated as the user kept dragging.
+	 *
+	 * Settle triggers (either):
+	 *   a. `RESIZE_SETTLE_MS` (500 ms) elapses with no further
+	 *      `viewportChanged` events — user paused mid-drag.
 	 *   b. A global `pointerup` lands — user released the splitter /
 	 *      window-edge handle (see `_ensureResizeReleaseListener`).
 	 *
-	 * Until one of those fires we do NOTHING — no scissor update, no
-	 * kernel grid resize, no PTY SIGWINCH. The visual terminal stays
-	 * exactly where it was at drag start while CSS reflows the
-	 * container around it. This matches the explicit UX ask: "during
-	 * resize the terminal content should not follow in real time; only
-	 * when the mouse pauses for 1 s OR the user releases the button
-	 * should the content snap into place against the divider".
-	 *
-	 * The previous 120 ms debounce eagerly fit on every brief pause
-	 * mid-drag, producing the "TUI drawing 错位 / 不完整" symptom: a
-	 * partial re-fit landed during continuous motion, then drift
-	 * accumulated as the user kept dragging.
-	 *
-	 * Kernel + PTY race-correctness still applies: in-flight bytes
-	 * carry absolute cursor positions valid only under one given grid,
-	 * so collapsing the whole drag into a single end-of-drag fit is
-	 * strictly safer than the prior behaviour.
-	 *
-	 * Initial fit at attach() bypasses the debounce — synchronous
+	 * Initial fit at `attach()` bypasses the debounce — synchronous
 	 * resize, no concurrent in-flight bytes.
 	 */
 	viewportChanged(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
+
+		// Immediate: recompute GPU scissor + viewport offset so the
+		// terminal visual region tracks the DOM container in real time
+		// during splitter-sidebar drag. Expensive kernel resize is
+		// deferred to the debounced `fitPane` below.
+		this._recomputeViewport(entry);
+		this._invalidateHost();
+		this.wake();
+
 		this._ensureResizeReleaseListener();
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
@@ -3965,18 +4020,12 @@ export class TerminalManager {
 		// flagged. Canvas2D mode skips this — its canvas is sized to
 		// the container directly with no padding budget to redistribute.
 		if (this._isHostMode(entry)) {
-			const cellsW = cols * entry.cellW;
-			const padAll = Math.max(0, (containerWCss - cellsW) / 2);
-			rows = Math.max(1, Math.floor((containerHCss - 2 * padAll) / entry.cellH));
-			entry.container.style.padding = `${padAll}px`;
-			// Record the ACTUAL written CSS padding separately from the
-			// user-preference value. `pickAt` etc. need the on-screen
-			// value to align overlays with the visible cursor, while
-			// the NEXT fitPane needs the user's basePad as a floor
-			// (otherwise basePad drifts toward padAll on every fit and
-			// the container shifts a few px each run — visible as the
-			// "shell prompt loads then nudges downward" jolt at startup).
-			entry.lastFitPaddingPx = padAll;
+			// §E1 (2026-06-02): no symmetric padding redistribution.
+			// Cells start flush against the container's content-box
+			// origin so the left edge has zero gap. Any residual
+			// right/bottom space (< 1 cell) displays as workspace bg.
+			rows = Math.max(1, Math.floor(containerHCss / entry.cellH));
+			entry.lastFitPaddingPx = entry.lastAppliedPaddingPx ?? 0;
 			this._recomputeViewport(entry);
 		} else {
 			entry.handle?.resize(wCss, hCss, dpr);

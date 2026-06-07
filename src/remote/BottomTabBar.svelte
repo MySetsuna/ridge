@@ -1,70 +1,89 @@
 <script lang="ts">
-  import { Plus, Folder, GitBranch, Search, Keyboard, RefreshCw } from 'lucide-svelte';
-  import type { RemoteConnection } from './lib/wsRemote';
+  import { Folder, GitBranch, Search, Keyboard, RefreshCw, MousePointer2 } from 'lucide-svelte';
+  import { t } from '$lib/i18n';
+  import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
+  import WorkspaceTree from './lib/WorkspaceTree.svelte';
 
-  let { ws, sidebarTab = null as 'files' | 'git' | 'search' | null, onSidebarToggle,
-    onRefresh, onCreateWorkspace, showKeyboard = $bindable(false), backendName = 'Canvas2D'
+  // §item1：底部导航条最右用「工作区/终端」树形级联控件取代原渲染类型标签
+  // (engine-badge)；工作区与终端的切换/新建/关闭全部收敛到该控件内。渲染引擎
+  // 名称作为树弹层底部的小字保留，不再单独占位。
+  let {
+    ws,
+    sidebarTab = null as 'files' | 'git' | 'search' | null,
+    onSidebarToggle,
+    onRefresh,
+    showKeyboard = $bindable(false),
+    selectionMode = $bindable(false),
+    backendName = 'Canvas2D',
+    panes = [],
+    activePaneId = $bindable(null),
+    workspaces = [],
+    activeWorkspaceId = $bindable(''),
+    onWorkspacesChanged,
   }: {
     ws?: RemoteConnection;
     sidebarTab?: 'files' | 'git' | 'search' | null;
     onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
     onRefresh?: () => void;
-    onCreateWorkspace?: (wsId: string) => void;
     showKeyboard?: boolean;
+    selectionMode?: boolean;
     backendName?: string;
+    panes?: PaneInfo[];
+    activePaneId?: string | null;
+    workspaces?: WorkspaceInfo[];
+    activeWorkspaceId?: string;
+    onWorkspacesChanged?: () => void;
   } = $props();
-
-  async function handleCreateWorkspace() {
-    if (!ws) return;
-    const id = await ws.createWorkspace();
-    if (id) {
-      await ws.switchWorkspace(id);
-      await ws.createPane();
-      ws.listPanes();
-      onCreateWorkspace?.(id);
-    }
-  }
 </script>
 
 <div class="actionbar">
   <!-- Sidebar toggles -->
   <div class="group">
-    <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title="文件" tabindex="-1">
+    <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title={$t('mobile.filesTitle')} tabindex="-1">
       <Folder class="w-4 h-4" />
     </button>
     <button class="ctrl-btn" class:active={sidebarTab === 'git'} onclick={() => onSidebarToggle?.('git')} title="Git" tabindex="-1">
       <GitBranch class="w-4 h-4" />
     </button>
-    <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title="搜索" tabindex="-1">
+    <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title={$t('mobile.searchTitle')} tabindex="-1">
       <Search class="w-4 h-4" />
     </button>
   </div>
 
   <!-- View controls -->
   <div class="group">
-    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title="虚拟键盘" tabindex="-1">
+    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
       <Keyboard class="w-4 h-4" />
     </button>
-    <button class="ctrl-btn" onclick={onRefresh} title="锁定渲染尺寸到本端并刷新" tabindex="-1">
+    <button class="ctrl-btn" class:active={selectionMode} onclick={() => selectionMode = !selectionMode} title={$t('mobile.selectionToggle')} tabindex="-1">
+      <MousePointer2 class="w-4 h-4" />
+    </button>
+    <button class="ctrl-btn" onclick={onRefresh} title={$t('mobile.lockAndRefresh')} tabindex="-1">
       <RefreshCw class="w-4 h-4" />
     </button>
   </div>
 
-  <!-- Workspace -->
-  <div class="group">
-    <button class="ctrl-btn" onclick={handleCreateWorkspace} title="新建工作区" tabindex="-1">
-      <Plus class="w-4 h-4" />
-    </button>
-  </div>
-
-  <span class="engine-badge" tabindex="-1">{backendName}</span>
+  <!-- 工作区 / 终端 树形级联（最右，原渲染类型标签位置） -->
+  <WorkspaceTree
+    {panes}
+    bind:activePaneId
+    {workspaces}
+    bind:activeWorkspaceId
+    {ws}
+    {backendName}
+    {onWorkspacesChanged}
+  />
 </div>
 
 <style>
-  .actionbar{display:flex;align-items:center;justify-content:space-around;gap:4px;padding:6px 12px;background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
-  .group{display:flex;align-items:center;gap:6px}
-  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:42px;height:36px;background:none;border:1px solid transparent;border-radius:8px;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
+  /* §safe-area: 底部内边距叠加 env(safe-area-inset-bottom)，让操作条避开 iPhone
+     底部 home indicator；无安全区时 inset 为 0，等同 6px。 */
+  /* §offscreen-fix: trim horizontal footprint so 6 icon buttons + the workspace
+     trigger fit within narrow phone widths instead of overflowing the right edge
+     (the WorkspaceTree popup is viewport-anchored as a belt-and-suspenders). */
+  .actionbar{display:flex;align-items:center;justify-content:space-between;gap:4px;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
+  .group{display:flex;align-items:center;gap:4px;flex-shrink:0}
+  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:38px;height:36px;background:none;border:1px solid transparent;border-radius:8px;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
   .ctrl-btn:active{background:var(--rg-surface-2);color:var(--rg-fg)}
   .ctrl-btn.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 12%, transparent);border-color:color-mix(in srgb, var(--rg-accent) 40%, transparent)}
-  .engine-badge{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--rg-surface-2);color:var(--rg-fg-muted);line-height:1.4;flex-shrink:0}
 </style>

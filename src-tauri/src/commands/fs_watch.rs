@@ -147,6 +147,9 @@ impl FsWatcher {
                     paths,
                     coalesced,
                 };
+                // §web-remote: also relay to desktop-browser clients (file tree /
+                // editor live refresh). Forward before the move into app.emit.
+                crate::remote::forward_event(&app, "fs-changed", &payload);
                 let _ = app.emit("fs-changed", payload);
             },
         )?;
@@ -165,8 +168,7 @@ impl FsWatcher {
     /// 若同一 root 的 recursive 标志变了，按"先卸后装"处理。
     pub fn sync_watched(&self, live: &[(PathBuf, bool)], app: &AppHandle) {
         {
-            let live_map: HashMap<&PathBuf, bool> =
-                live.iter().map(|(p, r)| (p, *r)).collect();
+            let live_map: HashMap<&PathBuf, bool> = live.iter().map(|(p, r)| (p, *r)).collect();
             let mut map = self.debouncers.lock();
             map.retain(|root, (_, rec)| live_map.get(root).is_some_and(|nr| *nr == *rec));
         }

@@ -1,16 +1,54 @@
 // vite.config.js
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import path from 'path';
+import { fileURLToPath } from 'url';
 // @ts-ignore — @tailwindcss/vite v4 ships ESM-only with package `exports`
 // that tsconfig `moduleResolution: "Node"` cannot resolve; resolved fine at
 // runtime by vite's bundler-style resolver.
 import tailwindcss from '@tailwindcss/vite';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// §web-remote: `RIDGE_WEB_REMOTE=1 vite build` produces a static SPA of the FULL
+// desktop UI for serving to plain browsers by the LAN remote server. Every
+// `@tauri-apps/api/*` import is redirected to the WS-backed shims in
+// src/lib/transport/tauriShim so the desktop code runs untouched outside Tauri.
+// In the normal Tauri build the flag is unset and none of this applies.
+const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
+/** @param {string} f */
+const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
+/** @type {Record<string, string>} */
+const webRemoteAliases = {};
+if (WEB_REMOTE) {
+  webRemoteAliases['@tauri-apps/api/core'] = shim('core.ts');
+  webRemoteAliases['@tauri-apps/api/event'] = shim('event.ts');
+  webRemoteAliases['@tauri-apps/api/window'] = shim('window.ts');
+  webRemoteAliases['@tauri-apps/plugin-dialog'] = shim('dialog.ts');
+  webRemoteAliases['@tauri-apps/plugin-clipboard-manager'] = shim('clipboard.ts');
+  webRemoteAliases['@tauri-apps/plugin-opener'] = shim('opener.ts');
+}
 
 export default defineConfig({
   plugins: [
     sveltekit(),
     tailwindcss(), // 如果你使用了 Tailwind
   ],
+
+  define: {
+    // Build-time flag read by +layout.svelte and the shims. `false` in the
+    // Tauri build lets the whole web-remote branch tree-shake away.
+    'import.meta.env.RIDGE_WEB_REMOTE': JSON.stringify(WEB_REMOTE),
+    // Build-time ridge-cloud base override (apiClient.ts BASE_DOMAIN). Empty in
+    // normal builds → client falls back to the production base. The debug build
+    // (scripts/tauri-build-debug.mjs) sets RIDGE_CLOUD_BASE_DOMAIN=localhost:5173
+    // so the packaged app talks to a local ridge-cloud instance.
+    'import.meta.env.RIDGE_CLOUD_BASE_DOMAIN': JSON.stringify(process.env.RIDGE_CLOUD_BASE_DOMAIN || ''),
+  },
+
+  resolve: {
+    alias: webRemoteAliases,
+  },
 
   // 路径别名在 svelte.config.js 的 kit.alias 中配置（与 SvelteKit / TS 一致）
 
@@ -31,6 +69,20 @@ export default defineConfig({
     // 允许 Tauri 的 WebView 访问
     fs: {
       allow: ['..'], // 允许访问 src-tauri 等上级目录
+    },
+    // 排除构建产物目录，避免 cargo/构建 churn 触发 vite 文件监视器崩溃。
+    // cargo dev 构建（build.rs）会重写 target/debug/web-remote-dist、
+    // target/debug/static/remote 等；vite 监视这些产物时，Windows
+    // ReadDirectoryChangesW 在目录被删除/重建瞬间会抛 UNKNOWN(errno -4094)，
+    // 整个 dev server 崩溃退出。这些都是构建产物（已 gitignore），dev server
+    // 无需监视。node_modules/.git 仍由 vite 默认忽略。
+    watch: {
+      ignored: [
+        '**/target/**',
+        '**/release/**',
+        '**/web-remote-dist/**',
+        '**/build/**',
+      ],
     },
   },
 

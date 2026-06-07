@@ -83,9 +83,8 @@ impl ProjectStore {
         }
 
         // Fetch the project
-        let mut stmt = conn.prepare(
-            "SELECT id, path, created_at, updated_at FROM projects WHERE path = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, path, created_at, updated_at FROM projects WHERE path = ?1")?;
         let project = stmt.query_row([&path], |row| {
             Ok(Project {
                 id: row.get(0)?,

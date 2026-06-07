@@ -1150,7 +1150,12 @@ impl RenderBackend for WebGpuPaneBackend {
             })
             .collect();
         let panel_cells_w = row_widths_cells.iter().copied().max().unwrap_or(0).max(8);
-        let panel_w = panel_cells_w as f32 * cell_w + 2.0 * pad_w;
+        // §history-scroll — reserve room on the right for a scrollbar when the
+        // full filtered list is longer than the visible window.
+        let needs_scrollbar = overlay.total_items > visible_count;
+        let sb_w = if needs_scrollbar { (cell_w * 0.30).clamp(4.0, 10.0) } else { 0.0 };
+        let sb_gap = if needs_scrollbar { (cell_w * 0.18).max(2.0) } else { 0.0 };
+        let panel_w = panel_cells_w as f32 * cell_w + 2.0 * pad_w + sb_w + sb_gap;
         let panel_h = visible_count as f32 * cell_h + 2.0 * pad_h;
 
         let panel_x = (overlay.anchor_col as f32 * cell_w).max(0.0);
@@ -1277,6 +1282,43 @@ impl RenderBackend for WebGpuPaneBackend {
                 bg_rgba: fg,
                 is_color: 0,
             });
+        }
+
+        // 5) §history-scroll — scrollbar track + thumb (Warp-style position
+        // indicator). Opaque colors mixed from bg→fg so no alpha-blend
+        // dependency. Drawn in the reserved right strip (see `sb_w`/`sb_gap`).
+        if needs_scrollbar && overlay.total_items > 0 {
+            let mix = |t: f32| {
+                [
+                    bg[0] * (1.0 - t) + fg[0] * t,
+                    bg[1] * (1.0 - t) + fg[1] * t,
+                    bg[2] * (1.0 - t) + fg[2] * t,
+                    1.0,
+                ]
+            };
+            let sb_x = panel_x + panel_w - sb_w - bw;
+            let track_y = panel_y_top + bw;
+            let track_h = (panel_h - 2.0 * bw).max(1.0);
+            let total = overlay.total_items as f32;
+            let frac_start = (overlay.first_visible as f32 / total).clamp(0.0, 1.0);
+            let frac_len = (visible_count as f32 / total).clamp(0.0, 1.0);
+            let min_thumb = (track_h * 0.10).clamp(10.0, track_h);
+            let thumb_h = (frac_len * track_h).max(min_thumb).min(track_h);
+            let mut thumb_y = track_y + frac_start * track_h;
+            if thumb_y + thumb_h > track_y + track_h {
+                thumb_y = track_y + track_h - thumb_h;
+            }
+            for (y, h, t) in [(track_y, track_h, 0.18_f32), (thumb_y, thumb_h, 0.55_f32)] {
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [sb_x, y],
+                    cell_size: [sb_w, h],
+                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                    atlas_layer: 0,
+                    fg_rgba: mix(t),
+                    bg_rgba: mix(t),
+                    is_color: 0,
+                });
+            }
         }
     }
 

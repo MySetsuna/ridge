@@ -8,6 +8,7 @@
   // updateSplitResizeDrag 写 ratios 后能立刻经 RgPane 的 size prop 反映到 DOM，
   // 不再被库内部 sz 状态覆盖。Class 名 `splitpanes__pane`/`splitpanes__splitter`
   // 通过 class prop forward，沿用 findSameAxisRefs 等查询逻辑。
+  import { t, tr } from '$lib/i18n';
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
   import { isTauri } from '@tauri-apps/api/core';
   import { TerminalManager } from '$lib/terminal/manager';
@@ -120,7 +121,7 @@ import {
       await closePaneApi(id);
     } catch (e) {
       console.error(e);
-      await alertDialog({ title: '操作失败', message: e instanceof Error ? e.message : String(e), danger: true });
+      await alertDialog({ title: tr('workspace.opFailed'), message: e instanceof Error ? e.message : String(e), danger: true });
     }
   }
 
@@ -509,7 +510,7 @@ import {
       await dockPane(src, targetId, region);
     } catch (err) {
       console.error(err);
-      await alertDialog({ title: '操作失败', message: err instanceof Error ? err.message : String(err), danger: true });
+      await alertDialog({ title: tr('workspace.opFailed'), message: err instanceof Error ? err.message : String(err), danger: true });
     }
   }
 </script>
@@ -552,7 +553,7 @@ import {
                 dockHover
               )}"
               role="region"
-              aria-label="将窗格停靠到此处"
+              aria-label={$t('workspace.dockHereLabel')}
               ondragover={(e) => {
                 e.preventDefault();
                 if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
@@ -581,7 +582,7 @@ import {
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
               draggable="true"
-              title="拖拽到其它窗格：靠边分屏，靠中间与目标互换"
+              title={$t('workspace.paneDragTitle')}
               onclick={() => activePaneId.set(node.id)}
               onkeydown={(e) => e.key === 'Enter' && activePaneId.set(node.id)}
               role="presentation"
@@ -616,7 +617,7 @@ import {
                          Always the first glyph so orchestrators see it at a glance. -->
                     <span
                       class="flex items-center gap-1 shrink-0 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/40 px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider"
-                      title={agentId ? `Claude Code agent 运行中：${agentId}` : 'teammate agent 运行中'}
+                      title={agentId ? $t('workspace.agentRunning', { agentId }) : $t('workspace.teammateRunning')}
                     >
                       <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                       AGENT
@@ -630,7 +631,7 @@ import {
                   {:else if agentState === 'starting'}
                     <span
                       class="flex items-center gap-1 shrink-0 rounded-full bg-amber-500/15 text-amber-300 border border-amber-400/40 px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider"
-                      title="teammate pane 启动中"
+                      title={$t('workspace.paneStarting')}
                     >
                       <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"></span>
                       STARTING
@@ -648,7 +649,7 @@ import {
                     {#if node.title}
                       <span class="text-[var(--rg-fg)] truncate">{node.title}</span>
                     {:else}
-                      <span class="text-[var(--rg-fg-muted)]">终端</span>
+                      <span class="text-[var(--rg-fg-muted)]">{$t('workspace.terminalFallback')}</span>
                     {/if}
                   {/if}
                 </span>
@@ -669,7 +670,7 @@ import {
             {/if}
             <button
               type="button"
-              title={leafCount <= 1 ? '至少保留一个窗格' : '关闭此窗格'}
+              title={leafCount <= 1 ? $t('workspace.keepOnePane') : $t('workspace.closeThisPane')}
               disabled={leafCount <= 1}
               class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)] disabled:opacity-25 disabled:pointer-events-none"
               onclick={() => onClosePane(node.id)}

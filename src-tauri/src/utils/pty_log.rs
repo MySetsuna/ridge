@@ -4,9 +4,7 @@ use uuid::Uuid;
 
 #[cfg(debug_assertions)]
 pub fn resize_ok(workspace_id: Uuid, pane_id: Uuid, rows: u16, cols: u16) {
-    eprintln!(
-        "[ridge][pty] resize_ok ws={workspace_id} pane={pane_id} rows={rows} cols={cols}"
-    );
+    eprintln!("[ridge][pty] resize_ok ws={workspace_id} pane={pane_id} rows={rows} cols={cols}");
 }
 
 #[cfg(not(debug_assertions))]
@@ -32,9 +30,7 @@ pub fn create_skip(_workspace_id: Uuid, _pane_id: Uuid) {}
 
 #[cfg(debug_assertions)]
 pub fn create_spawned(workspace_id: Uuid, pane_id: Uuid, trace_id: &str) {
-    eprintln!(
-        "[ridge][pty] create_spawned ws={workspace_id} pane={pane_id} trace={trace_id}"
-    );
+    eprintln!("[ridge][pty] create_spawned ws={workspace_id} pane={pane_id} trace={trace_id}");
 }
 
 #[cfg(not(debug_assertions))]
@@ -69,9 +65,7 @@ pub fn teammate_replace_pty(_workspace_id: Uuid, _pane_id: Uuid) {}
 /// through to `activate_pane_pty` for cross-correlation in logs.
 #[cfg(debug_assertions)]
 pub fn create_pending(workspace_id: Uuid, pane_id: Uuid, trace_id: &str) {
-    eprintln!(
-        "[ridge][pty] create_pending ws={workspace_id} pane={pane_id} trace={trace_id}"
-    );
+    eprintln!("[ridge][pty] create_pending ws={workspace_id} pane={pane_id} trace={trace_id}");
 }
 
 #[cfg(not(debug_assertions))]

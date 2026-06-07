@@ -5,6 +5,7 @@
    */
   import { devIssue, clearDevIssue } from '$lib/devIssue';
   import { onMount } from 'svelte';
+  import { t, tr } from '$lib/i18n';
 
   let showHints = $state(false);
 
@@ -99,7 +100,7 @@
     <button
       type="button"
       class="absolute inset-0 bg-black/60 backdrop-blur-[2px] border-0 cursor-default"
-      aria-label="关闭"
+      aria-label={$t('ui.devIssueCloseLabel')}
       onclick={dismiss}
     ></button>
     <div
@@ -120,7 +121,7 @@
           type="button"
           class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200 transition-colors"
           onclick={dismiss}
-          title="关闭 (Esc)"
+          title={$t('ui.devIssueCloseTitle')}
         >
           <span class="text-lg leading-none">×</span>
         </button>
@@ -142,7 +143,7 @@
               <div
                 class="px-3 py-1.5 text-[11px] font-medium text-zinc-500 uppercase tracking-wider border-b border-white/[0.06]"
               >
-                Call Stack
+                {$t('ui.devIssueCallStack')}
               </div>
               <pre
                 class="p-4 text-[12px] leading-5 text-zinc-400 font-mono whitespace-pre-wrap break-all max-h-[40vh] overflow-y-auto">{trimStack($devIssue.stack)}</pre>
@@ -151,7 +152,7 @@
 
           <div class="rounded-lg bg-zinc-900/80 ring-1 ring-white/[0.06] p-4 space-y-2">
             <p class="text-[12px] text-zinc-400 leading-relaxed">
-              <span class="text-zinc-300 font-medium">PTY / 后端：</span>
+              <span class="text-zinc-300 font-medium">{$t('ui.devIssuePtyLabel')}</span>
               查看运行 <code class="text-violet-300/90">ridge</code> 或
               <code class="text-violet-300/90">cargo tauri dev</code> 的终端输出，搜索前缀
               <code class="text-zinc-200">[ridge][pty]</code>（如
@@ -163,7 +164,7 @@
               class="text-[12px] text-violet-400/90 hover:text-violet-300 underline-offset-2 hover:underline"
               onclick={() => (showHints = !showHints)}
             >
-              {showHints ? '收起' : '展开'} Windows 事件查看器说明
+              {showHints ? $t('ui.devIssueToggleHintsCollapse') : $t('ui.devIssueToggleHintsExpand')}{$t('ui.devIssueToggleHintsSuffix')}
             </button>
             {#if showHints}
               <ul
@@ -192,7 +193,7 @@
           class="rounded-lg px-3 py-1.5 text-[12px] font-medium text-zinc-300 bg-white/[0.06] hover:bg-white/[0.1] transition-colors"
           onclick={dismiss}
         >
-          Dismiss
+          {$t('ui.devIssueDismiss')}
         </button>
       </div>
     </div>

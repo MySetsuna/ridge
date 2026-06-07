@@ -60,6 +60,7 @@
   import { alertDialog, confirmDialog, promptDialog } from './RidgeDialog.svelte';
   import GitGraph from './GitGraph.svelte';
   import { DEFAULT_DY as GRAPH_ROW_HEIGHT } from './gitGraphLayout';
+  import { t, tr } from '$lib/i18n';
 
   // Maximum ref pills shown inline before an overflow badge collapses the rest.
   // HEAD + one branch is the natural pair, so the HEAD exception adds +1 when
@@ -364,7 +365,7 @@
       }
       await navigator.clipboard.writeText(text);
     } catch (e) {
-      await alertDialog({ title: '复制失败', message: `复制${label}失败：${e}`, danger: true });
+      await alertDialog({ title: tr('scm.copyFailed'), message: tr('scm.copyFailedMsg', { label, error: String(e) }), danger: true });
     }
   }
 
@@ -396,17 +397,17 @@
         });
         if (inProgress.cherry_pick) {
           abortCmd = 'git_cherry_pick_abort';
-          abortMsg = '\n\n仓库目前处于 cherry-pick 暂停状态。要 abort 并恢复工作树吗？';
+          abortMsg = '\n\n' + tr('scm.cherryPickPaused');
         } else if (inProgress.revert) {
           abortCmd = 'git_revert_abort';
-          abortMsg = '\n\n仓库目前处于 revert 暂停状态。要 abort 并恢复工作树吗？';
+          abortMsg = '\n\n' + tr('scm.revertPaused');
         }
       } catch {
         /* op-status probe failed — fall through to plain error */
       }
       if (abortCmd) {
         const ok = await confirmDialog({
-          title: `${label} 失败`,
+          title: tr('scm.opFailedLabel', { label }),
           message: `${e}${abortMsg}`,
           okLabel: 'Abort',
           danger: true,
@@ -415,11 +416,11 @@
           try {
             await invoke(abortCmd, { repoRoot: selectedRepo });
           } catch (abortErr) {
-            await alertDialog({ title: 'Abort 失败', message: String(abortErr), danger: true });
+            await alertDialog({ title: tr('scm.abortFailed'), message: String(abortErr), danger: true });
           }
         }
       } else {
-        await alertDialog({ title: `${label} 失败`, message: String(e), danger: true });
+        await alertDialog({ title: tr('scm.opFailedLabel', { label }), message: String(e), danger: true });
       }
     } finally {
       // Always refresh — even on partial failure the user wants to see
@@ -440,30 +441,30 @@
     const items: ContextMenuItem[] = [
       {
         id: 'copy-short',
-        label: `复制短 hash (${shortHash})`,
+        label: tr('scm.copyShortHash', { hash: shortHash }),
         icon: Copy,
-        action: () => copyToClipboard(shortHash, '短 hash'),
+        action: () => copyToClipboard(shortHash, tr('scm.copyShortHash', { hash: shortHash })),
       },
       {
         id: 'copy-full',
-        label: '复制完整 hash',
+        label: tr('scm.copyFullHash'),
         icon: Copy,
-        action: () => copyToClipboard(c.hash, '完整 hash'),
+        action: () => copyToClipboard(c.hash, tr('scm.copyFullHash')),
       },
       { id: 'd1', divider: true },
       {
         id: 'create-branch',
-        label: '从此 commit 创建分支…',
+        label: tr('scm.createBranchFromCommit'),
         icon: GitBranch,
         action: () => {
           void (async () => {
             const name = await promptDialog({
-              title: '创建分支',
-              message: `从 ${shortHash} 创建新分支并切过去：`,
+              title: tr('scm.createBranchTitle'),
+              message: tr('scm.createBranchMsg', { hash: shortHash }),
               placeholder: 'feature/my-branch',
             });
             if (!name?.trim()) return;
-            await runCommitOp('创建分支', async () => {
+            await runCommitOp(tr('scm.createBranchTitle'), async () => {
               await invoke('git_checkout', {
                 repoRoot: selectedRepo,
                 branch: name.trim(),
@@ -482,7 +483,7 @@
           void (async () => {
             const ok = await confirmDialog({
               title: 'Checkout to commit',
-              message: `Checkout 到 ${shortHash}？这会进入 detached HEAD 状态——你现在不会在任何分支上。`,
+              message: tr('scm.checkoutDetachedMsg', { hash: shortHash }),
               okLabel: 'Checkout',
               danger: true,
             });
@@ -519,7 +520,7 @@
           void (async () => {
             const ok = await confirmDialog({
               title: 'Revert commit',
-              message: `Revert ${shortHash}？将创建一个反向 commit 撤销其改动。`,
+              message: tr('scm.revertCommitMsg', { hash: shortHash }),
               okLabel: 'Revert',
               danger: true,
             });
@@ -547,8 +548,8 @@
             const bag = commitFilesFor(c.hash);
             if (!bag || bag.files.length === 0) {
               await alertDialog({
-                title: '无变动文件',
-                message: bag?.error ?? `${shortHash} 不包含可显示的文件改动。`,
+                title: tr('scm.noChangedFilesTitle'),
+                message: bag?.error ?? tr('scm.noFilesInCommit', { hash: shortHash }),
               });
               return;
             }
@@ -571,17 +572,17 @@
         action: () => {
           void (async () => {
             const name = await promptDialog({
-              title: '创建 tag',
-              message: `在 ${shortHash} 上创建标签：`,
+              title: tr('scm.createTagTitle'),
+              message: tr('scm.createTagMsg', { hash: shortHash }),
               placeholder: 'v1.0.0',
             });
             if (!name?.trim()) return;
             const message = await promptDialog({
-              title: 'Annotated tag 信息',
-              message: '可选。留空则创建 lightweight tag（无 message）。',
+              title: tr('scm.annotatedTagTitle'),
+              message: tr('scm.annotatedTagMsg'),
               placeholder: 'Release v1.0.0',
             });
-            await runCommitOp('创建 tag', async () => {
+            await runCommitOp(tr('scm.createTagTitle'), async () => {
               await invoke('git_create_tag', {
                 repoRoot: selectedRepo,
                 name: name.trim(),
@@ -594,12 +595,12 @@
       },
       {
         id: 'reset',
-        label: 'Reset 到此 commit',
+        label: tr('scm.resetToCommit'),
         icon: RotateCw,
         children: [
           {
             id: 'reset-soft',
-            label: 'Soft  (保留索引与工作区改动)',
+            label: tr('scm.resetSoftLabel'),
             action: () => {
               void runCommitOp('Reset --soft', async () => {
                 await invoke('git_reset', {
@@ -612,7 +613,7 @@
           },
           {
             id: 'reset-mixed',
-            label: 'Mixed (保留工作区改动，清空索引)',
+            label: tr('scm.resetMixedLabel'),
             action: () => {
               void runCommitOp('Reset --mixed', async () => {
                 await invoke('git_reset', {
@@ -625,12 +626,12 @@
           },
           {
             id: 'reset-hard',
-            label: 'Hard  (丢弃所有未提交改动 ‼)',
+            label: tr('scm.resetHardLabel'),
             action: () => {
               void (async () => {
                 const ok = await confirmDialog({
                   title: 'Reset --hard',
-                  message: `Reset --hard 到 ${shortHash}？\n\n会丢弃所有未提交的改动，且无法恢复。`,
+                  message: tr('scm.resetHardMsg', { hash: shortHash }),
                   okLabel: 'Reset --hard',
                   danger: true,
                 });
@@ -766,7 +767,7 @@
       await invoke('git_stage', { repoRoot: root, paths });
       await refreshStatus(root);
     } catch (e) {
-      await alertDialog({ title: '暂存失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('scm.stageFailed'), message: String(e), danger: true });
     }
   }
   async function unstage(root: string, paths: string[]): Promise<void> {
@@ -774,7 +775,7 @@
       await invoke('git_unstage', { repoRoot: root, paths });
       await refreshStatus(root);
     } catch (e) {
-      await alertDialog({ title: '撤销暂存失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('scm.unstageFailed'), message: String(e), danger: true });
     }
   }
   /**
@@ -790,13 +791,13 @@
     const message =
       untracked.length > 0
         ? tracked.length > 0
-          ? `丢弃 ${files.length} 个文件的更改？将永久删除 ${untracked.length} 个未跟踪文件，此操作不可撤销。`
-          : `永久删除 ${untracked.length} 个未跟踪文件？此操作不可撤销。`
-        : `丢弃 ${files.length} 个文件的更改？此操作不可撤销。`;
+          ? tr('scm.discardMixedMsg', { total: String(files.length), untracked: String(untracked.length) })
+          : tr('scm.deleteUntrackedOnlyMsg', { untracked: String(untracked.length) })
+        : tr('scm.discardTrackedOnlyMsg', { total: String(files.length) });
     const ok = await confirmDialog({
-      title: untracked.length > 0 && tracked.length === 0 ? '永久删除未跟踪文件' : '确认丢弃',
+      title: untracked.length > 0 && tracked.length === 0 ? tr('scm.deleteUntrackedTitle') : tr('scm.confirmDiscardTitle'),
       message,
-      okLabel: untracked.length > 0 && tracked.length === 0 ? '删除' : '丢弃',
+      okLabel: untracked.length > 0 && tracked.length === 0 ? tr('scm.deleteLabel') : tr('scm.discardLabel'),
       danger: true,
     });
     if (!ok) return;
@@ -815,13 +816,13 @@
       }
       await refreshStatus(root);
     } catch (e) {
-      await alertDialog({ title: '丢弃失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('scm.discardFailed'), message: String(e), danger: true });
     }
   }
   async function commit(root: string, amend = false): Promise<void> {
     const msg = (commitMessage[root] ?? '').trim();
     if (!msg) {
-      await alertDialog({ title: '请输入提交信息', message: '提交信息不能为空' });
+      await alertDialog({ title: tr('scm.commitMessageRequired'), message: tr('scm.commitMessageEmpty') });
 
       return;
     }
@@ -832,7 +833,7 @@
       await refreshStatus(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      await alertDialog({ title: '提交失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('scm.commitFailed'), message: String(e), danger: true });
     } finally {
       committing = false;
     }
@@ -883,7 +884,7 @@
       await loadBranches(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      await alertDialog({ title: '切换分支失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('scm.switchBranchFailed'), message: String(e), danger: true });
     }
   }
   function startCreateBranch(root: string): void {
@@ -912,7 +913,7 @@
       await loadBranches(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      await alertDialog({ title: '创建分支失败', message: String(e), danger: true });
+      await alertDialog({ title: tr('scm.createBranchFailed'), message: String(e), danger: true });
     } finally {
       pendingCreateCommit = false;
     }
@@ -933,7 +934,7 @@
       await loadBranches(root);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
-      await alertDialog({ title: '操作失败', message: `${op} 失败: ${e}`, danger: true });
+      await alertDialog({ title: tr('scm.opFailed'), message: `${op} 失败: ${e}`, danger: true });
     } finally {
       syncing = '';
     }
@@ -1247,14 +1248,14 @@ onMount(() => {
           class="px-3 h-9 shrink-0 flex items-center justify-between border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/40"
         >
           <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-            更改
+            {$t('scm.changesSection')}
           </span>
           <div class="flex items-center gap-1">
-            <span class="text-[10px] text-[var(--rg-fg-muted)]">{repoRoots.length} 仓库</span>
+            <span class="text-[10px] text-[var(--rg-fg-muted)]">{$t('scm.repoCount', { count: repoRoots.length })}</span>
             <button
               type="button"
               class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]"
-              title="刷新"
+              title={$t('scm.refresh')}
               onclick={() => void manualRefresh()}
             >
               <RefreshCw class="h-3 w-3 {discoveryLoading ? 'animate-spin' : ''}" />
@@ -1265,7 +1266,7 @@ onMount(() => {
         <div class="flex-1 min-h-0" use:overlayScroll>
           {#if repoRoots.length === 0}
             <div class="p-4 text-[12px] text-[var(--rg-fg-muted)] text-center">
-              {discoveryLoading ? '扫描中…' : '未在任意终端的 cwd 中检测到 Git 仓库。'}
+              {discoveryLoading ? $t('scm.scanning') : $t('scm.noRepoDetected')}
             </div>
           {:else}
             {#each repoRoots as root (root)}
@@ -1285,7 +1286,7 @@ onMount(() => {
                     type="button"
                     class="flex items-center justify-center h-4 w-4 shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors"
                     onclick={() => toggleRepoCollapse(root)}
-                    title={collapsedRepos.has(root) ? '展开' : '折叠'}
+                    title={collapsedRepos.has(root) ? $t('scm.expand') : $t('scm.collapse')}
                   >
                     <ChevronRight class="h-3 w-3 transition-transform duration-150 {collapsedRepos.has(root) ? '' : 'rotate-90'}" />
                   </button>
@@ -1301,7 +1302,7 @@ onMount(() => {
                     class="flex items-center gap-1 h-6 px-1.5 rounded text-[10px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/25 transition-colors max-w-[140px]"
                     data-rg-branch-picker={root}
                     onclick={(ev) => void openBranchPicker(root, ev)}
-                    title={s?.current_branch ? `当前分支：${s.current_branch}（点击切换）` : '切换分支'}
+                    title={s?.current_branch ? $t('scm.currentBranch', { branch: s.current_branch }) : $t('scm.switchBranch')}
                   >
                     <GitBranch class="h-3 w-3 shrink-0" />
                     <span class="truncate">{s?.current_branch ?? '(detached)'}</span>
@@ -1314,7 +1315,7 @@ onMount(() => {
                       class="flex items-center gap-0.5 h-6 px-1.5 rounded text-[10px] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
                       onclick={() => void runSync(root, 'sync')}
                       disabled={syncing === root}
-                      title="同步（fetch + pull + push）"
+                      title={$t('scm.syncTooltip')}
                     >
                       {#if s.behind > 0}<ArrowDown class="h-3 w-3" /><span>{s.behind}</span>{/if}
                       {#if s.ahead > 0}<ArrowUp class="h-3 w-3" /><span>{s.ahead}</span>{/if}
@@ -1345,7 +1346,7 @@ onMount(() => {
                     class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]"
                     onclick={() => void runSync(root, 'push')}
                     disabled={syncing === root}
-                    title="Push（无 upstream 时自动 -u origin HEAD）"
+                    title={$t('scm.pushTooltip')}
                   >
                     <ArrowUp class="h-3 w-3" />
                   </button>
@@ -1376,7 +1377,7 @@ onMount(() => {
                           type="text"
                           autofocus
                           class="flex-1 bg-transparent border-0 outline-none text-[var(--rg-fg)] placeholder-[var(--rg-fg-muted)]/60"
-                          placeholder="新分支名称"
+                          placeholder={$t('scm.newBranchPlaceholder')}
                           bind:value={creatingBranchName}
                           onkeydown={(ev) => {
                             if (ev.key === 'Enter') {
@@ -1399,7 +1400,7 @@ onMount(() => {
                         data-rg-branch-picker={root}
                         onclick={() => startCreateBranch(root)}
                       >
-                        <Plus class="h-3 w-3" /> 创建新分支…
+                        <Plus class="h-3 w-3" /> {$t('scm.createNewBranch')}
                       </button>
                     {/if}
                     {#each blist as b (b.name)}
@@ -1434,7 +1435,7 @@ onMount(() => {
                       <input
                         type="text"
                         class="w-full text-[12px] px-2 py-1 rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]/60"
-                        placeholder="消息（仅提交已暂存的更改）"
+                        placeholder={$t('scm.commitMessagePlaceholder')}
                         bind:value={commitMessage[root]}
                       />
                       <div class="flex items-center gap-1.5">
@@ -1443,16 +1444,16 @@ onMount(() => {
                           class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] border border-[var(--rg-accent)]/30 hover:bg-[var(--rg-accent)]/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           onclick={() => commit(root, false)}
                           disabled={committing || s.staged.length === 0}
-                          title={s.staged.length === 0 ? '请先暂存文件' : '提交已暂存的更改'}
+                          title={s.staged.length === 0 ? $t('scm.commitDisabledTooltip') : $t('scm.commitTooltip')}
                         >
-                          <GitCommit class="h-3 w-3" /> 提交 {s.staged.length}
+                          <GitCommit class="h-3 w-3" /> {$t('scm.commitButton', { count: s.staged.length })}
                         </button>
                         <button
                           type="button"
                           class="px-2 py-1 rounded text-[10px] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-40"
                           onclick={() => commit(root, true)}
                           disabled={committing || s.staged.length === 0}
-                          title="修改最近一次提交（git commit --amend）"
+                          title={$t('scm.amendTooltip')}
                         >
                           Amend
                         </button>
@@ -1465,7 +1466,7 @@ onMount(() => {
                                 root,
                                 [...s.changes, ...s.untracked].map((f) => f.path)
                               )}
-                            title="暂存全部"
+                            title={$t('scm.stageAll')}
                           >
                             <Plus class="h-3 w-3" />
                           </button>
@@ -1489,12 +1490,12 @@ onMount(() => {
                           {:else}
                             <ChevronDown class="h-3 w-3" />
                           {/if}
-                          <span class="flex-1">已暂存</span>
+                          <span class="flex-1">{$t('scm.staged')}</span>
                         </button>
                         <button
                           type="button"
                           class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-all"
-                          title="撤销暂存全部"
+                          title={$t('scm.unstageAll')}
                           onclick={() => unstage(root, s.staged.map((f) => f.path))}
                         >
                           <Minus class="h-3 w-3" />
@@ -1505,7 +1506,7 @@ onMount(() => {
                         {#each s.staged as f (f.path)}
                           <div
                             class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--rg-surface)]/50 transition-colors cursor-pointer"
-                            title="{f.path}（点击查看差异）"
+                            title="{f.path}"
                             role="button"
                             tabindex="0"
                             onclick={() => void showDiff(root, f.path, true)}
@@ -1533,7 +1534,7 @@ onMount(() => {
                                 <button
                                   type="button"
                                   class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-                                  title="撤销暂存"
+                                  title={$t('scm.unstage')}
                                   onclick={(e) => { e.stopPropagation(); void unstage(root, [f.path]); }}
                                 >
                                   <Minus class="h-3 w-3" />
@@ -1559,12 +1560,12 @@ onMount(() => {
                           {:else}
                             <ChevronDown class="h-3 w-3" />
                           {/if}
-                          <span class="flex-1">更改</span>
+                          <span class="flex-1">{$t('scm.changes')}</span>
                         </button>
                         <button
                           type="button"
                           class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--rg-surface)] hover:text-red-400 transition-all"
-                          title="丢弃全部未暂存更改"
+                          title={$t('scm.discardAllUnstaged')}
                           onclick={() => discard(root, s.changes)}
                         >
                           <Undo2 class="h-3 w-3" />
@@ -1572,7 +1573,7 @@ onMount(() => {
                         <button
                           type="button"
                           class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-all"
-                          title="暂存全部"
+                          title={$t('scm.stageAll')}
                           onclick={() => stage(root, s.changes.map((f) => f.path))}
                         >
                           <Plus class="h-3 w-3" />
@@ -1583,7 +1584,7 @@ onMount(() => {
                         {#each s.changes as f (f.path)}
                           <div
                             class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--rg-surface)]/50 transition-colors cursor-pointer"
-                            title="{f.path}（点击查看差异）"
+                            title="{f.path}"
                             role="button"
                             tabindex="0"
                             onclick={() => void showDiff(root, f.path, false)}
@@ -1607,7 +1608,7 @@ onMount(() => {
                                 <button
                                   type="button"
                                   class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-                                  title="丢弃更改"
+                                  title={$t('scm.discardChange')}
                                   onclick={(e) => { e.stopPropagation(); void discard(root, [f]); }}
                                 >
                                   <Undo2 class="h-3 w-3" />
@@ -1615,7 +1616,7 @@ onMount(() => {
                                 <button
                                   type="button"
                                   class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-                                  title="暂存更改"
+                                  title={$t('scm.stageChange')}
                                   onclick={(e) => { e.stopPropagation(); void stage(root, [f.path]); }}
                                 >
                                   <Plus class="h-3 w-3" />
@@ -1647,12 +1648,12 @@ onMount(() => {
                           {:else}
                             <ChevronDown class="h-3 w-3" />
                           {/if}
-                          <span class="flex-1">未跟踪</span>
+                          <span class="flex-1">{$t('scm.untracked')}</span>
                         </button>
                         <button
                           type="button"
                           class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--rg-surface)] hover:text-red-400 transition-all"
-                          title="永久删除全部未跟踪文件"
+                          title={$t('scm.deleteAllUntracked')}
                           onclick={() => discard(root, s.untracked)}
                         >
                           <Undo2 class="h-3 w-3" />
@@ -1660,7 +1661,7 @@ onMount(() => {
                         <button
                           type="button"
                           class="flex h-5 w-5 items-center justify-center rounded opacity-0 group-hover/grp:opacity-100 hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-all"
-                          title="暂存全部未跟踪文件"
+                          title={$t('scm.stageAllUntracked')}
                           onclick={() => stage(root, s.untracked.map((f) => f.path))}
                         >
                           <Plus class="h-3 w-3" />
@@ -1676,7 +1677,7 @@ onMount(() => {
                                additions (matches VS Code's "U" file diff). -->
                           <div
                             class="group flex items-center gap-1.5 h-6 pl-6 pr-3 text-[11px] hover:bg-[var(--rg-surface)]/50 transition-colors cursor-pointer"
-                            title="{f.path}（点击查看新文件 diff）"
+                            title="{f.path}"
                             role="button"
                             tabindex="0"
                             onclick={() => showDiff(root, f.path, false)}
@@ -1693,7 +1694,7 @@ onMount(() => {
                               <button
                                 type="button"
                                 class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-red-400"
-                                title="永久删除文件（不可撤销）"
+                                title={$t('scm.deleteFilePermanent')}
                                 onclick={(e) => { e.stopPropagation(); void discard(root, [f]); }}
                               >
                                 <Undo2 class="h-3 w-3" />
@@ -1701,7 +1702,7 @@ onMount(() => {
                               <button
                                 type="button"
                                 class="flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-                                title="暂存"
+                                title={$t('scm.stage')}
                                 onclick={(e) => { e.stopPropagation(); void stage(root, [f.path]); }}
                               >
                                 <Plus class="h-3 w-3" />
@@ -1718,11 +1719,11 @@ onMount(() => {
 
                   {#if totalChanges === 0}
                     <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">
-                      工作区干净
+                      {$t('scm.workingTreeClean')}
                     </div>
                   {/if}
                 {:else}
-                  <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">加载中…</div>
+                  <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('scm.loading')}</div>
                 {/if}
                 {/if}<!-- /collapsedRepos -->
               </div>
@@ -1738,8 +1739,8 @@ onMount(() => {
         <div
           class="px-3 h-9 shrink-0 flex items-center justify-between gap-2 border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/40"
         >
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] shrink-0" title="带分支线 + merge 曲线的提交图谱">
-            图谱
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] shrink-0">
+            {$t('scm.graphSection')}
           </span>
           {#if repoRoots.length > 0}
             <select
@@ -1754,7 +1755,7 @@ onMount(() => {
             <button
               type="button"
               class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-50 disabled:cursor-not-allowed"
-              title="刷新（git pull --ff-only 后重载图谱；pull 失败仍刷新）"
+              title={$t('scm.graphRefreshTooltip')}
               disabled={graphRefreshing || graphLoading}
               onclick={() => selectedRepo && void refreshGraphWithPull(selectedRepo)}
             >
@@ -1766,10 +1767,10 @@ onMount(() => {
         <div class="flex-1 min-h-0" use:overlayScroll>
           {#if !selectedRepo}
             <div class="p-4 text-[12px] text-[var(--rg-fg-muted)] text-center">
-              无 Git 仓库可显示
+              {$t('scm.noRepoToShow')}
             </div>
           {:else if graphLoading && !graphInfo}
-            <div class="p-4 text-[12px] text-[var(--rg-fg-muted)] text-center">加载中…</div>
+            <div class="p-4 text-[12px] text-[var(--rg-fg-muted)] text-center">{$t('scm.loading')}</div>
           {:else if graphError}
             <div class="p-3 m-2 rounded bg-red-500/10 border border-red-500/20 text-[11px] text-red-400">
               {graphError}
@@ -1793,7 +1794,7 @@ onMount(() => {
                       ? 'bg-[var(--rg-accent)]/15'
                       : 'hover:bg-[var(--rg-surface)]/40'}"
                     style="height: {GRAPH_ROW_HEIGHT}px"
-                    title={`${c.hash}\n${c.author} · ${formatDate(c.date)}\n右键查看操作`}
+                    title={`${c.hash}\n${c.author} · ${formatDate(c.date)}\n${$t('scm.rightClickForActions')}`}
                     role="button"
                     tabindex="0"
                     onclick={() => selectCommit(c.hash)}
@@ -1910,17 +1911,17 @@ onMount(() => {
                         </div>
                         <div class="flex-1 min-h-0 overflow-y-auto rg-scroll-overlay py-1">
                           {#if bag?.loading}
-                            <div class="px-3 py-2 text-[var(--rg-fg-muted)]">加载变动文件…</div>
+                            <div class="px-3 py-2 text-[var(--rg-fg-muted)]">{$t('scm.loadingCommitFiles')}</div>
                           {:else if bag?.error}
-                            <div class="px-3 py-2 text-rose-300">无法读取：{bag.error}</div>
+                            <div class="px-3 py-2 text-rose-300">{bag.error}</div>
                           {:else if bag && bag.files.length === 0}
-                            <div class="px-3 py-2 text-[var(--rg-fg-muted)]/70">无变动文件</div>
+                            <div class="px-3 py-2 text-[var(--rg-fg-muted)]/70">{$t('scm.noChangedFiles')}</div>
                           {:else if bag}
                             {#each bag.files as cf (cf.path)}
                               <button
                                 type="button"
                                 class="w-full flex items-center gap-2 px-3 py-1 text-left hover:bg-[var(--rg-accent)]/10 transition-colors"
-                                title="查看 {cf.path} 在此 commit 的 diff"
+                                title={$t('scm.viewFileDiffTooltip', { path: cf.path })}
                                 onclick={() =>
                                   fileEditorStore.openDiffTab({
                                     repoRoot: selectedRepo!,
@@ -1949,9 +1950,9 @@ onMount(() => {
                   use:rgGraphSentinel={() => selectedRepo && loadMoreCommits(selectedRepo)}
                 >
                   {#if loadingMoreCommits}
-                    加载更早…
+                    {$t('scm.loadingOlder')}
                   {:else if selectedRepo && noMoreCommits.has(selectedRepo)}
-                    已到 git 历史末端
+                    {$t('scm.gitHistoryEnd')}
                   {/if}
                 </div>
               </div>

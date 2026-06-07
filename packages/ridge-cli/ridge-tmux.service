@@ -1,0 +1,76 @@
+# Ridge tmux engine — 无头 tmux 会话引擎的 systemd 服务模板。
+#
+# 用途：在一台无图形界面的机器（VPS）上常驻 `rdg tmux`，让本机上的 agent
+# （Claude Code 等）经 PATH 上的 `tmux` shim 创建/管理无头 tmux 会话。引擎与桌面端
+# 逐字节同源。详见 docs/ridge-vps-agent.md。
+#
+# 与 ridge-cli.service 的区别：ridge-cli.service 跑 `remote --daemon`（被动 PTY 桥，
+# 主动外连信令，故重度沙箱 + 低优先级）；本单元跑 `tmux` 引擎，背后是 agent 真刀真枪
+# 干活（编译/读写仓库/联网装包），所以沙箱更轻、不限速。
+#
+# 安装（系统级，开机自启）:
+#   sudo cp rdg /usr/local/bin/rdg
+#   sudo useradd --system --create-home --home-dir /var/lib/ridge --shell /bin/bash ridge
+#   sudo install -d -m 0750 -o ridge -g ridge /etc/ridge
+#   sudo install -m 0600 -o ridge -g ridge ridge-tmux.env.example /etc/ridge/tmux.env
+#   sudoedit /etc/ridge/tmux.env        # 至少设置一个强 RIDGE_TMUX_TOKEN
+#   sudo cp ridge-tmux.service /etc/systemd/system/ridge-tmux.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ridge-tmux
+#   journalctl -u ridge-tmux -f         # 启动日志里有 RIDGE_TEAMMATE_URL/_TOKEN 导出行
+#
+# 或用户级（无需 root，登录会话内）:
+#   mkdir -p ~/.config/systemd/user ~/.config/ridge
+#   cp ridge-tmux.env.example ~/.config/ridge/tmux.env && chmod 600 ~/.config/ridge/tmux.env
+#   # 编辑下面的 EnvironmentFile= 指向 %h/.config/ridge/tmux.env，并删掉 User=/Group= 两行:
+#   cp ridge-tmux.service ~/.config/systemd/user/ridge-tmux.service
+#   systemctl --user daemon-reload && systemctl --user enable --now ridge-tmux
+#   loginctl enable-linger "$USER"      # 让服务在登出后仍存活
+
+[Unit]
+Description=Ridge headless tmux session engine (rdg tmux)
+Documentation=https://remo2ridge.duckdns.org
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 系统级运行身份（用户级安装时删除这两行）。
+User=ridge
+Group=ridge
+
+# 配置来源：--bind / --port / --token 经 RIDGE_TMUX_* 注入（命令行 > 环境变量 > 默认）。
+# `-` 前缀使文件缺失时不报错；建议至少设置一个强 RIDGE_TMUX_TOKEN（见 ridge-tmux.env.example）。
+EnvironmentFile=-/etc/ridge/tmux.env
+
+# 不在命令行写 --token：那样 token 会出现在 `ps`/journald 里。改由上面的 EnvironmentFile
+# 提供 RIDGE_TMUX_TOKEN，CLI 直接读取。
+ExecStart=/usr/local/bin/rdg tmux
+
+# 失败重启 + 退避，避免崩溃风暴。
+Restart=on-failure
+RestartSec=5s
+
+# 日志级别（journald 收集）。可调成 debug 排障。
+Environment=RUST_LOG=info,ridge_cli=info
+
+# ── 沙箱（适度，避免拖垮 agent 的真实工作）──────────────────────
+# agent 要编译/读写仓库/联网装包，故不能像 remote 守护那样重度收敛。
+NoNewPrivileges=true
+PrivateTmp=true
+# /usr、/boot、/etc 只读，但 /home、/var 可写（agent 仓库通常在家目录下）。
+# 若 agent 需写 /etc 以外的系统路径，自行放宽。
+ProtectSystem=full
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+
+# ── 资源（默认不限速：VPS 上 agent 就是来干活的）────────────────
+# 如需给前台让路再启用，例如:
+# Nice=5
+# CPUWeight=50
+# 内存上限按机器规格设置；agent 的构建很吃内存，太低会被 OOM kill。
+# MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

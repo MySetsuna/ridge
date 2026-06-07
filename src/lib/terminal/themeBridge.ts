@@ -30,6 +30,7 @@ import { settingsStore } from '$lib/stores/settings';
 import { termFontSize } from '$lib/stores/termSettings';
 import { hex8 } from '$lib/utils/cssColor';
 import { TerminalManager } from './manager';
+import { withEmojiFallback } from './fontStack';
 
 // Color normalization moved to $lib/utils/cssColor — shared with
 // $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the
@@ -152,16 +153,15 @@ export function setupTerminalThemeBridge(): () => void {
 	let _lastFontFamily: string | null = null;
 	let _lastFontSize: number | null = null;
 
+	// Emoji font ordering lives in ./fontStack (shared with manager.ts +
+	// the web-remote controller) — `withEmojiFallback` normalizes any font
+	// string to a Noto-first emoji chain so bundled Noto wins (flags incl.).
 	const pushFont = (family: string, size: number) => {
 		if (family === _lastFontFamily && size === _lastFontSize) return;
 		_lastFontFamily = family;
 		_lastFontSize = size;
-		
-		const resolvedFamily = family.trim() !== '' 
-			? family 
-			: "'Cascadia Code','Cascadia Mono',Consolas,ui-monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',monospace";
-		
-		manager.setFont(resolvedFamily, size);
+
+		manager.setFont(withEmojiFallback(family), size);
 	};
 
 	// Initial push: the store fires immediately on subscribe. settings.ts's

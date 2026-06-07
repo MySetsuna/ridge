@@ -1,10 +1,12 @@
 mod commands;
 mod db;
+mod deep_root;
 mod engine;
 mod fs;
 pub mod remote;
 mod state;
 mod teammate;
+mod tray;
 mod types;
 mod utils;
 
@@ -13,12 +15,14 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
-use tokio::sync::mpsc;
-use crate::commands::{fs_watch, git, pane, process, project, settings, terminal, theme, watch, ridge_file, workspace};
+use crate::commands::{
+    fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme, watch, workspace,
+};
 use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tokio::sync::mpsc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,7 +40,9 @@ pub fn run() {
 
     let db_path = app_data_dir.join("projects.db");
     let project_store = ProjectStore::new(&db_path)
-        .map_err(|e| tracing::error!(target: "ridge::init", error = %e, "project store init failed"))
+        .map_err(
+            |e| tracing::error!(target: "ridge::init", error = %e, "project store init failed"),
+        )
         .ok();
 
     let mut app_state = AppState::new(event_tx);
@@ -48,19 +54,51 @@ pub fn run() {
         .set_path_and_load(app_data_dir.join("remote-blacklist.json"));
     let teammate_state = app_state.clone();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // 公网登录授权（契约 §1）：single-instance 必须最先注册——浏览器唤起
+    // `ridge://auth/focus` 时 Windows 会启动第二个进程，此插件把它的 argv 转交
+    // 给首个实例并触发下面的回调，我们据此聚焦主窗口并广播 auth-focus 事件。
+    //
+    // 例外：设置 `RIDGE_DISABLE_SINGLE_INSTANCE` 时跳过注册——专供
+    // `tauri:dev:cdp` 让一个带 CDP 的调试实例与已安装的正式版并存联调
+    // （正式版持有 single-instance 锁；调试实例若也注册会被立即聚焦并退出）。
+    // 仅该 dev 工作流设置此变量；正式构建从不设置，启动行为完全不变。
+    if std::env::var_os("RIDGE_DISABLE_SINGLE_INSTANCE").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            crate::deep_root::focus_main_window(app);
+        }));
+    }
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_dialog::init())
+    // Deep Root Mode（§8.1）：进入深根时发原生系统通知（NotificationExt）。
+    .plugin(tauri_plugin_notification::init())
         // §4 关闭即将退出 → 同步把当前所有已保存（`associated_file_path != None`）
         // 工作区路径写到 `restore_workspaces.json`，下次非 cli 启动时由前端
         // `get_restore_set` 取回并自动 reopen。这里必须同步：spawn 异步任务在
         // 进程退出前可能跑不完。
         .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 let state = app.state::<AppState>();
-                // 确保远程服务器被停止
+                // §4 阻止误退出（Deep Root Mode）：点窗口关闭按钮默认**隐藏到托盘**，
+                // 而非退出进程 —— 否则用户误关窗口会连同远控通道 / teammate / pane
+                // 生命周期一并销毁。仅当「彻底退出 Ridge」托盘项已置 `quitting` 标志
+                // 时才放行真正的退出（此时跑保存恢复集 + 停远控的收尾逻辑）。
+                if !state.quitting.load(std::sync::atomic::Ordering::Acquire) {
+                    api.prevent_close();
+                    if let Err(e) = window.hide() {
+                        tracing::warn!(
+                            target: "ridge::deep_root",
+                            error = %e,
+                            "hide-to-tray on close-requested failed"
+                        );
+                    }
+                    return;
+                }
+                // 真正退出路径：与改动前行为一致 —— 停远程服务器 + 同步保存恢复集。
                 crate::commands::remote::stop_remote_server(&state);
                 ridge_file::save_restore_set(app, &state);
             }
@@ -74,6 +112,27 @@ pub fn run() {
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
                 // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
                 let _ = teammate_state.app_handle.set(handle.clone());
+
+                // §web-remote: mirror teammate layout / active-pane events to
+                // desktop-browser remote clients in ONE place. `listen_any`
+                // catches every emit of these events regardless of which handle
+                // emitted them (there are ~21 scattered emit sites), so we don't
+                // touch the teammate code. The JSON payload is re-published onto
+                // the remote UI event bus → relayed as a `{type:'event'}` frame →
+                // dispatched by the browser's `listen()` shim. No feedback loop:
+                // forwarding publishes to the broadcast bus, never back to `emit`.
+                {
+                    use tauri::Listener;
+                    for name in ["teammate-layout-changed", "teammate-active-pane-changed"] {
+                        let fwd = handle.clone();
+                        app.listen_any(name, move |event| {
+                            let payload: serde_json::Value =
+                                serde_json::from_str(event.payload())
+                                    .unwrap_or(serde_json::Value::Null);
+                            crate::remote::forward_event(&fwd, name, payload);
+                        });
+                    }
+                }
 
                 // Build the main window programmatically (rather than declaring
                 // it in `tauri.conf.json`) so we can attach an
@@ -94,6 +153,39 @@ pub fn run() {
                     .initialization_script(&splash_init_script)
                     .build()?;
                 window.show()?;
+
+                // Deep Root Mode（§8.1）：构建系统托盘（恢复工作台 / 彻底退出）。
+                // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
+                if let Err(e) = crate::tray::build_tray(app) {
+                    tracing::error!(target: "ridge::tray", error = %e, "tray init failed");
+                }
+
+                // 公网登录授权（契约 §1/§2.3）：注册 `ridge://` 运行时处理器。
+                //   - register_all()：Linux/Windows 运行时绑定 scheme（dev 下尤其必要）。
+                //   - on_open_url：网页授权后 `ridge://auth/focus` 唤起 → 聚焦主窗口 +
+                //     广播 `ridge://auth-focus` 事件，前端据此立即触发一次轮询。
+                //   URI 仅作信号，绝不携带 JWT/敏感数据（token 一律走轮询接口）。
+                {
+                    use tauri_plugin_deep_link::DeepLinkExt;
+                    if let Err(e) = app.deep_link().register_all() {
+                        tracing::warn!(
+                            target: "ridge::deep_link",
+                            error = %e,
+                            "deep-link scheme runtime registration failed (continuing)"
+                        );
+                    }
+                    let dl_handle = app.handle().clone();
+                    app.deep_link().on_open_url(move |event| {
+                        let urls: Vec<String> =
+                            event.urls().iter().map(|u| u.to_string()).collect();
+                        tracing::info!(
+                            target: "ridge::deep_link",
+                            ?urls,
+                            "deep link opened"
+                        );
+                        crate::deep_root::focus_main_window(&dl_handle);
+                    });
+                }
 
             tauri::async_runtime::spawn(async move {
                 use std::collections::HashMap;
@@ -181,7 +273,11 @@ pub fn run() {
                             // amplification and state-drift issues of the
                             // previous per-sub-delta model.
                             let app_state = handle.state::<AppState>();
-                            if app_state.remote_enabled.load(Ordering::Relaxed) {
+                            // B2（D-GM-11）：LAN 远控 或 活跃 cloud 会话任一开启即 fan-out
+                            //（cloud-only 时 remote_enabled 可能为 false，但有 cloud pane 订阅）。
+                            if app_state.remote_enabled.load(Ordering::Relaxed)
+                                || app_state.cloud_remote_active.load(Ordering::Acquire)
+                            {
                                 let reg = app_state.pty_pane_registry.read();
                                 if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
                                     if !entry.remote_subs.is_empty() {
@@ -590,6 +686,8 @@ pub fn run() {
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
             commands::remote::get_remote_info,
+            commands::remote::remote_reap_orphans,
+            commands::remote::verify_remote_totp,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
             commands::remote::set_remote_fs_readonly,
@@ -599,6 +697,13 @@ pub fn run() {
             commands::remote::add_to_blacklist,
             commands::remote::list_blacklist,
             commands::remote::remove_from_blacklist,
+            // B2（D-GM-11）cloud pane 裸字节流（host-local sink，非 controller 直调）
+            commands::cloud_pane::subscribe_pane_raw,
+            commands::cloud_pane::unsubscribe_pane_raw,
+            // Deep Root Mode（§8.1）
+            deep_root::enter_deep_root_mode,
+            deep_root::restore_from_deep_root,
+            deep_root::set_cloud_remote_active,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

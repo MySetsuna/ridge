@@ -126,7 +126,8 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 # `device.create_shader_module` time in production.
 naga = { version = "23", features = ["wgsl-in"] }
 
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
+# NOTE (S1, 2026-06-03): the size-optimised release profile that lived here
+# (`opt-level = "z"`, `lto = true`, `codegen-units = 1`) moved to the workspace
+# root `Cargo.toml`. Cargo ignores `[profile.*]` on non-root workspace members,
+# so keeping it here would only emit a warning. The wasm-pack bundle keeps the
+# identical optimisation via the hoisted root profile.

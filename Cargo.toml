@@ -1,0 +1,30 @@
+# Virtual workspace root for the Ridge Rust crates.
+#
+# Created by S1 (ridge-core extraction). Before this, `src-tauri`,
+# `packages/ridge-cli`, `packages/ridge-term`, and `packages/rg-split` were
+# standalone crates wired only by `path` dependencies. Registering them as
+# workspace members (per the unified-remote handoff plan §6 S1 / S0 §11 file
+# ownership) gives `ridge-core` a single home, a shared `Cargo.lock`, and lets
+# `cargo check -p ridge-core` / `cargo check -p ridge` run from the repo root.
+#
+# `resolver = "2"` is required for a virtual manifest and matches each member's
+# `edition = "2021"` feature-resolution semantics.
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "packages/ridge-core",
+    "packages/ridge-cli",
+    "packages/ridge-term",
+    "packages/ridge-tmux",
+]
+
+# Workspace members cannot declare their own `[profile.*]` — only the workspace
+# root's profiles apply. `packages/ridge-term/Cargo.toml` previously set a
+# size-optimised release profile for its wasm bundle (`opt-level = "z"`, LTO,
+# 1 codegen unit). Hoisted here verbatim so the wasm-pack release build keeps
+# the same output size it had before this crate became a workspace member.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

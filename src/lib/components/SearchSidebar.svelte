@@ -35,6 +35,7 @@
   import { searchFolderStore, clearSearchFolder, searchQueryStore } from '$lib/stores/searchState';
   import { settingsStore } from '$lib/stores/settings';
   import { get } from 'svelte/store';
+  import { t, tr } from '$lib/i18n';
 
   const { active = false } = $props<{ active?: boolean }>();
 
@@ -362,9 +363,9 @@
     const fileList = Array.from(selectedFiles);
     if (fileList.length === 0) return;
     const confirmed = await confirmDialog({
-      title: '确认替换',
-      message: `将在 ${fileList.length} 个文件中把 "${query}" 替换为 "${replaceText}"，继续？`,
-      okLabel: '替换',
+      title: tr('ui.confirmReplaceTitle'),
+      message: tr('ui.confirmReplaceMessage', { count: fileList.length, search: query, replace: replaceText }),
+      okLabel: tr('ui.confirmReplaceOk'),
     });
     if (!confirmed) return;
     replacing = true;
@@ -406,10 +407,10 @@
         }
       }
       await alertDialog({
-        title: '替换完成',
-        message: `完成：${totalFiles} 个文件，${totalReplacements} 处替换${
-          errors.length ? `\n\n错误:\n${errors.join('\n')}` : ''
-        }`,
+        title: tr('ui.replaceCompleteTitle'),
+        message: errors.length
+          ? tr('ui.replaceCompleteWithErrors', { files: totalFiles, replacements: totalReplacements, errors: errors.join('\n') })
+          : tr('ui.replaceCompleteMessage', { files: totalFiles, replacements: totalReplacements }),
       });
       // Re-run search so stale matches disappear.
       await runSearch();
@@ -540,11 +541,11 @@
     class="px-3 h-11 shrink-0 flex items-center justify-between border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/40"
   >
     <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] flex items-center gap-1.5">
-      搜索
+      {$t('ui.search')}
       {#if $searchFolderStore}
         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] border border-[var(--rg-accent)]/30 max-w-[140px]">
           <span class="truncate" title={$searchFolderStore}>{$searchFolderStore.replace(/\\/g, '/').split('/').pop()}</span>
-          <button type="button" onclick={clearSearchFolder} class="shrink-0 hover:text-[var(--rg-fg)] transition-colors" title="清除文件夹限制">
+          <button type="button" onclick={clearSearchFolder} class="shrink-0 hover:text-[var(--rg-fg)] transition-colors" title={$t('ui.clearFolderScope')}>
             <X class="h-2.5 w-2.5" />
           </button>
         </span>
@@ -552,14 +553,14 @@
     </span>
     <div class="flex items-center gap-1">
       {#if !$searchFolderStore}
-        <span class="text-[10px] text-[var(--rg-fg-muted)]" title="当前会话的工作目录数量">
-          {roots.length} 根
+        <span class="text-[10px] text-[var(--rg-fg-muted)]">
+          {$t('ui.rootCount', { count: roots.length })}
         </span>
       {/if}
       <button
         type="button"
         class="flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-40"
-        title="重新运行上一次搜索"
+        title={$t('ui.rerunLastSearch')}
         disabled={!lastRunQuery || searching}
         onclick={() => void runSearch()}
       >
@@ -575,7 +576,7 @@
       <button
         type="button"
         class="flex h-6 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]"
-        title={showReplace ? '收起替换' : '展开替换'}
+        title={showReplace ? $t('ui.collapseReplace') : $t('ui.expandReplace')}
         onclick={() => (showReplace = !showReplace)}
       >
         {#if showReplace}
@@ -589,7 +590,7 @@
         bind:value={query}
         bind:this={queryInput}
         onkeydown={onQueryKeydown}
-        placeholder="搜索…"
+        placeholder={$t('ui.searchPlaceholder')}
         class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] focus:outline-none focus:border-[var(--rg-accent)]/60 placeholder:text-[var(--rg-fg-muted)]/70"
       />
     </div>
@@ -598,7 +599,7 @@
         <input
           type="text"
           bind:value={replaceText}
-          placeholder="替换为…"
+          placeholder={$t('ui.replaceWithPlaceholder')}
           class="flex-1 min-w-0 px-2 py-1 text-[12px] rounded bg-[var(--rg-bg)] border border-[var(--rg-border)] focus:outline-none focus:border-[var(--rg-accent)]/60 placeholder:text-[var(--rg-fg-muted)]/70"
         />
         <button
@@ -606,14 +607,14 @@
           class="ml-1 flex items-center gap-1 h-6 px-2 rounded text-[11px] bg-[var(--rg-accent)]/15 text-[var(--rg-accent)] border border-[var(--rg-accent)]/30 hover:bg-[var(--rg-accent)]/25 disabled:opacity-40"
           disabled={replacing || results.length === 0 || !query.trim()}
           onclick={() => void runReplace()}
-          title="全部替换"
+          title={$t('ui.replaceAll')}
         >
           {#if replacing}
             <Loader2 class="h-3 w-3 animate-spin" />
           {:else}
             <Replace class="h-3 w-3" />
           {/if}
-          全部替换
+          {$t('ui.replaceAll')}
         </button>
       </div>
     {/if}
@@ -625,28 +626,28 @@
       <input
         type="text"
         bind:value={includeGlobs}
-        placeholder="包含：*.ts, src/**"
+        placeholder={$t('ui.includeGlobsPlaceholder')}
         class="flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-[var(--rg-bg)] border focus:outline-none placeholder:text-[var(--rg-fg-muted)]/70 font-mono
           {includeGlobErrors.length > 0
             ? 'border-rose-500/60 focus:border-rose-500/80 ring-1 ring-rose-500/30'
             : 'border-[var(--rg-border)] focus:border-[var(--rg-accent)]/60'}"
         title={includeGlobErrors.length > 0
-          ? `非法 glob：\n${includeGlobErrors.map((g) => `  ${g.pattern} — ${g.error}`).join('\n')}`
-          : '只在匹配这些 glob 的文件里搜索。逗号分隔；* 不跨路径分隔符，** 跨任意层级。'}
+          ? $t('ui.includeGlobsErrorTitle', { details: includeGlobErrors.map((g) => `  ${g.pattern} — ${g.error}`).join('\n') })
+          : $t('ui.includeGlobsTitle')}
       />
     </div>
     <div class="flex items-center gap-1 pl-5">
       <input
         type="text"
         bind:value={excludeGlobs}
-        placeholder="排除：**/dist/**, **/*.lock"
+        placeholder={$t('ui.excludeGlobsPlaceholder')}
         class="flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-[var(--rg-bg)] border focus:outline-none placeholder:text-[var(--rg-fg-muted)]/70 font-mono
           {excludeGlobErrors.length > 0
             ? 'border-rose-500/60 focus:border-rose-500/80 ring-1 ring-rose-500/30'
             : 'border-[var(--rg-border)] focus:border-[var(--rg-accent)]/60'}"
         title={excludeGlobErrors.length > 0
-          ? `非法 glob：\n${excludeGlobErrors.map((g) => `  ${g.pattern} — ${g.error}`).join('\n')}`
-          : '匹配这些 glob 的文件不进入结果。'}
+          ? $t('ui.excludeGlobsErrorTitle', { details: excludeGlobErrors.map((g) => `  ${g.pattern} — ${g.error}`).join('\n') })
+          : $t('ui.excludeGlobsTitle')}
       />
     </div>
 
@@ -658,7 +659,7 @@
           {caseSensitive
           ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
           : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
-        title="区分大小写 (Aa)"
+        title={$t('ui.caseSensitiveTitle')}
         aria-pressed={caseSensitive}
         onclick={() => (caseSensitive = !caseSensitive)}
       >
@@ -670,7 +671,7 @@
           {wholeWord
           ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
           : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
-        title="匹配完整单词 (\\b)"
+        title={$t('ui.wholeWordTitle')}
         aria-pressed={wholeWord}
         onclick={() => (wholeWord = !wholeWord)}
       >
@@ -682,16 +683,16 @@
           {useRegex
           ? 'border-[var(--rg-accent)]/60 bg-[var(--rg-accent)]/15 !text-[var(--rg-accent)]'
           : 'border-[var(--rg-border)] hover:bg-[var(--rg-surface)]'}"
-        title="正则表达式 (.*)"
+        title={$t('ui.regexTitle')}
         aria-pressed={useRegex}
         onclick={() => (useRegex = !useRegex)}
       >
         <Regex class="h-3 w-3" />
       </button>
       <span class="ml-auto text-[10px] text-[var(--rg-fg-muted)]">
-        {#if searching}搜索中…
-        {:else if lastRunQuery && results.length === 0}无结果
-        {:else if results.length > 0}{results.length} 处 / {groupedResults.length} 文件
+        {#if searching}{$t('ui.searchingStatus')}
+        {:else if lastRunQuery && results.length === 0}{$t('ui.noResultsStatus')}
+        {:else if results.length > 0}{$t('ui.matchCountStatus', { count: results.length, files: groupedResults.length })}
         {:else}&nbsp;
         {/if}
       </span>
@@ -702,15 +703,15 @@
   <div class="flex-1 min-h-0" use:overlayScroll>
     {#if roots.length === 0}
       <div class="p-4 text-[11px] text-[var(--rg-fg-muted)] text-center">
-        当前会话无任何工作目录，打开一个终端或 .ridge 工作区后再试。
+        {$t('ui.noWorkingDirMessage')}
       </div>
     {:else if results.length === 0 && lastRunQuery}
       <div class="p-4 text-[11px] text-[var(--rg-fg-muted)] text-center">
-        未匹配 "{lastRunQuery}"
+        {$t('ui.noMatchMessage', { query: lastRunQuery })}
       </div>
     {:else if results.length === 0}
       <div class="p-4 text-[11px] text-[var(--rg-fg-muted)] text-center">
-        输入关键字后回车执行搜索。
+        {$t('ui.searchPromptMessage')}
       </div>
     {:else}
       {#each visibleGroups as group (group.file)}
@@ -723,7 +724,7 @@
                 class="h-3 w-3 accent-[var(--rg-accent)]"
                 checked={selectedFiles.has(group.file)}
                 onchange={() => toggleFileSelected(group.file)}
-                title="是否包含在替换里"
+                title={$t('ui.includeInReplace')}
               />
             {/if}
             <button
@@ -773,7 +774,7 @@
           class="w-full px-4 py-2 text-[11px] text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] transition-colors text-center"
           onclick={() => { showAll = true; }}
         >
-          显示全部 {results.length} 条结果（当前显示 {DISPLAY_LIMIT}）
+          {$t('ui.showAllResults', { count: results.length, limit: DISPLAY_LIMIT })}
         </button>
       {/if}
     {/if}

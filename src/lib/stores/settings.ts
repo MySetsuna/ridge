@@ -13,12 +13,12 @@ export interface UserSettings {
   defaultCwd: string;
   terminalPaddingPx: number;
   terminalScrollbackLines: number;
-  // P4.4 (2026-05-21) â€?removed `parserBackend: 'wasm' | 'rust'` toggle.
+  // P4.4 (2026-05-21) ï¿½?removed `parserBackend: 'wasm' | 'rust'` toggle.
   // The Rust-side PaneParser is now the only path; `set_pane_delta_mode`
   // is still invoked from RidgePane but always with `enabled: true` (and
   // remains used by the R5 self-heal force-reframe in ptyBridge).
-  /// 2026-05-21 â€?terminal IME helper textarea gate.
-  /// 'ime': click â†?focus invisible IME helper textarea so OS IME
+  /// 2026-05-21 ï¿½?terminal IME helper textarea gate.
+  /// 'ime': click ï¿½?focus invisible IME helper textarea so OS IME
   ///   composition events (CJK input methods) can attach. Each
   ///   keystroke routes through compositionstart/update/end. Default
   ///   for users who type Chinese / Japanese / Korean into shells.
@@ -158,11 +158,18 @@ export function applyTheme(themeId: string): void {
 export function setTheme(themeId: string): void {
   applyTheme(themeId);
   setSetting('theme', themeId);
-  // Persist to disk so the next launch's splash can render with the
-  // correct loader colors BEFORE any JS has run. Without this the
-  // first-frame splash would always fall back to the bootstrap theme.
-  // Fire-and-forget â€?failure to persist only affects the next-launch
-  // splash, never the current session.
+  // Â§theme-isolation: a remote control end (desktop-in-browser web-remote) must
+  // NOT write its theme back to the host. `set_active_theme` mutates the HOST's
+  // active theme + persists it to disk, and the host re-pushes that theme to
+  // EVERY connected control end (mobile, other web-remotes) â€” so a remote
+  // session's theme pick would clobber the host and every peer (the missing
+  // isolation). The host write is only meaningful on the native desktop, where
+  // this app IS the host; in web-remote the theme stays local (CSS vars +
+  // localStorage + kernel via the theme bridge), isolated per control end.
+  if (import.meta.env.RIDGE_WEB_REMOTE === true) return;
+  // Persist to disk so the next launch's splash can render with the correct
+  // loader colors BEFORE any JS has run. Fire-and-forget â€” failure only affects
+  // the next-launch splash, never the current session.
   invoke('set_active_theme', { themeId }).catch((e) => {
     console.warn('[settings] set_active_theme persistence failed', e);
   });

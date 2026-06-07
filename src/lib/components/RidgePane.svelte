@@ -16,9 +16,10 @@
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { t, tr } from '$lib/i18n';
 import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
-import { ensurePtyBridge, setPaneDeltaMode } from '$lib/terminal/ptyBridge';
+import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning } from '$lib/stores/remoteStatus';
@@ -67,6 +68,14 @@ let attached = $state(false);
 
 const manager = TerminalManager.instance();
 
+// §web-remote: compile-time flag for the desktop-in-browser SPA build
+// (`RIDGE_WEB_REMOTE=1 vite build`, defined in vite.config.js). When true,
+// this pane is a CONTROLLER viewing the host's PTY over the LAN-WS shim, so
+// the per-pane "re-claim my size" affordance must be available even though
+// the host-side `remoteRunning` store is false on the controller. See
+// tauriShim/core.ts — browser-only surfaces gate on this flag, not isTauri().
+const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+
 // §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
 // ArrowLeft / Home / Delete / mid-line edits preserve the buffer
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
@@ -79,27 +88,55 @@ let currentInputBuffer = $state<InputBufferState>(EMPTY_INPUT_BUFFER);
 // `packages/ridge-term/src/render/renderer.rs::HistoryOverlay` for the
 // renderer state and `webgpu.rs::draw_history_overlay` for the paint.
 let historyOverlayOpen = $state(false);
+// FULL filtered candidate list, newest-first. The renderer is fed a WINDOW
+// (slice) of this; `historyOverlaySelected` indexes into the full list.
 let historyOverlayItems = $state<string[]>([]);
 let historyOverlaySelected = $state(-1);
 let historyOverlayAbove = $state(true);
 let historyOverlayAnchor = $state<{ row: number; col: number } | null>(null);
+// §history-scroll — window start within the full list + window height.
+let historyOverlayFirstVisible = $state(0);
+let historyOverlayWindow = $state(12);
 
-const HISTORY_OVERLAY_MAX_ROWS = 10;
+// Hard ceiling on the visible window. The popup also can't exceed the space
+// above/below the anchor; everything beyond is reachable by scrolling (a
+// scrollbar shows position). The wasm renderer independently caps to 40.
+const HISTORY_OVERLAY_MAX_WINDOW = 16;
+// Cap the in-memory candidate list so a huge shell history doesn't bloat each
+// push; 500 recent matches is far more than anyone scrolls through.
+const HISTORY_OVERLAY_MAX_ITEMS = 500;
 
 function snapshotHistoryItems(query: string): string[] {
 	const all = dedupKeepFirst(get(terminalHistoryStore));
-	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ROWS);
+	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ITEMS);
+}
+
+// Window height = as many rows as fit above/below the anchor, capped — a
+// Warp-style "show many, scroll for the rest" popup instead of a fixed 10.
+function computeHistoryWindow(anchorRow: number, placeAbove: boolean): number {
+	const rows = manager.rows(paneId) || 24;
+	const avail = placeAbove ? anchorRow : Math.max(0, rows - anchorRow - 1);
+	return Math.max(3, Math.min(HISTORY_OVERLAY_MAX_WINDOW, avail));
 }
 
 function pushHistoryOverlay(): void {
 	if (!historyOverlayOpen || !historyOverlayAnchor) return;
+	const total = historyOverlayItems.length;
+	const win = Math.min(historyOverlayWindow, total);
+	// Clamp the window start so it never runs past the end of the list.
+	const first = Math.max(0, Math.min(historyOverlayFirstVisible, Math.max(0, total - win)));
+	historyOverlayFirstVisible = first;
+	const slice = historyOverlayItems.slice(first, first + win);
+	const sliceSelected = historyOverlaySelected >= 0 ? historyOverlaySelected - first : -1;
 	manager.setHistoryOverlay(
 		paneId,
-		historyOverlayItems,
-		historyOverlaySelected,
+		slice,
+		sliceSelected,
 		historyOverlayAnchor.row,
 		historyOverlayAnchor.col,
 		historyOverlayAbove,
+		total,
+		first,
 	);
 }
 
@@ -110,9 +147,11 @@ function openHistoryOverlay(): boolean {
 	if (items.length === 0) return false;
 	historyOverlayItems = items;
 	historyOverlaySelected = -1;
+	historyOverlayFirstVisible = 0;
 	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
 	const rows = manager.rows(paneId);
 	historyOverlayAbove = anchor.row >= rows / 2;
+	historyOverlayWindow = computeHistoryWindow(anchor.row, historyOverlayAbove);
 	historyOverlayOpen = true;
 	pushHistoryOverlay();
 	return true;
@@ -123,6 +162,7 @@ function closeHistoryOverlay(): void {
 	historyOverlayOpen = false;
 	historyOverlaySelected = -1;
 	historyOverlayItems = [];
+	historyOverlayFirstVisible = 0;
 	historyOverlayAnchor = null;
 	manager.clearHistoryOverlay(paneId);
 }
@@ -154,14 +194,28 @@ function moveHistorySelection(delta: number): void {
 		closeHistoryOverlay();
 		return;
 	}
+	// Newest-first list (index 0 = most recent). ArrowUp (delta<0) recalls
+	// the most recent command FIRST then walks toward older — shell
+	// convention + the user's "newest prioritized". ArrowDown is the reverse.
 	if (delta < 0) {
-		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
-		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
-		else historyOverlaySelected -= 1;
-	} else {
+		// back in time: prompt → newest → older → oldest → prompt
 		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
 		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
 		else historyOverlaySelected += 1;
+	} else {
+		// forward in time: prompt → oldest → newer → newest → prompt
+		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
+		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
+		else historyOverlaySelected -= 1;
+	}
+	// §history-scroll — keep the selection inside the visible window.
+	const win = Math.min(historyOverlayWindow, n);
+	if (historyOverlaySelected === -1) {
+		historyOverlayFirstVisible = 0;
+	} else if (historyOverlaySelected < historyOverlayFirstVisible) {
+		historyOverlayFirstVisible = historyOverlaySelected;
+	} else if (historyOverlaySelected >= historyOverlayFirstVisible + win) {
+		historyOverlayFirstVisible = historyOverlaySelected - win + 1;
 	}
 	pushHistoryOverlay();
 }
@@ -810,7 +864,7 @@ function onPtyResize(
 	// it on plain primary — the kernel grid only narrows AFTER the
 	// backend ConPTY resize completes, eliminating the in-flight byte
 	// race that used to cause border characters to wrap on shrink.
-	return invoke('resize_pane', { paneId, rows, cols, isAlt, isInlineTui }).then(
+	return invoke('resize_pane', { workspaceId, paneId, rows, cols, isAlt, isInlineTui }).then(
 		() => undefined,
 		(err) => {
 			console.error('resize_pane', err);
@@ -952,6 +1006,12 @@ onMount(() => {
 		// window are fed into the parked kernel rather than dropped.
 		// `pane-pty-closed` rebuild (create_pane + activate_pane_pty)
 		// also lives in the bridge.
+		//
+		// ORDERING CONTRACT (5b): this `ensurePtyBridge` MUST run BEFORE the
+		// `enableDeltaModeThenFit` call in step 7 — it registers the pty-delta
+		// Channel that setPaneDeltaMode + the deterministic post-fit Resize delta
+		// depend on. enableDeltaModeThenFit asserts `hasPtyBridge` and warns if
+		// this ordering is ever broken.
 		await ensurePtyBridge(paneId, workspaceId);
 		if (!alive) return;
 
@@ -1005,8 +1065,17 @@ onMount(() => {
 		// call flips the gate after the pane has activated, at which
 		// point the channel (registered by ptyBridge) starts
 		// receiving delta frames.
+		// 5b — deterministic fit AFTER the pty-delta Channel gate opens. P4.4
+		// routes kernel grid resize solely through apply_delta(Resize), gated on
+		// the Channel (registered by ensurePtyBridge above) + delta_mode. Awaiting
+		// setPaneDeltaMode before fitPaneNow closes the attach-rAF-fit race that
+		// left teammate panes stuck at 80×24 (they don't go through GUI split's
+		// scheduleForceFitAfterSplit). 0×0/hidden workspaces still fall back to the
+		// becomes-visible re-fit + kernel-grid self-heal. See bug_split_kernel_race.
 		if (alive) {
-			void setPaneDeltaMode(paneId, true);
+			void enableDeltaModeThenFit(paneId, () => {
+				if (alive) manager.fitPaneNow(paneId);
+			});
 		}
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
@@ -1016,9 +1085,9 @@ onMount(() => {
 });
 
 // P4.4 (2026-05-21) — removed the parserBackend live-switch effect.
-// With Rust path unconditional, the initial `setPaneDeltaMode(paneId, true)`
-// in the onMount IIFE is the only call site needed. No more 200ms fade
-// mask — there is no backend to switch to.
+// With Rust path unconditional, the onMount IIFE's `enableDeltaModeThenFit`
+// (which enables delta_mode then fits) is the only call site needed. No more
+// 200ms fade mask — there is no backend to switch to.
 
 // §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
 // used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`
@@ -1269,6 +1338,17 @@ $effect(() => {
 			return;
 		}
 
+		// ★ Alternate-scroll fallback: alt-screen TUI that DIDN'T enable
+		// mouse reporting (less / man / git log / fzf / claude /theme menu).
+		// handleWheel returned false above (no mouse mode); there's no host
+		// scrollback on alt screen, so without this the wheel is dead. Send
+		// arrow-key presses instead — the xterm `alternateScroll` default.
+		if (manager.wheelAltScroll(paneId, e)) {
+			e.preventDefault();
+			touchTuiSticky();
+			return;
+		}
+
 		// Only intercept when there's actually scrollback to scroll through.
 		const { total } = manager.scrollState(paneId);
 		if (total === 0) return;
@@ -1302,14 +1382,14 @@ function onContextMenu(e: MouseEvent) {
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
 		...(sel
-			? [{ id: 'term-copy', label: '复制', action: () => { void writeText(sel); } }]
+			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: () => { void writeText(sel); } }]
 			: []),
-		{ id: 'term-paste', label: '粘贴', action: () => {
-			void readText().then((t) => { if (t) pasteIntoPane(t); });
+		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: () => {
+			void readText().then((txt) => { if (txt) pasteIntoPane(txt); });
 		}},
 		{ id: 'term-sep1', divider: true },
-		{ id: 'term-select-all', label: '全选', action: () => manager.selectAll(paneId) },
-		{ id: 'term-clear', label: '清空', action: () => {
+		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
+		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: () => {
 			// §B.2 (2026-05-08) — full physical clear: grid + scrollback +
 			// cursor home, all in-kernel without a PTY round trip. Pre-fix
 			// this sent only Ctrl+L which the shell translated into ED 2 +
@@ -1337,14 +1417,14 @@ function onContextMenu(e: MouseEvent) {
 		// them (sets `height` → flex-col), so "向下拆分" passes 'vertical'.
 		// The previous mapping was inverted — see RgPane.svelte's
 		// `dim = direction === 'horizontal' ? 'width' : 'height'`.
-		{ id: 'term-split-right', label: '向右拆分', action: () => {
+		{ id: 'term-split-right', label: tr('workspace.ctxSplitRight'), action: () => {
 			void splitPane(paneId, 'horizontal');
 		}},
-		{ id: 'term-split-down', label: '向下拆分', action: () => {
+		{ id: 'term-split-down', label: tr('workspace.ctxSplitDown'), action: () => {
 			void splitPane(paneId, 'vertical');
 		}},
 		{ id: 'term-sep3', divider: true },
-		{ id: 'term-close', label: '关闭面板', action: () => {
+		{ id: 'term-close', label: tr('workspace.ctxClosePanel'), action: () => {
 			void closePane(paneId);
 		}},
 	], 'terminal', paneId, workspaceId);
@@ -1380,8 +1460,11 @@ function jumpToBottom() {
 
 // §multi-size: when remote control is on, the desktop and remote devices
 // share ONE PTY size. A remote device that claims/refreshes can shrink this
-// pane's grid; this button re-claims the PTY at THIS desktop pane's size and
-// forces a full repaint. Only shown while remote control is enabled.
+// pane's grid; this button re-claims the PTY at THIS pane's size and forces a
+// full repaint. Shown on the host while the remote server runs ($remoteRunning)
+// AND on the desktop-in-browser controller (WEB_REMOTE) — there fitPaneNow's
+// resize_pane tunnels over the LAN-WS shim, so it is exactly how a browser pane
+// tells the host PTY its own dimensions.
 function refreshForRemote() {
 	if (!alive || !attached) return;
 	manager.fitPaneNow(paneId);
@@ -1571,7 +1654,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	class:bell-flash={bellFlash}
 	style="background: var(--rg-term-bg); contain: strict;"
 	role="application"
-	aria-label="终端"
+	aria-label={$t('workspace.terminalAriaLabel')}
 	tabindex="-1"
 	data-rg-pane-id={paneId}
 	data-rg-pane-active={false}
@@ -1594,7 +1677,7 @@ function onContainerMouseDown(e: MouseEvent) {
 			bind:this={imeHelper}
 			class="rg-ime-helper"
 			class:is-composing={isComposing}
-			aria-label="终端输入"
+			aria-label={$t('workspace.terminalInputAriaLabel')}
 			autocomplete="off"
 			autocapitalize="off"
 			spellcheck="false"
@@ -1615,9 +1698,9 @@ function onContainerMouseDown(e: MouseEvent) {
 		<button
 			type="button"
 			class="rg-jump-bottom"
-			title="滚动到最新输出 (End)"
+			title={$t('workspace.scrollToBottom')}
 			onclick={jumpToBottom}
-			aria-label="滚动到最新输出"
+			aria-label={$t('workspace.scrollToBottom')}
 		>
 			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 				<path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1626,16 +1709,20 @@ function onContainerMouseDown(e: MouseEvent) {
 		</button>
 	{/if}
 
-	<!-- §multi-size: re-claim PTY at this desktop pane's size. Only while the
-	     remote server is actually RUNNING (not merely the persisted setting) —
-	     otherwise this pane is the sole viewer and fitPane already owns the size. -->
-	{#if $remoteRunning}
+	<!-- §multi-size: re-claim PTY at this pane's size + repaint. Shown when this
+	     desktop hosts a live remote server ($remoteRunning) OR when this IS the
+	     desktop-in-browser controller (WEB_REMOTE) — in both cases multiple
+	     viewers share one PTY and a viewer must be able to claim it at its own
+	     size. A lone local pane needs no button (fitPane already owns the size).
+	     On the browser controller this is the only way to push the pane's
+	     dimensions to the host PTY. -->
+	{#if $remoteRunning || WEB_REMOTE}
 		<button
 			type="button"
 			class="rg-remote-refresh"
-			title="按本端尺寸刷新（远程控制开启时可用）"
+			title={$t('workspace.refreshForRemote')}
 			onclick={refreshForRemote}
-			aria-label="按本端尺寸刷新"
+			aria-label={$t('workspace.refreshForRemoteLabel')}
 		>
 			<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 				<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
@@ -1686,7 +1773,7 @@ function onContainerMouseDown(e: MouseEvent) {
 			bind:this={searchInputEl}
 			class="rg-search-input"
 			type="text"
-			placeholder="在终端中查找…"
+			placeholder={$t('workspace.searchPlaceholder')}
 			bind:value={searchQuery}
 			oninput={refreshSearch}
 			onkeydown={onSearchInputKey}
@@ -1695,7 +1782,7 @@ function onContainerMouseDown(e: MouseEvent) {
 			{#if searchQuery.length === 0}
 				—
 			{:else if searchInfo.count === 0}
-				无匹配
+				{$t('workspace.searchNoMatch')}
 			{:else}
 				{searchInfo.activeIndex + 1}/{searchInfo.count}
 			{/if}
@@ -1703,22 +1790,22 @@ function onContainerMouseDown(e: MouseEvent) {
 		<button
 			class="rg-search-btn"
 			class:active={searchCaseSensitive}
-			title="区分大小写"
+			title={$t('workspace.searchCaseSensitive')}
 			onclick={() => { searchCaseSensitive = !searchCaseSensitive; refreshSearch(); }}
 		>Aa</button>
 		<button
 			class="rg-search-btn"
-			title="上一个 (Shift+Enter)"
+			title={$t('workspace.searchPrev')}
 			onclick={() => { manager.searchPrev(paneId); searchInfo = manager.searchInfo(paneId); }}
 		>↑</button>
 		<button
 			class="rg-search-btn"
-			title="下一个 (Enter)"
+			title={$t('workspace.searchNext')}
 			onclick={() => { manager.searchNext(paneId); searchInfo = manager.searchInfo(paneId); }}
 		>↓</button>
 		<button
 			class="rg-search-btn"
-			title="关闭 (Esc)"
+			title={$t('workspace.searchClose')}
 			onclick={closeSearchBar}
 		>×</button>
 	</div>

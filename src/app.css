@@ -31,6 +31,15 @@ body {
   font-family: var(--font-mono-term);
 }
 
+/* §web-remote 触屏可用性：触摸设备不会触发 :hover，编辑器文件 Tab 的关闭按钮
+   原本 `opacity-0 group-hover:opacity-100` 在手机上永远隐藏 → 非脏文件 Tab 无法
+   点关闭。coarse pointer 下强制常显。 */
+@media (pointer: coarse) {
+  .rg-tab-close {
+    opacity: 1 !important;
+  }
+}
+
 /* ── 统一下拉气泡容器 ─────────────────────────────────────────────────────
    所有气泡菜单（分支选择器、repo切换器、上下文菜单、最近工作区等）共享此类。
    position:fixed 坐标由 JS 计算后写入 inline style，确保不被任何
@@ -191,4 +200,12 @@ body.rg-os-dragging * {
 .rg-search-row {
   content-visibility: auto;
   contain-intrinsic-size: 0 22px;
+}
+
+/* Monaco 光标错位修复：body 上设置的 font-feature-settings /
+   text-rendering 会级联到 Monaco 内部 DOM，导致光标位置度量与实际渲染
+   不一致。在此重置 Monaco 宿主容器（继承属性自动级联到后代）。 */
+.rg-monaco-host {
+  font-feature-settings: normal !important;
+  text-rendering: auto !important;
 }

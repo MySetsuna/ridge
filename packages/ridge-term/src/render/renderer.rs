@@ -126,9 +126,18 @@ pub struct HistoryOverlay {
     pub place_above: bool,
     /// Maximum number of history rows to paint. Items beyond this
     /// cap are dropped at render time (the JS caller is expected to
-    /// pre-cap to a sensible value like 10). Acts as a hard floor on
-    /// popup height regardless of how much history the shell has.
+    /// pre-cap to a sensible value). Acts as a hard floor on popup
+    /// height regardless of how much history the shell has.
     pub max_visible_rows: usize,
+    /// §history-scroll — total number of entries in the FULL filtered
+    /// list (NOT just the visible window). When `total_items >
+    /// visible_count` the renderer paints a scrollbar so the user can
+    /// see there's more and where they are. JS pre-windows `items` to
+    /// the visible slice and reports the full count here.
+    pub total_items: usize,
+    /// §history-scroll — index of `items[0]` within the full filtered
+    /// list. Drives the scrollbar thumb's vertical position.
+    pub first_visible: usize,
 }
 
 impl<B: RenderBackend> Renderer<B> {

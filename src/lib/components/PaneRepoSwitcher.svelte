@@ -10,6 +10,7 @@
   // pair to that repo's data.
 
   import { onMount, onDestroy } from 'svelte';
+  import { t } from '$lib/i18n';
   import { Folder, ChevronDown, Check } from 'lucide-svelte';
   import {
     paneGitStatusStore,
@@ -75,7 +76,7 @@
       type="button"
       class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--rg-surface)]/60 text-[var(--rg-fg-muted)] border border-[var(--rg-border)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors max-w-[140px]
         {open ? 'bg-[var(--rg-surface)] text-[var(--rg-fg)]' : ''}"
-      title={`此 pane cwd 中检测到 ${repos.length} 个 git 仓库\n当前：${info.repoRoot}`}
+      title={$t('workspace.repoSwitcherTitle', { count: String(repos.length), root: info.repoRoot })}
       bind:this={triggerBtn}
       onclick={() => {
         if (open) { open = false; return; }

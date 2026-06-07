@@ -74,7 +74,9 @@ impl GitWatcher {
         let mut debouncer = new_debouncer(
             Duration::from_millis(500),
             move |events: Result<Vec<DebouncedEvent>, notify::Error>| {
-                let Ok(events) = events else { return; };
+                let Ok(events) = events else {
+                    return;
+                };
                 // Skip when every event in the debounce window is git-internal
                 // noise (objects DB / reflog / info / transient locks). Keeps
                 // shell-prompt git probes from spamming the SCM panel on every
@@ -101,13 +103,18 @@ impl GitWatcher {
             std::fs::read_to_string(&git_dot)
                 .ok()
                 .and_then(|content| {
-                    content.lines()
+                    content
+                        .lines()
                         .find(|l| l.starts_with("gitdir:"))
                         .map(|l| l["gitdir:".len()..].trim().to_string())
                 })
                 .map(|rel| {
                     let p = PathBuf::from(&rel);
-                    if p.is_absolute() { p } else { repo_root.join(p) }
+                    if p.is_absolute() {
+                        p
+                    } else {
+                        repo_root.join(p)
+                    }
                 })
                 .filter(|p| p.is_dir())
         } else {

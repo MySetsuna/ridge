@@ -497,28 +497,40 @@ impl Grid {
         &mut self,
         row: usize,
         col: usize,
-        cells: &[(char, Attrs, u8)],
+        cells: &[(char, Attrs, u8, Option<Box<str>>)],
     ) {
         // Intern attrs in a first pass so we don't hold &mut self.attrs
         // and &mut self.screen at the same time (the borrow checker
         // would reject it even though the fields are disjoint).
         let attr_ids: Vec<crate::term::attr_table::AttrId> = cells
             .iter()
-            .map(|(_, attrs, _)| self.attrs.intern(*attrs))
+            .map(|(_, attrs, _, _)| self.attrs.intern(*attrs))
             .collect();
         let target = match self.screen_mut().rows.get_mut(row) {
             Some(r) => r,
             None => return,
         };
-        for (i, (ch, _attrs, width)) in cells.iter().enumerate() {
+        for (i, (ch, _attrs, width, cluster)) in cells.iter().enumerate() {
             let target_col = col + i;
-            let grid_cell = match target.cells.get_mut(target_col) {
-                Some(c) => c,
+            // Write the cell scalar fields, then end that borrow before
+            // touching the (disjoint) cluster sidecar on the same row.
+            match target.cells.get_mut(target_col) {
+                Some(grid_cell) => {
+                    grid_cell.ch = *ch;
+                    grid_cell.attr = attr_ids[i];
+                    grid_cell.width = *width;
+                }
                 None => break,
-            };
-            grid_cell.ch = *ch;
-            grid_cell.attr = attr_ids[i];
-            grid_cell.width = *width;
+            }
+            // §emoji-cluster — keep the row's cluster sidecar in lockstep
+            // with the delta: `Some` registers the multi-codepoint cluster
+            // (renderer paints `cluster.text` instead of `cell.ch`), `None`
+            // drops any stale sidecar so a plain overwrite at a previously
+            // clustered col doesn't leave a ghost emoji behind.
+            match cluster {
+                Some(text) => target.set_cluster(target_col, text.clone()),
+                None => target.clear_cluster_at(target_col),
+            }
         }
     }
 
