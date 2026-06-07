@@ -186,6 +186,12 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "resize_pane",
     "detect_available_shells",
     "get_shell_history",
+    // native (headless) tmux session discovery (desktop hosts). `list` is
+    // read-only; `summon` is a structural pane op (adopts a session into the
+    // caller's viewed workspace) — not a mutating fs/git method, so it is allowed
+    // even in a read-only session, consistent with split/create/close pane.
+    "list_native_sessions",
+    "summon_native_session",
     // ── Workspace (live) ──
     "get_active_workspace_id",
     "switch_workspace",

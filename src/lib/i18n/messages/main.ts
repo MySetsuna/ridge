@@ -106,13 +106,10 @@ export const zh: Record<string, string> = {
   globalStatusPaneCount: '{wsLabel} · {count} 个 pane',
   globalStatusDefaultWs: '工作区 {seq}',
 
-  // NativeSessionsPanel
-  nativeSessionsHeader: 'Native 会话',
-  nativeSessionsRefresh: '刷新',
-  nativeSessionsEmpty: '暂无 native 会话',
-  nativeSessionsAttached: '已挂载',
+  // GlobalStatusPanel · native-session discovery (conditional)
+  nativeSessionsHeader: '后台会话',
   nativeSessionsSummon: '召唤进当前工作区',
-  nativeSessionsOpen: '打开',
+  nativeSessionsOpen: '查看',
 };
 
 export const en: Record<string, string> = {
@@ -219,11 +216,8 @@ export const en: Record<string, string> = {
   globalStatusPaneCount: '{wsLabel} · {count} pane(s)',
   globalStatusDefaultWs: 'Workspace {seq}',
 
-  // NativeSessionsPanel
-  nativeSessionsHeader: 'Native Sessions',
-  nativeSessionsRefresh: 'Refresh',
-  nativeSessionsEmpty: 'No native sessions',
-  nativeSessionsAttached: 'Attached',
+  // GlobalStatusPanel · native-session discovery (conditional)
+  nativeSessionsHeader: 'Background sessions',
   nativeSessionsSummon: 'Summon into current workspace',
-  nativeSessionsOpen: 'Open',
+  nativeSessionsOpen: 'View',
 };

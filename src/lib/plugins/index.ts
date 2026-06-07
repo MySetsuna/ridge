@@ -7,14 +7,17 @@ import GlobalStatusPanel from './globalStatus/GlobalStatusPanel.svelte';
 // .svelte file stays on disk in case a future feature wants to repopulate
 // the workspace-scope plugin region.
 
-// `native-sessions` plugin removed (2026-06-05): the sidebar panel surfaced
-// external tmux sessions to "summon" into a workspace, but it was a redundant
-// user-facing surface — over web-remote it was already gated off as a dead zone
-// (its `summon_native_session` command is excluded from the remote allowlist),
-// and on the desktop it duplicated workspace/session management most users never
-// touched. The backing headless tmux engine (`teammate/native.rs`) and its
-// `list_native_sessions` / `summon_native_session` commands stay — they are core
-// to teammate/remote/PTY orchestration; only the redundant panel is gone.
+// `native-sessions` always-on sidebar panel removed (2026-06-05): it surfaced
+// headless tmux sessions to "summon" into a workspace, but a permanently-visible
+// panel that's empty for most users was clutter. The discovery VALUE was kept,
+// re-shaped (2026-06-08) as a CONDITIONAL entry folded into GlobalStatusPanel:
+// it only renders when ≥1 unattached native session exists, so the common case
+// stays zero-clutter. Its `list_native_sessions` / `summon_native_session`
+// commands are remote-enabled (in REMOTE_ALLOWLIST); `summon` takes the caller's
+// viewed workspace id so the session lands where the remote user is actually
+// looking. The headless engine (`teammate/native.rs` → `ridge-tmux`) is also
+// reachable via the tmux shim's `attach-session` → `POST /api/v1/tmux/summon`
+// (`route_tmux_summon`).
 
 registerSidebarPlugin({
   id: 'global-status',
