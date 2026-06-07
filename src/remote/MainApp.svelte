@@ -117,6 +117,17 @@
     ws.pruneOutputs(live);
   }
 
+  // Defensive: the host's pane/workspace lists can briefly contain DUPLICATE ids
+  // — e.g. a pane present in both `terminals` and `pending_spawns` during a spawn
+  // (src-tauri/.../server.rs builds the list from both) — which makes Svelte's
+  // keyed {#each (id)} throw `each_key_duplicate` and corrupt the rendered tree
+  // (wrong row reused → close/switch acts on the wrong pane). Dedupe by id before
+  // rendering so the UI stays correct regardless of what the host sends.
+  function dedupeById<T extends { id: string }>(items: T[]): T[] {
+    const seen = new Set<string>();
+    return items.filter((it) => (seen.has(it.id) ? false : (seen.add(it.id), true)));
+  }
+
   function applyTheme(colors: Record<string, string>) {
     applyThemeVars(colors);
     kernelTheme = buildKernelTheme(colors);
@@ -168,7 +179,7 @@
   async function refreshWorkspaces() {
     try {
       const data = await ws.listWorkspaces();
-      workspaces = data.workspaces || [];
+      workspaces = dedupeById(data.workspaces || []);
       const active = workspaces.find(w => w.active);
       if (active) activeWorkspaceId = active.id;
     } catch { /* ignore */ }
@@ -209,16 +220,16 @@
     ws.onStateChange((s) => wsState = s);
     ws.onMessage((msg) => {
       if (msg.type === 'panes') {
-        panes = msg.panes;
-        const paneIds = msg.panes.map(p => p.id);
+        panes = dedupeById(msg.panes);
+        const paneIds = panes.map(p => p.id);
         // Release caches for panes the host no longer reports (memory/quota leak).
         pruneDeadPanes(paneIds);
         if (!activePaneId || !paneIds.includes(activePaneId)) {
-          activePaneId = msg.panes.length > 0 ? msg.panes[0].id : null;
+          activePaneId = panes.length > 0 ? panes[0].id : null;
         }
       }
       if (msg.type === 'workspaces') {
-        workspaces = msg.workspaces;
+        workspaces = dedupeById(msg.workspaces);
         const active = workspaces.find(w => w.active);
         if (active) activeWorkspaceId = active.id;
       }

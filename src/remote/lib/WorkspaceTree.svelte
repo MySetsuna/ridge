@@ -64,19 +64,32 @@
     if (!ws || busy) return;
     busy = true;
     err = '';
+    let id: string | null = null;
     try {
-      const id = await ws.createWorkspace();
+      id = await ws.createWorkspace();
       if (id) {
         await ws.switchWorkspace(id);
-        await ws.createPane();
         activeWorkspaceId = id;
-        ws.listPanes();
-        onWorkspacesChanged?.();
       }
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     } finally {
+      // Release the UI as soon as the workspace exists and is active — don't keep
+      // every workspace/terminal control `disabled` across the extra createPane
+      // round-trip. That long busy window silently swallowed taps (no feedback),
+      // so switching/creating right after felt broken on a slow remote link.
       busy = false;
+    }
+    if (id) {
+      onWorkspacesChanged?.();
+      try {
+        const pid = await ws.createPane();
+        // Only adopt the spawned pane if the user hasn't switched away meanwhile.
+        if (pid && activeWorkspaceId === id) activePaneId = pid;
+        ws.listPanes();
+      } catch (e) {
+        err = e instanceof Error ? e.message : String(e);
+      }
     }
   }
 
@@ -157,7 +170,10 @@
   {#if open}
     <div class="tree-popup" role="menu">
       <div class="tree-head">
-        <span class="tree-head-title">{$t('mobile.treeTitle')}</span>
+        <span class="tree-head-title">
+          {$t('mobile.treeTitle')}
+          {#if busy}<span class="tree-spin" aria-hidden="true"></span>{/if}
+        </span>
         <button class="tree-add" onclick={newWorkspace} title={$t('mobile.treeNewWorkspace')} disabled={busy} tabindex="-1">
           <Plus class="w-3.5 h-3.5" />
         </button>
@@ -250,10 +266,22 @@
   .chev{display:inline-flex;align-items:center;color:var(--rg-fg-muted);transition:transform .15s;transform:rotate(90deg)}
   .chev.up{transform:rotate(-90deg)}
 
-  .tree-popup{position:absolute;bottom:calc(100% + 8px);right:0;z-index:46;width:min(78vw,300px);max-height:min(60vh,440px);display:flex;flex-direction:column;background:var(--rg-surface);border:1px solid var(--rg-border-bright);border-radius:12px;box-shadow:0 12px 36px -6px rgba(0,0,0,.5);overflow:hidden;animation:treePop .14s ease-out}
+  /* §offscreen-fix: anchor to the VIEWPORT (not the anchor button). The bottom
+     bar packs 6 icon buttons + this trigger and can overflow the right edge on
+     narrow phones, pushing an `absolute; right:0` popup (and its 新建工作区 / +
+     button) off-screen → untappable. `fixed; right:8px` keeps the whole
+     workspace/terminal manager on-screen regardless of bar overflow. Sits above
+     the ≥48px action bar (+ safe-area). */
+  .tree-popup{position:fixed;bottom:calc(48px + env(safe-area-inset-bottom,0px) + 8px);right:8px;z-index:46;width:min(78vw,300px);max-height:min(60vh,440px);display:flex;flex-direction:column;background:var(--rg-surface);border:1px solid var(--rg-border-bright);border-radius:12px;box-shadow:0 12px 36px -6px rgba(0,0,0,.5);overflow:hidden;animation:treePop .14s ease-out}
   @keyframes treePop{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}
 
   .tree-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--rg-border-bright);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--rg-fg-muted)}
+  .tree-head-title{display:inline-flex;align-items:center}
+  /* §busy-feedback: a small spinner while a workspace/terminal op is in flight,
+     so a tap during the (multi-round-trip) busy window reads as "working" rather
+     than "nothing happened". */
+  .tree-spin{display:inline-block;width:10px;height:10px;margin-left:6px;border:1.5px solid color-mix(in srgb,var(--rg-accent) 30%,transparent);border-top-color:var(--rg-accent);border-radius:50%;animation:treeSpin .6s linear infinite}
+  @keyframes treeSpin{to{transform:rotate(360deg)}}
   .tree-add{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer}
   .tree-add:active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}
   .tree-add:disabled{opacity:.4}
