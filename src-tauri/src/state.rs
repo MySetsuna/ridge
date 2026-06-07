@@ -15,7 +15,7 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
-use crate::remote::auth::{RemoteAuth, SessionStore};
+use crate::remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
@@ -502,6 +502,10 @@ pub struct AppState {
     /// Tokens are created via POST /verify and validated via WS ?token=.
     /// Each token expires after 3 days of inactivity.
     pub remote_session_store: Arc<SessionStore>,
+    /// Brute-force throttle for TOTP verification (audit C1). Tracks failed
+    /// `/verify` (+ `?code=` WS) attempts per IP and per device id, applying
+    /// exponential backoff then a temp-ban; shared across both auth entry points.
+    pub remote_verify_throttle: Arc<VerifyThrottle>,
     /// mDNS broadcast thread handle + stop flag. `None` when the server
     /// is not running. Set the flag and join the handle to stop.
     pub remote_mdns: Arc<Mutex<Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>>>,
@@ -598,6 +602,7 @@ impl AppState {
             remote_shutdown: Arc::new(Mutex::new(None)),
             remote_dev_process: Arc::new(Mutex::new(None)),
             remote_session_store: Arc::new(SessionStore::new()),
+            remote_verify_throttle: Arc::new(VerifyThrottle::new()),
             remote_mdns: Arc::new(Mutex::new(None)),
             remote_client_registry: Arc::new(RemoteClientRegistry::default()),
             remote_blacklist: Arc::new(RemoteBlacklist::default()),

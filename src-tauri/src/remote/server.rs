@@ -587,11 +587,47 @@ async fn spa_fallback_handler(
     }
 }
 
+/// Collect the filesystem roots the remote `/file` endpoint is allowed to serve
+/// from: every workspace pane's cwd plus the active project. These are the same
+/// roots the WS `list-files` handler bases its listing on, i.e. the dirs the
+/// remote UI legitimately references (Markdown preview images, editor sources).
+///
+/// SECURITY (audit C4): without this set, `/file` reads ANY absolute path on the
+/// host (it only blocked `..`). Containment to these roots is what bounds it.
+fn allowed_file_roots(ctx: &RemoteCtx) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    {
+        let map = ctx.state.workspaces.read();
+        for ws in map.values() {
+            for node in ws.pane_tree.panes.values() {
+                if let Some(cwd) = node.cwd.as_ref() {
+                    roots.push(cwd.clone());
+                }
+            }
+        }
+    }
+    if let Some(proj) = ctx.state.current_project.read().clone() {
+        roots.push(proj);
+    }
+    roots
+}
+
+/// Canonicalize each root (collapsing symlinks / `.` / `..`) and return whether
+/// `target` (already canonicalized by the caller) lives inside at least one of
+/// them. A root that can't be canonicalized (e.g. since deleted) is skipped.
+fn is_within_allowed_roots(target: &std::path::Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .map(|canon_root| target.starts_with(&canon_root))
+            .unwrap_or(false)
+    })
+}
+
 /// Serve a single host file by absolute path for the desktop UI's
 /// `convertFileSrc` shim (Markdown preview images, etc.). Token-authenticated
 /// via query param (an `<img src>` can't set an Authorization header) and
-/// traversal-guarded. Only reachable while remote control is enabled
-/// (route_layer gate).
+/// path-contained to the active workspace/project roots. Only reachable while
+/// remote control is enabled (route_layer gate).
 #[derive(Deserialize)]
 struct FileQuery {
     path: String,
@@ -610,11 +646,31 @@ async fn file_handler(
     if !authed {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
+    // First-line string guard (defence-in-depth; the canonical check below is
+    // authoritative).
     if q.path.split(['/', '\\']).any(|c| c == "..") {
         return (StatusCode::BAD_REQUEST, "bad path").into_response();
     }
     let full = PathBuf::from(&q.path);
     if !full.is_file() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    // SECURITY (audit C4): canonicalize the requested path (collapsing symlinks
+    // and `.`/`..` segments) and require it to resolve INSIDE one of the allowed
+    // workspace/project roots. This is what stops a valid-token holder from
+    // reading arbitrary absolute paths (e.g. /etc/shadow, SSH keys) — the bare
+    // `..` filter alone never bounded the path. A 404 (not 403) is returned so
+    // the endpoint doesn't confirm existence of out-of-bounds files.
+    let canon = match tokio::fs::canonicalize(&full).await {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    let roots = allowed_file_roots(&ctx);
+    let within = tokio::task::spawn_blocking(move || is_within_allowed_roots(&canon, &roots))
+        .await
+        .unwrap_or(false);
+    if !within {
+        tracing::warn!(target: "ridge::remote", path = %q.path, "file_handler rejected: outside allowed roots");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     match tokio::fs::read(&full).await {
@@ -719,25 +775,101 @@ async fn verify_handler_get(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
     serve_index(&ctx.static_dir).await
 }
 
+/// Uniform failure message returned for EVERY rejected TOTP verify — wrong
+/// code, blacklisted, backoff cooldown, or temp-ban (audit M3). The client must
+/// not be able to distinguish these states (no oracle for "is this device
+/// blacklisted" vs "is this code wrong" vs "am I locked out"). Detailed reasons
+/// go only to the server log.
+const VERIFY_FAIL_MSG: &str = "验证失败，请稍后重试 / Verification failed, please try again later";
+
+/// On a freshly-tripped hard-cap ban, add the offender to the persistent
+/// blacklist so it stays barred across restarts and shows in the desktop panel.
+fn auto_blacklist_on_ban(ctx: &RemoteCtx, ip: &str, device_id: &str) {
+    let added_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let label = if !device_id.is_empty() {
+        // UTF-8-safe truncation (device ids are ASCII UUIDs in practice, but
+        // never byte-slice untrusted input — it can panic on a char boundary).
+        let short: String = device_id.chars().take(8).collect();
+        format!("auto:{short}")
+    } else {
+        format!("auto:{ip}")
+    };
+    ctx.state.remote_blacklist.add(crate::state::BlacklistEntry {
+        id: Uuid::new_v4().to_string(),
+        device_id: (!device_id.is_empty()).then(|| device_id.to_string()),
+        ip: Some(ip.to_string()),
+        label,
+        added_at,
+    });
+    tracing::warn!(
+        target: "ridge::remote",
+        ip, device = %device_id,
+        "TOTP brute-force hard cap reached — device/IP auto-blacklisted"
+    );
+}
+
+/// Apply the brute-force throttle + blacklist for one TOTP verify attempt.
+/// Returns `Ok(())` if the actual code check may proceed, or `Err(())` if the
+/// request must be rejected (blacklisted / backoff / banned / rate-limited).
+/// On the fresh hard-cap transition it auto-adds to the persistent blacklist.
+fn pre_verify_gate(ctx: &RemoteCtx, ip: &str, device_id: &str) -> Result<(), ()> {
+    use super::auth::ThrottleDecision;
+    // §blacklist: a barred device/IP can't even attempt verification.
+    if ctx.state.remote_blacklist.is_blocked(device_id, ip) {
+        tracing::info!(target: "ridge::remote", ip, device = %device_id, "verify rejected: blacklisted");
+        return Err(());
+    }
+    match ctx.state.remote_verify_throttle.check(ip, device_id) {
+        ThrottleDecision::Allow => Ok(()),
+        ThrottleDecision::Backoff { retry_after } => {
+            tracing::info!(target: "ridge::remote", ip, device = %device_id, retry_s = retry_after.as_secs(), "verify rejected: backoff");
+            Err(())
+        }
+        ThrottleDecision::Banned { retry_after, .. } => {
+            tracing::warn!(target: "ridge::remote", ip, device = %device_id, retry_s = retry_after.as_secs(), "verify rejected: temp-banned");
+            Err(())
+        }
+        ThrottleDecision::GlobalLimited => {
+            tracing::warn!(target: "ridge::remote", ip, "verify rejected: global rate limit");
+            Err(())
+        }
+    }
+}
+
+/// Record the outcome of a TOTP verify attempt against the throttle. On a
+/// failure that freshly trips the hard cap, auto-blacklist the offender.
+fn post_verify_record(ctx: &RemoteCtx, ip: &str, device_id: &str, valid: bool) {
+    if valid {
+        ctx.state.remote_verify_throttle.record_success(ip, device_id);
+    } else {
+        let fresh_ban = ctx.state.remote_verify_throttle.record_failure(ip, device_id);
+        if fresh_ban {
+            auto_blacklist_on_ban(ctx, ip, device_id);
+        }
+    }
+}
+
 async fn verify_handler_post(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     Form(form): Form<VerifyForm>,
 ) -> Json<VerifyResponse> {
-    // §blacklist: a barred device/IP can't even obtain a token.
     let device_id = form.device.clone().unwrap_or_default();
-    if ctx
-        .state
-        .remote_blacklist
-        .is_blocked(&device_id, &addr.ip().to_string())
-    {
+    let ip = addr.ip().to_string();
+    // SECURITY (audit C1/M3): brute-force throttle + blacklist gate, with a
+    // UNIFORM failure message so the client can't tell rejection reasons apart.
+    if pre_verify_gate(&ctx, &ip, &device_id).is_err() {
         return Json(VerifyResponse {
             success: false,
-            message: "该设备已被加入黑名单".to_string(),
+            message: VERIFY_FAIL_MSG.to_string(),
             token: None,
         });
     }
     let valid = ctx.auth.verify(&form.code);
+    post_verify_record(&ctx, &ip, &device_id, valid);
     let token = if valid {
         Some(ctx.state.remote_session_store.create_session())
     } else {
@@ -748,7 +880,7 @@ async fn verify_handler_post(
         message: if valid {
             "Verification successful".to_string()
         } else {
-            "Invalid TOTP code".to_string()
+            VERIFY_FAIL_MSG.to_string()
         },
         token,
     })
@@ -776,9 +908,19 @@ async fn ws_handler(
         return (StatusCode::FORBIDDEN, "device is blacklisted").into_response();
     }
     let valid = if let Some(ref t) = query.token {
+        // Session-token path: not brute-forceable (256-bit CSPRNG token), so it
+        // bypasses the TOTP throttle.
         ctx.state.remote_session_store.validate_token(t)
     } else if let Some(ref c) = query.code {
-        ctx.auth.verify(c)
+        // SECURITY (audit C1): the `?code=` TOTP path is brute-forceable, so it
+        // shares the SAME throttle/lockout/global-limit as POST /verify. A code
+        // guess over the WS upgrade is counted exactly like one over /verify.
+        if pre_verify_gate(&ctx, &remote_addr, &device_id).is_err() {
+            return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
+        }
+        let ok = ctx.auth.verify(c);
+        post_verify_record(&ctx, &remote_addr, &device_id, ok);
+        ok
     } else {
         false
     };
@@ -805,6 +947,37 @@ async fn session_handler(
 
 // ── Workspace HTTP handlers ─────────────────────────────────────────────
 
+/// Query carrier for a session token on token-authenticated GET/POST routes
+/// (`<img src>` and SW-bypassed fetches can't set an `Authorization` header,
+/// so the token also rides as `?token=`).
+#[derive(Deserialize)]
+struct TokenQuery {
+    token: Option<String>,
+}
+
+/// Validate a session token taken from EITHER the `Authorization: Bearer <t>`
+/// header OR the `?token=` query param.
+///
+/// SECURITY (audit H3): the `/workspace/*` HTTP routes previously had NO token
+/// check (only the `remote_enabled` gate), so any LAN peer could enumerate,
+/// switch, create, or destroy workspaces. This mirrors `file_handler`'s
+/// `validate_token` so those routes require the same session token the WS
+/// upgrade already demands.
+fn is_request_authed(
+    ctx: &RemoteCtx,
+    headers: &axum::http::HeaderMap,
+    query_token: Option<&str>,
+) -> bool {
+    let header_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").map(str::trim));
+    let token = header_token.or(query_token);
+    token
+        .map(|t| ctx.state.remote_session_store.validate_token(t))
+        .unwrap_or(false)
+}
+
 #[derive(Deserialize)]
 struct WorkspaceSwitchBody {
     workspace_id: String,
@@ -820,7 +993,15 @@ struct WorkspaceCloseBody {
     workspace_id: String,
 }
 
-async fn workspace_list_handler(State(ctx): State<RemoteCtx>) -> impl IntoResponse {
+async fn workspace_list_handler(
+    State(ctx): State<RemoteCtx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> axum::response::Response {
+    // SECURITY (audit H3): require a valid session token.
+    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+    }
     let order = ctx.state.workspace_order.read();
     let names = ctx.state.workspace_names.read();
     let map = ctx.state.workspaces.read();
@@ -839,13 +1020,22 @@ async fn workspace_list_handler(State(ctx): State<RemoteCtx>) -> impl IntoRespon
             })
         })
         .collect();
-    Json(serde_json::json!({ "workspaces": workspaces }))
+    Json(serde_json::json!({ "workspaces": workspaces })).into_response()
 }
 
 async fn workspace_switch_handler(
     State(ctx): State<RemoteCtx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceSwitchBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // SECURITY (audit H3): require a valid session token.
+    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"success":false,"error":"invalid token"})),
+        );
+    }
     let id = match Uuid::parse_str(&body.workspace_id) {
         Ok(id) => id,
         Err(_) => {
@@ -871,8 +1061,14 @@ async fn workspace_switch_handler(
 
 async fn workspace_create_handler(
     State(ctx): State<RemoteCtx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceCreateBody>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    // SECURITY (audit H3): require a valid session token.
+    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+    }
     use std::collections::HashMap;
     let id = Uuid::new_v4();
     let seq = ctx.state.allocate_workspace_seq();
@@ -903,13 +1099,22 @@ async fn workspace_create_handler(
     if let Some(name) = body.name.filter(|n| !n.is_empty()) {
         ctx.state.workspace_names.write().insert(id, name);
     }
-    Json(serde_json::json!({ "success": true, "workspaceId": id.to_string() }))
+    Json(serde_json::json!({ "success": true, "workspaceId": id.to_string() })).into_response()
 }
 
 async fn workspace_close_handler(
     State(ctx): State<RemoteCtx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceCloseBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // SECURITY (audit H3): require a valid session token.
+    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"success":false,"error":"invalid token"})),
+        );
+    }
     let id = match Uuid::parse_str(&body.workspace_id) {
         Ok(id) => id,
         Err(_) => {
