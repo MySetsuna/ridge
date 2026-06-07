@@ -5216,6 +5216,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "getrandom 0.2.17",
  "git2",
  "glob",
  "ignore",
