@@ -507,7 +507,9 @@ pub(crate) fn teammate_split_pane(
     let ws = map
         .get_mut(&workspace_id)
         .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
-    ws.pane_tree.split(target, dir)
+    // PaneTree::split now returns `CoreError`; convert to this fn's `AppError`
+    // (D11 Wave A — `From<CoreError> for AppError` preserves the error string).
+    ws.pane_tree.split(target, dir).map_err(Into::into)
 }
 
 /// 关闭指定窗格：结束 PTY、从 PaneTree 移除。至少保留一个窗格。

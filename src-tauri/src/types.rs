@@ -1,5 +1,4 @@
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -49,14 +48,9 @@ pub struct RemoteUiEvent {
     pub payload: serde_json::Value,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum PaneMode {
-    Terminal,
-    Editor {
-        file_path: Option<PathBuf>,
-        language: String,
-    },
-}
+// `PaneMode` 移入 `ridge_core::workspace::mode`（D11 Wave A）。re-export 保持
+// `crate::types::PaneMode` 调用点不变；serde 表示逐字兼容（随 `Pane` 落 `.ridge`）。
+pub use ridge_core::workspace::mode::PaneMode;
 
 #[derive(Clone, Serialize)]
 pub enum GlobalEvent {

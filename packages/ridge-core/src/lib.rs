@@ -38,6 +38,7 @@ pub mod fs;
 pub mod pty;
 pub mod sandbox;
 pub mod totp;
+pub mod workspace;
 
 // ── Curated public surface ──
 pub use capability::{CapabilitySet, REMOTE_ALLOWLIST};
