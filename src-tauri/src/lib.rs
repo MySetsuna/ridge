@@ -273,7 +273,11 @@ pub fn run() {
                             // amplification and state-drift issues of the
                             // previous per-sub-delta model.
                             let app_state = handle.state::<AppState>();
-                            if app_state.remote_enabled.load(Ordering::Relaxed) {
+                            // B2（D-GM-11）：LAN 远控 或 活跃 cloud 会话任一开启即 fan-out
+                            //（cloud-only 时 remote_enabled 可能为 false，但有 cloud pane 订阅）。
+                            if app_state.remote_enabled.load(Ordering::Relaxed)
+                                || app_state.cloud_remote_active.load(Ordering::Acquire)
+                            {
                                 let reg = app_state.pty_pane_registry.read();
                                 if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
                                     if !entry.remote_subs.is_empty() {
@@ -693,6 +697,9 @@ pub fn run() {
             commands::remote::add_to_blacklist,
             commands::remote::list_blacklist,
             commands::remote::remove_from_blacklist,
+            // B2（D-GM-11）cloud pane 裸字节流（host-local sink，非 controller 直调）
+            commands::cloud_pane::subscribe_pane_raw,
+            commands::cloud_pane::unsubscribe_pane_raw,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,

@@ -541,6 +541,10 @@ pub struct AppState {
     /// 时拦截关闭并隐藏到托盘（避免误退出）。仅托盘「彻底退出 Ridge」会先置 `true`
     /// 再 `app.exit(0)`，让 close-requested 处理放行真正的退出（保存恢复集 + 停远控）。
     pub quitting: Arc<AtomicBool>,
+    /// B2（D-GM-11）：cloud pane 裸字节订阅表 `pane_id → (workspace_id, sub_id)`。
+    /// `subscribe_pane_raw` 登记一条 `RemotePaneSub`（把该 pane 的 RawBytes 经 Tauri
+    /// event `pane-raw-{pane}` 转给本 WebView），`unsubscribe_pane_raw` 据此注销。
+    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<Uuid, (Uuid, u64)>>>,
 }
 
 impl AppState {
@@ -617,6 +621,7 @@ impl AppState {
             },
             cloud_remote_active: Arc::new(AtomicBool::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
+            cloud_pane_raw_subs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

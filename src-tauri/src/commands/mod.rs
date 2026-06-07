@@ -1,3 +1,4 @@
+pub mod cloud_pane;
 pub mod fs_watch;
 pub mod git;
 pub mod pane;
