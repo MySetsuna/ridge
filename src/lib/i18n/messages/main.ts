@@ -9,6 +9,11 @@ export const zh: Record<string, string> = {
   remoteGateErrReconnect: '连接失败，请重新输入验证码',
   remoteGateErrInvalidCode: '验证码无效',
   remoteGateErrNetwork: '网络错误，请重试',
+  // 自签名证书未受信任时，同源 fetch('/verify') 会被浏览器静默拦截（ERR_CERT_*），
+  // 在 JS 里只表现为不可区分的 "Failed to fetch"。这条提示替代笼统的"网络错误"，
+  // 指引用户安装/信任本机 CA 后重试。
+  remoteGateErrCert: '无法连接到 Ridge 远控服务。很可能是本机的自签名证书尚未受信任——请点击下方按钮安装证书，或在浏览器中点开地址栏的证书警告并选择"继续访问"，然后重试。',
+  remoteGateTrustCert: '安装本机证书 (CA)',
   remoteGateErrCloud: 'Cloud 连接失败',
 
   // §4 云端 TOTP 二次验证（控制端）
@@ -124,6 +129,10 @@ export const en: Record<string, string> = {
   totpGateErrNetwork: 'Verification timed out or failed, please try again',
   remoteGateErrInvalidCode: 'Invalid code',
   remoteGateErrNetwork: 'Network error, please try again',
+  // Self-signed cert not trusted → same-origin fetch('/verify') is blocked by the
+  // browser (ERR_CERT_*), surfacing only as an opaque "Failed to fetch" in JS.
+  remoteGateErrCert: 'Could not reach the Ridge remote service. This is most likely an untrusted self-signed certificate — install the local certificate with the button below, or open the certificate warning in your browser and choose "proceed", then retry.',
+  remoteGateTrustCert: 'Install local certificate (CA)',
   remoteGateErrCloud: 'Cloud connection failed',
 
   // sidebar nav tooltips

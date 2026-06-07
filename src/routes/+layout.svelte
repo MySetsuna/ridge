@@ -24,6 +24,13 @@
   let code = $state('');
   let errorMsg = $state('');
   let loading = $state(false);
+  // JOB1: when the verify fetch fails opaquely on an HTTPS origin we surface a
+  // cert-trust hint + a "/ridge-ca.crt" download link instead of a bare
+  // "网络错误". An opaque `fetch` rejection on a self-signed HTTPS origin is
+  // almost always ERR_CERT_* — the same-origin call is blocked even though the
+  // user clicked through the page-load warning. The browser never exposes the
+  // cert reason to JS, so we infer it from the protocol.
+  let showCertHint = $state(false);
 
   onMount(() => {
     if (!WEB_REMOTE) {
@@ -162,6 +169,7 @@
       code = '';
       loading = true;
       errorMsg = '';
+      showCertHint = false;
       fetch('/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -179,7 +187,18 @@
         })
         .catch(() => {
           loading = false;
-          errorMsg = tr('main.remoteGateErrNetwork');
+          // JOB1 root cause: `fetch('/verify')` is SAME-ORIGIN against the remote
+          // server (this bundle is only ever served by server.rs over its own
+          // HTTPS origin, never by Vite). An opaque rejection here on an https
+          // page is therefore almost always the self-signed cert being
+          // untrusted (ERR_CERT_*) — not a true network outage. Surface the
+          // cert-trust hint + CA download instead of a confusing "网络错误".
+          if (location.protocol === 'https:') {
+            showCertHint = true;
+            errorMsg = tr('main.remoteGateErrCert');
+          } else {
+            errorMsg = tr('main.remoteGateErrNetwork');
+          }
         });
     };
   }
@@ -243,6 +262,14 @@
           onkeydown={(e) => { if (e.key === 'Enter') submitCode(); }}
         />
         {#if errorMsg}<p class="wr-error">{errorMsg}</p>{/if}
+        <!-- JOB1: cert-trust escape hatch — `/ridge-ca.crt` is the public CA
+             served by server.rs (no token). Trusting it once silences the
+             self-signed warning that was blocking the same-origin verify fetch. -->
+        {#if showCertHint}
+          <a class="wr-trust" href="/ridge-ca.crt" download="ridge-remote-ca.crt">
+            {$t('main.remoteGateTrustCert')}
+          </a>
+        {/if}
         <button onclick={() => submitCode()} disabled={code.length < 6 || loading}>
           {loading ? $t('main.remoteGateVerifying') : $t('main.remoteGateConnect')}
         </button>
@@ -283,6 +310,7 @@
   .wr-card input { width: 100%; height: 48px; padding: 0 16px; border: 2px solid var(--rg-border-bright, #30363d); border-radius: 10px; background: var(--rg-bg, #0d1117); color: var(--rg-fg, #e6edf3); font-size: 24px; font-weight: 700; letter-spacing: 8px; text-align: center; outline: none; }
   .wr-card input:focus { border-color: var(--rg-accent, #7fb069); }
   .wr-error { color: var(--rg-ansi-red, #f85149); font-size: 13px; margin-top: 8px; }
+  .wr-trust { display: inline-block; margin-top: 12px; font-size: 13px; color: var(--rg-accent, #7fb069); text-decoration: underline; cursor: pointer; }
   .wr-card button { width: 100%; height: 48px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 16px; background: var(--rg-ansi-green, #2ea043); color: #fff; }
   .wr-card button:disabled { opacity: .4; cursor: not-allowed; }
 </style>

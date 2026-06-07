@@ -158,10 +158,27 @@ fn base32_encode(input: &[u8]) -> String {
     result
 }
 
-const SESSION_TTL: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+/// SECURITY (audit H5): shortened from 3 days to 12 hours. A session token is a
+/// bearer credential for full shell/file control over the LAN; a 3-day window
+/// gave a stolen/forgotten token a very long replay life. 12h still spans a
+/// normal working session while bounding exposure if a device is lost or a token
+/// leaks (e.g. via the `?token=` query string in logs/history).
+const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// Per-token binding + issue time. SECURITY (audit H5): tokens are pinned to the
+/// device id and source IP they were issued to, so a token sniffed/exfiltrated
+/// from one device can't be replayed from another host on the LAN.
+#[derive(Clone)]
+struct SessionRecord {
+    created: Instant,
+    /// Stable client-generated device id at issuance ("" if the client sent none).
+    device_id: String,
+    /// Source IP the token was issued to.
+    ip: String,
+}
 
 pub struct SessionStore {
-    tokens: Mutex<HashMap<String, Instant>>,
+    tokens: Mutex<HashMap<String, SessionRecord>>,
 }
 
 impl SessionStore {
@@ -171,27 +188,65 @@ impl SessionStore {
         }
     }
 
-    pub fn create_session(&self) -> String {
+    /// Issue a token bound to the issuing device id + IP (audit H5).
+    pub fn create_session_bound(&self, device_id: &str, ip: &str) -> String {
         // SECURITY (audit C2): session tokens are bearer credentials for full
         // remote control, so they MUST be unguessable. Draw 32 bytes (256 bits)
         // from the OS CSPRNG and hex-encode (64 chars, same format as before).
         // The previous xorshift PRNG could be reverse-engineered from observed
         // tokens to forge new ones, bypassing TOTP entirely.
         let token = generate_session_token();
-        self.tokens.lock().insert(token.clone(), Instant::now());
+        self.tokens.lock().insert(
+            token.clone(),
+            SessionRecord {
+                created: Instant::now(),
+                device_id: device_id.to_string(),
+                ip: ip.to_string(),
+            },
+        );
         self.cleanup_expired();
         token
     }
 
+    /// Existence + TTL check only (no binding). Used where the request context
+    /// can't supply the device/IP to compare against (e.g. the `/session`
+    /// liveness poll). The binding is enforced on the channels that actually
+    /// grant control — `/ws` and `/file` — via [`validate_token_bound`].
     pub fn validate_token(&self, token: &str) -> bool {
         let mut map = self.tokens.lock();
-        if let Some(&created) = map.get(token) {
-            if created.elapsed() < SESSION_TTL {
+        if let Some(rec) = map.get(token) {
+            if rec.created.elapsed() < SESSION_TTL {
                 return true;
             }
             map.remove(token);
         }
         false
+    }
+
+    /// Validate a token AND that it is being presented from the same identity it
+    /// was issued to (audit H5). `device_id` may be empty when the caller can't
+    /// supply one (e.g. `/file` image requests); in that case only the IP is
+    /// compared. The IP must always match. The device id must match when BOTH
+    /// the stored and presented ids are non-empty.
+    pub fn validate_token_bound(&self, token: &str, device_id: &str, ip: &str) -> bool {
+        let mut map = self.tokens.lock();
+        let Some(rec) = map.get(token) else {
+            return false;
+        };
+        if rec.created.elapsed() >= SESSION_TTL {
+            map.remove(token);
+            return false;
+        }
+        // IP must always match the issuing IP.
+        if rec.ip != ip {
+            return false;
+        }
+        // Device id must match when both sides provide one. (An empty presented
+        // id — e.g. an `<img>`-driven `/file` fetch — falls back to the IP pin.)
+        if !rec.device_id.is_empty() && !device_id.is_empty() && rec.device_id != device_id {
+            return false;
+        }
+        true
     }
 
     /// Revoke a session token so the device can no longer reconnect with it
@@ -204,7 +259,7 @@ impl SessionStore {
     fn cleanup_expired(&self) {
         self.tokens
             .lock()
-            .retain(|_, created| created.elapsed() < SESSION_TTL);
+            .retain(|_, rec| rec.created.elapsed() < SESSION_TTL);
     }
 }
 
@@ -466,10 +521,45 @@ mod tests {
     #[test]
     fn store_create_validate_roundtrip() {
         let store = SessionStore::new();
-        let token = store.create_session();
+        let token = store.create_session_bound("devX", "1.2.3.4");
         assert!(store.validate_token(&token));
         store.invalidate(&token);
         assert!(!store.validate_token(&token));
+    }
+
+    // ── SessionStore binding (audit H5) ──
+
+    #[test]
+    fn bound_token_requires_matching_ip() {
+        let store = SessionStore::new();
+        let token = store.create_session_bound("devX", "1.2.3.4");
+        // Same identity → ok.
+        assert!(store.validate_token_bound(&token, "devX", "1.2.3.4"));
+        // Different IP (token replayed from another LAN host) → rejected.
+        assert!(!store.validate_token_bound(&token, "devX", "9.9.9.9"));
+    }
+
+    #[test]
+    fn bound_token_requires_matching_device_when_both_present() {
+        let store = SessionStore::new();
+        let token = store.create_session_bound("devX", "1.2.3.4");
+        // Wrong device id from the SAME ip → rejected.
+        assert!(!store.validate_token_bound(&token, "devY", "1.2.3.4"));
+    }
+
+    #[test]
+    fn bound_token_allows_empty_presented_device_via_ip_pin() {
+        // `/file` image requests can't send a device id; the IP pin still holds.
+        let store = SessionStore::new();
+        let token = store.create_session_bound("devX", "1.2.3.4");
+        assert!(store.validate_token_bound(&token, "", "1.2.3.4"));
+        assert!(!store.validate_token_bound(&token, "", "9.9.9.9"));
+    }
+
+    #[test]
+    fn bound_token_unknown_is_rejected() {
+        let store = SessionStore::new();
+        assert!(!store.validate_token_bound("deadbeef", "devX", "1.2.3.4"));
     }
 
     // ── VerifyThrottle (audit C1) ──
