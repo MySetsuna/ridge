@@ -125,6 +125,7 @@ pnpm cdp:smoke
 | --- | --- | --- | --- |
 | `pnpm cdp:smoke` | `cdp-smoke.mjs` | 9222 可达 + 至少一个 Ridge page target | exit 0/1 |
 | `pnpm cdp:pty` | `cdp-pty-parsers.mjs` | **`ridge_core::pty` 解析层**：decode(增量 UTF-8 多字节回环)、title(OSC 0/1/2)、cwd(OSC 7) 经 PTY→后端解析→LAN 转发端到端 | exit 0/2 + 三项 PASS/FAIL |
+| `pnpm cdp:pane-graph` | `cdp-pane-graph.mjs` | **pane CRUD 特征化**（D11 Wave A 的 P2 gate）：split/close 经 CDP `invoke` → `get_pane_layout` 断言 ±1 leaf（树真相，`ridge_core::workspace::pane_tree` 所有）+ LAN WS 断言 `panes` 广播帧（`PanesChanged` 重枚举路径）。**不**断言 LAN panes 计数（headless split 无 PTY 故不入 `terminals`）；native-detach 抑制不在自动网内 | exit 0/2 + 四项 PASS/FAIL |
 | `node scripts/cdp-lan-probe.mjs` | `cdp-lan-probe.mjs` | LAN 线协议（hello/panes/subscribe/二进制帧 UUID 布局/echo 回环） | exit 0/2 |
 | `node scripts/cdp-term-input.mjs ["cmd"]` | `cdp-term-input.mjs` | 向可见终端注入一行（默认 emoji 测试表）供截图——**非断言**，配 MCP 截图用 | inject ✓ |
 
