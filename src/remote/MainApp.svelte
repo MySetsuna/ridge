@@ -45,7 +45,8 @@
   let expectReplayPane: string | null = null;
   let ssMirrorTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function ssKey(id: string) { return `rg-remote-sb:${id}`; }
+  const SB_KEY_PREFIX = 'rg-remote-sb:';
+  function ssKey(id: string) { return `${SB_KEY_PREFIX}${id}`; }
   function bytesToB64(b: Uint8Array): string {
     let s = '';
     for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
@@ -87,6 +88,33 @@
         sessionStorage.setItem(ssKey(id), bytesToB64(tail));
       } catch { /* quota exceeded / disabled — ignore */ }
     }, 600);
+  }
+
+  // §cache-gc: a closed pane MUST release its caches. The PWA tab can live for
+  // days (长期运行/长时间后台), so without this every terminal ever opened leaks
+  // its scrollback into both the in-memory buffer map (≤256KB each) AND
+  // sessionStorage (≤48KB each), plus the WS text buffer — eventually blowing the
+  // mobile tab's memory budget / sessionStorage quota, so the page fails to
+  // (re)open until the user clears site data. Prune everything outside the host's
+  // authoritative live-pane set whenever a fresh `panes` list arrives (the host
+  // re-broadcasts it on every pane add/close/rename). Over-pruning is harmless:
+  // the host replays a pane's scrollback on (re)subscribe.
+  function pruneDeadPanes(liveIds: string[]) {
+    const live = new Set(liveIds);
+    for (const id of [...paneBuffers.keys()]) {
+      if (!live.has(id)) paneBuffers.delete(id);
+    }
+    try {
+      const stale: string[] = [];
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const k = sessionStorage.key(i);
+        if (k && k.startsWith(SB_KEY_PREFIX) && !live.has(k.slice(SB_KEY_PREFIX.length))) {
+          stale.push(k);
+        }
+      }
+      for (const k of stale) sessionStorage.removeItem(k);
+    } catch { /* sessionStorage disabled — nothing to prune */ }
+    ws.pruneOutputs(live);
   }
 
   function applyTheme(colors: Record<string, string>) {
@@ -183,6 +211,8 @@
       if (msg.type === 'panes') {
         panes = msg.panes;
         const paneIds = msg.panes.map(p => p.id);
+        // Release caches for panes the host no longer reports (memory/quota leak).
+        pruneDeadPanes(paneIds);
         if (!activePaneId || !paneIds.includes(activePaneId)) {
           activePaneId = msg.panes.length > 0 ? msg.panes[0].id : null;
         }
