@@ -146,7 +146,10 @@ wind 半已完成（`keyBinding.ts` + `cloudHostBridge.verifyPeerKey` 接入点 
 
 ## 8. 终态总结（会话末，2026-06-07 —— A/B/C/D 全部完成）
 
-> **推送状态**：wind develop 已 push origin（`0c54ac3`，本会话 10 commit）。ridge-cloud：安全修复在 `origin/security/pre-deploy-2026-06-07`；protocol.md B3 补记 + 域名迁移仍在 **ridge-cloud develop 本地未推**（推会连带域名迁移上 prod，留用户择机）。**未做任何 prod 部署**（按用户选择）。
+> **推送/部署状态（已更新）**：wind develop 已 push origin（`a12b18e`）。**ridge-cloud 已部署 prod**：
+> dokku main + origin/develop 均 = `eb2d7af`（域名迁移 + 清理 + protocol.md B3 文档 + 安全修复 C-2/H-1/H-3/H-4/M-1），
+> 经 **https://9527127.xyz** 上线（healthz/api 200、租户 `*.9527127.xyz` 通配 TLS OK、旧 duckdns 已退役 000、迁移 0009 已跑）。
+> `origin/security/pre-deploy-2026-06-07` 分支内容已并入 develop，可删（冗余）。**桌面侧修复（LAN/云桥 RCE/B2/B3）仍随桌面 app 发布**。
 
 ### 本会话提交（均本地，未 push origin 除非注明）
 **wind develop**（链：`...→4e2022a→680eab7→79b0bcb→a44a982→89b58ae→2ef0771`，叠在并发会话 commit 之上）：
