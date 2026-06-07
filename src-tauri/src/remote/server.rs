@@ -39,6 +39,9 @@ struct RemoteCtx {
     /// served to desktop browsers (UA-forked). Empty/missing → desktop UA falls
     /// back to the mobile SPA in `static_dir`.
     desktop_dir: PathBuf,
+    /// Whether the server is serving over TLS — gates the HSTS response header
+    /// (audit M2; HSTS is meaningless / harmful over plain HTTP).
+    tls_enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -286,10 +289,31 @@ async fn run_remote_server(
     };
 
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
-    // Captured for the self-signed cert SANs (lan_ip + machine_name are moved
-    // into `ctx` below).
-    let tls_lan_ip = lan_ip.clone();
-    let tls_hostname = machine_name.clone();
+
+    // SECURITY (audit H1): resolve TLS BEFORE announcing the port (and before
+    // building the router) so a TLS failure can be reported back to the caller as
+    // a start failure (fail-closed) rather than the server silently coming up on
+    // plain HTTP. The remote server exposes full shell + filesystem control;
+    // serving it over cleartext on a hostile LAN would leak the 6-digit code and
+    // session token to any sniffer, who could then replay them. We therefore
+    // REFUSE to start when TLS material can't be produced — unless the operator
+    // explicitly opts into insecure HTTP via `RIDGE_REMOTE_ALLOW_INSECURE_HTTP=1`
+    // (loud, never silent/automatic).
+    let tls_config = super::tls::resolve_config(&lan_ip, &machine_name).await;
+    let allow_insecure = std::env::var("RIDGE_REMOTE_ALLOW_INSECURE_HTTP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if tls_config.is_none() && !allow_insecure {
+        tracing::error!(
+            target: "ridge::remote",
+            "Remote TLS unavailable — REFUSING to start the remote server on plain HTTP \
+             (would expose shell/file control + auth code over cleartext on the LAN). \
+             Set RIDGE_REMOTE_ALLOW_INSECURE_HTTP=1 to explicitly allow insecure HTTP."
+        );
+        let _ = port_tx.send(None);
+        return;
+    }
+    let tls_enabled = tls_config.is_some();
 
     let ctx = RemoteCtx {
         port,
@@ -299,6 +323,7 @@ async fn run_remote_server(
         auth,
         static_dir,
         desktop_dir,
+        tls_enabled,
     };
 
     let app = Router::new()
@@ -326,6 +351,14 @@ async fn run_remote_server(
         // index.html for client-side routes. Self-gates on `remote_enabled`
         // because `route_layer` middleware does not wrap the fallback.
         .fallback(spa_fallback_handler)
+        // SECURITY (audit M2): stamp baseline security headers on EVERY response
+        // (nosniff, clickjacking defence via X-Frame-Options + CSP
+        // frame-ancestors, and HSTS when on TLS). A plain layer (not route_layer)
+        // so it also wraps the `.fallback`.
+        .layer(axum::middleware::from_fn_with_state(
+            ctx.clone(),
+            security_headers,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             ctx.clone(),
             remote_gate,
@@ -340,9 +373,7 @@ async fn run_remote_server(
     // Prefer HTTPS: browsers only expose WebGPU in a secure context, so the
     // LAN page must be served over TLS to unlock the GPU render path. A
     // self-signed cert is auto-generated on first run (see remote/tls.rs).
-    // If TLS material can't be produced we fall back to plain HTTP so the
-    // server still comes up (WebGPU then stays disabled on remote browsers).
-    match super::tls::resolve_config(&tls_lan_ip, &tls_hostname).await {
+    match tls_config {
         Some(tls_config) => {
             tracing::info!(target: "ridge::remote", "Remote server serving HTTPS (TLS)");
             let handle = axum_server::Handle::new();
@@ -360,7 +391,8 @@ async fn run_remote_server(
             }
         }
         None => {
-            tracing::warn!(target: "ridge::remote", "Remote TLS unavailable — serving plain HTTP (browser WebGPU disabled)");
+            // SECURITY (audit H1): only reached after the explicit opt-in above.
+            tracing::warn!(target: "ridge::remote", "Remote TLS unavailable — serving plain HTTP by EXPLICIT opt-in (RIDGE_REMOTE_ALLOW_INSECURE_HTTP); auth code + token cross the LAN in cleartext");
             match tokio::net::TcpListener::from_std(std_listener) {
                 Ok(listener) => {
                     let shutdown_signal = shutdown_rx.map(|_| ());
@@ -393,6 +425,49 @@ async fn remote_gate(
         return (StatusCode::SERVICE_UNAVAILABLE, "Remote control disabled").into_response();
     }
     next.run(req).await
+}
+
+/// SECURITY (audit M2): stamp baseline security headers on every response. The
+/// remote UI was previously served with none, leaving it open to clickjacking
+/// (no X-Frame-Options / CSP frame-ancestors) and MIME sniffing, and offering no
+/// HSTS to pin the TLS upgrade. Applied as a plain `.layer` so it also covers the
+/// SPA `.fallback`. Headers are only ADDED — a handler that already set one wins.
+async fn security_headers(
+    State(ctx): State<RemoteCtx>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    use axum::http::header::{HeaderName, HeaderValue};
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    let mut set = |name: HeaderName, value: &'static str| {
+        if !headers.contains_key(&name) {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+    };
+    set(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        "nosniff",
+    );
+    set(axum::http::header::X_FRAME_OPTIONS, "DENY");
+    // Modern clickjacking defence (supersedes X-Frame-Options where supported).
+    set(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        "frame-ancestors 'none'",
+    );
+    set(
+        HeaderName::from_static("referrer-policy"),
+        "strict-origin-when-cross-origin",
+    );
+    // HSTS only over TLS (audit M2): meaningless on plain HTTP, and pinning HTTPS
+    // when the server is intentionally running cleartext would brick access.
+    if ctx.tls_enabled {
+        set(
+            axum::http::header::STRICT_TRANSPORT_SECURITY,
+            "max-age=31536000; includeSubDomains",
+        );
+    }
+    resp
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -632,16 +707,31 @@ fn is_within_allowed_roots(target: &std::path::Path, roots: &[PathBuf]) -> bool 
 struct FileQuery {
     path: String,
     token: Option<String>,
+    /// Stable client device id, when the caller can supply one (an `<img src>`
+    /// can't, so this is optional — the IP binding still applies). Audit H5.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 async fn file_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     Query(q): Query<FileQuery>,
 ) -> impl IntoResponse {
+    // SECURITY (audit H5): validate the token AND its device+IP binding. The IP
+    // is always compared; the device id only when both sides provide one (image
+    // requests can't). A token sniffed off the LAN can't be replayed from another
+    // host.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
     let authed = q
         .token
         .as_deref()
-        .map(|t| ctx.state.remote_session_store.validate_token(t))
+        .map(|t| {
+            ctx.state
+                .remote_session_store
+                .validate_token_bound(t, &device_id, &ip)
+        })
         .unwrap_or(false);
     if !authed {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
@@ -871,7 +961,13 @@ async fn verify_handler_post(
     let valid = ctx.auth.verify(&form.code);
     post_verify_record(&ctx, &ip, &device_id, valid);
     let token = if valid {
-        Some(ctx.state.remote_session_store.create_session())
+        // SECURITY (audit H5): pin the issued token to this device id + IP so it
+        // can't be replayed from another host on the LAN.
+        Some(
+            ctx.state
+                .remote_session_store
+                .create_session_bound(&device_id, &ip),
+        )
     } else {
         None
     };
@@ -910,7 +1006,11 @@ async fn ws_handler(
     let valid = if let Some(ref t) = query.token {
         // Session-token path: not brute-forceable (256-bit CSPRNG token), so it
         // bypasses the TOTP throttle.
-        ctx.state.remote_session_store.validate_token(t)
+        // SECURITY (audit H5): enforce the token's device+IP binding here so a
+        // token issued to one device can't be reconnected from another LAN host.
+        ctx.state
+            .remote_session_store
+            .validate_token_bound(t, &device_id, &remote_addr)
     } else if let Some(ref c) = query.code {
         // SECURITY (audit C1): the `?code=` TOTP path is brute-forceable, so it
         // shares the SAME throttle/lockout/global-limit as POST /verify. A code
