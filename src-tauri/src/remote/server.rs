@@ -2686,7 +2686,7 @@ fn is_mutating_invoke(cmd: &str) -> bool {
 /// unknown commands — including deliberately-excluded host-privileged ones
 /// (`get_remote_info` exposes the live TOTP; `set_remote_enabled` /
 /// `disconnect_session` / blacklist are remote-admin; `enter_deep_root_mode` /
-/// `set_cloud_remote_active` / `summon_native_session` are host-only) — return
+/// `set_cloud_remote_active` is host-only) — return
 /// an error and never reach a handler.
 async fn dispatch_invoke_request(
     cmd: &str,
@@ -2926,6 +2926,20 @@ async fn dispatch_invoke_request(
         ),
         "detect_available_shells" => plain(terminal::detect_available_shells()),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
+
+        // ── Native (headless) tmux session discovery ──
+        // `list` is read-only; `summon` adopts a headless session into the
+        // caller's viewed workspace (`workspaceId` from the remote client; the
+        // desktop omits it → active workspace).
+        "list_native_sessions" => plain(terminal::list_native_sessions()),
+        "summon_native_session" => val(terminal::summon_native_session(
+            handle.state(),
+            handle.clone(),
+            s(args, "socket"),
+            s(args, "target"),
+            opt_s(args, "workspaceId"),
+        )
+        .await),
 
         // ── Workspace (live) ──
         // `list_workspaces` is read-only and required by the desktop SPA
