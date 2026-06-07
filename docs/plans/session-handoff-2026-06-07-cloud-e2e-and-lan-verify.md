@@ -162,7 +162,7 @@ wind 半已完成（`keyBinding.ts` + `cloudHostBridge.verifyPeerKey` 接入点 
 - **B 云完成**：
   - **B1** ✅ **实机证伪**：单 realm WebRTC harness 跑通真云链路，`get_directory_children` 经云分页正确（total=92），非云层 bug（疑 UI 懒加载已修）。
   - **B2**（终端经云 Rust 半 `subscribe_pane_raw`）❌ **未做**——需改 `src-tauri/src/commands/remote.rs`（并发会话 WIP），须隔离/协调。wind 半 `cloudHostPaneSource.ts` 早已提交。
-  - **B3**（E2EE 公钥↔身份绑定）❌ **未实现**（设计就绪+已解锁）。设计 `d-gm-10-e2ee-key-binding-design.md`：认证信令旁路确认（providers 经信令互报临时公钥→各端比对 DataChannel 握手公钥，不一致即拒）。**阻塞已解除**（protocol.md 域名迁移 WIP 已提交 `350e7fc`）。relay **透明转发**任意信令，**几乎无需 ridge-cloud 改动**（providers 发 `e2ee-pubkey` 即被转发；只需 providers `onSignal` 处理 + verifyPeerKey 比对 + D9 `e2ee-bind` 能力 + vitest 篡改即拒）。**⚠️ 切勿赶工**：设计文档明确「错误的绑定=假安全，比现状更糟」；需仔细处理「信令公钥 vs DataChannel 握手」时序竞态（验证前不得标记 connected）+ 多控制方 per-cid 公钥。建议新会话专做 + cloud e2e 验 MITM 抵抗（harness 已就绪，加 tamper 测）。
+  - **B3**（E2EE 公钥↔身份绑定）✅ **已实现 + 实测验证**（commit `7a9199a`）。认证信令旁路确认：两端经信令互报临时公钥→比对 DataChannel 握手公钥，不一致即判 MITM 拒绝。启用门改用「信令公钥到达性」(非 $/hello，后者握手后才发太晚)，宽限期回落 relay-trust 兼容旧端。**relay 透明转发，ridge-cloud 零代码改动**（已实测经运行中 relay 跑通）。实测：正路 `keyBindingMode=enforced` 连通；反路(篡改信令公钥)→拒绝断开。全绿(vitest 690)。详见 `d-gm-10-e2ee-key-binding-design.md` §8。**唯一文档欠账**：`ridge-cloud/docs/ridge-cloud-protocol.md` §7 应补记 `e2ee-pubkey` 信令消息（纯文档，relay 行为不变，留待动 ridge-cloud 时）。
 - **C S6 部署**：按用户选择 = **只推 origin 不部署**（已完成）。真正上线 dokku 由用户择机：⚠️ 部署 develop 会**连带域名迁移**（`b200a8e` duckdns→9527127.xyz）上 prod，须先确认 9527127.xyz DNS/TLS/dokku BASE_DOMAIN 就绪；或只部署 `security/pre-deploy-2026-06-07`（已在 origin，基于当前 prod 基线，cherry-pick 干净 + cargo check 绿）。
 - **D 审计** ✅ 完成 + **①-1 实测坐实**（get_remote_info 经云泄露宿主 TOTP 密钥）→ 已修（`2ef0771`，实测修复后被拒）。
 
