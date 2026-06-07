@@ -18,7 +18,7 @@
   import { ApiError, listDevices, BASE_DOMAIN, type DeviceDto } from './cloud/apiClient';
   import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from './cloud/ridgeCloudProvider';
   import { CloudHostBridge } from './cloud/cloudHostBridge';
-  import { createCloudPaneSource } from './cloud/cloudPaneSource';
+  import { makeCloudHostPaneSource } from './cloud/cloudHostPaneSource';
 
   let proModalOpen = $state(false);
 
@@ -265,10 +265,12 @@
           new CloudHostBridge({
             invoke: (method, params) => invoke(method, params),
             sendFrame: send,
-            paneOutputSource: createCloudPaneSource({
-              listen,
-              getActiveWorkspaceId: () => invoke<string>('get_active_workspace_id'),
-            }),
+            // B2（D-GM-11）：用 subscribe_pane_raw 专用 raw fan-out（RemotePtyEvent::
+            // RawBytes → Tauri event pane-raw-{pane}）。**必须**走此路而非订阅
+            // pty-output：原生桌面 pane 为 delta-mode，lib.rs 对其 `continue` 跳过了
+            // pty-output 发射（只发 pty-delta），故旧 cloudPaneSource 对原生 pane 收不到
+            // 字节。raw fan-out 在 delta 分支之前，delta-mode 也照样推。
+            paneOutputSource: makeCloudHostPaneSource({ invoke, listen }),
             totpVerifier: (code) => invoke<boolean>('verify_remote_totp', { code }),
           }),
       },

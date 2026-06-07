@@ -21,7 +21,9 @@ import { CloudHostBridge } from './cloudHostBridge';
 import { createCloudWebrtcTransportWith } from '../../transport/remote/cloudWebrtcAdapter';
 import { RpcClient } from '../../transport/remote/rpcClient';
 import type { KeyBindingMode } from './keyBinding';
+import { makeCloudHostPaneSource } from './cloudHostPaneSource';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export interface CloudE2eOptions {
   /** device JWT（scope=device）。 */
@@ -50,6 +52,11 @@ export interface CloudE2eOptions {
    * E2EE 腿调包）。预期 controller 比对失败 → 判 MITM 拒绝 → connected=false。
    */
   tamperBinding?: boolean;
+  /**
+   * B2 验证：连上后订阅一个 pane 的裸字节流（`subscribe-pane`），可选先 `write_to_pty`
+   * 触发输出，收集经云回推的 pane 帧。证明终端经云端到端可用。
+   */
+  paneStream?: { paneId: string; write?: string; waitMs?: number };
 }
 
 export interface CloudE2eProbe {
@@ -75,6 +82,8 @@ export interface CloudE2eResult {
   exploitResult?: { method: string; ok: boolean; sample?: string; error?: string } | null;
   /** B3：controller 端最终绑定模式（enforced=信令公钥已比对一致；relay-trust=回落）。 */
   keyBindingMode?: KeyBindingMode | null;
+  /** B2：pane 裸字节流验证结果（经云收到的帧数/字节数/样本）。 */
+  paneStream?: { paneId: string; frames: number; bytes: number; sample: string } | null;
 }
 
 /**
@@ -108,6 +117,11 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
         new CloudHostBridge({
           invoke: (method, params) => invoke(method, params ?? {}),
           sendFrame: send,
+          // B2：注入真 pane 源（subscribe_pane_raw + pane-raw event），验证终端经云。
+          paneOutputSource: makeCloudHostPaneSource({
+            invoke: (cmd, args) => invoke(cmd, args ?? {}),
+            listen: listen as never,
+          }),
         }),
     },
   );
@@ -128,6 +142,9 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
   try {
     if (opts.tamperBinding) tamperGlobal.__RIDGE_DEBUG_TAMPER_E2EE_SIG = true;
     await host.goOnline(device);
+    // 镜像 RemotePanel.goOnline：上报 cloud 活跃，让 lib.rs PTY fan-out 门控放行
+    // （B2 pane 流必需；否则 remote_enabled=false 时收不到裸字节）。
+    await invoke('set_cloud_remote_active', { active: true }).catch(() => {});
     push('host.goOnline returned');
 
     connected = await new Promise<boolean>((resolve) => {
@@ -193,7 +210,35 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
 
     const keyBindingMode: KeyBindingMode = controllerProvider.getKeyBindingMode();
 
-    return { connected, results, capabilities, exploitResult, keyBindingMode, log };
+    // ── B2：pane 裸字节流验证（订阅 → 触发输出 → 收经云回推的 0x10 帧）──
+    let paneStream: CloudE2eResult['paneStream'] = null;
+    if (connected && opts.paneStream) {
+      const { paneId, write, waitMs = 1500 } = opts.paneStream;
+      let frames = 0;
+      let bytes = 0;
+      let sample = '';
+      const dec = new TextDecoder();
+      const offPane = adapter.onPaneBytes((pid, b) => {
+        if (pid !== paneId) return;
+        frames += 1;
+        bytes += b.length;
+        if (sample.length < 160) sample += dec.decode(b, { stream: true });
+      });
+      // controller 经云发 subscribe-pane（notification）→ host 桥调 paneOutputSource。
+      rpc.notify('subscribe-pane', { paneId });
+      if (write) {
+        try {
+          await rpc.request('write_to_pty', { paneId, data: write });
+        } catch (e) {
+          push(`write_to_pty err:${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      await new Promise<void>((r) => setTimeout(r, waitMs));
+      offPane();
+      paneStream = { paneId, frames, bytes, sample: sample.slice(0, 160) };
+    }
+
+    return { connected, results, capabilities, exploitResult, keyBindingMode, paneStream, log };
   } finally {
     delete tamperGlobal.__RIDGE_DEBUG_TAMPER_E2EE_SIG;
     try {
@@ -207,5 +252,6 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
     } catch {
       /* ignore */
     }
+    await invoke('set_cloud_remote_active', { active: false }).catch(() => {});
   }
 }
