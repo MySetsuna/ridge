@@ -1,7 +1,7 @@
 # 统一远控架构 + Cloud 桌面控制 —— 现状与规划（Handoff Plan · 最终稿）
 
 > 状态：**规划中（未开工）**。本文件是给后续接手 agent 的单一交接文档：先讲清**现状**，再讲清**要做什么、按什么顺序做**。
-> 作者轮次：2026-06-03 brainstorming 产出 → 2026-06-03 架构评审并入 → 2026-06-03 工作区多客户端模型定稿（D11）。语言约定：散文简体中文，标识符/字段名英文（与代码库一致）。
+> 作者轮次：2026-06-03 brainstorming 产出 → 2026-06-03 架构评审并入 → 2026-06-03 工作区多客户端模型定稿（D11）→ 2026-06-07 D11 落地解耦设计 + 三视角评审定稿并入路线图（见 [`d11-workspace-graph-pane-decoupling-design.md`](./d11-workspace-graph-pane-decoupling-design.md)；本文件 §6 末「D11 跨波次落地映射」、§5.1、R4 同步更新）。语言约定：散文简体中文，标识符/字段名英文（与代码库一致）。
 > 上游权威契约：[`docs/contracts/ridge-cloud-protocol.md`](../contracts/ridge-cloud-protocol.md)（Ridge Cloud 商业化协议 SSOT）。本文件**不覆盖**该契约；凡与之冲突处，以"改契约在先"为准（见 §6 风险 R1，以及新增的前置子项 **S0**）。
 
 ---
@@ -261,12 +261,22 @@ headless 机器有 fs/git/PTY，所以文件树/git/搜索/编辑器（文件读
 | **S2 客户端 `Transport` 抽象** | 分两层：L1 通道原语 + L2 共享 RPC 客户端（D7）；`bridge.ts` 依赖接口；LAN-WS 适配器包 `RemoteConnection` | 无（可与 S1 并行） | LAN desktop-web 行为不变（回归）；L2 RPC 单测（超时/取消/重连 reject） | 纯重构，低风险 |
 | **S3 统一线协议** | raw-byte + **JSON-RPC 2.0** 控制/invoke + 字节流 1 字节 mux；**版本握手(D9)**、**attach 快照(D10)**、**RPC 超时/取消/重连**、**事件背压**；invoke-RPC 定为唯一命令面 | **S0**, S1, S2 | 协议文档化并与契约一致；LAN 在新协议下回归；**protocol conformance 套件（S7）跨 LAN-WS 与 cloud-WebRTC 同套通过** | 协议设计 + 契约修订 |
 | **S4 cloud·桌面 app host 完整 IDE** | cloud-WebRTC 适配器；桌面 host 消费 mux 帧→进程内 dispatch；reconnect 重绘(D10)；E2EE 密钥认证核实；（终态迁 Rust，见契约 §8） | S1,S2,S3,(S6),S8 | 桌面浏览器经 cloud 看到完整 IDE 且终端流通畅、E2EE 生效、断连重连屏幕正确重绘 | 新能力 + 终态 Rust 迁移 |
-| **S5 headless·ridge-cli 完整 IDE** | ridge-cli 链 `ridge-core` + 补领域模型（按 **D11**：共享图谱 + 每连接视图 + 每 pane 锁定尺寸）；统一协议替换 ControlMsg；git 本地能力档 + PTY 环境定义 | S1, S3 | 在无 GUI 机器上经 cloud 提供完整 IDE（MVP：terminal+tree+search+只读编辑器；P2：git 本地+写编辑器+工作区） | 工作量大，**先 MVP 切法分期** |
+| **S5 headless·ridge-cli 完整 IDE** | ridge-cli 链 `ridge-core` + 补领域模型（按 **D11**：共享图谱 + 每连接视图 + 每 pane 锁定尺寸；**落地三波见 §6 末「D11 跨波次落地映射」**——Wave A 可早于 S3、Wave B 并入 S3、Wave C 随本波）；统一协议替换 ControlMsg；git 本地能力档 + PTY 环境定义 | S1, S3 | 在无 GUI 机器上经 cloud 提供完整 IDE（MVP：terminal+tree+search+只读编辑器；P2：git 本地+写编辑器+工作区） | 工作量大，**先 MVP 切法分期** |
 | **S6 cloud 入口** | 公网下发桌面 SPA（code-split + CDN 版本化缓存）+ 鉴权（user/device JWT）；扩契约 §0/§10 接纳桌面 controller；版本握手对账 | **S0**, S2, S3 | 控制端能在公网加载桌面 SPA 并鉴权连通；新 SPA 连旧 host 经 D9 正确降级/提示 | 横切，**跨 repo（ridge-cloud）** |
 | **S7 测试与一致性（新 · 横切）** | ① S1 的 **characterization/golden 套件**（采集现状命令 req/resp 语料，回放打 ridge-core）② S3 起的 **protocol conformance 套件**（同一套件跨两传输跑）③ 跨 host **parity 套件**（desktop vs ridge-cli 同命令同结果） | 随 S1/S3 | 套件纳入 CI，作为 S1/S3/S4/S5 的硬验收门 | **防静默漂移的核心投资** |
 | **S8 安全与可观测（新 · 横切）** | 能力白名单数据化(D8) 落地；fs 沙箱/root-scoping；deep-root 强鉴权+审计；E2EE 密钥认证核实；shim 全量审计；tracing + 相关 id + frame debug | 贯穿 | 安全评审 checklist 全过；关键路径有结构化 trace 与 debug 开关 | 横切，重点在 S4/S5/S6 |
 
 **推荐顺序**：`S0 ∥ S1 ∥ S2`（S0 文档/协商，S1 含 S7 characterization，S2 含 L2 RPC 单测）→ `S3`（含 S7 conformance）→ `{S4, S5, S6}`；**S8 贯穿全程，重点在 S4/S5/S6**。先 **S1**（解锁最多 + 风险最高，趁早单独做、配桌面回归 + characterization 网）；**S0 立刻并行起跑**以免成为 S3/S6 的关键路径瓶颈。
+
+### D11 跨波次落地映射（2026-06-07 定稿，详 [`d11-workspace-graph-pane-decoupling-design.md`](./d11-workspace-graph-pane-decoupling-design.md) §1.5）
+
+D11 的工作区 / pane 图谱**不是单个 S-行**，按依赖拆成**杠铃三波**（开始可早于 S3，完成绑 S3）：
+
+- **Wave A（S1 性质，S3-无关，可先行）**：`PaneTree`+`PaneMode` 移入 `ridge_core::workspace` + `WorkspaceGraph`（**持在 host 既有同一把 `workspaces` 写锁内，不是独立第二把锁**——否则重开 `pty_generation` 的 `[teardown,register)` 竞态 + 写读锁倒置）+ `commands/pane.rs` 薄壳（dispatch key 用线名，**已是 `REMOTE_ALLOWLIST`/`dispatch.rs` 的 MethodNotFound 预留槽**）+ 结构事件走 `EventScope::Broadcast` 且**释放锁后发**；host **保留** `{"type":"panes"}` 旁表重枚举 / `PaneClosed` respawn 决策 / native pane 抑制，并**移除 `server.rs` 旧 structural 发射**避免 double-emit。门：S7 golden（含 **P1 前必补**的 `PaneNode`/`PaneTree`/`SplitDirection` serde golden）+ 新 `scripts/cdp-pane-graph.mjs`（断言用户关 pane=1 次重建 / native detach=0 次）。
+- **Wave B（并入 S3）**：cli 单 leaf 图谱 + pane-id **全量切 graph-allocated Uuid**（cli + controller 随 S3 线协议**同步**切，**无过渡别名**——闭合原 D11-Q1）；CRUD broadcast 通知方法名 + payload schema + `panes` 帧须**先在 S0 补进契约 §7/§9**。
+- **Wave C（随 S4/S5）**：`ViewRegistry`（每连接视图）+ 悬空引用回退——多连接才可观测/可测；桌面 in-process（`ConnectionId=None`）退化单条、零行为变化，故现在**只设计、实现挪到 S4/S5**。
+
+**critical path = S3**（Wave B 绑它）。**最该守的单向门**：`Pane.id` 的**落盘 serde**（Wave A 冻结、永不被 S3 动）与 **S3 线协议 pane-id**（S3 独有）**显式解耦**——二者都是 `Uuid`，看似可换实则不可。
 
 ---
 
@@ -275,7 +285,7 @@ headless 机器有 fs/git/PTY，所以文件树/git/搜索/编辑器（文件读
 - **R1 契约 SSOT 部分过时**：`docs/contracts/ridge-cloud-protocol.md` §7.2/§9 仍写 "postcard 增量帧 schema 不改"，但 LAN 与 ridge-cli 实际已是 raw-byte；§0 规定 controller 仅复用移动端 SPA（无桌面 controller 概念）。契约自有规则"**改契约在先**"——**已抽成独立前置子项 S0**，S3/S6 开工前先就绪，否则跨组件实现会再次发散。
 - **R2 桌面回归风险（S1）**：动 `commands/*` 与 `AppState`，必须有桌面端全功能回归手段。历史记忆提醒：动桌面路径要慎重（见 fileExplorer 迁移待办）。**缓解**：S7 characterization/golden 套件作为安全网，不靠"应该没问题"。
 - **R3 ridge-cli 当前脏依赖**：现状 path-依赖 src-tauri lib（带 Tauri）。`ridge-core` 抽取须确保 ridge-core **零 Tauri 依赖**（含**不经 `tauri::async_runtime`**，直依 `tokio`），否则 headless 二进制被 Tauri 污染。
-- **R4 headless 领域模型缺口**：工作区/分屏状态今天只在桌面 `AppState`，headless 要等价物（归 `ridge-core`）。**已决（D11）**：共享实体图谱 + 每连接视图 + 每 pane 锁定尺寸（详 §5.1）；剩余实现风险集中在悬空引用回退与同 pane 并发输入两条边角。
+- **R4 headless 领域模型缺口**：工作区/分屏状态今天只在桌面 `AppState`，headless 要等价物（归 `ridge-core`）。**已决（D11）**：共享实体图谱 + 每连接视图 + 每 pane 锁定尺寸（详 §5.1，落地设计见 [`d11-workspace-graph-pane-decoupling-design.md`](./d11-workspace-graph-pane-decoupling-design.md)，排期见 §6 末「D11 跨波次落地映射」）。**2026-06-07 评审定稿纠正两处实现陷阱**：①图谱须持在 host **同一把 `workspaces` 锁内**（独立第二把锁会重开 `pty_generation` 的 `[teardown,register)` 竞态 + 写读锁倒置死锁）；②图谱**只发结构事件**、host 保留 respawn-vs-suppress（**native pane 必抑制 `PaneClosed`**），事件释放锁后发。剩余实现风险集中在悬空引用回退（Wave C）与同 pane 并发输入两条边角。
 - **R5 cloud 仍 scaffold**：`onFrame` 空、host WebRTC 在 WebView、deep-root 是 hide 非 destroy。终态须把 host WebRTC 迁 Rust（契约 §8）才能真正保活/降内存。S4 要规划这条迁移，不要在 WebView 上叠太多终态逻辑。
 - **R6 跨 repo / 文件归属**：cloud 后端在独立仓库 `C:\code\ridge-cloud`；契约 §11 有严格文件归属（B=src/、C=src-tauri/、D=packages/ridge-cli/）。`ridge-core` 抽取会**打破 §11 现有边界**（从 src-tauri 切出新 crate 并被 packages 依赖）——**在 S0 一并增补 `ridge-core` 归属**。
 - **R7 单通道 mux 的 HOL 阻塞（新）**：PTY 字节洪峰会 head-of-line 阻塞同通道的 JSON 控制/RPC，cloud 高延迟放大。**缓解**：v1 接受（与 WS 同性质），实测有影响则拆多 DataChannel（§9）。
