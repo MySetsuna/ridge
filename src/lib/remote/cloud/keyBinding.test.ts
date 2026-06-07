@@ -4,7 +4,7 @@
 // (e2ee-bind not negotiated) stays permissive so old controllers don't regress.
 
 import { describe, it, expect } from 'vitest';
-import { constantTimeEqual, makeKeyBindingVerifier } from './keyBinding';
+import { constantTimeEqual, makeKeyBindingVerifier, decideKeyBinding } from './keyBinding';
 import { PUBKEY_LEN } from './e2ee';
 
 function pubkey(fill: number): Uint8Array {
@@ -60,5 +60,35 @@ describe('makeKeyBindingVerifier — D-GM-10 binding enforcement', () => {
     // Even a mismatching pubkey is accepted in compat mode (old controller path).
     expect(verify(pubkey(0xcd))).toBe(true);
     expect(verify(pubkey(0x00))).toBe(true);
+  });
+});
+
+describe('decideKeyBinding — signaling-presence gate (the live B3 decision)', () => {
+  it('ACCEPTS when handshake pubkey matches the signaling pubkey', () => {
+    expect(decideKeyBinding(pubkey(0xab), pubkey(0xab), false)).toBe('accept');
+  });
+
+  it('REJECTS when handshake pubkey differs from the signaling pubkey (MITM)', () => {
+    // A DataChannel MITM swapped the handshake pubkey, but it can't touch the
+    // pubkey relayed over the separate authenticated TLS signaling → mismatch.
+    expect(decideKeyBinding(pubkey(0xcd), pubkey(0xab), false)).toBe('reject');
+    expect(decideKeyBinding(pubkey(0xcd), pubkey(0xab), true)).toBe('reject');
+  });
+
+  it('WAITS when the signaling pubkey has not arrived yet and grace has not expired', () => {
+    expect(decideKeyBinding(pubkey(0xab), null, false)).toBe('wait');
+  });
+
+  it('falls back to relay-trust (ACCEPT) once grace expires without a signaling pubkey', () => {
+    // The peer is an old client that never sends its signaling pubkey — a
+    // DataChannel MITM cannot induce this path (it can't suppress the separate
+    // TLS signaling), so relay-trust here is the backward-compat case only.
+    expect(decideKeyBinding(pubkey(0xab), null, true)).toBe('accept');
+  });
+
+  it('REJECTS defensively on illegal pubkey length when a signaling pubkey is present', () => {
+    const short = new Uint8Array(PUBKEY_LEN - 1).fill(0xab);
+    expect(decideKeyBinding(short, pubkey(0xab), false)).toBe('reject');
+    expect(decideKeyBinding(pubkey(0xab), short, false)).toBe('reject');
   });
 });

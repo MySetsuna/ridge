@@ -17,6 +17,7 @@ import {
   encodeHandshakeFrame,
   decodeHandshakeFrame,
   deriveSessionKey,
+  bytesToBase64,
   type EphemeralKeyPair,
 } from './e2ee';
 import type { CloudConnectionState } from './connectionProvider';
@@ -322,6 +323,44 @@ describe('ControllerCloudProvider', () => {
     expect(hostSession.open(onWire)).toEqual(ctrlPlain);
   });
 
+  it('B3：信令公钥与握手公钥一致 → 绑定模式 enforced + connected', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG);
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const dc = FakePeerConnection.instances[0].channel!;
+    dc.fireOpen();
+    const ctrlPub = decodeHandshakeFrame(dc.lastSent());
+    handshakeAsHost(ctrlPub, dc); // 内部已发匹配的 e2ee-pubkey 信令
+    expect(provider.getState()).toBe('connected');
+    expect(provider.getKeyBindingMode()).toBe('enforced');
+  });
+
+  it('B3：信令公钥 ≠ 握手公钥（relay-MITM 调包）→ 判 MITM 拒绝断开', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    let errCode: string | undefined;
+    const provider = new ControllerCloudProvider(CONFIG, { onError: (_m, code) => (errCode = code) });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const dc = FakePeerConnection.instances[0].channel!;
+    const ws = FakeWebSocket.instances[0];
+    dc.fireOpen();
+    const ctrlPub = decodeHandshakeFrame(dc.lastSent());
+
+    // host 的真实 DataChannel 握手用 hostKp；但信令旁路上报一个【不同】的公钥
+    // （模拟 relay 在 E2EE 腿给 controller 调包了攻击者公钥）。
+    const hostKp = generateEphemeralKeyPair();
+    const attackerPub = generateEphemeralKeyPair().publicKey;
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(attackerPub) });
+    // controller 仍能用 hostKp 派生 session，但握手公钥(hostKp) ≠ 信令公钥(attacker) → 拒绝。
+    void deriveSessionKey(hostKp.privateKey, hostKp.publicKey, ctrlPub);
+    dc.deliver(encodeHandshakeFrame(hostKp.publicKey));
+
+    expect(errCode).toBe('FORBIDDEN');
+    expect(provider.getState()).toBe('disconnected');
+    expect(provider.getKeyBindingMode()).not.toBe('enforced');
+  });
+
   it('握手前 sendFrame 静默丢弃（不抛、不发）', async () => {
     const { ControllerCloudProvider } = await loadProvider();
     const provider = new ControllerCloudProvider(CONFIG);
@@ -429,7 +468,10 @@ function handshakeAsHost(
   const hostKp = generateEphemeralKeyPair();
   const hostKey = deriveSessionKey(hostKp.privateKey, hostKp.publicKey, ctrlPub);
   const hostSession = new E2eeSession(hostKey, DIR_HOST_TO_CONTROLLER);
-  // host 把自己的握手帧投递给 controller → controller 派生 key、置 connected。
+  // B3：host 先经**信令旁路**上报与其 DataChannel 握手公钥一致的临时公钥；controller
+  // 比对一致 → enforced → connected。（不发此信令则 controller 会等到宽限期才回落。）
+  FakeWebSocket.instances[0]?.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(hostKp.publicKey) });
+  // host 把自己的握手帧投递给 controller → controller 派生 key、比对绑定、置 connected。
   dc.deliver(encodeHandshakeFrame(hostKp.publicKey));
   return { hostSession, hostKp };
 }

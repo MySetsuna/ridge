@@ -28,10 +28,17 @@ import {
   encodeHandshakeFrame,
   decodeHandshakeFrame,
   deriveSessionKey,
+  bytesToBase64,
+  base64ToBytes,
+  PUBKEY_LEN,
   type EphemeralKeyPair,
 } from './e2ee';
+import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
+
+/** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
+const KEY_BIND_GRACE_MS = 3000;
 
 /** DataChannel 标签与参数（契约 §7）。 */
 const DC_LABEL = 'ridge';
@@ -64,7 +71,9 @@ type SignalIn =
   | { t: 'error'; code: string; message: string }
   | { t: 'offer'; sdp: string; cid?: string }
   | { t: 'answer'; sdp: string; cid?: string }
-  | { t: 'ice'; candidate: RTCIceCandidateInit | null; cid?: string };
+  | { t: 'ice'; candidate: RTCIceCandidateInit | null; cid?: string }
+  // B3（D-GM-10）：cloud 经已认证信令把对端(controller)临时公钥旁路转发回来（带 cid）。
+  | { t: 'e2ee-pubkey'; pubkey: string; cid?: string };
 
 export interface RidgeCloudHostConfig {
   /** device JWT（scope=device），WS 与 ice-servers 鉴权用。 */
@@ -101,6 +110,14 @@ interface ControllerConn {
   bridge: CloudHostBridgeLike | null;
   state: CloudConnectionState;
   connectedAt: number;
+  // ── B3（D-GM-10）E2EE 公钥↔身份绑定（按 cid 独立）──
+  /** controller 经已认证信令旁路转发回来的临时公钥；尚未到达为 null。 */
+  peerSigKey: Uint8Array | null;
+  /** DataChannel 握手解出的 controller 公钥，待与信令公钥比对。 */
+  pendingHandshakePub: Uint8Array | null;
+  bindTimer: ReturnType<typeof setTimeout> | null;
+  bindingDecided: boolean;
+  bindingMode: KeyBindingMode;
 }
 
 /**
@@ -231,6 +248,11 @@ export class RidgeCloudHost {
       bridge: null,
       state: 'connecting',
       connectedAt: Date.now(),
+      peerSigKey: null,
+      pendingHandshakePub: null,
+      bindTimer: null,
+      bindingDecided: false,
+      bindingMode: 'pending',
     };
     this.conns.set(cid, conn);
 
@@ -281,6 +303,16 @@ export class RidgeCloudHost {
     conn.handshakeDone = false;
     conn.session = null;
     this.rawSend(conn, encodeHandshakeFrame(conn.ephemeral.publicKey));
+    // B3：把本端临时公钥经**已认证信令**旁路定向上报给该 cid 的 controller，供其比对
+    // DataChannel 握手公钥（两条独立通道，网络 MITM 无法同时篡改）。
+    //
+    // 测试 seam（仅 dev e2e harness 置位此 global；**生产永不设置**）：篡改成全 0 的
+    // 错误公钥，模拟 relay-MITM 在 E2EE 腿调包 → 对端比对应判 MITM 并拒绝。用于在真链路
+    // 上验证 reject 路径（不仅是 decideKeyBinding 纯函数）。
+    const tamper = (globalThis as { __RIDGE_DEBUG_TAMPER_E2EE_SIG?: boolean })
+      .__RIDGE_DEBUG_TAMPER_E2EE_SIG === true;
+    const sigPub = tamper ? new Uint8Array(PUBKEY_LEN) : conn.ephemeral.publicKey;
+    this.sendSignal({ t: 'e2ee-pubkey', pubkey: bytesToBase64(sigPub), cid: conn.cid });
   }
 
   private onDataChannelMessage(conn: ControllerConn, data: unknown): void {
@@ -296,17 +328,10 @@ export class RidgeCloudHost {
         // host 端发出方向为 host→controller(dir=0)。
         conn.session = new E2eeSession(key, DIR_HOST_TO_CONTROLLER);
         conn.handshakeDone = true;
-        conn.ephemeral = null; // 用完即焚
-        // 取应用层桥接管该 cid 的明文帧；sendFrame 闭包加密经本连接发回。
-        const bridge = this.cb.createBridge(conn.cid, (plaintext) => this.sendFrame(conn, plaintext));
-        // §5.5 公钥↔身份绑定（桥若注入了校验器）。不过即拒会话。
-        if (bridge.verifyPeerKey && !bridge.verifyPeerKey(peerPub)) {
-          conn.bridge = bridge;
-          this.teardownConn(conn.cid, true);
-          return;
-        }
-        conn.bridge = bridge;
-        this.setConnState(conn, 'connected');
+        conn.ephemeral = null; // 用完即焚（公钥已在 startE2eeHandshake 经信令上报）
+        // B3：先做公钥绑定判定，通过(或宽限期回落)才 createBridge + 标记 connected。
+        // 业务帧门控天然成立：连上前 conn.bridge 为 null，下方业务分支会丢弃。
+        this.resolveBinding(conn, peerPub);
       } catch (e: unknown) {
         this.fail(e instanceof Error ? e.message : 'E2EE 握手失败，已断开', 'FORBIDDEN');
         this.teardownConn(conn.cid, false);
@@ -322,6 +347,62 @@ export class RidgeCloudHost {
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
     }
+  }
+
+  // ── B3（D-GM-10）公钥绑定判定（按 cid 独立）──────────────────────────────────
+  /** DataChannel 握手解出对端公钥后进入判定（信令公钥可能先到/后到）。 */
+  private resolveBinding(conn: ControllerConn, peerPub: Uint8Array): void {
+    conn.pendingHandshakePub = peerPub;
+    this.decideBinding(conn);
+  }
+
+  /**
+   * 据「握手公钥 + 信令公钥(可能未到) + 宽限期」三态判定（见 keyBinding.decideKeyBinding）：
+   * accept → 建桥+connected；reject → 判 MITM 拆除；wait → 起宽限计时等信令公钥。
+   */
+  private decideBinding(conn: ControllerConn, graceExpired = false): void {
+    if (conn.bindingDecided || this.closed || conn.pendingHandshakePub == null) return;
+    if (!this.conns.has(conn.cid)) return; // 已被拆除
+    const decision = decideKeyBinding(conn.pendingHandshakePub, conn.peerSigKey, graceExpired);
+    if (decision === 'wait') {
+      this.armBindGrace(conn);
+      return;
+    }
+    conn.bindingDecided = true;
+    if (conn.bindTimer) {
+      clearTimeout(conn.bindTimer);
+      conn.bindTimer = null;
+    }
+    if (decision === 'accept') {
+      conn.bindingMode = conn.peerSigKey ? 'enforced' : 'relay-trust';
+      this.acceptConn(conn, conn.pendingHandshakePub);
+    } else {
+      // reject：握手公钥 ≠ 信令旁路公钥 → 检测到 MITM。
+      this.fail('E2EE 公钥绑定校验失败（疑似 MITM），已断开', 'FORBIDDEN');
+      this.teardownConn(conn.cid, true);
+    }
+  }
+
+  private armBindGrace(conn: ControllerConn): void {
+    if (conn.bindTimer || conn.bindingDecided) return;
+    conn.bindTimer = setTimeout(() => {
+      conn.bindTimer = null;
+      this.decideBinding(conn, true);
+    }, KEY_BIND_GRACE_MS);
+  }
+
+  /** 绑定通过：建应用层桥（含既有 verifyPeerKey 钩子）+ 标记 connected。 */
+  private acceptConn(conn: ControllerConn, peerPub: Uint8Array): void {
+    // 取应用层桥接管该 cid 的明文帧；sendFrame 闭包加密经本连接发回。
+    const bridge = this.cb.createBridge(conn.cid, (plaintext) => this.sendFrame(conn, plaintext));
+    // 兼容既有 §5.5 verifyPeerKey 钩子（更一般的注入式机制，默认 relay-trust=true）。
+    if (bridge.verifyPeerKey && !bridge.verifyPeerKey(peerPub)) {
+      conn.bridge = bridge;
+      this.teardownConn(conn.cid, true);
+      return;
+    }
+    conn.bridge = bridge;
+    this.setConnState(conn, 'connected');
   }
 
   /** 把一帧明文加密经某连接的 DataChannel 发回 controller。 */
@@ -347,6 +428,7 @@ export class RidgeCloudHost {
     const conn = this.conns.get(cid);
     if (!conn) return;
     this.conns.delete(cid);
+    if (conn.bindTimer) { clearTimeout(conn.bindTimer); conn.bindTimer = null; } // B3：清宽限计时
     try { conn.bridge?.reset(); } catch { /* ignore */ }
     if (conn.dc) {
       conn.dc.onopen = conn.dc.onclose = conn.dc.onmessage = null;
@@ -430,6 +512,19 @@ export class RidgeCloudHost {
           const conn = this.conns.get(msg.cid);
           if (conn) {
             try { await conn.pc.addIceCandidate(msg.candidate); } catch { /* 非关键 candidate 失败可忽略 */ }
+          }
+        }
+        break;
+      case 'e2ee-pubkey':
+        // B3：controller 经已认证信令旁路转发回来的临时公钥（带 cid）→ 存入该 conn 触发判定。
+        if (msg.cid) {
+          const conn = this.conns.get(msg.cid);
+          if (conn) {
+            const pk = base64ToBytes(msg.pubkey);
+            if (pk) {
+              conn.peerSigKey = pk;
+              this.decideBinding(conn);
+            }
           }
         }
         break;

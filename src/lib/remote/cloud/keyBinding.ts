@@ -68,3 +68,46 @@ export function makeKeyBindingVerifier(opts: KeyBindingOptions): KeyBindingVerif
     return constantTimeEqual(peerPublicKey, expectedPeerPublicKey);
   };
 }
+
+/**
+ * 一个连接的 B3 绑定模式（诊断/测试可读）。
+ * - `pending`：尚未判定。
+ * - `enforced`：收到信令旁路公钥并比对一致（严格绑定生效）。
+ * - `relay-trust`：宽限期内未收到信令公钥 → 回落 v1（对端疑为旧端）。
+ */
+export type KeyBindingMode = 'pending' | 'enforced' | 'relay-trust';
+
+/** {@link decideKeyBinding} 的三态判定。 */
+export type KeyBindingDecision =
+  | 'accept' // 校验通过（或回落 relay-trust）：可标记 connected
+  | 'reject' // 检测到 MITM：握手公钥 ≠ 信令旁路公钥 → 必须断开
+  | 'wait'; //  信令旁路公钥尚未到达且宽限期未过 → 暂缓决定（既不放行也不拒绝）
+
+/**
+ * B3 在线判定：用「**信令旁路确认是否到达**」作启用门，而非 D9 `$/hello` 能力位。
+ *
+ * 为何不用 `$/hello`：`$/hello` 在 E2EE 握手**完成后**才由 L2 发出（见 rpcClient/
+ * bridge），那时连接已 `connected`，太晚——无法在握手时据它决定是否拒绝。改用更稳健
+ * 的**信令公钥到达性**：DataChannel 网络中间人**无法**篡改另一条已认证 TLS 信令上转发
+ * 的公钥，故"收到了信令公钥"即可强制比对；"宽限期内未收到"暂缓；"宽限期过仍未收到"判
+ * 定对端为不发信令公钥的旧端 → 回落 relay-trust（向后兼容）。DataChannel MITM 无法
+ * 借此回落逃逸——它无法阻止信令公钥经独立 TLS 通道到达。
+ *
+ * @param handshakePub   E2EE DataChannel 握手帧里的对端公钥（0x01||pub32 解出）。
+ * @param signalingPub   cloud 经已认证信令转发回来的对端公钥；尚未到达为 null。
+ * @param graceExpired   宽限期是否已过（仍未收到 signalingPub 时用于回落判定）。
+ */
+export function decideKeyBinding(
+  handshakePub: Uint8Array,
+  signalingPub: Uint8Array | null,
+  graceExpired: boolean,
+): KeyBindingDecision {
+  if (signalingPub) {
+    if (signalingPub.length !== PUBKEY_LEN || handshakePub.length !== PUBKEY_LEN) {
+      return 'reject'; // 防御性：任一公钥长度非法 → 拒绝
+    }
+    return constantTimeEqual(handshakePub, signalingPub) ? 'accept' : 'reject';
+  }
+  // 尚无信令公钥：宽限期内等待；过期则回落 relay-trust（对端疑为旧端，不发信令公钥）。
+  return graceExpired ? 'accept' : 'wait';
+}

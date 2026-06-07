@@ -52,3 +52,32 @@ E2EE 握手是**无认证的 X25519 临时 DH**（`e2ee.ts`）：首帧 `0x01 ||
 ## 7. 一句话
 
 B3 的安全方案已定（认证信令旁路确认，复用既有 deviceJWT 信令 + e2ee.ts 的 compareBytes，无需新非对称密钥）；**安全属性的可单测核心**（篡改公钥即拒）明确；实现须等用户的 protocol.md 域名迁移 WIP 落定（避免契约在制品冲突）+ live cloud 验证 MITM 抵抗。
+
+---
+
+## 8. 实现状态（2026-06-07 ✅ 已实现 + 实测验证）
+
+§5 的两条阻塞均已解除（protocol.md 域名迁移 WIP 已提交 `350e7fc`；cloud e2e harness 已就绪）。B3 已在 **wind 单仓库**完整实现并实测，**ridge-cloud 零代码改动**。
+
+### 8.1 关键设计调整：启用门改用「信令公钥到达性」而非 D9 `$/hello`
+原设计 §3 用 `$/hello` 协商 `e2ee-bind` 能力位作启用门。核实发现 **`$/hello` 在 E2EE 握手完成 *之后* 才由 L2(rpcClient/bridge) 发出**——那时连接已 `connected`，太晚，无法在握手时据它决定拒绝。改用更稳健的**信令旁路公钥到达性**作隐式协商（见 `keyBinding.decideKeyBinding`）：
+- 收到对端信令公钥 → 强制比对（DataChannel 握手公钥 == 信令公钥？不等即判 MITM 拒绝）。
+- 宽限期（3s）内未收到 → `wait`；过期仍无 → 回落 relay-trust（对端疑为不发信令公钥的旧端）。
+- **DataChannel 网络 MITM 无法借「回落」逃逸**：它无法阻止信令公钥经**独立 TLS 信令**通道到达；能让你收不到信令公钥的，只有攻陷信令本身（既定边界外）。
+
+### 8.2 实现要点
+- **wire 原语**：`e2ee.ts` 加 `bytesToBase64`/`base64ToBytes`（信令 JSON 传公钥）。
+- **判定核心（纯、可单测）**：`keyBinding.ts` `decideKeyBinding(handshakePub, signalingPub|null, graceExpired) → 'accept'|'reject'|'wait'` + `KeyBindingMode`。
+- **两端 provider 对称接线**：握手时经信令发本端临时公钥（host 带 cid，per-controller 独立）；`onSignal` 收对端公钥；握手完成后**先判定再标记 connected**（绑定未决期丢弃业务帧，处理信令-vs-DataChannel 到达竞态 + 宽限计时）。host 在 accept 才 `createBridge`（业务帧门控天然成立：未连上 `conn.bridge` 为 null）。
+- 既有 `cloudHostBridge.verifyPeerKey` 钩子保留（更一般的注入式机制，默认 relay-trust=true），与本 provider 级信令比对并存不冲突。
+
+### 8.3 验证（实测）
+- **单测**：`keyBinding.test.ts` decideKeyBinding 5 例（一致 accept / 不一致 reject / 未到 wait / 过期回落 / 非法长度 reject）；`controllerCloudProvider.test.ts` enforced→connected + 不一致→判 MITM 断开。全绿。
+- **实机 cloud e2e**（dev:cdp 真链路经本地 relay）：
+  - 正路：`keyBindingMode='enforced'` + connected，dir-children 正常 → 信令公钥交换 + 比对端到端生效。
+  - 反路（`tamperBinding`：host 发错误信令公钥模拟 MITM 调包）：controller 判 MITM → `connected=false` / `ctrl:error`，**拒绝会话**。
+
+### 8.4 契约（protocol.md）待补 + relay 透明转发
+B3 依赖 relay **透明转发**信令对象（`route_controller_to_host` 注入 cid 转发任意对象 / `route_host_frame` 按 cid 转发）——**已实测**：B3 经当前运行的 relay 跑通，**无需 ridge-cloud 代码改动**。但**契约文档 `docs/ridge-cloud-protocol.md` §7 应补记**新信令消息（避免将来 relay 收紧为消息类型白名单时误伤）：
+- `{ t: "e2ee-pubkey", pubkey: <base64 32B>, cid? }`：controller→host（无 cid，relay 注入）/ host→controller（带 cid 定向）。各端经此旁路上报本端临时公钥，对端比对 DataChannel 握手公钥。
+- 此 protocol.md 补记为**纯文档**（relay 行为不变），留待用户下次动 ridge-cloud 时一并提交（本会话遵「不动 ridge-cloud 除安全推 origin 外」未改）。

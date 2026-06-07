@@ -64,6 +64,25 @@ export function decodeHandshakeFrame(frame: Uint8Array): Uint8Array {
   return frame.slice(1, 1 + PUBKEY_LEN);
 }
 
+/** 把字节数组编码为 base64（信令 JSON 传公钥用，B3）。 */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+/** 解析 base64 为字节数组；非法输入返回 null（不抛，调用方据此忽略坏帧）。 */
+export function base64ToBytes(b64: string): Uint8Array | null {
+  try {
+    const s = atob(b64);
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 字典序比较两个等长字节数组。返回 <0 / 0 / >0。
  * 用于 salt 排序（契约 §7.1：双方按字典序排序保证一致）。

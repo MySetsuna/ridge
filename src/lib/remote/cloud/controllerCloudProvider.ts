@@ -35,10 +35,16 @@ import {
   encodeHandshakeFrame,
   decodeHandshakeFrame,
   deriveSessionKey,
+  bytesToBase64,
+  base64ToBytes,
   type EphemeralKeyPair,
 } from './e2ee';
+import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
+
+/** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
+const KEY_BIND_GRACE_MS = 3000;
 
 /** DataChannel 标签（契约 §1.1 / §7：label="ridge"）。 */
 const DC_LABEL = 'ridge';
@@ -51,7 +57,9 @@ type SignalIn =
   | { t: 'error'; code: string; message: string }
   | { t: 'offer'; sdp: string }
   | { t: 'answer'; sdp: string }
-  | { t: 'ice'; candidate: RTCIceCandidateInit | null };
+  | { t: 'ice'; candidate: RTCIceCandidateInit | null }
+  // B3（D-GM-10）：cloud 经已认证信令把对端(host)临时公钥旁路转发回来。
+  | { t: 'e2ee-pubkey'; pubkey: string };
 
 export interface ControllerCloudProviderConfig {
   /** user JWT（scope=user），WS 与 ice-servers 鉴权用（§3）。 */
@@ -86,6 +94,16 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private state: CloudConnectionState = 'disconnected';
   private closed = false;
   private hostDevice = '';
+
+  // ── B3（D-GM-10）E2EE 公钥↔身份绑定状态 ──
+  /** host 经已认证信令旁路转发回来的临时公钥；尚未到达为 null。 */
+  private peerSigKey: Uint8Array | null = null;
+  /** DataChannel 握手解出的 host 公钥，待与信令公钥比对。 */
+  private pendingHandshakePub: Uint8Array | null = null;
+  private bindTimer: ReturnType<typeof setTimeout> | null = null;
+  private bindingDecided = false;
+  private bindingAccepted = false;
+  private bindingMode: KeyBindingMode = 'pending';
 
   constructor(config: ControllerCloudProviderConfig, callbacks: CloudConnectionCallbacks = {}) {
     this.config = {
@@ -123,6 +141,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.closed = false;
     this.offerStarted = false;
     this.hostDevice = deviceId;
+    this.resetBinding();
     this.setState('connecting');
 
     // 1. 取 ICE servers（契约 §5.2：必须调接口，不硬编码 STUN）。
@@ -185,6 +204,9 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.handshakeDone = false;
     this.session = null;
     this.rawSend(encodeHandshakeFrame(this.ephemeral.publicKey));
+    // B3：把本端临时公钥经**已认证信令**旁路上报，供 host 比对 DataChannel 握手公钥
+    // （走与 DataChannel 不同的 TLS 信令通道，网络 MITM 无法同时篡改两者）。
+    this.sendSignal({ t: 'e2ee-pubkey', pubkey: bytesToBase64(this.ephemeral.publicKey) });
   }
 
   private onDataChannelMessage(data: unknown): void {
@@ -200,9 +222,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         // controller 端发出方向为 controller→host(dir=1)；与 host provider 严格镜像。
         this.session = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
         this.handshakeDone = true;
-        // 握手用完即焚临时私钥引用。
+        // 握手用完即焚临时私钥引用（公钥已在 startE2eeHandshake 经信令上报）。
         this.ephemeral = null;
-        this.setState('connected');
+        // B3：先做公钥绑定判定，通过(或宽限期回落)才标记 connected。
+        this.resolveBindingFromHandshake(peerPub);
       } catch (e: unknown) {
         this.fail(e instanceof Error ? e.message : 'E2EE 握手失败，已断开', 'FORBIDDEN');
         this.disconnect();
@@ -212,6 +235,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
     // 业务帧：解密后上抛明文 mux 帧字节。
     if (!this.session) return;
+    // B3：绑定判定通过前不放行任何业务帧（防绑定未决期处理对端数据）。
+    if (!this.bindingAccepted) return;
     try {
       const plaintext = this.session.open(bytes);
       this.cb.onFrame?.(plaintext);
@@ -219,6 +244,67 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // 解密/重放失败：丢弃该帧但不一定断连（契约要求拒绝该帧）。
       this.cb.onError?.(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
     }
+  }
+
+  // ── B3（D-GM-10）公钥绑定判定 ──────────────────────────────────────────────
+  /** DataChannel 握手解出对端公钥后进入判定（信令公钥可能先到/后到）。 */
+  private resolveBindingFromHandshake(peerPub: Uint8Array): void {
+    this.pendingHandshakePub = peerPub;
+    this.decideBinding();
+  }
+
+  /**
+   * 据「握手公钥 + 信令公钥(可能未到) + 宽限期」三态判定（见 keyBinding.decideKeyBinding）：
+   * accept → 标记 connected；reject → 判 MITM 断开；wait → 起宽限计时等信令公钥。
+   */
+  private decideBinding(graceExpired = false): void {
+    if (this.bindingDecided || this.closed || this.pendingHandshakePub == null) return;
+    const decision = decideKeyBinding(this.pendingHandshakePub, this.peerSigKey, graceExpired);
+    if (decision === 'wait') {
+      this.armBindGrace();
+      return;
+    }
+    this.bindingDecided = true;
+    if (this.bindTimer) {
+      clearTimeout(this.bindTimer);
+      this.bindTimer = null;
+    }
+    if (decision === 'accept') {
+      this.bindingMode = this.peerSigKey ? 'enforced' : 'relay-trust';
+      this.bindingAccepted = true;
+      this.setState('connected');
+    } else {
+      // reject：握手公钥 ≠ 信令旁路公钥 → 检测到 MITM。
+      this.fail('E2EE 公钥绑定校验失败（疑似 MITM），已断开', 'FORBIDDEN');
+      this.disconnect();
+    }
+  }
+
+  /** 信令公钥未到时起一次性宽限计时；到期回落 relay-trust（兼容旧端）。 */
+  private armBindGrace(): void {
+    if (this.bindTimer || this.bindingDecided) return;
+    this.bindTimer = setTimeout(() => {
+      this.bindTimer = null;
+      this.decideBinding(true);
+    }, KEY_BIND_GRACE_MS);
+  }
+
+  /** 重置绑定状态（connect/disconnect）。 */
+  private resetBinding(): void {
+    if (this.bindTimer) {
+      clearTimeout(this.bindTimer);
+      this.bindTimer = null;
+    }
+    this.peerSigKey = null;
+    this.pendingHandshakePub = null;
+    this.bindingDecided = false;
+    this.bindingAccepted = false;
+    this.bindingMode = 'pending';
+  }
+
+  /** B3 绑定模式（诊断/测试可读）：enforced=已比对一致；relay-trust=回落；pending=未决。 */
+  getKeyBindingMode(): KeyBindingMode {
+    return this.bindingMode;
   }
 
   sendFrame(plaintext: Uint8Array): void {
@@ -319,6 +405,15 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
           }
         }
         break;
+      case 'e2ee-pubkey': {
+        // B3：host 经已认证信令旁路转发回来的临时公钥 → 存下并触发绑定判定。
+        const pk = base64ToBytes(msg.pubkey);
+        if (pk) {
+          this.peerSigKey = pk;
+          this.decideBinding();
+        }
+        break;
+      }
       case 'error':
         this.fail(msg.message || '信令错误', msg.code);
         break;
@@ -362,6 +457,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.session = null;
     this.handshakeDone = false;
     this.offerStarted = false;
+    // B3：清宽限计时防泄漏（bindingMode 保留供断开后诊断读取，下次 connect 再整体重置）。
+    if (this.bindTimer) {
+      clearTimeout(this.bindTimer);
+      this.bindTimer = null;
+    }
     this.setState('disconnected');
   }
 }
