@@ -35,6 +35,11 @@ use crate::sandbox::RootScope;
 pub struct CapabilitySet {
     allowed: HashSet<String>,
     roots: RootScope,
+    /// When `true`, `dispatch` refuses any [`is_mutating`] method with
+    /// [`CoreError::ReadOnly`](crate::error::CoreError::ReadOnly). Defaults to
+    /// `false` (writable), so existing hosts are unaffected until they opt in —
+    /// the same backward-compatible no-op posture as the empty-roots sandbox.
+    readonly: bool,
 }
 
 impl CapabilitySet {
@@ -49,6 +54,7 @@ impl CapabilitySet {
         Self {
             allowed: methods.into_iter().map(Into::into).collect(),
             roots: RootScope::unrestricted(),
+            readonly: false,
         }
     }
 
@@ -60,6 +66,7 @@ impl CapabilitySet {
         Self {
             allowed: HashSet::new(),
             roots: RootScope::unrestricted(),
+            readonly: false,
         }
         .with_allow_all()
     }
@@ -91,6 +98,23 @@ impl CapabilitySet {
     /// The filesystem sandbox scope. Empty ⇒ unrestricted (backward compatible).
     pub fn root_scope(&self) -> &RootScope {
         &self.roots
+    }
+
+    /// Mark this capability set **read-only**: `dispatch` will reject any
+    /// [`is_mutating`] method with `CoreError::ReadOnly`. Consuming-builder so it
+    /// composes with the presets, e.g.
+    /// `CapabilitySet::remote_default().with_readonly(true)`. The desktop wires
+    /// this from `AppState::remote_fs_readonly`; the headless host can expose a
+    /// `--read-only` operator switch. `false` (the default) is the unchanged,
+    /// writable posture.
+    pub fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// True if this set forbids mutating methods (the read-only session gate).
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
     }
 
     /// True if `method` is permitted under this set.
@@ -225,6 +249,47 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "git_clean_untracked",
 ];
 
+/// Methods that MUTATE host state — the read-only session gate (D-GM-9 / S1
+/// ledger §3.1) rejects these when [`CapabilitySet::is_readonly`] is set.
+///
+/// **Byte-for-byte mirror of `server.rs::is_mutating_invoke`** (which is
+/// `is_mutating_method` ∪ {`replace_in_files`, `apply_file_edits`}). Kept as a
+/// data constant in one place so the desktop pre-check and the `dispatch` gate
+/// cannot drift. When new mutating commands migrate into `dispatch`, add them
+/// here in lockstep.
+pub const MUTATING_METHODS: &[&str] = &[
+    // ── Filesystem writes ──
+    "write_file",
+    "apply_file_edits",
+    "rename_path",
+    "delete_path",
+    "create_file",
+    "create_directory",
+    "copy_path",
+    "move_path",
+    "replace_in_files",
+    // ── Git (mutating) ──
+    "git_stage",
+    "git_unstage",
+    "git_commit",
+    "git_pull",
+    "git_push",
+    "git_sync",
+    "git_checkout",
+    "git_revert",
+    "git_cherry_pick",
+    "git_reset",
+    "git_create_tag",
+    "git_discard",
+    "git_clean_untracked",
+];
+
+/// True if `method` mutates host state (see [`MUTATING_METHODS`]). The read-only
+/// gate in [`dispatch`](crate::dispatch::dispatch) consults this.
+pub fn is_mutating(method: &str) -> bool {
+    MUTATING_METHODS.contains(&method)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +356,32 @@ mod tests {
         // A host can call with_roots unconditionally; zero roots = no sandbox.
         let caps = CapabilitySet::remote_default().with_roots(Vec::<String>::new());
         assert!(caps.root_scope().is_unrestricted());
+    }
+
+    #[test]
+    fn readonly_is_off_by_default_and_opt_in() {
+        // Backward-compatible: presets start writable.
+        assert!(!CapabilitySet::remote_default().is_readonly());
+        assert!(!CapabilitySet::allow_all().is_readonly());
+        assert!(!CapabilitySet::default().is_readonly());
+        // Opt in, and it composes with the other builders / admission is untouched.
+        let caps = CapabilitySet::remote_default()
+            .with_roots(["/work"])
+            .with_readonly(true);
+        assert!(caps.is_readonly());
+        assert!(caps.is_allowed("write_file"));
+        assert!(!caps.root_scope().is_unrestricted());
+    }
+
+    #[test]
+    fn mutating_set_mirrors_the_desktop_pre_check() {
+        // Sample fs + git mutations are flagged…
+        for m in ["write_file", "apply_file_edits", "replace_in_files", "git_commit", "git_reset"] {
+            assert!(is_mutating(m), "{m} should be mutating");
+        }
+        // …and read-only / non-mutating methods are not.
+        for m in ["read_file", "get_file_tree", "search", "get_scm_status", "git_list_branches"] {
+            assert!(!is_mutating(m), "{m} should NOT be mutating");
+        }
     }
 }

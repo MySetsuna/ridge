@@ -117,6 +117,26 @@ pnpm cdp:smoke
 
 ---
 
+## 4.5 自动断言探针（headless e2e，无需 MCP）
+
+除了 agent 驱动的 MCP 探索，`scripts/cdp-*.mjs` 还有一组**自带断言、退出码即结论**的 node 脚本——CI 友好，也能让 agent 一条命令拿到 PASS/FAIL。它们都走「CDP attach → `invoke('set_remote_enabled')` → 轮询 `get_remote_info` → LAN WS」这条链路，对**真实运行的 Ridge 后端**做端到端验证。
+
+| 命令 | 脚本 | 验什么 | 结论 |
+| --- | --- | --- | --- |
+| `pnpm cdp:smoke` | `cdp-smoke.mjs` | 9222 可达 + 至少一个 Ridge page target | exit 0/1 |
+| `pnpm cdp:pty` | `cdp-pty-parsers.mjs` | **`ridge_core::pty` 解析层**：decode(增量 UTF-8 多字节回环)、title(OSC 0/1/2)、cwd(OSC 7) 经 PTY→后端解析→LAN 转发端到端 | exit 0/2 + 三项 PASS/FAIL |
+| `node scripts/cdp-lan-probe.mjs` | `cdp-lan-probe.mjs` | LAN 线协议（hello/panes/subscribe/二进制帧 UUID 布局/echo 回环） | exit 0/2 |
+| `node scripts/cdp-term-input.mjs ["cmd"]` | `cdp-term-input.mjs` | 向可见终端注入一行（默认 emoji 测试表）供截图——**非断言**，配 MCP 截图用 | inject ✓ |
+
+`cdp:pty` 设计要点（写**可重复** e2e 的范式）：
+- 注入的是**纯 ASCII 源**的 PowerShell 单行，用 `[char]::ConvertFromUtf32(...)` 在**输出端**生成 3/4 字节码点（∑ 😀 你好 🇯🇵），从而只考验输出 decode 路径而非 stdin 编码；并 `[Console]::OutputEncoding=UTF8` 让 Windows PowerShell 5.1 也吐 UTF-8。
+- title 用**每次运行的 nonce**（`Date.now()`）：桌面对**未变化**的 pane 标题会去重（同值不再发 `PaneTitleChanged`），所以固定标题第二次跑会假阴性——必须每次换新标题才幂等。cwd 因 PowerShell prompt 每次重发真实 cwd 而天然不被去重。
+- `find_prompt_osc`（prompt OSC）**不经 LAN WS 转发**，故由 `ridge-core` 单测覆盖，不在此 e2e 内。
+
+> 前提：先 `pnpm tauri:dev:cdp` 起调试实例（它与正式版并存、不互杀）。这些脚本会自轮询等待 Ridge target（最长 90s），可在 dev 启动后立刻跑。
+
+---
+
 ## 5. 故障排除
 
 | 症状 | 原因 | 处置 |

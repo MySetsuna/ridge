@@ -41,7 +41,7 @@
 
 use serde_json::Value;
 
-use crate::commands::{settings, theme};
+use crate::commands::{settings, shell, theme};
 use crate::ctx::Ctx;
 use crate::error::{CoreError, CoreResult};
 use crate::fs::commands as fs_commands;
@@ -149,6 +149,17 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         return Err(CoreError::CapabilityDenied(method.to_string()));
     }
 
+    // 1.5 Read-only session gate (D-GM-9 / S1 ledger §3.1). A read-only
+    // capability set refuses any mutating method up front, mirroring the legacy
+    // `server.rs::is_mutating_invoke` + `remote_fs_readonly` pre-check — but now
+    // enforced inside `dispatch`, so the headless host (which bypasses
+    // `server.rs`) is covered too. No-op when the set is writable (the default),
+    // so existing hosts are unaffected.
+    if ctx.capabilities().is_readonly() && crate::capability::is_mutating(method) {
+        tracing::warn!(target: "ridge::core::dispatch", method, "rejected mutating method: read-only");
+        return Err(CoreError::ReadOnly);
+    }
+
     // 2. Path-traversal guard.
     traversal_guard(&args)?;
 
@@ -214,6 +225,93 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             };
             let results = fs_commands::search(&s(&args, "root"), &s(&args, "query"), &sargs)?;
             serde_json::to_value(results).map_err(CoreError::internal)
+        }
+
+        // ── Filename search + glob diagnostics (S5+) ──
+        "filename_search" => {
+            let hits = fs_commands::filename_search(&s(&args, "root"), &s(&args, "pattern"))
+                .map_err(CoreError::internal)?;
+            serde_json::to_value(hits).map_err(CoreError::internal)
+        }
+        "text_search_diagnostics" => {
+            let bad = fs_commands::text_search_diagnostics(
+                opt_vec_s(&args, "includeGlobs"),
+                opt_vec_s(&args, "excludeGlobs"),
+            );
+            serde_json::to_value(bad).map_err(CoreError::internal)
+        }
+
+        // ── Shell discovery / history + directory browse (S1+) ──
+        // Pure system / fs reads, valuable to a headless host serving a remote
+        // IDE. `get_shell_history`'s legacy `shellKind` arg is ignored (as it was
+        // on the desktop). `browse_directory`'s `path` is optional.
+        "detect_available_shells" => {
+            serde_json::to_value(shell::detect_available_shells()).map_err(CoreError::internal)
+        }
+        "get_shell_history" => {
+            let lines = shell::get_shell_history().map_err(CoreError::internal)?;
+            serde_json::to_value(lines).map_err(CoreError::internal)
+        }
+        "browse_directory" => {
+            let listing =
+                fs_commands::browse_directory(opt_s(&args, "path")).map_err(CoreError::internal)?;
+            serde_json::to_value(listing).map_err(CoreError::internal)
+        }
+
+        // ── Filesystem writes (S1 ledger §2.1) ──
+        // Mutating — guarded above by the read-only gate, and by the traversal +
+        // sandbox guards. The handlers' exact (Chinese) error strings are wrapped
+        // in `CoreError::Internal` so `to_command_string` / `to_json_rpc` render
+        // them verbatim.
+        "write_file" => {
+            fs_commands::write_file(s(&args, "path"), s(&args, "content"))
+                .map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "apply_file_edits" => {
+            let edits: Vec<fs_commands::TextEdit> =
+                serde_json::from_value(args.get("edits").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| CoreError::InvalidArgs(format!("invalid edits: {e}")))?;
+            fs_commands::apply_file_edits(s(&args, "path"), edits).map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "rename_path" => {
+            fs_commands::rename_path(s(&args, "from"), s(&args, "to"))
+                .map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "delete_path" => {
+            fs_commands::delete_path(s(&args, "path")).map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "create_file" => {
+            fs_commands::create_file(s(&args, "path")).map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "create_directory" => {
+            fs_commands::create_directory(s(&args, "path")).map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "copy_path" => {
+            fs_commands::copy_path(s(&args, "from"), s(&args, "to"), opt_bool(&args, "overwrite"))
+                .map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "move_path" => {
+            fs_commands::move_path(s(&args, "from"), s(&args, "to")).map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
+        "replace_in_files" => {
+            let stats = fs_commands::replace_in_files(
+                s(&args, "root"),
+                s(&args, "search"),
+                s(&args, "replace"),
+                opt_vec_s(&args, "files").unwrap_or_default(),
+                opt_bool(&args, "caseSensitive"),
+                opt_bool(&args, "useRegex"),
+            )
+            .map_err(CoreError::internal)?;
+            serde_json::to_value(stats).map_err(CoreError::internal)
         }
 
         other => Err(CoreError::MethodNotFound(other.to_string())),
@@ -294,9 +392,11 @@ mod tests {
     #[test]
     fn allowed_but_unmigrated_method_is_method_not_found() {
         let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
-        // `write_file` is in the remote allow-list but not yet migrated (only
-        // the read-only fs commands are, as of S5).
-        let err = dispatch("write_file", serde_json::json!({"path": "x"}), &ctx).unwrap_err();
+        // `split_pane` is in the remote allow-list but not yet migrated — the
+        // pane / terminal / workspace domain commands still live in `src-tauri`
+        // (the fs read+write, search, theme/settings slices are migrated). A
+        // method that is allowed but absent from the table is MethodNotFound.
+        let err = dispatch("split_pane", serde_json::json!({"paneId": "x"}), &ctx).unwrap_err();
         assert_eq!(err.kind_tag(), "method_not_found");
     }
 
@@ -427,5 +527,80 @@ mod tests {
             assert_eq!(err.kind_tag(), "internal");
             assert!(err.to_command_string().contains("Root path does not exist"));
         }
+    }
+
+    // ── Read-only session gate (D-GM-9 / S1 ledger §3.1) ──
+
+    #[test]
+    fn readonly_session_rejects_mutating_method() {
+        let (ctx, _sink) = ctx_with_state(
+            Arc::new(EmptyState),
+            CapabilitySet::remote_default().with_readonly(true),
+        );
+        let err = dispatch(
+            "write_file",
+            serde_json::json!({ "path": "x.txt", "content": "y" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "read_only");
+        // Same message the legacy desktop read-only gate returned.
+        assert_eq!(err.to_command_string(), "remote filesystem is read-only");
+    }
+
+    #[test]
+    fn readonly_session_still_allows_reads() {
+        let (ctx, _sink) = ctx_with_state(
+            Arc::new(EmptyState),
+            CapabilitySet::remote_default().with_readonly(true),
+        );
+        // A non-mutating read is NOT gated: it reaches the handler (missing file
+        // ⇒ internal), proving read-only only blocks mutations.
+        let err = dispatch(
+            "read_file",
+            serde_json::json!({ "path": "definitely/nope/xyz.txt" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "internal");
+    }
+
+    #[test]
+    fn writable_session_runs_write_file_and_round_trips() {
+        let td = std::env::temp_dir().join(format!(
+            "ridge-core-dispatch-write-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&td).unwrap();
+        let file = td.join("w.txt").to_string_lossy().into_owned();
+
+        // remote_default() is writable by default; no roots ⇒ sandbox off.
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let out = dispatch(
+            "write_file",
+            serde_json::json!({ "path": file, "content": "hello" }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out, Value::Null);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    #[test]
+    fn shell_and_browse_arms_are_wired() {
+        let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+
+        // `detect_available_shells` returns a JSON array (≥0 entries).
+        let shells = dispatch("detect_available_shells", Value::Null, &ctx).unwrap();
+        assert!(shells.is_array());
+
+        // `browse_directory` on the (existing) temp dir returns a listing whose
+        // `path`/`subdirs` are present — proving the arm is wired, not MethodNotFound.
+        let td = std::env::temp_dir().to_string_lossy().into_owned();
+        let listing = dispatch("browse_directory", serde_json::json!({ "path": td }), &ctx).unwrap();
+        assert!(listing.get("path").and_then(|v| v.as_str()).is_some());
+        assert!(listing.get("subdirs").map(|v| v.is_array()).unwrap_or(false));
     }
 }

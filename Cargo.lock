@@ -5293,6 +5293,7 @@ dependencies = [
 name = "ridge-core"
 version = "0.1.0"
 dependencies = [
+ "dirs 5.0.1",
  "glob",
  "ignore",
  "rand 0.8.6",
@@ -5300,9 +5301,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sysinfo",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]

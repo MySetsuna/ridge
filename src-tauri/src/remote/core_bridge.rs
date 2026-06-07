@@ -97,11 +97,19 @@ pub fn remote_ctx(app: &AppHandle, state: &AppState, connection_id: impl Into<St
     let accessor: Arc<dyn ridge_core::CoreState> =
         Arc::new(HostStateAccessor(Arc::new(state.clone())));
     let events: Arc<dyn EventSink> = Arc::new(DesktopEventSink::new(app.clone(), state));
+    // Mirror the session's read-only flag into the capability set so the
+    // `ridge_core::dispatch` read-only gate (D-GM-9) is authoritative for the
+    // browser-facing path too. `server.rs::is_mutating_invoke` keeps its own
+    // pre-check as a backstop during the migration window (same rejection +
+    // message), so this is belt-and-suspenders with zero behaviour change.
+    let readonly = state
+        .remote_fs_readonly
+        .load(std::sync::atomic::Ordering::Relaxed);
     Ctx::new(
         accessor,
         events,
         Arc::new(TokioSpawner),
-        CapabilitySet::remote_default(),
+        CapabilitySet::remote_default().with_readonly(readonly),
     )
     .with_connection(connection_id)
 }

@@ -9,7 +9,11 @@
 pub mod search;
 pub mod tree;
 
-pub use search::{ReplaceStats, SearchEngine, SearchOptions, SearchResult};
+// `SearchEngine` / `SearchOptions` are no longer surfaced here: the search /
+// replace / filename-search commands moved into `ridge_core::fs::commands`
+// (S1+), so the desktop no longer drives `SearchEngine` directly. Consumers that
+// still need the engine type use `ridge_core::fs::search::SearchEngine`.
+pub use search::{ReplaceStats, SearchResult};
 pub use tree::{DirectoryPage, FileNode};
 // `FileTree` stays reachable as `crate::fs::tree::FileTree` (its only remaining
 // in-crate consumer, `remote/server.rs`, uses that submodule path); the

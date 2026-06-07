@@ -3,5 +3,8 @@
 //! `settings` (1 cmd) + `theme` (2 cmd); the remaining 11 files are tracked in
 //! `docs/plans/s1-migration-ledger.md`.
 
+pub mod git;
+pub mod process;
 pub mod settings;
+pub mod shell;
 pub mod theme;

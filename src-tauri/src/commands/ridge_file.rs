@@ -687,55 +687,17 @@ pub fn get_default_workspace_save_dir() -> Result<String, String> {
     Ok(default_save_dir().to_string_lossy().to_string())
 }
 
-#[derive(Debug, Serialize)]
-pub struct DirListing {
-    pub path: String,
-    pub parent: Option<String>,
-    pub subdirs: Vec<String>,
-}
+/// A directory-browse result. **Migrated to `ridge-core`** — aliased so
+/// `crate::commands::ridge_file::DirListing` and the WS dispatch arm in
+/// `remote/server.rs` stay identical.
+pub use ridge_core::fs::commands::DirListing;
 
-/// 目录浏览：返回给定路径下的直接子目录列表 + 可返回的父目录。
-/// 用于保存工作区对话框里的目录选择器：不存在的路径会被规范化到最近的已存在祖先。
+/// 目录浏览：返回给定路径下的直接子目录列表 + 可返回的父目录。§S1+: delegates to
+/// `ridge_core::fs::commands::browse_directory` (verbatim nearest-existing-
+/// ancestor normalisation + hidden-dir filter + case-insensitive sort).
 #[tauri::command]
 pub fn browse_directory(path: Option<String>) -> Result<DirListing, String> {
-    let start = match path {
-        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
-    };
-    // 规范化：如果输入不存在，退回到最近的存在祖先。
-    let mut cur = start.clone();
-    while !cur.is_dir() {
-        match cur.parent() {
-            Some(p) => cur = p.to_path_buf(),
-            None => {
-                cur = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                break;
-            }
-        }
-    }
-    let parent = cur.parent().map(|p| p.to_string_lossy().to_string());
-    let mut subdirs: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&cur) {
-        for entry in entries.flatten() {
-            let Ok(ft) = entry.file_type() else { continue };
-            if !ft.is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy().to_string();
-            // 过滤掉隐藏目录（Unix 约定 `.` 前缀）
-            if name_str.starts_with('.') {
-                continue;
-            }
-            subdirs.push(name_str);
-        }
-    }
-    subdirs.sort_by_key(|s| s.to_lowercase());
-    Ok(DirListing {
-        path: cur.to_string_lossy().to_string(),
-        parent,
-        subdirs,
-    })
+    ridge_core::fs::commands::browse_directory(path)
 }
 
 // ─── Auto-save scheduler ───────────────────────────────────────────────────
