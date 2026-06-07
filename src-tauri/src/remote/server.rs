@@ -101,6 +101,50 @@ pub struct ServerHandle {
 /// Spawn the remote-control WebSocket server on a background thread.
 /// Listens on `0.0.0.0:0` (OS-assigned port).
 ///
+/// Build the authoritative pane list for a workspace from its pane_tree LEAVES —
+/// the visible, closable panes the desktop renders — rather than iterating
+/// `terminals` / `pending_spawns` directly.
+///
+/// Those maps can diverge from the tree (orphaned PTYs after a failed activate,
+/// split rollback, or reconnect): the mobile list was built from them, so it
+/// surfaced ghost panes that `remote_close_pane` (which only acts on leaves) could
+/// never close — returning "无法关闭最后一个窗格" / PaneNotFound — and they piled up
+/// forever. Keying off leaves keeps the mobile list in lock-step with the desktop
+/// and with the close path. Title: live OSC title (activated terminal) → teammate
+/// name → shell kind → "pending..." for a not-yet-activated leaf.
+fn build_remote_pane_list(ws: &crate::state::Workspace) -> Vec<serde_json::Value> {
+    let mut list: Vec<serde_json::Value> = ws
+        .pane_tree
+        .get_all_leaves()
+        .into_iter()
+        .map(|pane_id| {
+            let node = ws.pane_tree.panes.get(&pane_id);
+            let title = ws
+                .terminals
+                .get(&pane_id)
+                .and_then(|h| h.parser.lock().title())
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| ws.teammate_pane_titles.get(&pane_id).cloned())
+                .or_else(|| node.and_then(|n| n.shell_kind.clone()))
+                .or_else(|| {
+                    ws.pending_spawns
+                        .contains_key(&pane_id)
+                        .then(|| "pending...".to_string())
+                })
+                .unwrap_or_else(|| "terminal".to_string());
+            serde_json::json!({
+                "id": pane_id.to_string(),
+                "title": title,
+                "cwd": node
+                    .and_then(|n| n.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    list
+}
+
 /// Accepts a `shutdown_rx` one-shot receiver: when a value is sent on
 /// the corresponding sender the server performs an orderly graceful
 /// shutdown (drain in-flight requests, close listeners).
@@ -1239,41 +1283,14 @@ async fn handle_ws(
                                 Ok(())
                             }
                             Some("list-panes") => {
-                                let mut pane_list = {
+                                let pane_list = {
                                     let workspaces = ctx.state.workspaces.read();
                                     let Some(ws) = workspaces.get(&active_ws_id) else {
                                         drop(workspaces);
                                         continue;
                                     };
-                                    let mut list = Vec::new();
-                                    for (pane_id, handle) in &ws.terminals {
-                                        // §6: prefer the live OSC window title (matches the
-                                        // desktop pane header's variable title), then the
-                                        // teammate-assigned name, then the shell kind.
-                                        let osc_title = handle.parser.lock().title()
-                                            .filter(|t| !t.trim().is_empty());
-                                        let title = osc_title
-                                            .or_else(|| ws.teammate_pane_titles.get(pane_id).cloned())
-                                            .or_else(|| ws.pane_tree.panes.get(pane_id).and_then(|n| n.shell_kind.clone()))
-                                            .unwrap_or_else(|| "terminal".to_string());
-                                        list.push(serde_json::json!({
-                                            "id": pane_id.to_string(),
-                                            "title": title,
-                                            "cwd": ws.pane_tree.panes.get(pane_id)
-                                                .and_then(|n| n.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
-                                                .unwrap_or_default(),
-                                        }));
-                                    }
-                                    for (pane_id, _) in &ws.pending_spawns {
-                                        list.push(serde_json::json!({
-                                            "id": pane_id.to_string(),
-                                            "title": "pending...",
-                                            "cwd": "",
-                                        }));
-                                    }
-                                    list
+                                    build_remote_pane_list(ws)
                                 };
-                                pane_list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
                                 ws_tx.send(Message::Text(serde_json::json!({"type":"panes","panes":pane_list}).to_string())).await
                             }
                             Some("subscribe-pane") => {
@@ -1920,31 +1937,7 @@ async fn handle_ws(
                                     let pane_list = {
                                         let workspaces = ctx.state.workspaces.read();
                                         if let Some(ws) = workspaces.get(&active_ws_id) {
-                                            let mut list = Vec::new();
-                                            for (pane_id, handle) in &ws.terminals {
-                                                let osc_title = handle.parser.lock().title()
-                                                    .filter(|t| !t.trim().is_empty());
-                                                let title = osc_title
-                                                    .or_else(|| ws.teammate_pane_titles.get(pane_id).cloned())
-                                                    .or_else(|| ws.pane_tree.panes.get(pane_id).and_then(|n| n.shell_kind.clone()))
-                                                    .unwrap_or_else(|| "terminal".to_string());
-                                                list.push(serde_json::json!({
-                                                    "id": pane_id.to_string(),
-                                                    "title": title,
-                                                    "cwd": ws.pane_tree.panes.get(pane_id)
-                                                        .and_then(|n| n.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
-                                                        .unwrap_or_default(),
-                                                }));
-                                            }
-                                            for (pane_id, _) in &ws.pending_spawns {
-                                                list.push(serde_json::json!({
-                                                    "id": pane_id.to_string(),
-                                                    "title": "pending...",
-                                                    "cwd": "",
-                                                }));
-                                            }
-                                            list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
-                                            list
+                                            build_remote_pane_list(ws)
                                         } else {
                                             Vec::new()
                                         }
