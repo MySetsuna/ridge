@@ -33,6 +33,7 @@ import {
   encodeJsonFrame,
   encodePaneFrame,
 } from '../../transport/remote/cloudMux';
+import { isRemoteAllowed } from './remoteAllowlist';
 
 /** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
 export const HOST_PROTOCOL_VERSION = 1;
@@ -60,6 +61,7 @@ const CANCEL_METHOD = '$/cancel';
 
 /** JSON-RPC 2.0 标准保留错误码（host 腿用到的子集）。 */
 const JSON_RPC_INVALID_REQUEST = -32600;
+const JSON_RPC_METHOD_NOT_FOUND = -32601;
 const JSON_RPC_INTERNAL_ERROR = -32603;
 
 /**
@@ -416,6 +418,20 @@ export class CloudHostBridge {
     method: string,
     params: unknown,
   ): Promise<void> {
+    // §5.4 D8 能力门控（审计 ①-1）：controller 只能调远程白名单内命令。非白名单
+    // （尤其 host 特权命令如 get_remote_info → 泄露 LAN TOTP 密钥）一律拒，杜绝
+    // 云控制端任意命令 RCE。白名单镜像 ridge_core capability::REMOTE_ALLOWLIST。
+    if (!isRemoteAllowed(method)) {
+      this.log('warn', `rejected non-allowlisted invoke "${method}"`);
+      this.sendControl(
+        jsonrpcError(id, {
+          code: JSON_RPC_METHOD_NOT_FOUND,
+          message: `method not permitted remotely: ${method}`,
+          data: { kind: 'forbidden' },
+        }),
+      );
+      return;
+    }
     const callParams = normalizeParams(params);
     const key = String(id);
     const token: InflightInvoke = { method, cancelled: false, abort: new AbortController() };
@@ -435,6 +451,11 @@ export class CloudHostBridge {
 
   /** notification 形态的命令转发（无 id，不回响应；中途出错仅记日志）。 */
   private async dispatchInvokeFireAndForget(method: string, params: unknown): Promise<void> {
+    // §5.4 D8 能力门控（审计 ①-1）：notification 路径同样过白名单，丢弃非白名单方法。
+    if (!isRemoteAllowed(method)) {
+      this.log('warn', `dropped non-allowlisted notification "${method}"`);
+      return;
+    }
     try {
       await this.invoke(method, normalizeParams(params));
     } catch (e) {

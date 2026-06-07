@@ -107,7 +107,7 @@ describe('CloudHostBridge — JSON-RPC invoke routing', () => {
   it('maps a generic Error to JSON-RPC INTERNAL_ERROR(-32603)', async () => {
     const rig = makeRig({ invoke: vi.fn(async () => Promise.reject(new Error('boom'))) });
 
-    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'some_legacy_cmd' });
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'git_fetch' });
     await vi.waitFor(() => expect(rig.sentJson()).toHaveLength(1));
 
     expect(rig.sentJson()[0]).toEqual({
@@ -319,7 +319,7 @@ describe('CloudHostBridge — reset', () => {
     const invoke = vi.fn(() => new Promise((r) => { resolveInvoke = r; }));
     const rig = makeRig({ invoke, paneOutputSource });
 
-    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'slow' });
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'text_search' });
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
 
     rig.bridge.reset();
