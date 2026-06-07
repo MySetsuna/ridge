@@ -31,7 +31,7 @@ import {
   type EphemeralKeyPair,
 } from './e2ee';
 import { getIceServers, type IceServer } from './apiClient';
-import { BASE_DOMAIN } from './apiClient';
+import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 
 /** DataChannel 标签与参数（契约 §7）。 */
 const DC_LABEL = 'ridge';
@@ -364,7 +364,7 @@ export class RidgeCloudHost {
   private openSignaling(deviceId: string): void {
     const label = this.hostLabel(deviceId);
     const url =
-      `wss://${label}.${this.config.baseDomain}/ws` +
+      `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
       `?token=${encodeURIComponent(this.config.deviceToken)}&role=host`;
 
     let ws: WebSocket;

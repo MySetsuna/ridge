@@ -19,8 +19,47 @@
 const ENV_BASE_DOMAIN = (import.meta.env.RIDGE_CLOUD_BASE_DOMAIN as string | undefined) || '';
 export const BASE_DOMAIN = ENV_BASE_DOMAIN || 'remo2ridge.duckdns.org';
 
-/** 主域名 API 根（契约 §4：全部挂在主域名 /api/v1）。 */
-export const API_BASE = `https://${BASE_DOMAIN}/api/v1`;
+/**
+ * 判定一个 cloud base 域是否为**不安全本机回环**（→ 明文 http/ws，而非 TLS）。
+ *
+ * 生产 base（`remo2ridge.duckdns.org` 等真实域名）恒为 false，继续走 https/wss。
+ * 仅当 base 指向本机回环（`localhost` / `*.localhost` / `127.0.0.0/8` / `0.0.0.0` /
+ * `[::1]`，可带端口）时为 true —— 用于自托管 / 本地 ridge-cloud（无 TLS 反代）调试。
+ * 这是 apiClient.ts 顶部注释所述「`RIDGE_CLOUD_BASE_DOMAIN=localhost:xxxx` 把客户端
+ * 指向本地 cloud」的配套：本地 cloud 是单机 HTTP，必须用 http/ws 而非 https/wss。
+ *
+ * 纯函数（不读模块状态）以便单测。
+ */
+export function isInsecureCloudDomain(domain: string): boolean {
+  // 去路径，取主机名小写。
+  const host = domain.split('/')[0].trim().toLowerCase();
+  // 括号 IPv6（[::1] / [::1]:port）：取括号内地址，端口在括号外可忽略。
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    return host.slice(1, end < 0 ? undefined : end) === '::1';
+  }
+  // 裸 IPv6（含 >1 个冒号，无 host:port 语义）原样判断，否则去掉尾部 :port。
+  // 直接对 `::1` 套 `:\d+$` 会把它误删成 `::`，故先识别裸 IPv6。
+  const hostname = (host.match(/:/g)?.length ?? 0) > 1 ? host : host.replace(/:\d+$/, '');
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+  if (hostname === '0.0.0.0' || hostname === '::1') return true;
+  // 127.0.0.0/8 回环段。
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+  return false;
+}
+
+/** 某 cloud base 域应使用的 HTTP scheme（本机回环 → http，否则 https）。 */
+export function cloudHttpScheme(domain: string): 'http' | 'https' {
+  return isInsecureCloudDomain(domain) ? 'http' : 'https';
+}
+
+/** 某 cloud base 域应使用的 WebSocket scheme（本机回环 → ws，否则 wss）。 */
+export function cloudWsScheme(domain: string): 'ws' | 'wss' {
+  return isInsecureCloudDomain(domain) ? 'ws' : 'wss';
+}
+
+/** 主域名 API 根（契约 §4：全部挂在主域名 /api/v1）。本机回环用 http。 */
+export const API_BASE = `${cloudHttpScheme(BASE_DOMAIN)}://${BASE_DOMAIN}/api/v1`;
 
 /** 错误码枚举（契约 §2，前后端共用字符串常量）。 */
 export type ApiErrorCode =
