@@ -682,6 +682,7 @@ pub fn run() {
             watch::start_watching_repos,
             fs_watch::start_watching_paths,
             commands::remote::get_remote_info,
+            commands::remote::remote_reap_orphans,
             commands::remote::verify_remote_totp,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,

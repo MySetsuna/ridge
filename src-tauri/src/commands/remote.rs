@@ -13,6 +13,40 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
     let enabled = state.remote_enabled.load(Ordering::Relaxed);
 
+    // §leak-trace (temporary diagnostic): per-workspace pane_tree leaves vs the
+    // terminals / pending_spawns maps. An orphan PTY shows up as terminals or
+    // pending > leaves. In-process command only — never crosses the /info HTTP
+    // boundary, so this exposes no secret.
+    let pane_debug: Vec<serde_json::Value> = {
+        let map = state.workspaces.read();
+        map.iter()
+            .map(|(wid, ws)| {
+                let leaves: std::collections::HashSet<_> =
+                    ws.pane_tree.get_all_leaves().into_iter().collect();
+                let orphan_terms: Vec<String> = ws
+                    .terminals
+                    .keys()
+                    .filter(|id| !leaves.contains(id))
+                    .map(|id| id.to_string())
+                    .collect();
+                let orphan_pend: Vec<String> = ws
+                    .pending_spawns
+                    .keys()
+                    .filter(|id| !leaves.contains(id))
+                    .map(|id| id.to_string())
+                    .collect();
+                serde_json::json!({
+                    "ws": wid.to_string(),
+                    "leaves": leaves.len(),
+                    "terminals": ws.terminals.len(),
+                    "pending": ws.pending_spawns.len(),
+                    "orphanTerminals": orphan_terms,
+                    "orphanPending": orphan_pend,
+                })
+            })
+            .collect()
+    };
+
     Ok(serde_json::json!({
         "port": port,
         "lanIp": lan_ip,
@@ -22,7 +56,17 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
         "remoteEnabled": enabled,
         "devMode": cfg!(debug_assertions),
         "machineName": machine_name,
+        "paneDebug": pane_debug,
     }))
+}
+
+/// §leak-trace (temporary diagnostic): manually reconcile every workspace's PTYs
+/// to its pane_tree leaves, returning the count reaped. Lets the e2e harness
+/// trigger reaping deterministically over CDP, independent of the WS list-panes
+/// path or any other client. In-process only.
+#[tauri::command]
+pub async fn remote_reap_orphans(state: State<'_, AppState>) -> Result<usize, String> {
+    Ok(crate::commands::terminal::reap_orphan_panes_all(&*state).await)
 }
 
 /// §cloud-TOTP (contract §4): verify a controller-supplied 6-digit TOTP code

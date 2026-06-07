@@ -1054,6 +1054,54 @@ pub async fn register_pane_delta_channel(
     Ok(())
 }
 
+/// Reap PTYs / pending-spawns no longer backed by a pane_tree LEAF (the tree is
+/// authoritative). Orphans arise from several paths — a cross-workspace move
+/// whose re-attach failed *after* the PTY was inserted (commands/pane.rs), a
+/// pane created-but-never-activated whose leaf was later removed, a `detach`
+/// without follow-up cleanup — and previously lingered forever: invisible on the
+/// desktop (it renders the tree), ghost "pending..."/"terminal" rows on mobile
+/// that `remote_close_pane` refused ("无法关闭最后一个窗格"/PaneNotFound), and
+/// leaked OS PTY fds. Reconciling to the tree fixes the leak at the sink,
+/// regardless of which path created the orphan. Returns the count reaped.
+///
+/// Safe: a terminal/pending is only created for a leaf, so an id that is NOT a
+/// current leaf is definitively dead — never an in-flight create (splits insert
+/// the leaf + pending atomically under one write lock).
+pub(crate) async fn reap_orphan_panes(state: &AppState, workspace_id: Uuid) -> usize {
+    let orphans: Vec<Uuid> = {
+        let map = state.workspaces.read();
+        let Some(ws) = map.get(&workspace_id) else {
+            return 0;
+        };
+        let leaves: std::collections::HashSet<Uuid> =
+            ws.pane_tree.get_all_leaves().into_iter().collect();
+        let mut set: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        for id in ws.terminals.keys().chain(ws.pending_spawns.keys()) {
+            if !leaves.contains(id) {
+                set.insert(*id);
+            }
+        }
+        set.into_iter().collect()
+    };
+    for id in &orphans {
+        kill_pty_if_present(state, workspace_id, *id).await;
+    }
+    orphans.len()
+}
+
+/// Reap orphans across EVERY workspace (not just the active one): a
+/// create-workspace switches away from the previous workspace, and an orphan
+/// stranded there would otherwise linger until the user happens to switch back.
+/// Returns the total reaped.
+pub(crate) async fn reap_orphan_panes_all(state: &AppState) -> usize {
+    let ws_ids: Vec<Uuid> = { state.workspaces.read().keys().copied().collect() };
+    let mut total = 0;
+    for wid in ws_ids {
+        total += reap_orphan_panes(state, wid).await;
+    }
+    total
+}
+
 /// 在指定工作区内移除并结束 PTY（若存在）。
 pub async fn kill_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
     // 领养的 native 视图：关闭 = **detach**（不写 exit、不杀子进程）。从布局树摘除并
