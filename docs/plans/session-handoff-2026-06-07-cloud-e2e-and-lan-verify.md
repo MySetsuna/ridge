@@ -141,3 +141,38 @@ wind 半已完成（`keyBinding.ts` + `cloudHostBridge.verifyPeerKey` 接入点 
 - cloud scheme 改动：`src/lib/remote/cloud/apiClient.ts`（helper + API_BASE）、`ridgeCloudProvider.ts:33-34,366-368`、`controllerCloudProvider.ts:40-41,245-247`。
 - cloud e2e 链路：`ridgeCloudProvider.ts`、`controllerCloudProvider.ts`、`cloudHostBridge.ts`、`cloudWebrtcAdapter.ts`、`rpcClient.ts`、`cloudControllerBoot.ts`、`e2ee.ts`。
 - ridge-cloud：`src/ws/handler.rs`（门控）、`src/validation.rs`（租户解析）、`src/api/device_routes.rs:176`（/device/bind）、`src/auth/jwt.rs`、`src/router.rs`（CORS/路由）、`src/api/ice.rs`。
+
+---
+
+## 8. 终态总结（会话末，2026-06-07 —— A/B/C/D 推进）
+
+### 本会话提交（均本地，未 push origin 除非注明）
+**wind develop**（链：`...→4e2022a→680eab7→79b0bcb→a44a982→89b58ae→2ef0771`，叠在并发会话 commit 之上）：
+- `4e2022a` cloud 连接按 base 域回环判定 http/ws（+单测，scheme 使能）
+- `79b0bcb` 远控+云链路安全审计（D，三层多视角）
+- `a44a982` 本地 cloud WebRTC e2e harness（`__cloudE2eHarness.ts`+`cdp-cloud-seed.mjs`+`app.html` CSP 放行 localhost）
+- `89b58ae` **LAN 远控加固**（C1 /verify 爆破节流+C2 OsRng+H3 /workspace 鉴权+C4 /file 收敛）—— 来自 agent，已审阅+`cargo check --all-targets` 0/0
+- `2ef0771` **云桥命令白名单门控**（堵审计①-1 远程 RCE）+ `remoteAllowlist.ts`（镜像 capability.rs）+单测
+- 交接文档若干（含本文件）
+
+**ridge-cloud**：安全修复**仅推 origin 分支** `security/pre-deploy-2026-06-07`（`f4ebfb0`，C-2 配对码锁定/H-1 房间按user_id/H-3限流/H-4/M-1，52 测绿）。**未部署、未并入 origin/develop、本地 develop 已还原回用户域名迁移 tip `350e7fc`**（用户选「只推 origin 不部署」）。
+
+### A/B/C/D 状态
+- **A 协议收敛/D11** ✅ 完成（早先）。
+- **B 云完成**：
+  - **B1** ✅ **实机证伪**：单 realm WebRTC harness 跑通真云链路，`get_directory_children` 经云分页正确（total=92），非云层 bug（疑 UI 懒加载已修）。
+  - **B2**（终端经云 Rust 半 `subscribe_pane_raw`）❌ **未做**——需改 `src-tauri/src/commands/remote.rs`（并发会话 WIP），须隔离/协调。wind 半 `cloudHostPaneSource.ts` 早已提交。
+  - **B3**（E2EE 公钥↔身份绑定）❌ **未实现**（设计就绪+已解锁）。设计 `d-gm-10-e2ee-key-binding-design.md`：认证信令旁路确认（providers 经信令互报临时公钥→各端比对 DataChannel 握手公钥，不一致即拒）。**阻塞已解除**（protocol.md 域名迁移 WIP 已提交 `350e7fc`）。relay **透明转发**任意信令，**几乎无需 ridge-cloud 改动**（providers 发 `e2ee-pubkey` 即被转发；只需 providers `onSignal` 处理 + verifyPeerKey 比对 + D9 `e2ee-bind` 能力 + vitest 篡改即拒）。**⚠️ 切勿赶工**：设计文档明确「错误的绑定=假安全，比现状更糟」；需仔细处理「信令公钥 vs DataChannel 握手」时序竞态（验证前不得标记 connected）+ 多控制方 per-cid 公钥。建议新会话专做 + cloud e2e 验 MITM 抵抗（harness 已就绪，加 tamper 测）。
+- **C S6 部署**：按用户选择 = **只推 origin 不部署**（已完成）。真正上线 dokku 由用户择机：⚠️ 部署 develop 会**连带域名迁移**（`b200a8e` duckdns→9527127.xyz）上 prod，须先确认 9527127.xyz DNS/TLS/dokku BASE_DOMAIN 就绪；或只部署 `security/pre-deploy-2026-06-07`（已在 origin，基于当前 prod 基线，cherry-pick 干净 + cargo check 绿）。
+- **D 审计** ✅ 完成 + **①-1 实测坐实**（get_remote_info 经云泄露宿主 TOTP 密钥）→ 已修（`2ef0771`，实测修复后被拒）。
+
+### 安全修复落地路径（重要）
+- **桌面侧修复**（LAN 加固 `89b58ae` + 云桥白名单 `2ef0771`）随**桌面 app 发布**生效——用户需 rebuild/分发安装版才在真机 host 生效（dev:cdp 已实测云桥修复有效）。
+- **ridge-cloud 安全修复**在 `origin/security/pre-deploy-2026-06-07`，待用户决定如何部署（见 C）。
+
+### 运行态（会话末仍在跑；下次可复用/清理）
+- docker `ridge-pg`（:5433）、ridge-cloud dev（:5050，**旧码**，无安全修复，仅供 harness）、dev:cdp（任务见会话日志，:5173/CDP9222，已含云桥修复经 HMR）。docker pg 按用户要求保留。
+- 清理：`docker rm -f ridge-pg` + 停 :5050 + 停 dev:cdp。
+
+### 复现 B1 / RCE 验证
+`node scripts/cdp-cloud-seed.mjs`（:5050+docker 在跑）→ 取 user/device JWT → dev:cdp(CDP9222) `import('/src/lib/remote/cloud/__cloudE2eHarness.ts')` 调 `runCloudDirChildrenE2E({...,exploit:{method:'get_remote_info'}})`。前置：dev:cdp 以 `RIDGE_CLOUD_BASE_DOMAIN=localhost:5050` 起 + `app.html` CSP（已提交）。
