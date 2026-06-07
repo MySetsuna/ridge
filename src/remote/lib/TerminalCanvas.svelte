@@ -25,6 +25,13 @@
   let hiddenInput: HTMLTextAreaElement | undefined = $state();
   let ctrl: TerminalController | null = null;
   let ready = $state(false);
+  // §theme-cache: hold the most-recent theme so a push that arrived before the
+  // (async) controller existed — or before a pane switch re-creates state — is
+  // re-applied once the kernel is ready, instead of being dropped by the `ctrl?.`
+  // guard in applyTheme(). Mirrors the desktop manager caching opts.theme and
+  // applying it to every pane on attach (the gap that left the mobile terminal
+  // painted in the default palette).
+  let lastTheme: Record<string, string> | null = null;
 
   // Mouse drag-select state (desktop; only when the app isn't grabbing mouse).
   let mouseSelecting = false;
@@ -73,6 +80,9 @@
       if (paneId && onResize) onResize(paneId, r, c, pw, ph);
     };
     backendName = ctrl.backendName;
+    // Re-apply a theme that the host pushed before this async create finished —
+    // without this the kernel keeps its compile-time default palette.
+    if (lastTheme) ctrl.applyTheme(lastTheme);
     ready = true;
     ctrl.setFocused(true);
     focusInput();
@@ -132,7 +142,7 @@
     }
   }
   export function getDims() { return ctrl?.getDims() ?? null; }
-  export function applyTheme(theme: Record<string, string>) { ctrl?.applyTheme(theme); }
+  export function applyTheme(theme: Record<string, string>) { lastTheme = theme; ctrl?.applyTheme(theme); }
   export function applyDeltaBase64(b64: string) {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
