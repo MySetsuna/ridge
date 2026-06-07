@@ -1486,7 +1486,7 @@ async fn route_kill_pane(
         match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
             Ok(pid) => {
                 let state_ref: &AppState = &ctx.state;
-                crate::commands::terminal::kill_pty_if_present(state_ref, wid, pid).await;
+                crate::commands::terminal::kill_pty_if_present(state_ref, wid, pid, true).await;
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
