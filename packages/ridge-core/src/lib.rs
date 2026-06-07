@@ -35,6 +35,7 @@ pub mod ctx;
 pub mod dispatch;
 pub mod error;
 pub mod fs;
+pub mod pty;
 pub mod sandbox;
 pub mod totp;
 

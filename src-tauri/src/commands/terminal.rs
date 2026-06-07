@@ -46,144 +46,18 @@ pub async fn create_pane(
 /// T14：检索系统可用 shell。返回 `(id, label, program)` 三元组列表。
 /// id 是 settings 持久化用的稳定标识；program 是实际可执行路径。Windows 扫描
 /// pwsh / powershell / cmd / bash（Git Bash） / wsl；Unix 扫描 zsh / bash / fish / sh。
-#[derive(serde::Serialize)]
-pub struct ShellInfo {
-    pub id: String,
-    pub label: String,
-    pub program: String,
-}
+/// Discovered-shell triple. **Migrated to `ridge-core`** — aliased so
+/// `crate::commands::terminal::ShellInfo` and the WS dispatch arm in
+/// `remote/server.rs` stay identical.
+pub use ridge_core::commands::shell::ShellInfo;
 
-/// 在 PATH 中查找命令；同时支持绝对路径直接判断存在性。
-/// 没有引入额外 crate（避免 `which` 依赖），用 std::env::var("PATH") + 手动迭代。
-fn lookup_program(name: &str) -> Option<std::path::PathBuf> {
-    let path = std::path::PathBuf::from(name);
-    if path.is_absolute() && path.is_file() {
-        return Some(path);
-    }
-    let path_var = std::env::var_os("PATH")?;
-    #[cfg(target_os = "windows")]
-    let exts: Vec<String> = std::env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .map(|s| s.to_string())
-        .collect();
-    #[cfg(not(target_os = "windows"))]
-    let exts: Vec<String> = vec![String::new()];
-
-    for dir in std::env::split_paths(&path_var) {
-        let base = dir.join(name);
-        if base.is_file() {
-            return Some(base);
-        }
-        // Windows 上 PATHEXT 列出的扩展名都试一下。
-        for ext in &exts {
-            if ext.is_empty() {
-                continue;
-            }
-            let with_ext = dir.join(format!("{name}{ext}"));
-            if with_ext.is_file() {
-                return Some(with_ext);
-            }
-        }
-    }
-    None
-}
-
+/// T14：检索系统可用 shell。§S1+: delegates to
+/// `ridge_core::commands::shell::detect_available_shells` (verbatim PATH /
+/// PATHEXT scan, same id/label/program triples). The headless host reuses the
+/// same discovery.
 #[tauri::command]
 pub fn detect_available_shells() -> Vec<ShellInfo> {
-    let mut found: Vec<ShellInfo> = Vec::new();
-    let try_add = |list: &mut Vec<ShellInfo>, id: &str, label: &str, candidates: &[&str]| {
-        for c in candidates {
-            if let Some(p) = lookup_program(c) {
-                let prog = p.to_string_lossy().to_string();
-                if list.iter().any(|s| s.program == prog) {
-                    return;
-                }
-                list.push(ShellInfo {
-                    id: id.to_string(),
-                    label: label.to_string(),
-                    program: prog,
-                });
-                return;
-            }
-        }
-    };
-
-    #[cfg(target_os = "windows")]
-    {
-        try_add(
-            &mut found,
-            "pwsh",
-            "PowerShell 7+ (pwsh)",
-            &["pwsh.exe", "pwsh"],
-        );
-        try_add(
-            &mut found,
-            "powershell",
-            "Windows PowerShell 5.1",
-            &["powershell.exe", "powershell"],
-        );
-        try_add(&mut found, "cmd", "命令提示符 (CMD)", &["cmd.exe", "cmd"]);
-        try_add(
-            &mut found,
-            "git-bash",
-            "Git Bash",
-            &[
-                "bash.exe",
-                "C:\\Program Files\\Git\\bin\\bash.exe",
-                "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
-            ],
-        );
-        try_add(&mut found, "wsl", "WSL (Ubuntu)", &["wsl.exe", "wsl"]);
-        try_add(&mut found, "nu", "Nushell", &["nu.exe", "nu"]);
-        try_add(
-            &mut found,
-            "clink",
-            "Clink (CMD 增强)",
-            &["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
-        );
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        try_add(
-            &mut found,
-            "zsh",
-            "Zsh",
-            &["zsh", "/bin/zsh", "/usr/bin/zsh"],
-        );
-        try_add(
-            &mut found,
-            "bash",
-            "Bash",
-            &["bash", "/bin/bash", "/usr/bin/bash"],
-        );
-        try_add(&mut found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
-        try_add(
-            &mut found,
-            "sh",
-            "POSIX sh",
-            &["sh", "/bin/sh", "/usr/bin/sh"],
-        );
-        try_add(
-            &mut found,
-            "dash",
-            "Dash",
-            &["dash", "/bin/dash", "/usr/bin/dash"],
-        );
-        try_add(
-            &mut found,
-            "nu",
-            "Nushell",
-            &["nu", "/bin/nu", "/usr/bin/nu"],
-        );
-        try_add(
-            &mut found,
-            "elvish",
-            "Elvish",
-            &["elvish", "/bin/elvish", "/usr/local/bin/elvish"],
-        );
-    }
-    found
+    ridge_core::commands::shell::detect_available_shells()
 }
 
 #[tauri::command]
@@ -906,56 +780,10 @@ pub async fn get_teammate_metrics(
 
 #[tauri::command]
 pub async fn get_shell_history(_shell_kind: String) -> Result<Vec<String>, String> {
-    let home_dir = dirs::home_dir().ok_or("无法获取 home 目录")?;
-    let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
-
-    // 收集所有可能的 shell 历史文件路径
-    let history_files = vec![
-        // PowerShell
-        app_data
-            .join("Microsoft")
-            .join("Windows")
-            .join("PowerShell")
-            .join("PSReadLine")
-            .join("ConsoleHost_history.txt"),
-        // Bash（含 Git Bash）
-        home_dir.join(".bash_history"),
-        // Zsh
-        home_dir.join(".zsh_history"),
-    ];
-
-    let mut all_lines: Vec<String> = Vec::new();
-    for file in &history_files {
-        if !file.exists() {
-            continue;
-        }
-        let content = match std::fs::read_to_string(file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Bash 时间戳行过滤
-            if trimmed.starts_with('#')
-                && trimmed.len() > 1
-                && trimmed[1..].chars().all(|c| c.is_ascii_digit())
-            {
-                continue;
-            }
-            all_lines.push(trimmed.to_string());
-        }
-    }
-
-    // 按出现顺序去重（保留最靠后的 = 最近使用）
-    all_lines.reverse();
-    let mut seen = std::collections::HashSet::new();
-    all_lines.retain(|line| seen.insert(line.clone()));
-
-    all_lines.truncate(1000);
-    Ok(all_lines)
+    // §S1+: delegate to `ridge_core::commands::shell::get_shell_history` (same
+    // PSReadLine / bash / zsh paths, same dedup + 1000-line cap). The legacy
+    // `_shell_kind` arg was always unused and is preserved for the IPC contract.
+    ridge_core::commands::shell::get_shell_history()
 }
 
 #[tauri::command]

@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use crate::error::{CoreError, CoreResult};
-use crate::fs::search::{SearchEngine, SearchOptions, SearchResult};
+use crate::fs::search::{InvalidGlob, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
 use crate::fs::tree::{DirectoryPage, FileNode, FileTree};
 
 /// Default lazy-load depth for the Explorer's initial tree request. Just the
@@ -238,6 +238,331 @@ pub fn search(root: &str, query: &str, args: &TextSearchArgs) -> CoreResult<Vec<
     };
 
     Ok(SearchEngine::search_text(&root_path, query, &options))
+}
+
+/// `filename_search`: glob/substring match on file NAMES under `root`.
+///
+/// Ported verbatim from `project.rs::filename_search`: `PathBuf::from(root)`
+/// (no normalisation) → exists check (same "Root path does not exist" string)
+/// → `SearchEngine::search_files`. The host keeps the `spawn_blocking` offload.
+pub fn filename_search(root: &str, pattern: &str) -> CoreResult<Vec<String>> {
+    let root_path = PathBuf::from(root);
+    if !root_path.exists() {
+        return Err(CoreError::Internal("Root path does not exist".to_string()));
+    }
+    Ok(SearchEngine::search_files(&root_path, pattern))
+}
+
+/// `text_search_diagnostics`: parse-only validation of the include/exclude glob
+/// inputs, returning ONLY the bad patterns (with which field they came from).
+///
+/// Ported verbatim from `project.rs::text_search_diagnostics` — microsecond-
+/// cheap, runs without touching the filesystem, so the frontend can decorate the
+/// glob inputs without re-running the whole search walk.
+pub fn text_search_diagnostics(
+    include_globs: Option<Vec<String>>,
+    exclude_globs: Option<Vec<String>>,
+) -> Vec<InvalidGlob> {
+    use glob::Pattern;
+    let mut bad: Vec<InvalidGlob> = Vec::new();
+    for s in include_globs.unwrap_or_default() {
+        if let Err(e) = Pattern::new(&s) {
+            bad.push(InvalidGlob {
+                pattern: s,
+                error: e.to_string(),
+                field: "include".to_string(),
+            });
+        }
+    }
+    for s in exclude_globs.unwrap_or_default() {
+        if let Err(e) = Pattern::new(&s) {
+            bad.push(InvalidGlob {
+                pattern: s,
+                error: e.to_string(),
+                field: "exclude".to_string(),
+            });
+        }
+    }
+    bad
+}
+
+// ── Filesystem write commands (S1 ledger §2.1) ──
+//
+// Pure `std::fs` mutations ported verbatim from `project.rs` — including the
+// exact Chinese error strings, which the desktop surfaces to the user via
+// `alert()`. They keep the legacy `Result<T, String>` shape (rather than
+// `CoreResult`) so the desktop wrappers return byte-identical errors with no
+// mapping; the `dispatch` arms wrap the `String` in `CoreError::Internal`
+// (which renders the bare message). The read-only gate + the sandbox / path-
+// traversal guards in `dispatch` run BEFORE any of these execute.
+
+/// Write `content` to `path` as UTF-8, creating parent dirs if missing.
+/// Verbatim port of `project.rs::write_file_blocking`.
+pub fn write_file(path: String, content: String) -> Result<(), String> {
+    let file_path = PathBuf::from(&path);
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+        }
+    }
+    std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))
+}
+
+/// A single Monaco `IModelContentChange`. Offsets/lengths are **UTF-16 code
+/// units** (JS string semantics), NOT bytes or Unicode scalar values.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEdit {
+    pub range_offset: usize,
+    pub range_length: usize,
+    pub text: String,
+}
+
+/// Apply a sequence of Monaco content changes to a file (incremental save).
+/// Verbatim port of the synchronous core of `project.rs::apply_file_edits`:
+/// edits splice in UTF-16 space (re-encoding to UTF-8), applied in order; any
+/// out-of-range edit errors so the caller falls back to a full `write_file`.
+pub fn apply_file_edits(path: String, edits: Vec<TextEdit>) -> Result<(), String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let mut units: Vec<u16> = content.encode_utf16().collect();
+    for e in &edits {
+        let start = e.range_offset;
+        let end = e
+            .range_offset
+            .checked_add(e.range_length)
+            .ok_or_else(|| "edit length overflow".to_string())?;
+        if start > end || end > units.len() {
+            return Err(format!(
+                "edit out of range: {}..{} (len {})",
+                start,
+                end,
+                units.len()
+            ));
+        }
+        let repl: Vec<u16> = e.text.encode_utf16().collect();
+        units.splice(start..end, repl);
+    }
+    let new_content = String::from_utf16(&units).map_err(|e| format!("UTF-16 解码失败: {}", e))?;
+    std::fs::write(&path, new_content).map_err(|e| format!("写入文件失败: {}", e))
+}
+
+/// Rename / move a file or directory. Verbatim port of `project.rs::rename_path`.
+pub fn rename_path(from: String, to: String) -> Result<(), String> {
+    let from_path = PathBuf::from(&from);
+    let to_path = PathBuf::from(&to);
+    if !from_path.exists() {
+        return Err(format!("路径不存在: {}", from));
+    }
+    if to_path.exists() {
+        return Err(format!("目标已存在: {}", to));
+    }
+    std::fs::rename(&from_path, &to_path).map_err(|e| format!("重命名失败: {}", e))?;
+    Ok(())
+}
+
+/// Delete a file or directory (recursively for directories). Verbatim port of
+/// the synchronous core of `project.rs::delete_path`.
+pub fn delete_path(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("路径不存在: {}", path));
+    }
+    let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| format!("删除目录失败: {}", e))?;
+    } else {
+        std::fs::remove_file(&target).map_err(|e| format!("删除文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Create an empty file (fails if it exists; creates parent dirs). Verbatim port
+/// of `project.rs::create_file`.
+pub fn create_file(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if target.exists() {
+        return Err(format!("文件已存在: {}", path));
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    std::fs::write(&target, []).map_err(|e| format!("创建文件失败: {}", e))?;
+    Ok(())
+}
+
+/// Create a directory (fails if it already exists). Verbatim port of
+/// `project.rs::create_directory`.
+pub fn create_directory(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if target.exists() {
+        return Err(format!("目录已存在: {}", path));
+    }
+    std::fs::create_dir_all(&target).map_err(|e| format!("创建目录失败: {}", e))?;
+    Ok(())
+}
+
+/// Copy `from` → `to` (files + recursive directories; refuses overwrite unless
+/// `overwrite=true`). Verbatim port of `project.rs::copy_path_sync`.
+pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
+    let from_path = PathBuf::from(&from);
+    let to_path = PathBuf::from(&to);
+    if !from_path.exists() {
+        return Err(format!("源路径不存在: {}", from));
+    }
+    let overwrite = overwrite.unwrap_or(false);
+    if to_path.exists() && !overwrite {
+        return Err(format!("目标已存在: {}", to));
+    }
+    if let Some(parent) = to_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    if meta.is_dir() {
+        // Recursive copy via walkdir. Mirror the tree relative to `from_path`.
+        std::fs::create_dir_all(&to_path).map_err(|e| format!("创建目标目录失败: {}", e))?;
+        for entry in walkdir::WalkDir::new(&from_path).min_depth(1) {
+            let entry = entry.map_err(|e| format!("遍历源目录失败: {}", e))?;
+            let rel = entry
+                .path()
+                .strip_prefix(&from_path)
+                .map_err(|e| format!("strip_prefix: {}", e))?;
+            let target = to_path.join(rel);
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target)
+                    .map_err(|e| format!("创建子目录失败 ({}): {}", target.display(), e))?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    if !parent.exists() {
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            format!("创建目标父目录失败 ({}): {}", parent.display(), e)
+                        })?;
+                    }
+                }
+                std::fs::copy(entry.path(), &target)
+                    .map_err(|e| format!("复制文件失败 ({}): {}", target.display(), e))?;
+            }
+        }
+    } else {
+        std::fs::copy(&from_path, &to_path).map_err(|e| format!("复制失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Move `from` → `to` (rename, falling back to copy+delete across filesystems).
+/// Verbatim port of `project.rs::move_path_sync`.
+pub fn move_path(from: String, to: String) -> Result<(), String> {
+    let from_path = PathBuf::from(&from);
+    let to_path = PathBuf::from(&to);
+    if !from_path.exists() {
+        return Err(format!("源路径不存在: {}", from));
+    }
+    if to_path.exists() {
+        return Err(format!("目标已存在: {}", to));
+    }
+    if let Some(parent) = to_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    if std::fs::rename(&from_path, &to_path).is_ok() {
+        return Ok(());
+    }
+    // Cross-device fallback: copy then delete source.
+    copy_path(from.clone(), to.clone(), Some(false))?;
+    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
+    } else {
+        std::fs::remove_file(&from_path).map_err(|e| format!("删除源文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Replace text across the given `files` under `root`. Verbatim port of the
+/// synchronous core of `project.rs::replace_in_files` (same `SearchOptions`
+/// defaults: not whole-word, not hidden, unbounded results, no globs).
+pub fn replace_in_files(
+    root: String,
+    search: String,
+    replace: String,
+    files: Vec<String>,
+    case_sensitive: Option<bool>,
+    use_regex: Option<bool>,
+) -> Result<ReplaceStats, String> {
+    let root_path = PathBuf::from(&root);
+    if !root_path.exists() {
+        return Err("Root path does not exist".to_string());
+    }
+    let options = SearchOptions {
+        case_sensitive: case_sensitive.unwrap_or(false),
+        use_regex: use_regex.unwrap_or(false),
+        whole_word: false,
+        include_hidden: false,
+        max_results: usize::MAX,
+        include_globs: Vec::new(),
+        exclude_globs: Vec::new(),
+    };
+    SearchEngine::replace_in_files(&root_path, &search, &replace, &files, &options)
+        .map_err(|e| format!("Replace failed: {}", e))
+}
+
+/// A directory-browse result: the resolved directory, its parent (if any), and
+/// the immediate non-hidden subdirectories (sorted case-insensitively).
+#[derive(Debug, serde::Serialize)]
+pub struct DirListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub subdirs: Vec<String>,
+}
+
+/// Browse `path`'s immediate subdirectories + parent, for the save-workspace
+/// directory picker. A non-existent input normalises to its nearest existing
+/// ancestor; `None`/blank starts at the home dir. Verbatim port of
+/// `ridge_file.rs::browse_directory`.
+pub fn browse_directory(path: Option<String>) -> Result<DirListing, String> {
+    let start = match path {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
+    };
+    // Normalise: if the input does not exist, fall back to the nearest existing
+    // ancestor.
+    let mut cur = start.clone();
+    while !cur.is_dir() {
+        match cur.parent() {
+            Some(p) => cur = p.to_path_buf(),
+            None => {
+                cur = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                break;
+            }
+        }
+    }
+    let parent = cur.parent().map(|p| p.to_string_lossy().to_string());
+    let mut subdirs: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cur) {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy().to_string();
+            // Filter hidden directories (Unix `.` prefix convention).
+            if name_str.starts_with('.') {
+                continue;
+            }
+            subdirs.push(name_str);
+        }
+    }
+    subdirs.sort_by_key(|s| s.to_lowercase());
+    Ok(DirListing {
+        path: cur.to_string_lossy().to_string(),
+        parent,
+        subdirs,
+    })
 }
 
 #[cfg(test)]

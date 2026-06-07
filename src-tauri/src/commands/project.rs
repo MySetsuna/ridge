@@ -1,4 +1,4 @@
-use crate::fs::{DirectoryPage, FileNode, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
+use crate::fs::{DirectoryPage, FileNode, ReplaceStats, SearchResult};
 use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -206,45 +206,27 @@ pub async fn text_search(
 /// inputs without re-running the whole walk: parse-only is microsecond-
 /// cheap. Kept separate from `text_search` so the existing IPC contract
 /// (Vec<SearchResult>) stays stable for any third-party caller.
+///
+/// §S5+: delegates to the migrated `ridge_core` port (same parse-only glob
+/// validation, same `InvalidGlob` shape — aliased through `crate::fs::search`).
 #[tauri::command]
 pub fn text_search_diagnostics(
     include_globs: Option<Vec<String>>,
     exclude_globs: Option<Vec<String>>,
 ) -> Vec<crate::fs::search::InvalidGlob> {
-    use crate::fs::search::InvalidGlob;
-    use glob::Pattern;
-    let mut bad: Vec<InvalidGlob> = Vec::new();
-    for s in include_globs.unwrap_or_default() {
-        if let Err(e) = Pattern::new(&s) {
-            bad.push(InvalidGlob {
-                pattern: s,
-                error: e.to_string(),
-                field: "include".to_string(),
-            });
-        }
-    }
-    for s in exclude_globs.unwrap_or_default() {
-        if let Err(e) = Pattern::new(&s) {
-            bad.push(InvalidGlob {
-                pattern: s,
-                error: e.to_string(),
-                field: "exclude".to_string(),
-            });
-        }
-    }
-    bad
+    ridge_core::fs::commands::text_search_diagnostics(include_globs, exclude_globs)
 }
 
 #[tauri::command]
 pub async fn filename_search(root: String, pattern: String) -> Result<Vec<String>, String> {
-    let root_path = PathBuf::from(&root);
-    if !root_path.exists() {
-        return Err("Root path does not exist".to_string());
-    }
-
-    tokio::task::spawn_blocking(move || Ok(SearchEngine::search_files(&root_path, &pattern)))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+    // §S5+: delegate to the migrated `ridge_core` port (same exists check +
+    // "Root path does not exist" string + `SearchEngine::search_files`). The
+    // host keeps the `spawn_blocking` offload.
+    tokio::task::spawn_blocking(move || {
+        ridge_core::fs::commands::filename_search(&root, &pattern).map_err(|e| e.to_command_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
@@ -256,24 +238,18 @@ pub async fn replace_in_files(
     case_sensitive: Option<bool>,
     use_regex: Option<bool>,
 ) -> Result<ReplaceStats, String> {
-    let root_path = PathBuf::from(&root);
-    if !root_path.exists() {
-        return Err("Root path does not exist".to_string());
-    }
-
-    let options = SearchOptions {
-        case_sensitive: case_sensitive.unwrap_or(false),
-        use_regex: use_regex.unwrap_or(false),
-        whole_word: false,
-        include_hidden: false,
-        max_results: usize::MAX,
-        include_globs: Vec::new(),
-        exclude_globs: Vec::new(),
-    };
-
+    // §S1+: delegate to the migrated `ridge_core` port (same exists check, same
+    // SearchOptions defaults, same "Replace failed:" / "Root path does not exist"
+    // strings). The host keeps the `spawn_blocking` offload.
     tokio::task::spawn_blocking(move || {
-        SearchEngine::replace_in_files(&root_path, &search, &replace, &files, &options)
-            .map_err(|e| format!("Replace failed: {}", e))
+        ridge_core::fs::commands::replace_in_files(
+            root,
+            search,
+            replace,
+            files,
+            case_sensitive,
+            use_regex,
+        )
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -304,74 +280,29 @@ pub async fn read_file_for_editor(path: String) -> Result<ReadFileForEditorResul
 }
 
 /// Write content to a file (UTF-8). Creates parent dirs if missing.
-/// Made async so auto-save calls don't block the IPC thread.
+/// §S1+: delegates to `ridge_core::fs::commands::write_file`; host keeps the
+/// `spawn_blocking` offload. Made async so auto-save calls don't block the IPC.
 #[tauri::command]
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || write_file_blocking(path, content))
+    tokio::task::spawn_blocking(move || ridge_core::fs::commands::write_file(path, content))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-/// Synchronous core of [`write_file`]: writes `content` to `path` as UTF-8,
-/// creating parent dirs if missing. `pub(crate)` so the remote server's WS
-/// data-request handler can write files from a `spawn_blocking` context,
-/// mirroring `copy_path_sync` / `move_path_sync`.
-pub(crate) fn write_file_blocking(path: String, content: String) -> Result<(), String> {
-    let file_path = PathBuf::from(&path);
-    if let Some(parent) = file_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
-        }
-    }
-    std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))
-}
-
-/// A single Monaco `IModelContentChange`. Offsets/lengths are **UTF-16 code
-/// units** (JS string semantics), NOT bytes or Unicode scalar values.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TextEdit {
-    pub range_offset: usize,
-    pub range_length: usize,
-    pub text: String,
-}
+/// A single Monaco `IModelContentChange`. **Migrated to `ridge-core`** — aliased
+/// so `crate::commands::project::TextEdit` (used by `remote/server.rs`) and the
+/// camelCase wire shape stay byte-for-byte identical.
+pub use ridge_core::fs::commands::TextEdit;
 
 /// Apply a sequence of Monaco content changes to a file — incremental save for
-/// the low-bandwidth desktop-UI-in-browser mode (send a few-byte edit instead of
-/// the whole file). Edits MUST arrive in Monaco's emission order (chronological
-/// across change events, and within each event the order Monaco gave them); each
-/// edit's offsets are interpreted against the running content after all prior
-/// edits — exactly mirroring the editor. Offsets are UTF-16 code units, so we
-/// splice in UTF-16 space and re-encode to UTF-8 (correct for non-ASCII, e.g.
-/// the Chinese comments throughout this codebase). On any out-of-range edit we
-/// error so the caller falls back to a full `write_file`.
+/// the low-bandwidth desktop-UI-in-browser mode. §S1+: delegates to
+/// `ridge_core::fs::commands::apply_file_edits` (verbatim UTF-16 splice logic +
+/// error strings); host keeps the `spawn_blocking` offload. Not a Tauri command
+/// (served on the WS data-request path by `remote/server.rs`).
 pub async fn apply_file_edits(path: String, edits: Vec<TextEdit>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
-        let mut units: Vec<u16> = content.encode_utf16().collect();
-        for e in &edits {
-            let start = e.range_offset;
-            let end = e
-                .range_offset
-                .checked_add(e.range_length)
-                .ok_or_else(|| "edit length overflow".to_string())?;
-            if start > end || end > units.len() {
-                return Err(format!(
-                    "edit out of range: {}..{} (len {})",
-                    start,
-                    end,
-                    units.len()
-                ));
-            }
-            let repl: Vec<u16> = e.text.encode_utf16().collect();
-            units.splice(start..end, repl);
-        }
-        let new_content =
-            String::from_utf16(&units).map_err(|e| format!("UTF-16 解码失败: {}", e))?;
-        std::fs::write(&path, new_content).map_err(|e| format!("写入文件失败: {}", e))
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    tokio::task::spawn_blocking(move || ridge_core::fs::commands::apply_file_edits(path, edits))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
@@ -389,167 +320,57 @@ pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<String>,
 // commands instead refuse when the target *already* exists, to avoid silent
 // overwrite).
 
+// §S1+: the filesystem MUTATION logic moved into `ridge_core::fs::commands`
+// (verbatim, including the Chinese error strings). These stay as thin
+// `#[tauri::command]` wrappers — `tauri::generate_handler!` references them by
+// `commands::project::*`, and `remote/server.rs` calls them on the WS path; both
+// keep working unchanged because the wrappers delegate to the shared core. The
+// read-only gate + sandbox/traversal guards live in `ridge_core::dispatch` (for
+// the headless host) and `server.rs::is_mutating_invoke` (desktop backstop).
+
 /// Rename / move a file or directory. `to` may be in a different directory.
 #[tauri::command]
 pub fn rename_path(from: String, to: String) -> Result<(), String> {
-    let from_path = PathBuf::from(&from);
-    let to_path = PathBuf::from(&to);
-    if !from_path.exists() {
-        return Err(format!("路径不存在: {}", from));
-    }
-    if to_path.exists() {
-        return Err(format!("目标已存在: {}", to));
-    }
-    std::fs::rename(&from_path, &to_path).map_err(|e| format!("重命名失败: {}", e))?;
-    Ok(())
+    ridge_core::fs::commands::rename_path(from, to)
 }
 
 /// Delete a file or directory (recursively for directories).
 #[tauri::command]
 pub async fn delete_path(path: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        let target = PathBuf::from(&path);
-        if !target.exists() {
-            return Err(format!("路径不存在: {}", path));
-        }
-        let meta =
-            std::fs::symlink_metadata(&target).map_err(|e| format!("读取元数据失败: {}", e))?;
-        if meta.is_dir() {
-            std::fs::remove_dir_all(&target).map_err(|e| format!("删除目录失败: {}", e))?;
-        } else {
-            std::fs::remove_file(&target).map_err(|e| format!("删除文件失败: {}", e))?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    tokio::task::spawn_blocking(move || ridge_core::fs::commands::delete_path(path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Create an empty file at `path`. Fails if the file already exists.
 /// Creates missing parent directories.
 #[tauri::command]
 pub fn create_file(path: String) -> Result<(), String> {
-    let target = PathBuf::from(&path);
-    if target.exists() {
-        return Err(format!("文件已存在: {}", path));
-    }
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
-        }
-    }
-    std::fs::write(&target, []).map_err(|e| format!("创建文件失败: {}", e))?;
-    Ok(())
+    ridge_core::fs::commands::create_file(path)
 }
 
 /// Create a directory at `path`. Fails if it already exists.
 #[tauri::command]
 pub fn create_directory(path: String) -> Result<(), String> {
-    let target = PathBuf::from(&path);
-    if target.exists() {
-        return Err(format!("目录已存在: {}", path));
-    }
-    std::fs::create_dir_all(&target).map_err(|e| format!("创建目录失败: {}", e))?;
-    Ok(())
+    ridge_core::fs::commands::create_directory(path)
 }
 
 /// Copy `from` → `to`. Supports files and directories; directories copy recursively.
 /// Refuses to overwrite unless `overwrite=true`. Preserves relative structure.
 #[tauri::command]
 pub async fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || copy_path_sync(from, to, overwrite))
+    tokio::task::spawn_blocking(move || ridge_core::fs::commands::copy_path(from, to, overwrite))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
-}
-
-pub(crate) fn copy_path_sync(
-    from: String,
-    to: String,
-    overwrite: Option<bool>,
-) -> Result<(), String> {
-    let from_path = PathBuf::from(&from);
-    let to_path = PathBuf::from(&to);
-    if !from_path.exists() {
-        return Err(format!("源路径不存在: {}", from));
-    }
-    let overwrite = overwrite.unwrap_or(false);
-    if to_path.exists() && !overwrite {
-        return Err(format!("目标已存在: {}", to));
-    }
-    if let Some(parent) = to_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
-        }
-    }
-    let meta =
-        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
-    if meta.is_dir() {
-        // Recursive copy via walkdir. Mirror the tree relative to `from_path`.
-        std::fs::create_dir_all(&to_path).map_err(|e| format!("创建目标目录失败: {}", e))?;
-        for entry in walkdir::WalkDir::new(&from_path).min_depth(1) {
-            let entry = entry.map_err(|e| format!("遍历源目录失败: {}", e))?;
-            let rel = entry
-                .path()
-                .strip_prefix(&from_path)
-                .map_err(|e| format!("strip_prefix: {}", e))?;
-            let target = to_path.join(rel);
-            if entry.file_type().is_dir() {
-                std::fs::create_dir_all(&target)
-                    .map_err(|e| format!("创建子目录失败 ({}): {}", target.display(), e))?;
-            } else {
-                if let Some(parent) = target.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            format!("创建目标父目录失败 ({}): {}", parent.display(), e)
-                        })?;
-                    }
-                }
-                std::fs::copy(entry.path(), &target)
-                    .map_err(|e| format!("复制文件失败 ({}): {}", target.display(), e))?;
-            }
-        }
-    } else {
-        std::fs::copy(&from_path, &to_path).map_err(|e| format!("复制失败: {}", e))?;
-    }
-    Ok(())
 }
 
 /// Move `from` → `to`. Falls back to copy + delete if `rename` fails across
 /// filesystems (common on Windows when spanning drive letters).
 #[tauri::command]
 pub async fn move_path(from: String, to: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || move_path_sync(from, to))
+    tokio::task::spawn_blocking(move || ridge_core::fs::commands::move_path(from, to))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
-}
-
-pub(crate) fn move_path_sync(from: String, to: String) -> Result<(), String> {
-    let from_path = PathBuf::from(&from);
-    let to_path = PathBuf::from(&to);
-    if !from_path.exists() {
-        return Err(format!("源路径不存在: {}", from));
-    }
-    if to_path.exists() {
-        return Err(format!("目标已存在: {}", to));
-    }
-    if let Some(parent) = to_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
-        }
-    }
-    if std::fs::rename(&from_path, &to_path).is_ok() {
-        return Ok(());
-    }
-    // Cross-device fallback: copy then delete source.
-    copy_path_sync(from.clone(), to.clone(), Some(false))?;
-    let meta =
-        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
-    } else {
-        std::fs::remove_file(&from_path).map_err(|e| format!("删除源文件失败: {}", e))?;
-    }
-    Ok(())
 }
 
 /// Open the OS file manager selecting `path` (Windows: `explorer /select,...`,

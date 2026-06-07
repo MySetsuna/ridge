@@ -88,10 +88,8 @@ fn find_last_osc7_terminator(after_prefix: &[u8]) -> Option<usize> {
 /// * `output` - A UTF-8 string chunk from the PTY (may contain partial escape sequences)
 ///
 /// # Examples
-/// ```ignore
-/// // `engine` is a crate-private module; doctest marked `ignore` and behaviour
-/// // is exercised by the unit-test module at the bottom of this file.
-/// use ridge_lib::engine::cwd::parse_cwd_from_output;
+/// ```
+/// use ridge_core::pty::cwd::parse_cwd_from_output;
 /// assert_eq!(
 ///     parse_cwd_from_output("\x1b]7;file://host/home/alice/projects\x07"),
 ///     Some(std::path::PathBuf::from("/home/alice/projects"))

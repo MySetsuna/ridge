@@ -7,75 +7,21 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use crate::engine::cwd;
 use crate::engine::parser::PaneParser;
-use crate::engine::title;
 use crate::state::AppState;
 use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
+use ridge_core::pty::decode::{flush_pending_eof, take_decoded_utf8};
+use ridge_core::pty::prompt::find_prompt_osc;
+use ridge_core::pty::{cwd, title};
 
-const PTY_READ_UTF8_PENDING_MAX: usize = 64 * 1024;
-
-/// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠），与 `process::normalize_cwd` 对齐，
-/// 避免 `paneCwdStore` 上出现 `C:\code\ridge` 与 `C:/code/ridge` 两个键并存的别名。
+/// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠）。逻辑单一真源在
+/// `ridge_core::commands::process::normalize_cwd`（与 OS 探测路径同一份实现），
+/// 这里仅做 `&str → String` 适配，避免 `paneCwdStore` 上出现 `C:\code\ridge` 与
+/// `C:/code/ridge` 两个键并存的别名。
 fn normalize_cwd_str(raw: &str) -> String {
-    #[cfg(windows)]
-    {
-        raw.replace('\\', "/")
-    }
-    #[cfg(not(windows))]
-    {
-        raw.to_string()
-    }
-}
-
-/// Extend `pending` with `chunk`, then drain leading complete UTF-8 into `String`.
-/// Incomplete trailing bytes remain in `pending` for the next read.
-fn take_decoded_utf8(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
-    if !chunk.is_empty() {
-        pending.extend_from_slice(chunk);
-    }
-    if pending.len() > PTY_READ_UTF8_PENDING_MAX {
-        let bytes = std::mem::replace(pending, Vec::new());
-        return String::from_utf8_lossy(&bytes).into_owned();
-    }
-    let mut out = String::new();
-    loop {
-        if pending.is_empty() {
-            break;
-        }
-        match std::str::from_utf8(pending) {
-            Ok(s) => {
-                out.push_str(s);
-                pending.clear();
-                break;
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if valid > 0 {
-                    out.push_str(unsafe { std::str::from_utf8_unchecked(&pending[..valid]) });
-                    pending.drain(..valid);
-                    continue;
-                }
-                if let Some(elen) = e.error_len() {
-                    out.push_str(&String::from_utf8_lossy(&pending[..elen]));
-                    pending.drain(..elen);
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-    out
-}
-
-fn flush_pending_eof(pending: &mut Vec<u8>) -> String {
-    if pending.is_empty() {
-        return String::new();
-    }
-    let bytes = std::mem::replace(pending, Vec::new());
-    String::from_utf8_lossy(&bytes).into_owned()
+    ridge_core::commands::process::normalize_cwd(raw.to_string())
 }
 
 pub struct PtyHandle {
@@ -143,33 +89,6 @@ fn now_epoch_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-/// 在 `data` 中查找最早出现的 shell-integration prompt OSC 起始字节偏移。
-///
-/// 检测下列序列起始（任一前 7 字节，不要求匹配 ST/BEL 终止符 —— xterm.js 会
-/// 在收到流后自行解析完整序列）：
-/// - `\x1b]133;A` / `\x1b]133;B` / `\x1b]133;P` — FinalTerm 语义 prompt 协议
-/// - `\x1b]633;A` / `\x1b]633;B` / `\x1b]633;P` — VS Code shell-integration 扩展
-///
-/// 返回首个命中的字节偏移（基于原 `data: &str` 的字节位置，可安全用于
-/// `data[off..]` 切片）。若未命中，返回 `None`。
-fn find_prompt_osc(data: &str) -> Option<usize> {
-    const MARKERS: [&str; 6] = [
-        "\x1b]133;A",
-        "\x1b]133;B",
-        "\x1b]133;P",
-        "\x1b]633;A",
-        "\x1b]633;B",
-        "\x1b]633;P",
-    ];
-    let mut earliest: Option<usize> = None;
-    for m in MARKERS.iter() {
-        if let Some(idx) = data.find(m) {
-            earliest = Some(earliest.map_or(idx, |e| e.min(idx)));
-        }
-    }
-    earliest
 }
 
 /// 从工作区表里摘掉该 pane 的 PTY（读线程结束或异常时用）。不影响其它 pane 的表项。

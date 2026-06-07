@@ -22,6 +22,7 @@
     "tauri:build:debug": "node scripts/tauri-build-debug.mjs",
     "tauri:dev:cdp": "node scripts/tauri-dev-cdp.mjs",
     "cdp:smoke": "node scripts/cdp-smoke.mjs",
+    "cdp:pty": "node scripts/cdp-pty-parsers.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
