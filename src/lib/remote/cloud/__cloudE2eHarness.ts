@@ -20,6 +20,7 @@ import { ControllerCloudProvider } from './controllerCloudProvider';
 import { CloudHostBridge } from './cloudHostBridge';
 import { createCloudWebrtcTransportWith } from '../../transport/remote/cloudWebrtcAdapter';
 import { RpcClient } from '../../transport/remote/rpcClient';
+import type { KeyBindingMode } from './keyBinding';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface CloudE2eOptions {
@@ -44,6 +45,11 @@ export interface CloudE2eOptions {
    * 任意 method 无白名单直送 invoke）。如 { method: 'get_remote_info' }。
    */
   exploit?: { method: string; params?: Record<string, unknown> };
+  /**
+   * B3 验证：置位时让 **host** 经信令旁路发送**错误**的临时公钥（模拟 relay-MITM 在
+   * E2EE 腿调包）。预期 controller 比对失败 → 判 MITM 拒绝 → connected=false。
+   */
+  tamperBinding?: boolean;
 }
 
 export interface CloudE2eProbe {
@@ -67,6 +73,8 @@ export interface CloudE2eResult {
   log: string[];
   /** 可选 exploit 探针结果（审计 #1 验证）。 */
   exploitResult?: { method: string; ok: boolean; sample?: string; error?: string } | null;
+  /** B3：controller 端最终绑定模式（enforced=信令公钥已比对一致；relay-trust=回落）。 */
+  keyBindingMode?: KeyBindingMode | null;
 }
 
 /**
@@ -104,15 +112,21 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
     },
   );
 
-  // ── CONTROLLER（offerer）：adapter + L2 RpcClient ───────────────────────────
-  const adapter = createCloudWebrtcTransportWith(
-    device,
-    (cb) => new ControllerCloudProvider({ userToken, username }, cb),
-  );
+  // ── CONTROLLER（offerer）：adapter + L2 RpcClient（捕获 provider 以读绑定模式）──
+  // 定值断言：createCloudWebrtcTransportWith 同步调用工厂，故 connect 前必已赋值。
+  let controllerProvider!: ControllerCloudProvider;
+  const adapter = createCloudWebrtcTransportWith(device, (cb) => {
+    controllerProvider = new ControllerCloudProvider({ userToken, username }, cb);
+    return controllerProvider;
+  });
   const rpc = new RpcClient(adapter, { defaultTimeoutMs: timeoutMs });
+
+  // B3 验证 seam：让 host 发错误信令公钥（仅本 dev harness 置位此 global，生产永不设）。
+  const tamperGlobal = globalThis as { __RIDGE_DEBUG_TAMPER_E2EE_SIG?: boolean };
 
   let connected = false;
   try {
+    if (opts.tamperBinding) tamperGlobal.__RIDGE_DEBUG_TAMPER_E2EE_SIG = true;
     await host.goOnline(device);
     push('host.goOnline returned');
 
@@ -177,8 +191,11 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
       }
     }
 
-    return { connected, results, capabilities, exploitResult, log };
+    const keyBindingMode: KeyBindingMode = controllerProvider.getKeyBindingMode();
+
+    return { connected, results, capabilities, exploitResult, keyBindingMode, log };
   } finally {
+    delete tamperGlobal.__RIDGE_DEBUG_TAMPER_E2EE_SIG;
     try {
       adapter.close();
       adapter.dispose();
