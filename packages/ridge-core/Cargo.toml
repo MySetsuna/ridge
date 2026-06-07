@@ -44,6 +44,10 @@ dirs = "5"
 # for the per-process secret. See `totp.rs`.
 sha2 = "0.10"
 rand = "0.8"
+# Pane / workspace identity for the shared workspace graph (D11 Wave A:
+# `workspace::pane_tree`). Same version + features the desktop `src-tauri` uses
+# so the workspace `Cargo.lock` stays unified. Pure crate, no Tauri.
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # OS process introspection for `commands::process` (foreground process / cwd by
 # PID). Only Windows needs `sysinfo`; the Unix port reads `/proc` directly, so

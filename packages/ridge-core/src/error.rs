@@ -34,6 +34,7 @@
 //! suite will assert.
 
 use serde_json::json;
+use uuid::Uuid;
 
 /// JSON-RPC application error code for an uncategorised internal failure.
 pub const CODE_INTERNAL: i64 = 1000;
@@ -50,6 +51,9 @@ pub const CODE_IO: i64 = 1005;
 /// JSON-RPC application error code: path-bearing arg resolved outside the
 /// host-granted workspace roots (fs sandbox / root-scoping, D8 / §5.6, R10).
 pub const CODE_OUTSIDE_SANDBOX: i64 = 1006;
+/// JSON-RPC application error code: referenced pane id not found in the
+/// workspace graph (D11 Wave A; mirrors the desktop `AppError::PaneNotFound`).
+pub const CODE_PANE_NOT_FOUND: i64 = 1007;
 /// JSON-RPC spec code: method not found.
 pub const CODE_METHOD_NOT_FOUND: i64 = -32601;
 /// JSON-RPC spec code: invalid params.
@@ -82,6 +86,13 @@ pub enum CoreError {
     /// roots the host granted (fs sandbox / root-scoping, D8 / §5.6, R10).
     #[error("path outside permitted workspace roots")]
     OutsideSandbox,
+
+    /// A referenced pane id does not exist in the workspace graph (D11 Wave A).
+    /// The message is **byte-identical** to the desktop `AppError::PaneNotFound`
+    /// because the frontend string-matches `"Pane not found"` to suppress a
+    /// benign activate-pane race (`RidgePane.svelte`, `ptyBridge.ts`).
+    #[error("Pane not found: {0}")]
+    PaneNotFound(Uuid),
 
     /// The host could not provide the state/handle the command needs.
     #[error("host unavailable: {0}")]
@@ -116,6 +127,7 @@ impl CoreError {
             CoreError::ReadOnly => CODE_READ_ONLY,
             CoreError::PathTraversal => CODE_PATH_TRAVERSAL,
             CoreError::OutsideSandbox => CODE_OUTSIDE_SANDBOX,
+            CoreError::PaneNotFound(_) => CODE_PANE_NOT_FOUND,
             CoreError::HostUnavailable(_) => CODE_HOST_UNAVAILABLE,
             CoreError::Io(_) => CODE_IO,
             CoreError::Internal(_) => CODE_INTERNAL,
@@ -151,6 +163,7 @@ impl CoreError {
             CoreError::ReadOnly => "read_only",
             CoreError::PathTraversal => "path_traversal",
             CoreError::OutsideSandbox => "outside_sandbox",
+            CoreError::PaneNotFound(_) => "pane_not_found",
             CoreError::HostUnavailable(_) => "host_unavailable",
             CoreError::Io(_) => "io",
             CoreError::Internal(_) => "internal",
@@ -196,6 +209,21 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("set_remote_enabled"));
+    }
+
+    #[test]
+    fn pane_not_found_message_is_frontend_compatible_and_code_stable() {
+        // The frontend suppresses a benign activate-pane race by matching
+        // `.includes("Pane not found")` — the message MUST contain that substring.
+        let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let e = CoreError::PaneNotFound(id);
+        assert!(e.to_command_string().contains("Pane not found"));
+        assert_eq!(
+            e.to_command_string(),
+            "Pane not found: 00000000-0000-0000-0000-000000000001"
+        );
+        assert_eq!(e.json_rpc_code(), CODE_PANE_NOT_FOUND);
+        assert_eq!(e.kind_tag(), "pane_not_found");
     }
 
     #[test]
