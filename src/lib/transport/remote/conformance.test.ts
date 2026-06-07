@@ -1,149 +1,231 @@
 // src/lib/transport/remote/conformance.test.ts
 //
-// §S7 protocol-conformance suite — LAN-WS arm (handoff plan §6 S7, contract
-// §7.0/§7.3/§7.4). This is the cross-cutting "防静默漂移" investment: it wires
-// the REAL L2 `RpcClient` on top of the REAL L1 `LanWsAdapter`, against a fake
-// host that emulates the S3 JSON-RPC-native LAN host (`server.rs`). It asserts
-// the end-to-end behaviour the same suite will later run against the
-// cloud-WebRTC arm, so the two transports cannot drift (decision D6):
+// §S7 protocol-conformance suite (handoff plan §6 S7, contract §7.0/§7.3/§7.4).
+// This is the cross-cutting "防静默漂移" investment, decision D6: the SAME suite
+// runs against BOTH transports — the LAN-WS arm (`LanWsAdapter`) and the
+// cloud-WebRTC arm (`CloudWebrtcAdapter`) — so the two legs cannot drift. Each
+// arm wires the REAL L2 `RpcClient` on top of the REAL L1 adapter, against a
+// fake host that emulates the S3 JSON-RPC-native host (`server.rs` / the cloud
+// host on the far side of the DataChannel). It asserts:
 //
-//   • JSON-RPC 2.0 request/response round-trip through the stack.
+//   • JSON-RPC 2.0 request/response round-trip through the full stack.
 //   • D9 `$/hello` handshake + capability negotiation (+ `$/bye` rejection).
 //   • `$/cancel` over the wire.
 //   • Full error `{code,message,data}` passthrough (the D-GM-2 fix): a
 //     structured host error reaches the caller as `RpcRemoteError` with code +
 //     data intact — never collapsed to a bare message.
+//   • Raw pane bytes + host event notifications.
 //
-// The fake host below mirrors the host's two behaviours that matter to the
-// client: (1) it speaks JSON-RPC natively once it sees the client's `$/hello`,
-// and (2) it round-trips ids and structured errors verbatim.
+// The LAN-only legacy fallback (pre-handshake legacy invoke envelope) stays in
+// its own block — the cloud leg is JSON-RPC-native from the first frame and has
+// no legacy mode, so that behaviour is transport-specific by design.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LanWsAdapter } from './lanWsAdapter';
+import { createCloudWebrtcTransportWith } from './cloudWebrtcAdapter';
+import { demuxFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
 import { RpcClient, CLIENT_CAPABILITIES } from './rpcClient';
 import type { ConnectionState, RemoteConnection } from '../../../remote/lib/wsRemote';
+import type {
+  CloudConnectionCallbacks,
+  CloudConnectionState,
+  RemoteConnectionProvider,
+} from '../../remote/cloud/connectionProvider';
+import type { ChannelTransport } from './types';
 import { RpcRemoteError } from './types';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Transport-agnostic host behaviour (the bit that MUST be identical across legs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Mutable host state a test tweaks before driving the client. */
+interface HostState {
+  responders: Record<string, (params: unknown) => unknown>;
+  hostCapabilities: string[];
+  hostProtocolVersion: number;
+}
+
 /**
- * Fake host that plays the S3 LAN host's JSON-RPC leg. It receives the wire
- * objects the adapter sends (already legacy-or-native), and pushes back frames
- * the adapter delivers inbound. A small programmable handler table lets each
- * test decide how the host answers a given method.
+ * Compute the host's reply to one client JSON-RPC frame — the single source of
+ * truth both transport fakes route through, so neither leg can answer
+ * differently. Returns the frame to push back inbound, or `null` for no reply
+ * (notifications, unknown methods → exercises the client's timeout/cancel path).
  */
-class FakeJsonRpcHost {
-  /** Frames the client sent to the host (post-adapter-translation). */
-  received: Record<string, unknown>[] = [];
-  /** Inbound delivery sink, wired to the adapter's RemoteConnection.onMessage. */
-  private inbound: ((m: unknown) => void) | null = null;
-  private rawSink: ((paneId: string, bytes: Uint8Array) => void) | null = null;
-  private stateCb: ((s: ConnectionState) => void) | null = null;
-  private _state: ConnectionState = 'connected';
-  disconnected = false;
-  /** Host capabilities advertised in its `$/hello` reply. */
-  hostCapabilities: string[] = ['pane', 'invoke', 'fs', 'git', 'search', 'workspace', 'theme'];
-  /** Host protocol version; set to 0 to force a `$/bye` mismatch. */
-  hostProtocolVersion = 1;
+function hostReply(msg: Record<string, unknown>, host: HostState): Record<string, unknown> | null {
+  if (msg.jsonrpc !== '2.0') return null; // legacy frame — not exercised here
+  const method = msg.method as string | undefined;
+  const id = msg.id;
 
-  // ── RemoteConnection surface the adapter uses ──
-  send(msg: Record<string, unknown>): void {
-    this.received.push(msg);
-    this.routeFromClient(msg);
-  }
-  onMessage(fn: (m: unknown) => void) {
-    this.inbound = fn;
-    return () => {
-      this.inbound = null;
-    };
-  }
-  onRawBytes(fn: (paneId: string, bytes: Uint8Array) => void) {
-    this.rawSink = fn;
-    return () => {
-      this.rawSink = null;
-    };
-  }
-  onStateChange(fn: (s: ConnectionState) => void) {
-    this.stateCb = fn;
-    return () => {
-      this.stateCb = null;
-    };
-  }
-  state(): ConnectionState {
-    return this._state;
-  }
-  disconnect(): void {
-    this.disconnected = true;
-  }
-
-  // ── host-side behaviour ──
-  /** Per-method responder: returns the JSON-RPC `result` or throws a structured
-   *  error object the host should send back. Tests override entries. */
-  responders: Record<string, (params: unknown) => unknown> = {};
-
-  private routeFromClient(msg: Record<string, unknown>): void {
-    // The host only understands native JSON-RPC frames on its JSON-RPC leg.
-    if (msg.jsonrpc !== '2.0') return; // legacy frame — not exercised here
-    const method = msg.method as string | undefined;
-    const id = msg.id;
-
-    // D9 handshake: reply with the host's $/hello (or $/bye on mismatch).
-    if (method === '$/hello') {
-      if (this.hostProtocolVersion < 1) {
-        this.deliver({ jsonrpc: '2.0', method: '$/bye', params: { reason: 'protocol-version-mismatch' } });
-        return;
-      }
-      this.deliver({
-        jsonrpc: '2.0',
-        method: '$/hello',
-        params: { protocolVersion: this.hostProtocolVersion, capabilities: this.hostCapabilities },
-      });
-      return;
+  if (method === '$/hello') {
+    if (host.hostProtocolVersion < 1) {
+      return { jsonrpc: '2.0', method: '$/bye', params: { reason: 'protocol-version-mismatch' } };
     }
-    // $/cancel is a notification; record only (no reply), like the real host.
-    if (method === '$/cancel') return;
-    // A request (has id) → run the responder and reply result/error.
-    if (id !== undefined && id !== null && typeof method === 'string') {
-      const responder = this.responders[method];
-      if (!responder) return; // no reply → exercises client timeout/cancel paths
-      try {
-        const result = responder(msg.params);
-        this.deliver({ jsonrpc: '2.0', id, result });
-      } catch (e) {
-        this.deliver({ jsonrpc: '2.0', id, error: e });
-      }
+    return {
+      jsonrpc: '2.0',
+      method: '$/hello',
+      params: { protocolVersion: host.hostProtocolVersion, capabilities: host.hostCapabilities },
+    };
+  }
+  if (method === '$/cancel') return null; // notification — record only
+  if (id !== undefined && id !== null && typeof method === 'string') {
+    const responder = host.responders[method];
+    if (!responder) return null; // no reply → exercises timeout/cancel
+    try {
+      return { jsonrpc: '2.0', id, result: responder(msg.params) };
+    } catch (e) {
+      return { jsonrpc: '2.0', id, error: e };
     }
   }
-
-  // ── test drivers ──
-  deliver(frame: unknown): void {
-    this.inbound?.(frame);
-  }
-  deliverRaw(paneId: string, bytes: Uint8Array): void {
-    this.rawSink?.(paneId, bytes);
-  }
-  setState(s: ConnectionState): void {
-    this._state = s;
-    this.stateCb?.(s);
-  }
+  return null;
 }
 
-function wire(host: FakeJsonRpcHost): { adapter: LanWsAdapter; rpc: RpcClient } {
-  const adapter = new LanWsAdapter(host as unknown as RemoteConnection);
+/** A wired conformance arm: the client + drivers, presented identically per leg. */
+interface Harness {
+  rpc: RpcClient;
+  adapter: ChannelTransport;
+  /** JSON objects the client sent (post-adapter-translation, demuxed for cloud). */
+  received: Record<string, unknown>[];
+  /** Mutable host state (tests set `host.responders.foo = …`, caps, version). */
+  host: HostState;
+  /** Push an inbound JSON control frame (host → client). */
+  deliver(frame: Record<string, unknown>): void;
+  /** Push inbound raw pane bytes. */
+  deliverRaw(paneId: string, bytes: Uint8Array): void;
+  /** Drive the transport connection state. */
+  setState(s: ConnectionState): void;
+}
+
+function freshHost(): HostState {
+  return {
+    responders: {},
+    hostCapabilities: ['pane', 'invoke', 'fs', 'git', 'search', 'workspace', 'theme'],
+    hostProtocolVersion: 1,
+  };
+}
+
+// ── LAN-WS arm: fake `RemoteConnection` behind `LanWsAdapter` ──
+function makeLanHarness(): Harness {
+  const host = freshHost();
+  const received: Record<string, unknown>[] = [];
+  let inbound: ((m: unknown) => void) | null = null;
+  let rawSink: ((paneId: string, bytes: Uint8Array) => void) | null = null;
+  let stateCb: ((s: ConnectionState) => void) | null = null;
+  let curState: ConnectionState = 'connected';
+
+  const conn = {
+    send(msg: Record<string, unknown>) {
+      received.push(msg);
+      const reply = hostReply(msg, host);
+      if (reply) inbound?.(reply);
+    },
+    onMessage(fn: (m: unknown) => void) {
+      inbound = fn;
+      return () => {
+        inbound = null;
+      };
+    },
+    onRawBytes(fn: (paneId: string, bytes: Uint8Array) => void) {
+      rawSink = fn;
+      return () => {
+        rawSink = null;
+      };
+    },
+    onStateChange(fn: (s: ConnectionState) => void) {
+      stateCb = fn;
+      return () => {
+        stateCb = null;
+      };
+    },
+    state: () => curState,
+    disconnect() {},
+  };
+
+  const adapter = new LanWsAdapter(conn as unknown as RemoteConnection);
   const rpc = new RpcClient(adapter);
-  return { adapter, rpc };
+  return {
+    rpc,
+    adapter,
+    received,
+    host,
+    deliver: (frame) => inbound?.(frame),
+    deliverRaw: (paneId, bytes) => rawSink?.(paneId, bytes),
+    setState: (s) => {
+      curState = s;
+      stateCb?.(s);
+    },
+  };
 }
 
-describe('S7 conformance (LAN-WS) — D9 $/hello handshake', () => {
-  let host: FakeJsonRpcHost;
-  let rpc: RpcClient;
+// ── cloud-WebRTC arm: fake `RemoteConnectionProvider` behind `CloudWebrtcAdapter` ──
+function makeCloudHarness(): Harness {
+  const host = freshHost();
+  const received: Record<string, unknown>[] = [];
 
+  // Map the conformance `ConnectionState` onto the provider's state vocabulary.
+  const toCloudState = (s: ConnectionState): CloudConnectionState =>
+    s === 'connected' ? 'connected' : s === 'connecting' ? 'connecting' : 'disconnected';
+
+  let cb!: CloudConnectionCallbacks;
+  let cloudState: CloudConnectionState = 'connected';
+
+  const provider: RemoteConnectionProvider = {
+    connect: () => Promise.resolve(),
+    disconnect: () => {},
+    getState: () => cloudState,
+    sendFrame(frame: Uint8Array) {
+      const out = demuxFrame(frame);
+      if (out.kind !== 'json') return; // pane/control frames are not host requests here
+      const msg = out.json as Record<string, unknown>;
+      received.push(msg);
+      const reply = hostReply(msg, host);
+      if (!reply) return;
+      // Handshake frames (notifications) reply synchronously so the client's
+      // protocol state is set before the test's synchronous assertion; request
+      // responses defer a microtask so the client's pending entry is registered
+      // first (mirrors the real async DataChannel).
+      const isHandshake = reply.method === '$/hello' || reply.method === '$/bye';
+      if (isHandshake) cb.onFrame?.(encodeJsonFrame(reply));
+      else queueMicrotask(() => cb.onFrame?.(encodeJsonFrame(reply)));
+    },
+  };
+
+  const adapter = createCloudWebrtcTransportWith('conformance-device', (callbacks) => {
+    cb = callbacks;
+    return provider;
+  });
+  const rpc = new RpcClient(adapter);
+  return {
+    rpc,
+    adapter,
+    received,
+    host,
+    deliver: (frame) => cb.onFrame?.(encodeJsonFrame(frame)),
+    deliverRaw: (paneId, bytes) => cb.onFrame?.(encodePaneFrame(paneId, bytes)),
+    setState: (s) => {
+      cloudState = toCloudState(s);
+      cb.onState?.(cloudState);
+    },
+  };
+}
+
+const ARMS: ReadonlyArray<readonly [string, () => Harness]> = [
+  ['LAN-WS', makeLanHarness],
+  ['cloud-WebRTC', makeCloudHarness],
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared conformance suite — runs identically on every transport arm (D6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.each(ARMS)('S7 conformance (%s) — D9 $/hello handshake', (_name, make) => {
+  let h: Harness;
   beforeEach(() => {
-    host = new FakeJsonRpcHost();
-    ({ rpc } = wire(host));
+    h = make();
   });
 
   it('sends the client $/hello with version + capabilities', () => {
-    rpc.hello();
-    const hello = host.received.find((m) => m.method === '$/hello');
+    h.rpc.hello();
+    const hello = h.received.find((m) => m.method === '$/hello');
     expect(hello).toEqual({
       jsonrpc: '2.0',
       method: '$/hello',
@@ -152,85 +234,82 @@ describe('S7 conformance (LAN-WS) — D9 $/hello handshake', () => {
   });
 
   it('stores the negotiated capability intersection from the host reply', () => {
-    host.hostCapabilities = ['pane', 'invoke', 'fs']; // host serves a subset
-    rpc.hello();
-    expect(rpc.protocol?.protocolVersion).toBe(1);
-    expect(rpc.protocol?.rejected).toBe(false);
-    expect(rpc.hasCapability('fs')).toBe(true);
-    expect(rpc.hasCapability('git')).toBe(false); // not advertised by host
+    h.host.hostCapabilities = ['pane', 'invoke', 'fs']; // host serves a subset
+    h.rpc.hello();
+    expect(h.rpc.protocol?.protocolVersion).toBe(1);
+    expect(h.rpc.protocol?.rejected).toBe(false);
+    expect(h.rpc.hasCapability('fs')).toBe(true);
+    expect(h.rpc.hasCapability('git')).toBe(false); // not advertised by host
   });
 
   it('notifies onNegotiated subscribers with the result', () => {
     let seen: { capabilities: Set<string> } | null = null;
-    rpc.onNegotiated((p) => {
+    h.rpc.onNegotiated((p) => {
       seen = p;
     });
-    rpc.hello();
+    h.rpc.hello();
     expect(seen).not.toBeNull();
     expect(seen!.capabilities.has('theme')).toBe(true);
   });
 
   it('marks the protocol rejected on a $/bye version mismatch', () => {
-    host.hostProtocolVersion = 0; // host forces $/bye
-    rpc.hello();
-    expect(rpc.protocol?.rejected).toBe(true);
-    expect(rpc.protocol?.reason).toBe('protocol-version-mismatch');
-    expect(rpc.hasCapability('fs')).toBe(false); // rejected → no panels
+    h.host.hostProtocolVersion = 0; // host forces $/bye
+    h.rpc.hello();
+    expect(h.rpc.protocol?.rejected).toBe(true);
+    expect(h.rpc.protocol?.reason).toBe('protocol-version-mismatch');
+    expect(h.rpc.hasCapability('fs')).toBe(false); // rejected → no panels
   });
 
   it('does not surface $/hello as a regular notification', () => {
     let fired = false;
-    rpc.onNotification('$/hello', () => {
+    h.rpc.onNotification('$/hello', () => {
       fired = true;
     });
-    rpc.hello();
+    h.rpc.hello();
     expect(fired).toBe(false);
   });
 
   it('does not double-send $/hello on the happy path (idempotent per connection)', () => {
-    rpc.hello();
-    rpc.hello(); // second call is a no-op until a reconnect
-    const hellos = host.received.filter((m) => m.method === '$/hello');
-    expect(hellos).toHaveLength(1);
+    h.rpc.hello();
+    h.rpc.hello(); // second call is a no-op until a reconnect
+    expect(h.received.filter((m) => m.method === '$/hello')).toHaveLength(1);
   });
 
   it('re-handshakes after a reconnect (SPA may have updated independently)', () => {
-    rpc.hello();
-    expect(host.received.filter((m) => m.method === '$/hello')).toHaveLength(1);
-    // Drop + reconnect → the client must greet again.
-    host.setState('disconnected');
-    host.setState('connecting');
-    host.setState('connected');
-    expect(host.received.filter((m) => m.method === '$/hello')).toHaveLength(2);
+    h.rpc.hello();
+    expect(h.received.filter((m) => m.method === '$/hello')).toHaveLength(1);
+    h.setState('disconnected');
+    h.setState('connecting');
+    h.setState('connected');
+    expect(h.received.filter((m) => m.method === '$/hello')).toHaveLength(2);
   });
 });
 
-describe('S7 conformance (LAN-WS) — JSON-RPC invoke round-trip', () => {
-  let host: FakeJsonRpcHost;
-  let rpc: RpcClient;
-
+describe.each(ARMS)('S7 conformance (%s) — JSON-RPC invoke round-trip', (_name, make) => {
+  let h: Harness;
   beforeEach(() => {
-    host = new FakeJsonRpcHost();
-    ({ rpc } = wire(host));
-    rpc.hello(); // upgrade the adapter to native JSON-RPC
+    h = make();
+    h.rpc.hello(); // upgrade to native JSON-RPC
   });
 
   it('round-trips a successful request natively after the handshake', async () => {
-    host.responders.read_file = (params) => ({ echoed: params });
-    const out = await rpc.request<{ echoed: unknown }>('read_file', { path: '/a' });
+    h.host.responders.read_file = (params) => ({ echoed: params });
+    const out = await h.rpc.request<{ echoed: unknown }>('read_file', { path: '/a' });
     expect(out).toEqual({ echoed: { path: '/a' } });
-    // The request went out as a NATIVE JSON-RPC frame (not legacy invoke-request).
-    const req = host.received.find((m) => m.method === 'read_file');
+    const req = h.received.find((m) => m.method === 'read_file');
     expect(req).toMatchObject({ jsonrpc: '2.0', method: 'read_file', params: { path: '/a' } });
     expect(req).not.toHaveProperty('type'); // not the legacy {type:'invoke-request'} shape
   });
 
   it('propagates a structured error with full code + data (D-GM-2 fix)', async () => {
-    host.responders.set_remote_enabled = () => {
-      // The S3 host's CoreError::CapabilityDenied → to_json_rpc().
-      throw { code: 1001, message: 'command not available remotely: set_remote_enabled', data: { kind: 'capability_denied' } };
+    h.host.responders.set_remote_enabled = () => {
+      throw {
+        code: 1001,
+        message: 'command not available remotely: set_remote_enabled',
+        data: { kind: 'capability_denied' },
+      };
     };
-    const p = rpc.request('set_remote_enabled', {});
+    const p = h.rpc.request('set_remote_enabled', {});
     await expect(p).rejects.toBeInstanceOf(RpcRemoteError);
     await p.catch((e: RpcRemoteError) => {
       expect(e.code).toBe(1001); // NOT collapsed to -32603 INTERNAL_ERROR
@@ -240,94 +319,89 @@ describe('S7 conformance (LAN-WS) — JSON-RPC invoke round-trip', () => {
   });
 
   it('preserves read-only / path-traversal structured codes end to end', async () => {
-    host.responders.write_file = () => {
+    h.host.responders.write_file = () => {
       throw { code: 1002, message: 'remote filesystem is read-only', data: { kind: 'read_only' } };
     };
-    await rpc.request('write_file', { path: '/a', content: 'x' }).catch((e: RpcRemoteError) => {
+    await h.rpc.request('write_file', { path: '/a', content: 'x' }).catch((e: RpcRemoteError) => {
       expect(e.code).toBe(1002);
       expect(e.data).toEqual({ kind: 'read_only' });
     });
   });
 
   it('correlates concurrent requests by id through the adapter', async () => {
-    host.responders.a = () => 1;
-    host.responders.b = () => 2;
-    const [a, b] = await Promise.all([rpc.request<number>('a'), rpc.request<number>('b')]);
+    h.host.responders.a = () => 1;
+    h.host.responders.b = () => 2;
+    const [a, b] = await Promise.all([h.rpc.request<number>('a'), h.rpc.request<number>('b')]);
     expect(a).toBe(1);
     expect(b).toBe(2);
   });
 });
 
-describe('S7 conformance (LAN-WS) — pre-handshake legacy fallback', () => {
-  it('sends invoke as the LEGACY envelope before the host $/hello reply', () => {
-    const host = new FakeJsonRpcHost();
-    const { rpc } = wire(host);
-    // No handshake yet → adapter still in legacy-translation mode.
-    void rpc.request('read_file', { path: '/a' });
-    const legacy = host.received.find((m) => m.type === 'invoke-request');
-    expect(legacy).toEqual({ type: 'invoke-request', cmd: 'read_file', args: { path: '/a' }, _reqId: 1 });
-  });
-
-  it('a legacy invoke-result still resolves the request (old-host compatibility)', async () => {
-    const host = new FakeJsonRpcHost();
-    const { rpc } = wire(host);
-    const p = rpc.request<string>('read_file', { path: '/a' });
-    const reqId = (host.received.find((m) => m.type === 'invoke-request') as { _reqId: number })._reqId;
-    // Old host replies in the legacy envelope; the adapter maps it to JSON-RPC.
-    host.deliver({ type: 'invoke-result', _reqId: reqId, _result: 'hello' });
-    await expect(p).resolves.toBe('hello');
-  });
-});
-
-describe('S7 conformance (LAN-WS) — $/cancel over the wire', () => {
-  let host: FakeJsonRpcHost;
-  let rpc: RpcClient;
-
+describe.each(ARMS)('S7 conformance (%s) — $/cancel over the wire', (_name, make) => {
+  let h: Harness;
   beforeEach(() => {
-    host = new FakeJsonRpcHost();
-    ({ rpc } = wire(host));
-    rpc.hello();
+    h = make();
+    h.rpc.hello();
   });
 
   it('cancel(id) emits a native $/cancel frame and rejects the request', async () => {
-    // Host never responds → request stays in-flight until cancelled.
-    const p = rpc.request('text_search', { query: 'x' });
-    const id = (host.received.find((m) => m.method === 'text_search') as { id: number }).id;
-    rpc.cancel(id);
+    const p = h.rpc.request('text_search', { query: 'x' }); // host never responds
+    const id = (h.received.find((m) => m.method === 'text_search') as { id: number }).id;
+    h.rpc.cancel(id);
     await expect(p).rejects.toThrow(/cancelled/);
-    const cancel = host.received.find((m) => m.method === '$/cancel');
+    const cancel = h.received.find((m) => m.method === '$/cancel');
     expect(cancel).toEqual({ jsonrpc: '2.0', method: '$/cancel', params: { id } });
   });
 
   it('AbortSignal cancellation reaches the host as $/cancel', async () => {
     const ac = new AbortController();
-    const p = rpc.request('text_search', { query: 'x' }, { signal: ac.signal });
-    const id = (host.received.find((m) => m.method === 'text_search') as { id: number }).id;
+    const p = h.rpc.request('text_search', { query: 'x' }, { signal: ac.signal });
+    const id = (h.received.find((m) => m.method === 'text_search') as { id: number }).id;
     ac.abort();
     await expect(p).rejects.toThrow(/cancelled/);
-    const cancel = host.received.find((m) => m.method === '$/cancel');
+    const cancel = h.received.find((m) => m.method === '$/cancel');
     expect(cancel).toEqual({ jsonrpc: '2.0', method: '$/cancel', params: { id } });
   });
 });
 
-describe('S7 conformance (LAN-WS) — pane bytes + notifications', () => {
-  it('forwards raw pane bytes through the adapter to the RPC consumer', () => {
-    const host = new FakeJsonRpcHost();
-    const adapter = new LanWsAdapter(host as unknown as RemoteConnection);
+describe.each(ARMS)('S7 conformance (%s) — pane bytes + notifications', (_name, make) => {
+  it('forwards raw pane bytes through the adapter to the consumer', () => {
+    const h = make();
     const got: { paneId: string; bytes: Uint8Array }[] = [];
-    adapter.onPaneBytes((paneId, bytes) => got.push({ paneId, bytes }));
+    h.adapter.onPaneBytes((paneId, bytes) => got.push({ paneId, bytes }));
     const bytes = new Uint8Array([0x1b, 0x5b, 0x41]);
-    host.deliverRaw('pane-7', bytes);
+    h.deliverRaw('pane-7', bytes);
     expect(got).toEqual([{ paneId: 'pane-7', bytes }]);
   });
 
   it('host event pushes reach onNotification consumers (post-handshake)', () => {
-    const host = new FakeJsonRpcHost();
-    const { rpc } = wire(host);
-    rpc.hello();
+    const h = make();
+    h.rpc.hello();
     const handler = vi.fn();
-    rpc.onNotification('fs-changed', handler);
-    host.deliver({ jsonrpc: '2.0', method: 'fs-changed', params: { path: '/x' } });
+    h.rpc.onNotification('fs-changed', handler);
+    h.deliver({ jsonrpc: '2.0', method: 'fs-changed', params: { path: '/x' } });
     expect(handler).toHaveBeenCalledWith({ path: '/x' });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAN-WS-only: pre-handshake legacy fallback (the cloud leg is native-only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('S7 conformance (LAN-WS) — pre-handshake legacy fallback', () => {
+  it('sends invoke as the LEGACY envelope before the host $/hello reply', () => {
+    const h = makeLanHarness();
+    // No handshake yet → adapter still in legacy-translation mode.
+    void h.rpc.request('read_file', { path: '/a' });
+    const legacy = h.received.find((m) => m.type === 'invoke-request');
+    expect(legacy).toEqual({ type: 'invoke-request', cmd: 'read_file', args: { path: '/a' }, _reqId: 1 });
+  });
+
+  it('a legacy invoke-result still resolves the request (old-host compatibility)', async () => {
+    const h = makeLanHarness();
+    const p = h.rpc.request<string>('read_file', { path: '/a' });
+    const reqId = (h.received.find((m) => m.type === 'invoke-request') as { _reqId: number })._reqId;
+    h.deliver({ type: 'invoke-result', _reqId: reqId, _result: 'hello' } as unknown as Record<string, unknown>);
+    await expect(p).resolves.toBe('hello');
   });
 });
