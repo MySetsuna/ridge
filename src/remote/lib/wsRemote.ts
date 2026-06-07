@@ -423,6 +423,16 @@ export class RemoteConnection {
     return this.paneOutputs.get(paneId) || [];
   }
 
+  /** Drop cached text output for panes no longer present. The UI calls this with
+   *  the host's authoritative live-pane set on every `panes` update so a
+   *  long-running session can't accumulate per-pane buffers for closed panes
+   *  (unbounded memory growth → OOM on mobile). */
+  pruneOutputs(liveIds: Set<string>) {
+    for (const id of [...this.paneOutputs.keys()]) {
+      if (!liveIds.has(id)) this.paneOutputs.delete(id);
+    }
+  }
+
   send(msg: Record<string, unknown>) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
