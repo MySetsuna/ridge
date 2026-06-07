@@ -31,3 +31,7 @@ plotforge.db
 # CDP dev-test artifacts
 .cdp-shots/
 .dev-cdp.log
+
+# Playwright remote-GC e2e artifacts (throwaway)
+.pw-remote-profile/
+gc-e2e-*.png
