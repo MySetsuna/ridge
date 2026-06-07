@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ChevronUp, FolderOpen, Folder, Check } from 'lucide-svelte';
+  import { t, tr } from '$lib/i18n';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getDefaultWorkspaceSaveDir } from '$lib/stores/paneTree';
@@ -26,6 +27,9 @@
   let submitting = $state(false);
   let error: string | null = $state(null);
   let nameInput: HTMLInputElement | undefined = $state();
+
+  // 路径提示按 {filename} 占位符拆段，文件名用 <code> 渲染（{@const} 不能嵌在 <span> 内）。
+  const savePathHintParts = $derived($t('workspace.savePathHint').split('{filename}'));
 
   function sanitizeFilenamePreview(raw: string): string {
     const cleaned = Array.from(raw).map((c) => /[A-Za-z0-9\-_. ]/.test(c) ? c : '_').join('');
@@ -76,7 +80,7 @@
         directory: true,
         multiple: false,
         defaultPath: savePath.trim() || defaultDir || undefined,
-        title: '选择保存位置',
+        title: tr('workspace.saveDialogPickerTitle'),
       });
       if (typeof picked === 'string' && picked) {
         savePath = picked;
@@ -111,7 +115,7 @@
   async function handleConfirm() {
     const trimmed = name.trim();
     if (!trimmed) {
-      error = '工作区名不能为空';
+      error = tr('workspace.saveNameEmpty');
       return;
     }
     submitting = true;
@@ -160,23 +164,23 @@
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="保存工作区"
+      aria-label={$t('workspace.saveDialogAriaLabel')}
       class="w-[480px] max-w-[92vw] max-h-[90vh] overflow-y-auto bg-[var(--rg-bg)] border border-[var(--rg-border)] rounded-lg shadow-xl p-5"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
       tabindex="-1"
     >
-      <h2 class="text-[14px] font-semibold text-[var(--rg-fg)] mb-3">保存工作区</h2>
+      <h2 class="text-[14px] font-semibold text-[var(--rg-fg)] mb-3">{$t('workspace.saveDialogTitle')}</h2>
 
       <label class="block mb-3">
         <span class="block text-[11px] text-[var(--rg-fg-muted)] mb-1">
-          工作区名 <span class="text-red-400">*</span>
+          {$t('workspace.saveNameLabel')} <span class="text-red-400">*</span>
         </span>
         <input
           bind:this={nameInput}
           bind:value={name}
           type="text"
-          placeholder="例如：ridge-dev"
+          placeholder={$t('workspace.saveNamePlaceholder')}
           class="w-full text-[13px] px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]/60"
           disabled={submitting}
         />
@@ -184,36 +188,36 @@
 
       <label class="block mb-3">
         <span class="block text-[11px] text-[var(--rg-fg-muted)] mb-1">
-          保存位置（可选）
+          {$t('workspace.savePathLabel')}
         </span>
         <div class="flex gap-1.5">
           <input
             bind:value={savePath}
             type="text"
-            placeholder={defaultDir ? `默认：${defaultDir}` : '默认用户目录下 ridge-workspaces/'}
+            placeholder={defaultDir ? $t('workspace.savePathPlaceholderDefault', { dir: defaultDir }) : $t('workspace.savePathPlaceholderFallback')}
             class="flex-1 text-[12px] px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]/60 font-mono"
             disabled={submitting}
           />
           <button
             type="button"
             class="flex items-center gap-1 px-2 rounded text-[11px] border border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors disabled:opacity-50"
-            title="浏览文件夹"
+            title={$t('workspace.saveBrowseTitle')}
             onclick={openBrowser}
             disabled={submitting}
           >
-            <FolderOpen class="h-3.5 w-3.5" /> 浏览…
+            <FolderOpen class="h-3.5 w-3.5" /> {$t('workspace.saveBrowseBtn')}
           </button>
         </div>
         <span class="mt-1 block text-[10px] text-[var(--rg-fg-muted)]">
-          留空则保存到默认目录。填目录时自动追加 <code>{name.trim() || '&lt;name&gt;'}.ridge</code>。
-          <br />不存在的目录会自动创建。
+          {savePathHintParts[0]}<code>{name.trim() || '&lt;name&gt;'}.ridge</code>{savePathHintParts[1] ?? ''}
+          <br />{$t('workspace.savePathHintAppend')}
         </span>
       </label>
 
       <!-- 实时预览最终落盘路径，避免用户猜测 sanitize 规则 -->
       {#if name.trim()}
         <div class="mb-3 px-2 py-1.5 rounded bg-[var(--rg-surface)]/40 border border-[var(--rg-border)]/60 text-[10px] text-[var(--rg-fg-muted)] font-mono break-all">
-          实际保存到：<span class="text-[var(--rg-fg)]">{resolvedPath}</span>
+          {$t('workspace.savePreviewLabel')}<span class="text-[var(--rg-fg)]">{resolvedPath}</span>
         </div>
       {/if}
 
@@ -224,11 +228,11 @@
             <button
               type="button"
               class="flex items-center gap-0.5 px-1.5 h-6 rounded text-[11px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors disabled:opacity-40"
-              title="上一级"
+              title={$t('workspace.saveNavUp')}
               disabled={!listing?.parent}
               onclick={() => listing?.parent && navigateTo(listing.parent)}
             >
-              <ChevronUp class="h-3 w-3" /> 上一级
+              <ChevronUp class="h-3 w-3" /> {$t('workspace.saveNavUp')}
             </button>
             <span class="flex-1 text-[11px] text-[var(--rg-fg)] font-mono truncate px-1" title={listing?.path}>
               {listing?.path ?? '…'}
@@ -239,12 +243,12 @@
               disabled={!listing}
               onclick={chooseCurrent}
             >
-              <Check class="h-3 w-3" /> 选此目录
+              <Check class="h-3 w-3" /> {$t('workspace.saveChooseDir')}
             </button>
           </div>
           <div class="max-h-[180px] overflow-y-auto">
             {#if browserLoading}
-              <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">读取中…</div>
+              <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('workspace.saveBrowserLoading')}</div>
             {:else if listing && listing.subdirs.length > 0}
               {#each listing.subdirs as sub (sub)}
                 <button
@@ -257,7 +261,7 @@
                 </button>
               {/each}
             {:else}
-              <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">空目录</div>
+              <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('workspace.saveBrowserEmpty')}</div>
             {/if}
           </div>
         </div>
@@ -276,7 +280,7 @@
           onclick={() => { onCancel(); open = false; }}
           disabled={submitting}
         >
-          取消
+          {$t('workspace.saveCancel')}
         </button>
         <button
           type="button"
@@ -284,7 +288,7 @@
           onclick={handleConfirm}
           disabled={submitting}
         >
-          {submitting ? '保存中…' : '保存'}
+          {submitting ? $t('workspace.saveSaving') : $t('workspace.saveConfirm')}
         </button>
       </div>
     </div>

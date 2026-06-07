@@ -68,10 +68,12 @@ export function dedupKeepFirst(items: readonly string[]): string[] {
  * Case-insensitive prefix match against `query`. Empty / whitespace
  * query returns a shallow copy of `items` unchanged.
  *
- * Sort order on matches: ascending by command length, then by the
- * item's index in `items` (stable tiebreaker). This mirrors the
- * popup's original behaviour so a drop-in swap is invisible to the
- * user.
+ * Order: **newest-first**, preserving the input order (which the store +
+ * `dedupKeepFirst` maintain as most-recent-first). The matches are pushed
+ * in input order so the most recently run commands stay at the top — like
+ * Warp's history. (Previously this sorted by command length, surfacing the
+ * shortest match first regardless of recency, which buried the command the
+ * user most likely wants.)
  *
  * The function is intentionally **prefix-only**, not substring or
  * fuzzy — matches the user's current shell-history mental model
@@ -80,12 +82,9 @@ export function dedupKeepFirst(items: readonly string[]): string[] {
 export function filterByPrefix(items: readonly string[], query: string): string[] {
 	const q = query.toLowerCase();
 	if (!q) return [...items];
-	const matches: { cmd: string; originalIndex: number }[] = [];
-	for (let i = 0; i < items.length; i++) {
-		if (items[i].toLowerCase().startsWith(q)) {
-			matches.push({ cmd: items[i], originalIndex: i });
-		}
+	const out: string[] = [];
+	for (const item of items) {
+		if (item.toLowerCase().startsWith(q)) out.push(item);
 	}
-	matches.sort((a, b) => a.cmd.length - b.cmd.length || a.originalIndex - b.originalIndex);
-	return matches.map(m => m.cmd);
+	return out;
 }

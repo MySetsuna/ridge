@@ -1,0 +1,46 @@
+[package]
+name = "ridge-tmux"
+version = "0.1.0"
+edition = "2021"
+description = "Headless, socket-namespaced tmux session engine (in-process PTY registry). Tauri-free; shared by the desktop (Tauri) host and the headless ridge-cli host."
+license = "MIT"
+
+# Standalone, runtime-agnostic engine extracted from the desktop crate
+# (`src-tauri/src/teammate/native.rs`, S-decouple). It owns the in-memory
+# registry of headless `portable-pty`-backed sessions behind the `tmux` shim,
+# plus capture-pane rendering (via ridge-term's `Terminal`) and the summon
+# handles. ZERO Tauri / AppState dependency, so BOTH the Tauri desktop host
+# (which re-exports it from `teammate::native`) and the headless `ridge-cli`
+# host can link it. The GUI-only "summon into a visible workspace" wiring stays
+# in the host (`teammate::server`), not here.
+
+[lib]
+name = "ridge_tmux"
+
+[dependencies]
+# Real PTY children — same crate + version the desktop host uses.
+portable-pty = "0.8"
+# capture-pane renders a session's CURRENT screen by feeding its output ring
+# into a one-shot VT `Terminal`. `default-features = false` strips the wasm/
+# wgpu render path, keeping this headless-friendly.
+ridge-term = { path = "../ridge-term", default-features = false }
+# Output broadcast to summoned GUI views — only the `sync` feature is needed.
+tokio = { version = "1", features = ["sync"] }
+# `created` timestamps on `ls` lines.
+chrono = "0.4"
+# Stable serde shape for the sidebar session list (`NativeSessionInfo`).
+serde = { version = "1", features = ["derive"] }
+# Attachment bookkeeping carries workspace/pane UUIDs (type use only).
+uuid = "1"
+# Shared master/writer guards across the engine and summoned views.
+parking_lot = "0.12"
+
+# ── `http` feature ── a teammate-protocol-compatible axum router exposing the
+# native `/api/v1/tmux/*` surface, so BOTH the desktop teammate server and the
+# headless `ridge-cli` host mount ONE shared router (no duplicated handlers).
+# Off by default — the bare engine stays dep-light for pure embedders.
+axum = { version = "0.7", optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+http = ["dep:axum", "dep:serde_json", "tokio/net", "tokio/rt"]

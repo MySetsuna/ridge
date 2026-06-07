@@ -280,7 +280,10 @@ fn load_recent(app: &tauri::AppHandle) -> Vec<String> {
     if !p.is_file() {
         return Vec::new();
     }
-    match std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()) {
+    match std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+    {
         Some(v) => v,
         None => Vec::new(),
     }
@@ -303,7 +306,10 @@ fn push_recent(app: &tauri::AppHandle, path: &Path) {
 }
 
 fn set_last_opened(app: &tauri::AppHandle, path: &Path) {
-    let _ = std::fs::write(last_opened_pointer_path(app), path.to_string_lossy().as_bytes());
+    let _ = std::fs::write(
+        last_opened_pointer_path(app),
+        path.to_string_lossy().as_bytes(),
+    );
     push_recent(app, path);
 }
 
@@ -321,7 +327,9 @@ fn snapshot_workspace(
     name: &str,
 ) -> Result<RidgeFile, String> {
     let map = state.workspaces.read();
-    let ws = map.get(&workspace_id).ok_or_else(|| "工作区不存在".to_string())?;
+    let ws = map
+        .get(&workspace_id)
+        .ok_or_else(|| "工作区不存在".to_string())?;
     let tree_json = serde_json::to_value(&ws.pane_tree).map_err(|e| e.to_string())?;
     let git_repos: Vec<String> = ws
         .pane_tree
@@ -391,7 +399,10 @@ pub fn save_workspace_to_file(
             ws.associated_file_path = Some(target.clone());
         }
     }
-    state.workspace_names.write().insert(id, trimmed.to_string());
+    state
+        .workspace_names
+        .write()
+        .insert(id, trimmed.to_string());
     set_last_opened(&app_handle, &target);
 
     Ok(target.to_string_lossy().to_string())
@@ -406,7 +417,8 @@ pub fn delete_workspace_file(
     let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let path_opt = {
         let mut map = state.workspaces.write();
-        map.get_mut(&id).and_then(|ws| ws.associated_file_path.take())
+        map.get_mut(&id)
+            .and_then(|ws| ws.associated_file_path.take())
     };
     if let Some(path) = path_opt {
         if path.exists() {
@@ -485,7 +497,8 @@ pub fn open_workspace_from_file(
         return Err(format!("不再支持非 .ridge 工作区文件：{path}"));
     }
     let raw = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-    let wf: RidgeFile = serde_json::from_slice(&raw).map_err(|e| format!(".ridge 格式非法: {e}"))?;
+    let wf: RidgeFile =
+        serde_json::from_slice(&raw).map_err(|e| format!(".ridge 格式非法: {e}"))?;
     if wf.version != RIDGE_FILE_VERSION {
         return Err(format!(
             ".ridge 版本 {} 与当前 ({}) 不匹配",
@@ -493,16 +506,20 @@ pub fn open_workspace_from_file(
         ));
     }
     // 反序列化 pane_tree（用于重建布局；真实 PTY 由前端 Pane onMount 重起）。
-    let tree: PaneTree =
-        serde_json::from_value(wf.pane_tree.clone()).map_err(|e| format!("pane tree 解析失败: {e}"))?;
+    let tree: PaneTree = serde_json::from_value(wf.pane_tree.clone())
+        .map_err(|e| format!("pane tree 解析失败: {e}"))?;
 
     // 如果这个文件已经关联到某个现存 workspace，直接切过去而不是重复打开。
     {
         let map = state.workspaces.read();
         let existing = map.iter().find_map(|(wid, ws)| {
-            ws.associated_file_path
-                .as_ref()
-                .and_then(|p| if p == &file_path { Some(*wid) } else { None })
+            ws.associated_file_path.as_ref().and_then(|p| {
+                if p == &file_path {
+                    Some(*wid)
+                } else {
+                    None
+                }
+            })
         });
         if let Some(wid) = existing {
             drop(map);
@@ -546,13 +563,17 @@ pub fn open_workspace_from_file(
                 teammate_agent_pane_map: HashMap::new(),
                 associated_file_path: Some(file_path.clone()),
                 pending_spawns: HashMap::new(),
+                pty_generation: HashMap::new(),
                 teammate_metrics: crate::state::TeammateMetrics::default(),
                 display_seq: seq,
             },
         );
     }
     state.workspace_order.write().push(new_id);
-    state.workspace_names.write().insert(new_id, wf.name.clone());
+    state
+        .workspace_names
+        .write()
+        .insert(new_id, wf.name.clone());
     *state.active_workspace.write() = new_id;
     set_last_opened(&app_handle, &file_path);
     Ok(new_id.to_string())
@@ -612,7 +633,9 @@ pub fn get_startup_context(state: State<'_, AppState>) -> Result<StartupContext,
 }
 
 #[tauri::command]
-pub fn get_last_opened_workspace_path(app_handle: tauri::AppHandle) -> Result<Option<String>, String> {
+pub fn get_last_opened_workspace_path(
+    app_handle: tauri::AppHandle,
+) -> Result<Option<String>, String> {
     let ptr = last_opened_pointer_path(&app_handle);
     if !ptr.is_file() {
         return Ok(None);
@@ -664,55 +687,17 @@ pub fn get_default_workspace_save_dir() -> Result<String, String> {
     Ok(default_save_dir().to_string_lossy().to_string())
 }
 
-#[derive(Debug, Serialize)]
-pub struct DirListing {
-    pub path: String,
-    pub parent: Option<String>,
-    pub subdirs: Vec<String>,
-}
+/// A directory-browse result. **Migrated to `ridge-core`** — aliased so
+/// `crate::commands::ridge_file::DirListing` and the WS dispatch arm in
+/// `remote/server.rs` stay identical.
+pub use ridge_core::fs::commands::DirListing;
 
-/// 目录浏览：返回给定路径下的直接子目录列表 + 可返回的父目录。
-/// 用于保存工作区对话框里的目录选择器：不存在的路径会被规范化到最近的已存在祖先。
+/// 目录浏览：返回给定路径下的直接子目录列表 + 可返回的父目录。§S1+: delegates to
+/// `ridge_core::fs::commands::browse_directory` (verbatim nearest-existing-
+/// ancestor normalisation + hidden-dir filter + case-insensitive sort).
 #[tauri::command]
 pub fn browse_directory(path: Option<String>) -> Result<DirListing, String> {
-    let start = match path {
-        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
-    };
-    // 规范化：如果输入不存在，退回到最近的存在祖先。
-    let mut cur = start.clone();
-    while !cur.is_dir() {
-        match cur.parent() {
-            Some(p) => cur = p.to_path_buf(),
-            None => {
-                cur = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                break;
-            }
-        }
-    }
-    let parent = cur.parent().map(|p| p.to_string_lossy().to_string());
-    let mut subdirs: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&cur) {
-        for entry in entries.flatten() {
-            let Ok(ft) = entry.file_type() else { continue };
-            if !ft.is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy().to_string();
-            // 过滤掉隐藏目录（Unix 约定 `.` 前缀）
-            if name_str.starts_with('.') {
-                continue;
-            }
-            subdirs.push(name_str);
-        }
-    }
-    subdirs.sort_by_key(|s| s.to_lowercase());
-    Ok(DirListing {
-        path: cur.to_string_lossy().to_string(),
-        parent,
-        subdirs,
-    })
+    ridge_core::fs::commands::browse_directory(path)
 }
 
 // ─── Auto-save scheduler ───────────────────────────────────────────────────
@@ -812,7 +797,9 @@ fn auto_save_worker(state: AppState) {
 fn write_workspace_snapshot(state: &AppState, workspace_id: Uuid) -> Result<(), String> {
     let (path, name) = {
         let map = state.workspaces.read();
-        let ws = map.get(&workspace_id).ok_or_else(|| "workspace missing".to_string())?;
+        let ws = map
+            .get(&workspace_id)
+            .ok_or_else(|| "workspace missing".to_string())?;
         let Some(path) = ws.associated_file_path.clone() else {
             return Ok(());
         };

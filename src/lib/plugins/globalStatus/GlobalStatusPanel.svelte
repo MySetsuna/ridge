@@ -13,6 +13,7 @@
     activeWorkspaceId,
   } from '$lib/stores/paneTree';
   import type { PaneNode } from '$lib/types';
+  import { t, tr } from '$lib/i18n';
 
   function countLeaves(node: PaneNode | null): number {
     if (!node) return 0;
@@ -25,13 +26,13 @@
     $workspacesList.find((w) => w.id === $activeWorkspaceId) ?? null
   );
   const wsLabel = $derived(
-    activeWs?.name?.trim() || (activeWs ? `工作区 ${activeWs.displaySeq}` : '—')
+    activeWs?.name?.trim() || (activeWs ? tr('main.globalStatusDefaultWs', { seq: activeWs.displaySeq }) : '—')
   );
 </script>
 
 <div
   class="px-3 py-1.5 flex items-center gap-2 text-[10px] text-[var(--rg-fg-muted)]"
-  title={`${wsLabel} · ${leafCount} 个 pane`}
+  title={$t('main.globalStatusPaneCount', { wsLabel, count: leafCount })}
 >
   <Layout class="h-3 w-3 text-[var(--rg-accent)]/70" />
   <span class="truncate flex-1">{wsLabel}</span>

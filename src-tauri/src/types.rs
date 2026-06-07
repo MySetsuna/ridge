@@ -1,7 +1,6 @@
-use std::path::PathBuf;
+use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
 
 /// Unified event type for the single per-client mpsc channel.
 #[derive(Clone, Debug)]
@@ -38,11 +37,20 @@ pub enum RemoteStructuralEvent {
     WorkspaceRenamed { workspace_id: Uuid, name: String },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum PaneMode {
-    Terminal,
-    Editor { file_path: Option<PathBuf>, language: String },
+/// Generic Tauri event forwarded to desktop-browser remote clients (the
+/// "desktop UI in a browser" mode). Carries the event name + JSON payload so the
+/// browser's `listen()` shim can dispatch it exactly like a native Tauri event.
+/// Broadcast so every connected desktop-browser receives it; the mobile SPA
+/// ignores `{type:'event'}` frames.
+#[derive(Clone, Debug)]
+pub struct RemoteUiEvent {
+    pub name: String,
+    pub payload: serde_json::Value,
 }
+
+// `PaneMode` 移入 `ridge_core::workspace::mode`（D11 Wave A）。re-export 保持
+// `crate::types::PaneMode` 调用点不变；serde 表示逐字兼容（随 `Pane` 落 `.ridge`）。
+pub use ridge_core::workspace::mode::PaneMode;
 
 #[derive(Clone, Serialize)]
 pub enum GlobalEvent {

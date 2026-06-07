@@ -1,0 +1,142 @@
+/** workspace 命名空间：工作区 tab / 分屏 / pane / 保存工作区对话框。 */
+export const zh: Record<string, string> = {
+  // WorkspaceTabs
+  tabRename: '重命名',
+  tabDefaultName: '工作区 {seq}',
+  tabClose: '关闭',
+  tabSwitchTo: '切换到 {name}',
+  tabCloseWorkspace: '关闭工作区',
+
+  // SplitContainer
+  opFailed: '操作失败',
+  dockHereLabel: '将窗格停靠到此处',
+  paneDragTitle: '拖拽到其它窗格：靠边分屏，靠中间与目标互换',
+  terminalFallback: '终端',
+  keepOnePane: '至少保留一个窗格',
+  closeThisPane: '关闭此窗格',
+  paneStarting: 'teammate pane 启动中',
+  agentRunning: 'Claude Code agent 运行中：{agentId}',
+  teammateRunning: 'teammate agent 运行中',
+
+  // RidgePane
+  terminalAriaLabel: '终端',
+  terminalInputAriaLabel: '终端输入',
+  scrollToBottom: '滚动到最新输出 (End)',
+  refreshForRemote: '按本端尺寸刷新（远程控制开启时可用）',
+  refreshForRemoteLabel: '按本端尺寸刷新',
+  searchPlaceholder: '在终端中查找…',
+  searchNoMatch: '无匹配',
+  searchCaseSensitive: '区分大小写',
+  searchPrev: '上一个 (Shift+Enter)',
+  searchNext: '下一个 (Enter)',
+  searchClose: '关闭 (Esc)',
+  ctxCopy: '复制',
+  ctxPaste: '粘贴',
+  ctxSelectAll: '全选',
+  ctxClear: '清空',
+  ctxSplitRight: '向右拆分',
+  ctxSplitDown: '向下拆分',
+  ctxClosePanel: '关闭面板',
+
+  // SaveWorkspaceDialog
+  saveDialogTitle: '保存工作区',
+  saveDialogAriaLabel: '保存工作区',
+  saveDialogPickerTitle: '选择保存位置',
+  saveNameEmpty: '工作区名不能为空',
+  saveNameLabel: '工作区名',
+  saveNamePlaceholder: '例如：ridge-dev',
+  savePathLabel: '保存位置（可选）',
+  savePathPlaceholderDefault: '默认：{dir}',
+  savePathPlaceholderFallback: '默认用户目录下 ridge-workspaces/',
+  saveBrowseTitle: '浏览文件夹',
+  saveBrowseBtn: '浏览…',
+  savePathHint: '留空则保存到默认目录。填目录时自动追加 {filename}。',
+  savePathHintAppend: '不存在的目录会自动创建。',
+  savePreviewLabel: '实际保存到：',
+  saveNavUp: '上一级',
+  saveChooseDir: '选此目录',
+  saveBrowserLoading: '读取中…',
+  saveBrowserEmpty: '空目录',
+  saveCancel: '取消',
+  saveSaving: '保存中…',
+  saveConfirm: '保存',
+
+  // PaneRepoSwitcher
+  repoSwitcherTitle: '此 pane cwd 中检测到 {count} 个 git 仓库\n当前：{root}',
+
+  // PaneShellSwitcher
+  shellFallback: '终端',
+  shellSwitchTitle: '切换终端类型',
+  shellCurrent: '当前',
+};
+
+export const en: Record<string, string> = {
+  // WorkspaceTabs
+  tabRename: 'Rename',
+  tabDefaultName: 'Workspace {seq}',
+  tabClose: 'Close',
+  tabSwitchTo: 'Switch to {name}',
+  tabCloseWorkspace: 'Close workspace',
+
+  // SplitContainer
+  opFailed: 'Operation failed',
+  dockHereLabel: 'Dock pane here',
+  paneDragTitle: 'Drag to another pane: drop on an edge to split, drop on center to swap',
+  terminalFallback: 'Terminal',
+  keepOnePane: 'At least one pane must remain',
+  closeThisPane: 'Close this pane',
+  paneStarting: 'Teammate pane starting',
+  agentRunning: 'Claude Code agent running: {agentId}',
+  teammateRunning: 'Teammate agent running',
+
+  // RidgePane
+  terminalAriaLabel: 'Terminal',
+  terminalInputAriaLabel: 'Terminal input',
+  scrollToBottom: 'Scroll to latest output (End)',
+  refreshForRemote: 'Refresh at this desktop size (available when remote control is on)',
+  refreshForRemoteLabel: 'Refresh at this desktop size',
+  searchPlaceholder: 'Find in terminal…',
+  searchNoMatch: 'No matches',
+  searchCaseSensitive: 'Case sensitive',
+  searchPrev: 'Previous (Shift+Enter)',
+  searchNext: 'Next (Enter)',
+  searchClose: 'Close (Esc)',
+  ctxCopy: 'Copy',
+  ctxPaste: 'Paste',
+  ctxSelectAll: 'Select all',
+  ctxClear: 'Clear',
+  ctxSplitRight: 'Split right',
+  ctxSplitDown: 'Split down',
+  ctxClosePanel: 'Close panel',
+
+  // SaveWorkspaceDialog
+  saveDialogTitle: 'Save workspace',
+  saveDialogAriaLabel: 'Save workspace',
+  saveDialogPickerTitle: 'Choose save location',
+  saveNameEmpty: 'Workspace name cannot be empty',
+  saveNameLabel: 'Workspace name',
+  saveNamePlaceholder: 'e.g. ridge-dev',
+  savePathLabel: 'Save location (optional)',
+  savePathPlaceholderDefault: 'Default: {dir}',
+  savePathPlaceholderFallback: 'Default: ridge-workspaces/ in user directory',
+  saveBrowseTitle: 'Browse for folder',
+  saveBrowseBtn: 'Browse…',
+  savePathHint: 'Leave blank to use the default directory. When a directory is entered, {filename} is appended automatically.',
+  savePathHintAppend: 'Non-existent directories will be created automatically.',
+  savePreviewLabel: 'Will save to: ',
+  saveNavUp: 'Up',
+  saveChooseDir: 'Use this folder',
+  saveBrowserLoading: 'Loading…',
+  saveBrowserEmpty: 'Empty directory',
+  saveCancel: 'Cancel',
+  saveSaving: 'Saving…',
+  saveConfirm: 'Save',
+
+  // PaneRepoSwitcher
+  repoSwitcherTitle: '{count} git repos detected in this pane\'s cwd\nCurrent: {root}',
+
+  // PaneShellSwitcher
+  shellFallback: 'Terminal',
+  shellSwitchTitle: 'Switch terminal type',
+  shellCurrent: 'current',
+};

@@ -1,0 +1,20 @@
+{
+  "feature_name": "teammate-pane-layout",
+  "created_at": "2026-06-02T00:00:00Z",
+  "updated_at": "2026-06-02T21:00:00Z",
+  "language": "zh",
+  "phase": "implementation",
+  "approved_by": "team-lead",
+  "decisions": { "DA": "A1", "DB": "H1-lock-fail-closed", "DC": "5b-only-resize-noop", "DE": "launch-busy-id-optional", "DF": "idle-reusable", "recognition": "intent-only-no-autodetect" },
+  "review": { "round1": { "reviewers": ["code-reviewer", "architect"], "status": "absorbed" }, "round2": { "reviewers": ["code-reviewer"], "status": "absorbed" } },
+  "resolved_implementation_blocks": {
+    "BLOCK1-command-reuse-no-EOF": "ruled (i) by team-lead: agent launch incl idle-reuse ALWAYS structured spawn (own PTY → EOF, replaces idle pane shell PTY); command-only intent → reject/downgrade+metric, never silent command-write; F4 watchdog stays P2",
+    "BLOCK2-native-DF2": "ruled by team-lead: split semantics — ordinary→reset Idle reusable; native→destroy+clear teammate_pane_states; invariant: no Busy/Starting orphan either branch"
+  },
+  "approvals": {
+    "requirements": { "generated": true, "approved": true },
+    "design": { "generated": true, "approved": true },
+    "tasks": { "generated": true, "approved": true }
+  },
+  "ready_for_implementation": true
+}

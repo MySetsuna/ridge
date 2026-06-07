@@ -54,7 +54,10 @@ pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Res
 
 /// 新建根工作区：独立分屏树与终端表，并切换为当前活动区。
 #[tauri::command]
-pub fn create_workspace(state: State<'_, AppState>, name: Option<String>) -> Result<String, String> {
+pub fn create_workspace(
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<String, String> {
     let id = Uuid::new_v4();
     let seq = state.allocate_workspace_seq();
     {
@@ -69,12 +72,13 @@ pub fn create_workspace(state: State<'_, AppState>, name: Option<String>) -> Res
                 pane_sizes: std::collections::HashMap::new(),
                 last_pane_index: None,
                 created_at: std::time::SystemTime::now(),
-            teammate_pane_states: std::collections::HashMap::new(),
-            teammate_agent_pane_map: std::collections::HashMap::new(),
-            associated_file_path: None,
-            pending_spawns: std::collections::HashMap::new(),
-            teammate_metrics: crate::state::TeammateMetrics::default(),
-            display_seq: seq,
+                teammate_pane_states: std::collections::HashMap::new(),
+                teammate_agent_pane_map: std::collections::HashMap::new(),
+                associated_file_path: None,
+                pending_spawns: std::collections::HashMap::new(),
+                pty_generation: std::collections::HashMap::new(),
+                teammate_metrics: crate::state::TeammateMetrics::default(),
+                display_seq: seq,
             },
         );
     }
@@ -84,12 +88,12 @@ pub fn create_workspace(state: State<'_, AppState>, name: Option<String>) -> Res
         state.workspace_names.write().insert(id, name);
     }
     // Broadcast workspace list change to remote clients and desktop frontend.
-    let _ = state.remote_structural_tx.send(
-        crate::types::RemoteStructuralEvent::WorkspacesChanged
-    );
-    let _ = state.event_tx.try_send(
-        crate::types::GlobalEvent::WorkspaceListChanged
-    );
+    let _ = state
+        .remote_structural_tx
+        .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
     Ok(id.to_string())
 }
 
@@ -122,18 +126,22 @@ pub fn close_workspace(state: State<'_, AppState>, workspace_id: String) -> Resu
     }
 
     // Broadcast workspace list change to remote clients and desktop frontend.
-    let _ = state.remote_structural_tx.send(
-        crate::types::RemoteStructuralEvent::WorkspacesChanged
-    );
-    let _ = state.event_tx.try_send(
-        crate::types::GlobalEvent::WorkspaceListChanged
-    );
+    let _ = state
+        .remote_structural_tx
+        .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn reorder_workspaces(state: State<'_, AppState>, from_index: usize, to_index: usize) -> Result<(), String> {
+pub fn reorder_workspaces(
+    state: State<'_, AppState>,
+    from_index: usize,
+    to_index: usize,
+) -> Result<(), String> {
     let mut order = state.workspace_order.write();
     if from_index >= order.len() || to_index >= order.len() {
         return Err("无效的索引".into());
@@ -144,7 +152,11 @@ pub fn reorder_workspaces(state: State<'_, AppState>, from_index: usize, to_inde
 }
 
 #[tauri::command]
-pub fn rename_workspace(state: State<'_, AppState>, workspace_id: String, name: String) -> Result<(), String> {
+pub fn rename_workspace(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    name: String,
+) -> Result<(), String> {
     let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     {
         let mut names = state.workspace_names.write();
@@ -154,16 +166,25 @@ pub fn rename_workspace(state: State<'_, AppState>, workspace_id: String, name: 
     // `schedule_auto_save` 仅在工作区已关联文件时才实际落盘，未保存工作区为 no-op。
     crate::commands::ridge_file::schedule_auto_save(&*state, id);
     // Broadcast rename to remote clients and desktop frontend.
-    let display_name = state.workspace_names.read().get(&id).cloned().unwrap_or_default();
-    let _ = state.remote_structural_tx.send(
-        crate::types::RemoteStructuralEvent::WorkspaceRenamed { workspace_id: id, name: display_name }
-    );
-    let _ = state.remote_structural_tx.send(
-        crate::types::RemoteStructuralEvent::WorkspacesChanged
-    );
-    let _ = state.event_tx.try_send(
-        crate::types::GlobalEvent::WorkspaceListChanged
-    );
+    let display_name = state
+        .workspace_names
+        .read()
+        .get(&id)
+        .cloned()
+        .unwrap_or_default();
+    let _ =
+        state
+            .remote_structural_tx
+            .send(crate::types::RemoteStructuralEvent::WorkspaceRenamed {
+                workspace_id: id,
+                name: display_name,
+            });
+    let _ = state
+        .remote_structural_tx
+        .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
     Ok(())
 }
 
@@ -205,7 +226,10 @@ fn load_history_store(app_handle: &tauri::AppHandle) -> WorkspaceHistoryStore {
     WorkspaceHistoryStore::default()
 }
 
-fn save_history_store(app_handle: &tauri::AppHandle, store: &WorkspaceHistoryStore) -> Result<(), String> {
+fn save_history_store(
+    app_handle: &tauri::AppHandle,
+    store: &WorkspaceHistoryStore,
+) -> Result<(), String> {
     let path = get_workspace_history_path(app_handle);
     let content = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
     // Atomic write: write to temp file first, then rename
@@ -215,7 +239,9 @@ fn save_history_store(app_handle: &tauri::AppHandle, store: &WorkspaceHistorySto
 }
 
 #[tauri::command]
-pub fn list_workspace_history(app_handle: tauri::AppHandle) -> Result<Vec<WorkspaceHistoryItem>, String> {
+pub fn list_workspace_history(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<WorkspaceHistoryItem>, String> {
     let store = load_history_store(&app_handle);
     Ok(store.items)
 }
@@ -240,7 +266,10 @@ pub fn save_workspace(
                 // Use provided name, or fall back to saved workspace name, or auto-generate
                 let workspace_name = name.unwrap_or_else(|| {
                     names.get(&active_id).cloned().unwrap_or_else(|| {
-                        format!("Saved Workspace {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"))
+                        format!(
+                            "Saved Workspace {}",
+                            chrono::Utc::now().format("%Y-%m-%d %H:%M")
+                        )
                     })
                 });
                 (pane_tree_json, pane_count, workspace_name)
@@ -265,7 +294,10 @@ pub fn save_workspace(
 }
 
 #[tauri::command]
-pub fn delete_workspace_history(app_handle: tauri::AppHandle, history_id: String) -> Result<(), String> {
+pub fn delete_workspace_history(
+    app_handle: tauri::AppHandle,
+    history_id: String,
+) -> Result<(), String> {
     let mut store = load_history_store(&app_handle);
     store.items.retain(|item| item.id != history_id);
     save_history_store(&app_handle, &store)
@@ -286,8 +318,8 @@ pub fn restore_workspace(
 
     // Create new workspace with restored pane tree
     let new_id = Uuid::new_v4();
-    let pane_tree: PaneTree = serde_json::from_str(&item.pane_tree_json)
-        .map_err(|e| e.to_string())?;
+    let pane_tree: PaneTree =
+        serde_json::from_str(&item.pane_tree_json).map_err(|e| e.to_string())?;
     let seq = state.allocate_workspace_seq();
 
     {
@@ -302,12 +334,13 @@ pub fn restore_workspace(
                 pane_sizes: std::collections::HashMap::new(),
                 last_pane_index: None,
                 created_at: std::time::SystemTime::now(),
-            teammate_pane_states: std::collections::HashMap::new(),
-            teammate_agent_pane_map: std::collections::HashMap::new(),
-            associated_file_path: None,
-            pending_spawns: std::collections::HashMap::new(),
-            teammate_metrics: crate::state::TeammateMetrics::default(),
-            display_seq: seq,
+                teammate_pane_states: std::collections::HashMap::new(),
+                teammate_agent_pane_map: std::collections::HashMap::new(),
+                associated_file_path: None,
+                pending_spawns: std::collections::HashMap::new(),
+                pty_generation: std::collections::HashMap::new(),
+                teammate_metrics: crate::state::TeammateMetrics::default(),
+                display_seq: seq,
             },
         );
     }
@@ -319,7 +352,10 @@ pub fn restore_workspace(
 }
 
 #[tauri::command]
-pub fn toggle_pin_workspace_history(app_handle: tauri::AppHandle, history_id: String) -> Result<(), String> {
+pub fn toggle_pin_workspace_history(
+    app_handle: tauri::AppHandle,
+    history_id: String,
+) -> Result<(), String> {
     let mut store = load_history_store(&app_handle);
     if let Some(item) = store.items.iter_mut().find(|i| i.id == history_id) {
         item.is_pinned = !item.is_pinned;
@@ -328,7 +364,11 @@ pub fn toggle_pin_workspace_history(app_handle: tauri::AppHandle, history_id: St
 }
 
 #[tauri::command]
-pub fn rename_workspace_history(app_handle: tauri::AppHandle, history_id: String, name: String) -> Result<(), String> {
+pub fn rename_workspace_history(
+    app_handle: tauri::AppHandle,
+    history_id: String,
+    name: String,
+) -> Result<(), String> {
     let mut store = load_history_store(&app_handle);
     if let Some(item) = store.items.iter_mut().find(|i| i.id == history_id) {
         item.name = name;
@@ -341,16 +381,25 @@ pub fn rename_workspace_history(app_handle: tauri::AppHandle, history_id: String
 // can use the more intuitive "saved_workspaces" naming.
 
 #[tauri::command]
-pub fn list_saved_workspaces(app_handle: tauri::AppHandle) -> Result<Vec<WorkspaceHistoryItem>, String> {
+pub fn list_saved_workspaces(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<WorkspaceHistoryItem>, String> {
     list_workspace_history(app_handle)
 }
 
 #[tauri::command]
-pub fn delete_saved_workspace(app_handle: tauri::AppHandle, history_id: String) -> Result<(), String> {
+pub fn delete_saved_workspace(
+    app_handle: tauri::AppHandle,
+    history_id: String,
+) -> Result<(), String> {
     delete_workspace_history(app_handle, history_id)
 }
 
 #[tauri::command]
-pub fn rename_saved_workspace(app_handle: tauri::AppHandle, history_id: String, name: String) -> Result<(), String> {
+pub fn rename_saved_workspace(
+    app_handle: tauri::AppHandle,
+    history_id: String,
+    name: String,
+) -> Result<(), String> {
     rename_workspace_history(app_handle, history_id, name)
 }

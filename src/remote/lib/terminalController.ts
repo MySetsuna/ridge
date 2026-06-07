@@ -1,5 +1,6 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
+import { DEFAULT_TERM_FONT, withEmojiFallback } from '$lib/terminal/fontStack';
 
 export interface TermOpts {
   fontSize?: number;
@@ -7,12 +8,19 @@ export interface TermOpts {
   fontFamily?: string;
 }
 
-export const FONT_STACK = '"JetBrains Mono","Cascadia Code","SF Mono",ui-monospace,Consolas,"SimHei","Heiti SC","Microsoft YaHei","Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",monospace';
+// Re-exported from the shared source (./fontStack) so the desktop renderer and
+// the web-remote controller stay byte-identical on emoji ordering — bundled
+// Noto first → flags + Warp-level emoji on the remote too (the remote app must
+// also @font-face the font; see src/remote index + /fonts/NotoColorEmoji.ttf).
+export const FONT_STACK = DEFAULT_TERM_FONT;
 
 const FEED_CHUNK_BYTES = 16 * 1024;
 const FEED_PER_CALL_BUDGET_MS = 4;
 const COALESCE_WINDOW_MS = 8;
-const RESIZE_DEBOUNCE_MS = 500;
+// Coalesce a burst of resize signals (orientation change, browser-chrome
+// show/hide, keyboard) into a single fitPane, but stay snappy — the user wants
+// automatic 自适应全屏, not a slow lag. Kept ≤120ms per the resize-fix brief.
+const RESIZE_DEBOUNCE_MS = 100;
 
 export class TerminalController {
   private kernel: TerminalKernel;
@@ -86,7 +94,8 @@ export class TerminalController {
     this.themeBg = new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
     this.fontSize = opts.fontSize ?? 14;
     this.scrollback = opts.scrollback ?? 5000;
-    this.fontFamily = opts.fontFamily ?? FONT_STACK;
+    // Normalize so a caller-supplied font still gets the Noto-first emoji chain.
+    this.fontFamily = withEmojiFallback(opts.fontFamily ?? '');
   }
 
   static async create(canvas: HTMLCanvasElement, container: HTMLDivElement, opts: TermOpts = {}): Promise<TerminalController> {
@@ -105,7 +114,12 @@ export class TerminalController {
     } catch {
       // WebGPU adapter unavailable — will fall back to Canvas2D
     }
-    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, surfaceHost);
+    // `newWithWebgpuFirst` consumes its `host` argument
+    // (wasm-bindgen `Option<T>` moves the JS wrapper into Rust and frees
+    // it on return). Clone the wrapper so the controller's stored handle
+    // stays alive across the render loop.
+    const hostArg = surfaceHost?.clone() ?? surfaceHost;
+    const renderHandle = await RenderHandle.newWithWebgpuFirst(canvas, hostArg);
     renderHandle.applyDefaultTheme();
 
     const controller = new TerminalController(kernel, renderHandle, surfaceHost, canvas, container, opts);
@@ -262,6 +276,22 @@ export class TerminalController {
     this.markDirty();
   }
 
+  /** Hard-isolate the local kernel when switching to a different pane. Drops any
+   *  buffered/deferred bytes from the previous pane, resets the screen / cursor /
+   *  modes (RIS), and physically clears the scrollback ring (clearScrollback also
+   *  clears the selection and snaps the viewport to the live grid). The new pane's
+   *  host scrollback replay (sent on subscribe) then paints a clean, isolated
+   *  view — without this the previous pane's scrollback bleeds into the new one. */
+  resetForSwitch() {
+    if (this.destroyed) return;
+    this.coalesceBuffer.length = 0;
+    if (this.coalesceTimer) { clearTimeout(this.coalesceTimer); this.coalesceTimer = null; }
+    this.feedDeferred.length = 0;
+    this.kernel.feed(new TextEncoder().encode('\x1bc')); // RIS — reset screen/cursor/modes
+    this.kernel.clearScrollback();                       // physically drop scrollback ring
+    this.markDirty();
+  }
+
   // ── External resize (called when server notifies of PTY resize) ──
 
   kernelResize(rows: number, cols: number) {
@@ -388,27 +418,42 @@ export class TerminalController {
 
   updateComposition(text: string) {
     if (this.destroyed) return;
-    const r = this.kernel.cursorRow?.() ?? -1;
-    const c = this.kernel.cursorCol?.() ?? -1;
+    const cell = this.inputAnchorCell();
+    const r = cell?.row ?? (this.kernel.cursorRow?.() ?? -1);
+    const c = cell?.col ?? (this.kernel.cursorCol?.() ?? -1);
     const h = this.renderHandle as unknown as { setPreedit?: (t: string, r: number, c: number) => void };
     h.setPreedit?.(text, r, c);
     this.markDirty();
   }
 
-  endComposition(text: string) {
+  /** Clear the preedit overlay + composition state. Does NOT emit the committed
+   *  text — the caller decides whether to send, so the Svelte layer can dedup
+   *  against the trailing `input` event mobile IMEs fire after compositionend. */
+  finishComposition() {
     this._isComposing = false;
     if (this.destroyed) return;
     const h = this.renderHandle as unknown as { clearPreedit?: () => void };
     h.clearPreedit?.();
-    if (text) {
-      const bytes = this.kernel.encodePaste(text);
-      if (bytes.length > 0 && this.onStdin) {
-        this.onStdin(new TextDecoder().decode(bytes));
-      }
-    }
     this.imeAnchorRow = -1;
     this.imeAnchorCol = -1;
     this.markDirty();
+  }
+
+  /** Encode committed text as a bracketed paste and emit it exactly once. */
+  commitText(text: string) {
+    if (this.destroyed || !text) return;
+    const bytes = this.kernel.encodePaste(text);
+    if (bytes.length > 0 && this.onStdin) {
+      this.onStdin(new TextDecoder().decode(bytes));
+    }
+  }
+
+  /** @deprecated Split into {@link finishComposition} + {@link commitText} so the
+   *  caller can dedup the trailing mobile-IME `input` event. Kept for callers
+   *  that don't need that distinction. */
+  endComposition(text: string) {
+    this.finishComposition();
+    this.commitText(text);
   }
 
   get isComposing() { return this._isComposing; }
@@ -485,6 +530,8 @@ export class TerminalController {
 
   scrollUp(lines: number) { this.kernel.scrollUp(lines); this.markDirty(); }
   scrollDown(lines: number) { this.kernel.scrollDown(lines); this.markDirty(); }
+  /** Snap the viewport to the live grid (bottom of scrollback). */
+  scrollToBottom() { if (this.destroyed) return; this.kernel.scrollToBottom(); this.markDirty(); }
   scrollOffset(): number { return this.destroyed ? 0 : this.kernel.scrollOffset(); }
   scrollbackLen(): number { return this.destroyed ? 0 : this.kernel.scrollbackLen(); }
 
@@ -495,16 +542,61 @@ export class TerminalController {
   }
 
   /**
+   * Resolve the *input* cell — not the live cursor. In alt-screen / inline-TUI
+   * mode the live cursor walks all over during redraws (spinners, status bars,
+   * log-update rewrites), which makes an anchored IME box "float". The last
+   * absolute-positioning CSI is where Ink / claude / opencode park the cursor at
+   * the end of every frame — i.e. the real input cell — so prefer it (ignoring
+   * age) while a TUI is active. Mirrors the desktop `manager.ts` inputAnchorCell
+   * resolver so the remote IME box behaves like the native app's.
+   */
+  private inputAnchorCell(): { row: number; col: number } | null {
+    if (this.destroyed) return null;
+    const k = this.kernel as unknown as {
+      cursorRow?: () => number;
+      cursorCol?: () => number;
+      lastAbsCsiPosition?: () => { row: number; col: number; atMs: number } | null;
+      isAltScreen?: () => boolean;
+      isInlineTuiMode?: () => boolean;
+    };
+    const ABS_CSI_DECAY_MS = 2_000;
+    const readCsi = () => { try { return k.lastAbsCsiPosition?.() ?? null; } catch { return null; } };
+    let isAlt = false, isInlineTui = false;
+    try { isAlt = k.isAltScreen?.() === true; } catch { /* older bundle */ }
+    try { isInlineTui = k.isInlineTuiMode?.() === true; } catch { /* older bundle */ }
+    // 1) TUI: the last absolute CSI is the stable input cell, even when idle.
+    if (isAlt || isInlineTui) {
+      const csi = readCsi();
+      if (csi) return { row: csi.row, col: csi.col };
+    }
+    // 2) Anchor captured at compositionstart (locks the box during shell input).
+    if (this.imeAnchorRow >= 0 && this.imeAnchorCol >= 0) {
+      return { row: this.imeAnchorRow, col: this.imeAnchorCol };
+    }
+    // 3) A recent absolute CSI, demoted to live cursor once it goes stale.
+    const csi = readCsi();
+    if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
+      return { row: csi.row, col: csi.col };
+    }
+    // 4) Live cursor fallback.
+    const row = k.cursorRow?.() ?? -1;
+    const col = k.cursorCol?.() ?? -1;
+    if (row < 0 || col < 0) return null;
+    return { row, col };
+  }
+
+  /**
    * Cursor position in CSS px relative to the canvas top-left. Used to park the
    * hidden IME textarea at the cursor so the candidate window appears in place.
    * `cellW`/`cellH` are CSS px (see `fitPane` cols/rows math), so no DPR scaling.
+   * Routes through {@link inputAnchorCell} so the box stays pinned to the TUI's
+   * real input cell instead of following the live cursor during redraws.
    */
   getCursorPixel(): { x: number; y: number; h: number } | null {
     if (this.destroyed || this.cellW <= 0 || this.cellH <= 0) return null;
-    const row = this.kernel.cursorRow?.() ?? -1;
-    const col = this.kernel.cursorCol?.() ?? -1;
-    if (row < 0 || col < 0) return null;
-    return { x: col * this.cellW, y: row * this.cellH, h: this.cellH };
+    const cell = this.inputAnchorCell();
+    if (!cell) return null;
+    return { x: cell.col * this.cellW, y: cell.row * this.cellH, h: this.cellH };
   }
 
   clientToCell(clientX: number, clientY: number): { row: number; col: number } | null {

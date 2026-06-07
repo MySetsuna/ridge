@@ -22,7 +22,6 @@
     toggleTaskAtLine,
   } from '$lib/utils/markdown';
   import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-  import { resolveLink, executeAction } from '$lib/utils/linkResolver';
   import { joinPath } from '$lib/utils/path';
 
   interface Props {
@@ -225,6 +224,7 @@
     const noHash = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
     const trailingFragment = hashIdx >= 0 ? href.slice(hashIdx) : '';
 
+    const { resolveLink, executeAction } = await import('$lib/utils/linkResolver');
     const action = resolveLink(noHash || href, { basePath });
 
     if (action.kind === 'fragment' || (noHash === '' && href.startsWith('#'))) {

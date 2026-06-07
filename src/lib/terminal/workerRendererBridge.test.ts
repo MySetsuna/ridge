@@ -69,11 +69,7 @@ describe('workerRendererBridge', () => {
 		vi.restoreAllMocks();
 	});
 
-	describe('flag off (opt-out)', () => {
-		beforeEach(() => {
-			setFlag(false);
-		});
-
+	describe('flag off (default)', () => {
 		it('isActive returns false', () => {
 			expect(workerRendererBridge.isActive()).toBe(false);
 		});
@@ -88,21 +84,6 @@ describe('workerRendererBridge', () => {
 
 		it('pendingCount returns 0 when bridge is inactive', () => {
 			expect(workerRendererBridge.pendingCount()).toBe(0);
-		});
-	});
-
-	describe('flag on by default (P4.9)', () => {
-		it('isActive returns true without explicit flag', () => {
-			expect(workerRendererBridge.isActive()).toBe(true);
-		});
-
-		it('attach/resize/destroy route to worker by default', () => {
-			workerRendererBridge.attach('pane-a', 24, 80, 2);
-			expect(fake.posted).toHaveLength(1);
-			workerRendererBridge.resize('pane-b', 50, 120, 2);
-			expect(fake.posted).toHaveLength(2);
-			workerRendererBridge.destroy('pane-a');
-			expect(fake.posted).toHaveLength(3);
 		});
 	});
 

@@ -6,7 +6,7 @@
 <script lang="ts">
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug } from 'lucide-svelte';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
@@ -15,6 +15,8 @@
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
   import { themeData, getThemeIds, getThemeLabels } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
+  import { t } from '$lib/i18n';
+  import LangSwitch from './LangSwitch.svelte';
   interface Props {
     open: boolean;
     onClose: () => void;
@@ -22,7 +24,7 @@
 
   let { open, onClose }: Props = $props();
 
-  type SectionId = 'appearance' | 'font' | 'terminal' | 'extensions' | 'debug';
+  type SectionId = 'appearance' | 'language' | 'font' | 'terminal' | 'extensions' | 'debug';
   let activeSection = $state<SectionId>('appearance');
 
   // T14：可用 shell 列表 —— 第一次打开 settings 面板时拉一次。
@@ -82,13 +84,14 @@
     return out;
   });
 
-  const SECTIONS: { id: SectionId; label: string; icon: typeof Palette }[] = [
-    { id: 'appearance',  label: '外观',     icon: Palette },
-    { id: 'font',        label: '字体',     icon: Type },
-    { id: 'terminal',    label: '终端',     icon: TerminalIcon },
-    { id: 'extensions',  label: '扩展',     icon: Puzzle },
-    { id: 'debug',       label: '调试应用',   icon: Bug },
-  ];
+  const SECTIONS = $derived<{ id: SectionId; label: string; icon: typeof Palette }[]>([
+    { id: 'appearance',  label: $t('settings.secAppearance'), icon: Palette },
+    { id: 'language',    label: $t('settings.secLanguage'),   icon: Languages },
+    { id: 'font',        label: $t('settings.secFont'),       icon: Type },
+    { id: 'terminal',    label: $t('settings.secTerminal'),   icon: TerminalIcon },
+    { id: 'extensions',  label: $t('settings.secExtensions'), icon: Puzzle },
+    { id: 'debug',       label: $t('settings.secDebug'),      icon: Bug },
+  ]);
 </script>
 
 <svelte:window onkeydown={open ? onKeydown : null} />
@@ -107,13 +110,13 @@
       class="w-[860px] max-w-[92vw] h-[560px] max-h-[88vh] bg-[var(--rg-bg-raised)] border border-[var(--rg-border)] rounded-xl shadow-2xl shadow-black/40 flex overflow-hidden"
       role="dialog"
       aria-modal="true"
-      aria-label="设置"
+      aria-label={$t('settings.title')}
       tabindex="-1"
     >
       <!-- 左侧 sidebar -->
       <aside class="w-[180px] shrink-0 border-r border-[var(--rg-border)] bg-[var(--rg-surface)]/40 flex flex-col">
         <div class="px-4 py-3 text-[13px] font-semibold text-[var(--rg-fg)] border-b border-[var(--rg-border)]">
-          设置
+          {$t('settings.title')}
         </div>
         <nav class="flex-1 py-2">
           {#each SECTIONS as s (s.id)}
@@ -141,7 +144,7 @@
           <button
             type="button"
             class="flex h-7 w-7 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors"
-            title="关闭"
+            title={$t('settings.close')}
             onclick={onClose}
           >
             <X class="h-4 w-4" />
@@ -152,8 +155,8 @@
         <div class="flex-1 min-h-0 overflow-y-auto rg-scroll p-5 space-y-5">
           {#if activeSection === 'appearance'}
             <div>
-              <div class="text-[12px] text-[var(--rg-fg)] mb-1">主题</div>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">选择整体配色方案。立即生效，自动保存。</div>
+              <div class="text-[12px] text-[var(--rg-fg)] mb-1">{$t('settings.themeTitle')}</div>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">{$t('settings.themeDesc')}</div>
               <div class="grid grid-cols-2 gap-3">
                 {#each themeIds as id (id)}
                   {@const p = themePreview[id]}
@@ -183,10 +186,17 @@
               </div>
             </div>
 
+          {:else if activeSection === 'language'}
+            <div>
+              <div class="text-[12px] text-[var(--rg-fg)] mb-1">{$t('lang.title')}</div>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">{$t('lang.desc')}</div>
+              <LangSwitch />
+            </div>
+
           {:else if activeSection === 'font'}
             <div>
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-font">终端字号</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">8 – 32 px。也可在终端内 Ctrl + + / Ctrl + - 调整。</div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-font">{$t('settings.termFontSize')}</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">{$t('settings.termFontSizeDesc')}</div>
               <div class="flex items-center gap-3">
                 <input
                   id="set-term-font"
@@ -203,8 +213,8 @@
             </div>
 
             <div>
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-scrollback">终端 Scrollback 行数</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">每个 pane 保留的历史行数。100 – 10000。修改仅对新 pane 生效；右键「清空」可随时物理释放已积累的 scrollback。</div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-term-scrollback">{$t('settings.termScrollback')}</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">{$t('settings.termScrollbackDesc')}</div>
               <div class="flex items-center gap-3">
                 <input
                   id="set-term-scrollback"
@@ -216,13 +226,41 @@
                   oninput={(e) => setSetting('terminalScrollbackLines', Number((e.currentTarget as HTMLInputElement).value))}
                   class="flex-1 accent-[var(--rg-accent)]"
                 />
-                <span class="w-16 text-right text-[12px] font-mono text-[var(--rg-fg)]">{$settingsStore.terminalScrollbackLines} 行</span>
+                <span class="w-16 text-right text-[12px] font-mono text-[var(--rg-fg)]">{$settingsStore.terminalScrollbackLines} {$t('settings.lines')}</span>
+              </div>
+            </div>
+
+            <!-- P4.4 (2026-05-21) — removed the parserBackend Rust|WASM toggle.
+                 The Rust-side PaneParser is now the only path; the WASM-thread
+                 entry was deleted along with the Setting field. -->
+
+            <div>
+              <span class="block text-[12px] text-[var(--rg-fg)] mb-1">终端输入法</span>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
+                <b>IME</b>（默认）：点击 pane 后聚焦不可见的辅助输入框，OS 输入法可以挂载，支持中日韩组合输入。<br/>
+                <b>直通</b>：跳过辅助输入框，键盘按键直接送 PTY；ASCII 不会被未切英文的中文输入法当成拼音吃掉。下次 pane 重建生效。
+              </div>
+              <div class="inline-flex rounded-md border border-[var(--rg-border)] overflow-hidden" role="radiogroup" aria-label="terminalImeMode">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$settingsStore.terminalImeMode === 'ime'}
+                  class="px-3 py-1 text-[12px] {$settingsStore.terminalImeMode === 'ime' ? 'bg-[var(--rg-accent)] text-[var(--rg-bg)]' : 'bg-transparent text-[var(--rg-fg)] hover:bg-[var(--rg-hover)]'}"
+                  onclick={() => setSetting('terminalImeMode', 'ime')}
+                >IME</button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$settingsStore.terminalImeMode === 'direct'}
+                  class="px-3 py-1 text-[12px] border-l border-[var(--rg-border)] {$settingsStore.terminalImeMode === 'direct' ? 'bg-[var(--rg-accent)] text-[var(--rg-bg)]' : 'bg-transparent text-[var(--rg-fg)] hover:bg-[var(--rg-hover)]'}"
+                  onclick={() => setSetting('terminalImeMode', 'direct')}
+                >直通</button>
               </div>
             </div>
 
             <div>
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-font">编辑器字号</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图共享。8 – 32 px。</div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-font">{$t('settings.editorFontSize')}</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">{$t('settings.editorFontSizeDesc')}</div>
               <div class="flex items-center gap-3">
                 <input
                   id="set-editor-font"
@@ -239,15 +277,15 @@
             </div>
 
             <div>
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-family">编辑器字体</label>
-              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">Monaco 编辑器与 diff 视图使用的等宽字体。修改后立即生效。</div>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-editor-family">{$t('settings.editorFontFamily')}</label>
+              <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">{$t('settings.editorFontFamilyDesc')}</div>
               <select
                 id="set-editor-family"
                 value={$settingsStore.editorFontFamily}
                 onchange={(e) => setSetting('editorFontFamily', (e.currentTarget as HTMLSelectElement).value)}
                 class="w-full px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)] cursor-pointer"
               >
-                <option value="">默认（JetBrains Mono → Cascadia Code → Consolas）</option>
+                <option value="">{$t('settings.editorFontDefault')}</option>
                 <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
                 <option value="'Cascadia Code', monospace">Cascadia Code</option>
                 <option value="'Cascadia Mono', monospace">Cascadia Mono</option>
@@ -263,12 +301,12 @@
 
           {:else if activeSection === 'terminal'}
             <div>
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-default-shell">默认终端</label>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-default-shell">{$t('settings.defaultShell')}</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
-                新建 pane 使用的 shell 程序。修改后已存在的 pane 不变；新开 pane 生效。
+                {$t('settings.defaultShellDesc')}
               </div>
               {#if availableShells.length === 0}
-                <div class="text-[11px] text-[var(--rg-fg-muted)]/70">{shellsLoaded ? '未在系统 PATH 中检索到任何 shell。' : '检索中…'}</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)]/70">{shellsLoaded ? $t('settings.noShells') : $t('settings.shellsLoading')}</div>
               {:else}
                 <select
                   id="set-default-shell"
@@ -276,7 +314,7 @@
                   onchange={(e) => setSetting('defaultShell', (e.currentTarget as HTMLSelectElement).value)}
                   class="w-full px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)]"
                 >
-                  <option value="">系统默认</option>
+                  <option value="">{$t('settings.systemDefault')}</option>
                   {#each availableShells as s (s.program)}
                     <option value={s.program}>{s.label} — {s.program}</option>
                   {/each}
@@ -285,9 +323,9 @@
             </div>
 
             <div class="pt-4">
-              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-default-cwd">默认工作目录</label>
+              <label class="block text-[12px] text-[var(--rg-fg)] mb-1" for="set-default-cwd">{$t('settings.defaultCwd')}</label>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-2">
-                未从终端用 <code class="font-mono">ridge</code> 命令启动时，新建工作区/首个 pane 使用的目录。空 = 使用系统用户 home。
+                {$t('settings.defaultCwdDescPrefix')} <code class="font-mono">ridge</code> {$t('settings.defaultCwdDescSuffix')}
               </div>
               <div class="flex gap-2">
                 <input
@@ -295,7 +333,7 @@
                   type="text"
                   value={$settingsStore.defaultCwd}
                   oninput={(e) => setSetting('defaultCwd', (e.currentTarget as HTMLInputElement).value)}
-                  placeholder="(未设置 — 使用 home)"
+                  placeholder={$t('settings.defaultCwdPlaceholder')}
                   class="flex-1 px-2 py-1.5 rounded bg-[var(--rg-surface)] border border-[var(--rg-border)] text-[12px] text-[var(--rg-fg)] font-mono outline-none focus:border-[var(--rg-accent)]"
                 />
                 <button
@@ -306,10 +344,10 @@
                     const picked = await openDialog({ directory: true, multiple: false, defaultPath: $settingsStore.defaultCwd || undefined });
                     if (typeof picked === 'string') setSetting('defaultCwd', picked);
                   }}
-                  title="浏览选择目录"
+                  title={$t('settings.browseDirTitle')}
                 >
                   <FolderOpen size={14} />
-                  浏览
+                  {$t('common.browse')}
                 </button>
               </div>
             </div>
@@ -317,15 +355,15 @@
           {:else if activeSection === 'extensions'}
             <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
               <div class="min-w-0 flex-1">
-                <div class="text-[12px] text-[var(--rg-fg)]">远程控制</div>
-                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">启动远程控制服务器，手机浏览器扫码或手动连接后可从移动端操作终端和文件。</div>
+                <div class="text-[12px] text-[var(--rg-fg)]">{$t('settings.remoteControl')}</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">{$t('settings.remoteControlDesc')}</div>
               </div>
               <button
                 type="button"
                 role="switch"
                 aria-checked={$settingsStore.remoteEnabled}
-                aria-label="切换远程控制"
-                title={$settingsStore.remoteEnabled ? '点击关闭远程控制' : '点击启动远程控制'}
+                aria-label={$t('settings.remoteToggle')}
+                title={$settingsStore.remoteEnabled ? $t('settings.remoteToggleOn') : $t('settings.remoteToggleOff')}
                 class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.remoteEnabled
                   ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
                   : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
@@ -335,7 +373,7 @@
                     const { invoke } = await import('@tauri-apps/api/core');
                     await invoke('set_remote_enabled', { enabled: next });
                   } catch (e) {
-                    console.warn('远程控制切换失败', e);
+                    console.warn($t('settings.remoteToggleFailed'), e);
                     void refreshRemoteRunning();
                     return;
                   }
@@ -354,9 +392,9 @@
           {:else if activeSection === 'debug'}
             {#if import.meta.env.DEV}
             <div>
-              <div class="text-[12px] text-[var(--rg-fg)] mb-1">调试工具</div>
+              <div class="text-[12px] text-[var(--rg-fg)] mb-1">{$t('settings.debugTools')}</div>
               <div class="text-[11px] text-[var(--rg-fg-muted)] mb-3">
-                打开 Chromium DevTools 检查应用布局、网络请求和终端渲染状态。
+                {$t('settings.debugToolsDesc')}
               </div>
               <button
                 type="button"
@@ -369,7 +407,7 @@
                   }
                 }}
               >
-                打开 DevTools
+                {$t('settings.openDevtools')}
               </button>
             </div>
             {/if}

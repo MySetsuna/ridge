@@ -244,6 +244,46 @@ export async function setPaneDeltaMode(paneId: string, enabled: boolean): Promis
 }
 
 /**
+ * 5b — deterministic post-activation fit: enable delta_mode, then run `fit`
+ * ONLY after that resolves.
+ *
+ * P4.4 routes kernel grid resize solely through `apply_delta(Resize)`, which
+ * requires BOTH the pty-delta Channel (registered by `ensurePtyBridge`) AND
+ * delta_mode being on. Awaiting `setPaneDeltaMode` before fitting closes the
+ * race where `attach()`'s rAF fit fired before the gate opened and its Resize
+ * delta was dropped — leaving the kernel stuck at its compile-time 80×24 grid.
+ * Teammate panes are the acute case: they reach RidgePane via layout re-sync,
+ * not GUI split's `scheduleForceFitAfterSplit` retry timer, so without this they
+ * had no deterministic fit at all. See memory bug_split_kernel_race.
+ *
+ * The fit is unconditional (runs even if `setPaneDeltaMode` no-op'd for a
+ * missing bridge) so a transient bridge gap can't strand the pane; later
+ * self-heal / ResizeObserver fits stay as the safety net.
+ *
+ * Ordering contract (observable, not just convention): callers MUST `await
+ * ensurePtyBridge(paneId, …)` BEFORE this — the bridge registers the pty-delta
+ * Channel that `setPaneDeltaMode` + the post-fit Resize delta depend on. If the
+ * bridge is absent here, the deterministic fit is degraded to the timing-based
+ * fallbacks, so we warn loudly (in dev) to surface a mis-ordered call site
+ * rather than fail silently.
+ */
+export async function enableDeltaModeThenFit(
+	paneId: string,
+	fit: () => void,
+): Promise<void> {
+	if (!hasPtyBridge(paneId)) {
+		console.warn(
+			'[ridge-term] enableDeltaModeThenFit called before ensurePtyBridge — ' +
+				'pty-delta Channel not registered; deterministic fit degraded to ' +
+				'self-heal/ResizeObserver fallback',
+			{ paneId },
+		);
+	}
+	await setPaneDeltaMode(paneId, true);
+	fit();
+}
+
+/**
  * Tear down the PTY bridge for a pane. Call from the "real close"
  * code path (paneTree.closePane after `invoke('close_pane', ...)`),
  * **NOT** from RidgePane's onDestroy — onDestroy fires on every

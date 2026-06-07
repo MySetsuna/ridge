@@ -11,7 +11,7 @@
  *   pnpm add -D @wdio/cli @wdio/local-runner @wdio/mocha-framework \
  *               @wdio/spec-reporter webdriverio @types/chai chai
  *   cargo install tauri-driver
- *   pnpm tauri build  # produces src-tauri/target/release/ridge.exe
+ *   pnpm tauri build  # produces <repo>/target/release/ridge.exe (workspace root)
  *
  * Tauri 2 compatibility caveat: tauri-driver's main branch targets
  * Tauri 2; if you hit a `unable to connect` error, fall back to
@@ -55,9 +55,13 @@ process.env.NO_PROXY = [process.env.NO_PROXY, 'localhost,127.0.0.1,::1']
 // `.webview2-*` entry that ships with the repo. Set BEFORE
 // `tauri-driver` spawns so the var lands in the inherited env of
 // every msedgedriver / ridge.exe child.
-// (WEBVIEW2_USER_DATA_FOLDER override temporarily removed while
-// debugging about:blank navigation hang. The test ridge now relies on
-// its identifier-scoped default path.)
+// §1.35 fix RE-ENABLED (2026-06-04): isolate the test ridge's WebView2
+// user-data dir from the installed `C:\Program Files\ridge\ridge.exe` host.
+// They share `identifier: "com.tauri-app.ridge"`, so without this they
+// resolve the SAME WebView2 user-data folder; WebView2's exclusive lock
+// then hangs the test ridge at boot (about:blank). Same pattern as
+// `scripts/tauri-dev-cdp.mjs`. `.webview2-*` is gitignored.
+process.env.WEBVIEW2_USER_DATA_FOLDER = path.resolve('.webview2-e2e');
 
 const DRIVER_PORT = 4444;
 let driverProc: ChildProcess | null = null;
@@ -74,7 +78,9 @@ export const config: WebdriverIO.Config = {
       browserName: 'wry',
       'tauri:options': {
         application: path.resolve(
-          'src-tauri/target/release/ridge.exe',
+          // Workspace root target dir (ridge-core extraction moved it here from
+          // src-tauri/target). `pnpm tauri build` → <repo>/target/release/ridge.exe.
+          'target/release/ridge.exe',
         ),
       },
     } as WebdriverIO.Capabilities,

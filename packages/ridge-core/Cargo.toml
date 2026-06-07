@@ -1,0 +1,60 @@
+[package]
+name = "ridge-core"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime-agnostic command + workspace domain core shared by the desktop (Tauri) host and the headless ridge-cli host. Zero Tauri dependency."
+license = "MIT"
+
+# Standalone library crate. The single hard rule: NO Tauri dependency, and in
+# particular NO `tauri::async_runtime` — background tasks depend on `tokio`
+# directly so the headless `ridge-cli` binary never pulls in webview/wgpu/wasm.
+# See docs/plans/unified-remote-architecture-handoff-final.md §4 D4/D7/D8/D11,
+# §5.1, and §7 R3.
+
+[lib]
+name = "ridge_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Background task spawning (file watcher / git polling) goes through the `Ctx`
+# spawner; the default in-process spawner uses tokio DIRECTLY (never
+# `tauri::async_runtime`). See §5.1 "后台任务派发".
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+# Library error type — typed errors with thiserror (rules/rust/coding-style.md).
+thiserror = "1"
+tracing = "0.1"
+# Filesystem search / tree core (S5). Same battle-tested pure crates the
+# desktop `src-tauri/src/fs` used before the migration — the `ignore` walker is
+# ripgrep's engine. NONE pull Tauri, so the "zero Tauri" rule above holds.
+ignore = "0.4"
+glob = "0.3"
+regex = "1"
+# Recursive directory copy for `fs::commands::copy_path` (S1 ledger §2.1 fs
+# writes). Same version the desktop `src-tauri` uses, so the workspace
+# `Cargo.lock` stays unified. Pure crate, no Tauri.
+walkdir = "2"
+# Home / data dirs for `commands::shell::get_shell_history` + `fs::commands::
+# browse_directory` (the headless host reads the SAME shell-history paths and
+# browses the SAME filesystem a remote IDE expects). Same crate the desktop
+# uses (`directories` in ridge-cli serves a different purpose). Pure, no Tauri.
+dirs = "5"
+# Canonical TOTP (RFC 6238, HMAC-SHA256) shared by desktop + headless cli +
+# (future) LAN host. Pure crates, no Tauri. `rand` uses the OS entropy source
+# for the per-process secret. See `totp.rs`.
+sha2 = "0.10"
+rand = "0.8"
+# Pane / workspace identity for the shared workspace graph (D11 Wave A:
+# `workspace::pane_tree`). Same version + features the desktop `src-tauri` uses
+# so the workspace `Cargo.lock` stays unified. Pure crate, no Tauri.
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# OS process introspection for `commands::process` (foreground process / cwd by
+# PID). Only Windows needs `sysinfo`; the Unix port reads `/proc` directly, so
+# the Linux/VPS `ridge-cli` build never pulls this crate. Same version the
+# desktop `src-tauri` uses, so the workspace `Cargo.lock` stays unified.
+[target.'cfg(windows)'.dependencies]
+sysinfo = "0.31"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "sync", "macros", "rt-multi-thread", "time"] }

@@ -28,7 +28,8 @@ pnpm e2e:shell
 ```
 
 The harness spawns `tauri-driver --port 4444`, opens
-`src-tauri/target/release/ridge.exe`, runs every `*.spec.ts` in this
+`target/release/ridge.exe` (workspace-root target dir, since the
+ridge-core extraction), runs every `*.spec.ts` in this
 directory, and tears the driver back down on completion.
 
 ## Specs

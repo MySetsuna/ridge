@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { alertDialog } from './RidgeDialog.svelte';
+  import { t, tr } from '$lib/i18n';
   import {
     projectStore,
     searchResults,
@@ -47,7 +48,7 @@
       useRegex,
     });
 
-    await alertDialog({ title: '替换完成', message: `已在 ${stats.files_modified} 个文件中完成 ${stats.replacements} 处替换` });
+    await alertDialog({ title: tr('ui.replaceCompleteModalTitle'), message: tr('ui.replaceCompleteModal', { files: stats.files_modified, replacements: stats.replacements }) });
 
     if (stats.files_modified > 0) {
       // Refresh search results
@@ -99,14 +100,14 @@
           class:active={searchType === 'text'}
           on:click={() => (searchType = 'text')}
         >
-          Find in Files
+          {$t('ui.findInFiles')}
         </button>
         <button
           class="tab"
           class:active={searchType === 'filename'}
           on:click={() => (searchType = 'filename')}
         >
-          File Name
+          {$t('ui.fileName')}
         </button>
       </div>
 
@@ -117,14 +118,14 @@
             class:active={mode === 'search'}
             on:click={() => (mode = 'search')}
           >
-            Search
+            {$t('ui.modeSearch')}
           </button>
           <button
             class="mode-btn"
             class:active={mode === 'replace'}
             on:click={() => (mode = 'replace')}
           >
-            Replace
+            {$t('ui.modeReplace')}
           </button>
         </div>
       {/if}
@@ -137,7 +138,7 @@
         <input
           type="text"
           bind:value={searchQuery}
-          placeholder="Search..."
+          placeholder={$t('ui.searchInputPlaceholder')}
           class="search-input"
         />
 
@@ -145,7 +146,7 @@
           <input
             type="text"
             bind:value={replaceQuery}
-            placeholder="Replace with..."
+            placeholder={$t('ui.replaceInputPlaceholder')}
             class="replace-input"
           />
         {/if}
@@ -153,32 +154,32 @@
         <div class="search-options">
           <label>
             <input type="checkbox" bind:checked={caseSensitive} />
-            Match Case
+            {$t('ui.matchCase')}
           </label>
           <label>
             <input type="checkbox" bind:checked={useRegex} />
-            Regex
+            {$t('ui.regex')}
           </label>
           <label>
             <input type="checkbox" bind:checked={wholeWord} />
-            Whole Word
+            {$t('ui.wholeWord')}
           </label>
         </div>
 
         <button class="search-btn" on:click={handleSearch} disabled={$isSearching}>
-          {$isSearching ? 'Searching...' : 'Search'}
+          {$isSearching ? $t('ui.searchingButton') : $t('ui.searchButton')}
         </button>
 
         {#if mode === 'replace'}
           <button class="replace-btn" on:click={handleReplace} disabled={$searchResults.length === 0}>
-            Replace All
+            {$t('ui.replaceAllButton')}
           </button>
         {/if}
       {:else}
         <input
           type="text"
           bind:value={searchQuery}
-          placeholder="Type to search files..."
+          placeholder={$t('ui.filenameInputPlaceholder')}
           class="search-input"
           on:input={handleSearch}
         />
@@ -187,9 +188,9 @@
 
     <div class="search-results">
       {#if $isSearching}
-        <div class="searching">Searching...</div>
+        <div class="searching">{$t('ui.searchingStatus2')}</div>
       {:else if searchType === 'text' && $searchResults.length > 0}
-        <div class="results-count">{$searchResults.length} results</div>
+        <div class="results-count">{$t('ui.resultsCount', { count: $searchResults.length })}</div>
         <div class="results-list">
           {#each $searchResults as result}
             <div
@@ -208,7 +209,7 @@
           {/each}
         </div>
       {:else if searchType === 'filename' && filenameResults.length > 0}
-        <div class="results-count">{filenameResults.length} files</div>
+        <div class="results-count">{$t('ui.filesCount', { count: filenameResults.length })}</div>
         <div class="results-list">
           {#each filenameResults as path}
             <div
@@ -226,7 +227,7 @@
           {/each}
         </div>
       {:else if searchQuery && !$isSearching}
-        <div class="no-results">No results found</div>
+        <div class="no-results">{$t('ui.noResultsFound')}</div>
       {/if}
     </div>
   </div>

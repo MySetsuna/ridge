@@ -1,0 +1,104 @@
+[package]
+name = "ridge-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Ridge headless remote host for Linux/VPS — device pairing, E2EE WebRTC PTY bridge"
+license = "MIT"
+# 可执行名为 `rdg`（短名，便于在终端直接调用）。包名仍保留 `ridge-cli`
+# 以维持工作区成员路径 / `cargo build -p ridge-cli` 调用不变。
+default-run = "rdg"
+
+# Standalone crate. This intentionally does NOT depend on the Tauri `ridge`
+# binary crate (which pulls webview/wasm/wgpu). It reuses the same battle-tested
+# pure crates (`ignore`, `glob`, `regex`, `portable-pty`) the desktop app uses.
+#
+# Reuse note (contract §9 / §11.D): the desktop reusable logic lives in
+# `src-tauri/src/fs/{search,tree}.rs` and `src-tauri/src/engine/pty.rs`. Those
+# modules are declared PRIVATE in `src-tauri/src/lib.rs` (`mod fs;`, `mod
+# engine;` — only `pub mod remote;` is exported), so a `path` dependency on
+# `ridge_lib` cannot reach them today. Additionally `engine::pty` is hard-wired
+# to the Tauri `AppState` (window events, workspaces map) and is not usable
+# headless. We therefore reuse the *pure dependency crates* directly and keep a
+# thin, signature-compatible local wrapper for fs search/tree (see
+# `src/fs_reuse.rs`, marked TODO). The minimal `pub` adjustments that WOULD let
+# us drop the wrapper are listed in the delivery report.
+
+[[bin]]
+name = "rdg"
+path = "src/main.rs"
+
+[dependencies]
+# Shared runtime-agnostic command + fs core (S5). The headless host now reaches
+# the SAME `fs::search` / `fs::tree` implementation the desktop uses, through
+# `ridge_core::dispatch`, instead of the old signature-compatible local replica
+# in `fs_reuse.rs`. `ridge-core` is Tauri-free (verified: `cargo tree -p
+# ridge-cli` shows no `tauri`), so this keeps the headless binary lean.
+ridge-core = { path = "../ridge-core" }
+# Headless tmux session engine + its teammate-protocol HTTP router (S-decouple).
+# Lets `ridge-cli tmux` host the SAME native engine the desktop uses, so a `tmux`
+# shim on this host can create/manage headless sessions. The `http` feature
+# pulls a small axum server; the engine itself is Tauri-free.
+ridge-tmux = { path = "../ridge-tmux", features = ["http"] }
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
+# CLI. `env` lets the `tmux` subcommand read --port/--bind/--token from
+# RIDGE_TMUX_* env vars (so a systemd EnvironmentFile can supply them without
+# putting the token on the command line, where `ps` would leak it).
+clap = { version = "4", features = ["derive", "env"] }
+# HTTP client (rustls, no native OpenSSL — VPS-friendly)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Errors / logging
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Config paths (~/.config/ridge on Linux)
+directories = "5"
+# Hidden password entry for `rdg login` (no echo on the terminal). Small, no C deps.
+rpassword = "7"
+# PTY — same crate + version the desktop app uses (src-tauri uses 0.8)
+portable-pty = "0.8"
+# Sync primitives (same as src-tauri)
+parking_lot = "0.12"
+
+# E2EE (contract §7 — byte-for-byte compatible with the browser noble stack)
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+
+# Signaling WebSocket client (rustls)
+tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+# LAN controller (E4): build a rustls ClientConfig that ACCEPTS the desktop LAN
+# host's self-signed cert (validated via CDP, see scripts/cdp-lan-probe.mjs).
+# `ring` (not aws-lc-rs) to match the existing tree — no C toolchain on Windows.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# 交互式 TUI（E2）：终端 raw 模式 + alt screen + 异步键盘事件流。passthrough 模型
+# （ssh/mosh 同款）——把远端/本地 PTY 的 ANSI 字节直接透传到本地终端，由本地终端
+# 原生渲染（不在此重做网格渲染；GUI canvas 渲染是另一回事，见 §B.9）。
+crossterm = { version = "0.28", features = ["event-stream"] }
+# Byte buffers (matches the `bytes` re-exported by the webrtc data channel API)
+bytes = "1"
+
+# fs reuse (same crates as src-tauri/src/fs)
+ignore = "0.4"
+glob = "0.3"
+regex = "1"
+
+# Host-side WebRTC (contract §0/§8 terminal architecture). Feature-gated so the
+# device-code flow + E2EE + PTY + batching + signaling all build even if the
+# heavy webrtc dependency tree is unavailable in a constrained CI. On by
+# default; disable with `--no-default-features` to get the trait-stub path.
+webrtc = { version = "0.11", optional = true }
+
+[features]
+default = ["rtc"]
+# Real host-side WebRTC peer connection via the `webrtc` crate.
+rtc = ["dep:webrtc"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "time"] }

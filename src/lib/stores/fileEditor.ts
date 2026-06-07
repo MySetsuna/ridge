@@ -13,6 +13,43 @@ import { isMarkdownPath } from '$lib/utils/markdown';
 import { isRecentlyWritten, markRecentlyWritten } from './fsEvents';
 import { alertDialog, choiceDialog, confirmDialog } from '$lib/components/RidgeDialog.svelte';
 
+// §弱网: in the desktop-UI-in-browser build, save by sending only the changed
+// span (one edit) instead of the whole file over the WS. See computeSingleEdit.
+const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+/**
+ * Minimal single-replacement edit between two strings, via longest common
+ * prefix/suffix. Offsets are UTF-16 code units (JS string indices), matching
+ * Monaco's `IModelContentChange` and the host's `apply_file_edits`. Returns null
+ * when the strings are identical. Surrogate pairs recombine correctly because
+ * matched code units are kept on both sides and the replacement carries the new
+ * units verbatim.
+ */
+function computeSingleEdit(
+  oldStr: string,
+  newStr: string,
+): { rangeOffset: number; rangeLength: number; text: string } | null {
+  if (oldStr === newStr) return null;
+  const oldLen = oldStr.length;
+  const newLen = newStr.length;
+  let prefix = 0;
+  const maxPrefix = Math.min(oldLen, newLen);
+  while (prefix < maxPrefix && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) prefix++;
+  let suffix = 0;
+  const maxSuffix = maxPrefix - prefix;
+  while (
+    suffix < maxSuffix &&
+    oldStr.charCodeAt(oldLen - 1 - suffix) === newStr.charCodeAt(newLen - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  return {
+    rangeOffset: prefix,
+    rangeLength: oldLen - prefix - suffix,
+    text: newStr.slice(prefix, newLen - suffix),
+  };
+}
+
 /** 图片文件扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'];
 
@@ -386,13 +423,31 @@ function createStore() {
         isImage,
         imageUrl,
       };
-      update((s) => ({
-        ...s,
-        openFiles: [...s.openFiles, file],
-        activePath: path,
-        isVisible: true,
-        pendingReveal: reveal ?? s.pendingReveal,
-      }));
+      update((s) => {
+        // Re-check inside the atomic updater: `openFile` awaited an async
+        // disk read between the earlier `existing` lookup and here, so a
+        // concurrent `openFile(path)` (e.g. a rapid double-click) may have
+        // already appended this tab. Appending again would put two entries
+        // with the same `path` into `openFiles`, and the editor tab strip's
+        // keyed `{#each ... (it.id)}` (id === path) throws
+        // `each_key_duplicate` and drops/misrenders tabs. Activate the
+        // existing tab instead of inserting a duplicate.
+        if (s.openFiles.some((f) => f.path === path)) {
+          return {
+            ...s,
+            activePath: path,
+            isVisible: true,
+            pendingReveal: reveal ?? s.pendingReveal,
+          };
+        }
+        return {
+          ...s,
+          openFiles: [...s.openFiles, file],
+          activePath: path,
+          isVisible: true,
+          pendingReveal: reveal ?? s.pendingReveal,
+        };
+      });
     },
 
     /** SearchSidebar 在 results 数组变化时整体写入；空数组等价 clear。 */
@@ -625,7 +680,26 @@ function createStore() {
         return;
       }
       try {
-        await invoke('write_file', { path, content: file.content });
+        // §弱网: over a remote browser link, save the changed span only. The base
+        // is `originalContent` (== what the host has on disk). On any failure
+        // (out-of-range edit, external change) fall back to a full write.
+        let saved = false;
+        if (webRemote && file.originalContent !== undefined) {
+          const edit = computeSingleEdit(file.originalContent, file.content);
+          if (edit === null) {
+            saved = true; // no change vs disk
+          } else {
+            try {
+              await invoke('apply_file_edits', { path, edits: [edit] });
+              saved = true;
+            } catch (e) {
+              console.warn('[fileEditor] apply_file_edits failed; full write fallback', e);
+            }
+          }
+        }
+        if (!saved) {
+          await invoke('write_file', { path, content: file.content });
+        }
         // Suppress the round-trip fs-changed event for ~800ms so the editor
         // doesn't prompt "this file changed externally" right after our own save.
         markRecentlyWritten(path);

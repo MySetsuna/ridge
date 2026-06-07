@@ -155,7 +155,8 @@ async fn ws_handler(
     if !ctx.auth.verify(&query.code) {
         return (StatusCode::UNAUTHORIZED, "invalid TOTP code").into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws(socket)).into_response()
+    ws.on_upgrade(move |socket| handle_ws(socket))
+        .into_response()
 }
 
 async fn handle_ws(socket: WebSocket) {
@@ -169,7 +170,11 @@ async fn handle_ws(socket: WebSocket) {
         "standalone": true,
         "message": "Standalone mode — terminal operations limited. Run full Ridge app for complete remote control."
     });
-    if ws_tx.send(Message::Text(welcome.to_string())).await.is_err() {
+    if ws_tx
+        .send(Message::Text(welcome.to_string()))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -183,16 +188,32 @@ async fn handle_ws(socket: WebSocket) {
         };
         let _ = match parsed["type"].as_str() {
             Some("ping") => {
-                ws_tx.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await
+                ws_tx
+                    .send(Message::Text(
+                        serde_json::json!({"type":"pong"}).to_string(),
+                    ))
+                    .await
             }
-            Some("list-panes") | Some("stdin") | Some("resize") | Some("list-files") | Some("list-git-status") => {
-                ws_tx.send(Message::Text(serde_json::json!({
-                    "type": "error",
-                    "message": "This operation requires the full Ridge app (standalone mode)"
-                }).to_string())).await
-            }
+            Some("list-panes")
+            | Some("stdin")
+            | Some("resize")
+            | Some("list-files")
+            | Some("list-git-status") => ws_tx
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "error",
+                        "message": "This operation requires the full Ridge app (standalone mode)"
+                    })
+                    .to_string(),
+                ))
+                .await,
             _ => {
-                ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
+                ws_tx
+                    .send(Message::Text(
+                        serde_json::json!({"type":"error","message":"unknown message type"})
+                            .to_string(),
+                    ))
+                    .await
             }
         };
     }

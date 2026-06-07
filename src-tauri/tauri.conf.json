@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ridge",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "identifier": "com.tauri-app.ridge",
   "build": {
     "beforeDevCommand": "node packages/ridge-term/build.mjs --dev && node scripts/ensure-teammate-shim.mjs && pnpm run dev",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:remote",
-    "beforeBundleCommand": "node -e \"setTimeout(()=>process.exit(0),3000)\" && cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml",
+    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:remote && pnpm build:desktop-web",
+    "beforeBundleCommand": "node -e \"setTimeout(()=>process.exit(0),3000)\" && cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml && pnpm build:cli",
     "frontendDist": "../build"
   },
   "app": {
@@ -20,6 +20,13 @@
       }
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["ridge"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
@@ -28,7 +35,9 @@
     ],
     "resources": {
       "../ridge.theme": "ridge.theme",
-      "../static/remote": "static/remote"
+      "../static/remote": "static/remote",
+      "../web-remote-dist": "web-remote-dist",
+      "../target/release/rdg.exe": "rdg.exe"
     },
     "windows": {
       "nsis": {

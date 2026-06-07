@@ -1,12 +1,13 @@
+pub mod cloud_pane;
 pub mod fs_watch;
 pub mod git;
 pub mod pane;
 pub mod process;
 pub mod project;
 pub mod remote;
+pub mod ridge_file;
 pub mod settings;
 pub mod terminal;
 pub mod theme;
 pub mod watch;
-pub mod ridge_file;
 pub mod workspace;

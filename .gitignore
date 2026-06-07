@@ -2,6 +2,7 @@
 node_modules
 /build
 /dist
+/web-remote-dist
 /release
 /.webview2-*
 *.log
@@ -12,6 +13,12 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .claude/scheduled_tasks.lock
+# Git worktrees live here (runtime scratch checkouts of other branches). Keep
+# them out of git AND out of content scanners (Tailwind v4 auto-source detection
+# respects .gitignore) — otherwise a worktree's duplicate src/site assets get
+# scanned, and removing a worktree leaves dangling asset refs that 500 the dev
+# server (e.g. ENOENT on a worktree's ridge-mark.svg from the CSS pipeline).
+.claude/worktrees/
 .aider*
 scripts/perf-runs/
 bash.exe.stackdump
@@ -21,3 +28,16 @@ bash.exe.stackdump
 /static/remote
 /packages/ridge-term/pkg
 plotforge.db
+
+# Rust workspace build output. S1 (ridge-core extraction) added a virtual
+# workspace root, relocating the cargo target dir from `src-tauri/target` to the
+# repo root (`src-tauri/.gitignore` still covers the old path).
+/target
+
+# CDP dev-test artifacts
+.cdp-shots/
+.dev-cdp.log
+
+# Playwright remote-GC e2e artifacts (throwaway)
+.pw-remote-profile/
+gc-e2e-*.png

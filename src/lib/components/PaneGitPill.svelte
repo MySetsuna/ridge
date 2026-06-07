@@ -13,6 +13,7 @@
   import { GitBranch, ArrowUp, ArrowDown, Check, ExternalLink, Plus } from 'lucide-svelte';
   import { alertDialog } from './RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
+  import { t, tr } from '$lib/i18n';
   import { portal } from '$lib/actions/portal';
   import {
     paneGitStatusStore,
@@ -126,9 +127,9 @@
       });
       await invalidatePaneGitStatusForRepo(info.repoRoot);
       open = false;
-      showToast(`已切换到 ${branch}`);
+      showToast(tr('scm.switchedToBranch', { branch }));
     } catch (err) {
-      await alertDialog({ title: '切换分支失败', message: String(err), danger: true });
+      await alertDialog({ title: tr('scm.switchBranchFailed'), message: String(err), danger: true });
     } finally {
       switching = '';
     }
@@ -183,10 +184,10 @@
       branches = [];
       loadedRepoRoot = null;
       await invalidatePaneGitStatusForRepo(info.repoRoot);
-      showToast(`已创建并切换到 ${trimmed}`);
+      showToast(tr('scm.createdAndSwitched', { branch: trimmed }));
       await loadBranches();
     } catch (err) {
-      await alertDialog({ title: '创建分支失败', message: String(err), danger: true });
+      await alertDialog({ title: tr('scm.createBranchFailed'), message: String(err), danger: true });
     } finally {
       switching = '';
     }
@@ -253,13 +254,10 @@
     <button
       bind:this={triggerBtn}
       type="button"
-      title={`${info.repoRoot}\n分支：${info.branch}${
-        info.ahead || info.behind ? `\n↑${info.ahead} ↓${info.behind}` : ''
-      }${
-        !info.hasUpstream
-          ? '\n⚠ 当前分支没有 upstream — push 时会需要 -u origin <branch>'
-          : ''
-      }\n点击切换分支（Ctrl-Click 打开 SCM 侧栏）`}
+      title={$t('scm.pillTooltip', { repoRoot: info.repoRoot, branch: info.branch })
+        + (info.ahead || info.behind ? $t('scm.pillTooltipAheadBehind', { ahead: info.ahead, behind: info.behind }) : '')
+        + (!info.hasUpstream ? $t('scm.pillTooltipNoUpstream') : '')
+        + $t('scm.pillTooltipClickHint')}
       class="flex items-center gap-1 h-5 px-1.5 rounded-full text-[10px] bg-[var(--rg-accent)]/12 text-[var(--rg-accent)]/90 border border-[var(--rg-accent)]/25 hover:bg-[var(--rg-accent)]/22 transition-colors max-w-[220px]
         {open ? 'bg-[var(--rg-accent)]/25 border-[var(--rg-accent)]/60' : ''}"
       onclick={(e) => {
@@ -287,7 +285,7 @@
              stay hidden when this one is shown. -->
         <span
           class="flex items-center shrink-0 text-[9px] font-mono leading-none text-amber-400/90"
-          aria-label="无 upstream"
+          aria-label={$t('scm.noUpstreamAriaLabel')}
         >↑↓?</span>
       {/if}
     </button>
@@ -320,12 +318,12 @@
                 bind:this={createInput}
                 bind:value={createName}
                 onkeydown={onCreateKeydown}
-                placeholder="新分支名"
+                placeholder={$t('scm.newBranchName')}
                 class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 py-0.5 text-[11px] text-[var(--rg-fg)]"
               />
             </div>
             <label class="flex items-center gap-1.5 text-[10px] text-[var(--rg-fg-muted)]">
-              <span class="shrink-0">基于：</span>
+              <span class="shrink-0">{$t('scm.basedOn')}</span>
               <!-- datalist combobox: user can type any ref (branch / tag / hash).
                    Suggestions come from the already-loaded branches list.
                    Single <datalist> id is safe because only one pill is open at a time. -->
@@ -333,11 +331,11 @@
                 type="text"
                 bind:value={createBase}
                 onkeydown={onCreateKeydown}
-                placeholder="HEAD（当前）"
+                placeholder={$t('scm.baseRefPlaceholder')}
                 list="rg-git-base-list"
                 autocomplete="off"
                 class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-border)] outline-none rounded px-1 py-0.5 text-[10px] text-[var(--rg-fg)] focus:border-[var(--rg-accent)]/60"
-                title="新分支从此 ref 拉出（留空 = 当前 HEAD）"
+                title={$t('scm.newBaseRefTitle')}
               />
               <datalist id="rg-git-base-list">
                 {#each branches as b (b.name)}
@@ -354,16 +352,16 @@
             class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] border-b border-[var(--rg-border)]/60 transition-colors disabled:opacity-40 disabled:pointer-events-none"
             disabled={!!switching}
             onclick={startCreate}
-            title="创建新分支并切过去（git checkout -b）"
+            title={$t('scm.createBranchCheckoutTooltip')}
           >
             <Plus class="h-3 w-3 shrink-0" />
-            创建新分支…
+            {$t('scm.createNewBranch')}
           </button>
         {/if}
         {#if loading}
-          <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">加载分支中…</div>
+          <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('scm.loadingBranches')}</div>
         {:else if branches.length === 0}
-          <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无分支信息</div>
+          <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('scm.noBranchInfo')}</div>
         {:else}
           <!-- Filter input — always visible so keyboard-first users can jump straight in.
                Backspace on empty input closes; Enter on single match switches. -->
@@ -372,7 +370,7 @@
               bind:this={filterInput}
               bind:value={branchFilter}
               type="text"
-              placeholder="过滤分支…"
+              placeholder={$t('scm.filterBranches')}
               class="w-full bg-[var(--rg-bg)] border border-[var(--rg-border)] rounded px-2 py-0.5 text-[11px] text-[var(--rg-fg)] placeholder:text-[var(--rg-fg-muted)]/60 outline-none focus:border-[var(--rg-accent)]/60"
               onkeydown={(e) => {
                 if (e.key === 'Escape') { open = false; branchFilter = ''; }
@@ -383,7 +381,7 @@
             />
           </div>
           {#if filteredBranches.length === 0}
-            <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">无匹配分支</div>
+            <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('scm.noMatchingBranch')}</div>
           {:else}
           {#each filteredBranches as b (b.name)}
             <button
@@ -420,10 +418,10 @@
             type="button"
             class="w-full flex items-center gap-1.5 px-3 h-7 text-[11px] text-left text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] transition-colors"
             onclick={openFullSCM}
-            title="打开 Source Control 侧栏，查看完整变更 / fetch / push"
+            title={$t('scm.openInSourceControlTooltip')}
           >
             <ExternalLink class="h-3 w-3" />
-            在源代码管理中打开
+            {$t('scm.openInSourceControl')}
           </button>
         </div>
       </div>

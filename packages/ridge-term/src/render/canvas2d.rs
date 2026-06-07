@@ -41,10 +41,12 @@ use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
 // §B.8 (2026-05-08) — `is_color_emoji_codepoint` and
 // `is_visual_wide_codepoint` were the codepoint-list driven gates of
-// the pre-§B.8 stretch path; now the canvas's own `fill_text_with_max_width`
-// + `cell_w * 2.0` cap handles the overflow at runtime, codepoint-
-// agnostic. Imports removed; the helpers themselves are still in
-// `wcwidth.rs` for completeness / external consumers.
+// the pre-§B.8 stretch path. §B.9 superseded both: glyphs now draw at
+// their **natural** size via a plain `fill_text` (see `draw_row_texts`,
+// no `maxWidth` cap, no aspect-fit) and are allowed to overflow into the
+// following cells, which are pushed right via `extra_cells`. Nothing
+// pads a glyph to the cell box. Imports removed; the helpers themselves
+// remain in `wcwidth.rs` for completeness / external consumers.
 
 /// §p4.9 (2026-05-22) — abstraction over the 2D drawing context so the
 /// same `Canvas2dBackend` body works on both `CanvasRenderingContext2d`
