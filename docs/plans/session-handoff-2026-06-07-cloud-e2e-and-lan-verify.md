@@ -10,15 +10,17 @@
 
 ## 0. TL;DR（最重要的三件事）
 
-1. **本会话有 3 个未提交、未验证的改动**（cloud 连接 scheme 本地化），见 §1。需要先 `pnpm check` + 补一个单测再提交。**不要提交 `src/remote/lib/TerminalCanvas.svelte`——那是并发会话的 WIP，不是本会话的。**
+1. ~~本会话有 3 个未提交、未验证的改动（cloud 连接 scheme 本地化）~~ → **已验证并提交**（`4e2022a`，含单测 + `pnpm check` 全绿），见 §1。**提交时切记只 `git add` 指名文件，勿 `-A`**（工作树常有并发会话 WIP，如 `src/remote/lib/TerminalCanvas.svelte`、`settings.ts` 等，非本会话的，勿带上）。
 2. **进行中的大任务**：用户已批准「推全 WebRTC e2e（我全包）」——在本机起完整 host↔controller 云链路，复现 B1 / 验证 B2·B3。后端已跑通，前端接线 + 种子数据 + harness 尚未写。完整下一步见 §3。
 3. **用户新报 bug（最后一条消息）**：Dev 模式下用桌面浏览器做局域网远控，**输入 6 位验证码 → 报「网络错误」**。已确认**不是**本会话改动引入的回归（LAN 网关走相对路径 `fetch('/verify')`，不经 cloud apiClient）。根因未定，调查状态 + 假设见 §4。
 
 ---
 
-## 1. 已改但未验证（本会话唯一的代码改动，未提交）
+## 1. cloud 连接 scheme 本地化（✅ 已验证并提交 `4e2022a`）
 
-`git status` 中属于**本会话**的 3 个文件（均 cloud 连接层，目的：让 `RIDGE_CLOUD_BASE_DOMAIN` 指向本机回环时走明文 http/ws，而非 TLS https/wss，以便本地自托管 / 调试 cloud；生产域名 `remo2ridge.duckdns.org` 恒走 https/wss，不受影响）：
+> 更新（会话末）：本节原为「已改未验/未提交」，现已补单测 + `pnpm check` 全绿（0 错 0 警，4497 文件）+ vitest 6 测全过，并**单独提交为 `4e2022a`**（4 文件：3 cloud 源 + `apiClient.test.ts`）。下面保留改动说明供参考；§1 的「验证欠账」已全部完成。
+
+属于**本会话**的改动（均 cloud 连接层，目的：让 `RIDGE_CLOUD_BASE_DOMAIN` 指向本机回环时走明文 http/ws，而非 TLS https/wss，以便本地自托管 / 调试 cloud；生产域名 `remo2ridge.duckdns.org` 恒走 https/wss，不受影响）：
 
 - **`src/lib/remote/cloud/apiClient.ts`**：新增纯函数
   - `isInsecureCloudDomain(domain)` — 判定 `localhost` / `*.localhost` / `127.0.0.0/8` / `0.0.0.0` / `[::1]`（可带端口）；
@@ -27,18 +29,12 @@
 - **`src/lib/remote/cloud/ridgeCloudProvider.ts`**：`import { BASE_DOMAIN, cloudWsScheme }`；`openSignaling` 的 URL 由 `wss://` 改为 `${cloudWsScheme(this.config.baseDomain)}://`。
 - **`src/lib/remote/cloud/controllerCloudProvider.ts`**：同上（controller 腿）。
 
-**验证欠账（必须做完才提交）**：
-- [ ] 给 `isInsecureCloudDomain` 补单测（纯函数，建议 `apiClient.test.ts` 或就近）：localhost/带端口/`x.localhost`/`127.0.0.1`/真实域名各一例。
-- [ ] `pnpm check`（svelte-check）。⚠️ 注意 `controllerCloudProvider.ts:88` 有一个**既有**（非本会话引入）的 `private hostDevice = ''` 字段：第 125 行 `this.hostDevice = deviceId` 只写不读（`roomLabel`/`openSignaling` 用的是入参），`noUnusedLocals` 会报 TS6133。若 check 因此变红，顺手删除该字段（确认无外部读取）即可，属安全清理。
-- [ ] `pnpm vitest run`（确认 cloud 既有测试不回归）。
+**验证欠账（已全部完成）**：
+- [x] `apiClient.test.ts` 已补（6 测：localhost/带端口/`x.localhost`/回环IP含裸 `::1`/公网域名/误判防护）。**单测期间发现并修复一个实现 bug**：原 `:\d+$` 端口剥离会把裸 `::1` 误删成 `::`，已改为先识别括号/裸 IPv6。
+- [x] `pnpm check`（svelte-check）全绿：0 错 0 警，4497 文件。**注**：担心的 `controllerCloudProvider.ts:88` `hostDevice` TS6133 **未在项目 tsconfig 下报错**（IDE 语言服务更严，但 `pnpm check` 不拦），故未动该字段；若将来想清理，删 :88 字段 + :125 赋值即可（确认无外部读取）。
+- [x] `npx vitest run src/lib/remote/cloud/apiClient.test.ts` → 6 passed。
 
-提交建议（仅这 3 个文件，**逐个 add，勿 `git add -A`**，避免带上并发 WIP）：
-```
-git add src/lib/remote/cloud/apiClient.ts \
-        src/lib/remote/cloud/ridgeCloudProvider.ts \
-        src/lib/remote/cloud/controllerCloudProvider.ts
-git commit -m "feat(remote): cloud 连接按 base 域回环判定 http/ws（自托管/本地调试）"
-```
+已提交：`4e2022a feat(remote): cloud 连接按 base 域回环判定 http/ws（本地自托管/调试）`（4 文件；只 add 指名文件，未带并发 WIP）。**尚未 push origin**（本机共享 tree，另开会话可直接见本地 commit；需要远端可 `git push`）。
 
 ---
 
