@@ -56,7 +56,7 @@ function makeFakeAdapter() {
 describe('parseCloudControllerHostname', () => {
   it('splits a tenant host on the LAST dash into device + username', () => {
     // Arrange
-    const host = 'my-laptop-alice.remo2ridge.duckdns.org';
+    const host = 'my-laptop-alice.9527127.xyz';
     // Act
     const parsed = parseCloudControllerHostname(host);
     // Assert
@@ -80,13 +80,13 @@ describe('parseCloudControllerHostname', () => {
   it.each(['www', 'api', 'ws', 'app', 'admin', 'static', 'cdn', 'mail'])(
     'treats reserved label %s as a system host, not a tenant',
     (label) => {
-      expect(parseCloudControllerHostname(`${label}.remo2ridge.duckdns.org`)).toBeNull();
+      expect(parseCloudControllerHostname(`${label}.9527127.xyz`)).toBeNull();
     },
   );
 
   it('returns null for dash-less / dot-less / localhost hosts', () => {
     expect(parseCloudControllerHostname('localhost')).toBeNull();
-    expect(parseCloudControllerHostname('remo2ridge.duckdns.org')).toBeNull();
+    expect(parseCloudControllerHostname('9527127.xyz')).toBeNull();
     expect(parseCloudControllerHostname('mydevice.example.com')).toBeNull();
   });
 

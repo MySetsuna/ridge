@@ -29,7 +29,7 @@
 
 [Unit]
 Description=Ridge headless tmux session engine (rdg tmux)
-Documentation=https://remo2ridge.duckdns.org
+Documentation=https://9527127.xyz
 After=network-online.target
 Wants=network-online.target
 

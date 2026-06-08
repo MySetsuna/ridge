@@ -2,7 +2,9 @@ pub mod auth;
 pub mod core_bridge;
 pub mod mdns;
 mod server;
-mod tls;
+// TLS cert generation: moved to shared crate ridge-remote.
+// Re-exported so super::tls::resolve_config etc. keep working in server.rs.
+pub use ridge_remote::tls;
 
 use std::net::ToSocketAddrs;
 

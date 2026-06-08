@@ -6,10 +6,14 @@
 //! 本轮驱动 [`LocalPtySession`]（本地 shell）；同一 [`run_session`] 主循环将无改动
 //! 复用于 LAN / 公网 controller（设计文档 §E4）。
 
+pub mod dashboard;
 mod keymap;
+pub mod qr_display;
 mod lan_proto;
 mod lan_session;
+pub mod lan_host;
 mod session;
+mod workspace;
 
 pub use session::{LocalPtySession, Session};
 

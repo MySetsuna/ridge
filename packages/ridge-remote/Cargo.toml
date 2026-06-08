@@ -1,0 +1,30 @@
+[package]
+name = "ridge-remote"
+version = "0.1.0"
+edition = "2021"
+description = "Shared LAN remote-control server logic (TLS certs, HTTP/WS server, TOTP auth)"
+license = "MIT"
+
+[dependencies]
+# HTTP + WS server
+axum = { version = "0.7", features = ["ws", "macros"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+# TLS cert generation (ring backend — no cmake needed on Windows)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "crypto"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
+# Config paths (cross-platform data dir for TLS material)
+dirs = "5"
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Async runtime
+tokio = { version = "1", features = ["sync", "net", "io-util"] }
+# Errors
+anyhow = "1"
+tracing = "0.1"
+# Base64 decode for DER conversion
+base64 = "0.22"
+
+[features]
+default = []

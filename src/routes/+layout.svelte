@@ -38,9 +38,9 @@
       return;
     }
     // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
-    //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
-    //   2. 租户域名: `{device}-{username}.remo2ridge.duckdns.org`（自动从 hostname 解析）
-    // 非 cloud 模式则走 LAN TOTP 流程。
+//   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
+  //   2. 租户域名: `{device}-{username}.9527127.xyz`（自动从 hostname 解析）
+  // 非 cloud 模式则走 LAN TOTP 流程。
     void startCloudControllerBootMode();
   });
 
@@ -50,8 +50,8 @@
   // once the relay/WebRTC/E2EE handshake reaches `connected`.
   //
   // 回退策略：
-  // - 租户域名（`{device}-{username}.remo2ridge.duckdns.org`）上 cloud 接线失败
-  //   （无 user token / host 不在线）→ 重定向到 `remo2ridge.duckdns.org` 登录/激活
+  // - 租户域名（`{device}-{username}.9527127.xyz`）上 cloud 接线失败
+  //   （无 user token / host 不在线）→ 重定向到 `9527127.xyz` 登录/激活
   // - 主域名上 cloud 接线失败 → 回退 LAN TOTP 流程
   // §跨子域交接（方案 B）：主域登录后经 `#token=<jwt>` 整页回跳到本租户子域。
   // 在 boot 前把 token 落盘到本子域 localStorage，并立即清除 fragment（避免 token
@@ -100,7 +100,7 @@
     if (!handle) {
       // 租户域名上无凭据 / host 不在线 → 回主域名登录。
       if (parseCloudControllerHostname(location.hostname)) {
-        window.location.replace(`https://remo2ridge.duckdns.org/?redirect=${encodeURIComponent(location.href)}`);
+        window.location.replace(`https://9527127.xyz/?redirect=${encodeURIComponent(location.href)}`);
         return;
       }
       // 主域名上非 cloud 模式 → 回退 LAN TOTP。

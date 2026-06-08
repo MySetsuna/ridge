@@ -116,6 +116,8 @@ ridge-core = { path = "../packages/ridge-core" }
 # its `crate::teammate::native::*` paths via a thin `pub use ridge_tmux::*;`
 # re-export. Pure deps only (portable-pty + ridge-term Terminal), no new Tauri.
 ridge-tmux = { path = "../packages/ridge-tmux", features = ["http"] }
+# Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
+ridge-remote = { path = "../packages/ridge-remote" }
 
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)

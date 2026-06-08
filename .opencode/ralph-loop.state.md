@@ -12,7 +12,7 @@ last_output: "ITER 4b (FINAL): cloud IDE functional surface COMPLETE — D-GM-11
 已就绪的接入：
 - 本会话在 Windows Terminal（非 ridge），可安全 `pnpm tauri build`/启动 ridge。
 - SSH `ubuntu@oracle`（`dokku apps:list` → ridge-cloud），有部署权限。
-- 测试账号 `s4-test@ridge.test` / `S4testpass!2026`（free，含 user JWT），cloud relay 在 remo2ridge.duckdns.org。
+- 测试账号 `s4-test@ridge.test` / `S4testpass!2026`（free，含 user JWT），cloud relay 在 9527127.xyz。
 - ridge-cloud 本机 `C:\code\ridge-cloud`（main，remote dokku@oracle:ridge-cloud）。
 
 ## Phase A — 后端运行时 e2e（验证 S1/S3/S5/S8）

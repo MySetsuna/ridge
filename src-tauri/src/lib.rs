@@ -107,6 +107,7 @@ pub fn run() {
         .setup({
             let app_data_dir = app_data_dir.clone();
             move |app| {
+                tracing::info!(target: "ridge::init", phase = 1, "setup: storing AppHandle");
                 let handle = app.handle().clone();
                 // teammate HTTP server 改为「按需启动」：不在冷启动路径上拉起，仅 stash
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
@@ -121,6 +122,7 @@ pub fn run() {
                 // the remote UI event bus → relayed as a `{type:'event'}` frame →
                 // dispatched by the browser's `listen()` shim. No feedback loop:
                 // forwarding publishes to the broadcast bus, never back to `emit`.
+                tracing::info!(target: "ridge::init", phase = 2, "setup: registering web-remote event listeners");
                 {
                     use tauri::Listener;
                     for name in ["teammate-layout-changed", "teammate-active-pane-changed"] {
@@ -142,7 +144,9 @@ pub fn run() {
                 // the very first frame would render with the hardcoded fallback
                 // colors because `localStorage.ridge-theme-data` is empty until
                 // SvelteKit hydrates. See `src/app.html` for the consumer end.
+                tracing::info!(target: "ridge::init", phase = 3, "setup: building splash init script");
                 let splash_init_script = theme::build_splash_init_script(app.handle(), &app_data_dir);
+                tracing::info!(target: "ridge::init", phase = 4, "setup: building and showing main window");
                 let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                     .title("ridge")
                     .inner_size(800.0, 600.0)
@@ -154,6 +158,7 @@ pub fn run() {
                     .build()?;
                 window.show()?;
 
+                tracing::info!(target: "ridge::init", phase = 5, "setup: building system tray");
                 // Deep Root Mode（§8.1）：构建系统托盘（恢复工作台 / 彻底退出）。
                 // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
                 if let Err(e) = crate::tray::build_tray(app) {
@@ -165,6 +170,7 @@ pub fn run() {
                 //   - on_open_url：网页授权后 `ridge://auth/focus` 唤起 → 聚焦主窗口 +
                 //     广播 `ridge://auth-focus` 事件，前端据此立即触发一次轮询。
                 //   URI 仅作信号，绝不携带 JWT/敏感数据（token 一律走轮询接口）。
+                tracing::info!(target: "ridge::init", phase = 6, "setup: registering deep-link handlers");
                 {
                     use tauri_plugin_deep_link::DeepLinkExt;
                     if let Err(e) = app.deep_link().register_all() {

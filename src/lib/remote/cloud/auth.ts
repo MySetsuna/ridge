@@ -247,6 +247,19 @@ export async function refreshMe(): Promise<CloudAuthState> {
   return update((s) => ({ ...s, user }));
 }
 
+// ─── 忘记密码 / 重置密码 ─────────────────────────────────────────────────────
+
+/** 忘记密码：发送重置码到邮箱。始终成功（防枚举），UI 不应根据返回值判断邮箱是否存在。 */
+export async function forgotPassword(email: string): Promise<void> {
+  await api.forgotPassword(email);
+}
+
+/** 重置密码：验证重置码 + 设新密码 → 登录态自动写入 cloudAuth。 */
+export async function resetPassword(email: string, code: string, password: string): Promise<CloudAuthState> {
+  const { token, user } = await api.resetPassword(email, code, password);
+  return update((s) => ({ ...s, userToken: token, user }));
+}
+
 // ─── §5 每日签到（free 用户每日 2h 免费公网远控）─────────────────────────────
 
 /**

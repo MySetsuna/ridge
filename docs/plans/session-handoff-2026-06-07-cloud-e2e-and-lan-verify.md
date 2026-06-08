@@ -20,7 +20,7 @@
 
 > 更新（会话末）：本节原为「已改未验/未提交」，现已补单测 + `pnpm check` 全绿（0 错 0 警，4497 文件）+ vitest 6 测全过，并**单独提交为 `4e2022a`**（4 文件：3 cloud 源 + `apiClient.test.ts`）。下面保留改动说明供参考；§1 的「验证欠账」已全部完成。
 
-属于**本会话**的改动（均 cloud 连接层，目的：让 `RIDGE_CLOUD_BASE_DOMAIN` 指向本机回环时走明文 http/ws，而非 TLS https/wss，以便本地自托管 / 调试 cloud；生产域名 `remo2ridge.duckdns.org` 恒走 https/wss，不受影响）：
+属于**本会话**的改动（均 cloud 连接层，目的：让 `RIDGE_CLOUD_BASE_DOMAIN` 指向本机回环时走明文 http/ws，而非 TLS https/wss，以便本地自托管 / 调试 cloud；生产域名 `9527127.xyz` 恒走 https/wss，不受影响）：
 
 - **`src/lib/remote/cloud/apiClient.ts`**：新增纯函数
   - `isInsecureCloudDomain(domain)` — 判定 `localhost` / `*.localhost` / `127.0.0.0/8` / `0.0.0.0` / `[::1]`（可带端口）；

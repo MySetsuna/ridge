@@ -152,7 +152,7 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
 
 补齐了 cloud 闭环缺失的全部代码并做了能做的 live 集成验证：
 - **代码全部提交**（develop，19 commit ahead，未 push）：S4-client `cloudWebrtcAdapter`+`cloudMux`（`efd6706`）、S4-host `cloudHostBridge`（`fd28768`）、controller-side `controllerCloudProvider`(offerer)+`cloudControllerBoot`+`+layout ?cloudHost` 分支（`bade1cc`）。140+ vitest 全过，svelte-check 0/0。
-- **device pairing 真打通**（live 云后端 API）：创建测试账号 `s4-test@ridge.test` → DB 升级 premium + username `s4test`（用户授权 SSH/DB）→ `/device/code`+`/device/activate`+`/device/poll` 拿到 device JWT（tenant `s4host-s4test.remo2ridge.duckdns.org`）。
+- **device pairing 真打通**（live 云后端 API）：创建测试账号 `s4-test@ridge.test` → DB 升级 premium + username `s4test`（用户授权 SSH/DB）→ `/device/code`+`/device/activate`+`/device/poll` 拿到 device JWT（tenant `s4host-s4test.9527127.xyz`）。
 - **host 集成验证至网络边界**：重建 ridge（内嵌 cloudHostBridge）→ chrome-devtools(WebView2 CDP) 注入 cloud auth(localStorage) → CloudPanel「官方公网加速」**正确识别已配对设备 + 显示专属公网入口** → 点「建立加速连接」→ **RidgeCloudProvider 代码真的跑起来并发起 fetch（带正确 device token/tenant）**。
 - **唯一阻塞 = 本机 WebView2 无外网**（环境问题，非代码/架构）：WebView2 内 `fetch` 连 `example.com`/relay 全 `Failed to fetch`，而 shell `curl` 同域名 200；`--no-proxy-server` 也未解 → 本机 ShellCrash/Tailscale 代理/DNS/防火墙对 WebView2 进程的网络拦截。
   ⇒ **cloud 闭环代码完成 + 集成正确接线（host 识别设备并发起连接）；live WebRTC e2e 受本机 WebView2 外网阻塞**，需在 WebView2 有外网的机器/网络上跑，或修本机 WebView2 网络（环境项，超出 unified-remote 范围）。
@@ -170,8 +170,8 @@ GM 在本机做了完整运行时验证（Claude 在 Windows Terminal 非 ridge 
 - **次要待办（非阻塞）**：① 展开 `docs` 子目录时 `get_directory_children`（懒加载）经云返回"空目录"——cloud 路径下子目录懒加载的小 bug（根树 `get_file_tree` 正常），待查参数传递；② D-GM-11 pane PTY 流、D-GM-10 E2EE 身份绑定仍为后续；③ 注意：live e2e 需 host+controller 同时在线（host 信令空闲会超时断），编排时序敏感。
 
 ### S6 公网下发部署 —— 代码完成 + 本地提交，部署受阻于 ridge-cloud 远端历史分叉
-- ridge-cloud 实现 + 本地提交 `fff01da`：host-label 路由 `app.remo2ridge.duckdns.org` → `desktop-app/`（刷新为 CSP-fixed web-remote-dist）；主域名/`/api`/`/ws` 不变；指纹缓存；Dockerfile 纳入 desktop-app。`cargo check`(ridge-cloud) 0err。
-- **app.* DNS+TLS 已就绪**（duckdns 通配 + `*.remo2ridge.duckdns.org` 证书；curl app.* = 200/cert valid）——无需额外 ops。
+- ridge-cloud 实现 + 本地提交 `fff01da`：host-label 路由 `app.9527127.xyz` → `desktop-app/`（刷新为 CSP-fixed web-remote-dist）；主域名/`/api`/`/ws` 不变；指纹缓存；Dockerfile 纳入 desktop-app。`cargo check`(ridge-cloud) 0err。
+- **app.* DNS+TLS 已就绪**（duckdns 通配 + `*.9527127.xyz` 证书；curl app.* = 200/cert valid）——无需额外 ops。
 - **部署受阻（非本次代码问题）**：`git push dokku main` 被拒（non-fast-forward）；fetch 后发现**本地 clone 与已部署 dokku/main 历史分叉**（ahead 4 / behind 1、根 commit 不同 = E 组曾 force-push/re-init）。生产仓强行 reconcile 风险高（可能破坏在线服务或丢 E 组已部署 web/）——**未强推**，已恢复 E 组 stash、服务 health 200 完好。S6 部署 = 待与 E 组对齐 ridge-cloud 历史后 `git push dokku main`（代码 + DNS/cert 均就绪）。
 
 ### D-GM-11 pane PTY 流（终端经云）—— 双向已接通（commit `26b3207`）
