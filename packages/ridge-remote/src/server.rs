@@ -55,36 +55,34 @@ pub async fn resolve_tls(lan_ip: &str, hostname: &str) -> Option<RustlsConfig> {
     tls::resolve_config(lan_ip, hostname).await
 }
 
-/// Serve a pre-built `axum::Router` with TLS or plain HTTP.
+/// Serve a pre-built `axum::Router` on a caller-provided TCP listener.
 ///
-/// This is the canonical entry point for both the desktop Tauri app and
-/// the `rdg` CLI. The caller provides:
+/// The caller is responsible for binding the listener and must set it to
+/// non-blocking mode before calling this function. TLS certs are resolved
+/// via [`crate::tls::resolve_config`].
 ///
-/// - `port` — desired listen port (probed upward on conflict).
-/// - `router` — fully configured `axum::Router` (state must be applied by the
-///   caller via `.with_state(...)` before passing it in).
-/// - `lan_ip` / `hostname` — for TLS cert SANs.
-/// - `shutdown_rx` — trigger graceful shutdown by dropping the sender.
-/// - `require_tls` — if `true`, refuse to serve plain HTTP; start fails.
+/// - `std_listener` — a bound, non-blocking `std::net::TcpListener`.
+/// - `router` — fully configured `axum::Router` (state applied by caller).
+/// - `tls_config` — optional TLS config; `None` serves plain HTTP.
+/// - `shutdown_rx` — trigger graceful shutdown.
+/// - `require_tls` — if `true` and no `tls_config`, refuse to start.
 ///
-/// Returns the actual port the server is listening on.
-pub async fn serve(
-    port: u16,
+/// Returns the actual port from the listener.
+pub async fn serve_on(
+    std_listener: std::net::TcpListener,
     router: Router<()>,
-    lan_ip: &str,
-    hostname: &str,
+    tls_config: Option<RustlsConfig>,
     shutdown_rx: oneshot::Receiver<()>,
     require_tls: bool,
-) -> Result<u16>
-{
-    let (std_listener, actual_port) = bind_tcp(port)?;
+) -> Result<u16> {
+    let actual_port = std_listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let allow_insecure = std::env::var("RIDGE_REMOTE_ALLOW_INSECURE_HTTP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
     let make_svc = router.into_make_service_with_connect_info::<SocketAddr>();
 
-    match resolve_tls(lan_ip, hostname).await {
+    match tls_config {
         Some(tls_config) => {
             tracing::info!(
                 target: "ridge::remote",
@@ -124,4 +122,31 @@ pub async fn serve(
     }
 
     Ok(actual_port)
+}
+
+/// Serve a pre-built `axum::Router` with TLS or plain HTTP.
+///
+/// This is the canonical entry point for both the desktop Tauri app and
+/// the `rdg` CLI. The caller provides:
+///
+/// - `port` — desired listen port (probed upward on conflict).
+/// - `router` — fully configured `axum::Router` (state must be applied by the
+///   caller via `.with_state(...)` before passing it in).
+/// - `lan_ip` / `hostname` — for TLS cert SANs.
+/// - `shutdown_rx` — trigger graceful shutdown by dropping the sender.
+/// - `require_tls` — if `true`, refuse to serve plain HTTP; start fails.
+///
+/// Returns the actual port the server is listening on.
+pub async fn serve(
+    port: u16,
+    router: Router<()>,
+    lan_ip: &str,
+    hostname: &str,
+    shutdown_rx: oneshot::Receiver<()>,
+    require_tls: bool,
+) -> Result<u16>
+{
+    let (std_listener, actual_port) = bind_tcp(port)?;
+    let tls_config = resolve_tls(lan_ip, hostname).await;
+    serve_on(std_listener, router, tls_config, shutdown_rx, require_tls).await
 }

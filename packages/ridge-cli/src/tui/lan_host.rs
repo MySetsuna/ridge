@@ -1,8 +1,7 @@
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -13,10 +12,7 @@ use axum::{
     routing::get,
     Form, Json, Router,
 };
-use axum_server::tls_rustls::RustlsConfig;
-use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::config;
@@ -89,93 +85,18 @@ pub async fn run(
         .route("/assets/*path", get(assets_handler))
         .with_state(ctx.clone());
 
-    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().context("invalid bind address")?;
-    let std_listener = std::net::TcpListener::bind(addr)
-        .with_context(|| format!("无法绑定端口 {port}"))?;
-    let actual_port = std_listener.local_addr().map(|a| a.port()).unwrap_or(port);
-    std_listener.set_nonblocking(true)?;
+    let actual_port = ridge_remote::server::serve(
+        port,
+        app,
+        &ctx.lan_ip,
+        &ctx.machine_name,
+        shutdown_rx,
+        true,
+    )
+    .await?;
 
-    let make_svc = app.into_make_service_with_connect_info::<SocketAddr>();
-
-    let cert_key = generate_self_signed_cert(&ctx.lan_ip);
-    let allow_insecure = std::env::var("RIDGE_REMOTE_ALLOW_INSECURE_HTTP")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    match cert_key {
-        Some((cert_pem, key_pem)) => {
-            tracing::info!(target: "ridge_cli::lan_host", port = actual_port, "Serving HTTPS (TLS)");
-            let tls_config = RustlsConfig::from_pem(cert_pem, key_pem)
-                .await
-                .context("failed to build TLS config")?;
-
-            let handle = axum_server::Handle::new();
-            let shutdown_handle = handle.clone();
-            tokio::spawn(async move {
-                drop(shutdown_rx.await);
-                shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
-            });
-
-            axum_server::from_tcp_rustls(std_listener, tls_config)
-                .handle(handle)
-                .serve(make_svc)
-                .await
-                .context("TLS server failed")?;
-        }
-        None => {
-            if !allow_insecure {
-                tracing::error!(target: "ridge_cli::lan_host",
-                    "TLS cert generation failed and RIDGE_REMOTE_ALLOW_INSECURE_HTTP is not set. Refusing to start.");
-                return Err(anyhow::anyhow!(
-                    "TLS unavailable — set RIDGE_REMOTE_ALLOW_INSECURE_HTTP=1 to allow plain HTTP"
-                ));
-            }
-            tracing::warn!(target: "ridge_cli::lan_host", "Serving plain HTTP (insecure — RIDGE_REMOTE_ALLOW_INSECURE_HTTP=1)");
-            let listener = tokio::net::TcpListener::from_std(std_listener)
-                .context("failed to create tokio listener")?;
-
-            axum::serve(listener, make_svc)
-                .with_graceful_shutdown(async { drop(shutdown_rx.await) })
-                .await?;
-        }
-    }
-
-    tracing::info!(target: "ridge_cli::lan_host", "LAN remote service stopped");
+    tracing::info!(target: "ridge_cli::lan_host", port = actual_port, "LAN remote service stopped");
     Ok(())
-}
-
-// ── Self-signed TLS certificate ──
-
-fn generate_self_signed_cert(lan_ip: &str) -> Option<(Vec<u8>, Vec<u8>)> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let mut dns_names = vec!["localhost".to_string()];
-    let hostname = host_name();
-    if !hostname.is_empty() && hostname != "localhost" {
-        dns_names.push(hostname.to_string());
-    }
-
-    let mut params = CertificateParams::new(dns_names).ok()?;
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "Ridge Remote CLI");
-    params
-        .subject_alt_names
-        .push(SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)));
-    if let Ok(ip) = lan_ip.parse::<IpAddr>() {
-        params.subject_alt_names.push(SanType::IpAddress(ip));
-    }
-    params.is_ca = IsCa::NoCa;
-    params.key_usages = vec![
-        KeyUsagePurpose::DigitalSignature,
-        KeyUsagePurpose::KeyEncipherment,
-    ];
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    params.use_authority_key_identifier_extension = true;
-
-    let key = KeyPair::generate().ok()?;
-    let cert = params.self_signed(&key).ok()?;
-    Some((cert.pem().into_bytes(), key.serialize_pem().into_bytes()))
 }
 
 // ── Static file helpers ──
