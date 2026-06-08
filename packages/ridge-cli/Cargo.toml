@@ -101,10 +101,8 @@ regex = "1"
 webrtc = { version = "0.11", optional = true }
 # HTTP server framework for LAN remote web UI
 axum = { version = "0.7", features = ["ws"] }
-# TLS for LAN HTTPS (self-signed cert, no CA toolchain needed)
-axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
-# Self-signed TLS cert generation (same version as transitively pulled by webrtc)
-rcgen = "0.13"
+# Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
+ridge-remote = { path = "../ridge-remote" }
 
 [features]
 default = ["rtc"]
