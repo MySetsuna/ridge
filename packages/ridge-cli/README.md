@@ -53,7 +53,7 @@ rdg remote --daemon --shell /bin/zsh --cwd /srv/app
 ### 环境变量
 
 - `RUST_LOG`：日志级别，默认 `info`（如 `RUST_LOG=debug,ridge_cli=debug`）。
-- `RIDGE_BASE_DOMAIN`：覆盖默认 Base zone `remo2ridge.duckdns.org`（自托管 / 测试用）。
+- `RIDGE_BASE_DOMAIN`：覆盖默认 Base zone `9527127.xyz`（自托管 / 测试用）。
 
 ## systemd 安装
 

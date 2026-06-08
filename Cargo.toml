@@ -15,6 +15,7 @@ members = [
     "src-tauri",
     "packages/ridge-core",
     "packages/ridge-cli",
+    "packages/ridge-remote",
     "packages/ridge-term",
     "packages/ridge-tmux",
 ]

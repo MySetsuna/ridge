@@ -53,7 +53,7 @@ const LEAF_VALID_DAYS: i64 = 397;
 const LEAF_RENEW_DAYS: u64 = 350;
 
 /// Directory holding the remote server's TLS material.
-fn tls_dir() -> PathBuf {
+pub fn tls_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ridge")
@@ -180,13 +180,6 @@ fn ensure_ca_and_leaf(dir: &Path, lan_ip: &str, hostname: &str) -> Option<(Strin
 /// from that key with a fixed distinguished name, so it can act as the
 /// `signed_by` issuer; the downloadable `ca.pem` / `ca.der` are written only
 /// once (on first creation) and stay byte-stable for the device's trust store.
-///
-/// Security note: `ca-key.pem` is the keystone — anyone who reads it can mint
-/// certs your trusting devices accept. It lives under `%LOCALAPPDATA%`, which
-/// is ACL-restricted to the current Windows user, so other users can't read it;
-/// we rely on that per-user boundary rather than narrowing the ACL further.
-/// A process running *as the same user* can still read it (same trust boundary
-/// as the user's SSH/browser key stores).
 fn load_or_create_ca(dir: &Path) -> Option<(Certificate, KeyPair)> {
     let ca_key_path = dir.join("ca-key.pem");
 
@@ -224,9 +217,7 @@ fn load_or_create_ca(dir: &Path) -> Option<(Certificate, KeyPair)> {
     Some((ca_cert, ca_key))
 }
 
-/// Parameters for the local root CA. The distinguished name is fixed (no LAN
-/// IP / hostname) so the trust anchor stays identical across IP changes and
-/// restarts; only the leaf carries the address-specific SANs.
+/// Parameters for the local root CA.
 fn ca_params() -> Option<CertificateParams> {
     let mut params = CertificateParams::new(Vec::new()).ok()?;
     params
@@ -235,8 +226,6 @@ fn ca_params() -> Option<CertificateParams> {
     params
         .distinguished_name
         .push(DnType::OrganizationName, "Ridge");
-    // pathLenConstraint=0: this CA only ever signs the end-entity leaf below,
-    // never a subordinate CA — keep the trust it grants as narrow as possible.
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.key_usages = vec![
         KeyUsagePurpose::KeyCertSign,
@@ -246,19 +235,11 @@ fn ca_params() -> Option<CertificateParams> {
     let now = OffsetDateTime::now_utc();
     params.not_before = now - TimeDuration::days(1);
     params.not_after = now + TimeDuration::days(CA_VALID_DAYS);
-    // Fixed serial: this is a single self-signed root that is always its own
-    // issuer, so RFC 5280's per-issuer serial uniqueness is trivially met. The
-    // serial must stay stable across restarts anyway (we regenerate the CA cert
-    // in memory each run but persist `ca.pem`/`ca.der` only once — see
-    // `load_or_create_ca`). The leaves issued *by* this CA get rcgen's random
-    // serials.
     params.serial_number = Some(SerialNumber::from(1u64));
     Some(params)
 }
 
-/// Mint a leaf cert (LAN IP, loopback, localhost, hostname, mDNS name as SANs)
-/// signed by the local CA. EKU=serverAuth and a sub-398-day validity keep it
-/// acceptable to Apple's TLS policy once the CA is trusted.
+/// Mint a leaf cert signed by the local CA.
 fn generate_leaf(
     lan_ip: &str,
     hostname: &str,
@@ -295,13 +276,10 @@ fn generate_leaf(
     Some((leaf_cert.pem(), leaf_key.serialize_pem()))
 }
 
-/// `lan_ip\nhostname\n<created_unix>` — the leaf provenance marker.
 fn leaf_meta(lan_ip: &str, hostname: &str) -> String {
     format!("{lan_ip}\n{hostname}\n{}", now_unix())
 }
 
-/// Reuse the cached leaf only if its address still matches and it has not aged
-/// past [`LEAF_RENEW_DAYS`] (and the files are actually present).
 fn leaf_should_reuse(dir: &Path, lan_ip: &str, hostname: &str) -> bool {
     let Ok(meta) = std::fs::read_to_string(dir.join("meta.txt")) else {
         return false;
@@ -312,7 +290,6 @@ fn leaf_should_reuse(dir: &Path, lan_ip: &str, hostname: &str) -> bool {
     }
     let created: u64 = lines[2].trim().parse().unwrap_or(0);
     let now = now_unix();
-    // Clock moved backwards (or unparseable) → regenerate defensively.
     if created == 0 || now < created {
         return false;
     }
@@ -327,7 +304,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// Decode the first PEM block's base64 body into DER bytes.
 fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
     use base64::Engine;
     let body: String = pem

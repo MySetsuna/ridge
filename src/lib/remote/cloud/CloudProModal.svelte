@@ -8,7 +8,7 @@
   //
   // 设计：glassmorphism with real depth（design-quality），避免模板感。
 
-  import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2, Globe, CalendarCheck } from 'lucide-svelte';
+  import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2, Globe, CalendarCheck, Mail, ArrowLeft } from 'lucide-svelte';
   import { portal } from '$lib/actions/portal';
   import * as auth from './auth';
   import { cloudAuth } from './auth';
@@ -53,6 +53,49 @@
 
   let busy = $state(false);
   let errorMsg = $state('');
+
+  // 忘记密码流程（login tab 内嵌）
+  let forgotStep = $state<'idle' | 'email' | 'code'>('idle');
+  let forgotEmail = $state('');
+  let forgotCode = $state('');
+  let forgotNewPassword = $state('');
+  let forgotConfirmPassword = $state('');
+  let forgotBusy = $state(false);
+
+  async function doForgotPassword(): Promise<void> {
+    errorMsg = '';
+    forgotBusy = true;
+    try {
+      await auth.forgotPassword(forgotEmail.trim());
+      forgotStep = 'code';
+    } catch (e) {
+      handleError(e);
+    } finally {
+      forgotBusy = false;
+    }
+  }
+
+  async function doResetPassword(): Promise<void> {
+    errorMsg = '';
+    if (forgotNewPassword !== forgotConfirmPassword) {
+      errorMsg = $t('cloudPro.forgotPasswordMismatch');
+      return;
+    }
+    if (forgotNewPassword.length < 8) {
+      errorMsg = $t('cloudPro.forgotPasswordTooShort');
+      return;
+    }
+    forgotBusy = true;
+    try {
+      await auth.resetPassword(forgotEmail.trim(), forgotCode.trim(), forgotNewPassword);
+      onReady();
+      close();
+    } catch (e) {
+      handleError(e);
+    } finally {
+      forgotBusy = false;
+    }
+  }
 
   // §5 每日签到：free 用户每日得 2h 免费公网远控。成功/已签到/永久 premium 各有反馈。
   let checkinBusy = $state(false);
@@ -183,6 +226,11 @@
 
   function close(): void {
     errorMsg = '';
+    forgotStep = 'idle';
+    forgotEmail = '';
+    forgotCode = '';
+    forgotNewPassword = '';
+    forgotConfirmPassword = '';
     // 关弹窗即取消进行中的浏览器登录轮询（loginViaBrowser 会抛 INVALID_INPUT，已忽略）。
     browserAbort?.abort();
     onClose();
@@ -351,59 +399,171 @@
             </div>
           {/if}
         {:else if tab === 'login'}
-          <!-- §2.3 主登录：浏览器授权（类似 Claude Code 登录）。 -->
-          <div class="space-y-3">
-            <button
-              type="button"
-              onclick={() => void doBrowserLogin()}
-              disabled={browserBusy}
-              class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--rg-accent)] py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-            >
-              {#if browserBusy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<Globe class="h-4 w-4" />{/if}
-              {$t('cloudPro.loginBrowser')}
-            </button>
-            {#if browserBusy}
-              <p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{$t('cloudPro.loginBrowserWaiting')}</p>
-              {#if authorizeUrl}
-                <button
-                  type="button"
-                  onclick={() => openExternal(authorizeUrl)}
-                  class="block w-full text-center text-[11px] text-[var(--rg-accent)] hover:underline"
-                >
-                  {$t('cloudPro.loginBrowserFallback')}
-                </button>
+          {#if forgotStep === 'idle'}
+            <!-- §2.3 主登录：浏览器授权（类似 Claude Code 登录）。 -->
+            <div class="space-y-3">
+              <button
+                type="button"
+                onclick={() => void doBrowserLogin()}
+                disabled={browserBusy}
+                class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--rg-accent)] py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                {#if browserBusy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<Globe class="h-4 w-4" />{/if}
+                {$t('cloudPro.loginBrowser')}
+              </button>
+              {#if browserBusy}
+                <p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{$t('cloudPro.loginBrowserWaiting')}</p>
+                {#if authorizeUrl}
+                  <button
+                    type="button"
+                    onclick={() => openExternal(authorizeUrl)}
+                    class="block w-full text-center text-[11px] text-[var(--rg-accent)] hover:underline"
+                  >
+                    {$t('cloudPro.loginBrowserFallback')}
+                  </button>
+                {/if}
+              {:else}
+                <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloudPro.loginBrowserHint')}</p>
               {/if}
-            {:else}
-              <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloudPro.loginBrowserHint')}</p>
-            {/if}
 
-            <!-- 兜底：邮箱密码登录（默认折叠）。 -->
-            <button
-              type="button"
-              onclick={() => { showLocalLogin = !showLocalLogin; errorMsg = ''; }}
-              class="w-full text-center text-[11px] text-[var(--rg-fg-muted)] underline-offset-2 hover:text-[var(--rg-fg)] hover:underline"
-            >
-              {$t('cloudPro.loginLocalToggle')}
-            </button>
-            {#if showLocalLogin}
-              <form class="space-y-3 border-t border-[var(--rg-border)]/60 pt-3" onsubmit={(e) => { e.preventDefault(); void doLogin(); }}>
+              <!-- 兜底：邮箱密码登录（默认折叠）。 -->
+              <button
+                type="button"
+                onclick={() => { showLocalLogin = !showLocalLogin; errorMsg = ''; }}
+                class="w-full text-center text-[11px] text-[var(--rg-fg-muted)] underline-offset-2 hover:text-[var(--rg-fg)] hover:underline"
+              >
+                {$t('cloudPro.loginLocalToggle')}
+              </button>
+              {#if showLocalLogin}
+                <form class="space-y-3 border-t border-[var(--rg-border)]/60 pt-3" onsubmit={(e) => { e.preventDefault(); void doLogin(); }}>
+                  <label class="block">
+                    <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginEmail')}</span>
+                    <input
+                      bind:value={email}
+                      type="email"
+                      autocomplete="email"
+                      required
+                      class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/60 focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginPassword')}</span>
+                    <input
+                      bind:value={password}
+                      type="password"
+                      autocomplete="current-password"
+                      required
+                      class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                      placeholder="••••••••"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    class="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--rg-border)] py-2 text-sm font-medium text-[var(--rg-fg)] transition-all hover:border-[var(--rg-accent)]/40 hover:bg-white/5 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                  >
+                    {#if busy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<LogIn class="h-4 w-4" />{/if}
+                    {$t('cloudPro.loginSubmit')}
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => { forgotStep = 'email'; forgotEmail = email || forgotEmail; errorMsg = ''; }}
+                    class="block w-full text-center text-[11px] text-[var(--rg-accent)] hover:underline"
+                  >
+                    {$t('cloudPro.forgotPasswordLink')}
+                  </button>
+                </form>
+              {/if}
+            </div>
+          {:else if forgotStep === 'email'}
+            <!-- 忘记密码：输入邮箱发送重置码 -->
+            <div class="space-y-3">
+              <button
+                type="button"
+                onclick={() => { forgotStep = 'idle'; errorMsg = ''; }}
+                class="flex items-center gap-1 text-xs text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+              >
+                <ArrowLeft class="h-3.5 w-3.5" />
+                {$t('cloudPro.forgotPasswordBack')}
+              </button>
+              <p class="text-xs leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordSentHint')}</p>
+              <label class="block">
+                <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordEmail')}</span>
+                <input
+                  bind:value={forgotEmail}
+                  type="email"
+                  autocomplete="email"
+                  required
+                  class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/60 focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                  placeholder="you@example.com"
+                />
+              </label>
+              <button
+                type="button"
+                onclick={() => void doForgotPassword()}
+                disabled={forgotBusy}
+                class="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--rg-border)] py-2 text-xs font-medium text-[var(--rg-fg)] transition-colors hover:border-[var(--rg-accent)]/40 hover:bg-white/5 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+              >
+                {#if forgotBusy}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<Mail class="h-3.5 w-3.5" />{/if}
+                {$t('cloudPro.forgotPasswordSend')}
+              </button>
+            </div>
+          {:else if forgotStep === 'code'}
+            <!-- 忘记密码：验证码 + 新密码表单 -->
+            <div class="space-y-3">
+              <button
+                type="button"
+                onclick={() => { forgotStep = 'idle'; errorMsg = ''; }}
+                class="flex items-center gap-1 text-xs text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+              >
+                <ArrowLeft class="h-3.5 w-3.5" />
+                {$t('cloudPro.forgotPasswordBack')}
+              </button>
+              <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doResetPassword(); }}>
                 <label class="block">
-                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginEmail')}</span>
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordEmail')}</span>
                   <input
-                    bind:value={email}
+                    bind:value={forgotEmail}
                     type="email"
                     autocomplete="email"
                     required
-                    class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/60 focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
-                    placeholder="you@example.com"
+                    class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
                   />
                 </label>
                 <label class="block">
-                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.loginPassword')}</span>
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordCode')}</span>
                   <input
-                    bind:value={password}
+                    bind:value={forgotCode}
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]{6}"
+                    maxlength="6"
+                    autocomplete="one-time-code"
+                    required
+                    class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-center font-mono text-sm tracking-widest text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                    placeholder="000000"
+                  />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordNewPassword')}</span>
+                  <input
+                    bind:value={forgotNewPassword}
                     type="password"
-                    autocomplete="current-password"
+                    autocomplete="new-password"
+                    minlength="8"
+                    required
+                    class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
+                    placeholder="••••••••"
+                  />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordConfirmPassword')}</span>
+                  <input
+                    bind:value={forgotConfirmPassword}
+                    type="password"
+                    autocomplete="new-password"
+                    minlength="8"
                     required
                     class="w-full rounded-lg border border-[var(--rg-border)] bg-black/20 px-3 py-2 text-sm text-[var(--rg-fg)] outline-none transition-colors focus:border-[var(--rg-accent)]/60 focus:ring-2 focus:ring-[var(--rg-accent)]/30"
                     placeholder="••••••••"
@@ -411,15 +571,23 @@
                 </label>
                 <button
                   type="submit"
-                  disabled={busy}
-                  class="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--rg-border)] py-2 text-sm font-medium text-[var(--rg-fg)] transition-all hover:border-[var(--rg-accent)]/40 hover:bg-white/5 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/50"
+                  disabled={forgotBusy}
+                  class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--rg-accent)] py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                 >
-                  {#if busy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<LogIn class="h-4 w-4" />{/if}
-                  {$t('cloudPro.loginSubmit')}
+                  {#if forgotBusy}<Loader2 class="h-4 w-4 animate-spin" />{:else}<KeyRound class="h-4 w-4" />{/if}
+                  {$t('cloudPro.forgotPasswordSubmit')}
+                </button>
+                <button
+                  type="button"
+                  onclick={() => void doForgotPassword()}
+                  disabled={forgotBusy}
+                  class="block w-full text-center text-[11px] text-[var(--rg-accent)] hover:underline disabled:opacity-50"
+                >
+                  {$t('cloudPro.forgotPasswordResend')}
                 </button>
               </form>
-            {/if}
-          </div>
+            </div>
+          {/if}
         {:else}
           <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); void doActivate(); }}>
             <p class="text-xs leading-relaxed text-[var(--rg-fg-muted)]">

@@ -31,7 +31,7 @@
 
 ```
 浏览器(controller, user JWT) ─┐                          ┌─ 桌面端/ridge-cli(host, device JWT)
-                              ├─ wss://{device}-{user}.remo2ridge.duckdns.org/ws ─┤
+                              ├─ wss://{device}-{user}.9527127.xyz/ws ─┤
                               └──── 信令(SDP/ICE)转发 ────┘
         └──────────── WebRTC DataChannel (E2EE: X25519 + ChaCha20-Poly1305) ───────────┘
                        （relay 看不到明文；TURN 也看不到）
@@ -41,9 +41,9 @@
 
 ## 1. 域名与身份（解决你原方案里的歧义）
 
-- Base zone：`remo2ridge.duckdns.org`
-- 每设备公网入口：`https://{device}-{username}.remo2ridge.duckdns.org`
-- WS 端点：`wss://{device}-{username}.remo2ridge.duckdns.org/ws`
+- Base zone：`9527127.xyz`
+- 每设备公网入口：`https://{device}-{username}.9527127.xyz`
+- WS 端点：`wss://{device}-{username}.9527127.xyz/ws`
 
 ### 1.1 命名规则（**契约级，覆盖原 prompt 中“username 可含连字符”的说法**）
 
@@ -95,7 +95,7 @@ Header 传递：`Authorization: Bearer <jwt>`。
 
 ---
 
-## 4. HTTP API（全部挂在主域名 `https://remo2ridge.duckdns.org/api/v1`）
+## 4. HTTP API（全部挂在主域名 `https://9527127.xyz/api/v1`）
 
 > 路径前缀 `/api/v1`。除标注 `(Bearer)` 的需带 user/device token 外，其余公开。
 > 所有请求/响应体走 §2 信封。
@@ -106,6 +106,11 @@ Header 传递：`Authorization: Bearer <jwt>`。
 - `GET  /me` (Bearer user) → `{user}`
 - `POST /auth/set-username` (Bearer user) `{username}`
   - 校验 §1.1 正则 + 全局唯一；非 premium 返回 `NOT_PREMIUM`；占用返回 `USERNAME_TAKEN`。
+- `POST /auth/forgot-password` `{email}` → `{ok:true}`
+  - 一律返回成功（不暴露邮箱是否存在）；仅对已存在且已验证的账户发送 6 位重置码邮件。
+- `POST /auth/reset-password` `{email, code, password}` → `{token, user}`
+  - 校验重置码 + 密码长度 → 更新密码 → 签发新 user token（即登录）。
+  - 最多 5 次尝试；过期 15 分钟；成功后一次性删除重置码（防重放）。
 
 `user` 对象形状（前后端共用）：
 ```json
@@ -142,7 +147,7 @@ Header 传递：`Authorization: Bearer <jwt>`。
   - 校验 `device_name` §1.1 正则；该 user 下唯一（否则 `DEVICE_NAME_TAKEN`）。
   - 找到 `pairing_code` 且未过期未绑定（否则 `PAIRING_EXPIRED`/`PAIRING_NOT_FOUND`）。
   - 创建/复用 `devices` 行；置 `pairing_codes.status='bound'` 并写入 user_id/device_name + 生成 device JWT。
-  - 返回 `{ public_entry: "https://{device_name}-{username}.remo2ridge.duckdns.org" }`。
+  - 返回 `{ public_entry: "https://{device_name}-{username}.9527127.xyz" }`。
 - `GET    /devices` (Bearer user) → `{devices:[...]}`
 - `DELETE /devices/:name` (Bearer user) → `{ok:true}`
 
@@ -350,7 +355,7 @@ host 永远是 answerer。
 - 安全库：`jsonwebtoken`、`argon2`(密码哈希)、`hmac`+`sha2`(LS 校验)。
 - 配置全部走环境变量（Dokku `config:set` 注入）：
   `DATABASE_URL`（Dokku postgres link 自动注入）、`JWT_SECRET`、`LEMON_SQUEEZY_SECRET`、
-  `BASE_DOMAIN`(默认 `remo2ridge.duckdns.org`)、`PORT`（Dokku 注入，默认 5000）。
+  `BASE_DOMAIN`(默认 `9527127.xyz`)、`PORT`（Dokku 注入，默认 5000）。
   启动时 fail-fast 校验必需变量存在。
 - 静态托管：Web 面板（SvelteKit adapter-static）产物由后端在**主域名**兜底返回
   （非 `/api`、非 `/ws` 的 GET 路由 → 返回 SPA `index.html`/静态资源）。

@@ -19,7 +19,7 @@
 
 [Unit]
 Description=Ridge headless remote host (ridge-cli daemon)
-Documentation=https://remo2ridge.duckdns.org
+Documentation=https://9527127.xyz
 After=network-online.target
 Wants=network-online.target
 

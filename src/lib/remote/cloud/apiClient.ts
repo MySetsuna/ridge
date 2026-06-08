@@ -17,12 +17,12 @@
  * 在 Chromium/WebView2 会自动解析到 127.0.0.1，故子域模型在 localhost 同样可用。
  */
 const ENV_BASE_DOMAIN = (import.meta.env.RIDGE_CLOUD_BASE_DOMAIN as string | undefined) || '';
-export const BASE_DOMAIN = ENV_BASE_DOMAIN || 'remo2ridge.duckdns.org';
+export const BASE_DOMAIN = ENV_BASE_DOMAIN || '9527127.xyz';
 
 /**
  * 判定一个 cloud base 域是否为**不安全本机回环**（→ 明文 http/ws，而非 TLS）。
  *
- * 生产 base（`remo2ridge.duckdns.org` 等真实域名）恒为 false，继续走 https/wss。
+ * 生产 base（`9527127.xyz` 等真实域名）恒为 false，继续走 https/wss。
  * 仅当 base 指向本机回环（`localhost` / `*.localhost` / `127.0.0.0/8` / `0.0.0.0` /
  * `[::1]`，可带端口）时为 true —— 用于自托管 / 本地 ridge-cloud（无 TLS 反代）调试。
  * 这是 apiClient.ts 顶部注释所述「`RIDGE_CLOUD_BASE_DOMAIN=localhost:xxxx` 把客户端
@@ -77,6 +77,7 @@ export type ApiErrorCode =
   | 'DEVICE_NAME_TAKEN'
   | 'SIGNATURE_INVALID'
   | 'RATE_LIMITED'
+  | 'INVALID_RESET_CODE'
   | 'INTERNAL'
   // 浏览器登录授权（契约 §2.1）
   | 'AUTH_REQUEST_NOT_FOUND'
@@ -176,7 +177,7 @@ function coerceCode(raw: string): ApiErrorCode {
     'UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND', 'INVALID_INPUT', 'INVALID_KEY',
     'KEY_ALREADY_USED', 'USERNAME_TAKEN', 'USERNAME_REQUIRED', 'NOT_PREMIUM',
     'PAIRING_EXPIRED', 'PAIRING_NOT_FOUND', 'DEVICE_NAME_TAKEN',
-    'SIGNATURE_INVALID', 'RATE_LIMITED', 'INTERNAL',
+    'SIGNATURE_INVALID', 'RATE_LIMITED', 'INVALID_RESET_CODE', 'INTERNAL',
     'AUTH_REQUEST_NOT_FOUND', 'AUTH_REQUEST_EXPIRED',
   ];
   return (known as string[]).includes(raw) ? (raw as ApiErrorCode) : 'INTERNAL';
@@ -300,6 +301,18 @@ export function listDevices(token: string): Promise<{ devices: DeviceDto[] }> {
 
 export function deleteDevice(token: string, name: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(`/devices/${encodeURIComponent(name)}`, { method: 'DELETE', token });
+}
+
+// ─── §4.1 忘记密码 / 重置密码 ──────────────────────────────────────────────
+
+/** 忘记密码：发送重置码到邮箱。始终返回 {ok:true}（防枚举）。 */
+export function forgotPassword(email: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/auth/forgot-password', { method: 'POST', body: { email } });
+}
+
+/** 重置密码：邮箱 + 重置码 + 新密码 → 签发新 token（即登录）。 */
+export function resetPassword(email: string, code: string, password: string): Promise<AuthResult> {
+  return request<AuthResult>('/auth/reset-password', { method: 'POST', body: { email, code, password } });
 }
 
 // ─── §5.2 ICE servers（必须调此接口取 iceServers，不要硬编码）──────────────
