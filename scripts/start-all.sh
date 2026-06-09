@@ -70,7 +70,7 @@ done
 echo "🚀 启动 wind 前端..."
 cd "$WIND_DIR"
 
-export RIDGE_CLOUD_BASE_DOMAIN="https://localhost:5001"
+export RIDGE_CLOUD_BASE_DOMAIN="localhost:5001"
 
 [[ ! -d "node_modules" ]] && { echo "📦 安装依赖..."; pnpm install; }
 

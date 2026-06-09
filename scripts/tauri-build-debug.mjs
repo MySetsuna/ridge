@@ -27,7 +27,7 @@ const root = path.join(__dirname, '..');
 const base =
   process.env.RIDGE_CLOUD_BASE_DOMAIN ||
   process.env.RIDGE_BASE_DOMAIN ||
-  'localhost:5173';
+  'localhost:5001';
 
 const env = {
   ...process.env,

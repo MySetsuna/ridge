@@ -12,7 +12,7 @@ echo "  wind 前端开发环境 (Main:5173, Remote:5174)"
 echo "═══════════════════════════════════════"
 
 # —— 1. 连接本地 ridge-cloud (HTTPS) ——
-export RIDGE_CLOUD_BASE_DOMAIN="${RIDGE_CLOUD_BASE_DOMAIN:-https://localhost:5000}"
+export RIDGE_CLOUD_BASE_DOMAIN="${RIDGE_CLOUD_BASE_DOMAIN:-localhost:5001}"
 echo "✅ RIDGE_CLOUD_BASE_DOMAIN=$RIDGE_CLOUD_BASE_DOMAIN"
 
 # —— 2. 检查依赖 ——

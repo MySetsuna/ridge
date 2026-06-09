@@ -15,7 +15,7 @@ const child = spawn('pnpm', ['run', 'dev'], {
   shell: true,
   env: {
     ...process.env,
-    RIDGE_CLOUD_BASE_DOMAIN: process.env.RIDGE_CLOUD_BASE_DOMAIN || 'localhost:3000',
+    RIDGE_CLOUD_BASE_DOMAIN: process.env.RIDGE_CLOUD_BASE_DOMAIN || 'localhost:5001',
   },
 });
 

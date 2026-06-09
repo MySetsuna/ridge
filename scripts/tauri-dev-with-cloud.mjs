@@ -9,12 +9,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 // 设置 cloud 环境变量
-process.env.RIDGE_CLOUD_BASE_DOMAIN = 'localhost:3000';
+process.env.RIDGE_CLOUD_BASE_DOMAIN = 'localhost:5001';
 
 console.log('═══════════════════════════════════════');
 console.log('  Tauri Dev with Local Ridge Cloud');
 console.log('═══════════════════════════════════════');
-console.log('  RIDGE_CLOUD_BASE_DOMAIN=localhost:3000');
+console.log('  RIDGE_CLOUD_BASE_DOMAIN=localhost:5001');
 console.log('  Main Vite:  http://localhost:5173');
 console.log('  Remote Vite: http://localhost:5174');
 console.log('═══════════════════════════════════════');
