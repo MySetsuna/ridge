@@ -803,10 +803,16 @@ pub async fn write_to_pty(
     pane_id: String,
     data: String,
 ) -> Result<(), String> {
-    write_to_pty_inner(state, pane_id, data).map_err(|e| e.to_string())
+    write_to_pty_async(state, pane_id, data)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-fn write_to_pty_inner(
+/// Drop-in blocking equivalent — does NOT defuse the ConPTY blocking issue.
+/// Used by callers that synchronously write small payloads (exit, clear
+/// screen) where blocking a worker thread is acceptable.
+#[allow(dead_code)]
+pub fn write_to_pty_inner(
     state: State<'_, AppState>,
     pane_id: String,
     data: String,
@@ -826,6 +832,37 @@ fn write_to_pty_inner(
         pty_log::pane_not_found("write", wid, pane_id);
         Err(AppError::PaneNotFound(pane_id))
     }
+}
+
+/// Async version that offloads blocking ConPTY WriteFile to a blocking task
+/// so it cannot freeze the async runtime when ConPTY's write buffer is full.
+/// This is the primary path used by JSON-RPC dispatch and the Tauri command.
+async fn write_to_pty_async(
+    state: State<'_, AppState>,
+    pane_id: String,
+    data: String,
+) -> Result<(), AppError> {
+    let pane_id = parse_pane_id(&pane_id)?;
+    let wid = state.active_workspace_id();
+    let (writer, _data) = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&wid)
+            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+        let handle = ws.terminals.get(&pane_id).ok_or_else(|| {
+            pty_log::pane_not_found("write", wid, pane_id);
+            AppError::PaneNotFound(pane_id)
+        })?;
+        (handle.writer.clone(), data.clone())
+    };
+    tokio::task::spawn_blocking(move || {
+        let mut w = writer.lock();
+        let _ = w.write_all(_data.as_bytes());
+        let _ = w.flush();
+    })
+    .await
+    .map_err(|_| AppError::PtyError("blocking task panicked".into()))?;
+    Ok(())
 }
 
 #[tauri::command]

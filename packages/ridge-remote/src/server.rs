@@ -146,7 +146,7 @@ pub async fn serve(
     require_tls: bool,
 ) -> Result<u16>
 {
-    let (std_listener, actual_port) = bind_tcp(port)?;
+    let (std_listener, _actual_port) = bind_tcp(port)?;
     let tls_config = resolve_tls(lan_ip, hostname).await;
     serve_on(std_listener, router, tls_config, shutdown_rx, require_tls).await
 }

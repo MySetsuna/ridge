@@ -5,11 +5,8 @@
   // 武装后下一个键（命名键或软键盘字符）消费即释放（见 modState consumeMods）。
   import { stickyMods, toggleMod, peekMods, clearMods } from './modState.svelte';
 
-  let { onKey, keyboardOffset = 0, onArm }: {
+  let { onKey, onArm }: {
     onKey: (key: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
-    keyboardOffset?: number;
-    // 武装某修饰键时回调（让 TerminalCanvas 聚焦隐藏输入、确保软键盘已升起来
-    // 接住下一个组成 chord 的字符）。
     onArm?: () => void;
   } = $props();
 
@@ -35,7 +32,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- preventDefault on pointerdown so tapping a key never blurs the terminal's
      hidden textarea — that would dismiss the mobile soft keyboard. -->
-<div class="vk-container" style="transform: translateY(-{keyboardOffset}px)" onpointerdown={(e) => e.preventDefault()}>
+<div class="vk-container" onpointerdown={(e) => e.preventDefault()}>
   <div class="vk-row">
     <button
       class="vk-key mod"
@@ -76,8 +73,6 @@
     gap: 4px;
     padding: 6px 8px;
     background: var(--rg-surface);
-    border-top: 1px solid var(--rg-border-bright);
-    border-bottom: 1px solid var(--rg-border-bright);
     user-select: none;
     -webkit-user-select: none;
     touch-action: manipulation;

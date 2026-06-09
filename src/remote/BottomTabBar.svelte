@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Folder, GitBranch, Search, Keyboard, RefreshCw, MousePointer2 } from 'lucide-svelte';
+  import { RefreshCw, MousePointer2 } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
   import WorkspaceTree from './lib/WorkspaceTree.svelte';
@@ -9,10 +9,7 @@
   // 名称作为树弹层底部的小字保留，不再单独占位。
   let {
     ws,
-    sidebarTab = null as 'files' | 'git' | 'search' | null,
-    onSidebarToggle,
     onRefresh,
-    showKeyboard = $bindable(false),
     selectionMode = $bindable(false),
     backendName = 'Canvas2D',
     panes = [],
@@ -22,10 +19,7 @@
     onWorkspacesChanged,
   }: {
     ws?: RemoteConnection;
-    sidebarTab?: 'files' | 'git' | 'search' | null;
-    onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
     onRefresh?: () => void;
-    showKeyboard?: boolean;
     selectionMode?: boolean;
     backendName?: string;
     panes?: PaneInfo[];
@@ -37,24 +31,7 @@
 </script>
 
 <div class="actionbar">
-  <!-- Sidebar toggles -->
   <div class="group">
-    <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title={$t('mobile.filesTitle')} tabindex="-1">
-      <Folder class="w-4 h-4" />
-    </button>
-    <button class="ctrl-btn" class:active={sidebarTab === 'git'} onclick={() => onSidebarToggle?.('git')} title="Git" tabindex="-1">
-      <GitBranch class="w-4 h-4" />
-    </button>
-    <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title={$t('mobile.searchTitle')} tabindex="-1">
-      <Search class="w-4 h-4" />
-    </button>
-  </div>
-
-  <!-- View controls -->
-  <div class="group">
-    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
-      <Keyboard class="w-4 h-4" />
-    </button>
     <button class="ctrl-btn" class:active={selectionMode} onclick={() => selectionMode = !selectionMode} title={$t('mobile.selectionToggle')} tabindex="-1">
       <MousePointer2 class="w-4 h-4" />
     </button>
