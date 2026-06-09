@@ -10,6 +10,7 @@
 import { build, version } from '$service-worker';
 
 const CACHE = `ridge-web-remote-${version}`;
+const HTML_CACHE = `ridge-html-${version}`;
 // Precache the content-hashed `_app` bundle (immutable). We intentionally skip
 // `files` (favicon, 1.jpg/2.jpg, the nested mobile build) to keep install light.
 const PRECACHE = build;
@@ -29,7 +30,7 @@ sw.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== HTML_CACHE).map((k) => caches.delete(k))))
       .then(() => sw.clients.claim()),
   );
 });
@@ -43,6 +44,31 @@ sw.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
   if (BYPASS.some((p) => url.pathname === p || url.pathname.startsWith(p + '/'))) return;
+
+  // Navigation requests (page reload / address-bar navigations): cache the
+  // response on the first successful fetch so subsequent flaky refreshes
+  // serve the app shell from cache instead of downloading the HTML.
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res.ok) {
+            const clone = res.clone();
+            void caches.open(HTML_CACHE).then((c) => c.put(req, clone));
+          }
+          return res;
+        })
+        .catch(() =>
+          caches.match(req).then((cached) => {
+            if (cached) return cached;
+            // Last resort: the request URL might differ from the cache key
+            // (e.g., ? query), so try matching the bare pathname.
+            return caches.match(url.pathname).then((fallback) => fallback ?? Response.error());
+          }),
+        ),
+    );
+    return;
+  }
 
   // Content-hashed bundle → cache-first (immutable). Everything else →
   // network-first, falling back to cache when offline.

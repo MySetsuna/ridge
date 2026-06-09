@@ -689,29 +689,6 @@ impl<B: RenderBackend> Renderer<B> {
         let row = grid.row(cur.row)?;
         let cell = row.cells.get(cur.col).copied().unwrap_or_default();
         let cluster_text = row.cluster_at(cur.col).map(|c| c.text.as_ref().to_string());
-        // §B.9 — cumulative extra cells from wide-cluster glyph expansion
-        // before the cursor column. Used by backends to compute the visual
-        // cursor position when preceding emoji have expanded beyond their
-        // grid span. Heuristic: only multi-codepoint clusters (emoji ZWJ,
-        // flags) expand; plain CJK (width=2, no cluster) does not.
-        let extra_cells = {
-            let mut extra = 0.0f64;
-            let mut i = 0;
-            while i < cur.col {
-                let c = row.cells.get(i).copied().unwrap_or_default();
-                if c.width >= 2 {
-                    if row.cluster_at(i).is_some() {
-                        extra += 1.0;
-                    }
-                    i += c.width as usize;
-                } else if c.width == 1 {
-                    i += 1;
-                } else {
-                    i += 1;
-                }
-            }
-            extra
-        };
         Some(CursorDraw {
             row: cur.row,
             col: cur.col,
@@ -728,7 +705,6 @@ impl<B: RenderBackend> Renderer<B> {
             ch_attr: cell.attr,
             width: cell.width.max(1),
             cluster_text,
-            extra_cells,
         })
     }
 }
@@ -1025,7 +1001,6 @@ mod tests {
             ch_attr: crate::term::attr_table::AttrId::DEFAULT,
             width: 1,
             cluster_text: None,
-            extra_cells: 0.0,
         }
     }
 

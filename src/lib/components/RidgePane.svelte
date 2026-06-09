@@ -17,7 +17,7 @@ import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { t, tr } from '$lib/i18n';
-import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
+import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
@@ -1467,6 +1467,9 @@ function jumpToBottom() {
 // tells the host PTY its own dimensions.
 function refreshForRemote() {
 	if (!alive || !attached) return;
+	// Select this pane's workspace in the sidebar/WorkspaceTree so the
+	// active terminal and workspace tree stay in sync after a refresh.
+	activeWorkspaceId.set(workspaceId);
 	manager.fitPaneNow(paneId);
 	manager.forceFullRedraw(paneId);
 }
@@ -1645,6 +1648,18 @@ function onContainerMouseDown(e: MouseEvent) {
 	e.preventDefault();
 }
 
+// Capture-phase keydown handler: prevent Backspace/Delete at the capture
+// phase so WebView2 never enters back-navigation detection mode, which
+// delays the initial key repeat on non-input elements (~1-2 s wait before
+// holding Backspace starts deleting).
+function captureBackspace(node: HTMLElement) {
+	function onCapture(e: KeyboardEvent) {
+		if (e.key === 'Backspace' || e.key === 'Delete') e.preventDefault();
+	}
+	node.addEventListener('keydown', onCapture, { capture: true });
+	return { destroy() { node.removeEventListener('keydown', onCapture, { capture: true }); } };
+}
+
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1663,6 +1678,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	onmousedown={onContainerMouseDown}
 	onpointerdown={onContainerPointerDown}
 	onkeydown={onContainerKeyDown}
+	use:captureBackspace
 >
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the

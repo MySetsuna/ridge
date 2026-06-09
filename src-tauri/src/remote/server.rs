@@ -18,7 +18,6 @@ use axum::{
     routing::{get, post},
     Form, Json, Router,
 };
-use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -1794,14 +1793,27 @@ async fn handle_ws(
                             Some("stdin") => {
                                 let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                                 let data_str = parsed["data"].as_str().unwrap_or("");
-                                if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                                    let workspaces = ctx.state.workspaces.read();
-                                    if let Some(ws) = workspaces.get(&active_ws_id) {
-                                        if let Some(handle) = ws.terminals.get(&pane_id) {
-                                            let mut writer = handle.writer.lock();
-                                            let _ = writer.write_all(data_str.as_bytes());
-                                            let _ = writer.flush();
-                                        }
+                                if let (Ok(pane_id), false) =
+                                    (Uuid::parse_str(pane_id_str), data_str.is_empty())
+                                {
+                                    let data = data_str.to_string();
+                                    let writer = {
+                                        let workspaces = ctx.state.workspaces.read();
+                                        workspaces
+                                            .get(&active_ws_id)
+                                            .and_then(|ws| ws.terminals.get(&pane_id))
+                                            .map(|handle| handle.writer.clone())
+                                    };
+                                    // Offload blocking ConPTY WriteFile to a
+                                    // blocking task so it cannot freeze the WS
+                                    // event loop (which would cascade into
+                                    // RPC timeouts + reconnect storms).
+                                    if let Some(writer) = writer {
+                                        tokio::task::spawn_blocking(move || {
+                                            let mut w = writer.lock();
+                                            let _ = w.write_all(data.as_bytes());
+                                            let _ = w.flush();
+                                        });
                                     }
                                 }
                                 // no response needed

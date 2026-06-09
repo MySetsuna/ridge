@@ -28,5 +28,8 @@
       "PowerShell(Get-ChildItem -Path C:\\\\code\\\\wind -Directory | ForEach-Object { $_.Name })",
       "Bash(grep -E \"\\\\.\\(ts|svelte\\)$\")"
     ]
-  }
+  },
+  "disabledMcpjsonServers": [
+    "codegraph"
+  ]
 }

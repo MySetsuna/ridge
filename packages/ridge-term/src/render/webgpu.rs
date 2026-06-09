@@ -502,7 +502,6 @@ impl RenderBackend for WebGpuPaneBackend {
         // prevent an independent bg from visually cutting the emoji.
         let render_path = scan_line_path(row.cells, row.clusters);
         let mut consume_until: usize = 0;
-        let mut extra_cells: f64 = 0.0;
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
@@ -518,54 +517,8 @@ impl RenderBackend for WebGpuPaneBackend {
 
             let cell_span = cell.width.max(1) as usize;
 
-            // §B.9 — compute effective span for wide cells via atlas
-            // lookup (px_w). Falls back to cell_span on cache miss
-            // (first frame catches up on frame 2).
-            let effective_span = if cell_span >= 2 {
-                let cluster_text = if !row.clusters.is_empty() {
-                    let target = col.min(u16::MAX as usize) as u16;
-                    row.clusters.iter().find(|c| c.col == target).map(|c| c.text.as_ref())
-                } else {
-                    None
-                };
-                let (font_family_hash, font_size_q) = {
-                    let ctx = self.ctx.borrow();
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    std::hash::Hash::hash(&ctx.font_family, &mut h);
-                    (std::hash::Hasher::finish(&h), (ctx.font_size_px * 100.0).round() as u16)
-                };
-                let glyph_id = match cluster_text {
-                    Some(text) => {
-                        use std::hash::Hasher;
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        h.write(text.as_bytes());
-                        let raw = std::hash::Hasher::finish(&h) as u32;
-                        CLUSTER_TAG | (raw & !CLUSTER_TAG)
-                    }
-                    None => cell.ch as u32,
-                };
-                let key = GlyphKey {
-                    font_family_hash,
-                    font_size_q,
-                    glyph_id,
-                    style_flags: 0,
-                };
-                let entry = self.ctx.borrow_mut().atlas.lookup(&key);
-                match entry {
-                    Some(e) => {
-                        let advance_px = (e.px_w as f32).max(1.0);
-                        (advance_px / cell_w).ceil() as usize
-                    }
-                    None => cell_span,
-                }
-            } else {
-                cell_span
-            };
-
-            let effective_span_f = effective_span as f64;
-            let effective_col = col as f64 + extra_cells;
-            let pixel_x = (effective_col as f32 * cell_w + 0.5).floor();
-            let pixel_x_right = ((effective_col + effective_span_f) as f32 * cell_w + 0.5).floor();
+            let pixel_x = (col as f32 * cell_w + 0.5).floor();
+            let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
             let cell_w_px = pixel_x_right - pixel_x;
 
             let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
@@ -585,8 +538,6 @@ impl RenderBackend for WebGpuPaneBackend {
             if render_path == RenderPath::Slow && cell_span > 1 {
                 consume_until = col + cell_span;
             }
-
-            extra_cells += effective_span_f - cell.width as f64;
         }
         self.pending_instances.append(&mut row_bg_instances);
     }
@@ -602,10 +553,6 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let render_path = scan_line_path(row.cells, row.clusters);
 
-        // §B.9 — cumulative extra cells from wide-cluster expansion.
-        // Tracks the visual column offset for each grid column.
-        let mut extra_cells: f64 = 0.0;
-
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
@@ -619,8 +566,7 @@ impl RenderBackend for WebGpuPaneBackend {
 
             // Pixel-aligned positions — floor(pos + 0.5) prevents sub-pixel
             // seams between adjacent cells that would show as hairline gaps.
-            let effective_col_f = col as f32 + extra_cells as f32;
-            let pixel_x = (effective_col_f * cell_w + 0.5).floor();
+            let pixel_x = (col as f32 * cell_w + 0.5).floor();
             let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
             let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
             let row_h_int = pixel_y_bot - pixel_y;
@@ -780,23 +726,11 @@ impl RenderBackend for WebGpuPaneBackend {
             }
 
             if !drawn_procedurally {
-                // §B.9 — glyph quad at natural size with effective column.
-                // Wide/color glyphs keep their native advance (no aspect-fit
-                // scaling), pushing subsequent cells right via extra_cells.
                 if let Some(e) = entry {
                     let natural_w = (e.px_w as f32).max(1.0);
-                    let (gx, gw) = if is_color_flag == 1 || cell_span >= 2 {
-                        let span = (natural_w / cell_w).ceil() as usize;
-                        let ex = (effective_col_f * cell_w + 0.5).floor();
-                        extra_cells += span as f64 - cell_span as f64;
-                        (ex, natural_w)
-                    } else {
-                        (pixel_x, natural_w)
-                    };
-
                     row_glyph_instances.push(CellInstance {
-                        cell_xy: [gx, pixel_y],
-                        cell_size: [gw, row_h_int],
+                        cell_xy: [pixel_x, pixel_y],
+                        cell_size: [natural_w, row_h_int],
                         atlas_uv: e.uv,
                         atlas_layer: e.layer as u32,
                         fg_rgba: rgba_u8_to_f32(fg),
@@ -814,7 +748,7 @@ impl RenderBackend for WebGpuPaneBackend {
 
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
         let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
-        let effective_col = cursor.col as f64 + cursor.extra_cells;
+        let effective_col = cursor.col as f64;
         let pixel_x = (effective_col as f32 * cell_w + 0.5).floor();
         let cursor_span = cursor.width.max(1) as usize;
 

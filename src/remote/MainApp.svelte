@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
+  import { Folder, GitBranch, Search, Keyboard } from 'lucide-svelte';
   import TerminalCanvas from './lib/TerminalCanvas.svelte';
-  import TopBar from './TopBar.svelte';
+  import VirtualKeyboard from './lib/VirtualKeyboard.svelte';
   import BottomTabBar from './BottomTabBar.svelte';
   import RemoteSidebar from './lib/RemoteSidebar.svelte';
   import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
@@ -14,7 +15,6 @@
   let wsState = $state<ConnectionState>('disconnected');
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
-  let showKeyboard = $state(false);
   // §selection: explicit selection mode (toggled in BottomTabBar). When on, a
   // single-finger drag selects; when off it scrolls (no accidental selection).
   let selectionMode = $state(false);
@@ -26,6 +26,7 @@
   let createError = $state('');
 
   let canvasRef: TerminalCanvas | undefined = $state();
+  let showKeyboard = $state(true);          // virtual keyboard visible in header
   // Kernel palette derived from the desktop theme; applied to the canvas once it
   // mounts (the theme push usually arrives before the terminal exists).
   let kernelTheme: Record<string, string> | null = $state(null);
@@ -305,9 +306,19 @@
         if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
         expectReplayPane = pid;
         ws.subscribePane(pid);
+        // The new server socket has no knowledge of our viewport size.
+        // Claim it immediately so the PTY is reflowed and the terminal
+        // doesn't stay stuck at the 80x24 default.
+        const d = canvasRef?.getDims();
+        if (d) ws.claimPane(pid, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
       }
       ws.listPanes();
       refreshWorkspaces();
+      // Reset stale-guard seq to 0 so the debounced refreshActivePane
+      // below can actually send — on reconnect no new claimPane has been
+      // issued yet, so the guard cur <= _refreshSeq would otherwise
+      // match and silently block the re-subscribe PTY resize (#B3).
+      _refreshSeq = -1;
       refreshActivePane();
     });
     ws.listPanes();
@@ -359,8 +370,6 @@
 </script>
 
 <div class="app-root">
-  <TopBar {panes} {activePaneId} {workspaces} {activeWorkspaceId} {wsState} />
-
   {#if panes.length === 0}
     <div class="empty">
       <p>{$t('mobile.noActiveTerminal')}</p>
@@ -370,14 +379,45 @@
       {#if createError}<p class="create-error">{createError}</p>{/if}
     </div>
   {:else if activePaneId}
+    <header class="mobile-header">
+      <div class="header-row">
+        <div class="header-nav">
+          <button class="hdr-btn" class:active={sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
+            <Folder class="w-4 h-4" />
+          </button>
+          <button class="hdr-btn" class:active={sidebarTab === 'git'} onclick={() => handleSidebarToggle('git')} title="Git" tabindex="-1">
+            <GitBranch class="w-4 h-4" />
+          </button>
+          <button class="hdr-btn" class:active={sidebarTab === 'search'} onclick={() => handleSidebarToggle('search')} title={$t('mobile.searchTitle')} tabindex="-1">
+            <Search class="w-4 h-4" />
+          </button>
+        </div>
+        <div class="header-breadcrumb">
+          {#if activePaneId}
+            <span class="breadcrumb-text">{activePaneId}</span>
+            <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+          {/if}
+        </div>
+        <div class="header-actions">
+          <button class="hdr-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
+            <Keyboard class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      {#if showKeyboard}
+        <div class="vk-section">
+          <VirtualKeyboard onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
+        </div>
+      {/if}
+    </header>
+
     <TerminalCanvas
       bind:this={canvasRef}
       bind:backendName
       paneId={activePaneId ?? null}
       {onStdin}
       {onResize}
-      {showKeyboard}
-      {selectionMode}
+      bind:selectionMode
     />
   {/if}
 
@@ -388,11 +428,8 @@
 
   <BottomTabBar
     {ws}
-    {sidebarTab}
     {backendName}
-    onSidebarToggle={handleSidebarToggle}
     onRefresh={handleRefresh}
-    bind:showKeyboard
     bind:selectionMode
     {panes}
     bind:activePaneId
@@ -410,4 +447,18 @@
   .create-btn:disabled{opacity:.5;cursor:not-allowed}
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
+  .mobile-header{display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
+  .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
+  .header-nav{display:flex;gap:2px}
+  .header-breadcrumb{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;overflow:hidden}
+  .breadcrumb-text{font-size:13px;color:var(--rg-fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .header-actions{display:flex;gap:2px}
+  .hdr-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:8px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s}
+  .hdr-btn:active{background:color-mix(in srgb,var(--rg-fg) 10%,transparent);color:var(--rg-fg)}
+  .hdr-btn.active{color:var(--rg-accent)}
+  .hdr-btn :global(svg){width:18px;height:18px}
+  .vk-section{overflow:hidden;border-top:1px solid color-mix(in srgb,var(--rg-fg) 8%,transparent)}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}
+  .status-dot.connected{background:var(--rg-ansi-green)}
+  .status-dot.connecting{background:var(--rg-ansi-yellow)}
 </style>

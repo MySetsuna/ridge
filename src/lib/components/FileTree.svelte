@@ -431,6 +431,11 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		e.preventDefault();
 		e.stopPropagation();
 
+		// Capture the node's path at the time the menu is shown (avoid reactive
+		// closure issues where `node` changes between show and action execution).
+		const pathAtMenu = node.path;
+		const isDirAtMenu = node.is_dir;
+
 	// Get column cwd for relative path
 	const storeState = get(fileExplorerStore);
 	const column = storeState.columns.find((c) => c.id === columnId);
@@ -449,7 +454,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		try { await writeText(text); } catch (err) { console.error('Copy failed:', err); }
 	};
 
-		const items = node.is_dir
+		const items = isDirAtMenu
 			? [
 					{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => beginCreate('file') },
 					{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => beginCreate('folder') },
@@ -462,7 +467,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					{ id: 'delete', label: tr('explorer.ctxDelete'), action: () => void deleteItem() },
 				]
 			: [
-					{ id: 'open', label: tr('explorer.ctxOpen'), action: () => void openFile() },
+					{ id: 'open', label: tr('explorer.ctxOpen'), action: () => void fileEditorStore.openFile(pathAtMenu) },
 			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
 					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
 					{ id: 'divider', divider: true },

@@ -39,14 +39,9 @@ use crate::render::backend::{
 use crate::render::procedural_box;
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
-// §B.8 (2026-05-08) — `is_color_emoji_codepoint` and
-// `is_visual_wide_codepoint` were the codepoint-list driven gates of
-// the pre-§B.8 stretch path. §B.9 superseded both: glyphs now draw at
-// their **natural** size via a plain `fill_text` (see `draw_row_texts`,
-// no `maxWidth` cap, no aspect-fit) and are allowed to overflow into the
-// following cells, which are pushed right via `extra_cells`. Nothing
-// pads a glyph to the cell box. Imports removed; the helpers themselves
-// remain in `wcwidth.rs` for completeness / external consumers.
+// Glyphs draw at their natural size via a plain `fill_text` (no
+// `maxWidth` cap, no aspect-fit) and are allowed to overflow into the
+// following cells. Nothing pads a glyph to the cell box.
 
 /// §p4.9 (2026-05-22) — abstraction over the 2D drawing context so the
 /// same `Canvas2dBackend` body works on both `CanvasRenderingContext2d`
@@ -404,8 +399,6 @@ impl RenderBackend for Canvas2dBackend {
         let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
         let h = y_bottom - y_top;
 
-        let mut extra_cells: f64 = 0.0;
-
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
                 continue;
@@ -413,25 +406,8 @@ impl RenderBackend for Canvas2dBackend {
 
             let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
 
-            let mut buf = [0u8; 4];
-            let glyph_str: &str = match row.clusters.iter().find(|c| c.col == col.min(u16::MAX as usize) as u16) {
-                Some(cspan) => &cspan.text,
-                None => cell.ch.encode_utf8(&mut buf),
-            };
-
-            let effective_span: f64 = if cell.width >= 2 {
-                match self.ctx.measure_text(glyph_str) {
-                    Ok(m) => (m.width().max(1.0) / cell_w).ceil(),
-                    Err(_) => cell.width as f64,
-                }
-            } else {
-                cell.width as f64
-            };
-
-            let effective_col = col as f64 + extra_cells;
-
-            let x_left = (effective_col * cell_w).round();
-            let x_right = ((effective_col + effective_span) * cell_w).round();
+            let x_left = (col as f64 * cell_w).round();
+            let x_right = ((col as f64 + cell.width as f64) * cell_w).round();
             let w = x_right - x_left;
 
             if w <= 0.0 {
@@ -444,8 +420,6 @@ impl RenderBackend for Canvas2dBackend {
                 self.ctx.set_fill_style_str(&Self::rgba_to_css(bg));
                 self.ctx.fill_rect(x_left, y_top, w, h);
             }
-
-            extra_cells += effective_span - cell.width as f64;
         }
     }
 
@@ -456,8 +430,6 @@ impl RenderBackend for Canvas2dBackend {
         let y_top = (row.row_index as f64 * cell_h).round();
         let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
         let h = y_bottom - y_top;
-
-        let mut extra_cells: f64 = 0.0;
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
@@ -496,9 +468,8 @@ impl RenderBackend for Canvas2dBackend {
                 None => glyph_str = cell.ch.encode_utf8(&mut buf),
             }
 
-            let effective_col = col as f64 + extra_cells;
-            let grid_x_left = (effective_col * cell_w).round();
-            let grid_span_w = ((effective_col + cell.width as f64) * cell_w).round() - grid_x_left;
+            let grid_x_left = (col as f64 * cell_w).round();
+            let grid_span_w = ((col as f64 + cell.width as f64) * cell_w).round() - grid_x_left;
 
             let effective_span: f64 = if cell.width >= 2 {
                 match self.ctx.measure_text(glyph_str) {
@@ -522,13 +493,10 @@ impl RenderBackend for Canvas2dBackend {
             }
 
             if !drawn_procedurally {
-                // §B.9 — render at natural browser size (no aspect-fit).
-                // Wide / emoji glyphs expand beyond their grid span and
-                // push subsequent cells right via extra_cells.
                 let _ = self.ctx.fill_text(glyph_str, grid_x_left, y_top);
             }
 
-            let effective_w = ((effective_col + effective_span) * cell_w).round() - grid_x_left;
+            let effective_w = ((col as f64 + effective_span) * cell_w).round() - grid_x_left;
 
             if attrs.flags.contains(Flags::UNDERLINE) {
                 let y = y_top + h - 2.0;
@@ -538,15 +506,13 @@ impl RenderBackend for Canvas2dBackend {
                 let y = y_top + h * 0.5;
                 self.ctx.fill_rect(grid_x_left, y, effective_w, 1.0);
             }
-
-            extra_cells += effective_span - cell.width as f64;
         }
     }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
-        let effective_col = cursor.col as f64 + cursor.extra_cells;
+        let effective_col = cursor.col as f64;
         let x = (effective_col * cell_w + 0.5).floor();
         let y = (cursor.row as f64 * cell_h + 0.5).floor();
         let y_bottom = ((cursor.row + 1) as f64 * cell_h + 0.5).floor();
