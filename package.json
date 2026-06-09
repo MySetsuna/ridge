@@ -36,10 +36,10 @@
     "perf:compare": "pwsh scripts/perf-compare.ps1",
     "perf:frame": "pwsh scripts/perf-frame-compare.ps1",
     "clean": "rimraf node_modules/.vite build target src-tauri/target",
-    "dev:cloud": "RIDGE_CLOUD_BASE_DOMAIN=https://localhost:5000 pnpm dev",
-    "dev:remote:cloud": "RIDGE_CLOUD_BASE_DOMAIN=https://localhost:5000 pnpm dev:remote",
-    "dev:with-cloud": "RIDGE_CLOUD_BASE_DOMAIN=https://localhost:5000 bash scripts/dev-with-cloud.sh",
-    "dev:all": "RIDGE_CLOUD_BASE_DOMAIN=https://localhost:5000 bash scripts/start-all.sh"
+    "dev:cloud": "RIDGE_CLOUD_BASE_DOMAIN=localhost:5001 pnpm dev",
+    "dev:remote:cloud": "RIDGE_CLOUD_BASE_DOMAIN=localhost:5001 pnpm dev:remote",
+    "dev:with-cloud": "RIDGE_CLOUD_BASE_DOMAIN=localhost:5001 bash scripts/dev-with-cloud.sh",
+    "dev:all": "RIDGE_CLOUD_BASE_DOMAIN=localhost:5001 bash scripts/start-all.sh"
   },
   "license": "MIT",
   "dependencies": {
