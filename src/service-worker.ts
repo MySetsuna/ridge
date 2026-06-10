@@ -6,31 +6,80 @@
 // only DATA crosses the WebSocket. Registered ONLY in the web-remote build
 // (src/routes/+layout.svelte); the Tauri build sets kit.serviceWorker.register
 // = false, so this file is built but never activated there.
+//
+// §version-gate: on install/activate, compare the build version (injected by
+// Vite via $service-worker) with the version stored in client-side storage.
+// If they differ, it means the remote server was updated — nuke ALL client-side
+// caches (Cache API, localStorage, sessionStorage, IndexedDB) so we start fresh
+// with the new build. This prevents stale tickets, old WASM, or mismatched
+// static assets from causing "卡在验证码" or broken UI.
 
 import { build, version } from '$service-worker';
 
 const CACHE = `ridge-web-remote-${version}`;
 const HTML_CACHE = `ridge-html-${version}`;
+const VERSION_KEY = 'ridge-web-remote-version';
 // Precache the content-hashed `_app` bundle (immutable). We intentionally skip
 // `files` (favicon, 1.jpg/2.jpg, the nested mobile build) to keep install light.
 const PRECACHE = build;
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
+// Check if the stored version matches the current build version.
+async function checkVersionAndNukeIfNeeded(): Promise<void> {
+  try {
+    const stored = await sw.clients.matchAll({ includeUncontrolled: true });
+    // We can't directly access localStorage from SW, so we use a cache key
+    // as a version marker. If the marker cache doesn't exist or has a
+    // different version, we nuke everything.
+    const caches = await self.caches.keys();
+    const versionCache = caches.find(c => c.startsWith('ridge-version-'));
+    if (versionCache) {
+      const cache = await self.caches.open(versionCache);
+      const res = await cache.match('version');
+      if (res) {
+        const text = await res.text();
+        if (text.trim() === version) return; // version matches, no action needed
+      }
+    }
+    // Version mismatch or first run — nuke all caches.
+    await Promise.all(caches.map(c => self.caches.delete(c)));
+    // Also clear client-side storage via postMessage to all clients.
+    const clients = await sw.clients.matchAll({ includeUncontrolled: true });
+    clients.forEach(client => client.postMessage({ type: 'CLEAR_STORAGE', version }));
+  } catch {
+    // If anything fails, continue — the activate handler will also clean up.
+  }
+}
+
 sw.addEventListener('install', (event) => {
   event.waitUntil(
-    caches
-      .open(CACHE)
+    checkVersionAndNukeIfNeeded()
+      .then(() => caches.open(CACHE))
       .then((cache) => cache.addAll(PRECACHE))
+      .then(() => {
+        // Store the current version as a marker cache.
+        return caches.open(`ridge-version-${version}`).then(c => c.put('version', new Response(version)));
+      })
+      .then(() => {
+        // Pre-fetch the emoji font in background so it's ready when needed.
+        return fetch('/fonts/NotoColorEmoji.ttf')
+          .then(res => {
+            if (res.ok) {
+              return caches.open(CACHE).then(c => c.put('/fonts/NotoColorEmoji.ttf', res));
+            }
+          })
+          .catch(() => {}); // ignore failures
+      })
       .then(() => sw.skipWaiting()),
   );
 });
 
 sw.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== HTML_CACHE).map((k) => caches.delete(k))))
+    checkVersionAndNukeIfNeeded()
+      .then(() => caches.keys())
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== HTML_CACHE && !k.startsWith('ridge-version-')).map((k) => caches.delete(k))))
       .then(() => sw.clients.claim()),
   );
 });

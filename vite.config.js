@@ -98,9 +98,26 @@ export default defineConfig({
           if (id.includes('node_modules/mermaid')) {
             return 'mermaid';
           }
-        }
+          // Split heavy desktop-only features from mobile build
+          if (id.includes('node_modules/@tauri-apps/api')) {
+            return 'tauri-api';
+          }
+          if (id.includes('/lib/components/')) {
+            // Split large desktop components into their own chunks
+            if (id.includes('FileEditor') || id.includes('Monaco') || id.includes('DiffEditor')) {
+              return 'desktop-editor';
+            }
+            if (id.includes('Explorer') || id.includes('FileTree') || id.includes('SourceControl')) {
+              return 'desktop-sidebar';
+            }
+            if (id.includes('GitGraph') || id.includes('MarkdownPreview')) {
+              return 'desktop-git';
+            }
+          }
+        },
+        chunkSizeWarningLimit: 500,
       }
-    }
+    },
   },
 
   // 优化依赖预构建
