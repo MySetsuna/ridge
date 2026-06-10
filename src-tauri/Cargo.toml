@@ -138,6 +138,11 @@ postcard = { version = "1", features = ["alloc"] }
 # mDNS uses raw UDP multicast — no extra crate needed.
 # WebSocket is built into axum 0.7 — no extra dep needed.
 
+[target.'cfg(windows)'.dependencies]
+# 剪贴板「复制图片文件」(CF_HDROP) 读取：arboard 只读位图/文本、读不到文件列表；
+# clipboard-win 已是 arboard 的传递依赖（同为 5.x），加为 Windows-only 直接依赖不引入新传递依赖。
+clipboard-win = "5"
+
 [[bin]]
 name = "tmux"
 path = "src/bin/tmux.rs"

@@ -624,6 +624,7 @@ pub fn run() {
             terminal::write_to_pty,
             clipboard_image::read_clipboard_image_to_temp,
             clipboard_image::save_clipboard_image_to_temp,
+            clipboard_image::resolve_pasted_image_path,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
