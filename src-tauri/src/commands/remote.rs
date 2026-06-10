@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 use sysinfo::System;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::remote::mdns;
 use crate::state::AppState;
@@ -80,6 +80,30 @@ pub async fn remote_reap_orphans(state: State<'_, AppState>) -> Result<usize, St
 #[tauri::command]
 pub fn verify_remote_totp(state: State<AppState>, code: &str) -> bool {
     state.remote_auth.verify(code)
+}
+
+/// §totp-persist：重置本机 TOTP 种子。重新生成 + 覆盖落盘（DPAPI/0600），已配对
+/// 的 authenticator 立即失效，须重新扫码。发 `remote-totp-changed` 事件让面板刷新。
+#[tauri::command]
+pub fn remote_reset_totp(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.remote_auth.reset_totp();
+    let _ = app.emit("remote-totp-changed", ());
+    tracing::info!(target: "ridge::remote", "TOTP secret reset by user");
+    Ok(())
+}
+
+/// §totp-persist：把活动 TOTP 种子切到指定云身份（`None`/登出 → `"default"`）。
+/// 由前端在云登录态变化时调用，实现「不同账号不同种子」的实时切换。发
+/// `remote-totp-changed` 事件让面板刷新二维码/验证码。
+#[tauri::command]
+pub fn remote_set_totp_identity(
+    app: AppHandle,
+    state: State<AppState>,
+    username: Option<String>,
+) -> Result<(), String> {
+    state.remote_auth.switch_identity(username.as_deref());
+    let _ = app.emit("remote-totp-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
