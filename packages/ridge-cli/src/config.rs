@@ -124,6 +124,16 @@ pub fn load_auth() -> Result<Option<AuthFile>> {
     Ok(Some(auth))
 }
 
+/// 本机 CLI 的 TOTP 身份：已激活则取 `auth.json` 的 username，否则 `"default"`
+/// （与桌面端登出态共用同一份默认种子 → 双端同账号自然同种子）。
+pub fn totp_identity() -> String {
+    load_auth()
+        .ok()
+        .flatten()
+        .map(|a| a.username)
+        .unwrap_or_else(|| "default".to_string())
+}
+
 /// 写入凭据。Linux 上设 0600 权限（凭据保护）。
 pub fn save_auth(auth: &AuthFile) -> Result<()> {
     let path = auth_path()?;

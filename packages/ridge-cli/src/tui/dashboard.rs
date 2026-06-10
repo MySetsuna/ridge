@@ -93,7 +93,7 @@ impl App {
         let auth = config::load_auth().ok().flatten();
         let lan_ip = config::detect_lan_ip();
         let port = config::lan_port();
-        let totp = Arc::new(RemoteTotp::new());
+        let totp = Arc::new(RemoteTotp::load_or_create(&config::totp_identity()));
         let totp_code = totp.current_code();
         let workspace = new_shared();
         {

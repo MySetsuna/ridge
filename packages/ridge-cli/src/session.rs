@@ -140,7 +140,7 @@ impl RemoteSession {
 
         // 4b. 云远控二次验证（契约 §4）：每会话一份随机 TOTP，打到 TUI。未验证前业务帧
         //     被门控（见 gate_envelope）。
-        let totp = RemoteTotp::new();
+        let totp = RemoteTotp::load_or_create(&crate::config::totp_identity());
         let mut verified = false;
         // controller 经 `subscribe-pane` / `register_pane_delta_channel` 订阅后才推 PTY 流
         //（桌面同款语义）。订阅 + 验证前 PTY 输出暂存于攒批缓冲，不丢失初始提示符。
