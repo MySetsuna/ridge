@@ -34,4 +34,27 @@ applyUpdate = registerSW({
 
 document.addEventListener('visibilitychange', flushUpdateWhenHidden);
 
+// §version-gate: listen for CLEAR_STORAGE message from SW (sent on version
+// mismatch). This clears all client-side storage to ensure a clean slate with
+// the new build. Then reload to re-authenticate cleanly.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'CLEAR_STORAGE') {
+      console.log('[remote] Clearing client storage due to version mismatch:', event.data.version);
+      try { localStorage.clear(); } catch {}
+      try { sessionStorage.clear(); } catch {}
+      // IndexedDB clearing is async; best-effort for known DBs.
+      try {
+        indexedDB.databases?.().then(dbs => {
+          for (const db of dbs) {
+            if (db.name) indexedDB.deleteDatabase(db.name);
+          }
+        });
+      } catch {}
+      // Reload to start fresh with new build.
+      window.location.reload();
+    }
+  });
+}
+
 export default app;

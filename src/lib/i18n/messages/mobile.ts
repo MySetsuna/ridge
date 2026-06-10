@@ -23,6 +23,9 @@ export const zh: Record<string, string> = {
   selectionToggle: '选择模式（手指滑动选中文本）',
   lockAndRefresh: '锁定渲染尺寸到本端并刷新',
   newWorkspace: '新建工作区',
+  pasteFromRemote: '从远程粘贴',
+  themeToggle: '切换主题',
+  langToggle: '切换语言',
 
   // WorkspaceTree（工作区/终端树形级联）
   treeTitle: '工作区 / 终端',
@@ -72,6 +75,7 @@ export const zh: Record<string, string> = {
   sidebarFilesTitle: '文件',
   sidebarSearchTitle: '搜索',
   sidebarClose: '关闭',
+  loading: '加载中…',
 
   // TerminalCanvas
   initializingTerminal: '初始化终端引擎…',
@@ -109,6 +113,9 @@ export const en: Record<string, string> = {
   selectionToggle: 'Selection mode (drag to select text)',
   lockAndRefresh: 'Lock render size to this device and refresh',
   newWorkspace: 'New workspace',
+  pasteFromRemote: 'Paste from remote',
+  themeToggle: 'Toggle theme',
+  langToggle: 'Toggle language',
 
   // WorkspaceTree (workspace / terminal cascade)
   treeTitle: 'Workspaces / Terminals',
@@ -158,6 +165,7 @@ export const en: Record<string, string> = {
   sidebarFilesTitle: 'Files',
   sidebarSearchTitle: 'Search',
   sidebarClose: 'Close',
+  loading: 'Loading…',
 
   // TerminalCanvas
   initializingTerminal: 'Initializing terminal engine…',

@@ -2,10 +2,14 @@
   import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { Folder, GitBranch, Search, Keyboard } from 'lucide-svelte';
-  import TerminalCanvas from './lib/TerminalCanvas.svelte';
-  import VirtualKeyboard from './lib/VirtualKeyboard.svelte';
+  // §lazy-load: heavy components loaded on demand to reduce initial bundle.
+  // TerminalCanvas (with WASM) is only needed after auth + pane selection.
+  const TerminalCanvas = import('./lib/TerminalCanvas.svelte');
+  // VirtualKeyboard is only needed when user toggles it via header button.
+  const VirtualKeyboard = import('./lib/VirtualKeyboard.svelte');
+  // RemoteSidebar (file tree, git, search) loaded when sidebar is opened.
+  const RemoteSidebar = import('./lib/RemoteSidebar.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import RemoteSidebar from './lib/RemoteSidebar.svelte';
   import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
 
@@ -31,6 +35,25 @@
   // mounts (the theme push usually arrives before the terminal exists).
   let kernelTheme: Record<string, string> | null = $state(null);
   let backendName = $state('Canvas2D');
+
+  // §remember-last-pane: remember the last active pane per workspace so that
+  // switching workspaces restores the user's context instead of auto-selecting
+  // the first pane (which causes "莫名奇妙切换工作区" and unexpected pane changes).
+  const lastActivePanePerWorkspace = new Map<string, string>();
+
+  // Theme cycling: the host pushes theme changes; we can request a cycle.
+  // The host will push the new theme back via the 'theme' message.
+  async function handleThemeToggle() {
+    if (!ws) return;
+    ws.send({ type: 'cycle-theme' });
+  }
+
+  // Paste from remote clipboard: ask the host to read its clipboard and send
+  // the content as a bracketed paste to the active pane.
+  async function handlePaste() {
+    if (!ws || !activePaneId) return;
+    ws.send({ type: 'paste', paneId: activePaneId });
+  }
 
   // §terminal-isolation + scrollback-cache: the local kernel is a single shared
   // instance, so switching panes MUST wipe it (resetForSwitch) — otherwise the
@@ -225,8 +248,19 @@
         const paneIds = panes.map(p => p.id);
         // Release caches for panes the host no longer reports (memory/quota leak).
         pruneDeadPanes(paneIds);
-        if (!activePaneId || !paneIds.includes(activePaneId)) {
-          activePaneId = panes.length > 0 ? panes[0].id : null;
+        // Remember the active pane for this workspace (if we have an active workspace).
+        // Do NOT auto-select the first pane — this was causing "莫名奇妙切换工作区".
+        // Only fall back to first pane if there's truly no remembered pane for this workspace.
+        if (activeWorkspaceId && !activePaneId) {
+          const remembered = lastActivePanePerWorkspace.get(activeWorkspaceId);
+          if (remembered && paneIds.includes(remembered)) {
+            activePaneId = remembered;
+          } else if (panes.length > 0) {
+            activePaneId = panes[0].id;
+          }
+        } else if (!activePaneId && panes.length > 0) {
+          // No active workspace yet (initial load) — use first pane.
+          activePaneId = panes[0].id;
         }
       }
       if (msg.type === 'workspaces') {
@@ -335,6 +369,10 @@
     untrack(() => {
       if (pid === subscribedPaneId) return;
       subscribedPaneId = pid;
+      // Remember this pane as the last active for the current workspace.
+      if (activeWorkspaceId) {
+        lastActivePanePerWorkspace.set(activeWorkspaceId, pid);
+      }
       // §isolation: wipe the kernel so the previous pane can't bleed into this one.
       canvasRef?.resetForSwitch();
       // Instant pre-paint from cache (in-memory; else sessionStorage on reload).
@@ -394,7 +432,7 @@
         </div>
         <div class="header-breadcrumb">
           {#if activePaneId}
-            <span class="breadcrumb-text">{activePaneId}</span>
+            <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
             <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
           {/if}
         </div>
@@ -406,30 +444,44 @@
       </div>
       {#if showKeyboard}
         <div class="vk-section">
-          <VirtualKeyboard onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
+          {#await VirtualKeyboard}
+            <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
+          {:then module}
+            <module.default onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
+          {/await}
         </div>
       {/if}
     </header>
 
-    <TerminalCanvas
-      bind:this={canvasRef}
-      bind:backendName
-      paneId={activePaneId ?? null}
-      {onStdin}
-      {onResize}
-      bind:selectionMode
-    />
+    {#await TerminalCanvas}
+      <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
+    {:then module}
+      <module.default
+        bind:this={canvasRef}
+        bind:backendName
+        paneId={activePaneId ?? null}
+        {onStdin}
+        {onResize}
+        bind:selectionMode
+      />
+    {/await}
   {/if}
 
   {#if sidebarTab !== null}
     <div class="sidebar-overlay" onclick={() => sidebarTab = null} role="presentation"></div>
-    <RemoteSidebar tab={sidebarTab} cwd={activeCwd} onClose={() => sidebarTab = null} onTabChange={(t) => sidebarTab = t} />
+    {#await RemoteSidebar}
+      <div class="sidebar-loading">{$t('mobile.loading')}</div>
+    {:then module}
+      <module.default tab={sidebarTab} cwd={activeCwd} onClose={() => sidebarTab = null} onTabChange={(t) => sidebarTab = t} />
+    {/await}
   {/if}
 
   <BottomTabBar
     {ws}
     {backendName}
     onRefresh={handleRefresh}
+    onPaste={handlePaste}
+    onThemeToggle={handleThemeToggle}
     bind:selectionMode
     {panes}
     bind:activePaneId
@@ -447,7 +499,7 @@
   .create-btn:disabled{opacity:.5;cursor:not-allowed}
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
-  .mobile-header{display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
+  .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
   .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
   .header-nav{display:flex;gap:2px}
   .header-breadcrumb{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;overflow:hidden}
