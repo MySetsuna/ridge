@@ -24,16 +24,19 @@ const TOTP_SKEW: i64 = 1;
 /// secret 字节数（RFC 6238 推荐 ≥ 输出 HMAC 长度即可，取 20）。
 const SECRET_LEN: usize = 20;
 
-/// 一个进程一份的 TOTP 上下文。secret 随进程而生、随进程而亡，从不离开本机。
+/// 一份 TOTP 上下文。`secret` 可由 `load_or_create` 从磁盘恢复（跨重启稳定），
+/// `identity` 记住其归属身份（`"default"` 或云账号 username），供 reset/switch 用。
 pub struct RemoteTotp {
     secret: Vec<u8>,
+    identity: String,
 }
 
 impl RemoteTotp {
-    /// 生成随机 secret 的新实例（OS 熵源）。
+    /// 生成随机 secret 的新实例（OS 熵源），**不落盘**。供单测与不关心持久化处。
     pub fn new() -> Self {
         Self {
             secret: generate_secret(),
+            identity: String::new(),
         }
     }
 
@@ -77,6 +80,37 @@ impl RemoteTotp {
     /// 时间步长（秒），供展示「每 {period}s 刷新」提示。
     pub const fn period_secs() -> u64 {
         TOTP_PERIOD
+    }
+
+    /// 按身份加载持久化 secret；无则生成并落盘（跨重启稳定的入口）。
+    pub fn load_or_create(identity: &str) -> Self {
+        let secret = crate::seed_store::load(identity).unwrap_or_else(|| {
+            let s = generate_secret();
+            crate::seed_store::save(identity, &s);
+            s
+        });
+        Self {
+            secret,
+            identity: identity.to_string(),
+        }
+    }
+
+    /// 仅替换内存 secret（不落盘）——拆出来便于无磁盘单测。
+    fn regenerate(&mut self) {
+        self.secret = generate_secret();
+    }
+
+    /// 重置当前身份的 secret：新生成 + 覆盖落盘（旧验证器即失效）。
+    pub fn reset(&mut self) {
+        self.regenerate();
+        crate::seed_store::save(&self.identity, &self.secret);
+    }
+
+    /// 切换到另一身份的 secret（无则现生成并落盘）。
+    pub fn switch_identity(&mut self, identity: &str) {
+        let next = Self::load_or_create(identity);
+        self.secret = next.secret;
+        self.identity = next.identity;
     }
 }
 
@@ -228,5 +262,15 @@ mod tests {
     fn base32_known_vector() {
         // RFC 4648 §10：base32("foobar") = "MZXW6YTBOI"（无填充）。
         assert_eq!(base32_encode(b"foobar"), "MZXW6YTBOI");
+    }
+
+    #[test]
+    fn regenerate_changes_secret_and_self_verifies() {
+        let mut totp = RemoteTotp::new();
+        let before = totp.secret.clone();
+        totp.regenerate();
+        assert_ne!(totp.secret, before, "regenerate 必须换掉 secret");
+        let code = totp.current_code();
+        assert!(totp.verify(&code), "regenerate 后的码须能自洽校验");
     }
 }
