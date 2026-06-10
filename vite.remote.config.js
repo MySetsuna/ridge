@@ -88,12 +88,24 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,
+    // Better code splitting: split by feature/vendor
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes('ridge-term')) return 'term-wasm';
           if (id.includes('node_modules/lucide-svelte')) return 'icons';
+          // Split heavy editor/terminal components
+          if (id.includes('monaco-editor')) return 'monaco-editor';
+          if (id.includes('mermaid')) return 'mermaid';
+          // Split virtual keyboard and touch-specific code
+          if (id.includes('/remote/lib/VirtualKeyboard') || id.includes('/remote/lib/modState')) return 'virtual-keyboard';
+          // Split terminal canvas (heavy WASM-dependent)
+          if (id.includes('/remote/lib/TerminalCanvas') || id.includes('/remote/lib/terminalController')) return 'terminal-canvas';
+          // Split workspace tree
+          if (id.includes('/remote/lib/WorkspaceTree')) return 'workspace-tree';
         },
+        // Smaller chunk size for better caching
+        chunkSizeWarningLimit: 500,
       },
     },
   },

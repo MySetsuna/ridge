@@ -27,13 +27,20 @@
     onKey('Arrow' + dir, m.ctrl, m.alt, m.shift);
     clearMods();
   }
+
+  function sendPage(dir: 'Up' | 'Down') {
+    const m = peekMods();
+    onKey('Page' + dir, m.ctrl, m.alt, m.shift);
+    clearMods();
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- preventDefault on pointerdown so tapping a key never blurs the terminal's
      hidden textarea — that would dismiss the mobile soft keyboard. -->
 <div class="vk-container" onpointerdown={(e) => e.preventDefault()}>
-  <div class="vk-row">
+  <!-- Top row: modifiers + escape/tab/enter/backspace -->
+  <div class="vk-row vk-row-mods">
     <button
       class="vk-key mod"
       class:active={stickyMods.ctrl}
@@ -55,14 +62,24 @@
     <button class="vk-key wide" onclick={() => sendNamedKey('Enter')}>⏎ Enter</button>
     <button class="vk-key" aria-label="Backspace" onclick={() => sendNamedKey('Backspace')}>⌫</button>
   </div>
-  <div class="vk-row">
-    <button class="vk-key arrow" onclick={() => sendArrow('Left')}>←</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Down')}>↓</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Up')}>↑</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Right')}>→</button>
+
+  <!-- Middle row: navigation cluster (arrow keys + home/end + pgup/pgdn) -->
+  <div class="vk-row vk-row-nav">
+    <div class="vk-nav-cluster">
+      <button class="vk-key arrow" onclick={() => sendArrow('Up')} aria-label="Up">↑</button>
+      <div class="vk-arrow-row">
+        <button class="vk-key arrow" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
+        <button class="vk-key arrow" onclick={() => sendArrow('Down')} aria-label="Down">↓</button>
+        <button class="vk-key arrow" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
+      </div>
+    </div>
     <span class="vk-sep"></span>
-    <button class="vk-key" onclick={() => sendNamedKey('Home')}>Home</button>
-    <button class="vk-key" onclick={() => sendNamedKey('End')}>End</button>
+    <div class="vk-page-cluster">
+      <button class="vk-key home" onclick={() => sendNamedKey('Home')} aria-label="Home">Home</button>
+      <button class="vk-key end" onclick={() => sendNamedKey('End')} aria-label="End">End</button>
+      <button class="vk-key pgup" onclick={() => sendPage('Up')} aria-label="Page Up">PgUp</button>
+      <button class="vk-key pgdn" onclick={() => sendPage('Down')} aria-label="Page Down">PgDn</button>
+    </div>
   </div>
 </div>
 
@@ -83,6 +100,29 @@
     align-items: center;
     gap: 4px;
     justify-content: center;
+  }
+  .vk-row-mods {
+    flex-wrap: wrap;
+  }
+  .vk-row-nav {
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 2px;
+  }
+  .vk-nav-cluster {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .vk-arrow-row {
+    display: flex;
+    gap: 2px;
+  }
+  .vk-page-cluster {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
   .vk-key {
     display: flex;
@@ -117,6 +157,15 @@
   }
   .vk-key.wide {
     min-width: 66px;
+  }
+  .vk-key.home,
+  .vk-key.end,
+  .vk-key.pgup,
+  .vk-key.pgdn {
+    min-width: 52px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 0 6px;
   }
   .vk-sep {
     width: 1px;

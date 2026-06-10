@@ -556,6 +556,8 @@
   // ── Fixed keyboard offset ──
   // When the system keyboard appears, push the canvas up by the full keyboard
   // height. Never recompute mid-keyboard (no flicker while typing).
+  // DO NOT call requestResize() here — we use transform to move the canvas up
+  // without changing the terminal grid size. Resize only on actual viewport/orientation change.
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -565,7 +567,9 @@
       const wasUp = keyboardOffset > 0;
       keyboardOffset = kh; // fixed: always the full keyboard height
       if (kh > 0 && !wasUp) ctrl?.scrollToBottom();
-      ctrl?.requestResize();
+      // NOTE: intentionally NOT calling ctrl?.requestResize() here.
+      // The terminal grid should not change just because the keyboard is visible.
+      // The transform on the container handles the visual offset.
     }
     vv.addEventListener('resize', onViewportResize);
     // Fire once to capture any already-open keyboard.

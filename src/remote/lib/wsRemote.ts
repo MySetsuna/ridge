@@ -19,6 +19,11 @@ export type BinaryDeltaListener = RawByteListener;
 
 const MAX_PANE_OUTPUT_LINES = 5000;
 
+// ── Message queue for buffering during reconnect ──
+// If the queue exceeds this many messages, we reload the page to avoid
+// stale state buildup (the reconnect would replay too much history).
+const MAX_QUEUED_MESSAGES = 50;
+
 // ── Connection liveness tuning ──
 // Mobile browsers silently drop the socket when the tab is backgrounded, often
 // without delivering a timely `close`. A heartbeat detects the half-open socket;
@@ -163,6 +168,10 @@ export class RemoteConnection {
   private _onOnline: (() => void) | null = null;
   private _onForeground: (() => void) | null = null;
 
+  // ── Message queue for buffering during disconnect ──
+  private _messageQueue: WsMessage[] = [];
+  private _isReconnecting = false;
+
   state() { return this._state; }
 
   onStateChange(fn: (s: ConnectionState) => void) {
@@ -254,6 +263,8 @@ export class RemoteConnection {
       // must resync. The first connect is wired by the page's own onMount.
       if (this._hasConnectedOnce) {
         this.reconnectListeners.forEach(fn => { try { fn(); } catch { /* listener owns its errors */ } });
+        // Flush any messages queued during disconnect.
+        this._flushQueue();
       }
       this._hasConnectedOnce = true;
     };
@@ -309,16 +320,29 @@ export class RemoteConnection {
           }
         }
       }
-      if (msg.type === 'output') {
-        const lines = msg.data.split('\n');
-        const existing = this.paneOutputs.get(msg.paneId) || [];
-        existing.push(...lines);
-        if (existing.length > MAX_PANE_OUTPUT_LINES) {
-          existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+      // If we're reconnecting (socket not ready), queue the message for replay.
+      // Only queue non-binary messages that are state updates (not pings/pongs).
+      if (this._state !== 'connected' && msg.type !== 'output') {
+        this._messageQueue.push(msg);
+        // If queue exceeds limit, force a full page reload to avoid stale state.
+        if (this._messageQueue.length > MAX_QUEUED_MESSAGES) {
+          console.warn('[wsRemote] Message queue exceeded ' + MAX_QUEUED_MESSAGES + ', reloading page');
+          window.location.reload();
+          return;
         }
-        this.paneOutputs.set(msg.paneId, existing);
+      } else if (this._state === 'connected') {
+        // Normal connected path: handle output buffering and dispatch.
+        if (msg.type === 'output') {
+          const lines = msg.data.split('\n');
+          const existing = this.paneOutputs.get(msg.paneId) || [];
+          existing.push(...lines);
+          if (existing.length > MAX_PANE_OUTPUT_LINES) {
+            existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+          }
+          this.paneOutputs.set(msg.paneId, existing);
+        }
+        this.messageListeners.forEach(fn => fn(msg));
       }
-      this.messageListeners.forEach(fn => fn(msg));
     } catch { /* ignore */ }
   }
 
@@ -330,6 +354,7 @@ export class RemoteConnection {
       this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
       this.ws = null;
     }
+    this._isReconnecting = true;
     this.setState('disconnected');
     if (!this._intentionalClose) this._scheduleReconnect();
   }
@@ -349,6 +374,19 @@ export class RemoteConnection {
 
   private _clearReconnectTimer() {
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+  }
+
+  /** Flush the queued messages after a successful reconnect. */
+  private _flushQueue() {
+    const queue = this._messageQueue.splice(0); // drain
+    for (const msg of queue) {
+      // Replay queued state messages (panes, workspaces, etc.) to listeners.
+      // Skip 'output' type as it's handled via paneOutputs.
+      if (msg.type !== 'output') {
+        this.messageListeners.forEach(fn => fn(msg));
+      }
+    }
+    this._isReconnecting = false;
   }
 
   // ── Heartbeat ──
@@ -531,6 +569,9 @@ export class RemoteConnection {
     this._stopHeartbeat();
     this._detachWindowListeners();
     this._hasConnectedOnce = false;
+    // Clear any queued messages on intentional disconnect.
+    this._messageQueue.length = 0;
+    this._isReconnecting = false;
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onerror = null;
