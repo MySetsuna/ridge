@@ -78,13 +78,14 @@ export const REMOTE_TERM_FONT = `${TEXT_MONO},${SYSTEM_EMOJI_FALLBACK},monospace
  * Remote counterpart of {@link withEmojiFallback}. Strips any emoji/flag
  * families and trailing generic from `family`, then appends the remote emoji
  * chain: system emoji by default, with `'Flag Emoji'` placed FIRST when
- * `flagsAvailable` so flag codepoints hit it before Segoe's non-rendering
+ * `flagFaceInjected` (true ⇔ the OS lacks native flags and the subset face
+ * was injected) so flag codepoints hit it before Segoe's non-rendering
  * Regional-Indicator letter glyphs (the unicode-range on the @font-face keeps
  * it from affecting any other emoji). Empty input → the full
  * {@link REMOTE_TERM_FONT} (plus flags when available).
  */
-export function withRemoteEmojiFallback(family: string, flagsAvailable: boolean): string {
-	const tail = flagsAvailable
+export function withRemoteEmojiFallback(family: string, flagFaceInjected: boolean): string {
+	const tail = flagFaceInjected
 		? `${FLAG_EMOJI_FAMILY},${SYSTEM_EMOJI_FALLBACK},monospace`
 		: `${SYSTEM_EMOJI_FALLBACK},monospace`;
 	const trimmed = (family ?? '').trim();

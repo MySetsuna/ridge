@@ -1,6 +1,7 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { DEFAULT_TERM_FONT, withEmojiFallback } from '$lib/terminal/fontStack';
+import { REMOTE_TERM_FONT, withRemoteEmojiFallback } from '$lib/terminal/fontStack';
+import { ensureRemoteFlagFont } from './flagEmojiSupport';
 
 export interface TermOpts {
   fontSize?: number;
@@ -8,11 +9,10 @@ export interface TermOpts {
   fontFamily?: string;
 }
 
-// Re-exported from the shared source (./fontStack) so the desktop renderer and
-// the web-remote controller stay byte-identical on emoji ordering — bundled
-// Noto first → flags + Warp-level emoji on the remote too (the remote app must
-// also @font-face the font; see src/remote index + /fonts/NotoColorEmoji.ttf).
-export const FONT_STACK = DEFAULT_TERM_FONT;
+// Re-exported remote font stack (system emoji baseline; flags come from the
+// on-demand 'Flag Emoji' subset face — see ./flagEmojiSupport). No bundled
+// Noto webfont, so ordinary emoji cost zero extra bytes on the remote.
+export const FONT_STACK = REMOTE_TERM_FONT;
 
 const FEED_CHUNK_BYTES = 16 * 1024;
 const FEED_PER_CALL_BUDGET_MS = 4;
@@ -94,8 +94,11 @@ export class TerminalController {
     this.themeBg = new Uint8Array([0x1e, 0x1e, 0x2e, 0xff]);
     this.fontSize = opts.fontSize ?? 14;
     this.scrollback = opts.scrollback ?? 5000;
-    // Normalize so a caller-supplied font still gets the Noto-first emoji chain.
-    this.fontFamily = withEmojiFallback(opts.fontFamily ?? '');
+    // Probe once (cached): on a flag-less OS this registers the unicode-range
+    // 'Flag Emoji' @font-face; the browser still only fetches flags.woff2 when
+    // a flag codepoint actually appears. Pick the matching stack variant.
+    const flagFaceInjected = ensureRemoteFlagFont();
+    this.fontFamily = withRemoteEmojiFallback(opts.fontFamily ?? '', flagFaceInjected);
   }
 
   static async create(canvas: HTMLCanvasElement, container: HTMLDivElement, opts: TermOpts = {}): Promise<TerminalController> {
