@@ -2,6 +2,10 @@
   import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { Folder, GitBranch, Search, Keyboard } from 'lucide-svelte';
+  // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
+  // the bind:this instance ref below. Erased at build, so it does NOT defeat
+  // the dynamic import / lazy-load on the next line.
+  import type TerminalCanvasComponent from './lib/TerminalCanvas.svelte';
   // §lazy-load: heavy components loaded on demand to reduce initial bundle.
   // TerminalCanvas (with WASM) is only needed after auth + pane selection.
   const TerminalCanvas = import('./lib/TerminalCanvas.svelte');
@@ -29,7 +33,7 @@
   let creatingPane = $state(false);
   let createError = $state('');
 
-  let canvasRef: TerminalCanvas | undefined = $state();
+  let canvasRef: ReturnType<typeof TerminalCanvasComponent> | undefined = $state();
   let showKeyboard = $state(true);          // virtual keyboard visible in header
   // Kernel palette derived from the desktop theme; applied to the canvas once it
   // mounts (the theme push usually arrives before the terminal exists).

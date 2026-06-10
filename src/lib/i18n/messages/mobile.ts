@@ -85,7 +85,6 @@ export const zh: Record<string, string> = {
   // SidebarFileTree
   parentDir: '上级目录',
   refresh: '刷新',
-  loading: '加载中…',
   emptyDir: '空目录',
 };
 
@@ -175,6 +174,5 @@ export const en: Record<string, string> = {
   // SidebarFileTree
   parentDir: 'Parent directory',
   refresh: 'Refresh',
-  loading: 'Loading…',
   emptyDir: 'Empty directory',
 };

@@ -115,9 +115,9 @@ export default defineConfig({
             }
           }
         },
-        chunkSizeWarningLimit: 500,
       }
     },
+    chunkSizeWarningLimit: 500,
   },
 
   // 优化依赖预构建
