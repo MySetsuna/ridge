@@ -30,6 +30,7 @@
 //! re-implemented per host.
 
 pub mod capability;
+pub mod clipboard;
 pub mod commands;
 pub mod ctx;
 pub mod dispatch;
