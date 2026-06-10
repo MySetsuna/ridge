@@ -5203,6 +5203,7 @@ dependencies = [
 name = "ridge-core"
 version = "0.1.0"
 dependencies = [
+ "directories",
  "dirs 5.0.1",
  "glob",
  "ignore",
