@@ -38,6 +38,7 @@ pub mod error;
 pub mod fs;
 pub mod pty;
 pub mod sandbox;
+mod seed_store;
 pub mod totp;
 pub mod workspace;
 

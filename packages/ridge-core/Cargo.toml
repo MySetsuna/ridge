@@ -39,6 +39,9 @@ walkdir = "2"
 # browses the SAME filesystem a remote IDE expects). Same crate the desktop
 # uses (`directories` in ridge-cli serves a different purpose). Pure, no Tauri.
 dirs = "5"
+# TOTP 种子持久化路径解析（与 ridge-cli auth.json 同根：ProjectDirs("ridge")
+# config_dir）。纯 crate，无 Tauri。见 src/seed_store.rs。
+directories = "5"
 # Canonical TOTP (RFC 6238, HMAC-SHA256) shared by desktop + headless cli +
 # (future) LAN host. Pure crates, no Tauri. `rand` uses the OS entropy source
 # for the per-process secret. See `totp.rs`.
