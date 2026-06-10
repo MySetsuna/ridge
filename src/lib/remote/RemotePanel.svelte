@@ -148,6 +148,25 @@
       console.error('Failed to refresh remote info', e);
     }
   }
+
+  // §totp-persist：重置本机 TOTP 种子（桌面 host 专属；web-remote 不渲染该按钮）。
+  // 二次确认后调命令；Rust 发 remote-totp-changed → onMount 的 listener 刷新二维码。
+  let resettingTotp = $state(false);
+  async function resetTotp(): Promise<void> {
+    if (resettingTotp) return;
+    const { confirm } = await import('@tauri-apps/plugin-dialog');
+    const ok = await confirm($t('remote.resetTotpConfirm'), { title: $t('remote.resetTotp'), kind: 'warning' });
+    if (!ok) return;
+    resettingTotp = true;
+    try {
+      await invoke('remote_reset_totp');
+      await refreshRemoteInfo();
+    } catch (e: unknown) {
+      connectError = e instanceof Error ? e.message : tr('remote.toggleFailed');
+    } finally {
+      resettingTotp = false;
+    }
+  }
   async function toggleRemoteEnabled() {
     try {
       const newState = !remoteEnabled;
@@ -334,6 +353,8 @@
 
   onMount(() => {
     refreshRemoteInfo();
+    // §totp-persist：种子被重置 / 登录态切换后，Rust 发此事件 → 刷新二维码+码。
+    const unlistenTotp = listen('remote-totp-changed', () => { void refreshRemoteInfo(); });
     // §shared-TOTP: single 5s poll for the shared TOTP code, alive while either
     // channel is active (LAN enabled OR public host online/connecting).
     totpTimer = setInterval(async () => {
@@ -343,6 +364,7 @@
       if (totpTimer) clearInterval(totpTimer);
       if (devicesTimer) clearInterval(devicesTimer);
       host?.goOffline();
+      void unlistenTotp.then((un) => un());
     };
   });
 </script>
@@ -387,6 +409,17 @@
         </div>
         <div class="flex flex-col items-center gap-1 pt-1">
           <p class="text-[10px] text-[var(--rg-fg-muted)]">{$t('remote.qrBindAuth')}</p>
+          {#if import.meta.env.RIDGE_WEB_REMOTE !== true}
+            <button
+              onclick={resetTotp}
+              disabled={resettingTotp}
+              class="flex items-center gap-1 text-[10px] text-[var(--rg-fg-muted)] hover:text-red-400 transition-colors disabled:opacity-50"
+              title={$t('remote.resetTotp')}
+            >
+              <RefreshCw class="w-3 h-3 {resettingTotp ? 'animate-spin' : ''}" />
+              {$t('remote.resetTotp')}
+            </button>
+          {/if}
           <QrCode value={remoteInfo.otpauthUri} size={132} />
         </div>
       </div>
