@@ -5126,6 +5126,7 @@ dependencies = [
  "notify-debouncer-mini",
  "once_cell",
  "parking_lot",
+ "png 0.17.16",
  "portable-pty",
  "postcard",
  "rcgen",

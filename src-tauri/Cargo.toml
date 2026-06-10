@@ -20,24 +20,24 @@ name = "ridge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 # `tray-icon`：Deep Root Mode（§8）的系统托盘所需（tauri::tray::TrayIconBuilder）。
 # 托盘图标复用 `app.default_window_icon()`（已是解码后的 RGBA `Image`），故无需
 # 额外的 `image-ico` 解码特性。
-tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
-tauri-plugin-opener = "2"
-tauri-plugin-clipboard-manager = "2"
-tauri-plugin-dialog = "2"
+tauri = { version = "2.11.2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-dialog = "2.7.1"
 # Deep Root Mode（§8.1）：进入深根时发原生系统通知（Rust 端 NotificationExt）。
-tauri-plugin-notification = "2"
+tauri-plugin-notification = "2.3.3"
 # 公网登录授权（契约 §1/§2.3）：注册自定义 scheme `ridge://`，网页授权批准后
 # `ridge://auth/focus` 把桌面端拉回前台并触发一次轮询。URI 仅作信号，绝不携带 token。
-tauri-plugin-deep-link = "2"
+tauri-plugin-deep-link = "2.4.9"
 # 配合 deep-link：Windows 上第二个实例（由浏览器唤起 `ridge://`）把 argv 转交首个
 # 实例并聚焦，避免重复开窗（single-instance 必须在 builder 链最前注册）。
-tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-single-instance = { version = "2.4.2", features = ["deep-link"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
@@ -85,6 +85,10 @@ git2 = "0.19"
 sysinfo = "0.31"
 backtrace = "0.3"
 base64 = "0.22"
+# 剪贴板图片粘贴（§clipboard-image）：把 arboard 读到的 RGBA8 编码成 PNG 落盘成临时文件，
+# 再把路径作为 bracketed-paste 文本喂给终端里的 TUI（Claude Code 等）。只需编码，故用轻量的
+# `png` crate 而非重量级的 `image`。
+png = "0.17"
 notify = { version = "6", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.4"
 
