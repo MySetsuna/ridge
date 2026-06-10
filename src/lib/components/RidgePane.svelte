@@ -16,6 +16,7 @@
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '$lib/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
@@ -245,6 +246,24 @@ function pasteIntoPane(text: string): void {
 	(imeHelper ?? container)?.focus();
 }
 
+// §clipboard-image: 主动粘贴入口——先尝试剪贴板里的图片（落盘成临时 PNG，把绝对路径作为文本
+// 粘入；终端里的 TUI 如 Claude Code 会把图片路径识别为图片附件），没有图片再 fallback 到文本
+// 粘贴。所有「host 主动粘贴」入口（Ctrl+Shift+V / Cmd+V / Win Ctrl+V / 右键菜单）都走这里。
+// 背景见 $lib/terminal/clipboardImage 与 src-tauri 的 commands/clipboard_image.rs。
+async function pasteFromClipboard(): Promise<void> {
+	try {
+		const imgPath = await acquireClipboardImagePath();
+		if (imgPath) {
+			pasteIntoPane(imgPath);
+			return;
+		}
+	} catch (err) {
+		console.error('[clipboard-image] image paste failed, falling back to text', err);
+	}
+	const text = await readText().catch(() => null);
+	if (text) pasteIntoPane(text);
+}
+
 /** Refresh the TUI sticky timestamp when any signal suggests the TUI
  *  is still alive, preventing the inline-TUI heuristic decay from
  *  silently exiting TUI mode during user interaction with host UI
@@ -431,7 +450,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// platform. Conservative POSIX users can reach the TUI's SYN byte
 	// ("literal next" in readline) via Ctrl+Q instead.
 	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		void pasteFromClipboard();
 		e.preventDefault();
 		return true;
 	}
@@ -440,7 +459,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// Skip when TUI is active so the TUI receives the byte.
 	if (!isTui && isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		void pasteFromClipboard();
 		e.preventDefault();
 		return true;
 	}
@@ -455,7 +474,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// the xterm / gnome-terminal / iTerm2 convention.
 	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		void pasteFromClipboard();
 		e.preventDefault();
 		return true;
 	}
@@ -694,6 +713,25 @@ function onCompositionStart() {
 	}
 
 	function onImeHelperPaste(e: ClipboardEvent) {
+		// §clipboard-image: 优先处理粘贴进来的图片（截图等）。clipboardData 在桌面 webview 和
+		// 远程浏览器都带图片项；落盘成临时 PNG 后把路径粘入，由 TUI 识别为图片。没有图片再走文本。
+		const items = e.clipboardData?.items;
+		let hasImage = false;
+		if (items) {
+			for (let i = 0; i < items.length; i++) {
+				if (items[i].kind === 'file' && items[i].type.startsWith('image/')) {
+					hasImage = true;
+					break;
+				}
+			}
+		}
+		if (hasImage) {
+			e.preventDefault();
+			void imagePathFromClipboardEvent(e)
+				.then((path) => { if (path) pasteIntoPane(path); })
+				.catch((err) => console.error('[clipboard-image] paste-event image failed', err));
+			return;
+		}
 		const text = e.clipboardData?.getData('text');
 		if (text) {
 			pasteIntoPane(text);
@@ -1385,7 +1423,7 @@ function onContextMenu(e: MouseEvent) {
 			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: () => { void writeText(sel); } }]
 			: []),
 		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: () => {
-			void readText().then((txt) => { if (txt) pasteIntoPane(txt); });
+			void pasteFromClipboard();
 		}},
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },

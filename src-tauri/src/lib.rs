@@ -16,7 +16,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::commands::{
-    fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme, watch, workspace,
+    clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme,
+    watch, workspace,
 };
 use crate::db::ProjectStore;
 use crate::state::AppState;
@@ -108,6 +109,9 @@ pub fn run() {
             let app_data_dir = app_data_dir.clone();
             move |app| {
                 tracing::info!(target: "ridge::init", phase = 1, "setup: storing AppHandle");
+                // §clipboard-image: 清理上次会话遗留的临时粘贴图片（超过 1h 的）。单文件不即时
+                // 删，避免与 CLI 异步读图竞态，故在启动期统一回收。
+                clipboard_image::cleanup_old_temp_images(std::time::Duration::from_secs(3600));
                 let handle = app.handle().clone();
                 // teammate HTTP server 改为「按需启动」：不在冷启动路径上拉起，仅 stash
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
@@ -618,6 +622,8 @@ pub fn run() {
             terminal::detect_available_shells,
             terminal::get_shell_history,
             terminal::write_to_pty,
+            clipboard_image::read_clipboard_image_to_temp,
+            clipboard_image::save_clipboard_image_to_temp,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
