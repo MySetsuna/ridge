@@ -27,7 +27,20 @@ const EMOJI_FAMILY_NAMES = new Set([
 	'noto color emoji',
 	'apple color emoji',
 	'segoe ui emoji',
+	'flag emoji',
 ]);
+
+/** Strip all emoji families and any trailing 'monospace' generic from a comma-separated font-family string. */
+function stripEmojiAndGeneric(family: string): string[] {
+	return family
+		.split(',')
+		.map((s) => s.trim())
+		.filter(Boolean)
+		.filter((p) => {
+			const bare = p.replace(/^["']|["']$/g, '').toLowerCase();
+			return !EMOJI_FAMILY_NAMES.has(bare) && bare !== 'monospace';
+		});
+}
 
 /**
  * Normalize any terminal font-family string so it ends with the canonical
@@ -41,13 +54,42 @@ const EMOJI_FAMILY_NAMES = new Set([
 export function withEmojiFallback(family: string): string {
 	const trimmed = (family ?? '').trim();
 	if (trimmed === '') return DEFAULT_TERM_FONT;
-	const kept = trimmed
-		.split(',')
-		.map((s) => s.trim())
-		.filter(Boolean)
-		.filter((p) => {
-			const bare = p.replace(/^["']|["']$/g, '').toLowerCase();
-			return !EMOJI_FAMILY_NAMES.has(bare) && bare !== 'monospace';
-		});
+	const kept = stripEmojiAndGeneric(trimmed);
 	return `${kept.join(',')},${EMOJI_FALLBACK},monospace`;
+}
+
+// ─────────────────────────── Remote (web/mobile) variant ───────────────────
+//
+// The remote does NOT bundle the full Noto webfont. Ordinary emoji render from
+// the OS; country flags — which Windows' Segoe UI Emoji can't draw — come from
+// an on-demand, unicode-range-gated 'Flag Emoji' subset face (registered by
+// src/remote/lib/flagEmojiSupport.ts only when the OS lacks flags).
+
+/** System color-emoji fonts only (no bundled Noto). */
+export const SYSTEM_EMOJI_FALLBACK = "'Apple Color Emoji','Segoe UI Emoji'";
+
+/** Family name of the on-demand flag-only subset face. */
+export const FLAG_EMOJI_FAMILY = "'Flag Emoji'";
+
+/** Remote default terminal font: text/CJK fonts → system emoji → generic. */
+export const REMOTE_TERM_FONT = `${TEXT_MONO},${SYSTEM_EMOJI_FALLBACK},monospace`;
+
+/**
+ * Remote counterpart of {@link withEmojiFallback}. Strips any emoji/flag
+ * families and trailing generic from `family`, then appends the remote emoji
+ * chain: system emoji by default, with `'Flag Emoji'` placed FIRST when
+ * `flagsAvailable` so flag codepoints hit it before Segoe's non-rendering
+ * Regional-Indicator letter glyphs (the unicode-range on the @font-face keeps
+ * it from affecting any other emoji). Empty input → the full
+ * {@link REMOTE_TERM_FONT} (plus flags when available).
+ */
+export function withRemoteEmojiFallback(family: string, flagsAvailable: boolean): string {
+	const tail = flagsAvailable
+		? `${FLAG_EMOJI_FAMILY},${SYSTEM_EMOJI_FALLBACK},monospace`
+		: `${SYSTEM_EMOJI_FALLBACK},monospace`;
+	const trimmed = (family ?? '').trim();
+	if (trimmed === '') return `${TEXT_MONO},${tail}`;
+	const kept = stripEmojiAndGeneric(trimmed);
+	if (kept.length === 0) return `${TEXT_MONO},${tail}`;
+	return `${kept.join(',')},${tail}`;
 }
