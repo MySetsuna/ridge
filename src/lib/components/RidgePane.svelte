@@ -261,7 +261,19 @@ async function pasteFromClipboard(): Promise<void> {
 		console.error('[clipboard-image] image paste failed, falling back to text', err);
 	}
 	const text = await readText().catch(() => null);
-	if (text) pasteIntoPane(text);
+	if (!text) return;
+	// §clipboard-image:「复制为路径 / Copy as path」场景——文本可能是带引号的图片文件路径。
+	// 若它确实指向一个存在的图片文件，去引号后粘**裸**路径（CLI 才识别为图片）；否则普通粘文本。
+	try {
+		const imgPath = await invoke<string | null>('resolve_pasted_image_path', { text });
+		if (imgPath) {
+			pasteIntoPane(imgPath);
+			return;
+		}
+	} catch (err) {
+		console.error('[clipboard-image] resolve pasted path failed', err);
+	}
+	pasteIntoPane(text);
 }
 
 /** Refresh the TUI sticky timestamp when any signal suggests the TUI

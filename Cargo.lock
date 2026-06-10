@@ -5116,6 +5116,7 @@ dependencies = [
  "backtrace",
  "base64 0.22.1",
  "chrono",
+ "clipboard-win",
  "dirs 5.0.1",
  "futures",
  "getrandom 0.2.17",
