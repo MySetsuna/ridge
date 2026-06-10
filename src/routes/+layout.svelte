@@ -7,6 +7,9 @@
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
+  import { invoke } from '@tauri-apps/api/core';
+  import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
+  import { cloudAuth as cloudAuthStore } from '$lib/remote/cloud/auth';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -35,7 +38,10 @@
   onMount(() => {
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
-      return;
+      // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
+      // WEB_REMOTE 分支排除，不会到这）。
+      const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
+      return () => stopTotpSync();
     }
     // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
 //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）

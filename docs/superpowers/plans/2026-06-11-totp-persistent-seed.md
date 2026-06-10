@@ -702,21 +702,19 @@ Expected: FAIL（`startTotpIdentitySync` 未定义 / 模块不存在）。
 // （登录→账号专属种子；登出→默认种子）。只在真实桌面 host 启用（见 +layout 守卫），
 // 绝不在 web-remote controller 跑——否则会把「控制端」的登录态隧道到 host，污染 host 种子。
 
-import { cloudAuth as cloudAuthStore } from './cloud/auth';
 import type { CloudAuthState } from './cloud/auth';
 
 type InvokeFn = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 type StoreLike = { subscribe: (run: (s: CloudAuthState) => void) => () => void };
 
 /**
- * 启动同步。返回取消订阅函数。
+ * 启动同步。返回取消订阅函数。`store` 显式传入（**不**默认全局）：本模块只
+ * `import type` cloud/auth，绝不顶层值导入它——否则单测一加载就触发 auth.ts 的
+ * localStorage 初始化（vitest node 环境下 `getItem` 非函数会抛）。
  * @param invoke 真实 Tauri `invoke`（测试可注入 mock）。
- * @param store  cloudAuth store（默认全局；测试可注入 writable）。
+ * @param store  cloudAuth store（+layout 传真实 store，测试传注入的 writable）。
  */
-export function startTotpIdentitySync(
-  invoke: InvokeFn,
-  store: StoreLike = cloudAuthStore,
-): () => void {
+export function startTotpIdentitySync(invoke: InvokeFn, store: StoreLike): () => void {
   // undefined 哨兵：确保首次订阅必触发一次（与任何真实 username 都不等）。
   let last: string | null | undefined = undefined;
   return store.subscribe((s) => {
@@ -740,6 +738,7 @@ Expected: PASS
 ```ts
   import { invoke } from '@tauri-apps/api/core';
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
+  import { cloudAuth as cloudAuthStore } from '$lib/remote/cloud/auth';
 ```
 
 再把 `onMount` 里的桌面分支（第 36-39 行）：
@@ -758,7 +757,7 @@ Expected: PASS
       setTransport(new TauriDataProvider());
       // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
       // WEB_REMOTE 分支排除，不会到这）。
-      const stopTotpSync = startTotpIdentitySync(invoke);
+      const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
       return () => stopTotpSync();
     }
 ```
