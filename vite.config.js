@@ -44,6 +44,9 @@ export default defineConfig({
     // (scripts/tauri-build-debug.mjs) sets RIDGE_CLOUD_BASE_DOMAIN=localhost:5173
     // so the packaged app talks to a local ridge-cloud instance.
     'import.meta.env.RIDGE_CLOUD_BASE_DOMAIN': JSON.stringify(process.env.RIDGE_CLOUD_BASE_DOMAIN || ''),
+    // Dev TLS 逃生开关：dev 默认全链路 TLS（apiClient cloudHttpScheme/cloudWsScheme）；
+    // 置 RIDGE_CLOUD_DEV_PLAINTEXT=1 时回环 cloud 回退明文 http/ws（mkcert 故障调试）。
+    'import.meta.env.RIDGE_CLOUD_DEV_PLAINTEXT': JSON.stringify(process.env.RIDGE_CLOUD_DEV_PLAINTEXT || ''),
   },
 
   resolve: {
