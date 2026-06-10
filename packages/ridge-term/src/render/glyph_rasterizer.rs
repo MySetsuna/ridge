@@ -295,7 +295,19 @@ impl GlyphRasterizer {
         // slot. The caller crops `atlas_uv` to this rectangle so the
         // cell quad samples only the rendered glyph instead of the
         // entire mostly-empty slot.
-        let bbox_w = advance_dev.ceil().clamp(1.0, self.slot_w as f32) as u16;
+        //
+        // Width must cover the glyph's ACTUAL painted right edge, not just the
+        // advance. Italic / synthetic-oblique glyphs — especially CJK, which
+        // usually lack a true italic face so the browser shears the upright
+        // glyph — lean their top-right PAST the advance. Cropping to `advance`
+        // alone shaved that overhang off (the "italic CJK missing top-right
+        // corner" report). `actualBoundingBoxRight` is the painted right edge;
+        // for upright glyphs it ≈ advance, so this is a no-op there.
+        let actual_right_dev = metrics.actual_bounding_box_right() as f32;
+        let bbox_w = advance_dev
+            .max(actual_right_dev)
+            .ceil()
+            .clamp(1.0, self.slot_w as f32) as u16;
         let bbox_h = bbox_h_dev.ceil().clamp(1.0, self.slot_h as f32) as u16;
 
         // Detect whether the browser stamped a color-emoji palette into
