@@ -2,6 +2,8 @@
 // web-remote. The pure logic (probe + cache) is split from the browser glue so
 // it stays unit-testable under the `node` vitest environment.
 
+import { SYSTEM_EMOJI_FALLBACK } from '$lib/terminal/fontStack';
+
 /** unicode-range-gated @font-face for the flag-only subset. Injected ONLY when
  *  the OS can't render flags; the browser then downloads /fonts/flags.woff2
  *  lazily — only when a flag codepoint actually appears. Note: the caller must
@@ -93,8 +95,12 @@ export function ensureRemoteFlagFont(): boolean {
 /** Measure advance width of `text` under the system emoji stack, on a canvas
  *  attached to document.body so WebView2 resolves the full system font chain
  *  (a detached canvas / OffscreenCanvas silently misses system emoji — see
- *  packages/ridge-term/src/render/glyph_rasterizer.rs). Must NOT name
- *  'Flag Emoji' (not yet injected) so the probe reflects the OS, not us. */
+ *  packages/ridge-term/src/render/glyph_rasterizer.rs). The probe MUST measure
+ *  the exact production stack ({@link SYSTEM_EMOJI_FALLBACK}) — no 'Flag Emoji'
+ *  (not yet injected) and no 'Noto Color Emoji': naming a flag-capable font the
+ *  production stack omits would let a machine with that font installed test
+ *  "supported" and skip the subset, leaving flags as letter-boxes. Measure
+ *  exactly what we ship, so the verdict matches what the terminal will render. */
 function measureWithCanvas(text: string): number {
   const canvas = document.createElement('canvas');
   canvas.setAttribute(
@@ -105,7 +111,7 @@ function measureWithCanvas(text: string): number {
   try {
     const ctx = canvas.getContext('2d');
     if (!ctx) return 0;
-    ctx.font = "64px 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif";
+    ctx.font = `64px ${SYSTEM_EMOJI_FALLBACK},sans-serif`;
     return ctx.measureText(text).width;
   } finally {
     canvas.remove();
