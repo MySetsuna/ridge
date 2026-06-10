@@ -48,14 +48,18 @@ export function isInsecureCloudDomain(domain: string): boolean {
   return false;
 }
 
-/** 某 cloud base 域应使用的 HTTP scheme（本机回环 → http，否则 https）。 */
-export function cloudHttpScheme(domain: string): 'http' | 'https' {
-  return isInsecureCloudDomain(domain) ? 'http' : 'https';
+/** 构建期逃生开关：dev 默认全链路 TLS；置 RIDGE_CLOUD_DEV_PLAINTEXT=1 时回环 cloud
+ *  回退明文 http/ws（mkcert 故障时临时调试用）。经 vite define 注入（见 vite.config.js）。 */
+const DEV_PLAINTEXT = (import.meta.env.RIDGE_CLOUD_DEV_PLAINTEXT as string | undefined) === '1';
+
+/** 某 cloud base 域应使用的 HTTP scheme。仅「回环 + 逃生明文」→ http，否则 https。 */
+export function cloudHttpScheme(domain: string, plaintext: boolean = DEV_PLAINTEXT): 'http' | 'https' {
+  return isInsecureCloudDomain(domain) && plaintext ? 'http' : 'https';
 }
 
-/** 某 cloud base 域应使用的 WebSocket scheme（本机回环 → ws，否则 wss）。 */
-export function cloudWsScheme(domain: string): 'ws' | 'wss' {
-  return isInsecureCloudDomain(domain) ? 'ws' : 'wss';
+/** 某 cloud base 域应使用的 WebSocket scheme。仅「回环 + 逃生明文」→ ws，否则 wss。 */
+export function cloudWsScheme(domain: string, plaintext: boolean = DEV_PLAINTEXT): 'ws' | 'wss' {
+  return isInsecureCloudDomain(domain) && plaintext ? 'ws' : 'wss';
 }
 
 /** 主域名 API 根（契约 §4：全部挂在主域名 /api/v1）。本机回环用 http。 */
