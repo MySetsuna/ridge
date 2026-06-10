@@ -157,6 +157,8 @@ const zh: Dict = {
     mobileEntry: '移动端访问入口',
     wsPort: '后端 WebSocket 端口',
     totpCode: 'TOTP 验证码',
+    resetTotp: '重置 TOTP 密钥',
+    resetTotpConfirm: '重置后已配对的验证器将立即失效，需要重新扫码。确定重置？',
     fetchingInfo: '正在获取远程服务器信息...',
     toggleFailed: '切换失败',
     unknownDevice: '未知设备'
@@ -374,6 +376,8 @@ const en: Dict = {
     mobileEntry: 'Mobile access entry',
     wsPort: 'Backend WebSocket port',
     totpCode: 'TOTP code',
+    resetTotp: 'Reset TOTP secret',
+    resetTotpConfirm: 'Resetting invalidates all paired authenticators — you must re-scan. Reset now?',
     fetchingInfo: 'Fetching remote server info…',
     toggleFailed: 'Toggle failed',
     unknownDevice: 'Unknown device'
