@@ -35,7 +35,7 @@ import {
 	EMPTY_INPUT_BUFFER,
 	type InputBufferState,
 } from './inputBufferTracker';
-import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
+import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
 
 interface Props {
 	paneId: string;
@@ -147,7 +147,11 @@ function openHistoryOverlay(): boolean {
 	const items = snapshotHistoryItems(currentInputBuffer.text);
 	if (items.length === 0) return false;
 	historyOverlayItems = items;
-	historyOverlaySelected = -1;
+	// §方向一致 (2026-06-11): pre-select the NEWEST entry (index 0, painted at
+	// the top) so the popup opens with the most recent command highlighted —
+	// one Enter repeats it. Arrow keys then move the highlight in screen
+	// direction (↑ newer / ↓ older) via `nextHistorySelection`.
+	historyOverlaySelected = 0;
 	historyOverlayFirstVisible = 0;
 	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
 	const rows = manager.rows(paneId);
@@ -195,25 +199,15 @@ function moveHistorySelection(delta: number): void {
 		closeHistoryOverlay();
 		return;
 	}
-	// Newest-first list (index 0 = most recent). ArrowUp (delta<0) recalls
-	// the most recent command FIRST then walks toward older — shell
-	// convention + the user's "newest prioritized". ArrowDown is the reverse.
-	if (delta < 0) {
-		// back in time: prompt → newest → older → oldest → prompt
-		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
-		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
-		else historyOverlaySelected += 1;
-	} else {
-		// forward in time: prompt → oldest → newer → newest → prompt
-		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
-		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
-		else historyOverlaySelected -= 1;
-	}
+	// §方向一致 (2026-06-11): the list is newest-first (index 0 = newest,
+	// painted at the TOP). Arrow keys move the highlight in SCREEN direction:
+	// ArrowUp (delta<0) → smaller index → newer; ArrowDown (delta>0) → larger
+	// index → older. Boundaries clamp (no wrap / no auto-dismiss). See
+	// `nextHistorySelection` for the full contract + tests.
+	historyOverlaySelected = nextHistorySelection(historyOverlaySelected, n, delta);
 	// §history-scroll — keep the selection inside the visible window.
 	const win = Math.min(historyOverlayWindow, n);
-	if (historyOverlaySelected === -1) {
-		historyOverlayFirstVisible = 0;
-	} else if (historyOverlaySelected < historyOverlayFirstVisible) {
+	if (historyOverlaySelected < historyOverlayFirstVisible) {
 		historyOverlayFirstVisible = historyOverlaySelected;
 	} else if (historyOverlaySelected >= historyOverlayFirstVisible + win) {
 		historyOverlayFirstVisible = historyOverlaySelected - win + 1;
