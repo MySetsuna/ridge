@@ -38,15 +38,26 @@ describe('isInsecureCloudDomain', () => {
 });
 
 describe('cloudHttpScheme / cloudWsScheme', () => {
-  it('returns plaintext schemes for loopback bases', () => {
-    expect(cloudHttpScheme('localhost:5050')).toBe('http');
-    expect(cloudWsScheme('localhost:5050')).toBe('ws');
-    expect(cloudWsScheme('mylaptop-alice.localhost:5050')).toBe('ws');
+  // 前提：RIDGE_CLOUD_DEV_PLAINTEXT 未注入（或注入空串）时 DEV_PLAINTEXT=false，下方“默认”用例据此走 TLS。
+  it('returns TLS schemes for loopback bases by default (dev TLS)', () => {
+    expect(cloudHttpScheme('localhost:5050')).toBe('https');
+    expect(cloudWsScheme('localhost:5050')).toBe('wss');
+    expect(cloudWsScheme('mylaptop-alice.localhost:5050')).toBe('wss');
   });
 
   it('returns TLS schemes for public bases', () => {
     expect(cloudHttpScheme('9527127.xyz')).toBe('https');
     expect(cloudWsScheme('9527127.xyz')).toBe('wss');
     expect(cloudWsScheme('mylaptop-alice.9527127.xyz')).toBe('wss');
+  });
+
+  it('downgrades loopback bases to plaintext when plaintext flag set (escape hatch)', () => {
+    expect(cloudHttpScheme('localhost:5050', true)).toBe('http');
+    expect(cloudWsScheme('localhost:5050', true)).toBe('ws');
+  });
+
+  it('keeps public bases on TLS even with plaintext flag (never downgrade prod)', () => {
+    expect(cloudHttpScheme('9527127.xyz', true)).toBe('https');
+    expect(cloudWsScheme('9527127.xyz', true)).toBe('wss');
   });
 });
