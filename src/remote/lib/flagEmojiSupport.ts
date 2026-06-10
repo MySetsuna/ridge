@@ -55,3 +55,68 @@ export function readFlagCache(raw: string | null, ua: string): boolean | null {
 export function writeFlagCache(supported: boolean, ua: string): string {
   return JSON.stringify({ ua, supported } satisfies FlagCacheEntry);
 }
+
+// ───────────────────────────── Browser glue ────────────────────────────────
+
+/**
+ * Resolve whether the remote needs the flag subset face, using a cached
+ * verdict when present else a one-shot canvas probe, and register the
+ * @font-face when the OS lacks flags. Returns true when the OS lacks native
+ * flags and the 'Flag Emoji' fallback face has therefore been injected (so the
+ * caller should include 'Flag Emoji' in the font stack); false when the OS
+ * renders flags natively or in a non-DOM context. Safe to call repeatedly
+ * (cache + idempotent injection). Never throws; returns false in non-DOM
+ * contexts.
+ */
+export function ensureRemoteFlagFont(): boolean {
+  if (typeof document === 'undefined') return false;
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  let supported: boolean | null = null;
+  try {
+    supported = readFlagCache(localStorage.getItem(FLAG_CACHE_KEY), ua);
+  } catch {
+    supported = null; // private mode / disabled storage
+  }
+  if (supported === null) {
+    supported = probeSystemFlagSupport(measureWithCanvas);
+    try {
+      localStorage.setItem(FLAG_CACHE_KEY, writeFlagCache(supported, ua));
+    } catch {
+      /* quota / private mode — proceed without caching */
+    }
+  }
+  const needsFallback = !supported;
+  if (needsFallback) injectFlagFontFace();
+  return needsFallback;
+}
+
+/** Measure advance width of `text` under the system emoji stack, on a canvas
+ *  attached to document.body so WebView2 resolves the full system font chain
+ *  (a detached canvas / OffscreenCanvas silently misses system emoji — see
+ *  packages/ridge-term/src/render/glyph_rasterizer.rs). Must NOT name
+ *  'Flag Emoji' (not yet injected) so the probe reflects the OS, not us. */
+function measureWithCanvas(text: string): number {
+  const canvas = document.createElement('canvas');
+  canvas.setAttribute(
+    'style',
+    'position:absolute;left:-9999px;top:-9999px;width:0;height:0;visibility:hidden;pointer-events:none',
+  );
+  document.body.appendChild(canvas);
+  try {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 0;
+    ctx.font = "64px 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif";
+    return ctx.measureText(text).width;
+  } finally {
+    canvas.remove();
+  }
+}
+
+/** Idempotently inject the flag-subset @font-face into <head>. */
+function injectFlagFontFace(): void {
+  if (document.getElementById('ridge-flag-emoji-face')) return;
+  const style = document.createElement('style');
+  style.id = 'ridge-flag-emoji-face';
+  style.textContent = FLAG_FONT_FACE_CSS;
+  document.head.appendChild(style);
+}
