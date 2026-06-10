@@ -1,161 +1,63 @@
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
+use parking_lot::{Mutex, RwLock};
+use ridge_core::RemoteTotp;
 
-const TOTP_PERIOD: u64 = 30;
-const TOTP_DIGITS: u64 = 6;
-const TOTP_SKEW: i64 = 1;
-
-/// Minimal TOTP (RFC 6238) implementation using SHA-256 HMAC.
-///
-/// No external crate dependencies — we use `sha2` (already in the dep tree)
-/// to implement HMAC-SHA256 directly.
+/// 本机 TOTP 持有者（契约 §4）。内部委托 ridge-core 的 `RemoteTotp`（唯一权威
+/// 实现），secret 由其持久化层跨重启恢复。`RwLock` 支持登录态变化时**实时切换**
+/// 活动种子（远控 server 持 `Arc<RemoteAuth>`，需内部可变）。
 pub struct RemoteAuth {
-    secret: Vec<u8>,
+    totp: RwLock<RemoteTotp>,
 }
 
 impl RemoteAuth {
+    /// 启动时桌面尚未登录 → 先用 `"default"` 身份的持久化种子；登录后由
+    /// `switch_identity` 切到账号专属种子。
     pub fn new() -> Self {
         Self {
-            secret: generate_secret(),
+            totp: RwLock::new(RemoteTotp::load_or_create("default")),
         }
     }
 
-    /// Generate the current 6-digit TOTP code.
+    /// 生成当前 6 位 TOTP。
     pub fn current_code(&self) -> String {
-        let now = now_secs();
-        totp_at(&self.secret, now)
+        self.totp.read().current_code()
     }
 
-    /// Verify a user-supplied code, checking the current +-1 window.
+    /// 校验用户输入的 code（±1 窗口在 `RemoteTotp::verify` 内）。
     pub fn verify(&self, code: &str) -> bool {
-        if code.len() != TOTP_DIGITS as usize {
-            return false;
-        }
-        let now = now_secs();
-        for offset in -TOTP_SKEW..=TOTP_SKEW {
-            let ts = if offset >= 0 {
-                now.saturating_add(offset as u64)
-            } else {
-                now.saturating_sub((-offset) as u64)
-            };
-            if constant_time_eq(totp_at(&self.secret, ts).as_bytes(), code.as_bytes()) {
-                return true;
-            }
-        }
-        false
+        self.totp.read().verify(code)
     }
 
-    /// Return current code + otpauth URI in one call (avoids race
-    /// if the time step ticks between two separate calls).
+    /// 当前 code + otpauth URI 一次取（同一把读锁，避免时间步在两次调用间跳变）。
     pub fn code_and_uri(&self, machine_name: &str) -> (String, String) {
-        (self.current_code(), self.otpauth_uri(machine_name))
+        let g = self.totp.read();
+        (g.current_code(), g.otpauth_uri(machine_name))
     }
 
-    /// Return an `otpauth://` URI suitable for QR-code generation.
-    /// Uses RFC 4648 base32 (no padding) for the secret.
+    /// 供二维码生成的 `otpauth://` URI。
     pub fn otpauth_uri(&self, machine_name: &str) -> String {
-        // Simple manual encoding for the label part
-        let label = machine_name.replace(' ', "%20");
-        format!(
-            "otpauth://totp/Ridge:{label}?secret={}&issuer=Ridge&algorithm=SHA256&digits={}&period={}",
-            base32_encode(&self.secret),
-            TOTP_DIGITS,
-            TOTP_PERIOD,
-        )
+        self.totp.read().otpauth_uri(machine_name)
     }
-}
 
-/// Generate the 20-byte (160-bit) TOTP secret seed.
-///
-/// SECURITY (audit C2): the secret seed determines every past/future TOTP
-/// code, so it MUST be unpredictable. We pull it from the OS CSPRNG
-/// (`getrandom`, backed by `getrandom`/`BCryptGenRandom`/`/dev/urandom`).
-/// The previous implementation seeded a non-cryptographic xorshift PRNG with
-/// `nanos ^ pid` (low entropy, observable), letting a LAN attacker reconstruct
-/// the seed and derive all codes. If the OS RNG ever fails we abort secret
-/// generation rather than fall back to a weak source — a remote server with a
-/// predictable TOTP secret is worse than one that fails to start its auth.
-fn generate_secret() -> Vec<u8> {
-    let mut buf = vec![0u8; 20];
-    getrandom::getrandom(&mut buf).expect("OS CSPRNG unavailable for TOTP secret generation");
-    buf
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Generate a TOTP code for the given secret and time step.
-fn totp_at(secret: &[u8], time_secs: u64) -> String {
-    let counter = time_secs / TOTP_PERIOD;
-    let counter_be = counter.to_be_bytes();
-    let hmac_result = hmac_sha256(secret, &counter_be);
-    let offset = (hmac_result[31] & 0x0f) as usize;
-    let code = ((hmac_result[offset] & 0x7f) as u32) << 24
-        | (hmac_result[offset + 1] as u32) << 16
-        | (hmac_result[offset + 2] as u32) << 8
-        | (hmac_result[offset + 3] as u32);
-    let mod_val = 10u32.pow(TOTP_DIGITS as u32);
-    let token = code % mod_val;
-    format!("{:0width$}", token, width = TOTP_DIGITS as usize)
-}
-
-/// HMAC-SHA256 (RFC 2104).
-fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
-    const BLOCK_SIZE: usize = 64;
-    let mut k = key.to_vec();
-    if k.len() > BLOCK_SIZE {
-        k = Sha256::digest(&k).to_vec();
+    /// 重置当前身份的种子（已配对验证器即失效，需重新扫码）。
+    pub fn reset_totp(&self) {
+        self.totp.write().reset();
     }
-    k.resize(BLOCK_SIZE, 0);
-    let mut ipad = vec![0x36u8; BLOCK_SIZE];
-    let mut opad = vec![0x5cu8; BLOCK_SIZE];
-    for i in 0..k.len() {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
-    }
-    let inner = Sha256::digest(&[&ipad[..], msg].concat());
-    Sha256::digest(&[&opad[..], &inner[..]].concat()).to_vec()
-}
 
-/// Constant-time comparison to prevent timing attacks.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    /// 切换活动种子到指定云身份（`None` → `"default"`）。登录/登出时调用。
+    pub fn switch_identity(&self, username: Option<&str>) {
+        self.totp.write().switch_identity(username.unwrap_or("default"));
     }
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
-}
 
-/// RFC 4648 base32 encoding (no padding).
-fn base32_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let mut result = String::new();
-    let mut buffer: u64 = 0;
-    let mut bits = 0;
-    for &byte in input {
-        buffer = (buffer << 8) | byte as u64;
-        bits += 8;
-        while bits >= 5 {
-            bits -= 5;
-            let idx = ((buffer >> bits) & 0x1f) as usize;
-            result.push(ALPHABET[idx] as char);
+    /// 测试用：临时随机种子，不落盘（避免单测写真实 AppData）。
+    #[cfg(test)]
+    fn ephemeral() -> Self {
+        Self {
+            totp: RwLock::new(RemoteTotp::new()),
         }
     }
-    if bits > 0 {
-        let idx = ((buffer << (5 - bits)) & 0x1f) as usize;
-        result.push(ALPHABET[idx] as char);
-    }
-    result
 }
 
 /// SECURITY (audit H5): shortened from 3 days to 12 hours. A session token is a
@@ -511,11 +413,11 @@ mod tests {
     }
 
     #[test]
-    fn totp_secret_is_20_bytes_and_varies() {
-        let s1 = generate_secret();
-        let s2 = generate_secret();
-        assert_eq!(s1.len(), 20, "RFC 6238 / our otpauth uses a 160-bit seed");
-        assert_ne!(s1, s2, "two CSPRNG draws must differ");
+    fn ephemeral_auth_verifies_its_own_code() {
+        let auth = RemoteAuth::ephemeral();
+        let (code, uri) = auth.code_and_uri("My Machine");
+        assert!(auth.verify(&code), "RemoteAuth 须能校验自己当前的 code");
+        assert!(uri.starts_with("otpauth://totp/Ridge:"), "otpauth URI 形状正确");
     }
 
     #[test]

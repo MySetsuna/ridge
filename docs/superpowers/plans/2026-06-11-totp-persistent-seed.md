@@ -542,11 +542,17 @@ impl RemoteAuth {
     }
 ```
 
-- [ ] **Step 4: 验证编译 + 测试**
+- [ ] **Step 4: 验证编译**
 
-Run: `cargo test -p ridge --lib remote::auth`
-Expected: PASS（session / throttle 测试 + 新 `ephemeral_auth_verifies_its_own_code`；不再有 `generate_secret` 相关）。
+Run: `cargo build -p ridge --tests`
+Expected: 编译通过（test profile 编译即覆盖 `remote::auth` 全部代码 + 新 `ephemeral_auth_verifies_its_own_code`；不再有 `generate_secret` 引用）。`reset_totp`/`switch_identity` 暂报 dead_code 警告（Task 4 接入后消除）。
 
+> ⚠️ 已知限制（本会话实测确认，预先存在、与本改动无关）：`cargo test -p ridge --lib`
+> 的**测试 harness exe 无法独立启动**——它从 `rfd`/`tauri-plugin-dialog` 链入
+> `TaskDialogIndirect`（comctl32 v6），而裸测试 exe 没有 Common-Controls v6 应用清单，
+> 加载器报 `STATUS_ENTRYPOINT_NOT_FOUND`。真实 `ridge.exe`（tauri-build 嵌了清单）不受影响。
+> 故 src-tauri 内的单测**只编译验证**；`remote::auth` 的运行期行为由 ridge-core 的
+> RemoteTotp 测试（已跑通）+ Task 6 真机烟雾共同保证。
 > 若常驻 `tauri dev` 占用构建锁，命令会等待——正常，勿杀 dev。
 
 - [ ] **Step 5: 提交**
