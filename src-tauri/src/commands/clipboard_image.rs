@@ -113,28 +113,13 @@ pub fn cleanup_old_temp_images(max_age: Duration) {
     }
 }
 
-/// 是否带常见图片扩展名（不含 svg —— CLI 多把 svg 当文本/矢量而非图片附件）。
-fn is_image_ext(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
-        .iter()
-        .any(|ext| lower.ends_with(ext))
-}
-
-/// 从一组文件路径里挑出第一个真实存在的图片文件（纯逻辑，便于单测）。
-fn pick_image_file(files: Vec<String>) -> Option<String> {
-    files
-        .into_iter()
-        .find(|f| is_image_ext(f) && std::path::Path::new(f).is_file())
-}
-
 /// Windows：读剪贴板文件列表（CF_HDROP，即资源管理器里「复制」图片文件的格式），
 /// 返回第一个存在的图片文件绝对路径。剪贴板没有文件列表时 get_clipboard 返回 Err → None。
 #[cfg(windows)]
 fn first_clipboard_image_file() -> Option<String> {
     let files: Vec<String> =
         clipboard_win::get_clipboard(clipboard_win::formats::FileList).ok()?;
-    pick_image_file(files)
+    ridge_core::clipboard::pick_image_file(files)
 }
 
 /// 非 Windows 暂不支持「复制文件」式粘贴（mac/Linux 文件列表格式各异，用户主路径是位图）。
@@ -143,75 +128,10 @@ fn first_clipboard_image_file() -> Option<String> {
     None
 }
 
-/// 把「复制为路径 / Copy as path」得到的文本（可能带引号）解析成一个真实存在的图片文件
-/// 绝对路径。仅当文本是单一、带图片扩展名、且文件存在的路径时返回 Some（前端据此粘**裸**
-/// 路径，CLI 才会识别为图片）；否则 None → 走普通文本粘贴，绝不误伤普通文本。
+/// 把「复制为路径 / Copy as path」文本解析成真实存在的图片路径。纯逻辑在
+/// `ridge_core::clipboard`（不链 Tauri、可在 `cargo test` 下单测）；这里只做
+/// `#[tauri::command]` 薄包装暴露给前端。
 #[tauri::command]
 pub fn resolve_pasted_image_path(text: String) -> Option<String> {
-    let trimmed = text.trim().trim_matches('"').trim();
-    if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
-        return None;
-    }
-    if is_image_ext(trimmed) && std::path::Path::new(trimmed).is_file() {
-        Some(trimmed.to_string())
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_strips_quotes_for_existing_image() {
-        // 「复制为路径 / Copy as path」：剪贴板是带引号的图片路径文本。
-        let dir = std::env::temp_dir().join("wind-clip-rtest");
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("shot.png");
-        std::fs::write(&img, b"\x89PNG").unwrap();
-        let p = img.to_string_lossy().to_string();
-
-        assert_eq!(resolve_pasted_image_path(format!("\"{p}\"")), Some(p.clone()));
-        assert_eq!(resolve_pasted_image_path(p.clone()), Some(p.clone()));
-        assert_eq!(resolve_pasted_image_path(format!("  {p}  ")), Some(p.clone()));
-
-        let _ = std::fs::remove_file(&img);
-    }
-
-    #[test]
-    fn resolve_rejects_non_image_and_missing() {
-        // 普通文本不误伤
-        assert_eq!(resolve_pasted_image_path("hello world".into()), None);
-        // 图片扩展名但文件不存在
-        assert_eq!(resolve_pasted_image_path("C:/nope/x.png".into()), None);
-        // 多行（粘贴的整段文本）不当成路径
-        assert_eq!(resolve_pasted_image_path("a.png\nb".into()), None);
-        // 真实存在但非图片扩展名
-        let dir = std::env::temp_dir().join("wind-clip-rtest2");
-        std::fs::create_dir_all(&dir).unwrap();
-        let txt = dir.join("note.txt");
-        std::fs::write(&txt, b"x").unwrap();
-        assert_eq!(
-            resolve_pasted_image_path(txt.to_string_lossy().to_string()),
-            None
-        );
-        let _ = std::fs::remove_file(&txt);
-    }
-
-    #[test]
-    fn pick_image_file_finds_existing_image() {
-        // 「复制图片文件」：CF_HDROP 读到的文件列表里挑出图片文件。
-        let dir = std::env::temp_dir().join("wind-clip-pick");
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("pic.png");
-        std::fs::write(&img, b"x").unwrap();
-        let p = img.to_string_lossy().to_string();
-
-        let files = vec!["C:/whatever/readme.txt".to_string(), p.clone()];
-        assert_eq!(pick_image_file(files), Some(p.clone()));
-        assert_eq!(pick_image_file(vec!["a.txt".into(), "b.doc".into()]), None);
-
-        let _ = std::fs::remove_file(&img);
-    }
+    ridge_core::clipboard::resolve_pasted_image_path(&text)
 }
