@@ -701,6 +701,8 @@ pub fn run() {
             commands::remote::get_remote_info,
             commands::remote::remote_reap_orphans,
             commands::remote::verify_remote_totp,
+            commands::remote::remote_reset_totp,
+            commands::remote::remote_set_totp_identity,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
             commands::remote::set_remote_fs_readonly,
