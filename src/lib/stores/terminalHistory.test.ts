@@ -21,7 +21,13 @@ const { invoke } = await import('@tauri-apps/api/core');
 const mockInvoke = vi.mocked(invoke);
 
 const mod = await import('./terminalHistory');
-const { dedupKeepFirst, filterByPrefix, terminalHistoryStore, terminalHistoryLoadedStore } = mod;
+const {
+	dedupKeepFirst,
+	filterByPrefix,
+	nextHistorySelection,
+	terminalHistoryStore,
+	terminalHistoryLoadedStore,
+} = mod;
 
 beforeEach(async () => {
 	mockInvoke.mockReset();
@@ -163,6 +169,57 @@ describe('dedupKeepFirst ∘ filterByPrefix composition', () => {
 		const store = ['echo foo', 'echo bar', 'echo foo', 'ls'];
 		const out = filterByPrefix(dedupKeepFirst(store), 'echo');
 		expect(out).toEqual(['echo foo', 'echo bar']);
+	});
+});
+
+describe('nextHistorySelection', () => {
+	// Contract (§方向一致, 2026-06-11): the overlay paints items[0] (newest)
+	// at the TOP and selected_index grows downward (see webgpu.rs
+	// draw_history_overlay). So ArrowUp (delta<0) must move the highlight UP
+	// = toward index 0 = toward the NEWER command; ArrowDown (delta>0) moves
+	// it DOWN = toward the OLDER command. Boundaries clamp (no wrap, no
+	// auto-dismiss) so an extra key press at an edge is a harmless no-op.
+	const TOTAL = 4; // indices 0..3, 0 = newest/top, 3 = oldest/bottom
+
+	it('returns -1 when the list is empty (caller closes the overlay)', () => {
+		expect(nextHistorySelection(0, 0, -1)).toBe(-1);
+		expect(nextHistorySelection(-1, 0, 1)).toBe(-1);
+	});
+
+	it('ArrowUp moves the highlight UP (toward newer / smaller index)', () => {
+		expect(nextHistorySelection(2, TOTAL, -1)).toBe(1);
+		expect(nextHistorySelection(1, TOTAL, -1)).toBe(0);
+	});
+
+	it('ArrowDown moves the highlight DOWN (toward older / larger index)', () => {
+		expect(nextHistorySelection(0, TOTAL, 1)).toBe(1);
+		expect(nextHistorySelection(2, TOTAL, 1)).toBe(3);
+	});
+
+	it('clamps at the top: ArrowUp on the newest (index 0) stays put', () => {
+		expect(nextHistorySelection(0, TOTAL, -1)).toBe(0);
+	});
+
+	it('clamps at the bottom: ArrowDown on the oldest (last index) stays put', () => {
+		expect(nextHistorySelection(TOTAL - 1, TOTAL, 1)).toBe(TOTAL - 1);
+	});
+
+	it('treats a -1 (no-selection) current as "enter at the newest/top"', () => {
+		// openHistoryOverlay now pre-selects index 0, so -1 is just a defensive
+		// fallback — either arrow lands on the newest entry.
+		expect(nextHistorySelection(-1, TOTAL, -1)).toBe(0);
+		expect(nextHistorySelection(-1, TOTAL, 1)).toBe(0);
+	});
+
+	it('clamps an out-of-range current back into the list before moving', () => {
+		// current past the end → treated as the last index.
+		expect(nextHistorySelection(99, TOTAL, -1)).toBe(TOTAL - 2);
+		expect(nextHistorySelection(99, TOTAL, 1)).toBe(TOTAL - 1);
+	});
+
+	it('handles a single-item list: both directions stay on index 0', () => {
+		expect(nextHistorySelection(0, 1, -1)).toBe(0);
+		expect(nextHistorySelection(0, 1, 1)).toBe(0);
 	});
 });
 
