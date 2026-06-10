@@ -20,6 +20,10 @@
   let { ws }: { ws: RemoteConnection } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
+  // The active pane object (for its title in the header breadcrumb), derived
+  // from the live `panes` list by id — mirrors the panes.find(...) lookup used
+  // for the active cwd below.
+  let activePane = $derived(panes.find((p) => p.id === activePaneId));
   let wsState = $state<ConnectionState>('disconnected');
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
