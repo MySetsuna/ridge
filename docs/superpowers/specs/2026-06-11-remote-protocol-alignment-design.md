@@ -23,12 +23,13 @@
 - 修 P0：ridge-cli 无头 host 全链路承载 `cid`，让浏览器 controller 能连上（与现网 relay 即时互通，无需 relay 改动）。
 - 补 `e2ee-pubkey`：ridge-cli 参与 §7.3 公钥旁路绑定（承载字段由本设计定，**语义由 crypto 定**）。
 - LAN/cloud 鉴权状态机收敛为传输无关的统一 `authState` 抽象（不削弱任一腿的真实鉴权）。
+- 为 crypto 零信任方案定**载体**：B 层 0x02 握手帧 tag 登记、C 层 `totp-bind` 与 `$/hello` 能力位 `device-id`/`totp-bind`（字节/算法/验证归 crypto，§0/§2.2/FIX-5）。
 
 **非目标**
 - 不写实现代码、不动任何源文件（本轮纯设计）。
-- 不改 E2EE 加密算法/帧格式（仅承载层 schema）。
-- 不改 0x10/0x11/0x12 mux 与 JSON-RPC 业务信封（已对齐）。
-- crypto 绑定方案的**字段语义/算法/验证规则**不在本文档（属 crypto 设计文档，本文档只留承载字段并引用之）。
+- 不定义 B 层 0x02 握手帧的字节布局/Ed25519 算法、不定义 `totp-bind` 的 HMAC 算法（属 crypto §7）；本文档仅**登记 tag、指定载体归属**（§2.2、FIX-5）。
+- 不改 0x10/0x11/0x12 mux **帧框架**（已对齐）；但 0x12 内的 `SessionControl` payload 新增 `totp-bind` 变体（C 层，FIX-5），JSON-RPC 业务信封不变。
+- crypto 绑定方案的**字段语义/算法/验证规则/签名密钥来源**不在本文档（属 crypto 设计文档，本文档只定载体并引用之）。
 - 移动端 legacy SPA（`src/remote/`，`stdin`/`invoke-request`，LAN-only）不纳入统一（保留旧路径）。
 
 ## §0 与 crypto-reviewer 的边界约定（已对齐）
@@ -231,18 +232,20 @@ Unknown   (#[serde(other)])
 - **`ridge-signaling`**：`tests/conformance.rs` 对每个 fixtures 帧做 parse→serialize 往返 == 原 JSON；`Unknown` 兜底未知 `t`；cid 可选性（controller 发无 cid / relay 注入后有 cid）双形态。
 - **TS 对照**：`signaling.conformance.test.ts` 加载同一 fixtures 往返一致；ts-rs 生成物 CI "regen 无 diff"。
 - **FIX-1**：ridge-cli 单测——入站 `offer{sdp,cid}` → 出站 `answer{sdp,cid}` cid 原样回盖；集成（feature `rtc`）端到端：浏览器 controller mock ↔ ridge-cli，断言 answer 带 cid 且被 relay 路由（可对 `route_host_frame` 写单测：无 cid→丢，有 cid→投递）。
-- **FIX-2**：ridge-cli keyBinding 三态纯单测（与 `keyBinding.test.ts` 对齐）；篡改 sig → reject（crypto 字段就绪后补）。
+- **FIX-2**：ridge-cli keyBinding 三态纯单测（与 `keyBinding.test.ts` 对齐），仅 eph_pub 旁路。
 - **FIX-4**：lanWsAdapter `connected→authorized`；cloudWebrtcAdapter `connected→pending→(totp ok)authorized/(locked)denied`；controller ready 只依赖 authState 的回归测试。
+- **FIX-5**（crypto 协同）：B 层 0x02 握手帧 `e2ee.ts↔e2ee.rs` 字节级 conformance + 篡改 sig→reject；C 层 `SessionControl::TotpBind` 往返 + protocol.rs↔TS conformance；`$/hello` 含/缺 `device-id`+`totp-bind` 时的强校验启用/回退分支。具体断言以 crypto §7 为准。
 
 ## §9 实施顺序（建议，逐项单独 commit；跨仓需协调 rev）
 
 1. 建 `ridge-signaling` crate（数据模型 + fixtures + Rust conformance + ts-rs 生成）。【SSOT 地基】
 2. relay 接入（FIX-3 relay 侧）：`messages.rs`/`handler.rs` 改 typed，线上不变。
 3. ridge-cli 接入 crate + **FIX-1 cid**（含 rtc/session/daemon 缝合）。【解 P0】
-4. ridge-cli **FIX-2 e2ee-pubkey** 承载层（crypto 字段留位）。
+4. ridge-cli **FIX-2 e2ee-pubkey** A 层 eph_pub 旁路（仅补 relay-trust 防 MITM，与 crypto 解耦）。
 5. TS 接入 crate 生成类型 + fixtures conformance（FIX-3 TS 侧）。
 6. **FIX-4** 鉴权状态机收敛（可与 1–5 并行，独立）。
-7. 次要收敛项（§6：ridge-cli 多控制方依赖步骤 3；$/hello 与能力集 SSOT；welcome.room 文档）。
-8. crypto 字段语义回填进 FIX-2（待 crypto 文档定稿）。
+7. 能力集 SSOT（§6 P2-2）+ 新增 `device-id`/`totp-bind` 能力位 —— **crypto fail-closed 的前置开关**。
+8. **FIX-5** crypto 载体接入（B 层 0x02 握手帧 + C 层 `totp-bind`），字节/算法/验证以 crypto §7 为准；由步骤 7 能力位 gating。
+9. 其余次要收敛项（§6：ridge-cli 多控制方依赖步骤 3；$/hello 版本协商；welcome.room 文档；nonce 保留字节归 crypto）。
 
-**关键依赖**：步骤 1 是 2/3/5 的前置；FIX-1（步骤 3）是 P0 与 §6 多控制方的前置；FIX-4（步骤 6）无依赖可先行。crypto 字段（步骤 8）不阻塞承载层落地。
+**关键依赖**：步骤 1 是 2/3/5 的前置；FIX-1（步骤 3）是 P0 与多控制方的前置；FIX-4（步骤 6）无依赖可先行；步骤 7（能力位 SSOT）是步骤 8（FIX-5 强校验）的前置开关。FIX-5 与 crypto §7 协同定稿，但**不阻塞** P0（步骤 3）与 A 层收敛（步骤 1-5）。
