@@ -318,6 +318,14 @@ fn find_idle_pane_index(state: &AppState, wid: uuid::Uuid) -> Option<usize> {
     let ws = map.get(&wid)?;
     let leaves = ws.pane_tree.get_all_leaves();
     for (idx, pane_id) in leaves.iter().enumerate() {
+        // §host-guard (2026-06-11): only reuse panes Ridge itself created for a
+        // teammate. The originating (host) pane — where the parent agent runs —
+        // is never teammate-owned, so idle-reuse can never select it. Restores
+        // the pre-refactor invariant (first teammate gets a fresh pane, idx≥1)
+        // and stops spawn-process from clobbering the host PTY via leaf 0.
+        if !ws.teammate_owned_panes.contains(pane_id) {
+            continue;
+        }
         let is_terminal = matches!(
             ws.pane_tree.panes.get(pane_id).map(|p| &p.mode),
             Some(crate::types::PaneMode::Terminal)
@@ -548,66 +556,6 @@ struct SplitBody {
 
 fn default_true() -> bool {
     true
-}
-
-/// F4 看门狗宽限期：teammate split 创建的面板若过此时长仍 `Starting`（F1 提升信号
-/// 始终未到），由看门狗据其自身 PTY 决断。> 激活超时(3s) + 余量，< 30s 孤儿看门狗。
-const STARTING_WATCHDOG_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// F4 安全网（P2）：解决「F1 提升信号缺失 → 面板长期卡 Starting」。宽限期后若面板仍
-/// `Starting`，据其**自身** PTY 决断：有存活子进程 ⇒ 提升 `Busy`（agent 在跑、信号丢
-/// 了）；无存活子进程 ⇒ 清 badge（孤儿 Starting）。
-///
-/// 严格只操作面板**所属工作区** `wid`，**绝不读** `active_workspace_id`（跨工作区安全）。
-/// 跳过：① 已被 F1(Busy)/child-exit(Idle/清除) 解决的面板；② 仍在 `pending_spawns`（未激活，
-/// 归 30s 孤儿看门狗管，不抢）。仅覆盖**新 split** 的 Starting（harness 主路径
-/// split→spawn-process 的提升缺失场景）；reuse 命中既有 shell 不在此范围。
-fn spawn_starting_watchdog(state: AppState, handle: tauri::AppHandle, wid: Uuid, pid: Uuid) {
-    tokio::spawn(async move {
-        tokio::time::sleep(STARTING_WATCHDOG_GRACE).await;
-        let resolved = {
-            let mut map = state.workspaces.write();
-            let Some(ws) = map.get_mut(&wid) else {
-                return;
-            };
-            // 已被 F1 / child-exit 解决 → 不动。
-            if !matches!(ws.teammate_pane_states.get(&pid), Some(PaneState::Starting)) {
-                return;
-            }
-            // 尚未激活（PendingSpawn 仍在）→ 30s 孤儿看门狗负责，本看门狗不抢。
-            if ws.pending_spawns.contains_key(&pid) {
-                return;
-            }
-            let has_live_child = ws
-                .terminals
-                .get_mut(&pid)
-                .and_then(|h| h._child.as_mut())
-                .map(|c| matches!(c.try_wait(), Ok(None))) // Ok(None) = 仍在运行
-                .unwrap_or(false);
-            if has_live_child {
-                // 权衡（reviewer LOW，文档化接受）：teammate 域里 Starting 面板≈「等
-                // agent 提升」，存活子进程几乎必是 agent → 标 Busy 正确。极窄例外：用户
-                // 在 ridge 直接敲**裸** `tmux split-window`（无后续 spawn-process）→ 滞留
-                // 的纯 shell 会被标 Busy（误标）。触发面极窄（用户极少直敲裸 tmux），接受。
-                ws.teammate_pane_states.insert(pid, PaneState::Busy);
-                *ws.teammate_metrics
-                    .failures
-                    .entry("watchdog_promoted_busy".into())
-                    .or_insert(0) += 1;
-            } else {
-                ws.teammate_pane_states.remove(&pid);
-                ws.teammate_agent_pane_map.retain(|_, v| *v != pid);
-                *ws.teammate_metrics
-                    .failures
-                    .entry("watchdog_cleared_starting".into())
-                    .or_insert(0) += 1;
-            }
-            true
-        };
-        if resolved {
-            let _ = handle.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
-        }
-    });
 }
 
 async fn route_split(
@@ -908,15 +856,15 @@ async fn route_split(
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.teammate_tmux_pane_cursor = new_idx;
-                    // F1（新 split 入口）：agent 意图（结构化）或内嵌-program → 启动即 Busy；
-                    // 否则 Starting（harness 主路径：split 无 cmd → Starting，随后 spawn-process
-                    // 提升）。与 idle-reuse 共用同一判定。
-                    let pane_state = if body.is_agent || is_structured {
-                        PaneState::Busy
-                    } else {
-                        PaneState::Starting
-                    };
-                    ws.teammate_pane_states.insert(new_id, pane_state);
+                    // F1（新 split 入口）：仅当**确有 agent 落入**（结构化 program / is_agent）
+                    // 才标 Busy（显示 agent badge）。裸 split（无 agent，纯 tmux 拉起的 shell
+                    // pane）**不写任何 teammate 状态** → 不打 agent 标（与普通用户 pane 同款）。
+                    // harness 主路径 split→spawn-process(is_agent) 由 spawn-process 适时标 Busy。
+                    // （用户需求 2026-06-11：tmux 拉起但未运行 agent 的 pane 不要 agent 标。）
+                    if body.is_agent || is_structured {
+                        ws.teammate_pane_states
+                            .insert(new_id, PaneState::Busy);
+                    }
                     if let Some(aid) = body
                         .agent_id
                         .as_ref()
@@ -988,13 +936,9 @@ async fn route_split(
                 }
             });
 
-            // F4 安全网（P2）：仅当本面板创建为 `Starting`（非 agent / 非内嵌结构化 →
-            // 等待后续 spawn-process 提升）时挂看门狗，宽限期后若提升信号仍缺失则据
-            // 自身 PTY 决断（live child→Busy / 否则清 badge）。is_agent/内嵌结构化已是
-            // Busy，无需看门狗。
-            if !(body.is_agent || is_structured) {
-                spawn_starting_watchdog(ctx.state.clone(), ctx.handle.clone(), wid, new_id);
-            }
+            // 裸 split 不再标 Starting、不挂 agent 看门狗（见上 F1 入口，用户需求 2026-06-11）：
+            // 无 agent 的纯 tmux shell pane 不打 agent 标；真 agent 经 spawn-process(is_agent)
+            // 在落入时自行标 Busy。
 
             // Wait up to 3s for the front-end to mount + fit + activate.
             // tokio::time::timeout wraps the recv future; the outer Result
@@ -1200,6 +1144,25 @@ async fn route_spawn_process(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
+    // §host-guard (2026-06-11): spawn-process tears down + replaces the target
+    // pane's PTY (ensure_pane_pty_workspace). If pane_idx (default 0 / stale
+    // cursor) resolves to the originating host pane, that replacement kills the
+    // parent agent. Only teammate-owned panes are valid spawn targets.
+    {
+        let owned = ctx
+            .state
+            .workspaces
+            .read()
+            .get(&wid)
+            .is_some_and(|ws| ws.teammate_owned_panes.contains(&pid));
+        if !owned {
+            return (
+                StatusCode::BAD_REQUEST,
+                "refusing to spawn onto a non-teammate pane",
+            )
+                .into_response();
+        }
+    }
     let cwd = body
         .cwd
         .as_ref()
@@ -1485,6 +1448,20 @@ async fn route_kill_pane(
     if let Some(idx) = body.pane_index {
         match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
             Ok(pid) => {
+                // §host-guard (2026-06-11): refuse to kill any pane Ridge did not
+                // create for a teammate. claude-sdk emits `kill-pane -t %0` during
+                // teammate teardown; if %0 resolves to the originating (host) pane,
+                // an unguarded kill destroys the parent session. Non-teammate panes
+                // → silent OK no-op so the teardown flow stays happy.
+                let is_owned = ctx
+                    .state
+                    .workspaces
+                    .read()
+                    .get(&wid)
+                    .is_some_and(|ws| ws.teammate_owned_panes.contains(&pid));
+                if !is_owned {
+                    return (StatusCode::OK, "ignored: not a teammate pane").into_response();
+                }
                 let state_ref: &AppState = &ctx.state;
                 crate::commands::terminal::kill_pty_if_present(state_ref, wid, pid, true).await;
                 {
@@ -1496,6 +1473,7 @@ async fn route_kill_pane(
                         ws.teammate_pane_states.remove(&pid);
                         ws.teammate_agent_pane_map.retain(|_, v| *v != pid);
                         ws.pane_sizes.remove(&pid);
+                        ws.teammate_owned_panes.remove(&pid);
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
