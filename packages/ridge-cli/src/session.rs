@@ -148,6 +148,12 @@ impl RemoteSession {
         Self::print_totp_prompt(&totp);
 
         // 5. 主循环。
+        // §5.3 cid 寻址：relay 把 controller 的 offer/ice **加盖该 controller 的 cid** 后转发
+        // 给 host；host 回的 answer/ice **必须带回同一 cid**，否则 relay 丢弃该帧（旧 cli 无
+        // cid 字段 → answer 永远到不了 controller，即 P0「浏览器连不上无头 host」）。cli 是
+        // 单会话 host：从入站 offer 取 cid，之后所有出站 answer/ice 原样回盖。cid 为 None 时
+        // （如非 relay 的直连场景）按无 cid 发送，行为同旧版。
+        let mut session_cid: Option<String> = None;
         let mut batch = BatchingBuffer::new();
 
         loop {
@@ -214,8 +220,15 @@ impl RemoteSession {
                 maybe_sig = outbound_rx.recv() => {
                     if let Some(out) = maybe_sig {
                         let msg = match out {
-                            PeerOutbound::Answer(sdp) => SignalMsg::Answer { sdp },
-                            PeerOutbound::Ice(candidate) => SignalMsg::Ice { candidate },
+                            // §5.3：回盖入站 offer 携带的 cid，relay 据此定向投递给该 controller。
+                            PeerOutbound::Answer(sdp) => SignalMsg::Answer {
+                                sdp,
+                                cid: session_cid.clone(),
+                            },
+                            PeerOutbound::Ice(candidate) => SignalMsg::Ice {
+                                candidate,
+                                cid: session_cid.clone(),
+                            },
                         };
                         signaling.send(msg).await.ok();
                     }
@@ -224,10 +237,18 @@ impl RemoteSession {
                 // 来自 relay 的信令。
                 maybe_relay = signal_rx.recv() => {
                     match maybe_relay {
-                        Some(SignalMsg::Offer { sdp }) => {
+                        Some(SignalMsg::Offer { sdp, cid }) => {
+                            // relay 加盖的该 controller 的 cid：记下，供出站 answer/ice 回盖。
+                            if cid.is_some() {
+                                session_cid = cid;
+                            }
                             inbound_tx.send(PeerInbound::Offer(sdp)).await.ok();
                         }
-                        Some(SignalMsg::Ice { candidate }) => {
+                        Some(SignalMsg::Ice { candidate, cid }) => {
+                            // 防御：若 ice 先于 offer 到达（一般不会），也捕获 cid。
+                            if session_cid.is_none() && cid.is_some() {
+                                session_cid = cid;
+                            }
                             inbound_tx.send(PeerInbound::Ice(candidate)).await.ok();
                         }
                         Some(SignalMsg::PeerLeave { .. }) => {
