@@ -110,6 +110,7 @@ self.MonacoEnvironment = {
     deleteWorkspaceFile, // 添加此导入
     closePane,
     paneCwdStore,
+    scheduleForceFitActivePanes,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { initFileWatcherSync } from '$lib/stores/fileWatcherSync';
@@ -1135,6 +1136,18 @@ function expandSidebar() {
       // flag any store/DOM pane-count drift. Shared action for every kind.
       const applyLayoutSync = async (change: LayoutChange) => {
         await syncPaneLayoutFromBackend();
+        // §teammate-fit (2026-06-11): backend-driven layout changes (teammate
+        // split/reused/detach/remove) only re-sync the tree here — unlike the
+        // front-end `splitPane`, which schedules `scheduleForceFitAfterSplit`.
+        // Without a matching forced re-fit, a backend-created teammate pane
+        // relies solely on its single attach-time fit, which races SvelteKit
+        // mount + `manager.ready()`; losing that race strands the kernel grid
+        // at the 24×80 attach default while the container is already its
+        // post-split width → 终端右侧死区、且不随 pane resize 自适应。`state`
+        // 仅翻 agent badge、不改布局，跳过（fitPaneNow 本就幂等，跳过只为省事）。
+        if (change.kind !== 'state') {
+          scheduleForceFitActivePanes();
+        }
         if (!dev) return;
         requestAnimationFrame(() => {
           const storeCount = getAllPaneIds(get(paneTreeStore)).length;

@@ -1056,6 +1056,37 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('new-2');
   });
 
+  it('teammate path: force-fits EVERY active-workspace pane two RAFs after a backend layout change', () => {
+    // 活动工作区树：host（缩小的源）+ 2 个 teammate 面板。teammate
+    // 分屏事件只带 trace_id（无新 pane id），故按全量叶子 fit。
+    paneTreeModule.paneTreeStore.set({
+      type: 'split',
+      id: 'split-root',
+      direction: 'horizontal',
+      children: [
+        { type: 'leaf', id: 'host-pane' },
+        { type: 'leaf', id: 'teammate-1' },
+        { type: 'leaf', id: 'teammate-2' },
+      ],
+      ratios: [34, 33, 33],
+    });
+
+    paneTreeModule.__test_scheduleForceFitActivePanes();
+
+    // 与前端 split 路径一致：必须延后到布局 settle，先不触发。
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+    // 帧 1：Svelte 重渲 / attach 落地中，仍不 fit（等内层 RAF）。
+    expect(flushOneFrame()).toBe(1);
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+    // 帧 2：内层 RAF 触发，活动工作区**全部 3 个叶子**被 fit（含缩小的
+    // host 与新 teammate 面板）——即修复死区的强制重 fit。
+    expect(flushOneFrame()).toBe(1);
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(3);
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('host-pane');
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('teammate-1');
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('teammate-2');
+  });
+
   it('splitPane() end-to-end: backend split_pane → layout sync → deferred fit', async () => {
     // Mock backend: split_pane returns the new pane id; get_pane_layout
     // returns the post-split tree the frontend uses to update its store.
