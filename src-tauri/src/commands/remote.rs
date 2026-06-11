@@ -82,6 +82,27 @@ pub fn verify_remote_totp(state: State<AppState>, code: &str) -> bool {
     state.remote_auth.verify(code)
 }
 
+/// 零信任 #2：返回本设备 Ed25519 身份**公钥**（32 字节）。controller 经此公钥验签
+/// host 的握手签名并 TOFU 固定指纹。私钥永不离开 Rust 侧（DPAPI/0600）。
+#[tauri::command]
+pub fn get_device_identity_pub(state: State<AppState>) -> Vec<u8> {
+    state.device_identity.public_bytes().to_vec()
+}
+
+/// 零信任 #2：用设备身份私钥对 id-bind 上下文签名，返回 64 字节 Ed25519 签名。
+///
+/// 用途**锁死**：Rust 侧强制加固定域分隔前缀 `ridge-id-bind-v1`，故此命令只能产出
+/// "设备身份绑定握手"签名，绝不能被借去签其它协议内容（防签名混淆）。`context` 由
+/// 握手层（P2）构造（双方临时 X25519 公钥 ‖ device_name ‖ username）。私钥不出 Rust。
+#[tauri::command]
+pub fn sign_device_identity(state: State<AppState>, context: Vec<u8>) -> Vec<u8> {
+    const DOMAIN: &[u8] = b"ridge-id-bind-v1";
+    let mut msg = Vec::with_capacity(DOMAIN.len() + context.len());
+    msg.extend_from_slice(DOMAIN);
+    msg.extend_from_slice(&context);
+    state.device_identity.sign(&msg).to_vec()
+}
+
 /// §totp-persist：重置本机 TOTP 种子。重新生成 + 覆盖落盘（DPAPI/0600），已配对
 /// 的 authenticator 立即失效，须重新扫码。发 `remote-totp-changed` 事件让面板刷新。
 #[tauri::command]

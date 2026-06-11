@@ -701,6 +701,8 @@ pub fn run() {
             commands::remote::get_remote_info,
             commands::remote::remote_reap_orphans,
             commands::remote::verify_remote_totp,
+            commands::remote::get_device_identity_pub,
+            commands::remote::sign_device_identity,
             commands::remote::remote_reset_totp,
             commands::remote::remote_set_totp_identity,
             commands::remote::set_remote_enabled,
