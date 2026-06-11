@@ -8,7 +8,7 @@
 // WebCrypto 没有 ChaCha20，必须走 noble；X25519 也统一走 noble 以与 Rust
 // （x25519-dalek + hkdf + sha2 + chacha20poly1305）保持字节级一致。
 
-import { x25519 } from '@noble/curves/ed25519.js';
+import { x25519, ed25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
@@ -62,6 +62,146 @@ export function decodeHandshakeFrame(frame: Uint8Array): Uint8Array {
     throw new Error('E2EE: 收到非法握手帧（首帧必须为 0x01 || pub32）');
   }
   return frame.slice(1, 1 + PUBKEY_LEN);
+}
+
+// ── B 层设备身份签名握手帧（0x02，零信任方案 #2 / 设计 §3.1, §7.1）────────────────
+// tag/尺寸与 `ridge-signaling::tags::handshake`（DEVICE_BOUND=0x02）对齐。
+// 帧布局：`0x02 || eph_pub(32) || id_pub(32) || sig(64)` = 129B。
+// sig = Ed25519(device_id_priv, ID_BIND_DOMAIN || context)，context 见 buildIdBindContext。
+// 用途：host→controller 方向，host 用长期设备身份私钥签本次临时公钥，controller 验签 +
+// TOFU 固定 id_pub 指纹 → 被攻陷 relay 无设备私钥无法替换公钥做 MITM。
+
+/** 设备身份签名握手帧 tag（= `ridge-signaling::tags::handshake::DEVICE_BOUND`）。 */
+export const DEVICE_BOUND_TAG = 0x02;
+/** Ed25519 设备身份公钥长度。 */
+export const ID_PUBKEY_LEN = 32;
+/** Ed25519 签名长度。 */
+export const SIGNATURE_LEN = 64;
+/** 0x02 帧总长：1 + 32 + 32 + 64 = 129。 */
+export const SIGNED_HANDSHAKE_LEN = 1 + PUBKEY_LEN + ID_PUBKEY_LEN + SIGNATURE_LEN;
+/** 签名域分隔串（与 Rust `src-tauri::sign_device_identity` / ridge-cli `e2ee.rs` 逐字一致）。 */
+export const ID_BIND_DOMAIN = 'ridge-id-bind-v1';
+
+/** 解析后的设备身份签名握手帧。 */
+export interface SignedHandshake {
+  /** 对端临时 X25519 公钥。 */
+  ephPub: Uint8Array;
+  /** 对端长期 Ed25519 设备身份公钥（待 TOFU 固定）。 */
+  idPub: Uint8Array;
+  /** Ed25519 签名（覆盖 `ID_BIND_DOMAIN || context`）。 */
+  sig: Uint8Array;
+}
+
+/** 构造 0x02 帧：`0x02 || eph_pub(32) || id_pub(32) || sig(64)`。 */
+export function encodeSignedHandshakeFrame(
+  ephPub: Uint8Array,
+  idPub: Uint8Array,
+  sig: Uint8Array,
+): Uint8Array {
+  if (ephPub.length !== PUBKEY_LEN) throw new Error(`E2EE: eph_pub 长度必须 ${PUBKEY_LEN}`);
+  if (idPub.length !== ID_PUBKEY_LEN) throw new Error(`E2EE: id_pub 长度必须 ${ID_PUBKEY_LEN}`);
+  if (sig.length !== SIGNATURE_LEN) throw new Error(`E2EE: sig 长度必须 ${SIGNATURE_LEN}`);
+  const out = new Uint8Array(SIGNED_HANDSHAKE_LEN);
+  out[0] = DEVICE_BOUND_TAG;
+  out.set(ephPub, 1);
+  out.set(idPub, 1 + PUBKEY_LEN);
+  out.set(sig, 1 + PUBKEY_LEN + ID_PUBKEY_LEN);
+  return out;
+}
+
+/** 解析 0x02 帧；tag/长度非法抛错。 */
+export function decodeSignedHandshakeFrame(frame: Uint8Array): SignedHandshake {
+  if (frame.length !== SIGNED_HANDSHAKE_LEN || frame[0] !== DEVICE_BOUND_TAG) {
+    throw new Error('E2EE: 收到非法签名握手帧（首帧必须为 0x02 || eph32 || id32 || sig64）');
+  }
+  return {
+    ephPub: frame.slice(1, 1 + PUBKEY_LEN),
+    idPub: frame.slice(1 + PUBKEY_LEN, 1 + PUBKEY_LEN + ID_PUBKEY_LEN),
+    sig: frame.slice(1 + PUBKEY_LEN + ID_PUBKEY_LEN),
+  };
+}
+
+/** 已解析的任意握手帧：legacy(0x01 裸公钥) 或 signed(0x02 带设备签名)。 */
+export type AnyHandshake =
+  | { kind: 'legacy'; ephPub: Uint8Array }
+  | { kind: 'signed'; ephPub: Uint8Array; idPub: Uint8Array; sig: Uint8Array };
+
+/** 按首字节分派解析握手帧（0x01→legacy，0x02→signed）；空帧/未知 tag 抛错。 */
+export function decodeAnyHandshakeFrame(frame: Uint8Array): AnyHandshake {
+  if (frame.length === 0) throw new Error('E2EE: 空握手帧');
+  switch (frame[0]) {
+    case HANDSHAKE_TAG:
+      return { kind: 'legacy', ephPub: decodeHandshakeFrame(frame) };
+    case DEVICE_BOUND_TAG: {
+      const s = decodeSignedHandshakeFrame(frame);
+      return { kind: 'signed', ephPub: s.ephPub, idPub: s.idPub, sig: s.sig };
+    }
+    default:
+      throw new Error(`E2EE: 未知握手帧 tag 0x${frame[0].toString(16)}`);
+  }
+}
+
+/** 以 1 字节长度前缀编码一个变长字节段（长度必须 ≤ 255）。 */
+function lenPrefixed(bytes: Uint8Array): Uint8Array {
+  if (bytes.length > 255) throw new Error('E2EE: id-bind 变长字段超过 255 字节');
+  const out = new Uint8Array(1 + bytes.length);
+  out[0] = bytes.length;
+  out.set(bytes, 1);
+  return out;
+}
+
+/**
+ * 构造设备身份签名的 **context**（**不含**域分隔前缀；前缀由签名方在签名时加）。
+ *   context = host_eph_pub(32) || controller_eph_pub(32)
+ *           || u8(len)||device_name || u8(len)||username
+ * 变长字段(device_name/username)加 1 字节长度前缀，杜绝 `a||b` 与 `a'||b'` 的拼接歧义。
+ * 双方临时公钥都纳入 → 签名绑定到本次具体会话，防 relay 把同一 host 签名重放到别的 controller。
+ */
+export function buildIdBindContext(
+  hostEphPub: Uint8Array,
+  controllerEphPub: Uint8Array,
+  deviceName: string,
+  username: string,
+): Uint8Array {
+  if (hostEphPub.length !== PUBKEY_LEN || controllerEphPub.length !== PUBKEY_LEN) {
+    throw new Error('E2EE: id-bind context 的临时公钥长度非法');
+  }
+  const dev = lenPrefixed(new TextEncoder().encode(deviceName));
+  const usr = lenPrefixed(new TextEncoder().encode(username));
+  const out = new Uint8Array(PUBKEY_LEN * 2 + dev.length + usr.length);
+  let off = 0;
+  out.set(hostEphPub, off);
+  off += PUBKEY_LEN;
+  out.set(controllerEphPub, off);
+  off += PUBKEY_LEN;
+  out.set(dev, off);
+  off += dev.length;
+  out.set(usr, off);
+  return out;
+}
+
+/**
+ * 验证对端设备身份签名：`ed25519.verify(sig, ID_BIND_DOMAIN || context, idPub)`。
+ *
+ * 与 Rust 签名方逐字节对齐：签名方对 `b"ridge-id-bind-v1" || context` 做 Ed25519 签名
+ * （src-tauri `sign_device_identity` 命令加同一前缀；ridge-cli `e2ee.rs` 同）。Ed25519 是
+ * RFC 8032 标准，@noble 与 ed25519-dalek 互验。返回是否通过（**不抛**，便于调用方决策）。
+ */
+export function verifyIdBindSignature(
+  idPub: Uint8Array,
+  context: Uint8Array,
+  sig: Uint8Array,
+): boolean {
+  if (idPub.length !== ID_PUBKEY_LEN || sig.length !== SIGNATURE_LEN) return false;
+  const domain = new TextEncoder().encode(ID_BIND_DOMAIN);
+  const msg = new Uint8Array(domain.length + context.length);
+  msg.set(domain, 0);
+  msg.set(context, domain.length);
+  try {
+    return ed25519.verify(sig, msg, idPub);
+  } catch {
+    return false;
+  }
 }
 
 /** 把字节数组编码为 base64（信令 JSON 传公钥用，B3）。 */
