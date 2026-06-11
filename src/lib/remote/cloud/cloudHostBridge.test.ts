@@ -525,6 +525,90 @@ describe('CloudHostBridge — §4 TOTP brute-force lockout (audit #3)', () => {
   });
 });
 
+describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)', () => {
+  /** 可控的 fake DataChannel 背压接口（bufferedAmount + drain 触发）。 */
+  function fakeChannel() {
+    let buffered = 0;
+    let drainCb: (() => void) | null = null;
+    return {
+      ctrl: {
+        bufferedAmount: () => buffered,
+        onDrained: (cb: () => void) => {
+          drainCb = cb;
+          return () => {
+            drainCb = null;
+          };
+        },
+      },
+      setBuffered: (n: number) => {
+        buffered = n;
+      },
+      drain: () => drainCb?.(),
+    };
+  }
+
+  it('bufferedAmount 高于上水位(8MiB) → 丢 pane 帧（不发）；回落 drain 后 invoke resync_pane_raw', async () => {
+    const invoke = vi.fn(async () => null);
+    const rig = makeRig({ invoke });
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+
+    // 高水位（>8 MiB）→ 丢帧，未发出 pane 帧。
+    ch.setBuffered(9 * 1024 * 1024);
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1, 2, 3]));
+    expect(rig.sentPane()).toHaveLength(0);
+
+    // 缓冲回落 → drain → 对背压期间丢帧的 pane 请求 host 重放（复用 desync→RIS+scrollback）。
+    ch.setBuffered(0);
+    ch.drain();
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('resync_pane_raw', { paneId: 'pane-1' }),
+    );
+  });
+
+  it('bufferedAmount 低于上水位 → 正常发 pane 帧', () => {
+    const rig = makeRig();
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+    ch.setBuffered(1024); // 远低于上水位
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([9, 9]));
+    const panes = rig.sentPane();
+    expect(panes).toHaveLength(1);
+    expect(panes[0].paneId).toBe('pane-1');
+    expect([...panes[0].bytes]).toEqual([9, 9]);
+  });
+
+  it('未注入 channel control → 不背压（向后兼容：总是直发）', () => {
+    const rig = makeRig();
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([7]));
+    expect(rig.sentPane()).toHaveLength(1);
+  });
+
+  it('drain 但本无背压丢帧 → 不请求 resync', () => {
+    const invoke = vi.fn(async () => null);
+    const rig = makeRig({ invoke });
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+    ch.drain(); // 没丢过帧
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('reset() 清背压待重同步集（重连后不残留旧 pane 的 resync 请求）', async () => {
+    const invoke = vi.fn(async () => null);
+    const rig = makeRig({ invoke });
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+    ch.setBuffered(9 * 1024 * 1024);
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1]));
+    rig.bridge.reset(); // 重连：清背压集
+    ch.setBuffered(0);
+    ch.drain();
+    // 等一个微任务窗口，确认没有触发 resync（被 reset 清掉了）。
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalledWith('resync_pane_raw', { paneId: 'pane-1' });
+  });
+});
+
 describe('toJsonRpcError (exported helper)', () => {
   it('passes a structured core error through, dropping undefined data', () => {
     expect(toJsonRpcError({ code: 1001, message: 'denied' })).toEqual({

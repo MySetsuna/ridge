@@ -717,6 +717,7 @@ pub fn run() {
             // B2（D-GM-11）cloud pane 裸字节流（host-local sink，非 controller 直调）
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,
+            commands::cloud_pane::resync_pane_raw,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,

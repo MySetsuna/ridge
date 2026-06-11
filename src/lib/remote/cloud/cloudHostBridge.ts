@@ -73,6 +73,24 @@ const JSON_RPC_INTERNAL_ERROR = -32603;
 const MAX_TOTP_ATTEMPTS = 5;
 
 /**
+ * DataChannel 背压流控（弱网 P1）：由 provider 在 acceptConn 后经 {@link CloudHostBridge.attachChannelControl}
+ * 注入；未注入则不做背压（行为不变，向后兼容既有构造点 / 测试）。
+ */
+export interface ChannelBackpressure {
+  /** 当前 DataChannel 发送缓冲字节数（provider 读 `conn.dc.bufferedAmount`）。 */
+  bufferedAmount(): number;
+  /** 订阅「缓冲已回落到低水位」（`bufferedamountlow`）；返回退订函数。 */
+  onDrained(cb: () => void): () => void;
+}
+
+/**
+ * DataChannel 背压上水位：`bufferedAmount` 超过即丢 pane 帧（防 SCTP 发送缓冲无界增长
+ * → OOM/卡死）。8 MiB 远低于 libwebrtc ~16 MiB 硬上限，留余量给在途帧。低水位（1 MiB）
+ * 在 provider 侧设 `bufferedAmountLowThreshold`，回落经 onDrained 通知。
+ */
+const BUFFERED_HIGH_WATERMARK = 8 * 1024 * 1024; // 8 MiB
+
+/**
  * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
  * 返回任意 result；抛错则映射成 JSON-RPC error。
  */
@@ -182,6 +200,14 @@ export class CloudHostBridge {
    */
   private totpFailures = 0;
 
+  // ── DataChannel 背压流控（弱网 P1；未注入则不背压）──
+  /** provider 注入的背压接口（bufferedAmount 读取 + drain 订阅）。 */
+  private channel: ChannelBackpressure | null = null;
+  /** drain 订阅的退订句柄（attach 替换 / reset 时调）。 */
+  private channelUnsub: (() => void) | null = null;
+  /** 背压期间丢帧的 pane：缓冲回落后请求 host 重放 RIS+scrollback。 */
+  private readonly backpressuredPanes = new Set<string>();
+
   constructor(config: CloudHostBridgeConfig) {
     this.invoke = config.invoke;
     this.sendFrame = config.sendFrame;
@@ -196,6 +222,16 @@ export class CloudHostBridge {
         // eslint-disable-next-line no-console
         console[level](`[cloudHostBridge] ${message}`, detail ?? '');
       });
+  }
+
+  /**
+   * provider 在 acceptConn 后注入 DataChannel 背压流控（弱网 P1）。可选——未注入则
+   * {@link pushPaneOutput} 不做背压（向后兼容既有构造点 / 测试）。再次调用会替换并退订旧订阅。
+   */
+  attachChannelControl(ctrl: ChannelBackpressure): void {
+    this.channelUnsub?.();
+    this.channel = ctrl;
+    this.channelUnsub = ctrl.onDrained(() => this.onChannelDrained());
   }
 
   /**
@@ -540,11 +576,33 @@ export class CloudHostBridge {
     // already gates subscription, but guard the push path too (defense in depth) so a
     // pre-verification race / direct caller can't emit PTY output ahead of the gate.
     if (!this.verified) return;
+    // §背压（弱网 P1）：DataChannel 缓冲过高 → 丢帧（而非无界堆积撑爆 SCTP 缓冲 → OOM/卡死），
+    // 记录待重同步；缓冲回落后 onChannelDrained 请求 host 重放 RIS+scrollback 修复空洞。
+    if (this.channel && this.channel.bufferedAmount() > BUFFERED_HIGH_WATERMARK) {
+      this.backpressuredPanes.add(paneId);
+      return;
+    }
     try {
       this.sendFrame(encodePaneFrame(paneId, raw));
     } catch (e) {
       // paneId 过长等编码错误：丢弃该帧但不断连。
       this.log('error', `failed to encode pane frame for ${paneId}; dropped`, e);
+    }
+  }
+
+  /**
+   * DataChannel 缓冲回落到低水位（provider 经 onDrained 通知）：对背压期间丢帧的 pane
+   * 请求 host 重放 RIS+scrollback（`invoke('resync_pane_raw')`）。复用 cloud_pane.rs 的
+   * desync→RIS+scrollback 恢复原语（与 LAN server.rs 同一套）。fire-and-forget。
+   */
+  private onChannelDrained(): void {
+    if (this.backpressuredPanes.size === 0) return;
+    const panes = [...this.backpressuredPanes];
+    this.backpressuredPanes.clear();
+    for (const paneId of panes) {
+      void Promise.resolve(this.invoke('resync_pane_raw', { paneId })).catch((e) =>
+        this.log('warn', `resync_pane_raw(${paneId}) failed`, e),
+      );
     }
   }
 
@@ -578,6 +636,7 @@ export class CloudHostBridge {
     this.inflight.clear();
     for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
     this.paneSubs.clear();
+    this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
     this.rejected = false;
     // §4：重连须重新 TOTP 验证（注入了校验器时 re-arm 门控）。
     this.verified = !this.totpVerifier;
