@@ -105,18 +105,11 @@ export default defineConfig({
           if (id.includes('node_modules/@tauri-apps/api')) {
             return 'tauri-api';
           }
-          if (id.includes('/lib/components/')) {
-            // Split large desktop components into their own chunks
-            if (id.includes('FileEditor') || id.includes('Monaco') || id.includes('DiffEditor')) {
-              return 'desktop-editor';
-            }
-            if (id.includes('Explorer') || id.includes('FileTree') || id.includes('SourceControl')) {
-              return 'desktop-sidebar';
-            }
-            if (id.includes('GitGraph') || id.includes('MarkdownPreview')) {
-              return 'desktop-git';
-            }
-          }
+          // NOTE: 不要按 `/lib/components/` 给 FileEditor/Monaco/DiffEditor 等做
+          // 细粒度分组——那会制造循环 chunk（desktop-editor ↔ desktop-git）并把
+          // FileEditor→monaco 拉进 SvelteKit `analyse` 加载的 server chunk 图，
+          // 在 Node 里执行 monaco 顶层 `window` 引用 → `window is not defined`，
+          // production build 崩。monaco 自身已单独成块即可（见上）。
         },
       }
     },
