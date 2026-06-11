@@ -299,6 +299,45 @@ controller 校验：
 
 **不含**：fail-closed 翻闸（P3，默认仍 fail-open 标注待翻）。
 
+## 7.3 概念 4-桌面 + 5 实现设计草案（host 端组，下轮清爽 context 按此实现）
+
+> 高回归点：改桌面 host **握手时序**。下轮实现前 `git pull`，改完跑「握手时序回归」专项（见 §7.4）。当前 host(`ridgeCloudProvider.ts` `RidgeCloudHost`) 与 `cloudHostBridge.ts` 工作树干净（基线 83a139d）。
+
+**当前 host 握手流程**（需改）：
+- `attachDataChannel`：dc.onopen → `startE2eeHandshake(conn)`。
+- `startE2eeHandshake`：`conn.ephemeral = generateEphemeralKeyPair()` → **立即** `rawSend(encodeHandshakeFrame(pub))`（0x01）+ 发 e2ee-pubkey 旁路。
+- `onDataChannelMessage`（握手分支）：收 controller 帧 → `decodeHandshakeFrame` → `deriveSessionKey` → `E2eeSession(DIR_HOST_TO_CONTROLLER)` → `resolveBinding`。
+
+**概念 4-桌面：host 发 0x02（握手时序反转「先收后发」）**
+- 0x02 的 sig context 需 controller_eph_pub，故 host **不能先发**。改为：
+  - dc.onopen → 仅 `conn.ephemeral = generateEphemeralKeyPair()`（**不发**），保留 e2ee-pubkey 旁路（兼容旧 controller 的 B3）。
+  - onDataChannelMessage 收 controller 0x01（controller eph_pub）后：① `deriveSessionKey` 建 session；② `context = build_id_bind_context(host_eph, ctrl_eph, device, username)`（用 e2ee.ts 同名函数）；③ **异步** `sig = await signContext(context)`（注入，= invoke `sign_device_identity`）；④ `rawSend(encodeSignedHandshakeFrame(host_eph, host_id_pub, sig))` 发 0x02；⑤ handshakeDone + resolveBinding（host 不验自身签名）。
+  - **异步签名**：onDataChannelMessage 当前同步 → 改为 async 或在收帧后 `void (async()=>{...})()`；注意 race（多帧/断连）。
+- **依赖注入**（`RidgeCloudHostConfig`/`RidgeCloudHost`）：
+  - `signContext: (ctx: Uint8Array) => Promise<Uint8Array>` = `(ctx) => invoke('sign_device_identity', { context: Array.from(ctx) })`（返回 number[]→Uint8Array）。
+  - `identityPub: Uint8Array`（启动时 `invoke('get_device_identity_pub')` 取一次缓存）。
+  - `device`/`username`：已在 config。
+  - RemotePanel `buildHost` 注入上述（invoke 已在作用域）。
+
+**概念 5：host 验 totp-bind**
+- host 握手后存 `conn.bindTranscript = build_bind_transcript(host_eph, ctrl_eph)`（与 controller 对齐）。
+- `createBridge(cid, send)` 回调**加传 transcript**（或 bridge 暴露 setter）→ `CloudHostBridge` 持有。
+- `cloudHostBridge.handleSessionControl`：现 `totp-verify`→`totpVerifier(code)`；**加 `totp-bind` 分支**→ `totpBindVerifier(transcript, base64Decode(tag))`。两者都回 `totp-result`。
+- 新 src-tauri 命令 `verify_remote_totp_bind(transcript: Vec<u8>, tag: Vec<u8>) -> bool` → `state.remote_auth` 的 `RemoteTotp::verify_bind_tag(&transcript, &tag)`（已实现，04b953e）。注册到 lib.rs invoke_handler。RemoteAuth 需加 `verify_bind_tag` 透传（auth.rs）。
+- RemotePanel `createBridge` 注入 `totpBindVerifier: (t,tag) => invoke('verify_remote_totp_bind', { transcript: Array.from(t), tag: Array.from(tag) })`。
+
+**兼容性 open question（实现时定）**：host 发 0x02 要求 controller 认 0x02（概念 3a 的 `decodeAnyHandshakeFrame` 已认）。cloud controller SPA 与 host 桌面**可能跨版本**（SPA 由 ridge-cloud 托管）。握手在 $/hello 前 → 无能力协商。选项：(a) 同步发版假设（SPA 来自同一 host 的 web-remote-dist，多数同版）；(b) 握手帧加 1B 版本/能力字节；(c) host 默认 0x02、旧 controller 收 0x02 解码失败即断（需评估旧 SPA 占比）。**建议**：实现时先走 (a) + 在 §7.4 清单专项验证「旧 0x01 controller ↔ 新 0x02 host」与反向。
+
+## 7.4 运行时集成验证清单（需跑 app 时执行；P2 收尾登记）
+
+> vitest/golden 覆盖纯函数；以下是**端到端运行时**才能验的，FIX-1c 地基验证后由 team-lead/我跑。
+
+1. **0x02 端到端**：新桌面 host ↔ 新 controller：握手走 0x02，controller 验签通过 + 首见 TOFU `pinned`、再连 `match`；篡改（改 host 进程身份/换机）→ controller `changed` 告警。
+2. **TOTP 信道绑定端到端**：controller 输 6 位码 → 发 totp-bind → host `verify_remote_totp_bind` 通过放行业务帧；错码 → 拒 + 计入 5 次锁定。
+3. **【握手时序回归】专项**（最高优先）：① 桌面 host「先收后发 0x02」改造后，DataChannel 能正常 open + 握手完成、不死锁（对照 FIX-1c 的 cli 死锁教训）；② 多 controller 并发接入各自握手不串；③ 断线重连后重新握手正常；④ host 异步签名期间收到其它帧不 race/崩。
+4. **向后兼容**：旧 0x01 controller ↔ 新 host（host 发 0x02 时）行为；新 controller ↔ 旧 0x01 host（回退 B3 + totp-verify，应已被概念 3 休眠安全覆盖）。
+5. **cli 0x02**（待 FIX-1c 运行时验证 + team-lead 通知后）：ridge-cli host 发 0x02 + totp-bind 验证，浏览器连无头 host 全链路。
+
 ## 8. 实施顺序与依赖
 
 ```
