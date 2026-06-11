@@ -31,6 +31,13 @@ impl SignalSender {
             .await
             .map_err(|_| anyhow::anyhow!("signaling send channel closed"))
     }
+
+    /// 测试用构造：从一个 `mpsc::Sender` 直接造发送句柄（绕过真实 WS），便于在
+    /// session 测试里断言 host 发出的信令（answer/e2ee-pubkey 等）。
+    #[cfg(test)]
+    pub(crate) fn new_for_test(outgoing: mpsc::Sender<SignalMsg>) -> Self {
+        Self { outgoing }
+    }
 }
 
 /// 信令连接句柄：`incoming` 收服务端 / 对端消息；`sender()` 取发送句柄。

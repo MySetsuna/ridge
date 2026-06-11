@@ -82,6 +82,8 @@ npm run tauri build      # 或重启 dev：npm run tauri dev
 
 - [ ] VPS 上 rebuild + 部署**新** `ridge-cli`（新 mux+JSON-RPC 协议；旧协议 daemon 与新 controller 不兼容）。
 - [ ] `ridge-cli remote --enable`（配对，浏览器 `/activate` 输码）→ `ridge-cli remote --daemon --root /srv/<项目>`。
+- [ ] **⚠️ 云端握手端到端（FIX-1c，必须实跑——静态/单测覆盖不到真实 WebRTC）**：浏览器 controller 打开 cli 设备子域后，**WebRTC offer→answer→ICE→DataChannel 打开→E2EE 握手能完整跑通、controller 真正连上无头 host**。这条曾被两个 blocker 卡死：①**cid 缺失**（FIX-1，relay 丢弃无 cid 的 answer）②**握手时序死锁**（FIX-1c，旧 `session.rs::run()` 在主循环前阻塞 `await` 对端握手帧，而驱动 DataChannel 打开的 offer 只在循环内转发 → 握手永远超时）。两者已修；**这是浏览器能连上无头 host 的必要条件**，务必在真链路确认握手不再 15s/30s 超时空转。
+- [ ] **e2ee-pubkey 旁路（FIX-2）**：cli 与浏览器 controller 间 B3 防 relay-MITM 旁路**不再静默退化为 relay-trust**——cli daemon 日志应出现 `E2EE 公钥绑定判定 mode=Enforced`（双方都发 e2ee-pubkey 时）；旧 controller 则 `mode=RelayTrust`（3s 宽限回落，不回归）。
 - [ ] 同一**浏览器 controller** 打开该 cli 设备子域 → 输 cli **TUI 打印的 TOTP** → 控制其终端 + 文件搜索/树；git/workspace/theme/IDE 面板因 `$/hello` 能力协商**置灰**（cli 只 advertise `pane/fs/search`）。
 
 ---
