@@ -65,6 +65,8 @@ parking_lot = "0.12"
 
 # E2EE (contract §7 — byte-for-byte compatible with the browser noble stack)
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+# base64：B3 信令旁路把临时公钥编/解码为 base64（与桌面 e2ee.ts btoa/atob 字节一致）。
+base64 = "0.22"
 hkdf = "0.12"
 sha2 = "0.10"
 chacha20poly1305 = "0.10"

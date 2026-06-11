@@ -26,6 +26,7 @@ mod e2ee;
 mod envelope;
 mod fs_reuse;
 mod ice;
+mod key_binding;
 mod login_flow;
 mod mux;
 mod protocol;

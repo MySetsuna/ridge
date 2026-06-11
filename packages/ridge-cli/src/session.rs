@@ -40,6 +40,7 @@ use crate::rpc::{
     self, Envelope, Method, RpcError, CANCEL_METHOD, HELLO_METHOD, JSON_RPC_INVALID_REQUEST,
     JSON_RPC_METHOD_NOT_FOUND,
 };
+use crate::key_binding::{decide_key_binding, KeyBindingDecision, KeyBindingMode};
 use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
 use crate::signaling::{SignalMsg, SignalSender};
 use crate::totp::RemoteTotp;
@@ -136,6 +137,10 @@ impl RemoteSession {
             Ok(None) => bail!("data channel closed during handshake"),
             Err(_) => bail!("E2EE handshake timed out"),
         };
+        // B3（D-GM-10）：本端临时公钥，待 cid 就绪后经信令旁路上报给 controller（方案 X：
+        // 仅 eph_pub、不带 sig，relay 零密码学材料）。peer_pub 为 [u8;32]（Copy），下方
+        // into_session 取走副本后仍可在主循环用于与对端信令公钥比对。
+        let host_pub = handshake.public_bytes();
         let mut crypto = handshake.into_session(peer_pub, Dir::HostToController)?;
 
         // 4b. 云远控二次验证（契约 §4）：每会话一份随机 TOTP，打到 TUI。未验证前业务帧
@@ -154,6 +159,21 @@ impl RemoteSession {
         // 单会话 host：从入站 offer 取 cid，之后所有出站 answer/ice 原样回盖。cid 为 None 时
         // （如非 relay 的直连场景）按无 cid 发送，行为同旧版。
         let mut session_cid: Option<String> = None;
+
+        // B3（D-GM-10）E2EE 公钥↔身份绑定（A 层 eph_pub 旁路，方案 X：relay 零密码学材料）。
+        // 旧 cli 从不发 e2ee-pubkey → controller 端 3s 宽限后**静默回落 relay-trust**；本会话
+        // 补上「发本端公钥 + 比对对端信令公钥」，使无头 host↔浏览器 controller 的 B3 防
+        // relay-MITM 旁路真正生效——握手公钥与信令旁路公钥不一致即判 MITM、断开会话。
+        // 兼容：不发 e2ee-pubkey 的旧 controller 走 3s 宽限回落 relay-trust（不回归）；本实现
+        // **不门控** DataChannel 帧（reject 即整会话 bail 断开，信令公钥早于业务帧到达，故
+        // mismatch 时先于业务断开），从而旧端业务帧不被宽限期丢弃。
+        let mut peer_sig_key: Option<[u8; crate::e2ee::PUB_KEY_LEN]> = None;
+        let mut host_pubkey_sent = false;
+        let mut binding_decided = false;
+        // 3s 宽限期：到期仍未收到信令公钥 → 回落 relay-trust（兼容不发 e2ee-pubkey 的旧端）。
+        let bind_grace = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(bind_grace);
+
         let mut batch = BatchingBuffer::new();
 
         loop {
@@ -190,6 +210,31 @@ impl RemoteSession {
                 _ = &mut flush_sleep => {
                     if verified && subscribed {
                         Self::flush_pane(&mut batch, &mut crypto, &dc_io.tx).await?;
+                    }
+                }
+
+                // B3：绑定宽限期到 —— 仍未收到信令公钥则回落 relay-trust（兼容不发 e2ee-pubkey
+                // 的旧 controller）。guard 确保判定一次后不再轮询该已 fire 的定时器。
+                _ = &mut bind_grace, if !binding_decided => {
+                    match decide_key_binding(
+                        &peer_pub,
+                        peer_sig_key.as_ref().map(|k| k.as_slice()),
+                        true,
+                    ) {
+                        KeyBindingDecision::Accept => {
+                            binding_decided = true;
+                            let mode = if peer_sig_key.is_some() {
+                                KeyBindingMode::Enforced
+                            } else {
+                                KeyBindingMode::RelayTrust
+                            };
+                            tracing::info!(target: "ridge_cli::session", mode = ?mode, "E2EE 公钥绑定判定（宽限期到）");
+                        }
+                        KeyBindingDecision::Reject => {
+                            tracing::warn!(target: "ridge_cli::session", "E2EE 公钥绑定校验失败（疑似 relay-MITM），断开会话");
+                            bail!("E2EE key binding failed (suspected MITM)");
+                        }
+                        KeyBindingDecision::Wait => {}
                     }
                 }
 
@@ -242,6 +287,19 @@ impl RemoteSession {
                             if cid.is_some() {
                                 session_cid = cid;
                             }
+                            // B3：cid 就绪后把本端临时公钥经信令旁路上报给 controller（仅一次，
+                            // 仅 eph_pub、不带 sig —— 方案 X，relay 仅读 t/cid 路由、零解析 pubkey）。
+                            // 供 controller 与其 DataChannel 握手解出的 host 公钥比对，防 relay-MITM。
+                            if !host_pubkey_sent {
+                                signaling
+                                    .send(SignalMsg::E2eePubkey {
+                                        pubkey: b64_encode(&host_pub),
+                                        cid: session_cid.clone(),
+                                    })
+                                    .await
+                                    .ok();
+                                host_pubkey_sent = true;
+                            }
                             inbound_tx.send(PeerInbound::Offer(sdp)).await.ok();
                         }
                         Some(SignalMsg::Ice { candidate, cid }) => {
@@ -250,6 +308,29 @@ impl RemoteSession {
                                 session_cid = cid;
                             }
                             inbound_tx.send(PeerInbound::Ice(candidate)).await.ok();
+                        }
+                        Some(SignalMsg::E2eePubkey { pubkey, .. }) => {
+                            // B3：controller 经已认证信令旁路转发回来的临时公钥（relay 已按 cid
+                            // 投递给本 host）。与 DataChannel 握手解出的对端公钥比对：不一致 = MITM。
+                            if let Some(pk) = b64_decode_pubkey(&pubkey) {
+                                peer_sig_key = Some(pk);
+                                if !binding_decided {
+                                    match decide_key_binding(&peer_pub, Some(pk.as_slice()), false) {
+                                        KeyBindingDecision::Accept => {
+                                            binding_decided = true;
+                                            tracing::info!(target: "ridge_cli::session", mode = ?KeyBindingMode::Enforced, "E2EE 公钥绑定校验通过（enforced）");
+                                        }
+                                        KeyBindingDecision::Reject => {
+                                            tracing::warn!(target: "ridge_cli::session", "E2EE 公钥绑定校验失败（疑似 relay-MITM），断开会话");
+                                            bail!("E2EE key binding failed (suspected MITM)");
+                                        }
+                                        // 信令公钥已到 → 不会是 Wait；防御性忽略。
+                                        KeyBindingDecision::Wait => {}
+                                    }
+                                }
+                            } else {
+                                tracing::warn!(target: "ridge_cli::session", "收到非法 e2ee-pubkey（base64/长度），已忽略");
+                            }
                         }
                         Some(SignalMsg::PeerLeave { .. }) => {
                             tracing::info!(target: "ridge_cli::session", "controller left; ending session");
@@ -570,6 +651,26 @@ impl RemoteSession {
         tx.send(sealed).await.ok();
         Ok(())
     }
+}
+
+/// 标准 base64（含 `=` 填充）编码 —— 与桌面 `e2ee.ts::bytesToBase64`(btoa) 字节一致，
+/// 供信令旁路上报临时公钥用（B3）。
+fn b64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// 解析标准 base64 为 32 字节临时公钥；base64 非法或长度不符返回 `None`（调用方忽略坏帧，
+/// 不断连）。与桌面 `e2ee.ts::base64ToBytes` 容错立场一致。
+fn b64_decode_pubkey(s: &str) -> Option<[u8; crate::e2ee::PUB_KEY_LEN]> {
+    use base64::Engine as _;
+    let v = base64::engine::general_purpose::STANDARD.decode(s).ok()?;
+    if v.len() != crate::e2ee::PUB_KEY_LEN {
+        return None;
+    }
+    let mut arr = [0u8; crate::e2ee::PUB_KEY_LEN];
+    arr.copy_from_slice(&v);
+    Some(arr)
 }
 
 /// 主机名（用于 otpauth label，仅展示用）。读 `HOSTNAME`/`COMPUTERNAME` 环境变量，
