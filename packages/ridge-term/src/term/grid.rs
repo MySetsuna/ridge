@@ -1049,13 +1049,23 @@ impl Grid {
             }
             // Fill remaining space with cursor rows, then trim cursor
             // rows from the bottom if needed.
-            let space_for_cursor = total_rows - remaining_count;
+            // saturating_sub：上面的丢弃是**段落粒度**，当单个段落比剩余 excess 还大时
+            // 丢不掉，`remaining_count` 可能仍 > `total_rows` —— 此时 `total_rows -
+            // remaining_count` 会 subtract-overflow panic（小窗口 resize 崩溃源，
+            // grid.rs:1052），并毒化 wasm 终端对象致后续渲染全 "recursive use"。
+            let space_for_cursor = total_rows.saturating_sub(remaining_count);
             for orig in cursor_area.iter().take(space_for_cursor) {
                 let row = orig.clone();
                 new_rows.push(row);
             }
             while new_rows.len() < total_rows {
                 new_rows.push(Row::new(new_cols));
+            }
+            // 段落粒度丢弃可能仍留下多于可见行数的行：从**顶部**（最旧）裁掉多余部分，
+            // 保证 `screen.rows` 恰为 `total_rows`，避免栅格过大。
+            if new_rows.len() > total_rows {
+                let overflow = new_rows.len() - total_rows;
+                new_rows.drain(0..overflow);
             }
             screen.rows = new_rows;
         }
