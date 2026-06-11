@@ -16,7 +16,7 @@ use crate::config::{self, AuthFile};
 use crate::ice;
 use crate::rtc::WebRtcHost;
 use crate::session::RemoteSession;
-use crate::signaling::{SignalMsg, Signaling};
+use crate::signaling::{Role, SignalMsg, Signaling};
 
 /// 重连退避上下限。
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -35,6 +35,16 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
         username = %auth.username,
         entry = %auth.public_entry(),
         "starting ridge-cli daemon"
+    );
+
+    // 零信任 #2：进程级初始化 Ed25519 设备身份（生成/加载 device_identity.key，
+    // DPAPI/0600，与 auth.json 同根）。指纹打到日志，供 TOFU 首次信任时用户带外核对。
+    // P2 握手将用它签名本次临时 X25519 公钥（本任务仅做密钥基建，不接握手帧）。
+    let device_identity = ridge_core::DeviceIdentity::load_or_create();
+    tracing::info!(
+        target: "ridge_cli::daemon",
+        fingerprint = %device_identity.fingerprint(),
+        "device identity ready (Ed25519, zero-trust #2)"
     );
 
     let http = reqwest::Client::builder()
@@ -89,9 +99,11 @@ async fn serve_once(
         };
 
         // controller 在场 → 起会话（host 作 answerer）。
+        // `..` 忽略共享 schema 新增的 cid 字段：此处只判定「是否有 controller」，cid 的
+        // 捕获/回盖在 RemoteSession 内进行（见 session.rs，从入站 offer 取 cid）。
         let controller_present = match ev {
             SignalMsg::Welcome { peer_present, .. } => peer_present,
-            SignalMsg::PeerJoin { ref role } => role == "controller",
+            SignalMsg::PeerJoin { ref role, .. } => *role == Role::Controller,
             SignalMsg::Error { code, message } => {
                 tracing::warn!(target: "ridge_cli::daemon", %code, %message, "signaling error");
                 continue;
