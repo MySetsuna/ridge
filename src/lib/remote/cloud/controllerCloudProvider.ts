@@ -33,12 +33,15 @@ import {
   DIR_CONTROLLER_TO_HOST,
   generateEphemeralKeyPair,
   encodeHandshakeFrame,
-  decodeHandshakeFrame,
+  decodeAnyHandshakeFrame,
+  buildIdBindContext,
+  verifyIdBindSignature,
   deriveSessionKey,
   bytesToBase64,
   base64ToBytes,
   type EphemeralKeyPair,
 } from './e2ee';
+import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
@@ -250,16 +253,24 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     // 握手完成前，首帧必须是对端握手帧；否则断开（契约 §7.1）。
     if (!this.handshakeDone) {
       try {
-        const peerPub = decodeHandshakeFrame(bytes);
+        // 按首字节分派：0x01 旧裸公钥 / 0x02 带设备身份签名（方案 X，零信任 #2）。
+        const hs = decodeAnyHandshakeFrame(bytes);
         if (!this.ephemeral) throw new Error('本端临时密钥缺失');
-        const key = deriveSessionKey(this.ephemeral.privateKey, this.ephemeral.publicKey, peerPub);
+        // 焚毁前留存本端临时公钥：0x02 验签的 context 需要双方临时公钥。
+        const myPub = this.ephemeral.publicKey;
+        const key = deriveSessionKey(this.ephemeral.privateKey, myPub, hs.ephPub);
         // controller 端发出方向为 controller→host(dir=1)；与 host provider 严格镜像。
         this.session = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
         this.handshakeDone = true;
         // 握手用完即焚临时私钥引用（公钥已在 startE2eeHandshake 经信令上报）。
         this.ephemeral = null;
-        // B3：先做公钥绑定判定，通过(或宽限期回落)才标记 connected。
-        this.resolveBindingFromHandshake(peerPub);
+        if (hs.kind === 'signed') {
+          // 方案 X：host 设备身份签名 + TOFU（设备私钥在 host、relay 无法伪造，强于 B3 旁路）。
+          this.resolveSignedBinding(hs.ephPub, myPub, hs.idPub, hs.sig);
+        } else {
+          // 旧 host（0x01 裸公钥）：回退 B3 e2ee-pubkey 旁路三态判定（向后兼容）。
+          this.resolveBindingFromHandshake(hs.ephPub);
+        }
       } catch (e: unknown) {
         this.fail(e instanceof Error ? e.message : 'E2EE 握手失败，已断开', 'FORBIDDEN');
         this.disconnect();
@@ -281,6 +292,48 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // 解密/重放失败：丢弃该帧但不一定断连（契约要求拒绝该帧）。
       this.cb.onError?.(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
     }
+  }
+
+  // ── 方案 X（零信任 #2）：0x02 设备身份签名 + TOFU ────────────────────────────
+  /**
+   * host 发来 0x02 签名握手帧：用 host 设备身份公钥验签本次临时公钥绑定
+   * （context = 双方临时公钥‖device‖username），并 TOFU 固定 host 指纹。
+   *   - 验签失败 → 判 MITM，断开（设备私钥在 host，relay 无私钥无法伪造）。
+   *   - TOFU 指纹变化 → 告警（本期默认**不强拒**；fail-closed 翻闸是 P3）。
+   *   - 通过 → 标记 connected（enforced）。设备签名比 B3 旁路更强，故不再走 e2ee-pubkey 比对。
+   */
+  private resolveSignedBinding(
+    hostEphPub: Uint8Array,
+    controllerEphPub: Uint8Array,
+    hostIdPub: Uint8Array,
+    sig: Uint8Array,
+  ): void {
+    if (this.bindingDecided || this.closed) return;
+    const context = buildIdBindContext(
+      hostEphPub,
+      controllerEphPub,
+      this.hostDevice,
+      this.config.username,
+    );
+    if (!verifyIdBindSignature(hostIdPub, context, sig)) {
+      this.bindingDecided = true;
+      this.fail('E2EE 设备身份签名验证失败（疑似 MITM），已断开', 'FORBIDDEN');
+      this.disconnect();
+      return;
+    }
+    // TOFU 固定（host 标识 = {device}-{username}）。指纹变化本期仅告警（P3 翻闸再强拒）。
+    const tofu = checkOrPinDeviceIdentity(this.roomLabel(this.hostDevice), hostIdPub);
+    if (tofu.status === 'changed') {
+      this.cb.onError?.(
+        `host 设备指纹变化（原 ${tofu.pinned} → 现 ${tofu.actual}），疑似 MITM 或换机`,
+        'FORBIDDEN',
+      );
+    }
+    this.bindingDecided = true;
+    this.bindingMode = 'enforced';
+    this.bindingAccepted = true;
+    this.reconnectAttempts = 0; // 全量握手成功：重置退避曲线
+    this.setState('connected');
   }
 
   // ── B3（D-GM-10）公钥绑定判定 ──────────────────────────────────────────────
