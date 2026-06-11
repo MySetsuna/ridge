@@ -454,6 +454,122 @@ describe('ControllerCloudProvider', () => {
   });
 });
 
+// ── 断线自动重连（弱网 P1）──────────────────────────────────────────────────────
+//
+// 验证 provider 断线后真正重连并重新 setState('connected')（=激活 L2 RpcClient 的
+// onReconnected 重订阅 + 重连 reject 死代码路径），退避口径与 LAN 一致：
+//   • RTC failed 且信令仍在 → ICE restart（同一 pc 重协商，不重建）。
+//   • 信令断 + RTC 断 → 整体重建（新 pc + 新 ws）后恢复 connected。
+//   • disconnect() 取消待定重连。
+//   • 退避延迟落在 base(1s)~+30% 抖动之间。
+describe('ControllerCloudProvider 断线自动重连 (P1)', () => {
+  beforeEach(() => {
+    FakePeerConnection.instances = [];
+    FakeWebSocket.instances = [];
+    installGlobals();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** host（dir 无关）：经指定 ws 上报匹配公钥 + 经 dc 回握手帧，推进到 connected。 */
+  function hostHandshake(dc: FakeDataChannel, ws: FakeWebSocket): void {
+    const hostKp = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(hostKp.publicKey) });
+    dc.deliver(encodeHandshakeFrame(hostKp.publicKey));
+  }
+
+  /** 连上并完成握手到 connected（直接 fireOpen + 握手，跳过 SDP 往返，与既有测试一致）。 */
+  async function connectToConnected(onState?: (s: CloudConnectionState) => void) {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG, onState ? { onState } : {});
+    await provider.connect(HOST_DEVICE);
+    await vi.advanceTimersByTimeAsync(0);
+    const pc = FakePeerConnection.instances.at(-1)!;
+    const dc = pc.channel!;
+    dc.fireOpen();
+    hostHandshake(dc, FakeWebSocket.instances.at(-1)!);
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('connected');
+    return { provider, pc, dc };
+  }
+
+  it('RTC failed 且信令仍在 → ICE restart 同 pc 重协商，恢复 connected（不重建 pc）', async () => {
+    const { provider, pc } = await connectToConnected();
+    const ws = FakeWebSocket.instances[0];
+    const offersBefore = ws.sentParsed().filter((m) => m.t === 'offer').length;
+
+    // RTC 失败，信令 WS 仍 OPEN。
+    pc.connectionState = 'failed';
+    pc.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('disconnected'); // connected→disconnected：L2 reject 边沿
+
+    // 退避（≤1.3s）后重连 → ICE restart：同一 pc 发新 offer，未重建 PeerConnection。
+    await vi.advanceTimersByTimeAsync(1400);
+    expect(FakePeerConnection.instances).toHaveLength(1);
+    expect(ws.sentParsed().filter((m) => m.t === 'offer').length).toBe(offersBefore + 1);
+    expect(provider.getState()).toBe('connecting');
+
+    // ICE 恢复 → connected（E2EE 会话存活，无需重握手）。
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('connected');
+  });
+
+  it('信令断 + RTC 失败 → 整体重建（新 pc + 新 ws）后恢复 connected', async () => {
+    const { provider, pc } = await connectToConnected();
+    // 信令先断（readyState=CLOSED），再 RTC 失败。
+    FakeWebSocket.instances[0].close();
+    pc.connectionState = 'failed';
+    pc.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('disconnected');
+
+    await vi.advanceTimersByTimeAsync(1400);
+    // 整体重建：新 pc + 新 ws（复用缓存 iceServers，无需再取）。
+    expect(FakePeerConnection.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // 驱动新连接握手 → 恢复 connected。
+    const pc2 = FakePeerConnection.instances[1];
+    const ws2 = FakeWebSocket.instances[1];
+    const dc2 = pc2.channel!;
+    dc2.fireOpen();
+    hostHandshake(dc2, ws2);
+    pc2.connectionState = 'connected';
+    pc2.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('connected');
+  });
+
+  it('disconnect() 取消待定重连，不再重建', async () => {
+    const { provider, pc } = await connectToConnected();
+    pc.connectionState = 'failed';
+    pc.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('disconnected');
+
+    provider.disconnect();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(FakePeerConnection.instances).toHaveLength(1); // 未重建
+    expect(provider.getState()).toBe('disconnected');
+  });
+
+  it('退避首次重连延迟落在 base(1s)~+30% 抖动之间', async () => {
+    const { provider, pc } = await connectToConnected();
+    pc.connectionState = 'failed';
+    pc.onconnectionstatechange?.();
+
+    // < base：尚未重连。
+    await vi.advanceTimersByTimeAsync(900);
+    expect(provider.getState()).toBe('disconnected');
+
+    // 到 1350ms（base + 30% 抖动上界）必已重连（ICE restart → connecting）。
+    await vi.advanceTimersByTimeAsync(450);
+    expect(provider.getState()).not.toBe('disconnected');
+  });
+});
+
 // ── 测试辅助：模拟 host（dir=0）完成握手 + 派生同一 key ──────────────────────────
 
 /**
