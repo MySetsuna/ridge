@@ -6,40 +6,16 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-/// 信令消息（契约 §5.1，tag 字段为 `t`）。涵盖服务端连接事件与两端互发的
-/// SDP / ICE 帧。`#[serde(other)]` 兜底未知 tag，向后兼容。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "t", rename_all = "kebab-case")]
-pub enum SignalMsg {
-    /// 服务端：连接成功。`peer_present` 表示房间里是否已有对端。
-    Welcome {
-        room: String,
-        role: String,
-        #[serde(rename = "peerPresent", default)]
-        peer_present: bool,
-    },
-    /// 服务端：对端加入。
-    PeerJoin { role: String },
-    /// 服务端：对端离开。
-    PeerLeave { role: String },
-    /// 服务端：错误。
-    Error {
-        code: String,
-        #[serde(default)]
-        message: String,
-    },
-    /// controller→host：SDP offer。
-    Offer { sdp: String },
-    /// host→controller：SDP answer。
-    Answer { sdp: String },
-    /// 两端互发：ICE candidate（`null` 表示候选收集结束）。
-    Ice { candidate: Option<Value> },
-}
+// 信令消息 schema 收敛到单一事实来源 `ridge-signaling`（findings-align P0/P1）。
+// 该 crate 的 `SignalMsg` 是四端（relay / 桌面 host / 桌面 controller / 本 cli）共用的
+// **唯一定义**，且**全程承载可选 `cid`** —— 这正是修复「浏览器 controller 连不上无头
+// host」P0 的关键：relay 要求 host→controller 的 answer/ice **必带 cid**，缺失即丢弃；
+// 旧的本地 `SignalMsg` 无 cid 字段，故 cli 回的 answer 永远到不了 controller。改用共享
+// 类型后，cli 把入站 offer 携带的 cid 原样回盖到 answer/ice 即可被 relay 正确路由。
+pub use ridge_signaling::{Role, SignalMsg};
 
 /// 往 relay 发信令的句柄（cheap-clone，可与 `incoming` 同时持有，规避借用冲突）。
 #[derive(Clone)]
@@ -130,49 +106,5 @@ impl Signaling {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn welcome_parses_peer_present_camelcase() {
-        let m: SignalMsg = serde_json::from_str(
-            r#"{"t":"welcome","room":"vps-bob","role":"host","peerPresent":true}"#,
-        )
-        .unwrap();
-        match m {
-            SignalMsg::Welcome {
-                room,
-                role,
-                peer_present,
-            } => {
-                assert_eq!(room, "vps-bob");
-                assert_eq!(role, "host");
-                assert!(peer_present);
-            }
-            _ => panic!("expected welcome"),
-        }
-    }
-
-    #[test]
-    fn offer_and_ice_parse() {
-        let offer: SignalMsg = serde_json::from_str(r#"{"t":"offer","sdp":"v=0..."}"#).unwrap();
-        matches!(offer, SignalMsg::Offer { .. });
-
-        let ice_null: SignalMsg = serde_json::from_str(r#"{"t":"ice","candidate":null}"#).unwrap();
-        match ice_null {
-            SignalMsg::Ice { candidate } => assert!(candidate.is_none()),
-            _ => panic!("expected ice"),
-        }
-    }
-
-    #[test]
-    fn answer_serializes_with_tag() {
-        let a = SignalMsg::Answer {
-            sdp: "v=0".to_string(),
-        };
-        let s = serde_json::to_string(&a).unwrap();
-        assert!(s.contains("\"t\":\"answer\""));
-        assert!(s.contains("\"sdp\":\"v=0\""));
-    }
-}
+// 信令消息的 (de)序列化测试已上移到 `ridge-signaling` 的跨语言 golden-fixture
+// conformance（SSOT 所有者负责锁线形）；此处不再重复本地 serde 单测。
