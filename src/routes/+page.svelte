@@ -550,8 +550,10 @@ function expandSidebar() {
     // 导致这里返回 target='unknown'，document-level handler 进而把它的
     // 「unknown」菜单贴在 RidgePane.onContextMenu 已显示的丰富菜单上面，
     // 用户看到的就是 RidgePane 菜单一闪而过，最后留下错误菜单。
-    const paneEl =
-      target.closest('.rg-pane-root') || target.closest('[data-rg-pane-id]');
+    // `.rg-pane-root` never existed in the rendered DOM — the pane root carries
+    // `.rg-pane-container[data-rg-pane-id]` (RidgePane.svelte), so this branch
+    // always missed and the `[data-rg-pane-id]` matcher alone already finds it.
+    const paneEl = target.closest('[data-rg-pane-id]');
     if (paneEl) {
       const paneId =
         paneEl.getAttribute('data-rg-pane-id') ||
@@ -1136,7 +1138,21 @@ function expandSidebar() {
         if (!dev) return;
         requestAnimationFrame(() => {
           const storeCount = getAllPaneIds(get(paneTreeStore)).length;
-          const domCount = document.querySelectorAll('.rg-pane-root').length;
+          // Mounted pane roots carry class `.rg-pane-container` (RidgePane.svelte:
+          // the `[data-rg-pane-id]` div), NOT `.rg-pane-root` — that class never
+          // existed in the rendered DOM, so this query always returned 0 and every
+          // teammate split spuriously tripped the guard ("mounted panes=0"). Scope
+          // the count to the ACTIVE workspace's pane host: the keep-alive renderer
+          // mounts EVERY workspace's SplitContainer at once (inactive ones are
+          // `display:none` but still in the DOM), while `storeCount` reflects only
+          // the active workspace's tree — an unscoped query would over-count.
+          const wsId = get(activeWorkspaceId);
+          const host = wsId
+            ? document.querySelector(`[data-rg-ws-pane-host="${wsId}"]`)
+            : null;
+          const domCount = (host ?? document).querySelectorAll(
+            '.rg-pane-container'
+          ).length;
           if (storeCount > 0 && domCount !== storeCount) {
             reportDevIssue({
               title: 'Layout sync mismatch',
