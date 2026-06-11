@@ -30,6 +30,11 @@ impl RemoteAuth {
         self.totp.read().verify(code)
     }
 
+    /// 零信任 #1：校验对端在 transcript 上的信道绑定 tag（±1 窗口，透传 `RemoteTotp::verify_bind_tag`）。
+    pub fn verify_bind_tag(&self, transcript: &[u8], tag: &[u8]) -> bool {
+        self.totp.read().verify_bind_tag(transcript, tag)
+    }
+
     /// 当前 code + otpauth URI 一次取（同一把读锁，避免时间步在两次调用间跳变）。
     pub fn code_and_uri(&self, machine_name: &str) -> (String, String) {
         let g = self.totp.read();
