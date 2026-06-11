@@ -47,4 +47,10 @@ export interface RemoteConnectionProvider {
   sendFrame(plaintext: Uint8Array): void;
   /** 当前状态。 */
   getState(): CloudConnectionState;
+  /**
+   * 可选（零信任 #1）：信道绑定 transcript（domain‖sorted 双方临时公钥），仅在收到
+   * host 0x02 签名握手帧后可用；controller 据此算 totp-bind MAC。未协商/旧 host 返回
+   * null（调用方回退明文 totp-verify）。
+   */
+  getBindTranscript?(): Uint8Array | null;
 }

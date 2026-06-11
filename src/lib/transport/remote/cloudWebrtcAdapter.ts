@@ -164,6 +164,11 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     return mapState(this.provider.getState());
   }
 
+  /** 零信任 #1：透传 provider 的信道绑定 transcript（供 boot 计算 totp-bind MAC）。 */
+  getBindTranscript(): Uint8Array | null {
+    return this.provider.getBindTranscript?.() ?? null;
+  }
+
   onStateChange(cb: StateListener): Unsubscribe {
     this.stateListeners.add(cb);
     return () => this.stateListeners.delete(cb);

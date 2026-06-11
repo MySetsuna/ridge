@@ -34,6 +34,7 @@ import {
 import { ControllerCloudProvider } from './controllerCloudProvider';
 import type { CloudConnectionCallbacks, CloudConnectionState } from './connectionProvider';
 import { snapshot as authSnapshot } from './auth';
+import { computeBindTag, bytesToBase64 } from './e2ee';
 
 /** URL query 参数名（cloud-controller 模式触发 + 目标）。 */
 export const CLOUD_HOST_PARAM = 'cloudHost'; // 目标 host 的 device_name
@@ -163,7 +164,15 @@ export function verifyTotpOverControl(
       unsub();
       reject(new Error('TOTP 验证超时'));
     }, timeoutMs);
-    adapter.sendSessionControl({ t: 'totp-verify', code });
+    // 零信任 #1：host 0x02 后有信道绑定 transcript → 发 totp-bind（HMAC tag，码不明文上线）；
+    // 否则（旧 host / 未收到 0x02）回退明文 totp-verify。host 对两者都回 totp-result。
+    const transcript = adapter.getBindTranscript?.() ?? null;
+    if (transcript) {
+      const tag = bytesToBase64(computeBindTag(code, transcript));
+      adapter.sendSessionControl({ t: 'totp-bind', tag });
+    } else {
+      adapter.sendSessionControl({ t: 'totp-verify', code });
+    }
   });
 }
 
