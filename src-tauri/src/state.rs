@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -108,6 +108,12 @@ pub struct Workspace {
     pub teammate_pane_states: HashMap<Uuid, PaneState>,
     /// Agent 到 pane 的映射：记录哪个 agent（通过唯一 ID）在哪个 pane
     pub teammate_agent_pane_map: HashMap<String, Uuid>,
+    /// Ridge 亲手为 teammate 创建的 pane 集合（经 `teammate_split_pane`）。
+    /// 宿主原始 pane 与任意用户手开 pane **永不**进此集合，因此 idle-reuse
+    /// (`find_idle_pane_index`) 与 teammate `kill-pane` / `spawn-process` 只能
+    /// 命中 Ridge 自己起的 pane，绝不会碰到 parent agent 自己的 pane。
+    /// 见 2026-06-11 宿主 pane 保护修复。
+    pub teammate_owned_panes: HashSet<Uuid>,
     /// 关联的 .ridge 文件绝对路径。`Some` 表示该工作区已保存到磁盘；
     /// 后续任何 cwd/布局/git 变化都会触发防抖自动回写。
     pub associated_file_path: Option<PathBuf>,
@@ -574,6 +580,7 @@ impl AppState {
                 created_at: SystemTime::now(),
                 teammate_pane_states: HashMap::new(),
                 teammate_agent_pane_map: HashMap::new(),
+                teammate_owned_panes: HashSet::new(),
                 associated_file_path: None,
                 pending_spawns: HashMap::new(),
                 pty_generation: HashMap::new(),

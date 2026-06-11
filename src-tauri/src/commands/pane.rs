@@ -509,7 +509,12 @@ pub(crate) fn teammate_split_pane(
         .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
     // PaneTree::split now returns `CoreError`; convert to this fn's `AppError`
     // (D11 Wave A — `From<CoreError> for AppError` preserves the error string).
-    ws.pane_tree.split(target, dir).map_err(Into::into)
+    let new_id: Uuid = ws.pane_tree.split(target, dir).map_err(AppError::from)?;
+    // §host-guard (2026-06-11): mark every teammate-created pane as owned so
+    // idle-reuse may reuse it and teammate kill-pane may target it — while the
+    // host/user panes (never recorded here) stay protected on both paths.
+    ws.teammate_owned_panes.insert(new_id);
+    Ok(new_id)
 }
 
 /// 关闭指定窗格：结束 PTY、从 PaneTree 移除。至少保留一个窗格。
@@ -540,6 +545,7 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         ws.teammate_pane_states.remove(&pane_id);
         ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
         ws.pane_sizes.remove(&pane_id);
+        ws.teammate_owned_panes.remove(&pane_id);
         // Drop any not-yet-activated PendingSpawn so a recycled pane_id
         // can't accidentally resurrect a dead PTY pair on next activate.
         ws.pending_spawns.remove(&pane_id);
