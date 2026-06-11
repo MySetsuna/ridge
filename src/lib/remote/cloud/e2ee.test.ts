@@ -1,5 +1,6 @@
 // E2EE 单元测试（契约 §7）：验证 seal→open 往返、方向 nonce、重放被拒。
 import { describe, test, expect } from 'vitest';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import {
   generateEphemeralKeyPair,
   encodeHandshakeFrame,
@@ -15,6 +16,15 @@ import {
   PUBKEY_LEN,
   NONCE_LEN,
   KEY_LEN,
+  encodeSignedHandshakeFrame,
+  decodeSignedHandshakeFrame,
+  decodeAnyHandshakeFrame,
+  buildIdBindContext,
+  verifyIdBindSignature,
+  DEVICE_BOUND_TAG,
+  SIGNED_HANDSHAKE_LEN,
+  SIGNATURE_LEN,
+  ID_BIND_DOMAIN,
 } from './e2ee';
 
 /** 模拟一次完整的 host/controller 握手，返回双方会话。 */
@@ -192,5 +202,122 @@ describe('E2EE 重放防护', () => {
     expect(() => controller.open(tampered)).toThrow();
     // counter 0 的合法帧仍应可解（失败帧未推高 lastRecvCounter）
     expect(controller.open(f0)).toEqual(new TextEncoder().encode('f0'));
+  });
+});
+
+describe('B 层 0x02 设备签名握手帧（零信任 #2）', () => {
+  // 测试用固定 Ed25519 设备身份种子（**非生产密钥**）。
+  const idPriv = new Uint8Array(32).fill(7);
+  const idPub = ed25519.getPublicKey(idPriv);
+
+  /** 模拟 Rust 签名方：对 `ID_BIND_DOMAIN || context` 做 Ed25519 签名。 */
+  function signContext(priv: Uint8Array, context: Uint8Array): Uint8Array {
+    const domain = new TextEncoder().encode(ID_BIND_DOMAIN);
+    const msg = new Uint8Array(domain.length + context.length);
+    msg.set(domain, 0);
+    msg.set(context, domain.length);
+    return ed25519.sign(msg, priv);
+  }
+
+  test('encode 产生 0x02 || eph32 || id32 || sig64（129B）', () => {
+    const eph = generateEphemeralKeyPair().publicKey;
+    const sig = new Uint8Array(SIGNATURE_LEN).fill(9);
+    const frame = encodeSignedHandshakeFrame(eph, idPub, sig);
+    expect(frame.length).toBe(SIGNED_HANDSHAKE_LEN);
+    expect(frame.length).toBe(129);
+    expect(frame[0]).toBe(DEVICE_BOUND_TAG);
+    expect(frame.slice(1, 33)).toEqual(eph);
+    expect(frame.slice(33, 65)).toEqual(idPub);
+    expect(frame.slice(65)).toEqual(sig);
+  });
+
+  test('decodeSignedHandshakeFrame 还原三段', () => {
+    const eph = generateEphemeralKeyPair().publicKey;
+    const sig = new Uint8Array(SIGNATURE_LEN).fill(3);
+    const parsed = decodeSignedHandshakeFrame(encodeSignedHandshakeFrame(eph, idPub, sig));
+    expect(parsed.ephPub).toEqual(eph);
+    expect(parsed.idPub).toEqual(idPub);
+    expect(parsed.sig).toEqual(sig);
+  });
+
+  test('decodeSignedHandshakeFrame 对错误 tag / 长度抛错', () => {
+    const good = encodeSignedHandshakeFrame(
+      generateEphemeralKeyPair().publicKey,
+      idPub,
+      new Uint8Array(SIGNATURE_LEN),
+    );
+    const wrongTag = good.slice();
+    wrongTag[0] = 0x01;
+    expect(() => decodeSignedHandshakeFrame(wrongTag)).toThrow();
+    expect(() => decodeSignedHandshakeFrame(good.slice(0, 128))).toThrow();
+  });
+
+  test('decodeAnyHandshakeFrame 分派 legacy(0x01) / signed(0x02) / 未知抛错', () => {
+    const eph = generateEphemeralKeyPair().publicKey;
+    const a = decodeAnyHandshakeFrame(encodeHandshakeFrame(eph));
+    expect(a.kind).toBe('legacy');
+    if (a.kind === 'legacy') expect(a.ephPub).toEqual(eph);
+    const b = decodeAnyHandshakeFrame(
+      encodeSignedHandshakeFrame(eph, idPub, new Uint8Array(SIGNATURE_LEN)),
+    );
+    expect(b.kind).toBe('signed');
+    if (b.kind === 'signed') expect(b.idPub).toEqual(idPub);
+    expect(() => decodeAnyHandshakeFrame(new Uint8Array([0x09, 1, 2, 3]))).toThrow();
+    expect(() => decodeAnyHandshakeFrame(new Uint8Array(0))).toThrow();
+  });
+
+  test('buildIdBindContext：长度前缀消除拼接歧义', () => {
+    const h = generateEphemeralKeyPair().publicKey;
+    const c = generateEphemeralKeyPair().publicKey;
+    // ("ab","c") 与 ("a","bc") 无长度前缀时会拼成同一串；这里必须不同。
+    expect(buildIdBindContext(h, c, 'ab', 'c')).not.toEqual(buildIdBindContext(h, c, 'a', 'bc'));
+    // 确定性：同输入同输出。
+    expect(buildIdBindContext(h, c, 'dev', 'alice')).toEqual(
+      buildIdBindContext(h, c, 'dev', 'alice'),
+    );
+  });
+
+  test('verifyIdBindSignature：正确签名通过', () => {
+    const host = generateEphemeralKeyPair().publicKey;
+    const ctrl = generateEphemeralKeyPair().publicKey;
+    const context = buildIdBindContext(host, ctrl, 'my-laptop', 'alice');
+    expect(verifyIdBindSignature(idPub, context, signContext(idPriv, context))).toBe(true);
+  });
+
+  test('verifyIdBindSignature：篡改 context（换 username）被拒', () => {
+    const host = generateEphemeralKeyPair().publicKey;
+    const ctrl = generateEphemeralKeyPair().publicKey;
+    const sig = signContext(idPriv, buildIdBindContext(host, ctrl, 'my-laptop', 'alice'));
+    expect(verifyIdBindSignature(idPub, buildIdBindContext(host, ctrl, 'my-laptop', 'mallory'), sig)).toBe(
+      false,
+    );
+  });
+
+  test('verifyIdBindSignature：换 host 临时公钥（疑似 MITM）被拒', () => {
+    const host = generateEphemeralKeyPair().publicKey;
+    const ctrl = generateEphemeralKeyPair().publicKey;
+    const sig = signContext(idPriv, buildIdBindContext(host, ctrl, 'd', 'u'));
+    const mitmHost = generateEphemeralKeyPair().publicKey;
+    expect(verifyIdBindSignature(idPub, buildIdBindContext(mitmHost, ctrl, 'd', 'u'), sig)).toBe(false);
+  });
+
+  test('verifyIdBindSignature：错误设备身份公钥被拒', () => {
+    const host = generateEphemeralKeyPair().publicKey;
+    const ctrl = generateEphemeralKeyPair().publicKey;
+    const context = buildIdBindContext(host, ctrl, 'd', 'u');
+    const sig = signContext(idPriv, context);
+    const otherPub = ed25519.getPublicKey(new Uint8Array(32).fill(8));
+    expect(verifyIdBindSignature(otherPub, context, sig)).toBe(false);
+  });
+
+  test('verifyIdBindSignature：篡改签名 / 非法长度被拒且不抛', () => {
+    const host = generateEphemeralKeyPair().publicKey;
+    const ctrl = generateEphemeralKeyPair().publicKey;
+    const context = buildIdBindContext(host, ctrl, 'd', 'u');
+    const sig = signContext(idPriv, context);
+    const bad = sig.slice();
+    bad[0] ^= 0xff;
+    expect(verifyIdBindSignature(idPub, context, bad)).toBe(false);
+    expect(verifyIdBindSignature(idPub, context, new Uint8Array(10))).toBe(false);
   });
 });
