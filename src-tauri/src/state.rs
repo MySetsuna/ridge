@@ -491,6 +491,9 @@ pub struct AppState {
     /// Remote Control auth — shared TOTP generator. Created on app startup;
     /// the same secret persists for the process lifetime.
     pub remote_auth: Arc<RemoteAuth>,
+    /// 零信任 #2：Ed25519 长期**设备身份**。私钥留 Rust（DPAPI/0600），仅经 invoke
+    /// 暴露公钥/签名能力，**绝不进 JS/localStorage**。进程启动 `load_or_create`。
+    pub device_identity: Arc<ridge_core::DeviceIdentity>,
     /// Global remote control toggle. When `false`, the remote server handlers
     /// return 503 and the WebSocket upgrade is refused. Set via the settings
     /// panel's "Remote Control" switch.
@@ -608,6 +611,7 @@ impl AppState {
             pty_pane_registry: Arc::new(RwLock::new(HashMap::new())),
             remote_port: Arc::new(RwLock::new(0)),
             remote_auth: Arc::new(RemoteAuth::new()),
+            device_identity: Arc::new(ridge_core::DeviceIdentity::load_or_create()),
             remote_enabled: Arc::new(AtomicBool::new(false)),
             remote_thread: Arc::new(Mutex::new(None)),
             remote_shutdown: Arc::new(Mutex::new(None)),
