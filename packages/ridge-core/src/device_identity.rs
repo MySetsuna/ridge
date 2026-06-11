@@ -344,6 +344,13 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_golden_matches_browser() {
+        // 跨实现 conformance：与浏览器 deviceTrust.test.ts 'golden' 同公钥同指纹
+        // （id_pub = 0x11*32）。host(Rust) 与 controller(TS) 显示同一指纹，用户方能带外核对。
+        assert_eq!(fingerprint_of(&[0x11u8; PUBLIC_KEY_LEN]), "02D4-49A3-1FBB-267C");
+    }
+
+    #[test]
     fn save_then_load_roundtrips_via_temp() {
         let dir = std::env::temp_dir().join(format!("ridge-devid-rt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
