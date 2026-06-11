@@ -323,6 +323,25 @@ describe('B 层 0x02 设备签名握手帧（零信任 #2）', () => {
     expect(verifyIdBindSignature(idPub, context, bad)).toBe(false);
     expect(verifyIdBindSignature(idPub, context, new Uint8Array(10))).toBe(false);
   });
+
+  test('golden：固定输入的 id-bind context（跨 Rust 实现 conformance 锚点）', () => {
+    // host_pub=0x11*32, ctrl_pub=0x22*32, device="dev", username="alice"。
+    // ridge-cli e2ee.rs 的 build_id_bind_context 必须产出同一 hex（字节对齐保证 host 签名
+    // 被 controller 验过）。
+    const ctx = buildIdBindContext(
+      new Uint8Array(32).fill(0x11),
+      new Uint8Array(32).fill(0x22),
+      'dev',
+      'alice',
+    );
+    const hex = Array.from(ctx)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    expect(hex).toBe(
+      '11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222' +
+        '0364657605616c696365',
+    );
+  });
 });
 
 describe('C 层 TOTP 信道绑定 MAC（零信任 #1）', () => {
