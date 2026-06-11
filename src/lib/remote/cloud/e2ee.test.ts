@@ -25,6 +25,9 @@ import {
   SIGNED_HANDSHAKE_LEN,
   SIGNATURE_LEN,
   ID_BIND_DOMAIN,
+  buildBindTranscript,
+  computeBindTag,
+  BIND_TRANSCRIPT_DOMAIN,
 } from './e2ee';
 
 /** 模拟一次完整的 host/controller 握手，返回双方会话。 */
@@ -319,5 +322,49 @@ describe('B 层 0x02 设备签名握手帧（零信任 #2）', () => {
     bad[0] ^= 0xff;
     expect(verifyIdBindSignature(idPub, context, bad)).toBe(false);
     expect(verifyIdBindSignature(idPub, context, new Uint8Array(10))).toBe(false);
+  });
+});
+
+describe('C 层 TOTP 信道绑定 MAC（零信任 #1）', () => {
+  test('buildBindTranscript：排序无关连接顺序（两端独立计算一致）', () => {
+    const h = generateEphemeralKeyPair().publicKey;
+    const c = generateEphemeralKeyPair().publicKey;
+    expect(buildBindTranscript(h, c)).toEqual(buildBindTranscript(c, h));
+  });
+
+  test('buildBindTranscript：以域分隔串开头，长度 = domain + 64', () => {
+    const h = generateEphemeralKeyPair().publicKey;
+    const c = generateEphemeralKeyPair().publicKey;
+    const t = buildBindTranscript(h, c);
+    const domain = new TextEncoder().encode(BIND_TRANSCRIPT_DOMAIN);
+    expect(t.length).toBe(domain.length + 64);
+    expect(t.slice(0, domain.length)).toEqual(domain);
+  });
+
+  test('computeBindTag：确定性 + 双端同输入同 tag，长度 32', () => {
+    const transcript = buildBindTranscript(
+      generateEphemeralKeyPair().publicKey,
+      generateEphemeralKeyPair().publicKey,
+    );
+    const a = computeBindTag('123456', transcript);
+    expect(a).toEqual(computeBindTag('123456', transcript));
+    expect(a.length).toBe(32);
+  });
+
+  test('computeBindTag：错误 6 位码算出不同 tag（中继不知码无法伪造）', () => {
+    const transcript = buildBindTranscript(
+      generateEphemeralKeyPair().publicKey,
+      generateEphemeralKeyPair().publicKey,
+    );
+    expect(computeBindTag('123456', transcript)).not.toEqual(computeBindTag('654321', transcript));
+  });
+
+  test('computeBindTag：不同 transcript（MITM 换公钥）→ 不同 tag（即便码相同）', () => {
+    const h = generateEphemeralKeyPair().publicKey;
+    const c = generateEphemeralKeyPair().publicKey;
+    const mitm = generateEphemeralKeyPair().publicKey;
+    expect(computeBindTag('123456', buildBindTranscript(h, c))).not.toEqual(
+      computeBindTag('123456', buildBindTranscript(mitm, c)),
+    );
   });
 });

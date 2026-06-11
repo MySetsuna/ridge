@@ -11,6 +11,7 @@
 import { x25519, ed25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { hmac } from '@noble/hashes/hmac.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 
 /** 握手首帧 tag（契约 §7.1）：0x01 || ephemeral_pub(32B)。 */
@@ -202,6 +203,54 @@ export function verifyIdBindSignature(
   } catch {
     return false;
   }
+}
+
+// ── C 层 TOTP 信道绑定（零信任方案 #1 / 设计 §2）─────────────────────────────────
+// 把 controller 输入的 6 位 TOTP 码升级为「transcript 上的 MAC」：码不再明文上线；
+// 被攻陷 relay 即便 MITM 了 X25519，也因**不知码**无法算出正确 tag → 被 host 拒。
+// 在线爆破由 host 端单桥 5 次上限 + LAN throttle 限制（6 位低熵仅在线可猜）。
+
+/** 信道绑定 transcript 域分隔串。 */
+export const BIND_TRANSCRIPT_DOMAIN = 'ridge-e2ee-bind-v1';
+/** 信道绑定 HKDF info。 */
+export const BIND_HKDF_INFO = 'ridge-bind';
+
+/**
+ * 构造信道绑定 transcript：`BIND_TRANSCRIPT_DOMAIN || sorted(host_eph, ctrl_eph)`。
+ * 双方临时公钥按字典序排序拼接 → 两端独立计算得同一 transcript（与 deriveSessionKey
+ * 的 salt 排序同思路），且把绑定锚定到本次具体的 X25519 协商。
+ */
+export function buildBindTranscript(
+  hostEphPub: Uint8Array,
+  controllerEphPub: Uint8Array,
+): Uint8Array {
+  if (hostEphPub.length !== PUBKEY_LEN || controllerEphPub.length !== PUBKEY_LEN) {
+    throw new Error('E2EE: bind transcript 公钥长度非法');
+  }
+  const [first, second] =
+    compareBytes(hostEphPub, controllerEphPub) <= 0
+      ? [hostEphPub, controllerEphPub]
+      : [controllerEphPub, hostEphPub];
+  const domain = new TextEncoder().encode(BIND_TRANSCRIPT_DOMAIN);
+  const out = new Uint8Array(domain.length + PUBKEY_LEN * 2);
+  out.set(domain, 0);
+  out.set(first, domain.length);
+  out.set(second, domain.length + PUBKEY_LEN);
+  return out;
+}
+
+/**
+ * 计算信道绑定 MAC：
+ *   K   = HKDF-SHA256(ikm = ascii(totp_code), salt = transcript, info = BIND_HKDF_INFO, L = 32)
+ *   tag = HMAC-SHA256(K, transcript)
+ * controller 用当前 6 位码算 tag 发给 host；host 用本机种子在 ±1 窗口各算一遍比对。
+ * 返回 32 字节 tag。
+ */
+export function computeBindTag(totpCode: string, transcript: Uint8Array): Uint8Array {
+  const ikm = new TextEncoder().encode(totpCode);
+  const info = new TextEncoder().encode(BIND_HKDF_INFO);
+  const k = hkdf(sha256, ikm, transcript, info, KEY_LEN);
+  return hmac(sha256, k, transcript);
 }
 
 /** 把字节数组编码为 base64（信令 JSON 传公钥用，B3）。 */
