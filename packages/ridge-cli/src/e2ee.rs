@@ -139,6 +139,112 @@ impl Default for Handshake {
     }
 }
 
+// ── B 层设备身份签名握手帧（0x02）+ 信道绑定 transcript（零信任 #1/#2，设计 §3.1/§2）──
+// 与浏览器 `e2ee.ts` 字节级对齐。host(ridge-cli) 发送侧：用 `DeviceIdentity` 对
+// `build_id_bind_context` 结果签名（签名方加 `ID_BIND_DOMAIN` 前缀，见 ridge-core
+// device_identity），再 `encode_signed_frame` 组装 0x02 帧。tag/串常量与
+// `ridge-signaling` 注册表一致。
+
+/// 设备身份签名握手帧 tag（= `ridge-signaling::tags::handshake::DEVICE_BOUND`）。
+pub const DEVICE_BOUND_TAG: u8 = 0x02;
+/// Ed25519 设备身份公钥长度。
+pub const ID_PUB_KEY_LEN: usize = 32;
+/// Ed25519 签名长度。
+pub const SIGNATURE_LEN: usize = 64;
+/// 0x02 帧总长：1 + 32 + 32 + 64 = 129。
+pub const SIGNED_HANDSHAKE_LEN: usize = 1 + PUB_KEY_LEN + ID_PUB_KEY_LEN + SIGNATURE_LEN;
+/// 设备身份签名域分隔串（与 `e2ee.ts::ID_BIND_DOMAIN` / src-tauri `sign_device_identity` 一致）。
+pub const ID_BIND_DOMAIN: &[u8] = b"ridge-id-bind-v1";
+/// 信道绑定 transcript 域分隔串（与 `e2ee.ts::BIND_TRANSCRIPT_DOMAIN` 一致）。
+pub const BIND_TRANSCRIPT_DOMAIN: &[u8] = b"ridge-e2ee-bind-v1";
+
+/// 组装 0x02 帧：`0x02 || eph_pub(32) || id_pub(32) || sig(64)`。
+pub fn encode_signed_frame(
+    eph_pub: &[u8; PUB_KEY_LEN],
+    id_pub: &[u8; ID_PUB_KEY_LEN],
+    sig: &[u8; SIGNATURE_LEN],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(SIGNED_HANDSHAKE_LEN);
+    out.push(DEVICE_BOUND_TAG);
+    out.extend_from_slice(eph_pub);
+    out.extend_from_slice(id_pub);
+    out.extend_from_slice(sig);
+    out
+}
+
+/// 解析 0x02 帧 → `(eph_pub, id_pub, sig)`。tag/长度非法报错。
+/// （host=ridge-cli 通常**发送** 0x02、不解析；保留供测试与对称完整性。）
+pub fn parse_signed_frame(
+    frame: &[u8],
+) -> Result<([u8; PUB_KEY_LEN], [u8; ID_PUB_KEY_LEN], [u8; SIGNATURE_LEN])> {
+    if frame.len() != SIGNED_HANDSHAKE_LEN {
+        bail!(
+            "signed handshake frame length {} != {}",
+            frame.len(),
+            SIGNED_HANDSHAKE_LEN
+        );
+    }
+    if frame[0] != DEVICE_BOUND_TAG {
+        bail!(
+            "signed handshake tag {:#x} != {:#x}",
+            frame[0],
+            DEVICE_BOUND_TAG
+        );
+    }
+    let mut eph = [0u8; PUB_KEY_LEN];
+    let mut id = [0u8; ID_PUB_KEY_LEN];
+    let mut sig = [0u8; SIGNATURE_LEN];
+    eph.copy_from_slice(&frame[1..1 + PUB_KEY_LEN]);
+    id.copy_from_slice(&frame[1 + PUB_KEY_LEN..1 + PUB_KEY_LEN + ID_PUB_KEY_LEN]);
+    sig.copy_from_slice(&frame[1 + PUB_KEY_LEN + ID_PUB_KEY_LEN..]);
+    Ok((eph, id, sig))
+}
+
+/// 以 1 字节长度前缀编码变长字节段（长度必须 ≤ 255）。
+fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
+    if bytes.len() > 255 {
+        bail!("id-bind 变长字段超过 255 字节");
+    }
+    out.push(bytes.len() as u8);
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// 构造设备身份签名 **context**（**不含**域分隔前缀；签名方加前缀）：
+///   `context = host_eph(32) || ctrl_eph(32) || u8(len)||device || u8(len)||username`
+/// 与 `e2ee.ts::buildIdBindContext` 字节对齐（变长字段 1B 长度前缀防拼接歧义）。
+pub fn build_id_bind_context(
+    host_eph: &[u8; PUB_KEY_LEN],
+    ctrl_eph: &[u8; PUB_KEY_LEN],
+    device_name: &str,
+    username: &str,
+) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(PUB_KEY_LEN * 2 + device_name.len() + username.len() + 2);
+    out.extend_from_slice(host_eph);
+    out.extend_from_slice(ctrl_eph);
+    push_len_prefixed(&mut out, device_name.as_bytes())?;
+    push_len_prefixed(&mut out, username.as_bytes())?;
+    Ok(out)
+}
+
+/// 构造信道绑定 transcript：`BIND_TRANSCRIPT_DOMAIN || sorted(host_eph, ctrl_eph)`。
+/// 与 `e2ee.ts::buildBindTranscript` 字节对齐（字典序排序保证两端独立计算一致）。
+pub fn build_bind_transcript(
+    host_eph: &[u8; PUB_KEY_LEN],
+    ctrl_eph: &[u8; PUB_KEY_LEN],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(BIND_TRANSCRIPT_DOMAIN.len() + PUB_KEY_LEN * 2);
+    out.extend_from_slice(BIND_TRANSCRIPT_DOMAIN);
+    let (first, second) = if host_eph <= ctrl_eph {
+        (host_eph, ctrl_eph)
+    } else {
+        (ctrl_eph, host_eph)
+    };
+    out.extend_from_slice(first);
+    out.extend_from_slice(second);
+    out
+}
+
 /// 派生出会话密钥后的对称加密上下文。方向分离 nonce + 单调 counter（防重放）。
 pub struct Session {
     cipher: ChaCha20Poly1305,
@@ -361,5 +467,67 @@ mod tests {
         // 之后 f2 (counter=2) 仍可消费。
         let f2 = host.seal(b"c").unwrap();
         assert_eq!(ctrl.open(&f2).unwrap(), b"c");
+    }
+
+    // ── B 层 0x02 设备签名握手帧 + 信道绑定 transcript（零信任 #1/#2）──────────────
+
+    #[test]
+    fn signed_frame_roundtrip() {
+        let eph = [0x11u8; PUB_KEY_LEN];
+        let id = [0x22u8; ID_PUB_KEY_LEN];
+        let sig = [0x33u8; SIGNATURE_LEN];
+        let frame = encode_signed_frame(&eph, &id, &sig);
+        assert_eq!(frame.len(), SIGNED_HANDSHAKE_LEN);
+        assert_eq!(frame.len(), 129);
+        assert_eq!(frame[0], DEVICE_BOUND_TAG);
+        let (e, i, s) = parse_signed_frame(&frame).unwrap();
+        assert_eq!(e, eph);
+        assert_eq!(i, id);
+        assert_eq!(s, sig);
+    }
+
+    #[test]
+    fn parse_signed_frame_rejects_bad_tag_and_len() {
+        let frame = encode_signed_frame(&[1u8; 32], &[2u8; 32], &[3u8; 64]);
+        let mut bad = frame.clone();
+        bad[0] = 0x01;
+        assert!(parse_signed_frame(&bad).is_err());
+        assert!(parse_signed_frame(&frame[..128]).is_err());
+    }
+
+    #[test]
+    fn id_bind_context_golden_matches_browser() {
+        // 跨实现 conformance：与 e2ee.test.ts 'id-bind context golden' 同输入同 hex
+        // （host_pub=0x11*32, ctrl_pub=0x22*32, device="dev", username="alice"）。
+        let ctx = build_id_bind_context(&[0x11u8; 32], &[0x22u8; 32], "dev", "alice").unwrap();
+        let hex: String = ctx.iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(
+            hex,
+            concat!(
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                "2222222222222222222222222222222222222222222222222222222222222222",
+                "0364657605616c696365"
+            ),
+            "Rust id-bind context 必须与浏览器 e2ee.ts buildIdBindContext 字节对齐"
+        );
+    }
+
+    #[test]
+    fn id_bind_context_length_prefix_disambiguates() {
+        let h = [1u8; 32];
+        let c = [2u8; 32];
+        // ("ab","c") 与 ("a","bc") 无长度前缀会拼成同一串；这里必须不同。
+        assert_ne!(
+            build_id_bind_context(&h, &c, "ab", "c").unwrap(),
+            build_id_bind_context(&h, &c, "a", "bc").unwrap(),
+        );
+    }
+
+    #[test]
+    fn bind_transcript_sort_order_independent() {
+        let h = [5u8; 32];
+        let c = [9u8; 32];
+        assert_eq!(build_bind_transcript(&h, &c), build_bind_transcript(&c, &h));
+        assert!(build_bind_transcript(&h, &c).starts_with(BIND_TRANSCRIPT_DOMAIN));
     }
 }
