@@ -37,6 +37,7 @@ import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES } from '../../transport/remote/cloudMux';
+import type { ChannelBackpressure } from './cloudHostBridge';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -49,6 +50,13 @@ const DC_LABEL = 'ridge';
 const RECONNECT_BASE_MS = 1_000;
 /** 退避上限（ms）。 */
 const RECONNECT_MAX_MS = 15_000;
+
+/**
+ * DataChannel 背压下水位（弱网 P1）：设为每条 conn DataChannel 的 `bufferedAmountLowThreshold`，
+ * 缓冲回落到此即触发 `bufferedamountlow` → 通知 bridge 重同步。与 cloudHostBridge 的
+ * 上水位（8 MiB）配对。
+ */
+const BUFFERED_LOW_WATERMARK = 1 * 1024 * 1024; // 1 MiB
 
 /** host 端信令 WS 在线状态（与 per-controller 的 CloudConnectionState 区分）。 */
 export type HostSignalState = 'offline' | 'connecting' | 'online' | 'error';
@@ -68,6 +76,8 @@ export interface CloudHostBridgeLike {
   handleFrame(plaintext: Uint8Array): void;
   verifyPeerKey?(peerPublicKey: Uint8Array): boolean;
   reset(): void;
+  /** 弱网 P1：注入 DataChannel 背压流控（可选；未实现则不背压）。 */
+  attachChannelControl?(ctrl: ChannelBackpressure): void;
 }
 
 /** 信令消息（契约 §5.1 + §5.3，tag 字段 `t`）。host 端视角。 */
@@ -125,6 +135,8 @@ interface ControllerConn {
   bindTimer: ReturnType<typeof setTimeout> | null;
   bindingDecided: boolean;
   bindingMode: KeyBindingMode;
+  /** 弱网 P1：DataChannel 缓冲回落（bufferedamountlow）时由 bridge 注册的 drain 回调。 */
+  onDrained: (() => void) | null;
 }
 
 /**
@@ -269,6 +281,7 @@ export class RidgeCloudHost {
       bindTimer: null,
       bindingDecided: false,
       bindingMode: 'pending',
+      onDrained: null,
     };
     this.conns.set(cid, conn);
 
@@ -301,6 +314,9 @@ export class RidgeCloudHost {
   private attachDataChannel(conn: ControllerConn, dc: RTCDataChannel): void {
     conn.dc = dc;
     dc.binaryType = 'arraybuffer';
+    // §背压（弱网 P1）：缓冲回落到低水位即 bufferedamountlow → 通知 bridge 触发重同步。
+    dc.bufferedAmountLowThreshold = BUFFERED_LOW_WATERMARK;
+    dc.onbufferedamountlow = () => conn.onDrained?.();
     dc.onopen = () => {
       this.setConnState(conn, 'handshaking');
       this.startE2eeHandshake(conn);
@@ -421,6 +437,17 @@ export class RidgeCloudHost {
       return;
     }
     conn.bridge = bridge;
+    // §背压（弱网 P1）：注入 DataChannel 流控（bufferedAmount 读取 + drain 订阅）。bridge 在
+    // bufferedAmount 过高时丢 pane 帧、回落后请求 host 重放 RIS+scrollback。
+    bridge.attachChannelControl?.({
+      bufferedAmount: () => conn.dc?.bufferedAmount ?? 0,
+      onDrained: (cb) => {
+        conn.onDrained = cb;
+        return () => {
+          if (conn.onDrained === cb) conn.onDrained = null;
+        };
+      },
+    });
     this.setConnState(conn, 'connected');
   }
 
@@ -451,8 +478,10 @@ export class RidgeCloudHost {
     try { conn.bridge?.reset(); } catch { /* ignore */ }
     if (conn.dc) {
       conn.dc.onopen = conn.dc.onclose = conn.dc.onmessage = null;
+      conn.dc.onbufferedamountlow = null;
       try { conn.dc.close(); } catch { /* ignore */ }
     }
+    conn.onDrained = null;
     conn.pc.onicecandidate = conn.pc.ondatachannel = conn.pc.onconnectionstatechange = null;
     try { conn.pc.close(); } catch { /* ignore */ }
     conn.ephemeral = null;
