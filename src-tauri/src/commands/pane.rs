@@ -580,7 +580,30 @@ pub(crate) fn choose_balanced_split(
             (id, r, c)
         })
         .collect();
-    balanced_split_decision(&sizes)
+    // §host-guard (2026-06-11)：分屏目标在「teammate 自有」面板里取面积最大者，受保护的
+    // 宿主 pane（不在 `teammate_owned_panes` 内 —— 父 agent / 用户所在窗格）永不被选为
+    // split 目标，避免反复切分宿主、挤占其工作区。仅当尚无任何 teammate 自有面板（首个
+    // teammate 分屏）才回退到全体叶子——此时唯一候选即宿主，方向仍按其真实尺寸推断。
+    balanced_split_decision_owned_first(&sizes, &ws.teammate_owned_panes)
+}
+
+/// `choose_balanced_split` 的纯核心（不依赖 `Workspace`，可独立单测）：在「teammate 自有」
+/// 叶子中选面积最大者作为 split 目标，宿主 pane 始终被排除；仅当没有任何自有叶子时才回退
+/// 到全体叶子（保留首个 teammate 分屏切分宿主的既有行为）。方向沿用 `balanced_split_decision`
+/// 的加权最长边推断，确保与单测口径一致（H-DIR）。
+fn balanced_split_decision_owned_first(
+    sizes: &[(Uuid, u16, u16)],
+    owned: &std::collections::HashSet<Uuid>,
+) -> Option<(Uuid, SplitDirection)> {
+    let owned_sizes: Vec<(Uuid, u16, u16)> = sizes
+        .iter()
+        .copied()
+        .filter(|(id, _, _)| owned.contains(id))
+        .collect();
+    if !owned_sizes.is_empty() {
+        return balanced_split_decision(&owned_sizes);
+    }
+    balanced_split_decision(sizes)
 }
 
 /// Pure core of `choose_balanced_split` (testable without a full `Workspace`):
@@ -767,7 +790,8 @@ async fn toggle_mode_inner(
 
 #[cfg(test)]
 mod balanced_split_tests {
-    use super::{balanced_split_decision, SplitDirection};
+    use super::{balanced_split_decision, balanced_split_decision_owned_first, SplitDirection};
+    use std::collections::HashSet;
     use uuid::Uuid;
 
     #[test]
@@ -813,6 +837,48 @@ mod balanced_split_tests {
             chosen, last,
             "equal area → deterministic last (highest-index) leaf"
         );
+    }
+
+    #[test]
+    fn owned_first_excludes_larger_host_pane() {
+        // 宿主 pane（host，面积更大）不在 owned 集合 → 即便面积最大也不得被选；
+        // split 目标落在唯一的 teammate 自有面板上（avoid 切分宿主）。
+        let host = Uuid::new_v4();
+        let teammate = Uuid::new_v4();
+        let owned: HashSet<Uuid> = [teammate].into_iter().collect();
+        let (chosen, _) = balanced_split_decision_owned_first(
+            &[(host, 60, 200), (teammate, 24, 80)],
+            &owned,
+        )
+        .unwrap();
+        assert_eq!(chosen, teammate, "受保护的宿主 pane 绝不能被选为 split 目标");
+    }
+
+    #[test]
+    fn owned_first_picks_largest_among_owned() {
+        // 多个 teammate 自有面板时，仍取其中面积最大者；宿主被排除。
+        let host = Uuid::new_v4();
+        let small = Uuid::new_v4();
+        let big = Uuid::new_v4();
+        let owned: HashSet<Uuid> = [small, big].into_iter().collect();
+        let (chosen, _) = balanced_split_decision_owned_first(
+            &[(host, 80, 200), (small, 10, 40), (big, 40, 100)],
+            &owned,
+        )
+        .unwrap();
+        assert_eq!(chosen, big, "owned 集合内取面积最大者");
+    }
+
+    #[test]
+    fn owned_first_falls_back_to_host_when_no_owned() {
+        // 首个 teammate 分屏：尚无任何自有面板 → 回退全体叶子，唯一候选（宿主）被切分。
+        let host = Uuid::new_v4();
+        let owned: HashSet<Uuid> = HashSet::new();
+        let (chosen, dir) =
+            balanced_split_decision_owned_first(&[(host, 24, 80)], &owned).unwrap();
+        assert_eq!(chosen, host, "无自有面板时回退到宿主（唯一候选）");
+        // 80 cols × 24 rows → 宽 80 vs 高 48 → 宽 → Horizontal，方向仍按真实尺寸推断。
+        assert!(matches!(dir, SplitDirection::Horizontal));
     }
 }
 
