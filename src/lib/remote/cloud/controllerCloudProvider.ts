@@ -36,6 +36,7 @@ import {
   decodeAnyHandshakeFrame,
   buildIdBindContext,
   verifyIdBindSignature,
+  buildBindTranscript,
   deriveSessionKey,
   bytesToBase64,
   base64ToBytes,
@@ -130,6 +131,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private bindingDecided = false;
   private bindingAccepted = false;
   private bindingMode: KeyBindingMode = 'pending';
+  /** 零信任 #1：收到 host 0x02 后存的信道绑定 transcript（供 totp-bind）；旧 host 为 null。 */
+  private bindTranscript: Uint8Array | null = null;
 
   constructor(config: ControllerCloudProviderConfig, callbacks: CloudConnectionCallbacks = {}) {
     this.config = {
@@ -329,6 +332,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         'FORBIDDEN',
       );
     }
+    // 零信任 #1：存信道绑定 transcript，供 controller 发 totp-bind（替代明文 totp-verify）。
+    this.bindTranscript = buildBindTranscript(hostEphPub, controllerEphPub);
     this.bindingDecided = true;
     this.bindingMode = 'enforced';
     this.bindingAccepted = true;
@@ -391,11 +396,17 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.bindingDecided = false;
     this.bindingAccepted = false;
     this.bindingMode = 'pending';
+    this.bindTranscript = null;
   }
 
   /** B3 绑定模式（诊断/测试可读）：enforced=已比对一致；relay-trust=回落；pending=未决。 */
   getKeyBindingMode(): KeyBindingMode {
     return this.bindingMode;
+  }
+
+  /** 零信任 #1：信道绑定 transcript（仅收到 host 0x02 后可用；旧 host/未握手为 null）。 */
+  getBindTranscript(): Uint8Array | null {
+    return this.bindTranscript;
   }
 
   sendFrame(plaintext: Uint8Array): void {
