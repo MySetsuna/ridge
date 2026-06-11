@@ -44,6 +44,12 @@ const KEY_BIND_GRACE_MS = 3000;
 /** DataChannel 标签与参数（契约 §7）。 */
 const DC_LABEL = 'ridge';
 
+// ── 信令断线自动重连参数（与 LAN wsRemote.ts / controller provider 同名同值）──
+/** 退避基数（ms）。 */
+const RECONNECT_BASE_MS = 1_000;
+/** 退避上限（ms）。 */
+const RECONNECT_MAX_MS = 15_000;
+
 /** host 端信令 WS 在线状态（与 per-controller 的 CloudConnectionState 区分）。 */
 export type HostSignalState = 'offline' | 'connecting' | 'online' | 'error';
 
@@ -136,6 +142,12 @@ export class RidgeCloudHost {
   private closed = true;
   private iceServers: IceServer[] = [];
 
+  // ── 信令断线自动重连状态（弱网 P1；只重连信令，不拆已建 per-controller RTC）──
+  /** 当前上线的 deviceId（信令重连复用）。 */
+  private deviceId = '';
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+
   /** cid → 连接。 */
   private readonly conns = new Map<string, ControllerConn>();
   /** 已拉黑的 cid（会话级；命中即拒绝其 offer 并 kick）。 */
@@ -186,6 +198,8 @@ export class RidgeCloudHost {
   async goOnline(deviceId: string): Promise<void> {
     if (this.hostState === 'connecting' || this.hostState === 'online') return; // 幂等
     this.closed = false;
+    this.deviceId = deviceId;
+    this.reconnectAttempts = 0;
     this.setHostState('connecting');
 
     // 取 ICE servers（契约 §5.2：必须调接口，不硬编码 STUN）。建 PC 时复用。
@@ -204,6 +218,7 @@ export class RidgeCloudHost {
 
   goOffline(): void {
     this.closed = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     for (const cid of [...this.conns.keys()]) this.teardownConn(cid, false);
     this.conns.clear();
     if (this.ws) {
@@ -447,6 +462,22 @@ export class RidgeCloudHost {
 
   // ─── 信令 WS（契约 §3：WS 用 query ?token=&role=）──────────────────────────
 
+  /**
+   * 信令断线退避重连（弱网 P1，与 LAN / controller provider 同口径：base 1s→cap 15s、
+   * ±30% 抖动）。只重开信令 WS，**不拆**已建 per-controller RTC（relay 下线不影响 P2P）。
+   */
+  private scheduleSignalingReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    const n = this.reconnectAttempts++;
+    const base = Math.min(RECONNECT_BASE_MS * 2 ** n, RECONNECT_MAX_MS);
+    const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.closed) return;
+      this.openSignaling(this.deviceId);
+    }, delay);
+  }
+
   private openSignaling(deviceId: string): void {
     const label = this.hostLabel(deviceId);
     const url =
@@ -465,14 +496,15 @@ export class RidgeCloudHost {
 
     ws.onmessage = (ev) => { void this.onSignal(ev.data); };
     ws.onerror = () => {
-      if (!this.closed) { this.fail('信令 WebSocket 错误', 'NETWORK'); this.setHostState('error'); }
+      // 仅上报；断开与重连由 onclose 驱动（避免误置 error 终态）。
+      if (!this.closed) this.fail('信令 WebSocket 错误', 'NETWORK');
     };
     ws.onclose = () => {
-      if (!this.closed) {
-        // 信令断开：host 视为离线（已连通的 RTC 在 relay 下线后仍可短暂存活，但
-        // 无信令则无法接入新 controller / 续 ICE，统一标记 error 让 UI 提示重连）。
-        this.setHostState('error');
-      }
+      if (this.closed) return;
+      // 信令断开：已建立的 per-controller RTC 不拆（relay 下线不影响 P2P），仅退避重连
+      // 信令通道以恢复「接纳新 controller / 续 ICE / 重协商」。重连成功收 welcome 即回 online。
+      this.setHostState('connecting');
+      this.scheduleSignalingReconnect();
     };
   }
 
@@ -493,6 +525,7 @@ export class RidgeCloudHost {
     switch (msg.t) {
       case 'welcome':
         // host welcome：标记上线。已有 controller 由后续 peer-join 各自补发枚举。
+        this.reconnectAttempts = 0; // 信令恢复：重置退避曲线
         this.setHostState('online');
         break;
       case 'peer-join':
