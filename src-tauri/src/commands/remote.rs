@@ -103,6 +103,16 @@ pub fn sign_device_identity(state: State<AppState>, context: Vec<u8>) -> Vec<u8>
     state.device_identity.sign(&msg).to_vec()
 }
 
+/// 零信任 #1（概念 5）：校验 controller 经 CONTROL 通道发来的 **totp-bind** MAC。
+/// host 用本机 TOTP 种子在 `transcript` 上 ±1 时间步窗口重算 tag 比对（恒定时间，见
+/// `RemoteTotp::verify_bind_tag`）。`transcript` 由 host 握手层构造并传入（domain‖sorted
+/// 双方临时公钥）；`tag` 为 controller 用当前 6 位码算的 HMAC。通过 → cloudHostBridge
+/// 解门控、放行业务帧。与浏览器 `e2ee.ts::computeBindTag` 字节对齐（跨实现 golden 已锁）。
+#[tauri::command]
+pub fn verify_remote_totp_bind(state: State<AppState>, transcript: Vec<u8>, tag: Vec<u8>) -> bool {
+    state.remote_auth.verify_bind_tag(&transcript, &tag)
+}
+
 /// §totp-persist：重置本机 TOTP 种子。重新生成 + 覆盖落盘（DPAPI/0600），已配对
 /// 的 authenticator 立即失效，须重新扫码。发 `remote-totp-changed` 事件让面板刷新。
 #[tauri::command]
