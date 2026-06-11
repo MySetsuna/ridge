@@ -280,6 +280,25 @@ controller 校验：
 
 依赖接线（P2）：`ridge-core`/`ridge-cli`/`src-tauri`/`controller(TS)` 引用 `ridge-signaling` 的 tag/串常量；relay(`ridge-cloud`) 用其 A 层 + tag 注册表。不再各自分叉常量。
 
+## 7.2 P2 实施进度（live tracker — 供 context compact 后自我重定向）
+
+> compact / 上下文重置后：TaskGet #14 + 读本节 + `git -C C:\code\wind log --oneline` 核对下列 commit 是否在，确认 P2 进度线未丢再续。
+
+**已落地（develop，每概念单测 + 跨语言 golden conformance）**：
+- #10 地基：JWT EdDSA `219f7e6`+`15facee`；Ed25519 设备身份 `746d6bf`/`526c109`/`acd60da`。
+- B 层 0x02 设备签名帧：TS `a5ba554` / Rust(ridge-cli/e2ee.rs) `5355fde` — golden context `11..0364657605616c696365`。
+- C 层 TOTP 绑定：TS `21351b4` / Rust(ridge-core/totp.rs) `04b953e` — golden tag `d694a528..aa64`。
+- TOFU 指纹固定：`f014b43`(deviceTrust.ts) — golden 指纹 `02D4-49A3-1FBB-267C`。
+
+**剩余概念**：
+3. **controller 接线**（controllerCloudProvider 收 host 0x02 → verifyIdBindSignature + checkOrPinDeviceIdentity；CONTROL 发 totp-bind 替代 totp-verify）— 纯 controller TS，**可做**。
+4. **host 接线**（桌面 ridgeCloudProvider + cli session.rs 0x02 发送 / 握手时序）— **暂停**：等 align FIX-1c（#17，session.rs run() 改事件驱动）落地后基于其结构再接；动 session.rs 前先 `git pull`。
+5. cloudHostBridge/cloudControllerBoot 接 totp-bind + src-tauri `verify_remote_totp_bind` 命令（复用 totp.rs::verify_bind_tag）。
+6. 验签失败 host 端 `$/bye{reason:"signature-invalid"}`。
+7. 运行时集成验证清单（含「**握手时序回归**」专项）。
+
+**不含**：fail-closed 翻闸（P3，默认仍 fail-open 标注待翻）。
+
 ## 8. 实施顺序与依赖
 
 ```
