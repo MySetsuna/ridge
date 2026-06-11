@@ -123,25 +123,29 @@ impl RemoteSession {
         // 3. PTY。
         let (pty, mut pty_out_rx) = PtyBridge::spawn(shell.as_deref(), cwd.as_deref())?;
 
-        // 4. E2EE 握手：先发本端公钥，等对端公钥。
+        // 4. E2EE 握手（**事件驱动，修 D-GM-10 握手时序死锁**）。
+        //
+        // 旧结构在主循环**之前** `await` 对端握手帧（15s 超时）；但驱动 DataChannel 打开所需
+        // 的 WebRTC offer 只在主循环**内**才转发（signal_rx → inbound_tx）→ offer 永远等不到
+        // 处理 → DataChannel 不开 → 握手 15s 超时 fail → 云端握手根本跑不通（与协议审核
+        // 「ridge-cli cloud 不通」一致；旧集成测试只测 handle_inbound 隔离逻辑、未覆盖 run()
+        // 全流程，故没抓到）。
+        //
+        // 新结构（镜像桌面 ridgeCloudProvider 事件模型）：把本端公钥**入队**（DataChannel
+        // 打开后由 rtc 出站泵发出，非阻塞），**不在此 await**；对端握手帧作为**首个 dc_io 帧**
+        // 在主循环里消费、派生会话。主循环并发处理 offer/answer/ICE，DataChannel 得以打开。
         let mut dc_io = dc_io;
         let handshake = Handshake::new();
+        // B3（D-GM-10）：本端临时公钥，cid 就绪后经信令旁路上报（方案 X：仅 eph_pub、不带 sig）。
+        let host_pub = handshake.public_bytes();
         dc_io
             .tx
             .send(handshake.encode_frame())
             .await
             .map_err(|_| anyhow!("data channel closed before handshake"))?;
-
-        let peer_pub = match tokio::time::timeout(Duration::from_secs(15), dc_io.rx.recv()).await {
-            Ok(Some(frame)) => Handshake::parse_peer_frame(&frame)?,
-            Ok(None) => bail!("data channel closed during handshake"),
-            Err(_) => bail!("E2EE handshake timed out"),
-        };
-        // B3（D-GM-10）：本端临时公钥，待 cid 就绪后经信令旁路上报给 controller（方案 X：
-        // 仅 eph_pub、不带 sig，relay 零密码学材料）。peer_pub 为 [u8;32]（Copy），下方
-        // into_session 取走副本后仍可在主循环用于与对端信令公钥比对。
-        let host_pub = handshake.public_bytes();
-        let mut crypto = handshake.into_session(peer_pub, Dir::HostToController)?;
+        // 握手待首个对端帧消费以派生会话；crypto 在握手完成前为 None（首帧前无业务帧/无 flush）。
+        let mut handshake = Some(handshake);
+        let mut crypto: Option<CryptoSession> = None;
 
         // 4b. 云远控二次验证（契约 §4）：每会话一份随机 TOTP，打到 TUI。未验证前业务帧
         //     被门控（见 gate_envelope）。
@@ -167,12 +171,53 @@ impl RemoteSession {
         // 兼容：不发 e2ee-pubkey 的旧 controller 走 3s 宽限回落 relay-trust（不回归）；本实现
         // **不门控** DataChannel 帧（reject 即整会话 bail 断开，信令公钥早于业务帧到达，故
         // mismatch 时先于业务断开），从而旧端业务帧不被宽限期丢弃。
+        // 对端 DataChannel 握手公钥（首个 dc_io 帧解出）；与信令旁路公钥比对。握手完成前 None。
+        let mut peer_handshake_pub: Option<[u8; crate::e2ee::PUB_KEY_LEN]> = None;
         let mut peer_sig_key: Option<[u8; crate::e2ee::PUB_KEY_LEN]> = None;
         let mut host_pubkey_sent = false;
         let mut binding_decided = false;
+        let mut grace_expired = false;
         // 3s 宽限期：到期仍未收到信令公钥 → 回落 relay-trust（兼容不发 e2ee-pubkey 的旧端）。
         let bind_grace = tokio::time::sleep(Duration::from_secs(3));
         tokio::pin!(bind_grace);
+
+        // 握手总超时兜底（含 WebRTC offer/answer/ICE + DataChannel 打开 + 首帧）。事件驱动后
+        // 不再有阻塞式 recv 超时，故在此设总超时：超时仍未派生会话即断开，避免 WebRTC 永不
+        // 连通时 run() 永久挂起（旧结构靠主循环前的 15s 握手 recv 超时——正是它造成死锁，已移除）。
+        let handshake_deadline = tokio::time::sleep(Duration::from_secs(30));
+        tokio::pin!(handshake_deadline);
+
+        // B3 三态判定（任一输入变化即尝试：握手公钥到 / 信令公钥到 / 宽限期到）。仅当握手公钥
+        // 已知才可判定（需它做比对）；reject 即 bail 断开整会话（疑似 relay-MITM）。本地 macro
+        // 复用同一段逻辑（hygiene 下捕获上面的循环局部），避免 3 个触发点重复。
+        macro_rules! try_decide_binding {
+            () => {{
+                if !binding_decided {
+                    if let Some(hpub) = peer_handshake_pub {
+                        match decide_key_binding(
+                            &hpub,
+                            peer_sig_key.as_ref().map(|k| k.as_slice()),
+                            grace_expired,
+                        ) {
+                            KeyBindingDecision::Accept => {
+                                binding_decided = true;
+                                let mode = if peer_sig_key.is_some() {
+                                    KeyBindingMode::Enforced
+                                } else {
+                                    KeyBindingMode::RelayTrust
+                                };
+                                tracing::info!(target: "ridge_cli::session", mode = ?mode, "E2EE 公钥绑定判定");
+                            }
+                            KeyBindingDecision::Reject => {
+                                tracing::warn!(target: "ridge_cli::session", "E2EE 公钥绑定校验失败（疑似 relay-MITM），断开会话");
+                                bail!("E2EE key binding failed (suspected MITM)");
+                            }
+                            KeyBindingDecision::Wait => {}
+                        }
+                    }
+                }
+            }};
+        }
 
         let mut batch = BatchingBuffer::new();
 
@@ -193,13 +238,18 @@ impl RemoteSession {
                         Some(bytes) => {
                             batch.push(&bytes);
                             // 仅在 verified+subscribed 后才 flush 到线上；否则继续累积。
+                            // crypto 此刻必为 Some（verified 需先经握手+TOTP），守卫防御性。
                             if verified && subscribed && batch.should_flush() {
-                                Self::flush_pane(&mut batch, &mut crypto, &dc_io.tx).await?;
+                                if let Some(c) = crypto.as_mut() {
+                                    Self::flush_pane(&mut batch, c, &dc_io.tx).await?;
+                                }
                             }
                         }
                         None => {
                             if verified && subscribed {
-                                Self::flush_pane(&mut batch, &mut crypto, &dc_io.tx).await.ok();
+                                if let Some(c) = crypto.as_mut() {
+                                    Self::flush_pane(&mut batch, c, &dc_io.tx).await.ok();
+                                }
                             }
                             tracing::info!(target: "ridge_cli::session", "shell exited; ending session");
                             break;
@@ -209,49 +259,59 @@ impl RemoteSession {
 
                 _ = &mut flush_sleep => {
                     if verified && subscribed {
-                        Self::flush_pane(&mut batch, &mut crypto, &dc_io.tx).await?;
+                        if let Some(c) = crypto.as_mut() {
+                            Self::flush_pane(&mut batch, c, &dc_io.tx).await?;
+                        }
                     }
                 }
 
-                // B3：绑定宽限期到 —— 仍未收到信令公钥则回落 relay-trust（兼容不发 e2ee-pubkey
-                // 的旧 controller）。guard 确保判定一次后不再轮询该已 fire 的定时器。
+                // B3：绑定宽限期到 —— 标记宽限期过并触发判定（仍未收到信令公钥则回落
+                // relay-trust，兼容不发 e2ee-pubkey 的旧 controller）。guard 确保判定一次后不再
+                // 轮询该已 fire 的定时器。若此刻握手尚未完成（peer_handshake_pub 为 None），macro
+                // 暂不判定，待握手帧到达后以 grace_expired=true 决断。
                 _ = &mut bind_grace, if !binding_decided => {
-                    match decide_key_binding(
-                        &peer_pub,
-                        peer_sig_key.as_ref().map(|k| k.as_slice()),
-                        true,
-                    ) {
-                        KeyBindingDecision::Accept => {
-                            binding_decided = true;
-                            let mode = if peer_sig_key.is_some() {
-                                KeyBindingMode::Enforced
-                            } else {
-                                KeyBindingMode::RelayTrust
-                            };
-                            tracing::info!(target: "ridge_cli::session", mode = ?mode, "E2EE 公钥绑定判定（宽限期到）");
-                        }
-                        KeyBindingDecision::Reject => {
-                            tracing::warn!(target: "ridge_cli::session", "E2EE 公钥绑定校验失败（疑似 relay-MITM），断开会话");
-                            bail!("E2EE key binding failed (suspected MITM)");
-                        }
-                        KeyBindingDecision::Wait => {}
-                    }
+                    grace_expired = true;
+                    try_decide_binding!();
                 }
 
-                // 来自 controller 的 E2EE 帧 → 解密 → demux → 分派。
+                // 握手总超时：仍未派生会话（WebRTC/DataChannel 始终没打开）→ 断开，daemon 退避重试。
+                // guard 确保握手完成后不再轮询该已 fire 的定时器。
+                _ = &mut handshake_deadline, if crypto.is_none() => {
+                    bail!("E2EE handshake did not complete within 30s (WebRTC/DataChannel never opened)");
+                }
+
+                // 来自 controller 的 DataChannel 帧。**首帧 = 对端 E2EE 握手帧**（事件驱动，
+                // 修死锁）：解出对端公钥派生会话；其后为业务密文帧 → 解密 → demux → 分派。
                 maybe_in = dc_io.rx.recv() => {
                     match maybe_in {
                         Some(frame) => {
-                            let was_subscribed = subscribed;
-                            if let Err(e) = Self::handle_inbound(
-                                &frame, &mut crypto, &pty, &dc_io.tx, &roots,
-                                &totp, &mut verified, &mut subscribed,
-                            ).await {
-                                tracing::warn!(target: "ridge_cli::session", error = %e, "inbound frame rejected");
-                            }
-                            // 刚验证并订阅 → 把暂存的初始 PTY 输出立即推出。
-                            if verified && subscribed && (!was_subscribed || batch.should_flush()) {
-                                Self::flush_pane(&mut batch, &mut crypto, &dc_io.tx).await.ok();
+                            if crypto.is_none() {
+                                // 首帧 = 对端握手帧（0x01||pub32）。派生会话密钥。
+                                let hs = match handshake.take() {
+                                    Some(h) => h,
+                                    None => bail!("internal: handshake state already consumed"),
+                                };
+                                let peer_pub = Handshake::parse_peer_frame(&frame)?;
+                                crypto = Some(hs.into_session(peer_pub, Dir::HostToController)?);
+                                peer_handshake_pub = Some(peer_pub);
+                                tracing::info!(target: "ridge_cli::session", "E2EE 握手完成，派生会话密钥");
+                                // 握手公钥已知 → 触发 B3 绑定判定（信令公钥可能先到 / 宽限可能已过）。
+                                try_decide_binding!();
+                            } else {
+                                // 业务密文帧。crypto 此刻必为 Some。
+                                let crypto_ref =
+                                    crypto.as_mut().expect("crypto present after handshake");
+                                let was_subscribed = subscribed;
+                                if let Err(e) = Self::handle_inbound(
+                                    &frame, crypto_ref, &pty, &dc_io.tx, &roots,
+                                    &totp, &mut verified, &mut subscribed,
+                                ).await {
+                                    tracing::warn!(target: "ridge_cli::session", error = %e, "inbound frame rejected");
+                                }
+                                // 刚验证并订阅 → 把暂存的初始 PTY 输出立即推出。
+                                if verified && subscribed && (!was_subscribed || batch.should_flush()) {
+                                    Self::flush_pane(&mut batch, crypto_ref, &dc_io.tx).await.ok();
+                                }
                             }
                         }
                         None => {
@@ -311,23 +371,11 @@ impl RemoteSession {
                         }
                         Some(SignalMsg::E2eePubkey { pubkey, .. }) => {
                             // B3：controller 经已认证信令旁路转发回来的临时公钥（relay 已按 cid
-                            // 投递给本 host）。与 DataChannel 握手解出的对端公钥比对：不一致 = MITM。
+                            // 投递给本 host）。存下并触发判定——握手公钥若已知则即刻比对（不一致
+                            // = MITM → bail）；握手尚未完成则暂存，待握手帧到达再判。
                             if let Some(pk) = b64_decode_pubkey(&pubkey) {
                                 peer_sig_key = Some(pk);
-                                if !binding_decided {
-                                    match decide_key_binding(&peer_pub, Some(pk.as_slice()), false) {
-                                        KeyBindingDecision::Accept => {
-                                            binding_decided = true;
-                                            tracing::info!(target: "ridge_cli::session", mode = ?KeyBindingMode::Enforced, "E2EE 公钥绑定校验通过（enforced）");
-                                        }
-                                        KeyBindingDecision::Reject => {
-                                            tracing::warn!(target: "ridge_cli::session", "E2EE 公钥绑定校验失败（疑似 relay-MITM），断开会话");
-                                            bail!("E2EE key binding failed (suspected MITM)");
-                                        }
-                                        // 信令公钥已到 → 不会是 Wait；防御性忽略。
-                                        KeyBindingDecision::Wait => {}
-                                    }
-                                }
+                                try_decide_binding!();
                             } else {
                                 tracing::warn!(target: "ridge_cli::session", "收到非法 e2ee-pubkey（base64/长度），已忽略");
                             }
@@ -728,6 +776,114 @@ mod tests {
         assert_eq!(
             gate_envelope(notif("subscribe-pane"), false),
             Gate::DropSilently
+        );
+    }
+
+    // ── FIX-1c 回归：run() 事件驱动，offer→answer（带 cid）+ e2ee-pubkey，不死锁 ──
+    //
+    // 旧结构在主循环**前**阻塞 await 对端握手帧，而驱动 DataChannel 打开的 offer 只在循环
+    // **内**才转发 → 死锁，answer 永不产出（云端握手跑不通）。本测试用 mock HostPeer（收
+    // offer 即回 answer，模拟 answerer 时序，**不做真实 WebRTC**），断言喂入带 cid 的 offer
+    // 后 host 在信令上发出 ①带 cid 的 e2ee-pubkey（FIX-2 A 层旁路）②带 cid 的 answer
+    // （FIX-1 cid 回盖）—— 二者出现即证明主循环正常运转、死锁已修。完整 WebRTC/DataChannel
+    // 端到端握手由**运行时集成验证**覆盖（见运行时验证清单），静态测不出。
+    #[tokio::test]
+    async fn run_is_event_driven_offer_yields_answer_and_e2ee_pubkey_with_cid() {
+        // 精简 CI 无可用 shell → 优雅跳过（run() 内部 spawn PTY，失败会早返回）。
+        if crate::pty::PtyBridge::spawn(None, None).is_err() {
+            eprintln!("skip run_is_event_driven: no usable shell to spawn PTY");
+            return;
+        }
+
+        // mock answerer：收到 offer 即回一个占位 answer（驱动握手时序，不做真实 SDP）。
+        struct MockPeer;
+        impl HostPeer for MockPeer {
+            async fn answer(
+                &self,
+                _ice: Vec<String>,
+                mut inbound: mpsc::Receiver<PeerInbound>,
+                outbound: mpsc::Sender<PeerOutbound>,
+            ) -> anyhow::Result<crate::rtc::DataChannelIo> {
+                let (dc_in_tx, dc_in_rx) = mpsc::channel::<Vec<u8>>(16);
+                let (dc_out_tx, dc_out_rx) = mpsc::channel::<Vec<u8>>(16);
+                tokio::spawn(async move {
+                    // 保持 dc_io 两端存活：dc_in_tx 在则 run() 的 dc_io.rx 维持 Pending（不因
+                    // None 退出）；dc_out_rx 在则 run() 入队握手帧的 dc_io.tx.send 成功。
+                    let _keep_in = dc_in_tx;
+                    let _keep_out = dc_out_rx;
+                    while let Some(ev) = inbound.recv().await {
+                        if let PeerInbound::Offer(_) = ev {
+                            let _ = outbound
+                                .send(PeerOutbound::Answer("v=0\r\n".to_string()))
+                                .await;
+                        }
+                    }
+                });
+                Ok(crate::rtc::DataChannelIo {
+                    rx: dc_in_rx,
+                    tx: dc_out_tx,
+                })
+            }
+        }
+
+        // 信令：sig_out 观测 host 发出的帧；signal_in 喂入 relay→host 的帧。
+        let (sig_out_tx, mut sig_out_rx) = mpsc::channel::<SignalMsg>(32);
+        let sender = SignalSender::new_for_test(sig_out_tx);
+        let (signal_in_tx, mut signal_in_rx) = mpsc::channel::<SignalMsg>(32);
+
+        let mut saw_pubkey_cid = false;
+        let mut saw_answer_cid = false;
+        let peer = MockPeer;
+
+        // run() 与驱动逻辑用 select! 在**同一任务**并发跑（不 tokio::spawn run()——run() 持
+        // PtyBridge/CryptoSession 等未必 Send，生产中 daemon 也是直接 await 不 spawn）。驱动
+        // 完成即 select! 返回、run() future 被丢弃（取消）。
+        tokio::select! {
+            _ = RemoteSession::run(&peer, vec![], &sender, &mut signal_in_rx, None, None, None) => {
+                panic!("run() 不应在测试期间结束（应一直处理信令/握手）");
+            }
+            _ = async {
+                // 喂入一个带 cid 的 offer（模拟 relay 加盖 cid 后转发）。
+                signal_in_tx
+                    .send(SignalMsg::Offer {
+                        sdp: "v=0\r\n".into(),
+                        cid: Some("cTESTcid".into()),
+                    })
+                    .await
+                    .unwrap();
+
+                // 收集 host 在信令上发出的帧（限时 3s），断言 e2ee-pubkey 与 answer 都带回 cid。
+                let collect = async {
+                    while let Some(msg) = sig_out_rx.recv().await {
+                        match msg {
+                            SignalMsg::E2eePubkey { cid, .. }
+                                if cid.as_deref() == Some("cTESTcid") =>
+                            {
+                                saw_pubkey_cid = true;
+                            }
+                            SignalMsg::Answer { cid, .. }
+                                if cid.as_deref() == Some("cTESTcid") =>
+                            {
+                                saw_answer_cid = true;
+                            }
+                            _ => {}
+                        }
+                        if saw_pubkey_cid && saw_answer_cid {
+                            break;
+                        }
+                    }
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(3), collect).await;
+            } => {}
+        }
+
+        assert!(
+            saw_pubkey_cid,
+            "host 应在信令发出带 cid 的 e2ee-pubkey（FIX-2 A 层旁路 + 主循环未死锁）"
+        );
+        assert!(
+            saw_answer_cid,
+            "host 应在信令发出带 cid 的 answer（FIX-1 cid 回盖 + 主循环未死锁）"
         );
     }
 
