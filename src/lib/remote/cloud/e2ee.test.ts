@@ -367,4 +367,16 @@ describe('C 层 TOTP 信道绑定 MAC（零信任 #1）', () => {
       computeBindTag('123456', buildBindTranscript(mitm, c)),
     );
   });
+
+  test('golden：固定 code+transcript 的 tag（跨 Rust 实现 conformance 锚点）', () => {
+    // 固定输入 → 固定 tag；ridge-core::totp.rs 的 Rust 实现必须产出同一 hex。
+    // host_pub = 0x11*32, ctrl_pub = 0x22*32, code = "123456"。
+    const hostPub = new Uint8Array(32).fill(0x11);
+    const ctrlPub = new Uint8Array(32).fill(0x22);
+    const tag = computeBindTag('123456', buildBindTranscript(hostPub, ctrlPub));
+    const hex = Array.from(tag)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    expect(hex).toBe('d694a5285b3e8eaff2a0e53216ac003f6e79fbab207fbaf4db605efa6ffdaa64');
+  });
 });

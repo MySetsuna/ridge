@@ -65,6 +65,35 @@ impl RemoteTotp {
         false
     }
 
+    /// C 层 TOTP 信道绑定校验（零信任 #1）：对端用当前 6 位码在 `transcript` 上算
+    /// `tag = HMAC(HKDF(code, transcript), transcript)` 发来；本端用本机种子在 **±1
+    /// 时间步**窗口各算一遍比对（恒定时间）。与浏览器 `e2ee.ts::computeBindTag` 字节对齐。
+    /// `transcript` 由 e2ee 层构造（domain‖sorted(双方临时公钥)，见 e2ee.* build_bind_transcript）。
+    pub fn verify_bind_tag(&self, transcript: &[u8], tag: &[u8]) -> bool {
+        if tag.len() != 32 {
+            return false;
+        }
+        let now = now_secs();
+        for step in -TOTP_SKEW..=TOTP_SKEW {
+            let ts = if step >= 0 {
+                now.saturating_add((step as u64) * TOTP_PERIOD)
+            } else {
+                now.saturating_sub(((-step) as u64) * TOTP_PERIOD)
+            };
+            let code = totp_at(&self.secret, ts);
+            let expected = bind_tag_at(&code, transcript);
+            if constant_time_eq(&expected, tag) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 本端用**当前**时间步的码对 `transcript` 算绑定 tag（controller 侧/对称测试用）。
+    pub fn current_bind_tag(&self, transcript: &[u8]) -> [u8; 32] {
+        bind_tag_at(&self.current_code(), transcript)
+    }
+
     /// 供 TUI 展示 / 二维码生成的 `otpauth://` URI。RFC 4648 base32（无填充）编码
     /// secret，并显式声明 `algorithm=SHA256`（默认是 SHA1，必须标注以对齐）。
     pub fn otpauth_uri(&self, label: &str) -> String {
@@ -166,6 +195,34 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     }
     let inner = Sha256::digest([&ipad[..], msg].concat());
     Sha256::digest([&opad[..], &inner[..]].concat()).to_vec()
+}
+
+/// C 层 TOTP 信道绑定 HKDF info（与 `e2ee.ts::BIND_HKDF_INFO` 一致）。
+const BIND_HKDF_INFO: &[u8] = b"ridge-bind";
+
+/// RFC 5869 HKDF-SHA256，单块 expand（L=32 = HashLen，一块足够）。复用手写 `hmac_sha256`。
+fn hkdf_sha256_32(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; 32] {
+    // extract：PRK = HMAC-SHA256(salt, ikm)。
+    let prk = hmac_sha256(salt, ikm);
+    // expand：T(1) = HMAC-SHA256(PRK, info || 0x01)，取前 32 字节。
+    let mut block_input = info.to_vec();
+    block_input.push(0x01);
+    let okm = hmac_sha256(&prk, &block_input);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&okm[..32]);
+    out
+}
+
+/// 用给定 code 对 transcript 算信道绑定 tag（32B）：
+///   K   = HKDF-SHA256(ikm=code_ascii, salt=transcript, info="ridge-bind", L=32)
+///   tag = HMAC-SHA256(K, transcript)
+/// 与 `e2ee.ts::computeBindTag` 逐字节对齐（HKDF/HMAC 均 RFC 标准 + 相同输入）。
+fn bind_tag_at(code: &str, transcript: &[u8]) -> [u8; 32] {
+    let k = hkdf_sha256_32(code.as_bytes(), transcript, BIND_HKDF_INFO);
+    let mac = hmac_sha256(&k, transcript);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&mac[..32]);
+    out
 }
 
 /// 常量时间比较，防计时侧信道泄露匹配进度。
@@ -272,5 +329,72 @@ mod tests {
         assert_ne!(totp.secret, before, "regenerate 必须换掉 secret");
         let code = totp.current_code();
         assert!(totp.verify(&code), "regenerate 后的码须能自洽校验");
+    }
+
+    // ── C 层 TOTP 信道绑定（零信任 #1）─────────────────────────────────────────
+
+    /// 与 e2ee.ts buildBindTranscript 一致：`domain || sorted(host_pub, ctrl_pub)`。
+    fn bind_transcript(host_pub: &[u8; 32], ctrl_pub: &[u8; 32]) -> Vec<u8> {
+        let mut t = b"ridge-e2ee-bind-v1".to_vec();
+        let (first, second) = if host_pub <= ctrl_pub {
+            (host_pub, ctrl_pub)
+        } else {
+            (ctrl_pub, host_pub)
+        };
+        t.extend_from_slice(first);
+        t.extend_from_slice(second);
+        t
+    }
+
+    #[test]
+    fn bind_tag_golden_matches_browser_e2ee() {
+        // 跨实现 conformance：与 e2ee.test.ts 'golden' 同一输入必产出同一 tag
+        // （host_pub=0x11*32, ctrl_pub=0x22*32, code="123456"）。任一端改算法即红。
+        let transcript = bind_transcript(&[0x11u8; 32], &[0x22u8; 32]);
+        let tag = bind_tag_at("123456", &transcript);
+        let hex: String = tag.iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(
+            hex,
+            "d694a5285b3e8eaff2a0e53216ac003f6e79fbab207fbaf4db605efa6ffdaa64",
+            "Rust 绑定 tag 必须与浏览器 e2ee.ts computeBindTag 字节对齐"
+        );
+    }
+
+    #[test]
+    fn verify_bind_tag_accepts_own_current_tag() {
+        let totp = RemoteTotp::new();
+        let transcript = bind_transcript(&[1u8; 32], &[2u8; 32]);
+        let tag = totp.current_bind_tag(&transcript);
+        assert!(
+            totp.verify_bind_tag(&transcript, &tag),
+            "本机当前码算的 tag 须能自洽校验"
+        );
+        // 长度非法直接拒。
+        assert!(!totp.verify_bind_tag(&transcript, &[0u8; 16]));
+    }
+
+    #[test]
+    fn verify_bind_tag_accepts_previous_step_within_skew() {
+        let totp = RemoteTotp::new();
+        let transcript = bind_transcript(&[3u8; 32], &[4u8; 32]);
+        let now = now_secs();
+        let prev_code = totp_at(&totp.secret, now.saturating_sub(TOTP_PERIOD));
+        let tag = bind_tag_at(&prev_code, &transcript);
+        assert!(
+            totp.verify_bind_tag(&transcript, &tag),
+            "±1 窗口内上一步码的 tag 须接受"
+        );
+    }
+
+    #[test]
+    fn verify_bind_tag_rejects_different_transcript() {
+        let totp = RemoteTotp::new();
+        let t1 = bind_transcript(&[1u8; 32], &[2u8; 32]);
+        let t2 = bind_transcript(&[9u8; 32], &[2u8; 32]); // MITM 换 host 公钥
+        let tag = totp.current_bind_tag(&t1);
+        assert!(
+            !totp.verify_bind_tag(&t2, &tag),
+            "transcript 不同（换公钥）→ 拒绝"
+        );
     }
 }
