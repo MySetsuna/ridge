@@ -291,7 +291,7 @@ controller 校验：
 - TOFU 指纹固定：`f014b43`(deviceTrust.ts) — golden 指纹 `02D4-49A3-1FBB-267C`。
 
 **剩余概念**：
-3. **controller 接线**：**3a ✅** `dde0b33`（controllerCloudProvider 收 0x02 → verifyIdBindSignature + checkOrPinDeviceIdentity TOFU；0x01 回退 B3；vitest 59 passed）。**3b 待做**：CONTROL 发 totp-bind 替代 totp-verify（需 provider 暴露 bind transcript + cloudControllerBoot 用 computeBindTag）。
+3. **controller 接线 ✅ 完成**：3a `dde0b33`（收 0x02 → verifyIdBindSignature + checkOrPinDeviceIdentity TOFU；0x01 回退 B3）+ 3b `a8e7a51`（CONTROL 发 totp-bind 替代 totp-verify；provider 存/暴露 bind transcript → adapter 透传 → boot computeBindTag）。**休眠安全**：totp-bind 仅在收到 host 0x02 后激活，当前桌面 host 发 0x01 → 回退 totp-verify → 零回归。vitest 全绿。
 4. **host 接线**（桌面 ridgeCloudProvider + cli session.rs 0x02 发送 / 握手时序）— **暂停**：等 align FIX-1c（#17，session.rs run() 改事件驱动）落地后基于其结构再接；动 session.rs 前先 `git pull`。
 5. cloudHostBridge/cloudControllerBoot 接 totp-bind + src-tauri `verify_remote_totp_bind` 命令（复用 totp.rs::verify_bind_tag）。
 6. 验签失败 host 端 `$/bye{reason:"signature-invalid"}`。
