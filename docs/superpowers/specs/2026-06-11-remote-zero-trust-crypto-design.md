@@ -262,6 +262,24 @@ controller 校验：
 
 ---
 
+## 7.1 载体定稿（2026-06-11 与 align-reviewer 对齐；schema 已落地 `C:\code\ridge-signaling`）
+
+三层归属（"信令 schema" 实跨 3 层，各有 SSOT）：
+- **A 层 信令 JSON**（relay WS，relay 读 `t`/`cid` 路由）→ `ridge-signaling` crate。**零密码学材料**：
+  - `cid: Option<Cid>`（仅寻址，客户端不得据它做信任决策）。
+  - `SignalMsg::E2eePubkey { pubkey: base64(eph_pub32), cid? }` —— **不含** sig/alg/ts。设备签名走 B 层；A 层只承载 eph_pub 旁路（旧端 relay-trust 交叉校验用，强绑定落地后降级）。
+  - **`id_pub` 绝不在 A 层旁带** —— 否则 relay 经手公钥、可误导 TOFU；TOFU 只锚 B 层 0x02 帧内经 sig 自证的 `id_pub`。
+- **B 层 E2EE 握手首帧**（DataChannel，加密前，relay 不经手）→ `e2ee.ts`/`e2ee.rs`（本文档 territory）：
+  - `0x01`（旧）= `tag‖eph_pub32` = 33B；`0x02`（新）= `tag‖eph_pub32‖id_pub32‖sig64` = 129B。
+  - `sig = Ed25519(device_id_priv, "ridge-id-bind-v1" ‖ context)`，`context = host_eph_pub ‖ controller_eph_pub ‖ len(device_name)‖device_name ‖ len(username)‖username`（**变长字段加 1B 长度前缀**避免拼接歧义）。
+  - tag 数值由 `ridge-signaling::tags::handshake{LEGACY_PUBKEY=0x01, DEVICE_BOUND=0x02}` 登记防冲突；字节布局/验签由本文档定，conformance 锁字节。
+- **C 层 E2EE 内明文**（DataChannel，加密后）：
+  - SessionControl(0x12)：`TotpBind { tag: base64(HMAC) }`，**保留** `TotpVerify { code }` 回退。CONTROL 子类型串引用 `ridge-signaling::control{TOTP_VERIFY/TOTP_BIND/TOTP_RESULT}`。
+  - `$/hello` 能力位 `device-id` / `totp-bind` → **`ridge-core::remote_protocol`**（+ TS 镜像）。双方交集都含才启用强校验，否则回退 0x01/totp-verify（fail-closed-with-fallback，旧端零感知、无 flag day）。
+- **失败信号**：验签/绑定失败在 host 端（E2EE 之后，**不经 relay**）→ 0x11 业务通道发 `$/bye { reason: "signature-invalid" }`（D9 语义，与现有 keyBinding reject→teardown 一致）。`SIGNATURE_INVALID` 仅在 `ridge-signaling::error_code` 做语义登记，relay 不主动发。
+
+依赖接线（P2）：`ridge-core`/`ridge-cli`/`src-tauri`/`controller(TS)` 引用 `ridge-signaling` 的 tag/串常量；relay(`ridge-cloud`) 用其 A 层 + tag 注册表。不再各自分叉常量。
+
 ## 8. 实施顺序与依赖
 
 ```
