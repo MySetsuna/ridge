@@ -292,10 +292,10 @@ controller 校验：
 
 **剩余概念**：
 3. **controller 接线 ✅ 完成**：3a `dde0b33`（收 0x02 → verifyIdBindSignature + checkOrPinDeviceIdentity TOFU；0x01 回退 B3）+ 3b `a8e7a51`（CONTROL 发 totp-bind 替代 totp-verify；provider 存/暴露 bind transcript → adapter 透传 → boot computeBindTag）。**休眠安全**：totp-bind 仅在收到 host 0x02 后激活，当前桌面 host 发 0x01 → 回退 totp-verify → 零回归。vitest 全绿。
-4. **host 接线**（桌面 ridgeCloudProvider + cli session.rs 0x02 发送 / 握手时序）— **暂停**：等 align FIX-1c（#17，session.rs run() 改事件驱动）落地后基于其结构再接；动 session.rs 前先 `git pull`。
-5. cloudHostBridge/cloudControllerBoot 接 totp-bind + src-tauri `verify_remote_totp_bind` 命令（复用 totp.rs::verify_bind_tag）。
-6. 验签失败 host 端 `$/bye{reason:"signature-invalid"}`。
-7. 运行时集成验证清单（含「**握手时序回归**」专项）。
+4. **host 接线 ✅ 完成**：4-桌面 `e5b6a89`（ridgeCloudProvider「先收后发 0x02」+ 异步 signContext + isConnLive race 守卫 + 回落 0x01；RemotePanel 注入 sign_device_identity/get_device_identity_pub；新增 provider 单测）+ 4-cli `6425724`（session.rs 握手时序反转 + 0x02 设备签名 + totp-bind 校验 + daemon HostIdentity 注入；ridge-core from_seed/SEED_LEN 改 pub）。**cli 待 team-lead 隔离 target 编译+测试验证**（与常驻 tauri dev 共享 target，未本地 cargo）。
+5. **cloudHostBridge totp-bind ✅ 完成**：`b95871d`（src-tauri verify_remote_totp_bind 命令）+ `083741e`（cloudHostBridge handleSessionControl totp-bind 分支，与 totp-verify 共享门控+5 次锁定；门控初始化改「注入任一校验器即门控」；RemotePanel bindTranscript 非空时注入 totpBindVerifier）。
+6. **验签失败 $/bye ✅ 完成**：`74d30e8`（controller 验 host 0x02 签名失败 → 经 E2EE 0x11 通道发 `$/bye{reason:"signature-invalid"}`（不经 relay）+ host bridge inbound $/bye → rejected；共享常量 `BYE_REASON_SIGNATURE_INVALID`）。**实现注**：§279 措辞「host 端」偏松——0x02 签名架构上 controller 验，故 $/bye 实际 controller→host。
+7. 运行时集成验证清单（含「**握手时序回归**」专项）→ §7.4。**全部 host 端 0x02 接线已落（4-桌面+4-cli+5+6），「0x02 全链就绪」**。
 
 **不含**：fail-closed 翻闸（P3，默认仍 fail-open 标注待翻）。
 
@@ -326,7 +326,12 @@ controller 校验：
 - 新 src-tauri 命令 `verify_remote_totp_bind(transcript: Vec<u8>, tag: Vec<u8>) -> bool` → `state.remote_auth` 的 `RemoteTotp::verify_bind_tag(&transcript, &tag)`（已实现，04b953e）。注册到 lib.rs invoke_handler。RemoteAuth 需加 `verify_bind_tag` 透传（auth.rs）。
 - RemotePanel `createBridge` 注入 `totpBindVerifier: (t,tag) => invoke('verify_remote_totp_bind', { transcript: Array.from(t), tag: Array.from(tag) })`。
 
-**兼容性 open question（实现时定）**：host 发 0x02 要求 controller 认 0x02（概念 3a 的 `decodeAnyHandshakeFrame` 已认）。cloud controller SPA 与 host 桌面**可能跨版本**（SPA 由 ridge-cloud 托管）。握手在 $/hello 前 → 无能力协商。选项：(a) 同步发版假设（SPA 来自同一 host 的 web-remote-dist，多数同版）；(b) 握手帧加 1B 版本/能力字节；(c) host 默认 0x02、旧 controller 收 0x02 解码失败即断（需评估旧 SPA 占比）。**建议**：实现时先走 (a) + 在 §7.4 清单专项验证「旧 0x01 controller ↔ 新 0x02 host」与反向。
+**兼容性裁决（team-lead 已定）**：走 **(a) 同步发版假设**——cloud controller SPA 由 ridge-cloud
+托管、来自同一 host 的 web-remote-dist，发版同步；故新 host 发 0x02、controller/cloud SPA 先支持
+0x02（概念 3a 的 `decodeAnyHandshakeFrame` 已认 0x01/0x02），**不为握手帧加能力协商字节**。配套
+**部署纪律**：controller/SPA 必须先于（或同批）新 host 发版，避免「新 0x02 host × 旧缓存 0x01-only
+SPA」解码失败。该组合在 §7.4 专项验证。desktop host 在 signContext/identityPub 缺失时仍回落 0x01
+（双保险）；cli host 始终持设备私钥、恒发 0x02。
 
 ## 7.4 运行时集成验证清单（需跑 app 时执行；P2 收尾登记）
 
@@ -335,8 +340,11 @@ controller 校验：
 1. **0x02 端到端**：新桌面 host ↔ 新 controller：握手走 0x02，controller 验签通过 + 首见 TOFU `pinned`、再连 `match`；篡改（改 host 进程身份/换机）→ controller `changed` 告警。
 2. **TOTP 信道绑定端到端**：controller 输 6 位码 → 发 totp-bind → host `verify_remote_totp_bind` 通过放行业务帧；错码 → 拒 + 计入 5 次锁定。
 3. **【握手时序回归】专项**（最高优先）：① 桌面 host「先收后发 0x02」改造后，DataChannel 能正常 open + 握手完成、不死锁（对照 FIX-1c 的 cli 死锁教训）；② 多 controller 并发接入各自握手不串；③ 断线重连后重新握手正常；④ host 异步签名期间收到其它帧不 race/崩。
-4. **向后兼容**：旧 0x01 controller ↔ 新 host（host 发 0x02 时）行为；新 controller ↔ 旧 0x01 host（回退 B3 + totp-verify，应已被概念 3 休眠安全覆盖）。
-5. **cli 0x02**（待 FIX-1c 运行时验证 + team-lead 通知后）：ridge-cli host 发 0x02 + totp-bind 验证，浏览器连无头 host 全链路。
+4. **向后兼容**：
+   - **新 0x02 host × 旧缓存 0x01-only SPA**（同步发版假设的失败面）：旧 SPA `decodeHandshakeFrame` 收 0x02（129B≠33B / 首字节 0x02）→ 报错断开。须靠**部署纪律**（SPA 先发版）+ 强刷缓存规避；验证：人为用旧 SPA 连新 host，确认仅该会话失败、host 不崩、用户刷新即恢复。
+   - 新 controller ↔ 旧 0x01 host（桌面 host 回落 0x01：controller 走 B3 + 明文 totp-verify，应已被概念 3 休眠安全覆盖）。
+5. **cli 0x02**：ridge-cli host 发 0x02 + totp-bind 验证，浏览器连无头 host 全链路。**前置**：team-lead 隔离 target `cargo check/test -p ridge-cli`（+ ridge-core from_seed 改动）编译+单测绿。
+6. **desktop host 回落**：临时把 `get_device_identity_pub` 置不可用（或不注入）→ host 发 0x01、controller 走 B3 + totp-verify，全链路仍通（双保险无回归）。
 
 ## 8. 实施顺序与依赖
 
