@@ -2,8 +2,8 @@
 @import "tailwindcss";
 
 :root {
-  --font-ui: "Inter", ui-sans-serif, system-ui, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
-  --font-mono-term: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", monospace;
+  --font-ui: "Inter", ui-sans-serif, system-ui, "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
+  --font-mono-term: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, "Segoe UI Emoji", "Apple Color Emoji", monospace;
 }
 
 html,
@@ -25,8 +25,8 @@ body {
    default stack (`ui-monospace, SFMono-Regular, ...`) has no emoji, so emoji
    inside `class="font-mono"` (e.g. pane title bars) used to fall back to a
    monochrome font and get tinted by `color`. With var(--font-mono-term) the
-   browser picks up Segoe UI Emoji / Apple Color Emoji / Noto Color Emoji, and
-   color-bitmap glyphs are rendered untouched by `color`. */
+   browser picks up Segoe UI Emoji / Apple Color Emoji, and color-bitmap glyphs
+   are rendered untouched by `color`. */
 .font-mono {
   font-family: var(--font-mono-term);
 }

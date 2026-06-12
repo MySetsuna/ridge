@@ -61,16 +61,6 @@ sw.addEventListener('install', (event) => {
         // Store the current version as a marker cache.
         return caches.open(`ridge-version-${version}`).then(c => c.put('version', new Response(version)));
       })
-      .then(() => {
-        // Pre-fetch the emoji font in background so it's ready when needed.
-        return fetch('/fonts/NotoColorEmoji.ttf')
-          .then(res => {
-            if (res.ok) {
-              return caches.open(CACHE).then(c => c.put('/fonts/NotoColorEmoji.ttf', res));
-            }
-          })
-          .catch(() => {}); // ignore failures
-      })
       .then(() => sw.skipWaiting()),
   );
 });

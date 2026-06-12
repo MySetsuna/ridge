@@ -57,6 +57,13 @@ export default defineConfig({
       workbox: {
         // Precache the built shell + assets, including the terminal wasm.
         globPatterns: ['**/*.{js,css,html,wasm,svg,png,ico,webp,woff,woff2,webmanifest}'],
+        // Keep the flag-only emoji subset OUT of the precache so it stays truly
+        // on-demand: the unicode-range @font-face (injected only on flag-less
+        // OSes — see flagEmojiSupport.ts) makes the browser fetch flags.woff2
+        // exactly once, when a flag codepoint first appears. mac/iOS render
+        // flags natively and never download it; first paint stays font-request
+        // free (design §8).
+        globIgnores: ['**/fonts/flags.woff2'],
         // The term-wasm bundle is large; raise the precache size ceiling.
         maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
         cleanupOutdatedCaches: true,

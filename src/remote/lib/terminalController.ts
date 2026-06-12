@@ -1,7 +1,7 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { REMOTE_TERM_FONT, withRemoteEmojiFallback } from '$lib/terminal/fontStack';
-import { ensureRemoteFlagFont } from './flagEmojiSupport';
+import { REMOTE_TERM_FONT, withEmojiFallback } from '$lib/terminal/fontStack';
+import { ensureFlagFont } from '$lib/terminal/flagEmojiSupport';
 
 export interface TermOpts {
   fontSize?: number;
@@ -10,8 +10,9 @@ export interface TermOpts {
 }
 
 // Re-exported remote font stack (system emoji baseline; flags come from the
-// on-demand 'Flag Emoji' subset face — see ./flagEmojiSupport). No bundled
-// Noto webfont, so ordinary emoji cost zero extra bytes on the remote.
+// on-demand 'Flag Emoji' subset face — see $lib/terminal/flagEmojiSupport,
+// shared with desktop). No bundled Noto webfont, so ordinary emoji cost zero
+// extra bytes on the remote.
 export const FONT_STACK = REMOTE_TERM_FONT;
 
 const FEED_CHUNK_BYTES = 16 * 1024;
@@ -96,9 +97,10 @@ export class TerminalController {
     this.scrollback = opts.scrollback ?? 5000;
     // Probe once (cached): on a flag-less OS this registers the unicode-range
     // 'Flag Emoji' @font-face; the browser still only fetches flags.woff2 when
-    // a flag codepoint actually appears. Pick the matching stack variant.
-    const flagFaceInjected = ensureRemoteFlagFont();
-    this.fontFamily = withRemoteEmojiFallback(opts.fontFamily ?? '', flagFaceInjected);
+    // a flag codepoint actually appears. Pick the matching stack variant. Same
+    // shared mechanism the desktop terminal uses (see $lib/terminal).
+    const flagFaceInjected = ensureFlagFont();
+    this.fontFamily = withEmojiFallback(opts.fontFamily ?? '', flagFaceInjected);
   }
 
   static async create(canvas: HTMLCanvasElement, container: HTMLDivElement, opts: TermOpts = {}): Promise<TerminalController> {

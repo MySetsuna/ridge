@@ -1,14 +1,20 @@
-// Flag-emoji support detection + on-demand subset-face registration for the
-// web-remote. The pure logic (probe + cache) is split from the browser glue so
-// it stays unit-testable under the `node` vitest environment.
+// Flag-emoji support detection + on-demand subset-face registration.
+//
+// Shared by BOTH surfaces — the desktop terminal (themeBridge `pushFont`) and
+// the web-remote controller — so the "system emoji + on-demand flag subset"
+// policy lives in one place and renders identically on every platform. The pure
+// logic (probe + cache) is split from the browser glue so it stays unit-testable
+// under the `node` vitest environment.
 
-import { SYSTEM_EMOJI_FALLBACK } from '$lib/terminal/fontStack';
+import { SYSTEM_EMOJI_FALLBACK } from './fontStack';
 
 /** unicode-range-gated @font-face for the flag-only subset. Injected ONLY when
  *  the OS can't render flags; the browser then downloads /fonts/flags.woff2
  *  lazily — only when a flag codepoint actually appears. Note: the caller must
  *  also prepend 'Flag Emoji' to the target element's font-family stack — the
- *  @font-face declaration alone does not place the family into the cascade. */
+ *  @font-face declaration alone does not place the family into the cascade.
+ *  `/fonts/flags.woff2` resolves on both surfaces: desktop serves it from
+ *  static/fonts/, the web-remote from src/remote/public/fonts/. */
 export const FLAG_FONT_FACE_CSS =
   "@font-face{font-family:'Flag Emoji';" +
   "src:url('/fonts/flags.woff2') format('woff2');" +
@@ -61,7 +67,7 @@ export function writeFlagCache(supported: boolean, ua: string): string {
 // ───────────────────────────── Browser glue ────────────────────────────────
 
 /**
- * Resolve whether the remote needs the flag subset face, using a cached
+ * Resolve whether the terminal needs the flag subset face, using a cached
  * verdict when present else a one-shot canvas probe, and register the
  * @font-face when the OS lacks flags. Returns true when the OS lacks native
  * flags and the 'Flag Emoji' fallback face has therefore been injected (so the
@@ -70,7 +76,7 @@ export function writeFlagCache(supported: boolean, ua: string): string {
  * (cache + idempotent injection). Never throws; returns false in non-DOM
  * contexts.
  */
-export function ensureRemoteFlagFont(): boolean {
+export function ensureFlagFont(): boolean {
   if (typeof document === 'undefined') return false;
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
   let supported: boolean | null = null;
