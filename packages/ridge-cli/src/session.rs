@@ -708,6 +708,26 @@ impl RemoteSession {
                 )
                 .await
             }
+            Method::ListWorkspaces => {
+                // cli 单工作区：回一条记录（id 与 get_active_workspace_id 一致）。字段名
+                // camelCase 对齐桌面 `WorkspaceInfo`（{id,index,name,displaySeq}）。让桌面 SPA
+                // 启动 `refreshWorkspaces` 成功 → `ensureActiveWorkspace` 因活动 ws 已就绪而
+                // 提前返回 → 终端渲染（否则 refreshWorkspaces 抛错令 boot IIFE 整体中断）。
+                let list = serde_json::json!([{
+                    "id": CLI_WORKSPACE_ID,
+                    "index": 0,
+                    "name": null,
+                    "displaySeq": 0,
+                }]);
+                Self::send_json(crypto, tx, &rpc::result_response(id, list)).await
+            }
+            Method::GetPaneLayout => {
+                // cli 单 pane：单 leaf 布局（type/id 对齐前端 `PaneNode` 的 leaf 分支）。
+                // pane id = CLI_PANE_ID，使 controller 的 cloudPaneSource 订阅到与 host
+                // 出站 0x10 PANE_RAW 帧同一 paneId 的 PTY 流。
+                let layout = serde_json::json!({ "type": "leaf", "id": CLI_PANE_ID });
+                Self::send_json(crypto, tx, &rpc::result_response(id, layout)).await
+            }
             Method::Search {
                 root,
                 query,
@@ -1278,6 +1298,68 @@ mod tests {
         assert_eq!(nf["error"]["code"], rpc::JSON_RPC_METHOD_NOT_FOUND);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 单工作区呈现：list_workspaces + get_pane_layout 桩（修 cloud→cli 终端不渲染）──
+    // 桌面 SPA 启动 refreshWorkspaces 调这两个；cli 单工作区/单 pane host 回桩，
+    // 使 boot 不中断、终端可渲染。断言回帧的 JSON 形状与前端 WorkspaceInfo/PaneNode 对齐。
+    #[tokio::test]
+    async fn serves_single_workspace_presentation_for_spa_boot() {
+        let (mut host_crypto, mut ctrl_crypto) = crypto_pair();
+        let (pty, _pty_out_rx) = match PtyBridge::spawn(None, None) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("skipping single-workspace test: no usable shell to spawn PTY ({e})");
+                return;
+            }
+        };
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+        let totp = RemoteTotp::new();
+        // 业务门控已开：boot 在 TOTP 通过后才装配工作区，故这两个请求到达时 verified=true。
+        let mut verified = true;
+        let mut subscribed = false;
+        let roots: Vec<PathBuf> = vec![];
+        let seal =
+            |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
+
+        // list_workspaces → 单条 {id:CLI_WORKSPACE_ID, index:0, name:null, displaySeq:0}
+        let lw = encode_json(&json!({ "jsonrpc": "2.0", "id": 21, "method": "list_workspaces" }));
+        let frame = seal(&mut ctrl_crypto, lw);
+        RemoteSession::handle_inbound(
+            &frame, &mut host_crypto, &pty, &tx, &roots, &totp, &mut verified, &mut subscribed,
+            None,
+        )
+        .await
+        .unwrap();
+        let out = drain(&mut rx);
+        assert_eq!(out.len(), 1);
+        let lw_resp: Value = match demux(&ctrl_crypto.open(&out[0]).unwrap()) {
+            Inbound::Json(b) => serde_json::from_slice(&b).unwrap(),
+            other => panic!("expected Json result, got {other:?}"),
+        };
+        let arr = lw_resp["result"].as_array().expect("list_workspaces 应回数组");
+        assert_eq!(arr.len(), 1, "cli 是单工作区 host");
+        assert_eq!(arr[0]["id"], CLI_WORKSPACE_ID);
+        assert_eq!(arr[0]["index"], 0);
+        assert_eq!(arr[0]["displaySeq"], 0);
+
+        // get_pane_layout → 单 leaf {type:"leaf", id:CLI_PANE_ID}
+        let gl = encode_json(&json!({ "jsonrpc": "2.0", "id": 22, "method": "get_pane_layout" }));
+        let frame = seal(&mut ctrl_crypto, gl);
+        RemoteSession::handle_inbound(
+            &frame, &mut host_crypto, &pty, &tx, &roots, &totp, &mut verified, &mut subscribed,
+            None,
+        )
+        .await
+        .unwrap();
+        let out = drain(&mut rx);
+        assert_eq!(out.len(), 1);
+        let gl_resp: Value = match demux(&ctrl_crypto.open(&out[0]).unwrap()) {
+            Inbound::Json(b) => serde_json::from_slice(&b).unwrap(),
+            other => panic!("expected Json result, got {other:?}"),
+        };
+        assert_eq!(gl_resp["result"]["type"], "leaf");
+        assert_eq!(gl_resp["result"]["id"], CLI_PANE_ID);
     }
 
     // ── 零信任 #1：totp-bind 信道绑定校验（概念 4-cli）──────────────────────────────

@@ -25,8 +25,12 @@ pub const HOST_PROTOCOL_VERSION: u64 = 1;
 /// cli host 公告的能力集（契约 §7.3 / §11.1：terminal/pty + fs 搜索/树）。
 ///
 /// **刻意是桌面 `HOST_CAPABILITIES` 的子集**：cli 不是 IDE host，不服务
-/// invoke（任意命令）/ git / workspace / theme。controller 取交集后灰掉那些面板，
+/// invoke（任意命令）/ git / workspace 管理 / theme。controller 取交集后灰掉那些面板，
 /// 只保留终端 + 文件搜索/树，故同一 SPA controller 能驱动 cli 而不崩。
+///
+/// 注：cli **只读呈现**自己的固定单工作区（`list_workspaces`/`get_pane_layout`/
+/// `get_active_workspace_id`），让 SPA 启动 `refreshWorkspaces` 能装配出唯一终端 pane；
+/// 这不等于公告 `workspace` 管理能力（新建/重命名/关闭工作区仍不支持）。
 ///   - `pane`   —— 终端 pane 订阅 + PTY 字节流（write_to_pty / resize_pane / subscribe-pane）。
 ///   - `fs`     —— 文件树（get_directory_children）。
 ///   - `search` —— 文本搜索（search）。
@@ -170,6 +174,13 @@ pub enum Method {
     ResizePane { cols: u16, rows: u16 },
     /// `get_active_workspace_id` → 返回 cli 的固定 workspace id。
     GetActiveWorkspaceId,
+    /// `list_workspaces` → cli 单工作区列表（只读呈现，非工作区管理能力）。
+    /// 桌面 SPA 启动 `refreshWorkspaces` 会调它；cli 是固定单工作区 host，回一条即可，
+    /// 否则 refreshWorkspaces 抛错令整个 boot IIFE 中断、终端永不渲染。
+    ListWorkspaces,
+    /// `get_pane_layout` → cli 单 pane 布局（leaf=CLI_PANE_ID）。同上由 boot 调，
+    /// 回单 leaf 让 SPA 渲染唯一终端 pane 并据此订阅 PTY 流。
+    GetPaneLayout,
     /// `search { root, query, useRegex, caseSensitive }` → fs 搜索。
     Search {
         root: String,
@@ -202,6 +213,10 @@ pub fn route_method(method: &str, params: &Value) -> Method {
         },
         // cloudPaneSource 解析活动 ws 以拼 `pty-output-{ws}-{pane}` event 名。
         "get_active_workspace_id" => Method::GetActiveWorkspaceId,
+        // 桌面 SPA `refreshWorkspaces` 启动调用：cli 单工作区/单 pane host 据实回桩，
+        // 否则 boot 中断（详见各 Method 变体注释 + session.rs dispatch）。
+        "list_workspaces" => Method::ListWorkspaces,
+        "get_pane_layout" => Method::GetPaneLayout,
         // 文本搜索（契约 §9）：字段名与桌面 fs::search 入参一致（camelCase）。
         "search" => Method::Search {
             root: params
@@ -375,6 +390,20 @@ mod tests {
             Method::DirectoryChildren {
                 path: "/tmp".into()
             }
+        );
+    }
+
+    #[test]
+    fn routes_workspace_presentation_methods() {
+        // cli 单工作区/单 pane host：boot 的 refreshWorkspaces 调这两个，须命中专用变体
+        // （而非 Unsupported），否则 SPA 启动中断、终端不渲染。
+        assert_eq!(
+            route_method("list_workspaces", &json!({})),
+            Method::ListWorkspaces
+        );
+        assert_eq!(
+            route_method("get_pane_layout", &json!({})),
+            Method::GetPaneLayout
         );
     }
 
