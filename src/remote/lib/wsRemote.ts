@@ -172,6 +172,17 @@ export class RemoteConnection {
   private _messageQueue: WsMessage[] = [];
   private _isReconnecting = false;
 
+  // ── §perf: three-segment latency instrumentation (B 方案诊断埋点) ──
+  // All marks are performance.now() (ms, monotonic). Mirrors the server's
+  // `ridge::remote::perf` trace so a slow link can be split into upgrade /
+  // connect / first-byte segments and read back via getPerf().
+  private _perf: {
+    connectStart: number | null;   // _open() called (socket construction)
+    upgradeStart: number | null;   // ws.onopen fired (≈ server ws_upgrade)
+    firstFrame: number | null;     // first message received (text or binary)
+    firstPtyBytes: number | null;  // first onRawBytes dispatch
+  } = { connectStart: null, upgradeStart: null, firstFrame: null, firstPtyBytes: null };
+
   state() { return this._state; }
 
   onStateChange(fn: (s: ConnectionState) => void) {
@@ -220,6 +231,11 @@ export class RemoteConnection {
   }
   lastTheme() { return this._lastTheme; }
 
+  /** §perf: shallow snapshot of the three-segment latency marks
+   *  (performance.now() ms, monotonic) for the current connection cycle.
+   *  Mirrors the server's `ridge::remote::perf` trace. */
+  getPerf() { return { ...this._perf }; }
+
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
     if (!auth) { this.setState('error'); return; }
     this._clearReconnectTimer();
@@ -244,6 +260,9 @@ export class RemoteConnection {
       this.ws = null;
     }
     this.setState('connecting');
+    // §perf: start a fresh measurement window for this connection attempt
+    // (first connect and every reconnect both funnel through _open).
+    this._perf = { connectStart: performance.now(), upgradeStart: null, firstFrame: null, firstPtyBytes: null };
     // Match the page's scheme: an HTTPS-served page must use wss:// (mixed
     // content blocks ws:// from https://). TLS is what unlocks WebGPU on the
     // LAN, so this is the common path in production.
@@ -255,6 +274,14 @@ export class RemoteConnection {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+      // §perf: onopen ≈ server-side ws_upgrade — stamp it and log the client's
+      // view of the connect/upgrade latency (connectStart → onopen).
+      this._perf.upgradeStart = performance.now();
+      console.log('[remote-perf] upgrade', {
+        sinceConnectMs: this._perf.connectStart != null
+          ? Math.round(this._perf.upgradeStart - this._perf.connectStart)
+          : null,
+      });
       this._reconnectAttempts = 0;
       this._startHeartbeat();
       this.setState('connected');
@@ -274,12 +301,26 @@ export class RemoteConnection {
   }
 
   private _handleMessage(event: MessageEvent) {
+    // §perf: stamp the first inbound frame (text or binary) of this cycle.
+    if (this._perf.firstFrame == null) this._perf.firstFrame = performance.now();
     // Any inbound byte proves the socket is alive — clear the pong watchdog.
     if (this._pongDeadline) { clearTimeout(this._pongDeadline); this._pongDeadline = null; }
     if (event.data instanceof ArrayBuffer) {
       const buf = new Uint8Array(event.data);
       const paneId = uuidFromBytes(buf, 0);
       const rawBytes = buf.subarray(16);
+      // §perf: first PTY bytes reaching the client — record once and log all
+      // three segments (each relative to connectStart) for the slow-link triage.
+      if (this._perf.firstPtyBytes == null) {
+        const now = performance.now();
+        this._perf.firstPtyBytes = now;
+        const p = this._perf;
+        console.log('[remote-perf] segments', {
+          upgradeMs: p.connectStart != null && p.upgradeStart != null ? Math.round(p.upgradeStart - p.connectStart) : null,
+          firstFrameMs: p.connectStart != null && p.firstFrame != null ? Math.round(p.firstFrame - p.connectStart) : null,
+          firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
+        });
+      }
       this.rawByteListeners.forEach(fn => fn(paneId, rawBytes));
       return;
     }

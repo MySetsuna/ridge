@@ -980,7 +980,8 @@ async fn ws_handler(
         return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
     }
     let token = query.token.clone();
-    ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token))
+    let upgrade_start = std::time::Instant::now();
+    ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token, upgrade_start))
         .into_response()
 }
 
@@ -1265,6 +1266,9 @@ async fn handle_ws(
     remote_addr: String,
     device_id: String,
     token: Option<String>,
+    // §perf (B方案 三段埋点): WS 升级握手开始的时刻，由 ws_handler move 进 on_upgrade
+    // 闭包后透传进来，用于在本任务开头打印 upgrade 段耗时。
+    upgrade_start: Instant,
 ) {
     use futures::{SinkExt, StreamExt};
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -1278,6 +1282,8 @@ async fn handle_ws(
         token,
     );
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client connected");
+    // §perf (B方案): upgrade 段 = WS 升级握手到本任务真正开始执行的耗时。
+    tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = upgrade_start.elapsed().as_millis() as u64, "ws_upgrade");
 
     // Per-client mpsc channel — isolated from other WS clients.
     let (raw_tx, mut raw_rx) = mpsc::channel::<crate::types::RemotePtyEvent>(512);
@@ -1331,6 +1337,9 @@ async fn handle_ws(
     // here but never stomps the PTY the desktop is using.
 
     // Initial handshake.
+    let ws_connect_start = std::time::Instant::now();
+    // §perf (B方案): first-byte 段日志的一次性 once-guard（仅用其 None/Some 状态打一次）。
+    let mut first_pty_bytes_at: Option<Instant> = None;
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
     if ws_tx
         .send(Message::Text(welcome.to_string()))
@@ -1352,6 +1361,9 @@ async fn handle_ws(
         });
         let _ = ws_tx.send(Message::Text(theme_msg.to_string())).await;
     }
+    // §perf (B方案): connect 段 = hello + theme 两帧都发完的"首帧 ready"时刻（theme 为
+    // best-effort，缺省时此处即 hello 之后，天然取到最迟者）。
+    tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_connected_first_frame");
 
     // §state-sep: per-client active workspace. Seeded once from the global
     // active workspace at connect, then owned by THIS client. Switching /
@@ -2138,6 +2150,12 @@ async fn handle_ws(
                     event = raw_rx.recv() => {
                         match event {
                             Some(crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes }) => {
+                                // §perf (B方案): first-byte 段 = 从 raw_rx 收到的第一帧 PTY
+                                // 输出，用 Option<Instant> 守卫只打一次。
+                                if first_pty_bytes_at.is_none() {
+                                    first_pty_bytes_at = Some(Instant::now());
+                                    tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_first_pty_bytes");
+                                }
                                 if workspace_id == active_ws_id {
                                     // §resync: if the fan-out dropped frames for this sub, the
                                     // client's vte stream has a hole that would corrupt every
@@ -2357,6 +2375,8 @@ async fn handle_ws(
     ctx.state.remote_client_registry.unregister(client_id);
 
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client disconnected");
+    // §perf (B方案): 连接收尾汇总 = 本连接从 hello 起到关闭的总时长。
+    tracing::info!(target: "ridge::remote::perf", client_id, total_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_closed");
 }
 
 /// Dispatches one remote `data-request` `method` to the same backend command
