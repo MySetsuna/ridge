@@ -10,6 +10,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
   import { cloudAuth as cloudAuthStore } from '$lib/remote/cloud/auth';
+  import { BASE_DOMAIN, cloudHttpScheme } from '$lib/remote/cloud/apiClient';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -59,33 +60,14 @@
   // - 租户域名（`{device}-{username}.9527127.xyz`）上 cloud 接线失败
   //   （无 user token / host 不在线）→ 重定向到 `9527127.xyz` 登录/激活
   // - 主域名上 cloud 接线失败 → 回退 LAN TOTP 流程
-  // §跨子域交接（方案 B）：主域登录后经 `#token=<jwt>` 整页回跳到本租户子域。
-  // 在 boot 前把 token 落盘到本子域 localStorage，并立即清除 fragment（避免 token
-  // 残留在地址栏/历史；fragment 本就不发往服务器，故不进 access log）。
-  async function consumeHandoffToken() {
-    const hash = location.hash;
-    if (!hash || hash.length < 2) return;
-    let token: string | null = null;
-    try {
-      token = new URLSearchParams(hash.slice(1)).get('token');
-    } catch {
-      token = null;
-    }
-    if (!token) return;
-    try {
-      const { persistHandoffToken } = await import('$lib/remote/cloud/auth');
-      persistHandoffToken(token);
-    } catch { /* ignore */ }
-    try {
-      history.replaceState(null, '', location.pathname + location.search);
-    } catch { /* ignore */ }
-  }
-
   async function startCloudControllerBootMode() {
     const { bootCloudControllerFromUrl, parseCloudControllerHostname } =
       await import('$lib/remote/cloud/cloudControllerBoot');
-    // 先消费可能存在的一次性交接 token，再发起 cloud 接线（boot 从 localStorage 读 token）。
-    await consumeHandoffToken();
+    // 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：用父域 `ridge_sso` cookie
+    // 换短 access token、seed 登录态（替代旧 `#token` 跨子域握手）。失败仅返回 false，由下方
+    // boot 失败回退（租户子域回主域登录 / 主域回退 LAN）统一处理。
+    const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
+    await bootstrapFromCookie();
     phase = 'connecting';
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
@@ -106,7 +88,10 @@
     if (!handle) {
       // 租户域名上无凭据 / host 不在线 → 回主域名登录。
       if (parseCloudControllerHostname(location.hostname)) {
-        window.location.replace(`https://9527127.xyz/?redirect=${encodeURIComponent(location.href)}`);
+        // 回主域名登录/激活。用配置的 BASE_DOMAIN（debug 包烘焙为 localhost:5001），
+        // 不再硬编码生产域名——否则 dev 下租户子域 boot 失败会被踢去生产站。
+        const scheme = cloudHttpScheme(BASE_DOMAIN);
+        window.location.replace(`${scheme}://${BASE_DOMAIN}/?redirect=${encodeURIComponent(location.href)}`);
         return;
       }
       // 主域名上非 cloud 模式 → 回退 LAN TOTP。
