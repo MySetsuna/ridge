@@ -15,11 +15,14 @@ import {
   DIR_HOST_TO_CONTROLLER,
   generateEphemeralKeyPair,
   encodeHandshakeFrame,
+  encodeSignedHandshakeFrame,
   decodeHandshakeFrame,
   deriveSessionKey,
   bytesToBase64,
+  BYE_REASON_SIGNATURE_INVALID,
   type EphemeralKeyPair,
 } from './e2ee';
+import { demuxFrame } from '../../transport/remote/cloudMux';
 import type { CloudConnectionState } from './connectionProvider';
 
 // getIceServers 网络调用 mock 掉；BASE_DOMAIN 用真实常量。
@@ -359,6 +362,40 @@ describe('ControllerCloudProvider', () => {
     expect(errCode).toBe('FORBIDDEN');
     expect(provider.getState()).toBe('disconnected');
     expect(provider.getKeyBindingMode()).not.toBe('enforced');
+  });
+
+  it('0x02 验签失败 → 经 E2EE 0x11 通道发 $/bye{signature-invalid}（不经 relay）+ 断开', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    let errCode: string | undefined;
+    const provider = new ControllerCloudProvider(CONFIG, { onError: (_m, code) => (errCode = code) });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const dc = FakePeerConnection.instances[0].channel!;
+    dc.fireOpen();
+    const ctrlPub = decodeHandshakeFrame(dc.lastSent());
+
+    // 模拟 host：用真实临时密钥派生同一会话密钥（dir=0），但发一个**签名无效**的 0x02 帧
+    //（id_pub 随意、sig 全 0）。controller 验签失败 → 判 MITM。
+    const hostEph = generateEphemeralKeyPair();
+    const hostKey = deriveSessionKey(hostEph.privateKey, hostEph.publicKey, ctrlPub);
+    const hostSession = new E2eeSession(hostKey, DIR_HOST_TO_CONTROLLER);
+    const badIdPub = new Uint8Array(32).fill(0x55);
+    const badSig = new Uint8Array(64).fill(0x00);
+    const sentBefore = dc.sent.length;
+    dc.deliver(encodeSignedHandshakeFrame(hostEph.publicKey, badIdPub, badSig));
+
+    // 断开 + FORBIDDEN。
+    expect(errCode).toBe('FORBIDDEN');
+    expect(provider.getState()).toBe('disconnected');
+
+    // 断开前 controller 在 DataChannel 上多发了一帧：解密 → 0x11 $/bye{signature-invalid}。
+    expect(dc.sent.length).toBe(sentBefore + 1);
+    const byePlain = hostSession.open(dc.lastSent());
+    const demuxed = demuxFrame(byePlain);
+    expect(demuxed.kind).toBe('json');
+    const bye = (demuxed as { kind: 'json'; json: Record<string, unknown> }).json;
+    expect(bye.method).toBe('$/bye');
+    expect((bye.params as { reason?: string }).reason).toBe(BYE_REASON_SIGNATURE_INVALID);
   });
 
   it('握手前 sendFrame 静默丢弃（不抛、不发）', async () => {

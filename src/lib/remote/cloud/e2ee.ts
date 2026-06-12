@@ -83,6 +83,13 @@ export const SIGNED_HANDSHAKE_LEN = 1 + PUBKEY_LEN + ID_PUBKEY_LEN + SIGNATURE_L
 /** 签名域分隔串（与 Rust `src-tauri::sign_device_identity` / ridge-cli `e2ee.rs` 逐字一致）。 */
 export const ID_BIND_DOMAIN = 'ridge-id-bind-v1';
 
+/**
+ * 设备签名/绑定校验失败时的 `$/bye` 原因串（零信任 #2，概念 6）。验签失败方经 **E2EE 0x11
+ * 业务通道**（**不经 relay**）发 `$/bye{reason}` 优雅收尾（D9 语义）。语义对应
+ * `ridge-signaling::error_code::SIGNATURE_INVALID`（仅登记，relay 不主动发）。
+ */
+export const BYE_REASON_SIGNATURE_INVALID = 'signature-invalid';
+
 /** 解析后的设备身份签名握手帧。 */
 export interface SignedHandshake {
   /** 对端临时 X25519 公钥。 */

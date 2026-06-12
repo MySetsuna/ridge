@@ -40,13 +40,14 @@ import {
   deriveSessionKey,
   bytesToBase64,
   base64ToBytes,
+  BYE_REASON_SIGNATURE_INVALID,
   type EphemeralKeyPair,
 } from './e2ee';
 import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { MAX_PANE_FRAME_BYTES } from '../../transport/remote/cloudMux';
+import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '../../transport/remote/cloudMux';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -320,6 +321,9 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     );
     if (!verifyIdBindSignature(hostIdPub, context, sig)) {
       this.bindingDecided = true;
+      // 概念 6：经 E2EE 0x11 业务通道（**不经 relay**）发 $/bye{signature-invalid} 优雅收尾
+      //（D9 语义，与 host 端 keyBinding reject→$/bye→teardown 一致），再断开。
+      this.sendByeSignatureInvalid();
       this.fail('E2EE 设备身份签名验证失败（疑似 MITM），已断开', 'FORBIDDEN');
       this.disconnect();
       return;
@@ -423,6 +427,26 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     if (this.dc && this.dc.readyState === 'open') {
       // 拷贝出独立 ArrayBuffer，避免发送共享底层 buffer 的视图。
       this.dc.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    }
+  }
+
+  /**
+   * 概念 6：设备签名验证失败时经 **E2EE 0x11 业务通道**（**不经 relay**）发
+   * `$/bye{reason:"signature-invalid"}`，让对端（host）拿到结构化收尾原因（D9 语义）。
+   * best-effort：会话已派生且 dc 仍 open 才发；发不出静默忽略（disconnect 仍会拆 DataChannel）。
+   * 即使会话被 relay-MITM，该帧也只透露"已识破"，不泄露任何机密。
+   */
+  private sendByeSignatureInvalid(): void {
+    if (!this.session || !this.dc || this.dc.readyState !== 'open') return;
+    try {
+      const bye = encodeJsonFrame({
+        jsonrpc: '2.0',
+        method: '$/bye',
+        params: { reason: BYE_REASON_SIGNATURE_INVALID },
+      });
+      this.rawSend(this.session.seal(bye));
+    } catch {
+      /* best-effort：seal/发送失败就算了，由 disconnect 收尾 */
     }
   }
 
