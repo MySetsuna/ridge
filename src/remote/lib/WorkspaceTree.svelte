@@ -32,6 +32,12 @@
   let open = $state(false);
   let busy = $state(false);
   let err = $state('');
+  // §collapse-toggle: which workspaces have their terminal list collapsed. The
+  // front chevron is a DEDICATED collapse toggle (it stops propagation so it no
+  // longer falls through to the row's switch handler — tapping it must not switch
+  // workspaces). Only the active workspace actually has panes to show/hide, but a
+  // collapse preference is kept per id so it survives re-activation.
+  let collapsedWs = $state(new Set<string>());
 
   const activePane = $derived(panes.find((p) => p.id === activePaneId));
 
@@ -43,10 +49,26 @@
     open = false;
   }
 
+  // Toggle the workspace's terminal list open/closed WITHOUT switching to it.
+  // stopPropagation is what keeps the tap off the row's switchWorkspace handler.
+  function toggleCollapse(e: Event, id: string) {
+    e.stopPropagation();
+    const next = new Set(collapsedWs);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    collapsedWs = next;
+    err = '';
+  }
+
   async function switchWorkspace(id: string) {
     if (!ws || busy || id === activeWorkspaceId) return;
     busy = true;
     err = '';
+    // Switching to a workspace always expands it so its terminals are visible.
+    if (collapsedWs.has(id)) {
+      const next = new Set(collapsedWs);
+      next.delete(id);
+      collapsedWs = next;
+    }
     // 切换前清空活动 pane：避免在新工作区 panes 回包前残留旧 pane 订阅。
     activePaneId = null;
     activeWorkspaceId = id;
@@ -193,7 +215,15 @@
               onclick={() => switchWorkspace(wsp.id)}
               disabled={busy}
             >
-              <span class="ws-chev" class:open={isActiveWs}><ChevronRight class="w-3.5 h-3.5 shrink-0" /></span>
+              <span
+                class="ws-chev"
+                class:open={isActiveWs && !collapsedWs.has(wsp.id)}
+                role="button"
+                tabindex="-1"
+                onclick={(e) => toggleCollapse(e, wsp.id)}
+                onkeydown={() => {}}
+                title={$t('mobile.treeToggleTerminals')}
+              ><ChevronRight class="w-3.5 h-3.5 shrink-0" /></span>
               <span class="ws-ico"><FolderOpen class="w-4 h-4 shrink-0" /></span>
               <span class="ws-name">{wsp.name || $t('mobile.workspaceDefault')}</span>
               {#if workspaces.length > 1}
@@ -210,8 +240,9 @@
               {/if}
             </button>
 
-            {#if isActiveWs}
-              <!-- 活动工作区：展开其终端（cascade 第二级）。 -->
+            {#if isActiveWs && !collapsedWs.has(wsp.id)}
+              <!-- 活动工作区且未折叠：展开其终端（cascade 第二级）。折叠由前端
+                   chevron 控制，不触发工作区切换。 -->
               <div class="pane-group">
                 {#each panes as pane (pane.id)}
                   <button
@@ -295,7 +326,11 @@
   .ws-row:active{background:var(--rg-surface-2)}
   .ws-row.active{background:color-mix(in srgb,var(--rg-accent) 12%,transparent)}
   .ws-row:disabled{opacity:.5}
-  .ws-chev{display:inline-flex;align-items:center;color:var(--rg-fg-muted);transition:transform .15s}
+  /* §collapse-toggle: bigger hit area so the dedicated collapse chevron is easy
+     to tap without catching the row's switch handler; negative margin keeps the
+     row layout tight. */
+  .ws-chev{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin:-3px -3px -3px -2px;border-radius:6px;color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0;transition:transform .15s,background .12s,color .12s}
+  .ws-chev:active{background:color-mix(in srgb,var(--rg-fg) 12%,transparent)}
   .ws-chev.open{transform:rotate(90deg);color:var(--rg-accent)}
   .ws-ico{display:inline-flex;align-items:center;color:var(--rg-accent);flex-shrink:0}
   .ws-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}

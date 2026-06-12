@@ -34,6 +34,7 @@ export const zh: Record<string, string> = {
   treeNoTerminal: '该工作区暂无终端',
   treeNewWorkspace: '新建工作区',
   treeNewTerminal: '新建终端',
+  treeToggleTerminals: '展开/折叠终端',
   treeSwitchHint: '点击切换工作区查看其终端',
   renderEngine: '渲染引擎',
 
@@ -123,6 +124,7 @@ export const en: Record<string, string> = {
   treeNoTerminal: 'No terminals in this workspace',
   treeNewWorkspace: 'New workspace',
   treeNewTerminal: 'New terminal',
+  treeToggleTerminals: 'Expand / collapse terminals',
   treeSwitchHint: 'Tap to switch workspace and view its terminals',
   renderEngine: 'Render engine',
 

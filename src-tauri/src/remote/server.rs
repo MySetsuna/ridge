@@ -735,6 +735,12 @@ async fn file_handler(
 fn root_asset_headers(path: &str) -> (&'static str, &'static str) {
     if path == "sw.js" || path.ends_with("/sw.js") {
         ("application/javascript", "no-cache")
+    } else if path.ends_with(".html") {
+        // Without this branch a directly-requested `.html` (e.g. `/index.html`)
+        // fell through to `application/octet-stream`, which the browser offers as
+        // a DOWNLOAD instead of rendering. `no-cache` so a new build's shell is
+        // always revalidated (matches serve_index).
+        ("text/html; charset=utf-8", "no-cache")
     } else if path.ends_with(".webmanifest") {
         ("application/manifest+json", "no-cache")
     } else if path.ends_with(".js") {

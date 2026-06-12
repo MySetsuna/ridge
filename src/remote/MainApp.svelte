@@ -44,10 +44,40 @@
   let kernelTheme: Record<string, string> | null = $state(null);
   let backendName = $state('Canvas2D');
 
-  // §remember-last-pane: remember the last active pane per workspace so that
-  // switching workspaces restores the user's context instead of auto-selecting
-  // the first pane (which causes "莫名奇妙切换工作区" and unexpected pane changes).
-  const lastActivePanePerWorkspace = new Map<string, string>();
+  // §remember-last-pane / §persist-state: remember the last active pane per
+  // workspace AND the last active workspace, persisted to localStorage so a
+  // refresh restores the user's exact context (工作区 + pane) instead of forcing
+  // a re-selection every time. sessionStorage holds the heavy scrollback; these
+  // lightweight "which ws / which pane" pointers go to localStorage so they also
+  // survive a tab close, not just a reload.
+  const LS_WS_KEY = 'rg-remote-active-ws';
+  const LS_PANEMAP_KEY = 'rg-remote-pane-map';
+
+  function loadPaneMap(): Map<string, string> {
+    try {
+      const raw = localStorage.getItem(LS_PANEMAP_KEY);
+      if (!raw) return new Map();
+      return new Map(Object.entries(JSON.parse(raw) as Record<string, string>));
+    } catch { return new Map(); }
+  }
+  function persistPaneMap(): void {
+    try {
+      localStorage.setItem(LS_PANEMAP_KEY, JSON.stringify(Object.fromEntries(lastActivePanePerWorkspace)));
+    } catch { /* quota exceeded / disabled — ignore */ }
+  }
+  function persistActiveWs(id: string): void {
+    try { if (id) localStorage.setItem(LS_WS_KEY, id); } catch { /* ignore */ }
+  }
+
+  const lastActivePanePerWorkspace = loadPaneMap();
+  // The workspace the user last viewed. Read once at init; on boot we switch the
+  // host back to it (if it's on a different one) so a refresh lands on the same
+  // workspace. The host then broadcasts that workspace's panes and the panes
+  // handler restores the remembered pane.
+  let savedActiveWs: string | null = null;
+  try { savedActiveWs = localStorage.getItem(LS_WS_KEY); } catch { /* ignore */ }
+  // Boot workspace-restore runs exactly once (first workspaces list after connect).
+  let bootRestoreDone = false;
 
   // Theme cycling: the host pushes theme changes; we can request a cycle.
   // The host will push the new theme back via the 'theme' message.
@@ -212,8 +242,29 @@
     try {
       const data = await ws.listWorkspaces();
       workspaces = dedupeById(data.workspaces || []);
-      const active = workspaces.find(w => w.active);
-      if (active) activeWorkspaceId = active.id;
+      const hostActive = workspaces.find(w => w.active);
+      // §persist-state: on the first list after (re)connect, if the user's last
+      // viewed workspace still exists but the host is on a different one, switch
+      // the host back so a refresh lands on the same workspace (the host then
+      // broadcasts that workspace's panes, and the panes handler restores the
+      // remembered pane). Runs once; afterwards we just track the host's active.
+      if (!bootRestoreDone) {
+        bootRestoreDone = true;
+        if (savedActiveWs && savedActiveWs !== (hostActive?.id ?? '')
+            && workspaces.some(w => w.id === savedActiveWs)) {
+          activeWorkspaceId = savedActiveWs;
+          activePaneId = null; // force the panes handler to re-pick for the restored ws
+          const ok = await ws.switchWorkspace(savedActiveWs);
+          if (ok) ws.listPanes();
+          // Re-read so the `active` flag reflects the switch.
+          const after = dedupeById((await ws.listWorkspaces()).workspaces || []);
+          workspaces = after;
+          const a2 = after.find(w => w.active);
+          activeWorkspaceId = a2 ? a2.id : savedActiveWs;
+          return;
+        }
+      }
+      if (hostActive) activeWorkspaceId = hostActive.id;
     } catch { /* ignore */ }
   }
 
@@ -256,25 +307,34 @@
         const paneIds = panes.map(p => p.id);
         // Release caches for panes the host no longer reports (memory/quota leak).
         pruneDeadPanes(paneIds);
-        // Remember the active pane for this workspace (if we have an active workspace).
-        // Do NOT auto-select the first pane — this was causing "莫名奇妙切换工作区".
-        // Only fall back to first pane if there's truly no remembered pane for this workspace.
-        if (activeWorkspaceId && !activePaneId) {
-          const remembered = lastActivePanePerWorkspace.get(activeWorkspaceId);
+        // §persist-state pane restore: keep a still-valid current selection
+        // (no "莫名奇妙切换工作区"); otherwise prefer the remembered pane for the
+        // current workspace (seeded from localStorage on boot), else the first
+        // pane. Re-picking when the current id went stale — e.g. right after a
+        // workspace switch — is what lets a refresh land back on the remembered
+        // pane instead of a dead id.
+        if (activePaneId && paneIds.includes(activePaneId)) {
+          // current selection still valid — leave it untouched
+        } else {
+          const remembered = activeWorkspaceId
+            ? lastActivePanePerWorkspace.get(activeWorkspaceId)
+            : undefined;
           if (remembered && paneIds.includes(remembered)) {
             activePaneId = remembered;
-          } else if (panes.length > 0) {
+          } else if (paneIds.length > 0) {
             activePaneId = panes[0].id;
+          } else {
+            activePaneId = null;
           }
-        } else if (!activePaneId && panes.length > 0) {
-          // No active workspace yet (initial load) — use first pane.
-          activePaneId = panes[0].id;
         }
       }
       if (msg.type === 'workspaces') {
         workspaces = dedupeById(msg.workspaces);
         const active = workspaces.find(w => w.active);
-        if (active) activeWorkspaceId = active.id;
+        // Once the boot restore has run, follow the host's active workspace.
+        // Before that, refreshWorkspaces() owns the restore decision, so a
+        // proactive push must not clobber the workspace we're about to restore.
+        if (active && bootRestoreDone) activeWorkspaceId = active.id;
       }
       if (msg.type === 'switch-workspace-result') {
         if (msg.success && msg.workspaceId) {
@@ -363,6 +423,11 @@
       _refreshSeq = -1;
       refreshActivePane();
     });
+    // §persist-state: seed the active workspace from localStorage before the
+    // first panes/workspaces arrive so the panes handler can restore the
+    // remembered pane immediately; refreshWorkspaces() then switches the host
+    // back to this workspace if it's currently on a different one.
+    if (savedActiveWs) activeWorkspaceId = savedActiveWs;
     ws.listPanes();
     refreshWorkspaces();
     return () => { ws.disconnect(); };
@@ -377,9 +442,12 @@
     untrack(() => {
       if (pid === subscribedPaneId) return;
       subscribedPaneId = pid;
-      // Remember this pane as the last active for the current workspace.
+      // Remember this pane as the last active for the current workspace, and
+      // persist it so a refresh restores the same ws + pane (§persist-state).
       if (activeWorkspaceId) {
         lastActivePanePerWorkspace.set(activeWorkspaceId, pid);
+        persistPaneMap();
+        persistActiveWs(activeWorkspaceId);
       }
       // §isolation: wipe the kernel so the previous pane can't bleed into this one.
       canvasRef?.resetForSwitch();
@@ -401,6 +469,12 @@
     if (activePaneId && canvasRef) {
       refreshActivePane();
     }
+  });
+
+  // §persist-state: save the active workspace whenever it changes (the pane map
+  // is saved on pane switch above) so a refresh restores the user's context.
+  $effect(() => {
+    if (activeWorkspaceId) persistActiveWs(activeWorkspaceId);
   });
 
   // Apply the kernel palette once the canvas exists (theme can arrive earlier).
