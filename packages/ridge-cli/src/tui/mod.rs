@@ -10,7 +10,7 @@ pub mod dashboard;
 mod keymap;
 pub mod qr_display;
 mod lan_proto;
-mod lan_session;
+pub(crate) mod lan_session;
 pub mod lan_host;
 mod session;
 mod workspace;
