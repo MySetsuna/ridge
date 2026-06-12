@@ -66,7 +66,11 @@ export async function initThemeSystem(): Promise<void> {
     store.set(tf);
     _resolved = true;
   } catch (e) {
-    console.error('initThemeSystem failed', e);
-    throw e;
+    // reduced-capability host（无头 cli host / 精简 cloud host）不实现 get_theme_data。
+    // 历史上这里 re-throw，会令 +page.svelte 启动 IIFE 在第一行整体中断 —— 后续
+    // refreshWorkspaces / ensureActiveWorkspace 全被跳过，控制端永远停在「请先选择一个
+    // 工作区」、终端不渲染。改为降级：保留默认（空）主题集继续启动，applyTheme 对未知
+    // 主题 no-op、终端回退 CSS 默认色。不置 _resolved —— 留待将来连到支持主题的 host 重试。
+    console.warn('initThemeSystem: get_theme_data 不可用（reduced-capability host），降级默认主题继续启动', e);
   }
 }
