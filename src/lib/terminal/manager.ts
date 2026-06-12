@@ -503,8 +503,11 @@ export class TerminalManager {
 		// of pre-/post-invalidate glyphs and visibly "thick + ghost
 		// echo" text. §A.7 dropped that webfont (system emoji fonts
 		// are reliable; the bundled Noto failed to render via canvas
-		// fillText on WebView2). The debounce stays so that any
-		// future webfont addition can't reintroduce the storm.
+		// fillText on WebView2). The debounce stays — it now also drives
+		// the on-demand 'Flag Emoji' subset: when a flag codepoint first
+		// appears, the browser fetches flags.woff2 and fires `loadingdone`,
+		// so this single invalidate re-rasterizes the boxed-letter flags
+		// into colored ones (and guards against any future webfont storm).
 		if (typeof document !== 'undefined' && 'fonts' in document) {
 			let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 			document.fonts.addEventListener('loadingdone', () => {
@@ -583,11 +586,12 @@ export class TerminalManager {
 					// rendering with system Segoe UI Emoji worked before
 					// Noto's unicode-range gate kicked in). System emoji
 					// fonts (Segoe UI Emoji on Windows, Apple Color
-					// Shared canonical stack (see ./fontStack): bundled
-					// "Noto Color Emoji" ahead of OS emoji fonts so flags +
-					// all emoji render Warp-level on every platform. This
-					// default is normally overridden by themeBridge's first
-					// `pushFont`, but kept correct for the pre-bridge frame.
+					// Emoji on macOS). Country flags (which Windows' Segoe
+					// can't draw) come from an on-demand 'Flag Emoji' subset
+					// face that themeBridge injects when the OS lacks them
+					// (see ./flagEmojiSupport + ./fontStack). This pre-bridge
+					// default carries no flag face yet; themeBridge's first
+					// `pushFont` re-derives the stack with 'Flag Emoji' first.
 					fontFamily: DEFAULT_TERM_FONT,
 					fontSizePx: 15,
 					scrollbackLines: 2000,

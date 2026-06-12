@@ -171,3 +171,104 @@ detached canvas / OffscreenCanvas 在 WebView2 上拿不到系统 emoji 与 `@fo
 - **subdivision flags 的 tag 匹配**：依赖浏览器把整个 grapheme cluster 交给能渲染基字符
   `U+1F3F4` 的字体；`unicode-range` 已含基字符与 tag range，实测核对苏格兰/威尔士。
 - **体积超红线**：见 §7 退出条件。
+
+---
+
+## 10. 修订 2026-06-13：桌面端同步瘦身（移除 bundled Noto，复用国旗子集）
+
+> 本节**翻转** §2「非目标 · 不改桌面端」与 §0「桌面端保持现状」的旧范围决策。
+> 触发原因：用户目标确认为**极致性能 + 极致安装包体积**，4.8MB 的本地 Noto 不再保留。
+
+### 10.1 决策
+
+- 桌面端（Tauri / WebView2）**也移除** bundled `static/fonts/NotoColorEmoji.ttf`（−4.8MB）、
+  `app.html` 的全量 `@font-face` 与 `document.fonts.load` 预热、Service Worker 预缓存、
+  `fontStack.ts` `EMOJI_FALLBACK` 里的 `'Noto Color Emoji'`。
+- 非国旗 emoji 桌面端一律交给系统字体（Apple Color Emoji / Segoe UI Emoji），与 remote 对齐。
+- 国旗（Windows 的 Segoe UI Emoji 无字形、且因含 RI 单字母字形而**不回退**）由**复用同一份
+  `flags.woff2`（~699KB）** 兜底——而非"Rust 自研国旗包"（**该机制不存在**，详见 §10.3）。
+- 净体积：−4.8MB（Noto）+0.7MB（flags）≈ **−4.1MB（−85%）**，Windows 国旗保留 Warp 级。
+
+### 10.2 桌面实现方案（与 remote 共用一套机制，DRY）
+
+1. **产物落位**：`flags.woff2` 同时供给桌面静态根 `static/fonts/flags.woff2`（SvelteKit/Tauri
+   经 `/fonts` 托管，本地资源、零网络）。构建脚本 `build-flag-font.mjs` 输出后**同步到
+   remote 与 desktop 两个 publish 根**（或单一产物 + 复制步骤），保持一份源。
+2. **共享探测模块**：把 `src/remote/lib/flagEmojiSupport.ts` 的**纯逻辑**
+   （`probeSystemFlagSupport`/`readFlagCache`/`writeFlagCache`/`FLAG_FONT_FACE_CSS`/
+   `FLAG_CACHE_KEY`）上提到 `src/lib/terminal/` 共享层，桌面与 remote 各保留自己的浏览器
+   glue（`ensure*FlagFont`）。避免桌面重复实现，也保证两端探测口径一致（measure 必须镜像
+   生产 emoji 栈，见 §5.3 / flagEmojiSupport `measureWithCanvas` 注释）。
+3. **桌面字体栈**：`fontStack.ts` 桌面 `withEmojiFallback` 在 OS 无原生国旗时把
+   `'Flag Emoji'` 排到系统 emoji **之前**（与 remote `withRemoteEmojiFallback` 同形）：
+   - 无国旗（Windows/WebView2）：`TEXT_MONO, 'Flag Emoji', 'Apple Color Emoji','Segoe UI Emoji', monospace`
+   - 有国旗（macOS）：`TEXT_MONO, 'Apple Color Emoji','Segoe UI Emoji', monospace`（不注入，用系统原生旗，风格一致）
+4. **`@font-face` 注入**：桌面 `flags.woff2` 是本地资源，首屏无网络代价；仍走 `unicode-range`
+   gate，浏览器只在实际出现国旗码点时栅格化。可沿用 remote 的"探测后动态注入"，桌面也能直接
+   在 `app.html` 静态声明（本地资源，`font-display:swap`）——二选一，优先复用探测以避免 macOS 用我们的旗替掉 Apple 原生旗。
+5. **注释订正**：删除 `app.html` / `fontStack.ts` / `manager.ts` / `themeBridge.ts` 里
+   "self-developed flag fallback in the glyph rasterizer" 的**事实错误**表述，改为指向本节的
+   flag-subset `@font-face` 机制。
+6. **遗漏清理**：`src/app.css` `--font-ui` / `--font-mono-term` 仍列 `"Noto Color Emoji"`
+   （DOM 侧 UI 栈），与本次清理一并删除；`glyph_rasterizer.rs` 注释里过时的
+   "@font-face Noto Color Emoji subsets" 同步订正。
+
+### 10.3 关键事实：桌面渲染路径无"自研国旗"
+
+桌面终端字形由 `packages/ridge-term/src/render/glyph_rasterizer.rs` 中**挂到 `document.body`
+的真实 `<canvas>` + `fillText`** 栅格化，即由 WebView2 按 CSS font-matching 出图。Rust 侧
+**没有任何国旗字形实现**（搜遍 `1F1E6/regional/国旗/include_bytes` 仅命中 SGR 样式位与
+cluster 分组，非旗帜字形）。因此桌面国旗**必须**靠字体栈里的 `flags.woff2` 提供，删 Noto 后
+若不接 flag 子集，Windows（Chromium 系不带国旗、Segoe 只有 RI 单字母）国旗即变方框字母。
+
+### 10.4 `flags.woff2` 体积来源与进一步压缩（决策点 D）
+
+当前 699KB（< 800KB 红线）的真实构成（woff2 表目录实测）：未压缩 sfnt 2.06MB，其中
+`glyf` 1.60MB（各国旗 COLR 图层的矢量轮廓，**大头**）、`COLR` 273KB、`loca/hmtx/vmtx`
+各 ~35–70KB、`CPAL` 5.4KB、`GSUB` 2.6KB。flavor `0x00010000`（TrueType 矢量），
+**无 CBDT/CBLC/sbix 位图表**——已是矢量 + brotli/woff2，"换矢量 / 换 woff2"无进一步空间。
+
+**关键解锁**：非国旗 emoji 现已全部交给系统字体，flags.woff2 **只负责国旗**、且紧挨系统 emoji
+渲染——因此**不再有"必须与 Noto 风格一致"的约束**，可自由选最小的国旗来源。
+
+**决策点 D（2026-06-13 已定）：换 Twemoji 源 + `--drop-tables=vmtx,vhea`。** 实测落地：
+
+- **源换 Twemoji（Mozilla COLRv0 build，`Twemoji.Mozilla.ttf` v0.7.0）**。务必用 **COLRv0**
+  版本：新版 13rac1 Twemoji 是 **SVGinOT（`SVG ` 表）**，Chromium/WebView2 的 canvas `fillText`
+  **不栅格化 OT-SVG**→国旗会空白，**不可用**。COLRv0（glyf+COLR/CPAL）与原 Noto 同机制，WebView2 正常出图。
+- 构建脚本钉到带版本号的 release 资源 URL + **SHA256 校验**（替代旧的 `main` 移动 ref，可复现）。
+- `--drop-tables=vmtx,vhea` 一并加上。
+- **实测体积：699KB（Noto）→ 76.5KB（Twemoji），−89%。** COLR/CPAL 彩色保留、wOF2 魔数正确、vmtx/vhea 已丢。
+- 许可证：Twemoji CC-BY 4.0，需在 NOTICE/README 署名（Twitter/Twemoji）。
+
+未采用的更激进手段（备查）：裁剪国旗集（只留常用 N 面，有损覆盖，77KB 已足够小故不必）、
+去 subdivision flags（已保留英/苏/威）。
+
+红线维持 800KB；脚本每次重新生成后以"实测体积 + woff2 魔数 `wOF2` + COLR/CPAL 存在"自校验（见 §8）。
+
+### 10.6 落地实现（2026-06-13 已完成，待 rebuild 验证）
+
+- 共享模块：`src/remote/lib/flagEmojiSupport.ts` → **`src/lib/terminal/flagEmojiSupport.ts`**
+  （`ensureRemoteFlagFont`→`ensureFlagFont`，desktop + remote 共用一份）；测试同迁移。
+- `fontStack.ts`：桌面 `withEmojiFallback` 与 remote `withRemoteEmojiFallback` **合并为单一**
+  `withEmojiFallback(family, flagFaceInjected)`（删 Noto 后两端字体栈本就相同）；
+  `withRemoteEmojiFallback`/`SYSTEM_EMOJI_FALLBACK`/`REMOTE_TERM_FONT` 保留为 back-compat 别名。
+  顺手修了旧桌面版"只剩 emoji family 输入→前导逗号"的潜在 bug（统一到 remote 那版的 `TEXT_MONO` 兜底）。
+- 桌面接线：`themeBridge.ts` 开机 `ensureFlagFont()` 一次，`pushFont` 传 `flagFaceInjected`。
+- 产物：`flags.woff2` 同时写 `src/remote/public/fonts/` 与 **`static/fonts/`**（桌面），
+  `build-flag-font.mjs` subset 后 `copyFileSync` 镜像到两处。
+- 关键联动：`manager.ts` 既有的 `document.fonts` `loadingdone` 去抖**正是国旗按需生效的机制**——
+  flag 码点首次出现→浏览器拉 flags.woff2→`loadingdone`→`invalidateAllPanes` 重栅格化→字母盒变彩旗。
+- 注释订正 + 残留清理：`app.html` / `manager.ts` / `glyph_rasterizer.rs`（删"自研国旗包"假述）、
+  `app.css` `--font-ui`/`--font-mono-term` 去 `"Noto Color Emoji"`。
+- 测试：`fontStack.test.ts` 重写覆盖两种 flag 状态 + 桌面 legacy-Noto strip + "不含 Noto"回归闸；
+  `flagEmojiSupport.test.ts` 迁移。`npx vitest` 绿。
+
+### 10.5 验证（在 §8 基础上补桌面）
+
+- Windows 桌面实测：普通 emoji 走系统；国旗（含 subdivision）彩色显示；删 Noto 后安装包
+  减重 ~4.1MB；首屏无字体请求，输出国旗时本地命中 `flags.woff2`。
+- macOS 桌面实测：国旗走系统原生（不注入我们的子集），全程零额外字体。
+- 回归：`fontStack.test.ts` 补桌面 `withEmojiFallback` 的 legacy-Noto strip 用例 +
+  `DEFAULT_TERM_FONT/EMOJI_FALLBACK` 不含 'Noto' 的回归闸。
+- ⚠️ 桌面渲染改动需 rebuild ridge（会杀当前会话），最终出图以重启后实测为准。

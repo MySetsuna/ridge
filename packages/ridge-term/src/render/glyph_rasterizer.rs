@@ -116,7 +116,8 @@ pub struct RasterizedGlyph {
 /// Chromium revisions resolve `measureText` against a permissive
 /// font-fallback fast path but punt `fillText` to a stricter pipeline
 /// that doesn't see system emoji fonts (Segoe UI Emoji) nor the
-/// document's `@font-face`-declared faces (Noto Color Emoji). Symptom
+/// document's `@font-face`-declared faces (the on-demand 'Flag Emoji'
+/// flag subset). Symptom
 /// captured 2026-05-08 via the §A.7 RIDGE_DIAG trace: every emoji
 /// codepoint reported `advance_dev > 0` AND `ascent_dev == font_size`
 /// (browser placeholder when no font matched) AND `non_zero_px == 0`
@@ -152,7 +153,7 @@ impl GlyphRasterizer {
         // Hide the canvas off-screen and out of layout. Some
         // Chromium / WebView2 versions only resolve the document's
         // full font-fallback chain (system Segoe UI Emoji + the
-        // @font-face Noto Color Emoji subsets) for canvases attached
+        // @font-face 'Flag Emoji' flag subset) for canvases attached
         // to the document tree — switching here from OffscreenCanvas
         // was the §A.7 fix for "emoji rasterises blank" reports.
         canvas
