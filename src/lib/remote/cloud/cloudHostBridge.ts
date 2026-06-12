@@ -465,6 +465,9 @@ export class CloudHostBridge {
       case CANCEL_METHOD:
         this.cancelInvoke(params);
         return;
+      case BYE_METHOD:
+        this.handleBye(params);
+        return;
       case 'subscribe-pane':
         this.handleSubscribePane(params);
         return;
@@ -484,6 +487,19 @@ export class CloudHostBridge {
    */
   private replyHello(params: unknown): void {
     this.sendControl(negotiateHello(params));
+  }
+
+  // ── 概念 6：对端经 0x11 通道发来的 $/bye（如 signature-invalid 验签失败）──────────
+  /**
+   * 对端（controller）经 **E2EE 0x11 通道**（不经 relay）通知会话终止。标记 `rejected`：
+   * 后续业务帧一律丢弃（与 §5.5 verifyPeerKey reject 同收尾语义）；DataChannel 关闭随后由
+   * provider teardown。无 id ⇒ 不回响应。恶意 controller 发 $/bye 只会终止其自身会话
+   * （每 cid 独立桥），无跨会话影响——等价于其直接关闭 DataChannel。
+   */
+  private handleBye(params: unknown): void {
+    const reason = (params as { reason?: unknown } | null | undefined)?.reason;
+    this.rejected = true;
+    this.log('warn', `peer sent $/bye (reason=${String(reason ?? 'unknown')}); rejecting session`);
   }
 
   // ── §7.0：$/cancel 尽力中止 ───────────────────────────────────────────────────

@@ -311,6 +311,19 @@ describe('CloudHostBridge — §5.5 key-binding verifier', () => {
     const rig = makeRig();
     expect(rig.bridge.verifyPeerKey(new Uint8Array(32))).toBe(true);
   });
+
+  // 概念 6：对端经 0x11 通道发来 $/bye（如 controller 验 host 签名失败）→ host 拒后续业务帧。
+  it('inbound $/bye (signature-invalid) rejects the session: drops later business frames', async () => {
+    const invoke = vi.fn(async () => 'should-not-run');
+    const rig = makeRig({ invoke }); // 无 totp → verified=true，正常会放行业务帧
+
+    rig.sendJson({ jsonrpc: '2.0', method: '$/bye', params: { reason: 'signature-invalid' } });
+    // $/bye 后业务帧被丢弃 —— invoke 不执行、不回响应。
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists', params: {} });
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(rig.sentJson()).toHaveLength(0);
+  });
 });
 
 describe('CloudHostBridge — reset', () => {
