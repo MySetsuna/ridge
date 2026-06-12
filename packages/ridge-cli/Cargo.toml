@@ -74,9 +74,9 @@ rand = "0.8"
 
 # 信令消息 schema 的单一事实来源（SSOT）—— 与 relay(ridge-cloud)/桌面端共用同一份
 # 定义，消除四端手写漂移并全程承载 cid（findings-align P0/P1）。纯 serde 数据模型，
-# 不污染依赖树。独立微仓，本地 dev 用 path 依赖（C:\code\ridge-signaling，在 wind 仓
-# 外，是 wind/packages/ridge-cli 的上三级目录）；正式发布改 git 依赖锁 rev。
-ridge-signaling = { path = "../../../ridge-signaling" }
+# 不污染依赖树。独立公开微仓（非机密信令线协议 schema）。git 依赖锁 rev：CI/发布
+# 零配置可拉（path 依赖要求 ridge-signaling 与 wind 同级 checkout，CI 上未必满足）。
+ridge-signaling = { git = "https://github.com/MySetsuna/ridge-signaling", rev = "7f958215d5d694746d743805226da1083fd494d8" }
 # Signaling WebSocket client (rustls)
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"

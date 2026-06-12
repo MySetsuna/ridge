@@ -5269,6 +5269,7 @@ dependencies = [
 [[package]]
 name = "ridge-signaling"
 version = "0.1.0"
+source = "git+https://github.com/MySetsuna/ridge-signaling?rev=7f958215d5d694746d743805226da1083fd494d8#7f958215d5d694746d743805226da1083fd494d8"
 dependencies = [
  "serde",
  "serde_json",
