@@ -294,8 +294,7 @@
         onSessions: (list) => { cloudSessions = list; },
         onError: (msg) => { connectError = msg; },
         // host=Tauri 桌面 app：注入真实 invoke + pane 源 + 本机 TOTP 校验（契约 §0/§4/§5.1）。
-        // 第三参 bindTranscript（零信任 #1）由概念 5 接入 totp-bind 校验。
-        createBridge: (_cid, send, _bindTranscript) =>
+        createBridge: (_cid, send, bindTranscript) =>
           new CloudHostBridge({
             invoke: (method, params) => invoke(method, params),
             sendFrame: send,
@@ -305,7 +304,17 @@
             // pty-output 发射（只发 pty-delta），故旧 cloudPaneSource 对原生 pane 收不到
             // 字节。raw fan-out 在 delta 分支之前，delta-mode 也照样推。
             paneOutputSource: makeCloudHostPaneSource({ invoke, listen }),
+            // 明文 totp-verify（旧 controller / host 回落 0x01 时）。
             totpVerifier: (code) => invoke<boolean>('verify_remote_totp', { code }),
+            // 零信任 #1（概念 5）：host 发 0x02 → bindTranscript 非空时启用 totp-bind
+            // 信道绑定校验（HMAC tag，明文码不上线）。transcript 闭包注入 Rust 命令。
+            totpBindVerifier: bindTranscript
+              ? (tag) =>
+                  invoke<boolean>('verify_remote_totp_bind', {
+                    transcript: Array.from(bindTranscript),
+                    tag: Array.from(tag),
+                  })
+              : undefined,
           }),
       },
     );

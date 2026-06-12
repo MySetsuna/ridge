@@ -35,6 +35,7 @@ function makeRig(opts: {
   paneOutputSource?: ConstructorParameters<typeof CloudHostBridge>[0]['paneOutputSource'];
   keyBindingVerifier?: (pub: Uint8Array) => boolean;
   totpVerifier?: (code: string) => Promise<boolean>;
+  totpBindVerifier?: (tag: Uint8Array) => Promise<boolean>;
 } = {}) {
   const sent: Uint8Array[] = [];
   const invoke =
@@ -45,6 +46,7 @@ function makeRig(opts: {
     paneOutputSource: opts.paneOutputSource,
     keyBindingVerifier: opts.keyBindingVerifier,
     totpVerifier: opts.totpVerifier,
+    totpBindVerifier: opts.totpBindVerifier,
     log: () => {}, // silence diagnostics in tests
   });
 
@@ -522,6 +524,75 @@ describe('CloudHostBridge — §4 TOTP brute-force lockout (audit #3)', () => {
     const rig = makeRig(); // no totpVerifier → verified=true from construction
     rig.bridge.pushPaneOutput('pane-1', new TextEncoder().encode('pty'));
     expect(rig.sentPane()).toHaveLength(1);
+  });
+
+  // ── 零信任 #1：totp-bind（信道绑定 HMAC tag，明文码不上线）── 概念 5 ────────────
+  // controller 在收到 host 0x02 后改发 `{t:'totp-bind', tag:base64(HMAC)}` 替代明文
+  // `{t:'totp-verify', code}`。host 经注入的 totpBindVerifier（= verify_remote_totp_bind，
+  // 本机种子 ±1 窗口重算比对）放行。与 totp-verify 共享 verified 门控 + 5 次锁定计数。
+
+  /** 把任意 32 字节 tag base64 化（与 e2ee.ts bytesToBase64 同口径，btoa 友好）。 */
+  const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+  const FAKE_TAG = new Uint8Array(32).fill(0xab);
+
+  it('verifies a correct totp-bind tag, replies totp-result{ok:true}, decodes tag bytes', async () => {
+    const totpBindVerifier = vi.fn(async (_tag: Uint8Array) => true);
+    const invoke = vi.fn(async () => 'ok');
+    const rig = makeRig({ invoke, totpBindVerifier });
+
+    rig.sendControl({ t: 'totp-bind', tag: b64(FAKE_TAG) });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    // 校验器收到的是解码后的原始 tag 字节（不是 base64 串）。
+    expect(totpBindVerifier).toHaveBeenCalledTimes(1);
+    expect(Array.from(totpBindVerifier.mock.calls[0][0])).toEqual(Array.from(FAKE_TAG));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: true });
+
+    // 门控打开：业务 invoke 现在放行。
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'read_file', params: {} });
+    await vi.waitFor(() => expect(rig.sentJson()).toHaveLength(1));
+    expect(rig.sentJson()[0].id).toBe(1);
+  });
+
+  it('rejects a wrong totp-bind tag: totp-result{ok:false}, gate stays closed', async () => {
+    const totpBindVerifier = vi.fn(async () => false);
+    const rig = makeRig({ totpBindVerifier });
+    rig.sendControl({ t: 'totp-bind', tag: b64(FAKE_TAG) });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: false });
+  });
+
+  it('totp-bind shares the 5-attempt lockout with totp-verify', async () => {
+    const totpBindVerifier = vi.fn(async () => false);
+    const rig = makeRig({ totpBindVerifier });
+    for (let i = 0; i < 5; i++) {
+      rig.sendControl({ t: 'totp-bind', tag: b64(FAKE_TAG) });
+      await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(i + 1));
+    }
+    expect(totpBindVerifier).toHaveBeenCalledTimes(5);
+    expect(rig.sentControl()[4]).toEqual({ t: 'totp-result', ok: false, locked: true });
+
+    // 锁定后不再调校验器。
+    rig.sendControl({ t: 'totp-bind', tag: b64(FAKE_TAG) });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(6));
+    expect(totpBindVerifier).toHaveBeenCalledTimes(5);
+    expect(rig.sentControl()[5]).toEqual({ t: 'totp-result', ok: false, locked: true });
+  });
+
+  it('totp-bind with no bind verifier (but gating on) → ok:false, no gate bypass', async () => {
+    // 门控由 totpVerifier 开启，但 controller 发来 totp-bind 而 host 未注入 bind 校验器：
+    // 不能放行（否则等于绕过门控）→ 计为失败。
+    const totpVerifier = vi.fn(async () => true);
+    const rig = makeRig({ totpVerifier }); // 仅 totpVerifier，无 totpBindVerifier
+    rig.sendControl({ t: 'totp-bind', tag: b64(FAKE_TAG) });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: false });
+  });
+
+  it('totp-bind with no verifiers at all → ungated pass (backward compat)', async () => {
+    const rig = makeRig(); // 无任何 TOTP 校验器 → 不门控
+    rig.sendControl({ t: 'totp-bind', tag: b64(FAKE_TAG) });
+    await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
+    expect(rig.sentControl()[0]).toEqual({ t: 'totp-result', ok: true });
   });
 });
 
