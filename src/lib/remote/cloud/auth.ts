@@ -9,7 +9,7 @@
 // 注意：JWT 仅做客户端展示用途的浅解码（读 plan/username/exp），真正的校验在
 // 后端。不信任本地 token 的真实性，仅用于 UI 状态判断。
 
-import { writable, type Writable } from 'svelte/store';
+import { writable, get, type Writable } from 'svelte/store';
 import * as api from './apiClient';
 import type { CheckinResult, UserDto } from './apiClient';
 
@@ -145,6 +145,24 @@ export async function bootstrapFromCookie(): Promise<boolean> {
     return false;
   }
 }
+
+// ─── 401 静默刷新（设计 2026-06-12）：短 access 过期 → 用 refresh cookie 换新 ──────────
+// 单飞去重：多个并发 401 共享同一个 in-flight 刷新，避免刷新风暴。
+let refreshing: Promise<boolean> | null = null;
+function refreshAccess(): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = bootstrapFromCookie().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+// 模块初始化即把刷新钩子注册进 apiClient：带 token 的请求收 401 → 刷新换新 access 重试一次。
+api.setUnauthorizedHandler(async () => {
+  const ok = await refreshAccess();
+  return ok ? get(cloudAuth).userToken : null;
+});
 
 // ─── §2.3 浏览器登录授权（host 轮询拿 user JWT，token 不进 URL）──────────────
 

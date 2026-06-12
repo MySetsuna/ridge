@@ -198,10 +198,36 @@ interface RequestOptions {
 }
 
 /**
- * 发起一次 API 请求并解包 §2 信封。
+ * 401 静默刷新钩子（设计 2026-06-12-cloud-domain-sso）：access token 短时（15min）会过期，
+ * auth.ts 在模块初始化时注册一个「用父域 refresh cookie 换新 access」的函数。`request`
+ * 收 UNAUTHORIZED 时调它拿新 token、用新 token **重试一次**，避免短 access 过期即掉线。
+ * 未注册（如纯 apiClient 单测）则不刷新，原样抛 401。
+ */
+let onUnauthorized: (() => Promise<string | null>) | null = null;
+export function setUnauthorizedHandler(fn: (() => Promise<string | null>) | null): void {
+  onUnauthorized = fn;
+}
+
+/**
+ * 发起 API 请求并解包 §2 信封；带 token 的请求收 401 时尝试静默刷新 + 重试一次。
  * 失败统一抛 ApiError（带结构化 code）。
  */
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  try {
+    return await requestOnce<T>(path, opts);
+  } catch (e) {
+    // 仅「带 token 的请求收 401 且注册了刷新钩子」才静默刷新 + 重试一次。
+    // 无 token 的请求（如 /auth/session 自身）不触发，避免递归。
+    if (e instanceof ApiError && e.code === 'UNAUTHORIZED' && opts.token && onUnauthorized) {
+      const fresh = await onUnauthorized();
+      if (fresh) return requestOnce<T>(path, { ...opts, token: fresh });
+    }
+    throw e;
+  }
+}
+
+/** 单次请求（无重试）。被 `request` 包装以支持 401 刷新重试。 */
+async function requestOnce<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', token, body, credentials } = opts;
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
