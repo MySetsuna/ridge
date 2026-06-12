@@ -310,8 +310,11 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
   });
 
   it('异步签名期间 host 下线 → 不崩、teardown 后不再发帧', async () => {
-    // 用一个永不 resolve 的 signContext，模拟签名在途时连接被拆。
-    let resolveSig: ((s: Uint8Array) => void) | null = null;
+    // 用一个永不 resolve 的 signContext，模拟签名在途时连接被拆。默认是 no-op，
+    // 握手触发 pendingSign() 后才被换成真正的 resolver。用非空函数默认值而非 `| null`：
+    // 既避免 TS 5.6 闭包收窄把它在调用处当成 `null`（→ 不可调用的 never），又保留
+    // 「未触发签名则什么都不做」的防御语义。
+    let resolveSig: (s: Uint8Array) => void = () => {};
     const pendingSign = (): Promise<Uint8Array> =>
       new Promise<Uint8Array>((r) => {
         resolveSig = r;
@@ -329,7 +332,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     // 签名仍在途时下线 → 拆连接。
     host.goOffline();
     // 现在签名「迟到」resolve：不应在已 teardown 的连接上发 0x02。
-    resolveSig?.(new Uint8Array(64).fill(9));
+    resolveSig(new Uint8Array(64).fill(9));
     await flush();
     expect(dc.sent.length).toBe(sentBefore); // 无新增帧
   });

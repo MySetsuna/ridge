@@ -38,113 +38,116 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- preventDefault on pointerdown so tapping a key never blurs the terminal's
      hidden textarea — that would dismiss the mobile soft keyboard. -->
+<!--
+  §compact-layout: 紧凑双行，键位还原实体键盘以利盲打肌肉记忆——
+  左下角修饰键(Ctrl/Alt/Shift) + 左上 Esc/Tab；中间方向键 inverted-T(↑ 在上，
+  ←↓→ 在下，用 grid 让 ↑ 精确压在 ↓ 上方)；右侧导航块 Home/PgUp 上、End/PgDn 下
+  竖向配对(还原实体 6 键块的纵向分组)；最右 Enter 上、Backspace 下。整体两行
+  ≈ 2×30px，较旧版 4 行竖排 page-cluster(~190px)大幅压缩到 ~80px。
+-->
 <div class="vk-container" onpointerdown={(e) => e.preventDefault()}>
-  <!-- Top row: modifiers + escape/tab/enter/backspace -->
-  <div class="vk-row vk-row-mods">
-    <button
-      class="vk-key mod"
-      class:active={stickyMods.ctrl}
-      onclick={() => tapMod('ctrl')}
-    >Ctrl</button>
-    <button
-      class="vk-key mod"
-      class:active={stickyMods.alt}
-      onclick={() => tapMod('alt')}
-    >Alt</button>
-    <button
-      class="vk-key mod"
-      class:active={stickyMods.shift}
-      onclick={() => tapMod('shift')}
-    >Shift</button>
-    <span class="vk-sep"></span>
-    <button class="vk-key" onclick={() => sendNamedKey('Escape')}>Esc</button>
-    <button class="vk-key" onclick={() => sendNamedKey('Tab')}>Tab</button>
-    <button class="vk-key wide" onclick={() => sendNamedKey('Enter')}>⏎ Enter</button>
-    <button class="vk-key" aria-label="Backspace" onclick={() => sendNamedKey('Backspace')}>⌫</button>
+  <!-- 左：Esc/Tab（上）+ Ctrl/Alt/Shift（下，实体键盘左下角） -->
+  <div class="vk-group vk-left">
+    <div class="vk-grp-row">
+      <button class="vk-key" onclick={() => sendNamedKey('Escape')}>Esc</button>
+      <button class="vk-key" onclick={() => sendNamedKey('Tab')}>Tab</button>
+    </div>
+    <div class="vk-grp-row">
+      <button class="vk-key mod" class:active={stickyMods.ctrl} onclick={() => tapMod('ctrl')}>Ctrl</button>
+      <button class="vk-key mod" class:active={stickyMods.alt} onclick={() => tapMod('alt')}>Alt</button>
+      <button class="vk-key mod" class:active={stickyMods.shift} onclick={() => tapMod('shift')}>⇧</button>
+    </div>
   </div>
 
-  <!-- Middle row: navigation cluster (arrow keys + home/end + pgup/pgdn) -->
-  <div class="vk-row vk-row-nav">
-    <div class="vk-nav-cluster">
-      <button class="vk-key arrow" onclick={() => sendArrow('Up')} aria-label="Up">↑</button>
-      <div class="vk-arrow-row">
-        <button class="vk-key arrow" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
-        <button class="vk-key arrow" onclick={() => sendArrow('Down')} aria-label="Down">↓</button>
-        <button class="vk-key arrow" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
-      </div>
-    </div>
-    <span class="vk-sep"></span>
-    <div class="vk-page-cluster">
-      <button class="vk-key home" onclick={() => sendNamedKey('Home')} aria-label="Home">Home</button>
-      <button class="vk-key end" onclick={() => sendNamedKey('End')} aria-label="End">End</button>
-      <button class="vk-key pgup" onclick={() => sendPage('Up')} aria-label="Page Up">PgUp</button>
-      <button class="vk-key pgdn" onclick={() => sendPage('Down')} aria-label="Page Down">PgDn</button>
-    </div>
+  <!-- 中：方向键 inverted-T（↑ 压在 ↓ 上方） -->
+  <div class="vk-group vk-arrows">
+    <button class="vk-key arrow up" onclick={() => sendArrow('Up')} aria-label="Up">↑</button>
+    <button class="vk-key arrow" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
+    <button class="vk-key arrow" onclick={() => sendArrow('Down')} aria-label="Down">↓</button>
+    <button class="vk-key arrow" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
+  </div>
+
+  <!-- 右中：导航块 Home/PgUp（上）/ End/PgDn（下） -->
+  <div class="vk-group vk-nav">
+    <button class="vk-key nav" onclick={() => sendNamedKey('Home')} aria-label="Home">Home</button>
+    <button class="vk-key nav" onclick={() => sendPage('Up')} aria-label="Page Up">PgUp</button>
+    <button class="vk-key nav" onclick={() => sendNamedKey('End')} aria-label="End">End</button>
+    <button class="vk-key nav" onclick={() => sendPage('Down')} aria-label="Page Down">PgDn</button>
+  </div>
+
+  <!-- 右：Enter（上）/ Backspace（下） -->
+  <div class="vk-group vk-right">
+    <button class="vk-key wide" onclick={() => sendNamedKey('Enter')} aria-label="Enter">⏎</button>
+    <button class="vk-key wide" aria-label="Backspace" onclick={() => sendNamedKey('Backspace')}>⌫</button>
   </div>
 </div>
 
 <style>
+  /* §compact-layout: 一行四组(左修饰/中方向/右导航/最右Enter·⌫)，每组内部两排，
+     整体两排键高 ≈ 80px(含安全区前的内边距)。 */
   .vk-container {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 6px 8px;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 8px;
     background: var(--rg-surface);
     user-select: none;
     -webkit-user-select: none;
     touch-action: manipulation;
     transition: transform .2s ease;
   }
-  .vk-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    justify-content: center;
-  }
-  .vk-row-mods {
-    flex-wrap: wrap;
-  }
-  .vk-row-nav {
-    justify-content: space-between;
-    gap: 8px;
-    padding-top: 2px;
-  }
-  .vk-nav-cluster {
+  .vk-group {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 2px;
+    gap: 3px;
   }
-  .vk-arrow-row {
+  .vk-grp-row {
     display: flex;
-    gap: 2px;
+    gap: 3px;
   }
-  .vk-page-cluster {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+  /* 方向键 inverted-T：3 列网格，↑ 固定在第 2 列第 1 行，正好压在 ↓ 上方；
+     ←/↓/→ 自动流入第 2 行。 */
+  .vk-arrows {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3px;
+  }
+  .vk-arrows .up {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  /* 导航块：2×2，Home/PgUp 上，End/PgDn 下——还原实体 6 键块的纵向分组。 */
+  .vk-nav {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 3px;
   }
   .vk-key {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 44px;
-    height: 36px;
-    padding: 0 10px;
+    min-width: 38px;
+    height: 30px;
+    padding: 0 8px;
     border: 1px solid var(--rg-border-bright);
-    border-radius: 8px;
+    border-radius: 7px;
     background: var(--rg-bg);
     color: var(--rg-fg);
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.12s;
+    transition: background .12s, transform .12s, border-color .12s, color .12s;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
   }
   .vk-key:active {
     background: var(--rg-surface-2);
-    transform: scale(.95);
+    transform: scale(.94);
+  }
+  .vk-key.mod {
+    min-width: 40px;
+    flex: 1;
   }
   .vk-key.mod.active {
     background: color-mix(in srgb, var(--rg-accent) 25%, transparent);
@@ -152,25 +155,20 @@
     color: var(--rg-accent);
   }
   .vk-key.arrow {
-    min-width: 48px;
-    font-size: 16px;
+    min-width: 40px;
+    font-size: 15px;
   }
-  .vk-key.wide {
-    min-width: 66px;
-  }
-  .vk-key.home,
-  .vk-key.end,
-  .vk-key.pgup,
-  .vk-key.pgdn {
-    min-width: 52px;
+  /* 导航键文字短，缩小字号让 2×2 块保持紧凑。 */
+  .vk-key.nav {
+    min-width: 46px;
     font-size: 10px;
     font-weight: 600;
-    padding: 0 6px;
+    padding: 0 4px;
   }
-  .vk-sep {
-    width: 1px;
-    height: 24px;
-    background: var(--rg-border-bright);
-    margin: 0 2px;
+  /* Enter / Backspace 略宽，竖向占满该组高度。 */
+  .vk-key.wide {
+    min-width: 50px;
+    flex: 1;
+    font-size: 15px;
   }
 </style>
