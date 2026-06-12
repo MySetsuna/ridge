@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::{Signer, SigningKey};
 
 /// Ed25519 私钥种子长度（32 字节）。
-const SEED_LEN: usize = 32;
+pub const SEED_LEN: usize = 32;
 /// 签名长度（Ed25519 固定 64 字节）。
 pub const SIGNATURE_LEN: usize = 64;
 /// 公钥长度（Ed25519 固定 32 字节）。
@@ -64,8 +64,9 @@ impl DeviceIdentity {
         }
     }
 
-    /// 从 32 字节种子构造（确定性：同种子 → 同密钥对）。
-    fn from_seed(seed: &[u8; SEED_LEN]) -> Self {
+    /// 从 32 字节种子构造（确定性：同种子 → 同密钥对）。pub 供调用方/测试用确定性种子
+    /// 构造，避免 `load_or_create` 的磁盘副作用（如 ridge-cli 会话签名单测）。
+    pub fn from_seed(seed: &[u8; SEED_LEN]) -> Self {
         Self {
             signing: SigningKey::from_bytes(seed),
         }

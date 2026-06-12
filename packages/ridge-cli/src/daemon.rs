@@ -15,8 +15,9 @@ use anyhow::{Context, Result};
 use crate::config::{self, AuthFile};
 use crate::ice;
 use crate::rtc::WebRtcHost;
-use crate::session::RemoteSession;
+use crate::session::{HostIdentity, RemoteSession};
 use crate::signaling::{Role, SignalMsg, Signaling};
+use ridge_core::DeviceIdentity;
 
 /// 重连退避上下限。
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -53,7 +54,9 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
 
     let mut backoff = MIN_BACKOFF;
     loop {
-        match serve_once(&http, &auth, shell.clone(), cwd.clone(), root.clone()).await {
+        match serve_once(&http, &auth, &device_identity, shell.clone(), cwd.clone(), root.clone())
+            .await
+        {
             Ok(()) => {
                 // 信令正常断开：重置退避后立即重连。
                 backoff = MIN_BACKOFF;
@@ -76,6 +79,7 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
 async fn serve_once(
     http: &reqwest::Client,
     auth: &AuthFile,
+    device_identity: &DeviceIdentity,
     shell: Option<String>,
     cwd: Option<String>,
     root: Option<String>,
@@ -114,6 +118,7 @@ async fn serve_once(
         if controller_present {
             tracing::info!(target: "ridge_cli::daemon", "controller present; starting session");
             // 会话借用 incoming 读 offer/ICE，并用 cheap-clone 的 sender 回 answer/ICE。
+            // 零信任 #2：注入设备身份签名材料（host 握手发 0x02）。
             if let Err(e) = RemoteSession::run(
                 &peer,
                 ice_urls.clone(),
@@ -122,6 +127,11 @@ async fn serve_once(
                 shell.clone(),
                 cwd.clone(),
                 root.clone(),
+                HostIdentity {
+                    device_identity,
+                    device_name: &auth.device_name,
+                    username: &auth.username,
+                },
             )
             .await
             {
