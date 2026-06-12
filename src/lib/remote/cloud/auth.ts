@@ -120,17 +120,6 @@ export async function login(email: string, password: string): Promise<CloudAuthS
 }
 
 /**
- * 跨子域 fragment 交接落盘（方案 B）：主域登录后经 `#token=<jwt>` 回跳到租户子域，
- * 控制端 boot 在此把 user token 写入本子域 localStorage，使 cloud 远控接线可发起。
- *
- * 只落 token：user 对象按需由 refreshMe()/`/me` 补齐；租户域下 username 由 hostname 提供
- * （见 cloudControllerBoot 的 parseCloudControllerHostname），故此处无须 user 即可 boot。
- */
-export function persistHandoffToken(token: string): void {
-  update((s) => ({ ...s, userToken: token }));
-}
-
-/**
  * 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：调 `GET /auth/session`
  * （带父域 `ridge_sso` cookie）换短时 access token。成功 → 写入 userToken+user（seed
  * 现有 Bearer 流程，apiClient 零改动）→ true；401/网络失败 → false（调用方跳主域登录）。
