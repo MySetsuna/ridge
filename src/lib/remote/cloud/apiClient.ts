@@ -193,6 +193,8 @@ interface RequestOptions {
   token?: string;
   /** JSON body（POST）。 */
   body?: unknown;
+  /** 带凭证（父域 SSO cookie）。仅 /auth/session bootstrap 用 `'include'`（设计 2026-06-12）。 */
+  credentials?: RequestCredentials;
 }
 
 /**
@@ -200,7 +202,7 @@ interface RequestOptions {
  * 失败统一抛 ApiError（带结构化 code）。
  */
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', token, body } = opts;
+  const { method = 'GET', token, body, credentials } = opts;
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -211,6 +213,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      credentials,
     });
   } catch (e: unknown) {
     throw new ApiError('NETWORK', e instanceof Error ? e.message : '网络请求失败');
@@ -248,6 +251,17 @@ export function getMe(token: string): Promise<{ user: UserDto }> {
 
 export function setUsername(token: string, username: string): Promise<{ user: UserDto }> {
   return request<{ user: UserDto }>('/auth/set-username', { method: 'POST', token, body: { username } });
+}
+
+// ─── 父域 SSO bootstrap（设计 2026-06-12-cloud-domain-sso）─────────────────────
+
+/**
+ * 用父域 refresh cookie 换短时 access token。`credentials:'include'` 让浏览器把
+ * `Domain=.{base}` 的 `ridge_sso` cookie 带上（子域同站自动发送）。命中回 {token,user}；
+ * 无 cookie/失效 → 后端 401 → `request` 抛 ApiError('UNAUTHORIZED')。
+ */
+export function session(): Promise<AuthResult> {
+  return request<AuthResult>('/auth/session', { credentials: 'include' });
 }
 
 // ─── §5 每日签到（free 用户每日 2h 免费公网远控）─────────────────────────────
