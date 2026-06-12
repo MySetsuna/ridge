@@ -56,6 +56,9 @@
   // ── 公网（官方公网加速，契约 §5.3 多控制方）状态 ─────────────────────────
   // host 多控制方管理器（一条信令 WS + 按 cid 的 N 个 PeerConnection）。
   let host: RidgeCloudHost | null = null;
+  // 零信任 #2（概念 4-桌面）：本机 Ed25519 设备身份公钥（get_device_identity_pub 取一次缓存）。
+  // 与 sign_device_identity 配对注入 host：俱在 → 握手发 0x02 签名帧；取不到 → 回落 0x01。
+  let deviceIdentityPub: Uint8Array | null = null;
   let hostState = $state<HostSignalState>('offline');
   let cloudSessions = $state<CloudControllerSession[]>([]);
   const isOnline = $derived(hostState === 'online');
@@ -270,7 +273,18 @@
     const s = cloudAuth.snapshot();
     if (!s.deviceToken || !s.deviceName || !s.user?.username) return null;
     return new RidgeCloudHost(
-      { deviceToken: s.deviceToken, username: s.user.username },
+      {
+        deviceToken: s.deviceToken,
+        username: s.user.username,
+        // 零信任 #2（概念 4-桌面）：host 握手发 0x02 设备签名帧。signContext = 对 id-bind
+        // context 做 Ed25519 签名（私钥在 Rust/DPAPI，relay 无法伪造）；identityPub = 本机
+        // 设备身份公钥（启动取一次缓存）。两者配对：俱在 → 0x02；缺一 → 回落 0x01（向后兼容）。
+        signContext: (context: Uint8Array) =>
+          invoke<number[]>('sign_device_identity', { context: Array.from(context) }).then((a) =>
+            Uint8Array.from(a),
+          ),
+        identityPub: deviceIdentityPub ?? undefined,
+      },
       {
         onHostState: (st) => {
           hostState = st;
@@ -280,7 +294,8 @@
         onSessions: (list) => { cloudSessions = list; },
         onError: (msg) => { connectError = msg; },
         // host=Tauri 桌面 app：注入真实 invoke + pane 源 + 本机 TOTP 校验（契约 §0/§4/§5.1）。
-        createBridge: (_cid, send) =>
+        // 第三参 bindTranscript（零信任 #1）由概念 5 接入 totp-bind 校验。
+        createBridge: (_cid, send, _bindTranscript) =>
           new CloudHostBridge({
             invoke: (method, params) => invoke(method, params),
             sendFrame: send,
@@ -301,6 +316,15 @@
     if (!s.deviceToken || !s.deviceName || !s.user?.username) {
       connectError = tr('cloud.errDeviceNotActivated');
       return;
+    }
+    // 零信任 #2（概念 4-桌面）：取一次本机设备身份公钥缓存，供 host 握手发 0x02。
+    // 取不到（旧设备/无密钥）→ 留 null，host 自动回落 0x01（不阻断上线）。
+    if (!deviceIdentityPub) {
+      try {
+        deviceIdentityPub = Uint8Array.from(await invoke<number[]>('get_device_identity_pub'));
+      } catch {
+        deviceIdentityPub = null;
+      }
     }
     host ??= buildHost();
     if (!host) { connectError = tr('cloud.errDeviceNotActivated'); return; }
