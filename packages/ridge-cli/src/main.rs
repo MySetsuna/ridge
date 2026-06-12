@@ -66,6 +66,10 @@ enum Command {
     /// 带 `--daemon` 时激活后直接进入守护。
     Login(LoginArgs),
 
+    /// 用已激活的设备凭据（`~/.config/ridge/auth.json`）直接进入守护：连云端 relay、
+    /// 等 controller 接入并桥接 PTY。需先经 `rdg login` 激活（本命令不再交互登录）。
+    Remote(RemoteArgs),
+
     /// 作为**控制端**连接桌面 LAN host（E4）：WS + 自签 TLS，订阅 pane 后
     /// passthrough 进交互式 TUI（与本地 shell 同一界面）。鉴权用 `--code <TOTP>`
     /// （桌面"远程控制"面板显示）或 `--token <session>`。
@@ -102,6 +106,26 @@ struct LoginArgs {
     cwd: Option<String>,
 
     /// fs 服务根沙箱（仅在 --daemon 时生效，见 `remote --daemon` 的 --root）。
+    #[arg(long, env = "RIDGE_REMOTE_ROOT")]
+    root: Option<String>,
+}
+
+#[derive(Args)]
+struct RemoteArgs {
+    /// 后台守护运行（`remote` 本就以守护为唯一用途；保留此 flag 仅为与文档
+    /// `rdg remote --daemon` 用法一致，传不传都进守护）。
+    #[arg(long)]
+    daemon: bool,
+
+    /// 指定要拉起的 shell（默认按平台探测）。
+    #[arg(long)]
+    shell: Option<String>,
+
+    /// 会话 shell 的工作目录（默认 $HOME / 当前目录）。
+    #[arg(long)]
+    cwd: Option<String>,
+
+    /// fs 服务根沙箱。
     #[arg(long, env = "RIDGE_REMOTE_ROOT")]
     root: Option<String>,
 }
@@ -156,6 +180,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Command::Tui(args)) => tui::run_local(args.shell, args.cwd).await,
         Some(Command::Login(args)) => run_login(args).await,
+        // 已激活则直接进守护（不再交互登录）；凭据缺失时 daemon::run 内部会提示先 login。
+        Some(Command::Remote(args)) => daemon::run(args.shell, args.cwd, args.root).await,
         Some(Command::Connect(args)) => {
             if args.probe {
                 tui::run_lan_probe(args.host, args.code, args.token, args.probe_seconds).await
