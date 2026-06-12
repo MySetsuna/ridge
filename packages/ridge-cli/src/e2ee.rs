@@ -72,6 +72,9 @@ impl Handshake {
     }
 
     /// 编码握手首帧 `0x01 || pub(32)`。
+    /// 概念 4-cli 后 host 改发 0x02 设备签名帧（[`encode_signed_frame`]），本方法仅保留供
+    /// 测试与 API 对称（解析对端 0x01 仍用 [`Handshake::parse_peer_frame`]）。
+    #[allow(dead_code)]
     pub fn encode_frame(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(1 + PUB_KEY_LEN);
         out.push(HANDSHAKE_TAG);
@@ -174,6 +177,7 @@ pub fn encode_signed_frame(
 
 /// 解析 0x02 帧 → `(eph_pub, id_pub, sig)`。tag/长度非法报错。
 /// （host=ridge-cli 通常**发送** 0x02、不解析；保留供测试与对称完整性。）
+#[allow(dead_code)]
 pub fn parse_signed_frame(
     frame: &[u8],
 ) -> Result<([u8; PUB_KEY_LEN], [u8; ID_PUB_KEY_LEN], [u8; SIGNATURE_LEN])> {

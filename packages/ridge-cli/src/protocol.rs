@@ -11,15 +11,19 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 0x12 CONTROL 通道帧（契约 §4）。`t` tag + kebab-case，与桌面
+/// 0x12 CONTROL 通道帧（契约 §4 + 零信任 #1）。`t` tag + kebab-case，与桌面
 /// `cloudHostBridge.ts` / 浏览器 controller 逐字段一致：
-///   - controller → host: `{"t":"totp-verify","code":"123456"}`
+///   - controller → host: `{"t":"totp-verify","code":"123456"}`（明文码，旧/回落路径）
+///   - controller → host: `{"t":"totp-bind","tag":"<base64 HMAC>"}`（信道绑定，码不上线）
 ///   - host → controller: `{"t":"totp-result","ok":true}`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "t", rename_all = "kebab-case")]
 pub enum SessionControl {
     /// controller 把用户从 host TUI 读到的 6 位 TOTP 回传。
     TotpVerify { code: String },
+    /// 零信任 #1：controller 在收到 host 0x02 后改发本会话 transcript 上的 HMAC tag
+    /// （base64），明文 6 位码**不上线**。host 用本机种子 ±1 窗口重算比对。
+    TotpBind { tag: String },
     /// host 回二次验证结果。
     TotpResult { ok: bool },
 }
