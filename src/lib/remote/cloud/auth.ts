@@ -33,7 +33,11 @@ export interface CloudAuthState {
 /** SSR/Node（测试、vite build prerender）下无 localStorage 的安全访问。 */
 function ls(): Storage | null {
   try {
-    return typeof localStorage !== 'undefined' ? localStorage : null;
+    if (typeof localStorage === 'undefined') return null;
+    // 某些运行时（如 Node 实验性 localStorage、未带文件路径）提供「半成品」全局：
+    // 对象存在但 getItem/setItem 非函数。校验方法可用，否则视为不可用退化为内存态。
+    if (typeof localStorage.getItem !== 'function') return null;
+    return localStorage;
   } catch {
     return null;
   }
@@ -124,6 +128,22 @@ export async function login(email: string, password: string): Promise<CloudAuthS
  */
 export function persistHandoffToken(token: string): void {
   update((s) => ({ ...s, userToken: token }));
+}
+
+/**
+ * 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：调 `GET /auth/session`
+ * （带父域 `ridge_sso` cookie）换短时 access token。成功 → 写入 userToken+user（seed
+ * 现有 Bearer 流程，apiClient 零改动）→ true；401/网络失败 → false（调用方跳主域登录）。
+ * 这是替代 `#token=` 跨子域握手的免重登入口。
+ */
+export async function bootstrapFromCookie(): Promise<boolean> {
+  try {
+    const { token, user } = await api.session();
+    update((s) => ({ ...s, userToken: token, user }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── §2.3 浏览器登录授权（host 轮询拿 user JWT，token 不进 URL）──────────────
