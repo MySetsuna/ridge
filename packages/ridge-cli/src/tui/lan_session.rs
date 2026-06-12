@@ -78,7 +78,10 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
 }
 
 /// 构造接受自签证书的 rustls 连接器（ring provider，与现有依赖树一致）。
-fn tls_connector() -> Result<Connector> {
+///
+/// 复用方：LAN 控制端（桌面 LAN host 自签）+ 云端信令 dev 模式（本地 ridge-cloud
+/// 自签，见 `signaling::Signaling::connect`，**仅 `config::is_dev_mode()` 放开**）。
+pub(crate) fn tls_connector() -> Result<Connector> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()

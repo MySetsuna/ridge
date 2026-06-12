@@ -49,9 +49,23 @@ pub struct Signaling {
 impl Signaling {
     /// 连接信令 WS。`ws_url` 必须已带 `?token=&role=host`（见 `AuthFile::signaling_ws_url`）。
     pub async fn connect(ws_url: &str) -> Result<Self> {
-        let (ws_stream, _resp) = tokio_tungstenite::connect_async(ws_url)
-            .await
-            .context("signaling WS connect failed")?;
+        // 生产：默认 webpki-roots 校验（公共 CA，严格）。dev 模式（base domain 含
+        // localhost/127.0.0.1）：本地 ridge-cloud 用 rcgen 自签证书，webpki-roots 会拒绝
+        // ——故仅此时复用 LAN 那套 `AcceptAnyServerCert` 连接器接受自签。
+        // **严格仅 `is_dev_mode()` 放开；生产路径绝不接受自签，防降级 MITM。**
+        let (ws_stream, _resp) = if crate::config::is_dev_mode() {
+            tracing::warn!(
+                target: "ridge_cli::signaling",
+                "dev 模式：信令 WS 接受自签 TLS（仅本地 ridge-cloud；生产走公共 CA 严格校验）"
+            );
+            let connector = crate::tui::lan_session::tls_connector()
+                .context("dev 自签 TLS 连接器构造失败")?;
+            tokio_tungstenite::connect_async_tls_with_config(ws_url, None, false, Some(connector))
+                .await
+        } else {
+            tokio_tungstenite::connect_async(ws_url).await
+        }
+        .context("signaling WS connect failed")?;
         let (mut write, mut read) = ws_stream.split();
 
         let (in_tx, in_rx) = mpsc::channel::<SignalMsg>(64);
