@@ -9,6 +9,7 @@ use crate::state::AppState;
 pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, String> {
     let port = *state.remote_port.read();
     let lan_ip = crate::remote::detect_lan_ip();
+    let lan_ips = crate::remote::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
     let enabled = state.remote_enabled.load(Ordering::Relaxed);
@@ -50,6 +51,7 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
     Ok(serde_json::json!({
         "port": port,
         "lanIp": lan_ip,
+        "lanIps": lan_ips,
         "totpCode": totp_code,
         "otpauthUri": otpauth_uri,
         "ready": port > 0 && enabled,

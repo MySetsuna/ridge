@@ -88,11 +88,16 @@ export const zh: Record<string, string> = {
   refresh: '刷新',
   emptyDir: '空目录',
 
-  // FileViewer（只读文件 / diff 查看器）
+  // FileViewer（文件 / diff 查看器，文件可编辑）
   viewerCopyPath: '复制路径',
   viewerEmpty: '空文件',
   viewerNoChanges: '该文件无改动',
   viewerTruncated: '内容过长，仅显示前 {max} 行',
+  viewerEdit: '编辑',
+  viewerView: '查看',
+  viewerSave: '保存',
+  viewerUnsaved: '未保存的修改',
+  viewerUnsavedConfirm: '有未保存的修改，确定关闭并丢弃？',
 };
 
 export const en: Record<string, string> = {
@@ -184,9 +189,14 @@ export const en: Record<string, string> = {
   refresh: 'Refresh',
   emptyDir: 'Empty directory',
 
-  // FileViewer (read-only file / diff viewer)
+  // FileViewer (file / diff viewer, files editable)
   viewerCopyPath: 'Copy path',
   viewerEmpty: 'Empty file',
   viewerNoChanges: 'No changes in this file',
   viewerTruncated: 'Content too long — showing the first {max} lines',
+  viewerEdit: 'Edit',
+  viewerView: 'View',
+  viewerSave: 'Save',
+  viewerUnsaved: 'Unsaved changes',
+  viewerUnsavedConfirm: 'You have unsaved changes. Close and discard them?',
 };

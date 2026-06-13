@@ -37,8 +37,11 @@
   const td = new TextDecoder();
 
   // Keyboard offset (mobile): when the system soft keyboard appears, the canvas
-  // is pushed up by a FIXED amount equal to the keyboard height — no dynamic
-  // per-cursor recomputation (prevents flicker while typing).
+  // is pushed up by exactly enough to seat the INPUT ROW just above the keyboard
+  // top — computed from the cursor's pixel position, NOT a blind full-keyboard
+  // shift (that over-shifted by the bottom bar's height, lifting the input line
+  // well above the keyboard). Computed once per show (not per keystroke) so there
+  // is no flicker while typing.
   let keyboardOffset = $state(0);
 
   // Touch state. Single-finger swipe = scroll (simulates mouse wheel).
@@ -222,14 +225,22 @@
     touchLastY = t.clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
-    // §select-always-text: when the user explicitly turns on selection mode they
-    // want to select TEXT (to copy) — even inside a mouse-reporting TUI (vim/htop)
-    // and even right after a page refresh. Always start a text selection here;
-    // the TUI's own mouse interaction stays reachable when selection mode is OFF
-    // (tap = click-through, drag = wheel) via the non-selection branches below.
+    // §select-as-mouse: the select toggle SIMULATES A MOUSE — it just emits mouse
+    // signals and lets the receiving terminal decide what to do (parity with the
+    // desktop mouse path, handleMouseDown). When the app captures the mouse
+    // (mouse-reporting TUI: vim/htop/tmux…) we forward a press and the TUI owns the
+    // gesture/selection. ONLY a plain shell — which doesn't accept mouse reporting
+    // — falls back to LOCAL text selection + copy pill.
     if (selectionMode) {
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      if (cell) ctrl.startSelection(cell.row, cell.col);
+      if (cell) {
+        if (ctrl.isMouseReporting()) {
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false); // press
+          if (bytes.length > 0) onStdin(td.decode(bytes));
+        } else {
+          ctrl.startSelection(cell.row, cell.col);
+        }
+      }
     }
   }
 
@@ -242,9 +253,16 @@
     if (selectionMode) {
       selDragging = true;
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      // §select-always-text: extend the text selection regardless of mouse-
-      // reporting (matches handleTouchStart) so dragging selects in TUIs too.
-      if (cell) ctrl.extendSelection(cell.row, cell.col);
+      // §select-as-mouse: mouse-reporting TUI → motion report (the TUI extends its
+      // own selection); plain shell → local text selection.
+      if (cell) {
+        if (ctrl.isMouseReporting()) {
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // drag
+          if (bytes.length > 0) onStdin(td.decode(bytes));
+        } else {
+          ctrl.extendSelection(cell.row, cell.col);
+        }
+      }
       return;
     }
     touchScrollAccum += touchLastY - t.clientY;
@@ -259,14 +277,25 @@
     if (e.changedTouches.length !== 1) return;
     const touch = e.changedTouches[0];
     if (!ctrl) return;
-    if (selectionMode && selDragging) {
+    if (selectionMode) {
+      const wasDragging = selDragging;
       selDragging = false;
       const cell = touch ? ctrl.clientToCell(touch.clientX, touch.clientY) : null;
-      // §select-always-text: finish the text selection regardless of mouse-
-      // reporting and surface the copy pill (hasSelectionState).
-      if (cell) {
+      if (ctrl.isMouseReporting()) {
+        // §select-as-mouse: complete the simulated gesture with a release — a tap
+        // becomes a click, a drag becomes a drag-end. The TUI handles the rest.
+        if (cell) {
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false); // release
+          if (bytes.length > 0) onStdin(td.decode(bytes));
+        }
+      } else if (wasDragging) {
+        // Plain shell: finish the local text selection + surface the copy pill.
         ctrl.endSelection();
         hasSelectionState = !!ctrl.hasSelection();
+      } else {
+        // A tap in shell selection mode clears any existing selection.
+        ctrl.clearSelection();
+        hasSelectionState = false;
       }
       return;
     }
@@ -581,11 +610,36 @@
   // rect + current DPR and, when the grid changed, claims the new size on the
   // host (full reflow). It's debounced + idempotent, so keyboard show/hide that
   // doesn't change the grid is a cheap no-op.
-  // ── Fixed keyboard offset ──
-  // When the system keyboard appears, push the canvas up by the full keyboard
-  // height. Never recompute mid-keyboard (no flicker while typing).
-  // DO NOT call requestResize() here — we use transform to move the canvas up
-  // without changing the terminal grid size. Resize only on actual viewport/orientation change.
+  // Small gap so the input line isn't flush against the keyboard's top edge.
+  const KB_GAP_PX = 8;
+
+  /** Offset (CSS px) to translate the canvas up so the cursor's INPUT ROW sits
+   *  just above the keyboard. Anchors the cursor cell's BOTTOM at (keyboard top −
+   *  gap); falls back to the canvas bottom row when the cursor pixel is
+   *  unavailable. Returns 0 when the keyboard is hidden. */
+  function computeKeyboardOffset(): number {
+    const vv = window.visualViewport;
+    if (!vv || !canvasEl) return 0;
+    const kh = Math.max(0, window.innerHeight - (vv.height || 0));
+    if (kh <= 0) return 0; // keyboard hidden → no shift
+    const rect = canvasEl.getBoundingClientRect();
+    // Undo the transform currently applied (translateY(-keyboardOffset)) to get
+    // the canvas's natural, offset-free top in viewport coordinates.
+    const naturalTop = rect.top + keyboardOffset;
+    const cur = ctrl?.getCursorPixel();
+    // Cursor cell bottom relative to canvas top (else the canvas's own bottom).
+    const cursorBottom = cur ? cur.y + cur.h : rect.height;
+    const cursorScreenY = naturalTop + cursorBottom;
+    const keyboardTopY = (vv.offsetTop || 0) + vv.height;
+    return Math.max(0, Math.round(cursorScreenY - (keyboardTopY - KB_GAP_PX)));
+  }
+
+  // ── Cursor-anchored keyboard offset ──
+  // When the system keyboard appears, push the canvas up just enough to keep the
+  // input row visible above it. Computed once on show (not per keystroke → no
+  // flicker). DO NOT call requestResize() here — the transform moves the canvas
+  // without changing the terminal grid; resize only on real viewport/orientation
+  // change.
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -593,11 +647,10 @@
       if (!vv) return;
       const kh = Math.max(0, window.innerHeight - (vv.height || 0));
       const wasUp = keyboardOffset > 0;
-      keyboardOffset = kh; // fixed: always the full keyboard height
+      // On first show, snap the terminal to the prompt so the cursor we anchor on
+      // is the live input row — THEN measure the offset against it.
       if (kh > 0 && !wasUp) ctrl?.scrollToBottom();
-      // NOTE: intentionally NOT calling ctrl?.requestResize() here.
-      // The terminal grid should not change just because the keyboard is visible.
-      // The transform on the container handles the visual offset.
+      keyboardOffset = computeKeyboardOffset();
     }
     vv.addEventListener('resize', onViewportResize);
     // Fire once to capture any already-open keyboard.
