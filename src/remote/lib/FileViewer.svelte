@@ -99,6 +99,15 @@
     dirty = true;
   }
 
+  // Leave edit mode → rebuild the read view from the CURRENT content so it
+  // reflects unsaved edits (otherwise the view showed the pre-edit text).
+  function exitEdit() {
+    const { rows, truncated: t2 } = splitLines(content);
+    lines = rows;
+    truncated = t2;
+    editing = false;
+  }
+
   function requestClose() {
     if (dirty && !confirm(tr('mobile.viewerUnsavedConfirm'))) return;
     onClose();
@@ -127,7 +136,7 @@
     {#if canEdit}
       {#if editing}
         <button class="v-btn" class:armed={dirty} onclick={save} disabled={!dirty || saving} title={tr('mobile.viewerSave')} tabindex="-1"><Save class="w-4 h-4" /></button>
-        <button class="v-btn" onclick={() => editing = false} title={tr('mobile.viewerView')} tabindex="-1"><Eye class="w-4 h-4" /></button>
+        <button class="v-btn" onclick={exitEdit} title={tr('mobile.viewerView')} tabindex="-1"><Eye class="w-4 h-4" /></button>
       {:else}
         <button class="v-btn" onclick={() => editing = true} title={tr('mobile.viewerEdit')} tabindex="-1"><Pencil class="w-4 h-4" /></button>
       {/if}
