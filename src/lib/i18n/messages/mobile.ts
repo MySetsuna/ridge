@@ -87,6 +87,12 @@ export const zh: Record<string, string> = {
   parentDir: '上级目录',
   refresh: '刷新',
   emptyDir: '空目录',
+
+  // FileViewer（只读文件 / diff 查看器）
+  viewerCopyPath: '复制路径',
+  viewerEmpty: '空文件',
+  viewerNoChanges: '该文件无改动',
+  viewerTruncated: '内容过长，仅显示前 {max} 行',
 };
 
 export const en: Record<string, string> = {
@@ -177,4 +183,10 @@ export const en: Record<string, string> = {
   parentDir: 'Parent directory',
   refresh: 'Refresh',
   emptyDir: 'Empty directory',
+
+  // FileViewer (read-only file / diff viewer)
+  viewerCopyPath: 'Copy path',
+  viewerEmpty: 'Empty file',
+  viewerNoChanges: 'No changes in this file',
+  viewerTruncated: 'Content too long — showing the first {max} lines',
 };

@@ -4,10 +4,13 @@
   import { TerminalController } from './terminalController';
   import { anyMod, consumeMods } from './modState.svelte';
 
-  let { paneId, onStdin, onResize, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
+  let { paneId, onStdin, onResize, onHostClipboard, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    /** Mirror a copied selection onto the desktop host's clipboard (so the host's
+     *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
+    onHostClipboard?: (text: string) => void;
     selectionMode?: boolean;
     backendName?: string;
   } = $props();
@@ -162,18 +165,52 @@
     }
   }
 
-  /** Copy selection text to clipboard via the platform copy shortcut
-   *  (Ctrl+C / Cmd+C), then clear the selection state. Also sends `\x03`
-   *  to the PTY so mouse-reporting TUI apps receive their copy signal. */
+  /** Write `text` to the control device's clipboard, with a legacy
+   *  `execCommand('copy')` fallback for mobile browsers that reject the async
+   *  Clipboard API (older WebViews / non-secure quirks). */
+  async function writeClipboard(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch { /* fall through to the legacy textarea path */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      // finally so a throwing execCommand can't leak the textarea into the DOM.
+      try { document.execCommand('copy'); }
+      finally { document.body.removeChild(ta); }
+    } catch { /* clipboard truly unavailable — nothing more we can do */ }
+  }
+
+  /** Copy the selection to the control device's clipboard, then clear it.
+   *  §copy-no-interrupt: copying must NOT send `\x03` to the PTY — the old
+   *  unconditional ^C cancelled the shell line / SIGINT'd the foreground process
+   *  every time you copied. Copy is a read-only clipboard action now. */
   function copyAndClear() {
     if (!ctrl) return;
     try {
       const text = ctrl.getSelectionText();
-      if (text) navigator.clipboard.writeText(text).catch(() => {});
+      if (text) {
+        void writeClipboard(text);   // control device (this phone/browser)
+        onHostClipboard?.(text);     // + desktop host, for its native Ctrl+V paste
+      }
     } catch { /* kernel may have no selection */ }
     ctrl.clearSelection();
     hasSelectionState = false;
-    onStdin('\x03');
+  }
+
+  /** Paste arbitrary text (the control device's clipboard) into the terminal as
+   *  a bracketed paste. Driven by the bottom-bar paste button in MainApp — that
+   *  onclick is the user gesture the Clipboard API requires, and the LAN/cloud
+   *  link is a secure context, so the read in MainApp is permitted. */
+  export function pasteText(text: string) {
+    sendPaste(text);
   }
 
   function handleTouchStart(e: TouchEvent) {
@@ -185,16 +222,14 @@
     touchLastY = t.clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
+    // §select-always-text: when the user explicitly turns on selection mode they
+    // want to select TEXT (to copy) — even inside a mouse-reporting TUI (vim/htop)
+    // and even right after a page refresh. Always start a text selection here;
+    // the TUI's own mouse interaction stays reachable when selection mode is OFF
+    // (tap = click-through, drag = wheel) via the non-selection branches below.
     if (selectionMode) {
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      if (cell) {
-        if (ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          ctrl.startSelection(cell.row, cell.col);
-        }
-      }
+      if (cell) ctrl.startSelection(cell.row, cell.col);
     }
   }
 
@@ -207,14 +242,9 @@
     if (selectionMode) {
       selDragging = true;
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      if (cell) {
-        if (ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          ctrl.extendSelection(cell.row, cell.col);
-        }
-      }
+      // §select-always-text: extend the text selection regardless of mouse-
+      // reporting (matches handleTouchStart) so dragging selects in TUIs too.
+      if (cell) ctrl.extendSelection(cell.row, cell.col);
       return;
     }
     touchScrollAccum += touchLastY - t.clientY;
@@ -232,14 +262,11 @@
     if (selectionMode && selDragging) {
       selDragging = false;
       const cell = touch ? ctrl.clientToCell(touch.clientX, touch.clientY) : null;
+      // §select-always-text: finish the text selection regardless of mouse-
+      // reporting and surface the copy pill (hasSelectionState).
       if (cell) {
-        if (ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          ctrl.endSelection();
-          hasSelectionState = !!ctrl.hasSelection();
-        }
+        ctrl.endSelection();
+        hasSelectionState = !!ctrl.hasSelection();
       }
       return;
     }
@@ -450,7 +477,8 @@
     if (!ctrl) return;
     const text = ctrl.getSelectionText();
     if (!text) return;
-    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
+    await writeClipboard(text);    // control device
+    onHostClipboard?.(text);       // + desktop host (native Ctrl+V paste)
     ctrl.clearSelection();
   }
 

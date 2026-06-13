@@ -133,6 +133,9 @@ export class WsDataProvider implements DataProvider {
   async gitCleanUntracked(repoRoot: string): Promise<void> {
     await this.request<void>('git_clean_untracked', { repoRoot });
   }
+  async gitDiffFile(repoRoot: string, path: string, cached = false): Promise<string> {
+    return this.request<string>('git_diff_file', { repoRoot, path, cached });
+  }
 
   // ── Search ──
   async searchFiles(query: string, path?: string): Promise<SearchResult[]> {

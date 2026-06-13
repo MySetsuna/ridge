@@ -39,11 +39,12 @@
 <!-- preventDefault on pointerdown so tapping a key never blurs the terminal's
      hidden textarea — that would dismiss the mobile soft keyboard. -->
 <!--
-  §compact-layout: 紧凑双行，键位还原实体键盘以利盲打肌肉记忆——
-  左下角修饰键(Ctrl/Alt/Shift) + 左上 Esc/Tab；中间方向键 inverted-T(↑ 在上，
-  ←↓→ 在下，用 grid 让 ↑ 精确压在 ↓ 上方)；右侧导航块 Home/PgUp 上、End/PgDn 下
-  竖向配对(还原实体 6 键块的纵向分组)；最右 Enter 上、Backspace 下。整体两行
-  ≈ 2×30px，较旧版 4 行竖排 page-cluster(~190px)大幅压缩到 ~80px。
+  §compact-layout v2: 紧凑双行，键位还原实体键盘以利盲打肌肉记忆——
+  左下角修饰键(Ctrl/Alt/Shift) + 左上 Esc/Tab；中间方向键正-T(第一排 ←↑→，
+  第二排仅 ↓，用 grid 让 ↑/↓ 同列纵向对齐)；右侧导航块 Home/PgUp 上、End/PgDn 下
+  竖向配对；最右 Enter 上、Backspace 下。
+  §no-overflow: 四组按列权重 flex 分摊整行宽度(键 flex:1; min-width:0)，键间/组间
+  仅 2px——退格/回车恒落在屏内，绝不溢出窄屏右缘（旧版固定 min-width 之和 > 视口）。
 -->
 <div class="vk-container" onpointerdown={(e) => e.preventDefault()}>
   <!-- 左：Esc/Tab（上）+ Ctrl/Alt/Shift（下，实体键盘左下角） -->
@@ -59,12 +60,12 @@
     </div>
   </div>
 
-  <!-- 中：方向键 inverted-T（↑ 压在 ↓ 上方） -->
+  <!-- 中：方向键正-T（第一排 ←↑→，第二排仅 ↓，↑/↓ 同列对齐） -->
   <div class="vk-group vk-arrows">
-    <button class="vk-key arrow up" onclick={() => sendArrow('Up')} aria-label="Up">↑</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Down')} aria-label="Down">↓</button>
-    <button class="vk-key arrow" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
+    <button class="vk-key arrow a-left" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
+    <button class="vk-key arrow a-up" onclick={() => sendArrow('Up')} aria-label="Up">↑</button>
+    <button class="vk-key arrow a-right" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
+    <button class="vk-key arrow a-down" onclick={() => sendArrow('Down')} aria-label="Down">↓</button>
   </div>
 
   <!-- 右中：导航块 Home/PgUp（上）/ End/PgDn（下） -->
@@ -83,14 +84,16 @@
 </div>
 
 <style>
-  /* §compact-layout: 一行四组(左修饰/中方向/右导航/最右Enter·⌫)，每组内部两排，
-     整体两排键高 ≈ 80px(含安全区前的内边距)。 */
+  /* §no-overflow: 一行四组(左修饰/中方向/右导航/最右Enter·⌫)，每组内部两排。
+     四组按"列数"权重 flex 分摊 100% 行宽，键 flex:1+min-width:0 → 永不溢出窄屏。
+     整体两排键高 ≈ 76px(含安全区前的内边距)。 */
   .vk-container {
     display: flex;
     align-items: stretch;
-    justify-content: space-between;
-    gap: 6px;
-    padding: 5px 8px;
+    gap: 2px;
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
+    width: 100%;
+    box-sizing: border-box;
     background: var(--rg-surface);
     user-select: none;
     -webkit-user-select: none;
@@ -100,36 +103,44 @@
   .vk-group {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
+    min-width: 0;
   }
+  /* 列权重：左修饰 3 / 方向 3 / 导航 2 / Enter·⌫ 1.5 —— 与各组最宽一排的列数对齐。 */
+  .vk-left { flex: 3 1 0; }
+  .vk-arrows { flex: 3 1 0; }
+  .vk-nav { flex: 2 1 0; }
+  .vk-right { flex: 1.5 1 0; }
   .vk-grp-row {
     display: flex;
-    gap: 3px;
+    gap: 2px;
+    min-width: 0;
   }
-  /* 方向键 inverted-T：3 列网格，↑ 固定在第 2 列第 1 行，正好压在 ↓ 上方；
-     ←/↓/→ 自动流入第 2 行。 */
+  .vk-grp-row .vk-key { flex: 1 1 0; }
+  /* 方向键正-T：3 列 × 2 行网格。←↑→ 在第 1 排，↓ 在第 2 排第 2 列 → ↑/↓ 同列对齐。 */
   .vk-arrows {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 3px;
+    grid-template-rows: repeat(2, 1fr);
+    gap: 2px;
   }
-  .vk-arrows .up {
-    grid-column: 2;
-    grid-row: 1;
-  }
-  /* 导航块：2×2，Home/PgUp 上，End/PgDn 下——还原实体 6 键块的纵向分组。 */
+  .vk-arrows .a-left  { grid-column: 1; grid-row: 1; }
+  .vk-arrows .a-up    { grid-column: 2; grid-row: 1; }
+  .vk-arrows .a-right { grid-column: 3; grid-row: 1; }
+  .vk-arrows .a-down  { grid-column: 2; grid-row: 2; }
+  /* 导航块：2×2，Home/PgUp 上，End/PgDn 下。 */
   .vk-nav {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 3px;
+    gap: 2px;
   }
   .vk-key {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 38px;
-    height: 30px;
-    padding: 0 8px;
+    min-width: 0;
+    height: 32px;
+    padding: 0 2px;
     border: 1px solid var(--rg-border-bright);
     border-radius: 7px;
     background: var(--rg-bg);
@@ -140,14 +151,15 @@
     transition: background .12s, transform .12s, border-color .12s, color .12s;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
+    white-space: nowrap;
   }
   .vk-key:active {
     background: var(--rg-surface-2);
     transform: scale(.94);
   }
   .vk-key.mod {
-    min-width: 40px;
-    flex: 1;
+    flex: 1 1 0;
   }
   .vk-key.mod.active {
     background: color-mix(in srgb, var(--rg-accent) 25%, transparent);
@@ -155,20 +167,16 @@
     color: var(--rg-accent);
   }
   .vk-key.arrow {
-    min-width: 40px;
     font-size: 15px;
   }
   /* 导航键文字短，缩小字号让 2×2 块保持紧凑。 */
   .vk-key.nav {
-    min-width: 46px;
     font-size: 10px;
     font-weight: 600;
-    padding: 0 4px;
   }
-  /* Enter / Backspace 略宽，竖向占满该组高度。 */
+  /* Enter / Backspace 竖向占满该组高度。 */
   .vk-key.wide {
-    min-width: 50px;
-    flex: 1;
+    flex: 1 1 0;
     font-size: 15px;
   }
 </style>

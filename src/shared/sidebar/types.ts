@@ -67,4 +67,8 @@ export interface SidebarProvider {
   listDir(path: string): Promise<DirListing>;
   gitStatus(): Promise<GitInfo>;
   search(query: string): Promise<SearchHit[]>;
+  /** Read a file's text content (read-only viewer). `path` is absolute. */
+  readFile(path: string): Promise<string>;
+  /** Unified diff of a working-tree file vs HEAD. `path` is repo-relative. */
+  gitDiff(path: string): Promise<string>;
 }
