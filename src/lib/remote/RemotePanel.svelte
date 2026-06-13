@@ -37,7 +37,24 @@
   // the Settings panel, which also reads `settingsStore.remoteEnabled`).
   const remoteEnabled = $derived($settingsStore.remoteEnabled);
   // §shared-TOTP: 单一来源 —— 同一本机 RemoteAuth(get_remote_info)，LAN 与公网共用。
-  let remoteInfo = $state<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
+  let remoteInfo = $state<{ port: number; lanIp: string; lanIps?: string[]; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
+  // §lan-addresses: a phone may be on a different interface than the host's
+  // primary route (Wi-Fi vs Tailscale vs Ethernet). List every usable LAN IPv4
+  // and let the user pick the one on their phone's network — the QR + copy link
+  // follow the selection. Defaults to the primary (route-to-internet) address.
+  let selectedIp = $state<string | null>(null);
+  const lanIps = $derived(
+    remoteInfo?.lanIps && remoteInfo.lanIps.length > 0
+      ? remoteInfo.lanIps
+      : remoteInfo?.lanIp
+        ? [remoteInfo.lanIp]
+        : [],
+  );
+  const activeIp = $derived(
+    selectedIp && lanIps.includes(selectedIp)
+      ? selectedIp
+      : (remoteInfo?.lanIp ?? lanIps[0] ?? 'localhost'),
+  );
   let connectError = $state('');
   let totpTimer: ReturnType<typeof setInterval> | null = null;
   let machineName = $state('Ridge');
@@ -144,7 +161,7 @@
   }
   async function refreshRemoteInfo() {
     try {
-      const info = await invoke<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string }>('get_remote_info');
+      const info = await invoke<{ port: number; lanIp: string; lanIps?: string[]; totpCode: string; otpauthUri: string; ready: boolean; machineName: string }>('get_remote_info');
       remoteInfo = info;
       machineName = info.machineName;
     } catch (e: unknown) {
@@ -183,7 +200,7 @@
     }
   }
   async function copyLink() {
-    const uri = buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0);
+    const uri = buildLinkUri(activeIp, remoteInfo?.port ?? 0);
     try {
       await navigator.clipboard.writeText(uri);
       copySuccess = true;
@@ -469,16 +486,33 @@
         {#if remoteEnabled}
           {#if remoteInfo?.ready}
             <div class="flex flex-col items-center gap-1 py-1">
-              <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={132} />
+              <QrCode value={buildLinkUri(activeIp, remoteInfo.port)} size={132} />
               <p class="text-[9px] text-[var(--rg-fg-muted)]">{$t('remote.qrScanFlow')}</p>
               {#if !dev}
                 <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">{$t('remote.certWarn')}</p>
               {/if}
             </div>
+            {#if lanIps.length > 1}
+              <!-- §lan-addresses: pick the address on the phone's network -->
+              <div class="flex flex-wrap gap-1 justify-center pt-0.5">
+                {#each lanIps as ip (ip)}
+                  <button
+                    onclick={() => selectedIp = ip}
+                    class="px-2 py-0.5 rounded text-[10px] font-mono border transition-colors {ip === activeIp
+                      ? 'border-[var(--rg-accent)] text-[var(--rg-accent)] bg-[var(--rg-accent)]/10'
+                      : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:border-[var(--rg-accent)]/40'}"
+                    title={ip}
+                  >
+                    {ip}
+                  </button>
+                {/each}
+              </div>
+              <p class="text-[9px] text-[var(--rg-fg-muted)] text-center leading-snug">{$t('remote.lanPickAddress')}</p>
+            {/if}
             <div class="flex items-center justify-between text-xs">
               <span class="text-[var(--rg-fg-muted)]">{$t('remote.mobileEntry')}</span>
               <button onclick={copyLink} class="text-[var(--rg-accent)] font-mono hover:underline cursor-pointer bg-transparent border-none p-0" title={$t('remote.copyLinkTitle')}>
-                {remoteInfo.lanIp}:{dev ? '5174' : remoteInfo.port}
+                {activeIp}:{dev ? '5174' : remoteInfo.port}
               </button>
             </div>
             <button onclick={copyLink} class="w-full text-[10px] text-[var(--rg-accent)] hover:underline" title={$t('remote.copyLink')}>

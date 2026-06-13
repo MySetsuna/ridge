@@ -87,6 +87,10 @@ export function createWsSidebarProvider(cwd: string): SidebarProvider {
       return dp.readFile(path);
     },
 
+    async writeFile(path: string, content: string): Promise<void> {
+      return dp.writeFile(path, content);
+    },
+
     async gitDiff(path: string): Promise<string> {
       // Working-tree diff vs HEAD (uncached), rooted at the pane cwd.
       return dp.gitDiffFile(root, path, false);
