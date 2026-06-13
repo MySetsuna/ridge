@@ -1362,6 +1362,7 @@ async fn handle_ws(
     if let Some(entry) = crate::commands::theme::active_theme_entry_no_handle() {
         let theme_msg = serde_json::json!({
             "type": "theme",
+            "id": entry.id,
             "themeType": entry.theme_type,
             "colors": entry.colors,
         });
@@ -2075,6 +2076,65 @@ async fn handle_ws(
                                     "results": results,
                                 }).to_string())).await
                             }
+                            Some("cycle-theme") => {
+                                // §theme-cycle: a control end taps "theme" → push the theme
+                                // AFTER the one it currently shows. Stateless: we never write
+                                // the active theme to disk nor clobber peers (§theme-isolation
+                                // — the control end owns its own appearance). The client tracks
+                                // its current id (seeded from the connect `theme` push) and
+                                // sends it as `current`; an unknown/empty id starts at index 0.
+                                let current = parsed["current"].as_str().unwrap_or("");
+                                let tf = ridge_core::commands::theme::get_theme_data();
+                                if tf.themes.is_empty() {
+                                    Ok(())
+                                } else {
+                                    let n = tf.themes.len();
+                                    let next = match tf.themes.iter().position(|t| t.id == current) {
+                                        Some(idx) => (idx + 1) % n,
+                                        None => 0,
+                                    };
+                                    let entry = &tf.themes[next];
+                                    let msg = serde_json::json!({
+                                        "type": "theme",
+                                        "id": entry.id,
+                                        "themeType": entry.theme_type,
+                                        "colors": entry.colors,
+                                    });
+                                    ws_tx.send(Message::Text(msg.to_string())).await
+                                }
+                            }
+                            Some("list-workspace-panes") => {
+                                // §peek-panes: list an arbitrary workspace's panes WITHOUT
+                                // switching this client's active workspace — backs the tree's
+                                // "expand a non-active workspace to peek at its terminals".
+                                // Read-only; never touches `active_ws_id`.
+                                let id_str = parsed["workspaceId"].as_str().unwrap_or("");
+                                let pane_list = if let Ok(id) = Uuid::parse_str(id_str) {
+                                    let workspaces = ctx.state.workspaces.read();
+                                    workspaces.get(&id).map(build_remote_pane_list).unwrap_or_default()
+                                } else {
+                                    Vec::new()
+                                };
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "workspace-panes",
+                                    "workspaceId": id_str,
+                                    "panes": pane_list,
+                                }).to_string())).await
+                            }
+                            Some("set-host-clipboard") => {
+                                // §copy-to-host: a control end's copy ALSO lands on the DESKTOP
+                                // host's system clipboard, so the host's own native paste (Ctrl+V)
+                                // picks it up. An authenticated remote already has shell stdin, so
+                                // writing the clipboard is strictly less powerful — best-effort,
+                                // failures are non-fatal (e.g. a headless host with no AppHandle).
+                                if let Some(text) = parsed["text"].as_str() {
+                                    if let Some(app) = ctx.state.app_handle.get() {
+                                        use tauri_plugin_clipboard_manager::ClipboardExt;
+                                        let _ = app.clipboard().write_text(text.to_string());
+                                    }
+                                }
+                                Ok(())
+                            }
                             Some("data-request") => {
                                 // Backs the remote `WsDataProvider` (src/lib/transport/ws.ts).
                                 // An authenticated remote already has shell stdin, so this
@@ -2108,6 +2168,11 @@ async fn handle_ws(
                                         dispatch_data_request(&method, &parsed, &ctx.state).await;
                                     if let Some(obj) = reply.as_object_mut() {
                                         obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                                        // §data-result-type: tag the reply so it survives
+                                        // RemoteConnection's onmessage routing (a typeless reply
+                                        // tripped `type.endsWith('-result')` → TypeError → the
+                                        // reply was silently dropped and the sidebar never loaded).
+                                        obj.insert("type".to_string(), serde_json::json!("data-result"));
                                     }
                                     ws_tx.send(Message::Text(reply.to_string())).await
                                 }
@@ -2579,6 +2644,15 @@ async fn dispatch_data_request(
         "git_clean_untracked" => {
             unit(git::git_clean_untracked(s(params, "repoRoot"), Vec::new()).await)
         }
+        // Read-only: unified diff of one file vs HEAD (or the index when cached).
+        "git_diff_file" => val(
+            git::git_diff_file(
+                s(params, "repoRoot"),
+                s(params, "path"),
+                params["cached"].as_bool(),
+            )
+            .await,
+        ),
 
         // ── Search ──
         "search_files" => search_files_result(state, s(params, "query"), s(params, "path")).await,

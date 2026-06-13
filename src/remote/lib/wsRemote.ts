@@ -144,7 +144,7 @@ export class RemoteConnection {
   private metaListeners: Set<MetaListener> = new Set();
   private resizeListeners: Set<PtyResizeListener> = new Set();
   private themeListeners: Set<ThemeListener> = new Set();
-  private _lastTheme: { themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
+  private _lastTheme: { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
@@ -230,6 +230,22 @@ export class RemoteConnection {
     return () => this.themeListeners.delete(fn);
   }
   lastTheme() { return this._lastTheme; }
+
+  /** Ask the host to cycle to the theme *after* `currentId` and push it back as
+   *  a `theme` message (applied via onTheme). Stateless on the host — it never
+   *  writes the active theme to disk nor clobbers peers (§theme-isolation): the
+   *  control end owns its own appearance. Pass the id the client currently shows
+   *  (from lastTheme()) so the host can compute the next one. */
+  cycleTheme(currentId: string) {
+    this.send({ type: 'cycle-theme', current: currentId });
+  }
+
+  /** Mirror a copied selection onto the DESKTOP host's system clipboard so the
+   *  host's own native paste (Ctrl+V) picks it up — the control end's copy
+   *  writes BOTH its local clipboard and the host's. Best-effort / fire-and-forget. */
+  setHostClipboard(text: string) {
+    if (text) this.send({ type: 'set-host-clipboard', text });
+  }
 
   /** §perf: shallow snapshot of the three-segment latency marks
    *  (performance.now() ms, monotonic) for the current connection cycle.
@@ -327,7 +343,15 @@ export class RemoteConnection {
     try {
       const msg = JSON.parse(event.data) as WsMessage;
       if (typeof msg === 'object' && msg !== null) {
-        const type = (msg as Record<string, unknown>).type as string;
+        // §data-request-fix: `data-request` replies (file tree / git / search)
+        // carry NO `type` field — only `_reqId` + `_result`/`_error`. A bare
+        // `(msg).type as string` then yields `undefined`, and the later
+        // `type.endsWith('-result')` threw a TypeError that the outer `catch {}`
+        // swallowed — so every sidebar reply was silently dropped and the
+        // File/Git/Search panels never received data (一直不可用). Coalesce to ''
+        // so untyped replies fall straight through to `messageListeners`, where
+        // `WsDataProvider` matches them by `_reqId`.
+        const type = ((msg as Record<string, unknown>).type as string) ?? '';
 
         // Heartbeat reply — liveness already recorded above, nothing else to do.
         if (type === 'pong') return;
@@ -344,14 +368,17 @@ export class RemoteConnection {
           return;
         }
         if (type === 'theme') {
-          const t = msg as { themeType: 'dark' | 'light'; colors: Record<string, string> };
-          this._lastTheme = { themeType: t.themeType, colors: t.colors };
+          const t = msg as { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> };
+          // Track the active theme id so the theme-cycle button can ask the host
+          // for "the theme after this one" (stateless host cycle, see cycleTheme).
+          this._lastTheme = { id: t.id, themeType: t.themeType, colors: t.colors };
           this.themeListeners.forEach(fn => fn(t.colors, t.themeType));
           return;
         }
 
         // Route result-type responses to pending request promises.
-        const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project';
+        const isResult = type.endsWith('-result') || type === 'workspaces'
+          || type === 'current-project' || type === 'workspace-panes';
         if (isResult) {
           const pending = this._pendingRequests.get(type);
           if (pending) {
@@ -596,6 +623,20 @@ export class RemoteConnection {
   async closeWorkspace(workspaceId: string): Promise<boolean> {
     const data = await this._sendAndWait({ type: 'close-workspace', workspaceId }, 'close-workspace-result') as Record<string, unknown>;
     return (data as Record<string, unknown>).success === true;
+  }
+
+  /** List the panes of an ARBITRARY workspace without switching this client's
+   *  active workspace. Backs the tree's "expand a non-active workspace to peek
+   *  at its terminals" (read-only on the host). */
+  async listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]> {
+    const data = await this._sendAndWait(
+      { type: 'list-workspace-panes', workspaceId },
+      'workspace-panes',
+    ) as { workspaceId?: string; panes?: PaneInfo[] };
+    // Guard against a stale reply for a different workspace (the response type
+    // is shared across workspaces, so a fast double-tap could cross wires).
+    if (data.workspaceId && data.workspaceId !== workspaceId) return [];
+    return data.panes || [];
   }
 
   async requestCurrentProject(): Promise<string> {

@@ -6,11 +6,15 @@
   import SidebarSearch from '../../shared/sidebar/SidebarSearch.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
 
-  let { tab = 'files', cwd = '', onClose, onTabChange }: {
+  let { tab = 'files', cwd = '', onClose, onTabChange, onOpenFile, onOpenDiff }: {
     tab?: 'files' | 'git' | 'search';
     cwd?: string;
     onClose: () => void;
     onTabChange?: (t: 'files' | 'git' | 'search') => void;
+    /** Open a file in the read-only viewer (file tree row / search hit). */
+    onOpenFile?: (path: string, line?: number) => void;
+    /** Open a changed file's git diff in the viewer (git panel row). */
+    onOpenDiff?: (path: string) => void;
   } = $props();
 
   // Rooted at the active pane's cwd — the same source the desktop ridge shows.
@@ -40,11 +44,11 @@
   <div class="sb-body">
     {#key cwd}
       {#if tab === 'files'}
-        <SidebarFileTree {provider} />
+        <SidebarFileTree {provider} {onOpenFile} />
       {:else if tab === 'git'}
-        <SidebarGitPanel {provider} />
+        <SidebarGitPanel {provider} {onOpenDiff} />
       {:else}
-        <SidebarSearch {provider} />
+        <SidebarSearch {provider} {onOpenFile} />
       {/if}
     {/key}
   </div>

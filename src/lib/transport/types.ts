@@ -44,6 +44,8 @@ export interface DataProvider {
   gitCreateTag(repoRoot: string, name: string, message?: string): Promise<void>;
   gitDiscard(repoRoot: string, paths: string[]): Promise<void>;
   gitCleanUntracked(repoRoot: string): Promise<void>;
+  /** Unified diff of a single file vs HEAD (or the index when `cached`). */
+  gitDiffFile(repoRoot: string, path: string, cached?: boolean): Promise<string>;
 
   // ── Search ──
   searchFiles(query: string, path?: string): Promise<SearchResult[]>;

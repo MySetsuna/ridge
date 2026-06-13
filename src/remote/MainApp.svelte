@@ -13,9 +13,12 @@
   const VirtualKeyboard = import('./lib/VirtualKeyboard.svelte');
   // RemoteSidebar (file tree, git, search) loaded when sidebar is opened.
   const RemoteSidebar = import('./lib/RemoteSidebar.svelte');
+  // FileViewer (read-only file / git-diff overlay) loaded on first open.
+  const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
   import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
+  import { createWsSidebarProvider } from './lib/sidebarProvider';
 
   let { ws }: { ws: RemoteConnection } = $props();
   let panes = $state<PaneInfo[]>([]);
@@ -31,8 +34,23 @@
   // single-finger drag selects; when off it scrolls (no accidental selection).
   let selectionMode = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
+  // Read-only file / git-diff viewer overlay. Opened from the sidebar (tap a
+  // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
+  let viewer = $state<{ kind: 'file' | 'diff'; path: string; line?: number } | null>(null);
   // Active pane's working dir — roots the sidebar at the same place ridge shows.
   let activeCwd = $state('');
+  // Provider rooted at the active cwd — backs the file/diff viewer (the sidebar
+  // builds its own internally). Recreated when the cwd changes.
+  const sidebarProvider = $derived(createWsSidebarProvider(activeCwd));
+
+  function openFileViewer(path: string, line?: number) {
+    viewer = { kind: 'file', path, line };
+    sidebarTab = null; // close the sidebar so the viewer takes the screen
+  }
+  function openDiffViewer(path: string) {
+    viewer = { kind: 'diff', path };
+    sidebarTab = null;
+  }
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
   let createError = $state('');
@@ -79,18 +97,27 @@
   // Boot workspace-restore runs exactly once (first workspaces list after connect).
   let bootRestoreDone = false;
 
-  // Theme cycling: the host pushes theme changes; we can request a cycle.
-  // The host will push the new theme back via the 'theme' message.
+  // Theme cycling: ask the host for the theme *after* the one we currently show.
+  // The host computes it statelessly (no disk write / no peer clobber — see
+  // wsRemote.cycleTheme) and pushes it back via the 'theme' message, which
+  // onTheme applies. The button was a no-op before: it sent `cycle-theme` with
+  // no `current`, and the host had no handler for it at all.
   async function handleThemeToggle() {
     if (!ws) return;
-    ws.send({ type: 'cycle-theme' });
+    ws.cycleTheme(ws.lastTheme()?.id ?? '');
   }
 
-  // Paste from remote clipboard: ask the host to read its clipboard and send
-  // the content as a bracketed paste to the active pane.
+  // Paste the CONTROL DEVICE's clipboard (this phone/browser) into the remote
+  // terminal as a bracketed paste. The button onclick is the user gesture the
+  // Clipboard API requires, and the LAN/cloud link is a secure context, so
+  // readText() is permitted. Previously this sent `{type:'paste'}` to the host,
+  // which had no handler — so the button did nothing.
   async function handlePaste() {
-    if (!ws || !activePaneId) return;
-    ws.send({ type: 'paste', paneId: activePaneId });
+    if (!activePaneId || !canvasRef) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) canvasRef.pasteText(text);
+    } catch { /* clipboard blocked: no permission / insecure context */ }
   }
 
   // §terminal-isolation + scrollback-cache: the local kernel is a single shared
@@ -374,6 +401,14 @@
       scheduleSessionMirror(paneId);
     });
     ws.onMetadata((paneId, title, cwd) => {
+      // §realtime-title: reflect the live pane title in the workspace tree (and
+      // header) the instant it changes, instead of waiting for the next
+      // list-panes round-trip. pty-meta only fires for the active workspace's
+      // panes (host filters by active_ws_id); non-active workspaces refresh via
+      // the tree's periodic poll.
+      if (title != null && title.length > 0) {
+        panes = panes.map((p) => (p.id === paneId ? { ...p, title } : p));
+      }
       if (paneId === activePaneId) {
         // Title drives the document/tab title directly.
         if (title != null && title.length > 0) document.title = title;
@@ -544,6 +579,7 @@
         paneId={activePaneId ?? null}
         {onStdin}
         {onResize}
+        onHostClipboard={(text) => ws.setHostClipboard(text)}
         bind:selectionMode
       />
     {/await}
@@ -554,7 +590,27 @@
     {#await RemoteSidebar}
       <div class="sidebar-loading">{$t('mobile.loading')}</div>
     {:then module}
-      <module.default tab={sidebarTab} cwd={activeCwd} onClose={() => sidebarTab = null} onTabChange={(t) => sidebarTab = t} />
+      <module.default
+        tab={sidebarTab}
+        cwd={activeCwd}
+        onClose={() => sidebarTab = null}
+        onTabChange={(t) => sidebarTab = t}
+        onOpenFile={openFileViewer}
+        onOpenDiff={openDiffViewer}
+      />
+    {/await}
+  {/if}
+
+  {#if viewer}
+    {@const v = viewer}
+    {#await FileViewer then module}
+      <module.default
+        provider={sidebarProvider}
+        kind={v.kind}
+        path={v.path}
+        line={v.line}
+        onClose={() => viewer = null}
+      />
     {/await}
   {/if}
 
