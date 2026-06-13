@@ -97,14 +97,36 @@
   // Boot workspace-restore runs exactly once (first workspaces list after connect).
   let bootRestoreDone = false;
 
+  // §theme-persist: a control end owns its appearance (theme isolation). Once the
+  // user cycles the theme, that choice must survive a reconnect (the host re-pushes
+  // its OWN active theme at every connect) AND a reload. We remember the cycled
+  // {id, colors} locally; on any later host theme push we re-apply the override
+  // instead of the host's theme. localStorage makes it survive a reload too.
+  const LS_THEME_KEY = 'rg-remote-theme-override';
+  let userTheme: { id: string; colors: Record<string, string> } | null = null;
+  try {
+    const raw = localStorage.getItem(LS_THEME_KEY);
+    if (raw) userTheme = JSON.parse(raw) as { id: string; colors: Record<string, string> };
+  } catch { /* ignore */ }
+  // True between tapping the theme button and its `theme` reply arriving, so the
+  // reply is adopted as the override (vs. a host-initiated connect/reconnect push).
+  let pendingCycle = false;
+  function persistUserTheme() {
+    try {
+      if (userTheme) localStorage.setItem(LS_THEME_KEY, JSON.stringify(userTheme));
+      else localStorage.removeItem(LS_THEME_KEY);
+    } catch { /* quota / disabled — ignore */ }
+  }
+
   // Theme cycling: ask the host for the theme *after* the one we currently show.
   // The host computes it statelessly (no disk write / no peer clobber — see
-  // wsRemote.cycleTheme) and pushes it back via the 'theme' message, which
-  // onTheme applies. The button was a no-op before: it sent `cycle-theme` with
-  // no `current`, and the host had no handler for it at all.
+  // wsRemote.cycleTheme) and pushes it back via the 'theme' message. We cycle from
+  // the user's override id when present so cycling stays continuous after a
+  // reconnect (where ws.lastTheme() would be the host's theme, not ours).
   async function handleThemeToggle() {
     if (!ws) return;
-    ws.cycleTheme(ws.lastTheme()?.id ?? '');
+    pendingCycle = true;
+    ws.cycleTheme(userTheme?.id ?? ws.lastTheme()?.id ?? '');
   }
 
   // Paste the CONTROL DEVICE's clipboard (this phone/browser) into the remote
@@ -422,10 +444,26 @@
       }
     });
     // Theme: apply the snapshot pushed at connect (cached, since it usually
-    // arrives before this listener), then follow any later pushes.
+    // arrives before this listener) — but a user override (§theme-persist) wins.
     const t0 = ws.lastTheme();
-    if (t0) applyTheme(t0.colors);
-    ws.onTheme((colors) => applyTheme(colors));
+    if (userTheme) applyTheme(userTheme.colors);
+    else if (t0) applyTheme(t0.colors);
+    ws.onTheme((colors) => {
+      if (pendingCycle) {
+        // Reply to our own cycle tap → adopt it as the persisted override.
+        pendingCycle = false;
+        const id = ws.lastTheme()?.id ?? '';
+        userTheme = id ? { id, colors } : null;
+        persistUserTheme();
+        applyTheme(colors);
+      } else if (userTheme) {
+        // Host (re)pushed its active theme at (re)connect, but the user has an
+        // override → keep the override so the cycled theme survives reconnects.
+        applyTheme(userTheme.colors);
+      } else {
+        applyTheme(colors);
+      }
+    });
     // Reconnect resync: a reconnect opens a brand-new host socket that holds no
     // pane subscription, and the local kernel still shows the stale pre-drop
     // screen. Reset it (RIS) so the host's scrollback replay + full repaint paint

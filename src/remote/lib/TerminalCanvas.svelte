@@ -297,6 +297,10 @@
         ctrl.clearSelection();
         hasSelectionState = false;
       }
+      // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises the
+      // soft keyboard so you can type without first leaving select mode. Drags are
+      // the selection gesture itself, so they don't pop the keyboard.
+      if (!wasDragging) focusInput();
       return;
     }
     const elapsed = Date.now() - touchStartTime;
