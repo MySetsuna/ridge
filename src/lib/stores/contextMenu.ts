@@ -21,6 +21,7 @@ export type ContextMenuTarget =
   | 'sidebar'
   | 'workspace-tabs'
   | 'git-graph'
+  | 'scm-files'
   | 'pane-content'
   | 'unknown';
 

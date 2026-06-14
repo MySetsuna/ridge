@@ -42,6 +42,7 @@ self.MonacoEnvironment = {
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
+  import QuickOpen from '$lib/components/QuickOpen.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
   // Side-effect import: each built-in plugin auto-registers via its module
@@ -124,6 +125,10 @@ self.MonacoEnvironment = {
 // ─── 打开 .ridge 入口（双下拉）───
   // 副按钮 = 已保存工作区（Bookmark 图标，列出 ~/ridge-workspaces/*.ridge）。
   // 点击 = openWorkspaceFromFile。
+  // §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P）：复用现成 QuickOpen.svelte
+  // （fuzzy filename_search → openFile）。详见 docs/superpowers/specs/2026-06-14-…。
+  let quickOpenVisible = $state(false);
+
   let savedOpen = $state(false);
   let savedList = $state<{ name: string; path: string; mtime_secs: number }[]>([]);
   let savedBtn: HTMLButtonElement | undefined = $state();
@@ -452,6 +457,20 @@ function expandSidebar() {
         sidebarCollapsed = false;
         saveSidebarSettings();
       }
+      return;
+    }
+    // Ctrl+Shift+P / Ctrl+P: 打开文件搜索 palette（VS Code 对齐）。
+    // Ctrl+Shift+P 全局生效；裸 Ctrl+P 在 TUI 活跃终端里让位给 shell
+    // （如 readline Ctrl+P=上一条历史），避免抢终端快捷键。
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+      if (!e.shiftKey) {
+        const target = e.target as HTMLElement | null;
+        const paneEl = target?.closest?.('[data-rg-pane-id]') as HTMLElement | null;
+        const paneId = paneEl?.dataset.rgPaneId;
+        if (paneId && isPaneTuiActive(paneId)) return;
+      }
+      e.preventDefault();
+      quickOpenVisible = true;
       return;
     }
     // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
@@ -1818,4 +1837,12 @@ function expandSidebar() {
 <WindToast />
 <!-- 全局右键菜单 -->
 <ContextMenu />
+
+<!-- §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P，VS Code 对齐）。openFile → 内置编辑器。 -->
+{#if quickOpenVisible}
+  <QuickOpen
+    on:openFile={(e) => fileEditorStore.openFile(e.detail.path)}
+    on:close={() => (quickOpenVisible = false)}
+  />
+{/if}
 
