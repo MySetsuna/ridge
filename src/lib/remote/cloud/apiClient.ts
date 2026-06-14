@@ -226,19 +226,72 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   }
 }
 
-/** 单次请求（无重试）。被 `request` 包装以支持 401 刷新重试。 */
+/** 运行在 Tauri WebView（桌面）内？无副作用、node/SSR 安全（typeof 守卫）。 */
+function inTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** 解 §2 信封：成功取 data，失败按 code 抛 ApiError，畸形抛 BAD_RESPONSE。 */
+function unwrapEnvelope<T>(envelope: Envelope<T> | null, status: number): T {
+  if (envelope && envelope.ok === true) {
+    return envelope.data;
+  }
+  if (envelope && envelope.ok === false && envelope.error) {
+    throw new ApiError(coerceCode(envelope.error.code), envelope.error.message ?? '请求失败');
+  }
+  throw new ApiError('BAD_RESPONSE', `响应信封格式非法（HTTP ${status}）`);
+}
+
+/**
+ * 单次请求（无重试）。被 `request` 包装以支持 401 刷新重试。
+ *
+ * 桌面（Tauri WebView，Windows 源 `http://tauri.localhost`）对云主域是**跨域** fetch，
+ * 受 CORS 管控；云端 allowlist 只放行 `https://tauri.localhost` → WebView fetch 被拦
+ * → 旧实现抛 `NETWORK`（「网络连接失败」）。故桌面改经 Rust 代理（`invoke('cloud_http')`，
+ * 见 src-tauri/src/commands/cloud_http.rs）绕过浏览器 CORS/CSP；web-remote（浏览器同源
+ * 访问云子域）仍走原生 fetch，并保留 `credentials` 供父域 SSO cookie。
+ */
 async function requestOnce<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', token, body, credentials } = opts;
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const url = `${API_BASE}${path}`;
+  const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
 
+  // ── 桌面：Rust HTTP 代理（绕过 WebView 跨域 CORS）──────────────────────────
+  if (inTauri()) {
+    let status: number;
+    let text: string;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const r = await invoke<{ status: number; body: string }>('cloud_http', {
+        method,
+        url,
+        headers,
+        body: bodyStr ?? null,
+      });
+      status = r.status;
+      text = r.body;
+    } catch (e: unknown) {
+      throw new ApiError('NETWORK', e instanceof Error ? e.message : '网络请求失败');
+    }
+    let envelope: Envelope<T>;
+    try {
+      envelope = JSON.parse(text) as Envelope<T>;
+    } catch {
+      throw new ApiError('BAD_RESPONSE', `响应不是合法 JSON（HTTP ${status}）`);
+    }
+    return unwrapEnvelope(envelope, status);
+  }
+
+  // ── 浏览器（web-remote）：原生 fetch ────────────────────────────────────────
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(url, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: bodyStr,
       credentials,
     });
   } catch (e: unknown) {
@@ -251,14 +304,7 @@ async function requestOnce<T>(path: string, opts: RequestOptions = {}): Promise<
   } catch {
     throw new ApiError('BAD_RESPONSE', `响应不是合法 JSON（HTTP ${res.status}）`);
   }
-
-  if (envelope && envelope.ok === true) {
-    return envelope.data;
-  }
-  if (envelope && envelope.ok === false && envelope.error) {
-    throw new ApiError(coerceCode(envelope.error.code), envelope.error.message ?? '请求失败');
-  }
-  throw new ApiError('BAD_RESPONSE', `响应信封格式非法（HTTP ${res.status}）`);
+  return unwrapEnvelope(envelope, res.status);
 }
 
 // ─── §4.1 账户 ───────────────────────────────────────────────────────────

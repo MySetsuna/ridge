@@ -62,6 +62,11 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring",
 # Certificate validity windows for the remote TLS CA/leaf (see remote/tls.rs).
 time = { version = "0.3", default-features = false, features = ["std"] }
 futures = "0.3"
+# §perf: HTTP 响应压缩。web-remote 把完整桌面 SPA（~20MB 未压缩，含 Monaco）
+# 直发给浏览器，此前 router 无压缩层 → 首屏裸传数 MB JS 是"连接缓慢"的主因之一。
+# gzip/br on-the-fly：immutable 内容哈希资产浏览器只下一次，一次性 CPU 可接受。
+# tower-http 0.6 已在 lock（与 axum 0.7 同走 http 1.x），brotli crate 亦已存在。
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
 sha2 = "0.10"
 # SECURITY (audit C2): OS CSPRNG for the remote TOTP secret seed + session
 # tokens. Replaces the former non-cryptographic `SimpleRng` xorshift (seeded
@@ -69,7 +74,9 @@ sha2 = "0.10"
 # is already in the dependency tree transitively (via ring/rustls); declaring
 # it directly pins the same major and pulls in no new transitive crates.
 getrandom = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+# native-tls：cloud_http.rs 需对 https://9527127.xyz 发请求，必须有 TLS 后端。
+# 用 native-tls（Windows=schannel）走 OS 信任库——与 WebView2/curl 实测可达的同一信任源一致。
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 glob = "0.3"

@@ -95,12 +95,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules/monaco-editor')) {
-            return 'monaco-editor';
-          }
-          if (id.includes('node_modules/mermaid')) {
-            return 'mermaid';
-          }
+          // §perf：不再用 manualChunks 强制 monaco / mermaid 单独成块。
+          // 经实测，强制成块会让 rollup 把 Vite 的 `__vitePreload` helper（每个动态
+          // import 都要用的 `W(async()=>…)`）co-locate 进这个大块；而根 layout /
+          // app entry 为自身的动态 import 静态 `import{_}` 这个 helper → 把整块（4.2MB
+          // monaco 或 2.7MB mermaid）拖成首屏 eager modulepreload（删 monaco 规则后
+          // helper 只是"搬家"到 mermaid 块，故两者都得交还给 rollup）。二者现均为纯
+          // 动态引用（monaco：FileEditor 懒挂载 + markdown.ts 懒 import；mermaid：
+          // markdown.ts loadMermaid），交给 rollup 自动切 async chunk，helper 自然
+          // 落到 eager 可达但不含这些大库的小共享块。
           // Split heavy desktop-only features from mobile build
           if (id.includes('node_modules/@tauri-apps/api')) {
             return 'tauri-api';
@@ -109,7 +112,7 @@ export default defineConfig({
           // 细粒度分组——那会制造循环 chunk（desktop-editor ↔ desktop-git）并把
           // FileEditor→monaco 拉进 SvelteKit `analyse` 加载的 server chunk 图，
           // 在 Node 里执行 monaco 顶层 `window` 引用 → `window is not defined`，
-          // production build 崩。monaco 自身已单独成块即可（见上）。
+          // production build 崩。monaco/mermaid 仅经动态 import 引用，rollup 自然成块。
         },
       }
     },
