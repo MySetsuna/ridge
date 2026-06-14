@@ -15,6 +15,8 @@ export const zh: Record<string, string> = {
   remoteGateErrCert: '无法连接到 Ridge 远控服务。很可能是本机的自签名证书尚未受信任——请点击下方按钮安装证书，或在浏览器中点开地址栏的证书警告并选择"继续访问"，然后重试。',
   remoteGateTrustCert: '安装本机证书 (CA)',
   remoteGateErrCloud: 'Cloud 连接失败',
+  // 跨子域登录态未能在子域生效（cookie 缺失/失效），已回主域一次仍未解决——停止无限回跳。
+  remoteGateErrTenantLoginStuck: '登录态未能在本子域生效，请回主域重新登录后再打开远控入口。',
 
   // §4 云端 TOTP 二次验证（控制端）
   totpGateSubtitle: '已建立加密连接。请输入桌面端 Ridge「官方公网加速」页面显示的 6 位动态验证码',
@@ -131,6 +133,9 @@ export const en: Record<string, string> = {
   remoteGateErrCert: 'Could not reach the Ridge remote service. This is most likely an untrusted self-signed certificate — install the local certificate with the button below, or open the certificate warning in your browser and choose "proceed", then retry.',
   remoteGateTrustCert: 'Install local certificate (CA)',
   remoteGateErrCloud: 'Cloud connection failed',
+  // Cross-subdomain login state never took effect on the subdomain (missing/
+  // stale cookie); already bounced to the main domain once — stop looping.
+  remoteGateErrTenantLoginStuck: 'Your sign-in did not take effect on this subdomain. Please sign in again on the main site, then reopen the remote entry.',
 
   // sidebar nav tooltips
   navFiles: 'Files',

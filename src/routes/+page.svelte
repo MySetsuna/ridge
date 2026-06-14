@@ -31,7 +31,8 @@ self.MonacoEnvironment = {
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
   import Explorer from '$lib/components/Explorer.svelte';
-  import FileEditor from '$lib/components/FileEditor.svelte';
+  // §perf FileEditor 改为懒挂载（见下方 $effect + 模板 {#if FileEditorComp}），
+  // 不再顶层静态 import —— 它深度耦合 Monaco 核心(~4MB)，会被打进 +page 首屏 chunk。
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
@@ -114,6 +115,20 @@ self.MonacoEnvironment = {
     scheduleForceFitActivePanes,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
+
+  // §perf 懒挂载 FileEditor（设计文档 docs/superpowers/specs/2026-06-13-…）：
+  // 编辑器深度耦合 Monaco 核心(~4MB)，原随顶层 import 进入 +page 首屏 eager chunk
+  // （web-remote 实测 CiLVb0ke.js 4.2MB 被 modulepreload）。改为首次打开文件时再
+  // 动态 import；从未打开文件则永不加载 monaco。加载后保持挂载以保留 FileEditor
+  // 的 keep-alive model 缓存（与原"常驻挂载"行为一致，仅把加载时机推迟到首次打开）。
+  let FileEditorComp = $state<import('svelte').Component<Record<string, never>> | null>(null);
+  $effect(() => {
+    if (!FileEditorComp && $fileEditorStore.openFiles.length > 0) {
+      void import('$lib/components/FileEditor.svelte').then((m) => {
+        FileEditorComp = m.default;
+      });
+    }
+  });
   import { initFileWatcherSync } from '$lib/stores/fileWatcherSync';
   import { getScmSelectedRepo } from '$lib/stores/scmCache';
   import {
@@ -216,6 +231,12 @@ self.MonacoEnvironment = {
   // the canvas is mounted once for the app's lifetime.
   function globalHostCanvas(node: HTMLCanvasElement) {
     const manager = TerminalManager.instance();
+    // §shared-remote: the desktop-in-browser controller shares one PTY (one grid)
+    // with the host and other viewers. Enable "manual lock + centered letterbox"
+    // so a passive layout change never fights the shared size and the terminal
+    // letterboxes instead of leaving a dead zone. Host (Tauri) build keeps the
+    // normal container-driven auto-fit.
+    if (webRemote) manager.setSharedRemoteMode(true);
     void manager.attachHost(node).catch((err) => {
       console.warn('[ridge] attachHost failed for global canvas', err);
     });
@@ -1784,8 +1805,12 @@ function expandSidebar() {
           style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0; display:block;"
         ></canvas>
       </div>
-      <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流 -->
-      <FileEditor />
+      <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流。
+           懒挂载：首次打开文件后才加载（见上方 $effect），未打开时不在 DOM —— 与
+           FileEditor 空态（embedded 宽 0 / 不可见）视觉等价。 -->
+      {#if FileEditorComp}
+        <FileEditorComp />
+      {/if}
     </div>
   </div>
 

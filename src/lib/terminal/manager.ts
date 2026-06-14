@@ -315,6 +315,14 @@ interface PaneEntry {
 	 *  `undefined` the same as a zero-size rect — the pane is parked-by-
 	 *  clip until JS computes a real viewport. */
 	viewport?: { x: number; y: number; w: number; h: number };
+	/** §shared-remote (2026-06-14): the kernel (rows, cols) the last
+	 *  `_recomputeViewport` sized the centered letterbox for. In
+	 *  `sharedRemoteMode` the scissor tracks the SHARED PTY grid (not the
+	 *  container), so the RAF pre-pass watches these to re-letterbox the
+	 *  moment a host/controller claim grows or shrinks the kernel grid via
+	 *  the broadcast Resize delta. -1 until the first shared-mode compute. */
+	lastViewportKernelRows: number;
+	lastViewportKernelCols: number;
 	/** §4a workspace keep-alive (2026-05-08): set true by the RAF tick when
 	 *  this pane's container has 0×0 bbox (display:none ancestor — its
 	 *  workspace tab is not active). Tracking this lets the next visible
@@ -425,6 +433,20 @@ export class TerminalManager {
 	 *  `_isContainerHidden` falls back to the bbox path so the very
 	 *  first pane attach still renders. */
 	private _activeWorkspaceId: string | null = null;
+	/** §shared-remote (2026-06-14): "manual lock + centered letterbox" mode.
+	 *  Enabled only on the desktop-in-browser controller (WEB_REMOTE). One PTY
+	 *  has one grid; multiple viewers of different sizes can't all fill it. In
+	 *  this mode:
+	 *   - a passive `fitPane` (ResizeObserver / workspace switch) does NOT claim
+	 *     the shared PTY (no `resize_pane`) — it only re-letterboxes;
+	 *   - `_recomputeViewport` sizes the scissor to the KERNEL's current grid
+	 *     (the shared size, driven by Resize deltas) and CENTERS it in the pane,
+	 *     so the surplus area is intentional terminal-bg letterbox, not a dead
+	 *     zone;
+	 *   - only an explicit `claimPaneSize` (the refresh button) resizes the PTY
+	 *     to this viewer's container size.
+	 *  Off (normal desktop): byte-for-byte the prior behaviour. */
+	private _sharedRemoteMode = false;
 	/** P2.2: monotonic counter, bumped at the bottom of every RAF tick.
 	 *  Used to rotate the order in which NON-focused panes are visited
 	 *  for render so no single non-focused pane gets perpetually
@@ -986,18 +1008,40 @@ export class TerminalManager {
 		let cssY = cr.top - hr.top + padT;
 		let cssW = Math.max(0, cr.width - padL - padR);
 		let cssH = Math.max(0, cr.height - padT - padB);
-		// Shrink the scissor to cells-exact dimensions, anchored to the
-		// content-box origin (no centering). §E1 (2026-06-02): prior
-		// versions re-centered the scissor, which created asymmetric
-		// padding at the left edge. By keeping the scissor at the
-		// content-box top-left, the first column/row renders flush
-		// against the pane border. CellsW × cellsH keeps the scissor
-		// tight — residual right/bottom space shows as workspace bg.
+		// Shrink the scissor to cells-exact dimensions.
+		//
+		// Normal mode (§E1, 2026-06-02): size to the CONTAINER's cell capacity,
+		// anchored to the content-box origin (no centering) so col/row 0 renders
+		// flush against the pane border; residual right/bottom space shows as bg.
+		//
+		// §shared-remote (2026-06-14): size to the KERNEL's CURRENT grid (the
+		// shared PTY size, driven by broadcast Resize deltas — NOT this viewer's
+		// container) and CENTER it in the content-box. A viewer whose pane is
+		// larger than the shared grid then shows the terminal centered with
+		// intentional bg letterbox instead of a top-left island + dead zone; a
+		// smaller viewer clips (clamped below).
 		if (entry.cellW > 0 && entry.cellH > 0) {
-			const cols = Math.max(1, Math.floor(cssW / entry.cellW));
-			const rows = Math.max(1, Math.floor(cssH / entry.cellH));
-			cssW = cols * entry.cellW;
-			cssH = rows * entry.cellH;
+			let cols: number;
+			let rows: number;
+			if (this._sharedRemoteMode) {
+				cols = Math.max(1, entry.kernel.cols());
+				rows = Math.max(1, entry.kernel.rows());
+			} else {
+				cols = Math.max(1, Math.floor(cssW / entry.cellW));
+				rows = Math.max(1, Math.floor(cssH / entry.cellH));
+			}
+			let gridW = cols * entry.cellW;
+			let gridH = rows * entry.cellH;
+			if (this._sharedRemoteMode) {
+				cssX += Math.max(0, (cssW - gridW) / 2);
+				cssY += Math.max(0, (cssH - gridH) / 2);
+				gridW = Math.min(gridW, cssW);
+				gridH = Math.min(gridH, cssH);
+				entry.lastViewportKernelRows = rows;
+				entry.lastViewportKernelCols = cols;
+			}
+			cssW = gridW;
+			cssH = gridH;
 		}
 		// Add small epsilon to device-pixel width/height to avoid 1px
 		// clipping on right/bottom edges due to sub-pixel rounding.
@@ -1574,6 +1618,8 @@ export class TerminalManager {
 			resizeObserver: new ResizeObserver(() => this.viewportChanged(paneId)),
 			lastReportedRows: -1,
 			lastReportedCols: -1,
+			lastViewportKernelRows: -1,
+			lastViewportKernelCols: -1,
 			pendingFitTimer: null,
 			syncStart: null,
 			syncTimeoutRendered: false,
@@ -3833,6 +3879,45 @@ export class TerminalManager {
 		void this.fitPane(entry);
 	}
 
+	/** §shared-remote (2026-06-14): toggle "manual lock + centered letterbox"
+	 *  mode (see `_sharedRemoteMode`). Enabled on the desktop-in-browser
+	 *  controller so a passive layout change never fights the shared PTY size.
+	 *  Re-letterboxes every attached pane on the transition so the change is
+	 *  visible without waiting for the next ResizeObserver fire. */
+	setSharedRemoteMode(on: boolean): void {
+		if (this._sharedRemoteMode === on) return;
+		this._sharedRemoteMode = on;
+		for (const entry of this.panes.values()) {
+			if (entry.parked) continue;
+			if (on) {
+				// Re-clip to the kernel grid centered in the container.
+				this._recomputeViewport(entry);
+			} else {
+				// Back to normal: re-fit (claim) so the pane fills its container.
+				void this.fitPane(entry, true);
+			}
+		}
+		this._invalidateHost();
+		this.wake();
+	}
+
+	/** §shared-remote (2026-06-14): explicit "lock the shared PTY to THIS
+	 *  viewer's size" — the per-pane refresh button. Unlike the passive
+	 *  `fitPaneNow` (which in shared mode only re-letterboxes), this always
+	 *  claims: it resizes the real PTY (`resize_pane` over the tunnel) to the
+	 *  container size; the broadcast Resize delta then grows every viewer's
+	 *  kernel grid, and the centered-letterbox tracking re-clips to it. In
+	 *  normal (non-shared) mode it is identical to `fitPaneNow`. */
+	claimPaneSize(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		if (entry.pendingFitTimer !== null) {
+			clearTimeout(entry.pendingFitTimer);
+			entry.pendingFitTimer = null;
+		}
+		void this.fitPane(entry, true);
+	}
+
 	/**
 	 * Container-size changed.
 	 *
@@ -3935,7 +4020,7 @@ export class TerminalManager {
 		}
 	}
 
-	private async fitPane(entry: PaneEntry): Promise<void> {
+	private async fitPane(entry: PaneEntry, claim = false): Promise<void> {
 		// §4.3 Phase B: in host mode there is no per-pane canvas — the
 		// entry.canvas reference is the shared host canvas, which spans
 		// the whole workspace. Read the CONTAINER's content-box instead
@@ -4002,6 +4087,18 @@ export class TerminalManager {
 			entry.cellW = quantizeCellSize(Number(w), dpr);
 			entry.cellH = quantizeCellSize(Number(h), dpr);
 			entry.lastConfiguredDpr = dpr;
+		}
+
+		// §shared-remote: a PASSIVE fit (ResizeObserver / workspace switch /
+		// padding tick) must NOT claim the shared PTY — that's the multi-viewer
+		// resize fight that left the controller's grid stuck at the host's size
+		// (content top-left, dead zone around it). Just re-letterbox the current
+		// kernel grid centered in the container and bail. Only an explicit claim
+		// (the refresh button → claimPaneSize → claim=true) falls through to the
+		// PTY resize path below. Non-shared (normal desktop) mode is unaffected.
+		if (this._sharedRemoteMode && !claim) {
+			this._recomputeViewport(entry);
+			return;
 		}
 
 		// Cells fit into the container; round DOWN to avoid drawing past
@@ -4362,6 +4459,19 @@ export class TerminalManager {
 				// CSS toggle, but defensive against intermediate layout
 				// states).
 				if (entry.workspaceId !== activeWsId) continue;
+				// §shared-remote: the centered letterbox is sized to the SHARED
+				// kernel grid, which changes asynchronously when any viewer claims
+				// a new size (the host broadcasts a Resize delta → this kernel's
+				// grid grows/shrinks). That path doesn't fire viewportChanged, so
+				// re-clip here the moment the grid differs from what the scissor
+				// was last sized for. Cheap: two integer reads + a compare.
+				if (this._sharedRemoteMode) {
+					const kr = entry.kernel.rows();
+					const kc = entry.kernel.cols();
+					if (kr !== entry.lastViewportKernelRows || kc !== entry.lastViewportKernelCols) {
+						this._recomputeViewport(entry);
+					}
+				}
 				const handleAny = entry.handle as unknown as {
 					isDirty?: (k: TerminalKernel, t: number) => boolean;
 				};

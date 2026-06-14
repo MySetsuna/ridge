@@ -19,6 +19,11 @@
   // branch tree-shakes away, and behaviour is unchanged.
   const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
 
+  // §redirect-loop 止血：租户子域 boot 失败回主域登录的「已回跳」计数（per-tab，
+  // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
+  // 不再无限回跳（apex⇄子域死循环的客户端一端）。connected 时清零。
+  const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
+
   // Auth/connect state for the web-remote gate. `ready` blocks the page outlet
   // until the bridge is attached, so the desktop UI never calls `invoke()`
   // before the WS is live.
@@ -67,13 +72,16 @@
     // 换短 access token、seed 登录态（替代旧 `#token` 跨子域握手）。失败仅返回 false，由下方
     // boot 失败回退（租户子域回主域登录 / 主域回退 LAN）统一处理。
     const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
-    await bootstrapFromCookie();
+    // 返回值 = 父域 ridge_sso cookie 是否有效（成功换出 access token）。失败 = cookie 缺失/失效。
+    const hadSession = await bootstrapFromCookie();
     phase = 'connecting';
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
         if (s === 'connected') {
           // §4 云端 TOTP 二次验证：连上（E2EE 完成）后**先**提示输入 host 展示的
           // 6 位 code，验证通过才标记 ready（驱动桌面 UI）。
+          // 接线成功（鉴权 + WebRTC OK）→ 清掉回跳计数，下次刷新从零开始。
+          try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
           phase = 'need-totp';
           errorMsg = '';
           loading = false;
@@ -86,8 +94,21 @@
     }, location.hostname);
     cloudHandle = handle;
     if (!handle) {
-      // 租户域名上无凭据 / host 不在线 → 回主域名登录。
+      // 租户域名上接线失败 → (重新)登录拿 cookie；但要防 apex⇄子域死循环。
       if (parseCloudControllerHostname(location.hostname)) {
+        // bootCloudControllerFromUrl 仅在缺 userToken/username（即 cookie 无效）时返回 null；
+        // host 离线是返回句柄后经 onState('error')，不会到这。
+        // 止血：①已回跳过一次仍失败，或 ②本就有有效 cookie 却仍接线失败（多半是 host 离线/
+        // 未设用户名而非鉴权）→ 停在子域显式报错，别再无限回跳。
+        let bounced = 0;
+        try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
+        if (bounced >= 1 || hadSession) {
+          try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
+          phase = 'error';
+          errorMsg = tr('main.remoteGateErrTenantLoginStuck');
+          return;
+        }
+        try { sessionStorage.setItem(TENANT_BOUNCE_KEY, String(bounced + 1)); } catch { /* ignore */ }
         // 回主域名登录/激活。用配置的 BASE_DOMAIN（debug 包烘焙为 localhost:5001），
         // 不再硬编码生产域名——否则 dev 下租户子域 boot 失败会被踢去生产站。
         const scheme = cloudHttpScheme(BASE_DOMAIN);
