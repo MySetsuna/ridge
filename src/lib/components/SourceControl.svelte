@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { get } from 'svelte/store';
@@ -23,7 +23,10 @@
     Copy,
     Scissors,
     GitMerge,
+    GitCompareArrows,
     Tag,
+    Search,
+    Archive,
   } from 'lucide-svelte';
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { Splitpanes, Pane as SPane } from 'svelte-splitpanes';
@@ -311,6 +314,182 @@
     setScmSelectedCommit(selectedRepo, selectedCommitHash === hash ? '' : hash);
   }
 
+  // §SCM Find widget（Ctrl+F 搜提交，对标 VSCode Git Graph）：在已加载的提交里按
+  // 消息/哈希/作者/分支·标签名匹配，高亮全部命中 + Enter/Shift+Enter 跳转定位。
+  let findOpen = $state(false);
+  let findQuery = $state('');
+  let findInput = $state<HTMLInputElement | undefined>();
+  let findIndex = $state(0);
+  const findMatches: string[] = $derived.by(() => {
+    const q = findQuery.trim().toLowerCase();
+    if (!q || !graphInfo) return [];
+    return graphInfo.commits
+      .filter(
+        (c) =>
+          c.subject.toLowerCase().includes(q) ||
+          c.hash.toLowerCase().includes(q) ||
+          c.author.toLowerCase().includes(q) ||
+          (c.refs ?? []).some((r) => r.toLowerCase().includes(q))
+      )
+      .map((c) => c.hash);
+  });
+  const findMatchSet = $derived(new Set(findMatches));
+
+  function openFind(): void {
+    findOpen = true;
+    void tick().then(() => findInput?.select());
+  }
+  function closeFind(): void {
+    findOpen = false;
+  }
+  /** 跳到第 idx 个匹配（环绕）：选中该提交 + 滚动居中。 */
+  function gotoFindMatch(idx: number): void {
+    const n = findMatches.length;
+    if (n === 0) return;
+    const i = ((idx % n) + n) % n;
+    findIndex = i;
+    const hash = findMatches[i];
+    if (selectedRepo) setScmSelectedCommit(selectedRepo, hash);
+    void tick().then(() => {
+      document
+        .querySelector(`[data-rg-commit="${hash}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+  function onFindInput(): void {
+    findIndex = 0;
+    gotoFindMatch(0);
+  }
+  function onFindKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFind();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      gotoFindMatch(e.shiftKey ? findIndex - 1 : findIndex + 1);
+    }
+  }
+
+  // §SCM Stash（贮藏，对标 VSCode Git Graph）─────────────────────────────────
+  interface StashEntry {
+    reference: string;
+    message: string;
+  }
+  let stashes = $state<StashEntry[]>([]);
+  let stashCollapsed = $state(false);
+
+  async function loadStashes(root: string): Promise<void> {
+    if (!isTauri()) {
+      stashes = [];
+      return;
+    }
+    try {
+      stashes = await invoke<StashEntry[]>('git_stash_list', { repoRoot: root });
+    } catch (e) {
+      console.error('git_stash_list failed', e);
+      stashes = [];
+    }
+  }
+  // 选中仓库变化 → 重载 stash 列表。
+  $effect(() => {
+    const r = selectedRepo;
+    if (r) void loadStashes(r);
+    else stashes = [];
+  });
+
+  /** 贮藏当前工作区改动（含未跟踪），可填说明。 */
+  async function createStash(root: string): Promise<void> {
+    const msg = await promptDialog({
+      title: tr('scm.stashChanges'),
+      message: '',
+      placeholder: tr('scm.stashMessagePlaceholder'),
+    });
+    if (msg === null) return; // 取消
+    await runCommitOp(tr('scm.stashChanges'), async () => {
+      await invoke('git_stash_push', {
+        repoRoot: root,
+        message: msg.trim() || null,
+        includeUntracked: true,
+      });
+      await loadStashes(root);
+      await refreshStatus(root);
+    });
+  }
+
+  function onStashContextMenu(e: MouseEvent, root: string, st: StashEntry): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const reload = async () => {
+      await loadStashes(root);
+      await refreshStatus(root);
+    };
+    const items: ContextMenuItem[] = [
+      {
+        id: 'stash-apply',
+        label: tr('scm.stashApply'),
+        icon: ArrowDown,
+        action: () =>
+          void runCommitOp(tr('scm.stashApply'), async () => {
+            await invoke('git_stash_apply', { repoRoot: root, reference: st.reference });
+            await reload();
+          }),
+      },
+      {
+        id: 'stash-pop',
+        label: tr('scm.stashPop'),
+        icon: ArrowUp,
+        action: () =>
+          void runCommitOp(tr('scm.stashPop'), async () => {
+            await invoke('git_stash_pop', { repoRoot: root, reference: st.reference });
+            await reload();
+          }),
+      },
+      {
+        id: 'stash-branch',
+        label: tr('scm.stashBranch'),
+        icon: GitBranch,
+        action: () =>
+          void (async () => {
+            const b = await promptDialog({
+              title: tr('scm.stashBranch'),
+              message: st.message,
+              placeholder: tr('scm.renameBranchPlaceholder'),
+            });
+            const bn = b?.trim();
+            if (!bn) return;
+            await runCommitOp(tr('scm.stashBranch'), async () => {
+              await invoke('git_stash_branch', {
+                repoRoot: root,
+                branch: bn,
+                reference: st.reference,
+              });
+              await reload();
+            });
+          })(),
+      },
+      { id: 'stash-sep', divider: true },
+      {
+        id: 'stash-drop',
+        label: tr('scm.stashDrop'),
+        icon: X,
+        action: () =>
+          void (async () => {
+            const ok = await confirmDialog({
+              title: tr('scm.stashDrop'),
+              message: tr('scm.stashDropConfirm', { message: st.message }),
+              danger: true,
+            });
+            if (!ok) return;
+            await runCommitOp(tr('scm.stashDrop'), async () => {
+              await invoke('git_stash_drop', { repoRoot: root, reference: st.reference });
+              await loadStashes(root);
+            });
+          })(),
+      },
+    ];
+    showContextMenu(e.clientX, e.clientY, items, 'git-graph');
+  }
+
   // ─── Commit inline 详情面板（VS Code GitGraph 风格）───────────────────────
   // 单击 commit 后展开一行 240px 的详情区域，列出 commit 涉及的文件。
   // GitGraph 的 layoutGraph 收到 expandedHash + expandedExtra，将该行下方腾出
@@ -353,6 +532,55 @@
   function commitFilesFor(hash: string): CommitFileBag | undefined {
     if (!selectedRepo) return undefined;
     return commitFilesCache.get(`${selectedRepo}::${hash}`);
+  }
+
+  // ─── 提交对比（VS Code Git Graph "Select for Compare" + "Compare with Selected"）──
+  // 右键一个提交标记为对比基线 → 右键另一个提交对比，列出两提交间变更的文件，
+  // 逐个点开 compareBase..commit 的范围 diff。
+  let compareBaseHash = $state('');
+  interface CompareResult {
+    from: string;
+    to: string;
+    loading: boolean;
+    files: { path: string; status: string }[];
+    error: string | null;
+  }
+  let compareResult = $state<CompareResult | null>(null);
+
+  async function openCompare(from: string, to: string): Promise<void> {
+    if (!selectedRepo || from === to) return;
+    compareResult = { from, to, loading: true, files: [], error: null };
+    try {
+      const files = await invoke<{ path: string; status: string }[]>('git_compare_commits', {
+        repoRoot: selectedRepo,
+        from,
+        to,
+      });
+      // 仅当用户没有在等待期间另起一次对比时才写回（防竞态）。
+      if (compareResult?.from === from && compareResult?.to === to) {
+        compareResult = { from, to, loading: false, files, error: null };
+      }
+    } catch (e) {
+      if (compareResult?.from === from && compareResult?.to === to) {
+        compareResult = { from, to, loading: false, files: [], error: String(e) };
+      }
+    }
+  }
+
+  function closeCompare(): void {
+    compareResult = null;
+  }
+
+  /** 在两提交间打开某文件的范围 diff（compareBase..commit）。 */
+  function openCompareFile(path: string): void {
+    if (!selectedRepo || !compareResult) return;
+    fileEditorStore.openDiffTab({
+      repoRoot: selectedRepo,
+      path,
+      cached: false,
+      commit: compareResult.to,
+      compareBase: compareResult.from,
+    });
   }
 
   /** Clipboard write with explicit failure surfacing — Tauri webview
@@ -453,6 +681,27 @@
       },
       { id: 'd1', divider: true },
       {
+        id: 'select-for-compare',
+        label: tr('scm.selectForCompare'),
+        icon: GitCompareArrows,
+        action: () => {
+          compareBaseHash = c.hash;
+        },
+      },
+      ...(compareBaseHash && compareBaseHash !== c.hash
+        ? [
+            {
+              id: 'compare-with-selected',
+              label: tr('scm.compareWithSelected', { hash: compareBaseHash.slice(0, 7) }),
+              icon: GitCompareArrows,
+              action: () => {
+                void openCompare(compareBaseHash, c.hash);
+              },
+            },
+          ]
+        : []),
+      { id: 'dc', divider: true },
+      {
         id: 'create-branch',
         label: tr('scm.createBranchFromCommit'),
         icon: GitBranch,
@@ -533,6 +782,26 @@
             });
           })();
         },
+      },
+      {
+        id: 'merge-commit',
+        label: tr('scm.mergeCommitIntoCurrent'),
+        icon: GitMerge,
+        action: () =>
+          void runCommitOp(tr('scm.mergeBranchTitle'), async () => {
+            await invoke('git_merge_branch', { repoRoot: selectedRepo, branch: c.hash });
+            await refreshStatus(selectedRepo);
+          }),
+      },
+      {
+        id: 'rebase-commit',
+        label: tr('scm.rebaseOntoCommit'),
+        icon: RotateCw,
+        action: () =>
+          void runCommitOp(tr('scm.rebaseTitle'), async () => {
+            await invoke('git_rebase', { repoRoot: selectedRepo, onto: c.hash });
+            await refreshStatus(selectedRepo);
+          }),
       },
       { id: 'd3', divider: true },
       {
@@ -655,6 +924,9 @@
     if (selectedRepo) {
       setScmSelectedCommit(selectedRepo, '');
       setScmSelectedRepo(selectedRepo);
+      // 切仓库时丢弃旧的对比状态，避免跨仓库残留的 hash 误命中。
+      compareBaseHash = '';
+      compareResult = null;
     }
   });
 
@@ -777,6 +1049,242 @@
     } catch (e) {
       await alertDialog({ title: tr('scm.unstageFailed'), message: String(e), danger: true });
     }
+  }
+
+  /**
+   * 改动文件行右键菜单（对标 VSCode）：打开文件 / 打开更改(Diff) / 暂存·撤销暂存 / 丢弃。
+   * `group` 决定项：staged → 撤销暂存（无丢弃）；changes/untracked → 暂存 + 丢弃。
+   */
+  function onScmFileContextMenu(
+    e: MouseEvent,
+    root: string,
+    f: ScmFile,
+    group: 'staged' | 'changes' | 'untracked'
+  ): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const abs = `${root.replace(/[/\\]+$/, '')}/${f.path}`;
+    const items: ContextMenuItem[] = [
+      {
+        id: 'open-file',
+        label: tr('scm.openFile'),
+        icon: FileText,
+        action: () => void fileEditorStore.openFile(abs),
+      },
+      {
+        id: 'open-changes',
+        label: tr('scm.openChanges'),
+        icon: FileText,
+        action: () => void showDiff(root, f.path, group === 'staged'),
+      },
+      { id: 'scm-file-sep', divider: true },
+      group === 'staged'
+        ? {
+            id: 'unstage',
+            label: tr('scm.unstage'),
+            icon: Minus,
+            action: () => void unstage(root, [f.path]),
+          }
+        : {
+            id: 'stage',
+            label: tr('scm.stageChange'),
+            icon: Plus,
+            action: () => void stage(root, [f.path]),
+          },
+    ];
+    if (group !== 'staged') {
+      items.push({
+        id: 'discard',
+        label: tr('scm.discardChange'),
+        icon: Undo2,
+        action: () => void discard(root, [f]),
+      });
+    }
+    showContextMenu(e.clientX, e.clientY, items, 'scm-files');
+  }
+
+  /**
+   * 分支徽章右键菜单（图谱，对标 VSCode Git Graph 插件）：检出 / 合并到当前 / 重命名 /
+   * 删除 / 复制分支名。远端分支只给「检出（建本地跟踪）+ 复制」；本地分支给全套。
+   */
+  function onBranchContextMenu(
+    e: MouseEvent,
+    root: string,
+    name: string,
+    isRemote: boolean
+  ): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const items: ContextMenuItem[] = [
+      {
+        id: 'checkout-branch',
+        label: tr('scm.checkoutBranch'),
+        icon: GitBranch,
+        action: () =>
+          void runCommitOp(tr('scm.checkoutBranch'), async () => {
+            await invoke('git_checkout', { repoRoot: root, branch: name, create: false });
+            await refreshStatus(root);
+          }),
+      },
+      {
+        id: 'fetch',
+        label: tr('scm.fetchLabel'),
+        icon: ArrowDown,
+        action: () =>
+          void runCommitOp(tr('scm.fetchLabel'), async () => {
+            await invoke('git_fetch', { repoRoot: root });
+            await refreshStatus(root);
+          }),
+      },
+    ];
+    if (!isRemote) {
+      items.push(
+        {
+          id: 'merge-branch',
+          label: tr('scm.mergeIntoCurrent'),
+          icon: GitMerge,
+          action: () =>
+            void runCommitOp(tr('scm.mergeBranchTitle'), async () => {
+              await invoke('git_merge_branch', { repoRoot: root, branch: name });
+              await refreshStatus(root);
+            }),
+        },
+        {
+          id: 'rebase-branch',
+          label: tr('scm.rebaseOntoBranch'),
+          icon: RotateCw,
+          action: () =>
+            void runCommitOp(tr('scm.rebaseTitle'), async () => {
+              await invoke('git_rebase', { repoRoot: root, onto: name });
+              await refreshStatus(root);
+            }),
+        },
+        {
+          id: 'push-branch',
+          label: tr('scm.pushBranch'),
+          icon: ArrowUp,
+          action: () =>
+            void runCommitOp(tr('scm.pushBranch'), async () => {
+              await invoke('git_push_branch', { repoRoot: root, branch: name });
+              await refreshStatus(root);
+            }),
+        },
+        { id: 'br-sep1', divider: true },
+        {
+          id: 'rename-branch',
+          label: tr('scm.renameBranch'),
+          action: () =>
+            void (async () => {
+              const input = await promptDialog({
+                title: tr('scm.renameBranch'),
+                message: name,
+                placeholder: tr('scm.renameBranchPlaceholder'),
+              });
+              const nn = input?.trim();
+              if (!nn || nn === name) return;
+              await runCommitOp(tr('scm.renameBranch'), async () => {
+                await invoke('git_rename_branch', { repoRoot: root, oldName: name, newName: nn });
+                await refreshStatus(root);
+              });
+            })(),
+        },
+        {
+          id: 'delete-branch',
+          label: tr('scm.deleteBranch'),
+          icon: X,
+          action: () =>
+            void (async () => {
+              const ok = await confirmDialog({
+                title: tr('scm.deleteBranch'),
+                message: tr('scm.deleteBranchConfirm', { branch: name }),
+                danger: true,
+              });
+              if (!ok) return;
+              await runCommitOp(tr('scm.deleteBranch'), async () => {
+                try {
+                  await invoke('git_delete_branch', { repoRoot: root, branch: name, force: false });
+                } catch (err) {
+                  // 未合并 → 询问是否强制删除（-D）。
+                  const force = await confirmDialog({
+                    title: tr('scm.deleteBranch'),
+                    message: tr('scm.deleteBranchForce', { branch: name, error: String(err) }),
+                    danger: true,
+                  });
+                  if (!force) return;
+                  await invoke('git_delete_branch', { repoRoot: root, branch: name, force: true });
+                }
+                await refreshStatus(root);
+              });
+            })(),
+        }
+      );
+    }
+    items.push(
+      { id: 'br-sep2', divider: true },
+      {
+        id: 'copy-branch',
+        label: tr('scm.copyBranchName'),
+        icon: Copy,
+        action: () => void copyToClipboard(name, tr('scm.copyBranchName')),
+      }
+    );
+    showContextMenu(e.clientX, e.clientY, items, 'git-graph');
+  }
+
+  /**
+   * 标签徽章右键菜单（图谱，对标 VSCode Git Graph）：检出(detached) / 推送 / 删除 /
+   * 复制标签名。
+   */
+  function onTagContextMenu(e: MouseEvent, root: string, name: string): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const items: ContextMenuItem[] = [
+      {
+        id: 'checkout-tag',
+        label: tr('scm.checkoutTag'),
+        icon: Tag,
+        action: () =>
+          void runCommitOp(tr('scm.checkoutTag'), async () => {
+            await invoke('git_checkout', { repoRoot: root, branch: name, create: false });
+            await refreshStatus(root);
+          }),
+      },
+      {
+        id: 'push-tag',
+        label: tr('scm.pushTag'),
+        icon: ArrowUp,
+        action: () =>
+          void runCommitOp(tr('scm.pushTag'), async () => {
+            await invoke('git_push_tag', { repoRoot: root, name });
+          }),
+      },
+      { id: 'tag-sep', divider: true },
+      {
+        id: 'delete-tag',
+        label: tr('scm.deleteTag'),
+        icon: X,
+        action: () =>
+          void (async () => {
+            const ok = await confirmDialog({
+              title: tr('scm.deleteTag'),
+              message: tr('scm.deleteTagConfirm', { name }),
+              danger: true,
+            });
+            if (!ok) return;
+            await runCommitOp(tr('scm.deleteTag'), async () => {
+              await invoke('git_delete_tag', { repoRoot: root, name });
+              await refreshStatus(root);
+            });
+          })(),
+      },
+      {
+        id: 'copy-tag',
+        label: tr('scm.copyTagName'),
+        icon: Copy,
+        action: () => void copyToClipboard(name, tr('scm.copyTagName')),
+      },
+    ];
+    showContextMenu(e.clientX, e.clientY, items, 'git-graph');
   }
   /**
    * 撤销一组改动。区分 tracked vs untracked：
@@ -1510,6 +2018,7 @@ onMount(() => {
                             role="button"
                             tabindex="0"
                             onclick={() => void showDiff(root, f.path, true)}
+                            oncontextmenu={(e) => onScmFileContextMenu(e, root, f, 'staged')}
                             onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && showDiff(root, f.path, true)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
@@ -1588,6 +2097,7 @@ onMount(() => {
                             role="button"
                             tabindex="0"
                             onclick={() => void showDiff(root, f.path, false)}
+                            oncontextmenu={(e) => onScmFileContextMenu(e, root, f, 'changes')}
                             onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && showDiff(root, f.path, false)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
@@ -1681,6 +2191,7 @@ onMount(() => {
                             role="button"
                             tabindex="0"
                             onclick={() => showDiff(root, f.path, false)}
+                            oncontextmenu={(e) => onScmFileContextMenu(e, root, f, 'untracked')}
                             onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && showDiff(root, f.path, false)}
                           >
                             <FileText class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
@@ -1735,7 +2246,18 @@ onMount(() => {
 
     <!-- ═══ Bottom: Git Graph section ═══ -->
     <SPane size={50} minSize={20}>
-      <div class="flex flex-col h-full min-h-0">
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="flex flex-col h-full min-h-0 relative"
+        role="region"
+        aria-label={$t('scm.graphSection')}
+        onkeydown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+            e.preventDefault();
+            openFind();
+          }
+        }}
+      >
         <div
           class="px-3 h-9 shrink-0 flex items-center justify-between gap-2 border-b border-[var(--rg-border)] bg-[var(--rg-surface)]/40"
         >
@@ -1754,6 +2276,15 @@ onMount(() => {
             </select>
             <button
               type="button"
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-50"
+              title={$t('scm.stashChanges')}
+              disabled={!selectedRepo}
+              onclick={() => selectedRepo && void createStash(selectedRepo)}
+            >
+              <Archive class="h-3 w-3" />
+            </button>
+            <button
+              type="button"
               class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:bg-[var(--rg-surface)] disabled:opacity-50 disabled:cursor-not-allowed"
               title={$t('scm.graphRefreshTooltip')}
               disabled={graphRefreshing || graphLoading}
@@ -1764,6 +2295,106 @@ onMount(() => {
           {/if}
         </div>
 
+        {#if findOpen}
+          <!-- §SCM Find widget（Ctrl+F，对标 VSCode Git Graph）：搜已加载提交，命中高亮 + 跳转 -->
+          <div
+            class="absolute top-1.5 right-2 z-20 flex items-center gap-1 px-1.5 py-1 rounded-md bg-[var(--rg-surface-2)] border border-[var(--rg-border)] shadow-lg shadow-black/30"
+          >
+            <Search class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+            <input
+              bind:this={findInput}
+              bind:value={findQuery}
+              oninput={onFindInput}
+              onkeydown={onFindKeydown}
+              placeholder={$t('scm.findPlaceholder')}
+              class="w-56 bg-transparent text-[11px] text-[var(--rg-fg)] focus:outline-none placeholder:text-[var(--rg-fg-muted)]"
+            />
+            <span
+              class="shrink-0 min-w-[3.2rem] text-right text-[10px] tabular-nums text-[var(--rg-fg-muted)]"
+            >
+              {findMatches.length > 0
+                ? `${findIndex + 1} / ${findMatches.length}`
+                : findQuery.trim()
+                  ? $t('scm.findNoMatch')
+                  : ''}
+            </span>
+            <button
+              type="button"
+              class="flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] disabled:opacity-40"
+              title={$t('scm.findPrev')}
+              disabled={findMatches.length === 0}
+              onclick={() => gotoFindMatch(findIndex - 1)}
+            >
+              <ArrowUp class="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              class="flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] disabled:opacity-40"
+              title={$t('scm.findNext')}
+              disabled={findMatches.length === 0}
+              onclick={() => gotoFindMatch(findIndex + 1)}
+            >
+              <ArrowDown class="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              class="flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]"
+              title={$t('scm.findClose')}
+              onclick={closeFind}
+            >
+              <X class="h-3 w-3" />
+            </button>
+          </div>
+        {/if}
+        {#if compareResult}
+          <!-- §SCM 提交对比面板（VS Code Git Graph "Compare"）：列出两提交间变更的
+               文件，点击进入 compareBase..commit 的范围 diff。固定在图谱上方不随滚动。 -->
+          <div class="shrink-0 border-b-2 border-[var(--rg-accent)]/40 bg-[var(--rg-surface)]/40">
+            <div class="flex items-center gap-1.5 px-2 h-7 text-[10px]">
+              <GitCompareArrows class="h-3 w-3 shrink-0 text-[var(--rg-accent)]" />
+              <span class="font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+                {$t('scm.compareTitle')}
+              </span>
+              <span class="font-mono text-[var(--rg-fg)] truncate">
+                {compareResult.from.slice(0, 7)} … {compareResult.to.slice(0, 7)}
+              </span>
+              {#if !compareResult.loading && !compareResult.error}
+                <span class="text-[var(--rg-fg-muted)]">({compareResult.files.length})</span>
+              {/if}
+              <button
+                type="button"
+                class="ml-auto flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]"
+                title={$t('scm.findClose')}
+                onclick={closeCompare}
+              >
+                <X class="h-3 w-3" />
+              </button>
+            </div>
+            <div class="max-h-40 overflow-y-auto rg-scroll-overlay pb-1">
+              {#if compareResult.loading}
+                <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('scm.loadingCommitFiles')}</div>
+              {:else if compareResult.error}
+                <div class="px-3 py-2 text-[11px] text-rose-300">{compareResult.error}</div>
+              {:else if compareResult.files.length === 0}
+                <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]/70">{$t('scm.noChangedFiles')}</div>
+              {:else}
+                {#each compareResult.files as cf (cf.path)}
+                  <button
+                    type="button"
+                    class="w-full flex items-center gap-2 px-3 py-1 text-left text-[11px] hover:bg-[var(--rg-accent)]/10 transition-colors"
+                    title={$t('scm.viewFileDiffTooltip', { path: cf.path })}
+                    onclick={() => openCompareFile(cf.path)}
+                  >
+                    <span class="shrink-0 font-mono text-[10px] w-4 text-center {statusColor(cf.status)}">
+                      {statusLabel(cf.status)}
+                    </span>
+                    <span class="truncate text-[var(--rg-fg)]">{cf.path}</span>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          </div>
+        {/if}
         <div class="flex-1 min-h-0" use:overlayScroll>
           {#if !selectedRepo}
             <div class="p-4 text-[12px] text-[var(--rg-fg-muted)] text-center">
@@ -1776,6 +2407,42 @@ onMount(() => {
               {graphError}
             </div>
           {:else if graphInfo && graphInfo.is_git_repo}
+            <!-- §SCM Stash 列表（对标 VSCode Git Graph）：在提交图谱上方，右键
+                 Apply/Pop/Branch/Drop。仅有 stash 时显示。 -->
+            {#if stashes.length > 0}
+              <div class="border-b border-[var(--rg-border)]/60">
+                <button
+                  type="button"
+                  class="w-full flex items-center gap-1 px-2 h-7 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+                  onclick={() => (stashCollapsed = !stashCollapsed)}
+                >
+                  {#if stashCollapsed}
+                    <ChevronRight class="h-3 w-3 shrink-0" />
+                  {:else}
+                    <ChevronDown class="h-3 w-3 shrink-0" />
+                  {/if}
+                  <Archive class="h-3 w-3 shrink-0 text-violet-300/70" />
+                  <span>{$t('scm.stashSection')} ({stashes.length})</span>
+                </button>
+                {#if !stashCollapsed}
+                  {#each stashes as st (st.reference)}
+                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                    <div
+                      class="group flex items-center gap-1.5 h-6 pl-7 pr-3 text-[11px] hover:bg-[var(--rg-surface)]/50 cursor-context-menu"
+                      role="listitem"
+                      title={`${st.reference} · ${st.message}`}
+                      oncontextmenu={(e) => onStashContextMenu(e, selectedRepo, st)}
+                    >
+                      <Archive class="h-3 w-3 shrink-0 text-violet-300/70" />
+                      <span class="truncate text-[var(--rg-fg)]">{st.message}</span>
+                      <span class="ml-auto shrink-0 font-mono text-[9px] text-[var(--rg-fg-muted)]">
+                        {st.reference}
+                      </span>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
             <!-- Graph + rows in one flex container so the SVG aligns
                  strictly to the per-commit row baseline. Row height
                  derives from GitGraph's exported DEFAULT_DY constant —
@@ -1790,9 +2457,12 @@ onMount(() => {
               <div class="flex-1 min-w-0">
                 {#each graphInfo.commits as c (c.hash)}
                   <div
+                    data-rg-commit={c.hash}
                     class="flex items-center gap-1.5 pr-3 cursor-pointer transition-colors {selectedCommitHash === c.hash
                       ? 'bg-[var(--rg-accent)]/15'
-                      : 'hover:bg-[var(--rg-surface)]/40'}"
+                      : findOpen && findMatchSet.has(c.hash)
+                        ? 'bg-amber-400/10 hover:bg-amber-400/15'
+                        : 'hover:bg-[var(--rg-surface)]/40'}"
                     style="height: {GRAPH_ROW_HEIGHT}px"
                     title={`${c.hash}\n${c.author} · ${formatDate(c.date)}\n${$t('scm.rightClickForActions')}`}
                     role="button"
@@ -1829,14 +2499,27 @@ onMount(() => {
                       {:else if ref.startsWith('branch:')}
                         {@const name = ref.slice(7)}
                         {@const isRemote = name.includes('/')}
-                        <span class="text-[10px] px-1 py-0.5 rounded shrink-0 font-mono {isRemote
-                          ? 'bg-blue-500/15 text-blue-300'
-                          : 'bg-emerald-500/15 text-emerald-300'}">
+                        <span
+                          class="text-[10px] px-1 py-0.5 rounded shrink-0 font-mono cursor-context-menu {isRemote
+                            ? 'bg-blue-500/15 text-blue-300'
+                            : 'bg-emerald-500/15 text-emerald-300'}"
+                          role="button"
+                          tabindex="-1"
+                          title={name}
+                          oncontextmenu={(e) => onBranchContextMenu(e, selectedRepo, name, isRemote)}
+                        >
                           {name}
                         </span>
                       {:else if ref.startsWith('tag:')}
-                        <span class="text-[10px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300 shrink-0 font-mono">
-                          ⛳ {ref.slice(4)}
+                        {@const tagName = ref.slice(4)}
+                        <span
+                          class="text-[10px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300 shrink-0 font-mono cursor-context-menu"
+                          role="button"
+                          tabindex="-1"
+                          title={tagName}
+                          oncontextmenu={(e) => onTagContextMenu(e, selectedRepo, tagName)}
+                        >
+                          ⛳ {tagName}
                         </span>
                       {:else}
                         <!-- Future-proof fallback for ref shapes the

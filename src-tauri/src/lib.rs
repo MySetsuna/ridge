@@ -3,6 +3,7 @@ mod db;
 mod deep_root;
 mod engine;
 mod fs;
+mod lsp;
 pub mod remote;
 mod state;
 mod teammate;
@@ -113,6 +114,8 @@ pub fn run() {
                 // 删，避免与 CLI 异步读图竞态，故在启动期统一回收。
                 clipboard_image::cleanup_old_temp_images(std::time::Duration::from_secs(3600));
                 let handle = app.handle().clone();
+                // §IDE LSP：注入 AppHandle，使 LSP 诊断通知能 emit 到前端（lsp://diagnostics）。
+                lsp::set_app_handle(handle.clone());
                 // teammate HTTP server 改为「按需启动」：不在冷启动路径上拉起，仅 stash
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
                 // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
@@ -589,15 +592,37 @@ pub fn run() {
             git::git_commit,
             git::git_list_branches,
             git::git_checkout,
+            git::git_merge_branch,
+            git::git_delete_branch,
+            git::git_rename_branch,
+            git::git_push_branch,
+            git::git_rebase,
+            git::git_delete_tag,
+            git::git_push_tag,
+            git::git_stash_list,
+            git::git_stash_push,
+            git::git_stash_apply,
+            git::git_stash_pop,
+            git::git_stash_drop,
+            git::git_stash_branch,
             git::git_fetch,
             git::git_pull,
             git::git_push,
             git::git_sync,
             git::git_diff_file,
+            git::git_blame,
+            git::git_file_log,
+            lsp::lsp_did_open,
+            lsp::lsp_did_change,
+            lsp::lsp_definition,
+            lsp::lsp_hover,
+            lsp::lsp_references,
             git::git_diff_summary,
             git::git_get_file_versions,
             git::git_get_commit_files,
             git::git_get_file_versions_at_commit,
+            git::git_get_file_versions_between,
+            git::git_compare_commits,
             git::git_create_tag,
             git::git_reset,
             git::git_cherry_pick,

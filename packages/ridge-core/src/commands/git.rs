@@ -1011,6 +1011,172 @@ fn git_checkout_sync(
     Ok(())
 }
 
+// ── 分支操作（SCM 图谱分支右键菜单，对标 VSCode Git Graph）────────────────────
+
+/// 把 `branch` 合并进当前分支（`git merge <branch>`）。返回 git 输出（含冲突提示）。
+pub async fn git_merge_branch(repo_root: String, branch: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["merge", "--", &branch]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 删除本地分支。`force` → `-D`（丢未合并提交），否则 `-d`（安全，未合并会报错）。
+pub async fn git_delete_branch(
+    repo_root: String,
+    branch: String,
+    force: Option<bool>,
+) -> Result<String, String> {
+    spawn_git_blocking(move || {
+        let flag = if force.unwrap_or(false) { "-D" } else { "-d" };
+        run_git_simple(&repo_root, &["branch", flag, "--", &branch])
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 重命名本地分支（`git branch -m <old> <new>`）。
+pub async fn git_rename_branch(
+    repo_root: String,
+    old_name: String,
+    new_name: String,
+) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["branch", "-m", &old_name, &new_name]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 跑一条 git 子命令，成功回 stdout，失败回 stderr（空则 stdout）。分支/标签操作复用。
+fn run_git_simple(repo_root: &str, args: &[&str]) -> Result<String, String> {
+    let out = git_cmd()
+        .args(args)
+        .current_dir(Path::new(repo_root))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let s = String::from_utf8_lossy(&out.stderr).to_string();
+        return Err(if s.is_empty() {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        } else {
+            s
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// 推送指定本地分支到 origin 并设上游（`git push -u origin <branch>`）。
+pub async fn git_push_branch(repo_root: String, branch: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["push", "-u", "origin", &branch]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 把当前分支变基到 `onto`（分支名或 commit hash）。`git rebase <onto>`。
+pub async fn git_rebase(repo_root: String, onto: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["rebase", "--", &onto]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 删除本地标签（`git tag -d <name>`）。
+pub async fn git_delete_tag(repo_root: String, name: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["tag", "-d", &name]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 推送标签到 origin（`git push origin <tag>`）。
+pub async fn git_push_tag(repo_root: String, name: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["push", "origin", &name]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+// ── Stash（贮藏，对标 VSCode Git Graph）──────────────────────────────────────
+
+/// 一条 stash。`reference` 如 `stash@{0}`；`message` 为描述。
+#[derive(Clone, Debug, Serialize)]
+pub struct StashEntry {
+    pub reference: String,
+    pub message: String,
+}
+
+/// 列出所有 stash（最新在前）。
+pub async fn git_stash_list(repo_root: String) -> Result<Vec<StashEntry>, String> {
+    spawn_git_blocking(move || {
+        let fmt = format!("--format=%gd{0}%s", FIELD_SEP);
+        let out = run_git_simple(&repo_root, &["stash", "list", &fmt])?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|line| {
+                let mut f = line.split(FIELD_SEP);
+                Some(StashEntry {
+                    reference: f.next()?.to_string(),
+                    message: f.next().unwrap_or("").to_string(),
+                })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 贮藏当前工作区改动。`include_untracked` → `-u`；`message` 非空 → `-m`。
+pub async fn git_stash_push(
+    repo_root: String,
+    message: Option<String>,
+    include_untracked: Option<bool>,
+) -> Result<String, String> {
+    spawn_git_blocking(move || {
+        let mut args: Vec<String> = vec!["stash".into(), "push".into()];
+        if include_untracked.unwrap_or(false) {
+            args.push("-u".into());
+        }
+        if let Some(m) = message.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            args.push("-m".into());
+            args.push(m.to_string());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_git_simple(&repo_root, &refs)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 应用某 stash（保留在栈中）。
+pub async fn git_stash_apply(repo_root: String, reference: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["stash", "apply", &reference]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 弹出某 stash（应用后从栈移除）。
+pub async fn git_stash_pop(repo_root: String, reference: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["stash", "pop", &reference]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 丢弃某 stash（不应用，直接删除）。
+pub async fn git_stash_drop(repo_root: String, reference: String) -> Result<String, String> {
+    spawn_git_blocking(move || run_git_simple(&repo_root, &["stash", "drop", &reference]))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 从某 stash 新建分支并应用（`git stash branch <branch> <ref>`）。
+pub async fn git_stash_branch(
+    repo_root: String,
+    branch: String,
+    reference: String,
+) -> Result<String, String> {
+    spawn_git_blocking(move || {
+        run_git_simple(&repo_root, &["stash", "branch", &branch, &reference])
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 pub async fn git_fetch(repo_root: String) -> Result<(), String> {
     spawn_git_blocking(move || git_fetch_sync(repo_root))
         .await
@@ -1440,6 +1606,83 @@ fn git_get_file_versions_at_commit_sync(
     Ok(GitFileVersions { original, modified })
 }
 
+// ── 提交对比（Ctrl+Click 两提交，对标 VSCode Git Graph）──────────────────────
+
+/// 两提交间某文件的版本对（from..to）：图谱「提交对比」点击文件时的 diff。缺失版本
+/// （文件在某侧不存在）→ 空串。
+pub async fn git_get_file_versions_between(
+    repo_root: String,
+    path: String,
+    from: String,
+    to: String,
+) -> Result<GitFileVersions, String> {
+    spawn_git_blocking(move || {
+        let repo = Path::new(&repo_root);
+        let show = |spec: &str| -> String {
+            git_cmd()
+                .args(["--no-pager", "show", spec])
+                .current_dir(repo)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default()
+        };
+        Ok(GitFileVersions {
+            original: show(&format!("{}:{}", from, path)),
+            modified: show(&format!("{}:{}", to, path)),
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 比较两提交，返回变更文件列表（`git diff <from> <to> --name-status`）。
+pub async fn git_compare_commits(
+    repo_root: String,
+    from: String,
+    to: String,
+) -> Result<Vec<CommitFileEntry>, String> {
+    spawn_git_blocking(move || {
+        let out = git_cmd()
+            .args(["--no-pager", "diff", "--name-status", "-r", &from, &to])
+            .current_dir(Path::new(&repo_root))
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut files = Vec::<CommitFileEntry>::new();
+        let mut seen = std::collections::HashSet::<String>::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // "M\tpath" 或 "R100\told\tnew"——状态首字母 + 末列路径。
+            let mut parts = line.split('\t');
+            let status = parts
+                .next()
+                .unwrap_or("")
+                .chars()
+                .next()
+                .map(|c| c.to_string())
+                .unwrap_or_default();
+            let p = parts.last().unwrap_or("").to_string();
+            if p.is_empty() || status.is_empty() {
+                continue;
+            }
+            if seen.insert(p.clone()) {
+                files.push(CommitFileEntry { path: p, status });
+            }
+        }
+        Ok(files)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 /// 创建 tag。message 为空时是 lightweight tag，非空则 annotated。
 pub async fn git_create_tag(
     repo_root: String,
@@ -1602,6 +1845,183 @@ fn git_diff_file_sync(
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+// ── 行级 Git blame（IDE 能力：FileEditor gutter/hover 显示每行的提交信息）────────
+
+/// 一行的 blame 信息。字段均为单词小写 → 前端直接拿（无需 serde rename）。
+#[derive(Clone, Debug, Serialize)]
+pub struct BlameLine {
+    /// 文件内最终行号（1-based）。
+    pub line: u32,
+    /// 短 commit sha（8 位）；全 0 表示未提交（工作区改动 / 新行）。
+    pub commit: String,
+    pub author: String,
+    /// author 时间（Unix 秒）。前端格式化为相对时间。
+    pub timestamp: i64,
+    /// 提交摘要（首行）。
+    pub summary: String,
+}
+
+/// 解析 `git blame --line-porcelain` 输出为每行 BlameLine。纯函数，便于单测。
+///
+/// `--line-porcelain` 对每一行都重复完整的 commit 头：以
+/// `<sha> <orig> <final> [<num>]` 起，随后若干 `key value` 行，最后一行以 `\t`
+/// 起为源码内容。我们只取 author / author-time / summary + 最终行号。
+fn parse_blame_porcelain(stdout: &str) -> Vec<BlameLine> {
+    let mut out = Vec::new();
+    let (mut sha, mut author, mut summary) = (String::new(), String::new(), String::new());
+    let mut ts: i64 = 0;
+    let mut final_line: u32 = 0;
+    for raw in stdout.lines() {
+        if let Some(_content) = raw.strip_prefix('\t') {
+            // 内容行 → 该行 blame 收尾。
+            out.push(BlameLine {
+                line: final_line,
+                commit: sha.chars().take(8).collect(),
+                author: author.clone(),
+                timestamp: ts,
+                summary: summary.clone(),
+            });
+        } else if let Some(rest) = raw.strip_prefix("author ") {
+            author = rest.to_string();
+        } else if let Some(rest) = raw.strip_prefix("author-time ") {
+            ts = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = raw.strip_prefix("summary ") {
+            summary = rest.to_string();
+        } else {
+            // 可能是 `<sha> <orig> <final> [num]` 头行。
+            let mut it = raw.split(' ');
+            if let Some(first) = it.next() {
+                if first.len() >= 39 && first.chars().all(|c| c.is_ascii_hexdigit()) {
+                    sha = first.to_string();
+                    let _orig = it.next();
+                    if let Some(fin) = it.next() {
+                        if let Ok(n) = fin.parse::<u32>() {
+                            final_line = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 行级 blame：返回文件每行的最近提交信息（作者/时间/摘要/短 sha）。
+pub async fn git_blame(repo_root: String, path: String) -> Result<Vec<BlameLine>, String> {
+    spawn_git_blocking(move || git_blame_sync(repo_root, path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn git_blame_sync(repo_root: String, path: String) -> Result<Vec<BlameLine>, String> {
+    let repo = Path::new(&repo_root);
+    let out = git_cmd()
+        // `-w` 忽略空白改动归因；`--line-porcelain` 每行重复完整头便于解析。
+        .args(["--no-pager", "blame", "-w", "--line-porcelain", "--"])
+        .arg(&path)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(parse_blame_porcelain(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// 文件提交历史：触碰该文件的提交（最近在前）。前端「查看本文件历史」/「本行历史」
+/// 列表用；选中某提交后复用 `git_diff_file` 看 diff。`--follow` 跨重命名追踪。
+pub async fn git_file_log(
+    repo_root: String,
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<FileCommit>, String> {
+    spawn_git_blocking(move || git_file_log_sync(repo_root, path, limit))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 文件历史里的一条提交。
+#[derive(Clone, Debug, Serialize)]
+pub struct FileCommit {
+    pub sha: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub summary: String,
+}
+
+fn git_file_log_sync(
+    repo_root: String,
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<FileCommit>, String> {
+    let repo = Path::new(&repo_root);
+    let pretty = format!("--pretty=format:%H{0}%an{0}%at{0}%s", FIELD_SEP);
+    let mut cmd = git_cmd();
+    cmd.args(["--no-pager", "log", "--follow", &pretty]);
+    if let Some(n) = limit {
+        cmd.arg(format!("-n{n}"));
+    }
+    cmd.arg("--").arg(&path);
+    let out = cmd.current_dir(repo).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let commits = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let mut f = line.split(FIELD_SEP);
+            Some(FileCommit {
+                sha: f.next()?.to_string(),
+                author: f.next()?.to_string(),
+                timestamp: f.next()?.trim().parse().unwrap_or(0),
+                summary: f.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+    Ok(commits)
+}
+
+#[cfg(test)]
+mod blame_tests {
+    use super::*;
+
+    #[test]
+    fn parses_line_porcelain_into_per_line_records() {
+        // 两行，分属两个提交（line-porcelain 每行重复完整头）。
+        let sample = "0123456789abcdef0123456789abcdef01234567 1 1 1\n\
+author Alice\n\
+author-mail <a@x.io>\n\
+author-time 1700000000\n\
+author-tz +0800\n\
+summary first commit\n\
+filename src/a.rs\n\
+\tfn main() {\n\
+89abcdef0123456789abcdef0123456789abcdef 2 2 1\n\
+author Bob\n\
+author-time 1700009999\n\
+summary second\n\
+filename src/a.rs\n\
+\t    println!(\"hi\");\n";
+        let lines = parse_blame_porcelain(sample);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].line, 1);
+        assert_eq!(lines[0].commit, "01234567");
+        assert_eq!(lines[0].author, "Alice");
+        assert_eq!(lines[0].timestamp, 1_700_000_000);
+        assert_eq!(lines[0].summary, "first commit");
+        assert_eq!(lines[1].line, 2);
+        assert_eq!(lines[1].commit, "89abcdef");
+        assert_eq!(lines[1].author, "Bob");
+    }
+
+    #[test]
+    fn empty_blame_yields_no_lines() {
+        assert!(parse_blame_porcelain("").is_empty());
+    }
 }
 
 /// 从 pane 的 cwd 获取 git 仓库信息
