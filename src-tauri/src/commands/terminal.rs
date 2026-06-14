@@ -1371,14 +1371,25 @@ pub fn write_pty_bytes_workspace(
     let ws = map
         .get(&workspace_id)
         .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
-    let handle = ws
-        .terminals
-        .get(&pane_id)
-        .ok_or(AppError::PaneNotFound(pane_id))?;
-    let mut w = handle.writer.lock();
-    w.write_all(data)?;
-    w.flush()?;
-    Ok(())
+    // 已激活的 live 终端优先。否则回退到阶段一的 `PendingSpawn`：其 PTY master
+    // writer 在 `openpty()` 时即存在（子进程要等 `activate_pane_pty` 才启动），
+    // 故 `spawn-process` 之后、前端激活该面板之前到达的 `send-keys` 仍能落地 ——
+    // 字节进 tty 输入队列，子进程启动后即被读取。缺此回退时，teammate 分屏刚
+    // spawn 后紧接的 `send-keys -t %N Enter` 会与前端激活竞态、返回 400，使宿主
+    // （Claude Code teammateMode=tmux）中止 teammate 拉起。
+    if let Some(handle) = ws.terminals.get(&pane_id) {
+        let mut w = handle.writer.lock();
+        w.write_all(data)?;
+        w.flush()?;
+        return Ok(());
+    }
+    if let Some(pending) = ws.pending_spawns.get(&pane_id) {
+        let mut w = pending.writer.lock();
+        w.write_all(data)?;
+        w.flush()?;
+        return Ok(());
+    }
+    Err(AppError::PaneNotFound(pane_id))
 }
 
 async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<(), AppError> {
