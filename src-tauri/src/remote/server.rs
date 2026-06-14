@@ -20,6 +20,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tower_http::compression::CompressionLayer;
 use uuid::Uuid;
 
 use crate::state::{AppState, RemotePaneSub, RemoteSubId};
@@ -340,6 +341,13 @@ async fn run_remote_server(
             ctx.clone(),
             security_headers,
         ))
+        // §perf: 压缩层放在最外层（最后 .layer = 请求最先经过、响应最后处理），
+        // 对内部所有 handler + fallback 产出的响应体做 gzip/br（按 Accept-Encoding
+        // 协商）。web-remote 桌面 SPA 的 4.2MB eager chunk / 7MB Monaco worker 等
+        // 文本资源压缩后 ~25-30%；security_headers 已先设好的头被原样保留，
+        // CompressionLayer 仅追加 Content-Encoding/Vary 并去掉 Content-Length。
+        // 默认谓词跳过已压缩类型（图片等）与 <32B 小响应；WS 101 升级无响应体不受影响。
+        .layer(CompressionLayer::new())
         .route_layer(axum::middleware::from_fn_with_state(
             ctx.clone(),
             remote_gate,
@@ -434,32 +442,20 @@ struct UiQuery {
 /// Decide which UI build to serve: the FULL desktop SPA for desktop browsers,
 /// the lightweight mobile SPA otherwise. `?ui=` overrides. Falls back to the
 /// mobile build if the desktop build (`web-remote-dist`) isn't present.
+///
+/// UA→UI 分叉判定下沉到 `ridge_remote::ua`（SSOT），与公网远控中继（ridge-cloud）
+/// 共用同一份规则，避免漂移。此处只额外校验桌面产物是否存在。
 fn wants_desktop_ui(
     ctx: &RemoteCtx,
     headers: &axum::http::HeaderMap,
     ui_override: Option<&str>,
 ) -> bool {
-    let prefer_desktop = match ui_override {
-        Some("desktop") => true,
-        Some("mobile") => false,
-        _ => {
-            let ua = headers
-                .get(axum::http::header::USER_AGENT)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            const MOBILE: [&str; 6] = [
-                "android",
-                "iphone",
-                "ipad",
-                "ipod",
-                "mobile",
-                "windows phone",
-            ];
-            !MOBILE.iter().any(|m| ua.contains(m))
-        }
-    };
-    prefer_desktop && ctx.desktop_dir.join("index.html").exists()
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    ridge_remote::ua::prefer_desktop_ui(ua, ui_override)
+        && ctx.desktop_dir.join("index.html").exists()
 }
 
 /// The UI build directory for this request (desktop vs mobile).
@@ -2272,11 +2268,17 @@ async fn handle_ws(
                                         "cwd": cwd.clone(),
                                     }).to_string())).await;
                                     // §web-remote: desktop UI listens to pane-cwd-changed-{ws}-{pane}.
-                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                        "type": "event",
-                                        "name": format!("pane-cwd-changed-{}-{}", workspace_id, pane_id),
-                                        "payload": { "cwd": cwd },
-                                    }).to_string())).await;
+                                    // Title-only Metadata events carry cwd=None (PaneTitleChanged fires
+                                    // on every prompt redraw). Forwarding them with a null cwd made the
+                                    // controller call setPaneCwd(null) → normalizeCwd(null).replace →
+                                    // TypeError spam. Only emit a cwd-changed event when there IS a cwd.
+                                    if let Some(cwd) = &cwd {
+                                        let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                            "type": "event",
+                                            "name": format!("pane-cwd-changed-{}-{}", workspace_id, pane_id),
+                                            "payload": { "cwd": cwd },
+                                        }).to_string())).await;
+                                    }
                                 }
                             }
                             Some(crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols }) => {

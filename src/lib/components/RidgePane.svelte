@@ -23,7 +23,7 @@ import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
-import { remoteRunning } from '$lib/stores/remoteStatus';
+import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
@@ -1514,7 +1514,12 @@ function refreshForRemote() {
 	// Select this pane's workspace in the sidebar/WorkspaceTree so the
 	// active terminal and workspace tree stay in sync after a refresh.
 	activeWorkspaceId.set(workspaceId);
-	manager.fitPaneNow(paneId);
+	// §shared-remote: CLAIM the shared PTY at this viewer's size. On the
+	// browser controller (sharedRemoteMode) passive fits no longer resize the
+	// PTY, so this explicit claim is the only path that pushes this pane's
+	// dimensions to the host; on the host it's an idempotent re-fit. The
+	// broadcast Resize delta then re-letterboxes every viewer.
+	manager.claimPaneSize(paneId);
 	manager.forceFullRedraw(paneId);
 }
 
@@ -1770,13 +1775,14 @@ function captureBackspace(node: HTMLElement) {
 	{/if}
 
 	<!-- §multi-size: re-claim PTY at this pane's size + repaint. Shown when this
-	     desktop hosts a live remote server ($remoteRunning) OR when this IS the
-	     desktop-in-browser controller (WEB_REMOTE) — in both cases multiple
-	     viewers share one PTY and a viewer must be able to claim it at its own
-	     size. A lone local pane needs no button (fitPane already owns the size).
-	     On the browser controller this is the only way to push the pane's
-	     dimensions to the host PTY. -->
-	{#if $remoteRunning || WEB_REMOTE}
+	     desktop hosts a live LAN remote server ($remoteRunning) OR is serving the
+	     public cloud remote ($cloudHostOnline) OR when this IS the desktop-in-
+	     browser controller (WEB_REMOTE) — in all cases multiple viewers share one
+	     PTY and a viewer must be able to lock it to its own size. A lone local
+	     pane needs no button (fitPane already owns the size). On the browser
+	     controller this is the only way to push the pane's dimensions to the
+	     host PTY. -->
+	{#if $remoteRunning || $cloudHostOnline || WEB_REMOTE}
 		<button
 			type="button"
 			class="rg-remote-refresh"

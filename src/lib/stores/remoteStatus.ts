@@ -10,6 +10,15 @@ import { writable } from 'svelte/store';
 // gates on this store so it stays hidden unless the server is truly up.
 export const remoteRunning = writable(false);
 
+// Live "is this desktop serving the public (cloud/WebRTC) remote" flag.
+//
+// The cloud host path (`cloudHostBridge` over the relay) is INDEPENDENT of the
+// LAN remote server — it does not flip `remoteRunning` (which only reflects
+// `get_remote_info().ready`). UI that must appear whenever ANY remote viewer can
+// share a pane's PTY (the per-pane "re-lock size" button) also gates on this
+// store. Set by RemotePanel's goOnline / goOffline / onHostState transitions.
+export const cloudHostOnline = writable(false);
+
 /** Query the backend for the real remote-server status and update the store. */
 export async function refreshRemoteRunning(): Promise<boolean> {
   try {

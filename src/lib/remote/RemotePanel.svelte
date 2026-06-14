@@ -6,7 +6,7 @@
   import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
   import { dev } from '$app/environment';
   import { settingsStore, setSetting } from '$lib/stores/settings';
-  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
+  import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
   // §unify: 远程控制 = 同一份能力的两个触达通道(LAN + 官方公网)。本面板把二者
   // 合一为单一视图(去 tab):一个主开关、一份共享 TOTP、LAN/公网入口同屏、一份
@@ -307,6 +307,10 @@
           hostState = st;
           if (st === 'error') connectError = tr('cloud.hostError');
           if (st === 'online' || st === 'connecting') connectError = '';
+          // Surface "public remote is serving" to the whole app so per-pane
+          // refresh buttons (RidgePane) appear while a cloud viewer can share
+          // the PTY — the LAN-only `remoteRunning` store stays false here.
+          cloudHostOnline.set(st === 'online');
         },
         onSessions: (list) => { cloudSessions = list; },
         onError: (msg) => { connectError = msg; },
@@ -363,6 +367,7 @@
   }
   async function goOffline(): Promise<void> {
     host?.goOffline();
+    cloudHostOnline.set(false);
     await notifyCloudActive(false);
   }
   function disconnectController(cid: string): void { host?.kick(cid); }

@@ -1951,7 +1951,11 @@ function mergePaneCwds(
   return next;
 }
 
-export function setPaneCwd(workspaceId: string, paneId: string, cwd: string): void {
+export function setPaneCwd(workspaceId: string, paneId: string, cwd: string | null | undefined): void {
+  // Defensive: remote hosts can forward a metadata event whose cwd is null
+  // (title-only change). normalizeCwd(null).replace would throw; a null cwd
+  // carries no new directory, so just ignore it.
+  if (cwd == null) return;
   const key = `${workspaceId}:${paneId}`;
   const normalized = normalizeCwd(cwd);
   paneCwdStore.update((store) => {
@@ -2017,7 +2021,7 @@ export async function setupPaneCwdListeners(workspaceId: string): Promise<void> 
   for (const paneId of paneIds) {
     if (!paneId) continue; // skip empty IDs (e.g., pre-hydration default leaf)
     const ch = `pane-cwd-changed-${workspaceId}-${paneId}`;
-    const unlisten = await listen<{ cwd: string }>(ch, (e) => {
+    const unlisten = await listen<{ cwd: string | null }>(ch, (e) => {
       setPaneCwd(workspaceId, paneId, e.payload.cwd);
     });
     unlisteners.push(unlisten);
