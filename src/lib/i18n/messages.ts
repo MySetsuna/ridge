@@ -127,11 +127,11 @@ const zh: Dict = {
     deviceOffline: '离线'
   },
   remote: {
-    title: '远程控制 ({name})',
+    title: '局域网远控 ({name})',
     modeLan: '局域网 / 自建网',
     modeCloud: '官方公网加速',
-    enabledLabel: '远程控制已启用',
-    startLabel: '启动远程控制',
+    enabledLabel: '局域网远控已启用',
+    startLabel: '启动局域网远控',
     devHint: '开发模式 · 运行 {cmd} 启动手机端',
     accessHintPrefix: '手机浏览器扫码或访问',
     copyLinkTitle: '点击复制链接',
@@ -347,11 +347,11 @@ const en: Dict = {
     deviceOffline: 'Offline'
   },
   remote: {
-    title: 'Remote control ({name})',
+    title: 'LAN remote ({name})',
     modeLan: 'LAN / self-hosted',
     modeCloud: 'Public acceleration',
-    enabledLabel: 'Remote control enabled',
-    startLabel: 'Start remote control',
+    enabledLabel: 'LAN remote enabled',
+    startLabel: 'Start LAN remote',
     devHint: 'Dev mode · run {cmd} to start the mobile end',
     accessHintPrefix: 'Scan or visit from your phone browser',
     copyLinkTitle: 'Click to copy link',

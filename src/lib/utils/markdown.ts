@@ -13,7 +13,16 @@
 //   (it embeds the highlighted HTML directly, no mount-time flicker).
 
 import { marked, Renderer, type Tokens } from 'marked';
-import * as monaco from 'monaco-editor';
+// §perf 懒加载 Monaco：colorize 仅用于 md 代码块高亮，顶层静态 import 会把整个
+// ~4MB Monaco 核心拖进每个渲染 markdown 的入口（含 web-remote 首屏 eager chunk）。
+// 改为首次高亮时再 `import('monaco-editor')`，与下方 mermaid 的懒加载范式一致。
+let monacoLoadPromise: Promise<typeof import('monaco-editor')> | null = null;
+function loadMonaco(): Promise<typeof import('monaco-editor')> {
+  if (!monacoLoadPromise) {
+    monacoLoadPromise = import('monaco-editor');
+  }
+  return monacoLoadPromise;
+}
 
 /**
  * Escape the four HTML-sensitive characters. Used before stuffing a raw code
@@ -342,6 +351,14 @@ export function renderMarkdown(source: string): string {
 export async function highlightCodeBlocks(container: HTMLElement): Promise<void> {
   const blocks = container.querySelectorAll<HTMLElement>('pre.rg-md-pre[data-rg-md-code]');
   if (blocks.length === 0) return;
+  // 懒加载 Monaco（仅在文档真的含代码块时）。失败则保留已渲染的纯文本回退。
+  let monaco: typeof import('monaco-editor');
+  try {
+    monaco = await loadMonaco();
+  } catch (err) {
+    console.warn('[markdown] monaco import failed', err);
+    return;
+  }
   await Promise.all(
     Array.from(blocks).map(async (pre) => {
       const encoded = pre.dataset.rgMdCode;
