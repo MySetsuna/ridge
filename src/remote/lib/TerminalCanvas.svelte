@@ -3,6 +3,7 @@
   import { t } from '$lib/i18n';
   import { TerminalController } from './terminalController';
   import { anyMod, consumeMods } from './modState.svelte';
+  import { keyboardShiftPx } from './keyboardOffset';
 
   let { paneId, onStdin, onResize, onHostClipboard, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
@@ -40,9 +41,24 @@
   // is pushed up by exactly enough to seat the INPUT ROW just above the keyboard
   // top — computed from the cursor's pixel position, NOT a blind full-keyboard
   // shift (that over-shifted by the bottom bar's height, lifting the input line
-  // well above the keyboard). Computed once per show (not per keystroke) so there
-  // is no flicker while typing.
+  // well above the keyboard).
   let keyboardOffset = $state(0);
+  // §kb-stable (2026-06-15): the vertical gap (CSS px) between the canvas's
+  // BOTTOM edge and the layout-viewport bottom — i.e. the bottom tab bar + safe
+  // area. Measured ONLY while the keyboard is hidden (transform is 0, so the
+  // bounding rect is the canvas's natural position). The keyboard-offset formula
+  // reads this cached value instead of the live, transform-affected
+  // `getBoundingClientRect().top`, which is what made the offset spiral: the soft
+  // keyboard slide-in fires many visualViewport `resize` events, and the previous
+  // `naturalTop = rect.top + keyboardOffset` undid the ANIMATING transition with
+  // the TARGET offset → the mismatch flung the canvas off-screen (blank terminal)
+  // and thrashed the page (apparent freeze). With this gap cached, the formula is
+  // fully transform-independent, so recomputing per resize converges cleanly.
+  let gapBelowCanvas = 0;
+  // True while the soft keyboard is up. Tracks the hidden→shown edge so the
+  // one-shot `scrollToBottom()` (snap to the live prompt) fires exactly once per
+  // show — not on every intermediate resize event during the slide-in.
+  let keyboardVisible = false;
 
   // Touch state. Single-finger swipe = scroll (simulates mouse wheel).
   // In TUI mode (mouse reporting), the scroll is forwarded to the app.
@@ -100,7 +116,10 @@
     hiddenInput.style.height = `${Math.round(p.h)}px`;
   }
 
-  onDestroy(() => { ctrl?.destroy(); });
+  onDestroy(() => {
+    if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
+    ctrl?.destroy();
+  });
 
 
 
@@ -620,44 +639,87 @@
   /** Offset (CSS px) to translate the canvas up so the cursor's INPUT ROW sits
    *  just above the keyboard. Anchors the cursor cell's BOTTOM at (keyboard top −
    *  gap); falls back to the canvas bottom row when the cursor pixel is
-   *  unavailable. Returns 0 when the keyboard is hidden. */
+   *  unavailable. Returns 0 when the keyboard is hidden.
+   *
+   *  §kb-stable: every term here is TRANSFORM-INDEPENDENT, so recomputing on each
+   *  visualViewport `resize` during the keyboard slide-in converges instead of
+   *  spiraling (the earlier `rect.top + keyboardOffset` undid the in-flight CSS
+   *  transition with the target offset → off-screen canvas + page thrash):
+   *   • kh                    keyboard height = innerHeight − visualViewport.height
+   *   • gapBelowCanvas        canvas-bottom → layout-bottom gap, cached while hidden
+   *   • cursorFromCanvasBottom canvas height − cursor cell bottom (intrinsic to the
+   *                            canvas, unaffected by a translateY)
+   *  offset = kh + gap_to_keyboard − gapBelowCanvas − cursorFromCanvasBottom. */
   function computeKeyboardOffset(): number {
     const vv = window.visualViewport;
     if (!vv || !canvasEl) return 0;
     const kh = Math.max(0, window.innerHeight - (vv.height || 0));
-    if (kh <= 0) return 0; // keyboard hidden → no shift
-    const rect = canvasEl.getBoundingClientRect();
-    // Undo the transform currently applied (translateY(-keyboardOffset)) to get
-    // the canvas's natural, offset-free top in viewport coordinates.
-    const naturalTop = rect.top + keyboardOffset;
+    const canvasH = canvasEl.clientHeight; // layout height — a translateY can't change it
     const cur = ctrl?.getCursorPixel();
-    // Cursor cell bottom relative to canvas top (else the canvas's own bottom).
-    const cursorBottom = cur ? cur.y + cur.h : rect.height;
-    const cursorScreenY = naturalTop + cursorBottom;
-    const keyboardTopY = (vv.offsetTop || 0) + vv.height;
-    return Math.max(0, Math.round(cursorScreenY - (keyboardTopY - KB_GAP_PX)));
+    const cursorBottom = cur ? cur.y + cur.h : canvasH;
+    return keyboardShiftPx({
+      keyboardHeightPx: kh,
+      gapBelowCanvasPx: gapBelowCanvas,
+      cursorFromCanvasBottomPx: Math.max(0, canvasH - cursorBottom),
+      gapPx: KB_GAP_PX,
+    });
+  }
+
+  /** Re-measure the stable canvas-bottom → layout-bottom gap. Safe only while the
+   *  keyboard is hidden (keyboardOffset === 0): with no transform applied the
+   *  bounding rect reflects the canvas's natural position. */
+  function measureGapBelowCanvas(): void {
+    if (!canvasEl || keyboardOffset !== 0) return;
+    const r = canvasEl.getBoundingClientRect();
+    gapBelowCanvas = Math.max(0, Math.round(window.innerHeight - r.bottom));
+  }
+
+  /** Re-measure once the un-shift transition (.2s) has settled, so the gap reads
+   *  the canvas's natural box rather than a mid-animation one. Self-heals a
+   *  mount-time transient (canvas not yet laid out) and layout drift. */
+  let gapRemeasureTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleGapRemeasure(): void {
+    if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
+    gapRemeasureTimer = setTimeout(() => {
+      gapRemeasureTimer = null;
+      measureGapBelowCanvas();
+    }, 260);
   }
 
   // ── Cursor-anchored keyboard offset ──
   // When the system keyboard appears, push the canvas up just enough to keep the
-  // input row visible above it. Computed once on show (not per keystroke → no
-  // flicker). DO NOT call requestResize() here — the transform moves the canvas
-  // without changing the terminal grid; resize only on real viewport/orientation
-  // change.
+  // input row visible above it. DO NOT call requestResize() here — the transform
+  // moves the canvas without changing the terminal grid; resize only on real
+  // viewport/orientation change.
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     function onViewportResize() {
       if (!vv) return;
       const kh = Math.max(0, window.innerHeight - (vv.height || 0));
-      const wasUp = keyboardOffset > 0;
-      // On first show, snap the terminal to the prompt so the cursor we anchor on
-      // is the live input row — THEN measure the offset against it.
-      if (kh > 0 && !wasUp) ctrl?.scrollToBottom();
+      if (kh <= 0) {
+        // Keyboard hidden: drop the shift. Do NOT re-measure the gap here — the
+        // un-shift transition is still animating, so the bounding rect would read
+        // a mid-animation (still-shifted) box. The gap is static layout, seeded on
+        // mount and refreshed on orientationchange (both transform-free moments).
+        keyboardVisible = false;
+        keyboardOffset = 0;
+        scheduleGapRemeasure(); // refresh once the un-shift settles (guarded)
+        return;
+      }
+      // First show: snap the terminal to the prompt so the cursor we anchor on is
+      // the live input row. Done once per show — not on every slide-in resize.
+      if (!keyboardVisible) {
+        keyboardVisible = true;
+        ctrl?.scrollToBottom();
+      }
       keyboardOffset = computeKeyboardOffset();
     }
     vv.addEventListener('resize', onViewportResize);
-    // Fire once to capture any already-open keyboard.
+    // Seed the gap measurement, then schedule a settled re-measure (in case the
+    // canvas isn't fully laid out yet), then capture any already-open keyboard.
+    measureGapBelowCanvas();
+    scheduleGapRemeasure();
     onViewportResize();
     return () => vv.removeEventListener('resize', onViewportResize);
   });
@@ -666,7 +728,13 @@
   // 'resize' may lag a frame behind the new layout on some browsers, so refit
   // explicitly too (idempotent + debounced — at most one extra fitPane).
   $effect(() => {
-    function onOrientation() { ctrl?.requestResize(); }
+    function onOrientation() {
+      ctrl?.requestResize();
+      // Layout changed → the canvas-bottom gap (bottom bar + safe area) may have
+      // changed too. Re-measure after the rotation settles (guarded so it only
+      // reads a transform-free box).
+      scheduleGapRemeasure();
+    }
     window.addEventListener('orientationchange', onOrientation);
     return () => window.removeEventListener('orientationchange', onOrientation);
   });
