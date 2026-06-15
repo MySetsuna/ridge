@@ -116,7 +116,8 @@ pub struct RasterizedGlyph {
 /// Chromium revisions resolve `measureText` against a permissive
 /// font-fallback fast path but punt `fillText` to a stricter pipeline
 /// that doesn't see system emoji fonts (Segoe UI Emoji) nor the
-/// document's `@font-face`-declared faces (Noto Color Emoji). Symptom
+/// document's `@font-face`-declared faces (the on-demand 'Flag Emoji'
+/// flag subset). Symptom
 /// captured 2026-05-08 via the §A.7 RIDGE_DIAG trace: every emoji
 /// codepoint reported `advance_dev > 0` AND `ascent_dev == font_size`
 /// (browser placeholder when no font matched) AND `non_zero_px == 0`
@@ -152,7 +153,7 @@ impl GlyphRasterizer {
         // Hide the canvas off-screen and out of layout. Some
         // Chromium / WebView2 versions only resolve the document's
         // full font-fallback chain (system Segoe UI Emoji + the
-        // @font-face Noto Color Emoji subsets) for canvases attached
+        // @font-face 'Flag Emoji' flag subset) for canvases attached
         // to the document tree — switching here from OffscreenCanvas
         // was the §A.7 fix for "emoji rasterises blank" reports.
         canvas
@@ -295,7 +296,19 @@ impl GlyphRasterizer {
         // slot. The caller crops `atlas_uv` to this rectangle so the
         // cell quad samples only the rendered glyph instead of the
         // entire mostly-empty slot.
-        let bbox_w = advance_dev.ceil().clamp(1.0, self.slot_w as f32) as u16;
+        //
+        // Width must cover the glyph's ACTUAL painted right edge, not just the
+        // advance. Italic / synthetic-oblique glyphs — especially CJK, which
+        // usually lack a true italic face so the browser shears the upright
+        // glyph — lean their top-right PAST the advance. Cropping to `advance`
+        // alone shaved that overhang off (the "italic CJK missing top-right
+        // corner" report). `actualBoundingBoxRight` is the painted right edge;
+        // for upright glyphs it ≈ advance, so this is a no-op there.
+        let actual_right_dev = metrics.actual_bounding_box_right() as f32;
+        let bbox_w = advance_dev
+            .max(actual_right_dev)
+            .ceil()
+            .clamp(1.0, self.slot_w as f32) as u16;
         let bbox_h = bbox_h_dev.ceil().clamp(1.0, self.slot_h as f32) as u16;
 
         // Detect whether the browser stamped a color-emoji palette into

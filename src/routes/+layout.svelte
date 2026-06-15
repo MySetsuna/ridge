@@ -7,6 +7,10 @@
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
+  import { invoke } from '@tauri-apps/api/core';
+  import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
+  import { cloudAuth as cloudAuthStore } from '$lib/remote/cloud/auth';
+  import { BASE_DOMAIN, cloudHttpScheme } from '$lib/remote/cloud/apiClient';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -14,6 +18,11 @@
   // vite.config.js). In the normal Tauri build the flag is undefined, the whole
   // branch tree-shakes away, and behaviour is unchanged.
   const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+  // §redirect-loop 止血：租户子域 boot 失败回主域登录的「已回跳」计数（per-tab，
+  // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
+  // 不再无限回跳（apex⇄子域死循环的客户端一端）。connected 时清零。
+  const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
 
   // Auth/connect state for the web-remote gate. `ready` blocks the page outlet
   // until the bridge is attached, so the desktop UI never calls `invoke()`
@@ -35,12 +44,15 @@
   onMount(() => {
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
-      return;
+      // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
+      // WEB_REMOTE 分支排除，不会到这）。
+      const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
+      return () => stopTotpSync();
     }
     // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
-    //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
-    //   2. 租户域名: `{device}-{username}.remo2ridge.duckdns.org`（自动从 hostname 解析）
-    // 非 cloud 模式则走 LAN TOTP 流程。
+//   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
+  //   2. 租户域名: `{device}-{username}.9527127.xyz`（自动从 hostname 解析）
+  // 非 cloud 模式则走 LAN TOTP 流程。
     void startCloudControllerBootMode();
   });
 
@@ -50,42 +62,26 @@
   // once the relay/WebRTC/E2EE handshake reaches `connected`.
   //
   // 回退策略：
-  // - 租户域名（`{device}-{username}.remo2ridge.duckdns.org`）上 cloud 接线失败
-  //   （无 user token / host 不在线）→ 重定向到 `remo2ridge.duckdns.org` 登录/激活
+  // - 租户域名（`{device}-{username}.9527127.xyz`）上 cloud 接线失败
+  //   （无 user token / host 不在线）→ 重定向到 `9527127.xyz` 登录/激活
   // - 主域名上 cloud 接线失败 → 回退 LAN TOTP 流程
-  // §跨子域交接（方案 B）：主域登录后经 `#token=<jwt>` 整页回跳到本租户子域。
-  // 在 boot 前把 token 落盘到本子域 localStorage，并立即清除 fragment（避免 token
-  // 残留在地址栏/历史；fragment 本就不发往服务器，故不进 access log）。
-  async function consumeHandoffToken() {
-    const hash = location.hash;
-    if (!hash || hash.length < 2) return;
-    let token: string | null = null;
-    try {
-      token = new URLSearchParams(hash.slice(1)).get('token');
-    } catch {
-      token = null;
-    }
-    if (!token) return;
-    try {
-      const { persistHandoffToken } = await import('$lib/remote/cloud/auth');
-      persistHandoffToken(token);
-    } catch { /* ignore */ }
-    try {
-      history.replaceState(null, '', location.pathname + location.search);
-    } catch { /* ignore */ }
-  }
-
   async function startCloudControllerBootMode() {
     const { bootCloudControllerFromUrl, parseCloudControllerHostname } =
       await import('$lib/remote/cloud/cloudControllerBoot');
-    // 先消费可能存在的一次性交接 token，再发起 cloud 接线（boot 从 localStorage 读 token）。
-    await consumeHandoffToken();
+    // 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：用父域 `ridge_sso` cookie
+    // 换短 access token、seed 登录态（替代旧 `#token` 跨子域握手）。失败仅返回 false，由下方
+    // boot 失败回退（租户子域回主域登录 / 主域回退 LAN）统一处理。
+    const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
+    // 返回值 = 父域 ridge_sso cookie 是否有效（成功换出 access token）。失败 = cookie 缺失/失效。
+    const hadSession = await bootstrapFromCookie();
     phase = 'connecting';
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
         if (s === 'connected') {
           // §4 云端 TOTP 二次验证：连上（E2EE 完成）后**先**提示输入 host 展示的
           // 6 位 code，验证通过才标记 ready（驱动桌面 UI）。
+          // 接线成功（鉴权 + WebRTC OK）→ 清掉回跳计数，下次刷新从零开始。
+          try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
           phase = 'need-totp';
           errorMsg = '';
           loading = false;
@@ -98,9 +94,25 @@
     }, location.hostname);
     cloudHandle = handle;
     if (!handle) {
-      // 租户域名上无凭据 / host 不在线 → 回主域名登录。
+      // 租户域名上接线失败 → (重新)登录拿 cookie；但要防 apex⇄子域死循环。
       if (parseCloudControllerHostname(location.hostname)) {
-        window.location.replace(`https://remo2ridge.duckdns.org/?redirect=${encodeURIComponent(location.href)}`);
+        // bootCloudControllerFromUrl 仅在缺 userToken/username（即 cookie 无效）时返回 null；
+        // host 离线是返回句柄后经 onState('error')，不会到这。
+        // 止血：①已回跳过一次仍失败，或 ②本就有有效 cookie 却仍接线失败（多半是 host 离线/
+        // 未设用户名而非鉴权）→ 停在子域显式报错，别再无限回跳。
+        let bounced = 0;
+        try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
+        if (bounced >= 1 || hadSession) {
+          try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
+          phase = 'error';
+          errorMsg = tr('main.remoteGateErrTenantLoginStuck');
+          return;
+        }
+        try { sessionStorage.setItem(TENANT_BOUNCE_KEY, String(bounced + 1)); } catch { /* ignore */ }
+        // 回主域名登录/激活。用配置的 BASE_DOMAIN（debug 包烘焙为 localhost:5001），
+        // 不再硬编码生产域名——否则 dev 下租户子域 boot 失败会被踢去生产站。
+        const scheme = cloudHttpScheme(BASE_DOMAIN);
+        window.location.replace(`${scheme}://${BASE_DOMAIN}/?redirect=${encodeURIComponent(location.href)}`);
         return;
       }
       // 主域名上非 cloud 模式 → 回退 LAN TOTP。

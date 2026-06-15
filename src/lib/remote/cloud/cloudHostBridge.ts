@@ -33,6 +33,7 @@ import {
   encodeJsonFrame,
   encodePaneFrame,
 } from '../../transport/remote/cloudMux';
+import { base64ToBytes } from './e2ee';
 import { isRemoteAllowed } from './remoteAllowlist';
 
 /** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
@@ -71,6 +72,24 @@ const JSON_RPC_INTERNAL_ERROR = -32603;
  * 无指数退避——爆破面已封死，无需更复杂的退避）。
  */
 const MAX_TOTP_ATTEMPTS = 5;
+
+/**
+ * DataChannel 背压流控（弱网 P1）：由 provider 在 acceptConn 后经 {@link CloudHostBridge.attachChannelControl}
+ * 注入；未注入则不做背压（行为不变，向后兼容既有构造点 / 测试）。
+ */
+export interface ChannelBackpressure {
+  /** 当前 DataChannel 发送缓冲字节数（provider 读 `conn.dc.bufferedAmount`）。 */
+  bufferedAmount(): number;
+  /** 订阅「缓冲已回落到低水位」（`bufferedamountlow`）；返回退订函数。 */
+  onDrained(cb: () => void): () => void;
+}
+
+/**
+ * DataChannel 背压上水位：`bufferedAmount` 超过即丢 pane 帧（防 SCTP 发送缓冲无界增长
+ * → OOM/卡死）。8 MiB 远低于 libwebrtc ~16 MiB 硬上限，留余量给在途帧。低水位（1 MiB）
+ * 在 provider 侧设 `bufferedAmountLowThreshold`，回落经 onDrained 通知。
+ */
+const BUFFERED_HIGH_WATERMARK = 8 * 1024 * 1024; // 8 MiB
 
 /**
  * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
@@ -120,6 +139,16 @@ export type KeyBindingVerifier = (peerPublicKey: Uint8Array) => boolean;
  */
 export type TotpVerifier = (code: string) => Promise<boolean>;
 
+/**
+ * 零信任 #1（概念 5）：信道绑定 TOTP 校验钩子。controller 在收到 host 0x02 后改发
+ * `{t:'totp-bind', tag}`（tag = HMAC over the bind transcript，明文 6 位码**不上线**）替代
+ * `totp-verify`。host 用本会话 bindTranscript + 本机种子在 ±1 窗口重算 tag 恒定时间比对。
+ * 生产环境注入 `(tag) => invoke('verify_remote_totp_bind', { transcript, tag })`（transcript 由
+ * provider 经 createBridge 闭包注入）；测试注入 mock。与 {@link TotpVerifier} 共享 verified
+ * 门控 + 5 次锁定计数（爆破面统一封死）。
+ */
+export type TotpBindVerifier = (tag: Uint8Array) => Promise<boolean>;
+
 export interface CloudHostBridgeConfig {
   /** 执行本地命令（注入 Tauri `invoke` 或 mock）。 */
   invoke: InvokeFn;
@@ -138,6 +167,13 @@ export interface CloudHostBridgeConfig {
    * 放行（verified=true），保持既有 cloud 连接路径不回归。
    */
   totpVerifier?: TotpVerifier;
+  /**
+   * 可选：零信任 #1（概念 5）信道绑定 TOTP 校验（{@link TotpBindVerifier}）。注入则桥接受
+   * controller 的 `totp-bind`（HMAC tag）作为 totp-verify 的等价/替代验证路径，与 totpVerifier
+   * 共享 verified 门控 + 失败锁定。未注入则收到 totp-bind 视为失败（除非两种校验器都未注入 =
+   * 完全不门控，向后兼容）。
+   */
+  totpBindVerifier?: TotpBindVerifier;
   /** 可选：诊断日志回调（默认 console）。 */
   log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 }
@@ -162,6 +198,7 @@ export class CloudHostBridge {
   private readonly paneOutputSource?: PaneOutputSource;
   private readonly keyBindingVerifier?: KeyBindingVerifier;
   private readonly totpVerifier?: TotpVerifier;
+  private readonly totpBindVerifier?: TotpBindVerifier;
   private readonly log: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 
   /** 在途 invoke（id → 令牌），供 $/cancel 尽力中止。 */
@@ -182,20 +219,40 @@ export class CloudHostBridge {
    */
   private totpFailures = 0;
 
+  // ── DataChannel 背压流控（弱网 P1；未注入则不背压）──
+  /** provider 注入的背压接口（bufferedAmount 读取 + drain 订阅）。 */
+  private channel: ChannelBackpressure | null = null;
+  /** drain 订阅的退订句柄（attach 替换 / reset 时调）。 */
+  private channelUnsub: (() => void) | null = null;
+  /** 背压期间丢帧的 pane：缓冲回落后请求 host 重放 RIS+scrollback。 */
+  private readonly backpressuredPanes = new Set<string>();
+
   constructor(config: CloudHostBridgeConfig) {
     this.invoke = config.invoke;
     this.sendFrame = config.sendFrame;
     this.paneOutputSource = config.paneOutputSource;
     this.keyBindingVerifier = config.keyBindingVerifier;
     this.totpVerifier = config.totpVerifier;
-    // 未注入 TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。
-    this.verified = !config.totpVerifier;
+    this.totpBindVerifier = config.totpBindVerifier;
+    // 未注入**任何** TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。注入了任一种
+    // （明文 totp-verify 或信道绑定 totp-bind）即门控业务帧，直至其一通过。
+    this.verified = !config.totpVerifier && !config.totpBindVerifier;
     this.log =
       config.log ??
       ((level, message, detail) => {
         // eslint-disable-next-line no-console
         console[level](`[cloudHostBridge] ${message}`, detail ?? '');
       });
+  }
+
+  /**
+   * provider 在 acceptConn 后注入 DataChannel 背压流控（弱网 P1）。可选——未注入则
+   * {@link pushPaneOutput} 不做背压（向后兼容既有构造点 / 测试）。再次调用会替换并退订旧订阅。
+   */
+  attachChannelControl(ctrl: ChannelBackpressure): void {
+    this.channelUnsub?.();
+    this.channel = ctrl;
+    this.channelUnsub = ctrl.onDrained(() => this.onChannelDrained());
   }
 
   /**
@@ -277,20 +334,21 @@ export class CloudHostBridge {
 
   // ── §4 云端 TOTP 二次验证（CONTROL 通道 0x12）──────────────────────────────────
   /**
-   * 处理一帧 CONTROL 信封。当前仅 `totp-verify`：
-   *   controller → host: `{ t: 'totp-verify', code }`
-   *   host → controller: `{ t: 'totp-result', ok }`
-   * 校验经注入的 `totpVerifier`（生产 = `verify_remote_totp` 命令，本机 RemoteAuth）。
-   * ok ⇒ 置 `verified=true`，放行后续业务帧。
+   * 处理一帧 CONTROL 信封（§4 + 零信任 #1）。两种 TOTP 二次验证路径：
+   *   - 明文：controller → host `{ t: 'totp-verify', code }`（经 {@link TotpVerifier}）。
+   *   - 信道绑定：controller → host `{ t: 'totp-bind', tag }`（base64 HMAC，经
+   *     {@link TotpBindVerifier}；明文码不上线）。controller 收到 host 0x02 后改走此路。
+   * 两者都回 `{ t: 'totp-result', ok }`，共享 `verified` 门控 + 5 次失败锁定计数。ok ⇒ 置
+   * `verified=true`，放行后续业务帧。
    */
   private async handleSessionControl(frame: Record<string, unknown>): Promise<void> {
-    if (frame.t !== 'totp-verify') {
-      this.log('warn', `unknown CONTROL frame t=${String(frame.t)}; ignored`);
+    const t = frame.t;
+    if (t !== 'totp-verify' && t !== 'totp-bind') {
+      this.log('warn', `unknown CONTROL frame t=${String(t)}; ignored`);
       return;
     }
-    const code = typeof frame.code === 'string' ? frame.code : '';
-    // 未注入校验器（不门控）：任何 code 都视为通过（与构造时 verified=true 一致）。
-    if (!this.totpVerifier) {
+    // 未注入**任何**校验器（不门控）：任何 totp 帧都视为通过（与构造时 verified=true 一致）。
+    if (!this.totpVerifier && !this.totpBindVerifier) {
       this.verified = true;
       this.sendSessionControl({ t: 'totp-result', ok: true });
       return;
@@ -308,7 +366,15 @@ export class CloudHostBridge {
     }
     let ok = false;
     try {
-      ok = await this.totpVerifier(code);
+      if (t === 'totp-verify') {
+        const code = typeof frame.code === 'string' ? frame.code : '';
+        // 仅当注入了明文校验器才认 totp-verify；否则视为失败（不绕过 totp-bind 门控）。
+        ok = this.totpVerifier ? await this.totpVerifier(code) : false;
+      } else {
+        // totp-bind：解 base64 tag → 原始字节 → 信道绑定校验器。坏 base64 / 未注入 ⇒ 失败。
+        const tag = base64ToBytes(typeof frame.tag === 'string' ? frame.tag : '');
+        ok = tag !== null && this.totpBindVerifier ? await this.totpBindVerifier(tag) : false;
+      }
     } catch (e) {
       this.log('error', 'TOTP verifier threw; treating as failed', e);
       ok = false;
@@ -316,7 +382,7 @@ export class CloudHostBridge {
     if (ok) {
       this.verified = true;
     } else {
-      // SECURITY (audit #3): 每次失败累加；达上限后本桥后续 totp-verify 直接锁死。
+      // SECURITY (audit #3): 每次失败累加；达上限后本桥后续 totp 帧直接锁死。
       this.totpFailures += 1;
     }
     const locked = !ok && this.totpFailures >= MAX_TOTP_ATTEMPTS;
@@ -399,6 +465,9 @@ export class CloudHostBridge {
       case CANCEL_METHOD:
         this.cancelInvoke(params);
         return;
+      case BYE_METHOD:
+        this.handleBye(params);
+        return;
       case 'subscribe-pane':
         this.handleSubscribePane(params);
         return;
@@ -418,6 +487,19 @@ export class CloudHostBridge {
    */
   private replyHello(params: unknown): void {
     this.sendControl(negotiateHello(params));
+  }
+
+  // ── 概念 6：对端经 0x11 通道发来的 $/bye（如 signature-invalid 验签失败）──────────
+  /**
+   * 对端（controller）经 **E2EE 0x11 通道**（不经 relay）通知会话终止。标记 `rejected`：
+   * 后续业务帧一律丢弃（与 §5.5 verifyPeerKey reject 同收尾语义）；DataChannel 关闭随后由
+   * provider teardown。无 id ⇒ 不回响应。恶意 controller 发 $/bye 只会终止其自身会话
+   * （每 cid 独立桥），无跨会话影响——等价于其直接关闭 DataChannel。
+   */
+  private handleBye(params: unknown): void {
+    const reason = (params as { reason?: unknown } | null | undefined)?.reason;
+    this.rejected = true;
+    this.log('warn', `peer sent $/bye (reason=${String(reason ?? 'unknown')}); rejecting session`);
   }
 
   // ── §7.0：$/cancel 尽力中止 ───────────────────────────────────────────────────
@@ -540,11 +622,33 @@ export class CloudHostBridge {
     // already gates subscription, but guard the push path too (defense in depth) so a
     // pre-verification race / direct caller can't emit PTY output ahead of the gate.
     if (!this.verified) return;
+    // §背压（弱网 P1）：DataChannel 缓冲过高 → 丢帧（而非无界堆积撑爆 SCTP 缓冲 → OOM/卡死），
+    // 记录待重同步；缓冲回落后 onChannelDrained 请求 host 重放 RIS+scrollback 修复空洞。
+    if (this.channel && this.channel.bufferedAmount() > BUFFERED_HIGH_WATERMARK) {
+      this.backpressuredPanes.add(paneId);
+      return;
+    }
     try {
       this.sendFrame(encodePaneFrame(paneId, raw));
     } catch (e) {
       // paneId 过长等编码错误：丢弃该帧但不断连。
       this.log('error', `failed to encode pane frame for ${paneId}; dropped`, e);
+    }
+  }
+
+  /**
+   * DataChannel 缓冲回落到低水位（provider 经 onDrained 通知）：对背压期间丢帧的 pane
+   * 请求 host 重放 RIS+scrollback（`invoke('resync_pane_raw')`）。复用 cloud_pane.rs 的
+   * desync→RIS+scrollback 恢复原语（与 LAN server.rs 同一套）。fire-and-forget。
+   */
+  private onChannelDrained(): void {
+    if (this.backpressuredPanes.size === 0) return;
+    const panes = [...this.backpressuredPanes];
+    this.backpressuredPanes.clear();
+    for (const paneId of panes) {
+      void Promise.resolve(this.invoke('resync_pane_raw', { paneId })).catch((e) =>
+        this.log('warn', `resync_pane_raw(${paneId}) failed`, e),
+      );
     }
   }
 
@@ -578,9 +682,10 @@ export class CloudHostBridge {
     this.inflight.clear();
     for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
     this.paneSubs.clear();
+    this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
     this.rejected = false;
-    // §4：重连须重新 TOTP 验证（注入了校验器时 re-arm 门控）。
-    this.verified = !this.totpVerifier;
+    // §4：重连须重新 TOTP 验证（注入了任一校验器时 re-arm 门控）。
+    this.verified = !this.totpVerifier && !this.totpBindVerifier;
     // SECURITY (audit #3): 重连清零失败计数（新桥/新连接重新获得满额尝试次数）。
     this.totpFailures = 0;
   }

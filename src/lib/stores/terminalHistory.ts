@@ -88,3 +88,37 @@ export function filterByPrefix(items: readonly string[], query: string): string[
 	}
 	return out;
 }
+
+/**
+ * §方向一致 (2026-06-11): compute the next selected index for the shell-history
+ * overlay given the current index, the list length, and an arrow delta.
+ *
+ * Layout contract: the renderer paints `items[0]` (the NEWEST command) at the
+ * TOP of the popup and `selected_index` grows downward (see
+ * `packages/ridge-term/src/render/webgpu.rs::draw_history_overlay`). So the
+ * arrow keys map to **screen direction**, not the shell's "↑ = recall older"
+ * tradition:
+ *
+ *   - ArrowUp   (`delta < 0`) → highlight moves UP   → smaller index → NEWER
+ *   - ArrowDown (`delta > 0`) → highlight moves DOWN → larger index  → OLDER
+ *
+ * Boundaries clamp (no wrap, no auto-dismiss): an extra ArrowUp on the newest
+ * entry, or ArrowDown on the oldest, is a harmless no-op. `total <= 0` returns
+ * `-1` so the caller can close the (now empty) overlay. A negative `current`
+ * (no selection — defensive only, since `openHistoryOverlay` pre-selects the
+ * newest) enters at index 0; an out-of-range `current` is clamped into the
+ * list before moving.
+ */
+export function nextHistorySelection(current: number, total: number, delta: number): number {
+	if (total <= 0) return -1;
+	const last = total - 1;
+	// No selection yet → land on the newest entry (top) regardless of direction.
+	if (current < 0) return 0;
+	const cur = current > last ? last : current;
+	if (delta < 0) {
+		// ArrowUp: move toward the top (newer). Clamp at the newest entry.
+		return cur <= 0 ? 0 : cur - 1;
+	}
+	// ArrowDown: move toward the bottom (older). Clamp at the oldest entry.
+	return cur >= last ? last : cur + 1;
+}

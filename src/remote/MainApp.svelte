@@ -1,35 +1,146 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
-  import TerminalCanvas from './lib/TerminalCanvas.svelte';
-  import TopBar from './TopBar.svelte';
+  import { Folder, GitBranch, Search, Keyboard } from 'lucide-svelte';
+  // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
+  // the bind:this instance ref below. Erased at build, so it does NOT defeat
+  // the dynamic import / lazy-load on the next line.
+  import type TerminalCanvasComponent from './lib/TerminalCanvas.svelte';
+  // §lazy-load: heavy components loaded on demand to reduce initial bundle.
+  // TerminalCanvas (with WASM) is only needed after auth + pane selection.
+  const TerminalCanvas = import('./lib/TerminalCanvas.svelte');
+  // VirtualKeyboard is only needed when user toggles it via header button.
+  const VirtualKeyboard = import('./lib/VirtualKeyboard.svelte');
+  // RemoteSidebar (file tree, git, search) loaded when sidebar is opened.
+  const RemoteSidebar = import('./lib/RemoteSidebar.svelte');
+  // FileViewer (read-only file / git-diff overlay) loaded on first open.
+  const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import RemoteSidebar from './lib/RemoteSidebar.svelte';
   import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
+  import { createWsSidebarProvider } from './lib/sidebarProvider';
 
   let { ws }: { ws: RemoteConnection } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
+  // The active pane object (for its title in the header breadcrumb), derived
+  // from the live `panes` list by id — mirrors the panes.find(...) lookup used
+  // for the active cwd below.
+  let activePane = $derived(panes.find((p) => p.id === activePaneId));
   let wsState = $state<ConnectionState>('disconnected');
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
-  let showKeyboard = $state(false);
   // §selection: explicit selection mode (toggled in BottomTabBar). When on, a
   // single-finger drag selects; when off it scrolls (no accidental selection).
   let selectionMode = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
+  // Read-only file / git-diff viewer overlay. Opened from the sidebar (tap a
+  // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
+  let viewer = $state<{ kind: 'file' | 'diff'; path: string; line?: number } | null>(null);
   // Active pane's working dir — roots the sidebar at the same place ridge shows.
   let activeCwd = $state('');
+  // Provider rooted at the active cwd — backs the file/diff viewer (the sidebar
+  // builds its own internally). Recreated when the cwd changes.
+  const sidebarProvider = $derived(createWsSidebarProvider(activeCwd));
+
+  function openFileViewer(path: string, line?: number) {
+    viewer = { kind: 'file', path, line };
+    sidebarTab = null; // close the sidebar so the viewer takes the screen
+  }
+  function openDiffViewer(path: string) {
+    viewer = { kind: 'diff', path };
+    sidebarTab = null;
+  }
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
   let createError = $state('');
 
-  let canvasRef: TerminalCanvas | undefined = $state();
+  let canvasRef: ReturnType<typeof TerminalCanvasComponent> | undefined = $state();
+  let showKeyboard = $state(true);          // virtual keyboard visible in header
   // Kernel palette derived from the desktop theme; applied to the canvas once it
   // mounts (the theme push usually arrives before the terminal exists).
   let kernelTheme: Record<string, string> | null = $state(null);
   let backendName = $state('Canvas2D');
+
+  // §remember-last-pane / §persist-state: remember the last active pane per
+  // workspace AND the last active workspace, persisted to localStorage so a
+  // refresh restores the user's exact context (工作区 + pane) instead of forcing
+  // a re-selection every time. sessionStorage holds the heavy scrollback; these
+  // lightweight "which ws / which pane" pointers go to localStorage so they also
+  // survive a tab close, not just a reload.
+  const LS_WS_KEY = 'rg-remote-active-ws';
+  const LS_PANEMAP_KEY = 'rg-remote-pane-map';
+
+  function loadPaneMap(): Map<string, string> {
+    try {
+      const raw = localStorage.getItem(LS_PANEMAP_KEY);
+      if (!raw) return new Map();
+      return new Map(Object.entries(JSON.parse(raw) as Record<string, string>));
+    } catch { return new Map(); }
+  }
+  function persistPaneMap(): void {
+    try {
+      localStorage.setItem(LS_PANEMAP_KEY, JSON.stringify(Object.fromEntries(lastActivePanePerWorkspace)));
+    } catch { /* quota exceeded / disabled — ignore */ }
+  }
+  function persistActiveWs(id: string): void {
+    try { if (id) localStorage.setItem(LS_WS_KEY, id); } catch { /* ignore */ }
+  }
+
+  const lastActivePanePerWorkspace = loadPaneMap();
+  // The workspace the user last viewed. Read once at init; on boot we switch the
+  // host back to it (if it's on a different one) so a refresh lands on the same
+  // workspace. The host then broadcasts that workspace's panes and the panes
+  // handler restores the remembered pane.
+  let savedActiveWs: string | null = null;
+  try { savedActiveWs = localStorage.getItem(LS_WS_KEY); } catch { /* ignore */ }
+  // Boot workspace-restore runs exactly once (first workspaces list after connect).
+  let bootRestoreDone = false;
+
+  // §theme-persist: a control end owns its appearance (theme isolation). Once the
+  // user cycles the theme, that choice must survive a reconnect (the host re-pushes
+  // its OWN active theme at every connect) AND a reload. We remember the cycled
+  // {id, colors} locally; on any later host theme push we re-apply the override
+  // instead of the host's theme. localStorage makes it survive a reload too.
+  const LS_THEME_KEY = 'rg-remote-theme-override';
+  let userTheme: { id: string; colors: Record<string, string> } | null = null;
+  try {
+    const raw = localStorage.getItem(LS_THEME_KEY);
+    if (raw) userTheme = JSON.parse(raw) as { id: string; colors: Record<string, string> };
+  } catch { /* ignore */ }
+  // True between tapping the theme button and its `theme` reply arriving, so the
+  // reply is adopted as the override (vs. a host-initiated connect/reconnect push).
+  let pendingCycle = false;
+  function persistUserTheme() {
+    try {
+      if (userTheme) localStorage.setItem(LS_THEME_KEY, JSON.stringify(userTheme));
+      else localStorage.removeItem(LS_THEME_KEY);
+    } catch { /* quota / disabled — ignore */ }
+  }
+
+  // Theme cycling: ask the host for the theme *after* the one we currently show.
+  // The host computes it statelessly (no disk write / no peer clobber — see
+  // wsRemote.cycleTheme) and pushes it back via the 'theme' message. We cycle from
+  // the user's override id when present so cycling stays continuous after a
+  // reconnect (where ws.lastTheme() would be the host's theme, not ours).
+  async function handleThemeToggle() {
+    if (!ws) return;
+    pendingCycle = true;
+    ws.cycleTheme(userTheme?.id ?? ws.lastTheme()?.id ?? '');
+  }
+
+  // Paste the CONTROL DEVICE's clipboard (this phone/browser) into the remote
+  // terminal as a bracketed paste. The button onclick is the user gesture the
+  // Clipboard API requires, and the LAN/cloud link is a secure context, so
+  // readText() is permitted. Previously this sent `{type:'paste'}` to the host,
+  // which had no handler — so the button did nothing.
+  async function handlePaste() {
+    if (!activePaneId || !canvasRef) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) canvasRef.pasteText(text);
+    } catch { /* clipboard blocked: no permission / insecure context */ }
+  }
 
   // §terminal-isolation + scrollback-cache: the local kernel is a single shared
   // instance, so switching panes MUST wipe it (resetForSwitch) — otherwise the
@@ -180,8 +291,29 @@
     try {
       const data = await ws.listWorkspaces();
       workspaces = dedupeById(data.workspaces || []);
-      const active = workspaces.find(w => w.active);
-      if (active) activeWorkspaceId = active.id;
+      const hostActive = workspaces.find(w => w.active);
+      // §persist-state: on the first list after (re)connect, if the user's last
+      // viewed workspace still exists but the host is on a different one, switch
+      // the host back so a refresh lands on the same workspace (the host then
+      // broadcasts that workspace's panes, and the panes handler restores the
+      // remembered pane). Runs once; afterwards we just track the host's active.
+      if (!bootRestoreDone) {
+        bootRestoreDone = true;
+        if (savedActiveWs && savedActiveWs !== (hostActive?.id ?? '')
+            && workspaces.some(w => w.id === savedActiveWs)) {
+          activeWorkspaceId = savedActiveWs;
+          activePaneId = null; // force the panes handler to re-pick for the restored ws
+          const ok = await ws.switchWorkspace(savedActiveWs);
+          if (ok) ws.listPanes();
+          // Re-read so the `active` flag reflects the switch.
+          const after = dedupeById((await ws.listWorkspaces()).workspaces || []);
+          workspaces = after;
+          const a2 = after.find(w => w.active);
+          activeWorkspaceId = a2 ? a2.id : savedActiveWs;
+          return;
+        }
+      }
+      if (hostActive) activeWorkspaceId = hostActive.id;
     } catch { /* ignore */ }
   }
 
@@ -224,14 +356,34 @@
         const paneIds = panes.map(p => p.id);
         // Release caches for panes the host no longer reports (memory/quota leak).
         pruneDeadPanes(paneIds);
-        if (!activePaneId || !paneIds.includes(activePaneId)) {
-          activePaneId = panes.length > 0 ? panes[0].id : null;
+        // §persist-state pane restore: keep a still-valid current selection
+        // (no "莫名奇妙切换工作区"); otherwise prefer the remembered pane for the
+        // current workspace (seeded from localStorage on boot), else the first
+        // pane. Re-picking when the current id went stale — e.g. right after a
+        // workspace switch — is what lets a refresh land back on the remembered
+        // pane instead of a dead id.
+        if (activePaneId && paneIds.includes(activePaneId)) {
+          // current selection still valid — leave it untouched
+        } else {
+          const remembered = activeWorkspaceId
+            ? lastActivePanePerWorkspace.get(activeWorkspaceId)
+            : undefined;
+          if (remembered && paneIds.includes(remembered)) {
+            activePaneId = remembered;
+          } else if (paneIds.length > 0) {
+            activePaneId = panes[0].id;
+          } else {
+            activePaneId = null;
+          }
         }
       }
       if (msg.type === 'workspaces') {
         workspaces = dedupeById(msg.workspaces);
         const active = workspaces.find(w => w.active);
-        if (active) activeWorkspaceId = active.id;
+        // Once the boot restore has run, follow the host's active workspace.
+        // Before that, refreshWorkspaces() owns the restore decision, so a
+        // proactive push must not clobber the workspace we're about to restore.
+        if (active && bootRestoreDone) activeWorkspaceId = active.id;
       }
       if (msg.type === 'switch-workspace-result') {
         if (msg.success && msg.workspaceId) {
@@ -271,6 +423,14 @@
       scheduleSessionMirror(paneId);
     });
     ws.onMetadata((paneId, title, cwd) => {
+      // §realtime-title: reflect the live pane title in the workspace tree (and
+      // header) the instant it changes, instead of waiting for the next
+      // list-panes round-trip. pty-meta only fires for the active workspace's
+      // panes (host filters by active_ws_id); non-active workspaces refresh via
+      // the tree's periodic poll.
+      if (title != null && title.length > 0) {
+        panes = panes.map((p) => (p.id === paneId ? { ...p, title } : p));
+      }
       if (paneId === activePaneId) {
         // Title drives the document/tab title directly.
         if (title != null && title.length > 0) document.title = title;
@@ -284,10 +444,26 @@
       }
     });
     // Theme: apply the snapshot pushed at connect (cached, since it usually
-    // arrives before this listener), then follow any later pushes.
+    // arrives before this listener) — but a user override (§theme-persist) wins.
     const t0 = ws.lastTheme();
-    if (t0) applyTheme(t0.colors);
-    ws.onTheme((colors) => applyTheme(colors));
+    if (userTheme) applyTheme(userTheme.colors);
+    else if (t0) applyTheme(t0.colors);
+    ws.onTheme((colors) => {
+      if (pendingCycle) {
+        // Reply to our own cycle tap → adopt it as the persisted override.
+        pendingCycle = false;
+        const id = ws.lastTheme()?.id ?? '';
+        userTheme = id ? { id, colors } : null;
+        persistUserTheme();
+        applyTheme(colors);
+      } else if (userTheme) {
+        // Host (re)pushed its active theme at (re)connect, but the user has an
+        // override → keep the override so the cycled theme survives reconnects.
+        applyTheme(userTheme.colors);
+      } else {
+        applyTheme(colors);
+      }
+    });
     // Reconnect resync: a reconnect opens a brand-new host socket that holds no
     // pane subscription, and the local kernel still shows the stale pre-drop
     // screen. Reset it (RIS) so the host's scrollback replay + full repaint paint
@@ -305,11 +481,26 @@
         if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
         expectReplayPane = pid;
         ws.subscribePane(pid);
+        // The new server socket has no knowledge of our viewport size.
+        // Claim it immediately so the PTY is reflowed and the terminal
+        // doesn't stay stuck at the 80x24 default.
+        const d = canvasRef?.getDims();
+        if (d) ws.claimPane(pid, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
       }
       ws.listPanes();
       refreshWorkspaces();
+      // Reset stale-guard seq to 0 so the debounced refreshActivePane
+      // below can actually send — on reconnect no new claimPane has been
+      // issued yet, so the guard cur <= _refreshSeq would otherwise
+      // match and silently block the re-subscribe PTY resize (#B3).
+      _refreshSeq = -1;
       refreshActivePane();
     });
+    // §persist-state: seed the active workspace from localStorage before the
+    // first panes/workspaces arrive so the panes handler can restore the
+    // remembered pane immediately; refreshWorkspaces() then switches the host
+    // back to this workspace if it's currently on a different one.
+    if (savedActiveWs) activeWorkspaceId = savedActiveWs;
     ws.listPanes();
     refreshWorkspaces();
     return () => { ws.disconnect(); };
@@ -324,6 +515,13 @@
     untrack(() => {
       if (pid === subscribedPaneId) return;
       subscribedPaneId = pid;
+      // Remember this pane as the last active for the current workspace, and
+      // persist it so a refresh restores the same ws + pane (§persist-state).
+      if (activeWorkspaceId) {
+        lastActivePanePerWorkspace.set(activeWorkspaceId, pid);
+        persistPaneMap();
+        persistActiveWs(activeWorkspaceId);
+      }
       // §isolation: wipe the kernel so the previous pane can't bleed into this one.
       canvasRef?.resetForSwitch();
       // Instant pre-paint from cache (in-memory; else sessionStorage on reload).
@@ -346,6 +544,12 @@
     }
   });
 
+  // §persist-state: save the active workspace whenever it changes (the pane map
+  // is saved on pane switch above) so a refresh restores the user's context.
+  $effect(() => {
+    if (activeWorkspaceId) persistActiveWs(activeWorkspaceId);
+  });
+
   // Apply the kernel palette once the canvas exists (theme can arrive earlier).
   $effect(() => {
     if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
@@ -359,8 +563,6 @@
 </script>
 
 <div class="app-root">
-  <TopBar {panes} {activePaneId} {workspaces} {activeWorkspaceId} {wsState} />
-
   {#if panes.length === 0}
     <div class="empty">
       <p>{$t('mobile.noActiveTerminal')}</p>
@@ -370,29 +572,92 @@
       {#if createError}<p class="create-error">{createError}</p>{/if}
     </div>
   {:else if activePaneId}
-    <TerminalCanvas
-      bind:this={canvasRef}
-      bind:backendName
-      paneId={activePaneId ?? null}
-      {onStdin}
-      {onResize}
-      {showKeyboard}
-      {selectionMode}
-    />
+    <header class="mobile-header">
+      <div class="header-row">
+        <div class="header-nav">
+          <button class="hdr-btn" class:active={sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
+            <Folder class="w-4 h-4" />
+          </button>
+          <button class="hdr-btn" class:active={sidebarTab === 'git'} onclick={() => handleSidebarToggle('git')} title="Git" tabindex="-1">
+            <GitBranch class="w-4 h-4" />
+          </button>
+          <button class="hdr-btn" class:active={sidebarTab === 'search'} onclick={() => handleSidebarToggle('search')} title={$t('mobile.searchTitle')} tabindex="-1">
+            <Search class="w-4 h-4" />
+          </button>
+        </div>
+        <div class="header-breadcrumb">
+          {#if activePaneId}
+            <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
+            <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+          {/if}
+        </div>
+        <div class="header-actions">
+          <button class="hdr-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
+            <Keyboard class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      {#if showKeyboard}
+        <div class="vk-section">
+          {#await VirtualKeyboard}
+            <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
+          {:then module}
+            <module.default onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
+          {/await}
+        </div>
+      {/if}
+    </header>
+
+    {#await TerminalCanvas}
+      <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
+    {:then module}
+      <module.default
+        bind:this={canvasRef}
+        bind:backendName
+        paneId={activePaneId ?? null}
+        {onStdin}
+        {onResize}
+        onHostClipboard={(text) => ws.setHostClipboard(text)}
+        bind:selectionMode
+      />
+    {/await}
   {/if}
 
   {#if sidebarTab !== null}
     <div class="sidebar-overlay" onclick={() => sidebarTab = null} role="presentation"></div>
-    <RemoteSidebar tab={sidebarTab} cwd={activeCwd} onClose={() => sidebarTab = null} onTabChange={(t) => sidebarTab = t} />
+    {#await RemoteSidebar}
+      <div class="sidebar-loading">{$t('mobile.loading')}</div>
+    {:then module}
+      <module.default
+        tab={sidebarTab}
+        cwd={activeCwd}
+        onClose={() => sidebarTab = null}
+        onTabChange={(t) => sidebarTab = t}
+        onOpenFile={openFileViewer}
+        onOpenDiff={openDiffViewer}
+      />
+    {/await}
+  {/if}
+
+  {#if viewer}
+    {@const v = viewer}
+    {#await FileViewer then module}
+      <module.default
+        provider={sidebarProvider}
+        kind={v.kind}
+        path={v.path}
+        line={v.line}
+        onClose={() => viewer = null}
+      />
+    {/await}
   {/if}
 
   <BottomTabBar
     {ws}
-    {sidebarTab}
     {backendName}
-    onSidebarToggle={handleSidebarToggle}
     onRefresh={handleRefresh}
-    bind:showKeyboard
+    onPaste={handlePaste}
+    onThemeToggle={handleThemeToggle}
     bind:selectionMode
     {panes}
     bind:activePaneId
@@ -410,4 +675,18 @@
   .create-btn:disabled{opacity:.5;cursor:not-allowed}
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
+  .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
+  .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
+  .header-nav{display:flex;gap:2px}
+  .header-breadcrumb{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;overflow:hidden}
+  .breadcrumb-text{font-size:13px;color:var(--rg-fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .header-actions{display:flex;gap:2px}
+  .hdr-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:8px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s}
+  .hdr-btn:active{background:color-mix(in srgb,var(--rg-fg) 10%,transparent);color:var(--rg-fg)}
+  .hdr-btn.active{color:var(--rg-accent)}
+  .hdr-btn :global(svg){width:18px;height:18px}
+  .vk-section{overflow:hidden;border-top:1px solid color-mix(in srgb,var(--rg-fg) 8%,transparent)}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}
+  .status-dot.connected{background:var(--rg-ansi-green)}
+  .status-dot.connecting{background:var(--rg-ansi-yellow)}
 </style>

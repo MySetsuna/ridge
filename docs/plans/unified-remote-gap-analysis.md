@@ -24,7 +24,7 @@
 
 ## G1 — S6 公网部署（硬阻塞：ridge-cloud 远端历史分叉）
 
-**目标**：让 `app.remo2ridge.duckdns.org` 向公网浏览器下发桌面 controller SPA（CSP-fixed web-remote-dist），实现"任意浏览器 → cloud → 桌面 host"的零安装入口。
+**目标**：让 `app.9527127.xyz` 向公网浏览器下发桌面 controller SPA（CSP-fixed web-remote-dist），实现"任意浏览器 → cloud → 桌面 host"的零安装入口。
 
 **Gap 在哪里**：
 - 代码**已完成并本地提交**于 `C:\code\ridge-cloud`，commit `fff01da`：
@@ -33,7 +33,7 @@
   - `Dockerfile` — 把 `desktop-app/`（= wind 的 `web-remote-dist` 产物）纳入镜像。
   - `desktop-app/` — CSP 已修正的 controller 产物副本。
   - `cargo check`(ridge-cloud) 0 err。
-- **DNS + TLS 已就绪**：duckdns 通配 + `*.remo2ridge.duckdns.org` 证书；`curl app.remo2ridge.duckdns.org` = 200、cert valid。**无需额外 ops。**
+- **DNS + TLS 已就绪**：duckdns 通配 + `*.9527127.xyz` 证书；`curl app.9527127.xyz` = 200、cert valid。**无需额外 ops。**
 
 **阻塞类别**：跨仓库 + 生产历史分叉（非代码问题）。
 - `git push dokku main` 被拒（non-fast-forward）。

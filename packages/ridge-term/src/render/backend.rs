@@ -66,10 +66,7 @@ pub struct CursorDraw {
     /// and size the cursor block to match the visual extent. `None` for
     /// simple single-codepoint cells.
     pub cluster_text: Option<String>,
-    /// §B.9 cumulative extra cells from wide-cluster glyph expansion before
-    /// this cursor column. Added to `col` to compute the visual cursor
-    /// position when preceding emoji have expanded beyond their grid span.
-    pub extra_cells: f64,
+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

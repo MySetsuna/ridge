@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { ListTree, Plus, X, FolderOpen, ChevronRight } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
   import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './wsRemote';
@@ -32,8 +33,25 @@
   let open = $state(false);
   let busy = $state(false);
   let err = $state('');
+  // §peek-expand: which workspaces have their terminal list EXPANDED. The front
+  // chevron is a dedicated expand toggle (stopPropagation keeps it off the row's
+  // switch handler). The active workspace renders the live `panes` prop; a NON-
+  // active workspace, on expand, fetches its panes via list-workspace-panes into
+  // `peekedPanes` so you can browse another workspace's terminals WITHOUT
+  // switching to it.
+  let expandedWs = $state(new Set<string>());
+  let peekedPanes = $state(new Map<string, PaneInfo[]>());
 
   const activePane = $derived(panes.find((p) => p.id === activePaneId));
+
+  // The panes to render under a workspace row: the live prop for the active ws,
+  // else the peeked snapshot (empty until the first fetch returns).
+  function panesFor(wsId: string): PaneInfo[] {
+    return wsId === activeWorkspaceId ? panes : (peekedPanes.get(wsId) ?? []);
+  }
+  function isExpanded(wsId: string): boolean {
+    return expandedWs.has(wsId);
+  }
 
   function toggle() {
     open = !open;
@@ -43,11 +61,88 @@
     open = false;
   }
 
+  // §auto-expand-active: expand a workspace the first time it becomes active so
+  // its terminals show by default — but only ONCE per id, so a manual collapse of
+  // the active workspace sticks (don't fight the user). `untrack` keeps the
+  // effect depending on activeWorkspaceId alone, not on expandedWs.
+  let lastSeededWs = '';
+  $effect(() => {
+    const id = activeWorkspaceId;
+    if (!id || id === lastSeededWs) return;
+    lastSeededWs = id;
+    untrack(() => {
+      if (!expandedWs.has(id)) {
+        const next = new Set(expandedWs);
+        next.add(id);
+        expandedWs = next;
+      }
+    });
+  });
+
+  // Serialize ALL list-workspace-panes round-trips. wsRemote._sendAndWait keys
+  // pending requests by response TYPE ('workspace-panes'), so two concurrent
+  // peeks (the 3s poll fans out across several expanded workspaces) would clobber
+  // each other's pending slot and silently drop a reply. A single chain keeps at
+  // most one peek in flight.
+  let peekChain: Promise<void> = Promise.resolve();
+
+  /** Fetch a non-active workspace's panes into the peek cache (host read-only).
+   *  Always records an entry (even []), so the "loading" hint resolves to
+   *  "no terminals" after the first attempt rather than spinning forever. */
+  function fetchPeek(id: string): Promise<void> {
+    if (!ws || id === activeWorkspaceId) return peekChain;
+    peekChain = peekChain.then(async () => {
+      if (!ws || id === activeWorkspaceId) return;
+      let list: PaneInfo[] | null = null;
+      try { list = await ws.listWorkspacePanes(id); } catch { /* keep prior snapshot */ }
+      const next = new Map(peekedPanes);
+      next.set(id, list ?? peekedPanes.get(id) ?? []);
+      peekedPanes = next;
+    });
+    return peekChain;
+  }
+
+  // Toggle a workspace's terminal list expanded/collapsed WITHOUT switching to
+  // it. Expanding a non-active workspace fetches its panes to peek at.
+  function toggleExpand(e: Event, id: string) {
+    e.stopPropagation();
+    const next = new Set(expandedWs);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+      if (id !== activeWorkspaceId) void fetchPeek(id);
+    }
+    expandedWs = next;
+    err = '';
+  }
+
+  // §live-titles: while the popup is open, poll so terminal titles (and the
+  // pane set) stay fresh — the active workspace via list-panes (updates the
+  // `panes` prop), each expanded non-active workspace via its peek fetch.
+  const REFRESH_INTERVAL_MS = 3000;
+  $effect(() => {
+    if (!open || !ws) return;
+    const timer = setInterval(() => {
+      // §untrack-poll: the reads below run in a timer callback, not the effect's
+      // sync body, so they're already non-reactive — untrack makes that explicit
+      // and guards against a future write here turning into a re-render loop.
+      untrack(() => {
+        ws.listPanes();
+        for (const id of expandedWs) {
+          if (id !== activeWorkspaceId) void fetchPeek(id);
+        }
+      });
+    }, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  });
+
   async function switchWorkspace(id: string) {
     if (!ws || busy || id === activeWorkspaceId) return;
     busy = true;
     err = '';
     // 切换前清空活动 pane：避免在新工作区 panes 回包前残留旧 pane 订阅。
+    // 新活动工作区由 §auto-expand-active effect 自动展开其终端。
     activePaneId = null;
     activeWorkspaceId = id;
     try {
@@ -109,9 +204,30 @@
     }
   }
 
-  function selectPane(id: string) {
-    activePaneId = id;
-    close();
+  // Select a terminal. In the active workspace it just focuses it; in a peeked
+  // (non-active) workspace it switches to that workspace first, then focuses the
+  // pane (the canvas only mirrors the active workspace, so viewing requires a
+  // switch — browsing the list does not).
+  async function selectPaneInWorkspace(wsId: string, paneId: string) {
+    if (wsId === activeWorkspaceId) {
+      activePaneId = paneId;
+      close();
+      return;
+    }
+    if (!ws || busy) return;
+    busy = true;
+    err = '';
+    activeWorkspaceId = wsId;
+    try {
+      await ws.switchWorkspace(wsId);
+      activePaneId = paneId;
+      ws.listPanes();
+      close();
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
   }
 
   async function newPane() {
@@ -187,13 +303,24 @@
         {:else}
           {#each workspaces as wsp (wsp.id)}
             {@const isActiveWs = wsp.id === activeWorkspaceId}
+            {@const expanded = isExpanded(wsp.id)}
+            {@const wsPanes = panesFor(wsp.id)}
+            {@const loadingPeek = !isActiveWs && !peekedPanes.has(wsp.id)}
             <button
               class="ws-row"
               class:active={isActiveWs}
               onclick={() => switchWorkspace(wsp.id)}
               disabled={busy}
             >
-              <span class="ws-chev" class:open={isActiveWs}><ChevronRight class="w-3.5 h-3.5 shrink-0" /></span>
+              <span
+                class="ws-chev"
+                class:open={expanded}
+                role="button"
+                tabindex="-1"
+                onclick={(e) => toggleExpand(e, wsp.id)}
+                onkeydown={() => {}}
+                title={$t('mobile.treeToggleTerminals')}
+              ><ChevronRight class="w-3.5 h-3.5 shrink-0" /></span>
               <span class="ws-ico"><FolderOpen class="w-4 h-4 shrink-0" /></span>
               <span class="ws-name">{wsp.name || $t('mobile.workspaceDefault')}</span>
               {#if workspaces.length > 1}
@@ -210,18 +337,19 @@
               {/if}
             </button>
 
-            {#if isActiveWs}
-              <!-- 活动工作区：展开其终端（cascade 第二级）。 -->
+            {#if expanded}
+              <!-- 展开其终端（cascade 第二级）。活动工作区用 live `panes`；非活动
+                   工作区用 peek 快照（list-workspace-panes 拉取，不切换工作区）。 -->
               <div class="pane-group">
-                {#each panes as pane (pane.id)}
+                {#each wsPanes as pane (pane.id)}
                   <button
                     class="pane-row"
-                    class:active={pane.id === activePaneId}
-                    onclick={() => selectPane(pane.id)}
+                    class:active={isActiveWs && pane.id === activePaneId}
+                    onclick={() => selectPaneInWorkspace(wsp.id, pane.id)}
                   >
                     <span class="pane-dot">▸</span>
                     <span class="pane-name">{pane.title || $t('mobile.terminalDefault')}</span>
-                    {#if panes.length > 1}
+                    {#if isActiveWs && wsPanes.length > 1}
                       <span
                         class="row-close"
                         role="button"
@@ -235,13 +363,15 @@
                     {/if}
                   </button>
                 {/each}
-                {#if panes.length === 0}
-                  <div class="pane-empty">{$t('mobile.treeNoTerminal')}</div>
+                {#if wsPanes.length === 0}
+                  <div class="pane-empty">{loadingPeek ? $t('mobile.loading') : $t('mobile.treeNoTerminal')}</div>
                 {/if}
-                <button class="pane-new" onclick={newPane} disabled={busy}>
-                  <Plus class="w-3.5 h-3.5 shrink-0" />
-                  <span>{$t('mobile.treeNewTerminal')}</span>
-                </button>
+                {#if isActiveWs}
+                  <button class="pane-new" onclick={newPane} disabled={busy}>
+                    <Plus class="w-3.5 h-3.5 shrink-0" />
+                    <span>{$t('mobile.treeNewTerminal')}</span>
+                  </button>
+                {/if}
               </div>
             {/if}
           {/each}
@@ -257,12 +387,15 @@
 
 <style>
   .tree-backdrop{position:fixed;inset:0;z-index:45;background:transparent}
-  .tree-anchor{position:relative;flex-shrink:0;display:flex;align-items:center}
+  /* §offscreen-fix: the anchor (and its trigger) may shrink so the bottom bar's
+     icon cluster keeps full size — the trigger's label truncates instead of the
+     whole control overflowing the right edge / squishing the buttons. */
+  .tree-anchor{position:relative;flex:0 1 auto;min-width:0;display:flex;align-items:center}
 
-  .tree-trigger{display:flex;align-items:center;gap:5px;max-width:160px;height:34px;padding:0 8px;border:1px solid var(--rg-border-bright);border-radius:8px;background:var(--rg-bg);color:var(--rg-fg-muted);font-size:11px;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
+  .tree-trigger{display:flex;align-items:center;gap:5px;max-width:160px;min-width:0;flex:0 1 auto;height:34px;padding:0 8px;border:1px solid var(--rg-border-bright);border-radius:8px;background:var(--rg-bg);color:var(--rg-fg-muted);font-size:11px;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
   .tree-trigger:active{background:var(--rg-surface-2)}
   .tree-trigger.active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 45%,transparent);background:color-mix(in srgb,var(--rg-accent) 12%,transparent)}
-  .trigger-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .trigger-label{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
   .chev{display:inline-flex;align-items:center;color:var(--rg-fg-muted);transition:transform .15s;transform:rotate(90deg)}
   .chev.up{transform:rotate(-90deg)}
 
@@ -295,7 +428,11 @@
   .ws-row:active{background:var(--rg-surface-2)}
   .ws-row.active{background:color-mix(in srgb,var(--rg-accent) 12%,transparent)}
   .ws-row:disabled{opacity:.5}
-  .ws-chev{display:inline-flex;align-items:center;color:var(--rg-fg-muted);transition:transform .15s}
+  /* §collapse-toggle: bigger hit area so the dedicated collapse chevron is easy
+     to tap without catching the row's switch handler; negative margin keeps the
+     row layout tight. */
+  .ws-chev{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin:-3px -3px -3px -2px;border-radius:6px;color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0;transition:transform .15s,background .12s,color .12s}
+  .ws-chev:active{background:color-mix(in srgb,var(--rg-fg) 12%,transparent)}
   .ws-chev.open{transform:rotate(90deg);color:var(--rg-accent)}
   .ws-ico{display:inline-flex;align-items:center;color:var(--rg-accent);flex-shrink:0}
   .ws-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}

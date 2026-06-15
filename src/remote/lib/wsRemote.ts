@@ -19,6 +19,11 @@ export type BinaryDeltaListener = RawByteListener;
 
 const MAX_PANE_OUTPUT_LINES = 5000;
 
+// ── Message queue for buffering during reconnect ──
+// If the queue exceeds this many messages, we reload the page to avoid
+// stale state buildup (the reconnect would replay too much history).
+const MAX_QUEUED_MESSAGES = 50;
+
 // ── Connection liveness tuning ──
 // Mobile browsers silently drop the socket when the tab is backgrounded, often
 // without delivering a timely `close`. A heartbeat detects the half-open socket;
@@ -139,7 +144,7 @@ export class RemoteConnection {
   private metaListeners: Set<MetaListener> = new Set();
   private resizeListeners: Set<PtyResizeListener> = new Set();
   private themeListeners: Set<ThemeListener> = new Set();
-  private _lastTheme: { themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
+  private _lastTheme: { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
   private _state: ConnectionState = 'disconnected';
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
@@ -162,6 +167,21 @@ export class RemoteConnection {
   private _onVisibility: (() => void) | null = null;
   private _onOnline: (() => void) | null = null;
   private _onForeground: (() => void) | null = null;
+
+  // ── Message queue for buffering during disconnect ──
+  private _messageQueue: WsMessage[] = [];
+  private _isReconnecting = false;
+
+  // ── §perf: three-segment latency instrumentation (B 方案诊断埋点) ──
+  // All marks are performance.now() (ms, monotonic). Mirrors the server's
+  // `ridge::remote::perf` trace so a slow link can be split into upgrade /
+  // connect / first-byte segments and read back via getPerf().
+  private _perf: {
+    connectStart: number | null;   // _open() called (socket construction)
+    upgradeStart: number | null;   // ws.onopen fired (≈ server ws_upgrade)
+    firstFrame: number | null;     // first message received (text or binary)
+    firstPtyBytes: number | null;  // first onRawBytes dispatch
+  } = { connectStart: null, upgradeStart: null, firstFrame: null, firstPtyBytes: null };
 
   state() { return this._state; }
 
@@ -211,6 +231,27 @@ export class RemoteConnection {
   }
   lastTheme() { return this._lastTheme; }
 
+  /** Ask the host to cycle to the theme *after* `currentId` and push it back as
+   *  a `theme` message (applied via onTheme). Stateless on the host — it never
+   *  writes the active theme to disk nor clobbers peers (§theme-isolation): the
+   *  control end owns its own appearance. Pass the id the client currently shows
+   *  (from lastTheme()) so the host can compute the next one. */
+  cycleTheme(currentId: string) {
+    this.send({ type: 'cycle-theme', current: currentId });
+  }
+
+  /** Mirror a copied selection onto the DESKTOP host's system clipboard so the
+   *  host's own native paste (Ctrl+V) picks it up — the control end's copy
+   *  writes BOTH its local clipboard and the host's. Best-effort / fire-and-forget. */
+  setHostClipboard(text: string) {
+    if (text) this.send({ type: 'set-host-clipboard', text });
+  }
+
+  /** §perf: shallow snapshot of the three-segment latency marks
+   *  (performance.now() ms, monotonic) for the current connection cycle.
+   *  Mirrors the server's `ridge::remote::perf` trace. */
+  getPerf() { return { ...this._perf }; }
+
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
     if (!auth) { this.setState('error'); return; }
     this._clearReconnectTimer();
@@ -235,6 +276,9 @@ export class RemoteConnection {
       this.ws = null;
     }
     this.setState('connecting');
+    // §perf: start a fresh measurement window for this connection attempt
+    // (first connect and every reconnect both funnel through _open).
+    this._perf = { connectStart: performance.now(), upgradeStart: null, firstFrame: null, firstPtyBytes: null };
     // Match the page's scheme: an HTTPS-served page must use wss:// (mixed
     // content blocks ws:// from https://). TLS is what unlocks WebGPU on the
     // LAN, so this is the common path in production.
@@ -246,6 +290,14 @@ export class RemoteConnection {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+      // §perf: onopen ≈ server-side ws_upgrade — stamp it and log the client's
+      // view of the connect/upgrade latency (connectStart → onopen).
+      this._perf.upgradeStart = performance.now();
+      console.log('[remote-perf] upgrade', {
+        sinceConnectMs: this._perf.connectStart != null
+          ? Math.round(this._perf.upgradeStart - this._perf.connectStart)
+          : null,
+      });
       this._reconnectAttempts = 0;
       this._startHeartbeat();
       this.setState('connected');
@@ -254,6 +306,8 @@ export class RemoteConnection {
       // must resync. The first connect is wired by the page's own onMount.
       if (this._hasConnectedOnce) {
         this.reconnectListeners.forEach(fn => { try { fn(); } catch { /* listener owns its errors */ } });
+        // Flush any messages queued during disconnect.
+        this._flushQueue();
       }
       this._hasConnectedOnce = true;
     };
@@ -263,19 +317,41 @@ export class RemoteConnection {
   }
 
   private _handleMessage(event: MessageEvent) {
+    // §perf: stamp the first inbound frame (text or binary) of this cycle.
+    if (this._perf.firstFrame == null) this._perf.firstFrame = performance.now();
     // Any inbound byte proves the socket is alive — clear the pong watchdog.
     if (this._pongDeadline) { clearTimeout(this._pongDeadline); this._pongDeadline = null; }
     if (event.data instanceof ArrayBuffer) {
       const buf = new Uint8Array(event.data);
       const paneId = uuidFromBytes(buf, 0);
       const rawBytes = buf.subarray(16);
+      // §perf: first PTY bytes reaching the client — record once and log all
+      // three segments (each relative to connectStart) for the slow-link triage.
+      if (this._perf.firstPtyBytes == null) {
+        const now = performance.now();
+        this._perf.firstPtyBytes = now;
+        const p = this._perf;
+        console.log('[remote-perf] segments', {
+          upgradeMs: p.connectStart != null && p.upgradeStart != null ? Math.round(p.upgradeStart - p.connectStart) : null,
+          firstFrameMs: p.connectStart != null && p.firstFrame != null ? Math.round(p.firstFrame - p.connectStart) : null,
+          firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
+        });
+      }
       this.rawByteListeners.forEach(fn => fn(paneId, rawBytes));
       return;
     }
     try {
       const msg = JSON.parse(event.data) as WsMessage;
       if (typeof msg === 'object' && msg !== null) {
-        const type = (msg as Record<string, unknown>).type as string;
+        // §data-request-fix: `data-request` replies (file tree / git / search)
+        // carry NO `type` field — only `_reqId` + `_result`/`_error`. A bare
+        // `(msg).type as string` then yields `undefined`, and the later
+        // `type.endsWith('-result')` threw a TypeError that the outer `catch {}`
+        // swallowed — so every sidebar reply was silently dropped and the
+        // File/Git/Search panels never received data (一直不可用). Coalesce to ''
+        // so untyped replies fall straight through to `messageListeners`, where
+        // `WsDataProvider` matches them by `_reqId`.
+        const type = ((msg as Record<string, unknown>).type as string) ?? '';
 
         // Heartbeat reply — liveness already recorded above, nothing else to do.
         if (type === 'pong') return;
@@ -292,14 +368,17 @@ export class RemoteConnection {
           return;
         }
         if (type === 'theme') {
-          const t = msg as { themeType: 'dark' | 'light'; colors: Record<string, string> };
-          this._lastTheme = { themeType: t.themeType, colors: t.colors };
+          const t = msg as { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> };
+          // Track the active theme id so the theme-cycle button can ask the host
+          // for "the theme after this one" (stateless host cycle, see cycleTheme).
+          this._lastTheme = { id: t.id, themeType: t.themeType, colors: t.colors };
           this.themeListeners.forEach(fn => fn(t.colors, t.themeType));
           return;
         }
 
         // Route result-type responses to pending request promises.
-        const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project';
+        const isResult = type.endsWith('-result') || type === 'workspaces'
+          || type === 'current-project' || type === 'workspace-panes';
         if (isResult) {
           const pending = this._pendingRequests.get(type);
           if (pending) {
@@ -309,16 +388,29 @@ export class RemoteConnection {
           }
         }
       }
-      if (msg.type === 'output') {
-        const lines = msg.data.split('\n');
-        const existing = this.paneOutputs.get(msg.paneId) || [];
-        existing.push(...lines);
-        if (existing.length > MAX_PANE_OUTPUT_LINES) {
-          existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+      // If we're reconnecting (socket not ready), queue the message for replay.
+      // Only queue non-binary messages that are state updates (not pings/pongs).
+      if (this._state !== 'connected' && msg.type !== 'output') {
+        this._messageQueue.push(msg);
+        // If queue exceeds limit, force a full page reload to avoid stale state.
+        if (this._messageQueue.length > MAX_QUEUED_MESSAGES) {
+          console.warn('[wsRemote] Message queue exceeded ' + MAX_QUEUED_MESSAGES + ', reloading page');
+          window.location.reload();
+          return;
         }
-        this.paneOutputs.set(msg.paneId, existing);
+      } else if (this._state === 'connected') {
+        // Normal connected path: handle output buffering and dispatch.
+        if (msg.type === 'output') {
+          const lines = msg.data.split('\n');
+          const existing = this.paneOutputs.get(msg.paneId) || [];
+          existing.push(...lines);
+          if (existing.length > MAX_PANE_OUTPUT_LINES) {
+            existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+          }
+          this.paneOutputs.set(msg.paneId, existing);
+        }
+        this.messageListeners.forEach(fn => fn(msg));
       }
-      this.messageListeners.forEach(fn => fn(msg));
     } catch { /* ignore */ }
   }
 
@@ -330,6 +422,7 @@ export class RemoteConnection {
       this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
       this.ws = null;
     }
+    this._isReconnecting = true;
     this.setState('disconnected');
     if (!this._intentionalClose) this._scheduleReconnect();
   }
@@ -349,6 +442,19 @@ export class RemoteConnection {
 
   private _clearReconnectTimer() {
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+  }
+
+  /** Flush the queued messages after a successful reconnect. */
+  private _flushQueue() {
+    const queue = this._messageQueue.splice(0); // drain
+    for (const msg of queue) {
+      // Replay queued state messages (panes, workspaces, etc.) to listeners.
+      // Skip 'output' type as it's handled via paneOutputs.
+      if (msg.type !== 'output') {
+        this.messageListeners.forEach(fn => fn(msg));
+      }
+    }
+    this._isReconnecting = false;
   }
 
   // ── Heartbeat ──
@@ -519,6 +625,20 @@ export class RemoteConnection {
     return (data as Record<string, unknown>).success === true;
   }
 
+  /** List the panes of an ARBITRARY workspace without switching this client's
+   *  active workspace. Backs the tree's "expand a non-active workspace to peek
+   *  at its terminals" (read-only on the host). */
+  async listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]> {
+    const data = await this._sendAndWait(
+      { type: 'list-workspace-panes', workspaceId },
+      'workspace-panes',
+    ) as { workspaceId?: string; panes?: PaneInfo[] };
+    // Guard against a stale reply for a different workspace (the response type
+    // is shared across workspaces, so a fast double-tap could cross wires).
+    if (data.workspaceId && data.workspaceId !== workspaceId) return [];
+    return data.panes || [];
+  }
+
   async requestCurrentProject(): Promise<string> {
     const data = await this._sendAndWait({ type: 'current-project' }, 'current-project') as Record<string, unknown>;
     return (data as { path: string }).path || '';
@@ -531,6 +651,9 @@ export class RemoteConnection {
     this._stopHeartbeat();
     this._detachWindowListeners();
     this._hasConnectedOnce = false;
+    // Clear any queued messages on intentional disconnect.
+    this._messageQueue.length = 0;
+    this._isReconnecting = false;
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onerror = null;

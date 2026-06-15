@@ -1458,6 +1458,46 @@ function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): vo
  *  scheduling against a mocked TerminalManager. Not for production use. */
 export const __test_scheduleForceFitAfterSplit = scheduleForceFitAfterSplit;
 
+/**
+ * Belt-and-suspenders fit after a BACKEND-driven layout change (teammate
+ * `split` / `reused` / `detached` / `removed` arriving via the
+ * `teammate-layout-changed` event), mirroring `scheduleForceFitAfterSplit`
+ * for the front-end `splitPane` path.
+ *
+ * Why the teammate path needs its own variant: a teammate split creates the
+ * pane in the BACKEND and the front-end only re-syncs the tree, so the new
+ * RidgePane relies SOLELY on its single attach-time fit — which races
+ * SvelteKit mount + `manager.ready()`. When that race loses, the kernel grid
+ * stays at the 24×80 attach default while the container already has its
+ * post-split width, leaving the dead strip on the right the user reported
+ * （普通 split 由 `scheduleForceFitAfterSplit` 补偿，故无此症状）。The split
+ * event carries only a `trace_id` (not the new pane id), and removal/detach
+ * also grows the surviving siblings, so we force-fit EVERY pane in the active
+ * workspace's tree; `fitPaneNow` is a no-op when a pane's rows×cols are
+ * unchanged, so refitting the untouched panes (incl. the shrunk source) is
+ * cheap. Retry cadence is identical to `scheduleForceFitAfterSplit` so both
+ * the slow-DOM and WebGPU-init windows are covered.
+ */
+export function scheduleForceFitActivePanes(): void {
+  if (typeof requestAnimationFrame === 'undefined') return;
+  const fitAll = () => {
+    const mgr = TerminalManager.instance();
+    for (const id of getAllPaneIds(get(paneTreeStore))) {
+      mgr.fitPaneNow(id);
+    }
+  };
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => fitAll());
+    setTimeout(() => fitAll(), 50);
+    setTimeout(() => fitAll(), 150);
+    setTimeout(() => fitAll(), 400);
+  });
+}
+
+/** Test-only: exported so paneTree.test.ts can drive the teammate-path
+ *  force-fit scheduling against a mocked TerminalManager. */
+export const __test_scheduleForceFitActivePanes = scheduleForceFitActivePanes;
+
 /** 将源窗格拖到目标上：四边为分栏，中间为与目标互换位置�?*/
 export async function dockPane(
   sourcePaneId: string,
@@ -1911,7 +1951,11 @@ function mergePaneCwds(
   return next;
 }
 
-export function setPaneCwd(workspaceId: string, paneId: string, cwd: string): void {
+export function setPaneCwd(workspaceId: string, paneId: string, cwd: string | null | undefined): void {
+  // Defensive: remote hosts can forward a metadata event whose cwd is null
+  // (title-only change). normalizeCwd(null).replace would throw; a null cwd
+  // carries no new directory, so just ignore it.
+  if (cwd == null) return;
   const key = `${workspaceId}:${paneId}`;
   const normalized = normalizeCwd(cwd);
   paneCwdStore.update((store) => {
@@ -1977,7 +2021,7 @@ export async function setupPaneCwdListeners(workspaceId: string): Promise<void> 
   for (const paneId of paneIds) {
     if (!paneId) continue; // skip empty IDs (e.g., pre-hydration default leaf)
     const ch = `pane-cwd-changed-${workspaceId}-${paneId}`;
-    const unlisten = await listen<{ cwd: string }>(ch, (e) => {
+    const unlisten = await listen<{ cwd: string | null }>(ch, (e) => {
       setPaneCwd(workspaceId, paneId, e.payload.cwd);
     });
     unlisteners.push(unlisten);

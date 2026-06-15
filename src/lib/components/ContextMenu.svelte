@@ -234,6 +234,7 @@
       sidebar: tr('ui.targetSidebar'),
       'workspace-tabs': tr('ui.targetWorkspaceTabs'),
       'git-graph': tr('ui.targetGitGraph'),
+      'scm-files': '',
       'pane-content': tr('ui.targetPaneContent'),
       unknown: ''
     };

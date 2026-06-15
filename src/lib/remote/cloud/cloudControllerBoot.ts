@@ -15,7 +15,7 @@
 //
 // 触发方式（优先级从高到低）：
 //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
-//   2. 租户域名: `{device}-{username}.remo2ridge.duckdns.org`（从 hostname 自动解析）
+//   2. 租户域名: `{device}-{username}.9527127.xyz`（从 hostname 自动解析）
 //   解析规则与 ridge-cloud 后端 validation.rs §1.1/§1.2 逐字一致。
 //
 // 设计要点（与 LAN boot 在 +layout.svelte 对称）：
@@ -34,6 +34,7 @@ import {
 import { ControllerCloudProvider } from './controllerCloudProvider';
 import type { CloudConnectionCallbacks, CloudConnectionState } from './connectionProvider';
 import { snapshot as authSnapshot } from './auth';
+import { computeBindTag, bytesToBase64 } from './e2ee';
 
 /** URL query 参数名（cloud-controller 模式触发 + 目标）。 */
 export const CLOUD_HOST_PARAM = 'cloudHost'; // 目标 host 的 device_name
@@ -163,7 +164,15 @@ export function verifyTotpOverControl(
       unsub();
       reject(new Error('TOTP 验证超时'));
     }, timeoutMs);
-    adapter.sendSessionControl({ t: 'totp-verify', code });
+    // 零信任 #1：host 0x02 后有信道绑定 transcript → 发 totp-bind（HMAC tag，码不明文上线）；
+    // 否则（旧 host / 未收到 0x02）回退明文 totp-verify。host 对两者都回 totp-result。
+    const transcript = adapter.getBindTranscript?.() ?? null;
+    if (transcript) {
+      const tag = bytesToBase64(computeBindTag(code, transcript));
+      adapter.sendSessionControl({ t: 'totp-bind', tag });
+    } else {
+      adapter.sendSessionControl({ t: 'totp-verify', code });
+    }
   });
 }
 
@@ -224,7 +233,7 @@ function isValidDeviceName(s: string): boolean {
 /**
  * 从 hostname 解析租户域名，提取 device_name 和 username。
  *
- * 例：`my-laptop-alice.remo2ridge.duckdns.org` → `{ hostDevice: "my-laptop", username: "alice" }`。
+ * 例：`my-laptop-alice.9527127.xyz` → `{ hostDevice: "my-laptop", username: "alice" }`。
  *
  * 解析算法（契约 §1.2，与 ridge-cloud `validation.rs` 的 `parse_tenant_label` 一致）：
  * 1. 取 hostname 首段 label（第一个 `.` 之前，已小写）。
@@ -261,7 +270,7 @@ export function parseCloudControllerHostname(
  *
  * 解析顺序：
  *   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定，最高优先级）
- *   2. hostname: `{device}-{username}.remo2ridge.duckdns.org`（租户域名自动解析）
+ *   2. hostname: `{device}-{username}.9527127.xyz`（租户域名自动解析）
  *
  * 返回句柄；非 cloud-controller 模式或缺凭据返回 null（调用方据此回退到 LAN boot）。
  *

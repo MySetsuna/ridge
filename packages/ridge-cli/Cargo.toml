@@ -65,11 +65,18 @@ parking_lot = "0.12"
 
 # E2EE (contract §7 — byte-for-byte compatible with the browser noble stack)
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+# base64：B3 信令旁路把临时公钥编/解码为 base64（与桌面 e2ee.ts btoa/atob 字节一致）。
+base64 = "0.22"
 hkdf = "0.12"
 sha2 = "0.10"
 chacha20poly1305 = "0.10"
 rand = "0.8"
 
+# 信令消息 schema 的单一事实来源（SSOT）—— 与 relay(ridge-cloud)/桌面端共用同一份
+# 定义，消除四端手写漂移并全程承载 cid（findings-align P0/P1）。纯 serde 数据模型，
+# 不污染依赖树。独立公开微仓（非机密信令线协议 schema）。git 依赖锁 rev：CI/发布
+# 零配置可拉（path 依赖要求 ridge-signaling 与 wind 同级 checkout，CI 上未必满足）。
+ridge-signaling = { git = "https://github.com/MySetsuna/ridge-signaling", rev = "7f958215d5d694746d743805226da1083fd494d8" }
 # Signaling WebSocket client (rustls)
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
@@ -77,10 +84,15 @@ futures-util = "0.3"
 # host's self-signed cert (validated via CDP, see scripts/cdp-lan-probe.mjs).
 # `ring` (not aws-lc-rs) to match the existing tree — no C toolchain on Windows.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
 # 交互式 TUI（E2）：终端 raw 模式 + alt screen + 异步键盘事件流。passthrough 模型
 # （ssh/mosh 同款）——把远端/本地 PTY 的 ANSI 字节直接透传到本地终端，由本地终端
 # 原生渲染（不在此重做网格渲染；GUI canvas 渲染是另一回事，见 §B.9）。
 crossterm = { version = "0.28", features = ["event-stream"] }
+# TUI 框架（E5）：ratatui 提供 widget 渲染（仪表盘、日志面板、菜单）。
+ratatui = { version = "0.29", features = ["crossterm"] }
+# QR code rendering in TUI (Unicode half-blocks for terminal display)
+qrcode = "0.14"
 # Byte buffers (matches the `bytes` re-exported by the webrtc data channel API)
 bytes = "1"
 
@@ -94,6 +106,10 @@ regex = "1"
 # heavy webrtc dependency tree is unavailable in a constrained CI. On by
 # default; disable with `--no-default-features` to get the trait-stub path.
 webrtc = { version = "0.11", optional = true }
+# HTTP server framework for LAN remote web UI
+axum = { version = "0.7", features = ["ws"] }
+# Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
+ridge-remote = { path = "../ridge-remote" }
 
 [features]
 default = ["rtc"]

@@ -9,7 +9,7 @@
 // 注意：JWT 仅做客户端展示用途的浅解码（读 plan/username/exp），真正的校验在
 // 后端。不信任本地 token 的真实性，仅用于 UI 状态判断。
 
-import { writable, type Writable } from 'svelte/store';
+import { writable, get, type Writable } from 'svelte/store';
 import * as api from './apiClient';
 import type { CheckinResult, UserDto } from './apiClient';
 
@@ -33,7 +33,11 @@ export interface CloudAuthState {
 /** SSR/Node（测试、vite build prerender）下无 localStorage 的安全访问。 */
 function ls(): Storage | null {
   try {
-    return typeof localStorage !== 'undefined' ? localStorage : null;
+    if (typeof localStorage === 'undefined') return null;
+    // 某些运行时（如 Node 实验性 localStorage、未带文件路径）提供「半成品」全局：
+    // 对象存在但 getItem/setItem 非函数。校验方法可用，否则视为不可用退化为内存态。
+    if (typeof localStorage.getItem !== 'function') return null;
+    return localStorage;
   } catch {
     return null;
   }
@@ -116,15 +120,38 @@ export async function login(email: string, password: string): Promise<CloudAuthS
 }
 
 /**
- * 跨子域 fragment 交接落盘（方案 B）：主域登录后经 `#token=<jwt>` 回跳到租户子域，
- * 控制端 boot 在此把 user token 写入本子域 localStorage，使 cloud 远控接线可发起。
- *
- * 只落 token：user 对象按需由 refreshMe()/`/me` 补齐；租户域下 username 由 hostname 提供
- * （见 cloudControllerBoot 的 parseCloudControllerHostname），故此处无须 user 即可 boot。
+ * 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：调 `GET /auth/session`
+ * （带父域 `ridge_sso` cookie）换短时 access token。成功 → 写入 userToken+user（seed
+ * 现有 Bearer 流程，apiClient 零改动）→ true；401/网络失败 → false（调用方跳主域登录）。
+ * 这是替代 `#token=` 跨子域握手的免重登入口。
  */
-export function persistHandoffToken(token: string): void {
-  update((s) => ({ ...s, userToken: token }));
+export async function bootstrapFromCookie(): Promise<boolean> {
+  try {
+    const { token, user } = await api.session();
+    update((s) => ({ ...s, userToken: token, user }));
+    return true;
+  } catch {
+    return false;
+  }
 }
+
+// ─── 401 静默刷新（设计 2026-06-12）：短 access 过期 → 用 refresh cookie 换新 ──────────
+// 单飞去重：多个并发 401 共享同一个 in-flight 刷新，避免刷新风暴。
+let refreshing: Promise<boolean> | null = null;
+function refreshAccess(): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = bootstrapFromCookie().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+// 模块初始化即把刷新钩子注册进 apiClient：带 token 的请求收 401 → 刷新换新 access 重试一次。
+api.setUnauthorizedHandler(async () => {
+  const ok = await refreshAccess();
+  return ok ? get(cloudAuth).userToken : null;
+});
 
 // ─── §2.3 浏览器登录授权（host 轮询拿 user JWT，token 不进 URL）──────────────
 
@@ -245,6 +272,19 @@ export async function refreshMe(): Promise<CloudAuthState> {
   if (!state.userToken) throw new api.ApiError('UNAUTHORIZED', '未登录');
   const { user } = await api.getMe(state.userToken);
   return update((s) => ({ ...s, user }));
+}
+
+// ─── 忘记密码 / 重置密码 ─────────────────────────────────────────────────────
+
+/** 忘记密码：发送重置码到邮箱。始终成功（防枚举），UI 不应根据返回值判断邮箱是否存在。 */
+export async function forgotPassword(email: string): Promise<void> {
+  await api.forgotPassword(email);
+}
+
+/** 重置密码：验证重置码 + 设新密码 → 登录态自动写入 cloudAuth。 */
+export async function resetPassword(email: string, code: string, password: string): Promise<CloudAuthState> {
+  const { token, user } = await api.resetPassword(email, code, password);
+  return update((s) => ({ ...s, userToken: token, user }));
 }
 
 // ─── §5 每日签到（free 用户每日 2h 免费公网远控）─────────────────────────────

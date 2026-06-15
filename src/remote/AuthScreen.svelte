@@ -5,6 +5,11 @@
   import CertTrustGuide from './CertTrustGuide.svelte';
 
   const TOKEN_KEY = 'ridge_remote_token';
+  // Give up on a token (auto)connect after this long and fall back to the code
+  // input — a stale/invalid token makes the server reject the /ws upgrade, and
+  // wsRemote then RETRIES the drop forever ('disconnected', never 'error'), which
+  // left the screen stuck on "connecting" indefinitely.
+  const AUTH_CONNECT_TIMEOUT_MS = 9000;
 
   let { ws, onverified }: { ws: RemoteConnection; onverified: () => void } = $props();
 
@@ -15,6 +20,7 @@
   let showManual = $state(false);
 
   let unsubState: (() => void) | undefined;
+  let connectTimer: ReturnType<typeof setTimeout> | undefined;
 
   function submitCode() {
     const numeric = code.replace(/\D/g, '').slice(0, 6);
@@ -47,19 +53,41 @@
       });
   }
 
+  // Abandon a failed (auto)connect: stop wsRemote's silent reconnect loop, drop
+  // the bad token, and fall back to the manual code-entry screen.
+  function fallbackToManual() {
+    if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
+    unsubState?.();
+    unsubState = undefined;
+    ws.disconnect(); // §stop-retry: otherwise it keeps retrying the bad token forever
+    localStorage.removeItem(TOKEN_KEY);
+    loading = false;
+    showManual = true;
+    error = tr('mobile.connectFail');
+  }
+
   function connectWithToken(host: string, port: number, token: string) {
     unsubState?.();
+    if (connectTimer) clearTimeout(connectTimer);
+    let sawConnected = false;
+    let disconnects = 0;
+    // Safety net: a connect that never reaches 'connected' (hung upgrade / rejected
+    // token) falls back to manual entry instead of an endless "connecting" spinner.
+    connectTimer = setTimeout(fallbackToManual, AUTH_CONNECT_TIMEOUT_MS);
     unsubState = ws.onStateChange((s: ConnectionState) => {
       if (s === 'connected') {
+        sawConnected = true;
+        if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
         loading = false;
         unsubState?.();
         onverified();
       } else if (s === 'error') {
-        loading = false;
-        localStorage.removeItem(TOKEN_KEY);
-        error = tr('mobile.connectFail');
-        showManual = true;
-        unsubState?.();
+        fallbackToManual();
+      } else if (s === 'disconnected' && !sawConnected) {
+        // The token auth keeps dropping before ever connecting (server rejected
+        // the upgrade → wsRemote silently retries). Bail after a couple of tries
+        // instead of spinning forever.
+        if (++disconnects >= 2) fallbackToManual();
       }
     });
     ws.connect(host, port, token, 'token');
@@ -80,7 +108,7 @@
   onMount(() => {
     autoReconnect();
     setTimeout(() => inputEl?.focus(), 400);
-    return () => unsubState?.();
+    return () => { unsubState?.(); if (connectTimer) clearTimeout(connectTimer); };
   });
 </script>
 

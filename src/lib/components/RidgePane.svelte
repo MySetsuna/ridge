@@ -16,13 +16,14 @@
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '$lib/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
-import { activePaneId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
+import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
-import { remoteRunning } from '$lib/stores/remoteStatus';
+import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
@@ -34,7 +35,7 @@ import {
 	EMPTY_INPUT_BUFFER,
 	type InputBufferState,
 } from './inputBufferTracker';
-import { terminalHistoryStore, dedupKeepFirst, filterByPrefix } from '$lib/stores/terminalHistory';
+import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
 
 interface Props {
 	paneId: string;
@@ -146,7 +147,11 @@ function openHistoryOverlay(): boolean {
 	const items = snapshotHistoryItems(currentInputBuffer.text);
 	if (items.length === 0) return false;
 	historyOverlayItems = items;
-	historyOverlaySelected = -1;
+	// §方向一致 (2026-06-11): pre-select the NEWEST entry (index 0, painted at
+	// the top) so the popup opens with the most recent command highlighted —
+	// one Enter repeats it. Arrow keys then move the highlight in screen
+	// direction (↑ newer / ↓ older) via `nextHistorySelection`.
+	historyOverlaySelected = 0;
 	historyOverlayFirstVisible = 0;
 	historyOverlayAnchor = { row: anchor.row, col: anchor.col };
 	const rows = manager.rows(paneId);
@@ -194,25 +199,15 @@ function moveHistorySelection(delta: number): void {
 		closeHistoryOverlay();
 		return;
 	}
-	// Newest-first list (index 0 = most recent). ArrowUp (delta<0) recalls
-	// the most recent command FIRST then walks toward older — shell
-	// convention + the user's "newest prioritized". ArrowDown is the reverse.
-	if (delta < 0) {
-		// back in time: prompt → newest → older → oldest → prompt
-		if (historyOverlaySelected === -1) historyOverlaySelected = 0;
-		else if (historyOverlaySelected >= n - 1) historyOverlaySelected = -1;
-		else historyOverlaySelected += 1;
-	} else {
-		// forward in time: prompt → oldest → newer → newest → prompt
-		if (historyOverlaySelected === -1) historyOverlaySelected = n - 1;
-		else if (historyOverlaySelected === 0) historyOverlaySelected = -1;
-		else historyOverlaySelected -= 1;
-	}
+	// §方向一致 (2026-06-11): the list is newest-first (index 0 = newest,
+	// painted at the TOP). Arrow keys move the highlight in SCREEN direction:
+	// ArrowUp (delta<0) → smaller index → newer; ArrowDown (delta>0) → larger
+	// index → older. Boundaries clamp (no wrap / no auto-dismiss). See
+	// `nextHistorySelection` for the full contract + tests.
+	historyOverlaySelected = nextHistorySelection(historyOverlaySelected, n, delta);
 	// §history-scroll — keep the selection inside the visible window.
 	const win = Math.min(historyOverlayWindow, n);
-	if (historyOverlaySelected === -1) {
-		historyOverlayFirstVisible = 0;
-	} else if (historyOverlaySelected < historyOverlayFirstVisible) {
+	if (historyOverlaySelected < historyOverlayFirstVisible) {
 		historyOverlayFirstVisible = historyOverlaySelected;
 	} else if (historyOverlaySelected >= historyOverlayFirstVisible + win) {
 		historyOverlayFirstVisible = historyOverlaySelected - win + 1;
@@ -243,6 +238,36 @@ function pasteIntoPane(text: string): void {
 	// readText) can steal focus from the pane; without this, IME composition and
 	// subsequent keystrokes never reach the pane.
 	(imeHelper ?? container)?.focus();
+}
+
+// §clipboard-image: 主动粘贴入口——先尝试剪贴板里的图片（落盘成临时 PNG，把绝对路径作为文本
+// 粘入；终端里的 TUI 如 Claude Code 会把图片路径识别为图片附件），没有图片再 fallback 到文本
+// 粘贴。所有「host 主动粘贴」入口（Ctrl+Shift+V / Cmd+V / Win Ctrl+V / 右键菜单）都走这里。
+// 背景见 $lib/terminal/clipboardImage 与 src-tauri 的 commands/clipboard_image.rs。
+async function pasteFromClipboard(): Promise<void> {
+	try {
+		const imgPath = await acquireClipboardImagePath();
+		if (imgPath) {
+			pasteIntoPane(imgPath);
+			return;
+		}
+	} catch (err) {
+		console.error('[clipboard-image] image paste failed, falling back to text', err);
+	}
+	const text = await readText().catch(() => null);
+	if (!text) return;
+	// §clipboard-image:「复制为路径 / Copy as path」场景——文本可能是带引号的图片文件路径。
+	// 若它确实指向一个存在的图片文件，去引号后粘**裸**路径（CLI 才识别为图片）；否则普通粘文本。
+	try {
+		const imgPath = await invoke<string | null>('resolve_pasted_image_path', { text });
+		if (imgPath) {
+			pasteIntoPane(imgPath);
+			return;
+		}
+	} catch (err) {
+		console.error('[clipboard-image] resolve pasted path failed', err);
+	}
+	pasteIntoPane(text);
 }
 
 /** Refresh the TUI sticky timestamp when any signal suggests the TUI
@@ -431,7 +456,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// platform. Conservative POSIX users can reach the TUI's SYN byte
 	// ("literal next" in readline) via Ctrl+Q instead.
 	if (mod && e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		void pasteFromClipboard();
 		e.preventDefault();
 		return true;
 	}
@@ -440,7 +465,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// Skip when TUI is active so the TUI receives the byte.
 	if (!isTui && isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		void pasteFromClipboard();
 		e.preventDefault();
 		return true;
 	}
@@ -455,7 +480,7 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	// the xterm / gnome-terminal / iTerm2 convention.
 	if (isWin && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey
 			&& (e.key === 'v' || e.key === 'V')) {
-		void readText().then((text) => { if (text) pasteIntoPane(text); });
+		void pasteFromClipboard();
 		e.preventDefault();
 		return true;
 	}
@@ -694,6 +719,25 @@ function onCompositionStart() {
 	}
 
 	function onImeHelperPaste(e: ClipboardEvent) {
+		// §clipboard-image: 优先处理粘贴进来的图片（截图等）。clipboardData 在桌面 webview 和
+		// 远程浏览器都带图片项；落盘成临时 PNG 后把路径粘入，由 TUI 识别为图片。没有图片再走文本。
+		const items = e.clipboardData?.items;
+		let hasImage = false;
+		if (items) {
+			for (let i = 0; i < items.length; i++) {
+				if (items[i].kind === 'file' && items[i].type.startsWith('image/')) {
+					hasImage = true;
+					break;
+				}
+			}
+		}
+		if (hasImage) {
+			e.preventDefault();
+			void imagePathFromClipboardEvent(e)
+				.then((path) => { if (path) pasteIntoPane(path); })
+				.catch((err) => console.error('[clipboard-image] paste-event image failed', err));
+			return;
+		}
 		const text = e.clipboardData?.getData('text');
 		if (text) {
 			pasteIntoPane(text);
@@ -1385,7 +1429,7 @@ function onContextMenu(e: MouseEvent) {
 			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: () => { void writeText(sel); } }]
 			: []),
 		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: () => {
-			void readText().then((txt) => { if (txt) pasteIntoPane(txt); });
+			void pasteFromClipboard();
 		}},
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
@@ -1467,7 +1511,15 @@ function jumpToBottom() {
 // tells the host PTY its own dimensions.
 function refreshForRemote() {
 	if (!alive || !attached) return;
-	manager.fitPaneNow(paneId);
+	// Select this pane's workspace in the sidebar/WorkspaceTree so the
+	// active terminal and workspace tree stay in sync after a refresh.
+	activeWorkspaceId.set(workspaceId);
+	// §shared-remote: CLAIM the shared PTY at this viewer's size. On the
+	// browser controller (sharedRemoteMode) passive fits no longer resize the
+	// PTY, so this explicit claim is the only path that pushes this pane's
+	// dimensions to the host; on the host it's an idempotent re-fit. The
+	// broadcast Resize delta then re-letterboxes every viewer.
+	manager.claimPaneSize(paneId);
 	manager.forceFullRedraw(paneId);
 }
 
@@ -1645,6 +1697,18 @@ function onContainerMouseDown(e: MouseEvent) {
 	e.preventDefault();
 }
 
+// Capture-phase keydown handler: prevent Backspace/Delete at the capture
+// phase so WebView2 never enters back-navigation detection mode, which
+// delays the initial key repeat on non-input elements (~1-2 s wait before
+// holding Backspace starts deleting).
+function captureBackspace(node: HTMLElement) {
+	function onCapture(e: KeyboardEvent) {
+		if (e.key === 'Backspace' || e.key === 'Delete') e.preventDefault();
+	}
+	node.addEventListener('keydown', onCapture, { capture: true });
+	return { destroy() { node.removeEventListener('keydown', onCapture, { capture: true }); } };
+}
+
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1663,6 +1727,7 @@ function onContainerMouseDown(e: MouseEvent) {
 	onmousedown={onContainerMouseDown}
 	onpointerdown={onContainerPointerDown}
 	onkeydown={onContainerKeyDown}
+	use:captureBackspace
 >
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the
@@ -1710,13 +1775,14 @@ function onContainerMouseDown(e: MouseEvent) {
 	{/if}
 
 	<!-- §multi-size: re-claim PTY at this pane's size + repaint. Shown when this
-	     desktop hosts a live remote server ($remoteRunning) OR when this IS the
-	     desktop-in-browser controller (WEB_REMOTE) — in both cases multiple
-	     viewers share one PTY and a viewer must be able to claim it at its own
-	     size. A lone local pane needs no button (fitPane already owns the size).
-	     On the browser controller this is the only way to push the pane's
-	     dimensions to the host PTY. -->
-	{#if $remoteRunning || WEB_REMOTE}
+	     desktop hosts a live LAN remote server ($remoteRunning) OR is serving the
+	     public cloud remote ($cloudHostOnline) OR when this IS the desktop-in-
+	     browser controller (WEB_REMOTE) — in all cases multiple viewers share one
+	     PTY and a viewer must be able to lock it to its own size. A lone local
+	     pane needs no button (fitPane already owns the size). On the browser
+	     controller this is the only way to push the pane's dimensions to the
+	     host PTY. -->
+	{#if $remoteRunning || $cloudHostOnline || WEB_REMOTE}
 		<button
 			type="button"
 			class="rg-remote-refresh"

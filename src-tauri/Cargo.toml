@@ -20,27 +20,27 @@ name = "ridge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 # `tray-icon`：Deep Root Mode（§8）的系统托盘所需（tauri::tray::TrayIconBuilder）。
 # 托盘图标复用 `app.default_window_icon()`（已是解码后的 RGBA `Image`），故无需
 # 额外的 `image-ico` 解码特性。
-tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
-tauri-plugin-opener = "2"
-tauri-plugin-clipboard-manager = "2"
-tauri-plugin-dialog = "2"
+tauri = { version = "2.11.2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-dialog = "2.7.1"
 # Deep Root Mode（§8.1）：进入深根时发原生系统通知（Rust 端 NotificationExt）。
-tauri-plugin-notification = "2"
+tauri-plugin-notification = "2.3.3"
 # 公网登录授权（契约 §1/§2.3）：注册自定义 scheme `ridge://`，网页授权批准后
 # `ridge://auth/focus` 把桌面端拉回前台并触发一次轮询。URI 仅作信号，绝不携带 token。
-tauri-plugin-deep-link = "2"
+tauri-plugin-deep-link = "2.4.9"
 # 配合 deep-link：Windows 上第二个实例（由浏览器唤起 `ridge://`）把 argv 转交首个
 # 实例并聚焦，避免重复开窗（single-instance 必须在 builder 链最前注册）。
-tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-single-instance = { version = "2.4.2", features = ["deep-link"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "process", "io-util"] }
 parking_lot = "0.12"
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -62,6 +62,11 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring",
 # Certificate validity windows for the remote TLS CA/leaf (see remote/tls.rs).
 time = { version = "0.3", default-features = false, features = ["std"] }
 futures = "0.3"
+# §perf: HTTP 响应压缩。web-remote 把完整桌面 SPA（~20MB 未压缩，含 Monaco）
+# 直发给浏览器，此前 router 无压缩层 → 首屏裸传数 MB JS 是"连接缓慢"的主因之一。
+# gzip/br on-the-fly：immutable 内容哈希资产浏览器只下一次，一次性 CPU 可接受。
+# tower-http 0.6 已在 lock（与 axum 0.7 同走 http 1.x），brotli crate 亦已存在。
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
 sha2 = "0.10"
 # SECURITY (audit C2): OS CSPRNG for the remote TOTP secret seed + session
 # tokens. Replaces the former non-cryptographic `SimpleRng` xorshift (seeded
@@ -69,7 +74,9 @@ sha2 = "0.10"
 # is already in the dependency tree transitively (via ring/rustls); declaring
 # it directly pins the same major and pulls in no new transitive crates.
 getrandom = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+# native-tls：cloud_http.rs 需对 https://9527127.xyz 发请求，必须有 TLS 后端。
+# 用 native-tls（Windows=schannel）走 OS 信任库——与 WebView2/curl 实测可达的同一信任源一致。
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 glob = "0.3"
@@ -85,6 +92,10 @@ git2 = "0.19"
 sysinfo = "0.31"
 backtrace = "0.3"
 base64 = "0.22"
+# 剪贴板图片粘贴（§clipboard-image）：把 arboard 读到的 RGBA8 编码成 PNG 落盘成临时文件，
+# 再把路径作为 bracketed-paste 文本喂给终端里的 TUI（Claude Code 等）。只需编码，故用轻量的
+# `png` crate 而非重量级的 `image`。
+png = "0.17"
 notify = { version = "6", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.4"
 
@@ -116,6 +127,8 @@ ridge-core = { path = "../packages/ridge-core" }
 # its `crate::teammate::native::*` paths via a thin `pub use ridge_tmux::*;`
 # re-export. Pure deps only (portable-pty + ridge-term Terminal), no new Tauri.
 ridge-tmux = { path = "../packages/ridge-tmux", features = ["http"] }
+# Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
+ridge-remote = { path = "../packages/ridge-remote" }
 
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)
@@ -131,6 +144,11 @@ postcard = { version = "1", features = ["alloc"] }
 # Using manual implementation to avoid new dep downloads.
 # mDNS uses raw UDP multicast — no extra crate needed.
 # WebSocket is built into axum 0.7 — no extra dep needed.
+
+[target.'cfg(windows)'.dependencies]
+# 剪贴板「复制图片文件」(CF_HDROP) 读取：arboard 只读位图/文本、读不到文件列表；
+# clipboard-win 已是 arboard 的传递依赖（同为 5.x），加为 Windows-only 直接依赖不引入新传递依赖。
+clipboard-win = "5"
 
 [[bin]]
 name = "tmux"

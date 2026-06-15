@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Folder, GitBranch, Search, Keyboard, RefreshCw, MousePointer2 } from 'lucide-svelte';
+  import { RefreshCw, MousePointer2, Clipboard, Palette, Globe } from 'lucide-svelte';
   import { t } from '$lib/i18n';
+  import { locale, setLocale } from '$lib/i18n/locale';
   import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
   import WorkspaceTree from './lib/WorkspaceTree.svelte';
 
@@ -9,10 +10,9 @@
   // 名称作为树弹层底部的小字保留，不再单独占位。
   let {
     ws,
-    sidebarTab = null as 'files' | 'git' | 'search' | null,
-    onSidebarToggle,
     onRefresh,
-    showKeyboard = $bindable(false),
+    onPaste,
+    onThemeToggle,
     selectionMode = $bindable(false),
     backendName = 'Canvas2D',
     panes = [],
@@ -22,10 +22,9 @@
     onWorkspacesChanged,
   }: {
     ws?: RemoteConnection;
-    sidebarTab?: 'files' | 'git' | 'search' | null;
-    onSidebarToggle?: (tab: 'files' | 'git' | 'search') => void;
     onRefresh?: () => void;
-    showKeyboard?: boolean;
+    onPaste?: () => void;
+    onThemeToggle?: () => void;
     selectionMode?: boolean;
     backendName?: string;
     panes?: PaneInfo[];
@@ -34,32 +33,28 @@
     activeWorkspaceId?: string;
     onWorkspacesChanged?: () => void;
   } = $props();
+
+  // Current locale for the language toggle button
+  const currentLocale = $derived($locale);
 </script>
 
 <div class="actionbar">
-  <!-- Sidebar toggles -->
-  <div class="group">
-    <button class="ctrl-btn" class:active={sidebarTab === 'files'} onclick={() => onSidebarToggle?.('files')} title={$t('mobile.filesTitle')} tabindex="-1">
-      <Folder class="w-4 h-4" />
-    </button>
-    <button class="ctrl-btn" class:active={sidebarTab === 'git'} onclick={() => onSidebarToggle?.('git')} title="Git" tabindex="-1">
-      <GitBranch class="w-4 h-4" />
-    </button>
-    <button class="ctrl-btn" class:active={sidebarTab === 'search'} onclick={() => onSidebarToggle?.('search')} title={$t('mobile.searchTitle')} tabindex="-1">
-      <Search class="w-4 h-4" />
-    </button>
-  </div>
-
-  <!-- View controls -->
-  <div class="group">
-    <button class="ctrl-btn" class:active={showKeyboard} onclick={() => showKeyboard = !showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
-      <Keyboard class="w-4 h-4" />
-    </button>
+  <div class="group group-left">
     <button class="ctrl-btn" class:active={selectionMode} onclick={() => selectionMode = !selectionMode} title={$t('mobile.selectionToggle')} tabindex="-1">
       <MousePointer2 class="w-4 h-4" />
     </button>
     <button class="ctrl-btn" onclick={onRefresh} title={$t('mobile.lockAndRefresh')} tabindex="-1">
       <RefreshCw class="w-4 h-4" />
+    </button>
+    <button class="ctrl-btn" onclick={onPaste} title={$t('mobile.pasteFromRemote')} tabindex="-1">
+      <Clipboard class="w-4 h-4" />
+    </button>
+    <button class="ctrl-btn" onclick={onThemeToggle} title={$t('mobile.themeToggle')} tabindex="-1">
+      <Palette class="w-4 h-4" />
+    </button>
+    <button class="ctrl-btn" onclick={() => setLocale(currentLocale === 'zh' ? 'en' : 'zh')} title={$t('mobile.langToggle')} tabindex="-1">
+      <Globe class="w-4 h-4" />
+      <span class="lang-label">{currentLocale === 'zh' ? 'EN' : '中'}</span>
     </button>
   </div>
 
@@ -81,9 +76,17 @@
   /* §offscreen-fix: trim horizontal footprint so 6 icon buttons + the workspace
      trigger fit within narrow phone widths instead of overflowing the right edge
      (the WorkspaceTree popup is viewport-anchored as a belt-and-suspenders). */
-  .actionbar{display:flex;align-items:center;justify-content:space-between;gap:4px;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
+  .actionbar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
   .group{display:flex;align-items:center;gap:4px;flex-shrink:0}
-  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:38px;height:36px;background:none;border:1px solid transparent;border-radius:8px;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
+  /* §offscreen-fix: the icon cluster keeps its size (flex-shrink:0); when the bar
+     runs out of room it's the workspace trigger that shrinks (its label
+     truncates), never the icon buttons (they used to get squished / pushed off). */
+  .group-left{display:flex;align-items:center;gap:4px;flex-shrink:0;min-width:0}
+  .ctrl-btn{display:flex;align-items:center;justify-content:center;width:38px;height:36px;flex-shrink:0;background:none;border:1px solid transparent;border-radius:8px;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
   .ctrl-btn:active{background:var(--rg-surface-2);color:var(--rg-fg)}
   .ctrl-btn.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 12%, transparent);border-color:color-mix(in srgb, var(--rg-accent) 40%, transparent)}
+  .lang-label{font-size:10px;font-weight:600;margin-left:2px}
+  @media (pointer: coarse) {
+    .ctrl-btn{width:44px;height:44px}
+  }
 </style>

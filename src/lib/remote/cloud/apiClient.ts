@@ -17,12 +17,12 @@
  * 在 Chromium/WebView2 会自动解析到 127.0.0.1，故子域模型在 localhost 同样可用。
  */
 const ENV_BASE_DOMAIN = (import.meta.env.RIDGE_CLOUD_BASE_DOMAIN as string | undefined) || '';
-export const BASE_DOMAIN = ENV_BASE_DOMAIN || 'remo2ridge.duckdns.org';
+export const BASE_DOMAIN = ENV_BASE_DOMAIN || '9527127.xyz';
 
 /**
  * 判定一个 cloud base 域是否为**不安全本机回环**（→ 明文 http/ws，而非 TLS）。
  *
- * 生产 base（`remo2ridge.duckdns.org` 等真实域名）恒为 false，继续走 https/wss。
+ * 生产 base（`9527127.xyz` 等真实域名）恒为 false，继续走 https/wss。
  * 仅当 base 指向本机回环（`localhost` / `*.localhost` / `127.0.0.0/8` / `0.0.0.0` /
  * `[::1]`，可带端口）时为 true —— 用于自托管 / 本地 ridge-cloud（无 TLS 反代）调试。
  * 这是 apiClient.ts 顶部注释所述「`RIDGE_CLOUD_BASE_DOMAIN=localhost:xxxx` 把客户端
@@ -48,14 +48,18 @@ export function isInsecureCloudDomain(domain: string): boolean {
   return false;
 }
 
-/** 某 cloud base 域应使用的 HTTP scheme（本机回环 → http，否则 https）。 */
-export function cloudHttpScheme(domain: string): 'http' | 'https' {
-  return isInsecureCloudDomain(domain) ? 'http' : 'https';
+/** 构建期逃生开关：dev 默认全链路 TLS；置 RIDGE_CLOUD_DEV_PLAINTEXT=1 时回环 cloud
+ *  回退明文 http/ws（mkcert 故障时临时调试用）。经 vite define 注入（见 vite.config.js）。 */
+const DEV_PLAINTEXT = (import.meta.env.RIDGE_CLOUD_DEV_PLAINTEXT as string | undefined) === '1';
+
+/** 某 cloud base 域应使用的 HTTP scheme。仅「回环 + 逃生明文」→ http，否则 https。 */
+export function cloudHttpScheme(domain: string, plaintext: boolean = DEV_PLAINTEXT): 'http' | 'https' {
+  return isInsecureCloudDomain(domain) && plaintext ? 'http' : 'https';
 }
 
-/** 某 cloud base 域应使用的 WebSocket scheme（本机回环 → ws，否则 wss）。 */
-export function cloudWsScheme(domain: string): 'ws' | 'wss' {
-  return isInsecureCloudDomain(domain) ? 'ws' : 'wss';
+/** 某 cloud base 域应使用的 WebSocket scheme。仅「回环 + 逃生明文」→ ws，否则 wss。 */
+export function cloudWsScheme(domain: string, plaintext: boolean = DEV_PLAINTEXT): 'ws' | 'wss' {
+  return isInsecureCloudDomain(domain) && plaintext ? 'ws' : 'wss';
 }
 
 /** 主域名 API 根（契约 §4：全部挂在主域名 /api/v1）。本机回环用 http。 */
@@ -77,6 +81,7 @@ export type ApiErrorCode =
   | 'DEVICE_NAME_TAKEN'
   | 'SIGNATURE_INVALID'
   | 'RATE_LIMITED'
+  | 'INVALID_RESET_CODE'
   | 'INTERNAL'
   // 浏览器登录授权（契约 §2.1）
   | 'AUTH_REQUEST_NOT_FOUND'
@@ -176,7 +181,7 @@ function coerceCode(raw: string): ApiErrorCode {
     'UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND', 'INVALID_INPUT', 'INVALID_KEY',
     'KEY_ALREADY_USED', 'USERNAME_TAKEN', 'USERNAME_REQUIRED', 'NOT_PREMIUM',
     'PAIRING_EXPIRED', 'PAIRING_NOT_FOUND', 'DEVICE_NAME_TAKEN',
-    'SIGNATURE_INVALID', 'RATE_LIMITED', 'INTERNAL',
+    'SIGNATURE_INVALID', 'RATE_LIMITED', 'INVALID_RESET_CODE', 'INTERNAL',
     'AUTH_REQUEST_NOT_FOUND', 'AUTH_REQUEST_EXPIRED',
   ];
   return (known as string[]).includes(raw) ? (raw as ApiErrorCode) : 'INTERNAL';
@@ -188,24 +193,106 @@ interface RequestOptions {
   token?: string;
   /** JSON body（POST）。 */
   body?: unknown;
+  /** 带凭证（父域 SSO cookie）。仅 /auth/session bootstrap 用 `'include'`（设计 2026-06-12）。 */
+  credentials?: RequestCredentials;
 }
 
 /**
- * 发起一次 API 请求并解包 §2 信封。
+ * 401 静默刷新钩子（设计 2026-06-12-cloud-domain-sso）：access token 短时（15min）会过期，
+ * auth.ts 在模块初始化时注册一个「用父域 refresh cookie 换新 access」的函数。`request`
+ * 收 UNAUTHORIZED 时调它拿新 token、用新 token **重试一次**，避免短 access 过期即掉线。
+ * 未注册（如纯 apiClient 单测）则不刷新，原样抛 401。
+ */
+let onUnauthorized: (() => Promise<string | null>) | null = null;
+export function setUnauthorizedHandler(fn: (() => Promise<string | null>) | null): void {
+  onUnauthorized = fn;
+}
+
+/**
+ * 发起 API 请求并解包 §2 信封；带 token 的请求收 401 时尝试静默刷新 + 重试一次。
  * 失败统一抛 ApiError（带结构化 code）。
  */
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', token, body } = opts;
+  try {
+    return await requestOnce<T>(path, opts);
+  } catch (e) {
+    // 仅「带 token 的请求收 401 且注册了刷新钩子」才静默刷新 + 重试一次。
+    // 无 token 的请求（如 /auth/session 自身）不触发，避免递归。
+    if (e instanceof ApiError && e.code === 'UNAUTHORIZED' && opts.token && onUnauthorized) {
+      const fresh = await onUnauthorized();
+      if (fresh) return requestOnce<T>(path, { ...opts, token: fresh });
+    }
+    throw e;
+  }
+}
+
+/** 运行在 Tauri WebView（桌面）内？无副作用、node/SSR 安全（typeof 守卫）。 */
+function inTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** 解 §2 信封：成功取 data，失败按 code 抛 ApiError，畸形抛 BAD_RESPONSE。 */
+function unwrapEnvelope<T>(envelope: Envelope<T> | null, status: number): T {
+  if (envelope && envelope.ok === true) {
+    return envelope.data;
+  }
+  if (envelope && envelope.ok === false && envelope.error) {
+    throw new ApiError(coerceCode(envelope.error.code), envelope.error.message ?? '请求失败');
+  }
+  throw new ApiError('BAD_RESPONSE', `响应信封格式非法（HTTP ${status}）`);
+}
+
+/**
+ * 单次请求（无重试）。被 `request` 包装以支持 401 刷新重试。
+ *
+ * 桌面（Tauri WebView，Windows 源 `http://tauri.localhost`）对云主域是**跨域** fetch，
+ * 受 CORS 管控；云端 allowlist 只放行 `https://tauri.localhost` → WebView fetch 被拦
+ * → 旧实现抛 `NETWORK`（「网络连接失败」）。故桌面改经 Rust 代理（`invoke('cloud_http')`，
+ * 见 src-tauri/src/commands/cloud_http.rs）绕过浏览器 CORS/CSP；web-remote（浏览器同源
+ * 访问云子域）仍走原生 fetch，并保留 `credentials` 供父域 SSO cookie。
+ */
+async function requestOnce<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  const { method = 'GET', token, body, credentials } = opts;
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const url = `${API_BASE}${path}`;
+  const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
 
+  // ── 桌面：Rust HTTP 代理（绕过 WebView 跨域 CORS）──────────────────────────
+  if (inTauri()) {
+    let status: number;
+    let text: string;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const r = await invoke<{ status: number; body: string }>('cloud_http', {
+        method,
+        url,
+        headers,
+        body: bodyStr ?? null,
+      });
+      status = r.status;
+      text = r.body;
+    } catch (e: unknown) {
+      throw new ApiError('NETWORK', e instanceof Error ? e.message : '网络请求失败');
+    }
+    let envelope: Envelope<T>;
+    try {
+      envelope = JSON.parse(text) as Envelope<T>;
+    } catch {
+      throw new ApiError('BAD_RESPONSE', `响应不是合法 JSON（HTTP ${status}）`);
+    }
+    return unwrapEnvelope(envelope, status);
+  }
+
+  // ── 浏览器（web-remote）：原生 fetch ────────────────────────────────────────
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(url, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: bodyStr,
+      credentials,
     });
   } catch (e: unknown) {
     throw new ApiError('NETWORK', e instanceof Error ? e.message : '网络请求失败');
@@ -217,14 +304,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   } catch {
     throw new ApiError('BAD_RESPONSE', `响应不是合法 JSON（HTTP ${res.status}）`);
   }
-
-  if (envelope && envelope.ok === true) {
-    return envelope.data;
-  }
-  if (envelope && envelope.ok === false && envelope.error) {
-    throw new ApiError(coerceCode(envelope.error.code), envelope.error.message ?? '请求失败');
-  }
-  throw new ApiError('BAD_RESPONSE', `响应信封格式非法（HTTP ${res.status}）`);
+  return unwrapEnvelope(envelope, res.status);
 }
 
 // ─── §4.1 账户 ───────────────────────────────────────────────────────────
@@ -243,6 +323,17 @@ export function getMe(token: string): Promise<{ user: UserDto }> {
 
 export function setUsername(token: string, username: string): Promise<{ user: UserDto }> {
   return request<{ user: UserDto }>('/auth/set-username', { method: 'POST', token, body: { username } });
+}
+
+// ─── 父域 SSO bootstrap（设计 2026-06-12-cloud-domain-sso）─────────────────────
+
+/**
+ * 用父域 refresh cookie 换短时 access token。`credentials:'include'` 让浏览器把
+ * `Domain=.{base}` 的 `ridge_sso` cookie 带上（子域同站自动发送）。命中回 {token,user}；
+ * 无 cookie/失效 → 后端 401 → `request` 抛 ApiError('UNAUTHORIZED')。
+ */
+export function session(): Promise<AuthResult> {
+  return request<AuthResult>('/auth/session', { credentials: 'include' });
 }
 
 // ─── §5 每日签到（free 用户每日 2h 免费公网远控）─────────────────────────────
@@ -300,6 +391,18 @@ export function listDevices(token: string): Promise<{ devices: DeviceDto[] }> {
 
 export function deleteDevice(token: string, name: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(`/devices/${encodeURIComponent(name)}`, { method: 'DELETE', token });
+}
+
+// ─── §4.1 忘记密码 / 重置密码 ──────────────────────────────────────────────
+
+/** 忘记密码：发送重置码到邮箱。始终返回 {ok:true}（防枚举）。 */
+export function forgotPassword(email: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/auth/forgot-password', { method: 'POST', body: { email } });
+}
+
+/** 重置密码：邮箱 + 重置码 + 新密码 → 签发新 token（即登录）。 */
+export function resetPassword(email: string, code: string, password: string): Promise<AuthResult> {
+  return request<AuthResult>('/auth/reset-password', { method: 'POST', body: { email, code, password } });
 }
 
 // ─── §5.2 ICE servers（必须调此接口取 iceServers，不要硬编码）──────────────

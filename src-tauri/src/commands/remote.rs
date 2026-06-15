@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 use sysinfo::System;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::remote::mdns;
 use crate::state::AppState;
@@ -9,6 +9,7 @@ use crate::state::AppState;
 pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, String> {
     let port = *state.remote_port.read();
     let lan_ip = crate::remote::detect_lan_ip();
+    let lan_ips = crate::remote::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
     let enabled = state.remote_enabled.load(Ordering::Relaxed);
@@ -50,6 +51,7 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
     Ok(serde_json::json!({
         "port": port,
         "lanIp": lan_ip,
+        "lanIps": lan_ips,
         "totpCode": totp_code,
         "otpauthUri": otpauth_uri,
         "ready": port > 0 && enabled,
@@ -80,6 +82,61 @@ pub async fn remote_reap_orphans(state: State<'_, AppState>) -> Result<usize, St
 #[tauri::command]
 pub fn verify_remote_totp(state: State<AppState>, code: &str) -> bool {
     state.remote_auth.verify(code)
+}
+
+/// 零信任 #2：返回本设备 Ed25519 身份**公钥**（32 字节）。controller 经此公钥验签
+/// host 的握手签名并 TOFU 固定指纹。私钥永不离开 Rust 侧（DPAPI/0600）。
+#[tauri::command]
+pub fn get_device_identity_pub(state: State<AppState>) -> Vec<u8> {
+    state.device_identity.public_bytes().to_vec()
+}
+
+/// 零信任 #2：用设备身份私钥对 id-bind 上下文签名，返回 64 字节 Ed25519 签名。
+///
+/// 用途**锁死**：Rust 侧强制加固定域分隔前缀 `ridge-id-bind-v1`，故此命令只能产出
+/// "设备身份绑定握手"签名，绝不能被借去签其它协议内容（防签名混淆）。`context` 由
+/// 握手层（P2）构造（双方临时 X25519 公钥 ‖ device_name ‖ username）。私钥不出 Rust。
+#[tauri::command]
+pub fn sign_device_identity(state: State<AppState>, context: Vec<u8>) -> Vec<u8> {
+    const DOMAIN: &[u8] = b"ridge-id-bind-v1";
+    let mut msg = Vec::with_capacity(DOMAIN.len() + context.len());
+    msg.extend_from_slice(DOMAIN);
+    msg.extend_from_slice(&context);
+    state.device_identity.sign(&msg).to_vec()
+}
+
+/// 零信任 #1（概念 5）：校验 controller 经 CONTROL 通道发来的 **totp-bind** MAC。
+/// host 用本机 TOTP 种子在 `transcript` 上 ±1 时间步窗口重算 tag 比对（恒定时间，见
+/// `RemoteTotp::verify_bind_tag`）。`transcript` 由 host 握手层构造并传入（domain‖sorted
+/// 双方临时公钥）；`tag` 为 controller 用当前 6 位码算的 HMAC。通过 → cloudHostBridge
+/// 解门控、放行业务帧。与浏览器 `e2ee.ts::computeBindTag` 字节对齐（跨实现 golden 已锁）。
+#[tauri::command]
+pub fn verify_remote_totp_bind(state: State<AppState>, transcript: Vec<u8>, tag: Vec<u8>) -> bool {
+    state.remote_auth.verify_bind_tag(&transcript, &tag)
+}
+
+/// §totp-persist：重置本机 TOTP 种子。重新生成 + 覆盖落盘（DPAPI/0600），已配对
+/// 的 authenticator 立即失效，须重新扫码。发 `remote-totp-changed` 事件让面板刷新。
+#[tauri::command]
+pub fn remote_reset_totp(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.remote_auth.reset_totp();
+    let _ = app.emit("remote-totp-changed", ());
+    tracing::info!(target: "ridge::remote", "TOTP secret reset by user");
+    Ok(())
+}
+
+/// §totp-persist：把活动 TOTP 种子切到指定云身份（`None`/登出 → `"default"`）。
+/// 由前端在云登录态变化时调用，实现「不同账号不同种子」的实时切换。发
+/// `remote-totp-changed` 事件让面板刷新二维码/验证码。
+#[tauri::command]
+pub fn remote_set_totp_identity(
+    app: AppHandle,
+    state: State<AppState>,
+    username: Option<String>,
+) -> Result<(), String> {
+    state.remote_auth.switch_identity(username.as_deref());
+    let _ = app.emit("remote-totp-changed", ());
+    Ok(())
 }
 
 #[tauri::command]

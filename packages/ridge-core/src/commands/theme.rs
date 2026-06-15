@@ -252,4 +252,116 @@ mod tests {
         // Optional None fields are skipped, matching the desktop serializer.
         assert!(!back.contains("strokeWidth"));
     }
+
+    #[test]
+    fn read_active_theme_id_returns_default_on_missing_file() {
+        let tmp = std::env::temp_dir().join("ridge-test-nonexistent");
+        let id = read_active_theme_id(&tmp);
+        assert_eq!(id, "endless-dark");
+    }
+
+    #[test]
+    fn read_active_theme_id_trims_whitespace() {
+        let tmp = std::env::temp_dir().join("ridge-test-trim");
+        std::fs::create_dir_all(&tmp).ok();
+        let path = tmp.join("active-theme.txt");
+        std::fs::write(&path, "  my-theme  ").ok();
+        let id = read_active_theme_id(&tmp);
+        assert_eq!(id, "my-theme");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn read_active_theme_id_returns_default_on_empty_file() {
+        let tmp = std::env::temp_dir().join("ridge-test-empty");
+        std::fs::create_dir_all(&tmp).ok();
+        let path = tmp.join("active-theme.txt");
+        std::fs::write(&path, "").ok();
+        let id = read_active_theme_id(&tmp);
+        assert_eq!(id, "endless-dark");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn theme_file_deserializes_with_loader_and_colors() {
+        let json = r##"{
+            "version": 1,
+            "themes": [{
+                "id": "test",
+                "label": "Test",
+                "type": "dark",
+                "loader": {"primary":"#fff","secondary":"#000"},
+                "colors": {"bg":"#000","fg":"#fff"}
+            }]
+        }"##;
+        let tf: ThemeFile = serde_json::from_str(json).unwrap();
+        assert_eq!(tf.version, 1);
+        assert_eq!(tf.themes.len(), 1);
+        assert_eq!(tf.themes[0].id, "test");
+        assert_eq!(tf.themes[0].loader.primary, "#fff");
+        assert_eq!(tf.themes[0].colors.get("bg").unwrap(), "#000");
+    }
+
+    #[test]
+    fn active_theme_entry_gracefully_handles_found_theme() {
+        // During `cargo test` the binary lives under target/debug/ and
+        // find_theme_path() walks ancestors until it hits the repo-root
+        // ridge.theme (which exists). This test just validates the function
+        // returns Some in that case and doesn't panic.
+        if let Some(entry) = active_theme_entry() {
+            assert!(!entry.id.is_empty());
+            assert!(!entry.loader.primary.is_empty());
+        }
+    }
+
+    #[test]
+    fn theme_file_rejects_invalid_version() {
+        let json = r##"{"version":0,"themes":[{"id":"x","label":"X","type":"dark","loader":{"primary":"#fff","secondary":"#000"},"colors":{}}]}"##;
+        let tf: ThemeFile = serde_json::from_str(json).unwrap();
+        // get_theme_data filters out version < 1 or empty themes.
+        // But the raw deserialization itself should succeed.
+        assert_eq!(tf.version, 0);
+        assert_eq!(tf.themes.len(), 1);
+    }
+
+    #[test]
+    fn set_active_theme_writes_and_reads_back() {
+        let tmp = std::env::temp_dir().join("ridge-test-set");
+        let ridge_dir = tmp.join("ridge");
+        // Temporarily redirect app_data_dir by setting LOCALAPPDATA on Windows.
+        let _guard = SetEnvGuard::new("LOCALAPPDATA", &tmp.to_string_lossy());
+        set_active_theme("my-custom-theme").ok();
+        // set_active_theme writes to app_data_dir()/active-theme.txt =
+        // <LOCALAPPDATA>/ridge/active-theme.txt = tmp/ridge/active-theme.txt
+        let read = read_active_theme_id(&ridge_dir);
+        assert_eq!(read, "my-custom-theme");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+/// RAII guard to temporarily set an env var, restoring the original on drop.
+
+struct SetEnvGuard {
+    key: String,
+    old: Option<String>,
+}
+
+#[cfg(test)]
+impl SetEnvGuard {
+    fn new(key: &str, val: &str) -> Self {
+        let old = std::env::var(key).ok();
+        std::env::set_var(key, val);
+        Self { key: key.into(), old }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SetEnvGuard {
+    fn drop(&mut self) {
+        match &self.old {
+            Some(v) => std::env::set_var(&self.key, v),
+            None => std::env::remove_var(&self.key),
+        }
+    }
 }

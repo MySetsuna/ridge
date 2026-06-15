@@ -39,11 +39,19 @@ walkdir = "2"
 # browses the SAME filesystem a remote IDE expects). Same crate the desktop
 # uses (`directories` in ridge-cli serves a different purpose). Pure, no Tauri.
 dirs = "5"
+# TOTP 种子持久化路径解析（与 ridge-cli auth.json 同根：ProjectDirs("ridge")
+# config_dir）。纯 crate，无 Tauri。见 src/seed_store.rs。
+directories = "5"
 # Canonical TOTP (RFC 6238, HMAC-SHA256) shared by desktop + headless cli +
 # (future) LAN host. Pure crates, no Tauri. `rand` uses the OS entropy source
 # for the per-process secret. See `totp.rs`.
 sha2 = "0.10"
 rand = "0.8"
+# Ed25519 长期设备身份签名（零信任 P0-1 / 方案 #2）：host 签名临时 X25519 公钥，
+# controller 验签 + TOFU 固定指纹。默认 features 即够（仅用 from_bytes/sign/verify，
+# 不需 rand_core 集成 —— 种子由本仓 rand::OsRng 现取）。纯 crate，无 Tauri。
+# 见 src/device_identity.rs。
+ed25519-dalek = "2"
 # Pane / workspace identity for the shared workspace graph (D11 Wave A:
 # `workspace::pane_tree`). Same version + features the desktop `src-tauri` uses
 # so the workspace `Cargo.lock` stays unified. Pure crate, no Tauri.

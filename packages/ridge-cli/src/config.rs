@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// 默认 Base zone（契约 §1）。可被 `RIDGE_BASE_DOMAIN` 环境变量覆盖（便于自托管 / 测试）。
-pub const DEFAULT_BASE_DOMAIN: &str = "remo2ridge.duckdns.org";
+pub const DEFAULT_BASE_DOMAIN: &str = "9527127.xyz";
 
 /// 取 Base zone。优先级：运行时 `RIDGE_BASE_DOMAIN` 环境变量 > 编译期烘焙的
 /// `RIDGE_BASE_DOMAIN`（option_env!，debug 包用 scripts/tauri-build-debug.mjs 设
@@ -26,14 +26,41 @@ pub fn base_domain() -> String {
     }
 }
 
+/// 是否为 dev 模式（base domain 含 localhost 或 127.0.0.1）。
+/// dev 模式下使用自签名证书，API 和信令仍走 HTTPS/WSS。
+pub fn is_dev_mode() -> bool {
+    let domain = base_domain();
+    domain.contains("localhost") || domain.contains("127.0.0.1")
+}
+
 /// HTTP API 根（契约 §4）：`https://{base}/api/v1`。
 pub fn api_base() -> String {
     format!("https://{}/api/v1", base_domain())
 }
 
-/// 设备激活引导页（契约：用户访问 `https://{base}/activate`）。
+/// 设备激活引导页：`https://{base}/activate`。
 pub fn activate_url() -> String {
     format!("https://{}/activate", base_domain())
+}
+
+/// LAN 远程服务端口：dev 模式用 5002（避免与本机桌面端 9527 冲突），生产用 9527。
+pub fn lan_port() -> u16 {
+    if is_dev_mode() { 5002 } else { 9527 }
+}
+
+/// 检测本机 LAN IP（通过 UDP 连接获取主接口地址）。
+pub fn detect_lan_ip() -> String {
+    let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(_) => return "127.0.0.1".to_string(),
+    };
+    match socket.connect("8.8.8.8:80") {
+        Ok(()) => match socket.local_addr() {
+            Ok(addr) => addr.ip().to_string(),
+            Err(_) => "127.0.0.1".to_string(),
+        },
+        Err(_) => "127.0.0.1".to_string(),
+    }
 }
 
 /// 持久化的设备凭据（契约 §3 device token + §4.4 绑定结果）。
@@ -97,6 +124,16 @@ pub fn load_auth() -> Result<Option<AuthFile>> {
     Ok(Some(auth))
 }
 
+/// 本机 CLI 的 TOTP 身份：已激活则取 `auth.json` 的 username，否则 `"default"`
+/// （与桌面端登出态共用同一份默认种子 → 双端同账号自然同种子）。
+pub fn totp_identity() -> String {
+    load_auth()
+        .ok()
+        .flatten()
+        .map(|a| a.username)
+        .unwrap_or_else(|| "default".to_string())
+}
+
 /// 写入凭据。Linux 上设 0600 权限（凭据保护）。
 pub fn save_auth(auth: &AuthFile) -> Result<()> {
     let path = auth_path()?;
@@ -136,14 +173,14 @@ mod tests {
             device_name: "my-laptop".to_string(),
             username: "alice".to_string(),
         };
-        assert_eq!(auth.tenant_host(), "my-laptop-alice.remo2ridge.duckdns.org");
+        assert_eq!(auth.tenant_host(), "my-laptop-alice.9527127.xyz");
         assert_eq!(
             auth.public_entry(),
-            "https://my-laptop-alice.remo2ridge.duckdns.org"
+            "https://my-laptop-alice.9527127.xyz"
         );
         assert_eq!(
             auth.signaling_ws_url(),
-            "wss://my-laptop-alice.remo2ridge.duckdns.org/ws?token=JWT123&role=host"
+            "wss://my-laptop-alice.9527127.xyz/ws?token=JWT123&role=host"
         );
 
         // 2) 设环境变量 → 覆盖域名。

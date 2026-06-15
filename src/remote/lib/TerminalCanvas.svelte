@@ -2,17 +2,15 @@
   import { onMount, onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import { TerminalController } from './terminalController';
-  import VirtualKeyboard from './VirtualKeyboard.svelte';
   import { anyMod, consumeMods } from './modState.svelte';
 
-  let { paneId, onStdin, onResize, showKeyboard = false, selectionMode = false, backendName = $bindable('Canvas2D') }: {
+  let { paneId, onStdin, onResize, onHostClipboard, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
-    showKeyboard?: boolean;
-    // §selection: when on, single-finger drag selects (Shell: kernel selection +
-    // copy pill; TUI: forwards mouse so the TUI runs its own selection). When
-    // off, single-finger drag scrolls and never selects (two-finger always scrolls).
+    /** Mirror a copied selection onto the desktop host's clipboard (so the host's
+     *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
+    onHostClipboard?: (text: string) => void;
     selectionMode?: boolean;
     backendName?: string;
   } = $props();
@@ -38,39 +36,27 @@
 
   const td = new TextDecoder();
 
-  // Keyboard offset (mobile): the canvas is pushed up by `keyboardOffset` — a
-  // DYNAMIC amount that lifts only as far as needed to keep the input cursor
-  // clear of the soft keyboard (full lift when the cursor sits at the bottom of
-  // the screen, none when it's already above the keyboard, partial in between).
-  // `keyboardHeight` is the full soft-keyboard height, used to dock the quick-key
-  // bar just above the soft keyboard regardless of the canvas's dynamic lift.
+  // Keyboard offset (mobile): when the system soft keyboard appears, the canvas
+  // is pushed up by exactly enough to seat the INPUT ROW just above the keyboard
+  // top — computed from the cursor's pixel position, NOT a blind full-keyboard
+  // shift (that over-shifted by the bottom bar's height, lifting the input line
+  // well above the keyboard). Computed once per show (not per keystroke) so there
+  // is no flicker while typing.
   let keyboardOffset = $state(0);
-  let keyboardHeight = $state(0);
-  const VK_BAR_HEIGHT = 96;    // approx quick-key bar height (2 rows + padding)
-  const KB_CURSOR_MARGIN = 12; // gap kept between the cursor bottom and the keyboard
 
-  // Touch state. Gesture model: two-finger pan = scroll; single-finger tap =
-  // focus (+ click in mouse-reporting apps); single-finger drag = selection
-  // (forwarded to the TUI as mouse events in mouse-reporting mode, local kernel
-  // selection otherwise).
+  // Touch state. Single-finger swipe = scroll (simulates mouse wheel).
+  // In TUI mode (mouse reporting), the scroll is forwarded to the app.
+  // Single-finger tap = focus (+ click-through in mouse-reporting apps).
   let touchStartY = 0;
   let touchStartX = 0;
   let touchScrollAccum = 0;
   let touchLastY = 0;
-  let isTwoFinger = false;
-  let twoFingerLastY = 0;
-  let singleDragging = false;   // selectionMode OFF: a single-finger scroll drag
   let touchStartTime = 0;
   const TOUCH_DRAG_THRESHOLD_PX = 8;
   const TOUCH_TAP_MAX_MS = 250;
 
-  // §selection drag state.
-  let selDragging = false;                 // a selection drag is in progress
-  let hasSelectionState = $state(false);    // drives the floating copy pill (Shell only)
-  let lastSelCell: { row: number; col: number } | null = null;
-  let edgeScrollTimer: ReturnType<typeof setInterval> | null = null;
-  let edgeScrollDir = 0;                    // -1 = up, +1 = down, 0 = none
-  const EDGE_ZONE_PX = 48;
+  let hasSelectionState = $state(false);    // drives the floating copy pill
+  let selDragging = false;                  // selection drag in progress
 
   onMount(async () => {
     if (!canvasEl || !containerEl) return;
@@ -114,10 +100,9 @@
     hiddenInput.style.height = `${Math.round(p.h)}px`;
   }
 
-  onDestroy(() => { stopEdgeScrollTimer(); ctrl?.destroy(); });
+  onDestroy(() => { ctrl?.destroy(); });
 
-  // §A raise the soft keyboard when the user opens the quick-key bar.
-  $effect(() => { if (showKeyboard) focusInput(); });
+
 
   let ro: ResizeObserver | undefined;
   onMount(() => {
@@ -134,7 +119,7 @@
   export function feed(data: string) {
     if (ctrl) ctrl.feed(new TextEncoder().encode(data));
   }
-  export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); scheduleKbRecompute(); }
+  export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); }
   export function applyDelta(bytes: Uint8Array) { ctrl?.applyDelta(bytes); }
   export function resizeKernel(rows: number, cols: number) {
     if (ctrl) {
@@ -154,11 +139,11 @@
    *  scrollback replay repaints a clean, isolated view. */
   export function resetForSwitch() { ctrl?.resetForSwitch(); }
 
-  // ── Virtual Keyboard ──
-  function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
+  // ── Virtual Keyboard (called from MainApp header) ──
+  export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
     if (!paneId || !ctrl) return;
     const bytes = ctrl.encodeKey(key, ctrlKey, alt, shift, false);
-    if (bytes.length > 0) { onStdin(new TextDecoder().decode(bytes)); return; }
+    if (bytes.length > 0) { onStdin(td.decode(bytes)); return; }
     const map: Record<string, string> = { Tab: '\t', Escape: '\x1b', Enter: '\r', Backspace: '\x7f', Delete: '\x1b[3~', Home: '\x1b[H', End: '\x1b[F', PageUp: '\x1b[5~', PageDown: '\x1b[6~', Insert: '\x1b[2~' };
     if (map[key]) { onStdin(shift && key === 'Tab' ? '\x1b[Z' : map[key]); return; }
     if (key.startsWith('Arrow')) {
@@ -183,133 +168,103 @@
     }
   }
 
-  /** Centroid Y of a two-finger touch, used for pan-scroll tracking. */
-  function twoFingerCentroidY(e: TouchEvent): number {
-    return (e.touches[0].clientY + e.touches[1].clientY) / 2;
+  /** Write `text` to the control device's clipboard, with a legacy
+   *  `execCommand('copy')` fallback for mobile browsers that reject the async
+   *  Clipboard API (older WebViews / non-secure quirks). */
+  async function writeClipboard(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch { /* fall through to the legacy textarea path */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      // finally so a throwing execCommand can't leak the textarea into the DOM.
+      try { document.execCommand('copy'); }
+      finally { document.body.removeChild(ta); }
+    } catch { /* clipboard truly unavailable — nothing more we can do */ }
   }
 
-  // ── Selection (explicit selectionMode) ──
-
-  /** While selecting near the top/bottom edge, keep scrolling so the selection
-   *  can extend past the visible area; re-extend to the last finger cell each tick. */
-  function startEdgeScroll(dir: number) {
-    if (edgeScrollDir === dir) return;
-    edgeScrollDir = dir;
-    if (edgeScrollTimer) { clearInterval(edgeScrollTimer); edgeScrollTimer = null; }
-    if (dir === 0) return;
-    edgeScrollTimer = setInterval(() => {
-      if (!ctrl || edgeScrollDir === 0) return;
-      if (edgeScrollDir < 0) ctrl.scrollUp(1); else ctrl.scrollDown(1);
-      if (lastSelCell && !ctrl.isMouseReporting()) ctrl.extendSelection(lastSelCell.row, lastSelCell.col);
-    }, 60);
-  }
-  function stopEdgeScrollTimer() {
-    if (edgeScrollTimer) { clearInterval(edgeScrollTimer); edgeScrollTimer = null; }
-    edgeScrollDir = 0;
-  }
-
-  /** Abort an in-progress selection drag (e.g. a second finger landed → scroll). */
-  function cancelSelectionDrag() {
-    selDragging = false;
-    stopEdgeScrollTimer();
-    lastSelCell = null;
-    if (ctrl && !ctrl.isMouseReporting()) { ctrl.clearSelection(); hasSelectionState = false; }
-  }
-
-  /** Copy the current (Shell) selection to the clipboard and clear it. */
-  async function copyAndClear() {
+  /** Copy the selection to the control device's clipboard, then clear it.
+   *  §copy-no-interrupt: copying must NOT send `\x03` to the PTY — the old
+   *  unconditional ^C cancelled the shell line / SIGINT'd the foreground process
+   *  every time you copied. Copy is a read-only clipboard action now. */
+  function copyAndClear() {
     if (!ctrl) return;
-    const text = ctrl.getSelectionText();
-    if (text) { try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ } }
+    try {
+      const text = ctrl.getSelectionText();
+      if (text) {
+        void writeClipboard(text);   // control device (this phone/browser)
+        onHostClipboard?.(text);     // + desktop host, for its native Ctrl+V paste
+      }
+    } catch { /* kernel may have no selection */ }
     ctrl.clearSelection();
     hasSelectionState = false;
   }
 
+  /** Paste arbitrary text (the control device's clipboard) into the terminal as
+   *  a bracketed paste. Driven by the bottom-bar paste button in MainApp — that
+   *  onclick is the user gesture the Clipboard API requires, and the LAN/cloud
+   *  link is a secure context, so the read in MainApp is permitted. */
+  export function pasteText(text: string) {
+    sendPaste(text);
+  }
+
   function handleTouchStart(e: TouchEvent) {
     if (!ctrl) return;
-    if (e.touches.length >= 2) {
-      // Two fingers → pan-scroll ONLY. Cancel any in-progress single-finger
-      // selection so a finger-down-then-second-finger never leaves a stray
-      // selection (§C: two-finger must never select).
-      if (selDragging) cancelSelectionDrag();
-      isTwoFinger = true;
-      singleDragging = false;
-      twoFingerLastY = twoFingerCentroidY(e);
-      touchScrollAccum = 0;
-      e.preventDefault();
-      return;
-    }
     if (e.touches.length !== 1) return;
-    touchStartY = e.touches[0].clientY;
-    touchStartX = e.touches[0].clientX;
-    touchLastY = e.touches[0].clientY;
+    const t = e.touches[0];
+    touchStartY = t.clientY;
+    touchStartX = t.clientX;
+    touchLastY = t.clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
-    singleDragging = false;
-    selDragging = false;
+    // §select-as-mouse: the select toggle SIMULATES A MOUSE — it just emits mouse
+    // signals and lets the receiving terminal decide what to do (parity with the
+    // desktop mouse path, handleMouseDown). When the app captures the mouse
+    // (mouse-reporting TUI: vim/htop/tmux…) we forward a press and the TUI owns the
+    // gesture/selection. ONLY a plain shell — which doesn't accept mouse reporting
+    // — falls back to LOCAL text selection + copy pill.
+    if (selectionMode) {
+      const cell = ctrl.clientToCell(t.clientX, t.clientY);
+      if (cell) {
+        if (ctrl.isMouseReporting()) {
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false); // press
+          if (bytes.length > 0) onStdin(td.decode(bytes));
+        } else {
+          ctrl.startSelection(cell.row, cell.col);
+        }
+      }
+    }
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (!ctrl) return;
-    // Two-finger pan = scroll (wheel for mouse-reporting apps, scrollback else).
-    if (isTwoFinger && e.touches.length === 2) {
-      e.preventDefault();
-      const y = twoFingerCentroidY(e);
-      touchScrollAccum += twoFingerLastY - y; // fingers up → scroll content down
-      twoFingerLastY = y;
-      if (Math.abs(touchScrollAccum) > 24) {
-        touchWheel(touchScrollAccum, e.touches[0].clientX, e.touches[0].clientY);
-        touchScrollAccum = 0;
-      }
-      return;
-    }
-    if (e.touches.length !== 1 || isTwoFinger) return;
+    if (!ctrl || e.touches.length !== 1) return;
     const t = e.touches[0];
-    const cell = ctrl.clientToCell(t.clientX, t.clientY);
-    if (!cell) return;
     const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
-
+    if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
+    e.preventDefault();
     if (selectionMode) {
-      // §D Selection drag: Shell → kernel selection (+ copy pill); TUI → forward
-      // mouse press/motion so the TUI program runs its own selection.
-      if (!selDragging) {
-        if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
-        selDragging = true;
-        const start = ctrl.clientToCell(touchStartX, touchStartY) ?? cell;
+      selDragging = true;
+      const cell = ctrl.clientToCell(t.clientX, t.clientY);
+      // §select-as-mouse: mouse-reporting TUI → motion report (the TUI extends its
+      // own selection); plain shell → local text selection.
+      if (cell) {
         if (ctrl.isMouseReporting()) {
-          const b = ctrl.encodeMouse(start.row, start.col, 0, 0, false, false, false);
-          if (b.length > 0) onStdin(td.decode(b));
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // drag
+          if (bytes.length > 0) onStdin(td.decode(bytes));
         } else {
-          ctrl.startSelection(start.row, start.col);
+          ctrl.extendSelection(cell.row, cell.col);
         }
       }
-      e.preventDefault();
-      lastSelCell = cell;
-      if (ctrl.isMouseReporting()) {
-        const b = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // motion w/ button
-        if (b.length > 0) onStdin(td.decode(b));
-      } else {
-        ctrl.extendSelection(cell.row, cell.col);
-        hasSelectionState = true;
-      }
-      // §D Edge auto-scroll while selecting.
-      const rect = canvasEl?.getBoundingClientRect();
-      if (rect) {
-        if (t.clientY < rect.top + EDGE_ZONE_PX) startEdgeScroll(-1);
-        else if (t.clientY > rect.bottom - EDGE_ZONE_PX) startEdgeScroll(1);
-        else stopEdgeScrollTimer();
-      }
       return;
     }
-
-    // §C selectionMode OFF: single-finger drag = scroll, never select.
-    if (!singleDragging) {
-      if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
-      singleDragging = true;
-      touchScrollAccum = 0;
-      touchLastY = t.clientY;
-    }
-    e.preventDefault();
     touchScrollAccum += touchLastY - t.clientY;
     touchLastY = t.clientY;
     if (Math.abs(touchScrollAccum) > 24) {
@@ -319,54 +274,59 @@
   }
 
   function handleTouchEnd(e: TouchEvent) {
-    if (isTwoFinger) { isTwoFinger = false; touchScrollAccum = 0; return; }
+    if (e.changedTouches.length !== 1) return;
     const touch = e.changedTouches[0];
-    // §D End a selection drag: TUI → mouse release; Shell → finalize selection
-    // (the copy pill then offers copy). Edge auto-scroll stops.
-    if (selDragging) {
+    if (!ctrl) return;
+    if (selectionMode) {
+      const wasDragging = selDragging;
       selDragging = false;
-      stopEdgeScrollTimer();
-      lastSelCell = null;
-      const cell = touch ? ctrl?.clientToCell(touch.clientX, touch.clientY) : null;
-      if (ctrl?.isMouseReporting()) {
+      const cell = touch ? ctrl.clientToCell(touch.clientX, touch.clientY) : null;
+      if (ctrl.isMouseReporting()) {
+        // §select-as-mouse: complete the simulated gesture with a release — a tap
+        // becomes a click, a drag becomes a drag-end. The TUI handles the rest.
         if (cell) {
-          const b = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false); // release
-          if (b.length > 0) onStdin(td.decode(b));
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false); // release
+          if (bytes.length > 0) onStdin(td.decode(bytes));
         }
+      } else if (wasDragging) {
+        // Plain shell: finish the local text selection + surface the copy pill.
+        ctrl.endSelection();
+        hasSelectionState = !!ctrl.hasSelection();
       } else {
-        ctrl?.endSelection();
-        hasSelectionState = !!ctrl?.hasSelection();
-      }
-      return;
-    }
-    // §C A single-finger scroll drag (selectionMode off) — just end it.
-    if (singleDragging) { singleDragging = false; return; }
-    // Tap.
-    const elapsed = Date.now() - touchStartTime;
-    if (elapsed < TOUCH_TAP_MAX_MS && ctrl) {
-      // §D Light tap clears an existing selection (and re-raises the keyboard).
-      if (hasSelectionState || ctrl.hasSelection()) {
+        // A tap in shell selection mode clears any existing selection.
         ctrl.clearSelection();
         hasSelectionState = false;
-        focusInput();
-        return;
       }
-      // Otherwise: focus (raise the soft keyboard) + click-through in TUI apps.
-      if (touch) {
-        const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
-        if (cell && ctrl.isMouseReporting()) {
-          const press = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
-          if (press.length > 0) onStdin(td.decode(press));
-          requestAnimationFrame(() => {
-            if (ctrl) {
-              const rel = ctrl.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
-              if (rel.length > 0) onStdin(td.decode(rel));
-            }
-          });
-        }
-      }
-      focusInput();
+      // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises the
+      // soft keyboard so you can type without first leaving select mode. Drags are
+      // the selection gesture itself, so they don't pop the keyboard.
+      if (!wasDragging) focusInput();
+      return;
     }
+    const elapsed = Date.now() - touchStartTime;
+    if (elapsed >= TOUCH_TAP_MAX_MS) return;
+    // Light tap clears an existing selection (and re-raises the keyboard).
+    if (hasSelectionState || ctrl.hasSelection()) {
+      ctrl.clearSelection();
+      hasSelectionState = false;
+      focusInput();
+      return;
+    }
+    // Otherwise: focus (raise the soft keyboard) + click-through in TUI apps.
+    if (touch) {
+      const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
+      if (cell && ctrl.isMouseReporting()) {
+        const press = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
+        if (press.length > 0) onStdin(td.decode(press));
+        requestAnimationFrame(() => {
+          if (ctrl) {
+            const rel = ctrl.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
+            if (rel.length > 0) onStdin(td.decode(rel));
+          }
+        });
+      }
+    }
+    focusInput();
   }
 
   // ── Composition (IME) + plain text input, both via the hidden textarea ──
@@ -550,7 +510,8 @@
     if (!ctrl) return;
     const text = ctrl.getSelectionText();
     if (!text) return;
-    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
+    await writeClipboard(text);    // control device
+    onHostClipboard?.(text);       // + desktop host (native Ctrl+V paste)
     ctrl.clearSelection();
   }
 
@@ -653,57 +614,50 @@
   // rect + current DPR and, when the grid changed, claims the new size on the
   // host (full reflow). It's debounced + idempotent, so keyboard show/hide that
   // doesn't change the grid is a cheap no-op.
-  // ── Dynamic keyboard avoidance ──
-  // Lift the canvas only as far as needed to keep the input cursor clear of the
-  // soft keyboard: full lift when the cursor sits at the bottom of the screen,
-  // none when it's already above the keyboard, partial in between.
-  function computeCanvasOffset(kbHeight: number): number {
-    if (kbHeight <= 0) return 0;
-    const vv = window.visualViewport;
-    if (!vv || !ctrl || !canvasEl) return kbHeight;
-    const cur = ctrl.getCursorPixel();
-    if (!cur) return kbHeight; // cursor position unknown → safe full lift
-    // Canvas natural top in viewport coords (undo the current upward transform).
-    const rect = canvasEl.getBoundingClientRect();
-    const naturalTop = rect.top + keyboardOffset;
-    const cursorBottom = naturalTop + cur.y + cur.h;
-    // Obstruction top = soft-keyboard top (vv.height), minus the quick-key bar
-    // height when it's shown (the bar sits above the soft keyboard).
-    const obstructionTop = (vv.height || 0) - (showKeyboard ? VK_BAR_HEIGHT : 0);
-    const need = cursorBottom + KB_CURSOR_MARGIN - obstructionTop;
-    return Math.max(0, Math.min(kbHeight, need));
-  }
+  // Small gap so the input line isn't flush against the keyboard's top edge.
+  const KB_GAP_PX = 8;
 
-  function updateKeyboardMetrics() {
+  /** Offset (CSS px) to translate the canvas up so the cursor's INPUT ROW sits
+   *  just above the keyboard. Anchors the cursor cell's BOTTOM at (keyboard top −
+   *  gap); falls back to the canvas bottom row when the cursor pixel is
+   *  unavailable. Returns 0 when the keyboard is hidden. */
+  function computeKeyboardOffset(): number {
     const vv = window.visualViewport;
-    if (!vv) return;
+    if (!vv || !canvasEl) return 0;
     const kh = Math.max(0, window.innerHeight - (vv.height || 0));
-    const wasUp = keyboardHeight > 0;
-    keyboardHeight = kh;
-    keyboardOffset = computeCanvasOffset(kh);
-    // §B keyboard just raised → snap to the live grid so the prompt is visible.
-    if (kh > 0 && !wasUp) ctrl?.scrollToBottom();
+    if (kh <= 0) return 0; // keyboard hidden → no shift
+    const rect = canvasEl.getBoundingClientRect();
+    // Undo the transform currently applied (translateY(-keyboardOffset)) to get
+    // the canvas's natural, offset-free top in viewport coordinates.
+    const naturalTop = rect.top + keyboardOffset;
+    const cur = ctrl?.getCursorPixel();
+    // Cursor cell bottom relative to canvas top (else the canvas's own bottom).
+    const cursorBottom = cur ? cur.y + cur.h : rect.height;
+    const cursorScreenY = naturalTop + cursorBottom;
+    const keyboardTopY = (vv.offsetTop || 0) + vv.height;
+    return Math.max(0, Math.round(cursorScreenY - (keyboardTopY - KB_GAP_PX)));
   }
 
-  // Recompute the dynamic offset when the cursor likely moved (input / output)
-  // while the keyboard is up — visualViewport 'resize' only fires on show/hide.
-  let _kbRaf = 0;
-  function scheduleKbRecompute() {
-    if (keyboardHeight <= 0 || _kbRaf) return;
-    _kbRaf = requestAnimationFrame(() => {
-      _kbRaf = 0;
-      keyboardOffset = computeCanvasOffset(keyboardHeight);
-    });
-  }
-
+  // ── Cursor-anchored keyboard offset ──
+  // When the system keyboard appears, push the canvas up just enough to keep the
+  // input row visible above it. Computed once on show (not per keystroke → no
+  // flicker). DO NOT call requestResize() here — the transform moves the canvas
+  // without changing the terminal grid; resize only on real viewport/orientation
+  // change.
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     function onViewportResize() {
-      updateKeyboardMetrics();
-      ctrl?.requestResize();
+      if (!vv) return;
+      const kh = Math.max(0, window.innerHeight - (vv.height || 0));
+      const wasUp = keyboardOffset > 0;
+      // On first show, snap the terminal to the prompt so the cursor we anchor on
+      // is the live input row — THEN measure the offset against it.
+      if (kh > 0 && !wasUp) ctrl?.scrollToBottom();
+      keyboardOffset = computeKeyboardOffset();
     }
     vv.addEventListener('resize', onViewportResize);
+    // Fire once to capture any already-open keyboard.
     onViewportResize();
     return () => vv.removeEventListener('resize', onViewportResize);
   });
@@ -768,10 +722,6 @@
     >{$t('mobile.copy')}</button>
   {/if}
 </div>
-
-{#if showKeyboard}
-  <VirtualKeyboard keyboardOffset={keyboardHeight} onKey={handleVirtualKey} onArm={focusInput} />
-{/if}
 
 <style>
   .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation;transition:transform .2s ease}

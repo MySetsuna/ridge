@@ -27,9 +27,9 @@ describe('isInsecureCloudDomain', () => {
   });
 
   it('treats real public domains as secure', () => {
-    expect(isInsecureCloudDomain('remo2ridge.duckdns.org')).toBe(false);
-    expect(isInsecureCloudDomain('mylaptop-alice.remo2ridge.duckdns.org')).toBe(false);
     expect(isInsecureCloudDomain('9527127.xyz')).toBe(false);
+    expect(isInsecureCloudDomain('mylaptop-alice.9527127.xyz')).toBe(false);
+    expect(isInsecureCloudDomain('example.com')).toBe(false);
     // 非回环 IP 与「localhost 仅作为子串」不应误判为回环。
     expect(isInsecureCloudDomain('192.168.0.10:5050')).toBe(false);
     expect(isInsecureCloudDomain('notlocalhost.example.com')).toBe(false);
@@ -38,15 +38,26 @@ describe('isInsecureCloudDomain', () => {
 });
 
 describe('cloudHttpScheme / cloudWsScheme', () => {
-  it('returns plaintext schemes for loopback bases', () => {
-    expect(cloudHttpScheme('localhost:5050')).toBe('http');
-    expect(cloudWsScheme('localhost:5050')).toBe('ws');
-    expect(cloudWsScheme('mylaptop-alice.localhost:5050')).toBe('ws');
+  // 前提：RIDGE_CLOUD_DEV_PLAINTEXT 未注入（或注入空串）时 DEV_PLAINTEXT=false，下方“默认”用例据此走 TLS。
+  it('returns TLS schemes for loopback bases by default (dev TLS)', () => {
+    expect(cloudHttpScheme('localhost:5050')).toBe('https');
+    expect(cloudWsScheme('localhost:5050')).toBe('wss');
+    expect(cloudWsScheme('mylaptop-alice.localhost:5050')).toBe('wss');
   });
 
   it('returns TLS schemes for public bases', () => {
-    expect(cloudHttpScheme('remo2ridge.duckdns.org')).toBe('https');
-    expect(cloudWsScheme('remo2ridge.duckdns.org')).toBe('wss');
-    expect(cloudWsScheme('mylaptop-alice.remo2ridge.duckdns.org')).toBe('wss');
+    expect(cloudHttpScheme('9527127.xyz')).toBe('https');
+    expect(cloudWsScheme('9527127.xyz')).toBe('wss');
+    expect(cloudWsScheme('mylaptop-alice.9527127.xyz')).toBe('wss');
+  });
+
+  it('downgrades loopback bases to plaintext when plaintext flag set (escape hatch)', () => {
+    expect(cloudHttpScheme('localhost:5050', true)).toBe('http');
+    expect(cloudWsScheme('localhost:5050', true)).toBe('ws');
+  });
+
+  it('keeps public bases on TLS even with plaintext flag (never downgrade prod)', () => {
+    expect(cloudHttpScheme('9527127.xyz', true)).toBe('https');
+    expect(cloudWsScheme('9527127.xyz', true)).toBe('wss');
   });
 });

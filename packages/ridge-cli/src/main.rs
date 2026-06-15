@@ -20,11 +20,13 @@ mod batching;
 mod config;
 mod core_host;
 mod daemon;
+mod daemon_ctl;
 mod device_flow;
 mod e2ee;
 mod envelope;
 mod fs_reuse;
 mod ice;
+mod key_binding;
 mod login_flow;
 mod mux;
 mod protocol;
@@ -64,7 +66,8 @@ enum Command {
     /// 带 `--daemon` 时激活后直接进入守护。
     Login(LoginArgs),
 
-    /// 远程控制：配对（--enable）或后台守护（--daemon）。
+    /// 用已激活的设备凭据（`~/.config/ridge/auth.json`）直接进入守护：连云端 relay、
+    /// 等 controller 接入并桥接 PTY。需先经 `rdg login` 激活（本命令不再交互登录）。
     Remote(RemoteArgs),
 
     /// 作为**控制端**连接桌面 LAN host（E4）：WS + 自签 TLS，订阅 pane 后
@@ -109,15 +112,12 @@ struct LoginArgs {
 
 #[derive(Args)]
 struct RemoteArgs {
-    /// 启动设备码配对流程，绑定后把 device JWT 写入 ~/.config/ridge/auth.json。
-    #[arg(long)]
-    enable: bool,
-
-    /// 以守护进程运行：连接信令、等待 controller、桥接本地 shell。
+    /// 后台守护运行（`remote` 本就以守护为唯一用途；保留此 flag 仅为与文档
+    /// `rdg remote --daemon` 用法一致，传不传都进守护）。
     #[arg(long)]
     daemon: bool,
 
-    /// 指定要拉起的 shell（默认按平台探测：$SHELL→bash→sh）。
+    /// 指定要拉起的 shell（默认按平台探测）。
     #[arg(long)]
     shell: Option<String>,
 
@@ -125,9 +125,7 @@ struct RemoteArgs {
     #[arg(long)]
     cwd: Option<String>,
 
-    /// fs 服务根沙箱（D-GM-9）：限定 controller 可读的目录子树，避免公网 host
-    /// 暴露 ~/.ssh、/etc/passwd 等。缺省回退 `--cwd` → 进程当前目录；显式设为
-    /// `/` 可放开为整机（不推荐）。
+    /// fs 服务根沙箱。
     #[arg(long, env = "RIDGE_REMOTE_ROOT")]
     root: Option<String>,
 }
@@ -182,7 +180,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Command::Tui(args)) => tui::run_local(args.shell, args.cwd).await,
         Some(Command::Login(args)) => run_login(args).await,
-        Some(Command::Remote(args)) => run_remote(args).await,
+        // 已激活则直接进守护（不再交互登录）；凭据缺失时 daemon::run 内部会提示先 login。
+        Some(Command::Remote(args)) => daemon::run(args.shell, args.cwd, args.root).await,
         Some(Command::Connect(args)) => {
             if args.probe {
                 tui::run_lan_probe(args.host, args.code, args.token, args.probe_seconds).await
@@ -191,13 +190,14 @@ async fn main() -> Result<()> {
             }
         }
         Some(Command::Tmux(args)) => run_tmux(args).await,
-        // 无子命令：交互式终端则进 TUI；非交互（管道/systemd）则打印用法，避免乱跑。
+        // 无子命令：进入仪表盘（daemon status + 操作菜单）。
+        // 通过菜单的 "Local shell session" 或子命令 `rdg tui` 进入 passthrough TUI。
         None => {
             if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-                tui::run_local(None, None).await
+                tui::dashboard::run().await
             } else {
                 eprintln!(
-                    "用法：rdg [tui|login|remote|connect|tmux]。无子命令时在交互终端进入 TUI。\n详见 `rdg --help`。"
+                    "用法：rdg [tui|login|remote|connect|tmux]。无子命令时在交互终端进入仪表盘。\n详见 `rdg --help`。"
                 );
                 Ok(())
             }
@@ -260,28 +260,6 @@ async fn run_login(args: LoginArgs) -> Result<()> {
         tracing::info!(target: "ridge_cli", device = %auth.device_name, "activation complete; entering daemon");
         return daemon::run(args.shell, args.cwd, args.root).await;
     }
-    Ok(())
-}
-
-async fn run_remote(args: RemoteArgs) -> Result<()> {
-    if args.enable {
-        let client = reqwest::Client::builder().build()?;
-        let auth = device_flow::run_enable(&client).await?;
-        // --enable 同时带 --daemon 时，配对成功后直接进入守护。
-        if args.daemon {
-            tracing::info!(target: "ridge_cli", device = %auth.device_name, "pairing complete; entering daemon");
-            return daemon::run(args.shell, args.cwd, args.root).await;
-        }
-        eprintln!("配对完成。运行 `rdg remote --daemon` 开始守护。");
-        return Ok(());
-    }
-
-    if args.daemon {
-        return daemon::run(args.shell, args.cwd, args.root).await;
-    }
-
-    // 既不 --enable 也不 --daemon：打印用法。
-    eprintln!("请指定 --enable（配对）或 --daemon（守护）。详见 `rdg remote --help`。");
     Ok(())
 }
 
