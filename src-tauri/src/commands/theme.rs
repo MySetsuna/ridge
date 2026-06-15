@@ -116,6 +116,30 @@ pub fn set_active_theme(theme_id: String) -> Result<(), String> {
     ridge_core::commands::theme::set_active_theme(&theme_id).map_err(|e| e.to_command_string())
 }
 
+/// 保存（新增/编辑）一个自定义主题，返回最终落盘的 entry。
+#[tauri::command]
+pub fn save_user_theme(entry: ThemeEntry) -> Result<ThemeEntry, String> {
+    ridge_core::commands::theme::save_user_theme(entry).map_err(|e| e.to_command_string())
+}
+
+/// 删除一个自定义主题及其背景图。
+#[tauri::command]
+pub fn delete_user_theme(id: String) -> Result<(), String> {
+    ridge_core::commands::theme::delete_user_theme(&id).map_err(|e| e.to_command_string())
+}
+
+/// 写入背景图字节，返回文件名（相对 theme-assets/）。
+#[tauri::command]
+pub fn save_theme_bg_image(bytes: Vec<u8>, ext: String) -> Result<String, String> {
+    ridge_core::commands::theme::save_theme_bg_image(bytes, &ext).map_err(|e| e.to_command_string())
+}
+
+/// 返回 theme-assets 目录绝对路径（前端 convertFileSrc 用）。
+#[tauri::command]
+pub fn get_theme_assets_dir() -> String {
+    ridge_core::commands::theme::get_theme_assets_dir()
+}
+
 /// AppHandle-free resolution of the desktop's currently active theme, used by
 /// the remote server to push the live theme to browser clients. Delegates to
 /// the core's handle-free resolver.
@@ -133,7 +157,10 @@ pub fn get_theme_data(app: AppHandle) -> ThemeFile {
             Ok(content) => match serde_json::from_str::<ThemeFile>(&content) {
                 Ok(tf) => {
                     if tf.version >= 1 && !tf.themes.is_empty() {
-                        return tf;
+                        let user = ridge_core::commands::theme::read_user_themes(
+                            &ridge_core::commands::theme::app_data_dir(),
+                        );
+                        return ridge_core::commands::theme::merge_user_theme_list(tf, user);
                     }
                     tracing::warn!(
                         target: "ridge::theme",
