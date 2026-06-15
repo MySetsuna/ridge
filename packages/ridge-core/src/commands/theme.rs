@@ -291,10 +291,11 @@ pub fn get_theme_assets_dir() -> String {
 
 /// 把用户主题追加到内置目录之后；id 撞车时丢弃用户那条（内置优先）。纯函数，便于单测。
 pub fn merge_user_theme_list(mut base: ThemeFile, user: Vec<ThemeEntry>) -> ThemeFile {
-    let have: std::collections::HashSet<String> =
+    let mut have: std::collections::HashSet<String> =
         base.themes.iter().map(|t| t.id.clone()).collect();
     for u in user {
-        if !have.contains(&u.id) {
+        // insert 返回 false 表示该 id 已存在（内置或前面的用户条目）→ 跳过
+        if have.insert(u.id.clone()) {
             base.themes.push(u);
         }
     }
@@ -352,6 +353,7 @@ pub fn active_theme_entry() -> Option<ThemeEntry> {
     let path = find_theme_path()?;
     let content = std::fs::read_to_string(&path).ok()?;
     let tf: ThemeFile = serde_json::from_str(&content).ok()?;
+    let tf = merge_user_theme_list(tf, read_user_themes(&dir));
     let mut themes = tf.themes;
     if themes.is_empty() {
         return None;
@@ -381,6 +383,7 @@ mod tests {
 
     #[test]
     fn empty_catalog_has_version_one_and_no_themes() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // With no `ridge.theme` discoverable in the test exe's layout, the
         // handler returns the empty catalog rather than erroring.
         let tf = get_theme_data();
@@ -453,6 +456,7 @@ mod tests {
 
     #[test]
     fn active_theme_entry_gracefully_handles_found_theme() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // During `cargo test` the binary lives under target/debug/ and
         // find_theme_path() walks ancestors until it hits the repo-root
         // ridge.theme (which exists). This test just validates the function
