@@ -6,17 +6,18 @@
 <script lang="ts">
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages } from 'lucide-svelte';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages, Pencil, Trash2, Plus } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
     setTheme,
   } from '$lib/stores/settings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
-  import { themeData, getThemeIds, getThemeLabels } from '$lib/stores/themes';
+  import { themeData, getThemeIds, getThemeLabels, isCustomTheme, deleteCustomTheme } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
   import { t } from '$lib/i18n';
   import LangSwitch from './LangSwitch.svelte';
+  import CustomThemeModal from './CustomThemeModal.svelte';
   interface Props {
     open: boolean;
     onClose: () => void;
@@ -26,6 +27,18 @@
 
   type SectionId = 'appearance' | 'language' | 'font' | 'terminal' | 'extensions' | 'debug';
   let activeSection = $state<SectionId>('appearance');
+
+  let customModalOpen = $state(false);
+  let customEditingId = $state<string | null>(null);
+
+  function openNewCustomTheme(): void { customEditingId = null; customModalOpen = true; }
+  function openEditCustomTheme(id: string): void { customEditingId = id; customModalOpen = true; }
+  async function removeCustomTheme(id: string): Promise<void> {
+    if (!confirm($t('settings.customThemeDeleteConfirm'))) return;
+    const wasActive = $settingsStore.theme === id;
+    await deleteCustomTheme(id);
+    if (wasActive) setTheme('endless-dark');
+  }
 
   // T14：可用 shell 列表 —— 第一次打开 settings 面板时拉一次。
   interface ShellInfo {
@@ -161,28 +174,58 @@
                 {#each themeIds as id (id)}
                   {@const p = themePreview[id]}
                   {@const selected = $settingsStore.theme === id}
-                  <button
-                    type="button"
-                    class="text-left rounded-lg border-2 transition-all overflow-hidden {selected
-                      ? 'border-[var(--rg-accent)] shadow-lg shadow-[var(--rg-accent-glow)]'
-                      : 'border-[var(--rg-border)] hover:border-[var(--rg-border-bright)]'}"
-                    onclick={() => setTheme(id)}
-                  >
-                    <div class="h-16 flex items-stretch" style="background: {p.bg};">
-                      <div class="flex-1" style="background: {p.surface}; border-right: 1px solid rgba(0,0,0,0.1);"></div>
-                      <div class="w-1/3 flex flex-col justify-end p-1.5 gap-1">
-                        <div class="h-1.5 rounded-full" style="background: {p.accent};"></div>
-                        <div class="h-1.5 rounded-full opacity-50" style="background: {p.fg};"></div>
+                  <div class="relative group">
+                    <button
+                      type="button"
+                      class="w-full text-left rounded-lg border-2 transition-all overflow-hidden {selected
+                        ? 'border-[var(--rg-accent)] shadow-lg shadow-[var(--rg-accent-glow)]'
+                        : 'border-[var(--rg-border)] hover:border-[var(--rg-border-bright)]'}"
+                      onclick={() => setTheme(id)}
+                    >
+                      <div class="h-16 flex items-stretch" style="background: {p.bg};">
+                        <div class="flex-1" style="background: {p.surface}; border-right: 1px solid rgba(0,0,0,0.1);"></div>
+                        <div class="w-1/3 flex flex-col justify-end p-1.5 gap-1">
+                          <div class="h-1.5 rounded-full" style="background: {p.accent};"></div>
+                          <div class="h-1.5 rounded-full opacity-50" style="background: {p.fg};"></div>
+                        </div>
                       </div>
-                    </div>
-                    <div class="px-3 py-2 bg-[var(--rg-surface)]/60 flex items-center justify-between">
-                      <span class="text-[12px] font-medium text-[var(--rg-fg)]">{themeLabels[id]}</span>
-                      {#if selected}
-                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/20 text-[var(--rg-accent)] font-mono uppercase">使用中</span>
-                      {/if}
-                    </div>
-                  </button>
+                      <div class="px-3 py-2 bg-[var(--rg-surface)]/60 flex items-center justify-between">
+                        <span class="text-[12px] font-medium text-[var(--rg-fg)]">{themeLabels[id]}</span>
+                        {#if selected}
+                          <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/20 text-[var(--rg-accent)] font-mono uppercase">{$t('settings.inUse')}</span>
+                        {/if}
+                      </div>
+                    </button>
+                    {#if isCustomTheme(id)}
+                      <div class="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          class="p-1 rounded bg-[var(--rg-surface)]/80 hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors"
+                          title={$t('settings.customThemeEdit')}
+                          onclick={() => openEditCustomTheme(id)}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          class="p-1 rounded bg-[var(--rg-surface)]/80 hover:bg-red-500/20 text-[var(--rg-fg-muted)] hover:text-red-400 transition-colors"
+                          title={$t('settings.customThemeDelete')}
+                          onclick={() => removeCustomTheme(id)}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    {/if}
+                  </div>
                 {/each}
+                <button
+                  type="button"
+                  class="text-left rounded-lg border-2 border-dashed border-[var(--rg-border)] hover:border-[var(--rg-accent)] transition-all overflow-hidden flex flex-col items-center justify-center gap-1.5 h-full min-h-[96px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-accent)]"
+                  onclick={openNewCustomTheme}
+                >
+                  <Plus size={18} />
+                  <span class="text-[11px]">{$t('settings.customThemeCard')}</span>
+                </button>
               </div>
             </div>
 
@@ -416,4 +459,5 @@
       </section>
     </div>
   </div>
+  <CustomThemeModal open={customModalOpen} editingId={customEditingId} onClose={() => (customModalOpen = false)} />
 {/if}

@@ -14,7 +14,8 @@ const zh: Dict = {
     close: '关闭',
     copy: '复制',
     copied: '已复制',
-    browse: '浏览'
+    browse: '浏览',
+    cancel: '取消'
   },
   lang: {
     label: '语言',
@@ -175,6 +176,10 @@ const zh: Dict = {
     close: '关闭',
     themeTitle: '主题',
     themeDesc: '选择整体配色方案。立即生效，自动保存。',
+    customThemeCard: '自定义主题',
+    customThemeEdit: '编辑',
+    customThemeDelete: '删除',
+    customThemeDeleteConfirm: '确定删除这个自定义主题吗？',
     inUse: '使用中',
     termFontSize: '终端字号',
     termFontSizeDesc: '8 – 32 px。也可在终端内 Ctrl + + / Ctrl + - 调整。',
@@ -206,6 +211,28 @@ const zh: Dict = {
     debugToolsDesc: '打开 Chromium DevTools 检查应用布局、网络请求和终端渲染状态。',
     openDevtools: '打开 DevTools'
   },
+  customTheme: {
+    title: '自定义主题',
+    newTitle: '新建自定义主题',
+    editTitle: '编辑自定义主题',
+    name: '主题名称',
+    namePlaceholder: '给你的主题起个名字',
+    type: '类型',
+    dark: '深色',
+    light: '浅色',
+    basedOn: '基于',
+    bgImage: '终端背景图',
+    chooseImage: '选择图片…',
+    removeImage: '移除',
+    bgOpacity: '背景图透明度',
+    coreColors: '核心配色',
+    advanced: '进阶（ANSI 终端色 / 启动动画色）',
+    ansiColors: 'ANSI 终端色',
+    loaderColors: '启动动画色',
+    preview: '预览',
+    save: '保存',
+    saving: '保存中…'
+  },
   errors: {
     UNAUTHORIZED: '账号或密码错误',
     FORBIDDEN: '没有权限',
@@ -234,7 +261,8 @@ const en: Dict = {
     close: 'Close',
     copy: 'Copy',
     copied: 'Copied',
-    browse: 'Browse'
+    browse: 'Browse',
+    cancel: 'Cancel'
   },
   lang: {
     label: 'Language',
@@ -395,6 +423,10 @@ const en: Dict = {
     close: 'Close',
     themeTitle: 'Theme',
     themeDesc: 'Choose the overall color scheme. Applies instantly, saved automatically.',
+    customThemeCard: 'Custom Theme',
+    customThemeEdit: 'Edit',
+    customThemeDelete: 'Delete',
+    customThemeDeleteConfirm: 'Delete this custom theme?',
     inUse: 'In use',
     termFontSize: 'Terminal font size',
     termFontSizeDesc: '8 – 32 px. Also adjustable in the terminal with Ctrl + + / Ctrl + -.',
@@ -425,6 +457,28 @@ const en: Dict = {
     debugTools: 'Debug tools',
     debugToolsDesc: 'Open Chromium DevTools to inspect layout, network requests and terminal render state.',
     openDevtools: 'Open DevTools'
+  },
+  customTheme: {
+    title: 'Custom Theme',
+    newTitle: 'New Custom Theme',
+    editTitle: 'Edit Custom Theme',
+    name: 'Theme name',
+    namePlaceholder: 'Name your theme',
+    type: 'Type',
+    dark: 'Dark',
+    light: 'Light',
+    basedOn: 'Based on',
+    bgImage: 'Terminal background',
+    chooseImage: 'Choose image…',
+    removeImage: 'Remove',
+    bgOpacity: 'Background opacity',
+    coreColors: 'Core colors',
+    advanced: 'Advanced (ANSI / loader colors)',
+    ansiColors: 'ANSI colors',
+    loaderColors: 'Loader colors',
+    preview: 'Preview',
+    save: 'Save',
+    saving: 'Saving…'
   },
   errors: {
     UNAUTHORIZED: 'Wrong account or password',
