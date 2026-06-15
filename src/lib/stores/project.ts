@@ -7,6 +7,7 @@
 // FileTree types — see docs/NEXT_LOOP_PLAN.md §P0-2 for the cleanup context.
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { derived, writable, get } from 'svelte/store';
+import { paneCwdStore } from './paneTree';
 
 /**
  * One page of a directory's children, returned by the
@@ -116,14 +117,37 @@ export async function textSearch(
 }
 
 export async function filenameSearch(pattern: string): Promise<string[]> {
-  const state = get(projectStore);
-  if (!state.currentPath || !pattern.trim()) return [];
+  if (!pattern.trim()) return [];
+
+  // §文件搜索根目录来源：旧 `openProject` 入口（及其设置的 projectStore.currentPath）
+  // 已被 CWD 驱动的 Explorer 取代、currentPath 恒为 null，故不能再用——这正是
+  // QuickOpen「搜不到文件」的根因。改用与搜索侧栏（SearchSidebar）一致的来源：当前
+  // 会话每个 pane 的 CWD（paneCwdStore），跨 root fan-out `filename_search` 后合并去重。
+  const roots = Array.from(
+    new Set(Object.values(get(paneCwdStore)).filter((c): c is string => !!c)),
+  );
+  if (roots.length === 0) return [];
 
   try {
-    return await invoke<string[]>('filename_search', {
-      root: state.currentPath,
-      pattern,
-    });
+    const parts = await Promise.all(
+      roots.map((root) =>
+        invoke<string[]>('filename_search', { root, pattern }).catch((e) => {
+          console.error('Filename search failed for root', root, e);
+          return [] as string[];
+        }),
+      ),
+    );
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const list of parts) {
+      for (const p of list) {
+        if (!seen.has(p)) {
+          seen.add(p);
+          merged.push(p);
+        }
+      }
+    }
+    return merged;
   } catch (e) {
     console.error('Filename search failed:', e);
     return [];

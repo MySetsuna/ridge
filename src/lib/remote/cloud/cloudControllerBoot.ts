@@ -149,30 +149,46 @@ export function verifyTotpOverControl(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve, reject) => {
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const clearAll = () => {
+      for (const t of timers) clearTimeout(t);
+    };
     const unsub = adapter.onSessionControl((frame) => {
       if (frame.t !== 'totp-result') return; // 忽略其它 CONTROL 帧
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearAll();
       unsub();
       resolve(frame.ok === true);
     });
-    timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      unsub();
-      reject(new Error('TOTP 验证超时'));
-    }, timeoutMs);
     // 零信任 #1：host 0x02 后有信道绑定 transcript → 发 totp-bind（HMAC tag，码不明文上线）；
     // 否则（旧 host / 未收到 0x02）回退明文 totp-verify。host 对两者都回 totp-result。
-    const transcript = adapter.getBindTranscript?.() ?? null;
-    if (transcript) {
-      const tag = bytesToBase64(computeBindTag(code, transcript));
-      adapter.sendSessionControl({ t: 'totp-bind', tag });
-    } else {
-      adapter.sendSessionControl({ t: 'totp-verify', code });
-    }
+    const send = () => {
+      const transcript = adapter.getBindTranscript?.() ?? null;
+      if (transcript) {
+        const tag = bytesToBase64(computeBindTag(code, transcript));
+        adapter.sendSessionControl({ t: 'totp-bind', tag });
+      } else {
+        adapter.sendSessionControl({ t: 'totp-verify', code });
+      }
+    };
+    send();
+    // 弱网兜底：移动蜂窝下 WebRTC 数据通道易在 connected 后劣化丢首帧（表现为 TOTP
+    // 「网络错误」超时）。到半程仍无结果则重发一次——host 对重复帧幂等（已验证直接回 ok，
+    // 未验证则按同一码重判），把「首帧丢失」与「真超时」区分开，显著降低弱网误超时。
+    timers.push(
+      setTimeout(() => {
+        if (!settled) send();
+      }, Math.floor(timeoutMs / 2)),
+    );
+    timers.push(
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        unsub();
+        reject(new Error('TOTP 验证超时'));
+      }, timeoutMs),
+    );
   });
 }
 
