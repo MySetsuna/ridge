@@ -13,7 +13,7 @@
     setTheme,
   } from '$lib/stores/settings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
-  import { themeData, getThemeIds, getThemeLabels, isCustomTheme, deleteCustomTheme } from '$lib/stores/themes';
+  import { themeData, isCustomTheme, deleteCustomTheme } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
   import { t } from '$lib/i18n';
   import LangSwitch from './LangSwitch.svelte';
@@ -78,8 +78,13 @@
     }
   }
 
-  const themeIds = $derived(getThemeIds());
-  const themeLabels = $derived(getThemeLabels());
+  // 直接读响应式 $themeData，使保存/删除/改名自定义主题后（refreshThemes →
+  // store.set）网格即时刷新。注意不要用 getThemeIds()/getThemeLabels()——它们走
+  // get(store) 命令式读取，在 $derived 里零追踪依赖，只算一次、永不更新。
+  const themeIds = $derived($themeData.themes.map((t) => t.id));
+  const themeLabels = $derived(
+    Object.fromEntries($themeData.themes.map((t) => [t.id, t.label])) as Record<string, string>
+  );
 
   const themePreview = $derived.by(() => {
     const out: Record<string, { bg: string; surface: string; accent: string; fg: string }> = {};
