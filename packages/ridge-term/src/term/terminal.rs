@@ -552,9 +552,16 @@ impl Terminal {
         // mode snapshot — an OSC arriving between the JS query and
         // the wasm resize call cannot desync the decision.
         let now_ms = super::clock::now_ms();
-        let inline_tui_active = self
-            .grid
-            .is_inline_tui_active_at(now_ms, self.modes.cursor_visible);
+        // §resize-tui-signal (2026-06-15): also feed DECCKM / mouse-reporting
+        // so an inline TUI that keeps its cursor visible at the resize moment
+        // (e.g. Claude Code without CLAUDE_CODE_NO_FLICKER) still gets the
+        // §A.3 blank-canvas treatment instead of the narrow §1.26 cleanup.
+        let inline_tui_active = self.grid.is_inline_tui_active_with_modes_at(
+            now_ms,
+            self.modes.cursor_visible,
+            self.modes.app_cursor_keys,
+            self.modes.mouse_normal || self.modes.mouse_button_event || self.modes.mouse_any_event,
+        );
         self.grid
             .resize_with_inline_tui(rows, cols, inline_tui_active);
     }
@@ -562,10 +569,16 @@ impl Terminal {
     /// Inline-TUI heuristic snapshot, exposed for the JS layer so
     /// `manager.ts::fitPane` can broaden the wipe-first ordering branch
     /// (§A.3) to cover Ink apps in addition to alt-screen TUIs. See
-    /// `Grid::is_inline_tui_active_at` for the heuristic itself.
+    /// `Grid::is_inline_tui_active_with_modes_at` for the heuristic itself.
+    /// Uses the same DECCKM / mouse-aware variant the kernel resize does so
+    /// the frontend `isInlineTuiMode()` flag and the backend wipe agree.
     pub fn is_inline_tui_mode_at(&self, now_ms: i64) -> bool {
-        self.grid
-            .is_inline_tui_active_at(now_ms, self.modes.cursor_visible)
+        self.grid.is_inline_tui_active_with_modes_at(
+            now_ms,
+            self.modes.cursor_visible,
+            self.modes.app_cursor_keys,
+            self.modes.mouse_normal || self.modes.mouse_button_event || self.modes.mouse_any_event,
+        )
     }
 
     /// JS-side hook: caller (manager.ts) just wrote ETX `\x03` to the

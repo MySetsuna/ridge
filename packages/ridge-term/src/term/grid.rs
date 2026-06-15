@@ -422,6 +422,55 @@ impl Grid {
         now_ms.saturating_sub(last) < INLINE_TUI_DECAY_MS
     }
 
+    /// §resize-tui-signal (2026-06-15) — `is_inline_tui_active_at` plus a
+    /// fallback that also treats application-cursor-keys (DECCKM `?1h`) and
+    /// mouse reporting (`?1000/?1002/?1003`) as positive inline-TUI signals.
+    ///
+    /// Motivation: the base heuristic bails when `cursor_visible` is true, but
+    /// an inline TUI being resized can momentarily have a VISIBLE cursor (e.g.
+    /// Claude Code without `CLAUDE_CODE_NO_FLICKER`), so the §A.3 primary wipe
+    /// never fires and the post-resize redraw lands on stale cells. DECCKM and
+    /// mouse-reporting are set by full-screen / inline TUI apps (Claude Code,
+    /// vim, fzf, lazygit) and effectively never by line-editing shells
+    /// (PSReadLine / zsh-zle / fish-zle), so they are a safe extra signal.
+    ///
+    /// Kept deliberately tight to avoid over-wiping: the fallback requires
+    /// BOTH a TUI mode on AND a RECENT ABSOLUTE-positioning CSI (not merely a
+    /// redraw-walk), so a program that only flipped a mode on but isn't
+    /// actively painting frames won't force a wipe. Alt screen and the Ctrl+C
+    /// grace window still short-circuit exactly as the base heuristic does.
+    pub fn is_inline_tui_active_with_modes_at(
+        &self,
+        now_ms: i64,
+        cursor_visible: bool,
+        app_cursor_keys: bool,
+        mouse_reporting: bool,
+    ) -> bool {
+        if self.is_inline_tui_active_at(now_ms, cursor_visible) {
+            return true;
+        }
+        // Alt-screen apps use the §1.22 alt-wipe path, never this one.
+        if self.is_alt {
+            return false;
+        }
+        // A just-killed TUI shouldn't force a wipe — mirror the base grace.
+        if self.last_ctrl_c_at_ms > 0
+            && now_ms.saturating_sub(self.last_ctrl_c_at_ms) < CTRL_C_GRACE_MS
+        {
+            return false;
+        }
+        if !(app_cursor_keys || mouse_reporting) {
+            return false;
+        }
+        // Require a recent ABSOLUTE-positioning CSI (CUP/HVP/CHA/VPA): a TUI
+        // mode + active frame painting is a strong combined signal; a stale
+        // mode left on by an exited app decays out within the window.
+        if self.last_abs_csi_at_ms == 0 {
+            return false;
+        }
+        now_ms.saturating_sub(self.last_abs_csi_at_ms) < INLINE_TUI_DECAY_MS
+    }
+
     pub fn rows(&self) -> usize {
         self.rows
     }
@@ -2773,6 +2822,71 @@ mod tests {
 
         // Cursor-visible / alt-screen guards still apply.
         assert!(!g.is_inline_tui_active_at(now + 500, true));
+    }
+
+    #[test]
+    fn inline_tui_modes_variant_fires_on_visible_cursor_tui() {
+        // §resize-tui-signal — the mode-aware variant must engage when a TUI
+        // mode (DECCKM / mouse) is on and an absolute CSI is fresh, EVEN with
+        // a VISIBLE cursor (the case the base heuristic bails on). This is the
+        // "Claude Code without NO_FLICKER keeps cursor visible at resize"
+        // scenario.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+        g.note_absolute_positioning(now);
+
+        // Base heuristic is OFF with a visible cursor...
+        assert!(!g.is_inline_tui_active_at(now + 500, true));
+        // ...but the mouse-reporting signal flips the variant ON.
+        assert!(g.is_inline_tui_active_with_modes_at(now + 500, true, false, true));
+        // ...as does application-cursor-keys (DECCKM).
+        assert!(g.is_inline_tui_active_with_modes_at(now + 500, true, true, false));
+
+        // Without any TUI mode, the variant matches the base (off w/ visible
+        // cursor) — no regression for plain shells.
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 500, true, false, false));
+    }
+
+    #[test]
+    fn inline_tui_modes_variant_requires_recent_abs_csi() {
+        // The fallback is deliberately tight: a TUI mode alone (no recent
+        // ABSOLUTE-positioning CSI) must NOT force the wipe, so a program that
+        // merely left mouse-mode on but isn't painting frames is left alone.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+
+        // Mode on, but never any abs CSI → off.
+        assert!(!g.is_inline_tui_active_with_modes_at(now, true, true, true));
+
+        // A redraw-walk CSI is NOT enough for the mode fallback (it requires
+        // an absolute landing); base heuristic still needs a hidden cursor.
+        g.note_redraw_csi(now);
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 100, true, true, true));
+
+        // Fresh abs CSI → on; past the decay window → off again.
+        g.note_absolute_positioning(now + 200);
+        assert!(g.is_inline_tui_active_with_modes_at(now + 300, true, true, true));
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 200 + 2_001, true, true, true));
+    }
+
+    #[test]
+    fn inline_tui_modes_variant_respects_alt_and_ctrl_c() {
+        // Alt-screen and the Ctrl+C grace window must short-circuit the
+        // mode-aware variant exactly like the base heuristic.
+        let now = 100_000_i64;
+
+        // Alt screen → off even with mode + fresh abs CSI.
+        let mut g = Grid::new(5, 20, 0);
+        g.enter_alt_screen(false);
+        g.note_absolute_positioning(now);
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 100, true, true, true));
+
+        // Ctrl+C grace → off even with mode + fresh abs CSI.
+        let mut g2 = Grid::new(5, 20, 0);
+        g2.note_absolute_positioning(now);
+        g2.note_ctrl_c_sent(now);
+        g2.note_absolute_positioning(now + 100);
+        assert!(!g2.is_inline_tui_active_with_modes_at(now + 200, true, true, true));
     }
 
     #[test]
