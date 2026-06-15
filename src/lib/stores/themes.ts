@@ -138,13 +138,14 @@ export interface ActiveBgImage {
 const bgImageStore = writable<ActiveBgImage>({ url: null, opacity: 1 });
 export const activeBgImage = { subscribe: bgImageStore.subscribe };
 
-let _assetsDir: string | null = null;
+// 三态：undefined = 未尝试，null = 已失败（永久跳过），string = 已缓存
+let _assetsDir: string | null | undefined = undefined;
 async function assetsDir(): Promise<string | null> {
-  if (_assetsDir !== null) return _assetsDir;
+  if (_assetsDir !== undefined) return _assetsDir;   // null 也命中，直接返回
   try {
     _assetsDir = await invoke<string>('get_theme_assets_dir');
   } catch {
-    _assetsDir = null;
+    _assetsDir = null;   // 失败后永远跳过 invoke
   }
   return _assetsDir;
 }
@@ -157,7 +158,9 @@ export async function setActiveBgImage(themeId: string): Promise<void> {
     return;
   }
   const dir = await assetsDir();
-  const sep = dir && dir.includes('\\') ? '\\' : '/';
-  const url = dir ? convertFileSrc(`${dir}${sep}${t.bgImage}`) : null;
+  if (!dir) { bgImageStore.set({ url: null, opacity: t.bgImageOpacity ?? 1 }); return; }
+  const cleanDir = dir.replace(/[\\/]+$/, '');
+  const sep = cleanDir.includes('\\') ? '\\' : '/';
+  const url = convertFileSrc(`${cleanDir}${sep}${t.bgImage}`);
   bgImageStore.set({ url, opacity: t.bgImageOpacity ?? 1 });
 }
