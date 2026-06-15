@@ -198,6 +198,8 @@ mod tests {
                 c.insert("accent".into(), "#36c26e".into());
                 c
             },
+            bg_image: None,
+            bg_image_opacity: None,
         }
     }
 
