@@ -36,6 +36,7 @@ import {
 	type InputBufferState,
 } from './inputBufferTracker';
 import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
+import { activeBgImage } from '$lib/stores/themes';
 
 interface Props {
 	paneId: string;
@@ -1729,6 +1730,14 @@ function captureBackspace(node: HTMLElement) {
 	onkeydown={onContainerKeyDown}
 	use:captureBackspace
 >
+	{#if $activeBgImage.url}
+		<div
+			class="rg-pane-bgimg"
+			style="background-image: url('{$activeBgImage.url}'); opacity: {$activeBgImage.opacity};"
+			aria-hidden="true"
+		></div>
+	{/if}
+
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the
 	     textarea never enters the DOM — OS IME has no focusable input
@@ -2104,5 +2113,14 @@ function captureBackspace(node: HTMLElement) {
 	.rg-search-btn.active {
 		background: var(--rg-accent, #4a8cff);
 		color: #fff;
+	}
+	.rg-pane-bgimg {
+		position: absolute;
+		inset: 0;
+		background-size: cover;
+		background-position: center;
+		background-repeat: no-repeat;
+		pointer-events: none;
+		z-index: 0;
 	}
 </style>
