@@ -4,7 +4,6 @@
   import { listen } from '@tauri-apps/api/event';
   import QrCode from './QrCode.svelte';
   import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
-  import { dev } from '$app/environment';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
@@ -154,9 +153,17 @@
     refreshSessions();
   }
   function buildLinkUri(lanIp: string, port: number): string {
-    // Dev: the SPA is served by Vite (plain HTTP on :5174), not the Rust server.
-    // Prod: the Rust server serves HTTPS (self-signed) for a secure context.
-    if (dev) return `http://${lanIp}:5174/`;
+    // Always point the phone at THIS instance's own remote server over HTTPS
+    // (self-signed → secure context). It serves the built `static/remote` bundle
+    // and handles /verify, /ws same-origin.
+    //
+    // §dev: deliberately NOT the Vite dev server (`:5174`). That path proxies
+    // /verify,/ws to a hardcoded `http://127.0.0.1:9527`, which breaks whenever
+    // the server is on TLS or a non-9527 port (e.g. two instances colliding on
+    // the default port → the dev server lands on 9528). Pointing the QR straight
+    // at the running instance's actual `port` makes "scan → connect" work against
+    // the dev instance with no proxy in the path. Trade-off: no phone-side HMR —
+    // rebuild with `pnpm build:remote` to refresh the served bundle.
     return `https://${lanIp}:${port}/`;
   }
   async function refreshRemoteInfo() {
@@ -517,7 +524,7 @@
             <div class="flex items-center justify-between text-xs">
               <span class="text-[var(--rg-fg-muted)]">{$t('remote.mobileEntry')}</span>
               <button onclick={copyLink} class="text-[var(--rg-accent)] font-mono hover:underline cursor-pointer bg-transparent border-none p-0" title={$t('remote.copyLinkTitle')}>
-                {activeIp}:{dev ? '5174' : remoteInfo.port}
+                {activeIp}:{remoteInfo.port}
               </button>
             </div>
             <button onclick={copyLink} class="w-full text-[10px] text-[var(--rg-accent)] hover:underline" title={$t('remote.copyLink')}>
