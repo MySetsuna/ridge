@@ -86,8 +86,11 @@ function readRidgeTheme(): Record<string, string> {
 	if (accent) {
 		out.cursor = accent;
 		// Cursor-text-color (the glyph drawn ON TOP of the cursor block)
-		// reads best as the bg color so it disappears into the cell.
-		if (bg) out.cursorAccent = bgImageActive ? (hex8(bg) ?? bg) : bg;
+		// reads best as the bg color so it disappears into the cell. `bg` is
+		// always the opaque `#rrggbbff` term-bg here (the alpha-0 form only
+		// goes into out.background), so no extra normalization is needed —
+		// even when a bg image is active the cursor glyph stays readable.
+		if (bg) out.cursorAccent = bg;
 		// Hyperlink underline: same accent, full opacity.
 		out.hyperlinkColor = accent;
 		// Selection bg: accent tinted at ~24% alpha for readability.
