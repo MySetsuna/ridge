@@ -130,6 +130,11 @@ export async function saveThemeBgImage(bytes: Uint8Array, ext: string): Promise<
   return invoke<string>('save_theme_bg_image', { bytes: Array.from(bytes), ext });
 }
 
+/** 让后端从磁盘路径读取并存图（前端无 fs 插件时用），返回文件名。 */
+export async function saveThemeBgImageFromPath(path: string): Promise<string> {
+  return invoke<string>('save_theme_bg_image_from_path', { path });
+}
+
 // ── 活动主题背景图信号 ──────────────────────────────────────────────
 export interface ActiveBgImage {
   url: string | null;     // convertFileSrc 后的可加载 URL
