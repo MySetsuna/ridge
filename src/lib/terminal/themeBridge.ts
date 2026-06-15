@@ -28,7 +28,9 @@
 
 import { settingsStore } from '$lib/stores/settings';
 import { termFontSize } from '$lib/stores/termSettings';
-import { hex8 } from '$lib/utils/cssColor';
+import { hex8, hex8WithAlpha } from '$lib/utils/cssColor';
+import { activeBgImage } from '$lib/stores/themes';
+import { get } from 'svelte/store';
 import { TerminalManager } from './manager';
 import { withEmojiFallback } from './fontStack';
 import { ensureFlagFont } from './flagEmojiSupport';
@@ -73,15 +75,19 @@ function readRidgeTheme(): Record<string, string> {
 	const accent = v('--rg-accent');
 	const tuiBg = v('--rg-tui-bg');
 
+	const bgImageActive = get(activeBgImage).url !== null;
+
 	const out: Record<string, string> = {};
-	if (bg) out.background = bg;
+	if (bg) {
+		out.background = bgImageActive ? (hex8WithAlpha(bg, 0) ?? bg) : bg;
+	}
 	if (fg) out.foreground = fg;
 	if (tuiBg) out.tuiBackground = tuiBg;
 	if (accent) {
 		out.cursor = accent;
 		// Cursor-text-color (the glyph drawn ON TOP of the cursor block)
 		// reads best as the bg color so it disappears into the cell.
-		if (bg) out.cursorAccent = bg;
+		if (bg) out.cursorAccent = bgImageActive ? (hex8(bg) ?? bg) : bg;
 		// Hyperlink underline: same accent, full opacity.
 		out.hyperlinkColor = accent;
 		// Selection bg: accent tinted at ~24% alpha for readability.
@@ -205,9 +211,14 @@ export function setupTerminalThemeBridge(): () => void {
 		pushFont(family, size);
 	});
 
+	const unsubscribeBgImage = activeBgImage.subscribe(() => {
+		push();
+	});
+
 	return () => {
 		unsubscribeTheme();
 		unsubscribeFont();
+		unsubscribeBgImage();
 		_subscribed = false;
 	};
 }
