@@ -724,6 +724,7 @@ pub fn run() {
             theme::save_user_theme,
             theme::delete_user_theme,
             theme::save_theme_bg_image,
+            theme::save_theme_bg_image_from_path,
             theme::get_theme_assets_dir,
             watch::start_watching_repos,
             fs_watch::start_watching_paths,

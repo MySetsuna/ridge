@@ -134,6 +134,12 @@ pub fn save_theme_bg_image(bytes: Vec<u8>, ext: String) -> Result<String, String
     ridge_core::commands::theme::save_theme_bg_image(bytes, &ext).map_err(|e| e.to_command_string())
 }
 
+/// 从磁盘路径读取并写入背景图，返回文件名（前端无 fs 插件时用 dialog 选路径走此命令）。
+#[tauri::command]
+pub fn save_theme_bg_image_from_path(path: String) -> Result<String, String> {
+    ridge_core::commands::theme::save_theme_bg_image_from_path(&path).map_err(|e| e.to_command_string())
+}
+
 /// 返回 theme-assets 目录绝对路径（前端 convertFileSrc 用）。
 #[tauri::command]
 pub fn get_theme_assets_dir() -> String {

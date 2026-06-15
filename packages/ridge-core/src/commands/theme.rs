@@ -284,6 +284,18 @@ pub fn save_theme_bg_image(bytes: Vec<u8>, ext: &str) -> CoreResult<String> {
     Ok(name)
 }
 
+/// 从磁盘路径读取图片字节并存入 theme-assets/，扩展名取自路径。
+/// 复用 `save_theme_bg_image` 的白名单 + 体积校验。
+pub fn save_theme_bg_image_from_path(src: &str) -> CoreResult<String> {
+    let ext = std::path::Path::new(src)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    let bytes = std::fs::read(src).map_err(|e| CoreError::io(format!("read image {src}: {e}")))?;
+    save_theme_bg_image(bytes, &ext)
+}
+
 /// 返回 theme-assets 目录绝对路径字符串（前端拼路径 + convertFileSrc 用）。
 pub fn get_theme_assets_dir() -> String {
     theme_assets_dir().to_string_lossy().to_string()
@@ -566,6 +578,24 @@ mod tests {
         let name = save_theme_bg_image(vec![0u8; 16], "PNG").unwrap();
         assert!(name.ends_with(".png"));
         assert!(theme_assets_dir().join(&name).exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn save_bg_image_from_path_reads_and_validates() {
+        let tmp = std::env::temp_dir().join("ridge-test-bgimg-path");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _guard = SetEnvGuard::new("LOCALAPPDATA", &tmp.to_string_lossy());
+        std::fs::create_dir_all(&tmp).ok();
+        let src = tmp.join("wallpaper.PNG");
+        std::fs::write(&src, vec![0u8; 32]).unwrap();
+        let name = save_theme_bg_image_from_path(&src.to_string_lossy()).unwrap();
+        assert!(name.ends_with(".png"));
+        assert!(theme_assets_dir().join(&name).exists());
+        let bad = tmp.join("evil.exe");
+        std::fs::write(&bad, vec![1u8; 4]).unwrap();
+        assert!(save_theme_bg_image_from_path(&bad.to_string_lossy()).is_err());
+        assert!(save_theme_bg_image_from_path(&tmp.join("nope.png").to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
