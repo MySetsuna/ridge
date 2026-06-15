@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { getTheme } from './themes';
+import { getTheme, setActiveBgImage } from './themes';
 
 export interface UserSettings {
   theme: string;
@@ -153,6 +153,8 @@ export function applyTheme(themeId: string): void {
   for (const [key, value] of Object.entries(t.colors)) {
     document.documentElement.style.setProperty(`--rg-${key}`, value);
   }
+  // 解析该主题的终端背景图（自定义主题专属，异步、fire-and-forget）。
+  void setActiveBgImage(themeId);
 }
 
 export function setTheme(themeId: string): void {
