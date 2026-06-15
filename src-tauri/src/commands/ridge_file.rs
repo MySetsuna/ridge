@@ -561,6 +561,7 @@ pub fn open_workspace_from_file(
                 created_at: std::time::SystemTime::now(),
                 teammate_pane_states: HashMap::new(),
                 teammate_agent_pane_map: HashMap::new(),
+                teammate_owned_panes: std::collections::HashSet::new(),
                 associated_file_path: Some(file_path.clone()),
                 pending_spawns: HashMap::new(),
                 pty_generation: HashMap::new(),

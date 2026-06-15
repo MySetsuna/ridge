@@ -3,7 +3,12 @@
   import type { SidebarProvider, GitInfo } from './types';
   import { t } from '$lib/i18n';
 
-  let { provider }: { provider: SidebarProvider } = $props();
+  let { provider, onOpenDiff }: {
+    provider: SidebarProvider;
+    /** Open a changed file's diff (tap a working-tree row). Optional — when
+     *  absent the rows are plain (the desktop wires its own diff editor). */
+    onOpenDiff?: (path: string) => void;
+  } = $props();
 
   let info = $state<GitInfo>({ isGitRepo: false, currentBranch: null, branches: [], files: [], commits: [] });
   let loading = $state(false);
@@ -54,14 +59,14 @@
         <span class="msg">{$t('scm.workingTreeClean')}</span>
       {:else}
         {#each info.files as f (f.path)}
-          <div class="file-row">
+          <button class="file-row" class:tappable={!!onOpenDiff} onclick={() => onOpenDiff?.(f.path)} disabled={!onOpenDiff}>
             <span class="badge {statusClass(f.status)}">{f.status.trim() || 'M'}</span>
             <span class="fpath" title={f.path}>{f.path}</span>
             <span class="nums">
               {#if f.additions > 0}<span class="add">+{f.additions}</span>{/if}
               {#if f.deletions > 0}<span class="del">-{f.deletions}</span>{/if}
             </span>
-          </div>
+          </button>
         {/each}
       {/if}
 
@@ -91,7 +96,10 @@
   .msg { color: var(--rg-fg-muted); font-size: 12px; padding: 6px 2px; display: block; }
   .msg.err { color: var(--rg-ansi-red); }
 
-  .file-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 13px; }
+  .file-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 13px; width: 100%; background: none; border: none; color: inherit; text-align: left; cursor: default; border-radius: 4px; }
+  .file-row.tappable { cursor: pointer; }
+  .file-row.tappable:active { background: var(--rg-surface-2); }
+  .file-row:disabled { cursor: default; }
   .badge { flex-shrink: 0; width: 18px; text-align: center; font-size: 11px; font-weight: 700; border-radius: 3px; }
   .badge.modified { color: var(--rg-ansi-yellow, #d29922); }
   .badge.added { color: var(--rg-ansi-green); }

@@ -22,6 +22,8 @@ describe('isRemoteAllowed', () => {
       'text_search',
       'get_scm_status',
       'git_commit',
+      'list_native_sessions',
+      'summon_native_session',
     ]) {
       expect(isRemoteAllowed(m)).toBe(true);
     }
@@ -35,7 +37,6 @@ describe('isRemoteAllowed', () => {
       'disconnect_session',
       'enter_deep_root_mode',
       'set_cloud_remote_active',
-      'summon_native_session',
     ]) {
       expect(isRemoteAllowed(m)).toBe(false);
     }
@@ -71,7 +72,7 @@ describe('isMutatingMethod', () => {
 describe('mirror integrity (vs capability.rs)', () => {
   // If these counts change, update capability.rs ⇄ remoteAllowlist.ts together.
   it('allow-list has the expected size', () => {
-    expect(REMOTE_ALLOWLIST.length).toBe(85);
+    expect(REMOTE_ALLOWLIST.length).toBe(87);
   });
   it('mutating set has the expected size', () => {
     expect(MUTATING_METHODS.length).toBe(22);

@@ -803,10 +803,16 @@ pub async fn write_to_pty(
     pane_id: String,
     data: String,
 ) -> Result<(), String> {
-    write_to_pty_inner(state, pane_id, data).map_err(|e| e.to_string())
+    write_to_pty_async(state, pane_id, data)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-fn write_to_pty_inner(
+/// Drop-in blocking equivalent — does NOT defuse the ConPTY blocking issue.
+/// Used by callers that synchronously write small payloads (exit, clear
+/// screen) where blocking a worker thread is acceptable.
+#[allow(dead_code)]
+pub fn write_to_pty_inner(
     state: State<'_, AppState>,
     pane_id: String,
     data: String,
@@ -826,6 +832,37 @@ fn write_to_pty_inner(
         pty_log::pane_not_found("write", wid, pane_id);
         Err(AppError::PaneNotFound(pane_id))
     }
+}
+
+/// Async version that offloads blocking ConPTY WriteFile to a blocking task
+/// so it cannot freeze the async runtime when ConPTY's write buffer is full.
+/// This is the primary path used by JSON-RPC dispatch and the Tauri command.
+async fn write_to_pty_async(
+    state: State<'_, AppState>,
+    pane_id: String,
+    data: String,
+) -> Result<(), AppError> {
+    let pane_id = parse_pane_id(&pane_id)?;
+    let wid = state.active_workspace_id();
+    let (writer, _data) = {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&wid)
+            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+        let handle = ws.terminals.get(&pane_id).ok_or_else(|| {
+            pty_log::pane_not_found("write", wid, pane_id);
+            AppError::PaneNotFound(pane_id)
+        })?;
+        (handle.writer.clone(), data.clone())
+    };
+    tokio::task::spawn_blocking(move || {
+        let mut w = writer.lock();
+        let _ = w.write_all(_data.as_bytes());
+        let _ = w.flush();
+    })
+    .await
+    .map_err(|_| AppError::PtyError("blocking task panicked".into()))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1334,14 +1371,25 @@ pub fn write_pty_bytes_workspace(
     let ws = map
         .get(&workspace_id)
         .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
-    let handle = ws
-        .terminals
-        .get(&pane_id)
-        .ok_or(AppError::PaneNotFound(pane_id))?;
-    let mut w = handle.writer.lock();
-    w.write_all(data)?;
-    w.flush()?;
-    Ok(())
+    // 已激活的 live 终端优先。否则回退到阶段一的 `PendingSpawn`：其 PTY master
+    // writer 在 `openpty()` 时即存在（子进程要等 `activate_pane_pty` 才启动），
+    // 故 `spawn-process` 之后、前端激活该面板之前到达的 `send-keys` 仍能落地 ——
+    // 字节进 tty 输入队列，子进程启动后即被读取。缺此回退时，teammate 分屏刚
+    // spawn 后紧接的 `send-keys -t %N Enter` 会与前端激活竞态、返回 400，使宿主
+    // （Claude Code teammateMode=tmux）中止 teammate 拉起。
+    if let Some(handle) = ws.terminals.get(&pane_id) {
+        let mut w = handle.writer.lock();
+        w.write_all(data)?;
+        w.flush()?;
+        return Ok(());
+    }
+    if let Some(pending) = ws.pending_spawns.get(&pane_id) {
+        let mut w = pending.writer.lock();
+        w.write_all(data)?;
+        w.flush()?;
+        return Ok(());
+    }
+    Err(AppError::PaneNotFound(pane_id))
 }
 
 async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<(), AppError> {
@@ -1397,21 +1445,30 @@ pub fn get_pane_scrollback_before(
     Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
 }
 
-/// 列出所有 native tmux 会话，供侧边栏展示。
+/// 列出所有 native tmux 会话，供「全局状态」面板的后台会话发现入口展示。
+/// 远程可达（只读，已列入 `REMOTE_ALLOWLIST`）：远程运维同样能看见后台 agent 会话。
 #[tauri::command]
 pub fn list_native_sessions() -> Vec<NativeSessionInfo> {
     native::list_all_sessions()
 }
 
-/// 召唤一个 native 会话进当前活动工作区。
+/// 召唤一个 native 会话进**调用方当前查看的工作区**（把无头后台会话拉进可见分屏围观）。
+///
+/// `workspace_id` 让远程客户端显式指定落点：web-remote PC 走全局活动工作区、移动端
+/// 是 per-client 独立工作区——都把"自己正看的工作区 id"传进来，召唤才落在对的地方。
+/// 桌面端省略该参数 → 回退到活动工作区。无效/缺失一律回退，绝不报错。
 #[tauri::command]
 pub async fn summon_native_session(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
     socket: String,
     target: String,
+    workspace_id: Option<String>,
 ) -> Result<usize, String> {
-    let wid = state.active_workspace_id();
+    let wid = workspace_id
+        .as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s.trim()).ok())
+        .unwrap_or_else(|| state.active_workspace_id());
     crate::teammate::server::summon_into_workspace(&state, &app_handle, &socket, &target, wid)
         .map_err(|e| e.message())
 }

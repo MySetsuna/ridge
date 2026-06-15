@@ -253,12 +253,16 @@ const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 
 fn print_login_banner() {
+    let login_url = config::activate_url().replace("/activate", "/login");
     eprintln!();
     eprintln!("{CYAN}{BOLD}  ╔══════════════════════════════════════════════╗{RESET}");
     eprintln!("{CYAN}{BOLD}  ║          RIDGE · ACCOUNT LOGIN                ║{RESET}");
     eprintln!("{CYAN}{BOLD}  ╚══════════════════════════════════════════════╝{RESET}");
     eprintln!();
-    eprintln!("  {DIM}用 Ridge 账号邮箱 + 密码登录，随后直接绑定本机为远控设备。{RESET}");
+    eprintln!("  {DIM}在浏览器中打开以下地址登录您的 Ridge 账号：{RESET}");
+    eprintln!("  {GREEN}{BOLD}{login_url}{RESET}");
+    eprintln!();
+    eprintln!("  {DIM}也可直接在下方输入邮箱 + 密码登录（无浏览器环境）。{RESET}");
     eprintln!();
 }
 

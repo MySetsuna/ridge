@@ -23,6 +23,9 @@ export const zh: Record<string, string> = {
   selectionToggle: '选择模式（手指滑动选中文本）',
   lockAndRefresh: '锁定渲染尺寸到本端并刷新',
   newWorkspace: '新建工作区',
+  pasteFromRemote: '从远程粘贴',
+  themeToggle: '切换主题',
+  langToggle: '切换语言',
 
   // WorkspaceTree（工作区/终端树形级联）
   treeTitle: '工作区 / 终端',
@@ -31,6 +34,7 @@ export const zh: Record<string, string> = {
   treeNoTerminal: '该工作区暂无终端',
   treeNewWorkspace: '新建工作区',
   treeNewTerminal: '新建终端',
+  treeToggleTerminals: '展开/折叠终端',
   treeSwitchHint: '点击切换工作区查看其终端',
   renderEngine: '渲染引擎',
 
@@ -72,6 +76,7 @@ export const zh: Record<string, string> = {
   sidebarFilesTitle: '文件',
   sidebarSearchTitle: '搜索',
   sidebarClose: '关闭',
+  loading: '加载中…',
 
   // TerminalCanvas
   initializingTerminal: '初始化终端引擎…',
@@ -81,8 +86,18 @@ export const zh: Record<string, string> = {
   // SidebarFileTree
   parentDir: '上级目录',
   refresh: '刷新',
-  loading: '加载中…',
   emptyDir: '空目录',
+
+  // FileViewer（文件 / diff 查看器，文件可编辑）
+  viewerCopyPath: '复制路径',
+  viewerEmpty: '空文件',
+  viewerNoChanges: '该文件无改动',
+  viewerTruncated: '内容过长，仅显示前 {max} 行',
+  viewerEdit: '编辑',
+  viewerView: '查看',
+  viewerSave: '保存',
+  viewerUnsaved: '未保存的修改',
+  viewerUnsavedConfirm: '有未保存的修改，确定关闭并丢弃？',
 };
 
 export const en: Record<string, string> = {
@@ -109,6 +124,9 @@ export const en: Record<string, string> = {
   selectionToggle: 'Selection mode (drag to select text)',
   lockAndRefresh: 'Lock render size to this device and refresh',
   newWorkspace: 'New workspace',
+  pasteFromRemote: 'Paste from remote',
+  themeToggle: 'Toggle theme',
+  langToggle: 'Toggle language',
 
   // WorkspaceTree (workspace / terminal cascade)
   treeTitle: 'Workspaces / Terminals',
@@ -117,6 +135,7 @@ export const en: Record<string, string> = {
   treeNoTerminal: 'No terminals in this workspace',
   treeNewWorkspace: 'New workspace',
   treeNewTerminal: 'New terminal',
+  treeToggleTerminals: 'Expand / collapse terminals',
   treeSwitchHint: 'Tap to switch workspace and view its terminals',
   renderEngine: 'Render engine',
 
@@ -158,6 +177,7 @@ export const en: Record<string, string> = {
   sidebarFilesTitle: 'Files',
   sidebarSearchTitle: 'Search',
   sidebarClose: 'Close',
+  loading: 'Loading…',
 
   // TerminalCanvas
   initializingTerminal: 'Initializing terminal engine…',
@@ -167,6 +187,16 @@ export const en: Record<string, string> = {
   // SidebarFileTree
   parentDir: 'Parent directory',
   refresh: 'Refresh',
-  loading: 'Loading…',
   emptyDir: 'Empty directory',
+
+  // FileViewer (file / diff viewer, files editable)
+  viewerCopyPath: 'Copy path',
+  viewerEmpty: 'Empty file',
+  viewerNoChanges: 'No changes in this file',
+  viewerTruncated: 'Content too long — showing the first {max} lines',
+  viewerEdit: 'Edit',
+  viewerView: 'View',
+  viewerSave: 'Save',
+  viewerUnsaved: 'Unsaved changes',
+  viewerUnsavedConfirm: 'You have unsaved changes. Close and discard them?',
 };

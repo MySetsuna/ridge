@@ -2,7 +2,7 @@
 
 > 跨三处协作的**单一真源**：`wind` 桌面端 + `wind/packages/ridge-cli` + `C:\code\ridge-cloud`（后端 src/ + 前端 web/）。
 > 所有并行 agent 必须严格按本契约的**接口形状**编码，不得自行改名/改字段。改契约须先改本文件。
-> base 域：`remo2ridge.duckdns.org`（可被 `RIDGE_BASE_DOMAIN` 覆盖）。API 前缀：`/api/v1`。
+> base 域：`9527127.xyz`（可被 `RIDGE_BASE_DOMAIN` 覆盖）。API 前缀：`/api/v1`。
 
 ## 0. 目标流程（用户原话归纳）
 

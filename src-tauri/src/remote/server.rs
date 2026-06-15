@@ -18,9 +18,9 @@ use axum::{
     routing::{get, post},
     Form, Json, Router,
 };
-use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tower_http::compression::CompressionLayer;
 use uuid::Uuid;
 
 use crate::state::{AppState, RemotePaneSub, RemoteSubId};
@@ -198,33 +198,15 @@ async fn run_remote_server(
     port_tx: std::sync::mpsc::Sender<Option<u16>>,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    // Fixed port 9527; if occupied, try 9528, 9529, … up to 10 attempts.
-    // Bind a std listener up front: axum-server's `from_tcp_rustls` adopts a
-    // std `TcpListener`, and the plain-HTTP fallback re-wraps it via
-    // `tokio::net::TcpListener::from_std`. Either way we keep the port-probe.
-    let base_port: u16 = 9527;
-    let mut port = base_port;
-    let std_listener = loop {
-        let addr = format!("0.0.0.0:{}", port);
-        match std::net::TcpListener::bind(&addr) {
-            Ok(l) => break l,
-            Err(_) if port < base_port + 10 => {
-                port += 1;
-                continue;
-            }
-            Err(e) => {
-                tracing::error!(target: "ridge::remote", error = %e, port = base_port, "remote server bind failed (tried {}+10)", base_port);
-                let _ = port_tx.send(None);
-                return;
-            }
+    // Use the shared port binding from ridge-remote (probe up to 10 higher ports).
+    let (std_listener, port) = match ridge_remote::server::bind_tcp(9527) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::error!(target: "ridge::remote", error = %e, "remote server bind failed");
+            let _ = port_tx.send(None);
+            return;
         }
     };
-    if let Err(e) = std_listener.set_nonblocking(true) {
-        tracing::error!(target: "ridge::remote", error = %e, "remote server: set_nonblocking failed");
-        let _ = port_tx.send(None);
-        return;
-    }
-    let port = std_listener.local_addr().map(|a| a.port()).unwrap_or(port);
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
     // Resolve the static files directory. The remote UI is built by
@@ -359,6 +341,13 @@ async fn run_remote_server(
             ctx.clone(),
             security_headers,
         ))
+        // §perf: 压缩层放在最外层（最后 .layer = 请求最先经过、响应最后处理），
+        // 对内部所有 handler + fallback 产出的响应体做 gzip/br（按 Accept-Encoding
+        // 协商）。web-remote 桌面 SPA 的 4.2MB eager chunk / 7MB Monaco worker 等
+        // 文本资源压缩后 ~25-30%；security_headers 已先设好的头被原样保留，
+        // CompressionLayer 仅追加 Content-Encoding/Vary 并去掉 Content-Length。
+        // 默认谓词跳过已压缩类型（图片等）与 <32B 小响应；WS 101 升级无响应体不受影响。
+        .layer(CompressionLayer::new())
         .route_layer(axum::middleware::from_fn_with_state(
             ctx.clone(),
             remote_gate,
@@ -368,46 +357,17 @@ async fn run_remote_server(
     let _ = port_tx.send(Some(port));
     // §sessions: serve with peer-address connect info so the WS handler can
     // capture each client's real IP (for the session list + blacklist).
-    let make_svc = app.into_make_service_with_connect_info::<SocketAddr>();
-
-    // Prefer HTTPS: browsers only expose WebGPU in a secure context, so the
-    // LAN page must be served over TLS to unlock the GPU render path. A
-    // self-signed cert is auto-generated on first run (see remote/tls.rs).
-    match tls_config {
-        Some(tls_config) => {
-            tracing::info!(target: "ridge::remote", "Remote server serving HTTPS (TLS)");
-            let handle = axum_server::Handle::new();
-            let shutdown_handle = handle.clone();
-            tokio::spawn(async move {
-                let _ = shutdown_rx.await;
-                shutdown_handle.graceful_shutdown(Some(Duration::from_secs(3)));
-            });
-            if let Err(e) = axum_server::from_tcp_rustls(std_listener, tls_config)
-                .handle(handle)
-                .serve(make_svc)
-                .await
-            {
-                tracing::error!(target: "ridge::remote", error = %e, "remote HTTPS server stopped");
-            }
-        }
-        None => {
-            // SECURITY (audit H1): only reached after the explicit opt-in above.
-            tracing::warn!(target: "ridge::remote", "Remote TLS unavailable — serving plain HTTP by EXPLICIT opt-in (RIDGE_REMOTE_ALLOW_INSECURE_HTTP); auth code + token cross the LAN in cleartext");
-            match tokio::net::TcpListener::from_std(std_listener) {
-                Ok(listener) => {
-                    let shutdown_signal = shutdown_rx.map(|_| ());
-                    if let Err(e) = axum::serve(listener, make_svc)
-                        .with_graceful_shutdown(shutdown_signal)
-                        .await
-                    {
-                        tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(target: "ridge::remote", error = %e, "remote server: failed to adopt listener for HTTP fallback");
-                }
-            }
-        }
+    // Use the shared serve infrastructure from ridge-remote.
+    if let Err(e) = ridge_remote::server::serve_on(
+        std_listener,
+        app,
+        tls_config,
+        shutdown_rx,
+        true,
+    )
+    .await
+    {
+        tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
     }
 }
 
@@ -482,32 +442,20 @@ struct UiQuery {
 /// Decide which UI build to serve: the FULL desktop SPA for desktop browsers,
 /// the lightweight mobile SPA otherwise. `?ui=` overrides. Falls back to the
 /// mobile build if the desktop build (`web-remote-dist`) isn't present.
+///
+/// UA→UI 分叉判定下沉到 `ridge_remote::ua`（SSOT），与公网远控中继（ridge-cloud）
+/// 共用同一份规则，避免漂移。此处只额外校验桌面产物是否存在。
 fn wants_desktop_ui(
     ctx: &RemoteCtx,
     headers: &axum::http::HeaderMap,
     ui_override: Option<&str>,
 ) -> bool {
-    let prefer_desktop = match ui_override {
-        Some("desktop") => true,
-        Some("mobile") => false,
-        _ => {
-            let ua = headers
-                .get(axum::http::header::USER_AGENT)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            const MOBILE: [&str; 6] = [
-                "android",
-                "iphone",
-                "ipad",
-                "ipod",
-                "mobile",
-                "windows phone",
-            ];
-            !MOBILE.iter().any(|m| ua.contains(m))
-        }
-    };
-    prefer_desktop && ctx.desktop_dir.join("index.html").exists()
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    ridge_remote::ua::prefer_desktop_ui(ua, ui_override)
+        && ctx.desktop_dir.join("index.html").exists()
 }
 
 /// The UI build directory for this request (desktop vs mobile).
@@ -783,6 +731,12 @@ async fn file_handler(
 fn root_asset_headers(path: &str) -> (&'static str, &'static str) {
     if path == "sw.js" || path.ends_with("/sw.js") {
         ("application/javascript", "no-cache")
+    } else if path.ends_with(".html") {
+        // Without this branch a directly-requested `.html` (e.g. `/index.html`)
+        // fell through to `application/octet-stream`, which the browser offers as
+        // a DOWNLOAD instead of rendering. `no-cache` so a new build's shell is
+        // always revalidated (matches serve_index).
+        ("text/html; charset=utf-8", "no-cache")
     } else if path.ends_with(".webmanifest") {
         ("application/manifest+json", "no-cache")
     } else if path.ends_with(".js") {
@@ -1028,7 +982,8 @@ async fn ws_handler(
         return (StatusCode::UNAUTHORIZED, "invalid authentication").into_response();
     }
     let token = query.token.clone();
-    ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token))
+    let upgrade_start = std::time::Instant::now();
+    ws.on_upgrade(move |socket| handle_ws(socket, ctx, remote_addr, device_id, token, upgrade_start))
         .into_response()
 }
 
@@ -1186,6 +1141,7 @@ async fn workspace_create_handler(
                 created_at: std::time::SystemTime::now(),
                 teammate_pane_states: HashMap::new(),
                 teammate_agent_pane_map: HashMap::new(),
+                teammate_owned_panes: std::collections::HashSet::new(),
                 associated_file_path: None,
                 pending_spawns: HashMap::new(),
                 pty_generation: HashMap::new(),
@@ -1312,6 +1268,9 @@ async fn handle_ws(
     remote_addr: String,
     device_id: String,
     token: Option<String>,
+    // §perf (B方案 三段埋点): WS 升级握手开始的时刻，由 ws_handler move 进 on_upgrade
+    // 闭包后透传进来，用于在本任务开头打印 upgrade 段耗时。
+    upgrade_start: Instant,
 ) {
     use futures::{SinkExt, StreamExt};
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -1325,6 +1284,8 @@ async fn handle_ws(
         token,
     );
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client connected");
+    // §perf (B方案): upgrade 段 = WS 升级握手到本任务真正开始执行的耗时。
+    tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = upgrade_start.elapsed().as_millis() as u64, "ws_upgrade");
 
     // Per-client mpsc channel — isolated from other WS clients.
     let (raw_tx, mut raw_rx) = mpsc::channel::<crate::types::RemotePtyEvent>(512);
@@ -1378,6 +1339,9 @@ async fn handle_ws(
     // here but never stomps the PTY the desktop is using.
 
     // Initial handshake.
+    let ws_connect_start = std::time::Instant::now();
+    // §perf (B方案): first-byte 段日志的一次性 once-guard（仅用其 None/Some 状态打一次）。
+    let mut first_pty_bytes_at: Option<Instant> = None;
     let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
     if ws_tx
         .send(Message::Text(welcome.to_string()))
@@ -1394,11 +1358,15 @@ async fn handle_ws(
     if let Some(entry) = crate::commands::theme::active_theme_entry_no_handle() {
         let theme_msg = serde_json::json!({
             "type": "theme",
+            "id": entry.id,
             "themeType": entry.theme_type,
             "colors": entry.colors,
         });
         let _ = ws_tx.send(Message::Text(theme_msg.to_string())).await;
     }
+    // §perf (B方案): connect 段 = hello + theme 两帧都发完的"首帧 ready"时刻（theme 为
+    // best-effort，缺省时此处即 hello 之后，天然取到最迟者）。
+    tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_connected_first_frame");
 
     // §state-sep: per-client active workspace. Seeded once from the global
     // active workspace at connect, then owned by THIS client. Switching /
@@ -1753,6 +1721,7 @@ async fn handle_ws(
                                         created_at: std::time::SystemTime::now(),
                                         teammate_pane_states: HashMap::new(),
                                         teammate_agent_pane_map: HashMap::new(),
+                                        teammate_owned_panes: std::collections::HashSet::new(),
                                         associated_file_path: None,
                                         pending_spawns: HashMap::new(),
                                         pty_generation: HashMap::new(),
@@ -1841,14 +1810,27 @@ async fn handle_ws(
                             Some("stdin") => {
                                 let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                                 let data_str = parsed["data"].as_str().unwrap_or("");
-                                if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                                    let workspaces = ctx.state.workspaces.read();
-                                    if let Some(ws) = workspaces.get(&active_ws_id) {
-                                        if let Some(handle) = ws.terminals.get(&pane_id) {
-                                            let mut writer = handle.writer.lock();
-                                            let _ = writer.write_all(data_str.as_bytes());
-                                            let _ = writer.flush();
-                                        }
+                                if let (Ok(pane_id), false) =
+                                    (Uuid::parse_str(pane_id_str), data_str.is_empty())
+                                {
+                                    let data = data_str.to_string();
+                                    let writer = {
+                                        let workspaces = ctx.state.workspaces.read();
+                                        workspaces
+                                            .get(&active_ws_id)
+                                            .and_then(|ws| ws.terminals.get(&pane_id))
+                                            .map(|handle| handle.writer.clone())
+                                    };
+                                    // Offload blocking ConPTY WriteFile to a
+                                    // blocking task so it cannot freeze the WS
+                                    // event loop (which would cascade into
+                                    // RPC timeouts + reconnect storms).
+                                    if let Some(writer) = writer {
+                                        tokio::task::spawn_blocking(move || {
+                                            let mut w = writer.lock();
+                                            let _ = w.write_all(data.as_bytes());
+                                            let _ = w.flush();
+                                        });
                                     }
                                 }
                                 // no response needed
@@ -2090,6 +2072,65 @@ async fn handle_ws(
                                     "results": results,
                                 }).to_string())).await
                             }
+                            Some("cycle-theme") => {
+                                // §theme-cycle: a control end taps "theme" → push the theme
+                                // AFTER the one it currently shows. Stateless: we never write
+                                // the active theme to disk nor clobber peers (§theme-isolation
+                                // — the control end owns its own appearance). The client tracks
+                                // its current id (seeded from the connect `theme` push) and
+                                // sends it as `current`; an unknown/empty id starts at index 0.
+                                let current = parsed["current"].as_str().unwrap_or("");
+                                let tf = ridge_core::commands::theme::get_theme_data();
+                                if tf.themes.is_empty() {
+                                    Ok(())
+                                } else {
+                                    let n = tf.themes.len();
+                                    let next = match tf.themes.iter().position(|t| t.id == current) {
+                                        Some(idx) => (idx + 1) % n,
+                                        None => 0,
+                                    };
+                                    let entry = &tf.themes[next];
+                                    let msg = serde_json::json!({
+                                        "type": "theme",
+                                        "id": entry.id,
+                                        "themeType": entry.theme_type,
+                                        "colors": entry.colors,
+                                    });
+                                    ws_tx.send(Message::Text(msg.to_string())).await
+                                }
+                            }
+                            Some("list-workspace-panes") => {
+                                // §peek-panes: list an arbitrary workspace's panes WITHOUT
+                                // switching this client's active workspace — backs the tree's
+                                // "expand a non-active workspace to peek at its terminals".
+                                // Read-only; never touches `active_ws_id`.
+                                let id_str = parsed["workspaceId"].as_str().unwrap_or("");
+                                let pane_list = if let Ok(id) = Uuid::parse_str(id_str) {
+                                    let workspaces = ctx.state.workspaces.read();
+                                    workspaces.get(&id).map(build_remote_pane_list).unwrap_or_default()
+                                } else {
+                                    Vec::new()
+                                };
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type": "workspace-panes",
+                                    "workspaceId": id_str,
+                                    "panes": pane_list,
+                                }).to_string())).await
+                            }
+                            Some("set-host-clipboard") => {
+                                // §copy-to-host: a control end's copy ALSO lands on the DESKTOP
+                                // host's system clipboard, so the host's own native paste (Ctrl+V)
+                                // picks it up. An authenticated remote already has shell stdin, so
+                                // writing the clipboard is strictly less powerful — best-effort,
+                                // failures are non-fatal (e.g. a headless host with no AppHandle).
+                                if let Some(text) = parsed["text"].as_str() {
+                                    if let Some(app) = ctx.state.app_handle.get() {
+                                        use tauri_plugin_clipboard_manager::ClipboardExt;
+                                        let _ = app.clipboard().write_text(text.to_string());
+                                    }
+                                }
+                                Ok(())
+                            }
                             Some("data-request") => {
                                 // Backs the remote `WsDataProvider` (src/lib/transport/ws.ts).
                                 // An authenticated remote already has shell stdin, so this
@@ -2123,6 +2164,11 @@ async fn handle_ws(
                                         dispatch_data_request(&method, &parsed, &ctx.state).await;
                                     if let Some(obj) = reply.as_object_mut() {
                                         obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                                        // §data-result-type: tag the reply so it survives
+                                        // RemoteConnection's onmessage routing (a typeless reply
+                                        // tripped `type.endsWith('-result')` → TypeError → the
+                                        // reply was silently dropped and the sidebar never loaded).
+                                        obj.insert("type".to_string(), serde_json::json!("data-result"));
                                     }
                                     ws_tx.send(Message::Text(reply.to_string())).await
                                 }
@@ -2171,6 +2217,12 @@ async fn handle_ws(
                     event = raw_rx.recv() => {
                         match event {
                             Some(crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes }) => {
+                                // §perf (B方案): first-byte 段 = 从 raw_rx 收到的第一帧 PTY
+                                // 输出，用 Option<Instant> 守卫只打一次。
+                                if first_pty_bytes_at.is_none() {
+                                    first_pty_bytes_at = Some(Instant::now());
+                                    tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_first_pty_bytes");
+                                }
                                 if workspace_id == active_ws_id {
                                     // §resync: if the fan-out dropped frames for this sub, the
                                     // client's vte stream has a hole that would corrupt every
@@ -2216,11 +2268,17 @@ async fn handle_ws(
                                         "cwd": cwd.clone(),
                                     }).to_string())).await;
                                     // §web-remote: desktop UI listens to pane-cwd-changed-{ws}-{pane}.
-                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                        "type": "event",
-                                        "name": format!("pane-cwd-changed-{}-{}", workspace_id, pane_id),
-                                        "payload": { "cwd": cwd },
-                                    }).to_string())).await;
+                                    // Title-only Metadata events carry cwd=None (PaneTitleChanged fires
+                                    // on every prompt redraw). Forwarding them with a null cwd made the
+                                    // controller call setPaneCwd(null) → normalizeCwd(null).replace →
+                                    // TypeError spam. Only emit a cwd-changed event when there IS a cwd.
+                                    if let Some(cwd) = &cwd {
+                                        let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                            "type": "event",
+                                            "name": format!("pane-cwd-changed-{}-{}", workspace_id, pane_id),
+                                            "payload": { "cwd": cwd },
+                                        }).to_string())).await;
+                                    }
                                 }
                             }
                             Some(crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols }) => {
@@ -2390,6 +2448,8 @@ async fn handle_ws(
     ctx.state.remote_client_registry.unregister(client_id);
 
     tracing::info!(target: "ridge::remote", client_id, "WebSocket client disconnected");
+    // §perf (B方案): 连接收尾汇总 = 本连接从 hello 起到关闭的总时长。
+    tracing::info!(target: "ridge::remote::perf", client_id, total_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_closed");
 }
 
 /// Dispatches one remote `data-request` `method` to the same backend command
@@ -2586,6 +2646,15 @@ async fn dispatch_data_request(
         "git_clean_untracked" => {
             unit(git::git_clean_untracked(s(params, "repoRoot"), Vec::new()).await)
         }
+        // Read-only: unified diff of one file vs HEAD (or the index when cached).
+        "git_diff_file" => val(
+            git::git_diff_file(
+                s(params, "repoRoot"),
+                s(params, "path"),
+                params["cached"].as_bool(),
+            )
+            .await,
+        ),
 
         // ── Search ──
         "search_files" => search_files_result(state, s(params, "query"), s(params, "path")).await,
@@ -2686,7 +2755,7 @@ fn is_mutating_invoke(cmd: &str) -> bool {
 /// unknown commands — including deliberately-excluded host-privileged ones
 /// (`get_remote_info` exposes the live TOTP; `set_remote_enabled` /
 /// `disconnect_session` / blacklist are remote-admin; `enter_deep_root_mode` /
-/// `set_cloud_remote_active` / `summon_native_session` are host-only) — return
+/// `set_cloud_remote_active` is host-only) — return
 /// an error and never reach a handler.
 async fn dispatch_invoke_request(
     cmd: &str,
@@ -2926,6 +2995,20 @@ async fn dispatch_invoke_request(
         ),
         "detect_available_shells" => plain(terminal::detect_available_shells()),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
+
+        // ── Native (headless) tmux session discovery ──
+        // `list` is read-only; `summon` adopts a headless session into the
+        // caller's viewed workspace (`workspaceId` from the remote client; the
+        // desktop omits it → active workspace).
+        "list_native_sessions" => plain(terminal::list_native_sessions()),
+        "summon_native_session" => val(terminal::summon_native_session(
+            handle.state(),
+            handle.clone(),
+            s(args, "socket"),
+            s(args, "target"),
+            opt_s(args, "workspaceId"),
+        )
+        .await),
 
         // ── Workspace (live) ──
         // `list_workspaces` is read-only and required by the desktop SPA

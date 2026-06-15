@@ -81,11 +81,19 @@ export interface OpenFile {
   imageUrl?: string;
   /**
    * If set, this tab is a read-only Monaco diff view.
-   *  - `commit` 设置时显示 `<commit>^` vs `<commit>` 的 diff（GitGraph 的"查看 commit diff"）；
+   *  - `compareBase` + `commit` 都设置时显示两个提交间该文件的范围 diff（GitGraph 的"对比提交"）；
+   *  - 仅 `commit` 设置时显示 `<commit>^` vs `<commit>` 的 diff（GitGraph 的"查看 commit diff"）；
    *  - 否则按 `cached` 走 staged (HEAD vs index) 或 working (index vs disk)。
-   * Tab path: `__diff__:<staged|working|commit>:<repoRoot>:<filePath>` 或加上 commit hash。
+   * Tab path: `__diff__:<staged|working|commit|compare>:<repoRoot>:<filePath>` 或加上 commit hash。
    */
-  diffArgs?: { repoRoot: string; path: string; cached: boolean; commit?: string };
+  diffArgs?: {
+    repoRoot: string;
+    path: string;
+    cached: boolean;
+    commit?: string;
+    /** 提交对比基线：设此则 diff 为 compareBase..commit 两提交间该文件的范围 diff。 */
+    compareBase?: string;
+  };
   /**
    * External-state marker. `'deleted'` means a filesystem watcher reported
    * the file was removed off-disk; the tab stays open so the user can salvage
@@ -891,17 +899,29 @@ function createStore() {
      *   - staged：    `__diff__:staged:<repoRoot>:<filePath>`
      *   - working：   `__diff__:working:<repoRoot>:<filePath>`
      */
-    openDiffTab(args: { repoRoot: string; path: string; cached: boolean; commit?: string }): void {
+    openDiffTab(args: {
+      repoRoot: string;
+      path: string;
+      cached: boolean;
+      commit?: string;
+      compareBase?: string;
+    }): void {
       const repoNorm = args.repoRoot.replace(/\\/g, '/');
-      const tabPath = args.commit
-        ? `__diff__:commit:${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`
-        : `__diff__:${args.cached ? 'staged' : 'working'}:${repoNorm}:${args.path}`;
+      const tabPath =
+        args.compareBase && args.commit
+          ? `__diff__:compare:${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`
+          : args.commit
+            ? `__diff__:commit:${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`
+            : `__diff__:${args.cached ? 'staged' : 'working'}:${repoNorm}:${args.path}`;
       const filePart = args.path.split('/').pop() ?? args.path;
-      const label = args.commit
-        ? `@${args.commit.slice(0, 7)}`
-        : args.cached
-          ? '已暂存'
-          : '工作区';
+      const label =
+        args.compareBase && args.commit
+          ? `${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}`
+          : args.commit
+            ? `@${args.commit.slice(0, 7)}`
+            : args.cached
+              ? '已暂存'
+              : '工作区';
       const name = `${filePart} (${label})`;
 
       update((s) => {

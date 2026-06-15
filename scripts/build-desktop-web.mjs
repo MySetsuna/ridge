@@ -24,4 +24,16 @@ const child = spawn(isWin ? 'npx.cmd' : 'npx', ['vite', 'build'], {
   shell: isWin,
 });
 
-child.on('exit', (code) => process.exit(code ?? 1));
+// 构建成功后清理陈旧的超大字体残留（含 Tauri target staging 增量副本）——
+// 在 beforeBuildCommand 阶段、cargo bundle 之前跑，确保不会把旧 NotoColorEmoji.ttf
+// 打进安装包 / 部署包。详见 scripts/prune-stale-fonts.mjs。
+child.on('exit', async (code) => {
+  if (code === 0) {
+    try {
+      await import('./prune-stale-fonts.mjs');
+    } catch (e) {
+      console.warn('[build-desktop-web] prune-stale-fonts failed:', e?.message ?? e);
+    }
+  }
+  process.exit(code ?? 1);
+});

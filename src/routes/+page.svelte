@@ -31,7 +31,8 @@ self.MonacoEnvironment = {
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
   import Explorer from '$lib/components/Explorer.svelte';
-  import FileEditor from '$lib/components/FileEditor.svelte';
+  // §perf FileEditor 改为懒挂载（见下方 $effect + 模板 {#if FileEditorComp}），
+  // 不再顶层静态 import —— 它深度耦合 Monaco 核心(~4MB)，会被打进 +page 首屏 chunk。
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
@@ -42,6 +43,7 @@ self.MonacoEnvironment = {
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
+  import QuickOpen from '$lib/components/QuickOpen.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
   // Side-effect import: each built-in plugin auto-registers via its module
@@ -110,8 +112,23 @@ self.MonacoEnvironment = {
     deleteWorkspaceFile, // 添加此导入
     closePane,
     paneCwdStore,
+    scheduleForceFitActivePanes,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
+
+  // §perf 懒挂载 FileEditor（设计文档 docs/superpowers/specs/2026-06-13-…）：
+  // 编辑器深度耦合 Monaco 核心(~4MB)，原随顶层 import 进入 +page 首屏 eager chunk
+  // （web-remote 实测 CiLVb0ke.js 4.2MB 被 modulepreload）。改为首次打开文件时再
+  // 动态 import；从未打开文件则永不加载 monaco。加载后保持挂载以保留 FileEditor
+  // 的 keep-alive model 缓存（与原"常驻挂载"行为一致，仅把加载时机推迟到首次打开）。
+  let FileEditorComp = $state<import('svelte').Component<Record<string, never>> | null>(null);
+  $effect(() => {
+    if (!FileEditorComp && $fileEditorStore.openFiles.length > 0) {
+      void import('$lib/components/FileEditor.svelte').then((m) => {
+        FileEditorComp = m.default;
+      });
+    }
+  });
   import { initFileWatcherSync } from '$lib/stores/fileWatcherSync';
   import { getScmSelectedRepo } from '$lib/stores/scmCache';
   import {
@@ -123,6 +140,10 @@ self.MonacoEnvironment = {
 // ─── 打开 .ridge 入口（双下拉）───
   // 副按钮 = 已保存工作区（Bookmark 图标，列出 ~/ridge-workspaces/*.ridge）。
   // 点击 = openWorkspaceFromFile。
+  // §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P）：复用现成 QuickOpen.svelte
+  // （fuzzy filename_search → openFile）。详见 docs/superpowers/specs/2026-06-14-…。
+  let quickOpenVisible = $state(false);
+
   let savedOpen = $state(false);
   let savedList = $state<{ name: string; path: string; mtime_secs: number }[]>([]);
   let savedBtn: HTMLButtonElement | undefined = $state();
@@ -210,6 +231,12 @@ self.MonacoEnvironment = {
   // the canvas is mounted once for the app's lifetime.
   function globalHostCanvas(node: HTMLCanvasElement) {
     const manager = TerminalManager.instance();
+    // §shared-remote: the desktop-in-browser controller shares one PTY (one grid)
+    // with the host and other viewers. Enable "manual lock + centered letterbox"
+    // so a passive layout change never fights the shared size and the terminal
+    // letterboxes instead of leaving a dead zone. Host (Tauri) build keeps the
+    // normal container-driven auto-fit.
+    if (webRemote) manager.setSharedRemoteMode(true);
     void manager.attachHost(node).catch((err) => {
       console.warn('[ridge] attachHost failed for global canvas', err);
     });
@@ -453,6 +480,20 @@ function expandSidebar() {
       }
       return;
     }
+    // Ctrl+Shift+P / Ctrl+P: 打开文件搜索 palette（VS Code 对齐）。
+    // Ctrl+Shift+P 全局生效；裸 Ctrl+P 在 TUI 活跃终端里让位给 shell
+    // （如 readline Ctrl+P=上一条历史），避免抢终端快捷键。
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+      if (!e.shiftKey) {
+        const target = e.target as HTMLElement | null;
+        const paneEl = target?.closest?.('[data-rg-pane-id]') as HTMLElement | null;
+        const paneId = paneEl?.dataset.rgPaneId;
+        if (paneId && isPaneTuiActive(paneId)) return;
+      }
+      e.preventDefault();
+      quickOpenVisible = true;
+      return;
+    }
     // Ctrl+A: 全选当前文本输入框的所有文本 (只在输入框/textarea上生效)
     if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
       const target = e.target as HTMLElement | null;
@@ -550,8 +591,10 @@ function expandSidebar() {
     // 导致这里返回 target='unknown'，document-level handler 进而把它的
     // 「unknown」菜单贴在 RidgePane.onContextMenu 已显示的丰富菜单上面，
     // 用户看到的就是 RidgePane 菜单一闪而过，最后留下错误菜单。
-    const paneEl =
-      target.closest('.rg-pane-root') || target.closest('[data-rg-pane-id]');
+    // `.rg-pane-root` never existed in the rendered DOM — the pane root carries
+    // `.rg-pane-container[data-rg-pane-id]` (RidgePane.svelte), so this branch
+    // always missed and the `[data-rg-pane-id]` matcher alone already finds it.
+    const paneEl = target.closest('[data-rg-pane-id]');
     if (paneEl) {
       const paneId =
         paneEl.getAttribute('data-rg-pane-id') ||
@@ -1133,10 +1176,36 @@ function expandSidebar() {
       // flag any store/DOM pane-count drift. Shared action for every kind.
       const applyLayoutSync = async (change: LayoutChange) => {
         await syncPaneLayoutFromBackend();
+        // §teammate-fit (2026-06-11): backend-driven layout changes (teammate
+        // split/reused/detach/remove) only re-sync the tree here — unlike the
+        // front-end `splitPane`, which schedules `scheduleForceFitAfterSplit`.
+        // Without a matching forced re-fit, a backend-created teammate pane
+        // relies solely on its single attach-time fit, which races SvelteKit
+        // mount + `manager.ready()`; losing that race strands the kernel grid
+        // at the 24×80 attach default while the container is already its
+        // post-split width → 终端右侧死区、且不随 pane resize 自适应。`state`
+        // 仅翻 agent badge、不改布局，跳过（fitPaneNow 本就幂等，跳过只为省事）。
+        if (change.kind !== 'state') {
+          scheduleForceFitActivePanes();
+        }
         if (!dev) return;
         requestAnimationFrame(() => {
           const storeCount = getAllPaneIds(get(paneTreeStore)).length;
-          const domCount = document.querySelectorAll('.rg-pane-root').length;
+          // Mounted pane roots carry class `.rg-pane-container` (RidgePane.svelte:
+          // the `[data-rg-pane-id]` div), NOT `.rg-pane-root` — that class never
+          // existed in the rendered DOM, so this query always returned 0 and every
+          // teammate split spuriously tripped the guard ("mounted panes=0"). Scope
+          // the count to the ACTIVE workspace's pane host: the keep-alive renderer
+          // mounts EVERY workspace's SplitContainer at once (inactive ones are
+          // `display:none` but still in the DOM), while `storeCount` reflects only
+          // the active workspace's tree — an unscoped query would over-count.
+          const wsId = get(activeWorkspaceId);
+          const host = wsId
+            ? document.querySelector(`[data-rg-ws-pane-host="${wsId}"]`)
+            : null;
+          const domCount = (host ?? document).querySelectorAll(
+            '.rg-pane-container'
+          ).length;
           if (storeCount > 0 && domCount !== storeCount) {
             reportDevIssue({
               title: 'Layout sync mismatch',
@@ -1736,8 +1805,12 @@ function expandSidebar() {
           style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0; display:block;"
         ></canvas>
       </div>
-      <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流 -->
-      <FileEditor />
+      <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流。
+           懒挂载：首次打开文件后才加载（见上方 $effect），未打开时不在 DOM —— 与
+           FileEditor 空态（embedded 宽 0 / 不可见）视觉等价。 -->
+      {#if FileEditorComp}
+        <FileEditorComp />
+      {/if}
     </div>
   </div>
 
@@ -1789,4 +1862,12 @@ function expandSidebar() {
 <WindToast />
 <!-- 全局右键菜单 -->
 <ContextMenu />
+
+<!-- §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P，VS Code 对齐）。openFile → 内置编辑器。 -->
+{#if quickOpenVisible}
+  <QuickOpen
+    on:openFile={(e) => fileEditorStore.openFile(e.detail.path)}
+    on:close={() => (quickOpenVisible = false)}
+  />
+{/if}
 

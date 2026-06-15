@@ -57,6 +57,13 @@ export default defineConfig({
       workbox: {
         // Precache the built shell + assets, including the terminal wasm.
         globPatterns: ['**/*.{js,css,html,wasm,svg,png,ico,webp,woff,woff2,webmanifest}'],
+        // Keep the flag-only emoji subset OUT of the precache so it stays truly
+        // on-demand: the unicode-range @font-face (injected only on flag-less
+        // OSes — see flagEmojiSupport.ts) makes the browser fetch flags.woff2
+        // exactly once, when a flag codepoint first appears. mac/iOS render
+        // flags natively and never download it; first paint stays font-request
+        // free (design §8).
+        globIgnores: ['**/fonts/flags.woff2'],
         // The term-wasm bundle is large; raise the precache size ceiling.
         maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
         cleanupOutdatedCaches: true,
@@ -88,12 +95,24 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,
+    // Better code splitting: split by feature/vendor
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes('ridge-term')) return 'term-wasm';
           if (id.includes('node_modules/lucide-svelte')) return 'icons';
+          // Split heavy editor/terminal components
+          if (id.includes('monaco-editor')) return 'monaco-editor';
+          if (id.includes('mermaid')) return 'mermaid';
+          // Split virtual keyboard and touch-specific code
+          if (id.includes('/remote/lib/VirtualKeyboard') || id.includes('/remote/lib/modState')) return 'virtual-keyboard';
+          // Split terminal canvas (heavy WASM-dependent)
+          if (id.includes('/remote/lib/TerminalCanvas') || id.includes('/remote/lib/terminalController')) return 'terminal-canvas';
+          // Split workspace tree
+          if (id.includes('/remote/lib/WorkspaceTree')) return 'workspace-tree';
         },
+        // Smaller chunk size for better caching
+        chunkSizeWarningLimit: 500,
       },
     },
   },

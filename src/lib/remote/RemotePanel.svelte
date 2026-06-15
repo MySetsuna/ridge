@@ -6,7 +6,7 @@
   import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
   import { dev } from '$app/environment';
   import { settingsStore, setSetting } from '$lib/stores/settings';
-  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
+  import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
   // §unify: 远程控制 = 同一份能力的两个触达通道(LAN + 官方公网)。本面板把二者
   // 合一为单一视图(去 tab):一个主开关、一份共享 TOTP、LAN/公网入口同屏、一份
@@ -37,7 +37,24 @@
   // the Settings panel, which also reads `settingsStore.remoteEnabled`).
   const remoteEnabled = $derived($settingsStore.remoteEnabled);
   // §shared-TOTP: 单一来源 —— 同一本机 RemoteAuth(get_remote_info)，LAN 与公网共用。
-  let remoteInfo = $state<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
+  let remoteInfo = $state<{ port: number; lanIp: string; lanIps?: string[]; totpCode: string; otpauthUri: string; ready: boolean; machineName: string } | null>(null);
+  // §lan-addresses: a phone may be on a different interface than the host's
+  // primary route (Wi-Fi vs Tailscale vs Ethernet). List every usable LAN IPv4
+  // and let the user pick the one on their phone's network — the QR + copy link
+  // follow the selection. Defaults to the primary (route-to-internet) address.
+  let selectedIp = $state<string | null>(null);
+  const lanIps = $derived(
+    remoteInfo?.lanIps && remoteInfo.lanIps.length > 0
+      ? remoteInfo.lanIps
+      : remoteInfo?.lanIp
+        ? [remoteInfo.lanIp]
+        : [],
+  );
+  const activeIp = $derived(
+    selectedIp && lanIps.includes(selectedIp)
+      ? selectedIp
+      : (remoteInfo?.lanIp ?? lanIps[0] ?? 'localhost'),
+  );
   let connectError = $state('');
   let totpTimer: ReturnType<typeof setInterval> | null = null;
   let machineName = $state('Ridge');
@@ -56,6 +73,9 @@
   // ── 公网（官方公网加速，契约 §5.3 多控制方）状态 ─────────────────────────
   // host 多控制方管理器（一条信令 WS + 按 cid 的 N 个 PeerConnection）。
   let host: RidgeCloudHost | null = null;
+  // 零信任 #2（概念 4-桌面）：本机 Ed25519 设备身份公钥（get_device_identity_pub 取一次缓存）。
+  // 与 sign_device_identity 配对注入 host：俱在 → 握手发 0x02 签名帧；取不到 → 回落 0x01。
+  let deviceIdentityPub: Uint8Array | null = null;
   let hostState = $state<HostSignalState>('offline');
   let cloudSessions = $state<CloudControllerSession[]>([]);
   const isOnline = $derived(hostState === 'online');
@@ -141,11 +161,30 @@
   }
   async function refreshRemoteInfo() {
     try {
-      const info = await invoke<{ port: number; lanIp: string; totpCode: string; otpauthUri: string; ready: boolean; machineName: string }>('get_remote_info');
+      const info = await invoke<{ port: number; lanIp: string; lanIps?: string[]; totpCode: string; otpauthUri: string; ready: boolean; machineName: string }>('get_remote_info');
       remoteInfo = info;
       machineName = info.machineName;
     } catch (e: unknown) {
       console.error('Failed to refresh remote info', e);
+    }
+  }
+
+  // §totp-persist：重置本机 TOTP 种子（桌面 host 专属；web-remote 不渲染该按钮）。
+  // 二次确认后调命令；Rust 发 remote-totp-changed → onMount 的 listener 刷新二维码。
+  let resettingTotp = $state(false);
+  async function resetTotp(): Promise<void> {
+    if (resettingTotp) return;
+    const { confirm } = await import('@tauri-apps/plugin-dialog');
+    const ok = await confirm($t('remote.resetTotpConfirm'), { title: $t('remote.resetTotp'), kind: 'warning' });
+    if (!ok) return;
+    resettingTotp = true;
+    try {
+      await invoke('remote_reset_totp');
+      await refreshRemoteInfo();
+    } catch (e: unknown) {
+      connectError = e instanceof Error ? e.message : tr('remote.toggleFailed');
+    } finally {
+      resettingTotp = false;
     }
   }
   async function toggleRemoteEnabled() {
@@ -161,7 +200,7 @@
     }
   }
   async function copyLink() {
-    const uri = buildLinkUri(remoteInfo?.lanIp ?? 'localhost', remoteInfo?.port ?? 0);
+    const uri = buildLinkUri(activeIp, remoteInfo?.port ?? 0);
     try {
       await navigator.clipboard.writeText(uri);
       copySuccess = true;
@@ -251,17 +290,32 @@
     const s = cloudAuth.snapshot();
     if (!s.deviceToken || !s.deviceName || !s.user?.username) return null;
     return new RidgeCloudHost(
-      { deviceToken: s.deviceToken, username: s.user.username },
+      {
+        deviceToken: s.deviceToken,
+        username: s.user.username,
+        // 零信任 #2（概念 4-桌面）：host 握手发 0x02 设备签名帧。signContext = 对 id-bind
+        // context 做 Ed25519 签名（私钥在 Rust/DPAPI，relay 无法伪造）；identityPub = 本机
+        // 设备身份公钥（启动取一次缓存）。两者配对：俱在 → 0x02；缺一 → 回落 0x01（向后兼容）。
+        signContext: (context: Uint8Array) =>
+          invoke<number[]>('sign_device_identity', { context: Array.from(context) }).then((a) =>
+            Uint8Array.from(a),
+          ),
+        identityPub: deviceIdentityPub ?? undefined,
+      },
       {
         onHostState: (st) => {
           hostState = st;
           if (st === 'error') connectError = tr('cloud.hostError');
           if (st === 'online' || st === 'connecting') connectError = '';
+          // Surface "public remote is serving" to the whole app so per-pane
+          // refresh buttons (RidgePane) appear while a cloud viewer can share
+          // the PTY — the LAN-only `remoteRunning` store stays false here.
+          cloudHostOnline.set(st === 'online');
         },
         onSessions: (list) => { cloudSessions = list; },
         onError: (msg) => { connectError = msg; },
         // host=Tauri 桌面 app：注入真实 invoke + pane 源 + 本机 TOTP 校验（契约 §0/§4/§5.1）。
-        createBridge: (_cid, send) =>
+        createBridge: (_cid, send, bindTranscript) =>
           new CloudHostBridge({
             invoke: (method, params) => invoke(method, params),
             sendFrame: send,
@@ -271,7 +325,17 @@
             // pty-output 发射（只发 pty-delta），故旧 cloudPaneSource 对原生 pane 收不到
             // 字节。raw fan-out 在 delta 分支之前，delta-mode 也照样推。
             paneOutputSource: makeCloudHostPaneSource({ invoke, listen }),
+            // 明文 totp-verify（旧 controller / host 回落 0x01 时）。
             totpVerifier: (code) => invoke<boolean>('verify_remote_totp', { code }),
+            // 零信任 #1（概念 5）：host 发 0x02 → bindTranscript 非空时启用 totp-bind
+            // 信道绑定校验（HMAC tag，明文码不上线）。transcript 闭包注入 Rust 命令。
+            totpBindVerifier: bindTranscript
+              ? (tag) =>
+                  invoke<boolean>('verify_remote_totp_bind', {
+                    transcript: Array.from(bindTranscript),
+                    tag: Array.from(tag),
+                  })
+              : undefined,
           }),
       },
     );
@@ -282,6 +346,15 @@
     if (!s.deviceToken || !s.deviceName || !s.user?.username) {
       connectError = tr('cloud.errDeviceNotActivated');
       return;
+    }
+    // 零信任 #2（概念 4-桌面）：取一次本机设备身份公钥缓存，供 host 握手发 0x02。
+    // 取不到（旧设备/无密钥）→ 留 null，host 自动回落 0x01（不阻断上线）。
+    if (!deviceIdentityPub) {
+      try {
+        deviceIdentityPub = Uint8Array.from(await invoke<number[]>('get_device_identity_pub'));
+      } catch {
+        deviceIdentityPub = null;
+      }
     }
     host ??= buildHost();
     if (!host) { connectError = tr('cloud.errDeviceNotActivated'); return; }
@@ -294,6 +367,7 @@
   }
   async function goOffline(): Promise<void> {
     host?.goOffline();
+    cloudHostOnline.set(false);
     await notifyCloudActive(false);
   }
   function disconnectController(cid: string): void { host?.kick(cid); }
@@ -334,6 +408,8 @@
 
   onMount(() => {
     refreshRemoteInfo();
+    // §totp-persist：种子被重置 / 登录态切换后，Rust 发此事件 → 刷新二维码+码。
+    const unlistenTotp = listen('remote-totp-changed', () => { void refreshRemoteInfo(); });
     // §shared-TOTP: single 5s poll for the shared TOTP code, alive while either
     // channel is active (LAN enabled OR public host online/connecting).
     totpTimer = setInterval(async () => {
@@ -343,6 +419,7 @@
       if (totpTimer) clearInterval(totpTimer);
       if (devicesTimer) clearInterval(devicesTimer);
       host?.goOffline();
+      void unlistenTotp.then((un) => un());
     };
   });
 </script>
@@ -387,6 +464,17 @@
         </div>
         <div class="flex flex-col items-center gap-1 pt-1">
           <p class="text-[10px] text-[var(--rg-fg-muted)]">{$t('remote.qrBindAuth')}</p>
+          {#if import.meta.env.RIDGE_WEB_REMOTE !== true}
+            <button
+              onclick={resetTotp}
+              disabled={resettingTotp}
+              class="flex items-center gap-1 text-[10px] text-[var(--rg-fg-muted)] hover:text-red-400 transition-colors disabled:opacity-50"
+              title={$t('remote.resetTotp')}
+            >
+              <RefreshCw class="w-3 h-3 {resettingTotp ? 'animate-spin' : ''}" />
+              {$t('remote.resetTotp')}
+            </button>
+          {/if}
           <QrCode value={remoteInfo.otpauthUri} size={132} />
         </div>
       </div>
@@ -403,16 +491,33 @@
         {#if remoteEnabled}
           {#if remoteInfo?.ready}
             <div class="flex flex-col items-center gap-1 py-1">
-              <QrCode value={buildLinkUri(remoteInfo.lanIp, remoteInfo.port)} size={132} />
+              <QrCode value={buildLinkUri(activeIp, remoteInfo.port)} size={132} />
               <p class="text-[9px] text-[var(--rg-fg-muted)]">{$t('remote.qrScanFlow')}</p>
               {#if !dev}
                 <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">{$t('remote.certWarn')}</p>
               {/if}
             </div>
+            {#if lanIps.length > 1}
+              <!-- §lan-addresses: pick the address on the phone's network -->
+              <div class="flex flex-wrap gap-1 justify-center pt-0.5">
+                {#each lanIps as ip (ip)}
+                  <button
+                    onclick={() => selectedIp = ip}
+                    class="px-2 py-0.5 rounded text-[10px] font-mono border transition-colors {ip === activeIp
+                      ? 'border-[var(--rg-accent)] text-[var(--rg-accent)] bg-[var(--rg-accent)]/10'
+                      : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] hover:border-[var(--rg-accent)]/40'}"
+                    title={ip}
+                  >
+                    {ip}
+                  </button>
+                {/each}
+              </div>
+              <p class="text-[9px] text-[var(--rg-fg-muted)] text-center leading-snug">{$t('remote.lanPickAddress')}</p>
+            {/if}
             <div class="flex items-center justify-between text-xs">
               <span class="text-[var(--rg-fg-muted)]">{$t('remote.mobileEntry')}</span>
               <button onclick={copyLink} class="text-[var(--rg-accent)] font-mono hover:underline cursor-pointer bg-transparent border-none p-0" title={$t('remote.copyLinkTitle')}>
-                {remoteInfo.lanIp}:{dev ? '5174' : remoteInfo.port}
+                {activeIp}:{dev ? '5174' : remoteInfo.port}
               </button>
             </div>
             <button onclick={copyLink} class="w-full text-[10px] text-[var(--rg-accent)] hover:underline" title={$t('remote.copyLink')}>

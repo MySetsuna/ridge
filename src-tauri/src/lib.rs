@@ -3,6 +3,7 @@ mod db;
 mod deep_root;
 mod engine;
 mod fs;
+mod lsp;
 pub mod remote;
 mod state;
 mod teammate;
@@ -16,7 +17,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::commands::{
-    fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme, watch, workspace,
+    clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme,
+    watch, workspace,
 };
 use crate::db::ProjectStore;
 use crate::state::AppState;
@@ -107,7 +109,13 @@ pub fn run() {
         .setup({
             let app_data_dir = app_data_dir.clone();
             move |app| {
+                tracing::info!(target: "ridge::init", phase = 1, "setup: storing AppHandle");
+                // §clipboard-image: 清理上次会话遗留的临时粘贴图片（超过 1h 的）。单文件不即时
+                // 删，避免与 CLI 异步读图竞态，故在启动期统一回收。
+                clipboard_image::cleanup_old_temp_images(std::time::Duration::from_secs(3600));
                 let handle = app.handle().clone();
+                // §IDE LSP：注入 AppHandle，使 LSP 诊断通知能 emit 到前端（lsp://diagnostics）。
+                lsp::set_app_handle(handle.clone());
                 // teammate HTTP server 改为「按需启动」：不在冷启动路径上拉起，仅 stash
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
                 // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
@@ -121,6 +129,7 @@ pub fn run() {
                 // the remote UI event bus → relayed as a `{type:'event'}` frame →
                 // dispatched by the browser's `listen()` shim. No feedback loop:
                 // forwarding publishes to the broadcast bus, never back to `emit`.
+                tracing::info!(target: "ridge::init", phase = 2, "setup: registering web-remote event listeners");
                 {
                     use tauri::Listener;
                     for name in ["teammate-layout-changed", "teammate-active-pane-changed"] {
@@ -142,7 +151,9 @@ pub fn run() {
                 // the very first frame would render with the hardcoded fallback
                 // colors because `localStorage.ridge-theme-data` is empty until
                 // SvelteKit hydrates. See `src/app.html` for the consumer end.
+                tracing::info!(target: "ridge::init", phase = 3, "setup: building splash init script");
                 let splash_init_script = theme::build_splash_init_script(app.handle(), &app_data_dir);
+                tracing::info!(target: "ridge::init", phase = 4, "setup: building and showing main window");
                 let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                     .title("ridge")
                     .inner_size(800.0, 600.0)
@@ -154,6 +165,7 @@ pub fn run() {
                     .build()?;
                 window.show()?;
 
+                tracing::info!(target: "ridge::init", phase = 5, "setup: building system tray");
                 // Deep Root Mode（§8.1）：构建系统托盘（恢复工作台 / 彻底退出）。
                 // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
                 if let Err(e) = crate::tray::build_tray(app) {
@@ -165,6 +177,7 @@ pub fn run() {
                 //   - on_open_url：网页授权后 `ridge://auth/focus` 唤起 → 聚焦主窗口 +
                 //     广播 `ridge://auth-focus` 事件，前端据此立即触发一次轮询。
                 //   URI 仅作信号，绝不携带 JWT/敏感数据（token 一律走轮询接口）。
+                tracing::info!(target: "ridge::init", phase = 6, "setup: registering deep-link handlers");
                 {
                     use tauri_plugin_deep_link::DeepLinkExt;
                     if let Err(e) = app.deep_link().register_all() {
@@ -579,15 +592,37 @@ pub fn run() {
             git::git_commit,
             git::git_list_branches,
             git::git_checkout,
+            git::git_merge_branch,
+            git::git_delete_branch,
+            git::git_rename_branch,
+            git::git_push_branch,
+            git::git_rebase,
+            git::git_delete_tag,
+            git::git_push_tag,
+            git::git_stash_list,
+            git::git_stash_push,
+            git::git_stash_apply,
+            git::git_stash_pop,
+            git::git_stash_drop,
+            git::git_stash_branch,
             git::git_fetch,
             git::git_pull,
             git::git_push,
             git::git_sync,
             git::git_diff_file,
+            git::git_blame,
+            git::git_file_log,
+            lsp::lsp_did_open,
+            lsp::lsp_did_change,
+            lsp::lsp_definition,
+            lsp::lsp_hover,
+            lsp::lsp_references,
             git::git_diff_summary,
             git::git_get_file_versions,
             git::git_get_commit_files,
             git::git_get_file_versions_at_commit,
+            git::git_get_file_versions_between,
+            git::git_compare_commits,
             git::git_create_tag,
             git::git_reset,
             git::git_cherry_pick,
@@ -612,6 +647,9 @@ pub fn run() {
             terminal::detect_available_shells,
             terminal::get_shell_history,
             terminal::write_to_pty,
+            clipboard_image::read_clipboard_image_to_temp,
+            clipboard_image::save_clipboard_image_to_temp,
+            clipboard_image::resolve_pasted_image_path,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
@@ -688,6 +726,11 @@ pub fn run() {
             commands::remote::get_remote_info,
             commands::remote::remote_reap_orphans,
             commands::remote::verify_remote_totp,
+            commands::remote::get_device_identity_pub,
+            commands::remote::sign_device_identity,
+            commands::remote::verify_remote_totp_bind,
+            commands::remote::remote_reset_totp,
+            commands::remote::remote_set_totp_identity,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
             commands::remote::set_remote_fs_readonly,
@@ -700,6 +743,9 @@ pub fn run() {
             // B2（D-GM-11）cloud pane 裸字节流（host-local sink，非 controller 直调）
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,
+            commands::cloud_pane::resync_pane_raw,
+            // 桌面 cloud HTTP 代理（绕过 WebView 跨域 CORS，见 cloud_http.rs）
+            commands::cloud_http::cloud_http,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,

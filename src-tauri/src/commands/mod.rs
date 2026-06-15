@@ -1,3 +1,5 @@
+pub mod clipboard_image;
+pub mod cloud_http;
 pub mod cloud_pane;
 pub mod fs_watch;
 pub mod git;

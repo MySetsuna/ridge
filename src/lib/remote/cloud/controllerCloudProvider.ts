@@ -33,22 +33,37 @@ import {
   DIR_CONTROLLER_TO_HOST,
   generateEphemeralKeyPair,
   encodeHandshakeFrame,
-  decodeHandshakeFrame,
+  decodeAnyHandshakeFrame,
+  buildIdBindContext,
+  verifyIdBindSignature,
+  buildBindTranscript,
   deriveSessionKey,
   bytesToBase64,
   base64ToBytes,
+  BYE_REASON_SIGNATURE_INVALID,
   type EphemeralKeyPair,
 } from './e2ee';
+import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { MAX_PANE_FRAME_BYTES } from '../../transport/remote/cloudMux';
+import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '../../transport/remote/cloudMux';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
 
 /** DataChannel 标签（契约 §1.1 / §7：label="ridge"）。 */
 const DC_LABEL = 'ridge';
+
+// ── 断线自动重连参数（与 LAN src/remote/lib/wsRemote.ts 同名同值）──
+/** 退避基数（ms）。 */
+const RECONNECT_BASE_MS = 1_000;
+/** 退避上限（ms）。 */
+const RECONNECT_MAX_MS = 15_000;
+/** 'disconnected'（ICE 抖动）自愈宽限（ms）：超时仍未回 connected 才重连。 */
+const DISCONNECTED_WATCHDOG_MS = 8_000;
+/** ICE restart 后判定未恢复、升级整体重建的期限（ms）。 */
+const ICE_RESTART_DEADLINE_MS = 6_000;
 
 /** 信令消息（契约 §5.1，tag 字段 `t`）。与 host provider 同形。 */
 type SignalIn =
@@ -96,6 +111,18 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private closed = false;
   private hostDevice = '';
 
+  // ── 断线自动重连状态（弱网 P1；口径与 LAN RemoteConnection 对齐）──
+  /** 首连缓存的 ICE servers，供重连重建复用（弱网下不再发 API）。 */
+  private iceServers: IceServer[] = [];
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  /** 'disconnected'（ICE 抖动）自愈看门狗。 */
+  private disconnectedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ICE restart 升级看门狗（限期未恢复 → 整体重建）。 */
+  private iceRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 本次断线是否已尝试过 ICE restart（避免对同一次断线反复 restart 死循环）。 */
+  private iceRestartTried = false;
+
   // ── B3（D-GM-10）E2EE 公钥↔身份绑定状态 ──
   /** host 经已认证信令旁路转发回来的临时公钥；尚未到达为 null。 */
   private peerSigKey: Uint8Array | null = null;
@@ -105,6 +132,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private bindingDecided = false;
   private bindingAccepted = false;
   private bindingMode: KeyBindingMode = 'pending';
+  /** 零信任 #1：收到 host 0x02 后存的信道绑定 transcript（供 totp-bind）；旧 host 为 null。 */
+  private bindTranscript: Uint8Array | null = null;
 
   constructor(config: ControllerCloudProviderConfig, callbacks: CloudConnectionCallbacks = {}) {
     this.config = {
@@ -140,6 +169,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       return; // 已在连接中，幂等
     }
     this.closed = false;
+    this.reconnectAttempts = 0;
     this.offerStarted = false;
     this.hostDevice = deviceId;
     this.resetBinding();
@@ -156,6 +186,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     }
     if (this.closed) return;
 
+    this.iceServers = iceServers; // 缓存供重连重建复用（STUN/TURN 稳定，弱网下不再发 API）。
     this.setupPeerConnection(iceServers);
     this.openSignaling(deviceId);
   }
@@ -171,10 +202,19 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
     pc.onconnectionstatechange = () => {
       const cs = pc.connectionState;
-      if (cs === 'failed' || cs === 'closed') {
-        if (!this.closed) this.fail('WebRTC 连接中断', 'NETWORK');
+      if (cs === 'connected') {
+        // 连接恢复：重置退避 + 清看门狗。ICE restart 恢复时 E2EE 会话存活、无需重握手，
+        // 直接恢复业务态（驱动 L2 'connected' 边沿 → 重订阅 pane / 重发 $/hello）。
+        this.reconnectAttempts = 0;
+        this.iceRestartTried = false;
+        this.clearDisconnectedWatchdog();
+        this.clearIceRestartDeadline();
+        if (this.handshakeDone && this.bindingAccepted) this.setState('connected');
+      } else if (cs === 'failed' || cs === 'closed') {
+        if (!this.closed) this.scheduleReconnect('WebRTC 连接中断');
       } else if (cs === 'disconnected') {
-        // 短暂抖动可能自愈，不立刻判失败。
+        // 短暂抖动可能自愈；起看门狗，超时仍未回 connected 才重连。
+        this.armDisconnectedWatchdog();
       }
     };
 
@@ -192,7 +232,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       this.startE2eeHandshake();
     };
     dc.onclose = () => {
-      if (!this.closed) this.fail('数据通道已关闭', 'NETWORK');
+      if (!this.closed) this.scheduleReconnect('数据通道已关闭');
     };
     dc.onmessage = (ev) => {
       this.onDataChannelMessage(ev.data);
@@ -217,16 +257,24 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     // 握手完成前，首帧必须是对端握手帧；否则断开（契约 §7.1）。
     if (!this.handshakeDone) {
       try {
-        const peerPub = decodeHandshakeFrame(bytes);
+        // 按首字节分派：0x01 旧裸公钥 / 0x02 带设备身份签名（方案 X，零信任 #2）。
+        const hs = decodeAnyHandshakeFrame(bytes);
         if (!this.ephemeral) throw new Error('本端临时密钥缺失');
-        const key = deriveSessionKey(this.ephemeral.privateKey, this.ephemeral.publicKey, peerPub);
+        // 焚毁前留存本端临时公钥：0x02 验签的 context 需要双方临时公钥。
+        const myPub = this.ephemeral.publicKey;
+        const key = deriveSessionKey(this.ephemeral.privateKey, myPub, hs.ephPub);
         // controller 端发出方向为 controller→host(dir=1)；与 host provider 严格镜像。
         this.session = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
         this.handshakeDone = true;
         // 握手用完即焚临时私钥引用（公钥已在 startE2eeHandshake 经信令上报）。
         this.ephemeral = null;
-        // B3：先做公钥绑定判定，通过(或宽限期回落)才标记 connected。
-        this.resolveBindingFromHandshake(peerPub);
+        if (hs.kind === 'signed') {
+          // 方案 X：host 设备身份签名 + TOFU（设备私钥在 host、relay 无法伪造，强于 B3 旁路）。
+          this.resolveSignedBinding(hs.ephPub, myPub, hs.idPub, hs.sig);
+        } else {
+          // 旧 host（0x01 裸公钥）：回退 B3 e2ee-pubkey 旁路三态判定（向后兼容）。
+          this.resolveBindingFromHandshake(hs.ephPub);
+        }
       } catch (e: unknown) {
         this.fail(e instanceof Error ? e.message : 'E2EE 握手失败，已断开', 'FORBIDDEN');
         this.disconnect();
@@ -248,6 +296,53 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // 解密/重放失败：丢弃该帧但不一定断连（契约要求拒绝该帧）。
       this.cb.onError?.(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
     }
+  }
+
+  // ── 方案 X（零信任 #2）：0x02 设备身份签名 + TOFU ────────────────────────────
+  /**
+   * host 发来 0x02 签名握手帧：用 host 设备身份公钥验签本次临时公钥绑定
+   * （context = 双方临时公钥‖device‖username），并 TOFU 固定 host 指纹。
+   *   - 验签失败 → 判 MITM，断开（设备私钥在 host，relay 无私钥无法伪造）。
+   *   - TOFU 指纹变化 → 告警（本期默认**不强拒**；fail-closed 翻闸是 P3）。
+   *   - 通过 → 标记 connected（enforced）。设备签名比 B3 旁路更强，故不再走 e2ee-pubkey 比对。
+   */
+  private resolveSignedBinding(
+    hostEphPub: Uint8Array,
+    controllerEphPub: Uint8Array,
+    hostIdPub: Uint8Array,
+    sig: Uint8Array,
+  ): void {
+    if (this.bindingDecided || this.closed) return;
+    const context = buildIdBindContext(
+      hostEphPub,
+      controllerEphPub,
+      this.hostDevice,
+      this.config.username,
+    );
+    if (!verifyIdBindSignature(hostIdPub, context, sig)) {
+      this.bindingDecided = true;
+      // 概念 6：经 E2EE 0x11 业务通道（**不经 relay**）发 $/bye{signature-invalid} 优雅收尾
+      //（D9 语义，与 host 端 keyBinding reject→$/bye→teardown 一致），再断开。
+      this.sendByeSignatureInvalid();
+      this.fail('E2EE 设备身份签名验证失败（疑似 MITM），已断开', 'FORBIDDEN');
+      this.disconnect();
+      return;
+    }
+    // TOFU 固定（host 标识 = {device}-{username}）。指纹变化本期仅告警（P3 翻闸再强拒）。
+    const tofu = checkOrPinDeviceIdentity(this.roomLabel(this.hostDevice), hostIdPub);
+    if (tofu.status === 'changed') {
+      this.cb.onError?.(
+        `host 设备指纹变化（原 ${tofu.pinned} → 现 ${tofu.actual}），疑似 MITM 或换机`,
+        'FORBIDDEN',
+      );
+    }
+    // 零信任 #1：存信道绑定 transcript，供 controller 发 totp-bind（替代明文 totp-verify）。
+    this.bindTranscript = buildBindTranscript(hostEphPub, controllerEphPub);
+    this.bindingDecided = true;
+    this.bindingMode = 'enforced';
+    this.bindingAccepted = true;
+    this.reconnectAttempts = 0; // 全量握手成功：重置退避曲线
+    this.setState('connected');
   }
 
   // ── B3（D-GM-10）公钥绑定判定 ──────────────────────────────────────────────
@@ -276,6 +371,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     if (decision === 'accept') {
       this.bindingMode = this.peerSigKey ? 'enforced' : 'relay-trust';
       this.bindingAccepted = true;
+      this.reconnectAttempts = 0; // 全量握手成功：重置退避曲线
       this.setState('connected');
     } else {
       // reject：握手公钥 ≠ 信令旁路公钥 → 检测到 MITM。
@@ -304,11 +400,17 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.bindingDecided = false;
     this.bindingAccepted = false;
     this.bindingMode = 'pending';
+    this.bindTranscript = null;
   }
 
   /** B3 绑定模式（诊断/测试可读）：enforced=已比对一致；relay-trust=回落；pending=未决。 */
   getKeyBindingMode(): KeyBindingMode {
     return this.bindingMode;
+  }
+
+  /** 零信任 #1：信道绑定 transcript（仅收到 host 0x02 后可用；旧 host/未握手为 null）。 */
+  getBindTranscript(): Uint8Array | null {
+    return this.bindTranscript;
   }
 
   sendFrame(plaintext: Uint8Array): void {
@@ -325,6 +427,26 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     if (this.dc && this.dc.readyState === 'open') {
       // 拷贝出独立 ArrayBuffer，避免发送共享底层 buffer 的视图。
       this.dc.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    }
+  }
+
+  /**
+   * 概念 6：设备签名验证失败时经 **E2EE 0x11 业务通道**（**不经 relay**）发
+   * `$/bye{reason:"signature-invalid"}`，让对端（host）拿到结构化收尾原因（D9 语义）。
+   * best-effort：会话已派生且 dc 仍 open 才发；发不出静默忽略（disconnect 仍会拆 DataChannel）。
+   * 即使会话被 relay-MITM，该帧也只透露"已识破"，不泄露任何机密。
+   */
+  private sendByeSignatureInvalid(): void {
+    if (!this.session || !this.dc || this.dc.readyState !== 'open') return;
+    try {
+      const bye = encodeJsonFrame({
+        jsonrpc: '2.0',
+        method: '$/bye',
+        params: { reason: BYE_REASON_SIGNATURE_INVALID },
+      });
+      this.rawSend(this.session.seal(bye));
+    } catch {
+      /* best-effort：seal/发送失败就算了，由 disconnect 收尾 */
     }
   }
 
@@ -349,13 +471,16 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       void this.onSignal(ev.data);
     };
     ws.onerror = () => {
-      if (!this.closed) this.fail('信令 WebSocket 错误', 'NETWORK');
+      // 仅上报；真正的断开与重连由 onclose 驱动（避免误置 error 终态）。
+      if (!this.closed) this.cb.onError?.('信令 WebSocket 错误', 'NETWORK');
     };
     ws.onclose = () => {
-      // 信令断开不一定意味着 RTC 断（已连通后 relay 可下线），仅在尚未建立 RTC 时判失败。
-      if (!this.closed && this.state === 'connecting') {
-        this.fail('信令连接已关闭', 'NETWORK');
-      }
+      if (this.closed) return;
+      // RTC 已连通：信令断开无害，且重开信令会在 relay 拿到新 cid → host 视作新 controller
+      //（幽灵会话），故不主动重连信令；待 RTC 真断时再整体重建。
+      if (this.pc?.connectionState === 'connected') return;
+      // 尚未连通 / RTC 也不健康 → 退避重连（整体重建会重开信令）。
+      this.scheduleReconnect('信令连接已关闭');
     };
   }
 
@@ -440,8 +565,141 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     }
   }
 
+  // ─── 断线自动重连（弱网 P1）─────────────────────────────────────────────────
+  // 让 provider 断线后真正重连并重新 setState('connected')，自动激活 L2 RpcClient 的
+  // onReconnected 重订阅 + 重连 reject/重握手（rpcClient.handleStateChange）。复用既有
+  // setupPeerConnection/openSignaling，不另写一套传输逻辑；退避口径与 LAN 完全一致。
+
+  /** 排一次退避重连。connected→disconnected 边沿驱动 L2 reject 在途请求。幂等（已排则跳过）。 */
+  private scheduleReconnect(reason?: string): void {
+    if (this.closed || this.reconnectTimer) return;
+    this.clearDisconnectedWatchdog();
+    this.clearIceRestartDeadline();
+    if (reason) this.cb.onError?.(reason, 'NETWORK');
+    // connected → disconnected 边沿：L2 据此 reject 在途请求（rpcClient.handleStateChange）。
+    this.setState('disconnected');
+    const n = this.reconnectAttempts++;
+    const base = Math.min(RECONNECT_BASE_MS * 2 ** n, RECONNECT_MAX_MS);
+    const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.reconnect();
+    }, delay);
+  }
+
+  /** 一次重连尝试：信令仍在 + pc 未关 → ICE restart（同 cid 重协商，最省）；否则整体重建。 */
+  private async reconnect(): Promise<void> {
+    if (this.closed) return;
+    this.setState('connecting');
+    const canIceRestart =
+      this.ws?.readyState === WebSocket.OPEN &&
+      !!this.pc &&
+      this.pc.connectionState !== 'closed' &&
+      !this.iceRestartTried;
+    if (canIceRestart && this.pc) {
+      this.iceRestartTried = true;
+      try {
+        this.offerStarted = false;
+        const offer = await this.pc.createOffer({ iceRestart: true });
+        await this.pc.setLocalDescription(offer);
+        this.sendSignal({ t: 'offer', sdp: offer.sdp });
+        this.offerStarted = true;
+        this.armIceRestartDeadline(); // 限期内未恢复 → 升级为整体重建
+        return;
+      } catch {
+        // ICE restart 失败 → 落到整体重建。
+      }
+    }
+    this.rebuildAll();
+  }
+
+  /** 整体重建：拆旧 pc/dc/ws，复用缓存 iceServers 重建（弱网下不再发 API）。 */
+  private rebuildAll(): void {
+    this.clearIceRestartDeadline();
+    this.teardownTransport();
+    if (this.closed) return;
+    this.iceRestartTried = false; // 新 pc：下一次抖动可再尝试 ICE restart
+    this.offerStarted = false;
+    this.resetBinding();
+    if (this.iceServers.length === 0) {
+      void this.refetchIceAndBuild();
+      return;
+    }
+    this.setupPeerConnection(this.iceServers);
+    this.openSignaling(this.hostDevice);
+  }
+
+  /** 缓存为空（极端）时取一次 ICE 再重建；失败则继续退避重连。 */
+  private async refetchIceAndBuild(): Promise<void> {
+    try {
+      const res = await getIceServers(this.config.userToken);
+      this.iceServers = res.iceServers ?? [];
+    } catch {
+      if (!this.closed) this.scheduleReconnect('获取 ICE 服务器失败');
+      return;
+    }
+    if (this.closed) return;
+    this.setupPeerConnection(this.iceServers);
+    this.openSignaling(this.hostDevice);
+  }
+
+  /** 关闭 pc/dc/ws 并解绑回调（不置 closed、不 setState）——供重连重建复用。 */
+  private teardownTransport(): void {
+    if (this.dc) {
+      this.dc.onopen = this.dc.onclose = this.dc.onmessage = null;
+      try { this.dc.close(); } catch { /* ignore */ }
+      this.dc = null;
+    }
+    if (this.pc) {
+      this.pc.onicecandidate = this.pc.ondatachannel = this.pc.onconnectionstatechange = null;
+      try { this.pc.close(); } catch { /* ignore */ }
+      this.pc = null;
+    }
+    if (this.ws) {
+      this.ws.onmessage = this.ws.onerror = this.ws.onclose = null;
+      try { this.ws.close(); } catch { /* ignore */ }
+      this.ws = null;
+    }
+    this.ephemeral = null;
+    this.session = null;
+    this.handshakeDone = false;
+  }
+
+  /** 'disconnected'（ICE 抖动）看门狗：超时仍未自愈回 connected → 重连。 */
+  private armDisconnectedWatchdog(): void {
+    if (this.disconnectedTimer || this.closed) return;
+    this.disconnectedTimer = setTimeout(() => {
+      this.disconnectedTimer = null;
+      if (this.closed) return;
+      if (this.pc?.connectionState === 'connected') return; // 自愈
+      this.scheduleReconnect('WebRTC 连接中断');
+    }, DISCONNECTED_WATCHDOG_MS);
+  }
+
+  private clearDisconnectedWatchdog(): void {
+    if (this.disconnectedTimer) { clearTimeout(this.disconnectedTimer); this.disconnectedTimer = null; }
+  }
+
+  /** ICE restart 升级看门狗：限期内未回 connected → 整体重建。 */
+  private armIceRestartDeadline(): void {
+    this.clearIceRestartDeadline();
+    this.iceRestartTimer = setTimeout(() => {
+      this.iceRestartTimer = null;
+      if (this.closed) return;
+      if (this.pc?.connectionState === 'connected') return; // restart 成功
+      this.rebuildAll();
+    }, ICE_RESTART_DEADLINE_MS);
+  }
+
+  private clearIceRestartDeadline(): void {
+    if (this.iceRestartTimer) { clearTimeout(this.iceRestartTimer); this.iceRestartTimer = null; }
+  }
+
   disconnect(): void {
     this.closed = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.clearDisconnectedWatchdog();
+    this.clearIceRestartDeadline();
     if (this.dc) {
       this.dc.onopen = this.dc.onclose = this.dc.onmessage = null;
       try { this.dc.close(); } catch { /* ignore */ }

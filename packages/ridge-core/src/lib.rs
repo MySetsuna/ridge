@@ -30,19 +30,23 @@
 //! re-implemented per host.
 
 pub mod capability;
+pub mod clipboard;
 pub mod commands;
 pub mod ctx;
+pub mod device_identity;
 pub mod dispatch;
 pub mod error;
 pub mod fs;
 pub mod pty;
 pub mod sandbox;
+mod seed_store;
 pub mod totp;
 pub mod workspace;
 
 // ── Curated public surface ──
 pub use capability::{CapabilitySet, REMOTE_ALLOWLIST};
 pub use ctx::{ConnectionId, CoreState, Ctx, EventScope, EventSink, TaskSpawner, TokioSpawner};
+pub use device_identity::DeviceIdentity;
 pub use dispatch::dispatch;
 pub use error::{CoreError, CoreResult};
 pub use sandbox::RootScope;

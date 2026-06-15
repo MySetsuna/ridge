@@ -71,6 +71,12 @@ pub fn build_splash_init_script(app: &AppHandle, app_data_dir: &Path) -> String 
         .iter()
         .find(|t| t.id == theme_id)
         .or_else(|| tf.themes.first());
+    format_splash_init_script(entry)
+}
+
+/// Pure function: produce the JS snippet for a given ThemeEntry (or None).
+/// Extracted for unit-testability.
+fn format_splash_init_script(entry: Option<&ThemeEntry>) -> String {
     let (loader_json, bg_json, colors_json, id_json) = match entry {
         Some(t) => {
             let loader = serde_json::to_string(&t.loader).unwrap_or_else(|_| "null".to_string());
@@ -158,5 +164,102 @@ pub fn get_theme_data(app: AppHandle) -> ThemeFile {
     ThemeFile {
         version: 1,
         themes: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample_entry() -> ThemeEntry {
+        ThemeEntry {
+            id: "test-dark".into(),
+            label: "Test Dark".into(),
+            theme_type: "dark".into(),
+            loader: LoaderConfig {
+                primary: "#fff".into(),
+                secondary: "#000".into(),
+                bg: Some("#07090c".into()),
+                accent_glow: Some("#36c26e".into()),
+                stroke_width: Some(2.0),
+                corner_radius: Some(4.0),
+                draw_duration_ms: Some(800),
+                breathe_duration_ms: Some(2000),
+                cross_delay_ms: Some(600),
+                fade_out_duration_ms: Some(400),
+                fill_opacity_primary: Some(0.9),
+                fill_opacity_secondary: Some(0.6),
+            },
+            colors: {
+                let mut c = HashMap::new();
+                c.insert("bg".into(), "#07090c".into());
+                c.insert("fg".into(), "#c8e8d4".into());
+                c.insert("accent".into(), "#36c26e".into());
+                c
+            },
+        }
+    }
+
+    #[test]
+    fn format_with_entry_produces_all_four_define_property_calls() {
+        let entry = sample_entry();
+        let js = format_splash_init_script(Some(&entry));
+        assert!(js.contains("__RIDGE_BOOT_LOADER__"));
+        assert!(js.contains("__RIDGE_BOOT_THEME_BG__"));
+        assert!(js.contains("__RIDGE_BOOT_THEME_COLORS__"));
+        assert!(js.contains("__RIDGE_BOOT_THEME_ID__"));
+        assert!(js.contains("Object.defineProperty"));
+        assert!(js.contains("Object.freeze"));
+        assert!(js.contains("#07090c"));
+        assert!(js.contains("#36c26e"));
+    }
+
+    #[test]
+    fn format_with_none_uses_null_defaults() {
+        let js = format_splash_init_script(None);
+        assert!(js.contains("value:null"));
+        // All four properties should still exist, just with null values.
+        assert!(js.contains("__RIDGE_BOOT_LOADER__"));
+        assert!(js.contains("__RIDGE_BOOT_THEME_BG__"));
+        assert!(js.contains("__RIDGE_BOOT_THEME_COLORS__"));
+        assert!(js.contains("__RIDGE_BOOT_THEME_ID__"));
+    }
+
+    #[test]
+    fn format_js_syntax_is_valid_assignment() {
+        let entry = sample_entry();
+        let js = format_splash_init_script(Some(&entry));
+        // The output is a JS statement that ends with a semicolon.
+        assert!(js.ends_with(';'), "JS must end with statement terminator");
+        // Each defineProperty call should be properly closed.
+        let opens: Vec<_> = js.match_indices("Object.defineProperty").collect();
+        let closes: Vec<_> = js.match_indices("});").collect();
+        assert_eq!(opens.len(), closes.len(),
+            "number of Object.defineProperty opens ({}) must match number of close parens ({})",
+            opens.len(), closes.len());
+    }
+
+    #[test]
+    fn loader_config_fields_are_camel_cased_in_output() {
+        let entry = sample_entry();
+        let js = format_splash_init_script(Some(&entry));
+        // The loader JSON inside should use camelCase keys.
+        assert!(js.contains("drawDurationMs"));
+        assert!(js.contains("breatheDurationMs"));
+        assert!(js.contains("fadeOutDurationMs"));
+        assert!(js.contains("fillOpacityPrimary"));
+        // snake_case keys should NOT appear.
+        assert!(!js.contains("draw_duration_ms"));
+    }
+
+    #[test]
+    fn colors_map_is_frozen_with_all_entries() {
+        let entry = sample_entry();
+        let js = format_splash_init_script(Some(&entry));
+        // The colors object should contain all our color keys.
+        assert!(js.contains("\"bg\":\"#07090c\""));
+        assert!(js.contains("\"fg\":\"#c8e8d4\""));
+        assert!(js.contains("\"accent\":\"#36c26e\""));
     }
 }

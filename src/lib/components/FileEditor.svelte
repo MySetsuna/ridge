@@ -31,6 +31,26 @@
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import MarkdownPreview from './MarkdownPreview.svelte';
   import { isMarkdownPath } from '$lib/utils/markdown';
+  // §IDE Ctrl/Cmd+Click 路径跳转：复用 linkResolver（解析相对/绝对路径 + 工程内
+  // 判定）+ pathToken（提取光标下路径 token 与 :line:col 后缀）。
+  import { resolveLink, executeAction } from '$lib/utils/linkResolver';
+  import { pathTokenAt } from '$lib/utils/pathToken';
+  import { projectStore } from '$lib/stores/project';
+  import { markRecentlyWritten, onFsChange, isRecentlyWritten } from '$lib/stores/fsEvents';
+  import { get } from 'svelte/store';
+  // §IDE 全量 LSP（go-to-definition）：Ctrl+Click 非路径 token 时调 LSP 符号跳转；
+  // TS/JS 文件激活/编辑时同步给 LSP host。详见 src/lib/lsp/lspClient.ts。
+  import {
+    lspSupports,
+    lspDidOpen,
+    lspDidChange,
+    lspDefinition,
+    lspReferences,
+    lspHover,
+    onLspDiagnostics,
+    uriToPath,
+  } from '$lib/lsp/lspClient';
+  import type { UnlistenFn } from '@tauri-apps/api/event';
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
@@ -77,6 +97,23 @@
   // 在命中范围加 inlineClassName='rg-search-flash-inline'，query 改变 / 关闭
   // 文件 / 切到非命中文件时 clear。
   let searchHighlightDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  // §IDE 行级 Git blame：Alt+B / 右键「切换 Git 行注释」开关。开启时拉 git_blame
+  // 在每行行尾注入「作者 · 相对时间 · 摘要」灰字注释；编辑内容即清除（避免错位）。
+  interface BlameLine {
+    line: number;
+    commit: string;
+    author: string;
+    timestamp: number;
+    summary: string;
+  }
+  let blameVisible = $state(false);
+  let blameDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  // §IDE LSP 文档同步状态：已 didOpen 的路径集 + 单调递增的 didChange 版本号。
+  const lspOpenedPaths = new Set<string>();
+  let lspVersion = 1;
+  // P2：LSP provider/监听句柄，onDestroy 时清理。
+  const lspDisposables: monaco.IDisposable[] = [];
+  let lspDiagUnlisten: UnlistenFn | null = null;
   // Keep-alive 缓存：每个 path 一个 Monaco model + view state，跨 tab 切换不丢
   // undo/redo 栈、滚动条、光标和折叠状态。Tab 关闭时才 dispose（在另一个 effect 里
   // 监听 openFiles 做 GC）。空白态用一个单例 emptyModel 兜底，避免每次反复创建。
@@ -105,6 +142,12 @@
   let diffCurrentPath: string | null = null;
   let diffLoading = $state(false);
   let diffError = $state('');
+  // §SCM 可编辑 diff（对标 VSCode）：仅「工作区改动」diff（非 commit / 非 staged）的
+  // modified 侧可编辑；记录其 {repoRoot, git-relative path} 供 diff 编辑器 Ctrl+S 直接
+  // write_file 落盘。历史 commit / 已暂存 diff 保持只读。
+  let diffEditableArgs: { repoRoot: string; path: string } | null = null;
+  // §SCM diff 实时刷新：订阅 fs-changed，外部改动当前所看工作区 diff 的文件时重载。
+  let fsDiffUnsub: (() => void) | null = null;
   let diffRenderSideBySide = $state(typeof window !== 'undefined' ? window.innerWidth >= 900 : true);
   let diffReqId = 0; // generation counter to cancel stale async loads
   /**
@@ -253,13 +296,44 @@
       fontSize: editorFontSize,
       renderWhitespace: 'boundary',
       scrollBeyondLastLine: false,
+      // §SCM diff 模式切换：Monaco 默认 useInlineViewWhenSpaceIsLimited=true，空间
+      // 不够时自动改 inline，会**覆盖**用户显式的 inline↔并排（renderSideBySide）切换
+      // → 点了不生效。关掉它，让工具栏的模式切换始终权威。
+      useInlineViewWhenSpaceIsLimited: false,
     });
     diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    // §SCM 可编辑 diff：Ctrl/Cmd+S 在可编辑（工作区）diff 上把 modified 侧落盘。
+    diffEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      void saveDiffModified();
+    });
     return diffEditor;
   }
 
+  /** 把可编辑（工作区）diff 的 modified 内容写回文件（绝对路径 = repoRoot/git-relative）。 */
+  async function saveDiffModified(): Promise<void> {
+    if (!diffEditableArgs || !diffEditor || !isTauri()) return;
+    const content = diffEditor.getModifiedEditor().getValue();
+    const abs = `${diffEditableArgs.repoRoot.replace(/[/\\]+$/, '')}/${diffEditableArgs.path}`;
+    try {
+      await invoke('write_file', { path: abs, content });
+      markRecentlyWritten(abs); // 抑制自写触发的 fs-changed「外部修改」提示
+    } catch (e) {
+      diffError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** 设定当前 diff 是否可编辑（仅工作区改动），并切 modified 侧 readOnly。 */
+  function applyDiffEditable(
+    ed: monaco.editor.IStandaloneDiffEditor,
+    args: { repoRoot: string; path: string; cached: boolean; commit?: string }
+  ): void {
+    const editable = !args.commit && !args.cached;
+    ed.updateOptions({ readOnly: !editable });
+    diffEditableArgs = editable ? { repoRoot: args.repoRoot, path: args.path } : null;
+  }
+
   async function loadDiff(
-    args: { repoRoot: string; path: string; cached: boolean; commit?: string },
+    args: { repoRoot: string; path: string; cached: boolean; commit?: string; compareBase?: string },
     tabPath: string,
     forceReload: boolean = false
   ): Promise<void> {
@@ -281,6 +355,7 @@
       if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
       ed.setModel({ original: cached.original, modified: cached.modified });
       diffCurrentPath = tabPath;
+      applyDiffEditable(ed, args);
       const vs = diffViewStateCache.get(tabPath);
       if (vs) ed.restoreViewState(vs);
       diffError = '';
@@ -293,16 +368,22 @@
     if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
     try {
       if (!isTauri()) throw new Error(tr('editor.requiresTauri'));
-      const v = args.commit
-        ? await invoke<{ original: string; modified: string }>(
-            'git_get_file_versions_at_commit',
-            { repoRoot: args.repoRoot, path: args.path, hash: args.commit }
-          )
-        : await invoke<{ original: string; modified: string }>('git_get_file_versions', {
-            repoRoot: args.repoRoot,
-            path: args.path,
-            cached: args.cached,
-          });
+      const v =
+        args.compareBase && args.commit
+          ? await invoke<{ original: string; modified: string }>(
+              'git_get_file_versions_between',
+              { repoRoot: args.repoRoot, path: args.path, from: args.compareBase, to: args.commit }
+            )
+          : args.commit
+            ? await invoke<{ original: string; modified: string }>(
+                'git_get_file_versions_at_commit',
+                { repoRoot: args.repoRoot, path: args.path, hash: args.commit }
+              )
+            : await invoke<{ original: string; modified: string }>('git_get_file_versions', {
+                repoRoot: args.repoRoot,
+                path: args.path,
+                cached: args.cached,
+              });
       if (myId !== diffReqId) return;
       if (!diffMountPoint) return;
       await tick();
@@ -315,6 +396,7 @@
       if (!ed) return;
       ed.setModel({ original, modified });
       diffCurrentPath = tabPath;
+      applyDiffEditable(ed, args);
       const vs = diffViewStateCache.get(tabPath);
       if (vs) ed.restoreViewState(vs);
     } catch (e) {
@@ -329,6 +411,19 @@
     if (searchHighlightDecorations) {
       try { searchHighlightDecorations.clear(); } catch {}
       searchHighlightDecorations = null;
+    }
+    // §IDE LSP P2：释放 hover provider + 诊断监听。
+    for (const d of lspDisposables) {
+      try { d.dispose(); } catch {}
+    }
+    lspDisposables.length = 0;
+    if (lspDiagUnlisten) {
+      try { lspDiagUnlisten(); } catch {}
+      lspDiagUnlisten = null;
+    }
+    if (fsDiffUnsub) {
+      try { fsDiffUnsub(); } catch {}
+      fsDiffUnsub = null;
     }
     if (editor) {
       editor.dispose();
@@ -385,6 +480,9 @@
       tabSize: 2,
       wordWrap: 'on',
       padding: { top: 8, bottom: 8 },
+      // §IDE：与 VS Code 一致用 Alt+Click 加多光标，腾出 Ctrl/Cmd+Click 给「跳转」
+      // （路径跳转见下方 onMouseDown；未来 LSP go-to-definition 也走 Ctrl+Click）。
+      multiCursorModifier: 'alt',
       // §C1 touch-friendly options on coarse-pointer devices.
       ...(coarsePointer ? {
         scrollbar: { verticalScrollbarSize: 16, horizontalScrollbarSize: 16 },
@@ -402,6 +500,11 @@
       if (!editor || !currentModelPath) return;
       const value = editor.getValue();
       fileEditorStore.updateContent(currentModelPath, value);
+      // §IDE LSP：把变更全量同步给 LSP（仅已 didOpen 的 TS/JS），保证 definition 位置准确。
+      if (lspOpenedPaths.has(currentModelPath)) {
+        const root = get(projectStore).currentPath;
+        if (root) void lspDidChange(root, currentModelPath, ++lspVersion, value);
+      }
     });
     // Track cursor line so the markdown preview can follow in preview mode.
     editor.onDidChangeCursorPosition((ev) => {
@@ -411,7 +514,276 @@
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void fileEditorStore.saveActive();
     });
+    // §IDE Ctrl/Cmd+Click 路径跳转（VS Code 对齐）：命中可解析的文件路径 token →
+    // 在内置编辑器打开（带 :line:col 定位）。非路径 token 不拦截，留给未来 LSP
+    // go-to-definition（同样走 Ctrl+Click，因上面已把多光标改到 Alt）。
+    editor.onMouseDown((e) => {
+      const oe = e.event;
+      if (!(oe.ctrlKey || oe.metaKey) || !oe.leftButton) return;
+      if (
+        e.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT ||
+        !e.target.position ||
+        !currentModelPath
+      )
+        return;
+      const model = editor?.getModel();
+      if (!model) return;
+      const pos = e.target.position;
+      const tok = pathTokenAt(model.getLineContent(pos.lineNumber), pos.column);
+      if (!tok) return;
+      // 相对路径以当前文件目录为基；工程根纳入 knownCwds → 工程内文件 open-file
+      // （而非 reveal 到资源管理器）。
+      const fileDir = currentModelPath.replace(/[/\\][^/\\]*$/, '');
+      const projectRoot = get(projectStore).currentPath ?? undefined;
+      const known = projectRoot ? [projectRoot, fileDir] : [fileDir];
+      const action = resolveLink(tok.path, { cwd: fileDir, basePath: fileDir, knownCwds: known });
+      // 1) 明确的工程内文件路径 → 直接打开（高置信，路径跳转）。
+      if (action.kind === 'open-file') {
+        oe.preventDefault();
+        oe.stopPropagation();
+        void executeAction({ ...action, line: tok.line, col: tok.col });
+        return;
+      }
+      // 2) 非明确文件路径：TS/JS 文件优先试 LSP go-to-definition（符号/方法跳转）；
+      //    LSP 无结果时回退到路径 reveal（如外部目录/文件）。
+      const issued = gotoDefinitionAt(
+        pos.lineNumber,
+        pos.column,
+        action.kind === 'reveal' ? () => void executeAction(action) : undefined
+      );
+      if (issued) {
+        oe.preventDefault();
+        oe.stopPropagation();
+        return;
+      }
+      // 3) 非 TS/JS：保留 F2a 的 reveal（外部路径在资源管理器打开）。
+      if (action.kind === 'reveal') {
+        oe.preventDefault();
+        oe.stopPropagation();
+        void executeAction(action);
+      }
+    });
+    // §IDE 行级 Git blame 开关：Alt+B + 右键菜单「切换 Git 行注释」。
+    editor.addAction({
+      id: 'rg.toggleBlame',
+      label: '切换 Git 行注释 (Blame)',
+      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyB],
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.5,
+      run: () => {
+        blameVisible = !blameVisible; // 同步由下方 $effect(refreshBlame) 处理
+      },
+    });
+    // §IDE LSP P2 — F12 / 右键「转到定义」（与 Ctrl+Click 同走 gotoDefinitionAt）。
+    editor.addAction({
+      id: 'rg.gotoDefinition',
+      label: '转到定义 (Go to Definition)',
+      keybindings: [monaco.KeyCode.F12],
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.1,
+      run: (ed) => {
+        const p = ed.getPosition();
+        if (p) gotoDefinitionAt(p.lineNumber, p.column);
+      },
+    });
+    // §IDE LSP — providers 全局注册（FileEditor 单例懒挂载），onDestroy 释放。
+    const LSP_LANGS = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact', 'rust'];
+    // P2 hover：签名/文档。
+    lspDisposables.push(
+      monaco.languages.registerHoverProvider(LSP_LANGS, {
+        async provideHover(model, position) {
+          const path = pathForModel(model);
+          if (!path || !lspSupports(path)) return null;
+          const root = get(projectStore).currentPath;
+          if (!root) return null;
+          const hover = await lspHover(root, path, position.lineNumber - 1, position.column - 1);
+          return hover ? { contents: [{ value: hover.markdown }] } : null;
+        },
+      })
+    );
+    // P3 references：Shift+F12 / 右键「查找所有引用」→ Monaco peek。
+    lspDisposables.push(
+      monaco.languages.registerReferenceProvider(LSP_LANGS, {
+        async provideReferences(model, position) {
+          const path = pathForModel(model);
+          if (!path || !lspSupports(path)) return null;
+          const root = get(projectStore).currentPath;
+          if (!root) return null;
+          const refs = await lspReferences(
+            root,
+            path,
+            position.lineNumber - 1,
+            position.column - 1
+          );
+          return refs.map((r) => ({
+            uri: monaco.Uri.file(r.path),
+            range: new monaco.Range(r.line, r.column, r.line, r.column),
+          }));
+        },
+      })
+    );
+    // P3 editorOpener：Monaco 内部导航（references peek 点击等）路由到 Ridge 编辑器，
+    // 而非默认的 standalone 行为（cross-file 打不开）。uriToPath 已归一盘符大小写。
+    lspDisposables.push(
+      monaco.editor.registerEditorOpener({
+        openCodeEditor(_source, resource, selectionOrPosition) {
+          const path = uriToPath(resource.toString());
+          let line: number | undefined;
+          let column: number | undefined;
+          if (selectionOrPosition && 'lineNumber' in selectionOrPosition) {
+            line = selectionOrPosition.lineNumber;
+            column = selectionOrPosition.column;
+          } else if (selectionOrPosition && 'startLineNumber' in selectionOrPosition) {
+            line = selectionOrPosition.startLineNumber;
+            column = selectionOrPosition.startColumn;
+          }
+          void fileEditorStore.openFile(path, { line, column });
+          return true;
+        },
+      })
+    );
+    // §IDE LSP P2 — 诊断：LSP host 经 Tauri event 推送 → 设到对应 model 的 markers。
+    void onLspDiagnostics((payload) => {
+      const path = uriToPath(payload.uri);
+      const model =
+        modelCache.get(path) ?? (path === currentModelPath ? editor?.getModel() ?? null : null);
+      if (!model) return;
+      const markers = payload.diagnostics.map((d) => ({
+        severity: lspSeverityToMonaco(d.severity),
+        message: d.message,
+        startLineNumber: d.range.start.line + 1,
+        startColumn: d.range.start.character + 1,
+        endLineNumber: d.range.end.line + 1,
+        endColumn: d.range.end.character + 1,
+        source: d.source,
+      }));
+      monaco.editor.setModelMarkers(model, 'lsp', markers);
+    }).then((un) => {
+      lspDiagUnlisten = un;
+    });
+    // §SCM diff 实时刷新：外部修改当前所看「工作区改动」diff 的文件时重载（自写经
+    // isRecentlyWritten 排除，故不会因自己 Ctrl+S 保存而丢正在编辑的内容）。
+    fsDiffUnsub = onFsChange((payload) => {
+      const c = current;
+      if (!c?.diffArgs || c.diffArgs.commit || c.diffArgs.cached) return;
+      const abs = `${c.diffArgs.repoRoot.replace(/[/\\]+$/, '')}/${c.diffArgs.path}`;
+      const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+      const target = norm(abs);
+      if (payload.paths.some((p) => norm(p) === target) && !isRecentlyWritten(abs)) {
+        void loadDiff(c.diffArgs, c.path, true);
+      }
+    });
   });
+
+  /** 相对时间（zh）：用于 blame 行尾注释。 */
+  function relTime(unixSec: number): string {
+    if (!unixSec) return '未提交';
+    const diff = Date.now() / 1000 - unixSec;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
+    const d = new Date(unixSec * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** 清除 blame 行注释（切文件 / 关闭时）。 */
+  function clearBlame(): void {
+    blameDecorations?.clear();
+    blameDecorations = null;
+  }
+
+  /** 拉取并渲染当前文件的行级 blame 注释。blameVisible 为假或无文件时清空。 */
+  async function refreshBlame(): Promise<void> {
+    if (!editor) return;
+    if (!blameVisible || !currentModelPath) {
+      clearBlame();
+      return;
+    }
+    const repoRoot = get(projectStore).currentPath;
+    if (!repoRoot) return;
+    const reqPath = currentModelPath;
+    let blame: BlameLine[];
+    try {
+      blame = await invoke<BlameLine[]>('git_blame', { repoRoot, path: reqPath });
+    } catch (err) {
+      console.warn('[blame] git_blame failed', reqPath, err);
+      return;
+    }
+    // stale guard：await 期间可能已切到别的文件或关闭了 blame。
+    if (!editor || !blameVisible || currentModelPath !== reqPath) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const maxLine = model.getLineCount();
+    const decos: monaco.editor.IModelDeltaDecoration[] = blame
+      .filter((b) => b.line >= 1 && b.line <= maxLine)
+      .map((b) => {
+        const col = model.getLineMaxColumn(b.line);
+        return {
+          range: new monaco.Range(b.line, col, b.line, col),
+          options: {
+            after: {
+              content: `      ${b.author} · ${relTime(b.timestamp)}${b.summary ? ` · ${b.summary}` : ''}`,
+              inlineClassName: 'rg-blame-annotation',
+            },
+            showIfCollapsed: true,
+          },
+        };
+      });
+    // 每次重建集合绑定到当前 model（跨 tab 切换不残留旧 model 的装饰）。
+    clearBlame();
+    blameDecorations = editor.createDecorationsCollection(decos);
+  }
+
+  // ── §IDE LSP P2 helpers ──────────────────────────────────────────────────
+
+  /** 反查 Monaco model 对应的文件路径（active 用 currentModelPath，否则查 modelCache）。 */
+  function pathForModel(model: monaco.editor.ITextModel): string | null {
+    if (model === editor?.getModel()) return currentModelPath;
+    for (const [p, m] of modelCache) if (m === model) return p;
+    return null;
+  }
+
+  /** LSP DiagnosticSeverity（1-4）→ Monaco MarkerSeverity。 */
+  function lspSeverityToMonaco(sev?: number): monaco.MarkerSeverity {
+    switch (sev) {
+      case 1:
+        return monaco.MarkerSeverity.Error;
+      case 2:
+        return monaco.MarkerSeverity.Warning;
+      case 3:
+        return monaco.MarkerSeverity.Info;
+      default:
+        return monaco.MarkerSeverity.Hint;
+    }
+  }
+
+  /**
+   * 在指定位置（1-based）触发 LSP go-to-definition → openFile 落点。Ctrl+Click /
+   * F12 / 右键「转到定义」共用。返回是否已发起请求（用于调用方决定是否拦默认行为）；
+   * `onEmpty` 在无定义结果时回调（Ctrl+Click 用它回退路径 reveal）。
+   */
+  function gotoDefinitionAt(
+    lineNumber: number,
+    column: number,
+    onEmpty?: () => void
+  ): boolean {
+    if (!currentModelPath || !lspSupports(currentModelPath)) return false;
+    const root = get(projectStore).currentPath;
+    if (!root) return false;
+    const path = currentModelPath;
+    void lspDefinition(root, path, lineNumber - 1, column - 1).then((targets) => {
+      if (targets.length > 0) {
+        void fileEditorStore.openFile(targets[0].path, {
+          line: targets[0].line,
+          column: targets[0].column,
+        });
+      } else {
+        onEmpty?.();
+      }
+    });
+    return true;
+  }
 
   // Swap editor model when active tab changes —— **keep-alive 模式**：
 
@@ -501,6 +873,28 @@
     } catch (err) {
       console.error('[FileEditor] model swap failed', err);
     }
+  });
+
+  // §IDE blame 同步：声明在 swap effect 之后 → 同一 flush 里后跑（currentModelPath
+  // 已更新）。读 current 建立对 tab 切换的依赖；refreshBlame 内同步读 blameVisible，
+  // 故开关切换也会触发本 effect（开→拉取，关→清除）。
+  $effect(() => {
+    void current; // 活动 tab 变化 → 重跑
+    void refreshBlame();
+  });
+
+  // §IDE LSP didOpen：TS/JS 文件首次激活时把内容同步给 LSP host（definition 需要打开
+  // 缓冲区）。声明在 swap effect 之后 → currentModelPath 已更新。每路径只 didOpen 一次，
+  // 后续编辑走 didChange（onDidChangeModelContent）。
+  $effect(() => {
+    void current; // tab 切换依赖
+    const path = currentModelPath;
+    if (!path || !lspSupports(path) || lspOpenedPaths.has(path)) return;
+    const root = get(projectStore).currentPath;
+    const model = editor?.getModel();
+    if (!root || !model) return;
+    lspOpenedPaths.add(path);
+    void lspDidOpen(root, path, model.getValue());
   });
 
   // —— GC：openFiles 中已经不再存在的 path，对应的 model / view state /
@@ -1626,6 +2020,13 @@
     background-color: rgba(255, 200, 0, 0.45) !important;
     border-radius: 2px;
     box-shadow: 0 0 0 1px rgba(255, 200, 0, 0.5);
+  }
+  /* §IDE 行级 Git blame：行尾灰字注释（作者 · 相对时间 · 摘要）。不抢眼、不可选。 */
+  :global(.rg-blame-annotation) {
+    color: var(--rg-fg-muted, #8b8b9a);
+    opacity: 0.65;
+    font-style: italic;
+    user-select: none;
   }
   /* Floating resize handles — small grab zones extending slightly outside the box */
   .rg-float-handle {

@@ -92,6 +92,97 @@ pub async fn git_checkout(
     ridge_core::commands::git::git_checkout(repo_root, branch, create, base).await
 }
 
+/// 分支：合并进当前分支（SCM 图谱分支右键菜单）。
+#[tauri::command]
+pub async fn git_merge_branch(repo_root: String, branch: String) -> Result<String, String> {
+    ridge_core::commands::git::git_merge_branch(repo_root, branch).await
+}
+
+/// 分支：删除本地分支（force=true → -D）。
+#[tauri::command]
+pub async fn git_delete_branch(
+    repo_root: String,
+    branch: String,
+    force: Option<bool>,
+) -> Result<String, String> {
+    ridge_core::commands::git::git_delete_branch(repo_root, branch, force).await
+}
+
+/// 分支：重命名本地分支。
+#[tauri::command]
+pub async fn git_rename_branch(
+    repo_root: String,
+    old_name: String,
+    new_name: String,
+) -> Result<String, String> {
+    ridge_core::commands::git::git_rename_branch(repo_root, old_name, new_name).await
+}
+
+/// 分支：推送到 origin 并设上游。
+#[tauri::command]
+pub async fn git_push_branch(repo_root: String, branch: String) -> Result<String, String> {
+    ridge_core::commands::git::git_push_branch(repo_root, branch).await
+}
+
+/// 变基：当前分支变基到 onto（分支/commit）。
+#[tauri::command]
+pub async fn git_rebase(repo_root: String, onto: String) -> Result<String, String> {
+    ridge_core::commands::git::git_rebase(repo_root, onto).await
+}
+
+/// 标签：删除本地标签。
+#[tauri::command]
+pub async fn git_delete_tag(repo_root: String, name: String) -> Result<String, String> {
+    ridge_core::commands::git::git_delete_tag(repo_root, name).await
+}
+
+/// 标签：推送到 origin。
+#[tauri::command]
+pub async fn git_push_tag(repo_root: String, name: String) -> Result<String, String> {
+    ridge_core::commands::git::git_push_tag(repo_root, name).await
+}
+
+// ── Stash ────────────────────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn git_stash_list(
+    repo_root: String,
+) -> Result<Vec<ridge_core::commands::git::StashEntry>, String> {
+    ridge_core::commands::git::git_stash_list(repo_root).await
+}
+
+#[tauri::command]
+pub async fn git_stash_push(
+    repo_root: String,
+    message: Option<String>,
+    include_untracked: Option<bool>,
+) -> Result<String, String> {
+    ridge_core::commands::git::git_stash_push(repo_root, message, include_untracked).await
+}
+
+#[tauri::command]
+pub async fn git_stash_apply(repo_root: String, reference: String) -> Result<String, String> {
+    ridge_core::commands::git::git_stash_apply(repo_root, reference).await
+}
+
+#[tauri::command]
+pub async fn git_stash_pop(repo_root: String, reference: String) -> Result<String, String> {
+    ridge_core::commands::git::git_stash_pop(repo_root, reference).await
+}
+
+#[tauri::command]
+pub async fn git_stash_drop(repo_root: String, reference: String) -> Result<String, String> {
+    ridge_core::commands::git::git_stash_drop(repo_root, reference).await
+}
+
+#[tauri::command]
+pub async fn git_stash_branch(
+    repo_root: String,
+    branch: String,
+    reference: String,
+) -> Result<String, String> {
+    ridge_core::commands::git::git_stash_branch(repo_root, branch, reference).await
+}
+
 #[tauri::command]
 pub async fn git_fetch(repo_root: String) -> Result<(), String> {
     ridge_core::commands::git::git_fetch(repo_root).await
@@ -168,6 +259,27 @@ pub async fn git_get_file_versions_at_commit(
     ridge_core::commands::git::git_get_file_versions_at_commit(repo_root, path, hash).await
 }
 
+/// 提交对比：两提交间某文件的版本对（图谱 Ctrl+Click 两提交点击文件的 diff）。
+#[tauri::command]
+pub async fn git_get_file_versions_between(
+    repo_root: String,
+    path: String,
+    from: String,
+    to: String,
+) -> Result<GitFileVersions, String> {
+    ridge_core::commands::git::git_get_file_versions_between(repo_root, path, from, to).await
+}
+
+/// 提交对比：两提交间的变更文件列表。
+#[tauri::command]
+pub async fn git_compare_commits(
+    repo_root: String,
+    from: String,
+    to: String,
+) -> Result<Vec<ridge_core::commands::git::CommitFileEntry>, String> {
+    ridge_core::commands::git::git_compare_commits(repo_root, from, to).await
+}
+
 #[tauri::command]
 pub async fn git_create_tag(
     repo_root: String,
@@ -190,6 +302,25 @@ pub async fn git_diff_file(
     cached: Option<bool>,
 ) -> Result<String, String> {
     ridge_core::commands::git::git_diff_file(repo_root, path, cached).await
+}
+
+/// 行级 blame：文件每行的最近提交信息（IDE FileEditor gutter/hover 用）。
+#[tauri::command]
+pub async fn git_blame(
+    repo_root: String,
+    path: String,
+) -> Result<Vec<ridge_core::commands::git::BlameLine>, String> {
+    ridge_core::commands::git::git_blame(repo_root, path).await
+}
+
+/// 文件提交历史（IDE「查看本文件/本行历史」用，选中后复用 git_diff_file 看 diff）。
+#[tauri::command]
+pub async fn git_file_log(
+    repo_root: String,
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<ridge_core::commands::git::FileCommit>, String> {
+    ridge_core::commands::git::git_file_log(repo_root, path, limit).await
 }
 
 /// Stub retained for compatibility — see `ridge_core::commands::git`. Param

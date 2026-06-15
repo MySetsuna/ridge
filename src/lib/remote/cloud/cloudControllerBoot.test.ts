@@ -27,6 +27,7 @@ import {
   verifyTotpOverControl,
 } from './cloudControllerBoot';
 import type { CloudWebrtcAdapter } from '$lib/transport/remote/cloudWebrtcAdapter';
+import { buildBindTranscript, computeBindTag, bytesToBase64 } from './e2ee';
 
 /**
  * Minimal fake of the bits of CloudWebrtcAdapter that verifyTotpOverControl uses
@@ -56,7 +57,7 @@ function makeFakeAdapter() {
 describe('parseCloudControllerHostname', () => {
   it('splits a tenant host on the LAST dash into device + username', () => {
     // Arrange
-    const host = 'my-laptop-alice.remo2ridge.duckdns.org';
+    const host = 'my-laptop-alice.9527127.xyz';
     // Act
     const parsed = parseCloudControllerHostname(host);
     // Assert
@@ -80,13 +81,13 @@ describe('parseCloudControllerHostname', () => {
   it.each(['www', 'api', 'ws', 'app', 'admin', 'static', 'cdn', 'mail'])(
     'treats reserved label %s as a system host, not a tenant',
     (label) => {
-      expect(parseCloudControllerHostname(`${label}.remo2ridge.duckdns.org`)).toBeNull();
+      expect(parseCloudControllerHostname(`${label}.9527127.xyz`)).toBeNull();
     },
   );
 
   it('returns null for dash-less / dot-less / localhost hosts', () => {
     expect(parseCloudControllerHostname('localhost')).toBeNull();
-    expect(parseCloudControllerHostname('remo2ridge.duckdns.org')).toBeNull();
+    expect(parseCloudControllerHostname('9527127.xyz')).toBeNull();
     expect(parseCloudControllerHostname('mydevice.example.com')).toBeNull();
   });
 
@@ -155,6 +156,26 @@ describe('verifyTotpOverControl (§4 controller→host TOTP handshake)', () => {
     await expect(p).resolves.toBe(true);
     // Listener was cleaned up after settling.
     expect(fake.hasListener()).toBe(false);
+  });
+
+  it('sends totp-bind (HMAC tag, no plaintext code) when a bind transcript is available', async () => {
+    const fake = makeFakeAdapter();
+    // 模拟已收到 host 0x02：adapter 暴露信道绑定 transcript（零信任 #1）。
+    const transcript = buildBindTranscript(
+      new Uint8Array(32).fill(0x11),
+      new Uint8Array(32).fill(0x22),
+    );
+    (fake.adapter as unknown as { getBindTranscript: () => Uint8Array }).getBindTranscript = () =>
+      transcript;
+    const p = verifyTotpOverControl(fake.adapter, '123456');
+    // 发出的是 totp-bind（base64 HMAC tag）而非明文 totp-verify；明文码不上线。
+    expect(fake.sent.length).toBe(1);
+    const frame = fake.sent[0];
+    expect(frame.t).toBe('totp-bind');
+    expect(frame.code).toBeUndefined();
+    expect(frame.tag).toBe(bytesToBase64(computeBindTag('123456', transcript)));
+    fake.emit({ t: 'totp-result', ok: true });
+    await expect(p).resolves.toBe(true);
   });
 
   it('resolves false on a totp-result{ok:false}', async () => {
