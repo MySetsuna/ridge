@@ -132,6 +132,12 @@
   // 仅 saveViewState；切回时 setModel + restoreViewState，scroll/折叠/光标全部
   // 还原。tab 真正关闭（在 openFiles 中消失）才在 GC effect 里 dispose models。
   let diffMountPoint: HTMLDivElement | undefined;
+  // diffEditor 保持普通 let（**勿**改 $state）：做成响应式会让所有读取它的 effect
+  // （renderSideBySide / 字体 / 布局 / GC）在 diff 实例创建/销毁时一并重跑，打乱编辑器
+  // 生命周期 → 切到普通文件后展示区卡住、只显示上一个文件内容。模式切换的修复改由下方
+  // renderSideBySide effect「先读 diffRenderSideBySide 再判空」实现：初始模式已在
+  // ensureDiffEditor() 内 updateOptions 设好；点击切换时 diffRenderSideBySide（$state）
+  // 变化即让该 effect 重跑生效，无需 diffEditor 响应式。
   let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
   type DiffPair = {
     original: monaco.editor.ITextModel;
@@ -302,6 +308,8 @@
       useInlineViewWhenSpaceIsLimited: false,
     });
     diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    // §光标对齐：若 diff 实例在 webfont 就绪前创建，等字体到位后重测字符宽度。
+    void remeasureWhenFontReady();
     // §SCM 可编辑 diff：Ctrl/Cmd+S 在可编辑（工作区）diff 上把 modified 侧落盘。
     diffEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void saveDiffModified();
@@ -496,6 +504,9 @@
       const vs = viewStateCache.get(current.path);
       if (vs) editor.restoreViewState(vs);
     }
+    // §光标对齐：editor 多在 webfont 就绪前创建，等字体到位后重测字符宽度，
+    // 消除行末光标因回退字体测宽导致的累积左偏。
+    void remeasureWhenFontReady();
     editor.onDidChangeModelContent(() => {
       if (!editor || !currentModelPath) return;
       const value = editor.getValue();
@@ -958,12 +969,33 @@
     void loadDiff(c.diffArgs, c.path);
   });
 
+  // §光标对齐：Monaco 在 create 时即用「当前可用字体」测量并缓存字符宽度。若 webfont
+  // （JetBrains Mono 等）尚未加载完成，测的是回退字体的宽度，字体到位后 Monaco 不会自动
+  // 重测 → 列宽逐列累积偏差，行末光标视觉左偏。等字体真正就绪后 remeasureFonts() 让
+  // Monaco 重测所有实例。remeasureFonts 是全局的，故由下方 effect 的 key 门控，仅在字体
+  // 族/字号真正变化时触发，避免无关设置变更引起整页重排抖动。
+  let lastFontKey = '';
+  async function remeasureWhenFontReady(): Promise<void> {
+    try {
+      await document.fonts.load(`${editorFontSize}px ${editorFontFamily}`);
+      await document.fonts.ready;
+      monaco.editor.remeasureFonts();
+    } catch {
+      /* 无 document.fonts（测试/SSR）或加载失败：忽略，退化为不重测 */
+    }
+  }
+
   // 字体设置变化时，让已存在的 editor / diffEditor 实时更新（无需重建）。
   // Monaco 的 updateOptions 是幂等的，重复 set 同值无副作用。
   $effect(() => {
+    const key = `${editorFontFamily}|${editorFontSize}`;
     const opts = { fontFamily: editorFontFamily, fontSize: editorFontSize };
     editor?.updateOptions(opts);
     diffEditor?.updateOptions(opts);
+    if (key !== lastFontKey) {
+      lastFontKey = key;
+      void remeasureWhenFontReady();
+    }
   });
 
   // Apply renderSideBySide toggle without a full IPC reload.
@@ -972,8 +1004,11 @@
   // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
   // 重建后再 restoreViewState 防止 toggle 时 scroll/折叠位置丢失。
   $effect(() => {
+    // 先无条件读取 $state，使其恒为本 effect 的依赖；切勿放到 `!diffEditor` 早退之后，
+    // 否则 effect 首跑（diffEditor 尚为 null）时不会登记 diffRenderSideBySide 依赖。
+    const sideBySide = diffRenderSideBySide;
     if (!diffEditor) return;
-    diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    diffEditor.updateOptions({ renderSideBySide: sideBySide });
     const cur = diffCurrentPath ? diffModelCache.get(diffCurrentPath) : null;
     if (cur) {
       const vs = diffEditor.saveViewState();

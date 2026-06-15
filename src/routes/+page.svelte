@@ -1111,7 +1111,21 @@ function expandSidebar() {
         });
       });
 
-      await refreshWorkspaces();
+      // §web-remote 工作区兜底（关键）：refreshWorkspaces() 在 catch 里 re-throw
+      // （paneTree.ts），而它在 web-remote/cloud-controller 下经 bridge invoke 取
+      // host 工作区——若在 RpcClient `$/hello` 能力协商/连接边沿仍在途时首发，会竞态
+      // reject 并冒泡，跳过下方 ensureActiveWorkspace() → workspacesList 留空 →
+      // 工作区 tab 空、资源管理器名退化成 id、activeWorkspace 未设 → 终端不 fit。
+      // 故隔离其异常并退避重试，绝不让单次失败带走后续兜底。
+      for (let i = 0; i < 5; i++) {
+        try {
+          await refreshWorkspaces();
+          break;
+        } catch (e) {
+          if (i === 4) console.error('refreshWorkspaces gave up after retries', e);
+          else await new Promise((r) => setTimeout(r, 300));
+        }
+      }
       // 启动策略：
       // 1. cli 启动（终端里 `ridge`）：cwd 是用户工作目录。
       //    - cwd 顶层有 .ridge → 打开它，关默认；否则保留默认（cwd 已种入根 pane）。
@@ -1153,6 +1167,9 @@ function expandSidebar() {
       // activeWorkspaceId 仍为空，这里主动恢复：优先切到列表里的第一个工作区
       // （即采用 host 当前工作区），列表为空才新建一个，确保用户可立即操作。
       await ensureActiveWorkspace();
+      // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
+      // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
+      scheduleForceFitActivePanes();
       await loadSavedWorkspaces();
       await refreshWorkspaceSaveInfo();
 
