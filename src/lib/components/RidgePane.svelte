@@ -1730,6 +1730,9 @@ function captureBackspace(node: HTMLElement) {
 	onkeydown={onContainerKeyDown}
 	use:captureBackspace
 >
+	<!-- 终端背景图层：absolute z-index:0，必须是容器的首个子节点，
+	     才能稳定排在 wasm canvas（由 manager 后续 append）的 DOM 顺序之前、
+	     渲染在其下方。勿在它前面插入其它元素，否则层叠会错乱。 -->
 	{#if $activeBgImage.url}
 		<div
 			class="rg-pane-bgimg"
