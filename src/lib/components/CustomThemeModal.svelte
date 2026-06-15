@@ -3,6 +3,7 @@
      右列 scoped 实时预览。z-index 9996（高于 SettingsPanel 9994，低于 ContextMenu 9999）。
      仅在桌面（isTauri）可用：保存/存图/选图都依赖 Tauri 命令与对话框。 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { invoke, isTauri, convertFileSrc } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { X } from 'lucide-svelte';
@@ -57,7 +58,9 @@
       if (e) { form = blankForm(); loadFrom(e, true); baseId = editingId; }
     } else {
       form = blankForm();
-      const b = getTheme(baseId) ?? $themeData.themes[0];
+      // untrack baseId：仅在弹窗打开/切换编辑态时初始化；后续切换“基于”由
+      // onBaseChange 命令式处理，避免 effect 重跑把用户已输入的主题名清空。
+      const b = untrack(() => getTheme(baseId)) ?? $themeData.themes[0];
       if (b) loadFrom(b, false);
     }
   });
@@ -208,7 +211,7 @@
             <div class="grid grid-cols-2 gap-2">
               {#each CORE_COLOR_KEYS as key (key)}
                 <div class="flex items-center gap-2">
-                  <input type="color" value={hex6(form.colors[key])}
+                  <input type="color" aria-label={key} value={hex6(form.colors[key])}
                     oninput={(e) => {
                       const hx = (e.currentTarget as HTMLInputElement).value;
                       if (ALPHA_COLOR_KEYS.has(key)) setColorWithAlpha(key, hx, alphaOf(form.colors[key]));
@@ -217,7 +220,7 @@
                     class="h-6 w-8 shrink-0 rounded border border-[var(--rg-border)] bg-transparent cursor-pointer" />
                   <span class="text-[11px] text-[var(--rg-fg-muted)] font-mono truncate flex-1">{key}</span>
                   {#if ALPHA_COLOR_KEYS.has(key)}
-                    <input type="range" min="0" max="1" step="0.01" value={alphaOf(form.colors[key])}
+                    <input type="range" min="0" max="1" step="0.01" aria-label="{key} alpha" value={alphaOf(form.colors[key])}
                       oninput={(e) => setColorWithAlpha(key, hex6(form.colors[key]), Number((e.currentTarget as HTMLInputElement).value))}
                       class="w-12 accent-[var(--rg-accent)]" title="alpha" />
                   {/if}
@@ -240,7 +243,7 @@
               <div class="grid grid-cols-2 gap-2">
                 {#each ANSI_COLOR_KEYS as key (key)}
                   <div class="flex items-center gap-2">
-                    <input type="color" value={hex6(form.colors[key])} oninput={(e) => setColor(key, (e.currentTarget as HTMLInputElement).value)}
+                    <input type="color" aria-label={key} value={hex6(form.colors[key])} oninput={(e) => setColor(key, (e.currentTarget as HTMLInputElement).value)}
                       class="h-6 w-8 shrink-0 rounded border border-[var(--rg-border)] bg-transparent cursor-pointer" />
                     <span class="text-[11px] text-[var(--rg-fg-muted)] font-mono truncate">{key}</span>
                   </div>
