@@ -693,16 +693,39 @@ impl Grid {
         let rows_changed = rows != self.rows;
         let dim_changed = cols_changed || rows_changed;
 
-        // §Reflow (2026-06-01): when column width changes on primary screen
-        // outside inline-TUI mode, reflow history rows (before cursor) at
-        // the new width so wrapped content isn't naively truncated. This
-        // runs BEFORE naive_resize_screen so cell data is preserved for
-        // redistribution. The cursor row and below (input area) are not
-        // reflowed — they get naive truncate/pad via naive_resize_screen.
-        let reflowed = cols_changed && !self.is_alt && !inline_tui_active
-            && self.primary.cursor.row > 0;
+        // §Reflow (2026-06-01) / §reflow-inline (2026-06-16): when the column
+        // width changes on primary, rewrap the HISTORY rows above the live
+        // region so wrapped content isn't naively truncated — this matches
+        // conhost's `ResizeWithReflow` and Windows Terminal, which rewrap
+        // wrapped lines on a width change. The "live region" boundary depends
+        // on the mode:
+        //   - shell (PSReadLine / zsh / fish): the cursor row. The prompt and
+        //     the line being edited get naive truncate/pad and are redrawn by
+        //     the shell on SIGWINCH; only the output above the prompt rewraps.
+        //   - inline TUI (Claude Code WITHOUT fullscreen / NO_FLICKER): the
+        //     frame top (`last_abs_csi_row`). The conversation / tool output
+        //     above the Ink input box is permanent primary content that ONLY
+        //     the terminal can rewrap — Ink's SIGWINCH redraw repaints just
+        //     its own frame rows, never the history. Before this the inline
+        //     path skipped reflow entirely and that history stayed at the old
+        //     wrap → the "resize 后内容错位 / 没有正常 reflow" symptom. The
+        //     frame region itself is still wiped below (`inline_tui_wipe`) so
+        //     Ink repaints onto blanks.
+        // Runs BEFORE naive_resize_screen so the old-width cell data is still
+        // intact for redistribution.
+        let inline_frame_top = if inline_tui_active && self.last_abs_csi_at_ms != 0 {
+            (self.last_abs_csi_row as usize).min(old_rows.saturating_sub(1))
+        } else {
+            0
+        };
+        let reflow_boundary = if inline_tui_active {
+            inline_frame_top
+        } else {
+            self.primary.cursor.row
+        };
+        let reflowed = cols_changed && !self.is_alt && reflow_boundary > 0;
         if reflowed {
-            self.reflow_primary_screen(old_cols, cols);
+            self.reflow_primary_screen_at(old_cols, cols, reflow_boundary);
         }
 
         Self::naive_resize_screen(&mut self.primary, rows, cols);
@@ -786,8 +809,17 @@ impl Grid {
             // behaviour. That's correct for the original §A.3 case
             // (lazygit's bottom-of-screen sticky bar, etc.) which
             // doesn't have a stable inline frame top row.
+            //
+            // §reflow-inline (2026-06-16): when the history above the frame
+            // was just rewrapped, the frame top moved by the row-count delta.
+            // `reflow_primary_screen_at` left `primary.cursor.row` at the new
+            // frame top (boundary + delta), so anchor the wipe there. Without
+            // reflow (rows-only change, or no recorded frame top) fall back to
+            // the original `last_abs_csi_row` anchor / full wipe.
             let last_row_idx = rows.saturating_sub(1);
-            let wipe_from_row = if self.last_abs_csi_at_ms != 0 {
+            let wipe_from_row = if reflowed {
+                self.primary.cursor.row.min(last_row_idx)
+            } else if self.last_abs_csi_at_ms != 0 {
                 (self.last_abs_csi_row as usize).min(last_row_idx)
             } else {
                 0
@@ -943,20 +975,28 @@ impl Grid {
     // Reflow (primary screen only)
     // ------------------------------------------------------------------
 
-    /// Reflow history rows (rows before the cursor) at the new column
-    /// width. Groups consecutive rows into paragraphs using the `wrapped`
-    /// flag, flattens each paragraph's cells, and re-splits at `new_cols`.
-    /// Replaces the history portion of `self.primary.rows` and adjusts
-    /// the cursor row by the row-count delta.
+    /// Reflow history rows `[0..boundary)` at the new column width. Groups
+    /// consecutive rows into paragraphs using the `wrapped` flag, flattens
+    /// each paragraph's cells, and re-splits at `new_cols`. Replaces the
+    /// history portion of `self.primary.rows` and adjusts the cursor row by
+    /// the row-count delta.
     ///
-    /// Preserves hyperlink and cluster metadata (OSC 8, grapheme clusters)
-    /// relative to each new row's column offsets. Runs BEFORE
-    /// `naive_resize_screen` so the cell data of old-width rows is still
-    /// intact for redistribution.
-    fn reflow_primary_screen(&mut self, old_cols: usize, new_cols: usize) {
+    /// §reflow-inline (2026-06-16) — the `boundary` parameter is the start of
+    /// the "live region" that is NOT reflowed (it gets naive truncate/pad and
+    /// is repainted by the foreground program on SIGWINCH). It is the shell
+    /// cursor row for the PSReadLine path, and the inline-TUI frame top
+    /// (`last_abs_csi_row`) for the Claude-Code-default path. `primary.cursor.row`
+    /// is set to `boundary + row_count_delta` so the caller can re-anchor the
+    /// live region after the rewrap (the inline path reads it back as the new
+    /// frame top for its wipe). `boundary == 0` → no history → no-op.
+    ///
+    /// Runs BEFORE `naive_resize_screen` so the old-width cell data is still
+    /// intact for redistribution. Hyperlink / cluster metadata (OSC 8,
+    /// grapheme clusters) is dropped on reflow.
+    fn reflow_primary_screen_at(&mut self, old_cols: usize, new_cols: usize, boundary: usize) {
         debug_assert!(old_cols != new_cols);
         let screen = &mut self.primary;
-        let old_cursor_row = screen.cursor.row;
+        let old_cursor_row = boundary;
         if old_cursor_row == 0 {
             return;
         }
@@ -2727,6 +2767,66 @@ mod tests {
             diag.cleared_below_cursor,
             "§1.26 partial cleanup still runs"
         );
+    }
+
+    #[test]
+    fn inline_tui_resize_reflows_history_above_frame() {
+        // §reflow-inline (2026-06-16): Claude Code WITHOUT fullscreen /
+        // NO_FLICKER renders inline on primary — the conversation / tool
+        // output above the Ink input box is permanent primary content that the
+        // TERMINAL must rewrap on a width change (Ink's SIGWINCH redraw only
+        // repaints its own frame rows, never the history). Before the fix the
+        // inline path skipped reflow and the history was naively truncated →
+        // the "resize 后没有正常 reflow" symptom. Verify the history above the
+        // frame top is REWRAPPED (not truncated) and the frame region is wiped
+        // for Ink to repaint onto blanks.
+        let mut g = Grid::new(8, 20, 100);
+
+        // History: one 24-char logical line wraps across rows 0-1 at 20 cols.
+        //   row0 = "ABCDEFGHIJKLMNOPQRST" (wrapped), row1 = "UVWX".
+        for ch in "ABCDEFGHIJKLMNOPQRSTUVWX".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        assert!(g.row(0).unwrap().wrapped, "history row 0 wrapped at old width");
+        assert_eq!(row_text(&g, 1), "UVWX");
+
+        // Inline-TUI frame top at row 2: record an absolute-positioning CSI
+        // there (marks the frame top for the wipe), then a frame marker, then
+        // park the cursor at the frame bottom.
+        g.cursor_to(2, 0);
+        g.note_absolute_positioning(1_000);
+        g.print('F', Attrs::DEFAULT);
+        g.cursor_to(3, 0);
+
+        // Narrow 20 → 10 cols in inline-TUI mode.
+        g.resize_with_inline_tui(8, 10, true);
+
+        // History rewrapped at 10 cols: "ABCDEFGHIJKLMNOPQRSTUVWX" (24) →
+        //   row0 "ABCDEFGHIJ", row1 "KLMNOPQRST", row2 "UVWX". The KEY
+        // assertion is row1: naive truncation would have LOST "KLMNOPQRST" and
+        // left "UVWX" there.
+        assert_eq!(row_text(&g, 0), "ABCDEFGHIJ", "reflow keeps first 10 cols");
+        assert_eq!(
+            row_text(&g, 1),
+            "KLMNOPQRST",
+            "reflow rewraps the overflow (truncation would lose it)"
+        );
+        assert_eq!(row_text(&g, 2), "UVWX", "reflow tail row");
+        assert!(g.row(0).unwrap().wrapped, "rewrapped row 0 still wrapped");
+        assert!(g.row(1).unwrap().wrapped, "rewrapped row 1 still wrapped");
+
+        // History now occupies 3 rows → frame top moved to row 3. The frame
+        // region is wiped for Ink; cursor anchored there.
+        for r in 3..g.rows() {
+            assert_eq!(row_text(&g, r), "", "frame row {r} wiped for Ink redraw");
+        }
+        assert_eq!(g.cursor().row, 3, "cursor anchored at reflowed frame top");
+        assert_eq!(g.cursor().col, 0);
+
+        let diag = g.last_resize_diags().last().expect("resize recorded");
+        assert!(diag.reflowed, "history reflow ran on the inline-TUI path");
+        assert!(diag.inline_tui_wipe, "frame region wiped");
+        assert!(diag.inline_tui_active, "inline-TUI flag recorded");
     }
 
     #[test]
