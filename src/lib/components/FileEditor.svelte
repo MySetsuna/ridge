@@ -132,7 +132,10 @@
   // 仅 saveViewState；切回时 setModel + restoreViewState，scroll/折叠/光标全部
   // 还原。tab 真正关闭（在 openFiles 中消失）才在 GC effect 里 dispose models。
   let diffMountPoint: HTMLDivElement | undefined;
-  let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+  // §SCM diff 模式切换：diffEditor 必须是 $state——否则它在 ensureDiffEditor() 内被赋值
+  // 时不触发响应式，依赖它的 renderSideBySide effect（下方）永不重跑，导致工具栏的
+  // 并排↔行内切换点击无反应（effect 首跑时 diffEditor 仍为 null 而早退，未登记依赖）。
+  let diffEditor = $state<monaco.editor.IStandaloneDiffEditor | null>(null);
   type DiffPair = {
     original: monaco.editor.ITextModel;
     modified: monaco.editor.ITextModel;
@@ -972,8 +975,11 @@
   // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
   // 重建后再 restoreViewState 防止 toggle 时 scroll/折叠位置丢失。
   $effect(() => {
+    // 先无条件读取 $state，使其恒为本 effect 的依赖；切勿放到 `!diffEditor` 早退之后，
+    // 否则 effect 首跑（diffEditor 尚为 null）时不会登记 diffRenderSideBySide 依赖。
+    const sideBySide = diffRenderSideBySide;
     if (!diffEditor) return;
-    diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    diffEditor.updateOptions({ renderSideBySide: sideBySide });
     const cur = diffCurrentPath ? diffModelCache.get(diffCurrentPath) : null;
     if (cur) {
       const vs = diffEditor.saveViewState();
