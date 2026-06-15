@@ -500,9 +500,9 @@
             <div class="flex flex-col items-center gap-1 py-1">
               <QrCode value={buildLinkUri(activeIp, remoteInfo.port)} size={132} />
               <p class="text-[9px] text-[var(--rg-fg-muted)]">{$t('remote.qrScanFlow')}</p>
-              {#if !dev}
-                <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">{$t('remote.certWarn')}</p>
-              {/if}
+              <!-- Self-signed HTTPS in both dev and prod now → always surface the
+                   trust-the-cert hint. -->
+              <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">{$t('remote.certWarn')}</p>
             </div>
             {#if lanIps.length > 1}
               <!-- §lan-addresses: pick the address on the phone's network -->
