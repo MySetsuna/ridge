@@ -305,6 +305,8 @@
       useInlineViewWhenSpaceIsLimited: false,
     });
     diffEditor.updateOptions({ renderSideBySide: diffRenderSideBySide });
+    // §光标对齐：若 diff 实例在 webfont 就绪前创建，等字体到位后重测字符宽度。
+    void remeasureWhenFontReady();
     // §SCM 可编辑 diff：Ctrl/Cmd+S 在可编辑（工作区）diff 上把 modified 侧落盘。
     diffEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void saveDiffModified();
@@ -499,6 +501,9 @@
       const vs = viewStateCache.get(current.path);
       if (vs) editor.restoreViewState(vs);
     }
+    // §光标对齐：editor 多在 webfont 就绪前创建，等字体到位后重测字符宽度，
+    // 消除行末光标因回退字体测宽导致的累积左偏。
+    void remeasureWhenFontReady();
     editor.onDidChangeModelContent(() => {
       if (!editor || !currentModelPath) return;
       const value = editor.getValue();
@@ -961,12 +966,33 @@
     void loadDiff(c.diffArgs, c.path);
   });
 
+  // §光标对齐：Monaco 在 create 时即用「当前可用字体」测量并缓存字符宽度。若 webfont
+  // （JetBrains Mono 等）尚未加载完成，测的是回退字体的宽度，字体到位后 Monaco 不会自动
+  // 重测 → 列宽逐列累积偏差，行末光标视觉左偏。等字体真正就绪后 remeasureFonts() 让
+  // Monaco 重测所有实例。remeasureFonts 是全局的，故由下方 effect 的 key 门控，仅在字体
+  // 族/字号真正变化时触发，避免无关设置变更引起整页重排抖动。
+  let lastFontKey = '';
+  async function remeasureWhenFontReady(): Promise<void> {
+    try {
+      await document.fonts.load(`${editorFontSize}px ${editorFontFamily}`);
+      await document.fonts.ready;
+      monaco.editor.remeasureFonts();
+    } catch {
+      /* 无 document.fonts（测试/SSR）或加载失败：忽略，退化为不重测 */
+    }
+  }
+
   // 字体设置变化时，让已存在的 editor / diffEditor 实时更新（无需重建）。
   // Monaco 的 updateOptions 是幂等的，重复 set 同值无副作用。
   $effect(() => {
+    const key = `${editorFontFamily}|${editorFontSize}`;
     const opts = { fontFamily: editorFontFamily, fontSize: editorFontSize };
     editor?.updateOptions(opts);
     diffEditor?.updateOptions(opts);
+    if (key !== lastFontKey) {
+      lastFontKey = key;
+      void remeasureWhenFontReady();
+    }
   });
 
   // Apply renderSideBySide toggle without a full IPC reload.
