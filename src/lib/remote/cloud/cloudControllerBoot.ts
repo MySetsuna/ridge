@@ -67,8 +67,8 @@ export interface CloudControllerHandle {
   disconnect(): void;
 }
 
-/** §4 controller→host TOTP 验证默认超时（ms）。 */
-const TOTP_VERIFY_TIMEOUT_MS = 10_000;
+/** §4 controller→host TOTP 验证默认超时（ms）。蜂窝网络加 TURN relay 延迟高，从 10s 提至 20s。 */
+const TOTP_VERIFY_TIMEOUT_MS = 20_000;
 
 /** 进程内单例句柄：保证幂等（重复 boot 不重复 attach / 不开多条 WebRTC）。 */
 let active: CloudControllerHandle | null = null;

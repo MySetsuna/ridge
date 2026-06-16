@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import QrCode from './QrCode.svelte';
-  import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
+  import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban, CalendarCheck } from 'lucide-svelte';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
@@ -22,8 +22,9 @@
   let proModalOpen = $state(false);
 
   const cloudState = $derived($cloudAuthStore);
-  // Premium 已就绪：已登录 + plan=premium（公网通道可用的前置）。
-  const cloudReady = $derived(cloudAuth.isLoggedIn(cloudState) && cloudAuth.isPremium(cloudState));
+  const isLoggedIn = $derived(cloudAuth.isLoggedIn(cloudState));
+  const hasValidTime = $derived(cloudAuth.hasActiveTime(cloudState));
+  const hasCheckedIn = $derived(cloudAuth.hasCheckedInToday(cloudState));
   // 公网入口子域 + 是否已激活设备。
   const publicDomain = $derived(cloudAuth.publicEntryDomain(cloudState));
   const hasDevice = $derived(!!cloudState.deviceToken && !!cloudState.deviceName);
@@ -380,12 +381,16 @@
   function disconnectController(cid: string): void { host?.kick(cid); }
   function blacklistController(cid: string): void { host?.blacklist(cid); }
 
-  // 切到公网相关操作前的门控：未就绪(未登录/未订阅)弹 Pro Modal。
+  // 切到公网相关操作前的门控：未登录弹 Pro Modal。
   function requirePremium(): boolean {
-    if (!cloudReady) { proModalOpen = true; return false; }
+    if (!isLoggedIn) { proModalOpen = true; return false; }
+    if (!hasValidTime) { proModalOpen = true; return false; }
     return true;
   }
-  function onCloudReady(): void { /* 登录/激活成功：cloudReady 派生态自动更新 UI */ }
+  function onCloudReady(): void {
+    void refreshDevices();
+    void refreshCloudUser();
+  }
 
   // ── polling ──────────────────────────────────────────────────────────────
   // §sessions: poll the connected LAN sessions while remote control is enabled.
@@ -550,7 +555,7 @@
           <div class="flex items-center gap-1.5">
             <Globe class="h-3.5 w-3.5 text-[var(--rg-accent)]" />
             <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('remote.modeCloud')}</span>
-            {#if !cloudReady}<span class="rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] text-[var(--rg-accent)]">Pro</span>{/if}
+            {#if !isLoggedIn}<span class="rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] text-[var(--rg-accent)]">Pro</span>{/if}
           </div>
           {#if hasDevice}
             <span class="flex items-center gap-1.5 text-[11px] font-medium {isOnline ? 'text-green-400' : isConnecting ? 'text-amber-400' : hostState === 'error' ? 'text-red-400' : 'text-[var(--rg-fg-muted)]'}">
@@ -560,8 +565,8 @@
           {/if}
         </div>
 
-        {#if !cloudReady}
-          <!-- 未就绪：引导升级 / 登录 -->
+        {#if !isLoggedIn}
+          <!-- 未登录：引导登录 -->
           <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.entryPending')}</p>
           <button
             onclick={() => requirePremium()}
@@ -570,7 +575,7 @@
             <Zap class="h-4 w-4" /> {$t('cloud.enablePublic')}
           </button>
         {:else if !hasUsername}
-          <!-- 已就绪但未设用户名：入口在 ridge-cloud（网页账户页），桌面端只引导、不提供输入 -->
+          <!-- 已登录但未设用户名：入口在 ridge-cloud（网页账户页），桌面端只引导、不提供输入 -->
           <p class="text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloud.usernameRequiredHint')}</p>
           <button
             onclick={openCloudAccount}
@@ -587,7 +592,7 @@
             {$t('cloud.refreshAfterSet')}
           </button>
         {:else if !hasDevice}
-          <!-- 已就绪但未激活设备：输设备名激活 -->
+          <!-- 已登录未激活设备：输设备名激活 -->
           <input
             bind:value={deviceNameInput}
             placeholder={$t('cloud.deviceNamePlaceholder')}
@@ -602,8 +607,50 @@
             {$t('cloud.activateBtn')}
           </button>
           {#if pairingHint}<p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{pairingHint}</p>{/if}
+          {#if !hasValidTime}
+            <div class="mt-2 rounded-lg border border-dashed border-[var(--rg-border)] p-2.5 space-y-2">
+              {#if hasCheckedIn}
+                <p class="text-[11px] text-amber-400">{$t('cloud.timeExpired')}</p>
+                <button
+                  onclick={() => requirePremium()}
+                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
+                >
+                  <Zap class="h-3.5 w-3.5" /> {$t('cloud.enablePublic')}
+                </button>
+              {:else}
+                <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.checkinHint')}</p>
+                <button
+                  onclick={() => requirePremium()}
+                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
+                >
+                  <CalendarCheck class="h-3.5 w-3.5" /> {$t('cloudPro.checkinBtn')}
+                </button>
+              {/if}
+            </div>
+          {/if}
         {:else}
-          <!-- 已激活：域名 + 打开 + 启用/停用公网 -->
+          <!-- 已激活 -->
+          {#if !hasValidTime}
+            <div class="rounded-lg border border-dashed border-[var(--rg-border)] p-2.5 space-y-2">
+              {#if hasCheckedIn}
+                <p class="text-[11px] text-amber-400">{$t('cloud.timeExpired')}</p>
+                <button
+                  onclick={() => requirePremium()}
+                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
+                >
+                  <Zap class="h-3.5 w-3.5" /> {$t('cloud.enablePublic')}
+                </button>
+              {:else}
+                <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.checkinHint')}</p>
+                <button
+                  onclick={() => requirePremium()}
+                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
+                >
+                  <CalendarCheck class="h-3.5 w-3.5" /> {$t('cloudPro.checkinBtn')}
+                </button>
+              {/if}
+            </div>
+          {/if}
           {#if publicDomain}
             <code class="block break-all text-xs font-medium text-[var(--rg-fg)]">{publicDomain}</code>
           {/if}

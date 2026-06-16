@@ -12,6 +12,8 @@ use anyhow::Result;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::ice::IceServerConfig;
+
 /// DataChannel 标签（契约 §7）。
 pub const DATA_CHANNEL_LABEL: &str = "ridge";
 /// v1 公共 STUN（契约 §5.2，仅作 ice-servers 拉取失败时的兜底）。
@@ -50,7 +52,7 @@ pub trait HostPeer {
     /// 返回 DataChannel 打开后的双向字节通道。
     async fn answer(
         &self,
-        ice_urls: Vec<String>,
+        ice_servers: Vec<IceServerConfig>,
         inbound: mpsc::Receiver<PeerInbound>,
         outbound: mpsc::Sender<PeerOutbound>,
     ) -> Result<DataChannelIo>;
@@ -74,20 +76,29 @@ mod imp {
     impl HostPeer for WebRtcHost {
         async fn answer(
             &self,
-            ice_urls: Vec<String>,
+            ice_servers: Vec<IceServerConfig>,
             mut inbound: mpsc::Receiver<PeerInbound>,
             outbound: mpsc::Sender<PeerOutbound>,
         ) -> Result<DataChannelIo> {
             let api = APIBuilder::new().build();
-            let config = RTCConfiguration {
-                ice_servers: vec![RTCIceServer {
-                    urls: if ice_urls.is_empty() {
-                        vec![FALLBACK_STUN.to_string()]
-                    } else {
-                        ice_urls
-                    },
+            let rtc_ice_servers: Vec<RTCIceServer> = if ice_servers.is_empty() {
+                vec![RTCIceServer {
+                    urls: vec![FALLBACK_STUN.to_string()],
                     ..Default::default()
-                }],
+                }]
+            } else {
+                ice_servers
+                    .into_iter()
+                    .map(|s| RTCIceServer {
+                        urls: s.urls,
+                        username: s.username.unwrap_or_default(),
+                        credential: s.credential.unwrap_or_default(),
+                        ..Default::default()
+                    })
+                    .collect()
+            };
+            let config = RTCConfiguration {
+                ice_servers: rtc_ice_servers,
                 ..Default::default()
             };
             let pc = Arc::new(api.new_peer_connection(config).await?);
@@ -214,7 +225,7 @@ mod imp {
     impl HostPeer for WebRtcHost {
         async fn answer(
             &self,
-            _ice_urls: Vec<String>,
+            _ice_servers: Vec<IceServerConfig>,
             _inbound: mpsc::Receiver<PeerInbound>,
             _outbound: mpsc::Sender<PeerOutbound>,
         ) -> Result<DataChannelIo> {

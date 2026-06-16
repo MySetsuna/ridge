@@ -62,9 +62,11 @@ const RECONNECT_BASE_MS = 1_000;
 /** 退避上限（ms）。 */
 const RECONNECT_MAX_MS = 15_000;
 /** 'disconnected'（ICE 抖动）自愈宽限（ms）：超时仍未回 connected 才重连。 */
-const DISCONNECTED_WATCHDOG_MS = 8_000;
+const DISCONNECTED_WATCHDOG_MS = 15_000;
 /** ICE restart 后判定未恢复、升级整体重建的期限（ms）。 */
-const ICE_RESTART_DEADLINE_MS = 6_000;
+const ICE_RESTART_DEADLINE_MS = 12_000;
+/** WebSocket 连接超时（ms）：超时未 open 则判失败重连。 */
+const WS_CONNECT_TIMEOUT_MS = 10_000;
 
 /** 信令消息（契约 §5.1，tag 字段 `t`）。与 host provider 同形。 */
 type SignalIn =
@@ -492,7 +494,18 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // 仅上报；真正的断开与重连由 onclose 驱动（避免误置 error 终态）。
       if (!this.closed) this.cb.onError?.('信令 WebSocket 错误', 'NETWORK');
     };
+    // 蜂窝弱网兜底：WS 连接超时（DNS/代理/防火墙慢→卡死遮挡）→ 触发退避重连。
+    const wsConnectTimer = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN && !this.closed) {
+        ws.close();
+        this.scheduleReconnect('信令连接超时');
+      }
+    }, WS_CONNECT_TIMEOUT_MS);
+    ws.onopen = () => {
+      clearTimeout(wsConnectTimer);
+    };
     ws.onclose = () => {
+      clearTimeout(wsConnectTimer);
       if (this.closed) return;
       // RTC 已连通：信令断开无害，且重开信令会在 relay 拿到新 cid → host 视作新 controller
       //（幽灵会话），故不主动重连信令；待 RTC 真断时再整体重建。
