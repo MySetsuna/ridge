@@ -31,6 +31,14 @@ import {
   type EphemeralKeyPair,
 } from './e2ee';
 import type { CloudHostBridgeLike } from './ridgeCloudProvider';
+import { ChunkReassembler } from '../../transport/remote/cloudChunk';
+
+/** 传输层分片测试帮手：从 host 发出的（单条）线消息还原出密文（剥掉 SINGLE tag）。 */
+function unwrapSingle(wire: Uint8Array): Uint8Array {
+  const ct = new ChunkReassembler().push(wire);
+  if (!ct) throw new Error('test: failed to reassemble single wire frame');
+  return ct;
+}
 
 vi.mock('./apiClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./apiClient')>();
@@ -267,7 +275,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     const ctrlKey = deriveSessionKey(ctrlEph.privateKey, ctrlEph.publicKey, signed.ephPub);
     const ctrlSession = new E2eeSession(ctrlKey, DIR_CONTROLLER_TO_HOST);
     bridges[0].send(new TextEncoder().encode('hello-from-host'));
-    const wire = dc.lastSent();
+    const wire = unwrapSingle(dc.lastSent()); // 剥掉传输层 SINGLE tag → 还原密文
     expect(new TextDecoder().decode(ctrlSession.open(wire))).toBe('hello-from-host');
 
     host.goOffline();
