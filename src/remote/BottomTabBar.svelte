@@ -2,7 +2,7 @@
   import { RefreshCw, MousePointer2, Clipboard, Palette, Globe } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import { locale, setLocale } from '$lib/i18n/locale';
-  import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './lib/wsRemote';
+  import type { PaneInfo, WorkspaceInfo, RemoteLink } from './lib/wsRemote';
   import WorkspaceTree from './lib/WorkspaceTree.svelte';
 
   // §item1：底部导航条最右用「工作区/终端」树形级联控件取代原渲染类型标签
@@ -21,7 +21,7 @@
     activeWorkspaceId = $bindable(''),
     onWorkspacesChanged,
   }: {
-    ws?: RemoteConnection;
+    ws?: RemoteLink;
     onRefresh?: () => void;
     onPaste?: () => void;
     onThemeToggle?: () => void;

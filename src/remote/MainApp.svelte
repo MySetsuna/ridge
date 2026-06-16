@@ -16,11 +16,11 @@
   // FileViewer (read-only file / git-diff overlay) loaded on first open.
   const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import { RemoteConnection, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
+  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
 
-  let { ws }: { ws: RemoteConnection } = $props();
+  let { ws }: { ws: RemoteLink } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
   // The active pane object (for its title in the header breadcrumb), derived
