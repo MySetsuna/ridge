@@ -135,7 +135,57 @@ export type WsMessage = {
 
 type Listener = (msg: WsMessage) => void;
 
-export class RemoteConnection {
+/** Cached theme snapshot shape ({@link RemoteLink.lastTheme}). */
+export interface ThemeSnapshot {
+  id?: string;
+  themeType: 'dark' | 'light';
+  colors: Record<string, string>;
+}
+
+/**
+ * Control-end transport surface consumed by the mobile UI (App / AuthScreen /
+ * MainApp / BottomTabBar / WorkspaceTree). Two implementations:
+ *   - {@link RemoteConnection} — LAN WebSocket (wsRemote protocol, self-signed TLS).
+ *   - `CloudRemoteConnection` (cloudRemote.ts) — cloud WebRTC E2EE + zero-trust,
+ *     translating these calls onto the Tauri-invoke bridge (server.rs's flat
+ *     protocol re-derived on the client).
+ * Typing the UI against this interface (not the concrete class) is what lets the
+ * exact same mobile UI ride either transport — see design 2026-06-16-mobile-cloud.
+ */
+export interface RemoteLink {
+  state(): ConnectionState;
+  onStateChange(fn: (s: ConnectionState) => void): () => void;
+  onReconnect(fn: () => void): () => void;
+  onMessage(fn: Listener): () => void;
+  onRawBytes(fn: RawByteListener): () => void;
+  onMetadata(fn: MetaListener): () => void;
+  onPtyResize(fn: PtyResizeListener): () => void;
+  onTheme(fn: ThemeListener): () => void;
+  lastTheme(): ThemeSnapshot | null;
+  cycleTheme(currentId: string): void;
+  setHostClipboard(text: string): void;
+  /** LAN-only signature; the cloud impl ignores it (it boots via cloudControllerBoot). */
+  connect(host: string, port: number, auth?: string, authType?: 'code' | 'token'): void;
+  getPaneOutput(paneId: string): string[];
+  pruneOutputs(liveIds: Set<string>): void;
+  send(msg: Record<string, unknown>): void;
+  listPanes(): void;
+  subscribePane(paneId: string): void;
+  sendStdin(paneId: string, data: string): void;
+  refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
+  claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
+  lastRefreshSeq(): number;
+  listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
+  switchWorkspace(workspaceId: string): Promise<boolean>;
+  createWorkspace(name?: string): Promise<string | null>;
+  createPane(shell?: string): Promise<string | null>;
+  closePane(paneId: string): Promise<boolean>;
+  closeWorkspace(workspaceId: string): Promise<boolean>;
+  listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]>;
+  disconnect(): void;
+}
+
+export class RemoteConnection implements RemoteLink {
   private ws: WebSocket | null = null;
   private stateListeners: Set<(s: ConnectionState) => void> = new Set();
   private messageListeners: Set<Listener> = new Set();

@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { ListTree, Plus, X, FolderOpen, ChevronRight } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
-  import type { PaneInfo, WorkspaceInfo, RemoteConnection } from './wsRemote';
+  import type { PaneInfo, WorkspaceInfo, RemoteLink } from './wsRemote';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
   // 放在底部导航条最右边——原本渲染类型标签(engine-badge)的位置。
@@ -23,7 +23,7 @@
     activePaneId?: string | null;
     workspaces?: WorkspaceInfo[];
     activeWorkspaceId?: string;
-    ws?: RemoteConnection;
+    ws?: RemoteLink;
     backendName?: string;
     // 工作区列表发生增删后通知上层刷新（create/close-workspace-result 被
     // _sendAndWait 消费，不会触发 MainApp.onMessage，故需显式回调拉取新列表）。
