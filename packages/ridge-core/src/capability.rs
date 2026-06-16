@@ -223,6 +223,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // ── Theme / settings ──
     "get_theme_data",
     "set_active_theme",
+    "get_active_theme_entry",
     "set_user_default_cwd",
     // ── Search ──
     "text_search",

@@ -563,6 +563,13 @@
 </script>
 
 <div class="app-root">
+  {#if wsState !== 'connected'}
+    <!-- §断连提示: live link status. 'error' = give up (refresh for a fresh code over
+         cloud / re-auth over LAN); otherwise the transport is auto-reconnecting. -->
+    <div class="conn-banner" class:lost={wsState === 'error'}>
+      {wsState === 'error' ? $t('mobile.connectionLost') : $t('mobile.reconnecting')}
+    </div>
+  {/if}
   {#if panes.length === 0}
     <div class="empty">
       <p>{$t('mobile.noActiveTerminal')}</p>
@@ -669,6 +676,8 @@
 
 <style>
   .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
+  .conn-banner{flex-shrink:0;padding:6px 12px;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50}
+  .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--rg-fg-muted);gap:12px}
   .create-btn{padding:8px 20px;border:1px solid var(--rg-accent);border-radius:8px;background:color-mix(in srgb,var(--rg-accent) 14%,transparent);color:var(--rg-fg);font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
   .create-btn:active{background:color-mix(in srgb,var(--rg-accent) 26%,transparent)}

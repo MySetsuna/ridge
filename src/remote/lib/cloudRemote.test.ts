@@ -25,6 +25,7 @@ import type { WsMessage } from './wsRemote';
 // Captured listen() handlers keyed by event name, so tests can fire host events.
 let handlers: Record<string, (e: { payload: unknown }) => void>;
 let disconnectSpy: ReturnType<typeof vi.fn>;
+let verifyTotpSpy: ReturnType<typeof vi.fn>;
 
 const LAYOUT: PaneNode = {
   type: 'split',
@@ -39,10 +40,11 @@ const LAYOUT: PaneNode = {
 
 function fakeHandle() {
   disconnectSpy = vi.fn();
+  verifyTotpSpy = vi.fn(async () => true);
   return {
     adapter: {} as never,
     hostDevice: 'dev',
-    verifyTotp: async () => true,
+    verifyTotp: verifyTotpSpy,
     disconnect: disconnectSpy,
   };
 }
@@ -62,6 +64,13 @@ beforeEach(() => {
       case 'list_workspaces': return [{ id: 'ws1', name: 'One' }, { id: 'ws2', name: 'Two' }];
       case 'split_pane': return { pane_id: 'pane-new', initial_cwd: null };
       case 'create_workspace': return 'ws-new';
+      case 'get_active_theme_entry':
+        return { id: 'dark1', type: 'dark', colors: { bg: '#000', accent: '#0f0' } };
+      case 'get_theme_data':
+        return { themes: [
+          { id: 'dark1', type: 'dark', colors: { bg: '#000' } },
+          { id: 'light1', type: 'light', colors: { bg: '#fff' } },
+        ] };
       default: return undefined;
     }
   });
@@ -204,6 +213,56 @@ describe('CloudRemoteConnection workspaces', () => {
     conn.subscribePane('pane-a');
     await flush();
     expect(handlers['pty-output-ws2-pane-a']).toBeTypeOf('function');
+  });
+});
+
+describe('CloudRemoteConnection theme', () => {
+  it('init reads the host active theme into lastTheme', async () => {
+    const conn = await connected();
+    expect(invokeMock).toHaveBeenCalledWith('get_active_theme_entry');
+    expect(conn.lastTheme()).toEqual({
+      id: 'dark1', themeType: 'dark', colors: { bg: '#000', accent: '#0f0' },
+    });
+  });
+
+  it('cycleTheme applies the next catalog theme locally without mutating the host', async () => {
+    const conn = await connected();
+    const seen: Array<{ colors: Record<string, string>; type: string }> = [];
+    conn.onTheme((colors, type) => seen.push({ colors, type }));
+    conn.cycleTheme('dark1'); // current dark1 → next light1
+    await flush();
+    expect(seen.at(-1)).toEqual({ colors: { bg: '#fff' }, type: 'light' });
+    expect(conn.lastTheme()?.id).toBe('light1');
+    // §theme-isolation: cycling must NOT re-skin the host / other viewers.
+    expect(invokeMock).not.toHaveBeenCalledWith('set_active_theme', expect.anything());
+  });
+});
+
+describe('CloudRemoteConnection reconnect', () => {
+  it('surfaces a drop then re-auths + fires onReconnect on recovery', async () => {
+    const conn = await connected();
+    conn.setVerifiedCode('123456');
+    let reconnected = 0;
+    conn.onReconnect(() => reconnected++);
+
+    conn.notifyState('disconnected');
+    expect(conn.state()).toBe('disconnected');
+
+    conn.notifyState('connected'); // recovery edge
+    await flush();
+    expect(verifyTotpSpy).toHaveBeenCalledWith('123456'); // re-auth with cached code
+    expect(reconnected).toBe(1); // MainApp resync triggered
+    expect(conn.state()).toBe('connected');
+  });
+
+  it('surfaces error when re-auth fails (stale code after a long outage)', async () => {
+    const conn = await connected();
+    verifyTotpSpy.mockResolvedValue(false);
+    conn.setVerifiedCode('000000');
+    conn.notifyState('disconnected');
+    conn.notifyState('connected');
+    await flush();
+    expect(conn.state()).toBe('error');
   });
 });
 

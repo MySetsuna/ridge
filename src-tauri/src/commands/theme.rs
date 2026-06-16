@@ -153,6 +153,16 @@ pub fn active_theme_entry_no_handle() -> Option<ThemeEntry> {
     ridge_core::commands::theme::active_theme_entry()
 }
 
+/// Cloud/remote controller → backend: the host's currently active theme entry.
+/// LAN clients receive this pushed over the WS (`server.rs`), but a cloud
+/// controller has no such push channel, so it PULLS the active theme to paint
+/// its chrome + terminal to match the desktop. Handle-free (delegates to the
+/// core resolver), so it works on the cloud-host invoke path.
+#[tauri::command]
+pub fn get_active_theme_entry() -> Option<ThemeEntry> {
+    active_theme_entry_no_handle()
+}
+
 /// Resolve the active theme catalog. Uses the `AppHandle` `Resource` resolver
 /// (so it picks up the bundled `ridge.theme`); falls back to an empty catalog
 /// on read/parse failure exactly as before. Behaviour unchanged from pre-S1.
