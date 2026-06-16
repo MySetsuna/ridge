@@ -1050,6 +1050,25 @@ function expandSidebar() {
     }
   }
 
+  // §file-drop (desktop only): insert dropped absolute path(s) into the terminal
+  // under the drop point (else the active pane), quoting any path with whitespace
+  // and adding a trailing space — the classic "drag a file onto the terminal to get
+  // its path". Tauri intercepts native OS drops and hands us the absolute paths.
+  function insertDroppedPaths(paths: string[], position: { x: number; y: number }): void {
+    if (!paths.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    const el = document.elementFromPoint(position.x / dpr, position.y / dpr);
+    const paneEl = el?.closest('[data-rg-pane-id]') as HTMLElement | null;
+    const pid = paneEl?.getAttribute('data-rg-pane-id') || get(activePaneId);
+    if (!pid) return;
+    const quote = (s: string) => (/\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
+    const text = paths.map(quote).join(' ') + ' ';
+    activePaneId.set(pid);
+    void invoke('write_to_pty', { paneId: pid, data: text }).catch((err) => {
+      console.error('write_to_pty (file-drop) failed', err);
+    });
+  }
+
   onMount(() => {
     // Sync onMount — Svelte's `onMount(async () => …)` returns a Promise
     // and the framework silently DROPS any cleanup function resolved from
@@ -1084,6 +1103,7 @@ function expandSidebar() {
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
     let unsubDefaultCwd: (() => void) | undefined;
+    let unlistenDrop: (() => void) | undefined;
 
     void (async () => {
       try {
@@ -1109,6 +1129,24 @@ function expandSidebar() {
       initFileWatcherSync();
 
       if (!isTauri()) return;
+
+      // §file-drop: native OS file drag-drop → insert absolute path(s) into the
+      // terminal. Gated on !webRemote (build constant → tree-shaken out of the
+      // web-remote bundle): a browser controller can't read absolute paths (sandbox)
+      // and a local path wouldn't be valid on the remote host anyway. Tauri's webview
+      // intercepts the native drop and gives us the absolute paths + drop position.
+      if (!webRemote) {
+        try {
+          const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+          unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+            const p = event.payload;
+            if (p.type !== 'drop') return;
+            insertDroppedPaths(p.paths, p.position);
+          });
+        } catch (e) {
+          console.warn('file-drop setup failed', e);
+        }
+      }
 
       // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
       // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
@@ -1309,6 +1347,7 @@ function expandSidebar() {
       unlisten?.();
       unlistenResized?.();
       unsubDefaultCwd?.();
+      unlistenDrop?.();
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
