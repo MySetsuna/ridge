@@ -122,7 +122,10 @@
     display: flex;
     justify-content: center;
     padding-top: 100px;
-    /* z-index: 1000; */
+    /* 与应用统一的 modal 层级带（账户气泡 9989 / 设置 9994 / 右键菜单 9999 /
+       Toast 10000）。原 1000 太低，会被侧栏/编辑器/状态面板等任何带正 z-index 的
+       浮层盖住。置于设置之上、右键菜单与 Toast 之下。 */
+    z-index: 9995;
   }
 
   .quick-open {
