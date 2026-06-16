@@ -10,10 +10,21 @@ use serde::Deserialize;
 use crate::config;
 use crate::rtc::FALLBACK_STUN;
 
+#[derive(Debug, Clone)]
+pub struct IceServerConfig {
+    pub urls: Vec<String>,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct IceServerEntry {
     #[serde(default)]
     urls: UrlsField,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    credential: Option<String>,
 }
 
 /// `urls` 既可能是单个字符串也可能是数组（W3C RTCIceServer 约定）。
@@ -36,22 +47,31 @@ struct IceServersData {
     ice_servers: Vec<IceServerEntry>,
 }
 
-/// 取 iceServers 的 url 列表。失败 / 为空时回退到公共 STUN。
-pub async fn fetch_ice_urls(client: &reqwest::Client, device_token: &str) -> Vec<String> {
+/// 取 iceServers 列表（含 STUN/TURN 地址和时效凭证）。
+/// 失败 / 为空时回退到公共 STUN（无凭证）。
+pub async fn fetch_ice_servers(client: &reqwest::Client, device_token: &str) -> Vec<IceServerConfig> {
     match try_fetch(client, device_token).await {
-        Ok(urls) if !urls.is_empty() => urls,
+        Ok(servers) if !servers.is_empty() => servers,
         Ok(_) => {
             tracing::warn!(target: "ridge_cli::ice", "ice-servers empty; using fallback STUN");
-            vec![FALLBACK_STUN.to_string()]
+            vec![IceServerConfig {
+                urls: vec![FALLBACK_STUN.to_string()],
+                username: None,
+                credential: None,
+            }]
         }
         Err(e) => {
             tracing::warn!(target: "ridge_cli::ice", error = %e, "ice-servers fetch failed; using fallback STUN");
-            vec![FALLBACK_STUN.to_string()]
+            vec![IceServerConfig {
+                urls: vec![FALLBACK_STUN.to_string()],
+                username: None,
+                credential: None,
+            }]
         }
     }
 }
 
-async fn try_fetch(client: &reqwest::Client, device_token: &str) -> Result<Vec<String>> {
+async fn try_fetch(client: &reqwest::Client, device_token: &str) -> Result<Vec<IceServerConfig>> {
     let url = format!("{}/ice-servers", config::api_base());
     let body = client
         .get(url)
@@ -61,14 +81,22 @@ async fn try_fetch(client: &reqwest::Client, device_token: &str) -> Result<Vec<S
         .text()
         .await?;
     let data: IceServersData = crate::envelope::parse_envelope(&body)?;
-    let mut urls = Vec::new();
+    let mut servers = Vec::new();
     for entry in data.ice_servers {
-        match entry.urls {
-            UrlsField::One(u) => urls.push(u),
-            UrlsField::Many(many) => urls.extend(many),
+        let urls = match entry.urls {
+            UrlsField::One(u) => vec![u],
+            UrlsField::Many(many) => many,
+        };
+        if urls.is_empty() {
+            continue;
         }
+        servers.push(IceServerConfig {
+            urls,
+            username: entry.username,
+            credential: entry.credential,
+        });
     }
-    Ok(urls)
+    Ok(servers)
 }
 
 #[cfg(test)]
@@ -79,16 +107,44 @@ mod tests {
     fn parses_string_and_array_urls() {
         let body = r#"{"ok":true,"data":{"iceServers":[
             {"urls":"stun:a:1"},
-            {"urls":["stun:b:2","turn:c:3"]}
+            {"urls":["stun:b:2","turn:c:3"],"username":"1700000000","credential":"abcd1234"}
         ]}}"#;
         let data: IceServersData = crate::envelope::parse_envelope(body).unwrap();
-        let mut urls = Vec::new();
-        for e in data.ice_servers {
-            match e.urls {
-                UrlsField::One(u) => urls.push(u),
-                UrlsField::Many(m) => urls.extend(m),
-            }
+        assert_eq!(data.ice_servers.len(), 2);
+
+        let stun = &data.ice_servers[0];
+        assert!(matches!(stun.urls, UrlsField::One(_)));
+        assert!(stun.username.is_none());
+        assert!(stun.credential.is_none());
+
+        let turn = &data.ice_servers[1];
+        if let UrlsField::Many(ref urls) = turn.urls {
+            assert_eq!(urls[0], "stun:b:2");
+            assert_eq!(urls[1], "turn:c:3");
+        } else {
+            panic!("expected array urls");
         }
-        assert_eq!(urls, vec!["stun:a:1", "stun:b:2", "turn:c:3"]);
+        assert_eq!(turn.username.as_deref(), Some("1700000000"));
+        assert_eq!(turn.credential.as_deref(), Some("abcd1234"));
+
+        // verify full conversion to IceServerConfig
+        let mut servers = Vec::new();
+        for entry in data.ice_servers {
+            let urls = match entry.urls {
+                UrlsField::One(u) => vec![u],
+                UrlsField::Many(many) => many,
+            };
+            servers.push(IceServerConfig {
+                urls,
+                username: entry.username,
+                credential: entry.credential,
+            });
+        }
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].urls, vec!["stun:a:1"]);
+        assert_eq!(servers[0].username, None);
+        assert_eq!(servers[1].urls, vec!["stun:b:2", "turn:c:3"]);
+        assert_eq!(servers[1].username.as_deref(), Some("1700000000"));
+        assert_eq!(servers[1].credential.as_deref(), Some("abcd1234"));
     }
 }

@@ -99,9 +99,19 @@ export function isLoggedIn(state: CloudAuthState): boolean {
   return !!state.userToken;
 }
 
-/** 是否 premium（按缓存的 user.plan）。 */
+/** 是否有有效时长（后端 premiumActive 判定，涵盖付费 premium 和签到临时体验）。 */
+export function hasActiveTime(state: CloudAuthState): boolean {
+  return state.user?.premiumActive === true;
+}
+
+/** 是否 premium（按缓存的 user.plan，和 hasActiveTime 不等价 — 签到用户 plan 仍为 'free'）。 */
 export function isPremium(state: CloudAuthState): boolean {
   return state.user?.plan === 'premium';
+}
+
+/** 今日是否已签到（后端 UTC+8 日期判断）。 */
+export function hasCheckedInToday(state: CloudAuthState): boolean {
+  return state.user?.checkedInToday === true;
 }
 
 /** 公网入口域名（契约 §1）：{device}-{username}.{BASE_DOMAIN}。 */

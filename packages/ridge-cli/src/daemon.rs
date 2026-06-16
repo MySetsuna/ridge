@@ -84,7 +84,7 @@ async fn serve_once(
     cwd: Option<String>,
     root: Option<String>,
 ) -> Result<()> {
-    let ice_urls = ice::fetch_ice_urls(http, &auth.token).await;
+    let ice_servers = ice::fetch_ice_servers(http, &auth.token).await;
     let mut signaling = Signaling::connect(&auth.signaling_ws_url())
         .await
         .context("signaling connect failed")?;
@@ -121,7 +121,7 @@ async fn serve_once(
             // 零信任 #2：注入设备身份签名材料（host 握手发 0x02）。
             if let Err(e) = RemoteSession::run(
                 &peer,
-                ice_urls.clone(),
+                ice_servers.clone(),
                 &sender,
                 &mut signaling.incoming,
                 shell.clone(),
