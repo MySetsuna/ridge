@@ -31,7 +31,41 @@
 - 画布透明像素"fall through to the canvas's CSS parents"（surface_host 注释）——即透出画布之下、
   包裹层之内绘制的内容。
 
-## 方案（Approach B：单一工作区图层 + 活动时 pane 背景透明）
+## ⚠️ 验证结论（2026-06-16 CDP 真机）：Approach B 已被证伪
+
+下面的 Approach B（纯 DOM/CSS）**真机验证不可行**，原因记录在此，供后续渲染器方案参考。
+
+**实测**（`pnpm tauri:dev:cdp` + CDP 驱动，建带壁纸自定义主题并激活）：
+- DOM 层叠完全正确：工作区图层为包裹层首子节点、画布之下；pane 容器 `background: transparent`；
+  画布空白单元像素读出 `rgba(0,0,0,0)`（themeBridge 推 alpha=0 + premultiplied swap-chain 生效，
+  渲染器**确实**输出透明默认底色）。
+- **但**把 `html` / `body` / 画布父级 / 祖先节点的 `background-color`（红/绿）或 `background-image`
+  逐一改掉，终端区域**毫无变化**，始终是窗口底色（wheat 主题的奶油色）。
+- **结论**：WebView2 的 WebGPU 画布把透明像素合成在**固定的窗口/webview 基底色**之上，**不**与画布
+  之下的 DOM 栈合成。⇒ **任何放在终端画布后方的 DOM 壁纸都无法透出**。既有的「单 pane 背景图」
+  代码同理从未真正显示在文字后方。这正是用户预判的「纯 js/html 不能实现 → 改 term 代码」。
+
+**已落地（本设计内已验证可行的部分）**：
+- Req 1 主题卡片展示壁纸：`resolveThemeBgUrl` + SettingsPanel 卡片叠图，CDP 验证通过，commit `035f241`。
+- 顺带修复文件搜索弹窗 z-index（`2d5cf59`，与本设计无关但同会话）。
+- Approach B 的 `+page.svelte` / `RidgePane.svelte` 改动已 revert（证伪）。
+
+## 后续独立任务：渲染器自绘壁纸（真正的 Req 2/3 修复）
+
+term 渲染器（`packages/ridge-term`）需自己画壁纸——这是核心渲染器改动，单独一轮做：
+1. **图片上传**：JS 端 `convertFileSrc` 加载图 → 离屏 canvas `getImageData` 取 RGBA → 传给 wasm
+   （避免在 wasm 引入 image 解码 crate）。随 `activeBgImage` 变化推送/清除。
+2. **GPU 纹理 + 管线**：上传 RGBA 为 `wgpu::Texture` + sampler/bind-group；新增「贴图四边形」管线
+   （或扩展 cell 管线），在**透明 clear 之后、cell 背景之前**画一张铺满**共享宿主画布**的贴图四边形。
+3. **工作区连续**：贴图 UV 映射到**整个宿主画布**而非单 pane；每 pane 的 scissor 内按其在宿主画布
+   的偏移采样同一张图 → 天然连续铺满整个工作区。
+4. **文字浮于其上**：默认底色单元已是 alpha=0（themeBridge）→ 壁纸透出；字形/带色底色不透明压在上面。
+5. **不透明度**：uniform；**Canvas2D 回退**：用 `drawImage` 画同一张图（或显式不支持，`log` 告知）。
+6. 改后 `wasm-pack build` 重编 + CDP 真机复验（连续铺满 / 文字清晰 / 分屏仍一张 / resize 不错位）。
+
+---
+
+## ~~方案（Approach B：单一工作区图层 + 活动时 pane 背景透明）~~（已证伪，保留备查）
 
 绘制顺序（CSS 2.1 Appendix E 第 6 步，定位元素按 tree order）：包裹层第一个子节点的图层
 → 各 relative pane → 共享画布。即 **图 → pane（透明）→ 画布**。
