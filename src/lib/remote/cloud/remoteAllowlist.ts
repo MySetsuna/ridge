@@ -59,6 +59,9 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'list_native_sessions',
   'summon_native_session',
   // ── Workspace (live) ──
+  // 只读：远程控制器连上后枚举 host 工作区（refreshWorkspaces → list_workspaces）。
+  // 漏放行会导致 controller 工作区列表空 → 兜底逻辑每次连接新建一个工作区（连带 bug）。
+  'list_workspaces',
   'get_active_workspace_id',
   'switch_workspace',
   'create_workspace',
