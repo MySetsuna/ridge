@@ -930,6 +930,35 @@ fn resize_pane_inner(
     // PTY-first: PSReadLine / zsh-zle need SIGWINCH to drive their prompt
     // redraw, and the §1.26 cursor-below cleanup (inside the same parser
     // resize) then tidies whatever the shell didn't overwrite.
+    //
+    // §resize-flag-authority (2026-06-16) — DERIVE is_alt / is_inline_tui from
+    // the AUTHORITATIVE backend parser, not the frontend params. The frontend
+    // passes `isInlineTui = kernel.isInlineTuiMode()` read off the delta-only
+    // mirror, which never records the absolute-positioning CSIs the heuristic
+    // needs — so in the (now sole) delta mode it is ALWAYS false, and the
+    // §resize-order ordering above + the silence-skip below never engaged for
+    // real inline TUIs (Claude Code default). The parser sees raw bytes and is
+    // the same grid that performs the wipe, so its snapshot is the correct one
+    // to gate ordering on. OR with the frontend value so any future non-delta
+    // path still contributes. (Read on the PRE-resize grid: "was a TUI active
+    // at the moment this resize fired".)
+    let flag_now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let (parser_is_alt, parser_is_inline_tui) = {
+        let map = state.workspaces.read();
+        map.get(&wid)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .filter(|h| h.delta_mode.load(Ordering::Acquire))
+            .map(|h| {
+                let p = h.parser.lock();
+                (p.is_alt_screen(), p.is_inline_tui_mode_at(flag_now_ms))
+            })
+            .unwrap_or((false, false))
+    };
+    let is_alt = is_alt || parser_is_alt;
+    let is_inline_tui = is_inline_tui || parser_is_inline_tui;
     let wipe_first = is_alt || is_inline_tui;
 
     // PTY `master.resize` → ConPTY resize → SIGWINCH. Also manages the

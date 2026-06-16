@@ -98,6 +98,45 @@ let reflowed = cols_changed && !self.is_alt && !inline_tui_active && self.primar
    splitter，看 `__RIDGE_KERNEL.lastResizeDiags()` 的 `reflowed=true`、`inline_tui_wipe=true`，且会话历史视觉上
    正确 rewrap。
 
+## 修复 B：后端权威 inline-TUI 判定（§resize-flag-authority，CDP 实测发现）
+
+落地 A 后用 `pnpm tauri:dev:cdp` 真机验证时发现**更大的根因**：
+
+**现象**：前端镜像（`JsTerminal`）是 **delta-only** —— 只 apply Cells/Cursor/Resize 等
+delta，**从不解析原始 VT 字节**。CDP 实测镜像 `lastAbsCsiPosition()==null` 恒成立，故
+`kernel.isInlineTuiMode()`（依赖 `last_abs_csi_at_ms`）在 delta 模式（现唯一模式）下**结构性恒为
+false**。
+
+**后果**：`manager.ts::fitPane` 把 `isInlineTui = kernel.isInlineTuiMode()`（恒 false）传给
+`resize_pane`，于是后端 `resize_pane_inner` 的 `wipe_first = is_alt || is_inline_tui` 与
+`skip_silence` 对**非 alt 的 inline TUI（默认 Claude）永不为真** —— **2026-06-15 的
+wipe-before-SIGWINCH 顺序修复在生产中从未生效**（PTY resize 先于 wipe → SIGWINCH 抢跑 + 80ms
+静默吞重绘）。这极可能才是用户「修了还错位」的主因。注意后端 `Terminal::resize` 内部的
+reflow/wipe **内容分支**用的是后端自己的启发式（能看到原始字节，正确），所以**内容**对、但
+**顺序/静默**错。
+
+**修复**：`resize_pane_inner` 改从**权威后端 parser** 推导 `is_alt`/`is_inline_tui`（与执行 wipe
+的是同一张栅格），不再信任恒 false 的前端 flag：
+
+```rust
+let (parser_is_alt, parser_is_inline_tui) = { /* lock parser, 读 pre-resize 快照 */
+    p.is_alt_screen(), p.is_inline_tui_mode_at(now_ms) };
+let is_alt = is_alt || parser_is_alt;            // OR 前端值，保留未来非 delta 路径
+let is_inline_tui = is_inline_tui || parser_is_inline_tui;
+let wipe_first = is_alt || is_inline_tui;
+```
+
+新增 `PaneParser::is_alt_screen()` / `is_inline_tui_mode_at(now_ms)`（薄委托 `Terminal`）。Shell
+不命中启发式（无 cursor-hide+abs CSI）→ 行为不变。
+
+**CDP 真机实证**（临时 `eprintln` 追踪，验后已删）：
+```
+parser_inline=false ... is_inline_tui=false wipe_first=false   ← shell resize
+parser_alt=false parser_inline=TRUE is_inline_tui=TRUE wipe_first=TRUE rows=26 cols=18  ← inline-TUI 窄化
+```
+即前端 flag 为 false，但后端 parser 正确判定 inline 并启用 wipe-first —— 修复前此处会是
+`wipe_first=false`（错位）。`cargo check`（ridge v0.0.5）0 警告；app 重建后正常运行。
+
 ## 残留 / 后续
 
 - conpty viewport replay（skip_silence 下未丢）仍可能在 frame 区落少量字节，但 frame 区交给 Ink 重画，影响小。
