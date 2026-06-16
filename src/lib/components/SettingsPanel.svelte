@@ -6,14 +6,14 @@
 <script lang="ts">
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages, Pencil, Trash2, Plus } from 'lucide-svelte';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages, Pencil, Trash2, Plus, Image as ImageIcon } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
     setTheme,
   } from '$lib/stores/settings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
-  import { themeData, isCustomTheme, deleteCustomTheme } from '$lib/stores/themes';
+  import { themeData, isCustomTheme, deleteCustomTheme, resolveThemeBgUrl } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
   import { t } from '$lib/i18n';
   import LangSwitch from './LangSwitch.svelte';
@@ -87,7 +87,7 @@
   );
 
   const themePreview = $derived.by(() => {
-    const out: Record<string, { bg: string; surface: string; accent: string; fg: string }> = {};
+    const out: Record<string, { bg: string; surface: string; accent: string; fg: string; hasBg: boolean; bgOpacity: number }> = {};
     for (const id of themeIds) {
       const t = $themeData.themes.find(x => x.id === id);
       if (t) {
@@ -96,10 +96,28 @@
           surface: t.colors['surface'] ?? '#111',
           accent: t.colors['accent'] ?? '#fff',
           fg: t.colors['fg'] ?? '#ccc',
+          hasBg: !!t.bgImage,
+          bgOpacity: t.bgImageOpacity ?? 1,
         };
       }
     }
     return out;
+  });
+
+  // 主题背景图缩略 URL（异步解析 theme-assets 文件名 → convertFileSrc）。
+  // 仅对带 bgImage 的主题解析；解析结果存这里供卡片预览叠图。
+  let themeBgUrls = $state<Record<string, string | null>>({});
+  $effect(() => {
+    // 依赖 $themeData：主题增删改后重算。逐个解析尚未缓存的带图主题。
+    for (const t of $themeData.themes) {
+      if (t.bgImage && themeBgUrls[t.id] === undefined) {
+        // 先占位 null 防重复触发，再异步填真值。
+        themeBgUrls = { ...themeBgUrls, [t.id]: null };
+        void resolveThemeBgUrl(t).then((url) => {
+          if (url) themeBgUrls = { ...themeBgUrls, [t.id]: url };
+        });
+      }
+    }
   });
 
   const SECTIONS = $derived<{ id: SectionId; label: string; icon: typeof Palette }[]>([
@@ -187,9 +205,21 @@
                         : 'border-[var(--rg-border)] hover:border-[var(--rg-border-bright)]'}"
                       onclick={() => setTheme(id)}
                     >
-                      <div class="h-16 flex items-stretch" style="background: {p.bg};">
-                        <div class="flex-1" style="background: {p.surface}; border-right: 1px solid rgba(0,0,0,0.1);"></div>
-                        <div class="w-1/3 flex flex-col justify-end p-1.5 gap-1">
+                      <div class="relative h-16 flex items-stretch overflow-hidden" style="background: {p.bg};">
+                        {#if p.hasBg && themeBgUrls[id]}
+                          <!-- 该主题带壁纸：把背景图铺在预览条上（按主题 opacity），
+                               色块浮于其上 → 卡片一眼可见"此主题带背景图"。 -->
+                          <div
+                            class="absolute inset-0 bg-center bg-cover bg-no-repeat"
+                            style="background-image: url('{themeBgUrls[id]}'); opacity: {p.bgOpacity};"
+                            aria-hidden="true"
+                          ></div>
+                          <div class="absolute top-1 left-1 flex items-center justify-center rounded bg-black/45 p-0.5 text-white/90" title={$t('customTheme.bgImage')}>
+                            <ImageIcon size={11} />
+                          </div>
+                        {/if}
+                        <div class="relative flex-1" style="background: {p.hasBg ? 'transparent' : p.surface}; border-right: 1px solid rgba(0,0,0,0.1);"></div>
+                        <div class="relative w-1/3 flex flex-col justify-end p-1.5 gap-1">
                           <div class="h-1.5 rounded-full" style="background: {p.accent};"></div>
                           <div class="h-1.5 rounded-full opacity-50" style="background: {p.fg};"></div>
                         </div>

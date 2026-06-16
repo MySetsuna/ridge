@@ -155,17 +155,24 @@ async function assetsDir(): Promise<string | null> {
   return _assetsDir;
 }
 
+/**
+ * 把一个主题的 `bgImage` 文件名解析成可加载 URL（拼 theme-assets 目录 + convertFileSrc）。
+ * 无背景图、或宿主无 theme-assets 目录（精简/远控 host）时返回 null。
+ * 共享给 activeBgImage 信号、设置面板卡片预览、编辑器预览，避免重复拼目录逻辑。
+ */
+export async function resolveThemeBgUrl(t: ThemeEntry | undefined): Promise<string | null> {
+  if (!t || !t.bgImage) return null;
+  const dir = await assetsDir();
+  if (!dir) return null;
+  const cleanDir = dir.replace(/[\\/]+$/, '');
+  const sep = cleanDir.includes('\\') ? '\\' : '/';
+  return convertFileSrc(`${cleanDir}${sep}${t.bgImage}`);
+}
+
 /** 解析某主题的背景图为可加载 URL，更新 activeBgImage 信号。fire-and-forget。 */
 export async function setActiveBgImage(themeId: string): Promise<void> {
   const t = getTheme(themeId);
-  if (!t || !t.bgImage) {
-    bgImageStore.set({ url: null, opacity: 1 });
-    return;
-  }
-  const dir = await assetsDir();
-  if (!dir) { bgImageStore.set({ url: null, opacity: t.bgImageOpacity ?? 1 }); return; }
-  const cleanDir = dir.replace(/[\\/]+$/, '');
-  const sep = cleanDir.includes('\\') ? '\\' : '/';
-  const url = convertFileSrc(`${cleanDir}${sep}${t.bgImage}`);
-  bgImageStore.set({ url, opacity: t.bgImageOpacity ?? 1 });
+  const opacity = t?.bgImageOpacity ?? 1;
+  const url = await resolveThemeBgUrl(t);
+  bgImageStore.set({ url, opacity });
 }
