@@ -556,7 +556,11 @@ impl Terminal {
         // so an inline TUI that keeps its cursor visible at the resize moment
         // (e.g. Claude Code without CLAUDE_CODE_NO_FLICKER) still gets the
         // §A.3 blank-canvas treatment instead of the narrow §1.26 cleanup.
-        let inline_tui_active = self.grid.is_inline_tui_active_with_modes_at(
+        // §sticky-inline-tui (2026-06-16): use the resize variant so an IDLE
+        // inline TUI (default Claude waiting at its prompt, every live signal
+        // decayed) is still classified via the sticky latch and gets the full
+        // frame wipe — otherwise its multi-row input box leaves border garbage.
+        let inline_tui_active = self.grid.is_inline_tui_for_resize_at(
             now_ms,
             self.modes.cursor_visible,
             self.modes.app_cursor_keys,
@@ -573,7 +577,25 @@ impl Terminal {
     /// Uses the same DECCKM / mouse-aware variant the kernel resize does so
     /// the frontend `isInlineTuiMode()` flag and the backend wipe agree.
     pub fn is_inline_tui_mode_at(&self, now_ms: i64) -> bool {
+        // LIVE heuristic — used by the shell-history popup gate and the frontend
+        // `isInlineTuiMode()` flag, both of which must NOT see the sticky latch
+        // (it would wedge the gate closed after a TUI idled). The resize/ordering
+        // path uses `is_inline_tui_resize_at` instead.
         self.grid.is_inline_tui_active_with_modes_at(
+            now_ms,
+            self.modes.cursor_visible,
+            self.modes.app_cursor_keys,
+            self.modes.mouse_normal || self.modes.mouse_button_event || self.modes.mouse_any_event,
+        )
+    }
+
+    /// §sticky-inline-tui (2026-06-16) — the RESIZE/ordering variant: live
+    /// heuristic OR the sticky latch, so an IDLE inline TUI (default Claude at
+    /// its prompt) is still classified for the wipe-before-SIGWINCH ordering and
+    /// the full frame wipe. Backend `resize_pane` reads this (via
+    /// `PaneParser::is_inline_tui_resize_at`); the gate / frontend flag do NOT.
+    pub fn is_inline_tui_resize_at(&self, now_ms: i64) -> bool {
+        self.grid.is_inline_tui_for_resize_at(
             now_ms,
             self.modes.cursor_visible,
             self.modes.app_cursor_keys,
@@ -628,6 +650,8 @@ impl Terminal {
     pub fn leave_alt_screen(&mut self) {
         self.grid.leave_alt_screen();
         self.modes = Modes::default();
+        // §sticky-inline-tui — the TUI process exited; drop the latch.
+        self.grid.clear_inline_tui_sticky();
     }
 
     /// Renderer entry point: returns the row at viewport-relative index

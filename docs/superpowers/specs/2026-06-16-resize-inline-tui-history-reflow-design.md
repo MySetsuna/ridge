@@ -137,6 +137,38 @@ parser_alt=false parser_inline=TRUE is_inline_tui=TRUE wipe_first=TRUE rows=26 c
 即前端 flag 为 false，但后端 parser 正确判定 inline 并启用 wipe-first —— 修复前此处会是
 `wipe_first=false`（错位）。`cargo check`（ridge v0.0.5）0 警告；app 重建后正常运行。
 
+## 修复 C：粘性 inline-TUI 检测 + 帧顶追踪（§sticky-inline-tui，真机 CDP 暴露 A/B 仍不够）
+
+A+B 上 dev:cdp 后真 Claude **仍残留/错位**。CDP 读真 Claude pane 实测根因：
+
+```
+cursorRow=6  cursorVisible=true  appCursorKeys=false  mouseReporting=false
+last abs-CSI age = 43,000ms（早过 2s 判定窗）→ isInlineTui=false
+```
+
+**空闲的默认 Claude 和 shell 提示符在信号上完全一样**（光标可见、无 DECCKM/鼠标、abs-CSI 早衰减）→
+启发式 false → resize 走 shell 路径（§1.26 只清光标行及以下）→ Claude 多行输入框**框顶在光标上方**那几行
+不被清 → ──── 边框残留。我之前的模拟器每 300ms 发 CUP 所以一直新鲜，**恰好掩盖了空闲失效**。
+
+**修复 C（两部分）**：
+1. **粘性 latch** `Grid.inline_tui_sticky`：parser 在观察到强 TUI 信号（DECCKM/鼠标/隐藏光标/alt，即驱动
+   `last_tui_signal_at_ms` 的同一 `tui_active` 采样）时 `mark_inline_tui_sticky()`；直到**明确退出信号**才
+   清除——RIS、alt-leave（parser + `Terminal::leave_alt_screen`）、**shell 集成 prompt OSC 133/633;A**
+   （parser `osc_dispatch` 新增分支）。新增 `is_inline_tui_for_resize_at` = 活动启发式 ∨ 粘性，**仅** resize
+   路径用（`Terminal::resize` + 新 `is_inline_tui_resize_at` + 后端 `PaneParser::is_inline_tui_resize_at`）。
+   **关键隔离**：`is_inline_tui_mode_at`（shell-history 弹窗门 + 前端 flag 用）保持纯活动版——否则粘性会把
+   弹窗门永久焊死（实测：误改后 3 个 gate 测试红，拆分后全绿）。
+2. **帧顶追踪** `Grid.frame_top_row`：`note_absolute_positioning` 按**渲染突发**（连续 abs-CSI ≤120ms）取
+   **最小行**=框顶（`last_abs_csi_row` 是最后 CUP=框底输入行）。resize 的 reflow 边界 + wipe 改用 frame_top，
+   于是清掉**整个**输入框（含光标上方框顶），而非只清光标以下。
+
+shell 不命中 `tui_active`（弹窗门已调过不误判 PSReadLine）→ 永不 set 粘性 → 行为不变。残留风险：无 shell 集成
+的 shell 在 Claude 退出后、下次 TUI 帧前 resize 可能误粘——但极少且 inline-wipe+shell 重画基本无害。
+
+`cargo test -p ridge-term --lib` **358 绿**（+3：粘性跨空闲存活 / 清除回落 shell / 帧顶突发最小值）；workspace
+`cargo check` 0 警告；wasm 重建。⚠️**真 Claude 端到端视觉仍未亲验**——dev:cdp 实例被并发主题会话+用户同时
+占用（设置/主题弹窗不断弹出），CDP 自动化撞车拿不到干净测试面，移交用户在其窗口里目视验。
+
 ## 残留 / 后续
 
 - conpty viewport replay（skip_silence 下未丢）仍可能在 frame 区落少量字节，但 frame 区交给 Ink 重画，影响小。
