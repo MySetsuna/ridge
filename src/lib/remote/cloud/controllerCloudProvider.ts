@@ -48,6 +48,7 @@ import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '../../transport/remote/cloudMux';
+import { encodeChunks, ChunkReassembler } from '../../transport/remote/cloudChunk';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -106,6 +107,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private handshakeDone = false;
   /** offer 是否已发起（防 welcome+peer-join 双触发重复 createOffer）。 */
   private offerStarted = false;
+  // ── 传输层分片（修 RTCDataChannel max-message-size，见 cloudChunk.ts）──
+  /** 发送帧计数器（每帧一个 msgId，供接收端重组）。 */
+  private sendMsgId = 0;
+  /** 入站分片重组器（按序拼回完整密文再 open）。 */
+  private reassembler = new ChunkReassembler();
 
   private state: CloudConnectionState = 'disconnected';
   private closed = false;
@@ -244,6 +250,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.ephemeral = generateEphemeralKeyPair();
     this.handshakeDone = false;
     this.session = null;
+    this.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
     this.rawSend(encodeHandshakeFrame(this.ephemeral.publicKey));
     // B3：把本端临时公钥经**已认证信令**旁路上报，供 host 比对 DataChannel 握手公钥
     // （走与 DataChannel 不同的 TLS 信令通道，网络 MITM 无法同时篡改两者）。
@@ -282,12 +289,14 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       return;
     }
 
-    // 业务帧：解密后上抛明文 mux 帧字节。
+    // 业务帧：先经传输层重组（分片→完整密文），再解密上抛明文 mux 帧字节。
     if (!this.session) return;
     // B3：绑定判定通过前不放行任何业务帧（防绑定未决期处理对端数据）。
     if (!this.bindingAccepted) return;
+    const ciphertext = this.reassembler.push(bytes);
+    if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
     try {
-      const plaintext = this.session.open(bytes);
+      const plaintext = this.session.open(ciphertext);
       // SECURITY (audit #4): drop oversized decrypted frames before they reach the
       // adapter's demux/JSON.parse so a peer can't OOM/stall the UI thread.
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
@@ -416,11 +425,20 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   sendFrame(plaintext: Uint8Array): void {
     if (this.state !== 'connected' || !this.session) return; // 握手前静默丢弃
     try {
-      this.rawSend(this.session.seal(plaintext));
+      this.sendSealed(this.session.seal(plaintext));
     } catch (e: unknown) {
       // counter 接近上限等 → 触发重建。
       this.fail(e instanceof Error ? e.message : '加密发送失败', 'INTERNAL');
     }
+  }
+
+  /**
+   * 把一帧已 seal 的密文经传输层分片后发出（修 RTCDataChannel max-message-size）。
+   * 每帧一个 msgId；密文 ≤ 单条上限走单条 SINGLE，否则切成多条 ≤16KiB 的 CHUNK。
+   */
+  private sendSealed(ciphertext: Uint8Array): void {
+    const msgId = this.sendMsgId++;
+    for (const wire of encodeChunks(ciphertext, msgId)) this.rawSend(wire);
   }
 
   private rawSend(bytes: Uint8Array): void {
@@ -444,7 +462,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         method: '$/bye',
         params: { reason: BYE_REASON_SIGNATURE_INVALID },
       });
-      this.rawSend(this.session.seal(bye));
+      this.sendSealed(this.session.seal(bye));
     } catch {
       /* best-effort：seal/发送失败就算了，由 disconnect 收尾 */
     }
