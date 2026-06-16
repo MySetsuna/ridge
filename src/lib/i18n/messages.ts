@@ -229,9 +229,17 @@ const zh: Dict = {
     advanced: '进阶（ANSI 终端色 / 启动动画色）',
     ansiColors: 'ANSI 终端色',
     loaderColors: '启动动画色',
-    preview: '预览',
+    preview: '实时预览',
+    previewHint: '左侧任意改动即时反映到这里',
     save: '保存',
-    saving: '保存中…'
+    saving: '保存中…',
+    desktopHint: '保存与背景图功能需在最新桌面版中使用',
+    grpSurface: '界面',
+    grpLine: '描边与滚动条',
+    grpText: '文字',
+    grpAccent: '强调',
+    grpTerminal: '终端',
+    grpTitlebar: '标题栏'
   },
   errors: {
     UNAUTHORIZED: '账号或密码错误',
@@ -476,9 +484,17 @@ const en: Dict = {
     advanced: 'Advanced (ANSI / loader colors)',
     ansiColors: 'ANSI colors',
     loaderColors: 'Loader colors',
-    preview: 'Preview',
+    preview: 'Live preview',
+    previewHint: 'Every change on the left shows up here instantly',
     save: 'Save',
-    saving: 'Saving…'
+    saving: 'Saving…',
+    desktopHint: 'Saving and background images require the latest desktop app',
+    grpSurface: 'Surfaces',
+    grpLine: 'Borders & scrollbar',
+    grpText: 'Text',
+    grpAccent: 'Accent',
+    grpTerminal: 'Terminal',
+    grpTitlebar: 'Title bar'
   },
   errors: {
     UNAUTHORIZED: 'Wrong account or password',
