@@ -63,17 +63,23 @@
 
   $effect(() => {
     if (!open) return;
-    errorMsg = null;
-    if (editingId) {
-      const e = getTheme(editingId);
-      if (e) { form = blankForm(); loadFrom(e, true); baseId = editingId; }
-    } else {
-      form = blankForm();
-      // untrack baseId：仅在弹窗打开/切换编辑态时初始化；后续切换"基于"由
-      // onBaseChange 命令式处理，避免 effect 重跑把用户已输入的主题名清空。
-      const b = untrack(() => getTheme(baseId)) ?? $themeData.themes[0];
-      if (b) loadFrom(b, false);
-    }
+    // 仅以 open / editingId / themeData 作为触发依赖。下面对 form / baseId / errorMsg
+    // 的写入必须整体 untrack——否则 loadFrom 内的 `form.x = ...` 赋值会先读取 form
+    // 取到 proxy，把 form 登记成本 effect 的依赖，而本 effect 又 `form = blankForm()`
+    // 重写 form → 自我循环 → effect_update_depth_exceeded（整个面板响应性崩溃）。
+    const id = editingId;
+    const themes = $themeData.themes;
+    untrack(() => {
+      errorMsg = null;
+      if (id) {
+        const e = getTheme(id);
+        if (e) { form = blankForm(); loadFrom(e, true); baseId = id; }
+      } else {
+        form = blankForm();
+        const b = getTheme(baseId) ?? themes[0];
+        if (b) loadFrom(b, false);
+      }
+    });
   });
 
   function onBaseChange(id: string): void {
