@@ -33,6 +33,11 @@
   let loading = $state(false);
   let inputEl: HTMLInputElement | undefined = $state();
   let handle: CloudControllerHandle | null = null;
+  // Set once the TOTP gate passes. While null, the boot's onState drives THIS gate;
+  // once set, ongoing provider state (drop / reconnect / error) is forwarded to the
+  // live transport so MainApp shows link status + auto-reconnects (this closure
+  // survives CloudAuthScreen unmount — the provider keeps the reference alive).
+  let cloudConn: CloudRemoteConnection | null = null;
 
   onMount(() => { void boot(); });
 
@@ -54,6 +59,9 @@
       location.search,
       {
         onState: (s) => {
+          // Post-gate: hand ongoing state to the live transport (drop / reconnect).
+          if (cloudConn) { cloudConn.notifyState(s); return; }
+          // Pre-gate: this is the initial connect driving the TOTP prompt.
           if (s === 'connected') {
             // E2EE handshake done — clear the bounce counter, prompt zero-trust TOTP.
             try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
@@ -66,7 +74,7 @@
             error = error || tr('main.remoteGateErrCloud');
           }
         },
-        onError: (msg) => { phase = 'error'; error = msg; },
+        onError: (msg) => { if (!cloudConn) { phase = 'error'; error = msg; } },
       },
       location.hostname,
     );
@@ -109,6 +117,8 @@
         // (idempotent) so the sidebar rides the same shimmed invoke.
         setTransport(new TauriDataProvider());
         const conn = new CloudRemoteConnection(handle!);
+        conn.setVerifiedCode(numeric); // cached for transparent re-auth on full reconnect
+        cloudConn = conn; // route ongoing provider state (drop/reconnect) to the transport
         await conn.init();
         loading = false;
         code = '';

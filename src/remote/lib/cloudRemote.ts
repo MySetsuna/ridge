@@ -48,6 +48,13 @@ interface BackendWorkspace {
   name?: string | null;
 }
 
+/** Host `get_active_theme_entry` / `get_theme_data` theme row (subset we use). */
+interface ThemeEntryLite {
+  id: string;
+  type?: 'dark' | 'light';
+  colors: Record<string, string>;
+}
+
 /** Default PTY grid for a freshly-activated pane until the canvas claims its real size. */
 const DEFAULT_ROWS = 24;
 const DEFAULT_COLS = 80;
@@ -87,6 +94,14 @@ export class CloudRemoteConnection implements RemoteLink {
   // streaming TextDecoder; we re-encode here to feed the byte-oriented mobile canvas.
   private readonly encoder = new TextEncoder();
   private _lastTheme: ThemeSnapshot | null = null;
+  // True once we've reached 'connected' at least once — gates reconnect handling
+  // so the initial connect isn't treated as a reconnect.
+  private _everConnected = false;
+  // The §4 TOTP code the user verified, cached so a full re-handshake reconnect can
+  // re-authorize without re-prompting (valid only while the code is in its time window).
+  private _verifiedCode: string | null = null;
+  // Guards against overlapping reconnect handling on a flapping link.
+  private _reconnecting = false;
 
   constructor(handle: CloudControllerHandle) {
     this.handle = handle;
@@ -113,12 +128,76 @@ export class CloudRemoteConnection implements RemoteLink {
     } catch {
       /* event subscribe failed — non-fatal, manual refresh still works */
     }
+    // Read the host's active theme so the mobile chrome + terminal match the desktop
+    // (MainApp.onMount reads lastTheme() and applies it). Best-effort: an older host
+    // without get_active_theme_entry just keeps the mobile's default palette.
+    await this._loadTheme();
+    this._everConnected = true;
     this.setState('connected');
   }
 
-  /** App.svelte forwards the boot's ongoing onState (drop/error) into the UI here. */
-  notifyState(s: ConnectionState): void {
-    this.setState(s);
+  /** Cache the verified §4 TOTP code for transparent re-auth on a full reconnect. */
+  setVerifiedCode(code: string): void {
+    this._verifiedCode = code;
+  }
+
+  /**
+   * App.svelte/CloudAuthScreen forwards the provider's ongoing state here (drop /
+   * reconnect / error). Maps it to the mobile {@link ConnectionState} so the UI shows
+   * the live link status (断连提示), and drives auto-reconnect: on a connected-after-
+   * down edge it re-authorizes (idempotent for an ICE-restart where the host stayed
+   * verified; required after a full re-handshake where the host re-gated §4) and then
+   * fires onReconnect so MainApp re-subscribes panes + re-lists workspaces.
+   */
+  notifyState(providerState: string): void {
+    const mapped: ConnectionState =
+      providerState === 'connected' ? 'connected'
+      : providerState === 'error' ? 'error'
+      : providerState === 'disconnected' ? 'disconnected'
+      : 'connecting';
+    const wasDown = this._state !== 'connected';
+    this.setState(mapped);
+    if (mapped === 'connected' && wasDown && this._everConnected) {
+      void this._handleReconnect();
+    }
+    if (mapped === 'connected') this._everConnected = true;
+  }
+
+  private async _handleReconnect(): Promise<void> {
+    if (this._reconnecting) return;
+    this._reconnecting = true;
+    try {
+      // Re-authorize. An ICE-restart keeps the host's §4 gate open (verifyTotp is a
+      // no-op ok); a full re-handshake re-gates it, so the cached code re-opens it —
+      // unless a long outage expired the code's time window, in which case the host
+      // rejects and we surface 'error' so the user refreshes for a fresh code.
+      let ok = true;
+      if (this._verifiedCode) {
+        ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
+      }
+      if (!ok) {
+        this.setState('error');
+        return;
+      }
+      this.reconnectListeners.forEach((fn) => {
+        try { fn(); } catch { /* listener owns its errors */ }
+      });
+    } finally {
+      this._reconnecting = false;
+    }
+  }
+
+  private async _loadTheme(): Promise<void> {
+    try {
+      const entry = await invoke<ThemeEntryLite | null>('get_active_theme_entry');
+      if (entry && entry.colors) {
+        const themeType = entry.type === 'light' ? 'light' : 'dark';
+        this._lastTheme = { id: entry.id, themeType, colors: entry.colors };
+        this.themeListeners.forEach((fn) => fn(entry.colors, themeType));
+      }
+    } catch {
+      /* older host without the command — keep the mobile default theme */
+    }
   }
 
   // ── state / listeners ──────────────────────────────────────────────────────
@@ -234,10 +313,10 @@ export class CloudRemoteConnection implements RemoteLink {
     void invoke('write_to_pty', { paneId, data }).catch(() => {});
   }
 
-  refreshPane(paneId: string, rows: number, cols: number): void {
+  refreshPane(paneId: string, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
     this._resize(paneId, rows, cols);
   }
-  claimPane(paneId: string, rows: number, cols: number): void {
+  claimPane(paneId: string, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
     this._resize(paneId, rows, cols);
   }
   private _resize(paneId: string, rows: number, cols: number): void {
@@ -348,13 +427,28 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
-  // ── theme (v1 best-effort) ────────────────────────────────────────────────────
-  // Full theme parity needs the active-theme id (settings) + a color-shape map from
-  // the host ThemeEntry to the mobile's palette. Deferred: the mobile keeps its CSS
-  // default theme over cloud. cycleTheme still drives the host so the desktop reflects
-  // it; we just don't re-skin the mobile in v1.
-  cycleTheme(_currentId: string): void {
-    /* no-op in v1 — see note above */
+  // ── theme ───────────────────────────────────────────────────────────────────
+  // The host's active theme is read in init() (lastTheme → applied by MainApp).
+  // Cycling is CONTROL-END-LOCAL (§theme-isolation, like the LAN host's stateless
+  // cycle): pick the next theme from the host's catalog and apply its colors to THIS
+  // controller only — we do NOT call set_active_theme (that would re-skin the host
+  // and every other viewer). MainApp persists the cycled choice as its own override.
+  cycleTheme(currentId: string): void {
+    void this._cycleTheme(currentId);
+  }
+  private async _cycleTheme(currentId: string): Promise<void> {
+    try {
+      const tf = await invoke<{ themes?: ThemeEntryLite[] }>('get_theme_data');
+      const themes = (tf?.themes ?? []).filter((t) => t && t.id && t.colors);
+      if (themes.length === 0) return;
+      const cur = themes.findIndex((t) => t.id === currentId);
+      const next = themes[(cur + 1) % themes.length];
+      const themeType = next.type === 'light' ? 'light' : 'dark';
+      this._lastTheme = { id: next.id, themeType, colors: next.colors };
+      this.themeListeners.forEach((fn) => fn(next.colors, themeType));
+    } catch {
+      /* catalog fetch failed — keep current theme */
+    }
   }
 
   // ── misc / parity stubs ────────────────────────────────────────────────────────

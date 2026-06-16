@@ -623,6 +623,22 @@
     }
   });
 
+  // §passive-fix: touchmove (selection drag) and wheel (scroll) call
+  // preventDefault, which Chrome rejects inside its default-passive listeners
+  // ("Unable to preventDefault inside passive event listener invocation" — seen
+  // when selecting in mobile/emulated touch). Svelte's declarative on* attributes
+  // can't set {passive:false}, so attach these two manually on the container.
+  $effect(() => {
+    const el = containerEl;
+    if (!el) return;
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('wheel', handleWheel);
+    };
+  });
+
   // Track keyboard show/hide via visualViewport AND drive the auto-refit.
   //
   // The container ResizeObserver catches box changes, but a real-device /
@@ -743,12 +759,10 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="container" bind:this={containerEl} role="application"
   ontouchstart={handleTouchStart}
-  ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
   onmousedown={handleMouseDown}
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
-  onwheel={handleWheel}
   oncontextmenu={handleContextMenu}
   style="transform: translateY(-{keyboardOffset}px)"
 >

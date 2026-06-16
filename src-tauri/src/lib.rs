@@ -761,6 +761,7 @@ pub fn run() {
             settings::set_user_default_cwd,
             theme::get_theme_data,
             theme::set_active_theme,
+            theme::get_active_theme_entry,
             theme::save_user_theme,
             theme::delete_user_theme,
             theme::save_theme_bg_image,

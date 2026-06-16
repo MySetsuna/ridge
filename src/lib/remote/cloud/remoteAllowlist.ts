@@ -88,6 +88,7 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   // ── Theme / settings ──
   'get_theme_data',
   'set_active_theme',
+  'get_active_theme_entry',
   'set_user_default_cwd',
   // ── Search ──
   'text_search',
