@@ -665,10 +665,19 @@ function expandSidebar() {
     const current = get(activeWorkspaceId);
     if (current && current !== NIL_WORKSPACE_ID) return;
     try {
-      const list = get(workspacesList);
+      let list = get(workspacesList);
+      // 列表为空时**不要直接新建**：host 启动必持有 ≥1 个全局活动工作区，所以空列表几乎
+      // 总是上面的 refreshWorkspaces 因竞态/权限（如 list_workspaces 被白名单拒）失败留下
+      // 的空态，而非 host 真的没有工作区。先权威重拉一次确认——若再次抛错则进 catch，绝不
+      // 落到 createWorkspace，杜绝「每次连接凭空多出一个工作区」（web-remote 连带 bug）。
+      if (list.length === 0) {
+        await refreshWorkspaces();
+        list = get(workspacesList);
+      }
       if (list.length > 0) {
         await switchWorkspace(list[0].id);
       } else {
+        // 仅在权威拉取成功且确认 host 工作区为空时才新建（极少见的合法退化态）。
         await createWorkspace();
       }
       // 切换/新建后重新拉取，使顶部工作区下拉与活动 id 同步。
