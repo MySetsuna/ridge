@@ -953,7 +953,7 @@ fn resize_pane_inner(
             .filter(|h| h.delta_mode.load(Ordering::Acquire))
             .map(|h| {
                 let p = h.parser.lock();
-                (p.is_alt_screen(), p.is_inline_tui_mode_at(flag_now_ms))
+                (p.is_alt_screen(), p.is_inline_tui_resize_at(flag_now_ms))
             })
             .unwrap_or((false, false))
     };

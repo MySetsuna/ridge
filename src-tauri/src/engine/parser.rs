@@ -159,11 +159,13 @@ impl PaneParser {
         self.terminal.is_alt_screen()
     }
 
-    /// Authoritative inline-TUI heuristic snapshot — see `is_alt_screen`.
-    /// `now_ms` is the caller's wall-clock so the decay window is evaluated
-    /// against the same clock the resize uses.
-    pub fn is_inline_tui_mode_at(&self, now_ms: i64) -> bool {
-        self.terminal.is_inline_tui_mode_at(now_ms)
+    /// Authoritative inline-TUI heuristic snapshot for the RESIZE decision —
+    /// see `is_alt_screen`. Uses the sticky-aware variant so an idle inline TUI
+    /// (default Claude at its prompt, all live signals decayed) is still
+    /// classified for the wipe-before-SIGWINCH ordering. `now_ms` is the
+    /// caller's wall-clock so the decay window matches the resize clock.
+    pub fn is_inline_tui_resize_at(&self, now_ms: i64) -> bool {
+        self.terminal.is_inline_tui_resize_at(now_ms)
     }
 
     /// Feed PTY bytes and return the resulting delta frame.
