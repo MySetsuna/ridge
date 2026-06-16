@@ -24,6 +24,17 @@ use crate::db::ProjectStore;
 use crate::state::AppState;
 use crate::types::{GlobalEvent, PaneMode};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags, WindowExt};
+
+/// 窗口几何持久化的维度：大小 / 位置 / 最大化 / 全屏。
+///
+/// 刻意**不含** `VISIBLE` 与 `DECORATIONS`：
+///   - 可见性由 Deep Root（hide-to-tray）/ 托盘逻辑掌控，存了会让深根隐藏后下次
+///     启动以「隐藏」态恢复（窗口开不出来）。
+///   - 装饰恒为关（`decorations(false)` 自绘标题栏），无需也不应被状态覆盖。
+fn window_state_flags() -> StateFlags {
+    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+}
 use tokio::sync::mpsc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -77,6 +88,17 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     // Deep Root Mode（§8.1）：进入深根时发原生系统通知（NotificationExt）。
     .plugin(tauri_plugin_notification::init())
+        // 记住上次窗口几何（大小/位置/最大化/全屏）。插件在 `RunEvent::Exit`（彻底退出）
+        // 自动存盘，并持续缓存 Moved/Resized 事件的几何；恢复则由 setup 里 show() 之前的
+        // `window.restore_state(...)` 显式执行（避免先以默认 800×600 绘制再跳变）。
+        // `skip_initial_state("main")`：本窗口由代码运行时创建（非 tauri.conf 声明），手动
+        // 恢复已覆盖，跳过插件自动恢复以免重复/迟到 restore 造成可见跳变。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(window_state_flags())
+                .skip_initial_state("main")
+                .build(),
+        )
         // §4 关闭即将退出 → 同步把当前所有已保存（`associated_file_path != None`）
         // 工作区路径写到 `restore_workspaces.json`，下次非 cli 启动时由前端
         // `get_restore_set` 取回并自动 reopen。这里必须同步：spawn 异步任务在
@@ -90,6 +112,12 @@ pub fn run() {
                 // 生命周期一并销毁。仅当「彻底退出 Ridge」托盘项已置 `quitting` 标志
                 // 时才放行真正的退出（此时跑保存恢复集 + 停远控的收尾逻辑）。
                 if !state.quitting.load(std::sync::atomic::Ordering::Acquire) {
+                    // 隐藏到托盘前先持久化窗口几何：此刻窗口仍可见、几何确定有效。
+                    // 这样即便用户之后从托盘「彻底退出」（届时窗口已隐藏），下次启动
+                    // 仍能恢复到用户最后摆放的大小/位置/最大化态。
+                    if let Err(e) = app.save_window_state(window_state_flags()) {
+                        tracing::warn!(target: "ridge::init", error = %e, "save window state on hide-to-tray failed");
+                    }
                     api.prevent_close();
                     if let Err(e) = window.hide() {
                         tracing::warn!(
@@ -100,7 +128,13 @@ pub fn run() {
                     }
                     return;
                 }
-                // 真正退出路径：与改动前行为一致 —— 停远程服务器 + 同步保存恢复集。
+                // 真正退出路径（「彻底退出 Ridge」→ app.exit(0) 触发本 CloseRequested）：
+                // 先持久化窗口几何，保证彻底退出后下次启动记住窗口状态。此刻窗口尚未销毁、
+                // 几何可读；与插件 `RunEvent::Exit` 的自动存盘互为冗余双保险。
+                if let Err(e) = app.save_window_state(window_state_flags()) {
+                    tracing::warn!(target: "ridge::init", error = %e, "save window state on quit failed");
+                }
+                // 与改动前行为一致 —— 停远程服务器 + 同步保存恢复集。
                 crate::commands::remote::stop_remote_server(&state);
                 ridge_file::save_restore_set(app, &state);
             }
@@ -163,6 +197,12 @@ pub fn run() {
                     .devtools(true)
                     .initialization_script(&splash_init_script)
                     .build()?;
+                // 恢复上次窗口几何（大小/位置/最大化/全屏）。必须在 show() 之前，否则会先以
+                // 上面 inner_size 的默认 800×600 绘制一帧再跳变到恢复值。首次启动（无状态文件）
+                // 时 restore_state 为 no-op，沿用默认几何。失败仅告警、用默认值继续。
+                if let Err(e) = window.restore_state(window_state_flags()) {
+                    tracing::warn!(target: "ridge::init", error = %e, "restore window state failed; using default geometry");
+                }
                 window.show()?;
 
                 tracing::info!(target: "ridge::init", phase = 5, "setup: building system tray");
