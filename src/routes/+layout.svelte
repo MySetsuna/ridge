@@ -42,6 +42,12 @@
   // cert reason to JS, so we infer it from the protocol.
   let showCertHint = $state(false);
 
+  const registerServiceWorker = () => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    }
+  };
+
   onMount(() => {
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
@@ -88,13 +94,11 @@
           // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
           let cached: string | null = null;
           try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-          if (cached && cloudHandle) {
-            cloudHandle.verifyTotp(cached).then((ok) => {
+          if (cached && handle) {
+            handle.verifyTotp(cached).then((ok) => {
               if (ok) {
                 ready = true;
-                if ('serviceWorker' in navigator) {
-                  navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-                }
+                registerServiceWorker();
               } else {
                 try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
                 ready = false;
@@ -162,12 +166,7 @@
       // DataProvider consumers (FS/git/search) ride the same shimmed invoke.
       setTransport(new TauriDataProvider());
       ready = true;
-      // §弱网: register the SW so the desktop bundle + Monaco are served from
-      // local cache; only data crosses the WS thereafter.
-      if ('serviceWorker' in navigator) {
-        // Classic script: SvelteKit bundles the SW self-contained for production.
-        navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-      }
+      registerServiceWorker();
     };
 
     const connectWith = (token: string) => {
@@ -259,9 +258,7 @@
           code = '';
           ready = true;
           try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-          }
+          registerServiceWorker();
         } else {
           code = '';
           try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
