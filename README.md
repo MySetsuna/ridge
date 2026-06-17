@@ -341,7 +341,7 @@ MIT License. Copyright (c) 2026 Jack Jiang and Ridge contributors.
 
 | WeChat 赞赏 | PayPal |
 |:---:|:---:|
-| ![WeChat Reward](./static/1.jpg) | ![PayPal Donate](./static/2.jpg) |
+| ![WeChat Reward](./static/2.jpg) | ![PayPal Donate](./static/1.jpg) |
 | 微信扫码赞赏 | PayPal Donate |
 
 </div>
