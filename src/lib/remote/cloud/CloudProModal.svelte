@@ -237,10 +237,10 @@
   }
 
   const loggedIn = $derived(auth.isLoggedIn($cloudAuth));
-  // premium 已激活（按缓存 plan）。已激活则不展示任何升级/签到入口（契约 §5/§7）。
-  const premiumActive = $derived(auth.isPremium($cloudAuth));
-  // 签到入口：已登录且非 premium 才展示（free 路径）。
-  const showCheckin = $derived(loggedIn && !premiumActive);
+  // 是否有有效时长（含付费 premium 和签到临时 trial）。有则隐藏升级/签到入口（契约 §5/§7）。
+  const hasActiveTime = $derived(auth.hasActiveTime($cloudAuth));
+  // 签到入口：已登录且无有效时长才展示（free 路径）。
+  const showCheckin = $derived(loggedIn && !hasActiveTime);
 
   // 可见 tab 列表随语言变化：外文隐藏「卡密激活」。
   const tabs = $derived(

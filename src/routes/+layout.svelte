@@ -23,6 +23,7 @@
   // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
   // 不再无限回跳（apex⇄子域死循环的客户端一端）。connected 时清零。
   const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
+  const TOTP_CACHE_KEY = 'ridge_totp_code';
 
   // Auth/connect state for the web-remote gate. `ready` blocks the page outlet
   // until the bridge is attached, so the desktop UI never calls `invoke()`
@@ -40,6 +41,12 @@
   // user clicked through the page-load warning. The browser never exposes the
   // cert reason to JS, so we infer it from the protocol.
   let showCertHint = $state(false);
+
+  const registerServiceWorker = () => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    }
+  };
 
   onMount(() => {
     if (!WEB_REMOTE) {
@@ -78,13 +85,34 @@
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
         if (s === 'connected') {
-          // §4 云端 TOTP 二次验证：连上（E2EE 完成）后**先**提示输入 host 展示的
-          // 6 位 code，验证通过才标记 ready（驱动桌面 UI）。
+          // §4 云端 TOTP 二次验证：连上（E2EE 完成）后验证通过才标记 ready（驱动桌面 UI）。
           // 接线成功（鉴权 + WebRTC OK）→ 清掉回跳计数，下次刷新从零开始。
           try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
-          phase = 'need-totp';
           errorMsg = '';
           loading = false;
+          // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提，
+          // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
+          let cached: string | null = null;
+          try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+          if (cached && handle) {
+            handle.verifyTotp(cached).then((ok) => {
+              if (ok) {
+                ready = true;
+                registerServiceWorker();
+              } else {
+                try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+                ready = false;
+                phase = 'need-totp';
+              }
+            }).catch(() => {
+              try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+              ready = false;
+              phase = 'need-totp';
+            });
+          } else {
+            ready = false;
+            phase = 'need-totp';
+          }
         } else if (s === 'error') {
           phase = 'error';
           errorMsg = errorMsg || tr('main.remoteGateErrCloud');
@@ -138,12 +166,7 @@
       // DataProvider consumers (FS/git/search) ride the same shimmed invoke.
       setTransport(new TauriDataProvider());
       ready = true;
-      // §弱网: register the SW so the desktop bundle + Monaco are served from
-      // local cache; only data crosses the WS thereafter.
-      if ('serviceWorker' in navigator) {
-        // Classic script: SvelteKit bundles the SW self-contained for production.
-        navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-      }
+      registerServiceWorker();
     };
 
     const connectWith = (token: string) => {
@@ -234,17 +257,18 @@
         if (ok) {
           code = '';
           ready = true;
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-          }
+          try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
+          registerServiceWorker();
         } else {
           code = '';
+          try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
           errorMsg = tr('main.totpGateErrInvalid');
         }
       })
       .catch(() => {
         loading = false;
         code = '';
+        try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
         errorMsg = tr('main.totpGateErrNetwork');
       });
   }

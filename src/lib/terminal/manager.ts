@@ -3530,8 +3530,13 @@ export class TerminalManager {
 	): { x: number; y: number; cellW: number; cellH: number; fontSizePx: number } | null {
 		const e = this.panes.get(paneId);
 		if (!e || e.cellW <= 0 || e.cellH <= 0) return null;
-		const row = e.kernel.cursorRow();
+		const gridRow = e.kernel.cursorRow();
 		const col = e.kernel.cursorCol();
+		// The kernel cursor row is a grid position. When the user has scrolled
+		// into history (scrollOffset > 0), the grid is pushed down in the
+		// viewport; add scrollOffset to get the viewport row for pixel math.
+		const scrollOff = e.kernel.scrollOffset();
+		const vpRow = gridRow + scrollOff;
 		// Container has CSS `padding: Npx` (set by setPadding); absolute-
 		// positioned IME helper measures `left/top` from the padding-box
 		// while the canvas lays out inside the content-box. Add `pad` so
@@ -3539,7 +3544,7 @@ export class TerminalManager {
 		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
 		return {
 			x: Math.round(col * e.cellW) + pad,
-			y: Math.round(row * e.cellH) + pad,
+			y: Math.round(vpRow * e.cellH) + pad,
 			cellW: e.cellW,
 			cellH: e.cellH,
 			fontSizePx: this.opts.fontSizePx,
@@ -3581,7 +3586,9 @@ export class TerminalManager {
 		// instead of N px above-left of it.
 		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
 		const pickAt = (row: number, col: number) => {
-			const r = Math.min(row, Math.max(0, rows - 1));
+			const scrollOff = e.kernel.scrollOffset();
+			const vpRow = row + scrollOff;
+			const r = Math.min(vpRow, Math.max(0, rows - 1));
 			const c = Math.min(col, Math.max(0, cols - 1));
 			return {
 				x: Math.round(c * e.cellW) + pad,
@@ -3705,14 +3712,44 @@ export class TerminalManager {
 		const r = Math.min(cell.row, Math.max(0, rows - 1));
 		const c = Math.min(cell.col, Math.max(0, cols - 1));
 		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
+		const scrollOff = e.kernel.scrollOffset();
+		const vpRow = r + scrollOff;
+		const vpR = Math.min(vpRow, Math.max(0, rows - 1));
 		return {
 			row: r,
 			col: c,
 			x: Math.round(c * e.cellW) + pad,
-			y: Math.round(r * e.cellH) + pad,
+			y: Math.round(vpR * e.cellH) + pad,
 			cellW: e.cellW,
 			cellH: e.cellH,
 			fontSizePx: this.opts.fontSizePx,
+		};
+	}
+
+	/** Convert a grid (row, col) to pixel position relative to the pane
+	 *  container's padding-box, accounting for scroll offset. Used by
+	 *  RidgePane during active IME composition to recompute the textarea
+	 *  position from the locked composingAnchor without moving the anchor
+	 *  itself (which would break the wasm preedit overlay). */
+	pixelPositionFromCell(
+		paneId: string,
+		row: number,
+		col: number,
+	): { x: number; y: number; cellW: number; cellH: number } | null {
+		const e = this.panes.get(paneId);
+		if (!e || e.cellW <= 0 || e.cellH <= 0) return null;
+		const rows = e.kernel.rows();
+		const cols = e.kernel.cols();
+		const scrollOff = e.kernel.scrollOffset();
+		const vpRow = row + scrollOff;
+		const r = Math.min(vpRow, Math.max(0, rows - 1));
+		const c = Math.min(col, Math.max(0, cols - 1));
+		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
+		return {
+			x: Math.round(c * e.cellW) + pad,
+			y: Math.round(r * e.cellH) + pad,
+			cellW: e.cellW,
+			cellH: e.cellH,
 		};
 	}
 

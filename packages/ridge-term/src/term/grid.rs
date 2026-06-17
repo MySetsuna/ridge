@@ -164,6 +164,16 @@ const CTRL_C_GRACE_MS: i64 = 3_000;
 /// if everything before the TUI was lost.
 const ED_SUPPRESS_AFTER_CTRL_C_MS: i64 = 500;
 
+/// §sticky-inline-tui (2026-06-16) — max gap between two absolute-positioning
+/// CSIs for them to count as part of the SAME render burst. An inline TUI
+/// (Ink / Claude Code) paints a whole frame's worth of CUPs back-to-back in a
+/// few ms, then idles. Consecutive abs-CSIs within this window are one burst,
+/// so `frame_top_row` (the burst's minimum row) captures the frame's TOP — the
+/// box border that sits ABOVE the input cursor. A gap longer than this starts a
+/// fresh burst. 120 ms comfortably spans a single frame's emit without bridging
+/// two distinct frames.
+const RENDER_BURST_GAP_MS: i64 = 120;
+
 pub struct Grid {
     rows: usize,
     cols: usize,
@@ -237,6 +247,28 @@ pub struct Grid {
     /// observe signals at gate-query time, missing the brief window.
     /// Sentinel 0 = no TUI signal ever observed.
     last_tui_signal_at_ms: i64,
+    /// §sticky-inline-tui (2026-06-16) — latched true once a strong inline-TUI
+    /// signal is observed (DECCKM / mouse / cursor-hidden / alt, via the same
+    /// `tui_active` sample that drives `last_tui_signal_at_ms`), and held until
+    /// an explicit exit signal (RIS, alt-screen leave, or a shell prompt OSC
+    /// 133/633 cleared from the backend). Motivation: a DEFAULT (non-fullscreen)
+    /// Claude Code idle at its input prompt is mode-IDENTICAL to a bare shell —
+    /// cursor visible, no DECCKM/mouse, last abs-CSI long decayed — so the live
+    /// heuristic returns false and `resize` falls to the shell path, leaving the
+    /// multi-row input-box border ABOVE the cursor as garbage. The sticky bit
+    /// keeps the pane classified as inline-TUI across idle so `resize` wipes the
+    /// whole frame. Read by `is_inline_tui_for_resize_at`, NOT by the live
+    /// `is_inline_tui_active_at` (which the shell-history popup gate relies on
+    /// staying purely live).
+    inline_tui_sticky: bool,
+    /// §sticky-inline-tui — minimum cursor row reached during the current
+    /// absolute-positioning render burst (consecutive abs-CSIs within
+    /// `RENDER_BURST_GAP_MS`). This is the inline-TUI frame's TOP row; the
+    /// resize wipe clears from here downward so the box border above the input
+    /// cursor is erased (unlike `last_abs_csi_row`, which is the LAST CUP = the
+    /// input row at the frame's bottom). Persists across idle so an idle
+    /// Claude's frame top is still known at resize time.
+    frame_top_row: u16,
     /// SGR "pen" mirrored from the parser's `current_attrs` for BCE
     /// (Background Color Erase). Erase / scroll / IL / DL paths fill
     /// blanked cells with `Cell { ch: ' ', attr: <pen.bg> }` so a TUI
@@ -265,6 +297,8 @@ impl Grid {
             last_ctrl_c_at_ms: 0,
             ed_suppressed_until_ms: 0,
             last_tui_signal_at_ms: 0,
+            inline_tui_sticky: false,
+            frame_top_row: 0,
             pen: Attrs::DEFAULT,
         }
     }
@@ -315,10 +349,49 @@ impl Grid {
     /// runtime). Tests pass a controlled value to drive the decay window
     /// deterministically.
     pub fn note_absolute_positioning(&mut self, now_ms: i64) {
-        self.last_abs_csi_at_ms = now_ms;
         let cur = self.screen().cursor;
-        self.last_abs_csi_row = cur.row.min(u16::MAX as usize) as u16;
+        let row = cur.row.min(u16::MAX as usize) as u16;
+        // §sticky-inline-tui — track the minimum row within a render burst.
+        // Consecutive abs-CSIs within RENDER_BURST_GAP_MS belong to the same
+        // frame paint; the burst minimum is the frame TOP (box border above the
+        // input cursor). A longer gap, or the first ever abs-CSI, starts a fresh
+        // burst anchored at the current row.
+        if self.last_abs_csi_at_ms == 0
+            || now_ms.saturating_sub(self.last_abs_csi_at_ms) > RENDER_BURST_GAP_MS
+        {
+            self.frame_top_row = row;
+        } else {
+            self.frame_top_row = self.frame_top_row.min(row);
+        }
+        self.last_abs_csi_at_ms = now_ms;
+        self.last_abs_csi_row = row;
         self.last_abs_csi_col = cur.col.min(u16::MAX as usize) as u16;
+    }
+
+    /// §sticky-inline-tui — latch the pane as inline-TUI. Called from the parser
+    /// whenever a strong TUI mode signal is observed (same `tui_active` sample
+    /// that bumps `last_tui_signal_at_ms`). Held until `clear_inline_tui_sticky`.
+    pub fn mark_inline_tui_sticky(&mut self) {
+        self.inline_tui_sticky = true;
+    }
+
+    /// §sticky-inline-tui — drop the sticky inline-TUI latch. Called on explicit
+    /// exit signals: RIS, alt-screen leave, and (from the backend) a shell
+    /// prompt OSC 133/633;A — i.e. control returned to a line-editing shell.
+    pub fn clear_inline_tui_sticky(&mut self) {
+        self.inline_tui_sticky = false;
+    }
+
+    /// §sticky-inline-tui — current sticky latch state. Exposed for tests and
+    /// for `is_inline_tui_for_resize_at`.
+    pub fn is_inline_tui_sticky(&self) -> bool {
+        self.inline_tui_sticky
+    }
+
+    /// §sticky-inline-tui — the current render burst's top row (see
+    /// `frame_top_row` field). 0 when no abs-CSI has been observed.
+    pub fn frame_top_row(&self) -> usize {
+        self.frame_top_row as usize
     }
 
     /// §A.4 (2026-05-08) — record an EL/ED/CUU/CUD dispatch. Only the
@@ -420,6 +493,93 @@ impl Grid {
             return false;
         }
         now_ms.saturating_sub(last) < INLINE_TUI_DECAY_MS
+    }
+
+    /// §resize-tui-signal (2026-06-15) — `is_inline_tui_active_at` plus a
+    /// fallback that also treats application-cursor-keys (DECCKM `?1h`) and
+    /// mouse reporting (`?1000/?1002/?1003`) as positive inline-TUI signals.
+    ///
+    /// Motivation: the base heuristic bails when `cursor_visible` is true, but
+    /// an inline TUI being resized can momentarily have a VISIBLE cursor (e.g.
+    /// Claude Code without `CLAUDE_CODE_NO_FLICKER`), so the §A.3 primary wipe
+    /// never fires and the post-resize redraw lands on stale cells. DECCKM and
+    /// mouse-reporting are set by full-screen / inline TUI apps (Claude Code,
+    /// vim, fzf, lazygit) and effectively never by line-editing shells
+    /// (PSReadLine / zsh-zle / fish-zle), so they are a safe extra signal.
+    ///
+    /// Kept deliberately tight to avoid over-wiping: the fallback requires
+    /// BOTH a TUI mode on AND a RECENT ABSOLUTE-positioning CSI (not merely a
+    /// redraw-walk), so a program that only flipped a mode on but isn't
+    /// actively painting frames won't force a wipe. Alt screen and the Ctrl+C
+    /// grace window still short-circuit exactly as the base heuristic does.
+    pub fn is_inline_tui_active_with_modes_at(
+        &self,
+        now_ms: i64,
+        cursor_visible: bool,
+        app_cursor_keys: bool,
+        mouse_reporting: bool,
+    ) -> bool {
+        if self.is_inline_tui_active_at(now_ms, cursor_visible) {
+            return true;
+        }
+        // Alt-screen apps use the §1.22 alt-wipe path, never this one.
+        if self.is_alt {
+            return false;
+        }
+        // A just-killed TUI shouldn't force a wipe — mirror the base grace.
+        if self.last_ctrl_c_at_ms > 0
+            && now_ms.saturating_sub(self.last_ctrl_c_at_ms) < CTRL_C_GRACE_MS
+        {
+            return false;
+        }
+        if !(app_cursor_keys || mouse_reporting) {
+            return false;
+        }
+        // Require a recent ABSOLUTE-positioning CSI (CUP/HVP/CHA/VPA): a TUI
+        // mode + active frame painting is a strong combined signal; a stale
+        // mode left on by an exited app decays out within the window.
+        if self.last_abs_csi_at_ms == 0 {
+            return false;
+        }
+        now_ms.saturating_sub(self.last_abs_csi_at_ms) < INLINE_TUI_DECAY_MS
+    }
+
+    /// §sticky-inline-tui (2026-06-16) — the heuristic the RESIZE path uses:
+    /// the live `is_inline_tui_active_with_modes_at` OR the sticky latch. The
+    /// sticky branch covers a DEFAULT Claude Code (or any inline TUI) sitting
+    /// IDLE at a visible-cursor input prompt, where every live signal has
+    /// decayed and the pane is otherwise indistinguishable from a bare shell —
+    /// yet its multi-row input box still needs the full frame wipe on resize.
+    ///
+    /// Deliberately NOT folded into the live heuristics: the shell-history
+    /// popup gate and the IME anchor key off the purely-live versions, and a
+    /// sticky latch there would wedge them on after a TUI idled. Alt-screen and
+    /// the Ctrl+C grace still short-circuit (a just-killed TUI mustn't force a
+    /// wipe; the next real frame re-arms the latch naturally).
+    pub fn is_inline_tui_for_resize_at(
+        &self,
+        now_ms: i64,
+        cursor_visible: bool,
+        app_cursor_keys: bool,
+        mouse_reporting: bool,
+    ) -> bool {
+        if self.is_inline_tui_active_with_modes_at(
+            now_ms,
+            cursor_visible,
+            app_cursor_keys,
+            mouse_reporting,
+        ) {
+            return true;
+        }
+        if self.is_alt {
+            return false;
+        }
+        if self.last_ctrl_c_at_ms > 0
+            && now_ms.saturating_sub(self.last_ctrl_c_at_ms) < CTRL_C_GRACE_MS
+        {
+            return false;
+        }
+        self.inline_tui_sticky
     }
 
     pub fn rows(&self) -> usize {
@@ -644,16 +804,43 @@ impl Grid {
         let rows_changed = rows != self.rows;
         let dim_changed = cols_changed || rows_changed;
 
-        // §Reflow (2026-06-01): when column width changes on primary screen
-        // outside inline-TUI mode, reflow history rows (before cursor) at
-        // the new width so wrapped content isn't naively truncated. This
-        // runs BEFORE naive_resize_screen so cell data is preserved for
-        // redistribution. The cursor row and below (input area) are not
-        // reflowed — they get naive truncate/pad via naive_resize_screen.
-        let reflowed = cols_changed && !self.is_alt && !inline_tui_active
-            && self.primary.cursor.row > 0;
+        // §Reflow (2026-06-01) / §reflow-inline (2026-06-16): when the column
+        // width changes on primary, rewrap the HISTORY rows above the live
+        // region so wrapped content isn't naively truncated — this matches
+        // conhost's `ResizeWithReflow` and Windows Terminal, which rewrap
+        // wrapped lines on a width change. The "live region" boundary depends
+        // on the mode:
+        //   - shell (PSReadLine / zsh / fish): the cursor row. The prompt and
+        //     the line being edited get naive truncate/pad and are redrawn by
+        //     the shell on SIGWINCH; only the output above the prompt rewraps.
+        //   - inline TUI (Claude Code WITHOUT fullscreen / NO_FLICKER): the
+        //     frame top (`last_abs_csi_row`). The conversation / tool output
+        //     above the Ink input box is permanent primary content that ONLY
+        //     the terminal can rewrap — Ink's SIGWINCH redraw repaints just
+        //     its own frame rows, never the history. Before this the inline
+        //     path skipped reflow entirely and that history stayed at the old
+        //     wrap → the "resize 后内容错位 / 没有正常 reflow" symptom. The
+        //     frame region itself is still wiped below (`inline_tui_wipe`) so
+        //     Ink repaints onto blanks.
+        // Runs BEFORE naive_resize_screen so the old-width cell data is still
+        // intact for redistribution.
+        // §sticky-inline-tui — use `frame_top_row` (the render burst's MINIMUM
+        // row = the box top) rather than `last_abs_csi_row` (the LAST CUP = the
+        // input row at the box bottom), so the reflow boundary / wipe covers the
+        // whole multi-row input box, not just the rows below the cursor.
+        let inline_frame_top = if inline_tui_active && self.last_abs_csi_at_ms != 0 {
+            (self.frame_top_row as usize).min(old_rows.saturating_sub(1))
+        } else {
+            0
+        };
+        let reflow_boundary = if inline_tui_active {
+            inline_frame_top
+        } else {
+            self.primary.cursor.row
+        };
+        let reflowed = cols_changed && !self.is_alt && reflow_boundary > 0;
         if reflowed {
-            self.reflow_primary_screen(old_cols, cols);
+            self.reflow_primary_screen_at(old_cols, cols, reflow_boundary);
         }
 
         Self::naive_resize_screen(&mut self.primary, rows, cols);
@@ -737,9 +924,19 @@ impl Grid {
             // behaviour. That's correct for the original §A.3 case
             // (lazygit's bottom-of-screen sticky bar, etc.) which
             // doesn't have a stable inline frame top row.
+            //
+            // §reflow-inline (2026-06-16): when the history above the frame
+            // was just rewrapped, the frame top moved by the row-count delta.
+            // `reflow_primary_screen_at` left `primary.cursor.row` at the new
+            // frame top (boundary + delta), so anchor the wipe there. Without
+            // reflow (rows-only change, or no recorded frame top) fall back to
+            // the original `last_abs_csi_row` anchor / full wipe.
             let last_row_idx = rows.saturating_sub(1);
-            let wipe_from_row = if self.last_abs_csi_at_ms != 0 {
-                (self.last_abs_csi_row as usize).min(last_row_idx)
+            let wipe_from_row = if reflowed {
+                self.primary.cursor.row.min(last_row_idx)
+            } else if self.last_abs_csi_at_ms != 0 {
+                // §sticky-inline-tui — frame TOP (burst min), not last CUP.
+                (self.frame_top_row as usize).min(last_row_idx)
             } else {
                 0
             };
@@ -894,20 +1091,28 @@ impl Grid {
     // Reflow (primary screen only)
     // ------------------------------------------------------------------
 
-    /// Reflow history rows (rows before the cursor) at the new column
-    /// width. Groups consecutive rows into paragraphs using the `wrapped`
-    /// flag, flattens each paragraph's cells, and re-splits at `new_cols`.
-    /// Replaces the history portion of `self.primary.rows` and adjusts
-    /// the cursor row by the row-count delta.
+    /// Reflow history rows `[0..boundary)` at the new column width. Groups
+    /// consecutive rows into paragraphs using the `wrapped` flag, flattens
+    /// each paragraph's cells, and re-splits at `new_cols`. Replaces the
+    /// history portion of `self.primary.rows` and adjusts the cursor row by
+    /// the row-count delta.
     ///
-    /// Preserves hyperlink and cluster metadata (OSC 8, grapheme clusters)
-    /// relative to each new row's column offsets. Runs BEFORE
-    /// `naive_resize_screen` so the cell data of old-width rows is still
-    /// intact for redistribution.
-    fn reflow_primary_screen(&mut self, old_cols: usize, new_cols: usize) {
+    /// §reflow-inline (2026-06-16) — the `boundary` parameter is the start of
+    /// the "live region" that is NOT reflowed (it gets naive truncate/pad and
+    /// is repainted by the foreground program on SIGWINCH). It is the shell
+    /// cursor row for the PSReadLine path, and the inline-TUI frame top
+    /// (`last_abs_csi_row`) for the Claude-Code-default path. `primary.cursor.row`
+    /// is set to `boundary + row_count_delta` so the caller can re-anchor the
+    /// live region after the rewrap (the inline path reads it back as the new
+    /// frame top for its wipe). `boundary == 0` → no history → no-op.
+    ///
+    /// Runs BEFORE `naive_resize_screen` so the old-width cell data is still
+    /// intact for redistribution. Hyperlink / cluster metadata (OSC 8,
+    /// grapheme clusters) is dropped on reflow.
+    fn reflow_primary_screen_at(&mut self, old_cols: usize, new_cols: usize, boundary: usize) {
         debug_assert!(old_cols != new_cols);
         let screen = &mut self.primary;
-        let old_cursor_row = screen.cursor.row;
+        let old_cursor_row = boundary;
         if old_cursor_row == 0 {
             return;
         }
@@ -2681,6 +2886,120 @@ mod tests {
     }
 
     #[test]
+    fn inline_tui_resize_reflows_history_above_frame() {
+        // §reflow-inline (2026-06-16): Claude Code WITHOUT fullscreen /
+        // NO_FLICKER renders inline on primary — the conversation / tool
+        // output above the Ink input box is permanent primary content that the
+        // TERMINAL must rewrap on a width change (Ink's SIGWINCH redraw only
+        // repaints its own frame rows, never the history). Before the fix the
+        // inline path skipped reflow and the history was naively truncated →
+        // the "resize 后没有正常 reflow" symptom. Verify the history above the
+        // frame top is REWRAPPED (not truncated) and the frame region is wiped
+        // for Ink to repaint onto blanks.
+        let mut g = Grid::new(8, 20, 100);
+
+        // History: one 24-char logical line wraps across rows 0-1 at 20 cols.
+        //   row0 = "ABCDEFGHIJKLMNOPQRST" (wrapped), row1 = "UVWX".
+        for ch in "ABCDEFGHIJKLMNOPQRSTUVWX".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        assert!(g.row(0).unwrap().wrapped, "history row 0 wrapped at old width");
+        assert_eq!(row_text(&g, 1), "UVWX");
+
+        // Inline-TUI frame top at row 2: record an absolute-positioning CSI
+        // there (marks the frame top for the wipe), then a frame marker, then
+        // park the cursor at the frame bottom.
+        g.cursor_to(2, 0);
+        g.note_absolute_positioning(1_000);
+        g.print('F', Attrs::DEFAULT);
+        g.cursor_to(3, 0);
+
+        // Narrow 20 → 10 cols in inline-TUI mode.
+        g.resize_with_inline_tui(8, 10, true);
+
+        // History rewrapped at 10 cols: "ABCDEFGHIJKLMNOPQRSTUVWX" (24) →
+        //   row0 "ABCDEFGHIJ", row1 "KLMNOPQRST", row2 "UVWX". The KEY
+        // assertion is row1: naive truncation would have LOST "KLMNOPQRST" and
+        // left "UVWX" there.
+        assert_eq!(row_text(&g, 0), "ABCDEFGHIJ", "reflow keeps first 10 cols");
+        assert_eq!(
+            row_text(&g, 1),
+            "KLMNOPQRST",
+            "reflow rewraps the overflow (truncation would lose it)"
+        );
+        assert_eq!(row_text(&g, 2), "UVWX", "reflow tail row");
+        assert!(g.row(0).unwrap().wrapped, "rewrapped row 0 still wrapped");
+        assert!(g.row(1).unwrap().wrapped, "rewrapped row 1 still wrapped");
+
+        // History now occupies 3 rows → frame top moved to row 3. The frame
+        // region is wiped for Ink; cursor anchored there.
+        for r in 3..g.rows() {
+            assert_eq!(row_text(&g, r), "", "frame row {r} wiped for Ink redraw");
+        }
+        assert_eq!(g.cursor().row, 3, "cursor anchored at reflowed frame top");
+        assert_eq!(g.cursor().col, 0);
+
+        let diag = g.last_resize_diags().last().expect("resize recorded");
+        assert!(diag.reflowed, "history reflow ran on the inline-TUI path");
+        assert!(diag.inline_tui_wipe, "frame region wiped");
+        assert!(diag.inline_tui_active, "inline-TUI flag recorded");
+    }
+
+    #[test]
+    fn sticky_inline_tui_survives_idle_for_resize() {
+        // §sticky-inline-tui: a DEFAULT Claude idle at its prompt is
+        // mode-identical to a shell (cursor visible, no DECCKM/mouse, abs-CSI
+        // long decayed) → the LIVE heuristic is off. The sticky latch (set while
+        // it was rendering) keeps the RESIZE heuristic on so the frame wipes.
+        let mut g = Grid::new(8, 20, 100);
+        g.note_absolute_positioning(1_000); // a frame paint happened
+        g.mark_inline_tui_sticky(); // parser latches alongside the TUI signal
+
+        let idle = 1_000 + 60_000; // 60 s later, fully decayed
+        assert!(
+            !g.is_inline_tui_active_with_modes_at(idle, true, false, false),
+            "LIVE heuristic is off when idle with a visible cursor"
+        );
+        assert!(
+            g.is_inline_tui_for_resize_at(idle, true, false, false),
+            "STICKY keeps the idle inline-TUI classified for resize"
+        );
+    }
+
+    #[test]
+    fn sticky_inline_tui_cleared_falls_back_to_shell() {
+        // The latch drops on an explicit exit signal (shell prompt OSC / RIS /
+        // alt-leave); a subsequent shell resize must NOT be force-wiped.
+        let mut g = Grid::new(8, 20, 100);
+        g.note_absolute_positioning(1_000);
+        g.mark_inline_tui_sticky();
+        let idle = 1_000 + 60_000;
+        assert!(g.is_inline_tui_for_resize_at(idle, true, false, false));
+        g.clear_inline_tui_sticky();
+        assert!(
+            !g.is_inline_tui_for_resize_at(idle, true, false, false),
+            "after the latch clears, resize falls back to the shell path"
+        );
+    }
+
+    #[test]
+    fn frame_top_tracks_render_burst_minimum() {
+        // Within a render burst (consecutive abs-CSIs ≤ RENDER_BURST_GAP_MS),
+        // frame_top is the MINIMUM row (the box top); a longer gap starts fresh.
+        let mut g = Grid::new(12, 20, 0);
+        g.cursor_to(5, 0);
+        g.note_absolute_positioning(1_000); // new burst → 5
+        g.cursor_to(3, 0);
+        g.note_absolute_positioning(1_050); // same burst → min(5,3)=3
+        g.cursor_to(7, 0);
+        g.note_absolute_positioning(1_100); // same burst → min(3,7)=3
+        assert_eq!(g.frame_top_row(), 3, "burst min across 5,3,7 = box top");
+        g.cursor_to(8, 0);
+        g.note_absolute_positioning(1_300); // gap 200ms > 120 → new burst → 8
+        assert_eq!(g.frame_top_row(), 8, "a gap longer than the burst window resets");
+    }
+
+    #[test]
     fn inline_tui_heuristic_decays_after_idle() {
         // Heuristic depends on (a) NOT alt screen, (b) cursor hidden,
         // (c) absolute-positioning timestamp within INLINE_TUI_DECAY_MS.
@@ -2773,6 +3092,71 @@ mod tests {
 
         // Cursor-visible / alt-screen guards still apply.
         assert!(!g.is_inline_tui_active_at(now + 500, true));
+    }
+
+    #[test]
+    fn inline_tui_modes_variant_fires_on_visible_cursor_tui() {
+        // §resize-tui-signal — the mode-aware variant must engage when a TUI
+        // mode (DECCKM / mouse) is on and an absolute CSI is fresh, EVEN with
+        // a VISIBLE cursor (the case the base heuristic bails on). This is the
+        // "Claude Code without NO_FLICKER keeps cursor visible at resize"
+        // scenario.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+        g.note_absolute_positioning(now);
+
+        // Base heuristic is OFF with a visible cursor...
+        assert!(!g.is_inline_tui_active_at(now + 500, true));
+        // ...but the mouse-reporting signal flips the variant ON.
+        assert!(g.is_inline_tui_active_with_modes_at(now + 500, true, false, true));
+        // ...as does application-cursor-keys (DECCKM).
+        assert!(g.is_inline_tui_active_with_modes_at(now + 500, true, true, false));
+
+        // Without any TUI mode, the variant matches the base (off w/ visible
+        // cursor) — no regression for plain shells.
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 500, true, false, false));
+    }
+
+    #[test]
+    fn inline_tui_modes_variant_requires_recent_abs_csi() {
+        // The fallback is deliberately tight: a TUI mode alone (no recent
+        // ABSOLUTE-positioning CSI) must NOT force the wipe, so a program that
+        // merely left mouse-mode on but isn't painting frames is left alone.
+        let mut g = Grid::new(5, 20, 0);
+        let now = 100_000_i64;
+
+        // Mode on, but never any abs CSI → off.
+        assert!(!g.is_inline_tui_active_with_modes_at(now, true, true, true));
+
+        // A redraw-walk CSI is NOT enough for the mode fallback (it requires
+        // an absolute landing); base heuristic still needs a hidden cursor.
+        g.note_redraw_csi(now);
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 100, true, true, true));
+
+        // Fresh abs CSI → on; past the decay window → off again.
+        g.note_absolute_positioning(now + 200);
+        assert!(g.is_inline_tui_active_with_modes_at(now + 300, true, true, true));
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 200 + 2_001, true, true, true));
+    }
+
+    #[test]
+    fn inline_tui_modes_variant_respects_alt_and_ctrl_c() {
+        // Alt-screen and the Ctrl+C grace window must short-circuit the
+        // mode-aware variant exactly like the base heuristic.
+        let now = 100_000_i64;
+
+        // Alt screen → off even with mode + fresh abs CSI.
+        let mut g = Grid::new(5, 20, 0);
+        g.enter_alt_screen(false);
+        g.note_absolute_positioning(now);
+        assert!(!g.is_inline_tui_active_with_modes_at(now + 100, true, true, true));
+
+        // Ctrl+C grace → off even with mode + fresh abs CSI.
+        let mut g2 = Grid::new(5, 20, 0);
+        g2.note_absolute_positioning(now);
+        g2.note_ctrl_c_sent(now);
+        g2.note_absolute_positioning(now + 100);
+        assert!(!g2.is_inline_tui_active_with_modes_at(now + 200, true, true, true));
     }
 
     #[test]

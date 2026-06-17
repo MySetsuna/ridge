@@ -93,6 +93,17 @@ pub fn ca_cert_pem() -> Option<String> {
 /// Returns `None` (caller falls back to plain HTTP) if cert material can't be
 /// produced or parsed — TLS is best-effort, the server must still come up.
 pub async fn resolve_config(lan_ip: &str, hostname: &str) -> Option<RustlsConfig> {
+    let ips = [lan_ip.to_string()];
+    resolve_config_multi(&ips, hostname).await
+}
+
+/// Like [`resolve_config`] but bakes EVERY supplied LAN IP into the leaf cert's
+/// SANs. A machine commonly has more than one reachable address (Wi-Fi
+/// 192.168.x, Tailscale 100.x, Ethernet 10.x); the remote panel lets the user
+/// pick which one the QR/link advertises (`detect_lan_ips`). If the cert only
+/// covered the auto-chosen primary, selecting any OTHER address would fail TLS
+/// (cert/host mismatch → "网络错误"). Covering them all makes every pick valid.
+pub async fn resolve_config_multi(lan_ips: &[String], hostname: &str) -> Option<RustlsConfig> {
     // rustls 0.23 has no compiled-in crypto provider under
     // `tls-rustls-no-provider`; install ring once for the whole process.
     // `install_default` errors only if one is already set — harmless.
@@ -114,7 +125,7 @@ pub async fn resolve_config(lan_ip: &str, hostname: &str) -> Option<RustlsConfig
     }
 
     // Ridge-managed CA + leaf.
-    if let Some((cert_pem, key_pem)) = ensure_ca_and_leaf(&dir, lan_ip, hostname) {
+    if let Some((cert_pem, key_pem)) = ensure_ca_and_leaf(&dir, lan_ips, hostname) {
         return build_config(cert_pem.into_bytes(), key_pem.into_bytes()).await;
     }
 
@@ -123,6 +134,20 @@ pub async fn resolve_config(lan_ip: &str, hostname: &str) -> Option<RustlsConfig
         (Ok(c), Ok(k)) => build_config(c, k).await,
         _ => None,
     }
+}
+
+/// Canonicalize a set of LAN IPs for stable cache keying + SANs: drop empties,
+/// sort, dedup. Order-independent so a mere interface-enumeration reshuffle
+/// doesn't force a needless leaf re-mint.
+fn canon_ips(lan_ips: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = lan_ips
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 async fn build_config(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Option<RustlsConfig> {
@@ -139,7 +164,7 @@ async fn build_config(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Option<RustlsConfi
 /// reusing the cached leaf when still valid for the current address, otherwise
 /// minting and persisting a fresh CA-signed leaf. Returns `None` on any
 /// unrecoverable generation error.
-fn ensure_ca_and_leaf(dir: &Path, lan_ip: &str, hostname: &str) -> Option<(String, String)> {
+fn ensure_ca_and_leaf(dir: &Path, lan_ips: &[String], hostname: &str) -> Option<(String, String)> {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::error!(target: "ridge::remote", error = %e, "remote TLS: mkdir failed");
         // Persistence will fail, but we can still mint an in-memory leaf below.
@@ -148,7 +173,7 @@ fn ensure_ca_and_leaf(dir: &Path, lan_ip: &str, hostname: &str) -> Option<(Strin
     let (ca_cert, ca_key) = load_or_create_ca(dir)?;
 
     // Reuse the cached leaf when its SANs still match and it is not aged out.
-    if leaf_should_reuse(dir, lan_ip, hostname) {
+    if leaf_should_reuse(dir, lan_ips, hostname) {
         if let (Ok(cert), Ok(key)) = (
             std::fs::read_to_string(dir.join("cert.pem")),
             std::fs::read_to_string(dir.join("key.pem")),
@@ -157,7 +182,7 @@ fn ensure_ca_and_leaf(dir: &Path, lan_ip: &str, hostname: &str) -> Option<(Strin
         }
     }
 
-    let (leaf_pem, leaf_key_pem) = match generate_leaf(lan_ip, hostname, &ca_cert, &ca_key) {
+    let (leaf_pem, leaf_key_pem) = match generate_leaf(lan_ips, hostname, &ca_cert, &ca_key) {
         Some(pair) => pair,
         None => {
             tracing::error!(target: "ridge::remote", "remote TLS: leaf generation failed");
@@ -167,8 +192,9 @@ fn ensure_ca_and_leaf(dir: &Path, lan_ip: &str, hostname: &str) -> Option<(Strin
 
     let _ = std::fs::write(dir.join("cert.pem"), &leaf_pem);
     let _ = std::fs::write(dir.join("key.pem"), &leaf_key_pem);
-    let _ = std::fs::write(dir.join("meta.txt"), leaf_meta(lan_ip, hostname));
-    tracing::info!(target: "ridge::remote", lan_ip, hostname, "remote TLS: issued CA-signed leaf cert");
+    let _ = std::fs::write(dir.join("meta.txt"), leaf_meta(lan_ips, hostname));
+    let san_ips = canon_ips(lan_ips).join(",");
+    tracing::info!(target: "ridge::remote", san_ips = %san_ips, hostname, "remote TLS: issued CA-signed leaf cert");
 
     Some((leaf_pem, leaf_key_pem))
 }
@@ -241,7 +267,7 @@ fn ca_params() -> Option<CertificateParams> {
 
 /// Mint a leaf cert signed by the local CA.
 fn generate_leaf(
-    lan_ip: &str,
+    lan_ips: &[String],
     hostname: &str,
     ca_cert: &Certificate,
     ca_key: &KeyPair,
@@ -257,8 +283,12 @@ fn generate_leaf(
     params
         .subject_alt_names
         .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
-    if let Ok(ip) = lan_ip.parse::<IpAddr>() {
-        params.subject_alt_names.push(SanType::IpAddress(ip));
+    // Every reachable LAN address → SAN, so whichever one the panel advertises
+    // (and the phone connects to) presents a matching cert.
+    for ip in canon_ips(lan_ips) {
+        if let Ok(parsed) = ip.parse::<IpAddr>() {
+            params.subject_alt_names.push(SanType::IpAddress(parsed));
+        }
     }
     params.is_ca = IsCa::NoCa;
     params.key_usages = vec![
@@ -276,16 +306,18 @@ fn generate_leaf(
     Some((leaf_cert.pem(), leaf_key.serialize_pem()))
 }
 
-fn leaf_meta(lan_ip: &str, hostname: &str) -> String {
-    format!("{lan_ip}\n{hostname}\n{}", now_unix())
+fn leaf_meta(lan_ips: &[String], hostname: &str) -> String {
+    format!("{}\n{hostname}\n{}", canon_ips(lan_ips).join(","), now_unix())
 }
 
-fn leaf_should_reuse(dir: &Path, lan_ip: &str, hostname: &str) -> bool {
+fn leaf_should_reuse(dir: &Path, lan_ips: &[String], hostname: &str) -> bool {
     let Ok(meta) = std::fs::read_to_string(dir.join("meta.txt")) else {
         return false;
     };
     let lines: Vec<&str> = meta.lines().collect();
-    if lines.len() < 3 || lines[0] != lan_ip || lines[1] != hostname {
+    // line 0 is the canonical (sorted, comma-joined) IP set; a changed set —
+    // new/removed NIC, different Wi-Fi — re-mints the leaf with fresh SANs.
+    if lines.len() < 3 || lines[0] != canon_ips(lan_ips).join(",").as_str() || lines[1] != hostname {
         return false;
     }
     let created: u64 = lines[2].trim().parse().unwrap_or(0);

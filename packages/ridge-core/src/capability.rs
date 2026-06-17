@@ -193,6 +193,10 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "list_native_sessions",
     "summon_native_session",
     // ── Workspace (live) ──
+    // 只读：远程控制器（桌面 SPA）连上后枚举 host 工作区列表（refreshWorkspaces →
+    // list_workspaces）。漏了它会导致 controller 取不到工作区 → 兜底逻辑每次连接新建一个
+    // 工作区（连带 bug），故与同组读/写命令一并放行。
+    "list_workspaces",
     "get_active_workspace_id",
     "switch_workspace",
     "create_workspace",
@@ -219,6 +223,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // ── Theme / settings ──
     "get_theme_data",
     "set_active_theme",
+    "get_active_theme_entry",
     "set_user_default_cwd",
     // ── Search ──
     "text_search",

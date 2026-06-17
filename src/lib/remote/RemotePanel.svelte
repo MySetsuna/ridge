@@ -4,7 +4,6 @@
   import { listen } from '@tauri-apps/api/event';
   import QrCode from './QrCode.svelte';
   import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
-  import { dev } from '$app/environment';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
@@ -12,6 +11,7 @@
   // 合一为单一视图(去 tab):一个主开关、一份共享 TOTP、LAN/公网入口同屏、一份
   // 合并的「已连接」列表(来源用图标区分)、一个最小化按钮。公网通道由 premium 门控。
   import CloudProModal from './cloud/CloudProModal.svelte';
+  import CheckinGateCard from './cloud/CheckinGateCard.svelte';
   import MinimizeButton from './MinimizeButton.svelte';
   import * as cloudAuth from './cloud/auth';
   import { cloudAuth as cloudAuthStore } from './cloud/auth';
@@ -23,8 +23,9 @@
   let proModalOpen = $state(false);
 
   const cloudState = $derived($cloudAuthStore);
-  // Premium 已就绪：已登录 + plan=premium（公网通道可用的前置）。
-  const cloudReady = $derived(cloudAuth.isLoggedIn(cloudState) && cloudAuth.isPremium(cloudState));
+  const isLoggedIn = $derived(cloudAuth.isLoggedIn(cloudState));
+  const hasValidTime = $derived(cloudAuth.hasActiveTime(cloudState));
+  const hasCheckedIn = $derived(cloudAuth.hasCheckedInToday(cloudState));
   // 公网入口子域 + 是否已激活设备。
   const publicDomain = $derived(cloudAuth.publicEntryDomain(cloudState));
   const hasDevice = $derived(!!cloudState.deviceToken && !!cloudState.deviceName);
@@ -154,9 +155,17 @@
     refreshSessions();
   }
   function buildLinkUri(lanIp: string, port: number): string {
-    // Dev: the SPA is served by Vite (plain HTTP on :5174), not the Rust server.
-    // Prod: the Rust server serves HTTPS (self-signed) for a secure context.
-    if (dev) return `http://${lanIp}:5174/`;
+    // Always point the phone at THIS instance's own remote server over HTTPS
+    // (self-signed → secure context). It serves the built `static/remote` bundle
+    // and handles /verify, /ws same-origin.
+    //
+    // §dev: deliberately NOT the Vite dev server (`:5174`). That path proxies
+    // /verify,/ws to a hardcoded `http://127.0.0.1:9527`, which breaks whenever
+    // the server is on TLS or a non-9527 port (e.g. two instances colliding on
+    // the default port → the dev server lands on 9528). Pointing the QR straight
+    // at the running instance's actual `port` makes "scan → connect" work against
+    // the dev instance with no proxy in the path. Trade-off: no phone-side HMR —
+    // rebuild with `pnpm build:remote` to refresh the served bundle.
     return `https://${lanIp}:${port}/`;
   }
   async function refreshRemoteInfo() {
@@ -373,12 +382,16 @@
   function disconnectController(cid: string): void { host?.kick(cid); }
   function blacklistController(cid: string): void { host?.blacklist(cid); }
 
-  // 切到公网相关操作前的门控：未就绪(未登录/未订阅)弹 Pro Modal。
-  function requirePremium(): boolean {
-    if (!cloudReady) { proModalOpen = true; return false; }
+  // 切到公网相关操作前的门控：未登录弹 Pro Modal。
+  function requirePublicAccess(): boolean {
+    if (!isLoggedIn) { proModalOpen = true; return false; }
+    if (!hasValidTime) { proModalOpen = true; return false; }
     return true;
   }
-  function onCloudReady(): void { /* 登录/激活成功：cloudReady 派生态自动更新 UI */ }
+  function onCloudReady(): void {
+    void refreshDevices();
+    void refreshCloudUser();
+  }
 
   // ── polling ──────────────────────────────────────────────────────────────
   // §sessions: poll the connected LAN sessions while remote control is enabled.
@@ -493,9 +506,9 @@
             <div class="flex flex-col items-center gap-1 py-1">
               <QrCode value={buildLinkUri(activeIp, remoteInfo.port)} size={132} />
               <p class="text-[9px] text-[var(--rg-fg-muted)]">{$t('remote.qrScanFlow')}</p>
-              {#if !dev}
-                <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">{$t('remote.certWarn')}</p>
-              {/if}
+              <!-- Self-signed HTTPS in both dev and prod now → always surface the
+                   trust-the-cert hint. -->
+              <p class="text-[9px] text-amber-400/80 text-center leading-snug max-w-[180px]">{$t('remote.certWarn')}</p>
             </div>
             {#if lanIps.length > 1}
               <!-- §lan-addresses: pick the address on the phone's network -->
@@ -517,7 +530,7 @@
             <div class="flex items-center justify-between text-xs">
               <span class="text-[var(--rg-fg-muted)]">{$t('remote.mobileEntry')}</span>
               <button onclick={copyLink} class="text-[var(--rg-accent)] font-mono hover:underline cursor-pointer bg-transparent border-none p-0" title={$t('remote.copyLinkTitle')}>
-                {activeIp}:{dev ? '5174' : remoteInfo.port}
+                {activeIp}:{remoteInfo.port}
               </button>
             </div>
             <button onclick={copyLink} class="w-full text-[10px] text-[var(--rg-accent)] hover:underline" title={$t('remote.copyLink')}>
@@ -543,7 +556,7 @@
           <div class="flex items-center gap-1.5">
             <Globe class="h-3.5 w-3.5 text-[var(--rg-accent)]" />
             <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">{$t('remote.modeCloud')}</span>
-            {#if !cloudReady}<span class="rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] text-[var(--rg-accent)]">Pro</span>{/if}
+            {#if !isLoggedIn}<span class="rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] text-[var(--rg-accent)]">Pro</span>{/if}
           </div>
           {#if hasDevice}
             <span class="flex items-center gap-1.5 text-[11px] font-medium {isOnline ? 'text-green-400' : isConnecting ? 'text-amber-400' : hostState === 'error' ? 'text-red-400' : 'text-[var(--rg-fg-muted)]'}">
@@ -553,17 +566,17 @@
           {/if}
         </div>
 
-        {#if !cloudReady}
-          <!-- 未就绪：引导升级 / 登录 -->
+        {#if !isLoggedIn}
+          <!-- 未登录：引导登录 -->
           <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.entryPending')}</p>
           <button
-            onclick={() => requirePremium()}
+            onclick={() => requirePublicAccess()}
             class="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--rg-accent)] py-2 text-sm font-semibold text-white transition-all hover:brightness-110"
           >
             <Zap class="h-4 w-4" /> {$t('cloud.enablePublic')}
           </button>
         {:else if !hasUsername}
-          <!-- 已就绪但未设用户名：入口在 ridge-cloud（网页账户页），桌面端只引导、不提供输入 -->
+          <!-- 已登录但未设用户名：入口在 ridge-cloud（网页账户页），桌面端只引导、不提供输入 -->
           <p class="text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">{$t('cloud.usernameRequiredHint')}</p>
           <button
             onclick={openCloudAccount}
@@ -580,7 +593,7 @@
             {$t('cloud.refreshAfterSet')}
           </button>
         {:else if !hasDevice}
-          <!-- 已就绪但未激活设备：输设备名激活 -->
+          <!-- 已登录未激活设备：输设备名激活 -->
           <input
             bind:value={deviceNameInput}
             placeholder={$t('cloud.deviceNamePlaceholder')}
@@ -595,8 +608,10 @@
             {$t('cloud.activateBtn')}
           </button>
           {#if pairingHint}<p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{pairingHint}</p>{/if}
+          <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} marginTop />
         {:else}
-          <!-- 已激活：域名 + 打开 + 启用/停用公网 -->
+          <!-- 已激活 -->
+          <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} />
           {#if publicDomain}
             <code class="block break-all text-xs font-medium text-[var(--rg-fg)]">{publicDomain}</code>
           {/if}

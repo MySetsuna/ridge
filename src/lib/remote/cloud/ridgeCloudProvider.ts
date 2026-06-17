@@ -40,6 +40,7 @@ import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES } from '../../transport/remote/cloudMux';
+import { encodeChunks, ChunkReassembler } from '../../transport/remote/cloudChunk';
 import type { ChannelBackpressure } from './cloudHostBridge';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
@@ -174,6 +175,11 @@ interface ControllerConn {
   bindTranscript: Uint8Array | null;
   /** 弱网 P1：DataChannel 缓冲回落（bufferedamountlow）时由 bridge 注册的 drain 回调。 */
   onDrained: (() => void) | null;
+  // ── 传输层分片（修 RTCDataChannel max-message-size，见 cloudChunk.ts）──
+  /** 发送帧计数器（每帧一个 msgId，供接收端重组）。 */
+  sendMsgId: number;
+  /** 入站分片重组器（按序拼回完整密文再 open）。 */
+  reassembler: ChunkReassembler;
 }
 
 /**
@@ -322,6 +328,8 @@ export class RidgeCloudHost {
       bindingMode: 'pending',
       bindTranscript: null,
       onDrained: null,
+      sendMsgId: 0,
+      reassembler: new ChunkReassembler(),
     };
     this.conns.set(cid, conn);
 
@@ -382,6 +390,7 @@ export class RidgeCloudHost {
     conn.ephemeral = generateEphemeralKeyPair();
     conn.handshakeDone = false;
     conn.session = null;
+    conn.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
     // B3：把本端临时公钥经**已认证信令**旁路定向上报给该 cid 的 controller，供其比对
     // DataChannel 握手公钥（两条独立通道，网络 MITM 无法同时篡改）。host 回落 0x01 时该旁路
     // 生效；host 发 0x02 时 controller 走更强的设备签名验证（忽略旁路），此上报无害。
@@ -481,10 +490,12 @@ export class RidgeCloudHost {
       return;
     }
 
-    // 业务帧：解密后交给该 cid 的桥。
+    // 业务帧：先经传输层重组（分片→完整密文），再解密交给该 cid 的桥。
     if (!conn.session || !conn.bridge) return;
+    const ciphertext = conn.reassembler.push(bytes);
+    if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
     try {
-      const plaintext = conn.session.open(bytes);
+      const plaintext = conn.session.open(ciphertext);
       // SECURITY (audit #4): drop oversized decrypted frames before demux/JSON.parse
       // so a connected peer can't OOM/stall the UI thread (match "drop bad frame").
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
@@ -566,11 +577,14 @@ export class RidgeCloudHost {
     this.setConnState(conn, 'connected');
   }
 
-  /** 把一帧明文加密经某连接的 DataChannel 发回 controller。 */
+  /** 把一帧明文加密经某连接的 DataChannel 发回 controller（传输层分片，修 max-message-size）。 */
   private sendFrame(conn: ControllerConn, plaintext: Uint8Array): void {
     if (conn.state !== 'connected' || !conn.session) return; // 握手前静默丢弃
     try {
-      this.rawSend(conn, conn.session.seal(plaintext));
+      const sealed = conn.session.seal(plaintext);
+      const msgId = conn.sendMsgId++;
+      // 密文 ≤ 单条上限走单条 SINGLE；否则切成多条 ≤16KiB 的 CHUNK，接收端按序重组。
+      for (const wire of encodeChunks(sealed, msgId)) this.rawSend(conn, wire);
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '加密发送失败', 'INTERNAL');
     }

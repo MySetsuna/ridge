@@ -665,10 +665,19 @@ function expandSidebar() {
     const current = get(activeWorkspaceId);
     if (current && current !== NIL_WORKSPACE_ID) return;
     try {
-      const list = get(workspacesList);
+      let list = get(workspacesList);
+      // 列表为空时**不要直接新建**：host 启动必持有 ≥1 个全局活动工作区，所以空列表几乎
+      // 总是上面的 refreshWorkspaces 因竞态/权限（如 list_workspaces 被白名单拒）失败留下
+      // 的空态，而非 host 真的没有工作区。先权威重拉一次确认——若再次抛错则进 catch，绝不
+      // 落到 createWorkspace，杜绝「每次连接凭空多出一个工作区」（web-remote 连带 bug）。
+      if (list.length === 0) {
+        await refreshWorkspaces();
+        list = get(workspacesList);
+      }
       if (list.length > 0) {
         await switchWorkspace(list[0].id);
       } else {
+        // 仅在权威拉取成功且确认 host 工作区为空时才新建（极少见的合法退化态）。
         await createWorkspace();
       }
       // 切换/新建后重新拉取，使顶部工作区下拉与活动 id 同步。
@@ -1041,6 +1050,25 @@ function expandSidebar() {
     }
   }
 
+  // §file-drop (desktop only): insert dropped absolute path(s) into the terminal
+  // under the drop point (else the active pane), quoting any path with whitespace
+  // and adding a trailing space — the classic "drag a file onto the terminal to get
+  // its path". Tauri intercepts native OS drops and hands us the absolute paths.
+  function insertDroppedPaths(paths: string[], position: { x: number; y: number }): void {
+    if (!paths.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    const el = document.elementFromPoint(position.x / dpr, position.y / dpr);
+    const paneEl = el?.closest('[data-rg-pane-id]') as HTMLElement | null;
+    const pid = paneEl?.getAttribute('data-rg-pane-id') || get(activePaneId);
+    if (!pid) return;
+    const quote = (s: string) => (/\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
+    const text = paths.map(quote).join(' ') + ' ';
+    activePaneId.set(pid);
+    void invoke('write_to_pty', { paneId: pid, data: text }).catch((err) => {
+      console.error('write_to_pty (file-drop) failed', err);
+    });
+  }
+
   onMount(() => {
     // Sync onMount — Svelte's `onMount(async () => …)` returns a Promise
     // and the framework silently DROPS any cleanup function resolved from
@@ -1075,6 +1103,7 @@ function expandSidebar() {
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
     let unsubDefaultCwd: (() => void) | undefined;
+    let unlistenDrop: (() => void) | undefined;
 
     void (async () => {
       try {
@@ -1101,6 +1130,24 @@ function expandSidebar() {
 
       if (!isTauri()) return;
 
+      // §file-drop: native OS file drag-drop → insert absolute path(s) into the
+      // terminal. Gated on !webRemote (build constant → tree-shaken out of the
+      // web-remote bundle): a browser controller can't read absolute paths (sandbox)
+      // and a local path wouldn't be valid on the remote host anyway. Tauri's webview
+      // intercepts the native drop and gives us the absolute paths + drop position.
+      if (!webRemote) {
+        try {
+          const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+          unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+            const p = event.payload;
+            if (p.type !== 'drop') return;
+            insertDroppedPaths(p.paths, p.position);
+          });
+        } catch (e) {
+          console.warn('file-drop setup failed', e);
+        }
+      }
+
       // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
       // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
       // 优先级（home）而不是用户配置。Svelte writable 的 subscribe 立即用当前值
@@ -1111,7 +1158,21 @@ function expandSidebar() {
         });
       });
 
-      await refreshWorkspaces();
+      // §web-remote 工作区兜底（关键）：refreshWorkspaces() 在 catch 里 re-throw
+      // （paneTree.ts），而它在 web-remote/cloud-controller 下经 bridge invoke 取
+      // host 工作区——若在 RpcClient `$/hello` 能力协商/连接边沿仍在途时首发，会竞态
+      // reject 并冒泡，跳过下方 ensureActiveWorkspace() → workspacesList 留空 →
+      // 工作区 tab 空、资源管理器名退化成 id、activeWorkspace 未设 → 终端不 fit。
+      // 故隔离其异常并退避重试，绝不让单次失败带走后续兜底。
+      for (let i = 0; i < 5; i++) {
+        try {
+          await refreshWorkspaces();
+          break;
+        } catch (e) {
+          if (i === 4) console.error('refreshWorkspaces gave up after retries', e);
+          else await new Promise((r) => setTimeout(r, 300));
+        }
+      }
       // 启动策略：
       // 1. cli 启动（终端里 `ridge`）：cwd 是用户工作目录。
       //    - cwd 顶层有 .ridge → 打开它，关默认；否则保留默认（cwd 已种入根 pane）。
@@ -1153,6 +1214,9 @@ function expandSidebar() {
       // activeWorkspaceId 仍为空，这里主动恢复：优先切到列表里的第一个工作区
       // （即采用 host 当前工作区），列表为空才新建一个，确保用户可立即操作。
       await ensureActiveWorkspace();
+      // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
+      // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
+      scheduleForceFitActivePanes();
       await loadSavedWorkspaces();
       await refreshWorkspaceSaveInfo();
 
@@ -1283,6 +1347,7 @@ function expandSidebar() {
       unlisten?.();
       unlistenResized?.();
       unsubDefaultCwd?.();
+      unlistenDrop?.();
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);

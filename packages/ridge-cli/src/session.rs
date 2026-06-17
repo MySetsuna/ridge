@@ -45,6 +45,7 @@ use crate::rpc::{
     JSON_RPC_METHOD_NOT_FOUND,
 };
 use crate::key_binding::{decide_key_binding, KeyBindingDecision, KeyBindingMode};
+use crate::ice::IceServerConfig;
 use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
 use crate::signaling::{SignalMsg, SignalSender};
 use crate::totp::RemoteTotp;
@@ -109,7 +110,7 @@ impl RemoteSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn run(
         peer: &impl HostPeer,
-        ice_urls: Vec<String>,
+        ice_servers: Vec<IceServerConfig>,
         signaling: &SignalSender,
         signal_rx: &mut mpsc::Receiver<SignalMsg>,
         shell: Option<String>,
@@ -137,7 +138,7 @@ impl RemoteSession {
         let (inbound_tx, inbound_rx) = mpsc::channel::<PeerInbound>(64);
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<PeerOutbound>(64);
 
-        let dc_io = peer.answer(ice_urls, inbound_rx, outbound_tx).await?;
+        let dc_io = peer.answer(ice_servers, inbound_rx, outbound_tx).await?;
 
         // 3. PTY。
         let (pty, mut pty_out_rx) = PtyBridge::spawn(shell.as_deref(), cwd.as_deref())?;
