@@ -911,8 +911,60 @@ fn resize_pane_inner(
     let rows = rows.max(1).min(MAX_SAFE_ROWS);
     let cols = cols.max(1).min(MAX_SAFE_COLS);
 
-    // Perform the resize within a limited scope so we can drop the read lock
-    let resize_result: Result<(), AppError> = {
+    // §resize-order (2026-06-15) — restore the "kernel wipe BEFORE SIGWINCH"
+    // ordering for alt-screen / inline-TUI panes. The §1.22 alt wipe and §A.3
+    // inline-TUI wipe live inside `PaneParser::resize → Terminal::resize`;
+    // they blank the visible grid so a diff-rendering TUI (Claude Code/Ink,
+    // lazygit, vim) repaints onto a clean canvas. The original design ran that
+    // wipe (in `manager.ts::fitPane`) BEFORE the PTY `master.resize`, so the
+    // wipe always preceded the child's SIGWINCH-driven redraw. The P3.9.r /
+    // P4.4 refactor moved the whole resize server-side but fired
+    // `master.resize()` FIRST — so on a slow ConPTY resize the PTY-reader
+    // thread can feed the child's redraw bytes into the parser against the
+    // STALE grid, and the subsequent wipe then erases that partial repaint
+    // (Ink only re-emits cells that differ from its own previous-frame model,
+    // so wiped cells stay blank → the "错位行和字符 / 内容截断" symptom).
+    //
+    // Fix: for TUI panes run the parser wipe first, then the PTY resize, so
+    // SIGWINCH always lands on an already-blank canvas. For shells keep
+    // PTY-first: PSReadLine / zsh-zle need SIGWINCH to drive their prompt
+    // redraw, and the §1.26 cursor-below cleanup (inside the same parser
+    // resize) then tidies whatever the shell didn't overwrite.
+    //
+    // §resize-flag-authority (2026-06-16) — DERIVE is_alt / is_inline_tui from
+    // the AUTHORITATIVE backend parser, not the frontend params. The frontend
+    // passes `isInlineTui = kernel.isInlineTuiMode()` read off the delta-only
+    // mirror, which never records the absolute-positioning CSIs the heuristic
+    // needs — so in the (now sole) delta mode it is ALWAYS false, and the
+    // §resize-order ordering above + the silence-skip below never engaged for
+    // real inline TUIs (Claude Code default). The parser sees raw bytes and is
+    // the same grid that performs the wipe, so its snapshot is the correct one
+    // to gate ordering on. OR with the frontend value so any future non-delta
+    // path still contributes. (Read on the PRE-resize grid: "was a TUI active
+    // at the moment this resize fired".)
+    let flag_now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let (parser_is_alt, parser_is_inline_tui) = {
+        let map = state.workspaces.read();
+        map.get(&wid)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .filter(|h| h.delta_mode.load(Ordering::Acquire))
+            .map(|h| {
+                let p = h.parser.lock();
+                (p.is_alt_screen(), p.is_inline_tui_resize_at(flag_now_ms))
+            })
+            .unwrap_or((false, false))
+    };
+    let is_alt = is_alt || parser_is_alt;
+    let is_inline_tui = is_inline_tui || parser_is_inline_tui;
+    let wipe_first = is_alt || is_inline_tui;
+
+    // PTY `master.resize` → ConPTY resize → SIGWINCH. Also manages the
+    // resize-silence window. Returns the pane-lookup result so the caller can
+    // log / update pane_sizes.
+    let do_master_resize = || -> Result<(), AppError> {
         let map = state.workspaces.read();
         let ws = map
             .get(&wid)
@@ -946,8 +998,9 @@ fn resize_pane_inner(
             // already been dropped). Tradeoff: a tiny amount of ConPTY tail
             // garbage may leak through during the resize moment, but the
             // alt-screen app's redraw lands within tens of ms and overwrites
-            // it. The kernel's §1.22 alt-buffer wipe runs first, so the
-            // visible canvas starts blank either way.
+            // it. The kernel's §1.22 alt-buffer wipe ran first (above, via
+            // `do_parser_resize` under §resize-order), so the visible canvas
+            // starts blank either way.
             //
             // §A.3 (2026-05-07): same skip when `is_inline_tui` is true.
             // Claude Code's input box renders inline on primary (Ink-style:
@@ -955,8 +1008,8 @@ fn resize_pane_inner(
             // the §1.24 alt-screen guard wouldn't fire — but Ink emits no
             // prompt OSC either, so 250ms silence drops Ink's SIGWINCH
             // redraw bytes the same way it dropped lazygit's. The kernel's
-            // §A.3 primary-visible wipe runs first via `manager.ts::fitPane`,
-            // so the canvas is blank when Ink's redraw lands.
+            // §A.3 primary-visible wipe ran first (above), so the canvas is
+            // blank when Ink's redraw lands.
             let skip_silence = is_alt || is_inline_tui;
             if res.is_ok() && !skip_silence {
                 let deadline = SystemTime::now()
@@ -992,65 +1045,86 @@ fn resize_pane_inner(
         }
     };
 
+    // `PaneParser::resize` → `Terminal::resize` (the §1.22 / §A.3 wipe) +
+    // emit the Resize delta frame so the mirror grid blanks in lock-step.
+    // No-op when the pane has no delta-mode parser (pending spawn / legacy).
+    //
+    // P3.9.r (2026-05-20) — keeps PaneParser in lock-step with the PTY native
+    // resize: the mirror grid follows via `apply_delta(Resize)` inside the
+    // emitted frame ("parser resizes FIRST, mirror catches up via the next
+    // delta frame"); fitPane skips its own `kernel.resize(...)` in rust mode.
+    let do_parser_resize = || {
+        let parser_for_delta = {
+            let map = state.workspaces.read();
+            map.get(&wid)
+                .and_then(|ws| ws.terminals.get(&pane_id))
+                .and_then(|h| {
+                    if h.delta_mode.load(Ordering::Acquire) {
+                        Some(h.parser.clone())
+                    } else {
+                        None
+                    }
+                })
+        };
+        if let Some(parser) = parser_for_delta {
+            use ridge_term::term::delta::encode_frame;
+            use tauri::Emitter;
+            let frame = {
+                let mut p = parser.lock();
+                p.resize(rows, cols)
+            };
+            match encode_frame(&frame) {
+                Ok(bytes) => {
+                    // P4.2 — prefer the Tauri Channel; fall back to
+                    // app.emit when the frontend hasn't registered a
+                    // channel yet for this pane.
+                    if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
+                        sender(bytes);
+                    } else {
+                        let label = pane_id.to_string();
+                        let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ridge::pty_delta",
+                        error = %e,
+                        ws = %wid,
+                        pane = %pane_id,
+                        "resize delta encode failed; mirror may briefly desync until next chunk",
+                    );
+                }
+            }
+        }
+    };
+
+    // §resize-order — TUI: wipe (parser) first so SIGWINCH lands on blanks;
+    // shell: SIGWINCH (PTY) first so the prompt redraw drives the new size,
+    // then the parser resize runs the §1.26 cursor-below cleanup. The
+    // closures keep `master` and `parser` locks in separate scopes (never
+    // held together), preserving the existing lock order. Scoped in a block
+    // so both closures' immutable `state` borrows drop before the write lock
+    // below.
+    let resize_result: Result<(), AppError> = {
+        if wipe_first {
+            do_parser_resize();
+            do_master_resize()
+        } else {
+            let res = do_master_resize();
+            if res.is_ok() {
+                do_parser_resize();
+            }
+            res
+        }
+    };
+
     match resize_result {
         Ok(()) => {
             pty_log::resize_ok(wid, pane_id, rows, cols);
             // Now we can safely acquire a write lock to update pane_sizes
-            {
-                let mut map = state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    ws.pane_sizes.insert(pane_id, (rows, cols));
-                }
-            }
-
-            // P3.9.r (2026-05-20) — keep PaneParser in lock-step with PTY
-            // native resize when delta_mode is on. The mirror grid follows
-            // via apply_delta(Resize) inside the emitted frame, so this
-            // path is the canonical "parser resizes FIRST, mirror catches
-            // up via the next delta frame" — fitPane in the front-end is
-            // told to skip its own `kernel.resize(...)` in rust mode so
-            // we never break the invariant.
-            let parser_for_delta = {
-                let map = state.workspaces.read();
-                map.get(&wid)
-                    .and_then(|ws| ws.terminals.get(&pane_id))
-                    .and_then(|h| {
-                        if h.delta_mode.load(Ordering::Acquire) {
-                            Some(h.parser.clone())
-                        } else {
-                            None
-                        }
-                    })
-            };
-            if let Some(parser) = parser_for_delta {
-                use ridge_term::term::delta::encode_frame;
-                use tauri::Emitter;
-                let frame = {
-                    let mut p = parser.lock();
-                    p.resize(rows, cols)
-                };
-                match encode_frame(&frame) {
-                    Ok(bytes) => {
-                        // P4.2 — prefer the Tauri Channel; fall back to
-                        // app.emit when the frontend hasn't registered a
-                        // channel yet for this pane.
-                        if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
-                            sender(bytes);
-                        } else {
-                            let label = pane_id.to_string();
-                            let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "ridge::pty_delta",
-                            error = %e,
-                            ws = %wid,
-                            pane = %pane_id,
-                            "resize delta encode failed; mirror may briefly desync until next chunk",
-                        );
-                    }
-                }
+            let mut map = state.workspaces.write();
+            if let Some(ws) = map.get_mut(&wid) {
+                ws.pane_sizes.insert(pane_id, (rows, cols));
             }
             Ok(())
         }

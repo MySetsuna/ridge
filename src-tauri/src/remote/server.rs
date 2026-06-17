@@ -281,7 +281,11 @@ async fn run_remote_server(
     // REFUSE to start when TLS material can't be produced — unless the operator
     // explicitly opts into insecure HTTP via `RIDGE_REMOTE_ALLOW_INSECURE_HTTP=1`
     // (loud, never silent/automatic).
-    let tls_config = super::tls::resolve_config(&lan_ip, &machine_name).await;
+    // Cover EVERY reachable LAN address in the cert (not just the auto-chosen
+    // primary), so the remote panel's IP picker can advertise any of them —
+    // Wi-Fi, Tailscale, Ethernet — and the phone still gets a matching cert.
+    let lan_ips = super::detect_lan_ips();
+    let tls_config = super::tls::resolve_config_multi(&lan_ips, &machine_name).await;
     let allow_insecure = std::env::var("RIDGE_REMOTE_ALLOW_INSECURE_HTTP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);

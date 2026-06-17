@@ -6,9 +6,27 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// §cloud-remote: the mobile app is ALWAYS browser-served (never native Tauri),
+// so — exactly like the desktop web-remote build (vite.config.js) — every
+// `@tauri-apps/api/*` import is redirected to the WS/WebRTC-backed shims in
+// src/lib/transport/tauriShim. The LAN path imports no Tauri API, so these
+// aliases are inert there; they only resolve once the cloud-controller path
+// (cloudControllerBoot → TauriDataProvider/ControllerCloudProvider) is loaded.
+/** @param {string} f */
+const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
+
 export default defineConfig({
   root: path.resolve(__dirname, 'src/remote'),
   base: '/',
+  // The mobile bundle is browser-served → RIDGE_WEB_REMOTE is true (drives the
+  // browser-vs-native decisions in the shimmed `$lib` modules the cloud path
+  // pulls in). RIDGE_CLOUD_BASE_DOMAIN empty → apiClient falls back to the
+  // production base (9527127.xyz); the debug packager overrides it.
+  define: {
+    'import.meta.env.RIDGE_WEB_REMOTE': JSON.stringify(true),
+    'import.meta.env.RIDGE_CLOUD_BASE_DOMAIN': JSON.stringify(process.env.RIDGE_CLOUD_BASE_DOMAIN || ''),
+    'import.meta.env.RIDGE_CLOUD_DEV_PLAINTEXT': JSON.stringify(process.env.RIDGE_CLOUD_DEV_PLAINTEXT || ''),
+  },
   // Isolate the dep-optimize cache from the MAIN dev server. Both Vite roots
   // resolve their default cacheDir to the project-root `node_modules/.vite`
   // (the nearest package.json), so when `set_remote_enabled` spawns this remote
@@ -20,6 +38,14 @@ export default defineConfig({
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
       '$lib': path.resolve(__dirname, 'src/lib'),
+      // Tauri API → browser shims (cloud-controller path). Mirror of the
+      // web-remote alias set in vite.config.js; keep the two in sync.
+      '@tauri-apps/api/core': shim('core.ts'),
+      '@tauri-apps/api/event': shim('event.ts'),
+      '@tauri-apps/api/window': shim('window.ts'),
+      '@tauri-apps/plugin-dialog': shim('dialog.ts'),
+      '@tauri-apps/plugin-clipboard-manager': shim('clipboard.ts'),
+      '@tauri-apps/plugin-opener': shim('opener.ts'),
     },
   },
   plugins: [

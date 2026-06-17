@@ -270,6 +270,25 @@ host 永远是 answerer。
   - **浏览器/WebView（Svelte）**：`@noble/curves`(x25519) + `@noble/hashes`(hkdf/sha256) + `@noble/ciphers`(chacha20poly1305)
     - 注：WebCrypto 无 ChaCha20，必须用 noble；X25519 也统一走 noble 以保证与 Rust 字节级一致。
 
+### 7.2a 传输层分片（DataChannel max-message-size）
+> 一条 SCTP DataChannel 消息有协商出的 `maxMessageSize` 上限（Chrome 约 256 KiB，移动 Safari /
+> `turns:`-over-TCP 链路可能更低）。§7.2 的密文一旦超过该上限，`dc.send()` 会**同步抛异常**、整帧丢失
+> （表现为 controller 端 `RTCDataChannel.send: Trying to send message larger than max-message-size`，
+> 常见触发：大文件 `read_file`/`get_file_tree`/`text_search` 结果、大 `write_file`、PTY scrollback 回放）。
+> 故在 E2EE 之下、裸 DataChannel 之上再叠一层**传输分片**——只切传输、不切加密（seal/open 仍每帧一次，
+> §7.2 的 nonce 计数与抗重放不变）。
+
+- **作用范围**：仅 **§7.1 握手完成后**的业务帧经本封装。握手帧（`0x01`/`0x02`）裸发裸收，不带传输 tag
+  （收端在 handshakeDone 之前直接按握手帧解析），故 `0x00`/`0x01` 传输 tag 只在握手后解释，与握手帧首字节不冲突。
+- **线格式**（握手后每条 DataChannel 消息，作用于 §7.2 的 `nonce||ciphertext_with_tag` 整体）：
+  - `0x00 = SINGLE`：`0x00 || sealedFrame`（整帧；`1 + len ≤ 16 KiB` 时用）。
+  - `0x01 = CHUNK`：`0x01 || msgId(u32 BE) || idx(u16 BE) || cnt(u16 BE) || part`，每片业务字节 ≤ `16 KiB − 9`。
+- **单条上限 16 KiB**：所有产出的线消息都 ≤ 16 KiB，故任意对端 `maxMessageSize` 下都不触发「message too large」。
+- **重组**：接收端按序拼回完整 `sealedFrame` 再交 §7.2 解密；半帧继续等，结构性坏帧/超 16 MiB 重组上限即丢弃。
+  `ordered:true` 保证同一 `msgId` 的分片连续到达、不与别的帧交错。
+- **实现方**：cloud host（answerer）与浏览器 controller（offerer）**对称**实现（`cloudChunk.ts`，两端 provider 共用）。
+  LAN / ridge-cli 走 WS（非本 WebRTC leg），不涉及本分片。
+
 ### 7.3 版本 / 能力握手（D9）
 
 > 评审 2026-06-03：新增 **D9**。controller SPA（cloud 经公网下发、可独立更新）与 host（随桌面/CLI

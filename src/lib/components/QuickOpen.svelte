@@ -122,13 +122,16 @@
     display: flex;
     justify-content: center;
     padding-top: 100px;
-    /* z-index: 1000; */
+    /* 与应用统一的 modal 层级带（账户气泡 9989 / 设置 9994 / 右键菜单 9999 /
+       Toast 10000）。原 1000 太低，会被侧栏/编辑器/状态面板等任何带正 z-index 的
+       浮层盖住。置于设置之上、右键菜单与 Toast 之下。 */
+    z-index: 9995;
   }
 
   .quick-open {
-    background: #252526;
-    border: 1px solid #3c3c3c;
-    border-radius: 6px;
+    background: var(--rg-surface);
+    border: 1px solid var(--rg-border-bright);
+    border-radius: 8px;
     width: 600px;
     max-height: 500px;
     display: flex;
@@ -139,23 +142,27 @@
 
   .search-box {
     padding: 12px;
-    border-bottom: 1px solid #3c3c3c;
+    border-bottom: 1px solid var(--rg-border-bright);
   }
 
   .search-input {
-    background: #3c3c3c;
-    border: 1px solid #3c3c3c;
-    color: #ccc;
+    background: var(--rg-bg);
+    border: 1px solid var(--rg-border-bright);
+    color: var(--rg-fg);
     padding: 10px 12px;
-    border-radius: 3px;
+    border-radius: 8px;
     font-size: 14px;
     width: 100%;
     box-sizing: border-box;
   }
 
+  .search-input::placeholder {
+    color: var(--rg-fg-muted);
+  }
+
   .search-input:focus {
     outline: none;
-    border-color: #007acc;
+    border-color: var(--rg-accent);
   }
 
   .results {
@@ -172,9 +179,12 @@
     cursor: pointer;
   }
 
-  .result-item:hover,
+  .result-item:hover {
+    background: var(--rg-surface-2);
+  }
+
   .result-item.selected {
-    background: #094771;
+    background: color-mix(in srgb, var(--rg-accent) 14%, transparent);
   }
 
   .file-icon {
@@ -188,12 +198,12 @@
   }
 
   .file-name {
-    color: #d4d4d4;
+    color: var(--rg-fg);
     font-size: 14px;
   }
 
   .file-dir {
-    color: #858585;
+    color: var(--rg-fg-muted);
     font-size: 11px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -205,23 +215,24 @@
   .hint {
     padding: 20px;
     text-align: center;
-    color: #969696;
+    color: var(--rg-fg-muted);
     font-size: 13px;
   }
 
   .footer {
     padding: 8px 12px;
-    border-top: 1px solid #3c3c3c;
-    background: #2d2d30;
+    border-top: 1px solid var(--rg-border-bright);
+    background: var(--rg-bg);
   }
 
   .hint-text {
     font-size: 11px;
-    color: #858585;
+    color: var(--rg-fg-muted);
   }
 
   kbd {
-    background: #3c3c3c;
+    background: var(--rg-surface-2);
+    color: var(--rg-fg-muted);
     padding: 2px 5px;
     border-radius: 3px;
     font-size: 11px;

@@ -23,7 +23,20 @@ import {
   type EphemeralKeyPair,
 } from './e2ee';
 import { demuxFrame } from '../../transport/remote/cloudMux';
+import { encodeChunks, ChunkReassembler } from '../../transport/remote/cloudChunk';
 import type { CloudConnectionState } from './connectionProvider';
+
+// ── 传输层分片测试帮手（握手后业务帧都经 cloudChunk 封装：单帧 = 0x00||ciphertext）──
+/** 把单帧密文包成 provider 期望的 SINGLE 线消息（用于 dc.deliver 模拟入站业务帧）。 */
+function wrapSingle(ciphertext: Uint8Array): Uint8Array {
+  return encodeChunks(ciphertext, 0)[0];
+}
+/** 从 provider 发出的（单条）线消息还原出密文（用于断言出站业务帧）。 */
+function unwrapSingle(wire: Uint8Array): Uint8Array {
+  const ct = new ChunkReassembler().push(wire);
+  if (!ct) throw new Error('test: failed to reassemble single wire frame');
+  return ct;
+}
 
 // getIceServers 网络调用 mock 掉；BASE_DOMAIN 用真实常量。
 vi.mock('./apiClient', async (importOriginal) => {
@@ -311,17 +324,17 @@ describe('ControllerCloudProvider', () => {
     const { hostSession } = handshakeAsHost(ctrlPub, dc);
     expect(provider.getState()).toBe('connected');
 
-    // 3) host → controller（dir=0）：provider.open 应解密并经 onFrame 上抛明文。
+    // 3) host → controller（dir=0）：provider 先重组分片再 open，经 onFrame 上抛明文。
     const hostPlain = new TextEncoder().encode('\x11{"jsonrpc":"2.0","method":"$/hello"}');
-    dc.deliver(hostSession.seal(hostPlain));
+    dc.deliver(wrapSingle(hostSession.seal(hostPlain)));
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual(hostPlain);
 
-    // 4) controller → host（dir=1）：sendFrame 加密，host 用同 key/dir 能解。
+    // 4) controller → host（dir=1）：sendFrame 加密+分片，host 重组后用同 key/dir 能解。
     const ctrlPlain = new TextEncoder().encode('\x11{"jsonrpc":"2.0","id":1,"method":"read_file"}');
     provider.sendFrame(ctrlPlain);
-    const onWire = dc.lastSent();
-    // 线上帧首字节 = nonce[0] = dir，controller 发出方向必须是 dir=1（DIR_CONTROLLER_TO_HOST）。
+    const onWire = unwrapSingle(dc.lastSent()); // 剥掉传输层 SINGLE tag → 还原密文
+    // 密文首字节 = nonce[0] = dir，controller 发出方向必须是 dir=1（DIR_CONTROLLER_TO_HOST）。
     expect(onWire[0]).toBe(1);
     expect(hostSession.open(onWire)).toEqual(ctrlPlain);
   });
@@ -388,9 +401,9 @@ describe('ControllerCloudProvider', () => {
     expect(errCode).toBe('FORBIDDEN');
     expect(provider.getState()).toBe('disconnected');
 
-    // 断开前 controller 在 DataChannel 上多发了一帧：解密 → 0x11 $/bye{signature-invalid}。
+    // 断开前 controller 在 DataChannel 上多发了一帧：重组+解密 → 0x11 $/bye{signature-invalid}。
     expect(dc.sent.length).toBe(sentBefore + 1);
-    const byePlain = hostSession.open(dc.lastSent());
+    const byePlain = hostSession.open(unwrapSingle(dc.lastSent()));
     const demuxed = demuxFrame(byePlain);
     expect(demuxed.kind).toBe('json');
     const bye = (demuxed as { kind: 'json'; json: Record<string, unknown> }).json;
@@ -443,8 +456,9 @@ describe('ControllerCloudProvider', () => {
     handshakeAsHost(ctrlPub, dc);
     expect(provider.getState()).toBe('connected');
 
-    // 投递一个无法解密的"业务帧"（随机字节，tag/poly1305 不符）。
-    dc.deliver(new Uint8Array(40).fill(7));
+    // 投递一个无法解密的"业务帧"（随机字节，tag/poly1305 不符）——须带传输层 SINGLE tag
+    // 才会进到 open 失败路径（裸坏帧会在重组器层被丢弃，不触发 onError）。
+    dc.deliver(wrapSingle(new Uint8Array(40).fill(7)));
     expect(errCode).toBe('FORBIDDEN');
     expect(received).toHaveLength(0);
     expect(provider.getState()).toBe('connected'); // 仍连着

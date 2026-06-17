@@ -1,6 +1,6 @@
 [package]
 name = "ridge"
-version = "0.0.4"
+version = "0.0.5"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -38,6 +38,9 @@ tauri-plugin-deep-link = "2.4.9"
 # 配合 deep-link：Windows 上第二个实例（由浏览器唤起 `ridge://`）把 argv 转交首个
 # 实例并聚焦，避免重复开窗（single-instance 必须在 builder 链最前注册）。
 tauri-plugin-single-instance = { version = "2.4.2", features = ["deep-link"] }
+# 记住上次窗口几何：大小 / 位置 / 最大化 / 全屏。彻底退出后下次启动恢复到用户最后
+# 摆放的窗口状态（仅 Rust 端调用 restore_state / save_window_state，无需 JS capability）。
+tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "process", "io-util"] }

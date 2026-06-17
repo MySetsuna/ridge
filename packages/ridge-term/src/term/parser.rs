@@ -301,6 +301,11 @@ impl<'a> Perform for Performer<'a> {
                         || self.grid.is_alt_screen();
                     if tui_active {
                         self.grid.note_tui_signal_at(now);
+                        // §sticky-inline-tui — latch this pane as inline-TUI so a
+                        // later IDLE resize (default Claude at its prompt, all
+                        // live signals decayed) still gets the full frame wipe.
+                        // Held until an exit signal (RIS / alt-leave / prompt OSC).
+                        self.grid.mark_inline_tui_sticky();
                     }
                 }
             }
@@ -694,6 +699,9 @@ impl<'a> Perform for Performer<'a> {
                 *self.grid.saved_cursor_mut() = None; // discard any DECSC slot
                 self.grid.cursor_to(0, 0);
                 self.grid.erase_in_display(EraseMode::All);
+                // §sticky-inline-tui — a full reset means whatever TUI was
+                // running is gone; drop the inline-TUI latch.
+                self.grid.clear_inline_tui_sticky();
                 // P3.10 — let `PaneParser` emit a `GridDelta::Reset`
                 // ahead of the post-reset Cells deltas so the mirror
                 // can apply the matching reset on its side before
@@ -795,6 +803,24 @@ impl<'a> Perform for Performer<'a> {
             //     wired.
             // If you add a kernel-level handler for any of these, also confirm
             // the backend reader doesn't double-process the same bytes.
+            "133" | "633" => {
+                // §sticky-inline-tui — FinalTerm / VS Code shell-integration
+                // prompt markers. Sub-command `A` (or `A;...`) is PROMPT START:
+                // control has returned to a line-editing shell, so an inline TUI
+                // (e.g. a default Claude that just exited) is no longer in front.
+                // Drop the sticky latch so a subsequent shell resize is NOT
+                // force-wiped. Other sub-commands (B/C/D/P) stay no-ops here —
+                // the backend's find_prompt_osc handles silence/cwd from the raw
+                // stream; this is the only screen-relevant signal the kernel
+                // needs. Cheap, idempotent.
+                let prompt_start = params
+                    .get(1)
+                    .map(|s| s.first() == Some(&b'A'))
+                    .unwrap_or(false);
+                if prompt_start {
+                    self.grid.clear_inline_tui_sticky();
+                }
+            }
             _ => {}
         }
     }
@@ -833,6 +859,10 @@ impl<'a> Performer<'a> {
             ModeEffect::LeaveAltScreen => {
                 *self.modes = Modes::default();
                 self.grid.leave_alt_screen();
+                // §sticky-inline-tui — a full-screen TUI exited; control returns
+                // to a shell (or to an inline TUI, which re-arms the latch on its
+                // next frame). Drop the latch so a bare shell isn't force-wiped.
+                self.grid.clear_inline_tui_sticky();
             }
             ModeEffect::LeaveAltScreenRestoreCursor => {
                 // Reset TUI-specific modes (mouse reporting, bracketed paste,
@@ -842,6 +872,8 @@ impl<'a> Performer<'a> {
                 // else should be clean for the shell.
                 *self.modes = Modes::default();
                 self.grid.leave_alt_screen();
+                // §sticky-inline-tui — see LeaveAltScreen above.
+                self.grid.clear_inline_tui_sticky();
                 if let Some(s) = *self.grid.saved_cursor_mut() {
                     self.modes.origin = s.origin;
                     self.modes.app_cursor_keys = s.app_cursor_keys;

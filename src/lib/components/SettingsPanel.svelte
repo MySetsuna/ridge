@@ -6,17 +6,18 @@
 <script lang="ts">
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages } from 'lucide-svelte';
+  import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages, Pencil, Trash2, Plus, Image as ImageIcon } from 'lucide-svelte';
   import {
     settingsStore,
     setSetting,
     setTheme,
   } from '$lib/stores/settings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
-  import { themeData, getThemeIds, getThemeLabels } from '$lib/stores/themes';
+  import { themeData, isCustomTheme, deleteCustomTheme, resolveThemeBgUrl } from '$lib/stores/themes';
   import { termFontSize, setTermFontSize } from '$lib/stores/termSettings';
   import { t } from '$lib/i18n';
   import LangSwitch from './LangSwitch.svelte';
+  import CustomThemeModal from './CustomThemeModal.svelte';
   interface Props {
     open: boolean;
     onClose: () => void;
@@ -26,6 +27,18 @@
 
   type SectionId = 'appearance' | 'language' | 'font' | 'terminal' | 'extensions' | 'debug';
   let activeSection = $state<SectionId>('appearance');
+
+  let customModalOpen = $state(false);
+  let customEditingId = $state<string | null>(null);
+
+  function openNewCustomTheme(): void { customEditingId = null; customModalOpen = true; }
+  function openEditCustomTheme(id: string): void { customEditingId = id; customModalOpen = true; }
+  async function removeCustomTheme(id: string): Promise<void> {
+    if (!confirm($t('settings.customThemeDeleteConfirm'))) return;
+    const wasActive = $settingsStore.theme === id;
+    await deleteCustomTheme(id);
+    if (wasActive) setTheme('endless-dark');
+  }
 
   // T14：可用 shell 列表 —— 第一次打开 settings 面板时拉一次。
   interface ShellInfo {
@@ -65,11 +78,16 @@
     }
   }
 
-  const themeIds = $derived(getThemeIds());
-  const themeLabels = $derived(getThemeLabels());
+  // 直接读响应式 $themeData，使保存/删除/改名自定义主题后（refreshThemes →
+  // store.set）网格即时刷新。注意不要用 getThemeIds()/getThemeLabels()——它们走
+  // get(store) 命令式读取，在 $derived 里零追踪依赖，只算一次、永不更新。
+  const themeIds = $derived($themeData.themes.map((t) => t.id));
+  const themeLabels = $derived(
+    Object.fromEntries($themeData.themes.map((t) => [t.id, t.label])) as Record<string, string>
+  );
 
   const themePreview = $derived.by(() => {
-    const out: Record<string, { bg: string; surface: string; accent: string; fg: string }> = {};
+    const out: Record<string, { bg: string; surface: string; accent: string; fg: string; hasBg: boolean; bgOpacity: number }> = {};
     for (const id of themeIds) {
       const t = $themeData.themes.find(x => x.id === id);
       if (t) {
@@ -78,10 +96,28 @@
           surface: t.colors['surface'] ?? '#111',
           accent: t.colors['accent'] ?? '#fff',
           fg: t.colors['fg'] ?? '#ccc',
+          hasBg: !!t.bgImage,
+          bgOpacity: t.bgImageOpacity ?? 1,
         };
       }
     }
     return out;
+  });
+
+  // 主题背景图缩略 URL（异步解析 theme-assets 文件名 → convertFileSrc）。
+  // 仅对带 bgImage 的主题解析；解析结果存这里供卡片预览叠图。
+  let themeBgUrls = $state<Record<string, string | null>>({});
+  $effect(() => {
+    // 依赖 $themeData：主题增删改后重算。逐个解析尚未缓存的带图主题。
+    for (const t of $themeData.themes) {
+      if (t.bgImage && themeBgUrls[t.id] === undefined) {
+        // 先占位 null 防重复触发，再异步填真值。
+        themeBgUrls = { ...themeBgUrls, [t.id]: null };
+        void resolveThemeBgUrl(t).then((url) => {
+          if (url) themeBgUrls = { ...themeBgUrls, [t.id]: url };
+        });
+      }
+    }
   });
 
   const SECTIONS = $derived<{ id: SectionId; label: string; icon: typeof Palette }[]>([
@@ -161,28 +197,70 @@
                 {#each themeIds as id (id)}
                   {@const p = themePreview[id]}
                   {@const selected = $settingsStore.theme === id}
-                  <button
-                    type="button"
-                    class="text-left rounded-lg border-2 transition-all overflow-hidden {selected
-                      ? 'border-[var(--rg-accent)] shadow-lg shadow-[var(--rg-accent-glow)]'
-                      : 'border-[var(--rg-border)] hover:border-[var(--rg-border-bright)]'}"
-                    onclick={() => setTheme(id)}
-                  >
-                    <div class="h-16 flex items-stretch" style="background: {p.bg};">
-                      <div class="flex-1" style="background: {p.surface}; border-right: 1px solid rgba(0,0,0,0.1);"></div>
-                      <div class="w-1/3 flex flex-col justify-end p-1.5 gap-1">
-                        <div class="h-1.5 rounded-full" style="background: {p.accent};"></div>
-                        <div class="h-1.5 rounded-full opacity-50" style="background: {p.fg};"></div>
+                  <div class="relative group">
+                    <button
+                      type="button"
+                      class="w-full text-left rounded-lg border-2 transition-all overflow-hidden {selected
+                        ? 'border-[var(--rg-accent)] shadow-lg shadow-[var(--rg-accent-glow)]'
+                        : 'border-[var(--rg-border)] hover:border-[var(--rg-border-bright)]'}"
+                      onclick={() => setTheme(id)}
+                    >
+                      <div class="relative h-16 flex items-stretch overflow-hidden" style="background: {p.bg};">
+                        {#if p.hasBg && themeBgUrls[id]}
+                          <!-- 该主题带壁纸：把背景图铺在预览条上（按主题 opacity），
+                               色块浮于其上 → 卡片一眼可见"此主题带背景图"。 -->
+                          <div
+                            class="absolute inset-0 bg-center bg-cover bg-no-repeat"
+                            style="background-image: url('{themeBgUrls[id]}'); opacity: {p.bgOpacity};"
+                            aria-hidden="true"
+                          ></div>
+                          <div class="absolute top-1 left-1 flex items-center justify-center rounded bg-black/45 p-0.5 text-white/90" title={$t('customTheme.bgImage')}>
+                            <ImageIcon size={11} />
+                          </div>
+                        {/if}
+                        <div class="relative flex-1" style="background: {p.hasBg ? 'transparent' : p.surface}; border-right: 1px solid rgba(0,0,0,0.1);"></div>
+                        <div class="relative w-1/3 flex flex-col justify-end p-1.5 gap-1">
+                          <div class="h-1.5 rounded-full" style="background: {p.accent};"></div>
+                          <div class="h-1.5 rounded-full opacity-50" style="background: {p.fg};"></div>
+                        </div>
                       </div>
-                    </div>
-                    <div class="px-3 py-2 bg-[var(--rg-surface)]/60 flex items-center justify-between">
-                      <span class="text-[12px] font-medium text-[var(--rg-fg)]">{themeLabels[id]}</span>
-                      {#if selected}
-                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/20 text-[var(--rg-accent)] font-mono uppercase">使用中</span>
-                      {/if}
-                    </div>
-                  </button>
+                      <div class="px-3 py-2 bg-[var(--rg-surface)]/60 flex items-center justify-between">
+                        <span class="text-[12px] font-medium text-[var(--rg-fg)]">{themeLabels[id]}</span>
+                        {#if selected}
+                          <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--rg-accent)]/20 text-[var(--rg-accent)] font-mono uppercase">{$t('settings.inUse')}</span>
+                        {/if}
+                      </div>
+                    </button>
+                    {#if isCustomTheme(id)}
+                      <div class="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          class="p-1 rounded bg-[var(--rg-surface)]/80 hover:bg-[var(--rg-surface)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] transition-colors"
+                          title={$t('settings.customThemeEdit')}
+                          onclick={() => openEditCustomTheme(id)}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          class="p-1 rounded bg-[var(--rg-surface)]/80 hover:bg-red-500/20 text-[var(--rg-fg-muted)] hover:text-red-400 transition-colors"
+                          title={$t('settings.customThemeDelete')}
+                          onclick={() => removeCustomTheme(id)}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    {/if}
+                  </div>
                 {/each}
+                <button
+                  type="button"
+                  class="text-left rounded-lg border-2 border-dashed border-[var(--rg-border)] hover:border-[var(--rg-accent)] transition-all overflow-hidden flex flex-col items-center justify-center gap-1.5 h-full min-h-[96px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-accent)]"
+                  onclick={openNewCustomTheme}
+                >
+                  <Plus size={18} />
+                  <span class="text-[11px]">{$t('settings.customThemeCard')}</span>
+                </button>
               </div>
             </div>
 
@@ -416,4 +494,5 @@
       </section>
     </div>
   </div>
+  <CustomThemeModal open={customModalOpen} editingId={customEditingId} onClose={() => (customModalOpen = false)} />
 {/if}

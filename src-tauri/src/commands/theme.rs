@@ -116,11 +116,51 @@ pub fn set_active_theme(theme_id: String) -> Result<(), String> {
     ridge_core::commands::theme::set_active_theme(&theme_id).map_err(|e| e.to_command_string())
 }
 
+/// 保存（新增/编辑）一个自定义主题，返回最终落盘的 entry。
+#[tauri::command]
+pub fn save_user_theme(entry: ThemeEntry) -> Result<ThemeEntry, String> {
+    ridge_core::commands::theme::save_user_theme(entry).map_err(|e| e.to_command_string())
+}
+
+/// 删除一个自定义主题及其背景图。
+#[tauri::command]
+pub fn delete_user_theme(id: String) -> Result<(), String> {
+    ridge_core::commands::theme::delete_user_theme(&id).map_err(|e| e.to_command_string())
+}
+
+/// 写入背景图字节，返回文件名（相对 theme-assets/）。
+#[tauri::command]
+pub fn save_theme_bg_image(bytes: Vec<u8>, ext: String) -> Result<String, String> {
+    ridge_core::commands::theme::save_theme_bg_image(bytes, &ext).map_err(|e| e.to_command_string())
+}
+
+/// 从磁盘路径读取并写入背景图，返回文件名（前端无 fs 插件时用 dialog 选路径走此命令）。
+#[tauri::command]
+pub fn save_theme_bg_image_from_path(path: String) -> Result<String, String> {
+    ridge_core::commands::theme::save_theme_bg_image_from_path(&path).map_err(|e| e.to_command_string())
+}
+
+/// 返回 theme-assets 目录绝对路径（前端 convertFileSrc 用）。
+#[tauri::command]
+pub fn get_theme_assets_dir() -> String {
+    ridge_core::commands::theme::get_theme_assets_dir()
+}
+
 /// AppHandle-free resolution of the desktop's currently active theme, used by
 /// the remote server to push the live theme to browser clients. Delegates to
 /// the core's handle-free resolver.
 pub fn active_theme_entry_no_handle() -> Option<ThemeEntry> {
     ridge_core::commands::theme::active_theme_entry()
+}
+
+/// Cloud/remote controller → backend: the host's currently active theme entry.
+/// LAN clients receive this pushed over the WS (`server.rs`), but a cloud
+/// controller has no such push channel, so it PULLS the active theme to paint
+/// its chrome + terminal to match the desktop. Handle-free (delegates to the
+/// core resolver), so it works on the cloud-host invoke path.
+#[tauri::command]
+pub fn get_active_theme_entry() -> Option<ThemeEntry> {
+    active_theme_entry_no_handle()
 }
 
 /// Resolve the active theme catalog. Uses the `AppHandle` `Resource` resolver
@@ -133,7 +173,10 @@ pub fn get_theme_data(app: AppHandle) -> ThemeFile {
             Ok(content) => match serde_json::from_str::<ThemeFile>(&content) {
                 Ok(tf) => {
                     if tf.version >= 1 && !tf.themes.is_empty() {
-                        return tf;
+                        let user = ridge_core::commands::theme::read_user_themes(
+                            &ridge_core::commands::theme::app_data_dir(),
+                        );
+                        return ridge_core::commands::theme::merge_user_theme_list(tf, user);
                     }
                     tracing::warn!(
                         target: "ridge::theme",
@@ -198,6 +241,8 @@ mod tests {
                 c.insert("accent".into(), "#36c26e".into());
                 c
             },
+            bg_image: None,
+            bg_image_opacity: None,
         }
     }
 

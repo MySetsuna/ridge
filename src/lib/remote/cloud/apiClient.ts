@@ -119,7 +119,10 @@ export interface UserDto {
   email: string;
   username: string | null;
   plan: 'free' | 'premium';
+  premiumActive: boolean;
   devices: DeviceDto[];
+  checkedInToday: boolean;
+  premiumExpiresAt: number | null;
 }
 
 export interface AuthResult {

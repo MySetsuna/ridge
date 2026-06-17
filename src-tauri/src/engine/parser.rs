@@ -143,6 +143,31 @@ impl PaneParser {
         self.terminal.cols() as u16
     }
 
+    /// §resize-flag-authority (2026-06-16) — the backend parser is the ONLY
+    /// component that sees raw VT bytes, so it is the authoritative source for
+    /// the alt-screen / inline-TUI state that `resize_pane` uses to pick the
+    /// wipe-before-SIGWINCH ordering and the ConPTY silence-window skip. The
+    /// frontend mirror (`JsTerminal`) is delta-only — it never records the
+    /// absolute-positioning CSIs the inline-TUI heuristic keys off — so its
+    /// `isInlineTuiMode()` is structurally always-false in the (now sole)
+    /// delta mode. Relying on the frontend flag left the §A.3 / §resize-order
+    /// ordering DISENGAGED for real inline TUIs (Claude Code without
+    /// fullscreen / NO_FLICKER): the PTY resize fired before the parser wipe
+    /// and the silence window swallowed the redraw. Query these directly so
+    /// the ordering matches the wipe the parser actually performs.
+    pub fn is_alt_screen(&self) -> bool {
+        self.terminal.is_alt_screen()
+    }
+
+    /// Authoritative inline-TUI heuristic snapshot for the RESIZE decision —
+    /// see `is_alt_screen`. Uses the sticky-aware variant so an idle inline TUI
+    /// (default Claude at its prompt, all live signals decayed) is still
+    /// classified for the wipe-before-SIGWINCH ordering. `now_ms` is the
+    /// caller's wall-clock so the decay window matches the resize clock.
+    pub fn is_inline_tui_resize_at(&self, now_ms: i64) -> bool {
+        self.terminal.is_inline_tui_resize_at(now_ms)
+    }
+
     /// Feed PTY bytes and return the resulting delta frame.
     ///
     /// The frame's `pane_seq` is the new value (post-increment from the

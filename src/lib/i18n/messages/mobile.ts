@@ -47,6 +47,8 @@ export const zh: Record<string, string> = {
   verifying: '验证中...',
   verifyAndConnect: '验证并连接',
   connecting: '正在连接远程桌面...',
+  reconnecting: '连接已断开，正在重连…',
+  connectionLost: '连接已断开，请刷新页面重连',
 
   // CertTrustGuide — toggle
   certToggleLabel: '浏览器提示「不安全」？安装证书消除警告',
@@ -148,6 +150,8 @@ export const en: Record<string, string> = {
   verifying: 'Verifying...',
   verifyAndConnect: 'Verify & Connect',
   connecting: 'Connecting to remote desktop...',
+  reconnecting: 'Connection lost — reconnecting…',
+  connectionLost: 'Connection lost — refresh the page to reconnect',
 
   // CertTrustGuide — toggle
   certToggleLabel: 'Browser showing "Not secure"? Install the certificate to fix',
