@@ -312,7 +312,7 @@ MIT License. Copyright (c) 2026 Jack Jiang and Ridge contributors.
 
 | 微信赞赏 | PayPal |
 |:---:|:---:|
-| ![微信赞赏](../static/1.jpg) | ![PayPal 捐赠](../static/2.jpg) |
+| ![微信赞赏](../static/2.jpg) | ![PayPal 捐赠](../static/1.jpg) |
 | 微信扫码赞赏 | PayPal Donate |
 
 </div>
