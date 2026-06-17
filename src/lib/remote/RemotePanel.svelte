@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import QrCode from './QrCode.svelte';
-  import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban, CalendarCheck } from 'lucide-svelte';
+  import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
   import { settingsStore, setSetting } from '$lib/stores/settings';
   import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
@@ -11,6 +11,7 @@
   // 合一为单一视图(去 tab):一个主开关、一份共享 TOTP、LAN/公网入口同屏、一份
   // 合并的「已连接」列表(来源用图标区分)、一个最小化按钮。公网通道由 premium 门控。
   import CloudProModal from './cloud/CloudProModal.svelte';
+  import CheckinGateCard from './cloud/CheckinGateCard.svelte';
   import MinimizeButton from './MinimizeButton.svelte';
   import * as cloudAuth from './cloud/auth';
   import { cloudAuth as cloudAuthStore } from './cloud/auth';
@@ -382,7 +383,7 @@
   function blacklistController(cid: string): void { host?.blacklist(cid); }
 
   // 切到公网相关操作前的门控：未登录弹 Pro Modal。
-  function requirePremium(): boolean {
+  function requirePublicAccess(): boolean {
     if (!isLoggedIn) { proModalOpen = true; return false; }
     if (!hasValidTime) { proModalOpen = true; return false; }
     return true;
@@ -569,7 +570,7 @@
           <!-- 未登录：引导登录 -->
           <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.entryPending')}</p>
           <button
-            onclick={() => requirePremium()}
+            onclick={() => requirePublicAccess()}
             class="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--rg-accent)] py-2 text-sm font-semibold text-white transition-all hover:brightness-110"
           >
             <Zap class="h-4 w-4" /> {$t('cloud.enablePublic')}
@@ -607,50 +608,10 @@
             {$t('cloud.activateBtn')}
           </button>
           {#if pairingHint}<p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{pairingHint}</p>{/if}
-          {#if !hasValidTime}
-            <div class="mt-2 rounded-lg border border-dashed border-[var(--rg-border)] p-2.5 space-y-2">
-              {#if hasCheckedIn}
-                <p class="text-[11px] text-amber-400">{$t('cloud.timeExpired')}</p>
-                <button
-                  onclick={() => requirePremium()}
-                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
-                >
-                  <Zap class="h-3.5 w-3.5" /> {$t('cloud.enablePublic')}
-                </button>
-              {:else}
-                <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.checkinHint')}</p>
-                <button
-                  onclick={() => requirePremium()}
-                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
-                >
-                  <CalendarCheck class="h-3.5 w-3.5" /> {$t('cloudPro.checkinBtn')}
-                </button>
-              {/if}
-            </div>
-          {/if}
+          <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} marginTop />
         {:else}
           <!-- 已激活 -->
-          {#if !hasValidTime}
-            <div class="rounded-lg border border-dashed border-[var(--rg-border)] p-2.5 space-y-2">
-              {#if hasCheckedIn}
-                <p class="text-[11px] text-amber-400">{$t('cloud.timeExpired')}</p>
-                <button
-                  onclick={() => requirePremium()}
-                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
-                >
-                  <Zap class="h-3.5 w-3.5" /> {$t('cloud.enablePublic')}
-                </button>
-              {:else}
-                <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('cloud.checkinHint')}</p>
-                <button
-                  onclick={() => requirePremium()}
-                  class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--rg-accent)]/40 py-1.5 text-xs font-medium text-[var(--rg-accent)] transition-colors hover:bg-[var(--rg-accent)]/10"
-                >
-                  <CalendarCheck class="h-3.5 w-3.5" /> {$t('cloudPro.checkinBtn')}
-                </button>
-              {/if}
-            </div>
-          {/if}
+          <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} />
           {#if publicDomain}
             <code class="block break-all text-xs font-medium text-[var(--rg-fg)]">{publicDomain}</code>
           {/if}

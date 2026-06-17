@@ -343,6 +343,7 @@ let searchInputEl: HTMLInputElement | undefined = $state(undefined);
 let bellFlash = $state(false);
 let bellFlashTimer: ReturnType<typeof setTimeout> | null = null;
 let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
+let imeFollowRaf: number | null = null;
 function triggerBellFlash() {
 	bellFlash = true;
 	if (bellFlashTimer !== null) clearTimeout(bellFlashTimer);
@@ -607,14 +608,14 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	// §1.28 + §P5.IME: during active composition use the snapshot
-	// `composingAnchor` (already maintained by the lock-or-follow rule
-	// in `onCompositionUpdate` — see below). Outside composition pull
-	// directly from the unified resolver so the textarea, the history
-	// popup, and the wasm overlay all see the same cell.
+	// During active composition use `pixelPositionFromCell` to recompute
+	// pixel position from the locked grid anchor + current scroll offset,
+	// so the OS IME candidate popup follows the cursor when the viewport
+	// scrolls. The grid row stays locked in `composingAnchor` for the wasm
+	// preedit overlay; only the pixel y tracks scrollOffset changes.
 	const pos: { x: number; y: number; cellW: number; cellH: number } | null =
 		isComposing && composingAnchor
-			? composingAnchor
+			? (manager.pixelPositionFromCell?.(paneId, composingAnchor.row, composingAnchor.col) ?? composingAnchor)
 			: (manager.inputAnchorResolved?.(paneId) ?? manager.inputAnchorPixelPosition(paneId));
 	if (!pos) return;
 	// Anchor the (invisible) IME textarea exactly on the cursor cell.
@@ -1148,6 +1149,26 @@ $effect(() => {
 	return manager.onScrollState(paneId, refreshScrollState);
 });
 
+// Continuous IME cursor following during composition. While IME is active
+// the textarea position is re-synced every frame so the OS candidate popup
+// follows the cursor when the viewport scrolls or cursor moves due to PTY
+// output. The rAF loop starts/stops reactively with `isComposing`.
+$effect(() => {
+	if (!isComposing || !alive || !attached) return;
+	const track = () => {
+		if (!isComposing || !alive) return;
+		repositionImeHelper();
+		imeFollowRaf = requestAnimationFrame(track);
+	};
+	imeFollowRaf = requestAnimationFrame(track);
+	return () => {
+		if (imeFollowRaf !== null) {
+			cancelAnimationFrame(imeFollowRaf);
+			imeFollowRaf = null;
+		}
+	};
+});
+
 onDestroy(() => {
 	alive = false;
 	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
@@ -1160,6 +1181,10 @@ onDestroy(() => {
 	if (compositionEndTimer !== null) {
 		clearTimeout(compositionEndTimer);
 		compositionEndTimer = null;
+	}
+	if (imeFollowRaf !== null) {
+		cancelAnimationFrame(imeFollowRaf);
+		imeFollowRaf = null;
 	}
 	// P1.3 (2026-05-19): no scrollbar poll timer to tear down — the
 	// $effect that wired `manager.onScrollState` handles unsubscription

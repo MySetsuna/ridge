@@ -498,7 +498,6 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     const wsConnectTimer = setTimeout(() => {
       if (ws.readyState !== WebSocket.OPEN && !this.closed) {
         ws.close();
-        this.scheduleReconnect('信令连接超时');
       }
     }, WS_CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
