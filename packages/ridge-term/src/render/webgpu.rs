@@ -362,6 +362,13 @@ impl RenderBackend for WebGpuPaneBackend {
         // again (e.g. via DXGI flip-discard with explicit retain), we
         // can re-introduce the flag-driven fast path behind a runtime
         // capability probe.
+        //
+        // TODO(①选区闪烁/首行选不中, 2026-06-18): 此恒-true 使活动 prompt 行被
+        // PSReadLine 高频重画时每帧整屏 LoadOp::Clear → 选区闪烁 + 首行难选中
+        // (首行=活动输入行)。修复需运行时取证后改为「初始化一次性能力探测」版:
+        // LoadOp::Load 可靠 → 返回 self.needs_initial_clear(脏行快路径);否则保持
+        // true。交接文档 docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md,
+        // 追踪 docs/term-rebuild/TASKS.md §1.36。
         true
     }
 

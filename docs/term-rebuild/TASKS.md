@@ -80,6 +80,15 @@
 - **修法（已实施）**：tick() 在 dirty_rows 计算后、是否 early-return 之前，若 `!full_redraw_pending && !dirty_rows.is_empty() && selection.is_some()`，把所有 selection 覆盖行追加进 dirty_rows。这样所有 overlay 影响行底层都被新画一次（opaque bg），overlay 永远只叠一层。idle 选区（dirty_rows 空）不触发，保留上帧像素，正确。
 - **测试**：111 单测 + 22 集成 全绿。
 
+### 1.36 [HIGH] 首行选不中 + 选区持续闪烁 ⏳ 待运行时取证(2026-06-18 发现)
+
+- **文件**：`packages/ridge-term/src/render/webgpu.rs:339-365`(`requires_full_frame` 恒 true)；牵涉 `renderer.rs:387/591-647`、`manager.ts:4461-4909`。
+- **现象**：Shell 模式首行(活动 prompt 行)鼠标选不中;选区出现后持续闪烁(像反复重绘整帧)。用户在 prompt 输入路径时最明显。
+- **根因(已静态定位,两症状同源)**：活动 prompt 行被 PSReadLine 高频重画 → 每帧 `is_dirty` → WebGPU `requires_full_frame()` 恒 true → 每帧整屏 `LoadOp::Clear` 全量重绘 → WebView2 上闪烁;活动输入行在视口顶部,故"首行"闪得最凶、选它时与实时重画相争。已**证伪**:选区门控(selection.rs 无门控)、命中越界(computeCell 有 max(0) 兜底)、RAF 自旋(已有 blink 休眠)。
+- **为何未修**：唯一真修复要动 `requires_full_frame=true` 这个**刻意为正确性设的**机制(webgpu.rs 注释:WebView2 148 上 `LoadOp::Load` 不可靠,当初为消除"历史行闪烁"才强制全帧)。无运行时无法验证、default-on 可能回退老 bug。经用户确认暂不盲改。
+- **修法(建议,需运行时)**：`pnpm tauri:dev:cdp` 连 DevTools 取证(输入时 RAF 频率 + 本机 WebView2 上 LoadOp::Load 是否可靠),再把 `requires_full_frame` 改为「初始化一次性能力探测」版(可靠→走 `needs_initial_clear` 脏行快路径消除闪烁;否则保持 true)。详见交接文档 `docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md`。
+- **验收**：输入/选中首行时不再闪烁;首行可正常选中;非 WebGPU(Canvas2D)路径不变。
+
 ### 1.7 [HIGH] 选中背景色不符合主题 ✅ 2026-05-03
 
 - **文件**：新增 `src/lib/terminal/themeBridge.ts`，wire from `src/routes/+page.svelte`
