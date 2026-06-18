@@ -115,6 +115,8 @@ self.MonacoEnvironment = {
     scheduleForceFitActivePanes,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
+  // §独立窗口：主窗口侧监听独立编辑器窗口的关闭（交还标签）。
+  import { initEditorWindowHost } from '$lib/stores/editorWindow';
 
   // §perf 懒挂载 FileEditor（设计文档 docs/superpowers/specs/2026-06-13-…）：
   // 编辑器深度耦合 Monaco 核心(~4MB)，原随顶层 import 进入 +page 首屏 eager chunk
@@ -1127,6 +1129,10 @@ function expandSidebar() {
       // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
       // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
       initFileWatcherSync();
+
+      // §独立窗口：主窗口监听独立编辑器窗口的关闭事件，交还标签快照并注销转发拦截器。
+      // 内部已对非 Tauri / web-remote 做守卫（返回 null）。
+      void initEditorWindowHost();
 
       if (!isTauri()) return;
 

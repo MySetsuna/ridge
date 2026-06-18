@@ -158,6 +158,17 @@ export interface SearchHit {
   matchLength: number;
 }
 
+/**
+ * 「独立窗口」open 拦截请求。editor 弹出到独立 OS 窗口后，主窗口侧的协调器
+ * （`editorWindow.ts`）注册一个拦截器：新 open 不在主窗口本地打开，而是转发给
+ * editor 窗口。拦截器返回 true 表示「已转发，store 不要本地处理」。
+ */
+export type OpenRequest =
+  | { kind: 'file'; path: string; opts?: { line?: number; column?: number; matchLength?: number } }
+  | { kind: 'diff'; args: { repoRoot: string; path: string; cached: boolean; commit?: string; compareBase?: string } };
+
+export type OpenInterceptor = (req: OpenRequest) => boolean;
+
 const LS_KEY = 'ridge-file-editor-prefs';
 const MIN_W = 320;
 const MIN_H = 240;
@@ -296,8 +307,44 @@ function createStore() {
     savePrefs(get({ subscribe }));
   }
 
+  // 「独立窗口」open 拦截器（见 OpenInterceptor）。null = 未弹出，正常本地打开。
+  let openInterceptor: OpenInterceptor | null = null;
+
   return {
     subscribe,
+
+    /**
+     * 注册 / 注销 open 拦截器（独立窗口协调器使用）。弹出期间注册转发器，
+     * 关闭独立窗口后传 null 注销，恢复主窗口本地打开。
+     */
+    setOpenInterceptor(fn: OpenInterceptor | null): void {
+      openInterceptor = fn;
+    },
+
+    /** 当前打开文件 + 活动 path 的快照（用于弹出 / 关闭时在窗口间交接，含未保存内容）。 */
+    snapshot(): { files: OpenFile[]; active: string | null } {
+      const s = get({ subscribe });
+      return { files: s.openFiles.map((f) => ({ ...f })), active: s.activePath };
+    },
+
+    /**
+     * 直接以给定的 OpenFile 列表替换打开文件（**不**从磁盘重读），保留 content /
+     * originalContent / isDirty / diffArgs 等——独立窗口交接用：弹出时把未保存编辑
+     * 原样搬过去，关闭时再原样搬回，绝不丢用户的脏改动。
+     */
+    loadFiles(files: OpenFile[], active: string | null): void {
+      update((s) => ({
+        ...s,
+        openFiles: files.map((f) => ({ ...f })),
+        activePath: active ?? files[0]?.path ?? null,
+        isVisible: files.length > 0,
+      }));
+    },
+
+    /** 清空打开文件（不弹确认）。所有权已交接给独立窗口后调用。 */
+    clearForHandoff(): void {
+      update((s) => ({ ...s, openFiles: [], activePath: null, isVisible: false }));
+    },
 
     /**
      * Open a file (or activate its existing tab). Auto-shows the editor.
@@ -310,6 +357,8 @@ function createStore() {
       path: string,
       opts?: { line?: number; column?: number; matchLength?: number }
     ): Promise<void> {
+      // 独立窗口弹出期间：转发给 editor 窗口，主窗口不本地打开。
+      if (openInterceptor && openInterceptor({ kind: 'file', path, opts })) return;
       const reveal: PendingReveal | null = opts?.line && opts.line > 0
         ? {
             path,
@@ -906,6 +955,8 @@ function createStore() {
       commit?: string;
       compareBase?: string;
     }): void {
+      // 独立窗口弹出期间：转发给 editor 窗口，主窗口不本地打开。
+      if (openInterceptor && openInterceptor({ kind: 'diff', args })) return;
       const repoNorm = args.repoRoot.replace(/\\/g, '/');
       const tabPath =
         args.compareBase && args.commit
