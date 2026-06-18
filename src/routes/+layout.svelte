@@ -3,6 +3,7 @@
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
+  import EditorWindow from '$lib/components/EditorWindow.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
@@ -18,6 +19,11 @@
   // vite.config.js). In the normal Tauri build the flag is undefined, the whole
   // branch tree-shakes away, and behaviour is unchanged.
   const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+  // §独立窗口：弹出的编辑器窗口以 ?win=editor 加载同一 SPA，但只渲染 <EditorWindow>
+  // （= 铺满窗口的文件编辑器），不跑主应用（+page）的终端/工作区重型初始化。
+  const editorWindow =
+    browser && new URLSearchParams(window.location.search).get('win') === 'editor';
 
   // §redirect-loop 止血：租户子域 boot 失败回主域登录的「已回跳」计数（per-tab，
   // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
@@ -51,6 +57,9 @@
   onMount(() => {
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
+      // §独立窗口：弹出的编辑器窗口只需 transport（让 invoke 可用），跳过 TOTP 身份同步
+      // 等主窗口职责，避免第二个窗口里重复运行。
+      if (editorWindow) return;
       // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
       // WEB_REMOTE 分支排除，不会到这）。
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
@@ -282,7 +291,11 @@
 
 {#if ready}
   <div class="min-h-screen min-h-[100dvh] bg-[var(--rg-bg)] text-[var(--rg-fg)] antialiased">
-    {@render children()}
+    {#if editorWindow}
+      <EditorWindow />
+    {:else}
+      {@render children()}
+    {/if}
   </div>
 {:else}
   <div class="wr-gate">
