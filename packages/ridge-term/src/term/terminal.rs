@@ -256,11 +256,15 @@ impl Terminal {
             }
             GridDelta::ScreenSwitch { is_alt } => {
                 if *is_alt {
-                    // `clear_on_enter = false`: the producer is going
-                    // to send Cells deltas describing the alt-screen
-                    // contents next. Clearing here would just be
-                    // overwritten immediately and waste cycles.
-                    self.grid.enter_alt_screen(false);
+                    // `clear_on_enter = true`: 进入 alt 屏即清空镜像
+                    // 的 alt 网格。原先这里传 false,假设生产者随后
+                    // 会补发完整 alt 内容;但 `PaneParser::diff_into_frame`
+                    // 在切屏时已重置其 cell-diff 基线,只发增量 Cells,
+                    // 不会重发与新基线"相同"的单元格。若不在此清屏,
+                    // 上一次 alt 会话(如已退出的 TUI)的残留会留在
+                    // 镜像里,造成「TUI 退出再进残留」。镜像自行清空
+                    // 兜底,与后端基线重置形成对称。
+                    self.grid.enter_alt_screen(true);
                 } else {
                     self.grid.leave_alt_screen();
                 }
@@ -805,6 +809,50 @@ mod tests {
         // Viewport snaps to live grid (Reset wipes any user-scroll lock).
         assert_eq!(t.scroll_offset(), 0);
         assert!(!t.is_user_scroll_locked());
+    }
+
+    #[test]
+    fn screen_switch_to_alt_clears_stale_alt_mirror() {
+        // 「TUI 退出再进残留」回归测试。重进 alt 屏时,镜像必须
+        // 清空上一次 alt 会话的残留内容,而不是依赖生产者随后补发
+        // 全量 Cells —— 后端的 cell-diff 基线在切屏时已重置,只发
+        // 增量,故镜像自身必须在进入 alt 时清屏兜底。
+        use crate::term::attrs::{Color, Flags};
+        use crate::term::delta::{DeltaCell, GridDelta};
+        let mut t = Terminal::new(4, 10, 100);
+        // 第一次进入 alt 屏。
+        t.apply_delta(&GridDelta::ScreenSwitch { is_alt: true });
+        // 在 alt 屏 row 1 写入 "GHOST"。
+        let ghost: Vec<DeltaCell> = "GHOST"
+            .chars()
+            .map(|ch| DeltaCell {
+                ch,
+                fg: Color::DEFAULT,
+                bg: Color::DEFAULT,
+                flags: Flags::empty(),
+                width: 1,
+                cluster: None,
+            })
+            .collect();
+        t.apply_delta(&GridDelta::Cells {
+            row: 1,
+            col: 0,
+            cells: ghost,
+        });
+        assert_eq!(
+            t.dump_visible_text()[1],
+            "GHOST",
+            "前置条件:GHOST 应已写入 alt 屏 row 1"
+        );
+        // 离开 alt 屏(回到 primary)。
+        t.apply_delta(&GridDelta::ScreenSwitch { is_alt: false });
+        // 重新进入 alt 屏 —— 这一步必须清掉上次的 GHOST 残留。
+        t.apply_delta(&GridDelta::ScreenSwitch { is_alt: true });
+        assert_eq!(
+            t.dump_visible_text()[1],
+            "",
+            "重进 alt 屏后,上一次会话的 GHOST 残留必须被清空"
+        );
     }
 
     #[test]
