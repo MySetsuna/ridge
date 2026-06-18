@@ -243,11 +243,11 @@ impl VerifyThrottle {
     /// Call BEFORE checking the TOTP code; call `record_failure` / `record_success`
     /// afterwards based on the result. `device_id` may be empty (not provided).
     pub fn check(&self, ip: &str, device_id: &str) -> ThrottleDecision {
-        // Global limiter first: cheap, and sheds load before per-key work.
-        if !self.global_allow() {
-            return ThrottleDecision::GlobalLimited;
-        }
         let now = Instant::now();
+        // Per-key decision FIRST. A source already in backoff/ban is rejected here
+        // WITHOUT touching the global limiter (audit M-1): otherwise a single
+        // throttled attacker could flood the `/verify` path with attempts that are
+        // doomed anyway, fill the global window, and shed legitimate users.
         // The strictest of the IP and device records governs.
         let ip_dec = self.key_decision(&self.by_ip, ip, now);
         let dev_dec = if device_id.is_empty() {
@@ -255,7 +255,17 @@ impl VerifyThrottle {
         } else {
             self.key_decision(&self.by_device, device_id, now)
         };
-        strictest(ip_dec, dev_dec)
+        let decision = strictest(ip_dec, dev_dec);
+        if decision != ThrottleDecision::Allow {
+            return decision;
+        }
+        // Only attempts that would actually reach the TOTP check consume global
+        // budget — this still caps a distributed (many fresh IPs) guess, while no
+        // longer letting throttled sources deny service to everyone else.
+        if !self.global_allow() {
+            return ThrottleDecision::GlobalLimited;
+        }
+        ThrottleDecision::Allow
     }
 
     /// Record a failed verify for both keys (advances backoff / ban state).
@@ -551,5 +561,31 @@ mod tests {
         }
         // One past the global window cap is shed.
         assert_eq!(t.check("10.0.99.99", ""), ThrottleDecision::GlobalLimited);
+    }
+
+    #[test]
+    fn throttle_banned_source_does_not_consume_global_budget() {
+        // audit M-1: a source already in backoff/ban must be rejected WITHOUT
+        // eating a global-limit slot. Otherwise a single throttled attacker could
+        // flood the global window with doomed attempts and shed legitimate users.
+        let t = VerifyThrottle::new();
+        // Drive one source into a hard-cap ban.
+        for _ in 0..THROTTLE_HARD_LIMIT {
+            t.record_failure("6.6.6.6", "devBan");
+        }
+        assert!(matches!(
+            t.check("6.6.6.6", "devBan"),
+            ThrottleDecision::Banned { .. }
+        ));
+        // Hammer the banned source far past the global window cap. None of these
+        // doomed attempts should consume global budget…
+        for _ in 0..(THROTTLE_GLOBAL_MAX * 3) {
+            assert!(matches!(
+                t.check("6.6.6.6", "devBan"),
+                ThrottleDecision::Banned { .. }
+            ));
+        }
+        // …so a legitimate fresh source still gets through (not GlobalLimited).
+        assert_eq!(t.check("4.4.4.4", "devOk"), ThrottleDecision::Allow);
     }
 }
