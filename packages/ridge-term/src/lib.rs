@@ -1327,6 +1327,16 @@ mod renderer_js {
             self.renderer.record_cached_only()
         }
 
+        /// §atlas-pin: before this frame's panes full-render, pin every
+        /// visible cached pane's glyph layers so another pane's glyph
+        /// admission can't evict + overwrite a layer this pane's
+        /// `recordCachedOnly` replay still samples. Caller: `manager.ts`
+        /// host loop, right after the host frame opens.
+        #[wasm_bindgen(js_name = pinCachedLayers)]
+        pub fn pin_cached_layers(&mut self) {
+            self.renderer.pin_cached_layers();
+        }
+
         /// Multi-pane hosts call this when the active pane changes. When
         /// `focused` is false, the renderer skips cursor draw entirely so
         /// only the truly active terminal blinks. Idempotent.
