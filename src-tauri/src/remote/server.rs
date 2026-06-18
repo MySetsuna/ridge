@@ -708,16 +708,21 @@ async fn file_handler(
         Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
     let roots = allowed_file_roots(&ctx);
-    let within = tokio::task::spawn_blocking(move || is_within_allowed_roots(&canon, &roots))
+    let canon_for_check = canon.clone();
+    let within = tokio::task::spawn_blocking(move || is_within_allowed_roots(&canon_for_check, &roots))
         .await
         .unwrap_or(false);
     if !within {
         tracing::warn!(target: "ridge::remote", path = %q.path, "file_handler rejected: outside allowed roots");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
-    match tokio::fs::read(&full).await {
+    // SECURITY (audit L-1): read the CANONICALIZED path, not the original `full`.
+    // `full` could be (or traverse) a symlink repointed between the containment
+    // check above and this read (TOCTOU); `canon` is the already-validated real
+    // path with symlinks collapsed, so reading it closes that window at zero cost.
+    match tokio::fs::read(&canon).await {
         Ok(bytes) => {
-            let name = full.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let name = canon.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let (content_type, _) = root_asset_headers(name);
             axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_TYPE, content_type)
