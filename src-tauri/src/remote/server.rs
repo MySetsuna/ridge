@@ -1012,20 +1012,31 @@ async fn session_handler(
 #[derive(Deserialize)]
 struct TokenQuery {
     token: Option<String>,
+    /// Stable client device id, when the caller can supply one. Optional — the
+    /// IP binding always applies; the device pin only when both sides provide
+    /// one (mirrors `/file`'s `FileQuery`). Audit H5.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 /// Validate a session token taken from EITHER the `Authorization: Bearer <t>`
 /// header OR the `?token=` query param.
 ///
-/// SECURITY (audit H3): the `/workspace/*` HTTP routes previously had NO token
-/// check (only the `remote_enabled` gate), so any LAN peer could enumerate,
-/// switch, create, or destroy workspaces. This mirrors `file_handler`'s
-/// `validate_token` so those routes require the same session token the WS
-/// upgrade already demands.
+/// SECURITY (audit H3 + H5): the `/workspace/*` HTTP routes previously had NO
+/// token check (only the `remote_enabled` gate), so any LAN peer could
+/// enumerate, switch, create, or destroy workspaces. These are control-plane
+/// routes, so — like `/ws` and `/file` — they enforce the token's device+IP
+/// binding via `validate_token_bound`, not bare existence (`validate_token`).
+/// The IP is always compared; the device id only when both the stored and
+/// presented ids are non-empty (a client that can't send one falls back to the
+/// IP pin). This stops a token leaked off the LAN (e.g. via a `?token=` URL in
+/// logs/history) from being replayed against the control plane from another host.
 fn is_request_authed(
     ctx: &RemoteCtx,
     headers: &axum::http::HeaderMap,
     query_token: Option<&str>,
+    device_id: &str,
+    ip: &str,
 ) -> bool {
     let header_token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -1033,7 +1044,11 @@ fn is_request_authed(
         .and_then(|s| s.strip_prefix("Bearer ").map(str::trim));
     let token = header_token.or(query_token);
     token
-        .map(|t| ctx.state.remote_session_store.validate_token(t))
+        .map(|t| {
+            ctx.state
+                .remote_session_store
+                .validate_token_bound(t, device_id, ip)
+        })
         .unwrap_or(false)
 }
 
@@ -1053,12 +1068,15 @@ struct WorkspaceCloseBody {
 }
 
 async fn workspace_list_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
 ) -> axum::response::Response {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
     let order = ctx.state.workspace_order.read();
@@ -1083,13 +1101,16 @@ async fn workspace_list_handler(
 }
 
 async fn workspace_switch_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceSwitchBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"success":false,"error":"invalid token"})),
@@ -1119,13 +1140,16 @@ async fn workspace_switch_handler(
 }
 
 async fn workspace_create_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceCreateBody>,
 ) -> axum::response::Response {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
     use std::collections::HashMap;
@@ -1163,13 +1187,16 @@ async fn workspace_create_handler(
 }
 
 async fn workspace_close_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceCloseBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"success":false,"error":"invalid token"})),
