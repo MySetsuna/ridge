@@ -1313,6 +1313,11 @@ async fn handle_ws(
 
     // Register this client in the remote client registry so the desktop
     // RemotePanel can list, disconnect, or blacklist it.
+    // §M-2: snapshot the auth identity BEFORE `register` consumes it, so the
+    // periodic health check can re-validate token TTL + blacklist mid-session.
+    let recheck_addr = remote_addr.clone();
+    let recheck_device = device_id.clone();
+    let recheck_token = token.clone();
     let (client_id, kill_flag) = ctx.state.remote_client_registry.register(
         remote_addr,
         String::new(), // user-agent not available from axum WS directly
@@ -1435,10 +1440,13 @@ async fn handle_ws(
     let mut cancelled_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     const MAX_CANCELLED_IDS: usize = 1024;
 
-    // Periodic health check: if remote control is toggled off, or this client
-    // is force-disconnected / blacklisted (kill_flag), close the WS so the
-    // mobile client gets a clean disconnect. Polled at 1s so an admin-triggered
-    // disconnect takes effect promptly (just an atomic load per tick).
+    // Periodic health check (1s): tears down an ALREADY-OPEN connection when
+    // remote control is toggled off, this client is force-disconnected
+    // (kill_flag), its device/IP gets blacklisted, or — for token sessions — the
+    // session token expires (TTL) or is revoked. SECURITY (audit M-2): the
+    // handshake check alone never expires a live session, so without this an
+    // issued token would outlive its TTL on an open socket and a fresh blacklist
+    // entry wouldn't kick an already-connected client.
     let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(1));
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -2453,14 +2461,35 @@ async fn handle_ws(
                         }
                     }
                     _ = health_interval.tick() => {
-                        if !ctx.state.remote_enabled.load(Ordering::Relaxed)
-                            || kill_flag.load(Ordering::Relaxed)
+                        // §M-2: a token session whose token has expired (TTL) or
+                        // been revoked must not keep streaming. `?code=` (TOTP)
+                        // connections carry no token, so this only applies when one
+                        // was presented. `validate_token_bound` also reaps the
+                        // expired entry as a side effect.
+                        let token_revoked = match recheck_token.as_deref() {
+                            Some(t) => !ctx
+                                .state
+                                .remote_session_store
+                                .validate_token_bound(t, &recheck_device, &recheck_addr),
+                            None => false,
+                        };
+                        let close_reason = if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
+                            Some("Remote control disabled")
+                        } else if kill_flag.load(Ordering::Relaxed) {
+                            Some("Disconnected by admin")
+                        } else if ctx
+                            .state
+                            .remote_blacklist
+                            .is_blocked(&recheck_device, &recheck_addr)
                         {
-                            let reason = if kill_flag.load(Ordering::Relaxed) {
-                                "Disconnected by admin"
-                            } else {
-                                "Remote control disabled"
-                            };
+                            Some("Device blacklisted")
+                        } else if token_revoked {
+                            Some("Session expired")
+                        } else {
+                            None
+                        };
+                        if let Some(reason) = close_reason {
+                            tracing::info!(target: "ridge::remote", client_id, reason, "WS closed by health check");
                             let _ = ws_tx.send(Message::Close(Some(
                                 axum::extract::ws::CloseFrame {
                                     code: 1000,
