@@ -31,8 +31,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = process.env.CDP_PORT ?? '9222';
 const userDataDir = path.resolve(__dirname, '..', '.webview2-dev-cdp');
 
+// `--remote-allow-origins=*` is REQUIRED for chrome-devtools-mcp (and any
+// CDP client that sends an Origin header) to attach on Chromium 111+ — without
+// it the DevTools websocket handshake is rejected with HTTP 403. Harmless on
+// older runtimes.
+//
+// NOTE (2026-06-18, WebView2 148.x): on this runtime the DevTools server was
+// observed to not initialise the remote-debugging port at all — no listener
+// on the port and no `DevToolsActivePort` file is written under the
+// user-data-dir despite these flags being applied to the WebView2 process.
+// If `pnpm cdp:smoke` can't reach the port, the WebView2 runtime version is
+// the likely cause; CDP-based forensics are unavailable until it's resolved.
 process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =
-  `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`;
+  `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1 --remote-allow-origins=*`;
 process.env.WEBVIEW2_USER_DATA_FOLDER = userDataDir;
 // Let this debug instance coexist with an already-running installed Ridge:
 // the installed app holds the single-instance lock, so without this the dev
