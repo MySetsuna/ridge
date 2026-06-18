@@ -10,6 +10,7 @@
     "build:desktop-web": "node scripts/build-desktop-web.mjs",
     "build:flag-font": "node scripts/build-flag-font.mjs",
     "sync:cloud-controller": "node scripts/sync-cloud-desktop-app.mjs",
+    "sync:signaling": "node scripts/sync-signaling.mjs",
     "dev:remote": "node scripts/start-remote-dev.mjs",
     "build:remote-server": "cargo build --release --bin remote-server --manifest-path src-tauri/Cargo.toml",
     "build:remote-server:dev": "cargo build --bin remote-server --manifest-path src-tauri/Cargo.toml",

@@ -28,6 +28,8 @@ import {
   type CloudConnectionState,
   type CloudConnectionCallbacks,
 } from './connectionProvider';
+import { parseSignal, isInboundSignal } from './signaling';
+import type { SignalMsg, SignalIn, JsonValue } from './signaling';
 import {
   E2eeSession,
   DIR_CONTROLLER_TO_HOST,
@@ -68,17 +70,9 @@ const ICE_RESTART_DEADLINE_MS = 12_000;
 /** WebSocket 连接超时（ms）：超时未 open 则判失败重连。 */
 const WS_CONNECT_TIMEOUT_MS = 10_000;
 
-/** 信令消息（契约 §5.1，tag 字段 `t`）。与 host provider 同形。 */
-type SignalIn =
-  | { t: 'welcome'; room: string; role: 'host' | 'controller'; peerPresent: boolean }
-  | { t: 'peer-join'; role: 'host' | 'controller' }
-  | { t: 'peer-leave'; role: 'host' | 'controller' }
-  | { t: 'error'; code: string; message: string }
-  | { t: 'offer'; sdp: string }
-  | { t: 'answer'; sdp: string }
-  | { t: 'ice'; candidate: RTCIceCandidateInit | null }
-  // B3（D-GM-10）：cloud 经已认证信令把对端(host)临时公钥旁路转发回来。
-  | { t: 'e2ee-pubkey'; pubkey: string };
+// 信令类型来自生成的 SSOT（`./signaling` ← ridge-signaling ts-rs bindings）。入站统一经
+// {@link parseSignal} + {@link isInboundSignal} 收窄到 {@link SignalIn}（去掉 kick），出站以
+// {@link SignalMsg} 收窄；不再手写副本（漂移由 signaling/conformance+drift 测试钉死）。
 
 export interface ControllerCloudProviderConfig {
   /** user JWT（scope=user），WS 与 ice-servers 鉴权用（§3）。 */
@@ -205,7 +199,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
     // 本端 ICE candidate → 经信令转发给对端（§5.1 trickle）。
     pc.onicecandidate = (ev) => {
-      this.sendSignal({ t: 'ice', candidate: ev.candidate ? ev.candidate.toJSON() : null });
+      // toJSON() 是 RTCIceCandidateInit；线类型是 JsonValue（serde_json），边界处收窄。
+      this.sendSignal({
+        t: 'ice',
+        candidate: ev.candidate ? (ev.candidate.toJSON() as unknown as JsonValue) : null,
+      });
     };
 
     pc.onconnectionstatechange = () => {
@@ -514,19 +512,18 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     };
   }
 
-  private sendSignal(msg: Record<string, unknown>): void {
+  private sendSignal(msg: SignalMsg): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
   }
 
   private async onSignal(raw: unknown): Promise<void> {
-    let msg: SignalIn;
-    try {
-      msg = JSON.parse(typeof raw === 'string' ? raw : '') as SignalIn;
-    } catch {
-      return; // 非文本/非法 JSON 忽略
-    }
+    // 统一入站解析：未知 tag / 非法 JSON / kick（controller 不在信令层处理 kick）→ 忽略，
+    // 绝不抛（前向兼容，见 signaling/parseSignal）。
+    const parsed = parseSignal(typeof raw === 'string' ? raw : '');
+    if (!isInboundSignal(parsed)) return;
+    const msg: SignalIn = parsed;
     const pc = this.pc;
     if (!pc) return;
 
@@ -558,7 +555,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       case 'ice':
         if (msg.candidate) {
           try {
-            await pc.addIceCandidate(msg.candidate);
+            // 线类型是 JsonValue（serde_json），到 WebRTC API 的边界处收窄。
+            await pc.addIceCandidate(msg.candidate as RTCIceCandidateInit);
           } catch {
             /* 无关键 candidate 失败可忽略 */
           }
@@ -588,7 +586,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      this.sendSignal({ t: 'offer', sdp: offer.sdp });
+      this.sendSignal({ t: 'offer', sdp: offer.sdp ?? '' });
     } catch (e: unknown) {
       this.offerStarted = false; // 允许后续重试
       this.fail(e instanceof Error ? e.message : '创建 offer 失败', 'INTERNAL');
@@ -632,7 +630,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         this.offerStarted = false;
         const offer = await this.pc.createOffer({ iceRestart: true });
         await this.pc.setLocalDescription(offer);
-        this.sendSignal({ t: 'offer', sdp: offer.sdp });
+        this.sendSignal({ t: 'offer', sdp: offer.sdp ?? '' });
         this.offerStarted = true;
         this.armIceRestartDeadline(); // 限期内未恢复 → 升级为整体重建
         return;
