@@ -53,10 +53,10 @@ fn encode_powershell_utf16le_base64(script: &str) -> String {
 const RIDGE_ZSH_ZSHENV: &str = "\
 # Ridge terminal shell integration (auto-generated; do not edit).
 # Ported from VS Code's MIT-licensed zsh integration — cwd/OSC 7 only.
-if [[ -f $USER_ZDOTDIR/.zshenv ]]; then
+if [[ -f \"$USER_ZDOTDIR/.zshenv\" ]]; then
 \tRIDGE_ZDOTDIR=$ZDOTDIR
 \tZDOTDIR=$USER_ZDOTDIR
-\t. $USER_ZDOTDIR/.zshenv
+\t. \"$USER_ZDOTDIR/.zshenv\"
 \tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
 \t\tZDOTDIR=$RIDGE_ZDOTDIR
 \tfi
@@ -66,10 +66,10 @@ fi
 #[cfg(unix)]
 const RIDGE_ZSH_ZPROFILE: &str = "\
 # Ridge terminal shell integration (auto-generated; do not edit).
-if [[ -f $USER_ZDOTDIR/.zprofile ]]; then
+if [[ -f \"$USER_ZDOTDIR/.zprofile\" ]]; then
 \tRIDGE_ZDOTDIR=$ZDOTDIR
 \tZDOTDIR=$USER_ZDOTDIR
-\t. $USER_ZDOTDIR/.zprofile
+\t. \"$USER_ZDOTDIR/.zprofile\"
 \tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
 \t\tZDOTDIR=$RIDGE_ZDOTDIR
 \tfi
@@ -80,16 +80,19 @@ fi
 const RIDGE_ZSH_ZSHRC: &str = "\
 # Ridge terminal shell integration (auto-generated; do not edit).
 # Ported from VS Code's MIT-licensed zsh integration — cwd/OSC 7 only.
-if [[ -f $USER_ZDOTDIR/.zshrc ]]; then
+if [[ -f \"$USER_ZDOTDIR/.zshrc\" ]]; then
 \tRIDGE_ZDOTDIR=$ZDOTDIR
 \tZDOTDIR=$USER_ZDOTDIR
-\t. $USER_ZDOTDIR/.zshrc
+\t. \"$USER_ZDOTDIR/.zshrc\"
 \tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
 \t\tZDOTDIR=$RIDGE_ZDOTDIR
 \tfi
 fi
 
 # Emit OSC 7 (cwd) before each prompt so the backend tracks interactive `cd`.
+# $PWD is emitted verbatim (not percent-encoded); Ridge's OSC 7 parser accepts
+# literal paths, so spaces/non-ASCII work despite deviating from RFC 3986 (a
+# conforming encoder would require an external tool).
 __ridge_emit_cwd() {
 \tprintf '\\033]7;file://%s\\a' \"$PWD\"
 }
@@ -111,10 +114,10 @@ fi
 #[cfg(unix)]
 const RIDGE_ZSH_ZLOGIN: &str = "\
 # Ridge terminal shell integration (auto-generated; do not edit).
-if [[ -f $USER_ZDOTDIR/.zlogin ]]; then
+if [[ -f \"$USER_ZDOTDIR/.zlogin\" ]]; then
 \tRIDGE_ZDOTDIR=$ZDOTDIR
 \tZDOTDIR=$USER_ZDOTDIR
-\t. $USER_ZDOTDIR/.zlogin
+\t. \"$USER_ZDOTDIR/.zlogin\"
 \tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
 \t\tZDOTDIR=$RIDGE_ZDOTDIR
 \tfi
@@ -128,8 +131,20 @@ ZDOTDIR=$USER_ZDOTDIR
 /// temp is reused across spawns; rewriting it on every spawn is idempotent.
 #[cfg(unix)]
 fn prepare_zsh_zdotdir() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("ridge-shell-integration").join("zsh");
-    std::fs::create_dir_all(&dir)?;
+    use std::os::unix::fs::DirBuilderExt;
+    // Per-user, 0o700 dir under the system temp: on a shared machine another
+    // local user can neither pre-seed the (otherwise fixed, guessable) path nor
+    // read our shims. The leaf is rewritten every spawn — idempotent.
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "default".to_string());
+    let dir = std::env::temp_dir()
+        .join(format!("ridge-shell-integration-{user}"))
+        .join("zsh");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)?;
     std::fs::write(dir.join(".zshenv"), RIDGE_ZSH_ZSHENV)?;
     std::fs::write(dir.join(".zprofile"), RIDGE_ZSH_ZPROFILE)?;
     std::fs::write(dir.join(".zshrc"), RIDGE_ZSH_ZSHRC)?;
@@ -585,12 +600,26 @@ pub fn ensure_pane_pty_workspace(
                 {
                     match prepare_zsh_zdotdir() {
                         Ok(zdotdir) => {
+                            // Prefer the user's existing ZDOTDIR, else HOME.
+                            // Both are filtered for emptiness: an empty value
+                            // would make the shims source "/.zshrc" and leave
+                            // ZDOTDIR="", so skip integration entirely and fall
+                            // back to sysinfo polling rather than corrupt the
+                            // user's shell startup.
                             let user_zdotdir = std::env::var_os("ZDOTDIR")
                                 .filter(|v| !v.is_empty())
-                                .or_else(|| std::env::var_os("HOME"))
-                                .unwrap_or_default();
-                            cmd.env("USER_ZDOTDIR", &user_zdotdir);
-                            cmd.env("ZDOTDIR", &zdotdir);
+                                .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()));
+                            match user_zdotdir {
+                                Some(user_zdotdir) => {
+                                    cmd.env("USER_ZDOTDIR", &user_zdotdir);
+                                    cmd.env("ZDOTDIR", &zdotdir);
+                                }
+                                None => {
+                                    eprintln!(
+                                        "[ridge-term] zsh shell integration disabled: neither ZDOTDIR nor HOME is set"
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             eprintln!("[ridge-term] zsh shell integration disabled: {e}");
