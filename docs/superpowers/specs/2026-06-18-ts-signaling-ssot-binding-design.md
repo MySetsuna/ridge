@@ -2,7 +2,20 @@
 
 > 日期:2026-06-18 ｜ 仓库:`C:\code\wind`(ridge 桌面 host + controller TS)
 > 关联:`ridge-signaling`(SSOT,rev `7f958215`)、`.agent-team/findings-align.md` P1-1
-> 状态:设计已审批,待落实现计划
+> 状态:设计已审批并提交推送(commit `18c2493`,origin/develop);**实现未开工(TODO,见下)**。
+
+## 实现 TODO(未开工)
+
+恢复入口:用 `writing-plans` 把本 spec 拆成实现计划,勿重新 brainstorm。纯类型来源切换,不改 provider 运行时安全逻辑、不碰 Rust 侧 / 线协议字节。
+
+- [ ] **vendor**:`bindings/{SignalMsg,Role,serde_json/JsonValue}.ts` + `fixtures/signaling/*.json`(16 个)→ `src/lib/remote/cloud/signaling/{generated,fixtures}/`,写 `SOURCE_REV`(初始 `7f958215`)。
+- [ ] **sync 脚本**:`scripts/sync-signaling.mjs` + `package.json` 加 `"sync:signaling"`(仿 `sync:cloud-controller`)。
+- [ ] **薄 `index.ts`**:re-export `SignalMsg`/`Role` + `SignalIn = Exclude<SignalMsg,{t:'kick'}>` + `parseSignal`。
+- [ ] **两 provider 切源**:`ridgeCloudProvider.ts` / `controllerCloudProvider.ts` 删手写 `SignalIn`、`'host'|'controller'`→`Role`、收信号入口走 `parseSignal`。
+- [ ] **`conformance.test.ts`**:16 fixtures 双向对照 + 字面量表 key 集合 === 文件名集合 + `unknown_forward_compat` 兜底。
+- [ ] **`drift.test.ts`**:同级在场逐字节比对 generated/fixtures + 校验 `SOURCE_REV`,缺席 `it.skip`。
+- [ ] **绿灯闸**:`pnpm test`(新增 conformance/drift 全过、provider 既有单测不退)+ `pnpm check` 类型零错。
+- 范围外(独立 TODO,不在本 spec):**P1-2** ridge-cli 多控制方(当前单会话,见 `.agent-team/findings-align.md` P1-2)。
 
 ## 背景与动机
 
