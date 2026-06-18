@@ -973,7 +973,7 @@ async fn ws_handler(
         // token issued to one device can't be reconnected from another LAN host.
         ctx.state
             .remote_session_store
-            .validate_token_bound(t, &device_id, &remote_addr)
+            .validate_token_device_strict(t, &device_id, &remote_addr)
     } else if let Some(ref c) = query.code {
         // SECURITY (audit C1): the `?code=` TOTP path is brute-forceable, so it
         // shares the SAME throttle/lockout/global-limit as POST /verify. A code
@@ -1032,10 +1032,12 @@ struct TokenQuery {
 /// enumerate, switch, create, or destroy workspaces. These are control-plane
 /// routes, so — like `/ws` and `/file` — they enforce the token's device+IP
 /// binding via `validate_token_bound`, not bare existence (`validate_token`).
-/// The IP is always compared; the device id only when both the stored and
-/// presented ids are non-empty (a client that can't send one falls back to the
-/// IP pin). This stops a token leaked off the LAN (e.g. via a `?token=` URL in
-/// logs/history) from being replayed against the control plane from another host.
+/// The IP is always compared; a device-bound token must additionally present its
+/// exact device id — control paths use `validate_token_device_strict`, so an
+/// empty device can't downgrade a device-bound token to the IP pin (audit L-3).
+/// Deviceless legacy tokens still validate on the IP pin. This stops a token
+/// leaked off the LAN (e.g. via a `?token=` URL in logs/history) from being
+/// replayed against the control plane from another host on the same egress IP.
 fn is_request_authed(
     ctx: &RemoteCtx,
     headers: &axum::http::HeaderMap,
@@ -1052,7 +1054,7 @@ fn is_request_authed(
         .map(|t| {
             ctx.state
                 .remote_session_store
-                .validate_token_bound(t, device_id, ip)
+                .validate_token_device_strict(t, device_id, ip)
         })
         .unwrap_or(false)
 }

@@ -156,6 +156,38 @@ impl SessionStore {
         true
     }
 
+    /// Like [`validate_token_bound`], but for control-granting endpoints
+    /// (`/ws`, `/workspace/*`) an EMPTY presented device is NOT allowed to fall
+    /// back to the IP pin when the token WAS issued with a device binding.
+    ///
+    /// SECURITY (audit L-3): the bound check skips the device comparison whenever
+    /// either side is empty, so an attacker sharing the victim's NAT egress IP
+    /// could downgrade a device-bound token to IP-only by simply omitting the
+    /// device. Control paths close that escape: a token carrying a device id MUST
+    /// have that exact id presented. A token issued WITHOUT a device (stored id
+    /// empty — legacy clients, or `<img>`-only `/file` flows that use the bound
+    /// check) still validates on the IP pin alone, so existing sessions and
+    /// header-less image fetches aren't locked out.
+    pub fn validate_token_device_strict(&self, token: &str, device_id: &str, ip: &str) -> bool {
+        let mut map = self.tokens.lock();
+        let Some(rec) = map.get(token) else {
+            return false;
+        };
+        if rec.created.elapsed() >= SESSION_TTL {
+            map.remove(token);
+            return false;
+        }
+        if rec.ip != ip {
+            return false;
+        }
+        // A device-bound token must present its exact device — no empty-device
+        // downgrade to the IP pin. Deviceless (legacy) tokens keep the IP pin.
+        if !rec.device_id.is_empty() && rec.device_id != device_id {
+            return false;
+        }
+        true
+    }
+
     /// Revoke a session token so the device can no longer reconnect with it
     /// (force-disconnect). The device must re-enter the auth code to obtain a
     /// fresh token. No-op if the token is unknown.
@@ -477,6 +509,35 @@ mod tests {
     fn bound_token_unknown_is_rejected() {
         let store = SessionStore::new();
         assert!(!store.validate_token_bound("deadbeef", "devX", "1.2.3.4"));
+    }
+
+    // ── SessionStore device-strict path (audit L-3) ──
+
+    #[test]
+    fn strict_token_rejects_empty_or_wrong_device_when_bound() {
+        let store = SessionStore::new();
+        let token = store.create_session_bound("devX", "1.2.3.4");
+        // Correct device + IP → ok.
+        assert!(store.validate_token_device_strict(&token, "devX", "1.2.3.4"));
+        // Empty device can no longer downgrade a device-bound token to the IP pin
+        // (this is the L-3 escape the bound check would have allowed).
+        assert!(!store.validate_token_device_strict(&token, "", "1.2.3.4"));
+        // Wrong device → rejected.
+        assert!(!store.validate_token_device_strict(&token, "devY", "1.2.3.4"));
+        // IP is still always pinned.
+        assert!(!store.validate_token_device_strict(&token, "devX", "9.9.9.9"));
+    }
+
+    #[test]
+    fn strict_token_allows_ip_pin_for_deviceless_token() {
+        // A token issued WITHOUT a device (legacy client / header-less flow) still
+        // validates on the IP pin alone, so the strict path doesn't lock it out.
+        let store = SessionStore::new();
+        let token = store.create_session_bound("", "1.2.3.4");
+        assert!(store.validate_token_device_strict(&token, "", "1.2.3.4"));
+        assert!(store.validate_token_device_strict(&token, "whatever", "1.2.3.4"));
+        // …but the IP pin still holds.
+        assert!(!store.validate_token_device_strict(&token, "", "9.9.9.9"));
     }
 
     // ── VerifyThrottle (audit C1) ──
