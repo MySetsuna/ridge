@@ -61,9 +61,29 @@ export default defineConfig({
       // active terminal session (reload happens when the tab is backgrounded).
       registerType: 'prompt',
       injectRegister: false, // registered manually in src/remote/main.ts
-      // Icons / favicon live in src/remote/public and need precaching too.
-      includeAssets: ['favicon.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'],
+      // Icons / favicon (and any other static public asset) need precaching
+      // too. Globs cover present + future drops into src/remote/public so a new
+      // icon/media file is auto-included without editing this list. The flag
+      // subset stays excluded (see globIgnores below) to keep it on-demand.
+      includeAssets: [
+        'favicon.png',
+        'apple-touch-icon.png',
+        'icon-192.png',
+        'icon-512.png',
+        'icon-maskable-512.png',
+        '**/*.{png,jpg,jpeg,gif,svg,webp,ico}',
+        '**/*.{woff2,woff,ttf}',
+        '**/*.{mp3,mp4,wav,ogg,webm}',
+        // Negation: keep the flag subset out of precache (mirrors workbox
+        // globIgnores) so it stays on-demand — includeAssets is NOT filtered by
+        // globIgnores, so without this it would be force-precached.
+        '!**/fonts/flags.woff2',
+      ],
       manifest: {
+        // Stable `id` so the browser treats reinstalls as the same app (and
+        // doesn't create a duplicate install). Without it some browsers key the
+        // app by start_url, which is fragile.
+        id: '/',
         name: 'Ridge Remote',
         short_name: 'Ridge',
         description: 'Ridge 远程终端控制台',
@@ -81,8 +101,19 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Precache the built shell + assets, including the terminal wasm.
-        globPatterns: ['**/*.{js,css,html,wasm,svg,png,ico,webp,woff,woff2,webmanifest}'],
+        // Precache the built shell + EVERY static asset type the remote can
+        // emit so the SW truly takes over offline: app shell (js/css/html),
+        // terminal wasm, fonts (woff2/woff/ttf), all image formats
+        // (png/jpg/jpeg/gif/svg/webp/ico), data (json/txt/webmanifest) and
+        // media (mp3/mp4/wav/ogg/webm). Missing a type here = that file silently
+        // bypasses the cache and breaks offline, which is the bug being fixed.
+        globPatterns: [
+          '**/*.{js,css,html,wasm}',
+          '**/*.{woff2,woff,ttf}',
+          '**/*.{png,jpg,jpeg,gif,svg,webp,ico}',
+          '**/*.{mp3,mp4,wav,ogg,webm}',
+          '**/*.{json,txt,webmanifest}',
+        ],
         // Keep the flag-only emoji subset OUT of the precache so it stays truly
         // on-demand: the unicode-range @font-face (injected only on flag-less
         // OSes — see flagEmojiSupport.ts) makes the browser fetch flags.woff2
@@ -90,8 +121,10 @@ export default defineConfig({
         // flags natively and never download it; first paint stays font-request
         // free (design §8).
         globIgnores: ['**/fonts/flags.woff2'],
-        // The term-wasm bundle is large; raise the precache size ceiling.
-        maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
+        // The term-wasm bundle is large and bundled media (mp4/webm/ogg) can be
+        // larger still; raise the precache size ceiling so big assets are not
+        // silently skipped (the default 2 MiB would drop wasm + any video).
+        maximumFileSizeToCacheInBytes: 32 * 1024 * 1024,
         cleanupOutdatedCaches: true,
         // Inline the Workbox runtime into sw.js so there is no extra hashed
         // workbox-*.js root file for the server to special-case.

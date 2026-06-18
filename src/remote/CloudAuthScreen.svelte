@@ -74,7 +74,13 @@
             error = error || tr('main.remoteGateErrCloud');
           }
         },
-        onError: (msg) => { if (!cloudConn) { phase = 'error'; error = msg; } },
+        onError: (msg, code) => {
+          // Post-gate: 把服务端「已认证但无权」的稳定 code 转发给 live transport，让它
+          // 分级（用户问题 / 设备停用 / 通道）并驱动 MainApp 的 banner + 退回登录逻辑。
+          if (cloudConn) { cloudConn.notifyError(msg, code); return; }
+          phase = 'error';
+          error = msg;
+        },
       },
       location.hostname,
     );

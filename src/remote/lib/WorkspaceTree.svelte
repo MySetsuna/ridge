@@ -348,7 +348,10 @@
                     onclick={() => selectPaneInWorkspace(wsp.id, pane.id)}
                   >
                     <span class="pane-dot">▸</span>
-                    <span class="pane-name">{pane.title || $t('mobile.terminalDefault')}</span>
+                    <span class="pane-text">
+                      <span class="pane-name">{pane.title || $t('mobile.terminalDefault')}</span>
+                      {#if pane.cwd}<span class="pane-cwd">{pane.cwd}</span>{/if}
+                    </span>
                     {#if isActiveWs && wsPanes.length > 1}
                       <span
                         class="row-close"
@@ -438,11 +441,15 @@
   .ws-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 
   .pane-group{display:flex;flex-direction:column;gap:1px;margin:1px 0 4px 0;padding-left:18px;border-left:1px solid var(--rg-border-bright);margin-left:14px}
-  .pane-row{display:flex;align-items:center;gap:6px;width:100%;padding:7px 8px;border:none;border-radius:6px;background:none;color:var(--rg-fg-muted);font-size:12px;cursor:pointer;text-align:left;transition:background .12s,color .12s}
+  .pane-row{display:flex;align-items:flex-start;gap:6px;width:100%;padding:7px 8px;border:none;border-radius:6px;background:none;color:var(--rg-fg-muted);font-size:12px;cursor:pointer;text-align:left;transition:background .12s,color .12s}
   .pane-row:active{background:var(--rg-surface-2)}
   .pane-row.active{color:var(--rg-fg);background:color-mix(in srgb,var(--rg-accent) 10%,transparent)}
-  .pane-dot{color:var(--rg-accent);font-size:10px;flex-shrink:0}
-  .pane-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pane-dot{color:var(--rg-accent);font-size:10px;flex-shrink:0;line-height:18px}
+  /* §pane-cwd: 标题 + cwd 垂直堆叠。title 主字，cwd 标题下方小字(灰、可截断)，
+     缺失则整行不渲染(见模板 {#if pane.cwd})。 */
+  .pane-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+  .pane-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pane-cwd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--rg-fg-muted);opacity:.7}
   .pane-empty{padding:8px;font-size:11px;color:var(--rg-fg-muted)}
   .pane-new{display:flex;align-items:center;gap:6px;width:100%;padding:7px 8px;border:1px dashed var(--rg-border-bright);border-radius:6px;background:none;color:var(--rg-fg-muted);font-size:12px;cursor:pointer;margin-top:2px}
   .pane-new:active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}

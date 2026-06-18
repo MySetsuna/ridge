@@ -29,17 +29,19 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { PaneNode } from '$lib/types';
 import type { CloudControllerHandle } from '$lib/remote/cloud/cloudControllerBoot';
-import type {
-  RemoteLink,
-  ConnectionState,
-  PaneInfo,
-  WorkspaceInfo,
-  WsMessage,
-  RawByteListener,
-  MetaListener,
-  PtyResizeListener,
-  ThemeListener,
-  ThemeSnapshot,
+import {
+  classifyFailure,
+  type RemoteLink,
+  type ConnectionState,
+  type ConnectionFailure,
+  type PaneInfo,
+  type WorkspaceInfo,
+  type WsMessage,
+  type RawByteListener,
+  type MetaListener,
+  type PtyResizeListener,
+  type ThemeListener,
+  type ThemeSnapshot,
 } from './wsRemote';
 
 /** Backend `list_workspaces` row (subset we use). */
@@ -73,6 +75,9 @@ export class CloudRemoteConnection implements RemoteLink {
   private readonly handle: CloudControllerHandle;
 
   private _state: ConnectionState = 'connecting';
+  // 最近一次失败分级（任务 A 问题1）。云端服务端「已认证但无权」会经信令 error 帧把
+  // 稳定 code 透传到 provider onError → notifyError；据此区分用户问题/设备停用/通道异常。
+  private _failure: ConnectionFailure | null = null;
   private _activeWorkspaceId = '';
   private _refreshSeq = 0;
 
@@ -156,11 +161,29 @@ export class CloudRemoteConnection implements RemoteLink {
       : providerState === 'disconnected' ? 'disconnected'
       : 'connecting';
     const wasDown = this._state !== 'connected';
+    // 进入 'error' 但未带分级（provider 仅报状态、没有先经 notifyError 给出 code）→
+    // 视为通道异常（网络/信令/WebRTC），UI 显示「通道异常」并允许重试，而非无限 pending。
+    if (mapped === 'error' && !this._failure) {
+      this._failure = { category: 'channel' };
+    }
     this.setState(mapped);
     if (mapped === 'connected' && wasDown && this._everConnected) {
       void this._handleReconnect();
     }
     if (mapped === 'connected') this._everConnected = true;
+  }
+
+  /**
+   * 服务端「已认证但无权」错误（任务 A 问题1）：provider 经信令 `{t:"error",code}` →
+   * onError(message, code) 把稳定 code 透传到这里。按 code 分级（用户问题 / 设备停用 /
+   * 通道）并进入 'error' 终态，使 UI 能精确处置（退回登录 / 去控制台 / 重试），不再
+   * 无差别转圈。CloudAuthScreen 在 gate 通过后把 provider onError 转发到此方法。
+   */
+  notifyError(message: string, code?: string): void {
+    const failure = classifyFailure(code);
+    if (message) failure.message = message;
+    this._failure = failure;
+    this.setState('error');
   }
 
   private async _handleReconnect(): Promise<void> {
@@ -176,6 +199,9 @@ export class CloudRemoteConnection implements RemoteLink {
         ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
       }
       if (!ok) {
+        // 重连后 re-auth 失败：多为长时间断网导致缓存 TOTP 码过期，刷新拿新码即可恢复
+        //（非账户/权限问题）→ 归通道类，UI 提示「通道异常」并允许重试/刷新。
+        this._failure = { category: 'channel' };
         this.setState('error');
         return;
       }
@@ -204,7 +230,12 @@ export class CloudRemoteConnection implements RemoteLink {
   state(): ConnectionState {
     return this._state;
   }
+  lastFailure(): ConnectionFailure | null {
+    return this._failure;
+  }
   private setState(s: ConnectionState): void {
+    // 重新连上 / 开始新一轮连接 → 清掉旧失败分级，避免 UI 残留过期错误。
+    if (s === 'connected' || s === 'connecting') this._failure = null;
     this._state = s;
     this.stateListeners.forEach((fn) => fn(s));
   }
@@ -477,6 +508,7 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   disconnect(): void {
+    this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
     for (const [, unlisten] of this.ptyUnlisten) {
       try { unlisten(); } catch { /* already gone */ }
