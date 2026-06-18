@@ -148,7 +148,7 @@ export async function bootstrapFromCookie(): Promise<boolean> {
 // ─── 401 静默刷新（设计 2026-06-12）：短 access 过期 → 用 refresh cookie 换新 ──────────
 // 单飞去重：多个并发 401 共享同一个 in-flight 刷新，避免刷新风暴。
 let refreshing: Promise<boolean> | null = null;
-function refreshAccess(): Promise<boolean> {
+export function refreshAccess(): Promise<boolean> {
   if (!refreshing) {
     refreshing = bootstrapFromCookie().finally(() => {
       refreshing = null;
