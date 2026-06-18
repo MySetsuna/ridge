@@ -34,6 +34,109 @@ fn encode_powershell_utf16le_base64(script: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+// ── zsh shell integration (ZDOTDIR technique) ──────────────────────────────
+//
+// zsh has no `PROMPT_COMMAND` analogue (unlike bash), so the only reliable way
+// to make an interactive zsh emit OSC 7 on every `cd` is to take over its
+// startup files. We point `ZDOTDIR` at a Ridge-managed directory whose startup
+// shims source the user's real config (from `USER_ZDOTDIR`) and then install a
+// `precmd` hook. This is a trimmed port of VS Code's MIT-licensed zsh shell
+// integration (only the cwd/OSC 7 piece is kept; command-status tracking is
+// dropped). The four shims must all live in the same dir so that — with
+// `ZDOTDIR` held at the Ridge dir through startup — every file zsh reads
+// (`.zshenv` always, `.zprofile`/`.zlogin` for login shells, `.zshrc` for
+// interactive shells) is ours; each shim temporarily swaps `ZDOTDIR` to the
+// user's dir to source their real equivalent, with a guard so a user file that
+// re-points `ZDOTDIR` itself is respected. The trailing handoff restores
+// `ZDOTDIR` to the user's dir so child zsh processes use the unmodified config.
+#[cfg(unix)]
+const RIDGE_ZSH_ZSHENV: &str = "\
+# Ridge terminal shell integration (auto-generated; do not edit).
+# Ported from VS Code's MIT-licensed zsh integration — cwd/OSC 7 only.
+if [[ -f $USER_ZDOTDIR/.zshenv ]]; then
+\tRIDGE_ZDOTDIR=$ZDOTDIR
+\tZDOTDIR=$USER_ZDOTDIR
+\t. $USER_ZDOTDIR/.zshenv
+\tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
+\t\tZDOTDIR=$RIDGE_ZDOTDIR
+\tfi
+fi
+";
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZPROFILE: &str = "\
+# Ridge terminal shell integration (auto-generated; do not edit).
+if [[ -f $USER_ZDOTDIR/.zprofile ]]; then
+\tRIDGE_ZDOTDIR=$ZDOTDIR
+\tZDOTDIR=$USER_ZDOTDIR
+\t. $USER_ZDOTDIR/.zprofile
+\tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
+\t\tZDOTDIR=$RIDGE_ZDOTDIR
+\tfi
+fi
+";
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZSHRC: &str = "\
+# Ridge terminal shell integration (auto-generated; do not edit).
+# Ported from VS Code's MIT-licensed zsh integration — cwd/OSC 7 only.
+if [[ -f $USER_ZDOTDIR/.zshrc ]]; then
+\tRIDGE_ZDOTDIR=$ZDOTDIR
+\tZDOTDIR=$USER_ZDOTDIR
+\t. $USER_ZDOTDIR/.zshrc
+\tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
+\t\tZDOTDIR=$RIDGE_ZDOTDIR
+\tfi
+fi
+
+# Emit OSC 7 (cwd) before each prompt so the backend tracks interactive `cd`.
+__ridge_emit_cwd() {
+\tprintf '\\033]7;file://%s\\a' \"$PWD\"
+}
+autoload -Uz add-zsh-hook 2>/dev/null
+if (( ${+functions[add-zsh-hook]} )); then
+\tadd-zsh-hook precmd __ridge_emit_cwd
+elif [[ -z ${precmd_functions[(r)__ridge_emit_cwd]} ]]; then
+\tprecmd_functions+=(__ridge_emit_cwd)
+fi
+
+# Non-login shells read no further startup files; hand ZDOTDIR back now so
+# child zsh processes use the user's unmodified config. Login shells defer
+# this to the .zlogin shim (read after .zshrc).
+if [[ $options[login] == off ]]; then
+\tZDOTDIR=$USER_ZDOTDIR
+fi
+";
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZLOGIN: &str = "\
+# Ridge terminal shell integration (auto-generated; do not edit).
+if [[ -f $USER_ZDOTDIR/.zlogin ]]; then
+\tRIDGE_ZDOTDIR=$ZDOTDIR
+\tZDOTDIR=$USER_ZDOTDIR
+\t. $USER_ZDOTDIR/.zlogin
+\tif [[ $ZDOTDIR == $USER_ZDOTDIR ]]; then
+\t\tZDOTDIR=$RIDGE_ZDOTDIR
+\tfi
+fi
+# Final handoff to the user's dir for child shells (login shells end here).
+ZDOTDIR=$USER_ZDOTDIR
+";
+
+/// Materialize the Ridge zsh-integration shim directory and return its path.
+/// The shim contents are static, so a stable per-user dir under the system
+/// temp is reused across spawns; rewriting it on every spawn is idempotent.
+#[cfg(unix)]
+fn prepare_zsh_zdotdir() -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join("ridge-shell-integration").join("zsh");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(".zshenv"), RIDGE_ZSH_ZSHENV)?;
+    std::fs::write(dir.join(".zprofile"), RIDGE_ZSH_ZPROFILE)?;
+    std::fs::write(dir.join(".zshrc"), RIDGE_ZSH_ZSHRC)?;
+    std::fs::write(dir.join(".zlogin"), RIDGE_ZSH_ZLOGIN)?;
+    Ok(dir)
+}
+
 #[tauri::command]
 pub async fn create_pane(
     state: State<'_, AppState>,
@@ -434,8 +537,9 @@ pub fn ensure_pane_pty_workspace(
     //   脚本之前被 PS 执行完，所以用户自定义 prompt 不会丢失。
     // - Bash: 设置 `PROMPT_COMMAND` 环境变量，bash 启动时自动读取；每次渲染 prompt 前执行。
     //   如果用户已有 PROMPT_COMMAND，我们叠加在前（; 分号分隔），不会覆盖。
-    // - Zsh: 设置 `Ridge_SHELL_INTEGRATION=1` 作为标记（TODO: 完整 precmd hook 需 stdin
-    //   注入或 ZDOTDIR 技术，下一轮补），此处先让 bash/powershell 的主流场景工作。
+    // - Zsh: 用 ZDOTDIR 技术（VS Code 同款）接管启动文件——把 ZDOTDIR 指向 Ridge 托管目录，
+    //   其 shim 会先 source 用户真实配置（USER_ZDOTDIR），再装一个 precmd 钩子每次渲染
+    //   prompt 前 emit OSC 7。zsh 没有 PROMPT_COMMAND，这是唯一可靠的 cwd 实时跟踪方式。
     // - Cmd.exe: 无可靠 hook 机制，保持原行为（polling + 用户执行外部命令时才更新 PEB）。
     if !has_explicit_launch {
         match shell_kind {
@@ -470,9 +574,32 @@ pub fn ensure_pane_pty_workspace(
                 };
                 cmd.env("PROMPT_COMMAND", pc);
             }
-            ShellKind::Zsh | ShellKind::Cmd | ShellKind::Other => {
-                // zsh/cmd/其它：留给 sysinfo PEB 轮询兜底；zsh 用户大多已有 oh-my-zsh/starship
-                // 等会在 prompt 中触发 cwd 更新。完整 zsh 集成下一轮处理。
+            ShellKind::Zsh => {
+                // zsh shell integration via the ZDOTDIR technique (ported from
+                // VS Code's MIT-licensed integration). Point ZDOTDIR at a
+                // Ridge-managed dir whose startup shims source the user's real
+                // config (from USER_ZDOTDIR) and install a precmd OSC 7 hook so
+                // the backend tracks interactive `cd` in real time. On failure
+                // we fall back to sysinfo PEB polling (the prior behavior).
+                #[cfg(unix)]
+                {
+                    match prepare_zsh_zdotdir() {
+                        Ok(zdotdir) => {
+                            let user_zdotdir = std::env::var_os("ZDOTDIR")
+                                .filter(|v| !v.is_empty())
+                                .or_else(|| std::env::var_os("HOME"))
+                                .unwrap_or_default();
+                            cmd.env("USER_ZDOTDIR", &user_zdotdir);
+                            cmd.env("ZDOTDIR", &zdotdir);
+                        }
+                        Err(e) => {
+                            eprintln!("[ridge-term] zsh shell integration disabled: {e}");
+                        }
+                    }
+                }
+            }
+            ShellKind::Cmd | ShellKind::Other => {
+                // cmd/其它：留给 sysinfo PEB 轮询兜底。
             }
         }
     }
