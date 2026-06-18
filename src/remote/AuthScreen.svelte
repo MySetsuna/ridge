@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { RemoteConnection, type ConnectionState } from './lib/wsRemote';
+  import { getRemoteDeviceId } from './lib/deviceId';
   import CertTrustGuide from './CertTrustGuide.svelte';
 
   const TOKEN_KEY = 'ridge_remote_token';
@@ -35,7 +36,8 @@
     fetch('/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `code=${encodeURIComponent(numeric)}`,
+      // §L-3: bind the issued token to this device (in addition to its IP).
+      body: `code=${encodeURIComponent(numeric)}&device=${encodeURIComponent(getRemoteDeviceId())}`,
     })
       .then(r => r.json())
       .then(d => {

@@ -1,3 +1,5 @@
+import { getRemoteDeviceId } from './deviceId';
+
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
@@ -334,7 +336,11 @@ export class RemoteConnection implements RemoteLink {
     // LAN, so this is the common path in production.
     const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
     const param = this._authType === 'token' ? 'token' : 'code';
-    const url = `${wsScheme}://${this._host}:${this._port}/ws?${param}=${encodeURIComponent(this._token)}`;
+    // §L-3: pin the session to this device (in addition to its source IP) so a
+    // token replayed from another device behind the same NAT egress can't
+    // connect. MUST match the `device` sent to /verify at issuance.
+    const device = encodeURIComponent(getRemoteDeviceId());
+    const url = `${wsScheme}://${this._host}:${this._port}/ws?${param}=${encodeURIComponent(this._token)}&device=${device}`;
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
