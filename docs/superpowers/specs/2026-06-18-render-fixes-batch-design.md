@@ -2,6 +2,12 @@
 
 四个独立的终端渲染缺陷,根因均已在代码中核验。每个缺陷单独 commit。
 
+## 最终状态(2026-06-18)
+- **③ TUI 重进残留** —— ✅ 已修并入 develop(`9ec8ae4`)。`cargo test -p ridge-term` 364 绿。
+- **② 反复 resize 错位** —— ✅ 已修并入 develop(`8d2124e`)。回流重写为幂等/纳入 scrollback/宽字符成对;inline-TUI 测试全保绿;多行 PSReadLine prompt 边角延后(见 ② 节)。
+- **④ IME 顶偏 + 定位不准** —— ✅ 已修并入 develop(`8b07992`)。顶偏根治 + scissor 同源精确对齐;`imeAnchor` 9/9 绿。**定位精度待运行时核验**(100/125/150% 缩放 + 多分屏)。
+- **① 首行选不中 + 选区闪烁** —— ⏳ **未修(刻意)**。唯一候选修复需动 WebGPU「恒全帧」正确性机制、无运行时无法验证且可能回退,经用户确认先交接 + 留 TODO。交接文档 [2026-06-18-selection-flash-firstline-handoff.md](2026-06-18-selection-flash-firstline-handoff.md);追踪 TASKS.md §1.36。
+
 架构前提:Rust 原生终端引擎 `packages/ridge-term`(grid/parser/renderer)+ 后端 `src-tauri/src/engine/parser.rs`(`PaneParser` 跑真 vte 并 diff 出 `GridDelta`)+ 前端镜像 `terminal.rs::apply_delta` 重放 + Svelte 面板 `RidgePane.svelte`(桌面)/`TerminalCanvas.svelte`(remote)。桌面默认 WebGPU host 单画布,`requires_full_frame()` 恒 true。
 
 ---
