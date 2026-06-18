@@ -48,6 +48,7 @@ pub enum LayoutNode {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn engine_node_to_layout(
     node: &EnginePaneNode,
     split_counter: &mut u64,
@@ -55,6 +56,8 @@ fn engine_node_to_layout(
     panes: &std::collections::HashMap<Uuid, crate::engine::pane_tree::Pane>,
     pane_states: &HashMap<Uuid, crate::state::PaneState>,
     agent_by_pane: &HashMap<Uuid, String>,
+    terminals: &HashMap<Uuid, crate::engine::pty::PtyHandle>,
+    pending_spawns: &HashMap<Uuid, crate::state::PendingSpawn>,
 ) -> LayoutNode {
     match node {
         EnginePaneNode::Leaf(id) => {
@@ -66,11 +69,27 @@ fn engine_node_to_layout(
                 }
                 .to_string()
             });
+            let pane = panes.get(id);
+            // 与 LAN 路径 `build_remote_pane_list` 对齐的 title 回退链：
+            // 实时 parser title（已激活终端）→ teammate 名 → shell kind →
+            // 未激活 leaf 的 "pending..." → 兜底 "terminal"。公网路径此前只读
+            // teammate titles，故未激活/无名 pane 都掉到默认名。
+            let title = terminals
+                .get(id)
+                .and_then(|h| h.parser.lock().title())
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| titles.get(id).cloned())
+                .or_else(|| pane.and_then(|p| p.shell_kind.clone()))
+                .or_else(|| {
+                    pending_spawns
+                        .contains_key(id)
+                        .then(|| "pending...".to_string())
+                })
+                .or_else(|| Some("terminal".to_string()));
             LayoutNode::Leaf {
                 id: id.to_string(),
-                title: titles.get(id).cloned(),
-                cwd: panes
-                    .get(id)
+                title,
+                cwd: pane
                     .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
                 agent_state,
                 agent_id: agent_by_pane.get(id).cloned(),
@@ -99,6 +118,8 @@ fn engine_node_to_layout(
                             panes,
                             pane_states,
                             agent_by_pane,
+                            terminals,
+                            pending_spawns,
                         )
                     })
                     .collect(),
@@ -148,6 +169,8 @@ fn get_pane_layout_for_inner(
         &ws.pane_tree.panes,
         &ws.teammate_pane_states,
         &agent_by_pane,
+        &ws.terminals,
+        &ws.pending_spawns,
     ))
 }
 

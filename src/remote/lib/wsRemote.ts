@@ -2,6 +2,53 @@ import { getRemoteDeviceId } from './deviceId';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+// ── 连接失败分级（任务 A）───────────────────────────────────────────────────
+// 服务端 WS 在「已认证但无权」时会先升级、下发一帧 `{t:"error",code,message}`，再以
+// close code 4403 关闭；匿名/伪造则是不透明 403（连升级都不给）。客户端据此把失败分成
+// 两类，让 UI 能区分处置：
+//   - 'user'    用户问题：账户/设备归属/权限不匹配（USERNAME_MISMATCH /
+//               DEVICE_NOT_OWNED / DEVICE_TOKEN_MISMATCH / NOT_PREMIUM）。无法靠重试
+//               解决，应退回登录/用户主页换凭据，绝不无限 pending。
+//   - 'parked'  设备已停用（DEVICE_PARKED）：去控制台启用或升级，单列以便专门文案。
+//   - 'channel' 通道问题：信令/WebRTC/网络/并发超限（TOO_MANY_CONNECTIONS），可重试。
+export type ConnectionFailureCategory = 'user' | 'parked' | 'channel';
+
+export interface ConnectionFailure {
+  category: ConnectionFailureCategory;
+  /** 服务端稳定错误码（契约 §2），通道类网络故障无码时为 undefined。 */
+  code?: string;
+  /** 人类可读信息（来自服务端 error 帧或本地兜底）。 */
+  message?: string;
+}
+
+/** WS close code：服务端「已认证但无权」专用关闭码（升级后下发 error 帧再以此关闭）。 */
+export const WS_CLOSE_AUTHENTICATED_FORBIDDEN = 4403;
+
+/** 归类为「用户问题」的稳定错误码（退回登录，不重试）。 */
+const USER_FAILURE_CODES = new Set([
+  'USERNAME_MISMATCH',
+  'DEVICE_NOT_OWNED',
+  'DEVICE_TOKEN_MISMATCH',
+  'NOT_PREMIUM',
+]);
+
+/**
+ * 把一帧 error 的 code（可选）+ close code 映射成失败分级。
+ *   - 命中用户类 code → 'user'
+ *   - DEVICE_PARKED → 'parked'
+ *   - 其余（含无 code 的网络/信令断、TOO_MANY_CONNECTIONS）→ 'channel'
+ * 注：close code 4403 仅表示「已认证但无权」，真正的细分以同时下发的 error 帧 code 为准；
+ * 若只拿到 4403 而没拿到 code（理论上不应发生），按用户类处理（不无限重试）。
+ */
+export function classifyFailure(code?: string, closeCode?: number): ConnectionFailure {
+  if (code === 'DEVICE_PARKED') return { category: 'parked', code };
+  if (code && USER_FAILURE_CODES.has(code)) return { category: 'user', code };
+  if (!code && closeCode === WS_CLOSE_AUTHENTICATED_FORBIDDEN) {
+    return { category: 'user', code: undefined };
+  }
+  return { category: 'channel', code };
+}
+
 function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
   const hex: string[] = [];
   for (let i = offset; i < offset + 16; i++) {
@@ -156,6 +203,11 @@ export interface ThemeSnapshot {
  */
 export interface RemoteLink {
   state(): ConnectionState;
+  /**
+   * 最近一次进入 'error' 的失败详情（分级 + 服务端 code）。UI 据此区分「用户问题
+   * （退回登录）」「设备停用」「通道异常（可重试）」。无失败或已恢复时返回 null。
+   */
+  lastFailure(): ConnectionFailure | null;
   onStateChange(fn: (s: ConnectionState) => void): () => void;
   onReconnect(fn: () => void): () => void;
   onMessage(fn: Listener): () => void;
@@ -198,6 +250,10 @@ export class RemoteConnection implements RemoteLink {
   private themeListeners: Set<ThemeListener> = new Set();
   private _lastTheme: { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
   private _state: ConnectionState = 'disconnected';
+  // 最近一次失败分级（任务 A 问题1）。进入 'error' 时填充，恢复/重连时清空。
+  private _failure: ConnectionFailure | null = null;
+  // 服务端升级后下发的 `{t:"error",code}` 暂存：onclose(4403) 紧随其后，用它做精确分级。
+  private _pendingServerError: { code?: string; message?: string } | null = null;
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
   private _reqCounter = 0;
@@ -236,6 +292,13 @@ export class RemoteConnection implements RemoteLink {
   } = { connectStart: null, upgradeStart: null, firstFrame: null, firstPtyBytes: null };
 
   state() { return this._state; }
+  lastFailure() { return this._failure; }
+
+  /** 进入 'error' 终态并记录失败分级（供 UI 区分用户问题 / 通道异常 / 设备停用）。 */
+  private failWith(failure: ConnectionFailure) {
+    this._failure = failure;
+    this.setState('error');
+  }
 
   onStateChange(fn: (s: ConnectionState) => void) {
     this.stateListeners.add(fn);
@@ -305,7 +368,7 @@ export class RemoteConnection implements RemoteLink {
   getPerf() { return { ...this._perf }; }
 
   connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
-    if (!auth) { this.setState('error'); return; }
+    if (!auth) { this.failWith({ category: 'channel', message: 'missing credential' }); return; }
     this._clearReconnectTimer();
     this._intentionalClose = false;
     this._reconnectAttempts = 0;
@@ -367,7 +430,7 @@ export class RemoteConnection implements RemoteLink {
       }
       this._hasConnectedOnce = true;
     };
-    ws.onclose = () => this._handleDrop();
+    ws.onclose = (ev) => this._handleClose(ev.code);
     ws.onerror = () => this._handleDrop();
     ws.onmessage = (event) => this._handleMessage(event);
   }
@@ -408,6 +471,18 @@ export class RemoteConnection implements RemoteLink {
         // so untyped replies fall straight through to `messageListeners`, where
         // `WsDataProvider` matches them by `_reqId`.
         const type = ((msg as Record<string, unknown>).type as string) ?? '';
+
+        // 服务端「已认证但无权」错误帧（契约形状 `{t:"error",code,message}`，用 `t`
+        // 字段，非业务 `type`）。服务端升级后先发它、再以 close 4403 关闭，所以这里只
+        // 暂存 code/message；随后的 _handleClose 会用它做精确分级（不重试）。
+        const rec = msg as Record<string, unknown>;
+        if (rec.t === 'error' && typeof rec.code === 'string') {
+          this._pendingServerError = {
+            code: rec.code,
+            message: typeof rec.message === 'string' ? rec.message : undefined,
+          };
+          return;
+        }
 
         // Heartbeat reply — liveness already recorded above, nothing else to do.
         if (type === 'pong') return;
@@ -471,6 +546,33 @@ export class RemoteConnection implements RemoteLink {
   }
 
   // ── Drop / reconnect ──
+
+  /**
+   * onclose 入口（任务 A 问题1）：读取 close code 做失败分级。
+   *   - 4403（已认证但无权）或先前已收到服务端 error 帧 → 进入 'error' 终态并按 code
+   *     分级（用户问题/设备停用/通道），**不重试**——再连只会被同样拒绝、白白转圈。
+   *   - 其它（正常断/网络断）→ 走原 _handleDrop 的自动重连。
+   * 注：匿名/伪造在握手阶段就被不透明 403 挡住（WS 根本不 open），不会到这里。
+   */
+  private _handleClose(code?: number) {
+    const pending = this._pendingServerError;
+    if (code === WS_CLOSE_AUTHENTICATED_FORBIDDEN || pending) {
+      this._pendingServerError = null;
+      this._stopHeartbeat();
+      if (this.ws) {
+        this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
+        this.ws = null;
+      }
+      // 鉴权/权限类失败不重试：停掉重连定时器，标记为有意关闭，避免后台监听器重试。
+      this._intentionalClose = true;
+      this._clearReconnectTimer();
+      const failure = classifyFailure(pending?.code, code);
+      if (pending?.message) failure.message = pending.message;
+      this.failWith(failure);
+      return;
+    }
+    this._handleDrop();
+  }
 
   private _handleDrop() {
     this._stopHeartbeat();
@@ -727,6 +829,8 @@ export class RemoteConnection implements RemoteLink {
   }
 
   private setState(s: ConnectionState) {
+    // 一旦重新连上或开始新一轮连接，清掉旧的失败分级（避免 UI 残留过期错误）。
+    if (s === 'connected' || s === 'connecting') this._failure = null;
     this._state = s;
     this.stateListeners.forEach(fn => fn(s));
   }
