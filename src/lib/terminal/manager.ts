@@ -4542,6 +4542,32 @@ export class TerminalManager {
 				if (hostFrameOpen) return true;
 				if (!activeHost) return false;
 				hostFrameOpen = activeHost.beginFrame(themeBg);
+				if (hostFrameOpen) {
+					// §atlas-pin: beginFrame just reset the shared
+					// `frame_written` mask. Pin every visible NOT-dirty
+					// host pane's cached atlas layers NOW — before any
+					// dirty pane's full render can evict + overwrite a
+					// layer a cached replay still samples. Order-
+					// independent: all cached panes protected before the
+					// first eviction this frame. Kills the garbled glyphs
+					// seen for a few frames right after a workspace switch
+					// (cached pane's slot stolen by the newly-visible
+					// pane's glyph admission).
+					for (const e of frameOrder) {
+						if (e.parked) continue;
+						if (dirtyByPane.get(e.paneId) !== false) continue;
+						const h = e.handle as unknown as {
+							pinCachedLayers?: () => void;
+						} | null;
+						if (h !== null && typeof h.pinCachedLayers === 'function') {
+							try {
+								h.pinCachedLayers();
+							} catch {
+								/* old wasm bundle w/o export → skip */
+							}
+						}
+					}
+				}
 				return hostFrameOpen;
 			};
 			// P2.2 (2026-05-20): use the frame's ordered list (focused
