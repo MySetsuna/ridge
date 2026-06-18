@@ -75,8 +75,10 @@ const WS_CONNECT_TIMEOUT_MS = 10_000;
 // {@link SignalMsg} 收窄；不再手写副本（漂移由 signaling/conformance+drift 测试钉死）。
 
 export interface ControllerCloudProviderConfig {
-  /** user JWT（scope=user），WS 与 ice-servers 鉴权用（§3）。 */
-  userToken: string;
+  /** user JWT（scope=user），WS 与 ice-servers 鉴权用（§3）。
+   *  可传字符串（固定值）或 getter 函数（每次连接/重连时动态取最新 access token，
+   *  用于避免长挂机后 token 过期导致 WS 重连失败）。 */
+  userToken: string | (() => string);
   /** username（host label 拼接用，契约 §1；host 与 controller 必须同账户）。 */
   username: string;
   /** Base zone，默认 BASE_DOMAIN，集中可改。 */
@@ -93,6 +95,12 @@ export interface ControllerCloudProviderConfig {
 export class ControllerCloudProvider implements RemoteConnectionProvider {
   private readonly config: Required<ControllerCloudProviderConfig>;
   private readonly cb: CloudConnectionCallbacks;
+
+  /** 每次需要 user JWT 时调用：支持固定字符串和动态 getter 两种配置形式。 */
+  private _token(): string {
+    const t = this.config.userToken;
+    return typeof t === 'function' ? t() : t;
+  }
 
   private ws: WebSocket | null = null;
   private pc: RTCPeerConnection | null = null;
@@ -180,7 +188,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     // 1. 取 ICE servers（契约 §5.2：必须调接口，不硬编码 STUN）。
     let iceServers: IceServer[];
     try {
-      const res = await getIceServers(this.config.userToken);
+      const res = await getIceServers(this._token());
       iceServers = res.iceServers ?? [];
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '获取 ICE 服务器失败', 'NETWORK');
@@ -474,7 +482,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     const label = this.roomLabel(hostDevice);
     const url =
       `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
-      `?token=${encodeURIComponent(this.config.userToken)}&role=controller`;
+      `?token=${encodeURIComponent(this._token())}&role=controller`;
 
     let ws: WebSocket;
     try {
@@ -660,7 +668,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   /** 缓存为空（极端）时取一次 ICE 再重建；失败则继续退避重连。 */
   private async refetchIceAndBuild(): Promise<void> {
     try {
-      const res = await getIceServers(this.config.userToken);
+      const res = await getIceServers(this._token());
       this.iceServers = res.iceServers ?? [];
     } catch {
       if (!this.closed) this.scheduleReconnect('获取 ICE 服务器失败');
