@@ -5,7 +5,7 @@
   import QrCode from './QrCode.svelte';
   import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
   import { settingsStore, setSetting } from '$lib/stores/settings';
-  import { refreshRemoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
+  import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
   import { t, tr } from '$lib/i18n';
   // §unify: 远程控制 = 同一份能力的两个触达通道(LAN + 官方公网)。本面板把二者
   // 合一为单一视图(去 tab):一个主开关、一份共享 TOTP、LAN/公网入口同屏、一份
@@ -16,9 +16,19 @@
   import * as cloudAuth from './cloud/auth';
   import { cloudAuth as cloudAuthStore } from './cloud/auth';
   import { ApiError, listDevices, BASE_DOMAIN, type DeviceDto } from './cloud/apiClient';
-  import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from './cloud/ridgeCloudProvider';
-  import { CloudHostBridge } from './cloud/cloudHostBridge';
-  import { makeCloudHostPaneSource } from './cloud/cloudHostPaneSource';
+  import { type CloudControllerSession } from './cloud/ridgeCloudProvider';
+  // §lifecycle: 公网 host 现为模块级单例（cloudHostStore），生命周期与本面板的
+  // 挂载/卸载解耦 —— 折叠侧栏卸载 RemotePanel 不再掐断公网连接。本面板只订阅
+  // 状态 store + 调用动作。
+  import {
+    hostState,
+    cloudSessions,
+    hostError,
+    goOnline,
+    goOffline,
+    kickController,
+    blacklistController,
+  } from './cloud/cloudHostStore';
 
   let proModalOpen = $state(false);
 
@@ -72,17 +82,11 @@
   let blacklist = $state<BlacklistDto[]>([]);
 
   // ── 公网（官方公网加速，契约 §5.3 多控制方）状态 ─────────────────────────
-  // host 多控制方管理器（一条信令 WS + 按 cid 的 N 个 PeerConnection）。
-  let host: RidgeCloudHost | null = null;
-  // 零信任 #2（概念 4-桌面）：本机 Ed25519 设备身份公钥（get_device_identity_pub 取一次缓存）。
-  // 与 sign_device_identity 配对注入 host：俱在 → 握手发 0x02 签名帧；取不到 → 回落 0x01。
-  let deviceIdentityPub: Uint8Array | null = null;
-  let hostState = $state<HostSignalState>('offline');
-  let cloudSessions = $state<CloudControllerSession[]>([]);
-  const isOnline = $derived(hostState === 'online');
-  const isConnecting = $derived(hostState === 'connecting');
+  // host 多控制方管理器现由 cloudHostStore 单例持有；本面板订阅其状态 store。
+  const isOnline = $derived($hostState === 'online');
+  const isConnecting = $derived($hostState === 'connecting');
   // 「是否有人在使用」公网：已完成 E2EE 握手、可真正操作的控制方。
-  const activeCount = $derived(cloudSessions.filter((s) => s.state === 'connected').length);
+  const activeCount = $derived($cloudSessions.filter((s) => s.state === 'connected').length);
   // 云端已注册设备（GET /devices）：本账户名下设备及在线状态。
   let devices = $state<DeviceDto[]>([]);
   let devicesTimer: ReturnType<typeof setInterval> | null = null;
@@ -119,13 +123,13 @@
       onDisconnect: () => disconnectSession(s.id),
       onBlock: () => blacklistSession(s.id),
     })),
-    ...cloudSessions.map((c): ConnRow => ({
+    ...$cloudSessions.map((c): ConnRow => ({
       source: 'cloud',
       key: `cloud-${c.cid}`,
       title: tr('cloud.controllerName', { id: c.cid }),
       subtitle: `${stateLabel[c.state]} · ${tr('cloud.connectedFor', { min: sinceMinutes(c.connectedAt) })}`,
       connected: c.state === 'connected',
-      onDisconnect: () => disconnectController(c.cid),
+      onDisconnect: () => kickController(c.cid),
       onBlock: () => blacklistController(c.cid),
     })),
   ]);
@@ -225,10 +229,6 @@
   function sinceMinutes(connectedAt: number): number {
     return Math.max(0, Math.floor((Date.now() - connectedAt) / 60000));
   }
-  // 跨 agent 命令：通知 Rust 侧云端远控活跃状态（契约 §8.1）。容错。
-  async function notifyCloudActive(active: boolean): Promise<void> {
-    try { await invoke('set_cloud_remote_active', { active }); } catch { /* 容错 */ }
-  }
   async function refreshDevices(): Promise<void> {
     const s = cloudAuth.snapshot();
     if (!s.userToken) { devices = []; return; }
@@ -294,96 +294,6 @@
       activating = false;
     }
   }
-  /** 构造 host 管理器：每个 controller 一个独立 CloudHostBridge（pane 输出各自订阅）。 */
-  function buildHost(): RidgeCloudHost | null {
-    const s = cloudAuth.snapshot();
-    if (!s.deviceToken || !s.deviceName || !s.user?.username) return null;
-    return new RidgeCloudHost(
-      {
-        deviceToken: s.deviceToken,
-        username: s.user.username,
-        // 零信任 #2（概念 4-桌面）：host 握手发 0x02 设备签名帧。signContext = 对 id-bind
-        // context 做 Ed25519 签名（私钥在 Rust/DPAPI，relay 无法伪造）；identityPub = 本机
-        // 设备身份公钥（启动取一次缓存）。两者配对：俱在 → 0x02；缺一 → 回落 0x01（向后兼容）。
-        signContext: (context: Uint8Array) =>
-          invoke<number[]>('sign_device_identity', { context: Array.from(context) }).then((a) =>
-            Uint8Array.from(a),
-          ),
-        identityPub: deviceIdentityPub ?? undefined,
-      },
-      {
-        onHostState: (st) => {
-          hostState = st;
-          if (st === 'error') connectError = tr('cloud.hostError');
-          if (st === 'online' || st === 'connecting') connectError = '';
-          // Surface "public remote is serving" to the whole app so per-pane
-          // refresh buttons (RidgePane) appear while a cloud viewer can share
-          // the PTY — the LAN-only `remoteRunning` store stays false here.
-          cloudHostOnline.set(st === 'online');
-        },
-        onSessions: (list) => { cloudSessions = list; },
-        onError: (msg) => { connectError = msg; },
-        // host=Tauri 桌面 app：注入真实 invoke + pane 源 + 本机 TOTP 校验（契约 §0/§4/§5.1）。
-        createBridge: (_cid, send, bindTranscript) =>
-          new CloudHostBridge({
-            invoke: (method, params) => invoke(method, params),
-            sendFrame: send,
-            // B2（D-GM-11）：用 subscribe_pane_raw 专用 raw fan-out（RemotePtyEvent::
-            // RawBytes → Tauri event pane-raw-{pane}）。**必须**走此路而非订阅
-            // pty-output：原生桌面 pane 为 delta-mode，lib.rs 对其 `continue` 跳过了
-            // pty-output 发射（只发 pty-delta），故旧 cloudPaneSource 对原生 pane 收不到
-            // 字节。raw fan-out 在 delta 分支之前，delta-mode 也照样推。
-            paneOutputSource: makeCloudHostPaneSource({ invoke, listen }),
-            // 明文 totp-verify（旧 controller / host 回落 0x01 时）。
-            totpVerifier: (code) => invoke<boolean>('verify_remote_totp', { code }),
-            // 零信任 #1（概念 5）：host 发 0x02 → bindTranscript 非空时启用 totp-bind
-            // 信道绑定校验（HMAC tag，明文码不上线）。transcript 闭包注入 Rust 命令。
-            totpBindVerifier: bindTranscript
-              ? (tag) =>
-                  invoke<boolean>('verify_remote_totp_bind', {
-                    transcript: Array.from(bindTranscript),
-                    tag: Array.from(tag),
-                  })
-              : undefined,
-            // §7.4 trusted-controller grant：注入信道绑定 transcript 供 Ed25519 proof 验证。
-            bindTranscript,
-          }),
-      },
-    );
-  }
-  async function goOnline(): Promise<void> {
-    connectError = '';
-    const s = cloudAuth.snapshot();
-    if (!s.deviceToken || !s.deviceName || !s.user?.username) {
-      connectError = tr('cloud.errDeviceNotActivated');
-      return;
-    }
-    // 零信任 #2（概念 4-桌面）：取一次本机设备身份公钥缓存，供 host 握手发 0x02。
-    // 取不到（旧设备/无密钥）→ 留 null，host 自动回落 0x01（不阻断上线）。
-    if (!deviceIdentityPub) {
-      try {
-        deviceIdentityPub = Uint8Array.from(await invoke<number[]>('get_device_identity_pub'));
-      } catch {
-        deviceIdentityPub = null;
-      }
-    }
-    host ??= buildHost();
-    if (!host) { connectError = tr('cloud.errDeviceNotActivated'); return; }
-    try {
-      await host.goOnline(s.deviceName);
-      await notifyCloudActive(true);
-    } catch (e) {
-      connectError = e instanceof Error ? e.message : tr('cloud.errConnectFailed');
-    }
-  }
-  async function goOffline(): Promise<void> {
-    host?.goOffline();
-    cloudHostOnline.set(false);
-    await notifyCloudActive(false);
-  }
-  function disconnectController(cid: string): void { host?.kick(cid); }
-  function blacklistController(cid: string): void { host?.blacklist(cid); }
-
   // 切到公网相关操作前的门控：未登录弹 Pro Modal。
   function requirePublicAccess(): boolean {
     if (!isLoggedIn) { proModalOpen = true; return false; }
@@ -433,7 +343,8 @@
     return () => {
       if (totpTimer) clearInterval(totpTimer);
       if (devicesTimer) clearInterval(devicesTimer);
-      host?.goOffline();
+      // §lifecycle: 故意**不**在卸载时 goOffline —— host 是模块级单例，折叠侧栏
+      // 卸载本面板不应掐断公网连接。下线只由用户显式点「停用公网」触发。
       void unlistenTotp.then((un) => un());
     };
   });
@@ -561,9 +472,9 @@
             {#if !isLoggedIn}<span class="rounded bg-[var(--rg-accent)]/20 px-1 text-[9px] text-[var(--rg-accent)]">Pro</span>{/if}
           </div>
           {#if hasDevice}
-            <span class="flex items-center gap-1.5 text-[11px] font-medium {isOnline ? 'text-green-400' : isConnecting ? 'text-amber-400' : hostState === 'error' ? 'text-red-400' : 'text-[var(--rg-fg-muted)]'}">
+            <span class="flex items-center gap-1.5 text-[11px] font-medium {isOnline ? 'text-green-400' : isConnecting ? 'text-amber-400' : $hostState === 'error' ? 'text-red-400' : 'text-[var(--rg-fg-muted)]'}">
               {#if isOnline}<Wifi class="h-3.5 w-3.5" />{:else if isConnecting}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<WifiOff class="h-3.5 w-3.5" />{/if}
-              {isOnline ? $t('cloud.hostOnline') : isConnecting ? $t('cloud.hostConnecting') : hostState === 'error' ? $t('cloud.stateError') : $t('cloud.hostOffline')}
+              {isOnline ? $t('cloud.hostOnline') : isConnecting ? $t('cloud.hostConnecting') : $hostState === 'error' ? $t('cloud.stateError') : $t('cloud.hostOffline')}
             </span>
           {/if}
         </div>
@@ -759,8 +670,8 @@
       <MinimizeButton active={remoteEnabled || isOnline} onError={(m) => (connectError = m || tr('cloud.errMinimizeFailed'))} />
     {/if}
 
-    {#if connectError}
-      <p class="text-xs text-red-400 text-center">{connectError}</p>
+    {#if connectError || $hostError}
+      <p class="text-xs text-red-400 text-center">{connectError || $hostError}</p>
     {/if}
   </div>
 </div>
