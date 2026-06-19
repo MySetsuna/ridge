@@ -53,3 +53,16 @@ pub use dispatch::dispatch;
 pub use error::{CoreError, CoreResult};
 pub use sandbox::RootScope;
 pub use totp::RemoteTotp;
+
+// ── Domain Zero: 端侧多智能体协同核心（teammate / MCP 纯逻辑层）──
+// 见 docs/superpowers/specs/2026-06-19-domain-zero-teammate-design.md。运行时
+// 接线（server 路由 / PTY 注入 / Tauri 事件）在 src-tauri 复用这些纯类型。
+pub use mcp::registry::{ToolRegistry, ToolSpec};
+pub use mcp::resource::{RidgeUri, StashStore};
+pub use teammate::model::{
+    AgentCapabilities, AgentPersonality, AgentRole, Teammate, TeammateStatus,
+};
+pub use teammate::risk::{classify_method, classify_shell_command, RiskAssessment, RiskLevel};
+pub use teammate::stream_cleaner::{CleanOutput, StreamCleaner};
+pub use teammate::tml::{TmlAction, TmlHeader, TmlMessage};
+pub use teammate::topology::{TaskEdge, TopologyError, TopologyGraph};
