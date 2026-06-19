@@ -16,6 +16,20 @@
 
 ---
 
+<p align="center">
+  <a href="https://github.com/Pooowu">
+    <img src="https://github.com/Pooowu.png" width="72" height="72" alt="@Pooowu" />
+  </a>
+</p>
+
+<p align="center">
+  <b>💛 Special Thanks · 特别鸣谢</b><br/>
+  Heartfelt thanks to <a href="https://github.com/Pooowu"><b>@Pooowu</b></a> for sponsoring Ridge.<br/>
+  <sub>衷心感谢赞助者 <a href="https://github.com/Pooowu">@Pooowu</a> 对 Ridge 的支持 🙏</sub>
+</p>
+
+---
+
 ## Architecture
 
 Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelte 5 frontend). Every pane hosts an independent PTY session; the layout engine supports unlimited recursive horizontal/vertical splits. A WebWorker-hosted terminal renderer (Rust → WASM) drives the grid, with WebGPU as the primary backend and Canvas2D as the universal fallback.
