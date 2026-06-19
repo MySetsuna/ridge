@@ -281,3 +281,26 @@ export function parseTmlMessage(
   const text = humanizeTmlAction(kind, nameOf(fromPane), nameOf(toPane), actionPayload);
   return { fromPane, toPane, kind, text };
 }
+
+// ── Circuit breaker (Domain D3) ──
+
+/** A worker that tripped the loop-breaker (from `teammate://circuit-tripped`). */
+export interface CircuitTrip {
+  /** Affected pane id (Uuid string). */
+  readonly paneId: string;
+  /** Why it tripped — the repeated-failure fingerprint surfaced by the breaker. */
+  readonly reason: string;
+}
+
+/**
+ * Parse a `teammate://circuit-tripped` event payload into a {@link CircuitTrip}.
+ * Backend payload (circuit.rs): `{ workspaceId, paneId, reason }`. Returns null
+ * without a pane id; an empty reason degrades to a generic "逻辑死锁".
+ */
+export function parseCircuitTripped(payload: unknown): CircuitTrip | null {
+  const rec = asRecord(payload);
+  if (!rec) return null;
+  const paneId = asString(rec.paneId) ?? asString(rec.pane_id);
+  if (!paneId) return null;
+  return { paneId, reason: asString(rec.reason) || '逻辑死锁' };
+}
