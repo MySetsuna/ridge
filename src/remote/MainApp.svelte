@@ -59,6 +59,9 @@
   let creatingPane = $state(false);
   let createError = $state('');
 
+  // §B-debounce: 防快速切 pane 打爆 DataChannel 的补偿定时器（见 §replay-backpressure）。
+  let _paneSubDebounce: ReturnType<typeof setTimeout> | null = null;
+
   let canvasRef: ReturnType<typeof TerminalCanvasComponent> | undefined = $state();
   let showKeyboard = $state(true);          // virtual keyboard visible in header
   // Kernel palette derived from the desktop theme; applied to the canvas once it
@@ -564,8 +567,15 @@
       if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
       // The host replays this pane's scrollback on subscribe — reconcile it
       // against the cache in onRawBytes to avoid double-painting.
+      // §B-debounce: 防快速切换 pane 连发多次未截流的 replay_pane_scrollback_raw（256 KiB）
+      // 打爆 DataChannel 缓冲区（8 MiB BUFFERED_HIGH_WATERMARK）→ 断连。
+      // 只对"最终落脚"的 pane 发 subscribePane：150ms 内若 activePaneId 已变则取消。
+      if (_paneSubDebounce !== null) clearTimeout(_paneSubDebounce);
       expectReplayPane = pid;
-      ws.subscribePane(pid);
+      _paneSubDebounce = setTimeout(() => {
+        _paneSubDebounce = null;
+        if (activePaneId === pid) ws.subscribePane(pid);
+      }, 150);
     });
   });
 

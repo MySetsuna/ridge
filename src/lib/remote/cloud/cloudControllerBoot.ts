@@ -35,7 +35,8 @@ import { ControllerCloudProvider } from './controllerCloudProvider';
 import type { CloudConnectionCallbacks, CloudConnectionState } from './connectionProvider';
 import { snapshot as authSnapshot, cloudAuth, refreshAccess } from './auth';
 import { get } from 'svelte/store';
-import { computeBindTag, bytesToBase64 } from './e2ee';
+import { computeBindTag, bytesToBase64, base64ToBytes } from './e2ee';
+import { getControllerPub, signTrust } from './controllerIdentity';
 
 /** URL query 参数名（cloud-controller 模式触发 + 目标）。 */
 export const CLOUD_HOST_PARAM = 'cloudHost'; // 目标 host 的 device_name
@@ -64,12 +65,20 @@ export interface CloudControllerHandle {
    * 连上（'connected'）后、标记 ready 前由 gate 调用。
    */
   verifyTotp(code: string, timeoutMs?: number): Promise<boolean>;
+  /**
+   * §7.4 受信 controller 免密直通：发 trust-hello → 等 challenge → 发 proof（Ed25519）→
+   * 等 trust-result。host 若认可（已记录该 pub）则 resolve(true)，跳过 TOTP UI；
+   * 未认可则 resolve(false)，继续走 TOTP 流程；超时则 resolve(false)。
+   */
+  tryTrustGrant(timeoutMs?: number): Promise<boolean>;
   /** 断开并释放（幂等）：close 适配器（→ provider.disconnect）。 */
   disconnect(): void;
 }
 
 /** §4 controller→host TOTP 验证默认超时（ms）。蜂窝网络加 TURN relay 延迟高，从 10s 提至 20s。 */
 const TOTP_VERIFY_TIMEOUT_MS = 20_000;
+/** §7.4 受信握手默认超时（ms）。不参与 TOTP 失败计数，超时退化为正常 TOTP 流程。 */
+const TRUST_GRANT_TIMEOUT_MS = 10_000;
 
 /** 进程内单例句柄：保证幂等（重复 boot 不重复 attach / 不开多条 WebRTC）。 */
 let active: CloudControllerHandle | null = null;
@@ -78,6 +87,37 @@ let active: CloudControllerHandle | null = null;
 const TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 /** 定时刷新 timer，disconnect 时清除。 */
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+// ─── 回前台探活（Task A：修复后台休眠 + token 过期导致重连 403）────────────────────
+// 浏览器将页面置为后台后，JS setInterval 会被节流/暂停（Chromium 最大 1 分钟 1 次，
+// Safari 更激进），导致 TOKEN_REFRESH_INTERVAL_MS 定时刷新实际上不再触发。
+// 当页面再次进入前台时，cloudAuth.userToken 可能已过 15 分钟过期窗口；此时 WS 重连
+// 会以陈旧 token 请求升级，relay 返回 403，触发无限退避。
+// 解法：监听 visibilitychange/online/focus/pageshow 四个前台恢复事件，
+// 先 await refreshAccess()（刷新 token，单飞防并发），再 wakeUp()（跳退避立即重连）。
+
+/** 当前注册的前台恢复监听函数（null = 未注册）。 */
+let foregroundHandler: (() => void) | null = null;
+
+/** 注册前台恢复监听（幂等，SSR 安全）。 */
+function attachForegroundListeners(handler: () => void): void {
+  if (foregroundHandler || typeof document === 'undefined') return;
+  foregroundHandler = handler;
+  document.addEventListener('visibilitychange', handler);
+  window.addEventListener('online', handler);
+  window.addEventListener('pageshow', handler);
+  window.addEventListener('focus', handler);
+}
+
+/** 注销前台恢复监听（disconnect 时调用，防内存泄漏）。 */
+function detachForegroundListeners(): void {
+  if (!foregroundHandler || typeof document === 'undefined') return;
+  document.removeEventListener('visibilitychange', foregroundHandler);
+  window.removeEventListener('online', foregroundHandler);
+  window.removeEventListener('pageshow', foregroundHandler);
+  window.removeEventListener('focus', foregroundHandler);
+  foregroundHandler = null;
+}
 
 /**
  * 以 cloud-controller 形态接线并发起连接。返回句柄（含 adapter）。
@@ -107,6 +147,8 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   }
 
   // 组合 UI 回调 + 适配器的 demux/state 回调（适配器在工厂内自接 onState/onFrame）。
+  // provider 引用在工厂回调内赋值，供后续 attachForegroundListeners 使用。
+  let provider!: ControllerCloudProvider;
   const adapter = createCloudWebrtcTransportWith(params.hostDevice, (adapterCallbacks) => {
     const callbacks: CloudConnectionCallbacks = {
       onState: (s) => {
@@ -118,11 +160,12 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
     };
     // 传 getter 而非固定字符串：每次 WS/WebRTC (重)连时动态读 cloudAuth store，
     // 保证使用的是最新 access token，防止 15 分钟过期后重连失败。
-    return new ControllerCloudProvider({
+    provider = new ControllerCloudProvider({
       userToken: () => get(cloudAuth).userToken ?? userToken,
       username,
       baseDomain: undefined,
     }, callbacks);
+    return provider;
   });
 
   // bridge 内部建 L2 RpcClient + D9 $/hello + use-global-workspace（与 LAN boot 一致）。
@@ -135,8 +178,21 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
 
   // 定时刷新 access token：每 10 分钟主动刷新，保证 cloudAuth.userToken 始终在过期前更新，
   // 使上方 getter `() => get(cloudAuth).userToken` 在 WS 重连时总能拿到有效 token。
+  // 注意：页面在后台时浏览器会暂停/节流 setInterval，故仅靠此 timer 不足以覆盖后台休眠
+  // 超过 15 分钟的场景——回前台补偿逻辑见下方 attachForegroundListeners。
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => { void refreshAccess(); }, TOKEN_REFRESH_INTERVAL_MS);
+
+  // 回前台探活：token 刷新后立即唤醒 provider 重连（跳过退避等待）。
+  // visibilitychange + online + pageshow + focus 四路覆盖各浏览器/系统的恢复事件。
+  detachForegroundListeners(); // 防止重复 boot 时残留旧监听
+  attachForegroundListeners(() => {
+    // 仅在页面可见时处理（过滤 focus 在 tab 切换时的重复触发）。
+    if (typeof document !== 'undefined' && document.hidden) return;
+    // 先刷新 token（单飞：refreshAccess 内部去重，多次唤醒不并发），
+    // 再通知 provider 跳过退避、立即重连——此时 _token() getter 已能读到新 token。
+    void refreshAccess().then(() => { provider.wakeUp(); });
+  });
 
   const handle: CloudControllerHandle = {
     adapter,
@@ -144,7 +200,11 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
     verifyTotp(code, timeoutMs = TOTP_VERIFY_TIMEOUT_MS) {
       return verifyTotpOverControl(adapter, code, timeoutMs);
     },
+    tryTrustGrant(timeoutMs = TRUST_GRANT_TIMEOUT_MS) {
+      return performTrustHandshake(adapter, timeoutMs);
+    },
     disconnect() {
+      detachForegroundListeners(); // 回收前台监听，防内存泄漏
       if (refreshTimer) {
         clearInterval(refreshTimer);
         refreshTimer = null;
@@ -156,6 +216,101 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   };
   active = handle;
   return handle;
+}
+
+/**
+ * §7.4 受信 controller 免密直通握手。
+ *
+ * 流程（契约 §7.4）：
+ *   controller → host : { t:'totp-trust-hello', pub:'<b64 Ed25519 公钥 32B>' }
+ *   host → controller : { t:'totp-trust-challenge', nonce:'<b64 32B>' }
+ *   controller → host : { t:'totp-trust-proof', sig:'<b64 Ed25519 签名 64B>' }
+ *   host → controller : { t:'totp-trust-result', trusted: true|false }
+ *
+ * 签名消息 = utf8("ridge-totp-trust-v1") ‖ nonce(32B) ‖ bindTranscript。
+ *
+ * 纯函数（注入 adapter 以便单测）；超时不 reject，而是 resolve(false)
+ * 以便调用方无缝退化到正常 TOTP 流程。
+ */
+export async function performTrustHandshake(
+  adapter: CloudWebrtcAdapter,
+  timeoutMs = TRUST_GRANT_TIMEOUT_MS,
+): Promise<boolean> {
+  // 1. 获取本机 Ed25519 控制器公钥（延迟生成，幂等）
+  const ctrlPub = await getControllerPub();
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let phase: 'hello' | 'proof' = 'hello';
+    let pendingNonce: Uint8Array | null = null;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      unsub();
+      resolve(false); // 超时退化为 TOTP 流程
+    }, timeoutMs);
+
+    const settle = (trusted: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve(trusted);
+    };
+
+    const unsub = adapter.onSessionControl(async (frame) => {
+      if (settled) return;
+
+      // 2. 等 host 回 totp-trust-challenge
+      if (phase === 'hello' && frame.t === 'totp-trust-challenge') {
+        const nonceB64 = typeof frame.nonce === 'string' ? frame.nonce : '';
+        const nonce = base64ToBytes(nonceB64);
+        if (!nonce || nonce.length !== 32) {
+          // 非法 challenge → 放弃，退化到 TOTP
+          settle(false);
+          return;
+        }
+        phase = 'proof';
+        pendingNonce = nonce;
+
+        // 3. 构造签名消息：prefix ‖ nonce ‖ bindTranscript
+        const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
+        const transcript = adapter.getBindTranscript?.() ?? new Uint8Array(0);
+        const msg = new Uint8Array(prefix.length + nonce.length + transcript.length);
+        msg.set(prefix, 0);
+        msg.set(nonce, prefix.length);
+        msg.set(transcript, prefix.length + nonce.length);
+
+        // 4. 签名（由 controllerIdentity 用私钥签）
+        let sig: Uint8Array;
+        try {
+          sig = await signTrust(msg);
+        } catch {
+          settle(false);
+          return;
+        }
+
+        // 5. 发 totp-trust-proof
+        adapter.sendSessionControl({ t: 'totp-trust-proof', sig: bytesToBase64(sig) });
+        return;
+      }
+
+      // 6. 等 host 回 totp-trust-result
+      if (phase === 'proof' && frame.t === 'totp-trust-result') {
+        settle(frame.trusted === true);
+        return;
+      }
+
+      // 忽略其它 CONTROL 帧（如 totp-result 从属于另一流程）
+    });
+
+    // 使用 void 消除 eslint no-floating-promises（unsub 已在内部异步回调中使用）
+    void pendingNonce;
+
+    // 1b. 发 totp-trust-hello（在设置好监听后立即发）
+    adapter.sendSessionControl({ t: 'totp-trust-hello', pub: bytesToBase64(ctrlPub) });
+  });
 }
 
 /**

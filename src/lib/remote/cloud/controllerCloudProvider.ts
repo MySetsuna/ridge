@@ -649,6 +649,27 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.rebuildAll();
   }
 
+  /**
+   * 回前台唤醒探活（由 cloudControllerBoot 的 visibilitychange/online/focus 监听器调用）。
+   * token 已由调用方刷新完毕，此处只需跳过退避等待、立即重连。
+   * 幂等：已处于 connected / connecting / handshaking 时无操作。
+   */
+  public wakeUp(): void {
+    if (this.closed) return;
+    if (
+      this.state === 'connected' ||
+      this.state === 'connecting' ||
+      this.state === 'handshaking'
+    ) return;
+    // 已断线（disconnected / error）：取消待定的退避 timer，重置计数，立刻重连。
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
+    void this.reconnect();
+  }
+
   /** 整体重建：拆旧 pc/dc/ws，复用缓存 iceServers 重建（弱网下不再发 API）。 */
   private rebuildAll(): void {
     this.clearIceRestartDeadline();

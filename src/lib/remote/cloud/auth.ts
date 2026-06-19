@@ -12,6 +12,7 @@
 import { writable, get, type Writable } from 'svelte/store';
 import * as api from './apiClient';
 import type { CheckinResult, UserDto } from './apiClient';
+import { clearControllerIdentity } from './controllerIdentity';
 
 const LS_USER_TOKEN = 'ridge.cloud.userToken';
 const LS_USER = 'ridge.cloud.user';
@@ -322,6 +323,8 @@ export async function checkin(): Promise<CheckinResult> {
 
 export function logout(): void {
   update(() => ({ userToken: null, user: null, deviceToken: null, deviceName: null }));
+  // §7.4 退出时清除本机 Ed25519 controller 身份，撤销已记录的信任关系。
+  void clearControllerIdentity();
 }
 
 /** 卡密激活（§4.2）。成功后回写 premium user + token。 */

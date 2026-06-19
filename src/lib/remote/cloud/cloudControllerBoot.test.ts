@@ -25,6 +25,7 @@ import {
   parseCloudControllerHostname,
   parseCloudControllerUrl,
   verifyTotpOverControl,
+  performTrustHandshake,
 } from './cloudControllerBoot';
 import type { CloudWebrtcAdapter } from '$lib/transport/remote/cloudWebrtcAdapter';
 import { buildBindTranscript, computeBindTag, bytesToBase64 } from './e2ee';
@@ -205,5 +206,21 @@ describe('verifyTotpOverControl (§4 controller→host TOTP handshake)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('performTrustHandshake (§7.4 trusted-controller grant)', () => {
+  it('sends totp-trust-hello and resolves false on timeout when no challenge arrives (old host), then unsubscribes', async () => {
+    // 旧 host 不识别 totp-trust-hello → 永不回 totp-trust-challenge。控制端必须在
+    // 超时后 resolve(false)（退化到 TOTP），绝不 reject / 悬挂。用短超时跑真实计时器，
+    // 避免与 getControllerPub() 的 IndexedDB-降级异步路径在假计时器下相互干扰。
+    const fake = makeFakeAdapter();
+    const trusted = await performTrustHandshake(fake.adapter, 20);
+    expect(trusted).toBe(false);
+    // 已发出 hello（公钥 32B base64），且超时后退订（无悬挂监听）。
+    expect(fake.sent.length).toBe(1);
+    expect(fake.sent[0].t).toBe('totp-trust-hello');
+    expect(typeof fake.sent[0].pub).toBe('string');
+    expect(fake.hasListener()).toBe(false);
   });
 });

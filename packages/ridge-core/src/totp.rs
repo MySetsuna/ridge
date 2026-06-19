@@ -141,6 +141,12 @@ impl RemoteTotp {
         self.secret = next.secret;
         self.identity = next.identity;
     }
+
+    /// 返回当前 TOTP 归属身份（`"default"` 或云账号 username）。
+    /// 供 `grant_store` 按身份隔离授权记录使用。
+    pub fn identity(&self) -> String {
+        self.identity.clone()
+    }
 }
 
 impl Default for RemoteTotp {

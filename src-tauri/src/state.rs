@@ -179,9 +179,12 @@ pub struct ScrollbackChunk {
 /// tail read pulls ~128 KiB (2 blocks) without getting too chunky on the
 /// wire to the renderer.
 pub const SCROLLBACK_BLOCK_SIZE: usize = 64 * 1024;
-/// Hard retention cap per pane. 4 MiB covers ~30k lines of 120-char output,
-/// which comfortably outlives a typical `cat log.txt`.
-pub const SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Hard retention cap per pane. 8 MiB covers ~60k lines of 120-char output,
+/// enough to retain a full long build log or vim session. Doubled from the
+/// original 4 MiB to match the raised cloud replay cap (256 KiB) — no point
+/// replaying more than what we've retained. Memory cost: at most 8 MiB *
+/// number of active panes (typically ≤ 10), so ≤ ~80 MiB worst case.
+pub const SCROLLBACK_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 impl PaneScrollback {
     pub fn new() -> Self {

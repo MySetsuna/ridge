@@ -24,6 +24,8 @@ import {
   encodeJsonFrame,
   encodePaneFrame,
 } from '../../transport/remote/cloudMux';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { bytesToBase64 } from './e2ee';
 
 /**
  * A test rig that stands in for the controller + provider: it captures frames
@@ -36,6 +38,7 @@ function makeRig(opts: {
   keyBindingVerifier?: (pub: Uint8Array) => boolean;
   totpVerifier?: (code: string) => Promise<boolean>;
   totpBindVerifier?: (tag: Uint8Array) => Promise<boolean>;
+  bindTranscript?: Uint8Array | null;
 } = {}) {
   const sent: Uint8Array[] = [];
   const invoke =
@@ -47,6 +50,7 @@ function makeRig(opts: {
     keyBindingVerifier: opts.keyBindingVerifier,
     totpVerifier: opts.totpVerifier,
     totpBindVerifier: opts.totpBindVerifier,
+    bindTranscript: opts.bindTranscript,
     log: () => {}, // silence diagnostics in tests
   });
 
@@ -228,6 +232,26 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
     expect(paneOutputSource).toHaveBeenCalledOnce();
+  });
+
+  // 初次订阅 → 立即请求不限频的历史回放（修复切 pane / 首连看到空屏）。
+  // 走 replay_pane_scrollback_raw（不限频、不依赖下一帧），而非限频的 resync_pane_raw。
+  it('requests an unthrottled initial scrollback replay on subscribe', () => {
+    const invoke = vi.fn(async () => null);
+    const paneOutputSource = vi.fn(() => () => {});
+    const rig = makeRig({ invoke, paneOutputSource });
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1' } });
+    expect(invoke).toHaveBeenCalledWith('replay_pane_scrollback_raw', { paneId: 'pane-1' });
+    // 初次回放绝不走限频的背压自愈通道。
+    expect(invoke).not.toHaveBeenCalledWith('resync_pane_raw', { paneId: 'pane-1' });
+  });
+
+  // 无 source（占位订阅）→ 不请求回放（host 端无流可放）。
+  it('does not request a replay when no paneOutputSource is wired', () => {
+    const invoke = vi.fn(async () => null);
+    const rig = makeRig({ invoke }); // no paneOutputSource
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('registers subscribe-pane intent with no source wired (pane stream TODO)', () => {
@@ -707,5 +731,99 @@ describe('toJsonRpcError (exported helper)', () => {
       message: 'plain string',
       data: { kind: 'internal' },
     });
+  });
+});
+
+// ─── §7.4 TOTP trust-grant handshake ─────────────────────────────────────────
+// Helpers to build a valid Ed25519 proof for a given keypair + nonce + transcript.
+function buildTrustMsg(nonce: Uint8Array, transcript: Uint8Array): Uint8Array {
+  const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
+  const msg = new Uint8Array(prefix.length + nonce.length + transcript.length);
+  msg.set(prefix, 0);
+  msg.set(nonce, prefix.length);
+  msg.set(transcript, prefix.length + nonce.length);
+  return msg;
+}
+
+describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
+  it('grants trust: valid Ed25519 proof + totp_trust_check=true → totp-trust-result{trusted:true}', async () => {
+    // Arrange: generate a test keypair
+    const { secretKey: privKey, publicKey: pubKey } = ed25519.keygen();
+    const transcript = new Uint8Array([1, 2, 3, 4]);
+
+    const invoke = vi.fn(async (method: string) => {
+      if (method === 'totp_trust_check') return true;
+      return null;
+    });
+    const { sendControl, sentControl } = makeRig({
+      invoke,
+      totpVerifier: async () => true, // TOTP verifier present (so gating is active)
+      bindTranscript: transcript,
+    });
+
+    // Act: send totp-trust-hello
+    sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(pubKey) });
+    await Promise.resolve(); // flush microtasks
+
+    // The host should reply with a challenge
+    const challenges = sentControl().filter((f) => f.t === 'totp-trust-challenge');
+    expect(challenges).toHaveLength(1);
+    const nonceB64 = challenges[0].nonce as string;
+    const nonce = Uint8Array.from(atob(nonceB64), (c) => c.charCodeAt(0));
+    expect(nonce.length).toBe(32);
+
+    // Build a valid signature and send the proof
+    const sig = ed25519.sign(buildTrustMsg(nonce, transcript), privKey);
+    sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(sig) });
+    await Promise.resolve(); // flush microtasks
+
+    // Assert: host sent totp-trust-result{trusted:true}
+    const results = sentControl().filter((f) => f.t === 'totp-trust-result');
+    expect(results).toHaveLength(1);
+    expect(results[0].trusted).toBe(true);
+
+    // totp_trust_check was called with the correct pub key
+    expect(invoke).toHaveBeenCalledWith('totp_trust_check', { ctrlPubB64: bytesToBase64(pubKey) });
+  });
+
+  it('rejects bad sig: totp-trust-result{trusted:false}, gate stays closed', async () => {
+    // Arrange
+    const { secretKey: privKey, publicKey: pubKey } = ed25519.keygen();
+
+    const { sendControl, sentControl } = makeRig({
+      totpVerifier: async () => true,
+    });
+
+    // Send hello
+    sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(pubKey) });
+    await Promise.resolve();
+
+    // Send a proof with an all-zero (bad) signature
+    const badSig = new Uint8Array(64); // all zeros, invalid
+    sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(badSig) });
+    await Promise.resolve();
+
+    const results = sentControl().filter((f) => f.t === 'totp-trust-result');
+    expect(results).toHaveLength(1);
+    expect(results[0].trusted).toBe(false);
+  });
+
+  it('ignores totp-trust-proof with no prior hello (missing nonce)', async () => {
+    // Arrange: send a proof without a prior hello (no pending nonce)
+    const { secretKey: privKey, publicKey: pubKey } = ed25519.keygen();
+    const fakeSig = ed25519.sign(new Uint8Array(32), privKey);
+
+    const { sendControl, sentControl } = makeRig({
+      totpVerifier: async () => true,
+    });
+
+    // Act: send proof without hello first
+    sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(fakeSig) });
+    await Promise.resolve();
+
+    // Assert: no totp-trust-result should be emitted (frame is ignored)
+    const results = sentControl().filter((f) => f.t === 'totp-trust-result');
+    expect(results).toHaveLength(0);
+    void pubKey; // suppress unused warning
   });
 });

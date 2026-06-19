@@ -197,6 +197,10 @@ export class CloudRemoteConnection implements RemoteLink {
       let ok = true;
       if (this._verifiedCode) {
         ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
+      } else {
+        // §7.4：本会话经信任授权进入（无缓存 TOTP 码）。full re-handshake 会重置 host 的
+        // §4 门，故重连后重跑静默信任握手重新开门；旧 host 无 challenge → 超时 false。
+        ok = await this.handle.tryTrustGrant().catch(() => false);
       }
       if (!ok) {
         // 重连后 re-auth 失败：多为长时间断网导致缓存 TOTP 码过期，刷新拿新码即可恢复

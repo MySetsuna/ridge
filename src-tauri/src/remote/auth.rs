@@ -56,6 +56,12 @@ impl RemoteAuth {
         self.totp.write().switch_identity(username.unwrap_or("default"));
     }
 
+    /// 返回当前 TOTP 归属身份（`"default"` 或云账号 username）。
+    /// 供 `totp_trust_check` / `totp_trust_record` / `totp_trust_revoke_all` 三条命令取身份标签。
+    pub fn current_identity(&self) -> String {
+        self.totp.read().identity()
+    }
+
     /// 测试用：临时随机种子，不落盘（避免单测写真实 AppData）。
     #[cfg(test)]
     fn ephemeral() -> Self {

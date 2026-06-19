@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use base64::Engine as _;
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, State};
 
@@ -137,6 +138,45 @@ pub fn remote_set_totp_identity(
     state.remote_auth.switch_identity(username.as_deref());
     let _ = app.emit("remote-totp-changed", ());
     Ok(())
+}
+
+// ── TOTP 信任授权（grant_store，§totp-trust）──────────────────────────────────
+
+/// §totp-trust-check：查询 `(当前身份, ctrl_pub_b64)` 是否持有 24h 内的信任授权。
+///
+/// `ctrl_pub_b64`：controller Ed25519 公钥的 base64 标准编码（32 字节）。
+/// 返回 `true` → 跳过 TOTP 二次验证；`false` → 仍须手动 TOTP。
+/// 解码失败视为「无授权」，返回 `false`（降级，不阻断远控）。
+#[tauri::command]
+pub fn totp_trust_check(state: State<AppState>, ctrl_pub_b64: &str) -> bool {
+    let Ok(ctrl_pub) = base64::engine::general_purpose::STANDARD.decode(ctrl_pub_b64) else {
+        tracing::warn!(target: "ridge::remote", "totp_trust_check: 解码 ctrl_pub_b64 失败，视为无授权");
+        return false;
+    };
+    let identity = state.remote_auth.current_identity();
+    ridge_core::grant_store::check(&identity, &ctrl_pub)
+}
+
+/// §totp-trust-record：记录/刷新 `(当前身份, ctrl_pub_b64)` 的信任时间戳为「当前时刻」。
+///
+/// 在手动 TOTP 验证通过后立即调用（前端决策）。幂等；写失败仅 warn。
+#[tauri::command]
+pub fn totp_trust_record(state: State<AppState>, ctrl_pub_b64: &str) -> Result<(), String> {
+    let ctrl_pub = base64::engine::general_purpose::STANDARD
+        .decode(ctrl_pub_b64)
+        .map_err(|e| format!("ctrl_pub_b64 解码失败: {e}"))?;
+    let identity = state.remote_auth.current_identity();
+    ridge_core::grant_store::record(&identity, &ctrl_pub);
+    Ok(())
+}
+
+/// §totp-trust-revoke-all：撤销当前身份的全部信任授权（删除对应 grants 文件）。
+///
+/// 用于：用户切换账号、主动「忘记所有受信控制端」、安全重置等场景。
+#[tauri::command]
+pub fn totp_trust_revoke_all(state: State<AppState>) {
+    let identity = state.remote_auth.current_identity();
+    ridge_core::grant_store::revoke_all(&identity);
 }
 
 #[tauri::command]

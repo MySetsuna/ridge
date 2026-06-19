@@ -345,6 +345,8 @@
                     tag: Array.from(tag),
                   })
               : undefined,
+            // §7.4 trusted-controller grant：注入信道绑定 transcript 供 Ed25519 proof 验证。
+            bindTranscript,
           }),
       },
     );
