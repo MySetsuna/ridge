@@ -12,6 +12,7 @@ import {
   parseHitlRequest,
   humanizeTmlAction,
   parseTmlMessage,
+  parseCircuitTripped,
   EMPTY_TOPOLOGY,
 } from './teammateModel';
 
@@ -140,5 +141,22 @@ describe('parseTmlMessage', () => {
   it('returns null on garbage', () => {
     expect(parseTmlMessage(null)).toBeNull();
     expect(parseTmlMessage(42)).toBeNull();
+  });
+});
+
+describe('parseCircuitTripped', () => {
+  it('parses a circuit-tripped payload', () => {
+    const trip = parseCircuitTripped({ workspaceId: 'ws', paneId: 'uuid-2', reason: '递归/批量删除' });
+    expect(trip).toEqual({ paneId: 'uuid-2', reason: '递归/批量删除' });
+  });
+
+  it('degrades empty/missing reason to a generic one', () => {
+    expect(parseCircuitTripped({ paneId: 'p', reason: '' })?.reason).toBe('逻辑死锁');
+    expect(parseCircuitTripped({ pane_id: 'p2' })?.reason).toBe('逻辑死锁');
+  });
+
+  it('returns null without a pane id', () => {
+    expect(parseCircuitTripped({ reason: 'x' })).toBeNull();
+    expect(parseCircuitTripped(null)).toBeNull();
   });
 });

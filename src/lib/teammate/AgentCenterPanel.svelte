@@ -10,20 +10,24 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
-  import { Crown, Bot, Activity, MessageSquare } from 'lucide-svelte';
+  import { Crown, Bot, Activity, MessageSquare, ZapOff } from 'lucide-svelte';
   import {
     parseTopologySnapshot,
     parseTmlMessage,
+    parseCircuitTripped,
     EMPTY_TOPOLOGY,
     type TopologySnapshot,
     type TeammateProfile,
     type AuditEntry,
+    type CircuitTrip,
   } from './teammateModel';
 
   const TOPOLOGY_CMD = 'get_teammate_topology';
   const TML_EVENT = 'teammate://tml-message';
+  const CIRCUIT_EVENT = 'teammate://circuit-tripped';
   const POLL_MS = 3000;
   const AUDIT_CAP = 50;
+  const TRIP_CAP = 20;
 
   interface Props {
     /** 当前工作区 id；用于拉取该工作区的拓扑。 */
@@ -33,6 +37,7 @@
 
   let topology = $state<TopologySnapshot>(EMPTY_TOPOLOGY);
   let audit = $state<AuditEntry[]>([]);
+  let trips = $state<CircuitTrip[]>([]);
 
   const leader = $derived(topology.roster.find((t) => t.id === topology.leaderId) ?? null);
   const workers = $derived(topology.roster.filter((t) => t.id !== topology.leaderId));
@@ -69,9 +74,15 @@
       const entry = parseTmlMessage(e.payload, nameOf);
       if (entry) audit = [entry, ...audit].slice(0, AUDIT_CAP);
     });
+    // Domain D3：worker 陷入死循环被熔断（后端 SIGINT 后 emit），置顶红色告警。
+    const unTrip = listen(CIRCUIT_EVENT, (e) => {
+      const trip = parseCircuitTripped(e.payload);
+      if (trip) trips = [trip, ...trips].slice(0, TRIP_CAP);
+    });
     return () => {
       clearInterval(timer);
       un.then((f) => f()).catch(() => {});
+      unTrip.then((f) => f()).catch(() => {});
     };
   });
 </script>
@@ -90,6 +101,32 @@
       {/if}
     </p>
   </section>
+
+  <!-- 熔断告警 (Domain D3)：worker 死循环被熔断时置顶红色告警；无事件则零渲染 -->
+  {#if trips.length > 0}
+    <section class="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5">
+      <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-400">
+        <ZapOff class="h-3 w-3" /> 熔断告警
+        <button
+          onclick={() => (trips = [])}
+          class="ml-auto text-[10px] font-normal text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+        >
+          清除
+        </button>
+      </h3>
+      <ul class="mt-1 space-y-1">
+        {#each trips as trip, i (i + trip.paneId + trip.reason)}
+          <li class="flex items-start gap-1.5 text-[11px] leading-snug">
+            <span class="mt-1 h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse shrink-0"></span>
+            <span class="min-w-0">
+              <span class="font-medium text-red-300">{nameOf(trip.paneId)} 已熔断</span>
+              <span class="text-[var(--rg-fg-muted)]"> · {trip.reason}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   <!-- 花名册 -->
   <section>
