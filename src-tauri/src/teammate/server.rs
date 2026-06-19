@@ -16,6 +16,7 @@ use crate::commands::{pane, terminal};
 use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
+use super::hitl;
 use super::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use super::native::{self, NativeError};
 use crate::engine::pane_tree::SplitDirection;
@@ -291,6 +292,11 @@ async fn run_server(
         .route("/api/v1/register-agent", post(route_register_agent))
         .route("/api/v1/release-pane", post(route_release_pane))
         .route("/api/v1/find-idle-pane", get(route_find_idle_pane))
+        // Domain B3 高层 Teammate API（花名册 / 派活 / 广播 / 汇报）
+        .route("/api/v1/team-profile", get(route_get_team_profile))
+        .route("/api/v1/delegate-task", post(route_delegate_task))
+        .route("/api/v1/broadcast", post(route_broadcast))
+        .route("/api/v1/report-progress", post(route_report_progress))
         // GUI-only native route: summon a headless session into a VISIBLE
         // workspace (needs AppState/AppHandle), so it stays on TeammateCtx
         // rather than in the shared, host-agnostic router below.
@@ -445,6 +451,121 @@ async fn route_register_agent(
         Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })),
     )
         .into_response()
+}
+
+// ===== Domain B3: 高层 Teammate API（复用现有 HTTP + bearer 传输，非 UDS）=====
+
+/// 花名册快照（只读）：Leader 启动时「查兵马」。复用 D1 拓扑映射。
+async fn route_get_team_profile(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
+    let map = ctx.state.workspaces.read();
+    let body = map
+        .get(&wid)
+        .map(crate::commands::teammate::topology_json)
+        .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }));
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+#[derive(Deserialize)]
+struct DelegateBody {
+    target_pane: usize,
+    objective: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    max_steps: u32,
+}
+
+/// 向指定 Worker 派活：物理注入任务提示词唤醒目标 pane，标记 Working，返回 Task Ticket。
+async fn route_delegate_task(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<DelegateBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
+    let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, body.target_pane) {
+        Ok(u) => u,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    let prompt = format!("{}\n", body.objective);
+    if let Err(e) = terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, prompt.as_bytes()) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_pane_states.insert(pid, PaneState::Busy);
+        }
+    }
+    let _ = ctx
+        .handle
+        .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+    let ticket = ridge_core::mcp::protocol::TaskTicket::dispatched(
+        format!("tsk_{}", pid.simple()),
+        body.target_pane as u32,
+    );
+    let payload =
+        serde_json::to_value(&ticket).unwrap_or_else(|_| serde_json::json!({ "status": "dispatched" }));
+    (StatusCode::OK, Json(payload)).into_response()
+}
+
+#[derive(Deserialize)]
+struct BroadcastBody {
+    message: String,
+}
+
+/// 全网求助广播：emit 事件供前端审计 + 其他 Agent 举手接单。
+async fn route_broadcast(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<BroadcastBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let _ = ctx.handle.emit(
+        "teammate://broadcast",
+        serde_json::json!({ "message": body.message }),
+    );
+    (StatusCode::OK, "ok").into_response()
+}
+
+#[derive(Deserialize)]
+struct ReportProgressBody {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    exit_code: i32,
+}
+
+/// Worker 向 Leader 汇报阶段性结果：emit 进度事件触发状态机流转。
+async fn route_report_progress(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<ReportProgressBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let _ = ctx.handle.emit(
+        "teammate://progress",
+        serde_json::json!({ "status": body.status, "exit_code": body.exit_code }),
+    );
+    (StatusCode::OK, "ok").into_response()
 }
 
 #[derive(Deserialize)]
@@ -1089,7 +1210,29 @@ async fn route_send_keys(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, body.text.as_bytes()) {
+    // Domain D2 HITL 网关（默认关——`hitl::is_enabled()` 为 false 时本块整体跳过，
+    // send-keys 行为零变化）。开启后仅对「换行提交」的整条命令做 L2 风险拦截：批准放行、
+    // 拒绝回授权阻断错误、修改则改写后注入。
+    let text_to_write = {
+        let submitted = body.text.ends_with('\n') || body.text.ends_with('\r');
+        let cmd = body.text.trim_end_matches(|c| c == '\r' || c == '\n');
+        if hitl::is_enabled() && submitted && !cmd.is_empty() {
+            match hitl::request_approval(&ctx.handle, &format!("pane#{pane_idx}"), cmd).await {
+                hitl::HitlResolution::Approve => body.text.clone(),
+                hitl::HitlResolution::Reject => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        "Execution blocked by user authorization policy.",
+                    )
+                        .into_response();
+                }
+                hitl::HitlResolution::Modify(new_cmd) => format!("{new_cmd}\n"),
+            }
+        } else {
+            body.text.clone()
+        }
+    };
+    match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, text_to_write.as_bytes()) {
         Ok(()) => (StatusCode::OK, "ok").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }

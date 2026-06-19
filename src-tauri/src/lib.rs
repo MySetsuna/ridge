@@ -792,6 +792,11 @@ pub fn run() {
             commands::cloud_pane::resync_pane_raw,
             // 桌面 cloud HTTP 代理（绕过 WebView 跨域 CORS，见 cloud_http.rs）
             commands::cloud_http::cloud_http,
+            // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
+            commands::teammate::get_teammate_topology,
+            commands::teammate::resolve_hitl_request,
+            commands::teammate::set_hitl_enabled,
+            commands::teammate::classify_command_risk,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,
