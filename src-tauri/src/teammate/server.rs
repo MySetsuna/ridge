@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -297,6 +298,8 @@ async fn run_server(
         .route("/api/v1/delegate-task", post(route_delegate_task))
         .route("/api/v1/broadcast", post(route_broadcast))
         .route("/api/v1/report-progress", post(route_report_progress))
+        // Domain C 内置 MCP server（WebSocket / JSON-RPC 2.0）
+        .route("/api/v1/mcp/ws", get(route_mcp_ws))
         // GUI-only native route: summon a headless session into a VISIBLE
         // workspace (needs AppState/AppHandle), so it stays on TeammateCtx
         // rather than in the shared, host-agnostic router below.
@@ -566,6 +569,152 @@ async fn route_report_progress(
         serde_json::json!({ "status": body.status, "exit_code": body.exit_code }),
     );
     (StatusCode::OK, "ok").into_response()
+}
+
+// ===== Domain C: 内置端侧 MCP server（WebSocket / JSON-RPC 2.0）=====
+// 复用 ridge_core::mcp 纯协议核心 + remote/server.rs 同款 axum 0.7 ws 样板。
+// 请求-响应循环（最小可用）：initialize / tools/list / tools/call / resources/read。
+// 进度通知 (notifications/progress) 需 split sink，后续接入；当前不阻断主链路。
+
+async fn route_mcp_ws(
+    ws: WebSocketUpgrade,
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    ws.on_upgrade(move |socket| mcp_socket(socket, ctx))
+}
+
+async fn mcp_socket(mut socket: WebSocket, ctx: TeammateCtx) {
+    let registry = ridge_core::mcp::registry::ToolRegistry::default();
+    while let Some(Ok(msg)) = socket.recv().await {
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+        let reply = handle_mcp_message(&text, &registry, &ctx).await;
+        if socket.send(Message::Text(reply)).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn handle_mcp_message(
+    text: &str,
+    registry: &ridge_core::mcp::registry::ToolRegistry,
+    ctx: &TeammateCtx,
+) -> String {
+    use ridge_core::mcp::protocol as proto;
+    let req = match proto::parse_request(text.as_bytes()) {
+        Ok(r) => r,
+        Err(_) => {
+            return proto::mcp_error(serde_json::Value::Null, proto::PARSE_ERROR, "parse error")
+                .to_string()
+        }
+    };
+    let id = req.id.clone();
+    let resp = match req.method.as_str() {
+        proto::METHOD_INITIALIZE => proto::mcp_result(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "serverInfo": { "name": "ridge-teammate", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": { "tools": {}, "resources": {} }
+            }),
+        ),
+        proto::METHOD_TOOLS_LIST => proto::mcp_result(id, registry.tools_list_result()),
+        proto::METHOD_TOOLS_CALL => mcp_tools_call(id, &req.params, ctx).await,
+        proto::METHOD_RESOURCES_READ => mcp_resources_read(id, &req.params, ctx),
+        other => {
+            proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("method not found: {other}"))
+        }
+    };
+    resp.to_string()
+}
+
+/// tools/call 最小路由：在活动工作区上落地 ridge_send_to_teammate / ridge_delegate_task。
+async fn mcp_tools_call(
+    id: serde_json::Value,
+    params: &serde_json::Value,
+    ctx: &TeammateCtx,
+) -> serde_json::Value {
+    use ridge_core::mcp::protocol as proto;
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let wid = *ctx.state.active_workspace.read();
+    match name {
+        "ridge_send_to_teammate" | "ridge_delegate_task" => {
+            let pane_idx = args
+                .get("target_pane_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let text = args
+                .get("message")
+                .or_else(|| args.get("objective"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane_idx) {
+                Ok(u) => u,
+                Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string()),
+            };
+            let payload = format!("{text}\n");
+            match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, payload.as_bytes()) {
+                Ok(()) => {
+                    if name == "ridge_delegate_task" {
+                        let mut map = ctx.state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&wid) {
+                            ws.teammate_pane_states.insert(pid, PaneState::Busy);
+                        }
+                    }
+                    proto::mcp_result(
+                        id,
+                        serde_json::json!({ "content": [ { "type": "text", "text": "delivered" } ] }),
+                    )
+                }
+                Err(e) => proto::mcp_error(id, proto::INTERNAL_ERROR, &e.to_string()),
+            }
+        }
+        other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("unknown tool: {other}")),
+    }
+}
+
+/// resources/read：当前支持 `ridge://workspace/active-panes`（活动工作区花名册）。
+fn mcp_resources_read(
+    id: serde_json::Value,
+    params: &serde_json::Value,
+    ctx: &TeammateCtx,
+) -> serde_json::Value {
+    use ridge_core::mcp::protocol as proto;
+    use ridge_core::mcp::resource::RidgeUri;
+    let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+    match RidgeUri::parse(uri) {
+        Ok(RidgeUri::WorkspaceActivePanes) => {
+            let wid = *ctx.state.active_workspace.read();
+            let map = ctx.state.workspaces.read();
+            let snapshot = map
+                .get(&wid)
+                .map(crate::commands::teammate::topology_json)
+                .unwrap_or_else(|| serde_json::json!({ "roster": [] }));
+            proto::mcp_result(
+                id,
+                serde_json::json!({
+                    "contents": [ {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": snapshot.to_string()
+                    } ]
+                }),
+            )
+        }
+        Ok(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "resource not yet available"),
+        Err(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "invalid ridge:// uri"),
+    }
 }
 
 #[derive(Deserialize)]

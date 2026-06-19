@@ -113,8 +113,9 @@ Tauri 接线层 (src-tauri, 需 rebuild 验证) ── Phase 2
   - `teammate/hitl.rs`：进程级 HITL 挂起注册表（`LazyLock<Mutex<HashMap>>` + oneshot + 120s 超时 fail-closed），`request_approval` 用 `ridge_core::classify_shell_command`，**默认关闭**（零行为变化）。
   - `teammate/server.rs::route_send_keys`：HITL 网关（flag-gated，仅对换行提交命令做 L2 拦截）。
   - `teammate/server.rs`：B3 高层 API 路由 `team-profile`/`delegate-task`（返回 `TaskTicket`）/`broadcast`/`report-progress`。
+  - `teammate/server.rs`：**§8A-6 MCP server WS 挂载** `/api/v1/mcp/ws`（axum 0.7 ws，复用 `ridge_core::mcp` 协议核心）——`initialize`/`tools/list`(注册表)/`tools/call`(ridge_send_to_teammate·ridge_delegate_task 落活动工作区)/`resources/read`(`ridge://workspace/active-panes`)。
   - **零 `AppState` 改动、零默认行为变化**（HITL flag 默认关）；未触 `REMOTE_ALLOWLIST`（桌面 IPC 即可，web-remote 后续）。
-- ⏳ **Phase 2 剩余**：§8A-3 StreamCleaner 入 PTY 读路径（**runtime-risky，刻意延期**：PTY 热路径、不可 cargo-check 验运行时，误净化会污染终端）；§8A-6 MCP server WS 挂载（additive，最大面，暂无消费方）；§8A-1 typed profiles 全量入 Workspace（register-agent 带 capabilities/personality）；前端挂载两组件 + Pane 状态呼吸灯（hotspot）。
+- ⏳ **Phase 2 剩余（刻意延期）**：§8A-3 StreamCleaner 入 PTY 读路径（**runtime-risky**：PTY 热路径、不可 cargo-check 验运行时，误净化会污染终端 → 需 `tauri:dev:cdp` 真机回归）；§8A-1 typed profiles 全量入 Workspace（register-agent 带 capabilities/personality → 让 elect_leader 有意义）；MCP `notifications/progress` 服务端推送（需 split sink）；前端挂载两组件 + Pane 状态呼吸灯（hotspot 文件）。
 
 ## 8. Phase 2 可执行清单（含 file:line 落点，源自勘探）
 
