@@ -1,5 +1,6 @@
 import { registerSidebarPlugin } from '$lib/stores/sidebarPlugins';
 import GlobalStatusPanel from './globalStatus/GlobalStatusPanel.svelte';
+import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
 
 // `workspace-summary` plugin removed: it last showed only "N pane",
 // which clutters the workspace header for no real value. The Explorer
@@ -25,4 +26,14 @@ registerSidebarPlugin({
   scope: 'global',
   component: GlobalStatusPanel,
   order: 100,
+});
+
+// Domain Zero / D1：智能体指挥部（Agent Center）。展示团队拓扑花名册 + 协作审计。
+// 后端 `get_teammate_topology` 未接线时优雅显示空态，故常驻安全。
+registerSidebarPlugin({
+  id: 'agent-center',
+  title: '智能体指挥部',
+  scope: 'global',
+  component: AgentCenterPanel,
+  order: 90,
 });
