@@ -55,6 +55,10 @@ pub async fn get_teammate_topology(
         Some(s) => Uuid::parse_str(&s).map_err(|e| e.to_string())?,
         None => *state.active_workspace.read(),
     };
+    // 有 typed 画像 → 跑 Leader 竞选（真实角色/leader）；否则回退侧表映射。
+    if crate::teammate::profiles::has(wid) {
+        return Ok(crate::teammate::profiles::topology_for(wid));
+    }
     let workspaces = state.workspaces.read();
     let ws = workspaces
         .get(&wid)

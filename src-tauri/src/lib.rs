@@ -797,6 +797,10 @@ pub fn run() {
             commands::teammate::resolve_hitl_request,
             commands::teammate::set_hitl_enabled,
             commands::teammate::classify_command_risk,
+            // Domain D3 文件并发写锁（前端冲突仲裁视图用）
+            teammate::locks::acquire_write_lock,
+            teammate::locks::release_write_lock,
+            teammate::locks::write_lock_holder,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,
