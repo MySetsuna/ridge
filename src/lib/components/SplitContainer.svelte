@@ -9,8 +9,10 @@
   // 不再被库内部 sz 状态覆盖。Class 名 `splitpanes__pane`/`splitpanes__splitter`
   // 通过 class prop forward，沿用 findSameAxisRefs 等查询逻辑。
   import { t, tr } from '$lib/i18n';
+  import { Bot } from 'lucide-svelte';
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
-  import { isTauri } from '@tauri-apps/api/core';
+  import { isTauri, invoke } from '@tauri-apps/api/core';
+  import { settingsStore } from '$lib/stores/settings';
   import { TerminalManager } from '$lib/terminal/manager';
   import { alertDialog } from './RidgeDialog.svelte';
   import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
@@ -75,6 +77,28 @@ import {
   let dragMoveUnlisten: (() => void) | undefined;
   let dragUpUnlisten: (() => void) | undefined;
   const ORTHOGONAL_TRIGGER_PX = 8;
+
+  // 手动把一个分屏标记为/取消智能体（Domain Zero「手动注册」入口）。已注册
+  // (agent_state==='busy') → 调 release_teammate_agent；否则 register_teammate_agent，
+  // agentId 取终端标题/前台进程名（缺省 'agent'）。后端会 emit teammate-layout-changed
+  // → 重渲染徽章；指挥部 Tab 轮询 get_teammate_topology 即收入花名册。
+  async function toggleTeammateAgent(leafId: string, isAgent: boolean): Promise<void> {
+    try {
+      if (isAgent) {
+        await invoke('release_teammate_agent', { workspaceId, paneId: leafId });
+      } else {
+        const agentId =
+          get(terminalTitles)[leafId] || get(paneForegroundProcessStore)[leafId] || 'agent';
+        await invoke('register_teammate_agent', { workspaceId, paneId: leafId, agentId });
+      }
+    } catch (e) {
+      await alertDialog({
+        title: tr('workspace.opFailed'),
+        message: e instanceof Error ? e.message : String(e),
+        danger: true,
+      });
+    }
+  }
 
   // §4a workspace keep-alive: count from THIS workspace's tree, not the
   // global active one. Falls back to paneTreeStore on first paint before
@@ -667,6 +691,19 @@ import {
               <PaneRepoSwitcher paneId={node.id} />
               <PaneGitPill paneId={node.id} />
               <PaneDiffPill paneId={node.id} />
+              {#if $settingsStore.teammateEnabled}
+                {@const isAgent = node.agent_state === 'busy'}
+                <button
+                  type="button"
+                  title={isAgent ? '取消标记智能体' : '把此分屏标记为智能体（纳入指挥部花名册）'}
+                  class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {isAgent
+                    ? 'text-emerald-400 hover:bg-emerald-500/10'
+                    : 'text-[var(--rg-fg-muted)] hover:bg-white/[0.06] hover:text-[var(--rg-fg)]'}"
+                  onclick={() => toggleTeammateAgent(node.id, isAgent)}
+                >
+                  <Bot class="h-4 w-4" />
+                </button>
+              {/if}
             {/if}
             <button
               type="button"
