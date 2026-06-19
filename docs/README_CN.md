@@ -12,6 +12,20 @@
 
 ---
 
+<p align="center">
+  <a href="https://github.com/Pooowu">
+    <img src="https://github.com/Pooowu.png" width="72" height="72" alt="@Pooowu" />
+  </a>
+</p>
+
+<p align="center">
+  <b>💛 特别鸣谢 · Special Thanks</b><br/>
+  衷心感谢赞助者 <a href="https://github.com/Pooowu"><b>@Pooowu</b></a> 对 Ridge 的支持 🙏<br/>
+  <sub>Heartfelt thanks to <a href="https://github.com/Pooowu">@Pooowu</a> for sponsoring Ridge.</sub>
+</p>
+
+---
+
 ## 架构
 
 Ridge 是基于 Tauri v2 构建的**原生终端工作台**（Rust 后端 + Svelte 5 前端）。每个窗格承载一个独立的 PTY 会话；布局引擎支持无限递归的水平/垂直分割。WebWorker 托管的终端渲染器（Rust → WASM）驱动网格，WebGPU 为主渲染后端，Canvas2D 为通用回退方案。

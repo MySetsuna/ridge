@@ -708,16 +708,21 @@ async fn file_handler(
         Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
     let roots = allowed_file_roots(&ctx);
-    let within = tokio::task::spawn_blocking(move || is_within_allowed_roots(&canon, &roots))
+    let canon_for_check = canon.clone();
+    let within = tokio::task::spawn_blocking(move || is_within_allowed_roots(&canon_for_check, &roots))
         .await
         .unwrap_or(false);
     if !within {
         tracing::warn!(target: "ridge::remote", path = %q.path, "file_handler rejected: outside allowed roots");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
-    match tokio::fs::read(&full).await {
+    // SECURITY (audit L-1): read the CANONICALIZED path, not the original `full`.
+    // `full` could be (or traverse) a symlink repointed between the containment
+    // check above and this read (TOCTOU); `canon` is the already-validated real
+    // path with symlinks collapsed, so reading it closes that window at zero cost.
+    match tokio::fs::read(&canon).await {
         Ok(bytes) => {
-            let name = full.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let name = canon.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let (content_type, _) = root_asset_headers(name);
             axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_TYPE, content_type)
@@ -968,7 +973,7 @@ async fn ws_handler(
         // token issued to one device can't be reconnected from another LAN host.
         ctx.state
             .remote_session_store
-            .validate_token_bound(t, &device_id, &remote_addr)
+            .validate_token_device_strict(t, &device_id, &remote_addr)
     } else if let Some(ref c) = query.code {
         // SECURITY (audit C1): the `?code=` TOTP path is brute-forceable, so it
         // shares the SAME throttle/lockout/global-limit as POST /verify. A code
@@ -1012,20 +1017,33 @@ async fn session_handler(
 #[derive(Deserialize)]
 struct TokenQuery {
     token: Option<String>,
+    /// Stable client device id, when the caller can supply one. Optional — the
+    /// IP binding always applies; the device pin only when both sides provide
+    /// one (mirrors `/file`'s `FileQuery`). Audit H5.
+    #[serde(default)]
+    device: Option<String>,
 }
 
 /// Validate a session token taken from EITHER the `Authorization: Bearer <t>`
 /// header OR the `?token=` query param.
 ///
-/// SECURITY (audit H3): the `/workspace/*` HTTP routes previously had NO token
-/// check (only the `remote_enabled` gate), so any LAN peer could enumerate,
-/// switch, create, or destroy workspaces. This mirrors `file_handler`'s
-/// `validate_token` so those routes require the same session token the WS
-/// upgrade already demands.
+/// SECURITY (audit H3 + H5): the `/workspace/*` HTTP routes previously had NO
+/// token check (only the `remote_enabled` gate), so any LAN peer could
+/// enumerate, switch, create, or destroy workspaces. These are control-plane
+/// routes, so — like `/ws` and `/file` — they enforce the token's device+IP
+/// binding via `validate_token_bound`, not bare existence (`validate_token`).
+/// The IP is always compared; a device-bound token must additionally present its
+/// exact device id — control paths use `validate_token_device_strict`, so an
+/// empty device can't downgrade a device-bound token to the IP pin (audit L-3).
+/// Deviceless legacy tokens still validate on the IP pin. This stops a token
+/// leaked off the LAN (e.g. via a `?token=` URL in logs/history) from being
+/// replayed against the control plane from another host on the same egress IP.
 fn is_request_authed(
     ctx: &RemoteCtx,
     headers: &axum::http::HeaderMap,
     query_token: Option<&str>,
+    device_id: &str,
+    ip: &str,
 ) -> bool {
     let header_token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -1033,7 +1051,11 @@ fn is_request_authed(
         .and_then(|s| s.strip_prefix("Bearer ").map(str::trim));
     let token = header_token.or(query_token);
     token
-        .map(|t| ctx.state.remote_session_store.validate_token(t))
+        .map(|t| {
+            ctx.state
+                .remote_session_store
+                .validate_token_device_strict(t, device_id, ip)
+        })
         .unwrap_or(false)
 }
 
@@ -1053,12 +1075,15 @@ struct WorkspaceCloseBody {
 }
 
 async fn workspace_list_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
 ) -> axum::response::Response {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
     let order = ctx.state.workspace_order.read();
@@ -1083,13 +1108,16 @@ async fn workspace_list_handler(
 }
 
 async fn workspace_switch_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceSwitchBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"success":false,"error":"invalid token"})),
@@ -1119,13 +1147,16 @@ async fn workspace_switch_handler(
 }
 
 async fn workspace_create_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceCreateBody>,
 ) -> axum::response::Response {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
     use std::collections::HashMap;
@@ -1163,13 +1194,16 @@ async fn workspace_create_handler(
 }
 
 async fn workspace_close_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<RemoteCtx>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TokenQuery>,
     Json(body): Json<WorkspaceCloseBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // SECURITY (audit H3): require a valid session token.
-    if !is_request_authed(&ctx, &headers, q.token.as_deref()) {
+    // SECURITY (audit H3 + H5): require a token bound to this device+IP.
+    let ip = addr.ip().to_string();
+    let device_id = q.device.clone().unwrap_or_default();
+    if !is_request_authed(&ctx, &headers, q.token.as_deref(), &device_id, &ip) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"success":false,"error":"invalid token"})),
@@ -1281,6 +1315,11 @@ async fn handle_ws(
 
     // Register this client in the remote client registry so the desktop
     // RemotePanel can list, disconnect, or blacklist it.
+    // §M-2: snapshot the auth identity BEFORE `register` consumes it, so the
+    // periodic health check can re-validate token TTL + blacklist mid-session.
+    let recheck_addr = remote_addr.clone();
+    let recheck_device = device_id.clone();
+    let recheck_token = token.clone();
     let (client_id, kill_flag) = ctx.state.remote_client_registry.register(
         remote_addr,
         String::new(), // user-agent not available from axum WS directly
@@ -1403,10 +1442,13 @@ async fn handle_ws(
     let mut cancelled_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     const MAX_CANCELLED_IDS: usize = 1024;
 
-    // Periodic health check: if remote control is toggled off, or this client
-    // is force-disconnected / blacklisted (kill_flag), close the WS so the
-    // mobile client gets a clean disconnect. Polled at 1s so an admin-triggered
-    // disconnect takes effect promptly (just an atomic load per tick).
+    // Periodic health check (1s): tears down an ALREADY-OPEN connection when
+    // remote control is toggled off, this client is force-disconnected
+    // (kill_flag), its device/IP gets blacklisted, or — for token sessions — the
+    // session token expires (TTL) or is revoked. SECURITY (audit M-2): the
+    // handshake check alone never expires a live session, so without this an
+    // issued token would outlive its TTL on an open socket and a fresh blacklist
+    // entry wouldn't kick an already-connected client.
     let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(1));
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -2421,14 +2463,35 @@ async fn handle_ws(
                         }
                     }
                     _ = health_interval.tick() => {
-                        if !ctx.state.remote_enabled.load(Ordering::Relaxed)
-                            || kill_flag.load(Ordering::Relaxed)
+                        // §M-2: a token session whose token has expired (TTL) or
+                        // been revoked must not keep streaming. `?code=` (TOTP)
+                        // connections carry no token, so this only applies when one
+                        // was presented. `validate_token_bound` also reaps the
+                        // expired entry as a side effect.
+                        let token_revoked = match recheck_token.as_deref() {
+                            Some(t) => !ctx
+                                .state
+                                .remote_session_store
+                                .validate_token_bound(t, &recheck_device, &recheck_addr),
+                            None => false,
+                        };
+                        let close_reason = if !ctx.state.remote_enabled.load(Ordering::Relaxed) {
+                            Some("Remote control disabled")
+                        } else if kill_flag.load(Ordering::Relaxed) {
+                            Some("Disconnected by admin")
+                        } else if ctx
+                            .state
+                            .remote_blacklist
+                            .is_blocked(&recheck_device, &recheck_addr)
                         {
-                            let reason = if kill_flag.load(Ordering::Relaxed) {
-                                "Disconnected by admin"
-                            } else {
-                                "Remote control disabled"
-                            };
+                            Some("Device blacklisted")
+                        } else if token_revoked {
+                            Some("Session expired")
+                        } else {
+                            None
+                        };
+                        if let Some(reason) = close_reason {
+                            tracing::info!(target: "ridge::remote", client_id, reason, "WS closed by health check");
                             let _ = ws_tx.send(Message::Close(Some(
                                 axum::extract::ws::CloseFrame {
                                     code: 1000,

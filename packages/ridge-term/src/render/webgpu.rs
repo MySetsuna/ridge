@@ -213,6 +213,13 @@ pub struct WebGpuPaneBackend {
     /// must fall back to full render to rebuild instances with correct
     /// atlas UV/layer data.
     cached_evictions_seen: u64,
+    /// Distinct non-reserved atlas layers referenced by this pane's last
+    /// successful `end_frame` instance upload. `pin_cached_layers` ORs
+    /// these into the shared `frame_written` mask BEFORE any pane's
+    /// full-render eviction runs this frame, so a cached-replay pane's
+    /// already-recorded draw can't have its atlas slots evicted +
+    /// overwritten mid-frame by another pane admitting new glyphs.
+    cached_layers: Vec<u16>,
 }
 
 impl Drop for WebGpuPaneBackend {
@@ -288,6 +295,7 @@ impl WebGpuPaneBackend {
             needs_initial_clear: true,
             cached_n_cells: 0,
             cached_evictions_seen: 0,
+            cached_layers: Vec::new(),
         })
     }
 
@@ -354,6 +362,13 @@ impl RenderBackend for WebGpuPaneBackend {
         // again (e.g. via DXGI flip-discard with explicit retain), we
         // can re-introduce the flag-driven fast path behind a runtime
         // capability probe.
+        //
+        // TODO(①选区闪烁/首行选不中, 2026-06-18): 此恒-true 使活动 prompt 行被
+        // PSReadLine 高频重画时每帧整屏 LoadOp::Clear → 选区闪烁 + 首行难选中
+        // (首行=活动输入行)。修复需运行时取证后改为「初始化一次性能力探测」版:
+        // LoadOp::Load 可靠 → 返回 self.needs_initial_clear(脏行快路径);否则保持
+        // true。交接文档 docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md,
+        // 追踪 docs/term-rebuild/TASKS.md §1.36。
         true
     }
 
@@ -1334,6 +1349,7 @@ impl RenderBackend for WebGpuPaneBackend {
             self.needs_initial_clear = false;
             // §4b: with 0 instances we have nothing to cache.
             self.cached_n_cells = 0;
+            self.cached_layers.clear();
             return;
         }
 
@@ -1363,6 +1379,22 @@ impl RenderBackend for WebGpuPaneBackend {
         // walking the kernel grid.
         self.cached_n_cells = n_cells;
         self.cached_evictions_seen = ctx.atlas_eviction_count;
+        // §atlas-pin: record the distinct glyph layers this frame's
+        // instances cite so `pin_cached_layers` can protect them next time
+        // we replay via `record_cached_only`. Reserved layer 0
+        // (backgrounds / clears / procedural rects) is never an eviction
+        // candidate — skip it to keep the list tight.
+        let mut layers: Vec<u16> = Vec::new();
+        for inst in &self.pending_instances {
+            let l = inst.atlas_layer;
+            if l >= super::gpu_context::ATLAS_RESERVED_LAYERS {
+                let lu = l as u16;
+                if !layers.contains(&lu) {
+                    layers.push(lu);
+                }
+            }
+        }
+        self.cached_layers = layers;
     }
 }
 
@@ -1446,5 +1478,25 @@ impl WebGpuPaneBackend {
                 pass.draw(0..4, 0..n_cells);
             });
         true
+    }
+
+    /// §atlas-pin: re-pin this pane's cached glyph layers into the shared
+    /// per-frame `frame_written` mask. Called by the host loop right after
+    /// the host frame opens (mask just reset) and before any pane's full
+    /// render — so eviction in `rasterize_and_admit` won't reclaim a layer
+    /// that this pane's upcoming `record_cached_only` replay still samples.
+    /// No-op when the cache is empty/invalid (then `record_cached_only`
+    /// itself falls back to full render and re-marks layers as it admits).
+    pub fn pin_cached_layers(&mut self) {
+        if self.cached_n_cells == 0 || self.cached_layers.is_empty() {
+            return;
+        }
+        let mut ctx = self.ctx.borrow_mut();
+        for &l in &self.cached_layers {
+            let idx = l as usize;
+            if idx < ctx.frame_written.len() {
+                ctx.frame_written[idx] = true;
+            }
+        }
     }
 }

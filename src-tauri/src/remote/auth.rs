@@ -156,6 +156,38 @@ impl SessionStore {
         true
     }
 
+    /// Like [`validate_token_bound`], but for control-granting endpoints
+    /// (`/ws`, `/workspace/*`) an EMPTY presented device is NOT allowed to fall
+    /// back to the IP pin when the token WAS issued with a device binding.
+    ///
+    /// SECURITY (audit L-3): the bound check skips the device comparison whenever
+    /// either side is empty, so an attacker sharing the victim's NAT egress IP
+    /// could downgrade a device-bound token to IP-only by simply omitting the
+    /// device. Control paths close that escape: a token carrying a device id MUST
+    /// have that exact id presented. A token issued WITHOUT a device (stored id
+    /// empty — legacy clients, or `<img>`-only `/file` flows that use the bound
+    /// check) still validates on the IP pin alone, so existing sessions and
+    /// header-less image fetches aren't locked out.
+    pub fn validate_token_device_strict(&self, token: &str, device_id: &str, ip: &str) -> bool {
+        let mut map = self.tokens.lock();
+        let Some(rec) = map.get(token) else {
+            return false;
+        };
+        if rec.created.elapsed() >= SESSION_TTL {
+            map.remove(token);
+            return false;
+        }
+        if rec.ip != ip {
+            return false;
+        }
+        // A device-bound token must present its exact device — no empty-device
+        // downgrade to the IP pin. Deviceless (legacy) tokens keep the IP pin.
+        if !rec.device_id.is_empty() && rec.device_id != device_id {
+            return false;
+        }
+        true
+    }
+
     /// Revoke a session token so the device can no longer reconnect with it
     /// (force-disconnect). The device must re-enter the auth code to obtain a
     /// fresh token. No-op if the token is unknown.
@@ -243,11 +275,11 @@ impl VerifyThrottle {
     /// Call BEFORE checking the TOTP code; call `record_failure` / `record_success`
     /// afterwards based on the result. `device_id` may be empty (not provided).
     pub fn check(&self, ip: &str, device_id: &str) -> ThrottleDecision {
-        // Global limiter first: cheap, and sheds load before per-key work.
-        if !self.global_allow() {
-            return ThrottleDecision::GlobalLimited;
-        }
         let now = Instant::now();
+        // Per-key decision FIRST. A source already in backoff/ban is rejected here
+        // WITHOUT touching the global limiter (audit M-1): otherwise a single
+        // throttled attacker could flood the `/verify` path with attempts that are
+        // doomed anyway, fill the global window, and shed legitimate users.
         // The strictest of the IP and device records governs.
         let ip_dec = self.key_decision(&self.by_ip, ip, now);
         let dev_dec = if device_id.is_empty() {
@@ -255,7 +287,17 @@ impl VerifyThrottle {
         } else {
             self.key_decision(&self.by_device, device_id, now)
         };
-        strictest(ip_dec, dev_dec)
+        let decision = strictest(ip_dec, dev_dec);
+        if decision != ThrottleDecision::Allow {
+            return decision;
+        }
+        // Only attempts that would actually reach the TOTP check consume global
+        // budget — this still caps a distributed (many fresh IPs) guess, while no
+        // longer letting throttled sources deny service to everyone else.
+        if !self.global_allow() {
+            return ThrottleDecision::GlobalLimited;
+        }
+        ThrottleDecision::Allow
     }
 
     /// Record a failed verify for both keys (advances backoff / ban state).
@@ -469,6 +511,35 @@ mod tests {
         assert!(!store.validate_token_bound("deadbeef", "devX", "1.2.3.4"));
     }
 
+    // ── SessionStore device-strict path (audit L-3) ──
+
+    #[test]
+    fn strict_token_rejects_empty_or_wrong_device_when_bound() {
+        let store = SessionStore::new();
+        let token = store.create_session_bound("devX", "1.2.3.4");
+        // Correct device + IP → ok.
+        assert!(store.validate_token_device_strict(&token, "devX", "1.2.3.4"));
+        // Empty device can no longer downgrade a device-bound token to the IP pin
+        // (this is the L-3 escape the bound check would have allowed).
+        assert!(!store.validate_token_device_strict(&token, "", "1.2.3.4"));
+        // Wrong device → rejected.
+        assert!(!store.validate_token_device_strict(&token, "devY", "1.2.3.4"));
+        // IP is still always pinned.
+        assert!(!store.validate_token_device_strict(&token, "devX", "9.9.9.9"));
+    }
+
+    #[test]
+    fn strict_token_allows_ip_pin_for_deviceless_token() {
+        // A token issued WITHOUT a device (legacy client / header-less flow) still
+        // validates on the IP pin alone, so the strict path doesn't lock it out.
+        let store = SessionStore::new();
+        let token = store.create_session_bound("", "1.2.3.4");
+        assert!(store.validate_token_device_strict(&token, "", "1.2.3.4"));
+        assert!(store.validate_token_device_strict(&token, "whatever", "1.2.3.4"));
+        // …but the IP pin still holds.
+        assert!(!store.validate_token_device_strict(&token, "", "9.9.9.9"));
+    }
+
     // ── VerifyThrottle (audit C1) ──
 
     #[test]
@@ -551,5 +622,31 @@ mod tests {
         }
         // One past the global window cap is shed.
         assert_eq!(t.check("10.0.99.99", ""), ThrottleDecision::GlobalLimited);
+    }
+
+    #[test]
+    fn throttle_banned_source_does_not_consume_global_budget() {
+        // audit M-1: a source already in backoff/ban must be rejected WITHOUT
+        // eating a global-limit slot. Otherwise a single throttled attacker could
+        // flood the global window with doomed attempts and shed legitimate users.
+        let t = VerifyThrottle::new();
+        // Drive one source into a hard-cap ban.
+        for _ in 0..THROTTLE_HARD_LIMIT {
+            t.record_failure("6.6.6.6", "devBan");
+        }
+        assert!(matches!(
+            t.check("6.6.6.6", "devBan"),
+            ThrottleDecision::Banned { .. }
+        ));
+        // Hammer the banned source far past the global window cap. None of these
+        // doomed attempts should consume global budget…
+        for _ in 0..(THROTTLE_GLOBAL_MAX * 3) {
+            assert!(matches!(
+                t.check("6.6.6.6", "devBan"),
+                ThrottleDecision::Banned { .. }
+            ));
+        }
+        // …so a legitimate fresh source still gets through (not GlobalLimited).
+        assert_eq!(t.check("4.4.4.4", "devOk"), ThrottleDecision::Allow);
     }
 }
