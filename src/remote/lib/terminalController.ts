@@ -473,7 +473,12 @@ export class TerminalController {
   startSelection(row: number, col: number) {
     if (this.destroyed) return;
     this.isSelecting = true;
-    this.selAnchorRow = row;
+    // 与 extendSelection 保持一致：anchor 也须换算为绝对行（scrollback 相对），
+    // 否则 setSelectionAbs 的 anchor/end 坐标系不同，scrolled 状态下选区永远偏移。
+    const absRow = this.kernel.scrollbackLen() > 0
+      ? row + (this.kernel.scrollOffset() > 0 ? this.kernel.scrollOffset() : 0)
+      : row;
+    this.selAnchorRow = absRow;
     this.selAnchorCol = col;
     this.kernel.clearSelection();
     this.markDirty();
@@ -610,8 +615,8 @@ export class TerminalController {
     const x = clientX - rect.left;
     const y = clientY - rect.top;
     return {
-      col: Math.max(0, Math.floor(x / this.cellW)),
-      row: Math.max(0, Math.floor(y / this.cellH)),
+      col: Math.max(0, Math.min(this.cols - 1, Math.floor(x / this.cellW))),
+      row: Math.max(0, Math.min(this.rows - 1, Math.floor(y / this.cellH))),
     };
   }
 

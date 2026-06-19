@@ -324,6 +324,15 @@ impl PaneParser {
         if self.is_alt != Some(alt_now) {
             deltas.push(GridDelta::ScreenSwitch { is_alt: alt_now });
             self.is_alt = Some(alt_now);
+            // 切屏 = 整屏内容映射改变,旧基线属于另一张屏,对新屏
+            // 已失效。必须像 resize / RIS 一样把基线重置为全 blank,
+            // 否则后续的 cell-diff 会拿新屏内容与旧屏 snapshot 比较:
+            // 若恰好同位同字(如重进 alt 的 TUI 与上次残留相同)则
+            // 判定"无变化"而不发 Cells,镜像便保留上一次会话残留
+            // (「TUI 退出再进残留」)。重置后 diff 会全量重发当前屏。
+            let cols = self.terminal.cols();
+            let rows = self.terminal.rows();
+            self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
         }
 
         // 1b. Scrollback growth. Compare today's `scrollback_len()` +
@@ -711,6 +720,35 @@ mod tests {
                 .any(|d| matches!(d, GridDelta::ScreenSwitch { is_alt: false })),
             "expected ScreenSwitch(is_alt=false) on DECRST 1049; got {:?}",
             leave.deltas
+        );
+    }
+
+    #[test]
+    fn screen_switch_resets_diff_baseline_so_content_reemits() {
+        // 「TUI 退出再进残留」回归测试(后端侧)。切屏会整屏改变
+        // 内容映射,cell-diff 基线 `self.snapshot` 必须随之重置为全
+        // blank,否则当 alt 屏的内容恰好与上一屏 snapshot 相同(同位
+        // 同字)时,diff 会判定"无变化"而不发 Cells,镜像便保留上次
+        // 残留。这里在 primary row0 写 "ABC",再进入 alt 屏同样在
+        // row0 写 "ABC":若基线未重置,alt 的 "ABC" 与 snapshot 的
+        // "ABC" 相同 → 无 Cells;基线重置后 → 重发 "ABC"。
+        let mut p = make_parser(4, 10);
+        let _ = p.feed_and_diff(b"");
+        // primary row0 = "ABC",将其写入基线 snapshot。
+        let _ = p.feed_and_diff(b"ABC");
+        // 进入 alt 屏(DECSET 1049),光标 home,在 alt row0 写 "ABC"。
+        let frame = p.feed_and_diff(b"\x1b[?1049h\x1b[HABC");
+        // 必须有覆盖 row0 且含 'A' 的 Cells delta。
+        let reemits_row0 = frame.deltas.iter().any(|d| match d {
+            GridDelta::Cells { row, cells, .. } => {
+                *row == 0 && cells.iter().any(|c| c.ch == 'A')
+            }
+            _ => false,
+        });
+        assert!(
+            reemits_row0,
+            "切屏后基线未重置,alt 屏内容未被重发;got {:?}",
+            frame.deltas
         );
     }
 

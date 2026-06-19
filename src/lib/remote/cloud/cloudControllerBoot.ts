@@ -33,7 +33,8 @@ import {
 } from '$lib/transport/remote/cloudWebrtcAdapter';
 import { ControllerCloudProvider } from './controllerCloudProvider';
 import type { CloudConnectionCallbacks, CloudConnectionState } from './connectionProvider';
-import { snapshot as authSnapshot } from './auth';
+import { snapshot as authSnapshot, cloudAuth, refreshAccess } from './auth';
+import { get } from 'svelte/store';
 import { computeBindTag, bytesToBase64 } from './e2ee';
 
 /** URL query 参数名（cloud-controller 模式触发 + 目标）。 */
@@ -73,6 +74,11 @@ const TOTP_VERIFY_TIMEOUT_MS = 20_000;
 /** 进程内单例句柄：保证幂等（重复 boot 不重复 attach / 不开多条 WebRTC）。 */
 let active: CloudControllerHandle | null = null;
 
+/** access token 定时刷新间隔（ms）：10 分钟，短于 15 分钟过期窗口，保证 WS 重连始终用新 token。 */
+const TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+/** 定时刷新 timer，disconnect 时清除。 */
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
 /**
  * 以 cloud-controller 形态接线并发起连接。返回句柄（含 adapter）。
  *
@@ -110,7 +116,13 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
       onFrame: (b) => adapterCallbacks.onFrame?.(b),
       onError: (message, code) => params.onError?.(message, code),
     };
-    return new ControllerCloudProvider({ userToken, username, baseDomain: undefined }, callbacks);
+    // 传 getter 而非固定字符串：每次 WS/WebRTC (重)连时动态读 cloudAuth store，
+    // 保证使用的是最新 access token，防止 15 分钟过期后重连失败。
+    return new ControllerCloudProvider({
+      userToken: () => get(cloudAuth).userToken ?? userToken,
+      username,
+      baseDomain: undefined,
+    }, callbacks);
   });
 
   // bridge 内部建 L2 RpcClient + D9 $/hello + use-global-workspace（与 LAN boot 一致）。
@@ -121,6 +133,11 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   // 发起连接（信令 → offer → E2EE → connected）。失败经 provider onError/onState 透传。
   void adapter.connect();
 
+  // 定时刷新 access token：每 10 分钟主动刷新，保证 cloudAuth.userToken 始终在过期前更新，
+  // 使上方 getter `() => get(cloudAuth).userToken` 在 WS 重连时总能拿到有效 token。
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => { void refreshAccess(); }, TOKEN_REFRESH_INTERVAL_MS);
+
   const handle: CloudControllerHandle = {
     adapter,
     hostDevice: params.hostDevice,
@@ -128,6 +145,10 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
       return verifyTotpOverControl(adapter, code, timeoutMs);
     },
     disconnect() {
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
       adapter.close();
       adapter.dispose();
       if (active === handle) active = null;

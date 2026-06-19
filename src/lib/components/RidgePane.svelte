@@ -627,10 +627,9 @@ function repositionImeHelper() {
 	imeHelper.style.left = `${pos.x}px`;
 	imeHelper.style.top = `${pos.y}px`;
 	imeHelper.style.bottom = 'auto';
-	// Cell dimensions drive the textarea's own `width / height` (set
-	// in CSS via `var(--rg-ime-cell-w)`), so the OS IME has a real
-	// cell-sized rect to anchor its candidate window against.
-	imeHelper.style.setProperty('--rg-ime-cell-w', `${pos.cellW}px`);
+	// §缺陷A: textarea 宽度固定 1px（见 CSS），不再随 cell 宽变化——故不再
+	// 设 `--rg-ime-cell-w`。仅把 cell 高度喂给 CSS（`var(--rg-ime-cell-h)`）
+	// 让候选框有一个 cell 高的竖直锚点矩形。
 	imeHelper.style.setProperty('--rg-ime-cell-h', `${pos.cellH}px`);
 }
 
@@ -707,10 +706,13 @@ function onCompositionStart() {
 			manager.setPreedit?.(paneId, next, composingAnchor.row, composingAnchor.col);
 			preeditSentToPty = next;
 		}
-		if (imeHelper && composingAnchor && e.data) {
-			const charCount = e.data.length;
-			imeHelper.style.width = `${(charCount + 1) * composingAnchor.cellW}px`;
-		}
+		// §缺陷A (2026-06-18): NOT widen the hidden textarea during composition.
+		// 以前这里把 textarea 宽度撑成 `(charCount+1)*cellW`，col 0 时它 `left:0`
+		// 贴分区左边界又被聚焦 → WebView2/Chromium 对 overflow:hidden 祖先隐式设
+		// scrollLeft，把整屏内容左移（「最左侧顶偏」）。preedit 文本本就由 wasm
+		// 渲染器画在 cell 网格上、候选框只需一个 cell 大小的锚点矩形，textarea
+		// 无需随输入加宽。固定窄宽（见 .rg-ime-helper CSS）即可，借鉴 remote 端
+		// hidden-input 固定 1px 的做法。
 		diagLogIme('update', { dataLen: e.data?.length ?? 0, data: e.data });
 	}
 
@@ -762,7 +764,10 @@ function onCompositionStart() {
 		}
 		if (imeHelper) {
 			imeHelper.value = '';
-			imeHelper.style.width = 'auto';
+			// §缺陷A: textarea 宽度由 CSS 固定为 1px，composition 期不再内联
+			// 撑宽，故这里也不再需要恢复宽度——清空可能残留的内联 width（防御
+			// 历史样式），让其回落到 CSS 固定值。
+			imeHelper.style.width = '';
 		}
 
 		// §1.27 fix: force a full-frame redraw so any canvas pixels that
@@ -1945,12 +1950,21 @@ function captureBackspace(node: HTMLElement) {
 		 * `opacity: 0` because some OS IMEs (Microsoft Pinyin
 		 * notably) treat an opacity:0 input as "hidden" and switch
 		 * back to popup-rendered preedit — undoing the whole point.
-		 * Pixel rect is one cell-sized box at the kernel cursor so
-		 * the OS positions the candidate popup correctly below it. */
+		 * Pixel rect 用一个「极窄、一个 cell 高」的盒子锚定在光标格上：
+		 * 候选框只需要一个左上角锚点 + 行高，宽度无需贴合输入文字长度。
+		 *
+		 * §缺陷A (2026-06-18): 宽度固定为 1px（借鉴 remote 端 hidden-input
+		 * 的 width:1px 做法）。以前 base 用一个 cell 宽、composition 期还被
+		 * onCompositionUpdate 内联撑成 (charCount+1)*cellW，当光标在 col 0 时
+		 * textarea `left:0` 贴分区左边界且被聚焦，WebView2/Chromium 会对
+		 * overflow:hidden 的祖先隐式设 scrollLeft，把整屏内容整体左移（即
+		 * 「最左侧输入顶偏」）。固定 1px 宽 + 不再随输入加宽，textarea 永远
+		 * 不会被撑出可滚动内容，scrollLeft 恒为 0，顶偏消失。高度保留一个
+		 * cell（var(--rg-ime-cell-h)）供 IME 候选框竖直锚定。 */
 		position: absolute;
 		left: 0;
 		top: 0;
-		width: var(--rg-ime-cell-w, 8px);
+		width: 1px;
 		height: var(--rg-ime-cell-h, 18px);
 		opacity: 1;
 		pointer-events: none;
@@ -1972,10 +1986,11 @@ function captureBackspace(node: HTMLElement) {
 		 * the PTY (see `onCompositionUpdate` in this file) so the shell
 		 * echoes it back and the user sees pinyin/kana letters appear
 		 * at the cursor cell — drawn by the wasm canvas renderer, not
-		 * by an overlay. The textarea itself stays invisible; we only
-		 * resize its width slightly so the OS candidate popup anchors
-		 * close to the user's typed letters. */
-		width: var(--rg-ime-cell-w, 8px);
+		 * by an overlay. The textarea itself stays invisible.
+		 *
+		 * §缺陷A: 宽度同样固定 1px——composition 期绝不加宽，避免 col 0
+		 * 时触发祖先 scrollLeft 导致整屏左移。 */
+		width: 1px;
 		height: var(--rg-ime-cell-h, 18px);
 		opacity: 0;
 		pointer-events: none;

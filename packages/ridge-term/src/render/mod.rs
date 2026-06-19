@@ -456,6 +456,17 @@ impl AnyBackend {
             AnyBackend::Webgpu(b) => b.record_cached_only(),
         }
     }
+
+    /// §atlas-pin: protect a cached pane's glyph layers from mid-frame
+    /// eviction by another pane's glyph admission. No-op for Canvas2D
+    /// (no shared atlas / `frame_written` mask).
+    pub fn pin_cached_layers(&mut self) {
+        match self {
+            AnyBackend::Canvas2d(_) => {}
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.pin_cached_layers(),
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

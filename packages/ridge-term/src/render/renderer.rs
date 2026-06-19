@@ -720,6 +720,13 @@ impl Renderer<crate::render::AnyBackend> {
     pub fn record_cached_only(&mut self) -> bool {
         self.backend.record_cached_only()
     }
+
+    /// §atlas-pin: passthrough so JS can pin a cached pane's glyph layers
+    /// before this frame's full renders run (see `WebGpuPaneBackend::
+    /// pin_cached_layers`).
+    pub fn pin_cached_layers(&mut self) {
+        self.backend.pin_cached_layers()
+    }
 }
 
 fn cursor_eq(a: &Option<CursorDraw>, b: &Option<CursorDraw>) -> bool {

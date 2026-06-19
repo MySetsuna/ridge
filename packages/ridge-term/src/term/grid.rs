@@ -87,11 +87,12 @@ impl Screen {
 
 /// Which branch `Grid::resize` actually took. Retained so frontend devtools
 /// (`__RIDGE_KERNEL.lastResizeDiags()`) can confirm the §1.22 wipe path
-/// fired in a live scenario. Since §1.25 (2026-05-06) the kernel never
-/// reflows on resize — both primary and alt always go through naive
-/// truncate/pad — so only one branch exists. The enum stays for
-/// forward-compat: a future deferred-reflow mode (run only when no TUI
-/// is active and only on idle) would add a `DeferredReflow` variant.
+/// fired in a live scenario. History notes: §1.25 (2026-05-06) disabled
+/// reflow entirely (naive truncate/pad everywhere); §Reflow (2026-06-01) +
+/// §reflow-fix (2026-06-18) re-introduced and then corrected primary-screen
+/// history reflow on a width change. The alt screen still always takes the
+/// `Naive` branch; the primary screen takes `Reflowed` on a width change (and
+/// `Naive` otherwise).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ResizeBranch {
     /// Naive truncate/pad on both screens. Used for alt screen and
@@ -747,28 +748,27 @@ impl Grid {
         self.cursor_to(0, 0);
     }
 
-    /// Resize. Both primary and alt screens always go through naive
-    /// truncate/pad — the kernel does not reflow.
+    /// Resize. The ALT screen always goes through naive truncate/pad (the
+    /// foreground TUI repaints it on SIGWINCH). The PRIMARY screen's HISTORY
+    /// (scrollback + the rows above the live region) is REWRAPPED on a width
+    /// change — see `reflow_primary_history` — while its live region (the
+    /// shell prompt / inline-TUI frame) gets naive truncate/pad and is
+    /// repainted by the foreground program.
     ///
-    /// §1.25 (2026-05-06): the previous reflow path (`reflow_primary`) was
-    /// removed. Reasoning: any application that cares about the new size
-    /// receives SIGWINCH from the PTY and emits its own redraw at the new
-    /// width — shells (PSReadLine, fish, zsh-zle), full-screen TUIs (vim,
-    /// less, htop), and Ink-based CLIs (claude code, lazygit) all do this.
-    /// A simultaneous kernel-side reflow races with that redraw: while
-    /// reflow is moving cells around to a new wrap, the application's own
-    /// repaint bytes arrive and overwrite cells based on a layout the
-    /// kernel has already mutated, producing "字符打架" (visible
-    /// overdraw) and post-exit cursor drift. Naive truncate/pad
-    /// eliminates the race entirely — the only state the kernel mutates
-    /// is the row count and a per-row column truncation/extension; no
-    /// cells move between rows.
+    /// Historical context: §1.25 (2026-05-06) removed the original reflow
+    /// path because a kernel-side reflow that touched the LIVE region raced
+    /// the application's own SIGWINCH redraw — while reflow moved cells, the
+    /// app's repaint bytes landed on a layout the kernel had already mutated,
+    /// producing "字符打架" (overdraw) and cursor drift. §Reflow (2026-06-01)
+    /// re-introduced reflow but scoped it to the HISTORY ABOVE the live
+    /// region, so the racy live cells are never moved — only permanent
+    /// already-emitted output (which only the terminal can rewrap) is
+    /// rewrapped. §reflow-fix (2026-06-18) made that history reflow
+    /// idempotent, scrollback-aware, and wide-char-safe (this is why
+    /// repeated shell resizes no longer accumulate "错乱错行错位").
     ///
-    /// This matches xterm, kitty, alacritty, iTerm2, and Windows Terminal
-    /// — none of which reflow on resize by default. Reflow of *scrollback*
-    /// (when the user pages up after a width change) remains a separate,
-    /// deferrable concern that can be addressed without touching the
-    /// active viewport.
+    /// This matches conhost's `ResizeWithReflow` and Windows Terminal, which
+    /// rewrap wrapped lines on a width change.
     ///
     /// Scroll-region preservation rule (unchanged): if the region was the
     /// default full screen before resize (top=0, bottom=rows-1), extend it
@@ -781,8 +781,7 @@ impl Grid {
     ///
     /// `primary.saved_cursor` (DECSC'd by `?1049h`) is clamped to the new
     /// bounds inside `naive_resize_screen` so `?1049l` exit lands on a
-    /// valid cell. Because no rewrap moves cells, the saved (row, col)
-    /// stays semantically anchored to the same prompt line.
+    /// valid cell.
     /// Convenience wrapper used by tests and the rare caller that doesn't
     /// know whether an inline TUI is active. Equivalent to
     /// `resize_with_inline_tui(rows, cols, false)`. The production wasm
@@ -840,7 +839,10 @@ impl Grid {
         };
         let reflowed = cols_changed && !self.is_alt && reflow_boundary > 0;
         if reflowed {
-            self.reflow_primary_screen_at(old_cols, cols, reflow_boundary);
+            // Shell path preserves its prompt/edit live region; the inline-TUI
+            // path treats the region below the frame top as wipeable canvas, so
+            // history may take the whole screen there. §reflow-fix.
+            self.reflow_primary_history(old_cols, cols, reflow_boundary, !inline_tui_active);
         }
 
         Self::naive_resize_screen(&mut self.primary, rows, cols);
@@ -927,10 +929,10 @@ impl Grid {
             //
             // §reflow-inline (2026-06-16): when the history above the frame
             // was just rewrapped, the frame top moved by the row-count delta.
-            // `reflow_primary_screen_at` left `primary.cursor.row` at the new
-            // frame top (boundary + delta), so anchor the wipe there. Without
-            // reflow (rows-only change, or no recorded frame top) fall back to
-            // the original `last_abs_csi_row` anchor / full wipe.
+            // `reflow_primary_history` left `primary.cursor.row` at the new
+            // frame top (the new history row count), so anchor the wipe there.
+            // Without reflow (rows-only change, or no recorded frame top) fall
+            // back to the original `last_abs_csi_row` anchor / full wipe.
             let last_row_idx = rows.saturating_sub(1);
             let wipe_from_row = if reflowed {
                 self.primary.cursor.row.min(last_row_idx)
@@ -1091,198 +1093,274 @@ impl Grid {
     // Reflow (primary screen only)
     // ------------------------------------------------------------------
 
-    /// Reflow history rows `[0..boundary)` at the new column width. Groups
-    /// consecutive rows into paragraphs using the `wrapped` flag, flattens
-    /// each paragraph's cells, and re-splits at `new_cols`. Replaces the
-    /// history portion of `self.primary.rows` and adjusts the cursor row by
-    /// the row-count delta.
+    /// Reflow the primary "history" document — the scrollback rows plus the
+    /// visible rows `[0..boundary)` — at the new column width, treating it as
+    /// ONE continuous text. Soft-wrapped paragraphs (runs joined by the
+    /// `wrapped` flag, INCLUDING a paragraph that straddles the
+    /// scrollback↔visible boundary) are stitched, then re-split at `new_cols`.
     ///
-    /// §reflow-inline (2026-06-16) — the `boundary` parameter is the start of
-    /// the "live region" that is NOT reflowed (it gets naive truncate/pad and
-    /// is repainted by the foreground program on SIGWINCH). It is the shell
-    /// cursor row for the PSReadLine path, and the inline-TUI frame top
-    /// (`last_abs_csi_row`) for the Claude-Code-default path. `primary.cursor.row`
-    /// is set to `boundary + row_count_delta` so the caller can re-anchor the
-    /// live region after the rewrap (the inline path reads it back as the new
-    /// frame top for its wipe). `boundary == 0` → no history → no-op.
+    /// Correctness contract (the four §reflow-fix goals):
+    ///  1. **Idempotent / non-destructive** — re-wrapping is driven only by
+    ///     the logical content of each paragraph (trailing blanks on every
+    ///     constituent row are treated as non-content: a wrapped row's tail
+    ///     blanks are the wide-char wrap pad the kernel inserts, and the last
+    ///     row's tail blanks are unused columns). So width A → B → A restores
+    ///     the original layout instead of accumulating drift.
+    ///  2. **Scrollback folded in** — the straddling paragraph's head rows are
+    ///     pulled OUT of scrollback so it rewraps as a whole; rows that no
+    ///     longer fit above the live region overflow back INTO scrollback
+    ///     (oldest first) rather than being dropped.
+    ///  3. **Wide-char pairing** — a width-2 cell is never split across the
+    ///     row boundary: if its main half would land in the last column it is
+    ///     pushed whole to the next row and a blank pad fills the vacated
+    ///     column (mirroring `print`'s own wrap rule). Its width-0 spacer
+    ///     always rides with it.
+    ///
+    /// `preserve_cursor_area`:
+    ///  - `true` (shell / PSReadLine): the live region `[boundary..)` is the
+    ///    prompt + edit line, anchored to the cursor. Visible history is
+    ///    capped at `boundary` rows; the surplus overflows to scrollback so
+    ///    the prompt stays put. `cursor.row` lands at the new history count
+    ///    (≤ boundary).
+    ///  - `false` (inline TUI): the region below the frame top is wipeable
+    ///    canvas, so history takes priority — it may grow to the full screen,
+    ///    trimming the (about-to-be-wiped) live region from the bottom.
+    ///    `cursor.row` lands at the new history count so the caller can
+    ///    re-anchor the frame-wipe there (the inline path reads it back).
     ///
     /// Runs BEFORE `naive_resize_screen` so the old-width cell data is still
-    /// intact for redistribution. Hyperlink / cluster metadata (OSC 8,
-    /// grapheme clusters) is dropped on reflow.
-    fn reflow_primary_screen_at(&mut self, old_cols: usize, new_cols: usize, boundary: usize) {
+    /// intact. Hyperlink / cluster sidecars (OSC 8, ZWJ-emoji) are dropped on
+    /// reflow — they're ephemeral and the cell's `ch`/`width` render fine.
+    /// `boundary == 0` with no wrapped scrollback tail → no history → no-op.
+    fn reflow_primary_history(
+        &mut self,
+        old_cols: usize,
+        new_cols: usize,
+        boundary: usize,
+        preserve_cursor_area: bool,
+    ) {
         debug_assert!(old_cols != new_cols);
-        let screen = &mut self.primary;
-        let old_cursor_row = boundary;
-        if old_cursor_row == 0 {
+        // A zero-width grid has no columns to wrap into — bail and let the
+        // naive path handle the (degenerate) resize. Guards the indexing in
+        // the re-split loop below against a 0-length row.
+        if new_cols == 0 {
+            return;
+        }
+        let total_rows = self.rows;
+        let boundary = boundary.min(total_rows);
+
+        // ── 1. Gather the source document (scrollback head + visible) ─────
+        // Pull the maximal wrapped tail of scrollback: those rows form the
+        // HEAD of the paragraph that continues into visible row 0, so they
+        // must rewrap together with it. A scrollback row with `wrapped=true`
+        // continues into the row below it (eventually visible row 0). Walk
+        // back from the newest scrollback row while it is wrapped.
+        let sb_len = self.scrollback.len();
+        let mut straddle = 0usize; // count of scrollback rows pulled
+        while straddle < sb_len
+            && self
+                .scrollback
+                .get(sb_len - 1 - straddle)
+                .map_or(false, |r| r.wrapped)
+        {
+            straddle += 1;
+        }
+
+        // Source rows in document order: pulled scrollback head, then the
+        // visible history rows [0..boundary).
+        let mut src: Vec<Row> = Vec::with_capacity(straddle + boundary);
+        for i in (sb_len - straddle)..sb_len {
+            src.push(self.scrollback.get(i).expect("in range").clone());
+        }
+        for r in 0..boundary {
+            src.push(self.primary.rows[r].clone());
+        }
+
+        if src.is_empty() {
             return;
         }
 
-        // ── 1. Build paragraphs from rows [0..old_cursor_row) ──────────
-        // A paragraph is a group of rows where every row except the last
-        // has `wrapped = true`. Each paragraph represents one visual line
-        // (which may be soft-wrapped across multiple grid rows).
-        struct Paragraph {
-            rows: std::ops::Range<usize>,
+        // Remove the pulled head from scrollback: keep the non-straddling
+        // prefix, clear, re-push it. (Scrollback exposes no pop-newest, so we
+        // rebuild; the common no-straddle case skips this entirely.)
+        if straddle > 0 {
+            let keep: Vec<Row> = (0..(sb_len - straddle))
+                .map(|i| self.scrollback.get(i).expect("in range").clone())
+                .collect();
+            self.scrollback.clear();
+            for row in keep {
+                self.scrollback.push(row);
+            }
         }
-        let mut paragraphs: Vec<Paragraph> = Vec::new();
-        let mut i = 0;
-        while i < old_cursor_row {
+
+        // ── 2. Group into paragraphs and reflow each ──────────────────────
+        // A paragraph is a maximal run where every row but the last has
+        // `wrapped == true`. Flatten each paragraph's LOGICAL content, then
+        // re-split. The flatten rule is what keeps the rewrap idempotent AND
+        // lossless:
+        //  - A WRAPPED (non-last) row is FULL — the cursor advanced past its
+        //    last column, so every cell (including trailing spaces between
+        //    words) is real content and must be kept. The ONE exception is the
+        //    wide-char wrap pad: when a width-2 cell couldn't fit in the last
+        //    column, `print` writes a blank there and starts the wide char on
+        //    the next row. That pad blank is NOT content — detect it (last cell
+        //    blank AND next row begins with a width-2 main) and drop it.
+        //  - The LAST (non-wrapped) row's trailing blanks are unused columns —
+        //    trim them.
+        let mut out_rows: Vec<Row> = Vec::new(); // reflowed history, doc order
+        let mut i = 0usize;
+        while i < src.len() {
             let start = i;
-            while i + 1 < old_cursor_row && screen.rows[i].wrapped {
+            while i + 1 < src.len() && src[i].wrapped {
                 i += 1;
             }
-            // i is the last row of this paragraph (may equal start for
-            // single-row paragraphs). Advance past it.
-            paragraphs.push(Paragraph { rows: start..i + 1 });
+            let para_end = i + 1; // exclusive
             i += 1;
-        }
 
-        if paragraphs.is_empty() {
-            return;
-        }
-
-        // ── 2. Reflow each paragraph ──────────────────────────────────
-        // Flatten cells, trim trailing blanks, re-split at new_cols.
-        struct ReflowedPara {
-            /// One `Vec<Cell>` per output row.
-            rows: Vec<Vec<Cell>>,
-            // Hyperlinks and clusters from the original paragraph are
-            // dropped on reflow (OSC 8 links are ephemeral; the cell's
-            // first codepoint in `cell.ch` renders fine without clusters).
-        }
-        let mut reflowed: Vec<ReflowedPara> = Vec::with_capacity(paragraphs.len());
-
-        for para in &paragraphs {
-            // Collect cells from all rows in this paragraph.
+            // Flatten the paragraph's logical cells.
             let mut flat: Vec<Cell> = Vec::new();
-            for r in para.rows.clone() {
-                flat.extend_from_slice(&screen.rows[r].cells);
+            for r in start..para_end {
+                let cells = &src[r].cells;
+                if r + 1 < para_end {
+                    // Wrapped row: keep the full width, minus a wide-char pad.
+                    let mut take = cells.len();
+                    let next_starts_wide = src[r + 1]
+                        .cells
+                        .first()
+                        .map_or(false, |c| c.width == 2);
+                    if next_starts_wide
+                        && take > 0
+                        && cells[take - 1].width == 1
+                        && cells[take - 1].is_blank()
+                    {
+                        take -= 1;
+                    }
+                    flat.extend_from_slice(&cells[..take]);
+                } else {
+                    // Last row of the paragraph: trim trailing blanks.
+                    let mut last_content = 0usize; // one past last non-blank
+                    for (idx, c) in cells.iter().enumerate() {
+                        if !c.is_blank() {
+                            last_content = idx + 1;
+                        }
+                    }
+                    flat.extend_from_slice(&cells[..last_content]);
+                }
             }
-            // Trim trailing blanks from the paragraph as a whole.
-            while flat.last().map_or(false, |c| c.is_blank()) {
-                flat.pop();
-            }
+
             if flat.is_empty() {
-                // Empty paragraph → single blank row.
-                reflowed.push(ReflowedPara {
-                    rows: vec![vec![Cell::EMPTY; new_cols]],
-                });
+                // Empty paragraph → one blank row.
+                out_rows.push(Row::new(new_cols));
                 continue;
             }
-            // Re-split at new_cols.
-            let num = (flat.len() + new_cols - 1) / new_cols;
-            let mut para_rows: Vec<Vec<Cell>> = Vec::with_capacity(num);
-            for r in 0..num {
-                let start_off = r * new_cols;
-                let end_off = std::cmp::min(start_off + new_cols, flat.len());
-                let mut row_cells = vec![Cell::EMPTY; new_cols];
-                for (j, cell) in flat[start_off..end_off].iter().enumerate() {
-                    row_cells[j] = *cell;
-                }
-                para_rows.push(row_cells);
-            }
-            reflowed.push(ReflowedPara { rows: para_rows });
-        }
 
-        // ── 3. Replace rows ───────────────────────────────────────────
-        let new_history_count: usize = reflowed.iter().map(|p| p.rows.len()).sum();
-        let old_history_count = old_cursor_row;
-        let cursor_delta = new_history_count as isize - old_history_count as isize;
-        let cursor_area_count = self.rows - old_cursor_row;
-        let total_rows = self.rows;
-
-        // Compute how many rows we need for the full screen post-reflow.
-        let needed = new_history_count + cursor_area_count;
-
-        // Strip the original cursor-area rows from the screen.
-        let cursor_area: Vec<Row> = screen.rows.drain(old_cursor_row..).collect();
-
-        // Drain the history area too (we'll replace it entirely).
-        screen.rows.clear();
-
-        if needed <= total_rows {
-            // Room for everything. Fill from top: reflowed history followed
-            // by cursor-area rows, then blank padding below.
-            let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
-            for para in &reflowed {
-                let pn = para.rows.len();
-                for (r_idx, cells) in para.rows.iter().enumerate() {
-                    let mut row = Row::new(new_cols);
-                    row.cells.clone_from_slice(cells);
-                    row.wrapped = r_idx < pn - 1;
-                    new_rows.push(row);
-                }
-            }
-            for orig in &cursor_area {
-                let row = orig.clone();
-                new_rows.push(row);
-            }
-            while new_rows.len() < total_rows {
-                new_rows.push(Row::new(new_cols));
-            }
-            screen.rows = new_rows;
-        } else {
-            // Content exceeds visible rows — drop oldest paragraphs until
-            // it fits. Then fill from top.
-            let excess = needed - total_rows;
-            let mut drop = 0usize;
-            let mut accumulated = 0usize;
-            for para in &reflowed {
-                let n = para.rows.len();
-                if accumulated + n <= excess {
-                    accumulated += n;
-                    drop += 1;
+            // Re-split at new_cols, keeping wide pairs atomic.
+            let mut col = 0usize;
+            let mut row = Row::new(new_cols);
+            let mut j = 0usize;
+            while j < flat.len() {
+                let cell = flat[j];
+                if cell.width == 2 {
+                    // Wide main needs two columns. If it (or its spacer) would
+                    // straddle the right edge, wrap first and pad the gap.
+                    if col + 2 > new_cols {
+                        // Pad the remaining column(s) of this row, mark wrapped.
+                        // (A 1-col terminal can't hold a wide char at all; fall
+                        // through placing nothing and skip the cell to avoid an
+                        // infinite loop.)
+                        row.wrapped = true;
+                        out_rows.push(std::mem::replace(&mut row, Row::new(new_cols)));
+                        col = 0;
+                        if new_cols < 2 {
+                            // Degenerate width: drop the unplaceable wide cell
+                            // (and its spacer) so we make progress.
+                            j += 1;
+                            while j < flat.len() && flat[j].width == 0 {
+                                j += 1;
+                            }
+                            continue;
+                        }
+                    }
+                    row.cells[col] = cell;
+                    // Place the spacer ourselves (don't rely on the source's,
+                    // which we may have just split away from).
+                    row.cells[col + 1] = Cell::wide_spacer(cell.attr);
+                    col += 2;
+                    j += 1;
+                    // Consume a following width-0 spacer from the source if
+                    // present (already represented by the one we wrote).
+                    if j < flat.len() && flat[j].width == 0 {
+                        j += 1;
+                    }
+                } else if cell.width == 0 {
+                    // Orphan spacer with no preceding main (shouldn't happen
+                    // after the trim, but be defensive): skip it.
+                    j += 1;
                 } else {
-                    break;
+                    // Narrow cell.
+                    if col >= new_cols {
+                        row.wrapped = true;
+                        out_rows.push(std::mem::replace(&mut row, Row::new(new_cols)));
+                        col = 0;
+                    }
+                    row.cells[col] = cell;
+                    col += 1;
+                    j += 1;
                 }
             }
-            // Drop `drop` paragraphs from the beginning (oldest).
-            let remaining: Vec<&ReflowedPara> = reflowed.iter().skip(drop).collect();
-
-            // Recompute history count after dropping.
-            let remaining_count: usize = remaining.iter().map(|p| p.rows.len()).sum();
-            // Cursor area might also need trimming.
-            let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
-            for para in &remaining {
-                let pn = para.rows.len();
-                for (r_idx, cells) in para.rows.iter().enumerate() {
-                    let mut row = Row::new(new_cols);
-                    row.cells.clone_from_slice(cells);
-                    row.wrapped = r_idx < pn - 1;
-                    new_rows.push(row);
-                }
-            }
-            // Fill remaining space with cursor rows, then trim cursor
-            // rows from the bottom if needed.
-            // saturating_sub：上面的丢弃是**段落粒度**，当单个段落比剩余 excess 还大时
-            // 丢不掉，`remaining_count` 可能仍 > `total_rows` —— 此时 `total_rows -
-            // remaining_count` 会 subtract-overflow panic（小窗口 resize 崩溃源，
-            // grid.rs:1052），并毒化 wasm 终端对象致后续渲染全 "recursive use"。
-            let space_for_cursor = total_rows.saturating_sub(remaining_count);
-            for orig in cursor_area.iter().take(space_for_cursor) {
-                let row = orig.clone();
-                new_rows.push(row);
-            }
-            while new_rows.len() < total_rows {
-                new_rows.push(Row::new(new_cols));
-            }
-            // 段落粒度丢弃可能仍留下多于可见行数的行：从**顶部**（最旧）裁掉多余部分，
-            // 保证 `screen.rows` 恰为 `total_rows`，避免栅格过大。
-            if new_rows.len() > total_rows {
-                let overflow = new_rows.len() - total_rows;
-                new_rows.drain(0..overflow);
-            }
-            screen.rows = new_rows;
+            // Flush the final (non-wrapped) row of the paragraph.
+            out_rows.push(row);
         }
 
-        // ── 4. Adjust cursor ──────────────────────────────────────────
-        // The cursor was at old_cursor_row in the original layout. After
-        // reflow, history might take more/fewer rows, so we slide the
-        // cursor by the delta, clamped to valid bounds.
-        let new_cursor = (old_cursor_row as isize + cursor_delta).max(0) as usize;
-        screen.cursor.row = new_cursor.min(total_rows.saturating_sub(1));
-        screen.cursor.col = screen.cursor.col.min(new_cols.saturating_sub(1));
-        screen.cursor.pending_wrap = false;
+        // ── 3. Lay out: history at top, live region below ─────────────────
+        // `cursor_area` = the live region rows we preserve verbatim (shell
+        // prompt/edit line). For the inline path these get wiped by the
+        // caller, so trimming them is harmless.
+        let cursor_area_count = total_rows - boundary;
+        let cursor_area: Vec<Row> = self.primary.rows.split_off(boundary);
+        self.primary.rows.clear();
+
+        // How many reflowed history rows may stay VISIBLE above the live
+        // region. Shell keeps the prompt put (cap at `boundary`); inline lets
+        // history use the whole screen (cap at `total_rows`, trim the wipeable
+        // area).
+        let max_visible_history = if preserve_cursor_area {
+            boundary
+        } else {
+            total_rows
+        };
+
+        let history_count = out_rows.len();
+        let visible_history = history_count.min(max_visible_history);
+        let overflow = history_count - visible_history;
+
+        // Overflow oldest history rows back INTO scrollback (oldest first) —
+        // never dropped. Order is preserved: scrollback already holds the
+        // non-straddling prefix; these append after it.
+        for row in out_rows.drain(0..overflow) {
+            self.scrollback.push(row);
+        }
+
+        // Assemble the new visible grid: visible history, then the live
+        // region, then blank padding — trimming the live region from the
+        // BOTTOM if history + live exceeds the screen (only reachable on the
+        // inline path, where the live region is about to be wiped anyway).
+        let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
+        new_rows.append(&mut out_rows); // the `visible_history` rows
+        let live_space = total_rows.saturating_sub(new_rows.len());
+        for orig in cursor_area.into_iter().take(live_space.min(cursor_area_count)) {
+            new_rows.push(orig);
+        }
+        while new_rows.len() < total_rows {
+            new_rows.push(Row::new(new_cols));
+        }
+        new_rows.truncate(total_rows);
+        self.primary.rows = new_rows;
+
+        // ── 4. Re-anchor the cursor at the new live-region top ────────────
+        self.primary.cursor.row = visible_history.min(total_rows.saturating_sub(1));
+        self.primary.cursor.col = self.primary.cursor.col.min(new_cols.saturating_sub(1));
+        self.primary.cursor.pending_wrap = false;
     }
 
     // ------------------------------------------------------------------
@@ -2561,11 +2639,11 @@ mod tests {
         assert_eq!(g.row(0).unwrap().cells[0].ch, 'p');
     }
 
-    // §1.25 (2026-05-06): the kernel never reflows. While alt is active,
-    // primary's `saved_cursor` (DECSC'd by `?1049h`) must stay anchored to
-    // its original (row, col) so `?1049l` lands on the prompt line. Naive
-    // truncate/pad clamps the saved coordinates inside the new bounds but
-    // never moves them across rows.
+    // While ALT is active the primary screen takes the naive path (no reflow
+    // runs on the inactive primary). Its `saved_cursor` (DECSC'd by `?1049h`)
+    // must stay anchored to its original (row, col) so `?1049l` lands on the
+    // prompt line: naive truncate/pad clamps the saved coordinates inside the
+    // new bounds but never moves them across rows.
     #[test]
     fn resize_on_alt_screen_preserves_primary_saved_cursor() {
         use super::super::cursor::SavedCursor;
@@ -2649,11 +2727,14 @@ mod tests {
         assert_eq!(g.row(3).unwrap().cells[0].ch, 'c');
     }
 
-    // ---- Naive resize (§1.25) -----------------------------------------
-    // The kernel never reflows on resize. Both screens use truncate/pad.
-    // Any post-resize re-layout is the responsibility of the running
-    // application via its SIGWINCH redraw — this avoids the race between
-    // kernel-driven cell migration and the TUI's own diff repaint.
+    // ---- Naive resize -------------------------------------------------
+    // These cases all hit the naive truncate/pad path (no history reflow):
+    // the alt screen, same-width / rows-only resizes, and primary width
+    // changes with the cursor on row 0 (no history above the live region to
+    // rewrap). History reflow on a primary width change is covered separately
+    // by the `reflow_*` and `inline_tui_resize_reflows_history_above_frame`
+    // tests. In the naive cases the running application owns any re-layout via
+    // its SIGWINCH redraw.
 
     /// Helper: read the printable text of a row (stripping trailing blanks).
     fn row_text(g: &Grid, r: usize) -> String {
@@ -2943,6 +3024,312 @@ mod tests {
         assert!(diag.reflowed, "history reflow ran on the inline-TUI path");
         assert!(diag.inline_tui_wipe, "frame region wiped");
         assert!(diag.inline_tui_active, "inline-TUI flag recorded");
+    }
+
+    // ---- §reflow-fix (2026-06-18) shell-mode reflow correctness --------
+    // The shell-mode reflow (`reflow_primary_history` with boundary =
+    // cursor.row) must be idempotent / non-destructive across repeated
+    // resizes, must fold the scrollback into the reflow document, must
+    // overflow the oldest rows INTO scrollback (never drop them), and must
+    // never split a wide-char cell pair across the row boundary.
+
+    /// Reconstruct the printable text of a single grid row WITHOUT trailing-
+    /// blank trimming (so wrap boundaries are visible). Wide-cell spacers
+    /// (width==0, ch=='\0') are skipped so the logical text reads naturally.
+    fn raw_row_text(row: &Row) -> String {
+        row.cells
+            .iter()
+            .filter(|c| !(c.width == 0 && c.ch == '\0'))
+            .map(|c| c.ch)
+            .collect()
+    }
+
+    /// Reconstruct the logical lines of the whole document (scrollback +
+    /// visible rows up to and including `last_visible`) by stitching rows
+    /// joined via the `wrapped` flag. Faithful inverse of the kernel's reflow
+    /// flatten rule: a WRAPPED row contributes its full content (a width-2
+    /// cell can't fit in the last column inserts a wide-char wrap pad — that
+    /// single trailing blank is dropped); the LAST row of a paragraph has its
+    /// trailing blanks trimmed. This is the "去尾空白后按 wrapped 拼接"
+    /// representation the user perceives.
+    fn logical_lines(g: &Grid, last_visible: usize) -> Vec<String> {
+        // Collect the actual rows, scrollback first, then visible.
+        let mut rows: Vec<Row> = Vec::new();
+        for i in 0..g.scrollback.len() {
+            rows.push(g.scrollback.get(i).unwrap().clone());
+        }
+        for r in 0..=last_visible {
+            rows.push(g.row(r).expect("row in range").clone());
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut i = 0usize;
+        while i < rows.len() {
+            let start = i;
+            while i + 1 < rows.len() && rows[i].wrapped {
+                i += 1;
+            }
+            let para_end = i + 1; // exclusive
+            i += 1;
+
+            let mut text = String::new();
+            for r in start..para_end {
+                let row = &rows[r];
+                if r + 1 < para_end {
+                    // Wrapped row: full content minus a wide-char wrap pad.
+                    let cells = &row.cells;
+                    let mut take = cells.len();
+                    let next_starts_wide =
+                        rows[r + 1].cells.first().map_or(false, |c| c.width == 2);
+                    if next_starts_wide
+                        && take > 0
+                        && cells[take - 1].width == 1
+                        && cells[take - 1].is_blank()
+                    {
+                        take -= 1;
+                    }
+                    for c in &cells[..take] {
+                        if !(c.width == 0 && c.ch == '\0') {
+                            text.push(c.ch);
+                        }
+                    }
+                } else {
+                    // Last row of the paragraph: trim trailing blanks.
+                    let mut s = raw_row_text(row);
+                    while s.ends_with(' ') {
+                        s.pop();
+                    }
+                    text.push_str(&s);
+                }
+            }
+            lines.push(text);
+        }
+        lines
+    }
+
+    #[test]
+    fn reflow_round_trip_restores_content() {
+        // A soft-wrapped long logical line in the visible history must be
+        // restored exactly (cells + wrapped flags) after wide → narrow →
+        // wide-back-to-original.
+        let mut g = Grid::new(8, 20, 100);
+        // 24-char logical line wraps across rows 0-1 at 20 cols.
+        for ch in "ABCDEFGHIJKLMNOPQRSTUVWX".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        // Park cursor at row 2 so rows 0-1 are the reflow history.
+        g.cursor_to(2, 0);
+
+        assert!(g.row(0).unwrap().wrapped, "precondition: row 0 wrapped");
+        assert_eq!(row_text(&g, 0), "ABCDEFGHIJKLMNOPQRST");
+        assert_eq!(row_text(&g, 1), "UVWX");
+
+        // Narrow 20 → 10, then grow back 10 → 20 (shell path, inline=false).
+        g.resize_with_inline_tui(8, 10, false);
+        g.resize_with_inline_tui(8, 20, false);
+
+        assert_eq!(g.cols(), 20);
+        assert_eq!(
+            row_text(&g, 0),
+            "ABCDEFGHIJKLMNOPQRST",
+            "round-trip restores first wrapped row"
+        );
+        assert_eq!(row_text(&g, 1), "UVWX", "round-trip restores tail row");
+        assert!(
+            g.row(0).unwrap().wrapped,
+            "round-trip restores the wrapped flag on row 0"
+        );
+        assert!(
+            !g.row(1).unwrap().wrapped,
+            "tail row is not wrapped after round-trip"
+        );
+    }
+
+    #[test]
+    fn reflow_repeated_resize_no_corruption() {
+        // The most user-faithful case: place several identifiable logical
+        // lines, then resize through a sequence of widths many times. The
+        // logical text (wrapped-stitched, trailing-blank-trimmed) must be
+        // preserved without misordering, mangling, or loss.
+        let mut g = Grid::new(10, 24, 200);
+        let originals = [
+            "the quick brown fox jumps over the lazy dog again", // 49 chars
+            "0123456789012345678901234567890",                   // 31 chars
+            "short line",
+        ];
+        for line in originals {
+            for ch in line.chars() {
+                g.print(ch, Attrs::DEFAULT);
+            }
+            g.linefeed();
+            g.carriage_return();
+        }
+        // Cursor now sits on the row after the last printed line; that row and
+        // below are the live region. Everything above is reflow history.
+        let baseline = logical_lines(&g, g.cursor().row.saturating_sub(1));
+        assert!(
+            baseline.iter().any(|l| l.contains("the quick brown fox")),
+            "precondition: content present"
+        );
+
+        // Cycle through widths repeatedly.
+        let widths = [12usize, 40, 7, 30, 18, 50, 24];
+        for _ in 0..3 {
+            for &w in &widths {
+                g.resize_with_inline_tui(10, w, false);
+            }
+        }
+        // Return to the original width for a clean comparison.
+        g.resize_with_inline_tui(10, 24, false);
+
+        let after = logical_lines(&g, g.cursor().row.saturating_sub(1));
+        // Every original logical line must still be present, in order, with
+        // its content intact.
+        for orig in originals {
+            assert!(
+                after.iter().any(|l| l == orig),
+                "logical line lost or corrupted after repeated resize: {orig:?}\n got: {after:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reflow_overflow_goes_to_scrollback() {
+        // Narrowing turns N history rows into >N rows; the rows that no
+        // longer fit ABOVE the live region must roll into scrollback (oldest
+        // first), NOT be dropped.
+        let mut g = Grid::new(4, 20, 100);
+        // Fill rows 0..2 each with a full 20-char line that will DOUBLE when
+        // narrowed to 10 cols. Use distinct content so we can find them.
+        let lines = [
+            "AAAAAAAAAAAAAAAAAAAA",
+            "BBBBBBBBBBBBBBBBBBBB",
+            "CCCCCCCCCCCCCCCCCCCC",
+        ];
+        for line in lines {
+            for ch in line.chars() {
+                g.print(ch, Attrs::DEFAULT);
+            }
+            g.linefeed();
+            g.carriage_return();
+        }
+        // Cursor is at row 3 (live region). History = rows 0,1,2 (3 full
+        // lines). At 10 cols each becomes 2 rows → 6 history rows, but only 3
+        // rows fit above the live region → 3 oldest must overflow to scrollback.
+        assert_eq!(g.scrollback.len(), 0, "precondition: nothing in scrollback");
+        g.resize_with_inline_tui(4, 10, false);
+
+        assert!(
+            g.scrollback.len() >= 1,
+            "overflowed history rows must land in scrollback, not be dropped (len={})",
+            g.scrollback.len()
+        );
+        // The oldest content ('A...') must be recoverable from scrollback +
+        // visible — nothing lost.
+        let doc = logical_lines(&g, g.cursor().row.saturating_sub(1));
+        for line in lines {
+            assert!(
+                doc.iter().any(|l| l == line),
+                "history line {line:?} lost on narrow (must be in scrollback): {doc:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reflow_folds_scrollback_paragraph_across_boundary() {
+        // A logical line whose soft-wrapped tail spilled into scrollback must
+        // rewrap as ONE paragraph with the visible part — the kernel pulls the
+        // wrapped scrollback head back into the reflow. Narrow → grow-back must
+        // restore the original layout without corrupting the boundary.
+        let mut g = Grid::new(3, 20, 100);
+        // One 50-char logical line. At 20 cols it wraps to 3 rows
+        // (20+20+10); on a 3-row grid the oldest wrapped row rolls into
+        // scrollback as content scrolls. Push it there by printing extra
+        // lines after it.
+        for ch in "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.linefeed();
+        g.carriage_return();
+        for ch in "tail".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.linefeed();
+        g.carriage_return();
+        // The long line's head now sits in scrollback (wrapped), its tail
+        // still visible — a paragraph straddling the boundary.
+        assert!(
+            g.scrollback.len() >= 1 && g.scrollback.get(g.scrollback.len() - 1).unwrap().wrapped,
+            "precondition: a wrapped scrollback tail straddles the boundary"
+        );
+        let before = logical_lines(&g, g.cursor().row.saturating_sub(1));
+
+        // Narrow then grow back to the original width.
+        g.resize_with_inline_tui(3, 12, false);
+        g.resize_with_inline_tui(3, 20, false);
+
+        let after = logical_lines(&g, g.cursor().row.saturating_sub(1));
+        assert!(
+            after
+                .iter()
+                .any(|l| l == "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN"),
+            "straddling paragraph must rewrap intact across the scrollback boundary:\n before={before:#?}\n after={after:#?}"
+        );
+        assert!(
+            after.iter().any(|l| l == "tail"),
+            "the following line must survive too: {after:#?}"
+        );
+    }
+
+    #[test]
+    fn reflow_preserves_wide_char() {
+        // A CJK wide char that, after narrowing, would straddle the row
+        // boundary must migrate WHOLE to the next row (with a blank pad in
+        // the vacated last column), never be split into two halves.
+        let mut g = Grid::new(6, 20, 100);
+        // "abcdefgh中" — 8 narrow + 1 wide (width 2) = 10 display cols. At 9
+        // cols the wide char can't fit at col 8 (needs cols 8&9, but col 9 is
+        // past the new width) → must wrap to the next row's col 0.
+        for ch in "abcdefgh中".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        g.cursor_to(2, 0); // park cursor below so row 0 is reflow history
+        assert_eq!(
+            raw_row_text(g.row(0).unwrap()).trim_end(),
+            "abcdefgh中",
+            "precondition at 20 cols"
+        );
+
+        g.resize_with_inline_tui(6, 9, false);
+
+        // The wide char must NOT be split. Find which row holds it and verify
+        // it carries a width==2 main immediately followed by a width==0 spacer.
+        let mut found_wide = false;
+        for r in 0..g.rows() {
+            let cells = &g.row(r).unwrap().cells;
+            for (i, c) in cells.iter().enumerate() {
+                if c.ch == '中' {
+                    found_wide = true;
+                    assert_eq!(c.width, 2, "wide char keeps width==2 after reflow");
+                    assert!(
+                        i + 1 < cells.len(),
+                        "wide char not allowed in the last column (would split the pair)"
+                    );
+                    assert_eq!(
+                        cells[i + 1].width,
+                        0,
+                        "wide char's continuation spacer preserved"
+                    );
+                }
+            }
+        }
+        assert!(found_wide, "the wide char '中' must survive the reflow");
+        // And the logical text is intact.
+        let doc = logical_lines(&g, g.cursor().row.saturating_sub(1));
+        assert!(
+            doc.iter().any(|l| l == "abcdefgh中"),
+            "wide-char line intact after reflow: {doc:#?}"
+        );
     }
 
     #[test]

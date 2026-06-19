@@ -506,15 +506,23 @@
   // 把当前 results 整体推到 fileEditorStore.searchHits —— FileEditor 据此把
   // 当前文件里所有命中一起画装饰。results 变（新搜索 / 清空 / 替换完成）
   // 自动同步；query 改 → results 重算 → 数组刷新 → 装饰更新。
+  //
+  // 按 `active` 门控：仅在「搜索」侧栏 tab 处于激活态时把命中推给编辑器。离开搜索
+  // tab（active=false）即清空 → 编辑器里的搜索高亮（rg-search-flash-inline）随之消失，
+  // 不再作为视觉「蒙层」长期残留覆盖文件内容；回到搜索 tab 时 results 仍在内存、effect
+  // 重跑自动恢复高亮。门控这条既有推送（而非另设 clear effect），避免与后台 results
+  // 重算的推送竞争把高亮重新填回。
   $effect(() => {
     const r = results;
     fileEditorStore.setSearchHits(
-      r.map((it) => ({
-        path: it.file,
-        line: it.line,
-        column: it.column,
-        matchLength: (it.match_text ?? query).length,
-      }))
+      active
+        ? r.map((it) => ({
+            path: it.file,
+            line: it.line,
+            column: it.column,
+            matchLength: (it.match_text ?? query).length,
+          }))
+        : []
     );
   });
 

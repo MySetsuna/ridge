@@ -39,6 +39,7 @@ import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBrid
 import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
 import { DEFAULT_TERM_FONT } from './fontStack';
+import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -3551,6 +3552,58 @@ export class TerminalManager {
 		};
 	}
 
+	/** §IME-scissor (2026-06-18, 缺陷 B): scissor-同源的 IME textarea 像素
+	 *  换算。桌面共享 host canvas 模式下，分区内容画在 host canvas 的 scissor
+	 *  偏移处（`_recomputeViewport` 的 `xDev/yDev`），而 textarea 是分区容器
+	 *  内的 absolute 元素。旧公式 `round(col*cellW)+pad` 与 scissor 的
+	 *  `floor(cssX*dpr)` 取整基准/原点都不同，非整数缩放（125%/150%）下偏。
+	 *  这里把 textarea 的 CSS-px left/top 从 scissor 原点 + 渲染器逐格设备
+	 *  取整 `round(col*cellW*dpr)` 反推回容器坐标系（见 `imeAnchor.ts`），
+	 *  使 textarea 精确压在渲染器绘制该格的设备像素上。
+	 *
+	 *  仅在 host 模式且本分区已算出 viewport（scissor）时返回非 null；
+	 *  非 host（每分区独立 canvas，如 Canvas2D / worker 路径）下 canvas 与
+	 *  容器同原点，旧公式即正确，返回 null 让调用方走旧路径兜底。
+	 *
+	 *  `vpRow`/`col` 为已 clamp 过的视口内行列（含 scrollOffset）。 */
+	private _imeScissorCssPosition(
+		entry: PaneEntry,
+		vpRow: number,
+		col: number,
+	): { x: number; y: number } | null {
+		const gh = this.globalHost;
+		if (!gh || !this._isHostMode(entry)) return null;
+		const vp = entry.viewport;
+		if (!vp) return null;
+		if (entry.cellW <= 0 || entry.cellH <= 0) return null;
+		const cr = entry.container.getBoundingClientRect();
+		const hr = gh.canvas.getBoundingClientRect();
+		if (cr.width <= 0 || cr.height <= 0) return null;
+		const cs = window.getComputedStyle(entry.container);
+		const padL = parseFloat(cs.paddingLeft) || 0;
+		const padT = parseFloat(cs.paddingTop) || 0;
+		const dpr = window.devicePixelRatio || 1;
+		// `padL/padT` 与 scissor 同源：`_recomputeViewport` 用同样的
+		// `cssX = cr.left - hr.left + padL` → `floor(cssX*dpr)`，因此
+		// `imeHelperCssPosition` 内部重算的 scissor 原点会精确等于
+		// `entry.viewport.x/y`。这里复用同一份输入即保证两坐标系同源。
+		const input: ImeAnchorInput = {
+			containerLeft: cr.left,
+			containerTop: cr.top,
+			hostLeft: hr.left,
+			hostTop: hr.top,
+			padL,
+			padT,
+			cellW: entry.cellW,
+			cellH: entry.cellH,
+			col,
+			row: vpRow,
+			dpr,
+		};
+		const pos = imeHelperCssPosition(input);
+		return { x: pos.x, y: pos.y };
+	}
+
 	/** Pixel position of the IME helper anchor (§1.27 fix) — uses the
 	 *  stable user-input snapshot (`PaneEntry.imeAnchor`) instead of the
 	 *  live kernel cursor, so background PTY redraws (Ink/log-update
@@ -3590,6 +3643,18 @@ export class TerminalManager {
 			const vpRow = row + scrollOff;
 			const r = Math.min(vpRow, Math.max(0, rows - 1));
 			const c = Math.min(col, Math.max(0, cols - 1));
+			// §IME-scissor: host 模式下优先用 scissor-同源换算，消除非整数
+			// 缩放/多分屏的偏移；非 host 模式 (null) 退回旧的 round+pad 公式。
+			const scissor = this._imeScissorCssPosition(e, r, c);
+			if (scissor) {
+				return {
+					x: scissor.x,
+					y: scissor.y,
+					cellW: e.cellW,
+					cellH: e.cellH,
+					fontSizePx: this.opts.fontSizePx,
+				};
+			}
 			return {
 				x: Math.round(c * e.cellW) + pad,
 				y: Math.round(r * e.cellH) + pad,
@@ -3715,11 +3780,14 @@ export class TerminalManager {
 		const scrollOff = e.kernel.scrollOffset();
 		const vpRow = r + scrollOff;
 		const vpR = Math.min(vpRow, Math.max(0, rows - 1));
+		// §IME-scissor: host 模式走 scissor-同源换算，非 host 退回旧公式。
+		const scissor = this._imeScissorCssPosition(e, vpR, c);
+		const px = scissor ?? { x: Math.round(c * e.cellW) + pad, y: Math.round(vpR * e.cellH) + pad };
 		return {
 			row: r,
 			col: c,
-			x: Math.round(c * e.cellW) + pad,
-			y: Math.round(vpR * e.cellH) + pad,
+			x: px.x,
+			y: px.y,
 			cellW: e.cellW,
 			cellH: e.cellH,
 			fontSizePx: this.opts.fontSizePx,
@@ -3745,6 +3813,11 @@ export class TerminalManager {
 		const r = Math.min(vpRow, Math.max(0, rows - 1));
 		const c = Math.min(col, Math.max(0, cols - 1));
 		const pad = e.lastFitPaddingPx ?? e.lastAppliedPaddingPx ?? 0;
+		// §IME-scissor: host 模式走 scissor-同源换算，非 host 退回旧公式。
+		const scissor = this._imeScissorCssPosition(e, r, c);
+		if (scissor) {
+			return { x: scissor.x, y: scissor.y, cellW: e.cellW, cellH: e.cellH };
+		}
 		return {
 			x: Math.round(c * e.cellW) + pad,
 			y: Math.round(r * e.cellH) + pad,
@@ -4542,6 +4615,32 @@ export class TerminalManager {
 				if (hostFrameOpen) return true;
 				if (!activeHost) return false;
 				hostFrameOpen = activeHost.beginFrame(themeBg);
+				if (hostFrameOpen) {
+					// §atlas-pin: beginFrame just reset the shared
+					// `frame_written` mask. Pin every visible NOT-dirty
+					// host pane's cached atlas layers NOW — before any
+					// dirty pane's full render can evict + overwrite a
+					// layer a cached replay still samples. Order-
+					// independent: all cached panes protected before the
+					// first eviction this frame. Kills the garbled glyphs
+					// seen for a few frames right after a workspace switch
+					// (cached pane's slot stolen by the newly-visible
+					// pane's glyph admission).
+					for (const e of frameOrder) {
+						if (e.parked) continue;
+						if (dirtyByPane.get(e.paneId) !== false) continue;
+						const h = e.handle as unknown as {
+							pinCachedLayers?: () => void;
+						} | null;
+						if (h !== null && typeof h.pinCachedLayers === 'function') {
+							try {
+								h.pinCachedLayers();
+							} catch {
+								/* old wasm bundle w/o export → skip */
+							}
+						}
+					}
+				}
 				return hostFrameOpen;
 			};
 			// P2.2 (2026-05-20): use the frame's ordered list (focused
