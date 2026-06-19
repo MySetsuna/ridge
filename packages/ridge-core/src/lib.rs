@@ -62,7 +62,9 @@ pub use mcp::resource::{RidgeUri, StashStore};
 pub use teammate::model::{
     AgentCapabilities, AgentPersonality, AgentRole, Teammate, TeammateStatus,
 };
+pub use teammate::circuit_breaker::{LoopBreaker, LoopSignal};
 pub use teammate::risk::{classify_method, classify_shell_command, RiskAssessment, RiskLevel};
 pub use teammate::stream_cleaner::{CleanOutput, StreamCleaner};
+pub use teammate::write_lock::{LockOutcome, WriteLockRegistry};
 pub use teammate::tml::{TmlAction, TmlHeader, TmlMessage};
 pub use teammate::topology::{TaskEdge, TopologyError, TopologyGraph};

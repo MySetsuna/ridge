@@ -5,8 +5,10 @@
 //! 本模块只承载**可单测的纯逻辑**：TML 协议、PTY 流净化、Teammate 画像、
 //! 拓扑/Leader 竞选、风险分级。
 
+pub mod circuit_breaker;
 pub mod model;
 pub mod risk;
 pub mod stream_cleaner;
 pub mod tml;
 pub mod topology;
+pub mod write_lock;
