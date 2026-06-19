@@ -32,10 +32,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DEV_USER_DATA_DIR, readDevToolsActivePort } from './cdp-port.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const userDataDir = DEV_USER_DATA_DIR;
 const portFile = path.join(userDataDir, 'cdp-port.txt');
 const activePortFile = path.join(userDataDir, 'EBWebView', 'DevToolsActivePort');
