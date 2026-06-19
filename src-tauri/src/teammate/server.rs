@@ -384,13 +384,19 @@ fn register_agent_to_pane(state: &AppState, wid: uuid::Uuid, agent_id: &str, pan
 
 /// 释放 pane（标记为空闲）
 fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) {
-    let mut map = state.workspaces.write();
-    if let Some(ws) = map.get_mut(&wid) {
-        ws.teammate_pane_states
-            .insert(pane_id, crate::state::PaneState::Idle);
-        // 清理 agent 映射
-        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+    {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_pane_states
+                .insert(pane_id, crate::state::PaneState::Idle);
+            // 清理 agent 映射
+            ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+        }
     }
+    // Domain B1：同步清理 typed 画像（按 pane）。
+    super::profiles::remove_by_pane(wid, pane_id);
+    // Domain D3：清理该 pane 的循环熔断器状态。
+    super::circuit::forget_pane(wid, pane_id);
 }
 
 /// 通过 agent_id 查找 pane
@@ -409,6 +415,15 @@ fn find_pane_by_agent(state: &AppState, wid: uuid::Uuid, agent_id: &str) -> Opti
 struct RegisterAgentBody {
     agent_id: String,
     pane_index: Option<usize>,
+    /// 可选 agent 展示名（Domain B1 画像）。
+    #[serde(default)]
+    name: Option<String>,
+    /// 可选能力矩阵（语言/领域技能 + 上下文窗口）——驱动 Leader 竞选。
+    #[serde(default)]
+    capabilities: Option<ridge_core::AgentCapabilities>,
+    /// 可选性格倾向（风险承受度 / 细致度）。
+    #[serde(default)]
+    personality: Option<ridge_core::AgentPersonality>,
 }
 
 async fn route_register_agent(
@@ -444,6 +459,15 @@ async fn route_register_agent(
     };
 
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
+    // Domain B1：落 typed 画像（可选 capabilities/personality）供拓扑/Leader 竞选。
+    super::profiles::upsert(
+        wid,
+        &body.agent_id,
+        pane_id,
+        body.name.clone(),
+        body.capabilities.clone(),
+        body.personality.clone(),
+    );
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
     let _ = ctx
@@ -470,11 +494,15 @@ async fn route_get_team_profile(
         Ok(w) => w,
         Err(r) => return workspace_reject_response(&ctx, r),
     };
-    let map = ctx.state.workspaces.read();
-    let body = map
-        .get(&wid)
-        .map(crate::commands::teammate::topology_json)
-        .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }));
+    // 有 typed 画像 → 跑 Leader 竞选返回真实角色；否则回退侧表映射。
+    let body = if super::profiles::has(wid) {
+        super::profiles::topology_for(wid)
+    } else {
+        let map = ctx.state.workspaces.read();
+        map.get(&wid)
+            .map(crate::commands::teammate::topology_json)
+            .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
+    };
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -553,9 +581,16 @@ struct ReportProgressBody {
     status: String,
     #[serde(default)]
     exit_code: i32,
+    /// Domain D3：上报方 pane 索引（带上则喂循环熔断器）。
+    #[serde(default)]
+    pane: Option<usize>,
+    /// Domain D3：失败特征指纹（缺省用 status）；连续相同 key 失败触发熔断。
+    #[serde(default)]
+    key: Option<String>,
 }
 
 /// Worker 向 Leader 汇报阶段性结果：emit 进度事件触发状态机流转。
+/// 带 `pane` 时同时喂 Domain D3 循环熔断器（连续相似失败→SIGINT 该 pane）。
 async fn route_report_progress(
     State(ctx): State<TeammateCtx>,
     headers: HeaderMap,
@@ -568,6 +603,14 @@ async fn route_report_progress(
         "teammate://progress",
         serde_json::json!({ "status": body.status, "exit_code": body.exit_code }),
     );
+    if let Some(idx) = body.pane {
+        if let Ok(wid) = caller_workspace_id_strict(&ctx, &headers) {
+            if let Ok(pid) = pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
+                let key = body.key.clone().unwrap_or_else(|| body.status.clone());
+                super::circuit::record(&ctx.handle, &ctx.state, wid, pid, &key, body.exit_code != 0);
+            }
+        }
+    }
     (StatusCode::OK, "ok").into_response()
 }
 
