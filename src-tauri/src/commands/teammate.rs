@@ -59,7 +59,7 @@ pub async fn get_teammate_topology(
     let ws = workspaces
         .get(&wid)
         .ok_or_else(|| format!("workspace {wid} not found"))?;
-    Ok(build_topology(ws))
+    Ok(topology_json(ws))
 }
 
 /// D2 —— 人类对一个挂起的高危动作的裁决回传。
