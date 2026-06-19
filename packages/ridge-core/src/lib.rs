@@ -37,9 +37,11 @@ pub mod device_identity;
 pub mod dispatch;
 pub mod error;
 pub mod fs;
+pub mod mcp;
 pub mod pty;
 pub mod sandbox;
 mod seed_store;
+pub mod teammate;
 pub mod totp;
 pub mod workspace;
 
