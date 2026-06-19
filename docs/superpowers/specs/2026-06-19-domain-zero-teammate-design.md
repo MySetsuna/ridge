@@ -107,7 +107,14 @@ Tauri 接线层 (src-tauri, 需 rebuild 验证) ── Phase 2
 - ✅ **Phase 0**（`ce93849`）：本设计文档 + ridge-core teammate/mcp 模块骨架。
 - ✅ **Phase 1**（`feb87f2`）：四 Domain 纯核心层落地 ridge-core，`cargo test -p ridge-core` **275 绿(+69)**、新文件 clippy 0 警告。
   - 执行教训：worktree 隔离令 subagent **冷编译 thrash**（4/4 impl-teammate 上下文溢出）；据实改为「写文件型 teammate + lead 集成测试」。**本仓 subagent 在注入大体量 CLAUDE/rules 上下文下极易 thrash——后续少用隔离 worktree、命令一律 `| tail`。**
-- ⏳ **Phase 2**：后端接线（需 rebuild）+ 前端 UI（可 check 验证）。详见下方可执行清单。
+- ✅ **Phase 2 前端基座**（`d6efafe`+`efd03f3`）：`teammateModel.ts`（vitest 14 绿）+ `HitlApprovalModal.svelte` + `AgentCenterPanel.svelte`，`pnpm check` 0/0。
+- ✅ **Phase 2 后端接线**（`cargo check -p ridge` 绿，**待 rebuild + 真机 e2e**）：完成 §8A 的 2/4/5 + 部分 1：
+  - `commands/teammate.rs`：`get_teammate_topology`（D1 拓扑快照，从现有侧表映射，pane 用真 Uuid 串）+ `resolve_hitl_request`/`set_hitl_enabled`/`classify_command_risk`，注册入 `lib.rs` invoke_handler。
+  - `teammate/hitl.rs`：进程级 HITL 挂起注册表（`LazyLock<Mutex<HashMap>>` + oneshot + 120s 超时 fail-closed），`request_approval` 用 `ridge_core::classify_shell_command`，**默认关闭**（零行为变化）。
+  - `teammate/server.rs::route_send_keys`：HITL 网关（flag-gated，仅对换行提交命令做 L2 拦截）。
+  - `teammate/server.rs`：B3 高层 API 路由 `team-profile`/`delegate-task`（返回 `TaskTicket`）/`broadcast`/`report-progress`。
+  - **零 `AppState` 改动、零默认行为变化**（HITL flag 默认关）；未触 `REMOTE_ALLOWLIST`（桌面 IPC 即可，web-remote 后续）。
+- ⏳ **Phase 2 剩余**：§8A-3 StreamCleaner 入 PTY 读路径（**runtime-risky，刻意延期**：PTY 热路径、不可 cargo-check 验运行时，误净化会污染终端）；§8A-6 MCP server WS 挂载（additive，最大面，暂无消费方）；§8A-1 typed profiles 全量入 Workspace（register-agent 带 capabilities/personality）；前端挂载两组件 + Pane 状态呼吸灯（hotspot）。
 
 ## 8. Phase 2 可执行清单（含 file:line 落点，源自勘探）
 
