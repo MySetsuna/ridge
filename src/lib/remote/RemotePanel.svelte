@@ -521,10 +521,15 @@
             {$t('cloud.activateBtn')}
           </button>
           {#if pairingHint}<p class="text-center text-[11px] text-[var(--rg-fg-muted)]">{pairingHint}</p>{/if}
-          <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} marginTop />
+          <!-- §member: 已有有效公网时长（付费会员 or 今天已签到）就不再展示签到卡。 -->
+          {#if !hasValidTime}
+            <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} marginTop />
+          {/if}
         {:else}
           <!-- 已激活 -->
-          <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} />
+          {#if !hasValidTime}
+            <CheckinGateCard hasCheckedIn={hasCheckedIn} onAction={() => requirePublicAccess()} />
+          {/if}
           {#if publicDomain}
             <code class="block break-all text-xs font-medium text-[var(--rg-fg)]">{publicDomain}</code>
           {/if}
