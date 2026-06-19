@@ -115,7 +115,13 @@ Tauri 接线层 (src-tauri, 需 rebuild 验证) ── Phase 2
   - `teammate/server.rs`：B3 高层 API 路由 `team-profile`/`delegate-task`（返回 `TaskTicket`）/`broadcast`/`report-progress`。
   - `teammate/server.rs`：**§8A-6 MCP server WS 挂载** `/api/v1/mcp/ws`（axum 0.7 ws，复用 `ridge_core::mcp` 协议核心）——`initialize`/`tools/list`(注册表)/`tools/call`(ridge_send_to_teammate·ridge_delegate_task 落活动工作区)/`resources/read`(`ridge://workspace/active-panes`)。
   - **零 `AppState` 改动、零默认行为变化**（HITL flag 默认关）；未触 `REMOTE_ALLOWLIST`（桌面 IPC 即可，web-remote 后续）。
-- ⏳ **Phase 2 剩余（刻意延期）**：§8A-3 StreamCleaner 入 PTY 读路径（**runtime-risky**：PTY 热路径、不可 cargo-check 验运行时，误净化会污染终端 → 需 `tauri:dev:cdp` 真机回归）；§8A-1 typed profiles 全量入 Workspace（register-agent 带 capabilities/personality → 让 elect_leader 有意义）；MCP `notifications/progress` 服务端推送（需 split sink）；前端挂载两组件 + Pane 状态呼吸灯（hotspot 文件）。
+- ✅ **Phase 2 组件挂载**（`2e46038`）：AgentCenterPanel 注册为 global 侧栏插件、HitlApprovalModal 挂 `+layout.svelte`，`pnpm check` 0/0。
+- ✅ **延期项推进**（`af94506`+`ef3bba8`+ 本批，`cargo test/check` 绿）：
+  - **D3 纯核心**（`af94506`，ridge-core 286 测试绿）：`circuit_breaker::LoopBreaker`（连续相似失败熔断）+ `write_lock::WriteLockRegistry`（path→owner 冲突仲裁）。
+  - **B1/B2 画像→竞选**（`ef3bba8`）：`teammate/profiles.rs` 进程级画像表；register-agent 落 capabilities/personality；`get_teammate_topology`/`team-profile` 有画像时跑 `elect_leader()` 返真实 role/leaderId。
+  - **D3 运行时接线**（`ef3bba8`）：`teammate/circuit.rs` per-pane LoopBreaker（report-progress 带 pane+key 喂结果，连续失败→写 Ctrl+C SIGINT + emit `teammate://circuit-tripped`）；`teammate/locks.rs` 写锁命令（acquire/release/holder）。
+  - **A3 StreamCleaner 入 PTY 读路径**（本批，`teammate/stream.rs` + `engine::pty::spawn_pty_reader`）：每 pane 持 cleaner，**flag 默认关 → 热路径字节级零变化**；开启时隐藏 TML 区间 + emit `teammate://tml-message`（喂 Agent Center 审计）。`set_tml_stream_enabled` 命令控制。
+- ⏳ **真正剩余（需 rebuild + 真机）**：所有后端改动的运行时/真机 e2e（本机 WebView2 CDP 故障致 dev:cdp 自验受阻）；A3/HITL/circuit 三个网关 flag 默认关，真机回归通过后再启用；前端 Pane 状态呼吸灯三档（SplitContainer hotspot）；MCP `notifications/progress` 推送（split sink）；写锁深度接入 fs dispatch 写路径（需补写入方身份，§8C）。
 
 ## 8. Phase 2 可执行清单（含 file:line 落点，源自勘探）
 
