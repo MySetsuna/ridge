@@ -4,6 +4,7 @@
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
   import EditorWindow from '$lib/components/EditorWindow.svelte';
+  import HitlApprovalModal from '$lib/teammate/HitlApprovalModal.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
@@ -349,6 +350,11 @@
 
 {#if dev && browser && !WEB_REMOTE}
   <DevIssueDialog />
+{/if}
+
+<!-- Domain Zero / D2：HITL 人类中间审批模态（全局高优先级覆盖层）。无待审批时不渲染。 -->
+{#if browser && !WEB_REMOTE && !editorWindow}
+  <HitlApprovalModal />
 {/if}
 
 <style>
