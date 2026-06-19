@@ -31,6 +31,16 @@ export interface UserSettings {
   /// Remote control server enabled on last session. Restored on boot to
   /// automatically start the remote server if the user left it on.
   remoteEnabled: boolean;
+  /// 智能体协同（Domain Zero）总开关。关闭后隐藏指挥部 Tab / pane「设为智能体」
+  /// 入口，并强制后端 HITL/TML 网关为关（行为回到加这套系统之前）。默认开（仅
+  /// 呈现指挥部空态，零打扰）。
+  teammateEnabled: boolean;
+  /// 安全审批网关（HITL）。开后 L2 危险命令弹审批模态。默认关 —— 与后端
+  /// `set_hitl_enabled` 默认一致，保证 send-keys 行为零变化。
+  teammateHitlEnabled: boolean;
+  /// TML 流净化 / 协作审计。开后隐藏队员间 TML 控制字符并刷新「协作审计」。
+  /// 默认关 —— 与后端 `set_tml_stream_enabled` 默认一致。
+  teammateTmlStreamEnabled: boolean;
 }
 
 const DEFAULTS: UserSettings = {
@@ -46,6 +56,9 @@ const DEFAULTS: UserSettings = {
   terminalScrollbackLines: 2000,
   terminalImeMode: 'ime',
   remoteEnabled: false,
+  teammateEnabled: true,
+  teammateHitlEnabled: false,
+  teammateTmlStreamEnabled: false,
 };
 
 const LS_KEY = 'ridge-settings';
@@ -120,6 +133,18 @@ function load(): UserSettings {
       typeof obj.remoteEnabled === 'boolean'
         ? obj.remoteEnabled
         : DEFAULTS.remoteEnabled,
+    teammateEnabled:
+      typeof obj.teammateEnabled === 'boolean'
+        ? obj.teammateEnabled
+        : DEFAULTS.teammateEnabled,
+    teammateHitlEnabled:
+      typeof obj.teammateHitlEnabled === 'boolean'
+        ? obj.teammateHitlEnabled
+        : DEFAULTS.teammateHitlEnabled,
+    teammateTmlStreamEnabled:
+      typeof obj.teammateTmlStreamEnabled === 'boolean'
+        ? obj.teammateTmlStreamEnabled
+        : DEFAULTS.teammateTmlStreamEnabled,
   };
 }
 
