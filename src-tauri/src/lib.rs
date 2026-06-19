@@ -777,6 +777,9 @@ pub fn run() {
             commands::remote::verify_remote_totp_bind,
             commands::remote::remote_reset_totp,
             commands::remote::remote_set_totp_identity,
+            commands::remote::totp_trust_check,
+            commands::remote::totp_trust_record,
+            commands::remote::totp_trust_revoke_all,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
             commands::remote::set_remote_fs_readonly,
@@ -790,6 +793,7 @@ pub fn run() {
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,
             commands::cloud_pane::resync_pane_raw,
+            commands::cloud_pane::replay_pane_scrollback_raw,
             // 桌面 cloud HTTP 代理（绕过 WebView 跨域 CORS，见 cloud_http.rs）
             commands::cloud_http::cloud_http,
             // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级

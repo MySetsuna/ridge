@@ -41,6 +41,7 @@ pub mod mcp;
 pub mod pty;
 pub mod sandbox;
 mod seed_store;
+pub mod grant_store;
 pub mod teammate;
 pub mod totp;
 pub mod workspace;

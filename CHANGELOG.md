@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.8] — 2026-06-19
+
+公网远控稳定性与体验专项（切后台不掉线、TOTP 少重输、scrollback 完整、切 Pane 不丢/不断）。
+
+### Added
+- **TOTP 受信控制端授权**：通过验证的设备（绑定云账号 + 该浏览器/设备的持久 Ed25519 身份）**24 小时内重连免再输** TOTP。端到端在 host 验证（relay/后端零参与），grant 经 DPAPI/0600 加密落盘。登出 / 换设备 / 防爆破触发 / 种子轮换 / 过期仍**强制重验**（契约 §7.4）。
+- **连接前 fail-fast 校验**：访问 `{device}-{user}` 远控域名时先校验登录态与账号/设备归属，并即时映射 WS 错误码（账号不符 / 设备不属 / 已停用 / 非会员）为可读提示，不再长时间干等「连接中」。
+
+### Changed
+- **登录态滑动 3 天续期**：刷新凭证 3 天内有活动即长期在线，配合控制端「可见即主动续期」熬过切后台（需配套已部署的云后端）。
+- 终端 scrollback 容量上调：host 存储 4→8 MiB，云回放上限 64→256 KiB。
+
+### Fixed
+- **切后台/锁屏回前台断连且重连失败**：回前台先 `await` 刷新 access token 再重连，修「后台 token 过期 → WS 升级 403 → 无限退避」。
+- **终端 scrollback 不完整**：修复 E2EE/TOTP verified 之前回放被丢弃的竞态，连接/重连后历史完整回放。
+- **手机端切 Pane 丢失 scrollback**：订阅即触发不节流的历史回放，空闲 pane 也能立即渲染历史。
+- **快速切 Pane 易中断连接**：订阅 150ms 防抖 + DataChannel 背压保护，避免大回放灌爆缓冲导致断连。
+
+---
+
 ## [0.1.0] — 2026-04-30
 
 The first public release of Ridge.
