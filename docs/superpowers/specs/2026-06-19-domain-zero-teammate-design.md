@@ -99,4 +99,54 @@ Tauri 接线层 (src-tauri, 需 rebuild 验证) ── Phase 2
 | ridge-core 纯核心 | `cargo test -p ridge-core` | 否 |
 | 前端 | `pnpm check` + `vitest` + 可选 `tauri:dev:cdp` | 否 |
 | Tauri 后端接线 | 需 rebuild 覆盖安装/重启，或 `tauri:dev:cdp` 独立实例 | 是（正式版）/否（dev:cdp 并存） |
+
+---
+
+## 7. 进度（2026-06-19）
+
+- ✅ **Phase 0**（`ce93849`）：本设计文档 + ridge-core teammate/mcp 模块骨架。
+- ✅ **Phase 1**（`feb87f2`）：四 Domain 纯核心层落地 ridge-core，`cargo test -p ridge-core` **275 绿(+69)**、新文件 clippy 0 警告。
+  - 执行教训：worktree 隔离令 subagent **冷编译 thrash**（4/4 impl-teammate 上下文溢出）；据实改为「写文件型 teammate + lead 集成测试」。**本仓 subagent 在注入大体量 CLAUDE/rules 上下文下极易 thrash——后续少用隔离 worktree、命令一律 `| tail`。**
+- ⏳ **Phase 2**：后端接线（需 rebuild）+ 前端 UI（可 check 验证）。详见下方可执行清单。
+
+## 8. Phase 2 可执行清单（含 file:line 落点，源自勘探）
+
+> 原则：后端改动用 `cargo check`（不杀会话）验证编译，提交时标注「待 rebuild + 真机 e2e」；
+> 前端用 `pnpm check` + `vitest`（不杀会话）验证。**修改 `SplitContainer.svelte`/`server.rs`/`state.rs`
+> 等共享热点前先核对 HEAD（并发会话），按 hunk 隔离。**
+
+### 8A. 后端接线（src-tauri，需 rebuild 验证）
+
+1. **typed 模型入 Workspace**：`state.rs` `Workspace`（line ~94）已有 `teammate_pane_states: HashMap<Uuid,PaneState>`、
+   `teammate_agent_pane_map: HashMap<String,Uuid>`、`teammate_pane_titles`。新增 `teammate_profiles: HashMap<Uuid, ridge_core::Teammate>`
+   侧表（受同一 RwLock）。register-agent 路由（`teammate/server.rs::route_register_agent`）落画像（可选 body 带 capabilities/personality；缺省 `Teammate::new`）。
+2. **拓扑快照命令**：新增只读 `#[tauri::command] get_teammate_topology(workspace_id)`：把侧表映射为
+   `ridge_core::TopologyGraph`，`elect_leader()`，返回 `roster + leader + edges` JSON。在 `lib.rs` invoke_handler 注册；加入 `REMOTE_ALLOWLIST`（只读）。供 D1 Agent Center 拉取。
+3. **StreamCleaner 接入 PTY 读路径**：`packages/ridge-tmux/src/lib.rs` `spawn_pane` reader 线程，在
+   `take_decoded_utf8` 之后、emit 之前插 `StreamCleaner::clean_stream`；`visible` 走原 emit，`messages` 经
+   通道投递到拓扑总线（新事件 `teammate://tml-message`）。每 pane 持一个 cleaner 实例。
+4. **风险网关（HITL）**：`teammate/server.rs::route_send_keys` 与（未来）MCP `tools/call` 入口前置
+   `ridge_core::classify_shell_command`/`classify_method`；命中 `RiskLevel::Dangerous(L2)` 则 `tokio::sync::oneshot`
+   挂起 + `app.emit("teammate://hitl-approval-required", {initiator,action,risk,reason})`；前端裁决回信号续/拒/改写。
+5. **高层 Teammate API 路由**（复用现有 HTTP+bearer 传输，非 UDS）：`teammate/server.rs` 加
+   `get_team_profile`/`delegate_task`/`broadcast`/`report_progress`；`delegate_task` 写拓扑边 + 物理注入（复用 `route_send_keys`/`write_pty_bytes_workspace`）+ 返回 `ridge_core::mcp::TaskTicket`。
+6. **MCP server 挂载**：复用 `remote/server.rs` 的 `ws_handler`/`handle_socket`（axum 0.7 ws）样板，在 teammate axum
+   加 `GET /api/v1/mcp/ws`；`tools/list`→`ToolRegistry::default().tools_list_result()`；`tools/call`→路由 2/5；
+   `resources/read`→`RidgeUri::parse` + 活动 pane 快照 / `StashStore`；完成时推 `progress_notification`。
+
+### 8B. 前端 UI（src/，pnpm check + vitest 验证）
+
+7. **Agent Center 侧栏**：参照 `src/lib/plugins/globalStatus/GlobalStatusPanel.svelte`（Svelte 5 runes + `invoke` + i18n `$t/tr`）。
+   新 `src/lib/teammate/agentCenter.svelte.ts`（store：roster/objective/auditTrail/pending，`listen` 上述事件，含 vitest）
+   + `AgentCenterPanel.svelte`（Objective/Roster/Audit/DAG 四区，轮询 `get_teammate_topology`）。注册到侧栏 region（先定位当前注册机制：`globalStatus` 的挂载点）。
+8. **Pane 状态呼吸灯**：`SplitContainer.svelte`（line ~610-639 现有 busy/starting 徽章）扩 Thinking(慢脉冲)/Executing(快闪)/Idle
+   三档 CSS keyframe；需后端 PaneState 增 Thinking/Executing（与 8A.1 同批）。**热点文件，按 hunk 隔离并发会话。**
+9. **HITL 审批模态**：`HitlApprovalModal.svelte`（`listen('teammate://hitl-approval-required')`，展示 risk 级别+动作+reason，
+   Approve/Reject/Modify→回信号）+ pending store。参照 `RidgeDialog.svelte` 队列模态样式，挂 App 根。
+10. **协作连线 overlay**：split 布局上叠绝对定位 SVG 层，pane→pane 消息（`teammate://tml-message`）时画贝塞尔光束。打底可后置。
+
+### 8C. 延期（运行时信号依赖）
+
+- D3 死循环熔断（3× edit→test→error → SIGINT）+ 文件并发写锁（Monaco Diff 冲突仲裁）：需运行时序列检测，Phase 3。
+- C2 `ridge://workspace/git-status`（需把 shell-out 结果缓存进内存）/`editor-context`（前端镜像入 Rust）：Phase 3。
 </content>
