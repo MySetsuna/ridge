@@ -5,5 +5,6 @@ pub(crate) mod locks;
 pub(crate) mod native;
 pub(crate) mod profiles;
 pub(crate) mod server;
+pub(crate) mod stream;
 
 pub use server::ensure_teammate_started;
