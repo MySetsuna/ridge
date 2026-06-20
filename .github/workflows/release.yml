@@ -96,14 +96,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS 代码签名 + 公证：配置了下面这些 secret 时 tauri-action 会自动签名并公证；
-          # 留空（现状）则照旧产未签名包，用户首次需右键→打开。需 Apple Developer($99/年)。
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS 代码签名 + 公证：要启用时，把 docs/release-signing.md 里的 APPLE_* env 块
+          # 粘到这里并配好同名 secret。注意：**不要**留空写 APPLE_CERTIFICATE —— 空值会让
+          # tauri-action 去 import 空证书、构建直接挂。没有证书就别加这些 env（现状=未签名包）。
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'Ridge __VERSION__'

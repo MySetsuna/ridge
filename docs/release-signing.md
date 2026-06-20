@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | **Linux** | 基本无影响 | ✅ 完全免费 | 自管 GPG key | ✅ 已接线（缺 secret 自跳过） |
 | **Windows** | SmartScreen 警告 | ⚠️ 仅开源可免费 | SignPath(开源免费) / Azure(~$10 月) / Certum(~€89 年) | 文档（见下，未接线） |
-| **macOS** | Gatekeeper 拦截，需右键打开 | ❌ 无免费干净方案 | Apple Developer $99/年 | ✅ 已接线（缺 secret 自跳过） |
+| **macOS** | Gatekeeper 拦截，需右键打开 | ❌ 无免费干净方案 | Apple Developer $99/年 | 文档：有证书后手动加 env+secret |
 
 ---
 
@@ -89,7 +89,12 @@ rm ridge-release-private.asc    # 用完即删本地副本
 - **免费的 ad-hoc 自签**只能让二进制能跑，但下载来的带 quarantine 仍被 Gatekeeper 拦——
   用户还是要右键→打开 或 `xattr -dr com.apple.quarantine Ridge.app`。
 
-**开通后启用（workflow 已留好 env，只需加 secret）：**
+**开通后启用（两步：加 secret + 加 env）：**
+
+> ⚠️ **不要提前把 APPLE_* env 加进 workflow 留空**——tauri-action 见到 `APPLE_CERTIFICATE`
+> 存在就会去 `security import`，空值会让 macOS 构建直接挂（已踩过）。**只有真有证书时**才加下面两样。
+
+1) 加 secret：
 ```bash
 # 在 Apple Developer 后台建 “Developer ID Application” 证书，导出 .p12，base64：
 base64 -i DeveloperID.p12 | gh secret set APPLE_CERTIFICATE
@@ -98,6 +103,15 @@ gh secret set APPLE_SIGNING_IDENTITY         # 形如 "Developer ID Application:
 gh secret set APPLE_ID                        # Apple 账号邮箱
 gh secret set APPLE_PASSWORD                  # App 专用密码（appleid.apple.com 生成）
 gh secret set APPLE_TEAM_ID                   # 10 位 Team ID
+```
+2) 把这个 env 块加进 `.github/workflows/release.yml` 的 `Build & publish (Tauri)` 步骤 `env:` 下：
+```yaml
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 ```
 加完后下个 tag 的 macOS 包就自动签名 + 公证，dmg/app 双击即开。两个 arch 各自签。
 
@@ -110,5 +124,6 @@ gh secret set APPLE_TEAM_ID                   # 10 位 Team ID
    **Azure Trusted Signing**（~$10/月、CI 最顺）。
 3. **macOS**：预算到位就买 Apple $99/年；否则维持「右键打开」并在 README/Release 写明。
 
-> workflow 挂载点：macOS = `Build & publish` 步骤的 `APPLE_*` env；Linux = `GPG sign Linux
-> artifacts` 步骤；Windows 待选定 provider 后补一步签名 action。三者都「无 secret 即跳过」。
+> workflow 挂载点：Linux = `GPG sign Linux artifacts` 步骤（无 secret 自跳过，已接线）；
+> macOS = 有证书后按上面把 `APPLE_*` env 块加进 `Build & publish`（**勿留空**）；Windows =
+> 选定 provider 后补一步签名 action。
