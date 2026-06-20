@@ -4,7 +4,7 @@
  * 三个持久化偏好存在 `settingsStore`（见 stores/settings.ts）：
  *   - teammateEnabled          总开关（UI 级：是否呈现指挥部 Tab / pane 标记入口）
  *   - teammateHitlEnabled      安全审批网关（后端 `set_hitl_enabled`）
- *   - teammateTmlStreamEnabled TML 流净化 / 协作审计（后端 `set_tml_stream_enabled`）
+ *   - teammateTmlStreamEnabled （已退场 / deprecated）TML 流净化；恒关，不再启用
  *
  * 后端「生效值」= 总开关 AND 子开关：总开关关闭时强制两条网关为关，行为回到加这
  * 套系统之前（send-keys 字节级零变化）。这里集中处理「写 setting + 推后端」与启动
@@ -35,7 +35,9 @@ async function pushTml(enabled: boolean): Promise<void> {
 export function syncTeammateBackend(s: UserSettings = get(settingsStore)): void {
   const on = s.teammateEnabled;
   void pushHitl(on && s.teammateHitlEnabled);
-  void pushTml(on && s.teammateTmlStreamEnabled);
+  // TML 协作审计已退场（底座化瘦身，见 specs/2026-06-20-team-agent-upgrade-plan-design.md）：
+  // 恒推 false，即便旧持久化偏好为 true 也不再启用净化网关。
+  void pushTml(false);
 }
 
 /** 总开关：写 setting 后按新生效值推后端（关闭即强制两网关下线）。 */
@@ -50,10 +52,13 @@ export function setTeammateHitlEnabled(enabled: boolean): void {
   void pushHitl(get(settingsStore).teammateEnabled && enabled);
 }
 
-/** TML 流净化开关：仅在总开关开启时才真正推后端 enable。 */
-export function setTeammateTmlStreamEnabled(enabled: boolean): void {
-  setSetting('teammateTmlStreamEnabled', enabled);
-  void pushTml(get(settingsStore).teammateEnabled && enabled);
+/**
+ * @deprecated TML 协作审计已退场（底座化瘦身）。保留导出以兼容旧调用方，但恒关：
+ * 写入持久化偏好为 false 并推后端 false，无法再启用。
+ */
+export function setTeammateTmlStreamEnabled(_enabled?: boolean): void {
+  setSetting('teammateTmlStreamEnabled', false);
+  void pushTml(false);
 }
 
 /** 启动同步：把持久化的 UI 偏好镜像到后端（否则重启后 UI 显示开、后端实为关）。 */
