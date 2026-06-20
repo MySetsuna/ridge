@@ -1,9 +1,9 @@
-//! Domain B1/B2 接线 —— teammate 能力画像进程级注册表 + 拓扑/Leader 竞选构建。
+//! Domain B1 接线 —— teammate 名册进程级注册表（底座化瘦身）。
 //!
-//! `register-agent` 携带的 `capabilities`/`personality` 落此表（进程级 `LazyLock`，
-//! 类比 [`super::hitl`]，**不改 `AppState`**）。`get_teammate_topology` /
-//! `route_get_team_profile` 据此构建 `ridge_core::TopologyGraph`、跑 `elect_leader()`，
-//! 产出带**真实 role/leaderId** 的花名册（无画像数据时调用方回退到侧表映射）。
+//! `register-agent` 携带的 agent 名落此表（进程级 `LazyLock`，类比 [`super::hitl`]，
+//! **不改 `AppState`**）。`get_teammate_topology` / `route_get_team_profile` 据此构建
+//! `ridge_core::TopologyGraph` 产出花名册。Leader 不再 AI 竞选（leaderId 恒空，
+//! 除非人类静态钦定），能力/性格画像已退场。
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -11,9 +11,7 @@ use std::sync::{LazyLock, Mutex};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use ridge_core::{
-    AgentCapabilities, AgentPersonality, AgentRole, Teammate, TeammateStatus, TopologyGraph,
-};
+use ridge_core::{AgentRole, Teammate, TeammateStatus, TopologyGraph};
 
 struct ProfileEntry {
     teammate: Teammate,
@@ -24,22 +22,9 @@ struct ProfileEntry {
 static PROFILES: LazyLock<Mutex<HashMap<Uuid, HashMap<String, ProfileEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// register-agent 落画像。缺省能力/性格时用默认值（仍可入册，仅竞选权重偏低）。
-pub fn upsert(
-    wid: Uuid,
-    agent_id: &str,
-    pane_uuid: Uuid,
-    name: Option<String>,
-    capabilities: Option<AgentCapabilities>,
-    personality: Option<AgentPersonality>,
-) {
+/// register-agent 落花名册条目（名 + Working 态）。
+pub fn upsert(wid: Uuid, agent_id: &str, pane_uuid: Uuid, name: Option<String>) {
     let mut t = Teammate::new(agent_id, name.unwrap_or_else(|| agent_id.to_string()), 0);
-    if let Some(c) = capabilities {
-        t = t.with_capabilities(c);
-    }
-    if let Some(p) = personality {
-        t = t.with_personality(p);
-    }
     t.status = TeammateStatus::Working;
     if let Ok(mut g) = PROFILES.lock() {
         g.entry(wid)
@@ -65,7 +50,7 @@ pub fn has(wid: Uuid) -> bool {
         .unwrap_or(false)
 }
 
-/// 构建该工作区的拓扑快照 JSON（`{roster, leaderId, edges}`），跑 Leader 竞选。
+/// 构建该工作区的花名册快照 JSON（`{roster, leaderId, edges}`）。leaderId 恒空（不竞选）。
 pub fn topology_for(wid: Uuid) -> Value {
     let empty = json!({ "roster": [], "leaderId": Value::Null, "edges": [] });
     let Ok(g) = PROFILES.lock() else {
@@ -81,7 +66,6 @@ pub fn topology_for(wid: Uuid) -> Value {
         pane_by_id.insert(agent_id.clone(), e.pane_uuid.to_string());
         graph.add_teammate(e.teammate.clone());
     }
-    graph.elect_leader();
     let leader_id = graph.leader_id().map(|s| s.to_string());
 
     let roster: Vec<Value> = graph

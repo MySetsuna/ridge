@@ -808,8 +808,6 @@ pub fn run() {
             teammate::locks::acquire_write_lock,
             teammate::locks::release_write_lock,
             teammate::locks::write_lock_holder,
-            // Domain A3 PTY 流 TML 净化网关开关（默认关，真机验证后启用）
-            teammate::stream::set_tml_stream_enabled,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,

@@ -10,8 +10,6 @@ import {
   riskLabel,
   parseTopologySnapshot,
   parseHitlRequest,
-  humanizeTmlAction,
-  parseTmlMessage,
   parseCircuitTripped,
   EMPTY_TOPOLOGY,
 } from './teammateModel';
@@ -95,52 +93,6 @@ describe('parseHitlRequest', () => {
   it('returns null without an id (nothing to reply to)', () => {
     expect(parseHitlRequest({ action: 'x' })).toBeNull();
     expect(parseHitlRequest(null)).toBeNull();
-  });
-});
-
-describe('humanizeTmlAction', () => {
-  it('renders each action kind', () => {
-    expect(humanizeTmlAction('AssignTask', 'Claude', 'Hermes', { objective: '跑单测' })).toContain(
-      'Claude 给 Hermes 派活：跑单测'
-    );
-    expect(humanizeTmlAction('YieldControl', 'A', 'B', { reason: '挂起' })).toContain('控制权');
-    expect(humanizeTmlAction('ReportStatus', 'B', 'A', { status: 'PASS' })).toContain('汇报：PASS');
-    expect(humanizeTmlAction('PeerTalk', 'A', 'B')).toContain('A 对 B 说话');
-  });
-
-  it('falls back when payload fields are missing', () => {
-    expect(humanizeTmlAction('AssignTask', 'A', 'B')).toContain('一个任务');
-  });
-});
-
-describe('parseTmlMessage', () => {
-  it('parses a header-wrapped TML message into a humanized audit entry', () => {
-    const entry = parseTmlMessage(
-      {
-        header: {
-          from_pane: 'p1',
-          to_pane: 'p2',
-          action: { type: 'AssignTask', payload: { objective: '重构缓存' } },
-        },
-        body: 'go',
-      },
-      (id) => (id === 'p1' ? 'Claude' : 'Hermes')
-    );
-    expect(entry).not.toBeNull();
-    expect(entry?.kind).toBe('AssignTask');
-    expect(entry?.fromPane).toBe('p1');
-    expect(entry?.text).toBe('Claude 给 Hermes 派活：重构缓存');
-  });
-
-  it('defaults unknown action kind to PeerTalk', () => {
-    const entry = parseTmlMessage({ header: { from_pane: 'p1', to_pane: 'p2', action: { type: 'Bogus' } } });
-    expect(entry?.kind).toBe('PeerTalk');
-    expect(entry?.text).toBe('p1 对 p2 说话');
-  });
-
-  it('returns null on garbage', () => {
-    expect(parseTmlMessage(null)).toBeNull();
-    expect(parseTmlMessage(42)).toBeNull();
   });
 });
 
