@@ -9,7 +9,7 @@
 | 平台 | 不签名后果 | 免费且「干净」？ | 最低成本路径 | workflow 现状 |
 |---|---|---|---|---|
 | **Linux** | 基本无影响 | ✅ 完全免费 | 自管 GPG key | ✅ 已接线（缺 secret 自跳过） |
-| **Windows** | SmartScreen 警告 | ⚠️ 仅开源可免费 | SignPath(开源免费) / Azure(~$10 月) / Certum(~€89 年) | 文档（见下，未接线） |
+| **Windows** | SmartScreen 警告 | ✅ 开源免费（SignPath） | SignPath(开源免费) / Azure(~$10 月) / Certum(~€89 年) | ✅ 已接线（开 `SIGNPATH_ENABLED` 变量即启用） |
 | **macOS** | Gatekeeper 拦截，需右键打开 | ❌ 无免费干净方案 | Apple Developer $99/年 | 文档：有证书后手动加 env+secret |
 
 ---
@@ -46,25 +46,42 @@ rm ridge-release-private.asc    # 用完即删本地副本
 ## Windows —— 免费仅限开源
 
 警告来自 SmartScreen / Defender，必须用**受信任 CA 签发的 Authenticode 证书**（自签证书无效，
-用户照样被拦）。本仓现状：**public 但无 LICENSE** → 不满足各开源免费计划的「OSI 许可证」前置。
+用户照样被拦）。本仓 license 前置 **已满足**：仓库为 public 且默认分支 `main` 带 MIT LICENSE
+（GitHub 已识别为 MIT），满足 SignPath OSS 的开源前置。
 
-> **先决条件（解锁免费/优惠的关键一步）**：加一个 OSI 许可证（如 `MIT` 或 `Apache-2.0`）。
-> 选哪个是你对项目授权方式的决定，定了我可以直接加 `LICENSE`。
+### SignPath.io Foundation（开源免费，已接线）
 
-**选项（从免费到付费）：**
+workflow 里 `Stage / Upload / Sign with SignPath / Re-upload` 四步已就绪，仅在仓库变量
+`SIGNPATH_ENABLED=true` 时启用（未配置=不签名、零影响）。流程：tauri 出未签名 `.exe`/`.msi`
+→ `actions/upload-artifact` 上传 → `signpath/github-action-submit-signing-request` 云端签名
+→ 下载签名件 → `gh release upload --clobber` 覆盖回 Release。
 
-1. **SignPath.io Foundation（开源免费，推荐）**
-   - 要求：稳定的开源项目 + OSI 许可证。审核通过后给免费证书 + 云签名 + GitHub Action。
-   - 接线：在 `Build & publish` 之后加一步用 `signpath/github-action-submit-signing-request` 提交
-     `.exe`/`.msi` 去云端签名，签好再 `gh release upload --clobber`。
+**一次性配置（都在 SignPath 控制台 + 本仓 Settings 做，我无法替你完成账号注册）：**
+1. 去 https://signpath.io 注册，按 **Foundation / Open Source** 计划提交本仓（需 OSI 许可证，已满足）。
+2. 审核通过后，在 SignPath 控制台建：一个 **Project**（记下 project slug）、一个 **Signing Policy**
+   （如 `release-signing`，记下 slug）、一个 **Artifact Configuration**（让它识别 zip 内的 `.exe`/`.msi`
+   并各自 Authenticode 签名）。拿到 **Organization ID**（GUID）和一个 **CI User API Token**。
+3. 在本仓 **Settings → Secrets and variables → Actions** 配：
+   ```bash
+   gh secret set SIGNPATH_API_TOKEN          # CI User 的 API token
+   gh secret set SIGNPATH_ORGANIZATION_ID    # 组织 GUID
+   gh variable set SIGNPATH_PROJECT_SLUG --body "ridge"            # 你建的 project slug
+   gh variable set SIGNPATH_POLICY_SLUG  --body "release-signing"  # 你建的 signing policy slug
+   gh variable set SIGNPATH_ENABLED      --body "true"             # 总开关，开启签名
+   ```
+4. 下个 tag（如 `v0.0.10`）的 Windows `.exe`/`.msi` 即被 SignPath 签名后再发布。
+   > 首次跑建议先用 `signing-policy = test-signing`（测试策略，秒签不耗审批额度）验证管线，
+   > 通了再切 `release-signing`。SignPath 控制台可看每次签名请求的状态/日志。
 
-2. **Azure Trusted Signing（对 CI 最省事，~$9.99/月）**
+### 其它（不想用 SignPath 时）
+
+1. **Azure Trusted Signing（对 CI 最省事，~$9.99/月）**
    - 个人开发者也能用，需身份验证，无需自备 U 盾。有官方 `azure/trusted-signing-action`。
    - 流程：tauri build 出未签名 `.exe`/`.msi` → action 签 → 重新上传到 Release。
 
-3. **Certum 开源代码签名（~€89/年）**：便宜，但**私钥必须在硬件 U 盾上**（CA/B 规则），CI 自动化不便。
+2. **Certum 开源代码签名（~€89/年）**：便宜，但**私钥必须在硬件 U 盾上**（CA/B 规则），CI 自动化不便。
 
-4. **标准 OV / EV（$200–600/年）**：OV 靠下载量慢慢攒 SmartScreen 信誉；EV 即时信誉、需 U 盾。
+3. **标准 OV / EV（$200–600/年）**：OV 靠下载量慢慢攒 SmartScreen 信誉；EV 即时信誉、需 U 盾。
 
 **接线骨架（以 Azure 为例，待你开通后我补全）：**
 ```yaml
@@ -119,11 +136,11 @@ gh secret set APPLE_TEAM_ID                   # 10 位 Team ID
 
 ## 落地建议（按性价比）
 
-1. **Linux**：随时可免费开（上面 4 条命令）。最实用的是后续上 Flathub。
-2. **Windows**：先定一个 OSI 许可证 → 申请 **SignPath 开源免费**（最划算）；不想等审核就用
-   **Azure Trusted Signing**（~$10/月、CI 最顺）。
+1. **Windows**：MIT 许可证已就位、SignPath 四步已接线——只差去 SignPath 注册开源计划、建
+   project/policy、配 2 secret + 3 变量（含 `SIGNPATH_ENABLED=true`），下个 tag 即免费签名。
+2. **Linux**：随时可免费开（上面 4 条命令）。最实用的是后续上 Flathub。
 3. **macOS**：预算到位就买 Apple $99/年；否则维持「右键打开」并在 README/Release 写明。
 
-> workflow 挂载点：Linux = `GPG sign Linux artifacts` 步骤（无 secret 自跳过，已接线）；
-> macOS = 有证书后按上面把 `APPLE_*` env 块加进 `Build & publish`（**勿留空**）；Windows =
-> 选定 provider 后补一步签名 action。
+> workflow 挂载点：Windows = `Stage/Upload/Sign with SignPath/Re-upload` 四步（`SIGNPATH_ENABLED`
+> 变量开关，已接线）；Linux = `GPG sign Linux artifacts` 步骤（无 secret 自跳过，已接线）；
+> macOS = 有证书后按上面把 `APPLE_*` env 块加进 `Build & publish`（**勿留空**）。
