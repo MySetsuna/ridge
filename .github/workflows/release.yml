@@ -28,10 +28,9 @@ jobs:
           - label: macos-arm64          # Apple Silicon 原生
             platform: macos-latest
             args: '--bundles app,dmg'
-          - label: macos-x64            # Intel：在 arm64 runner 上交叉编译 x86_64
-            platform: macos-latest      # （不依赖正在淘汰的 macos-13 Intel runner）
-            rust_target: x86_64-apple-darwin
-            args: '--bundles app,dmg --target x86_64-apple-darwin'
+          - label: macos-x64            # Intel 原生（x86_64）
+            platform: macos-13          # 用原生 Intel runner：交叉编译 x86_64 在 arm64
+            args: '--bundles app,dmg'    # runner 上缺 x86_64 OpenSSL（openssl-sys 需系统库）
           - label: linux-x64
             platform: ubuntu-22.04
             args: '--bundles deb,appimage'
@@ -76,10 +75,6 @@ jobs:
 
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
-
-      - name: Add cross Rust target (Intel macOS)
-        if: matrix.rust_target != ''
-        run: rustup target add ${{ matrix.rust_target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
