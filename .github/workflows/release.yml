@@ -91,6 +91,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS 代码签名 + 公证：配置了下面这些 secret 时 tauri-action 会自动签名并公证；
+          # 留空（现状）则照旧产未签名包，用户首次需右键→打开。需 Apple Developer($99/年)。
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'Ridge __VERSION__'
@@ -103,3 +111,32 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Linux 免费签名：用自管 GPG 私钥给 .deb / .AppImage 生成 detached 签名（.asc）并
+      # 传到同一 Release。未配置 GPG_PRIVATE_KEY 时整步自跳过（现状 = 不签名，零影响）。
+      # 配置：本地 `gpg --gen-key`，`gpg --armor --export-secret-keys <ID>` 存为仓库 secret
+      # GPG_PRIVATE_KEY（有口令再加 GPG_PASSPHRASE）。校验：`gpg --verify x.deb.asc x.deb`。
+      - name: GPG sign Linux artifacts (optional)
+        if: matrix.label == 'linux-x64'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REL_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "GPG_PRIVATE_KEY 未配置，跳过 Linux 签名（产物仍正常发布，只是无 .asc）"
+            exit 0
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID=$(gpg --list-secret-keys --with-colons --keyid-format=long | awk -F: '/^sec/{print $5; exit}')
+          shopt -s globstar nullglob
+          signed=0
+          for f in src-tauri/target/**/bundle/**/*.deb src-tauri/target/**/bundle/**/*.AppImage; do
+            echo "signing $f"
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                -u "$KEYID" --armor --detach-sign "$f"
+            gh release upload "$REL_TAG" "$f.asc" --clobber
+            signed=$((signed+1))
+          done
+          echo "signed $signed Linux artifact(s)"
