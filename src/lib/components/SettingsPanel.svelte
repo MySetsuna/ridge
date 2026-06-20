@@ -15,7 +15,6 @@
   import {
     setTeammateEnabled,
     setTeammateHitlEnabled,
-    setTeammateTmlStreamEnabled,
   } from '$lib/teammate/teammateSettings';
   import { refreshRemoteRunning } from '$lib/stores/remoteStatus';
   import { themeData, isCustomTheme, deleteCustomTheme, resolveThemeBgUrl } from '$lib/stores/themes';
@@ -478,7 +477,7 @@
             <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
               <div class="min-w-0 flex-1">
                 <div class="text-[12px] text-[var(--rg-fg)]">启用智能体协同</div>
-                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">关闭后隐藏左侧「智能体」Tab 与分屏「设为智能体」入口，并强制下面两项为关。</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">关闭后隐藏左侧「智能体」Tab 与分屏「设为智能体」入口，并强制下面的审批网关为关。</div>
               </div>
               <button
                 type="button"
@@ -513,26 +512,6 @@
                   onclick={() => setTeammateHitlEnabled(!$settingsStore.teammateHitlEnabled)}
                 >
                   <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.teammateHitlEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}"></span>
-                </button>
-              </div>
-
-              <!-- TML 流净化 / 协作审计 -->
-              <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
-                <div class="min-w-0 flex-1">
-                  <div class="text-[12px] text-[var(--rg-fg)]">协作审计（TML 流净化）</div>
-                  <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">隐藏队员间的 TML 控制字符，并把协作动作刷进「智能体」Tab 的活动列表。默认关。</div>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={$settingsStore.teammateTmlStreamEnabled}
-                  aria-label="协作审计"
-                  class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.teammateTmlStreamEnabled
-                    ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
-                    : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
-                  onclick={() => setTeammateTmlStreamEnabled(!$settingsStore.teammateTmlStreamEnabled)}
-                >
-                  <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.teammateTmlStreamEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}"></span>
                 </button>
               </div>
             </div>

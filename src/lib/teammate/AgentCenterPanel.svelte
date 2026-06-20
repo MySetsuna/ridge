@@ -1,36 +1,33 @@
 <script lang="ts">
-  // AgentCenterPanel —— Domain D1 智能体指挥部（现为左侧图标栏独立 Tab）。
+  // AgentCenterPanel —— 智能体状态面板（左侧图标栏独立 Tab）。
   //
-  // 展示团队拓扑：目标 / 成员（Roster）/ 活动（把底层 TML tool-call 降维成人话）/
-  // 异常（熔断告警）。数据来源：
-  //   - 轮询 `get_teammate_topology` → roster + leader + edges
-  //   - 监听 `teammate://tml-message` → 追加活动行
+  // 底座化瘦身后只保留「给人看的」两块：成员（Roster）+ 异常（熔断告警）。
+  // 「目标 / 活动（TML 协作审计）」等 AI 自治协同的可视化已退场
+  //（见 docs/superpowers/specs/2026-06-20-team-agent-upgrade-plan-design.md）。
+  // 数据来源：
+  //   - 轮询 `get_teammate_topology` → roster（成员名册 / 状态）
   //   - 监听 `teammate://circuit-tripped` → 置顶异常告警
-  // 后端未接线时优雅显示空态（不报错）。顶部带一个「审批」快捷开关（HITL），完整
-  // 三开关在设置面板「智能体」分区。
+  // 后端未接线时优雅显示空态（不报错）。顶部带一个「审批」快捷开关（HITL），
+  // 完整开关在设置面板「智能体」分区。
 
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
-  import { Crown, Bot, Target, MessageSquare, ZapOff, ShieldCheck } from 'lucide-svelte';
+  import { Crown, Bot, ZapOff, ShieldCheck } from 'lucide-svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { setTeammateHitlEnabled } from './teammateSettings';
   import {
     parseTopologySnapshot,
-    parseTmlMessage,
     parseCircuitTripped,
     EMPTY_TOPOLOGY,
     type TopologySnapshot,
     type TeammateProfile,
-    type AuditEntry,
     type CircuitTrip,
   } from './teammateModel';
 
   const TOPOLOGY_CMD = 'get_teammate_topology';
-  const TML_EVENT = 'teammate://tml-message';
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
   const POLL_MS = 3000;
-  const AUDIT_CAP = 50;
   const TRIP_CAP = 20;
 
   interface Props {
@@ -40,7 +37,6 @@
   let { workspaceId }: Props = $props();
 
   let topology = $state<TopologySnapshot>(EMPTY_TOPOLOGY);
-  let audit = $state<AuditEntry[]>([]);
   let trips = $state<CircuitTrip[]>([]);
 
   const hitlOn = $derived($settingsStore.teammateHitlEnabled);
@@ -74,17 +70,12 @@
   onMount(() => {
     refresh();
     const timer = setInterval(refresh, POLL_MS);
-    const un = listen(TML_EVENT, (e) => {
-      const entry = parseTmlMessage(e.payload, nameOf);
-      if (entry) audit = [entry, ...audit].slice(0, AUDIT_CAP);
-    });
     const unTrip = listen(CIRCUIT_EVENT, (e) => {
       const trip = parseCircuitTripped(e.payload);
       if (trip) trips = [trip, ...trips].slice(0, TRIP_CAP);
     });
     return () => {
       clearInterval(timer);
-      un.then((f) => f()).catch(() => {});
       unTrip.then((f) => f()).catch(() => {});
     };
   });
@@ -114,20 +105,6 @@
   </header>
 
   <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
-    <!-- 目标 -->
-    <section>
-      <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-        <Target class="h-3 w-3 text-[var(--rg-accent)]/70" /> 目标
-      </h3>
-      <p class="mt-1 text-[12px] text-[var(--rg-fg)]/90">
-        {#if leader}
-          <span class="font-medium">{leader.name}</span> · {topology.roster.length} 名成员
-        {:else}
-          未连接智能体
-        {/if}
-      </p>
-    </section>
-
     <!-- 异常（熔断告警）：worker 死循环被熔断时置顶；无事件则零渲染 -->
     {#if trips.length > 0}
       <section class="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5">
@@ -177,23 +154,6 @@
         {/each}
         {#if topology.roster.length === 0}
           <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
-        {/if}
-      </ul>
-    </section>
-
-    <!-- 活动（协作审计） -->
-    <section>
-      <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-        <MessageSquare class="h-3 w-3 text-[var(--rg-accent)]/70" /> 活动
-      </h3>
-      <ul class="mt-1 space-y-1">
-        {#each audit as entry, i (i + entry.text)}
-          <li class="rounded bg-[var(--rg-surface)] px-2 py-1 text-[11px] text-[var(--rg-fg)]/85 leading-snug">
-            {entry.text}
-          </li>
-        {/each}
-        {#if audit.length === 0}
-          <li class="px-1.5 text-[11px] text-[var(--rg-fg-muted)]">暂无活动</li>
         {/if}
       </ul>
     </section>
