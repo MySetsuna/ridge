@@ -25,12 +25,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest      # Apple Silicon (arm64)
+          - label: macos-arm64          # Apple Silicon 原生
+            platform: macos-latest
             args: '--bundles app,dmg'
-          - platform: ubuntu-22.04
+          - label: macos-x64            # Intel：在 arm64 runner 上交叉编译 x86_64
+            platform: macos-latest      # （不依赖正在淘汰的 macos-13 Intel runner）
+            rust_target: x86_64-apple-darwin
+            args: '--bundles app,dmg --target x86_64-apple-darwin'
+          - label: linux-x64
+            platform: ubuntu-22.04
             args: '--bundles deb,appimage'
-          - platform: windows-latest
+          - label: windows-x64
+            platform: windows-latest
             args: '--bundles nsis,msi'
+    name: build (${{ matrix.label }})
     runs-on: ${{ matrix.platform }}
     env:
       # 前端 vite 构建体量大（Monaco 等）。macOS arm64 runner 给 Node 的默认堆偏低，
@@ -69,6 +77,10 @@ jobs:
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
 
+      - name: Add cross Rust target (Intel macOS)
+        if: matrix.rust_target != ''
+        run: rustup target add ${{ matrix.rust_target }}
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
@@ -92,7 +104,7 @@ jobs:
             公网远控：折叠侧边栏不再断线（host 提升为模块单例）。
             会员/已签到时隐藏每日签到入口。
 
-            本次首发 Linux（.deb / .AppImage）与 macOS（.dmg，Apple Silicon，未签名）产物。
+            本次首发 Linux（.deb / .AppImage）与 macOS（.dmg，Apple Silicon + Intel 各一份，未签名）产物。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
