@@ -3,6 +3,8 @@
 > 日期：2026-06-20
 > 上游：`2026-06-19-domain-zero-teammate-design.md`（四 Domain 已落地：纯核心 286 测试 + 接线 + 前端）。
 > 本文取代上一版"对标扩张"思路，定为**唯一权威执行计划**。
+>
+> **落地状态（2026-06-20）**：Commit 1 冻结 `356b94c`、Commit 2 摒弃 `f6f82fa`、Commit 3 HITL 独立 `56bfc83` 均已提交（ridge-core 268 绿 / `cargo check -p ridge` 0 err / svelte-check 0/0 / vitest 183）。Commit 4/5（持久化 + 技能）**据实延期为「观望」**，理由见下。后端删除项**待 rebuild + 真机 e2e**。
 
 ## 0. 一句话与分界线
 
@@ -69,15 +71,18 @@
 - 审计无"一键关安全"旁路；学 Claude Code"hooks 即便 yolo 也触发"——闸不可被整体关。
 - **验证**：`pnpm check` + `vitest` + `tauri:dev:cdp` 走 L2 命令弹审批。
 
-### Commit 4 — 新增持久化原语（会话永不丢）
-- `ridge-core/teammate/journal.rs`：append-only 事件类型 + 重放（纯结构，可单测）。
-- `src-tauri/teammate/store.rs`：落 `.ridge/teammate/journal.sqlite`（`rusqlite` 已在依赖）；写入异步、失败降级内存态（零默认行为变化）。
-- 启动重放重建 roster / HITL pending。
-- **验证**：ridge-core 重放单测 + `tauri:dev:cdp` 重启后状态仍在。
+### Commit 4 —（据实延期，本轮未落地）持久化原语 + 技能复利
+**执行中据实修正**。落地勘探推翻了原拟方案的前提：
+- 本仓 `.ridge` 指**工作区快照文件**（`<name>.ridge`），**无 per-workspace 目录约定**——teammate
+  日志/技能没有自然落点，需新造一套存储约定。
+- teammate roster 是**活 pane 状态**，应用重启后 PTY 本就不存在，"重放重建 roster"价值低；真正
+  durable 的只是"历史/记录"（熔断/审计），而它的消费需求尚未真实出现。
+- 后端接线本会话**无法真机自验**（rebuild 杀会话）。为不可验证、价值存疑的子系统铺一套新存储 =
+  投机过建（违 YAGNI，亦背离本规划"底座而非编排器"的克制主旨）。
 
-### Commit 5 —（观望，可不做）技能文件约定起步
-- 仅约定 `.ridge/skills/<slug>/SKILL.md` + `mcp/resource.rs` 暴露只读 `ridge://skills/*`。
-- **不做**蒸馏、不做 sqlite 索引、不做向量库。按真实使用再决定是否长出。
+→ **结论：持久化与技能复利整体移入「观望」**（见 §5）。待出现「真实、可运行时验证、live-pane
+之外的历史/记录」消费需求时，再按**文件化**（jsonl / 纯文件，不上 sqlite/向量库）最小落地。
+**本轮不写投机代码**——这正是本规划"帮你少做"的体现。
 
 ## 4. 验证矩阵
 | 层 | 手段 | 杀会话? |
@@ -88,7 +93,7 @@
 
 ## 5. 护城河 + 观望清单
 - **必须保住并强化**：L0/L1/L2 + 不可绕过 HITL；熔断 + 写锁；端侧数据不出机；同屏就地高带宽监督。
-- **观望（基座/真实使用逼出形态再说，现在一律不做）**：fan-out-then-judge、opt-in worktree 隔离档、多厂商 provider 抽象、双账本/co-planning、技能自动蒸馏、看板。
+- **观望（基座/真实使用逼出形态再说，现在一律不做）**：**持久化/事件日志**、**技能复利（文件化）**、fan-out-then-judge、opt-in worktree 隔离档、多厂商 provider 抽象、双账本/co-planning、技能自动蒸馏、看板。
 
 ---
 
