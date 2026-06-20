@@ -296,7 +296,6 @@ async fn run_server(
         // Domain B3 高层 Teammate API（花名册 / 派活 / 广播 / 汇报）
         .route("/api/v1/team-profile", get(route_get_team_profile))
         .route("/api/v1/delegate-task", post(route_delegate_task))
-        .route("/api/v1/broadcast", post(route_broadcast))
         .route("/api/v1/report-progress", post(route_report_progress))
         // Domain C 内置 MCP server（WebSocket / JSON-RPC 2.0）
         .route("/api/v1/mcp/ws", get(route_mcp_ws))
@@ -415,15 +414,9 @@ fn find_pane_by_agent(state: &AppState, wid: uuid::Uuid, agent_id: &str) -> Opti
 struct RegisterAgentBody {
     agent_id: String,
     pane_index: Option<usize>,
-    /// 可选 agent 展示名（Domain B1 画像）。
+    /// 可选 agent 展示名（用于花名册）。
     #[serde(default)]
     name: Option<String>,
-    /// 可选能力矩阵（语言/领域技能 + 上下文窗口）——驱动 Leader 竞选。
-    #[serde(default)]
-    capabilities: Option<ridge_core::AgentCapabilities>,
-    /// 可选性格倾向（风险承受度 / 细致度）。
-    #[serde(default)]
-    personality: Option<ridge_core::AgentPersonality>,
 }
 
 async fn route_register_agent(
@@ -459,15 +452,8 @@ async fn route_register_agent(
     };
 
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
-    // Domain B1：落 typed 画像（可选 capabilities/personality）供拓扑/Leader 竞选。
-    super::profiles::upsert(
-        wid,
-        &body.agent_id,
-        pane_id,
-        body.name.clone(),
-        body.capabilities.clone(),
-        body.personality.clone(),
-    );
+    // Domain B1：落花名册条目（名 + Working 态）。
+    super::profiles::upsert(wid, &body.agent_id, pane_id, body.name.clone());
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
     let _ = ctx
@@ -552,27 +538,6 @@ async fn route_delegate_task(
     let payload =
         serde_json::to_value(&ticket).unwrap_or_else(|_| serde_json::json!({ "status": "dispatched" }));
     (StatusCode::OK, Json(payload)).into_response()
-}
-
-#[derive(Deserialize)]
-struct BroadcastBody {
-    message: String,
-}
-
-/// 全网求助广播：emit 事件供前端审计 + 其他 Agent 举手接单。
-async fn route_broadcast(
-    State(ctx): State<TeammateCtx>,
-    headers: HeaderMap,
-    Json(body): Json<BroadcastBody>,
-) -> impl IntoResponse {
-    if !auth_ok(&headers, &ctx.token) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    let _ = ctx.handle.emit(
-        "teammate://broadcast",
-        serde_json::json!({ "message": body.message }),
-    );
-    (StatusCode::OK, "ok").into_response()
 }
 
 #[derive(Deserialize)]

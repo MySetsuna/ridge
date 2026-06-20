@@ -165,10 +165,6 @@ pub fn spawn_pty_reader(
             // carryover stays small. No upper bound: scrollback already retains
             // history independently, so we don't need to truncate carryover.
             let mut carryover: String = String::new();
-            // Domain A3：本 pane 的 StreamCleaner（跨读循环复用——TML 标记可能跨 chunk
-            // 切分）。默认关闭时 `stream::apply` 直接原样返回，不触碰它（零开销）。
-            let mut tml_cleaner =
-                ridge_core::StreamCleaner::new(&workspace_id.to_string(), &pane_id.to_string());
             let read_result = catch_unwind(AssertUnwindSafe(|| {
                 loop {
                     match reader.read(&mut buf) {
@@ -220,11 +216,6 @@ pub fn spawn_pty_reader(
                             let raw = take_decoded_utf8(&mut utf8_pending, &buf[..n]);
                             if raw.is_empty() {
                                 continue;
-                            }
-                            // Domain A3（默认关，开启时隐藏 TML 区间 + 上抛 tml-message）。
-                            let raw = crate::teammate::stream::apply(&state, &mut tml_cleaner, raw);
-                            if raw.is_empty() {
-                                continue; // 整块都是被隐藏的 TML
                             }
                             // Resize-silence gate + signal scan (ConPTY resize-replay
                             // drop → prompt/title/cwd) is the AppState-agnostic core of

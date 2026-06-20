@@ -2,17 +2,15 @@
  * teammateModel.ts — front-end typed mirror of the Rust `ridge_core::teammate`
  * domain (Domain Zero 端侧多智能体协同).
  *
- * The Tauri backend (Phase 2 接线, see
- * docs/superpowers/specs/2026-06-19-domain-zero-teammate-design.md §8) emits:
+ * The Tauri backend emits:
  *   - `get_teammate_topology` → a TopologySnapshot (roster + leader + edges)
  *   - event `teammate://hitl-approval-required` → a HitlRequest (Domain D2)
- *   - event `teammate://tml-message` → a parsed TML message (Domain A2)
+ *   - event `teammate://circuit-tripped` → a CircuitTrip (Domain D3)
  *
- * This module normalizes those wire shapes into typed front-end view models and
- * humanizes raw tool/TML traffic into a readable Audit Trail line (Domain D1 的
- * 「降维展示」). Every parser degrades gracefully on an unexpected payload so the
- * Agent Center / HITL UI can never break on a malformed event — same defensive
- * posture as `layoutEvent.ts`.
+ * This module normalizes those wire shapes into typed front-end view models.
+ * Every parser degrades gracefully on an unexpected payload so the Agent Center /
+ * HITL UI can never break on a malformed event — same defensive posture as
+ * `layoutEvent.ts`. （TML 协作审计已退场——底座化瘦身。）
  *
  * Wire enums mirror serde's default unit-variant encoding (the variant name as a
  * bare string): AgentRole/TeammateStatus/RiskLevel.
@@ -101,18 +99,6 @@ export interface HitlDecision {
   readonly verdict: HitlVerdict;
   /** New command text when verdict is `modify`. */
   readonly replacement?: string;
-}
-
-// ── Audit trail (Domain D1) ──
-
-export type TmlActionKind = 'PeerTalk' | 'AssignTask' | 'YieldControl' | 'ReportStatus';
-
-export interface AuditEntry {
-  readonly fromPane: string;
-  readonly toPane: string;
-  readonly kind: TmlActionKind;
-  /** Human-readable one-liner for the chat-bubble audit log. */
-  readonly text: string;
 }
 
 // ── Narrowing helpers ──
@@ -214,72 +200,6 @@ export function parseHitlRequest(payload: unknown): HitlRequest | null {
     level: asRisk(rec.risk ?? rec.level),
     reason: asString(rec.reason) ?? '',
   };
-}
-
-// ── TML audit humanizer (Domain D1 「降维展示」) ──
-
-const ACTION_KINDS: ReadonlySet<string> = new Set([
-  'PeerTalk',
-  'AssignTask',
-  'YieldControl',
-  'ReportStatus',
-]);
-
-/**
- * Turn a TML action + the two participants' display names into a readable
- * audit-log line, e.g. "Claude 给 Hermes 派活：跑单元测试".
- */
-export function humanizeTmlAction(
-  kind: TmlActionKind,
-  fromName: string,
-  toName: string,
-  payload?: Record<string, unknown>
-): string {
-  switch (kind) {
-    case 'AssignTask': {
-      const objective = asString(payload?.objective) ?? '一个任务';
-      return `${fromName} 给 ${toName} 派活：${objective}`;
-    }
-    case 'YieldControl': {
-      const reason = asString(payload?.reason);
-      return reason
-        ? `${fromName} 把控制权交给 ${toName}（${reason}）`
-        : `${fromName} 把控制权交给 ${toName}`;
-    }
-    case 'ReportStatus': {
-      const status = asString(payload?.status) ?? '已完成';
-      return `${fromName} 向 ${toName} 汇报：${status}`;
-    }
-    case 'PeerTalk':
-    default:
-      return `${fromName} 对 ${toName} 说话`;
-  }
-}
-
-/**
- * Parse a `teammate://tml-message` event into an AuditEntry. Resolves the two
- * pane ids to display names via `nameOf` (falls back to the raw id). Returns
- * null on an unrecognized payload.
- */
-export function parseTmlMessage(
-  payload: unknown,
-  nameOf: (paneId: string) => string = (id) => id
-): AuditEntry | null {
-  const rec = asRecord(payload);
-  if (!rec) return null;
-
-  const headerRec = asRecord(rec.header) ?? rec;
-  const fromPane = asString(headerRec.from_pane) ?? asString(headerRec.fromPane) ?? '';
-  const toPane = asString(headerRec.to_pane) ?? asString(headerRec.toPane) ?? '';
-
-  const actionRec = asRecord(headerRec.action);
-  const rawKind = actionRec ? asString(actionRec.type) : undefined;
-  const kind: TmlActionKind =
-    rawKind && ACTION_KINDS.has(rawKind) ? (rawKind as TmlActionKind) : 'PeerTalk';
-  const actionPayload = actionRec ? asRecord(actionRec.payload) ?? undefined : undefined;
-
-  const text = humanizeTmlAction(kind, nameOf(fromPane), nameOf(toPane), actionPayload);
-  return { fromPane, toPane, kind, text };
 }
 
 // ── Circuit breaker (Domain D3) ──
