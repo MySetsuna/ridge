@@ -32,6 +32,10 @@ jobs:
           - platform: windows-latest
             args: '--bundles nsis,msi'
     runs-on: ${{ matrix.platform }}
+    env:
+      # 前端 vite 构建体量大（Monaco 等）。macOS arm64 runner 给 Node 的默认堆偏低，
+      # 会在 SSR 打包时 OOM（heap out of memory）。统一抬高 old-space 上限，三平台一致。
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
 
