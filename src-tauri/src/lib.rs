@@ -192,7 +192,10 @@ pub fn run() {
                     .title("ridge")
                     .inner_size(800.0, 600.0)
                     .decorations(false)
-                    .transparent(false)
+                    // 不调 `.transparent(false)`：该方法在 macOS 上被 cfg 门控在
+                    // `macos-private-api` feature 之后（Win/Linux 无门控），而我们传的就是
+                    // 默认值 false（窗口本就不透明）。删掉这个 no-op 调用即可让 macOS 编译通过，
+                    // 三平台行为不变（仍是不透明窗口）。
                     .visible(false)
                     .devtools(true)
                     .initialization_script(&splash_init_script)
