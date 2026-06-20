@@ -477,7 +477,7 @@
             <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
               <div class="min-w-0 flex-1">
                 <div class="text-[12px] text-[var(--rg-fg)]">启用智能体协同</div>
-                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">关闭后隐藏左侧「智能体」Tab 与分屏「设为智能体」入口，并强制下面的审批网关为关。</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">仅控制左侧「智能体」Tab 与分屏「设为智能体」入口的露出；不影响下面的安全审批闸。</div>
               </div>
               <button
                 type="button"
@@ -493,13 +493,13 @@
               </button>
             </div>
 
-            <!-- 子开关：总开关关闭时整体置灰 -->
-            <div class="space-y-5 {$settingsStore.teammateEnabled ? '' : 'opacity-40 pointer-events-none'}">
+            <!-- 安全审批闸：独立生效，不随总开关置灰（不可整体关） -->
+            <div class="space-y-5">
               <!-- 安全审批 HITL -->
               <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
                 <div class="min-w-0 flex-1">
                   <div class="text-[12px] text-[var(--rg-fg)]">安全审批（HITL）</div>
-                  <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">智能体提交危险（L2）命令时弹窗，由你批准 / 拒绝 / 改写。默认关。</div>
+                  <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">智能体提交危险（L2）命令时弹窗，由你批准 / 拒绝 / 改写。默认关；独立生效，不随总开关关闭而失效。</div>
                 </div>
                 <button
                   type="button"
