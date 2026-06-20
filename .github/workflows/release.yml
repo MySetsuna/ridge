@@ -1,0 +1,94 @@
+name: release
+
+# 跨平台桌面发布：打 v* tag（或手动 workflow_dispatch）→ 在 windows / ubuntu /
+# macOS 三个 runner 上各自跑 tauri build，产物上传到同一个 GitHub Release（草稿）。
+# 校验无误后再把草稿改为正式发布。本仓构建链全在 tauri.conf 的 beforeBuildCommand /
+# beforeBundleCommand 里（wasm + 前端 + remote + desktop-web + tmux shim + cli），
+# tauri-action 会自动触发，无需在此重复。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（如 v0.0.9）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # Apple Silicon (arm64)
+            args: '--bundles app,dmg'
+          - platform: ubuntu-22.04
+            args: '--bundles deb,appimage'
+          - platform: windows-latest
+            args: '--bundles nsis,msi'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2 \
+            build-essential curl wget file libssl-dev libxdo-dev pkg-config
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build & publish (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Ridge __VERSION__'
+          releaseBody: |
+            智能体协同：指挥部独立 Tab + 精简文案、设置面板服务开关（HITL / TML / 总开关）、分屏「设为智能体」手动注册。
+            公网远控：折叠侧边栏不再断线（host 提升为模块单例）。
+            会员/已签到时隐藏每日签到入口。
+
+            本次首发 Linux（.deb / .AppImage）与 macOS（.dmg，Apple Silicon，未签名）产物。
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
