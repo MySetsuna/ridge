@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ridge",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "identifier": "com.tauri-app.ridge",
   "build": {
     "beforeDevCommand": "node packages/ridge-term/build.mjs --dev && node scripts/ensure-teammate-shim.mjs && node scripts/start-vite-dev.mjs",
