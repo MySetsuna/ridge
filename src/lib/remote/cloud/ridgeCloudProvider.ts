@@ -21,6 +21,8 @@
 import {
   type CloudConnectionState,
 } from './connectionProvider';
+import { parseSignal, isInboundSignal } from './signaling';
+import type { SignalMsg, SignalIn, Role, JsonValue } from './signaling';
 import {
   E2eeSession,
   DIR_HOST_TO_CONTROLLER,
@@ -84,17 +86,8 @@ export interface CloudHostBridgeLike {
   attachChannelControl?(ctrl: ChannelBackpressure): void;
 }
 
-/** 信令消息（契约 §5.1 + §5.3，tag 字段 `t`）。host 端视角。 */
-type SignalIn =
-  | { t: 'welcome'; room: string; role: 'host' | 'controller'; peerPresent: boolean; cid?: string }
-  | { t: 'peer-join'; role: 'host' | 'controller'; cid?: string }
-  | { t: 'peer-leave'; role: 'host' | 'controller'; cid?: string }
-  | { t: 'error'; code: string; message: string }
-  | { t: 'offer'; sdp: string; cid?: string }
-  | { t: 'answer'; sdp: string; cid?: string }
-  | { t: 'ice'; candidate: RTCIceCandidateInit | null; cid?: string }
-  // B3（D-GM-10）：cloud 经已认证信令把对端(controller)临时公钥旁路转发回来（带 cid）。
-  | { t: 'e2ee-pubkey'; pubkey: string; cid?: string };
+/** host 端信令角色（契约 §3：WS query ?role=）。出站连接以 {@link Role} 收窄。 */
+const SIGNAL_ROLE: Role = 'host';
 
 export interface RidgeCloudHostConfig {
   /** device JWT（scope=device），WS 与 ice-servers 鉴权用。 */
@@ -335,7 +328,12 @@ export class RidgeCloudHost {
 
     // 本端 ICE candidate → 经信令**定向**转发给该 controller（§5.3 带 cid）。
     pc.onicecandidate = (ev) => {
-      this.sendSignal({ t: 'ice', candidate: ev.candidate ? ev.candidate.toJSON() : null, cid });
+      // toJSON() 是 RTCIceCandidateInit；线类型是 JsonValue（serde_json），边界处收窄。
+      this.sendSignal({
+        t: 'ice',
+        candidate: ev.candidate ? (ev.candidate.toJSON() as unknown as JsonValue) : null,
+        cid,
+      });
     };
     pc.onconnectionstatechange = () => {
       const cs = pc.connectionState;
@@ -640,7 +638,7 @@ export class RidgeCloudHost {
     const label = this.hostLabel(deviceId);
     const url =
       `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
-      `?token=${encodeURIComponent(this.config.deviceToken)}&role=host`;
+      `?token=${encodeURIComponent(this.config.deviceToken)}&role=${SIGNAL_ROLE}`;
 
     let ws: WebSocket;
     try {
@@ -666,19 +664,18 @@ export class RidgeCloudHost {
     };
   }
 
-  private sendSignal(msg: Record<string, unknown>): void {
+  private sendSignal(msg: SignalMsg): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
   }
 
   private async onSignal(raw: unknown): Promise<void> {
-    let msg: SignalIn;
-    try {
-      msg = JSON.parse(typeof raw === 'string' ? raw : '') as SignalIn;
-    } catch {
-      return;
-    }
+    // 统一入站解析：未知 tag / 非法 JSON / kick（host 不在信令层处理）→ 忽略，绝不抛
+    // （前向兼容，见 signaling/parseSignal）。
+    const parsed = parseSignal(typeof raw === 'string' ? raw : '');
+    if (!isInboundSignal(parsed)) return;
+    const msg: SignalIn = parsed;
 
     switch (msg.t) {
       case 'welcome':
@@ -706,7 +703,8 @@ export class RidgeCloudHost {
         if (msg.cid && msg.candidate) {
           const conn = this.conns.get(msg.cid);
           if (conn) {
-            try { await conn.pc.addIceCandidate(msg.candidate); } catch { /* 非关键 candidate 失败可忽略 */ }
+            // 线类型是 JsonValue（serde_json），到 WebRTC API 的边界处收窄。
+            try { await conn.pc.addIceCandidate(msg.candidate as RTCIceCandidateInit); } catch { /* 非关键 candidate 失败可忽略 */ }
           }
         }
         break;
@@ -736,7 +734,7 @@ export class RidgeCloudHost {
       await conn.pc.setRemoteDescription({ type: 'offer', sdp });
       const answer = await conn.pc.createAnswer();
       await conn.pc.setLocalDescription(answer);
-      this.sendSignal({ t: 'answer', sdp: answer.sdp, cid });
+      this.sendSignal({ t: 'answer', sdp: answer.sdp ?? '', cid });
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '处理 offer 失败', 'INTERNAL');
       this.teardownConn(cid, true);

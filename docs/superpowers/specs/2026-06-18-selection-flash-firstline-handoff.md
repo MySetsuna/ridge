@@ -37,3 +37,26 @@
 - `packages/ridge-term/src/render/renderer.rs:387`(WebGPU 强制全帧)、`:591-647`(`is_dirty` 驱动 RAF 唤醒)
 - `src/lib/terminal/manager.ts:4461-4909`(RAF 循环 / blink 休眠 / host 渲染门控)、`:1238`/`:2911`(命中测试)
 - `packages/ridge-term/src/selection.rs`(无门控,排除项)、`src/lib/terminal/tuiGate.ts`(输入路由,排除项)
+
+## 跟进(2026-06-18,第二轮:取证尝试 + 根因深化)
+
+> 触发:用户要求清扫 TODO 并用 `dev:cdp` + chrome-devtools 取证。结论:**取证被环境阻断,根因分析已深化并纠正本文早先的简化框架,决定继续保持现状(零回归),不盲改渲染核心。**
+
+### A. 纠正:并非"每帧整屏 LoadOp::Clear"
+P1.1(2026-05-19)已把 `surface_host.rs::begin_frame` 的整屏 `LoadOp::Clear` 改成**仅 `needs_initial_clear` 为真时**才发(只由 `resize()`/`invalidate()`/surface-lost 置位),其余帧 `record_pane` 一律 `LoadOp::Load`。因此 `requires_full_frame()=true` 的真实代价是**每帧把所有可见行重新编码**(全标脏),**不是每帧清屏**。本文 §收敛的根因 中"每帧整屏 LoadOp::Clear"一句应据此修正。
+
+### B. 进一步证伪
+- **选区不会每帧误判变化**:`renderer.rs::selection_eq`(:743) 是 normalized **值比较**;稳定选区 → `sel_changed=false` → 不会每帧 `on_full_invalidate`。故"选区存在→每帧整屏清"不成立。
+- **JS 侧已补偿 Load 不可靠**:`manager.ts:4740-4755` 注释明确——任一 pane 脏即所有可见 pane 重录(脏走 `render()`、其余 `recordCachedOnly()`),正是为补偿 WebView2 "邻 pane scissor 区 present 后呈 fresh-zero"。
+- 推论:残留闪烁最可能是 **WebView2 148 交换链 present 语义在 60fps 全帧 churn 下的呈现**(取证级现象),而非可静态定位的逻辑 bug。
+
+### C. 取证被环境阻断(关键)
+`pnpm tauri:dev:cdp` 成功构建并启动 dev 应用(正常建 pane、远控可开),但 **WebView2 148 的远程调试端口未初始化**:
+- 9222 无 listener;
+- 进程命令行确带 `--remote-debugging-port=9222`,但 user-data-dir(`.webview2-dev-cdp/EBWebView`)下**不生成 `DevToolsActivePort`**;
+- 无 Edge `RemoteDebuggingAllowed` 策略封禁。
+
+即:**当前 WebView2 版本上整套 CDP forensics 工作流不可用**——这正解释了第一轮"无运行时无法验证"的根本原因。已给 `scripts/tauri-dev-cdp.mjs` 补 `--remote-allow-origins=*`(chrome-devtools-mcp 在 Chromium 111+ 连接所必需),但它治的是 WS 握手 403,**不解决 148 上端口根本不初始化**的问题。
+
+### D. 决定
+保持 `requires_full_frame()=true`(刻意、正确、零回归)。能力探测版的真实成本被低估:需把 surface usage 加 `COPY_SRC` + 初始化期**异步 GPU 回读**判断 `LoadOp::Load` 是否保留——侵入渲染核心且脆弱;且即便实现,dev(Load 不可靠)上会**正确回退到现状**,无法取得正向验证,真正收益只在 release exe。**修复仍 gated 在**:① 一个 CDP 可用的 WebView2 版本(以取证) 或 ② 直接在 release exe 上做视觉验证。在此之前不动。

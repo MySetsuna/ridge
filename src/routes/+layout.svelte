@@ -3,6 +3,8 @@
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
+  import EditorWindow from '$lib/components/EditorWindow.svelte';
+  import HitlApprovalModal from '$lib/teammate/HitlApprovalModal.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
@@ -18,6 +20,11 @@
   // vite.config.js). In the normal Tauri build the flag is undefined, the whole
   // branch tree-shakes away, and behaviour is unchanged.
   const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+  // §独立窗口：弹出的编辑器窗口以 ?win=editor 加载同一 SPA，但只渲染 <EditorWindow>
+  // （= 铺满窗口的文件编辑器），不跑主应用（+page）的终端/工作区重型初始化。
+  const editorWindow =
+    browser && new URLSearchParams(window.location.search).get('win') === 'editor';
 
   // §redirect-loop 止血：租户子域 boot 失败回主域登录的「已回跳」计数（per-tab，
   // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
@@ -51,6 +58,9 @@
   onMount(() => {
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
+      // §独立窗口：弹出的编辑器窗口只需 transport（让 invoke 可用），跳过 TOTP 身份同步
+      // 等主窗口职责，避免第二个窗口里重复运行。
+      if (editorWindow) return;
       // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
       // WEB_REMOTE 分支排除，不会到这）。
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
@@ -81,6 +91,25 @@
     const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
     // 返回值 = 父域 ridge_sso cookie 是否有效（成功换出 access token）。失败 = cookie 缺失/失效。
     const hadSession = await bootstrapFromCookie();
+    // §fast-fail-A: 租户子域 + 无有效会话 → 立即跳登录，不等 WebRTC 超时（避免用户看到长时间
+    // "连接中"后才报错）。走相同 bounce-guard 逻辑防止 apex⇄子域死循环。
+    if (!hadSession && parseCloudControllerHostname(location.hostname)) {
+      let bounced = 0;
+      try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
+      if (bounced >= 1) {
+        // 已回跳过且仍无会话 → 停在子域显式报错，不再循环。
+        try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
+        phase = 'error';
+        errorMsg = tr('main.remoteGateErrTenantLoginStuck');
+        return;
+      }
+      phase = 'error';
+      errorMsg = tr('main.remoteGateErrNotLoggedIn');
+      try { sessionStorage.setItem(TENANT_BOUNCE_KEY, String(bounced + 1)); } catch { /* ignore */ }
+      const scheme = cloudHttpScheme(BASE_DOMAIN);
+      window.location.replace(`${scheme}://${BASE_DOMAIN}/?redirect=${encodeURIComponent(location.href)}`);
+      return;
+    }
     phase = 'connecting';
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
@@ -90,35 +119,62 @@
           try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
           errorMsg = '';
           loading = false;
-          // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提，
-          // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
-          let cached: string | null = null;
-          try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-          if (cached && handle) {
-            handle.verifyTotp(cached).then((ok) => {
-              if (ok) {
-                ready = true;
-                registerServiceWorker();
-              } else {
+          // §7.4 信任授权优先：若 host 已记录本机控制器公钥（受信设备），静默握手通过即
+          // 跳过 TOTP（host 端经握手已打开 §4 verified 门）。优先级：信任授权 → 缓存码 → 手输。
+          // 旧 host 不识别 totp-trust-hello → 永不回 challenge → 10s 超时 resolve(false)，
+          // 无缝退化到下面的缓存码/手输流程（不会卡死）。
+          const fallbackToTotp = () => {
+            // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提，
+            // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
+            let cached: string | null = null;
+            try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+            if (cached && handle) {
+              handle.verifyTotp(cached).then((ok) => {
+                if (ok) {
+                  ready = true;
+                  registerServiceWorker();
+                } else {
+                  try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+                  ready = false;
+                  phase = 'need-totp';
+                }
+              }).catch(() => {
                 try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
                 ready = false;
                 phase = 'need-totp';
-              }
-            }).catch(() => {
-              try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+              });
+            } else {
               ready = false;
               phase = 'need-totp';
-            });
+            }
+          };
+          if (handle) {
+            handle.tryTrustGrant().then((trusted) => {
+              if (trusted) {
+                ready = true;
+                registerServiceWorker();
+              } else {
+                fallbackToTotp();
+              }
+            }).catch(() => fallbackToTotp());
           } else {
-            ready = false;
-            phase = 'need-totp';
+            fallbackToTotp();
           }
         } else if (s === 'error') {
           phase = 'error';
           errorMsg = errorMsg || tr('main.remoteGateErrCloud');
         }
       },
-      onError: (msg) => { phase = 'error'; errorMsg = msg; },
+      onError: (msg, code) => {
+        // §fast-fail-B: 信令 WS relay 上报稳定 error code（§5）→ 用户可读提示。
+        // 未知 code / 无 code 时降级到服务端的 msg（已脱敏），最终兜底显示通用云错误。
+        phase = 'error';
+        if (code === 'USERNAME_MISMATCH') errorMsg = tr('main.remoteGateErrUsernameMismatch');
+        else if (code === 'DEVICE_NOT_OWNED') errorMsg = tr('main.remoteGateErrDeviceNotOwned');
+        else if (code === 'DEVICE_PARKED') errorMsg = tr('main.remoteGateErrDeviceParked');
+        else if (code === 'NOT_PREMIUM') errorMsg = tr('main.remoteGateErrNotPremium');
+        else errorMsg = msg || tr('main.remoteGateErrCloud');
+      },
     }, location.hostname);
     cloudHandle = handle;
     if (!handle) {
@@ -282,7 +338,11 @@
 
 {#if ready}
   <div class="min-h-screen min-h-[100dvh] bg-[var(--rg-bg)] text-[var(--rg-fg)] antialiased">
-    {@render children()}
+    {#if editorWindow}
+      <EditorWindow />
+    {:else}
+      {@render children()}
+    {/if}
   </div>
 {:else}
   <div class="wr-gate">
@@ -336,6 +396,11 @@
 
 {#if dev && browser && !WEB_REMOTE}
   <DevIssueDialog />
+{/if}
+
+<!-- Domain Zero / D2：HITL 人类中间审批模态（全局高优先级覆盖层）。无待审批时不渲染。 -->
+{#if browser && !WEB_REMOTE && !editorWindow}
+  <HitlApprovalModal />
 {/if}
 
 <style>

@@ -33,7 +33,8 @@ import {
   encodeJsonFrame,
   encodePaneFrame,
 } from '../../transport/remote/cloudMux';
-import { base64ToBytes } from './e2ee';
+import { base64ToBytes, bytesToBase64 } from './e2ee';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { isRemoteAllowed } from './remoteAllowlist';
 
 /** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
@@ -174,6 +175,12 @@ export interface CloudHostBridgeConfig {
    * 完全不门控，向后兼容）。
    */
   totpBindVerifier?: TotpBindVerifier;
+  /**
+   * 可选：§7.3 信道绑定 transcript（hostEphPub ‖ controllerEphPub）。用于 §7.4
+   * trusted-controller grant 握手的 Ed25519 签名消息构造。未注入则信任握手无法完成
+   * （proof 直接失败）。
+   */
+  bindTranscript?: Uint8Array | null;
   /** 可选：诊断日志回调（默认 console）。 */
   log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 }
@@ -199,7 +206,13 @@ export class CloudHostBridge {
   private readonly keyBindingVerifier?: KeyBindingVerifier;
   private readonly totpVerifier?: TotpVerifier;
   private readonly totpBindVerifier?: TotpBindVerifier;
+  /** §7.4 信道绑定 transcript（来自 config）。 */
+  private readonly bindTranscript: Uint8Array | null;
   private readonly log: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
+  /** §7.4 正在进行的 trust 握手：临时存放对端 ctrlPub（totp-trust-hello 时写入）。 */
+  private trustCtrlPub: Uint8Array | null = null;
+  /** §7.4 正在进行的 trust 握手：一次性 nonce（totp-trust-challenge 时写入，proof 时消耗）。 */
+  private trustNonce: Uint8Array | null = null;
 
   /** 在途 invoke（id → 令牌），供 $/cancel 尽力中止。 */
   private readonly inflight = new Map<string, InflightInvoke>();
@@ -234,6 +247,7 @@ export class CloudHostBridge {
     this.keyBindingVerifier = config.keyBindingVerifier;
     this.totpVerifier = config.totpVerifier;
     this.totpBindVerifier = config.totpBindVerifier;
+    this.bindTranscript = config.bindTranscript ?? null;
     // 未注入**任何** TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。注入了任一种
     // （明文 totp-verify 或信道绑定 totp-bind）即门控业务帧，直至其一通过。
     this.verified = !config.totpVerifier && !config.totpBindVerifier;
@@ -343,6 +357,88 @@ export class CloudHostBridge {
    */
   private async handleSessionControl(frame: Record<string, unknown>): Promise<void> {
     const t = frame.t;
+
+    // §7.4 trusted-controller grant — totp-trust-hello：controller 发送自身公钥，host 回 nonce。
+    if (t === 'totp-trust-hello') {
+      const pubB64 = typeof frame.pub === 'string' ? frame.pub : '';
+      const pub = base64ToBytes(pubB64);
+      if (!pub || pub.length !== 32) {
+        this.log('warn', 'totp-trust-hello: invalid pub field; ignored');
+        return;
+      }
+      this.trustCtrlPub = pub;
+      const nonce = new Uint8Array(32);
+      crypto.getRandomValues(nonce);
+      this.trustNonce = nonce;
+      this.sendSessionControl({ t: 'totp-trust-challenge', nonce: bytesToBase64(nonce) });
+      return;
+    }
+
+    // §7.4 trusted-controller grant — totp-trust-proof：controller 用私钥签名证明身份。
+    if (t === 'totp-trust-proof') {
+      const ctrlPub = this.trustCtrlPub;
+      const nonce = this.trustNonce;
+      // 抗重放：立即清除 nonce，无论验证结果如何。
+      this.trustNonce = null;
+
+      if (!ctrlPub || !nonce) {
+        // 没有进行中的 trust 握手（nonce 已消耗或从未发起）。
+        this.log('warn', 'totp-trust-proof: no active trust challenge; ignored');
+        return;
+      }
+      // SECURITY: 共享锁定计数，防止 trust 通道爆破。
+      if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
+        this.log('warn', 'totp-trust-proof: locked out; rejecting');
+        this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
+        return;
+      }
+
+      const sigB64 = typeof frame.sig === 'string' ? frame.sig : '';
+      const sig = base64ToBytes(sigB64);
+      let valid = false;
+      if (sig && sig.length === 64) {
+        try {
+          // §7.4 签名消息：utf8("ridge-totp-trust-v1") ‖ nonce ‖ transcript
+          const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
+          const transcript = this.bindTranscript;
+          const transcriptLen = transcript?.length ?? 0;
+          const msg = new Uint8Array(prefix.length + nonce.length + transcriptLen);
+          msg.set(prefix, 0);
+          msg.set(nonce, prefix.length);
+          if (transcript) msg.set(transcript, prefix.length + nonce.length);
+          valid = ed25519.verify(sig, msg, ctrlPub);
+        } catch (e) {
+          this.log('error', 'totp-trust-proof: Ed25519 verify threw; treating as invalid', e);
+          valid = false;
+        }
+      }
+
+      if (!valid) {
+        this.totpFailures += 1;
+        this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
+        return;
+      }
+
+      // 签名合法：查询 host 是否记录过该 controller（Tauri invoke）。
+      const ctrlPubB64 = bytesToBase64(ctrlPub);
+      let trusted = false;
+      try {
+        trusted = await this.invoke('totp_trust_check', { ctrlPubB64 }) as boolean;
+      } catch (e) {
+        this.log('error', 'totp_trust_check invoke threw; treating as not trusted', e);
+        trusted = false;
+      }
+
+      if (trusted && (this.totpVerifier ?? this.totpBindVerifier)) {
+        // 是已信任的 controller 且当前会话需要 TOTP → 跳过交互验证直接设 verified。
+        this.verified = true;
+        // 记录公钥以便 manual-verify 路径的 totp_trust_record 能更新时间戳（幂等）。
+        this.trustCtrlPub = ctrlPub;
+      }
+      this.sendSessionControl({ t: 'totp-trust-result', trusted });
+      return;
+    }
+
     if (t !== 'totp-verify' && t !== 'totp-bind') {
       this.log('warn', `unknown CONTROL frame t=${String(t)}; ignored`);
       return;
@@ -381,6 +477,14 @@ export class CloudHostBridge {
     }
     if (ok) {
       this.verified = true;
+      // §7.4：手动 TOTP 成功后，若本轮已进行过 trust 握手且 controller 公钥已知，
+      // 则记录为受信任（fire-and-forget）。
+      if (this.trustCtrlPub) {
+        const ctrlPubB64 = bytesToBase64(this.trustCtrlPub);
+        void this.invoke('totp_trust_record', { ctrlPubB64 }).catch((e: unknown) => {
+          this.log('error', 'totp_trust_record invoke threw (ignored)', e);
+        });
+      }
     } else {
       // SECURITY (audit #3): 每次失败累加；达上限后本桥后续 totp 帧直接锁死。
       this.totpFailures += 1;
@@ -610,6 +714,27 @@ export class CloudHostBridge {
       this.pushPaneOutput(paneId, raw);
     });
     this.paneSubs.set(paneId, unsub);
+
+    // 初始历史回放：订阅刚建立时 host 只发新到的字节，历史不会自动重发。
+    // 用户主动订阅（首次连接 / 移动端切 pane 重订阅）走 replay_pane_scrollback_raw：
+    // 它**立即**补发 RIS + scrollback，**不限频、不依赖下一帧**——故快速切 pane、
+    // 1s 内切回、或切到无新输出的空闲 pane 都能立刻渲染历史（不会被 resync 的 1s
+    // 限频吞掉，也不会因空闲 pane 无「下一帧」而永远不补发）。背压自愈仍走限频的
+    // resync_pane_raw（见 onChannelDrained），二者正交。
+    // 重连时 reset() 会清空 paneSubs → 新 subscribe-pane 再次触发此路径，
+    // 所以重连后也能正确拿到历史（gate 已因 reset() 重置为 false，此处只在
+    // verified===true 时执行，语义自洽）。
+    // §replay-backpressure: DataChannel 已处于高背压时（缓冲量接近 8 MiB 高水位），
+    // 立即发起 256 KiB 的 replay 会直接溢出 → 把该 pane 标为待恢复，等 onChannelDrained
+    // 再走限频的 resync_pane_raw，而非在高压下再发一次大 replay。
+    if ((this.channel?.bufferedAmount() ?? 0) > BUFFERED_HIGH_WATERMARK) {
+      this.backpressuredPanes.add(paneId);
+      this.log('warn', `replay_pane_scrollback_raw(${paneId}) deferred: channel bufferedAmount high`);
+    } else {
+      void Promise.resolve(this.invoke('replay_pane_scrollback_raw', { paneId })).catch((e) =>
+        this.log('warn', `replay_pane_scrollback_raw(${paneId}) initial replay failed`, e),
+      );
+    }
   }
 
   /**
@@ -688,6 +813,9 @@ export class CloudHostBridge {
     this.verified = !this.totpVerifier && !this.totpBindVerifier;
     // SECURITY (audit #3): 重连清零失败计数（新桥/新连接重新获得满额尝试次数）。
     this.totpFailures = 0;
+    // §7.4：重连清空 trust 握手状态。
+    this.trustCtrlPub = null;
+    this.trustNonce = null;
   }
 }
 

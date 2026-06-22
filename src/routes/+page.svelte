@@ -39,6 +39,8 @@ self.MonacoEnvironment = {
   import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
+  import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
+  import { initTeammateBoot } from '$lib/teammate/teammateSettings';
   import { Smartphone } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
@@ -83,6 +85,7 @@ self.MonacoEnvironment = {
     PanelRightOpen,
     RefreshCw,
     LogOut,
+    Bot,
   } from 'lucide-svelte';
 // 删除相关的最近工作区定义和函数
   import {
@@ -115,6 +118,8 @@ self.MonacoEnvironment = {
     scheduleForceFitActivePanes,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
+  // §独立窗口：主窗口侧监听独立编辑器窗口的关闭（交还标签）。
+  import { initEditorWindowHost } from '$lib/stores/editorWindow';
 
   // §perf 懒挂载 FileEditor（设计文档 docs/superpowers/specs/2026-06-13-…）：
   // 编辑器深度耦合 Monaco 核心(~4MB)，原随顶层 import 进入 +page 首屏 eager chunk
@@ -298,8 +303,14 @@ self.MonacoEnvironment = {
     });
   });
 
-  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote';
+  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote' | 'agents';
   let sidebarTab = $state<SidebarTab>('files');
+  // 智能体协同总开关（设置面板「智能体」分区）：关闭时隐藏指挥部 Tab 入口。
+  const teammateEnabled = $derived($settingsStore.teammateEnabled);
+  // 守卫：总开关被关掉时若正停在指挥部 Tab，回退到文件 Tab（避免空白侧栏）。
+  $effect(() => {
+    if (!teammateEnabled && sidebarTab === 'agents') sidebarTab = 'files';
+  });
 
 
 
@@ -1111,6 +1122,9 @@ function expandSidebar() {
       await initThemeSystem();
       // 主题数据就绪后，把当前主题写到 CSS 变量
       initSettingsBoot();
+      // 智能体协同：把持久化的 HITL/TML 偏好镜像到后端网关（否则重启后 UI 显示
+      // 开、后端实为关）。容错，旧二进制无对应命令时静默降级。
+      initTeammateBoot();
       // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
       // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
       // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
@@ -1127,6 +1141,10 @@ function expandSidebar() {
       // 文件系统监听桥接：订阅 explorer cwd + 编辑器外部文件，并把 fs-changed
       // 事件分发到文件树和编辑器。模块内部 idempotent，重复调用是安全的。
       initFileWatcherSync();
+
+      // §独立窗口：主窗口监听独立编辑器窗口的关闭事件，交还标签快照并注销转发拦截器。
+      // 内部已对非 Tauri / web-remote 做守卫（返回 null）。
+      void initEditorWindowHost();
 
       if (!isTauri()) return;
 
@@ -1410,6 +1428,17 @@ function expandSidebar() {
     >
       <GitBranch class="h-5 w-5" />
     </button>
+    <!-- 智能体指挥部（Domain Zero）独立 Tab。总开关关闭时不渲染入口。 -->
+    {#if teammateEnabled}
+    <button
+      type="button"
+      class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
+      title="智能体"
+      onclick={() => { sidebarTab = 'agents'; expandSidebar(); }}
+    >
+      <Bot class="h-5 w-5" />
+    </button>
+    {/if}
     <!-- Bottom-anchored extension manager — uses mt-auto so it stays at the
          rail's bottom regardless of how many tabs sit above. Click toggles
          the Claude Code extension. The icon flips between dim/Bot when off
@@ -1492,6 +1521,13 @@ function expandSidebar() {
         {#if !webRemote}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'remote' ? '' : 'hidden'}">
           <RemotePanel />
+        </div>
+        {/if}
+
+        <!-- Agents tab（智能体指挥部）：总开关开启时才挂载 -->
+        {#if teammateEnabled}
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'agents' ? '' : 'hidden'}">
+          <AgentCenterPanel workspaceId={$activeWorkspaceId} />
         </div>
         {/if}
 

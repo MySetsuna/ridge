@@ -84,9 +84,13 @@
 
 - **文件**：`packages/ridge-term/src/render/webgpu.rs:339-365`(`requires_full_frame` 恒 true)；牵涉 `renderer.rs:387/591-647`、`manager.ts:4461-4909`。
 - **现象**：Shell 模式首行(活动 prompt 行)鼠标选不中;选区出现后持续闪烁(像反复重绘整帧)。用户在 prompt 输入路径时最明显。
-- **根因(已静态定位,两症状同源)**：活动 prompt 行被 PSReadLine 高频重画 → 每帧 `is_dirty` → WebGPU `requires_full_frame()` 恒 true → 每帧整屏 `LoadOp::Clear` 全量重绘 → WebView2 上闪烁;活动输入行在视口顶部,故"首行"闪得最凶、选它时与实时重画相争。已**证伪**:选区门控(selection.rs 无门控)、命中越界(computeCell 有 max(0) 兜底)、RAF 自旋(已有 blink 休眠)。
-- **为何未修**：唯一真修复要动 `requires_full_frame=true` 这个**刻意为正确性设的**机制(webgpu.rs 注释:WebView2 148 上 `LoadOp::Load` 不可靠,当初为消除"历史行闪烁"才强制全帧)。无运行时无法验证、default-on 可能回退老 bug。经用户确认暂不盲改。
-- **修法(建议,需运行时)**：`pnpm tauri:dev:cdp` 连 DevTools 取证(输入时 RAF 频率 + 本机 WebView2 上 LoadOp::Load 是否可靠),再把 `requires_full_frame` 改为「初始化一次性能力探测」版(可靠→走 `needs_initial_clear` 脏行快路径消除闪烁;否则保持 true)。详见交接文档 `docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md`。
+- **根因(深化静态分析,2026-06-18 复审,纠正早先简化框架)**：活动 prompt 行被 PSReadLine 高频重画 → 每帧 `is_dirty` → WebGPU `requires_full_frame()` 恒 true → 每帧把**整窗所有可见行重新编码**(并非每帧整屏 `LoadOp::Clear`——见下纠正)。早先"每帧整屏 LoadOp::Clear"的描述**已过时**:`surface_host.rs::begin_frame`(P1.1, 2026-05-19)早已把整屏 `LoadOp::Clear` 改成**仅 `needs_initial_clear` 时**才发(只由 resize/invalidate/surface-lost 置位),`record_pane` 一律 `LoadOp::Load`;故 `requires_full_frame=true` 的真实代价是**全量重编码**(把所有行标脏),不是每帧清屏。
+- **已进一步证伪(本轮新增)**:
+  - 选区不会每帧误判变化 → `renderer.rs::selection_eq`(:743) 是 normalized **值比较**,稳定选区下 `sel_changed=false`,不会每帧触发 `on_full_invalidate`(故"选区→每帧 LoadOp::Clear"假说不成立)。
+  - JS 侧已为 Load 不可靠兜底 → `manager.ts:4740-4755` 注释明确:任一 pane 脏即所有可见 pane 重录(脏的走 `render()`、其余走 `recordCachedOnly()`),正是补偿 WebView2 "邻 pane scissor 区呈 fresh-zero"。
+  - 故残留闪烁最可能源于 **WebView2 148 交换链 present 语义在 60fps 全帧 churn 下的表现**(取证级),非可静态定位的逻辑 bug;选区让高对比区更显眼、首行=活动输入行故最明显。早先已证伪:selection.rs 无门控、computeCell max(0) 兜底、RAF 已有 blink 休眠。
+- **运行时取证尝试(2026-06-18, 本轮)——环境受阻**:`pnpm tauri:dev:cdp` 已起、dev 应用正常建 pane,但 **WebView2 148 的远程调试端口未初始化**:进程虽带 `--remote-debugging-port=9222`,9222 无 listener、user-data-dir 下**不生成 `DevToolsActivePort`**(无 Edge 策略封禁)。即当前 WebView2 版本上 CDP forensics 工作流不可用——与当初无法取证同根。(已给 `scripts/tauri-dev-cdp.mjs` 补 `--remote-allow-origins=*`,chrome-devtools-mcp 在 Chromium 111+ 连接必需,但不解决 148 端口未初始化。)
+- **决定(本轮)**:保持 `requires_full_frame()=true`(刻意、正确、零回归)。不盲改:能力探测版需把 surface usage 加 `COPY_SRC` + 初始化期异步 GPU 回读(侵入渲染核心且脆弱),且即使实现,在 dev(Load 不可靠)上会正确回退到现状→**无法在 dev 取得正向验证**,真正收益只在 release exe 体现。修复仍 gated 在「能跑 CDP 的 WebView2 / release exe 取证」上。详见交接文档 `docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md`。
 - **验收**：输入/选中首行时不再闪烁;首行可正常选中;非 WebGPU(Canvas2D)路径不变。
 
 ### 1.7 [HIGH] 选中背景色不符合主题 ✅ 2026-05-03

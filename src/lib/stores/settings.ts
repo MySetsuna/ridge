@@ -31,6 +31,13 @@ export interface UserSettings {
   /// Remote control server enabled on last session. Restored on boot to
   /// automatically start the remote server if the user left it on.
   remoteEnabled: boolean;
+  /// 智能体协同（Domain Zero）总开关。**仅控制 UI 露出**（指挥部 Tab / pane
+  /// 「设为智能体」入口）；不影响安全闸。默认开（仅呈现指挥部空态，零打扰）。
+  teammateEnabled: boolean;
+  /// 安全审批网关（HITL）。开后 L2 危险命令弹审批模态。默认关 —— 与后端
+  /// `set_hitl_enabled` 默认一致，保证 send-keys 行为零变化。**独立生效，不被总
+  /// 开关左右**（不可整体关：开启的安全闸不会被无关 UI 开关静默撤销）。
+  teammateHitlEnabled: boolean;
 }
 
 const DEFAULTS: UserSettings = {
@@ -46,6 +53,8 @@ const DEFAULTS: UserSettings = {
   terminalScrollbackLines: 2000,
   terminalImeMode: 'ime',
   remoteEnabled: false,
+  teammateEnabled: true,
+  teammateHitlEnabled: false,
 };
 
 const LS_KEY = 'ridge-settings';
@@ -120,6 +129,14 @@ function load(): UserSettings {
       typeof obj.remoteEnabled === 'boolean'
         ? obj.remoteEnabled
         : DEFAULTS.remoteEnabled,
+    teammateEnabled:
+      typeof obj.teammateEnabled === 'boolean'
+        ? obj.teammateEnabled
+        : DEFAULTS.teammateEnabled,
+    teammateHitlEnabled:
+      typeof obj.teammateHitlEnabled === 'boolean'
+        ? obj.teammateHitlEnabled
+        : DEFAULTS.teammateHitlEnabled,
   };
 }
 

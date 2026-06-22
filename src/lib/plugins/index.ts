@@ -26,3 +26,7 @@ registerSidebarPlugin({
   component: GlobalStatusPanel,
   order: 100,
 });
+
+// Domain Zero / D1：智能体指挥部（Agent Center）此前是钉在每个 Tab 底部的 global
+// 插件，已改为左侧图标栏的**独立 Tab**（见 routes/+page.svelte 的 sidebarTab='agents'），
+// 故此处不再注册。组件本身保留在 $lib/teammate/AgentCenterPanel.svelte。
