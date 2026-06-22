@@ -37,6 +37,8 @@ import {
 } from './inputBufferTracker';
 import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
 import { activeBgImage } from '$lib/stores/themes';
+import { getShells, changePaneShell, type ShellInfo } from '$lib/terminal/paneShell';
+import { Terminal } from 'lucide-svelte';
 
 interface Props {
 	paneId: string;
@@ -53,6 +55,15 @@ let alive = true;
 // pane's wasm renderer at its default `focused=true` → both panes blink
 // after a split until the next activePaneId change.
 let attached = $state(false);
+
+// 右键菜单"切换终端类型"子菜单需要 shell 列表；挂载预加载（共享缓存），
+// 使 onContextMenu 能同步构建子菜单项。
+let shells = $state<ShellInfo[]>([]);
+$effect(() => {
+	void getShells().then((s) => {
+		shells = s;
+	});
+});
 
 // P4.4 (2026-05-21) — removed the parserBackend live-switch state.
 // The Rust path is now unconditional; `set_pane_delta_mode(true)` is
@@ -1498,6 +1509,19 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-split-down', label: tr('workspace.ctxSplitDown'), action: () => {
 			void splitPane(paneId, 'vertical');
 		}},
+		...(shells.length > 0 ? [
+			{ id: 'term-sep-shell', divider: true },
+			{
+				id: 'term-shell',
+				label: tr('workspace.ctxSwitchShell'),
+				icon: Terminal,
+				children: shells.map((s) => ({
+					id: `term-shell-${s.id}`,
+					label: s.label,
+					action: () => { void changePaneShell(paneId, s); },
+				})),
+			},
+		] : []),
 		{ id: 'term-sep3', divider: true },
 		{ id: 'term-close', label: tr('workspace.ctxClosePanel'), action: () => {
 			void closePane(paneId);
