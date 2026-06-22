@@ -52,6 +52,18 @@ pub fn _init() {
     console_error_panic_hook::set_once();
 }
 
+/// §present-fast (2026-06-22): let JS opt the WebGPU renderer into the
+/// dirty-row fast path (vs. the always-full-frame correctness default) on a
+/// release WebView2 whose swap chain reliably preserves prior pixels under
+/// LoadOp::Load. `manager.ts` gates this on `localStorage.RIDGE_PRESENT_FAST`.
+/// Compiled only with the WebGPU backend; absent on Canvas2D-only builds (the
+/// JS caller guards with `typeof`). See `render/webgpu.rs::requires_full_frame`.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = setPresentFast)]
+pub fn set_present_fast(on: bool) {
+    crate::render::webgpu::set_present_fast(on);
+}
+
 #[wasm_bindgen(js_name = TerminalKernel)]
 pub struct JsTerminal {
     inner: Terminal,

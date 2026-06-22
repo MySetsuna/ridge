@@ -648,6 +648,29 @@ export class TerminalManager {
 		this.wasmReadyPromise = (async () => {
 			await init(wasmUrl);
 			this.wasmReady = true;
+			// §present-fast (2026-06-22): opt the WebGPU renderer into the
+			// dirty-row fast path (vs. the always-full-frame correctness
+			// default) when `localStorage.RIDGE_PRESENT_FAST === '1'`. On a
+			// release WebView2 that reliably preserves swap-chain pixels under
+			// LoadOp::Load this kills the per-frame full Clear behind IME-
+			// composition / selection flicker AND cuts the per-frame glyph
+			// re-admission that amplifies switch-workspace atlas-eviction
+			// garble. Default off = zero behaviour change; reversible by
+			// unsetting the flag. typeof-guarded for wasm bundles built before
+			// the `setPresentFast` export existed.
+			try {
+				if (
+					typeof localStorage !== 'undefined' &&
+					localStorage.getItem('RIDGE_PRESENT_FAST') === '1'
+				) {
+					const mod = (await import('@ridge/term-wasm')) as unknown as {
+						setPresentFast?: (on: boolean) => void;
+					};
+					if (typeof mod.setPresentFast === 'function') mod.setPresentFast(true);
+				}
+			} catch {
+				/* old wasm bundle without the export → skip */
+			}
 		})();
 		return this.wasmReadyPromise;
 	}
