@@ -69,7 +69,9 @@ git commit -m "fix(workspace): + 按钮与左侧 tab 留出间距"
 
 - [ ] **Step 1: 新建 `Toggle.svelte`**
 
-几何要点：轨道 `relative` + 圆钮 `absolute` 用 `left` 定位（off → `left-0.5`；on → `left-[calc(100%-1.125rem)]`，其中 `100%` 取自轨道 padding box、`1.125rem`=圆钮 1rem + 0.125rem 间隙），垂直 `top-1/2 -translate-y-1/2`。**不用固定 px 的 `translate-x`**，任意根字号/缩放下圆钮恒在轨道内、右侧留 2px。
+几何要点：轨道 `relative` + 圆钮 `absolute` 用 `left` 定位（off → `left-0.5`；on → `left-[calc(100%_-_1.125rem)]`，其中 `100%` 取自轨道 padding box、`1.125rem`=圆钮 1rem + 0.125rem 间隙），垂直 `top-1/2 -translate-y-1/2`。**不用固定 px 的 `translate-x`**，任意根字号/缩放下圆钮恒在轨道内、右侧留 2px。
+
+> ⚠️ Tailwind 任意值里 calc 的空格必须写成下划线：`left-[calc(100%_-_1.125rem)]`（生成 `left: calc(100% - 1.125rem)`）。写成 `left-[calc(100%-1.125rem)]` 会生成非法 CSS（`-` 两侧缺空格）被浏览器丢弃，圆钮回退 `left:auto` 反而错位。务必用下划线版本。
 
 Create `src/lib/components/Toggle.svelte`:
 
@@ -100,7 +102,7 @@ Create `src/lib/components/Toggle.svelte`:
 >
   <span
     class="pointer-events-none absolute top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-white shadow-sm transition-[left] duration-150 {checked
-      ? 'left-[calc(100%-1.125rem)]'
+      ? 'left-[calc(100%_-_1.125rem)]'
       : 'left-0.5'}"
   ></span>
 </button>
