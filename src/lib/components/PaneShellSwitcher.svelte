@@ -1,50 +1,33 @@
 <script lang="ts">
-  import { invoke, isTauri } from '@tauri-apps/api/core';
   import { t, tr } from '$lib/i18n';
   import { ChevronDown, Terminal } from 'lucide-svelte';
-  import { activeWorkspaceId } from '$lib/stores/paneTree';
   import { portal } from '$lib/actions/portal';
-  import { TerminalManager } from '$lib/terminal/manager';
-
-  interface ShellInfo {
-    id: string;
-    label: string;
-    program: string;
-    args: string[];
-  }
+  import { getShells, changePaneShell, type ShellInfo } from '$lib/terminal/paneShell';
 
   interface Props {
     paneId: string;
     currentShell?: string;
   }
-
   let { paneId, currentShell }: Props = $props();
 
-  // 切换成功后立即记下选中的 ShellInfo.id（乐观）；layout 回传 shell_kind(program)
+  // 切换成功后立即记下选中的 ShellInfo.id（乐观）；layout 回传的 shell_kind(program)
   // 在 WSL 多发行版同 program 时不足以区分，故优先用 selectedId。
   let selectedId = $state<string | null>(null);
-
   let open = $state(false);
   let shells = $state<ShellInfo[]>([]);
-  let shellsLoaded = $state(false);
   let changing = $state(false);
   let btnEl: HTMLButtonElement | undefined = $state();
   let popupStyle = $state('');
 
-  async function loadShells(): Promise<void> {
-    if (!isTauri() || shellsLoaded) return;
-    try {
-      shells = await invoke<ShellInfo[]>('detect_available_shells');
-    } catch (e) {
-      console.warn('detect_available_shells failed', e);
-      shells = [];
-    } finally {
-      shellsLoaded = true;
-    }
-  }
+  // 挂载即预加载（共享缓存）。修复旧 bug：旧实现仅在点击 toggle 时加载 shells，
+  // 而按钮 {#if shells.length>0} 才渲染 → 按钮永不出现、永不可点。
+  $effect(() => {
+    void getShells().then((s) => {
+      shells = s;
+    });
+  });
 
-  async function toggle() {
-    if (!shellsLoaded) await loadShells();
+  function toggle() {
     if (btnEl) {
       const r = btnEl.getBoundingClientRect();
       popupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
@@ -72,24 +55,12 @@
   }
 
   async function selectShell(shell: ShellInfo) {
-    if (!isTauri()) return;
     open = false;
     if (isCurrent(shell)) return;
     changing = true;
     try {
-      const wsId = $activeWorkspaceId;
-      if (!wsId) return;
-      const manager = TerminalManager.instance();
-      manager.clearScrollback(paneId);
-      await invoke('change_pane_shell', { paneId, shell: shell.program, args: shell.args ?? [] });
-      await invoke('activate_pane_pty', {
-        workspaceId: wsId,
-        paneId,
-        rows: manager.rows(paneId),
-        cols: manager.cols(paneId),
-      });
+      await changePaneShell(paneId, shell);
       selectedId = shell.id;
-      manager.forceFullRedraw(paneId);
     } catch (e) {
       console.warn('change_pane_shell failed', e);
     } finally {
