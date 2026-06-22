@@ -18,6 +18,7 @@
   import { t } from '$lib/i18n';
   import LangSwitch from './LangSwitch.svelte';
   import CustomThemeModal from './CustomThemeModal.svelte';
+  import Toggle from './Toggle.svelte';
   interface Props {
     open: boolean;
     onClose: () => void;
@@ -436,17 +437,11 @@
                 <div class="text-[12px] text-[var(--rg-fg)]">{$t('settings.remoteControl')}</div>
                 <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">{$t('settings.remoteControlDesc')}</div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={$settingsStore.remoteEnabled}
-                aria-label={$t('settings.remoteToggle')}
+              <Toggle
+                checked={$settingsStore.remoteEnabled}
+                ariaLabel={$t('settings.remoteToggle')}
                 title={$settingsStore.remoteEnabled ? $t('settings.remoteToggleOn') : $t('settings.remoteToggleOff')}
-                class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.remoteEnabled
-                  ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
-                  : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
-                onclick={async () => {
-                  const next = !$settingsStore.remoteEnabled;
+                onchange={async (next) => {
                   try {
                     const { invoke } = await import('@tauri-apps/api/core');
                     await invoke('set_remote_enabled', { enabled: next });
@@ -458,13 +453,7 @@
                   setSetting('remoteEnabled', next);
                   void refreshRemoteRunning();
                 }}
-              >
-                <span
-                  class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.remoteEnabled
-                    ? 'translate-x-[18px]'
-                    : 'translate-x-0.5'}"
-                ></span>
-              </button>
+              />
             </div>
 
           {:else if activeSection === 'debug'}
