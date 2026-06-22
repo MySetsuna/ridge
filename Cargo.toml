@@ -21,11 +21,25 @@ members = [
 ]
 
 # Workspace members cannot declare their own `[profile.*]` — only the workspace
-# root's profiles apply. `packages/ridge-term/Cargo.toml` previously set a
-# size-optimised release profile for its wasm bundle (`opt-level = "z"`, LTO,
-# 1 codegen unit). Hoisted here verbatim so the wasm-pack release build keeps
-# the same output size it had before this crate became a workspace member.
+# root's profiles apply.
+#
+# 2026-06-22 拆 profile：原全局 `opt-level="z" + lto=true(fat) + codegen-units=1`
+# 是给 wasm 体积调的，却套到整个原生工作区 → 原生 release 出包冷编译十几~几十
+# 分钟（fat-LTO 代码生成是最大头），且 opt-z 让原生运行还更慢。现在拆开：
+#   · 全局 = 原生提速档：opt-level=2（原生按速度，比 z 编得快也跑得快）、
+#     lto="thin"（仍跨 crate 内联，但比 fat 快得多、可并行）、codegen-units=16
+#     （并行代码生成）、strip=true（去符号）。
+#   · wasm 主 crate ridge-term 仍走体积档（opt-z + cgu=1），配合 thin-LTO 基本
+#     维持原 wasm 体积。注意：wasm 的「依赖」crate 现按全局 opt-2 编（体积略增）；
+#     若 wasm 体积敏感，装 binaryen 让 build.mjs 的 wasm-opt 兜底（当前 skip）。
 [profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 16
+strip = true
+
+# wasm bundle 仍要尽量小：只给 wasm 主 crate 保留 size-opt（不影响原生构建——
+# ridge-term 是 wasm-only，原生 release 根本不编它）。
+[profile.release.package.ridge-term]
 opt-level = "z"
-lto = true
 codegen-units = 1
