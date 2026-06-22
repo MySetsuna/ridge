@@ -468,18 +468,11 @@
                 <div class="text-[12px] text-[var(--rg-fg)]">启用智能体协同</div>
                 <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">仅控制左侧「智能体」Tab 与分屏「设为智能体」入口的露出；不影响下面的安全审批闸。</div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={$settingsStore.teammateEnabled}
-                aria-label="启用智能体协同"
-                class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.teammateEnabled
-                  ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
-                  : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
-                onclick={() => setTeammateEnabled(!$settingsStore.teammateEnabled)}
-              >
-                <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.teammateEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}"></span>
-              </button>
+              <Toggle
+                checked={$settingsStore.teammateEnabled}
+                ariaLabel="启用智能体协同"
+                onchange={(next) => setTeammateEnabled(next)}
+              />
             </div>
 
             <!-- 安全审批闸：独立生效，不随总开关置灰（不可整体关） -->
@@ -490,18 +483,11 @@
                   <div class="text-[12px] text-[var(--rg-fg)]">安全审批（HITL）</div>
                   <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">智能体提交危险（L2）命令时弹窗，由你批准 / 拒绝 / 改写。默认关；独立生效，不随总开关关闭而失效。</div>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={$settingsStore.teammateHitlEnabled}
-                  aria-label="安全审批"
-                  class="shrink-0 h-5 w-9 rounded-full border transition-colors relative {$settingsStore.teammateHitlEnabled
-                    ? 'bg-[var(--rg-accent)] border-[var(--rg-accent)]'
-                    : 'bg-[var(--rg-surface-2)] border-[var(--rg-border)]'}"
-                  onclick={() => setTeammateHitlEnabled(!$settingsStore.teammateHitlEnabled)}
-                >
-                  <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {$settingsStore.teammateHitlEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}"></span>
-                </button>
+                <Toggle
+                  checked={$settingsStore.teammateHitlEnabled}
+                  ariaLabel="安全审批"
+                  onchange={(next) => setTeammateHitlEnabled(next)}
+                />
               </div>
             </div>
 
