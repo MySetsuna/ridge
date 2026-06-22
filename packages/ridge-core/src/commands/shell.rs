@@ -17,6 +17,11 @@ pub struct ShellInfo {
     pub id: String,
     pub label: String,
     pub program: String,
+    /// Launch args (e.g. WSL distro `["-d","Ubuntu"]`, VS `["/k","...VsDevCmd.bat"]`).
+    /// Empty means launch `program` directly. `#[serde(default)]` keeps backward
+    /// compatibility with old deserialization paths.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 /// Look up a command in `PATH`; also accepts an absolute path directly. No
@@ -73,6 +78,7 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
                     id: id.to_string(),
                     label: label.to_string(),
                     program: prog,
+                    args: vec![],
                 });
                 return;
             }
@@ -104,7 +110,29 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
                 "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
             ],
         );
-        try_add(&mut found, "wsl", "WSL (Ubuntu)", &["wsl.exe", "wsl"]);
+        // WSL: enumerate each installed distro (each becomes `wsl -d <distro>`).
+        // Fall back to a single bare wsl entry if enumeration returns nothing.
+        if let Some(wsl) = lookup_program("wsl.exe").or_else(|| lookup_program("wsl")) {
+            let prog = wsl.to_string_lossy().to_string();
+            let distros = list_wsl_distros();
+            if distros.is_empty() {
+                found.push(ShellInfo {
+                    id: "wsl".to_string(),
+                    label: "WSL".to_string(),
+                    program: prog,
+                    args: vec![],
+                });
+            } else {
+                for d in distros {
+                    found.push(ShellInfo {
+                        id: format!("wsl-{d}"),
+                        label: format!("WSL: {d}"),
+                        program: prog.clone(),
+                        args: vec!["-d".to_string(), d],
+                    });
+                }
+            }
+        }
         try_add(&mut found, "nu", "Nushell", &["nu.exe", "nu"]);
         try_add(
             &mut found,
@@ -112,6 +140,7 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
             "Clink (CMD 增强)",
             &["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
         );
+        found.extend(detect_vs_dev_shells());
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -139,6 +168,109 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
         );
     }
     found
+}
+
+/// Parse the stdout of `wsl.exe -l -q` (UTF-16LE encoded) into a list of
+/// distro names, stripping empty lines, CR characters and NUL padding.
+/// This is a pure function (no I/O) so it can be unit-tested cross-platform.
+pub fn parse_wsl_list(stdout: &[u8]) -> Vec<String> {
+    let u16s: Vec<u16> = stdout
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16_lossy(&u16s)
+        .lines()
+        .map(|l| l.trim().trim_matches('\0').trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// Run `wsl.exe -l -q` and return the list of installed distro names.
+#[cfg(target_os = "windows")]
+fn list_wsl_distros() -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    match Command::new("wsl.exe")
+        .args(["-l", "-q"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) if o.status.success() => parse_wsl_list(&o.stdout),
+        _ => Vec::new(),
+    }
+}
+
+/// Detect Visual Studio developer shells via vswhere. Returns entries for
+/// "Developer Command Prompt for VS" (cmd /k VsDevCmd.bat) and
+/// "Developer PowerShell for VS" (powershell -NoExit -Command ...) when the
+/// VS installation is found.
+#[cfg(target_os = "windows")]
+fn detect_vs_dev_shells() -> Vec<ShellInfo> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut out = Vec::new();
+    let pf86 = match std::env::var("ProgramFiles(x86)") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return out,
+    };
+    let vswhere = PathBuf::from(&pf86)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+    if !vswhere.is_file() {
+        return out;
+    }
+    let install_path = match Command::new(&vswhere)
+        .args(["-latest", "-property", "installationPath"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => return out,
+    };
+    if install_path.is_empty() {
+        return out;
+    }
+    let install = PathBuf::from(&install_path);
+
+    // Developer Command Prompt: cmd /k VsDevCmd.bat
+    let vsdevcmd = install.join("Common7").join("Tools").join("VsDevCmd.bat");
+    if vsdevcmd.is_file() {
+        if let Some(cmd) = lookup_program("cmd.exe") {
+            out.push(ShellInfo {
+                id: "vs-devcmd".to_string(),
+                label: "Developer Command Prompt for VS".to_string(),
+                program: cmd.to_string_lossy().to_string(),
+                args: vec!["/k".to_string(), vsdevcmd.to_string_lossy().to_string()],
+            });
+        }
+    }
+
+    // Developer PowerShell: powershell -NoExit -Command "Import-Module DevShell.dll; Enter-VsDevShell ..."
+    let devshell = install
+        .join("Common7")
+        .join("Tools")
+        .join("Microsoft.VisualStudio.DevShell.dll");
+    if devshell.is_file() {
+        if let Some(ps) = lookup_program("powershell.exe") {
+            let script = format!(
+                "Import-Module '{}'; Enter-VsDevShell -VsInstallPath '{}' -SkipAutomaticLocation",
+                devshell.to_string_lossy(),
+                install.to_string_lossy()
+            );
+            out.push(ShellInfo {
+                id: "vs-pwsh".to_string(),
+                label: "Developer PowerShell for VS".to_string(),
+                program: ps.to_string_lossy().to_string(),
+                args: vec!["-NoExit".to_string(), "-Command".to_string(), script],
+            });
+        }
+    }
+    out
 }
 
 /// Read recent shell history (PowerShell PSReadLine, bash, zsh), deduped
@@ -196,4 +328,33 @@ pub fn get_shell_history() -> Result<Vec<String>, String> {
 
     all_lines.truncate(1000);
     Ok(all_lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn parse_wsl_list_decodes_utf16le_and_trims() {
+        // `wsl -l -q` 输出 UTF-16LE，每行一个发行版，可能带 CR / 尾随空行。
+        let bytes = utf16le("Ubuntu\r\nDebian\r\n\r\n");
+        assert_eq!(parse_wsl_list(&bytes), vec!["Ubuntu".to_string(), "Debian".to_string()]);
+    }
+
+    #[test]
+    fn parse_wsl_list_empty_is_empty() {
+        assert_eq!(parse_wsl_list(&utf16le("")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_wsl_list_strips_nul_padding() {
+        // 某些环境会夹带 NUL；不应产生空条目。
+        let mut bytes = utf16le("Ubuntu");
+        bytes.extend_from_slice(&[0, 0]); // trailing NUL u16
+        assert_eq!(parse_wsl_list(&bytes), vec!["Ubuntu".to_string()]);
+    }
 }
