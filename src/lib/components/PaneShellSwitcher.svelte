@@ -2,7 +2,12 @@
   import { t, tr } from '$lib/i18n';
   import { ChevronDown, Terminal } from 'lucide-svelte';
   import { portal } from '$lib/actions/portal';
-  import { getShells, changePaneShell, type ShellInfo } from '$lib/terminal/paneShell';
+  import {
+    getShells,
+    changePaneShell,
+    paneShellSelection,
+    type ShellInfo,
+  } from '$lib/terminal/paneShell';
 
   interface Props {
     paneId: string;
@@ -10,9 +15,10 @@
   }
   let { paneId, currentShell }: Props = $props();
 
-  // 切换成功后立即记下选中的 ShellInfo.id（乐观）；layout 回传的 shell_kind(program)
-  // 在 WSL 多发行版同 program 时不足以区分，故优先用 selectedId。
-  let selectedId = $state<string | null>(null);
+  // §I-2: 选中的 ShellInfo.id 改从共享 store 派生（不再用组件本地 $state），故
+  // 经 pane 右键菜单切换时此 header 也同步更新、且跨重挂载保留。优先于 layout
+  // 回传的 currentShell(program)——WSL 多发行版同 program 时仅 id 能区分。
+  let selectedId = $derived($paneShellSelection[paneId] ?? null);
   let open = $state(false);
   let shells = $state<ShellInfo[]>([]);
   let changing = $state(false);
@@ -59,8 +65,8 @@
     if (isCurrent(shell)) return;
     changing = true;
     try {
+      // §I-2: selectedId 由 changePaneShell 写共享 store，这里不再本地赋值。
       await changePaneShell(paneId, shell);
-      selectedId = shell.id;
     } catch (e) {
       console.warn('change_pane_shell failed', e);
     } finally {
