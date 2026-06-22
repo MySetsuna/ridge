@@ -1681,7 +1681,7 @@ function expandSidebar() {
           {#snippet trailingActions()}
             <button
               type="button"
-              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
+              class="shrink-0 ml-2 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
               title={$t('main.newWorkspaceBtn')}
               onclick={() => createWorkspace()}
             >
