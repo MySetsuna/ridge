@@ -1588,6 +1588,9 @@ export async function closePane(paneId: string) {
     delete c[paneId];
     return c;
   });
+  // §I-2: drop this pane's selected-shell entry on genuine close (dynamic
+  // import avoids a static cycle — paneShell.ts imports from this module).
+  void import('$lib/terminal/paneShell').then((m) => m.clearPaneShellSelection(paneId));
   await syncPaneLayoutFromBackend();
 }
 
