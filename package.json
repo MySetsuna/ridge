@@ -20,7 +20,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "tauri:build": "pnpm tauri build && node scripts/post-build-rename.mjs",
+    "tauri:build": "node scripts/tauri-build.mjs",
     "tauri:build:debug": "node scripts/tauri-build-debug.mjs",
     "tauri:dev:cdp": "node scripts/tauri-dev-cdp.mjs",
     "tauri:dev:with-cloud": "node scripts/tauri-dev-with-cloud.mjs",
