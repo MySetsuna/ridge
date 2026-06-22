@@ -36,6 +36,7 @@ export const zh: Record<string, string> = {
   ctxClear: '清空',
   ctxSplitRight: '向右拆分',
   ctxSplitDown: '向下拆分',
+  ctxSwitchShell: '切换终端类型',
   ctxClosePanel: '关闭面板',
 
   // SaveWorkspaceDialog
@@ -107,6 +108,7 @@ export const en: Record<string, string> = {
   ctxClear: 'Clear',
   ctxSplitRight: 'Split right',
   ctxSplitDown: 'Split down',
+  ctxSwitchShell: 'Switch shell type',
   ctxClosePanel: 'Close panel',
 
   // SaveWorkspaceDialog
