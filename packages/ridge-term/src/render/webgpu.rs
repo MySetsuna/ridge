@@ -59,6 +59,32 @@ use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, T
 use crate::term::cell::{scan_line_path, RenderPath};
 use crate::term::attr_table::AttrTable;
 
+thread_local! {
+    /// §present-fast (2026-06-22): process-wide opt-in flag gating
+    /// `requires_full_frame`. Default `false` keeps the always-true
+    /// correctness behaviour (full re-encode + LoadOp::Clear every tick),
+    /// required where the WebView2 swap chain drops prior pixels under
+    /// LoadOp::Load (dev Edge WebView2 148). Set to `true` from JS
+    /// (`setPresentFast`, gated on `localStorage.RIDGE_PRESENT_FAST`) on a
+    /// release WebView2 verified to preserve swap-chain pixels — flips the
+    /// renderer back to the dirty-row fast path, killing the per-frame full
+    /// Clear behind IME-composition / selection flicker AND the per-frame
+    /// glyph re-admission that maxes out the switch-workspace atlas-eviction
+    /// churn (transient garble). Fully reversible: unset → always-full path.
+    static PRESENT_FAST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// §present-fast: set the process-wide present-fast flag. See `PRESENT_FAST`
+/// and `WebGpuPaneBackend::requires_full_frame`.
+pub fn set_present_fast(on: bool) {
+    PRESENT_FAST.with(|c| c.set(on));
+}
+
+#[inline]
+fn present_fast() -> bool {
+    PRESENT_FAST.with(|c| c.get())
+}
+
 /// High bit tag for grapheme-cluster glyph IDs so they cannot collide
 /// with any Unicode codepoint (max 0x10FFFF).
 const CLUSTER_TAG: u32 = 0x8000_0000;
@@ -369,6 +395,19 @@ impl RenderBackend for WebGpuPaneBackend {
         // LoadOp::Load 可靠 → 返回 self.needs_initial_clear(脏行快路径);否则保持
         // true。交接文档 docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md,
         // 追踪 docs/term-rebuild/TASKS.md §1.36。
+        //
+        // §present-fast (2026-06-22): opt-in dirty-row fast path. Default
+        // (flag off) keeps the always-true behaviour above. When
+        // `setPresentFast(true)` is set (release WebView2 verified to preserve
+        // swap-chain pixels), return `needs_initial_clear` so cursor-blink /
+        // IME-preedit / selection / TUI redraws re-encode ONLY changed rows
+        // instead of full-Clearing + full-admitting every tick — kills the
+        // per-frame flash (IME-composition + selection flicker) and the
+        // per-frame glyph re-admission that amplifies the switch-workspace
+        // atlas-eviction garble. Reversible: unset → always-full path.
+        if present_fast() {
+            return self.needs_initial_clear;
+        }
         true
     }
 
