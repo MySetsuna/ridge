@@ -1,14 +1,21 @@
 [package]
 name = "ridge"
-version = "0.0.5"
+version = "0.0.10"
 description = "A Tauri App"
 authors = ["you"]
+license = "MIT"
 edition = "2021"
 default-run = "ridge"
 
 [features]
 # 对于自定义构建，启用 "devtools" 这个特性
 devtools = ["tauri/devtools"]
+
+# 交叉编译 macOS Intel (x86_64) 时，arm64 runner 上没有 x86_64 的系统 OpenSSL，而 git2 →
+# libgit2-sys / libssh2-sys 依赖 openssl-sys → 链接失败。此特性让 openssl 从源码 vendored
+# 编译（git2 的 vendored-openssl 会打开共享 openssl-sys 的 vendored）。仅 macOS Intel 交叉
+# 编译 job 通过 `--features vendored-openssl` 启用；Win/Linux/macOS-arm64 不带此特性、行为不变。
+vendored-openssl = ["git2/vendored-openssl"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

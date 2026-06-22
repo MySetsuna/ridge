@@ -16,7 +16,7 @@
   // FileViewer (read-only file / git-diff overlay) loaded on first open.
   const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo } from './lib/wsRemote';
+  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
 
@@ -28,6 +28,10 @@
   // for the active cwd below.
   let activePane = $derived(panes.find((p) => p.id === activePaneId));
   let wsState = $state<ConnectionState>('disconnected');
+  // §fail-grading（任务 A 问题1）：最近一次失败分级。驱动顶部 banner 的差异化处置——
+  // 'user'（账户/权限不匹配）退回登录、'parked'（设备停用）提示去控制台、'channel'
+  // （信令/网络/并发）显示「通道异常」并允许重试。
+  let failure = $state<ConnectionFailure | null>(null);
   let workspaces = $state<WorkspaceInfo[]>([]);
   let activeWorkspaceId = $state<string>('');
   // §selection: explicit selection mode (toggled in BottomTabBar). When on, a
@@ -54,6 +58,9 @@
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
   let createError = $state('');
+
+  // §B-debounce: 防快速切 pane 打爆 DataChannel 的补偿定时器（见 §replay-backpressure）。
+  let _paneSubDebounce: ReturnType<typeof setTimeout> | null = null;
 
   let canvasRef: ReturnType<typeof TerminalCanvasComponent> | undefined = $state();
   let showKeyboard = $state(true);          // virtual keyboard visible in header
@@ -317,6 +324,24 @@
     } catch { /* ignore */ }
   }
 
+  // §fail-grading 处置（任务 A 问题1）。
+  // 通道异常（信令/WebRTC/网络/并发超限）→ 全量重连：reload 让 App.svelte 重新走
+  // boot/gate（cloud boot 单例幂等；LAN autoReconnect 用持久化 token 重连），比在 banner
+  // 里手搓一套重连状态机更稳，且复用本仓库既有「reload 即重连」模式。
+  function handleRetry() {
+    try { ws.disconnect(); } catch { /* already torn down */ }
+    location.reload();
+  }
+  // 用户问题（账户/权限不匹配）或设备停用 → 退回登录态：清掉本端持久化的远控 token，
+  // reload 后 App.svelte 会落到 AuthScreen（LAN 无 token→手动输码；cloud 会话失效→boot
+  // 重定向到主域登录）。这就是本仓库现有的「回登录」路径（AuthScreen.fallbackToManual /
+  // CloudAuthScreen 的 location.replace 同源）。
+  function handleBackToLogin() {
+    try { ws.disconnect(); } catch { /* already torn down */ }
+    try { localStorage.removeItem('ridge_remote_token'); } catch { /* ignore */ }
+    location.reload();
+  }
+
   function handleSidebarToggle(tab: 'files' | 'git' | 'search') {
     if (sidebarTab === tab) {
       sidebarTab = null;
@@ -349,7 +374,16 @@
   }
 
   onMount(() => {
-    ws.onStateChange((s) => wsState = s);
+    // §realtime-status（任务 A 问题3）：先装状态监听，再同步一次真实连接态。云端进入
+    // MainApp 时传输早已 'connected'，若不同步则 wsState 停在初值 'disconnected'，顶部
+    // 误显示「重连中」直到下一次状态事件才纠正。装监听在先、同步在后，保证此刻起的每次
+    // 连接事件都不漏。
+    ws.onStateChange((s) => {
+      wsState = s;
+      failure = ws.lastFailure();
+    });
+    wsState = ws.state();
+    failure = ws.lastFailure();
     ws.onMessage((msg) => {
       if (msg.type === 'panes') {
         panes = dedupeById(msg.panes);
@@ -533,8 +567,15 @@
       if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
       // The host replays this pane's scrollback on subscribe — reconcile it
       // against the cache in onRawBytes to avoid double-painting.
+      // §B-debounce: 防快速切换 pane 连发多次未截流的 replay_pane_scrollback_raw（256 KiB）
+      // 打爆 DataChannel 缓冲区（8 MiB BUFFERED_HIGH_WATERMARK）→ 断连。
+      // 只对"最终落脚"的 pane 发 subscribePane：150ms 内若 activePaneId 已变则取消。
+      if (_paneSubDebounce !== null) clearTimeout(_paneSubDebounce);
       expectReplayPane = pid;
-      ws.subscribePane(pid);
+      _paneSubDebounce = setTimeout(() => {
+        _paneSubDebounce = null;
+        if (activePaneId === pid) ws.subscribePane(pid);
+      }, 150);
     });
   });
 
@@ -564,11 +605,31 @@
 
 <div class="app-root">
   {#if wsState !== 'connected'}
-    <!-- §断连提示: live link status. 'error' = give up (refresh for a fresh code over
-         cloud / re-auth over LAN); otherwise the transport is auto-reconnecting. -->
-    <div class="conn-banner" class:lost={wsState === 'error'}>
-      {wsState === 'error' ? $t('mobile.connectionLost') : $t('mobile.reconnecting')}
-    </div>
+    <!-- §断连提示 + §fail-grading（任务 A 问题1）: live link status.
+         - 非 error（disconnected/connecting）: 传输在自动重连 → 「重连中」，不阻断。
+         - error + user/parked: 不可重试的终态 → 标红，给「退回登录」动作（user 换凭据 /
+           parked 设备停用需去控制台启用或升级），绝不再无限 pending。
+         - error + channel（含无分级兜底）: 通道异常（信令/WebRTC/网络/并发超限）→ 标红，
+           给「重试」动作，让用户主动全量重连而不是一直转圈。 -->
+    {#if wsState === 'error'}
+      <div class="conn-banner lost">
+        {#if failure?.category === 'user'}
+          <span class="conn-msg">{$t('mobile.connectFail')}</span>
+          <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.verifyAndConnect')}</button>
+        {:else if failure?.category === 'parked'}
+          <span class="conn-msg">{$t('mobile.connectionLost')}</span>
+          <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.refresh')}</button>
+        {:else}
+          <!-- channel 异常 -->
+          <span class="conn-msg">{$t('mobile.connectionLost')}</span>
+          <button class="conn-action" onclick={handleRetry}>{$t('mobile.refresh')}</button>
+        {/if}
+      </div>
+    {:else}
+      <div class="conn-banner">
+        {$t('mobile.reconnecting')}
+      </div>
+    {/if}
   {/if}
   {#if panes.length === 0}
     <div class="empty">
@@ -676,8 +737,11 @@
 
 <style>
   .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
-  .conn-banner{flex-shrink:0;padding:6px 12px;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50}
+  .conn-banner{flex-shrink:0;padding:6px 12px;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px}
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
+  .conn-msg{flex:0 1 auto}
+  .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}
+  .conn-action:hover{background:rgba(255,255,255,.28)}
   .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--rg-fg-muted);gap:12px}
   .create-btn{padding:8px 20px;border:1px solid var(--rg-accent);border-radius:8px;background:color-mix(in srgb,var(--rg-accent) 14%,transparent);color:var(--rg-fg);font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
   .create-btn:active{background:color-mix(in srgb,var(--rg-accent) 26%,transparent)}

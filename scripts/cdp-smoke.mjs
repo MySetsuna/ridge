@@ -10,8 +10,11 @@
 // Exits 0 with the target list when reachable and at least one page target
 // exists. Exits 1 with a diagnostic message otherwise.
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const port = process.env.CDP_PORT ?? '9222';
+// Chromium 136+ uses a DYNAMIC debug port; discover it from DevToolsActivePort
+// (or CDP_PORT override). See scripts/cdp-port.mjs + tauri-dev-cdp.mjs.
+const port = resolveCdpPort();
 const host = '127.0.0.1';
 const timeoutMs = Number(process.env.CDP_SMOKE_TIMEOUT_MS ?? 3000);
 

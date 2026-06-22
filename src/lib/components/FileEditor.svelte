@@ -58,7 +58,8 @@
   import { applyRidgeMonacoTheme, ridgeMonacoThemeId } from '$lib/monaco/ridgeTheme';
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { alertDialog } from './RidgeDialog.svelte';
-  import { Copy, FolderOpen } from 'lucide-svelte';
+  import { popOutEditor } from '$lib/stores/editorWindow';
+  import { Copy, FolderOpen, ExternalLink } from 'lucide-svelte';
   import { dndzone, SOURCES } from 'svelte-dnd-action';
   import { t, tr } from '$lib/i18n';
 
@@ -1518,9 +1519,17 @@
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(pointer: coarse)').matches;
 
+  // §独立窗口：本组件运行在弹出的独立 OS 窗口里（URL ?win=editor）。此时编辑器铺满
+  // 整个窗口，并隐藏 drawer/floating/embedded 的窗内 chrome（折叠/缩放手柄/显示模式
+  // 切换）——这些都会写共享 localStorage prefs，必须在独立窗口里禁用以免污染主窗口。
+  const popout = typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('win') === 'editor';
+
   const containerStyle = $derived.by(() => {
     if (!editorState.isVisible || editorState.openFiles.length === 0)
       return 'display: none;';
+    // §独立窗口：铺满整个 OS 窗口（必须在 coarsePointer 分支之前判定）。
+    if (popout) return 'position: fixed; inset: 0; z-index: 0;';
     // §C1 touch: full-screen overlay below the Dynamic Island / status bar so the
     // code is actually readable/editable (the collapse button still closes it).
     if (coarsePointer) {
@@ -1546,11 +1555,13 @@
 
 <div
   bind:this={panelRootEl}
-  class="rg-file-editor flex flex-col bg-[var(--rg-surface-2)]/98 backdrop-blur-xl border border-[var(--rg-border)] shadow-2xl {editorState.displayMode === 'floating'
-    ? 'rounded-lg overflow-hidden'
-    : editorState.displayMode === 'drawer'
-      ? 'rounded-l-lg'
-      : ''}"
+  class="rg-file-editor flex flex-col bg-[var(--rg-surface-2)]/98 backdrop-blur-xl {popout
+    ? ''
+    : `border border-[var(--rg-border)] shadow-2xl ${editorState.displayMode === 'floating'
+        ? 'rounded-lg overflow-hidden'
+        : editorState.displayMode === 'drawer'
+          ? 'rounded-l-lg'
+          : ''}`}"
   style={containerStyle}
 >
   <!-- ═══ Header row 1: actions ═══ -->
@@ -1559,17 +1570,17 @@
        作为拖拽手柄。`onFloatingDragStart` 内部已过滤掉 button/input/select。 -->
   <div
     class="rg-editor-toolbar flex items-center shrink-0 h-7 bg-[var(--rg-surface)]/90 {editorState.displayMode ===
-    'floating'
+      'floating' && !popout
       ? 'cursor-grab active:cursor-grabbing select-none'
       : ''}"
     role="toolbar"
     tabindex="-1"
     aria-label={$t('editor.toolbarAriaLabel')}
-    onmousedown={editorState.displayMode === 'floating'
+    onmousedown={editorState.displayMode === 'floating' && !popout
       ? onFloatingDragStart
       : undefined}
   >
-    {#if editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded'}
+    {#if (editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded') && !popout}
       <button
         type="button"
         class="rg-no-drag flex h-7 w-7 shrink-0 items-center justify-center text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors border-r border-[var(--rg-border)]"
@@ -1670,6 +1681,9 @@
             data-rg-portal-id="file-editor-settings"
             use:portal={{ id: 'file-editor-settings' }}
           >
+            <!-- §独立窗口：在弹出的独立窗口里隐藏整个「显示模式」段——切 dock 模式无意义
+                 且会写共享 prefs 污染主窗口。「独立窗口」动作也只在主窗口出现。 -->
+            {#if !popout}
             <div
               class="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--rg-fg-muted)]"
             >
@@ -1714,6 +1728,19 @@
                   class="ml-auto text-[10px]">✓</span
                 >{/if}
             </button>
+            <!-- §独立窗口：弹出整个编辑器（含所有标签）到一个真正独立的 OS 窗口。
+                 非 Tauri / web-remote 下 popOutEditor 自动回退到悬浮模式。 -->
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors text-[var(--rg-fg)]"
+              onclick={() => {
+                settingsOpen = false;
+                void popOutEditor();
+              }}
+            >
+              <ExternalLink class="h-3.5 w-3.5" /> {$t('editor.modeWindow')}
+            </button>
+            {/if}
 
             <div class="my-1 border-t border-[var(--rg-border)]"></div>
             <button
@@ -1733,6 +1760,7 @@
             >
               <XCircle class="h-3.5 w-3.5" /> {$t('editor.closeAllTabs')}
             </button>
+            {#if !popout}
             <button
               type="button"
               class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--rg-surface)] transition-colors text-[var(--rg-fg-muted)]"
@@ -1743,10 +1771,11 @@
             >
               {$t('editor.hidePanel')}
             </button>
+            {/if}
           </div>
         {/if}
       </div>
-      {#if editorState.displayMode === 'floating'}
+      {#if editorState.displayMode === 'floating' && !popout}
         <!-- pin 模式专属关闭按钮：drawer 模式下左侧已经有收起按钮，这里
                重复一次反而冗余；只有 floating 时为了贴合标准窗口的"关闭在
                右上角"心智模型才显示。功能与左侧收起一致——隐藏面板，
@@ -1841,17 +1870,23 @@
   <div class="flex-1 min-h-0 relative">
     <!-- Regular editor。进入 diff 时隐藏；进入 preview 时也隐藏（preview 是
          mountPoint 的兄弟，独立 visibility，不会有继承问题）。 -->
+    <!-- 隐藏态除 visibility:hidden 外必须叠加 pointer-events:none：diffMountPoint 是
+         最后一个兄弟（画在常规 mountPoint 之上）且为 keep-alive 的全尺寸 Monaco 实例，
+         visibility:hidden 的子元素可被 Monaco 内部重新置回 visible 而继续参与命中测试，
+         吞掉本应落到下方常规编辑器的点击 → 编辑器「点不进/无法聚焦」。pointer-events:none
+         对整棵隐藏子树禁用命中测试（子元素无法 opt-in），且不影响 automaticLayout（它只观察
+         盒子尺寸，故仍用 visibility:hidden 而非 display:none 保留尺寸）。 -->
     <div
       bind:this={mountPoint}
       class="absolute inset-0 rg-monaco-host"
-      style={inPreviewMode || isDiffTab ? 'visibility: hidden;' : ''}
+      style={inPreviewMode || isDiffTab ? 'visibility: hidden; pointer-events: none;' : ''}
     ></div>
 
     <!-- Diff editor mount point — always in DOM so bind:this is stable -->
     <div
       bind:this={diffMountPoint}
       class="absolute inset-0 rg-monaco-host"
-      style={!isDiffTab || !!diffError ? 'visibility: hidden;' : ''}
+      style={!isDiffTab || !!diffError ? 'visibility: hidden; pointer-events: none;' : ''}
     ></div>
 
     <!-- Diff loading / error overlays -->
@@ -1940,7 +1975,7 @@
 
   <!-- ═══ Drawer / Embedded left-edge resizer ═══ -->
   <!-- §C1 hidden on touch (mouse-only drag; the editor is full-screen there). -->
-  {#if (editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded') && !coarsePointer}
+  {#if (editorState.displayMode === 'drawer' || editorState.displayMode === 'embedded') && !coarsePointer && !popout}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[var(--rg-accent)]/40 transition-colors {isResizingDrawer
@@ -1958,7 +1993,7 @@
          Svelte 的 `a11y_no_noninteractive_*` 规则不认识 role=separator + 互补
          keydown 这个合法的 "window splitter" 模式，所以为每个 handle 显式抑制。
          参考 WAI-ARIA authoring practices: separator 可聚焦并响应 Arrow 键。 -->
-  {#if editorState.displayMode === 'floating' && !coarsePointer}
+  {#if editorState.displayMode === 'floating' && !coarsePointer && !popout}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div

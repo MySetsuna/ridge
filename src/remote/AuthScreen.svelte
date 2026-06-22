@@ -6,6 +6,28 @@
   import CertTrustGuide from './CertTrustGuide.svelte';
 
   const TOKEN_KEY = 'ridge_remote_token';
+
+  // §persist-login（任务 A 问题2）：登录态持久化。后端 device/user token 长期有效（user
+  // 30 天 / device 180 天），所以 token 应「写一次、长期复用、刷新不丢」。localStorage 为
+  // 主（跨刷新/跨标签页关闭仍在）；隐私模式或配额禁用 localStorage 时回退 sessionStorage
+  // 兜底（至少当前会话内刷新不丢）。读取时两处都查，优先 localStorage。
+  function readToken(): string | null {
+    try {
+      const v = localStorage.getItem(TOKEN_KEY);
+      if (v) return v;
+    } catch { /* localStorage blocked — fall through to sessionStorage */ }
+    try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+  }
+  function writeToken(token: string): void {
+    let ok = false;
+    try { localStorage.setItem(TOKEN_KEY, token); ok = true; } catch { /* blocked */ }
+    // localStorage 不可用时才写 sessionStorage 兜底；可用则不重复写（避免两处不一致）。
+    if (!ok) { try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* ignore */ } }
+  }
+  function clearToken(): void {
+    try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+    try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+  }
   // Give up on a token (auto)connect after this long and fall back to the code
   // input — a stale/invalid token makes the server reject the /ws upgrade, and
   // wsRemote then RETRIES the drop forever ('disconnected', never 'error'), which
@@ -42,7 +64,7 @@
       .then(r => r.json())
       .then(d => {
         if (d.success && d.token) {
-          localStorage.setItem(TOKEN_KEY, d.token);
+          writeToken(d.token);
           connectWithToken(host, port, d.token);
         } else {
           loading = false;
@@ -55,14 +77,19 @@
       });
   }
 
-  // Abandon a failed (auto)connect: stop wsRemote's silent reconnect loop, drop
-  // the bad token, and fall back to the manual code-entry screen.
+  // Abandon a failed (auto)connect: stop wsRemote's silent reconnect loop and fall
+  // back to the manual code-entry screen.
+  // §persist-login（任务 A 问题2）：只在确属「用户/鉴权类」失败（token 真的无效——
+  // USERNAME_MISMATCH / DEVICE_* / NOT_PREMIUM / 4403 等，ws.lastFailure().category
+  // === 'user'）时才清 token。纯通道/网络抖动导致的失败保留 token，这样刷新页面仍能
+  // autoReconnect，不会因为一次网络波动就把一个其实长期有效的登录态丢掉。
   function fallbackToManual() {
     if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
     unsubState?.();
     unsubState = undefined;
-    ws.disconnect(); // §stop-retry: otherwise it keeps retrying the bad token forever
-    localStorage.removeItem(TOKEN_KEY);
+    const cat = ws.lastFailure()?.category;
+    ws.disconnect(); // §stop-retry: otherwise it keeps retrying forever
+    if (cat === 'user') clearToken(); // 凭据无效才丢弃；通道类保留以便刷新自动重连
     loading = false;
     showManual = true;
     error = tr('mobile.connectFail');
@@ -96,7 +123,7 @@
   }
 
   function autoReconnect() {
-    const saved = localStorage.getItem(TOKEN_KEY);
+    const saved = readToken();
     if (!saved) {
       showManual = true;
       return;

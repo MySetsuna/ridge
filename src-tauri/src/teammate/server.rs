@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -16,6 +17,7 @@ use crate::commands::{pane, terminal};
 use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
+use super::hitl;
 use super::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use super::native::{self, NativeError};
 use crate::engine::pane_tree::SplitDirection;
@@ -291,6 +293,12 @@ async fn run_server(
         .route("/api/v1/register-agent", post(route_register_agent))
         .route("/api/v1/release-pane", post(route_release_pane))
         .route("/api/v1/find-idle-pane", get(route_find_idle_pane))
+        // Domain B3 高层 Teammate API（花名册 / 派活 / 广播 / 汇报）
+        .route("/api/v1/team-profile", get(route_get_team_profile))
+        .route("/api/v1/delegate-task", post(route_delegate_task))
+        .route("/api/v1/report-progress", post(route_report_progress))
+        // Domain C 内置 MCP server（WebSocket / JSON-RPC 2.0）
+        .route("/api/v1/mcp/ws", get(route_mcp_ws))
         // GUI-only native route: summon a headless session into a VISIBLE
         // workspace (needs AppState/AppHandle), so it stays on TeammateCtx
         // rather than in the shared, host-agnostic router below.
@@ -375,13 +383,19 @@ fn register_agent_to_pane(state: &AppState, wid: uuid::Uuid, agent_id: &str, pan
 
 /// 释放 pane（标记为空闲）
 fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) {
-    let mut map = state.workspaces.write();
-    if let Some(ws) = map.get_mut(&wid) {
-        ws.teammate_pane_states
-            .insert(pane_id, crate::state::PaneState::Idle);
-        // 清理 agent 映射
-        ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+    {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_pane_states
+                .insert(pane_id, crate::state::PaneState::Idle);
+            // 清理 agent 映射
+            ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+        }
     }
+    // Domain B1：同步清理 typed 画像（按 pane）。
+    super::profiles::remove_by_pane(wid, pane_id);
+    // Domain D3：清理该 pane 的循环熔断器状态。
+    super::circuit::forget_pane(wid, pane_id);
 }
 
 /// 通过 agent_id 查找 pane
@@ -400,6 +414,9 @@ fn find_pane_by_agent(state: &AppState, wid: uuid::Uuid, agent_id: &str) -> Opti
 struct RegisterAgentBody {
     agent_id: String,
     pane_index: Option<usize>,
+    /// 可选 agent 展示名（用于花名册）。
+    #[serde(default)]
+    name: Option<String>,
 }
 
 async fn route_register_agent(
@@ -435,6 +452,8 @@ async fn route_register_agent(
     };
 
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
+    // Domain B1：落花名册条目（名 + Working 态）。
+    super::profiles::upsert(wid, &body.agent_id, pane_id, body.name.clone());
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
     let _ = ctx
@@ -445,6 +464,265 @@ async fn route_register_agent(
         Json(serde_json::json!({ "ok": true, "pane_id": pane_id.to_string() })),
     )
         .into_response()
+}
+
+// ===== Domain B3: 高层 Teammate API（复用现有 HTTP + bearer 传输，非 UDS）=====
+
+/// 花名册快照（只读）：Leader 启动时「查兵马」。复用 D1 拓扑映射。
+async fn route_get_team_profile(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
+    // 有 typed 画像 → 跑 Leader 竞选返回真实角色；否则回退侧表映射。
+    let body = if super::profiles::has(wid) {
+        super::profiles::topology_for(wid)
+    } else {
+        let map = ctx.state.workspaces.read();
+        map.get(&wid)
+            .map(crate::commands::teammate::topology_json)
+            .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+#[derive(Deserialize)]
+struct DelegateBody {
+    target_pane: usize,
+    objective: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    max_steps: u32,
+}
+
+/// 向指定 Worker 派活：物理注入任务提示词唤醒目标 pane，标记 Working，返回 Task Ticket。
+async fn route_delegate_task(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<DelegateBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let wid = match caller_workspace_id_strict(&ctx, &headers) {
+        Ok(w) => w,
+        Err(r) => return workspace_reject_response(&ctx, r),
+    };
+    let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, body.target_pane) {
+        Ok(u) => u,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    let prompt = format!("{}\n", body.objective);
+    if let Err(e) = terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, prompt.as_bytes()) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_pane_states.insert(pid, PaneState::Busy);
+        }
+    }
+    let _ = ctx
+        .handle
+        .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
+    let ticket = ridge_core::mcp::protocol::TaskTicket::dispatched(
+        format!("tsk_{}", pid.simple()),
+        body.target_pane as u32,
+    );
+    let payload =
+        serde_json::to_value(&ticket).unwrap_or_else(|_| serde_json::json!({ "status": "dispatched" }));
+    (StatusCode::OK, Json(payload)).into_response()
+}
+
+#[derive(Deserialize)]
+struct ReportProgressBody {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    exit_code: i32,
+    /// Domain D3：上报方 pane 索引（带上则喂循环熔断器）。
+    #[serde(default)]
+    pane: Option<usize>,
+    /// Domain D3：失败特征指纹（缺省用 status）；连续相同 key 失败触发熔断。
+    #[serde(default)]
+    key: Option<String>,
+}
+
+/// Worker 向 Leader 汇报阶段性结果：emit 进度事件触发状态机流转。
+/// 带 `pane` 时同时喂 Domain D3 循环熔断器（连续相似失败→SIGINT 该 pane）。
+async fn route_report_progress(
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+    Json(body): Json<ReportProgressBody>,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let _ = ctx.handle.emit(
+        "teammate://progress",
+        serde_json::json!({ "status": body.status, "exit_code": body.exit_code }),
+    );
+    if let Some(idx) = body.pane {
+        if let Ok(wid) = caller_workspace_id_strict(&ctx, &headers) {
+            if let Ok(pid) = pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
+                let key = body.key.clone().unwrap_or_else(|| body.status.clone());
+                super::circuit::record(&ctx.handle, &ctx.state, wid, pid, &key, body.exit_code != 0);
+            }
+        }
+    }
+    (StatusCode::OK, "ok").into_response()
+}
+
+// ===== Domain C: 内置端侧 MCP server（WebSocket / JSON-RPC 2.0）=====
+// 复用 ridge_core::mcp 纯协议核心 + remote/server.rs 同款 axum 0.7 ws 样板。
+// 请求-响应循环（最小可用）：initialize / tools/list / tools/call / resources/read。
+// 进度通知 (notifications/progress) 需 split sink，后续接入；当前不阻断主链路。
+
+async fn route_mcp_ws(
+    ws: WebSocketUpgrade,
+    State(ctx): State<TeammateCtx>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth_ok(&headers, &ctx.token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    ws.on_upgrade(move |socket| mcp_socket(socket, ctx))
+}
+
+async fn mcp_socket(mut socket: WebSocket, ctx: TeammateCtx) {
+    let registry = ridge_core::mcp::registry::ToolRegistry::default();
+    while let Some(Ok(msg)) = socket.recv().await {
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+        let reply = handle_mcp_message(&text, &registry, &ctx).await;
+        if socket.send(Message::Text(reply)).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn handle_mcp_message(
+    text: &str,
+    registry: &ridge_core::mcp::registry::ToolRegistry,
+    ctx: &TeammateCtx,
+) -> String {
+    use ridge_core::mcp::protocol as proto;
+    let req = match proto::parse_request(text.as_bytes()) {
+        Ok(r) => r,
+        Err(_) => {
+            return proto::mcp_error(serde_json::Value::Null, proto::PARSE_ERROR, "parse error")
+                .to_string()
+        }
+    };
+    let id = req.id.clone();
+    let resp = match req.method.as_str() {
+        proto::METHOD_INITIALIZE => proto::mcp_result(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "serverInfo": { "name": "ridge-teammate", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": { "tools": {}, "resources": {} }
+            }),
+        ),
+        proto::METHOD_TOOLS_LIST => proto::mcp_result(id, registry.tools_list_result()),
+        proto::METHOD_TOOLS_CALL => mcp_tools_call(id, &req.params, ctx).await,
+        proto::METHOD_RESOURCES_READ => mcp_resources_read(id, &req.params, ctx),
+        other => {
+            proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("method not found: {other}"))
+        }
+    };
+    resp.to_string()
+}
+
+/// tools/call 最小路由：在活动工作区上落地 ridge_send_to_teammate / ridge_delegate_task。
+async fn mcp_tools_call(
+    id: serde_json::Value,
+    params: &serde_json::Value,
+    ctx: &TeammateCtx,
+) -> serde_json::Value {
+    use ridge_core::mcp::protocol as proto;
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let wid = *ctx.state.active_workspace.read();
+    match name {
+        "ridge_send_to_teammate" | "ridge_delegate_task" => {
+            let pane_idx = args
+                .get("target_pane_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let text = args
+                .get("message")
+                .or_else(|| args.get("objective"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane_idx) {
+                Ok(u) => u,
+                Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string()),
+            };
+            let payload = format!("{text}\n");
+            match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, payload.as_bytes()) {
+                Ok(()) => {
+                    if name == "ridge_delegate_task" {
+                        let mut map = ctx.state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&wid) {
+                            ws.teammate_pane_states.insert(pid, PaneState::Busy);
+                        }
+                    }
+                    proto::mcp_result(
+                        id,
+                        serde_json::json!({ "content": [ { "type": "text", "text": "delivered" } ] }),
+                    )
+                }
+                Err(e) => proto::mcp_error(id, proto::INTERNAL_ERROR, &e.to_string()),
+            }
+        }
+        other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("unknown tool: {other}")),
+    }
+}
+
+/// resources/read：当前支持 `ridge://workspace/active-panes`（活动工作区花名册）。
+fn mcp_resources_read(
+    id: serde_json::Value,
+    params: &serde_json::Value,
+    ctx: &TeammateCtx,
+) -> serde_json::Value {
+    use ridge_core::mcp::protocol as proto;
+    use ridge_core::mcp::resource::RidgeUri;
+    let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+    match RidgeUri::parse(uri) {
+        Ok(RidgeUri::WorkspaceActivePanes) => {
+            let wid = *ctx.state.active_workspace.read();
+            let map = ctx.state.workspaces.read();
+            let snapshot = map
+                .get(&wid)
+                .map(crate::commands::teammate::topology_json)
+                .unwrap_or_else(|| serde_json::json!({ "roster": [] }));
+            proto::mcp_result(
+                id,
+                serde_json::json!({
+                    "contents": [ {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": snapshot.to_string()
+                    } ]
+                }),
+            )
+        }
+        Ok(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "resource not yet available"),
+        Err(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "invalid ridge:// uri"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1089,7 +1367,29 @@ async fn route_send_keys(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, body.text.as_bytes()) {
+    // Domain D2 HITL 网关（默认关——`hitl::is_enabled()` 为 false 时本块整体跳过，
+    // send-keys 行为零变化）。开启后仅对「换行提交」的整条命令做 L2 风险拦截：批准放行、
+    // 拒绝回授权阻断错误、修改则改写后注入。
+    let text_to_write = {
+        let submitted = body.text.ends_with('\n') || body.text.ends_with('\r');
+        let cmd = body.text.trim_end_matches(|c| c == '\r' || c == '\n');
+        if hitl::is_enabled() && submitted && !cmd.is_empty() {
+            match hitl::request_approval(&ctx.handle, &format!("pane#{pane_idx}"), cmd).await {
+                hitl::HitlResolution::Approve => body.text.clone(),
+                hitl::HitlResolution::Reject => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        "Execution blocked by user authorization policy.",
+                    )
+                        .into_response();
+                }
+                hitl::HitlResolution::Modify(new_cmd) => format!("{new_cmd}\n"),
+            }
+        } else {
+            body.text.clone()
+        }
+    };
+    match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, text_to_write.as_bytes()) {
         Ok(()) => (StatusCode::OK, "ok").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }

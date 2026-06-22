@@ -5,7 +5,14 @@ edition = "2021"
 description = "A Rust terminal kernel (VT parser + grid + render backends) compiled to WebAssembly"
 license = "MIT"
 
-[package.metadata.wasm-pack]
+# wasm-pack 只认 `profile.<dev|release>.wasm-opt` 这个嵌套键；裸 `[package.metadata.wasm-pack]
+# wasm-opt = false` 不生效，wasm-pack 仍会跑它内置的 wasm-opt（macOS CI runner 上该二进制
+# 解析新版 wasm-bindgen 输出失败 → 构建挂）。这里禁掉 wasm-pack 内置 opt；体积优化交给
+# build.mjs 里那一道 best-effort 的显式 `wasm-opt -Oz`（缺失/失败则静默跳过，不阻断）。
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.dev]
 wasm-opt = false
 
 # Two-target crate. The `term` / `input` / `selection` / `search` modules

@@ -9,6 +9,7 @@ pub mod project;
 pub mod remote;
 pub mod ridge_file;
 pub mod settings;
+pub mod teammate;
 pub mod terminal;
 pub mod theme;
 pub mod watch;

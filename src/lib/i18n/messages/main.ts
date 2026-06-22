@@ -17,6 +17,12 @@ export const zh: Record<string, string> = {
   remoteGateErrCloud: 'Cloud 连接失败',
   // 跨子域登录态未能在子域生效（cookie 缺失/失效），已回主域一次仍未解决——停止无限回跳。
   remoteGateErrTenantLoginStuck: '登录态未能在本子域生效，请回主域重新登录后再打开远控入口。',
+  // 信令 WS 错误码（§5 relay 上报）→ 用户可读提示
+  remoteGateErrNotLoggedIn: '请先登录。正在跳转到登录页面…',
+  remoteGateErrUsernameMismatch: '账号与域名不匹配，请用域名对应的账号登录后重试。',
+  remoteGateErrDeviceNotOwned: '该设备不属于当前账号，请确认域名与设备所有权。',
+  remoteGateErrDeviceParked: '设备已停用（Parked），请前往控制台重新激活后重试。',
+  remoteGateErrNotPremium: '需要付费订阅才能使用远控功能。请前往控制台升级。',
 
   // §4 云端 TOTP 二次验证（控制端）
   totpGateSubtitle: '已建立加密连接。请输入桌面端 Ridge「官方公网加速」页面显示的 6 位动态验证码',
@@ -136,6 +142,12 @@ export const en: Record<string, string> = {
   // Cross-subdomain login state never took effect on the subdomain (missing/
   // stale cookie); already bounced to the main domain once — stop looping.
   remoteGateErrTenantLoginStuck: 'Your sign-in did not take effect on this subdomain. Please sign in again on the main site, then reopen the remote entry.',
+  // Signaling WS error codes (§5 relay) → user-readable messages
+  remoteGateErrNotLoggedIn: 'Please sign in first. Redirecting to the login page…',
+  remoteGateErrUsernameMismatch: 'Account does not match this address. Please sign in with the account that owns this subdomain.',
+  remoteGateErrDeviceNotOwned: 'This device does not belong to your account. Check the subdomain and device ownership.',
+  remoteGateErrDeviceParked: 'Device is parked (disabled). Go to your console to reactivate it.',
+  remoteGateErrNotPremium: 'A paid subscription is required to use remote control. Please upgrade in your console.',
 
   // sidebar nav tooltips
   navFiles: 'Files',

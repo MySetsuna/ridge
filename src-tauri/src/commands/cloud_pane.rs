@@ -38,8 +38,11 @@ const RAW_CHAN_CAP: usize = 512;
 /// 「慢消费 → 丢帧 → 重同步 → 更慢」的拥塞放大反馈环。
 const RESYNC_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
-/// 重同步回放的最近 scrollback 上限（与 server.rs 的 64 KiB 一致）。
-const RESYNC_SCROLLBACK_BYTES: usize = 65536;
+/// 重同步回放的最近 scrollback 上限。
+/// Cloud 路径经 §7.2a 分片层（≤16 KiB/帧），可安全发大块；取 256 KiB
+/// 以覆盖深历史终端（长构建输出、vim 会话等），显著减少初次连接时历史缺失。
+/// LAN 路径（server.rs）保持 64 KiB 不动（无分片层，直接过 WebSocket）。
+const RESYNC_SCROLLBACK_BYTES: usize = 262144;
 
 /// pane → 该 pane cloud sub 的 `desync` 标志（与 lib.rs fan-out / 转发任务持有的是
 /// **同一个** Arc）。`resync_pane_raw` 命令据此置位，触发转发任务在下一帧前补发
@@ -162,11 +165,50 @@ pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(
 /// 补发 `RIS + scrollback` 修复 controller 端 vte 空洞。供 JS 侧 DataChannel 背压丢帧后
 /// （bufferedAmount 回落时）请求 host 重放，复用与 fan-out 丢帧**同一套**恢复原语。
 /// 幂等；未订阅的 pane 静默忽略。
+///
+/// **限频 1/s**（转发任务侧的 RESYNC_MIN_INTERVAL）：防「慢消费→丢帧→重同步→更慢」的
+/// 背压反馈环。**仅用于背压自愈**这类自动触发路径——用户主动触发的初次回放走
+/// `replay_pane_scrollback_raw`（不限频，且不依赖下一帧）。
 #[tauri::command]
 pub fn resync_pane_raw(pane_id: String) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
     if let Some(flag) = desync_flags().lock().unwrap().get(&pane) {
         flag.store(true, Ordering::Release);
     }
+    Ok(())
+}
+
+/// `invoke('replay_pane_scrollback_raw', { paneId })`：**立即**补发 `RIS + scrollback`
+/// （不经转发任务的 desync 标志、不受 RESYNC_MIN_INTERVAL 限频）。
+///
+/// 用于**用户主动**触发的初次回放：controller 订阅一个 pane（或移动端切 pane → 重订阅）
+/// 时调用，让已有终端内容立刻渲染。不能复用 `resync_pane_raw`：(1) 其 1s 限频会吞掉快速
+/// 切 pane / 1s 内切回的回放请求；(2) 它依赖转发任务收到「下一帧」才补发——空闲 pane
+/// 无新输出 → 永远不补发 → 空屏。本命令在命令线程内**同步**取 scrollback 并 emit，
+/// 与空闲/限频均无关。
+///
+/// 与背压自愈正交：背压丢帧仍走限频的 `resync_pane_raw`（防拥塞放大）。
+/// 复用与 `subscribe_pane_raw` 转发任务中**逐字一致**的 RIS+scrollback 帧格式。
+/// 幂等；未订阅的 pane（无 desync 注册）静默忽略，避免给非活跃 pane 凭空发流。
+#[tauri::command]
+pub fn replay_pane_scrollback_raw(
+    pane_id: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
+    // 仅对已订阅的 pane 回放：desync_flags 的 key 与活跃 sub 一一对应（注册/注销同步维护）。
+    let subscribed = desync_flags().lock().unwrap().contains_key(&pane);
+    if !subscribed {
+        return Ok(());
+    }
+    let ws = state.active_workspace_id();
+    let history = state.get_recent_scrollback_for(ws, pane, RESYNC_SCROLLBACK_BYTES);
+    let mut resync = Vec::with_capacity(2 + history.len());
+    resync.extend_from_slice(b"\x1bc"); // RIS — 全屏复位（与转发任务一致）
+    resync.extend_from_slice(&history);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&resync);
+    let event_name = format!("pane-raw-{pane}");
+    let _ = app.emit(&event_name, serde_json::json!({ "b64": b64 }));
     Ok(())
 }

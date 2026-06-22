@@ -54,6 +54,25 @@
     if (!isTenant) { onfallbacklan(); return; }
 
     const hadSession = await bootstrapFromCookie();
+    // §fast-fail-A（移动端）: 租户域名 + 无有效会话 → 立即跳登录，不等 WebRTC 超时。
+    // 同样走 bounce-guard 防止 apex⇄子域死循环。
+    if (!hadSession) {
+      const { BASE_DOMAIN, cloudHttpScheme } = await import('$lib/remote/cloud/apiClient');
+      let bounced = 0;
+      try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
+      if (bounced >= 1) {
+        try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
+        phase = 'error';
+        error = tr('main.remoteGateErrTenantLoginStuck');
+        return;
+      }
+      phase = 'error';
+      error = tr('main.remoteGateErrNotLoggedIn');
+      try { sessionStorage.setItem(TENANT_BOUNCE_KEY, String(bounced + 1)); } catch { /* ignore */ }
+      const scheme = cloudHttpScheme(BASE_DOMAIN);
+      window.location.replace(`${scheme}://${BASE_DOMAIN}/?redirect=${encodeURIComponent(location.href)}`);
+      return;
+    }
     phase = 'connecting';
     handle = mod.bootCloudControllerFromUrl(
       location.search,
@@ -63,18 +82,42 @@
           if (cloudConn) { cloudConn.notifyState(s); return; }
           // Pre-gate: this is the initial connect driving the TOTP prompt.
           if (s === 'connected') {
-            // E2EE handshake done — clear the bounce counter, prompt zero-trust TOTP.
+            // E2EE handshake done — clear the bounce counter.
             try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
-            phase = 'need-totp';
             error = '';
             loading = false;
-            setTimeout(() => inputEl?.focus(), 300);
+            // §7.4 信任授权优先：受信设备静默握手通过即跳过 TOTP（host 端经握手已开 §4 门）。
+            // 旧 host 不识别 totp-trust-hello → 10s 超时 resolve(false) → 退化到 TOTP 输入。
+            // 无缓存码（mobile 不缓存），故信任授权失败直接进 need-totp 手输。
+            if (handle) {
+              handle.tryTrustGrant().then((trusted) => {
+                if (cloudConn) return; // 竞态保护：已被其它路径完成
+                if (trusted) {
+                  void finishConnected(null);
+                } else {
+                  promptTotp();
+                }
+              }).catch(() => promptTotp());
+            } else {
+              promptTotp();
+            }
           } else if (s === 'error') {
             phase = 'error';
             error = error || tr('main.remoteGateErrCloud');
           }
         },
-        onError: (msg) => { if (!cloudConn) { phase = 'error'; error = msg; } },
+        onError: (msg, code) => {
+          // Post-gate: 把服务端「已认证但无权」的稳定 code 转发给 live transport，让它
+          // 分级（用户问题 / 设备停用 / 通道）并驱动 MainApp 的 banner + 退回登录逻辑。
+          if (cloudConn) { cloudConn.notifyError(msg, code); return; }
+          // §fast-fail-B: 信令 WS relay 稳定 error code（§5）→ 用户可读提示（移动端）。
+          phase = 'error';
+          if (code === 'USERNAME_MISMATCH') error = tr('main.remoteGateErrUsernameMismatch');
+          else if (code === 'DEVICE_NOT_OWNED') error = tr('main.remoteGateErrDeviceNotOwned');
+          else if (code === 'DEVICE_PARKED') error = tr('main.remoteGateErrDeviceParked');
+          else if (code === 'NOT_PREMIUM') error = tr('main.remoteGateErrNotPremium');
+          else error = msg || tr('main.remoteGateErrCloud');
+        },
       },
       location.hostname,
     );
@@ -98,6 +141,31 @@
     }
   }
 
+  // §4：展示 TOTP 手输门控（信任授权未命中 / 不可用时的回退）。
+  function promptTotp() {
+    if (cloudConn) return; // 已完成则不再降级提示
+    phase = 'need-totp';
+    error = '';
+    loading = false;
+    setTimeout(() => inputEl?.focus(), 300);
+  }
+
+  // 授权通过（TOTP 手输 ok 或 §7.4 信任授权）→ 建立 live transport 并 onready。
+  // verifiedCode 为 null 表示走信任授权（无缓存码）：full re-handshake 重连时由
+  // cloudRemote 回退到 tryTrustGrant 重新静默授权。
+  async function finishConnected(verifiedCode: string | null): Promise<void> {
+    // 云会话已完全授权。boot 已为 FS/git/search 接好 TauriDataProvider；
+    // 防御性重置（幂等），让侧栏沿用同一 shimmed invoke。
+    setTransport(new TauriDataProvider());
+    const conn = new CloudRemoteConnection(handle!);
+    if (verifiedCode) conn.setVerifiedCode(verifiedCode); // 缓存以便 full reconnect 透明 re-auth
+    cloudConn = conn; // route ongoing provider state (drop/reconnect) to the transport
+    await conn.init();
+    loading = false;
+    code = '';
+    onready(conn);
+  }
+
   function submitTotp() {
     const numeric = code.replace(/\D/g, '').slice(0, 6);
     if (numeric.length < 6 || loading || !handle) return;
@@ -112,17 +180,8 @@
           error = tr('main.totpGateErrInvalid');
           return;
         }
-        // Zero-trust TOTP passed → the cloud session is fully authorized. The boot
-        // already wired TauriDataProvider for FS/git/search; reassert it defensively
-        // (idempotent) so the sidebar rides the same shimmed invoke.
-        setTransport(new TauriDataProvider());
-        const conn = new CloudRemoteConnection(handle!);
-        conn.setVerifiedCode(numeric); // cached for transparent re-auth on full reconnect
-        cloudConn = conn; // route ongoing provider state (drop/reconnect) to the transport
-        await conn.init();
-        loading = false;
-        code = '';
-        onready(conn);
+        // Zero-trust TOTP passed → finish + cache the code for reconnect re-auth.
+        await finishConnected(numeric);
       })
       .catch(() => {
         loading = false;

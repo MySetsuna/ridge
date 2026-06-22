@@ -192,7 +192,10 @@ pub fn run() {
                     .title("ridge")
                     .inner_size(800.0, 600.0)
                     .decorations(false)
-                    .transparent(false)
+                    // 不调 `.transparent(false)`：该方法在 macOS 上被 cfg 门控在
+                    // `macos-private-api` feature 之后（Win/Linux 无门控），而我们传的就是
+                    // 默认值 false（窗口本就不透明）。删掉这个 no-op 调用即可让 macOS 编译通过，
+                    // 三平台行为不变（仍是不透明窗口）。
                     .visible(false)
                     .devtools(true)
                     .initialization_script(&splash_init_script)
@@ -777,6 +780,9 @@ pub fn run() {
             commands::remote::verify_remote_totp_bind,
             commands::remote::remote_reset_totp,
             commands::remote::remote_set_totp_identity,
+            commands::remote::totp_trust_check,
+            commands::remote::totp_trust_record,
+            commands::remote::totp_trust_revoke_all,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
             commands::remote::set_remote_fs_readonly,
@@ -790,8 +796,18 @@ pub fn run() {
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,
             commands::cloud_pane::resync_pane_raw,
+            commands::cloud_pane::replay_pane_scrollback_raw,
             // 桌面 cloud HTTP 代理（绕过 WebView 跨域 CORS，见 cloud_http.rs）
             commands::cloud_http::cloud_http,
+            // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
+            commands::teammate::get_teammate_topology,
+            commands::teammate::resolve_hitl_request,
+            commands::teammate::set_hitl_enabled,
+            commands::teammate::classify_command_risk,
+            // Domain D3 文件并发写锁（前端冲突仲裁视图用）
+            teammate::locks::acquire_write_lock,
+            teammate::locks::release_write_lock,
+            teammate::locks::write_lock_holder,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,
