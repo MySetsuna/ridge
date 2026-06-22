@@ -128,13 +128,14 @@ import {
     }
   }
 
-  function dockHintClass(h: DockRegion | null): string {
+  // 返回方向半区预览块的定位 class：明确显示拖拽 pane 将落入的区域。
+  function dockRegionClass(h: DockRegion | null): string {
     if (!h) return '';
-    if (h === 'left') return 'shadow-[inset_5px_0_0_0_var(--rg-accent)]';
-    if (h === 'right') return 'shadow-[inset_-5px_0_0_0_var(--rg-accent)]';
-    if (h === 'top') return 'shadow-[inset_0_5px_0_0_var(--rg-accent)]';
-    if (h === 'bottom') return 'shadow-[inset_0_-5px_0_0_var(--rg-accent)]';
-    return 'ring-2 ring-[var(--rg-accent)] ring-inset';
+    if (h === 'left') return 'inset-y-0 left-0 w-1/2';
+    if (h === 'right') return 'inset-y-0 right-0 w-1/2';
+    if (h === 'top') return 'inset-x-0 top-0 h-1/2';
+    if (h === 'bottom') return 'inset-x-0 bottom-0 h-1/2';
+    return 'inset-[20%]';
   }
 
   // T20：原 onSplitResized 监听 svelte-splitpanes 的 'resized' event 落盘。
@@ -524,10 +525,16 @@ import {
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
             {@const hover = $paneDockHover && $paneDockHover.paneId === node.id ? $paneDockHover.region : null}
             <div
-              class="absolute inset-0 z-30 rounded-lg bg-black/25 transition-shadow pointer-events-none {dockHintClass(hover)}"
+              class="absolute inset-0 z-30 rounded-lg bg-black/15 pointer-events-none"
               role="region"
               aria-label={$t('workspace.dockHereLabel')}
-            ></div>
+            >
+              {#if hover}
+                <div
+                  class="absolute bg-[var(--rg-accent)]/25 border-2 border-[var(--rg-accent)] rounded transition-all duration-100 {dockRegionClass(hover)}"
+                ></div>
+              {/if}
+            </div>
           {/if}
           <header
             class="rg-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
