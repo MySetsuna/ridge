@@ -3042,7 +3042,16 @@ async fn dispatch_invoke_request(
             .await,
         ),
         "change_pane_shell" => unit(
-            terminal::change_pane_shell(handle.state(), s(args, "paneId"), s(args, "shell")).await,
+            terminal::change_pane_shell(
+                handle.state(),
+                s(args, "paneId"),
+                s(args, "shell"),
+                args.get("args")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+            )
+            .await,
         ),
         "write_to_pty" => {
             unit(terminal::write_to_pty(handle.state(), s(args, "paneId"), s(args, "data")).await)

@@ -183,6 +183,7 @@ pub async fn change_pane_shell(
     state: State<'_, AppState>,
     pane_id: String,
     shell: String,
+    args: Vec<String>,
 ) -> Result<(), String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let workspace_id = state.active_workspace_id();
@@ -196,14 +197,39 @@ pub async fn change_pane_shell(
     teardown_pane_pty_if_present(&state, workspace_id, pane_id);
     state.clear_pty_scrollback(workspace_id, pane_id);
 
+    // 持久化本 pane 的 shell（program）——对齐 create_pane_inner，使标题/恢复一致。
+    {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&workspace_id) {
+            if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+                pane.shell_kind = Some(shell.clone());
+            }
+        }
+    }
+
+    // 带参（WSL 发行版 / VS 开发者环境）走 structured_command；它使
+    // has_explicit_launch=true，自动跳过 OSC7 注入（避免与 VS 的 -Command 冲突）。
+    let (shell_opt, sc) = if args.is_empty() {
+        (Some(shell), None)
+    } else {
+        (
+            None,
+            Some(StructuredPtyCommand {
+                program: shell,
+                args,
+                env: std::collections::HashMap::new(),
+            }),
+        )
+    };
+
     ensure_pane_pty_workspace(
         &*state,
         workspace_id,
         pane_id,
-        Some(shell),
+        shell_opt,
         cwd.as_deref(),
         None,
-        None,
+        sc,
         None,
         None,
         None,

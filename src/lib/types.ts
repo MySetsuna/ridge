@@ -14,6 +14,8 @@ export type PaneNode =
       id: string;
       title?: string;
       cwd?: string;
+      /** 本 pane 当前 shell 的 program（后端 get_pane_layout 回传，用于切换器标签）。 */
+      shell_kind?: string;
       /** "idle" | "busy" | "starting" if teammate ever marked this pane. */
       agent_state?: AgentState;
       /** agent_id that currently owns this pane (when busy). */
