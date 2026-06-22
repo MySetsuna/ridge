@@ -680,7 +680,7 @@ import {
               {/if}
             </div>
             {#if node.type === 'leaf'}
-              <PaneShellSwitcher paneId={node.id} />
+              <PaneShellSwitcher paneId={node.id} currentShell={node.shell_kind} />
               <!-- Repo switcher (renders only when cwd hosts >1 git repo);
                    then Branch pill (picker + ahead/behind + upstream warn);
                    then Diff pill (working-tree changed-file count + +N -N).

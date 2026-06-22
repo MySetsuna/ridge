@@ -33,6 +33,9 @@ pub enum LayoutNode {
         title: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// 本 pane 当前 shell 的 program（用于 per-pane 切换器标签）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shell_kind: Option<String>,
         /// "idle" | "busy" | "starting"；`None` 表示从未被 teammate 接触过。
         #[serde(skip_serializing_if = "Option::is_none")]
         agent_state: Option<String>,
@@ -91,6 +94,7 @@ fn engine_node_to_layout(
                 title,
                 cwd: pane
                     .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
+                shell_kind: panes.get(id).and_then(|p| p.shell_kind.clone()),
                 agent_state,
                 agent_id: agent_by_pane.get(id).cloned(),
             }
