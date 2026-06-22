@@ -35,7 +35,7 @@ import {
     closePane as closePaneApi,
     activePaneId,
     paneDragSourceId,
-    dockPane,
+    paneDockHover,
     activeWorkspaceId,
     paneCwdStore,
     terminalTitles,
@@ -55,6 +55,7 @@ import {
     findSameAxisRefs,
     collapseCwd,
   } from '$lib/stores/paneTree';
+  import { paneDockDrag } from '$lib/actions/paneDockDrag';
 
 
   interface Props {
@@ -111,28 +112,6 @@ import {
     node.type === 'split' ? (node.direction === 'horizontal' ? 'x' : 'y') : ''
   );
 
-  /** 当前叶节点上的停靠预览（仅拖拽他格悬停时）。 */
-  let dockHover: DockRegion | null = $state(null);
-
-  function getDockRegion(e: DragEvent): DockRegion | null {
-    const el = e.currentTarget as HTMLElement;
-    const rect = el.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const w = rect.width;
-    const h = rect.height;
-
-    const threshold = 0.25;
-
-    if (x < w * threshold) return 'left';
-    if (x > w * (1 - threshold)) return 'right';
-    if (y < h * threshold) return 'top';
-    if (y > h * (1 - threshold)) return 'bottom';
-    if (x > w * 0.3 && x < w * 0.7 && y > h * 0.3 && y < h * 0.7) return 'center';
-    
-    return null;
-  }
-
   /**
    * svelte-splitpanes: horizontal=true → flex 纵向 → 上下分屏（横条分割）；
    * horizontal=false → flex 横向 → 左右分屏（竖条分割）。
@@ -147,22 +126,6 @@ import {
       console.error(e);
       await alertDialog({ title: tr('workspace.opFailed'), message: e instanceof Error ? e.message : String(e), danger: true });
     }
-  }
-
-  function regionAtPoint(
-    clientX: number,
-    clientY: number,
-    el: HTMLElement
-  ): DockRegion {
-    const r = el.getBoundingClientRect();
-    const x = (clientX - r.left) / Math.max(r.width, 1);
-    const y = (clientY - r.top) / Math.max(r.height, 1);
-    const m = 0.18;
-    if (x < m) return 'left';
-    if (x > 1 - m) return 'right';
-    if (y < m) return 'top';
-    if (y > 1 - m) return 'bottom';
-    return 'center';
   }
 
   function dockHintClass(h: DockRegion | null): string {
@@ -522,21 +485,7 @@ import {
       splitHost?.removeEventListener('mousedown', handler, { capture: true });
   });
 
-  async function onDockDrop(e: DragEvent, targetId: string) {
-    e.preventDefault();
-    const src = get(paneDragSourceId);
-    dockHover = null;
-    if (!src || src === targetId) return;
-    const t = e.currentTarget;
-    if (!(t instanceof HTMLElement)) return;
-    const region = regionAtPoint(e.clientX, e.clientY, t);
-    try {
-      await dockPane(src, targetId, region);
-    } catch (err) {
-      console.error(err);
-      await alertDialog({ title: tr('workspace.opFailed'), message: err instanceof Error ? err.message : String(err), danger: true });
-    }
-  }
+
 </script>
 
 <div
@@ -569,35 +518,15 @@ import {
              child canvas so it doesn't need the wrapper tint either.
              Card outline stays via the box-shadow. -->
         <div
+          data-pane-id={node.id}
           class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
+            {@const hover = $paneDockHover && $paneDockHover.paneId === node.id ? $paneDockHover.region : null}
             <div
-              class="absolute inset-0 z-30 rounded-lg bg-black/25 transition-shadow {dockHintClass(
-                dockHover
-              )}"
+              class="absolute inset-0 z-30 rounded-lg bg-black/25 transition-shadow pointer-events-none {dockHintClass(hover)}"
               role="region"
               aria-label={$t('workspace.dockHereLabel')}
-              ondragover={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-                const t = e.currentTarget;
-                if (t instanceof HTMLElement) {
-                  dockHover = regionAtPoint(e.clientX, e.clientY, t);
-                }
-              }}
-              ondragleave={(e) => {
-                const rel = e.relatedTarget;
-                const cur = e.currentTarget;
-                if (
-                  cur instanceof HTMLElement &&
-                  rel instanceof Node &&
-                  !cur.contains(rel)
-                ) {
-                  dockHover = null;
-                }
-              }}
-              ondrop={(e) => onDockDrop(e, node.id)}
             ></div>
           {/if}
           <header
@@ -605,20 +534,10 @@ import {
           >
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
-              draggable="true"
               title={$t('workspace.paneDragTitle')}
-              onclick={() => activePaneId.set(node.id)}
               onkeydown={(e) => e.key === 'Enter' && activePaneId.set(node.id)}
               role="presentation"
-              ondragstart={(e) => {
-                e.dataTransfer?.setData('text/plain', node.id);
-                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-                paneDragSourceId.set(node.id);
-              }}
-              ondragend={() => {
-                paneDragSourceId.set(null);
-                dockHover = null;
-              }}
+              use:paneDockDrag={{ paneId: node.id }}
             >
               {#if node.id !== undefined}
                 <!-- Title source: same as Explorer's pane tag. terminalTitles is
@@ -730,26 +649,8 @@ import {
         <div
           class="rg-pane splitpanes__pane relative"
           role="region"
-          ondragover={(e) => {
-            e.preventDefault();
-            dockHover = getDockRegion(e);
-          }}
-          ondragleave={() => (dockHover = null)}
-          ondrop={async (e) => {
-            e.preventDefault();
-            const sourceId = e.dataTransfer?.getData('text/plain');
-            if (sourceId && child.id && sourceId !== child.id && dockHover) {
-              await dockPane(sourceId, child.id, dockHover);
-            }
-            dockHover = null;
-          }}
           style="{dim}: {ratio}%; flex-grow: 0; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden;"
         >
-          {#if dockHover}
-            <div
-              class="absolute inset-0 z-50 bg-[var(--rg-accent)]/20 border-2 border-[var(--rg-accent)] pointer-events-none"
-            ></div>
-          {/if}
           <SplitLayout
             node={child}
             {workspaceId}

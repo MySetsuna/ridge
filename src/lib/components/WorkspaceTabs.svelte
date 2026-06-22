@@ -7,8 +7,7 @@
   } from '$lib/stores/contextMenu';
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { dndzone, SOURCES, TRIGGERS } from 'svelte-dnd-action';
-  import { paneDragSourceId } from '$lib/stores/paneTree';
-  import { get } from 'svelte/store';
+  import { dragHoverWorkspaceId } from '$lib/stores/paneTree';
 
   interface WorkspaceInfo {
     id: string;
@@ -203,50 +202,9 @@
     }
   }
 
-  // 跨工作区拖拽 pane：当 `paneDragSourceId` 非空且 dragover 落在某个非活动 tab 上
-  // 超过 HOVER_SWITCH_MS 时，自动切到该 workspace，让用户接着把 pane 放到目标
-  // SplitContainer 的 dock 区域。源 pane 仍在原 workspace 后台保持运行；后端 dock_pane
-  // 检测到 source/target 跨 workspace 后会迁移节点 + PTY，UI 上 keep-alive 切换无黑屏。
-  const HOVER_SWITCH_MS = 250;
-  let hoverTimer: ReturnType<typeof setTimeout> | null = null;
-  // hoverTimerWsId 用 $state 是为了让 tab 的 highlight ring 在悬停命中时
-  // 立即响应；clearHoverTimer 重置 → ring 移除，HOVER_SWITCH_MS 触发后切走。
-  let hoverTimerWsId: string | null = $state(null);
-  function clearHoverTimer() {
-    if (hoverTimer !== null) {
-      clearTimeout(hoverTimer);
-      hoverTimer = null;
-      hoverTimerWsId = null;
-    }
-  }
-  function onTabDragOver(e: DragEvent, ws: WorkspaceInfo) {
-    if (!get(paneDragSourceId)) return;
-    if (ws.id === activeWorkspaceId) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    if (hoverTimerWsId === ws.id) return; // already armed for this tab
-    clearHoverTimer();
-    hoverTimerWsId = ws.id;
-    hoverTimer = setTimeout(() => {
-      // 再次检查仍在拖拽中且这个 tab 仍是悬停目标。
-      if (get(paneDragSourceId) && hoverTimerWsId === ws.id) {
-        onSwitch(ws.id);
-      }
-      hoverTimer = null;
-      hoverTimerWsId = null;
-    }, HOVER_SWITCH_MS);
-  }
-  function onTabDragLeave(e: DragEvent, ws: WorkspaceInfo) {
-    if (hoverTimerWsId === ws.id) {
-      // dragleave 触发条件较松（指针移到子元素也会触发），用 setTimeout 自然过期已足够，
-      // 这里只在切到下一个 tab 时清除（onTabDragOver 也会清）。
-      // 防止指针快速划过多个 tab 时误清除：检查 relatedTarget。
-      const cur = e.currentTarget;
-      const rel = e.relatedTarget;
-      if (cur instanceof HTMLElement && rel instanceof Node && cur.contains(rel)) return;
-      clearHoverTimer();
-    }
-  }
+  // 跨工作区拖拽 pane：paneDockDrag action 在 pointermove 期间会更新
+  // dragHoverWorkspaceId；悬停 250ms 后 action 内部自动调用 switchWorkspace。
+  // 这里仅订阅该 store 来驱动 tab 的高亮 ring，无需在组件层维护计时器。
 </script>
 
 <!-- Outer wrapper: plain flex row, bounded by flex-1/min-w-0 from parent.
@@ -279,13 +237,12 @@
           {ws.id === activeWorkspaceId
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
             : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}
-          {hoverTimerWsId === ws.id ? 'ring-2 ring-[var(--rg-accent)]/60' : ''}"
+          {$dragHoverWorkspaceId === ws.id ? 'ring-2 ring-[var(--rg-accent)]/60' : ''}"
+        data-ws-tab-id={ws.id}
         title={editingId === ws.id ? undefined : $t('workspace.tabSwitchTo', { name: getWorkspaceName(ws) })}
         onclick={() => { if (editingId !== ws.id) onSwitch(ws.id); }}
         onkeydown={(e) => handleSelectKeydown(e, ws)}
         oncontextmenu={(e) => handleContextMenu(e, ws)}
-        ondragover={(e) => onTabDragOver(e, ws)}
-        ondragleave={(e) => onTabDragLeave(e, ws)}
         role="button"
         tabindex="0"
         >

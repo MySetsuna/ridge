@@ -111,6 +111,12 @@ export const activePaneId = writable<string>('');
 export const paneDragSourceId = writable<string | null>(null);
 
 export type DockRegion = 'left' | 'right' | 'top' | 'bottom' | 'center';
+
+/** 指针拖拽 pane 时，当前悬停的停靠目标（leaf 据此画方向高亮）。 */
+export const paneDockHover = writable<{ paneId: string; region: DockRegion } | null>(null);
+/** 指针拖拽 pane 时，当前悬停的工作区 tab（tab 据此画 ring，命中 250ms 后切换）。 */
+export const dragHoverWorkspaceId = writable<string | null>(null);
+
 export type SplitterAxis = 'x' | 'y';
 
 export interface SplitterRef {
