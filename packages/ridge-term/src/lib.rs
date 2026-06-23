@@ -64,6 +64,30 @@ pub fn set_present_fast(on: bool) {
     crate::render::webgpu::set_present_fast(on);
 }
 
+/// §atlas-race detector (2026-06-22): read the process-wide count of
+/// "a glyph-atlas layer was overwritten after a recorded draw already cited
+/// it this frame" events — the exact cross-pane switch-workspace garble.
+/// Returned as `f64` (counts never approach 2^53). 0 on Canvas2D-only builds
+/// (JS guards with `typeof`). Poll from CDP/console for release forensics;
+/// any non-zero value localises a residual `frame_written` hole (details are
+/// logged to the devtools console at detection time).
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = atlasOverwriteAfterCiteCount)]
+pub fn atlas_overwrite_after_cite_count() -> f64 {
+    crate::render::gpu_context::atlas_overwrite_after_cite_count() as f64
+}
+
+/// §stale-replay detector (2026-06-22 round 2): read the process-wide count of
+/// cached replays aborted because a cited atlas layer was repurposed since
+/// caching — the CROSS-frame switch-workspace garble the per-frame detector
+/// misses. Non-zero with the fix in place means "the bug WAS happening and is
+/// now caught + re-rendered." 0 on Canvas2D-only builds.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = staleReplayCount)]
+pub fn stale_replay_count() -> f64 {
+    crate::render::gpu_context::stale_replay_count() as f64
+}
+
 #[wasm_bindgen(js_name = TerminalKernel)]
 pub struct JsTerminal {
     inner: Terminal,

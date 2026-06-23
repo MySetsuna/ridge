@@ -648,6 +648,29 @@ export class TerminalManager {
 		this.wasmReadyPromise = (async () => {
 			await init(wasmUrl);
 			this.wasmReady = true;
+			// §atlas-race forensics (2026-06-22): expose detector counters on
+			// window.__ridgeAtlasRace() for release console / CDP polling. Returns
+			// { overwriteAfterCite, staleReplay }. A value of -1 means the wasm
+			// export is missing (running an OLD bundle) — confirms the installed
+			// app actually has this build.
+			try {
+				const rmod = (await import('@ridge/term-wasm')) as unknown as {
+					atlasOverwriteAfterCiteCount?: () => number;
+					staleReplayCount?: () => number;
+				};
+				if (typeof window !== 'undefined') {
+					(window as unknown as Record<string, unknown>).__ridgeAtlasRace = () => ({
+						overwriteAfterCite:
+							typeof rmod.atlasOverwriteAfterCiteCount === 'function'
+								? rmod.atlasOverwriteAfterCiteCount()
+								: -1,
+						staleReplay:
+							typeof rmod.staleReplayCount === 'function' ? rmod.staleReplayCount() : -1,
+					});
+				}
+			} catch {
+				/* old wasm bundle without the exports */
+			}
 			// §present-fast (2026-06-22): opt the WebGPU renderer into the
 			// dirty-row fast path (vs. the always-full-frame correctness
 			// default) when `localStorage.RIDGE_PRESENT_FAST === '1'`. On a
@@ -4609,7 +4632,25 @@ export class TerminalManager {
 					isDirty?: (k: TerminalKernel, t: number) => boolean;
 				};
 				let d = true;
-				if (entry.handle !== null && typeof handleAny.isDirty === 'function') {
+				if (entry.wasHiddenLastTick) {
+					// §atlas-race (switch-frame garble): this pane was under a
+					// hidden (inactive-workspace) container last tick and is
+					// becoming visible THIS frame. Its cached instance buffer
+					// cites atlas layers captured before the hide. Replaying it
+					// via `recordCachedOnly` on the very frame that the other
+					// newly-visible panes mass-admit glyphs is the switch-
+					// workspace garble window: the first/idle pane's replay
+					// draws against slots a sibling reclaims mid-frame. Force a
+					// FULL render so the pane re-admits its own glyphs under the
+					// shared `frame_written` eviction guard instead of trusting
+					// the per-layer pin bookkeeping to survive the churn. Costs
+					// one extra full render per pane per switch — negligible
+					// (the default requires_full_frame path full-renders every
+					// tick regardless). `wasHiddenLastTick` is cleared in the
+					// render loop below, so this only forces the FIRST visible
+					// frame; steady-state cached replay is unaffected.
+					d = true;
+				} else if (entry.handle !== null && typeof handleAny.isDirty === 'function') {
 					try {
 						d = handleAny.isDirty(entry.kernel, dateNow);
 					} catch {

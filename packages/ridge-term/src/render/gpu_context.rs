@@ -164,6 +164,46 @@ pub struct GpuContext {
     /// will sample the wrong data when the encoder is submitted.
     pub frame_written: Vec<bool>,
 
+    /// §atlas-race detector (2026-06-22): per-layer "a pane already RECORDED
+    /// a draw citing this layer THIS frame" mask, same length as
+    /// `atlas_layers`. Unlike `frame_written` (set eagerly when a layer is
+    /// admitted/cited), this is set AFTER a pane hands its draw to the host
+    /// encoder (`end_frame` / `record_cached_only`), from the layers its
+    /// instance buffer actually references. It is the GROUND TRUTH of "this
+    /// slot's pixels are now load-bearing for an unsubmitted draw". If
+    /// `rasterize_and_admit` overwrites a layer whose `frame_committed` is
+    /// set, that recorded draw samples the new glyph at submit time — the
+    /// exact cross-pane switch-workspace garble. `frame_written` SHOULD make
+    /// this impossible; a hit pinpoints a citing path that skipped it.
+    pub frame_committed: Vec<bool>,
+    /// §atlas-race detector: running count of overwrite-after-cite events.
+    /// Surfaced to JS via `atlas_overwrite_after_cite_count` /
+    /// `atlasOverwriteAfterCiteCount` for CDP/release forensics.
+    pub atlas_overwrite_after_cite: u64,
+    /// §atlas-race detector: remaining console-log budget. The counter is
+    /// unbounded but logging stops after this many detections so a churn
+    /// storm can't flood devtools.
+    pub atlas_cite_log_budget: u32,
+
+    /// §stale-replay detector (2026-06-22, round 2): per-layer monotonic
+    /// write counter, same length as `atlas_layers`. Bumped every time
+    /// `rasterize_and_admit` writes a layer's pixels (fresh OR eviction).
+    /// A pane snapshots the epochs of the layers its instance buffer cites
+    /// at `end_frame`; `record_cached_only` re-checks them before replaying.
+    /// If any cited layer's epoch advanced since the snapshot, the layer was
+    /// repurposed for a different glyph in a LATER frame (while this pane was
+    /// idle/hidden) — the cached buffer is stale and replaying it paints the
+    /// wrong glyph. This catches the CROSS-frame staleness the per-frame
+    /// `frame_committed` mask cannot see, and is independent of the coarse
+    /// `atlas_eviction_count` / `atlas_generation` guards (which the
+    /// switch-workspace garble apparently slips past).
+    pub layer_write_epoch: Vec<u64>,
+    /// §stale-replay detector: running count of cached replays aborted
+    /// because a cited layer was repurposed since caching. Surfaced to JS.
+    pub stale_replay_count: u64,
+    /// §stale-replay detector: remaining console-log budget.
+    pub stale_replay_log_budget: u32,
+
     pub font_family: String,
     pub font_size_px: f32,
 }
@@ -174,6 +214,30 @@ thread_local! {
     /// Failure is *not* cached — each call re-attempts so a transient
     /// adapter miss doesn't permanently lock the session into Canvas2D.
     static SHARED_GPU: RefCell<Option<Rc<RefCell<GpuContext>>>> = const { RefCell::new(None) };
+}
+
+/// §atlas-race detector: read the process-wide overwrite-after-cite count
+/// from the shared GPU context. Returns 0 before the context inits (Canvas2D
+/// path, or pre-first-frame). Surfaced to JS via `lib.rs::atlasOverwriteAfterCiteCount`.
+pub fn atlas_overwrite_after_cite_count() -> u64 {
+    SHARED_GPU.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|rc| rc.borrow().atlas_overwrite_after_cite)
+            .unwrap_or(0)
+    })
+}
+
+/// §stale-replay detector: read the process-wide count of cached replays
+/// aborted because a cited atlas layer was repurposed since caching (the
+/// cross-frame switch-workspace garble). 0 before the GPU context inits.
+pub fn stale_replay_count() -> u64 {
+    SHARED_GPU.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|rc| rc.borrow().stale_replay_count)
+            .unwrap_or(0)
+    })
 }
 
 impl GpuContext {
@@ -482,6 +546,12 @@ impl GpuContext {
             atlas_generation: 0,
             atlas_eviction_count: 0,
             frame_written: vec![false; atlas_layers as usize],
+            frame_committed: vec![false; atlas_layers as usize],
+            atlas_overwrite_after_cite: 0,
+            atlas_cite_log_budget: 64,
+            layer_write_epoch: vec![0; atlas_layers as usize],
+            stale_replay_count: 0,
+            stale_replay_log_budget: 64,
             font_family: String::from("monospace"),
             font_size_px: 15.0,
         })
@@ -539,6 +609,21 @@ impl GpuContext {
         for w in &mut self.frame_written {
             *w = false;
         }
+        // §atlas-race detector: the committed-citation mask is per-frame too.
+        for c in &mut self.frame_committed {
+            *c = false;
+        }
+    }
+
+    /// §atlas-race detector: mark `layer` as cited by a draw that has already
+    /// been RECORDED into the host encoder this frame. Called from the
+    /// per-pane `end_frame` / `record_cached_only` right after `record_pane`.
+    /// See [`Self::frame_committed`].
+    pub fn mark_committed(&mut self, layer: u16) {
+        let idx = layer as usize;
+        if idx < self.frame_committed.len() {
+            self.frame_committed[idx] = true;
+        }
     }
 
     pub fn rebuild_atlas(&mut self) -> Result<(), String> {
@@ -590,6 +675,14 @@ impl GpuContext {
         self.atlas.clear();
         self.next_free_layer = ATLAS_RESERVED_LAYERS;
         self.atlas_generation = self.atlas_generation.wrapping_add(1);
+        // §atlas-race detector: layer indices are about to be reused against a
+        // logically-cleared atlas. Any panes that already recorded a draw this
+        // frame reference the OLD pixels via their retained bind group, so a
+        // fresh write to a reused index is NOT a real overwrite-after-cite —
+        // drop the committed marks to avoid false positives.
+        for c in &mut self.frame_committed {
+            *c = false;
+        }
     }
 
     /// Update the shared font configuration. Invalidates the atlas if
@@ -685,6 +778,48 @@ impl GpuContext {
                 }
             }
         };
+
+        // §atlas-race detector (2026-06-22): we are about to overwrite
+        // `layer`'s pixels. If any pane already RECORDED a draw citing this
+        // layer this frame (`frame_committed`), that draw will sample the new
+        // glyph at submit time → the cross-pane switch-workspace garble. This
+        // is supposed to be impossible: `pick_evictable_layer` skips
+        // `frame_written`, and the fresh `next_free_layer` path never reuses a
+        // live layer. A hit therefore localises the residual hole — log the
+        // glyph + whether `frame_written` was (wrongly) clear for this layer.
+        if self
+            .frame_committed
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            self.atlas_overwrite_after_cite = self.atlas_overwrite_after_cite.wrapping_add(1);
+            if self.atlas_cite_log_budget > 0 {
+                self.atlas_cite_log_budget -= 1;
+                let was_written =
+                    self.frame_written.get(layer as usize).copied().unwrap_or(false);
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "[ridge-term][atlas-race] OVERWRITE-AFTER-CITE layer={} new_glyph={:?} \
+                     glyph_id=0x{:08x} frame_written={} evict_count={} total={} \
+                     (a recorded draw will sample the wrong glyph this frame)",
+                    layer,
+                    glyph_text,
+                    key.glyph_id,
+                    was_written,
+                    self.atlas_eviction_count,
+                    self.atlas_overwrite_after_cite,
+                )));
+            }
+        }
+
+        // §stale-replay detector: bump this layer's write epoch BEFORE the
+        // texture write. Any pane holding a cached buffer that cited this
+        // layer at an older epoch will detect the mismatch in
+        // `record_cached_only` and re-render instead of replaying stale UVs.
+        if (layer as usize) < self.layer_write_epoch.len() {
+            self.layer_write_epoch[layer as usize] =
+                self.layer_write_epoch[layer as usize].wrapping_add(1);
+        }
 
         self.queue.write_texture(
             wgpu::ImageCopyTexture {
