@@ -311,6 +311,12 @@ function touchTuiSticky(): void {
 function dispatchBufferEvent(e: KeyboardEvent): void {
 	const ev = deriveBufferEvent(e);
 	if (!ev) return;
+	// §shell-history (2026-06-24): snapshot the keystroke mirror BEFORE
+	// the state machine clears it, so we can record the executed command
+	// into `terminalHistoryStore`. Must happen before `updateInputBuffer`
+	// because `clear` returns `EMPTY_INPUT_BUFFER`.
+	const preText = currentInputBuffer.text;
+	const preDirty = currentInputBuffer.dirty === true;
 	// §1.32 Wave F: keep the keystroke mirror updated for the popup's
 	// live filter, AND drive the snapshot's input-start lifecycle so
 	// `readShellInputSnapshot` can read the actual shell line at
@@ -325,6 +331,15 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			manager.markInputStart(paneId);
 			break;
 		case 'clear':
+			// §shell-history (2026-06-24): record the executed command
+			// into the in-memory store so commands typed this session
+			// appear in the history popup. Skip dirty buffers (Tab
+			// completion echoed text the mirror can't see) to avoid
+			// recording partial prefixes as if they were the full command.
+			if (preText.trim() && !preDirty) {
+				terminalHistoryStore.add(preText);
+			}
+			// fall through
 		case 'killLine':
 			// Enter / Ctrl+U: shell line ends or fully clears; the
 			// next input is a fresh start.

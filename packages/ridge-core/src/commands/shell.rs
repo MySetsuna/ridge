@@ -277,6 +277,65 @@ fn detect_vs_dev_shells() -> Vec<ShellInfo> {
 /// newest-first and capped at 1000 lines. Verbatim port of
 /// `terminal.rs::get_shell_history` (the legacy `shell_kind` arg was unused and
 /// is dropped here; the desktop wrapper still accepts + ignores it).
+/// Parse a single line from a shell history file.
+/// Returns `None` for blank / skip-worthy lines; otherwise returns the
+/// command text.
+fn parse_history_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Bash timestamp lines: "#1234567890"
+    if trimmed.starts_with('#')
+        && trimmed.len() > 1
+        && trimmed[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    // Zsh extended history: ": <timestamp>:<duration>;<command>"
+    if trimmed.starts_with(": ") {
+        if let Some(semi) = trimmed.find(';') {
+            let cmd = trimmed[semi + 1..].trim();
+            if cmd.is_empty() {
+                return None;
+            }
+            return Some(cmd.to_string());
+        }
+        // ":" prefix without "; " — treat as a regular command.
+        // (Corner case: a command that starts with ": " followed by
+        // non-metadata content. Fall through to return trimmed.)
+    }
+    Some(trimmed.to_string())
+}
+
+/// Read a shell history file and return its commands in **newest-first**
+/// order, deduped within this file (case-sensitive, keeping each command's
+/// most recent occurrence). Returns an empty vec when the file does not
+/// exist or cannot be read.
+fn read_history_file_newest_first(path: &std::path::Path) -> Vec<String> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    for raw in content.lines() {
+        if let Some(cmd) = parse_history_line(raw) {
+            lines.push(cmd);
+        }
+    }
+
+    // Reverse to newest-first (history files append new entries at the
+    // end), then dedup keeping the first occurrence (= newest).
+    lines.reverse();
+    let mut seen = std::collections::HashSet::new();
+    lines.retain(|line| seen.insert(line.clone()));
+    lines
+}
+
 pub fn get_shell_history() -> Result<Vec<String>, String> {
     let home_dir = dirs::home_dir().ok_or("无法获取 home 目录")?;
     let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
@@ -296,33 +355,20 @@ pub fn get_shell_history() -> Result<Vec<String>, String> {
         home_dir.join(".zsh_history"),
     ];
 
+    // Read each file independently (newest-first, file-internal dedup)
+    // and concatenate in file order. The file order gives priority to
+    // the primary Windows shell (PSReadLine) over bash/zsh for the
+    // global dedup pass below.
     let mut all_lines: Vec<String> = Vec::new();
     for file in &history_files {
-        if !file.exists() {
-            continue;
-        }
-        let content = match std::fs::read_to_string(file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Skip bash timestamp lines.
-            if trimmed.starts_with('#')
-                && trimmed.len() > 1
-                && trimmed[1..].chars().all(|c| c.is_ascii_digit())
-            {
-                continue;
-            }
-            all_lines.push(trimmed.to_string());
-        }
+        let file_lines = read_history_file_newest_first(file);
+        all_lines.extend(file_lines);
     }
 
-    // Dedup by appearance order, keeping the latest (= most recently used).
-    all_lines.reverse();
+    // Global dedup over the merged list, keeping the FIRST occurrence
+    // of each command. Since each file segment is already newest-first,
+    // and PSReadLine entries appear first, the most recently used shell's
+    // command supersedes older duplicates from other shells.
     let mut seen = std::collections::HashSet::new();
     all_lines.retain(|line| seen.insert(line.clone()));
 
