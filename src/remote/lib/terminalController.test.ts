@@ -444,3 +444,75 @@ describe('fitPane / requestResize — cols/rows computed from container pixels +
     expect(mockKernelInstance.resize).toHaveBeenCalledWith(1, 1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUP 3: feedChunked / flushDeferred 分片与预算
+// ─────────────────────────────────────────────────────────────────────────────
+describe('feedChunked / flushDeferred — chunked feeding with time budget', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('feedChunked splits 48 KiB into three 16 KiB chunks', async () => {
+    const ctrl = await makeController();
+    const data = new Uint8Array(48 * 1024).fill(65); // 'A', no escape → skip coalesce
+
+    (ctrl as any).feedChunked(data);
+
+    expect(mockKernelInstance.feed).toHaveBeenCalledTimes(3);
+    expect(mockKernelInstance.feed.mock.calls[0][0].length).toBe(16 * 1024);
+    expect(mockKernelInstance.feed.mock.calls[1][0].length).toBe(16 * 1024);
+    expect(mockKernelInstance.feed.mock.calls[2][0].length).toBe(16 * 1024);
+    // takePendingResponse called after all chunks processed
+    expect(mockKernelInstance.takePendingResponse).toHaveBeenCalledTimes(1);
+    // No deferred data left
+    expect((ctrl as any).feedDeferred.length).toBe(0);
+  });
+
+  it('feedChunked defers remainder when time budget is exceeded', async () => {
+    const perfNow = vi.spyOn(performance, 'now');
+    let callIdx = 0;
+    perfNow.mockImplementation(() => {
+      callIdx++;
+      return callIdx === 1 ? 0 : 5; // start=0ms → first check at 5ms → >4 → defer
+    });
+
+    const ctrl = await makeController();
+    const data = new Uint8Array(48 * 1024).fill(65);
+
+    (ctrl as any).feedChunked(data);
+
+    // Only first 16 KiB chunk processed (budget exceeded at chunk 2)
+    expect(mockKernelInstance.feed).toHaveBeenCalledTimes(1);
+    expect(mockKernelInstance.feed.mock.calls[0][0].length).toBe(16 * 1024);
+    // Remaining 32 KiB deferred as one entry
+    expect((ctrl as any).feedDeferred.length).toBe(1);
+    expect((ctrl as any).feedDeferred[0].length).toBe(32 * 1024);
+    // takePendingResponse NOT called — data not fully processed
+    expect(mockKernelInstance.takePendingResponse).not.toHaveBeenCalled();
+  });
+
+  it('flushDeferred delegates to feedChunked for each deferred entry', async () => {
+    const ctrl = await makeController();
+    const chunk = new Uint8Array(16 * 1024).fill(65);
+    (ctrl as any).feedDeferred.push(chunk);
+
+    const feedChunkedSpy = vi.spyOn(TerminalController.prototype as any, 'feedChunked');
+    (ctrl as any).flushDeferred();
+
+    // feedChunked was called with the deferred entry, NOT drained directly via kernel.feed
+    expect(feedChunkedSpy).toHaveBeenCalledTimes(1);
+    expect(feedChunkedSpy).toHaveBeenCalledWith(chunk);
+    // Deferred entry was consumed
+    expect((ctrl as any).feedDeferred.length).toBe(0);
+  });
+
+  it('flushDeferred is no-op when feedDeferred is empty', async () => {
+    const ctrl = await makeController();
+    const feedChunkedSpy = vi.spyOn(TerminalController.prototype as any, 'feedChunked');
+
+    (ctrl as any).flushDeferred();
+
+    expect(feedChunkedSpy).not.toHaveBeenCalled();
+  });
+});
