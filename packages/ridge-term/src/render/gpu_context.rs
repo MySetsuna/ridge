@@ -204,6 +204,18 @@ pub struct GpuContext {
     /// §stale-replay detector: remaining console-log budget.
     pub stale_replay_log_budget: u32,
 
+    /// §switch-garble fix (2026-06-24): `invalidate_atlas` is called from
+    /// `Renderer::invalidate_all` on EVERY resize/reflow — often mid-host-frame
+    /// (one pane reflows while siblings have already recorded draws against the
+    /// shared atlas). Clearing the map + resetting `next_free_layer` right then,
+    /// on the REUSED texture, either clobbers those siblings' cited layers (the
+    /// switch garble) or — if we skip written slots — exhausts the fresh-layer
+    /// pointer under density (random missing glyphs that flicker). So
+    /// `invalidate_atlas` only RAISES this flag; the actual clear is applied at
+    /// the next `reset_frame_written` (host frame boundary), where no pane has
+    /// cited anything yet and resetting `next_free_layer` is always safe.
+    pub pending_invalidate: bool,
+
     pub font_family: String,
     pub font_size_px: f32,
 }
@@ -552,6 +564,7 @@ impl GpuContext {
             layer_write_epoch: vec![0; atlas_layers as usize],
             stale_replay_count: 0,
             stale_replay_log_budget: 64,
+            pending_invalidate: false,
             font_family: String::from("monospace"),
             font_size_px: 15.0,
         })
@@ -672,17 +685,41 @@ impl GpuContext {
     /// drawing instances with stale `atlas_layer` indices that now
     /// point into reused-but-not-yet-uploaded slots.
     pub fn invalidate_atlas(&mut self) {
+        // DEFER, don't clear. `Renderer::invalidate_all` calls this on every
+        // resize/reflow, frequently MID-host-frame (one pane reflows while
+        // sibling panes have already admitted glyphs + recorded draws against
+        // the shared, REUSED atlas texture). Clearing the map and resetting
+        // `next_free_layer` right here would re-hand-out the siblings' cited
+        // layers and `write_texture` would clobber the pixels their recorded
+        // draws sample at submit — the switch-workspace garble; skipping
+        // written slots instead starves the fresh-layer pointer and drops
+        // glyphs (the flicker). Both are avoided by applying the clear at the
+        // next frame boundary (`apply_pending_invalidate`), where
+        // `reset_frame_written` has just cleared every cited mark. See
+        // `pending_invalidate`. We do NOT bump `atlas_generation` here — that
+        // happens at apply time so panes see it on the same frame the atlas is
+        // actually cleared.
+        self.pending_invalidate = true;
+    }
+
+    /// Apply a deferred [`Self::invalidate_atlas`] at the host frame boundary.
+    /// Called from `SurfaceHost::begin_frame` immediately after
+    /// [`Self::reset_frame_written`], so the per-frame cited mask is empty and
+    /// resetting `next_free_layer` cannot clobber any pane's recorded draw.
+    pub fn apply_pending_invalidate(&mut self) {
+        if !self.pending_invalidate {
+            return;
+        }
+        self.pending_invalidate = false;
         self.atlas.clear();
         self.next_free_layer = ATLAS_RESERVED_LAYERS;
+        // Bump generation HERE (not in `invalidate_atlas`) so panes observe the
+        // change on the SAME frame the map is actually cleared: each pane's
+        // `begin_frame` rebuilds its bind group + drops `cached_n_cells`,
+        // forcing a full re-admit into the cleared atlas. Bumping earlier would
+        // let panes consume the generation before the clear, then replay cached
+        // buffers citing now-reused layers.
         self.atlas_generation = self.atlas_generation.wrapping_add(1);
-        // §atlas-race detector: layer indices are about to be reused against a
-        // logically-cleared atlas. Any panes that already recorded a draw this
-        // frame reference the OLD pixels via their retained bind group, so a
-        // fresh write to a reused index is NOT a real overwrite-after-cite —
-        // drop the committed marks to avoid false positives.
-        for c in &mut self.frame_committed {
-            *c = false;
-        }
     }
 
     /// Update the shared font configuration. Invalidates the atlas if
