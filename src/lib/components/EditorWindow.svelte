@@ -54,6 +54,20 @@
     let unlistenClose: UnlistenFn | null = null;
 
     void (async () => {
+      // 0) 先注册关闭请求处理器，再执行其他异步初始化。防止用户在主题/快照加载
+      //    完成前就关闭窗口——若处理器未就绪，默认关闭行为不会 emit 快照给主窗口，
+      //    导致主窗口的拦截器永久残留，后续无法在本地打开文件。
+      unlistenClose = await getCurrentWindow().onCloseRequested(async (event) => {
+        event.preventDefault();
+        const snap = fileEditorStore.snapshot();
+        try {
+          await emitTo('main', EVT_CLOSED, snap);
+        } catch (e) {
+          console.warn('[EditorWindow] 交还快照失败', e);
+        }
+        await getCurrentWindow().destroy();
+      });
+
       // 1) 主题：CSS 变量 bootstrap（独立窗口不经 splash init script）。
       await initThemeSystem();
       initSettingsBoot();
@@ -68,19 +82,6 @@
         const req = e.payload;
         if (req.kind === 'file') void fileEditorStore.openFile(req.path, req.opts);
         else fileEditorStore.openDiffTab(req.args);
-      });
-
-      // 关闭窗口：先把当前标签快照交还主窗口（含未保存内容），再真正销毁。
-      // preventDefault + destroy 确保 emit 先送达（destroy 不会再次触发 close-requested）。
-      unlistenClose = await getCurrentWindow().onCloseRequested(async (event) => {
-        event.preventDefault();
-        const snap = fileEditorStore.snapshot();
-        try {
-          await emitTo('main', EVT_CLOSED, snap);
-        } catch (e) {
-          console.warn('[EditorWindow] 交还快照失败', e);
-        }
-        await getCurrentWindow().destroy();
       });
     })();
 

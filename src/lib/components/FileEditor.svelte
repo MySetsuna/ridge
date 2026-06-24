@@ -383,6 +383,9 @@
       if (!ed) return;
       // 切走当前 path 前先存 view state。
       if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
+      // 显式 detach 再 attach 旧 model 对，防止 Monaco 内部在 model 不变时跳过
+      // 重渲染导致新旧内容叠加（#残留）。
+      ed.setModel(null);
       ed.setModel({ original: cached.original, modified: cached.modified });
       diffCurrentPath = tabPath;
       applyDiffEditable(ed, args);
@@ -396,6 +399,10 @@
     diffError = '';
     // 切走当前正在显示的 path 之前先存 view state，避免被新加载覆盖。
     if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
+    // 显式 detach 确保 mount 点干净，避免残留覆盖
+    if (diffEditor && diffEditor.getModel()) {
+      diffEditor.setModel(null);
+    }
     try {
       if (!isTauri()) throw new Error(tr('editor.requiresTauri'));
       const v =
@@ -975,10 +982,11 @@
   // ─── Diff editor lifecycle ────────────────────────────────────────────────
   // Keep-alive：切走 diff tab 仅保存 view state；切回 / 切换到不同 diff path
   // 走 loadDiff（命中缓存即跳 IPC）。diffReqId 防止快速切换时 stale 异步覆盖。
+  // 在切离 diff 时先 detach model + dispose view state，避免 display:none 后
+  // 的残留在新 tab 被 GC dispose 时导致 Monaco 内部断言或视觉残留。
   $effect(() => {
     const c = current;
     if (!c?.diffArgs) {
-      // Switched away from diff tab — keep instance alive; just save scroll/cursor.
       if (diffCurrentPath !== null) {
         saveDiffViewState();
         diffCurrentPath = null;
@@ -987,7 +995,14 @@
       return;
     }
     if (!diffMountPoint) return;
-    if (c.path === diffCurrentPath) return; // same diff already shown
+    // 已在显示同一个 diff tab：不做任何事（保持 keep-alive 现有 model）。
+    if (c.path === diffCurrentPath) return;
+    // 切到不同的 diff tab：先 detach 当前 model，再 load 新的。
+    // detach 在前、load 在后确保中间态没有残留 model 被 display 切换暴露。
+    if (diffEditor && diffEditor.getModel()) {
+      saveDiffViewState();
+      diffEditor.setModel(null);
+    }
     void loadDiff(c.diffArgs, c.path);
   });
 
@@ -1025,9 +1040,9 @@
   // widget（表面上选项已改但视觉仍是旧模式）。setModel(null) → setModel(real)
   // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
   // 重建后再 restoreViewState 防止 toggle 时 scroll/折叠位置丢失。
+  // diffMountPoint 用 display:none 互斥后，切换模式时还需经过 tick() 确保
+  // display 已变为 block 再操作 Monaco。
   $effect(() => {
-    // 先无条件读取 $state，使其恒为本 effect 的依赖；切勿放到 `!diffEditor` 早退之后，
-    // 否则 effect 首跑（diffEditor 尚为 null）时不会登记 diffRenderSideBySide 依赖。
     const sideBySide = diffRenderSideBySide;
     if (!diffEditor) return;
     diffEditor.updateOptions({ renderSideBySide: sideBySide });
@@ -1038,20 +1053,20 @@
       diffEditor.setModel({ original: cur.original, modified: cur.modified });
       if (vs) diffEditor.restoreViewState(vs);
     }
-    diffEditor.layout();
+    void tick().then(() => diffEditor?.layout());
   });
 
-  // When switching back to a diff tab, visibility changes from hidden→visible.
-  // Because visibility:hidden doesn't affect element size, automaticLayout
-  // doesn't detect the change. Force layout after the DOM settles.
+  // When switching to a diff tab, the diff mount point transitions from
+  // display:none to display:block. Monaco's automaticLayout handles ResizeObserver,
+  // but there can be a one-frame gap. Force layout after the DOM settles.
   $effect(() => {
     if (isDiffTab && !diffError && diffEditor) {
       void tick().then(() => diffEditor?.layout());
     }
   });
 
-  // When switching back to a regular editor from a diff tab or preview, 
-  // visibility changes from hidden→visible. Force layout similarly.
+  // When switching back to a regular editor from a diff tab or preview,
+  // the mount point transitions from display:none to display:block.
   $effect(() => {
     const hidden = inPreviewMode || isDiffTab;
     if (!hidden && editor) {
@@ -1889,25 +1904,23 @@
 
   <!-- ═══ Monaco host ═══ -->
   <div class="flex-1 min-h-0 relative">
-    <!-- Regular editor。进入 diff 时隐藏；进入 preview 时也隐藏（preview 是
-         mountPoint 的兄弟，独立 visibility，不会有继承问题）。 -->
-    <!-- 隐藏态除 visibility:hidden 外必须叠加 pointer-events:none：diffMountPoint 是
-         最后一个兄弟（画在常规 mountPoint 之上）且为 keep-alive 的全尺寸 Monaco 实例，
-         visibility:hidden 的子元素可被 Monaco 内部重新置回 visible 而继续参与命中测试，
-         吞掉本应落到下方常规编辑器的点击 → 编辑器「点不进/无法聚焦」。pointer-events:none
-         对整棵隐藏子树禁用命中测试（子元素无法 opt-in），且不影响 automaticLayout（它只观察
-         盒子尺寸，故仍用 visibility:hidden 而非 display:none 保留尺寸）。 -->
+    <!-- Regular editor。使用 display:none 实现严格互斥：两个 mount 点都是 absolute
+         inset-0，用 visibility:hidden 时二者同时处在渲染树中，Monaco 内部可能把
+         visibility:hidden 子元素重新置为 visible，导致点击被隐藏元素吞掉（"点不进
+         编辑器"）。display:none 完全移除渲染层，无此问题；automaticLayout 在切换
+         回 display:block 后由 ResizeObserver 自动恢复，下方 layout() effect 加倍
+         保障。 -->
     <div
       bind:this={mountPoint}
       class="absolute inset-0 rg-monaco-host"
-      style={inPreviewMode || isDiffTab ? 'visibility: hidden; pointer-events: none;' : ''}
+      style={inPreviewMode || isDiffTab ? 'display: none;' : ''}
     ></div>
 
     <!-- Diff editor mount point — always in DOM so bind:this is stable -->
     <div
       bind:this={diffMountPoint}
       class="absolute inset-0 rg-monaco-host"
-      style={!isDiffTab || !!diffError ? 'visibility: hidden; pointer-events: none;' : ''}
+      style={!isDiffTab || !!diffError ? 'display: none;' : ''}
     ></div>
 
     <!-- Diff loading / error overlays -->
