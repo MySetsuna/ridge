@@ -432,6 +432,8 @@ pub fn delete_workspace_file(
             }
         }
     }
+    // 清除工作区的已保存名称，使其降级为默认名"工作区 N"。
+    state.workspace_names.write().remove(&id);
     Ok(())
 }
 

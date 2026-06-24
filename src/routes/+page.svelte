@@ -45,6 +45,7 @@ self.MonacoEnvironment = {
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
+  import SaveWorkspaceDialog from '$lib/components/SaveWorkspaceDialog.svelte';
   import QuickOpen from '$lib/components/QuickOpen.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
@@ -106,13 +107,14 @@ self.MonacoEnvironment = {
     reorderWorkspaces,
     renameWorkspace,
     saveCurrentWorkspace,
+    saveWorkspaceToFile,
     loadSavedWorkspaces,
     getStartupContext,
     getRestoreSet,
     openWorkspaceFromFile,
     listSavedWorkspaceFiles,
     refreshWorkspaceSaveInfo,
-    deleteWorkspaceFile, // 添加此导入
+    deleteWorkspaceFile,
     closePane,
     paneCwdStore,
     scheduleForceFitActivePanes,
@@ -713,6 +715,36 @@ function expandSidebar() {
       await renameWorkspace(wid, newName.trim());
     } catch (e) {
       await alertDialog({ title: tr('main.dlgRenameFailTitle'), message: String(e), danger: true });
+    }
+  }
+
+  // ─── 工作区 Tab 右键菜单"保存/删除保存记录" ───
+  let tabSaveDialogOpen = $state(false);
+  let tabSaveTargetWsId = $state<string>('');
+  let tabSaveDefaultName = $state('');
+
+  function handleTabSave(wsId: string, currentName: string | undefined) {
+    tabSaveTargetWsId = wsId;
+    tabSaveDefaultName = currentName?.trim() || '';
+    tabSaveDialogOpen = true;
+  }
+  async function handleTabSaveConfirm(name: string, path: string | null) {
+    const target = tabSaveTargetWsId;
+    if (!target) return;
+    await saveWorkspaceToFile(target, name, path ?? undefined);
+  }
+  async function handleTabDeleteSave(wsId: string) {
+    const ok = await confirmDialog({
+      title: tr('main.dlgDeleteSaveTitle'),
+      message: tr('main.dlgDeleteSaveMessage'),
+      okLabel: tr('main.dlgDeleteSaveOk'),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteWorkspaceFile(wsId);
+    } catch (e) {
+      await alertDialog({ title: tr('main.dlgDeleteSaveFail'), message: String(e), danger: true });
     }
   }
 
@@ -1635,6 +1667,8 @@ function expandSidebar() {
           onClose={closeWorkspace}
           onReorder={reorderWorkspaces}
           onRename={renameWorkspace}
+          onSave={handleTabSave}
+          onDeleteSave={handleTabDeleteSave}
         >
           {#snippet actions()}
             <button
@@ -1956,6 +1990,14 @@ function expandSidebar() {
     </div>
   </div>
 {/if}
+
+<!-- 工作区 Tab 右键"保存"对话框 -->
+<SaveWorkspaceDialog
+  bind:open={tabSaveDialogOpen}
+  defaultName={tabSaveDefaultName}
+  onConfirm={handleTabSaveConfirm}
+  onCancel={() => (tabSaveDialogOpen = false)}
+/>
 
 <!-- alert / confirm / prompt 替代浏览器原生 dialog -->
 <WindDialog />

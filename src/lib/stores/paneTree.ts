@@ -1787,6 +1787,7 @@ export async function openWorkspaceFromFile(path: string): Promise<string> {
 export async function deleteWorkspaceFile(workspaceId: string): Promise<void> {
   await invoke('delete_workspace_file', { workspaceId });
   await refreshWorkspaceSaveInfo();
+  await refreshWorkspaces();
 }
 
 export async function getDefaultWorkspaceSaveDir(): Promise<string> {

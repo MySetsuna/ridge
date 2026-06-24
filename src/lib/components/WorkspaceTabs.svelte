@@ -23,6 +23,8 @@
     onClose: (id: string) => void;
     onReorder: (fromIndex: number, toIndex: number) => void;
     onRename: (id: string, name: string) => void;
+    onSave?: (id: string, currentName: string | undefined) => void;
+    onDeleteSave?: (id: string) => void;
     actions?: Snippet;
     trailingActions?: Snippet;
   }
@@ -34,6 +36,8 @@
     onClose,
     onReorder,
     onRename,
+    onSave,
+    onDeleteSave,
     actions,
     trailingActions,
   }: Props = $props();
@@ -89,25 +93,21 @@
     const next = e.detail.items;
     localItems = next;
     if (e.detail.info.source !== SOURCES.POINTER) return;
-    // 对比新顺序与原顺序，找出第一个错位的位置作为 from/to。
+    // 计算每个元素在新旧顺序中的位移量 delta，绝对位移最大的即为被拖拽元素。
     const oldIds = workspaces.map((w) => w.id);
     const newIds = next.map((w) => w.id);
-    let fromIndex = -1;
-    let toIndex = -1;
-    for (let i = 0; i < newIds.length; i++) {
-      if (newIds[i] !== oldIds[i]) {
-        fromIndex = oldIds.indexOf(newIds[i]);
-        toIndex = i;
-        break;
-      }
-    }
-    if (fromIndex >= 0 && toIndex >= 0 && fromIndex !== toIndex) {
-      onReorder(fromIndex, toIndex);
+    const deltas = newIds
+      .map((id, i) => ({ from: oldIds.indexOf(id), to: i }))
+      .filter((d) => d.from >= 0 && d.from !== d.to);
+    if (deltas.length > 0) {
+      deltas.sort((a, b) => Math.abs(b.to - b.from) - Math.abs(a.to - a.from));
+      onReorder(deltas[0].from, deltas[0].to);
     }
   }
 
   function handleContextMenu(e: MouseEvent, ws: WorkspaceInfo) {
     e.preventDefault();
+    e.stopPropagation();
     const items: ContextMenuItem[] = [
       {
         id: 'rename',
@@ -118,6 +118,17 @@
         },
       },
       { id: 'divider1', divider: true },
+      {
+        id: 'save',
+        label: tr('workspace.tabSave'),
+        action: () => onSave?.(ws.id, ws.name),
+      },
+      {
+        id: 'delete-save',
+        label: tr('workspace.tabDeleteSave'),
+        action: () => onDeleteSave?.(ws.id),
+      },
+      { id: 'divider2', divider: true },
       {
         id: 'close',
         label: tr('workspace.tabClose'),
