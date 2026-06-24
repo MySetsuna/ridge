@@ -2,6 +2,7 @@
   import { contextMenu, hideContextMenu, type ContextMenuItem, type ContextMenuTarget } from '$lib/stores/contextMenu';
   import { onMount, tick } from 'svelte';
   import { tr } from '$lib/i18n';
+  import { portal } from '$lib/actions/portal';
 
   let menuRef: HTMLDivElement | undefined = $state();
   let openSubmenuId: string | null = $state(null);
@@ -15,8 +16,15 @@
    * 决定向左 / 向上展开。
    */
   let menuPos = $state({ x: 0, y: 0 });
-  let submenuFlipX = $state(false);
-  let submenuFlipY = $state(false);
+  /**
+   * Submenu 与主菜单同走 `.rg-popup`（position:fixed + backdrop-filter）。因为主
+   * 菜单的 backdrop-filter 会成为 fixed 子元素的 containing block、且 overflow-hidden
+   * 会裁剪它，所以 submenu 必须 `use:portal` 移到 <body> 才不会错位/被裁。坐标由
+   * JS 按父项 rect 实时计算后写进 inline style；展开前先放屏外避免闪到 (0,0)。
+   */
+  let submenuRef: HTMLDivElement | undefined = $state();
+  const SUBMENU_OFFSCREEN = 'left:-9999px; top:-9999px;';
+  let submenuStyle = $state(SUBMENU_OFFSCREEN);
 
   const VIEWPORT_MARGIN = 8;
 
@@ -35,10 +43,6 @@
     }
     if (x < VIEWPORT_MARGIN) x = VIEWPORT_MARGIN;
     if (y < VIEWPORT_MARGIN) y = VIEWPORT_MARGIN;
-    // Submenu 固定 180px 宽展开 —— 按主菜单当前位置预判方向。
-    submenuFlipX = x + rect.width + 180 + VIEWPORT_MARGIN > vw;
-    // 主菜单已经做下溢出翻转，submenu 也按主菜单 bottom 边判断。
-    submenuFlipY = y + rect.height + VIEWPORT_MARGIN > vh - 40;
     menuPos = { x, y };
   }
 
@@ -105,10 +109,14 @@
   }
 
   function handleClickOutside(event: MouseEvent) {
-    if (menuRef && !menuRef.contains(event.target as Node)) {
-      hideContextMenu();
-      openSubmenuId = null;
-    }
+    const target = event.target as Node;
+    if (menuRef && menuRef.contains(target)) return;
+    // Submenu portal 到 <body>，不在 menuRef 内——单独放行，
+    // 否则点子菜单项时主菜单会先于按钮 onclick 关掉。
+    const el = target as HTMLElement | null;
+    if (el?.closest?.('[data-rg-ctx-submenu]')) return;
+    hideContextMenu();
+    openSubmenuId = null;
   }
 
   /**
@@ -213,17 +221,51 @@
     };
   });
 
-  function getSubmenuPosition(index: number): string {
-    const menuWidth = 180;
-    // 默认右下展开；主菜单触发位置接近右边界 / 底部时翻转方向。
-    const xRule = submenuFlipX
-      ? `right: ${menuWidth - 4}px; left: auto;`
-      : `left: ${menuWidth - 4}px;`;
-    const yRule = submenuFlipY
-      ? `bottom: 0; top: auto;`
-      : `top: ${index * 36}px;`;
-    return `${xRule} ${yRule}`;
+  /**
+   * 按当前展开父项的真实 rect 把 portal 到 <body> 的 submenu 定位到视口坐标：
+   * 默认贴父项右侧、顶端对齐；贴右边界则翻向左侧、贴底则上移夹紧进视口。
+   * 与 `adjustMenuPosition` 同策略，但作用于已渲染（可量高）的 submenu。
+   */
+  const SUBMENU_OVERLAP = 4; // 与主菜单轻微重叠，鼠标横移不易脱离
+  function positionSubmenu(): void {
+    if (!openSubmenuId || !menuRef || !submenuRef) return;
+    const idx = $contextMenu.items.findIndex((it) => it.id === openSubmenuId);
+    if (idx < 0) return;
+    const anchorBtn = menuRef.querySelector<HTMLElement>(
+      `button[data-rg-ctx-index="${idx}"]`
+    );
+    if (!anchorBtn) return;
+    const anchor = anchorBtn.getBoundingClientRect();
+    const sm = submenuRef.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let x = anchor.right - SUBMENU_OVERLAP;
+    if (x + sm.width + VIEWPORT_MARGIN > vw) {
+      x = anchor.left - sm.width + SUBMENU_OVERLAP; // 翻向左侧
+    }
+    if (x < VIEWPORT_MARGIN) x = VIEWPORT_MARGIN;
+
+    let y = anchor.top;
+    if (y + sm.height + VIEWPORT_MARGIN > vh) {
+      y = Math.max(VIEWPORT_MARGIN, vh - sm.height - VIEWPORT_MARGIN);
+    }
+    if (y < VIEWPORT_MARGIN) y = VIEWPORT_MARGIN;
+
+    submenuStyle = `left:${x}px; top:${y}px;`;
   }
+
+  // 子菜单开合时重新定位；坐标依赖主菜单位置，故也跟随其变化重算。
+  $effect(() => {
+    void openSubmenuId;
+    void menuPos.x;
+    void menuPos.y;
+    if (!openSubmenuId) {
+      submenuStyle = SUBMENU_OFFSCREEN;
+      return;
+    }
+    void tick().then(positionSubmenu);
+  });
 
   function targetLabel(target: ContextMenuTarget): string {
     const labels: Record<ContextMenuTarget, string> = {
@@ -290,8 +332,11 @@
           </button>
           {#if item.children && item.children.length > 0 && openSubmenuId === item.id}
             <div
+              bind:this={submenuRef}
+              data-rg-ctx-submenu
+              use:portal
               class="fixed z-[10000] min-w-[160px] max-w-[240px] overflow-hidden rounded-xl border border-[var(--rg-border)] bg-[var(--rg-surface)]/98 backdrop-blur-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
-              style={getSubmenuPosition(i)}
+              style={submenuStyle}
               role="menu"
             >
               {#each item.children as child}

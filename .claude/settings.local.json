@@ -26,7 +26,9 @@
       "Bash(grep -n \"OSC 7\\\\|CwdChanged\\\\|file://\\\\|0x07.*7\\\\|\\\\\\\\bb'7'\" C:/code/wind/packages/ridge-term/src/term/parser.rs)",
       "Bash(Get-ChildItem *)",
       "PowerShell(Get-ChildItem -Path C:\\\\code\\\\wind -Directory | ForEach-Object { $_.Name })",
-      "Bash(grep -E \"\\\\.\\(ts|svelte\\)$\")"
+      "Bash(grep -E \"\\\\.\\(ts|svelte\\)$\")",
+      "PowerShell(Set-Location C:\\\\code\\\\wind; node scripts/_tmp_insert_garbledump.mjs; \"NODE_EXIT=$LASTEXITCODE\")",
+      "PowerShell(npm run *)"
     ]
   },
   "disabledMcpjsonServers": [
