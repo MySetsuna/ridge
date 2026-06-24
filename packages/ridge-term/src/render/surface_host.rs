@@ -273,8 +273,18 @@ impl SurfaceHost {
         // frames anyway, so leaving them untouched is correct.
 
         // Reset the global frame-written mask so all atlas layers are
-        // available for writing in this new frame.
-        self.ctx.borrow_mut().reset_frame_written();
+        // available for writing in this new frame, then apply any deferred
+        // atlas invalidation (resize/reflow/font change). Doing the clear HERE
+        // — at the frame boundary, with no pane having cited a layer yet — is
+        // what makes resetting `next_free_layer` safe; doing it mid-frame
+        // (where `invalidate_atlas` is actually called from) clobbers sibling
+        // panes' recorded draws (the switch garble) or starves the fresh-layer
+        // pointer (the flicker).
+        {
+            let mut ctx = self.ctx.borrow_mut();
+            ctx.reset_frame_written();
+            ctx.apply_pending_invalidate();
+        }
 
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
