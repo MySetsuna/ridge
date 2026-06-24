@@ -2,6 +2,8 @@
 export const zh: Record<string, string> = {
   // WorkspaceTabs
   tabRename: '重命名',
+  tabSave: '保存工作区',
+  tabDeleteSave: '删除保存记录',
   tabDefaultName: '工作区 {seq}',
   tabClose: '关闭',
   tabSwitchTo: '切换到 {name}',
@@ -74,6 +76,8 @@ export const zh: Record<string, string> = {
 export const en: Record<string, string> = {
   // WorkspaceTabs
   tabRename: 'Rename',
+  tabSave: 'Save workspace',
+  tabDeleteSave: 'Delete save record',
   tabDefaultName: 'Workspace {seq}',
   tabClose: 'Close',
   tabSwitchTo: 'Switch to {name}',
