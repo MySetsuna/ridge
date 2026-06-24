@@ -1,3 +1,24 @@
+<script lang="ts" module>
+  // Monaco Editor Worker 配置 - 必须在使用 monaco 之前配置
+  // 放在 FileEditor.svelte 的 module script 中，随编辑器首次加载时初始化，
+  // 不与 +page.svelte 首屏 chunk 捆绑，避免未使用编辑器时加载 ~500KB worker 代码。
+  import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+  import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+  import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
+  import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
+  import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+
+  self.MonacoEnvironment = {
+    getWorker(_: unknown, label: string) {
+      if (label === 'json') return new jsonWorker();
+      if (label === 'css' || label === 'scss' || label === 'less') return new cssWorker();
+      if (label === 'html' || label === 'handlebars' || label === 'razor') return new htmlWorker();
+      if (label === 'typescript' || label === 'javascript') return new tsWorker();
+      return new editorWorker();
+    },
+  };
+</script>
+
 <script lang="ts">
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import * as monaco from 'monaco-editor';

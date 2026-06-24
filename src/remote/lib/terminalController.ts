@@ -270,7 +270,7 @@ export class TerminalController {
     if (deferred.length === 0) return;
     const frameStart = performance.now();
     for (let i = 0; i < deferred.length; i++) {
-      if (performance.now() - frameStart >= FEED_PER_CALL_BUDGET_MS) {
+      if (performance.now() - frameStart > FEED_PER_CALL_BUDGET_MS) {
         for (let r = i; r < deferred.length; r++) this.feedDeferred.push(deferred[r]);
         break;
       }
