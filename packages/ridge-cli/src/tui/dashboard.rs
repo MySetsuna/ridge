@@ -19,6 +19,7 @@ use crate::config;
 use crate::daemon_ctl;
 use crate::login_flow;
 use crate::totp::RemoteTotp;
+use ridge_core::workspace::pane_tree::SplitDirection;
 use super::qr_display;
 use super::workspace::{new_shared, SharedWorkspace};
 
@@ -98,7 +99,7 @@ impl App {
         let workspace = new_shared();
         {
             let mut w = workspace.lock().unwrap();
-            let _ = w.create_session(None, None);
+            let _ = w.create_session(None, None, None, SplitDirection::Horizontal);
         }
         Self {
             view: View::Main,

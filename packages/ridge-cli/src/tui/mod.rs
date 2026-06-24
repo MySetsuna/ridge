@@ -8,6 +8,7 @@
 
 pub mod dashboard;
 mod keymap;
+pub mod pager;
 pub mod qr_display;
 mod lan_proto;
 pub(crate) mod lan_session;
@@ -26,6 +27,7 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, terminal};
 use futures_util::StreamExt;
+use ridge_core::workspace::pane_tree::SplitDirection;
 use tokio::sync::mpsc;
 
 /// 退出热键：Ctrl+]。
@@ -38,6 +40,44 @@ pub async fn run_local(shell: Option<String>, cwd: Option<String>) -> Result<()>
     eprintln!("rdg 交互式终端（本地 shell）。按 Ctrl+] 退出。");
     let (sess, rx) = LocalPtySession::spawn(shell.as_deref(), cwd.as_deref())?;
     run_session(sess, rx).await
+}
+
+/// 启动多会话 Pager TUI：创建 N 个本地 shell，支持 Ctrl+Shift+方向 切换 pane。
+pub async fn run_local_pager(
+    shell: Option<String>,
+    cwd: Option<String>,
+    session_count: usize,
+) -> Result<()> {
+    let count = session_count.max(1).min(12);
+    eprintln!("rdg 交互式终端（{count} 会话）。Ctrl+Shift+方向键 切换 pane，Ctrl+] 退出。");
+
+    let mut mgr = workspace::WorkspaceManager::new(workspace::new_shared());
+    // 首个 session
+    {
+        let mut ws = mgr.active_workspace_mut();
+        let label = cwd.as_deref().unwrap_or("shell").to_string();
+        ws.create_session(shell.as_deref(), cwd.as_deref(), None, SplitDirection::Horizontal)?;
+        if let Some(s) = ws.sessions.last_mut() {
+            s.title = label;
+        }
+    }
+    // 后续 session：依次 split 前一个
+    for _ in 1..count {
+        let id = mgr.split_active_session(
+            shell.as_deref(),
+            cwd.as_deref(),
+            SplitDirection::Horizontal,
+        )?;
+        let idx = {
+            let ws = mgr.active_workspace_mut();
+            ws.sessions.iter().position(|s| s.id == id)
+        };
+        if let Some(i) = idx {
+            let mut ws = mgr.active_workspace_mut();
+            ws.sessions[i].title = format!("shell-{}", ws.sessions.len());
+        }
+    }
+    pager::run_pager(&mut mgr).await
 }
 
 /// 启动 LAN 控制端 TUI（E4）：连桌面 host、订阅 pane、passthrough 进同一界面。

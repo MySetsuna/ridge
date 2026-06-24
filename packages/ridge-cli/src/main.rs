@@ -89,6 +89,11 @@ struct TuiArgs {
     /// 会话 shell 的工作目录（默认 $HOME / 当前目录）。
     #[arg(long)]
     cwd: Option<String>,
+
+    /// 创建 N 个独立 shell 会话（默认 1）。>1 时进入多会话 Pager 模式，
+    /// 可用 Ctrl+Shift+方向键切换 pane，Ctrl+F1..F12 切换工作区。
+    #[arg(long, default_value_t = 1)]
+    sessions: usize,
 }
 
 #[derive(Args)]
@@ -178,7 +183,13 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Tui(args)) => tui::run_local(args.shell, args.cwd).await,
+        Some(Command::Tui(args)) => {
+            if args.sessions > 1 {
+                tui::run_local_pager(args.shell, args.cwd, args.sessions).await
+            } else {
+                tui::run_local(args.shell, args.cwd).await
+            }
+        }
         Some(Command::Login(args)) => run_login(args).await,
         // 已激活则直接进守护（不再交互登录）；凭据缺失时 daemon::run 内部会提示先 login。
         Some(Command::Remote(args)) => daemon::run(args.shell, args.cwd, args.root).await,

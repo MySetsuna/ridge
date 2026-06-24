@@ -71,6 +71,8 @@ hkdf = "0.12"
 sha2 = "0.10"
 chacha20poly1305 = "0.10"
 rand = "0.8"
+# UUID（与 ridge-core PaneTree 对齐，serde 用于 JSON 序列化 id）。
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # 信令消息 schema 的单一事实来源（SSOT）—— 与 relay(ridge-cloud)/桌面端共用同一份
 # 定义，消除四端手写漂移并全程承载 cid（findings-align P0/P1）。纯 serde 数据模型，
