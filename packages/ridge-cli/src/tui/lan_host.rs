@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::config;
 use crate::totp::RemoteTotp;
+use ridge_core::workspace::pane_tree::SplitDirection;
 use super::workspace::SharedWorkspace;
 
 #[derive(Clone)]
@@ -266,43 +267,49 @@ async fn run_ws(socket: WebSocket, ctx: AppCtx) {
                                 ctx.workspace.lock().unwrap().default_session_id().map(String::from)
                             });
                             if let Some(ref pid) = target_pid {
-                                let w = ctx.workspace.lock().unwrap();
-                                if let Some(sess) = w.find(pid) {
-                                    let _ = sess.send_input(data.as_bytes());
+                                if let Ok(pid_uuid) = uuid::Uuid::parse_str(pid) {
+                                    let w = ctx.workspace.lock().unwrap();
+                                    if let Some(sess) = w.find(pid_uuid) {
+                                        let _ = sess.send_input(data.as_bytes());
+                                    }
                                 }
                             }
                         }
                         "claim-pane" => {
                             if let Some(pid) = v["paneId"].as_str() {
-                                let rows = v["rows"].as_u64().unwrap_or(24) as u16;
-                                let cols = v["cols"].as_u64().unwrap_or(80) as u16;
-                                let w = ctx.workspace.lock().unwrap();
-                                if let Some(sess) = w.find(pid) {
-                                    let _ = sess.resize(cols, rows);
+                                if let Ok(pid_uuid) = uuid::Uuid::parse_str(pid) {
+                                    let rows = v["rows"].as_u64().unwrap_or(24) as u16;
+                                    let cols = v["cols"].as_u64().unwrap_or(80) as u16;
+                                    let w = ctx.workspace.lock().unwrap();
+                                    if let Some(sess) = w.find(pid_uuid) {
+                                        let _ = sess.resize(cols, rows);
+                                    }
                                 }
                             }
                         }
                         "subscribe-pane" => {
                             if let Some(pid) = v["paneId"].as_str() {
-                                let w = ctx.workspace.lock().unwrap();
-                                if let Some(sess) = w.find(pid) {
-                                    let mut rx = sess.subscribe();
-                                    let tx = msg_tx_for_reader.clone();
-                                    let pid2 = pid.to_string();
-                                    tokio::spawn(async move {
-                                        while let Ok(bytes) = rx.recv().await {
-                                            let mut buf = Vec::with_capacity(16 + bytes.len());
-                                            let pbytes = pid2.as_bytes();
-                                            let copy = pbytes.len().min(16);
-                                            let mut hdr = [0u8; 16];
-                                            hdr[..copy].copy_from_slice(&pbytes[..copy]);
-                                            buf.extend_from_slice(&hdr);
-                                            buf.extend_from_slice(&bytes);
-                                            if tx.send(buf).is_err() {
-                                                break;
+                                if let Ok(pid_uuid) = uuid::Uuid::parse_str(pid) {
+                                    let w = ctx.workspace.lock().unwrap();
+                                    if let Some(sess) = w.find(pid_uuid) {
+                                        let mut rx = sess.subscribe();
+                                        let tx = msg_tx_for_reader.clone();
+                                        let pid2 = pid.to_string();
+                                        tokio::spawn(async move {
+                                            while let Ok(bytes) = rx.recv().await {
+                                                let mut buf = Vec::with_capacity(16 + bytes.len());
+                                                let pbytes = pid2.as_bytes();
+                                                let copy = pbytes.len().min(16);
+                                                let mut hdr = [0u8; 16];
+                                                hdr[..copy].copy_from_slice(&pbytes[..copy]);
+                                                buf.extend_from_slice(&hdr);
+                                                buf.extend_from_slice(&bytes);
+                                                if tx.send(buf).is_err() {
+                                                    break;
+                                                }
                                             }
-                                        }
-                                    });
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -311,7 +318,7 @@ async fn run_ws(socket: WebSocket, ctx: AppCtx) {
                             // Scope the workspace lock — drop before await
                             let msg = {
                                 let mut w = ctx.workspace.lock().unwrap();
-                                match w.create_session(None, cwd) {
+                                match w.create_session(None, cwd, None, SplitDirection::Horizontal) {
                                     Ok(id) => serde_json::json!({"type":"create-pane-result","success":true,"paneId":id}).to_string(),
                                     Err(e) => serde_json::json!({"type":"create-pane-result","success":false,"message":format!("{e}")}).to_string(),
                                 }
