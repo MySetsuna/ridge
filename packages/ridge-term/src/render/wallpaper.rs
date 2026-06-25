@@ -12,8 +12,8 @@ pub struct CoverUv {
 /// 计算 cover 模式下的 UV 缩放/偏移。
 ///
 /// 思路：以「画布纵横比 vs 图片纵横比」决定哪一维需要裁切。被裁的维度
-/// `scale > 1`（采样范围 < [0,1]，等比放大），并用 `offset` 把可见窗口
-/// 居中。另一维 `scale = 1, offset = 0`（铺满，不裁）。
+/// `scale < 1`（只采样图片居中的子区间，配合 `offset` 居中，等比放大铺满
+/// 画布）。另一维 `scale = 1, offset = 0`（整段铺满，不裁）。
 pub fn cover_uv_transform(canvas_w: u32, canvas_h: u32, img_w: u32, img_h: u32) -> CoverUv {
     if img_w == 0 || img_h == 0 || canvas_w == 0 || canvas_h == 0 {
         return CoverUv { scale: [1.0, 1.0], offset: [0.0, 0.0] };
@@ -84,6 +84,12 @@ mod tests {
     }
 
     #[test]
+    fn cover_zero_canvas_is_identity() {
+        let uv = cover_uv_transform(0, 0, 100, 100);
+        assert_eq!(uv, CoverUv { scale: [1.0, 1.0], offset: [0.0, 0.0] });
+    }
+
+    #[test]
     fn pack_already_aligned_returns_unpadded() {
         // width=64 → 64*4=256，已对齐。
         let data = vec![7u8; 256 * 2];
@@ -103,5 +109,6 @@ mod tests {
         assert!(out[0..40].iter().all(|&b| b == 9));
         assert!(out[40..256].iter().all(|&b| b == 0));
         assert!(out[256..296].iter().all(|&b| b == 9));
+        assert!(out[296..512].iter().all(|&b| b == 0));
     }
 }
