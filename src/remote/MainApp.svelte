@@ -19,7 +19,7 @@
   import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
-  import { PaneScrollbackCache, PANE_BUF_CAP, bytesEndsWith } from './lib/paneScrollbackCache';
+  import { PaneScrollbackCache, PANE_BUF_CAP } from './lib/paneScrollbackCache';
 
   let { ws }: { ws: RemoteLink } = $props();
   let panes = $state<PaneInfo[]>([]);
@@ -461,15 +461,16 @@
       if (paneId !== activePaneId) return;
       if (expectReplayPane === paneId) {
         // First chunk after (re)subscribe = the host's on-subscribe scrollback
-        // replay. If our cache already ends with it we pre-painted it on switch
-        // → drop the redundant replay. Otherwise the pane changed while we were
-        // away (or the cache was empty/short) → wipe + repaint authoritatively.
+        // replay (≤64KB tail). §no-shrink（方案2）: reconcile it against the local
+        // cache. 'keep' = our cache tail-matches OR is LONGER than the replay →
+        // we already pre-painted it; drop the replay so the host's 64KB tail can't
+        // overwrite/shrink our ≤256KB history. 'repaint' = no cache, or the pane
+        // changed (cache shorter & no tail-match) → wipe + repaint authoritatively.
         expectReplayPane = null;
-        const cached = paneCache.get(paneId);
-        if (cached && bytesEndsWith(cached, data)) return;
+        const r = paneCache.reconcileReplay(paneId, data, activeWorkspaceId || undefined);
+        if (r.action === 'keep') return;
         canvasRef?.resetForSwitch();
-        canvasRef?.feedUtf8(data);
-        paneCache.set(paneId, data, activeWorkspaceId || undefined);
+        canvasRef?.feedUtf8(r.buffer);
         scheduleSessionMirror(paneId);
         return;
       }

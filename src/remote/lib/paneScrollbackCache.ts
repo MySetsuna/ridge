@@ -123,15 +123,17 @@ export class PaneScrollbackCache {
    *  - cache LONGER than replay → keep (local has more history; the 64KB tail
    *    must not overwrite/shrink it — the original shrink bug);
    *  - otherwise (cache not longer and no tail-match → pane changed) → repaint.
-   * On 'repaint' the returned buffer is also written back as the new cache.
+   * On 'repaint' the returned buffer is also written back as the new cache
+   * (tagged `workspaceId` when given so cross-workspace prune protects it).
    */
-  reconcileReplay(id: string, replay: Uint8Array): ReconcileResult {
+  reconcileReplay(id: string, replay: Uint8Array, workspaceId?: string): ReconcileResult {
     const cached = this.buffers.get(id);
     if (cached && (bytesEndsWith(cached, replay) || cached.length > replay.length)) {
       return { action: 'keep', buffer: cached };
     }
     const buf = replay.length > this.cap ? replay.slice(replay.length - this.cap) : replay.slice();
     this.buffers.set(id, buf);
+    if (workspaceId) this.paneWorkspace.set(id, workspaceId);
     return { action: 'repaint', buffer: buf };
   }
 }
