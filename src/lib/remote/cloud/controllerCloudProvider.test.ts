@@ -203,6 +203,16 @@ describe('ControllerCloudProvider', () => {
     expect(url).toContain('token=user-jwt-abc');
   });
 
+  it('信令 URL 携带 cli（契约 §5.3 同实例顶替）', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG);
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const url = FakeWebSocket.instances[0].url;
+    expect(url).toMatch(/[?&]role=controller/);
+    expect(url).toMatch(/[?&]cli=[A-Za-z0-9._%-]+/);
+  });
+
   it('controller=offerer：收 welcome(peerPresent) 后创建 ridge ordered DataChannel + 发 offer', async () => {
     const { ControllerCloudProvider } = await loadProvider();
     const provider = new ControllerCloudProvider(CONFIG);

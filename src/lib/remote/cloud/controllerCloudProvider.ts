@@ -51,6 +51,7 @@ import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '../../transport/remote/cloudMux';
 import { encodeChunks, ChunkReassembler } from '../../transport/remote/cloudChunk';
+import { getOrCreateCli } from './controllerInstanceId';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -482,7 +483,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     const label = this.roomLabel(hostDevice);
     const url =
       `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
-      `?token=${encodeURIComponent(this._token())}&role=controller`;
+      `?token=${encodeURIComponent(this._token())}&role=controller` +
+      `&cli=${encodeURIComponent(getOrCreateCli())}`;
 
     let ws: WebSocket;
     try {
