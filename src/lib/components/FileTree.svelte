@@ -706,7 +706,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				{/if}
 			</span>
 		{:else}
-			<span class="w-4 h-4"></span>
+			<span class="w-4 h-4 shrink-0"></span>
 			<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-fg-muted)]">
 				<FileIcon size={16} />
 			</span>
@@ -737,7 +737,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 					<div
 						class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--rg-accent)]/10"
 					>
-						<span class="w-4 h-4"></span>
+						<span class="w-4 h-4 shrink-0"></span>
 						<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-accent)]">
 							<PendingCreateIcon size={16} />
 						</span>
@@ -802,8 +802,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 						onclick={() => void loadNextChildrenPage()}
 						disabled={childrenLoading}
 					>
-						<span class="w-4 h-4"></span>
-						<span class="w-4 h-4"></span>
+						<span class="w-4 h-4 shrink-0"></span>
+						<span class="w-4 h-4 shrink-0"></span>
 						{#if childrenLoading}
 							{$t('explorer.loadingEllipsis')}
 						{:else}
