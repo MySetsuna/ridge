@@ -27,7 +27,7 @@
   // Side-effect import: each built-in plugin auto-registers via its module
   // script. Must land once, at app chrome level.
   import '$lib/plugins';
-  import { initThemeSystem } from '$lib/stores/themes';
+  import { initThemeSystem, activeWallpaperGpu } from '$lib/stores/themes';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { setupTerminalThemeBridge } from '$lib/terminal/themeBridge';
   import {
@@ -219,9 +219,21 @@
     // letterboxes instead of leaving a dead zone. Host (Tauri) build keeps the
     // normal container-driven auto-fit.
     if (webRemote) manager.setSharedRemoteMode(true);
-    void manager.attachHost(node).catch((err) => {
-      console.warn('[ridge] attachHost failed for global canvas', err);
+    // §wallpaper-gpu: 订阅 activeWallpaperGpu store，每次 emission 立刻上传纹理。
+    // attachHost 是 async；store 可能在 host 就绪前就 emit（no-op）。
+    // host 就绪后用 get() 补 replay 当前值，确保首帧壁纸不丢失。
+    let unsubWallpaper: (() => void) | undefined;
+    unsubWallpaper = activeWallpaperGpu.subscribe((gpu) => {
+      manager.applyWallpaperGpu(gpu);
     });
+    void manager.attachHost(node)
+      .then(() => {
+        // host 就绪后补 replay——订阅回调在 host 未就绪时 no-op。
+        manager.applyWallpaperGpu(get(activeWallpaperGpu));
+      })
+      .catch((err) => {
+        console.warn('[ridge] attachHost failed for global canvas', err);
+      });
     const parent = node.parentElement;
     let observer: ResizeObserver | undefined;
     if (parent) {
@@ -244,6 +256,7 @@
     }
     return {
       destroy() {
+        unsubWallpaper?.();
         observer?.disconnect();
         manager.detachHost();
       },

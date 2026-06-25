@@ -35,6 +35,7 @@ import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/te
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsStore } from '../stores/settings';
+import type { ActiveWallpaperGpu } from '../stores/themes';
 import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
 import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
@@ -808,6 +809,20 @@ export class TerminalManager {
 	public detachHost(): void {
 		this.globalHost = null;
 		this.attachHostPromise = null;
+	}
+
+	/** §wallpaper — 将 activeWallpaperGpu 信号的最新值应用到 GPU 壁纸。
+	 *  由 +page.svelte 订阅 activeWallpaperGpu store 并在每次 emission 时调用。
+	 *  gpu=null 时调用 clearWallpaper 回退纯色；host 未就绪时 no-op（信号晚到
+	 *  不丢失——host 就绪后 attachHost 调用方须补一次 applyWallpaperGpu）。 */
+	public applyWallpaperGpu(gpu: ActiveWallpaperGpu | null): void {
+		const host = this._globalHostHandle();
+		if (!host) return;
+		if (gpu) {
+			host.setWallpaper(gpu.rgba, gpu.width, gpu.height, gpu.opacity);
+		} else {
+			host.clearWallpaper();
+		}
 	}
 
 	/** §A.9 — internal: global SurfaceHost lookup. The legacy
