@@ -1,3 +1,9 @@
+<script module lang="ts">
+	import { writable } from 'svelte/store';
+	// 当前拖拽落点文件夹的绝对路径，所有 FileTree 实例共享，用于落点高亮。
+	const dragOverPath = writable<string | null>(null);
+</script>
+
 <script lang="ts">
 	import { tick, onDestroy } from 'svelte';
 import { get } from 'svelte/store';
@@ -12,7 +18,7 @@ import { get } from 'svelte/store';
 		Image,
 	} from 'lucide-svelte';
 	import { invoke, isTauri } from '@tauri-apps/api/core';
-import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import { showContextMenu } from '$lib/stores/contextMenu';
 	import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
 	import {
@@ -23,6 +29,7 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import type { FileNode } from '$lib/stores/project';
 	import { searchInFolder } from '$lib/stores/searchState';
+	import { activePaneId } from '$lib/stores/paneTree';
 	import { t, tr } from '$lib/i18n';
 	import FileTree from './FileTree.svelte';
 
@@ -215,131 +222,191 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		}
 	}
 
-	// ─── Drag & drop (move by default, Ctrl = copy) ────────────────────────
-	// MIME used for the dragged payload: newline-separated absolute paths.
-	// Keeps the protocol browser-native so drops into external apps still
-	// convey something useful (many shells accept text lists of paths).
-	const DND_TYPE = 'application/x-ridge-explorer-paths';
-	/**
-	 * Hover-to-expand latency: matches VS Code / macOS Finder "spring-loaded
-	 * folders" behaviour — pause over a collapsed dir during drag ~800ms to
-	 * automatically open it and drill in.
-	 */
+	// ─── 拖拽（指针事件实现）─────────────────────────────────────────────────
+	// WebView2 下 Tauri 原生 dragDrop 会吞掉 webview 内 HTML5 drop（见记忆
+	// project_webview2_dnd），故文件树拖拽改用指针事件：pointerdown 起拖、
+	// setPointerCapture 让跨元素（树↔树、树→终端）的 pointermove/up 都回到源按钮，
+	// elementFromPoint 命中落点。落文件夹 = 移动（Ctrl/⌘ = 复制），落终端 = 粘路径文本。
+	const DRAG_THRESHOLD_PX = 4;
+	// Hover-to-expand：拖拽悬停折叠目录 ~800ms 自动展开（spring-loaded folders）。
 	const HOVER_EXPAND_MS = 800;
-	let isDragTarget = $state(false);
+
+	// 本节点是否为当前拖拽落点（高亮）。dragOverPath 是模块级共享 store（见顶部
+	// <script module>），跨 FileTree 实例广播落点路径。
+	let isDragTarget = $derived($dragOverPath === node.path && node.is_dir);
+
+	let dragPointerId: number | null = null;
+	let dragStartX = 0;
+	let dragStartY = 0;
+	let dragging = false;
+	// 刚发生过拖拽 —— 让紧随 pointerup 的 click 不再触发选中/展开。
+	let didDrag = false;
+	let dragPaths: string[] = [];
+	let dropFolderPath: string | null = null;
+	let dropPaneId: string | null = null;
+	let ghostEl: HTMLDivElement | null = null;
 	let hoverExpandTimer: ReturnType<typeof setTimeout> | null = null;
+	let hoverExpandPath: string | null = null;
 
 	function clearHoverExpandTimer(): void {
 		if (hoverExpandTimer !== null) {
 			clearTimeout(hoverExpandTimer);
 			hoverExpandTimer = null;
 		}
+		hoverExpandPath = null;
 	}
-	onDestroy(clearHoverExpandTimer);
 
-	function onNodeDragStart(e: DragEvent): void {
-		if (editing) return;
-		// If the current node is part of a multi-selection, drag the whole set.
-		// Otherwise drag only this one path.
-		const payloadPaths =
+	function removeGhost(): void {
+		if (ghostEl) { ghostEl.remove(); ghostEl = null; }
+	}
+
+	function createGhost(count: number, label: string): void {
+		const g = document.createElement('div');
+		g.textContent = count > 1 ? tr('explorer.dragGhostCount', { count }) : label;
+		g.style.cssText =
+			'position:fixed;z-index:9999;pointer-events:none;left:0;top:0;padding:2px 8px;' +
+			'border-radius:6px;font-size:12px;line-height:1.4;white-space:nowrap;color:var(--rg-fg);' +
+			'background:var(--rg-surface-2);border:1px solid var(--rg-accent);' +
+			'box-shadow:0 4px 12px rgba(0,0,0,.3);opacity:.95;';
+		document.body.appendChild(g);
+		ghostEl = g;
+	}
+
+	function moveGhost(x: number, y: number): void {
+		if (ghostEl) ghostEl.style.transform = `translate(${x + 12}px, ${y + 8}px)`;
+	}
+
+	// 落点文件夹合法性：排除拖到自身、或把祖先拖进自己的后代。
+	function isValidDropFolder(target: string): boolean {
+		for (const p of dragPaths) {
+			if (target === p) return false;
+			if (target.startsWith(p + '/') || target.startsWith(p + '\\')) return false;
+		}
+		return true;
+	}
+
+	function armHoverExpand(path: string): void {
+		if (hoverExpandPath === path) return;
+		clearHoverExpandTimer();
+		hoverExpandPath = path;
+		if (!expandedPaths.has(path)) {
+			hoverExpandTimer = setTimeout(() => {
+				if (dragging && hoverExpandPath === path) {
+					fileExplorerStore.toggleExpanded(columnId, path);
+				}
+				hoverExpandTimer = null;
+			}, HOVER_EXPAND_MS);
+		}
+	}
+
+	function onNodePointerDown(e: PointerEvent): void {
+		if (e.button !== 0 || editing) return;
+		dragPointerId = e.pointerId;
+		dragStartX = e.clientX;
+		dragStartY = e.clientY;
+		dragging = false;
+		didDrag = false;
+		try {
+			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		} catch {
+			/* capture 可能失败，忽略 */
+		}
+	}
+
+	function beginDrag(): void {
+		dragging = true;
+		// 多选拖拽：本节点在多选集合内则拖整个集合，否则只拖自己。
+		dragPaths =
 			selectedPaths.has(node.path) && selectedPaths.size > 1
 				? Array.from(selectedPaths)
 				: [node.path];
-		if (!e.dataTransfer) return;
-		e.dataTransfer.effectAllowed = 'copyMove';
-		e.dataTransfer.setData(DND_TYPE, payloadPaths.join('\n'));
-		// Fallback: plain text of the paths so drops into terminals / editors
-		// still get something human-readable.
-		e.dataTransfer.setData('text/plain', payloadPaths.join('\n'));
+		createGhost(dragPaths.length, node.name);
 	}
 
-	function onNodeDragOver(e: DragEvent): void {
-		if (!node.is_dir) return;
-		const types = e.dataTransfer?.types;
-		if (!types || !Array.from(types).includes(DND_TYPE)) return;
-		// Only accept drops that would actually move/copy across paths. Prevent
-		// default to signal "yes, this is a valid drop zone".
-		e.preventDefault();
-		if (e.dataTransfer) {
-			e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
+	function onNodePointerMove(e: PointerEvent): void {
+		if (dragPointerId === null) return;
+		if (!dragging) {
+			if (Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY) < DRAG_THRESHOLD_PX) return;
+			beginDrag();
 		}
-		if (!isDragTarget) {
-			isDragTarget = true;
-			// Only arm the auto-expand timer once per hover, when entering the
-			// row. dragover fires repeatedly; we don't want to reset the clock
-			// on every pixel of movement.
-			if (node.is_dir && !isExpanded) {
+		moveGhost(e.clientX, e.clientY);
+		// ghost 设了 pointer-events:none，不会挡住 elementFromPoint。
+		const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+		const treeBtn = el?.closest('[data-rg-tree-path]') as HTMLElement | null;
+		const paneEl = el?.closest('[data-rg-pane-id]') as HTMLElement | null;
+		dropFolderPath = null;
+		dropPaneId = null;
+		if (treeBtn && treeBtn.getAttribute('data-rg-tree-dir') === 'true') {
+			const p = treeBtn.getAttribute('data-rg-tree-path');
+			const col = treeBtn.getAttribute('data-rg-tree-column');
+			if (p && col === columnId && isValidDropFolder(p)) {
+				dropFolderPath = p;
+				armHoverExpand(p);
+			} else {
 				clearHoverExpandTimer();
-				hoverExpandTimer = setTimeout(() => {
-					// Sanity check: still being hovered with drag active.
-					if (isDragTarget) {
-						fileExplorerStore.toggleExpanded(columnId, node.path);
-					}
-					hoverExpandTimer = null;
-				}, HOVER_EXPAND_MS);
 			}
+		} else if (paneEl) {
+			dropPaneId = paneEl.getAttribute('data-rg-pane-id');
+			clearHoverExpandTimer();
+		} else {
+			clearHoverExpandTimer();
 		}
+		dragOverPath.set(dropFolderPath);
 	}
 
-	function onNodeDragLeave(): void {
-		isDragTarget = false;
-		clearHoverExpandTimer();
-	}
-
-	async function onNodeDrop(e: DragEvent): Promise<void> {
-		isDragTarget = false;
-		clearHoverExpandTimer();
-		if (!node.is_dir) return;
-		const raw = e.dataTransfer?.getData(DND_TYPE);
-		if (!raw) return;
-		e.preventDefault();
-		e.stopPropagation();
-
-	// Get column cwd for relative path
-	const storeState = get(fileExplorerStore);
-	const column = storeState.columns.find((c) => c.id === columnId);
-	const cwd = column?.cwd || '';
-
-	const getRelativePath = (absPath: string): string => {
-		const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
-		const normalizedPath = absPath.replace(/\\/g, '/');
-		if (normalizedPath.startsWith(normalizedCwd + '/')) {
-			return normalizedPath.slice(normalizedCwd.length + 1);
-		}
-		return normalizedPath;
-	};
-
-	const copyToClipboard = async (text: string) => {
-		try { await writeText(text); } catch (err) { console.error('Copy failed:', err); }
-	};
-		const paths = raw.split('\n').filter(Boolean);
-		if (paths.length === 0) return;
-		// Refuse self-drop / drop of an ancestor onto a descendant.
-		for (const p of paths) {
-			if (p === node.path || node.path.startsWith(p + '/') || node.path.startsWith(p + '\\')) {
-				await alertDialog({ title: tr('explorer.dndFailed'), message: tr('explorer.dndSelfDropMessage'), danger: true });
-
-				return;
+	function cleanupDrag(e: PointerEvent): void {
+		const el = e.currentTarget as HTMLElement | null;
+		if (dragPointerId !== null && el?.hasPointerCapture?.(dragPointerId)) {
+			try {
+				el.releasePointerCapture(dragPointerId);
+			} catch {
+				/* */
 			}
 		}
-		if (!isTauri()) return;
+		dragPointerId = null;
+		dragging = false;
+		removeGhost();
+		clearHoverExpandTimer();
+		dragOverPath.set(null);
+		dropFolderPath = null;
+		dropPaneId = null;
+		dragPaths = [];
+	}
+
+	async function onNodePointerUp(e: PointerEvent): Promise<void> {
+		const wasDragging = dragging;
+		const folder = dropFolderPath;
+		const pane = dropPaneId;
 		const copy = e.ctrlKey || e.metaKey;
+		const paths = dragPaths.slice();
+		cleanupDrag(e);
+		if (!wasDragging) return; // 普通点击：交给 onclick 处理选中/展开。
+		didDrag = true;
+		if (folder) {
+			await performFolderDrop(folder, paths, copy);
+		} else if (pane) {
+			pasteToTerminal(pane, paths);
+		}
+	}
+
+	function onNodePointerCancel(e: PointerEvent): void {
+		didDrag = false;
+		cleanupDrag(e);
+	}
+
+	// 落到文件夹：移动（Ctrl/⌘ = 复制）。沿用既有自冲突重命名 + 跨列刷新逻辑。
+	async function performFolderDrop(targetFolder: string, paths: string[], copy: boolean): Promise<void> {
+		if (!isTauri() || paths.length === 0) return;
 		const cmd = copy ? 'copy_path' : 'move_path';
-		// Names already in the target dir — auto-rename on conflict so we
-		// never silently clobber. Shared helper with paste path.
-		// Drag-drop is rare and needs the FULL child list (not just the
-		// pages the user has expanded into). Use the legacy
-		// paginate-then-concat wrapper so cross-page conflicts (e.g.
-		// drop "foo.ts" into a folder whose existing "foo.ts" is on
-		// page 4) are still caught.
-		const fullChildren = await fileExplorerStore.loadChildren(columnId, node.path);
+		// 需要目标目录的「完整」子列表（不止已展开分页）以便跨页冲突也能命中。
+		const fullChildren = await fileExplorerStore.loadChildren(columnId, targetFolder);
 		const existing = new Set<string>(fullChildren.map((c) => c.path));
-		const sep = node.path.includes('\\') && !node.path.includes('/') ? '\\' : '/';
-		const cleanTarget = node.path.replace(/[\\/]+$/, '');
+		const sep = targetFolder.includes('\\') && !targetFolder.includes('/') ? '\\' : '/';
+		const cleanTarget = targetFolder.replace(/[\\/]+$/, '');
 		const errors: string[] = [];
 		for (const from of paths) {
 			const leaf = from.split(/[\\/]/).pop() || 'untitled';
-			const unique = uniqueChildName(node.path, leaf, existing);
+			const unique = uniqueChildName(targetFolder, leaf, existing);
 			const to = `${cleanTarget}${sep}${unique}`;
 			existing.add(to);
 			try {
@@ -348,11 +415,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 				errors.push(`${from}: ${err}`);
 			}
 		}
-		// Reload target + any column caching the target dir (covers "two
-		// workspaces at same cwd" scenarios). For moves, also refresh the
-		// source parents so the row disappears there.
 		resetChildrenState();
-		await refreshColumnsCovering(node.path);
+		await refreshColumnsCovering(targetFolder);
 		if (!copy) {
 			const sourceDirs = new Set<string>(
 				paths.map((p) => p.replace(/[\\/][^\\/]+[\\/]*$/, '') || p)
@@ -363,6 +427,24 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 			await alertDialog({ title: tr('explorer.dndFailed'), message: tr('explorer.dndFailedMessage', { count: errors.length, details: errors.join('\n') }), danger: true });
 		}
 	}
+
+	// 落到终端 pane：把路径作为文本写入 PTY（带空格的路径加引号 + 末尾空格），
+	// 与「从系统资源管理器拖文件进终端」(+page.svelte insertDroppedPaths) 行为一致。
+	function pasteToTerminal(paneId: string, paths: string[]): void {
+		if (!isTauri() || paths.length === 0) return;
+		const quote = (s: string) => (/\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
+		const text = paths.map(quote).join(' ') + ' ';
+		activePaneId.set(paneId);
+		void invoke('write_to_pty', { paneId, data: text }).catch((err) => {
+			console.error('write_to_pty (tree-drag) failed', err);
+		});
+	}
+
+	onDestroy(() => {
+		clearHoverExpandTimer();
+		removeGhost();
+		if (dragging) dragOverPath.set(null);
+	});
 
 	function activateNode(modifiers: { shift: boolean; ctrl: boolean; meta: boolean }) {
 		if (editing) return;
@@ -382,6 +464,8 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 	}
 
 	function handleClick(e: MouseEvent) {
+		// 刚拖拽完的 pointerup 会带出一个 click —— 吞掉它，避免误触选中/展开。
+		if (didDrag) { didDrag = false; return; }
 		activateNode({ shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey });
 	}
 
@@ -681,11 +765,11 @@ import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager';
 		data-rg-tree-path={node.path}
 		data-rg-tree-column={columnId}
 		data-rg-ignored={isIgnored ? 'true' : null}
-		draggable="true"
-		ondragstart={onNodeDragStart}
-		ondragover={onNodeDragOver}
-		ondragleave={onNodeDragLeave}
-		ondrop={(e) => void onNodeDrop(e)}
+		data-rg-tree-dir={node.is_dir ? 'true' : null}
+		onpointerdown={onNodePointerDown}
+		onpointermove={onNodePointerMove}
+		onpointerup={(e) => void onNodePointerUp(e)}
+		onpointercancel={onNodePointerCancel}
 		onclick={handleClick}
 		onkeydown={handleKeydown}
 		oncontextmenu={handleContextMenu}
