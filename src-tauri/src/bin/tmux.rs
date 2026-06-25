@@ -237,6 +237,52 @@ fn client() -> reqwest::blocking::Client {
         .expect("client")
 }
 
+/// 连接错误后第 `attempt` 次失败的退避时长（ms）；`None` = 不再重试。
+///
+/// 只对**连接错误**重试：连接没建起来 ⇒ 请求字节从未发出 ⇒ 后端零副作用 ⇒ 重试安全
+/// （绝不会重复 split 出两个 pane）。超时 / HTTP 错误状态一律不重试——请求可能已被处理，
+/// 重试有重复副作用风险。递增退避桥接后端「按需启动 / panic 后自重启」的瞬时不可达窗口，
+/// 3 次封顶（总计 ~1.05s）避免无限重试拖死调用方。
+fn retry_backoff_ms(is_connect_err: bool, attempt: usize) -> Option<u64> {
+    if !is_connect_err {
+        return None;
+    }
+    match attempt {
+        0 => Some(150),
+        1 => Some(300),
+        2 => Some(600),
+        _ => None,
+    }
+}
+
+/// 发送 HTTP 请求，连接错误时按 `retry_backoff_ms` 有界重试——桥接后端「按需启动 /
+/// panic 后自重启」造成的瞬时不可达窗口。body 不可克隆（流式上传）时退化为单发。
+fn send_retry(
+    req: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let mut attempt = 0usize;
+    loop {
+        let Some(this) = req.try_clone() else {
+            // 流式 body 无法克隆重发 → 单次发送，结果如实返回。
+            return req.send();
+        };
+        match this.send() {
+            Ok(resp) => return Ok(resp),
+            Err(e) => match retry_backoff_ms(e.is_connect(), attempt) {
+                Some(ms) => {
+                    log_to_file(&format!(
+                        "send_retry: connect err (attempt {}), backoff {ms}ms: {e}",
+                        attempt + 1
+                    ));
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    attempt += 1;
+                }
+                None => return Err(e),
+            },
+        }
+    }
+}
+
 /// 按子命令分级的 HTTP 总超时。
 ///
 /// 旧实现对**所有**命令一刀切 60s：后端 teammate HTTP server 楔死时，harness 发的每条
@@ -268,10 +314,16 @@ fn backend_error_message(is_timeout: bool, is_connect: bool, detail: &str) -> St
 
 fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
     let mut m = reqwest::header::HeaderMap::new();
-    m.insert(
-        "X-Ridge-Token",
-        reqwest::header::HeaderValue::from_str(token).expect("token header"),
-    );
+    // 健壮性：token 含非法 header 字符也**不 panic 崩溃**（旧 `.expect` 会把 backtrace 喷给
+    // harness）。跳过鉴权头即可——后端会以 401 拒绝，比崩溃友好得多。
+    match reqwest::header::HeaderValue::from_str(token) {
+        Ok(v) => {
+            m.insert("X-Ridge-Token", v);
+        }
+        Err(_) => {
+            log_to_file("auth_headers: RIDGE_TEAMMATE_TOKEN 含非法 header 字符；不带鉴权头发送")
+        }
+    }
     // 发起方工作区身份（由 Ridge PTY 注入 `RIDGE_WORKSPACE_ID`，shim 子进程继承）：
     // 让后端把 GUI-bridge 的 split/复用/接管锁定在「发起 tmux 的会话所在工作区」。
     if let Ok(ws) = env::var("RIDGE_WORKSPACE_ID") {
@@ -391,18 +443,27 @@ fn tmux_api(url: &str, path: &str) -> String {
 
 /// GET，返回 (status, body)；网络失败 None。
 fn http_get(u: String, token: &str) -> Option<(u16, String)> {
-    let res = client().get(u).headers(auth_headers(token)).send().ok()?;
+    let res = send_retry(client().get(u).headers(auth_headers(token)))
+        .map_err(|e| {
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            )
+        })
+        .ok()?;
     let status = res.status().as_u16();
     Some((status, res.text().unwrap_or_default()))
 }
 
 /// POST JSON，返回 (status, body)；网络失败 None。
 fn http_post(u: String, token: &str, body: serde_json::Value) -> Option<(u16, String)> {
-    let res = client()
-        .post(u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
+        .map_err(|e| {
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            )
+        })
         .ok()?;
     let status = res.status().as_u16();
     Some((status, res.text().unwrap_or_default()))
@@ -611,7 +672,7 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
 
 fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
     let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
-    let res = client().get(u).headers(auth_headers(token)).send().ok()?;
+    let res = send_retry(client().get(u).headers(auth_headers(token))).ok()?;
     let json: serde_json::Value = res.json().ok()?;
     let panes = json.get("panes")?.as_array()?;
     // Prefer the highest index when multiple panes share a name (most recently created).
@@ -717,10 +778,7 @@ fn render_tmux_format_dynamic(fmt: &str, pane_index: usize, url: &str, token: &s
     }
 
     let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
-    let resp = client()
-        .get(&u)
-        .headers(auth_headers(token))
-        .send()
+    let resp = send_retry(client().get(&u).headers(auth_headers(token)))
         .ok()
         .and_then(|r| {
             if r.status().is_success() {
@@ -1021,12 +1079,7 @@ fn post_split(
     log_to_file(&format!("post_split: body={}", body));
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
     log_to_file(&format!("post_split: posting to {}", u));
-    let res = match client()
-        .post(&u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
-    {
+    let res = match send_retry(client().post(&u).headers(auth_headers(token)).json(&body)) {
         Ok(r) => r,
         Err(e) => {
             log_to_file(&format!("tmux: HTTP error: {e}"));
@@ -1327,14 +1380,13 @@ fn post_spawn_process(
     let body = build_spawn_process_body(target, launch);
     let u = format!("{}/api/v1/spawn-process", url.trim_end_matches('/'));
     log_to_file(&format!("spawn-process: posting to {}", u));
-    let res = client()
-        .post(u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
         .map_err(|e| {
             log_to_file(&format!("spawn-process: HTTP error: {e}"));
-            eprintln!("tmux: {e}");
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            );
         })?;
     if !res.status().is_success() {
         let status = res.status();
@@ -3021,5 +3073,24 @@ mod tests {
     fn connect_error_message_names_unreachable_backend() {
         let msg = backend_error_message(false, true, "connection refused");
         assert!(msg.contains("cannot reach"), "got: {msg}");
+    }
+
+    #[test]
+    fn retry_only_on_connect_error() {
+        // 非连接错误(超时 / HTTP 状态):绝不重试——请求可能已被后端处理,重试有重复副作用
+        // 风险(如重复 split 出两个 pane)。
+        assert_eq!(retry_backoff_ms(false, 0), None);
+        assert_eq!(retry_backoff_ms(false, 5), None);
+    }
+
+    #[test]
+    fn connect_error_retries_are_bounded_with_backoff() {
+        // 连接错误(请求确定没送达 → 重试安全):有界递增退避,跨越后端按需启动/自重启的
+        // 瞬时不可达窗口;第 3 次之后停,避免无限重试拖死调用。
+        assert_eq!(retry_backoff_ms(true, 0), Some(150));
+        assert_eq!(retry_backoff_ms(true, 1), Some(300));
+        assert_eq!(retry_backoff_ms(true, 2), Some(600));
+        assert_eq!(retry_backoff_ms(true, 3), None);
+        assert_eq!(retry_backoff_ms(true, 99), None);
     }
 }
