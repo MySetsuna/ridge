@@ -103,11 +103,14 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'Ridge __VERSION__'
           releaseBody: |
-            智能体协同：指挥部独立 Tab + 精简文案、设置面板服务开关（HITL / TML / 总开关）、分屏「设为智能体」手动注册。
-            公网远控：折叠侧边栏不再断线（host 提升为模块单例）。
-            会员/已签到时隐藏每日签到入口。
+            渲染：根治切工作区首帧「最初 pane」整屏字形乱码，以及 resize / 文本输入时的字形闪烁（invalidate_atlas 延迟到帧边界统一处理）。
+            终端：每个 pane 可独立切换 shell 类型并持久化；shell history 弹窗记录当前会话输入；补全 WSL 各发行版与 VS 开发者环境枚举；flushDeferred 防超时丢帧。
+            工作区：pane 拖拽停靠改用指针事件（绕开 WebView2 屏蔽的 HTML5 拖拽），方向半区落点预览；工作区 tab 支持跨多 tab 拖拽排序 + 专属右键菜单（重命名 / 保存 / 删除）。
+            快捷键：Ctrl+Shift+方向键在分屏间移动焦点，Ctrl+F1..F12 切换工作区。
+            编辑器：修复弹出为独立窗口时的初始化竞态。
+            UI：抽取可复用 Toggle 组件，修开关圆钮溢出与间距问题。
 
-            本次首发 Linux（.deb / .AppImage）与 macOS（.dmg，Apple Silicon + Intel 各一份，未签名）产物。
+            产物：Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

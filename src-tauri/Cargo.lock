@@ -4100,7 +4100,7 @@ dependencies = [
 
 [[package]]
 name = "ridge"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "axum",
  "axum-server",
