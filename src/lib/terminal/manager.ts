@@ -2882,6 +2882,43 @@ export class TerminalManager {
 	}
 
 	/**
+	 * Soft-reset the pane's terminal *input* modes. Clears the DEC private
+	 * modes a crashed TUI can leave stuck — mouse tracking (?1000/1002/1003 +
+	 * ?1005/1006/1015 encodings), focus reporting (?1004), bracketed paste
+	 * (?2004) — restores the text cursor (?25h) and leaves the alt-screen
+	 * (?1049/1047/47). The DECRST bytes are fed into the kernel only (local
+	 * emulator state); nothing is written to the PTY, so the running shell is
+	 * untouched. Scrollback and screen contents are preserved (soft reset, not
+	 * RIS).
+	 *
+	 * Use case: a TUI (e.g. an Ink/Bun app) segfaults without emitting its
+	 * mode-restore sequences, leaving the terminal forwarding wheel scrolls as
+	 * SGR mouse reports into the shell ("[<65;…M" garbage). Bound to a host
+	 * shortcut (Ctrl+Shift+R) so it stays reachable even while the TUI gate
+	 * would suppress the pane's own right-click / shortcuts.
+	 */
+	resetInputModes(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		const seq =
+			'\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l' + // mouse tracking
+			'\x1b[?1005l\x1b[?1006l\x1b[?1015l' + // mouse report encodings (UTF8/SGR/urxvt)
+			'\x1b[?1004l' + // focus reporting
+			'\x1b[?2004l' + // bracketed paste
+			'\x1b[?25h' + // show cursor
+			'\x1b[?1049l\x1b[?1047l\x1b[?47l'; // leave alt-screen (all variants)
+		try {
+			entry.kernel.feed(new TextEncoder().encode(seq));
+		} catch {
+			return; // kernel may be freed mid-teardown
+		}
+		entry.linkSpans.markDirty();
+		this.wake();
+		const reply = entry.kernel.takePendingResponse();
+		if (reply.length > 0 && entry.dataHandler) entry.dataHandler(reply);
+	}
+
+	/**
 	 * Paste text into the pane. Wraps in bracketed-paste markers if mode 2004
 	 * is active. Pushes through onData.
 	 */

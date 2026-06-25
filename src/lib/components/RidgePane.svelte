@@ -1430,7 +1430,15 @@ $effect(() => {
 		// 且字节真的发出去时才 preventDefault。否则（如 claude code 这
 		// 类启用了 cursor hidden 让 sticky=true 但不接管鼠标的 inline-TUI）
 		// 落到下方的 scrollback 分支，用户仍能向上翻页 host 历史。
-		if (isTuiSticky() && manager.handleWheel(paneId, e)) {
+		// 自愈：仅在「活跃 TUI 渲染上下文」（alt-screen / inline-active / 光标隐藏 之一）
+		// 才把滚轮转成 SGR 鼠标上报。TUI 崩溃后回到 shell 提示符（光标可见、无渲染信号）
+		// 即便鼠标模式 ?1000.. 卡在非零，也不再吐 "[<65;…M" 乱码，改走下方滚历史分支。
+		// 只收紧滚轮路径，不动 tuiGate 的键盘门控（避免回归 claude code 的 ArrowUp 泄漏）。
+		const liveTuiCtx =
+			manager.isAltScreen(paneId) ||
+			manager.isInlineTuiActive(paneId) ||
+			!manager.isCursorVisible(paneId);
+		if (liveTuiCtx && isTuiSticky() && manager.handleWheel(paneId, e)) {
 			e.preventDefault();
 			// §TUI: keep the TUI gate alive after a wheel event so the
 			// sticky window doesn't decay during scroll-heavy interaction.
