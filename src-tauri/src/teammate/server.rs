@@ -223,6 +223,38 @@ fn spawn_teammate_inner(
         });
 }
 
+/// 楔死诊断埋点（option 3）。
+///
+/// teammate HTTP 跑在单线程 Tokio 运行时（见 `spawn_teammate_inner`）：一旦某个 handler
+/// 在那唯一 worker 上阻塞，后续请求全部排不上、各自卡满垫片超时（实测 split + list-sessions
+/// 各卡 60s → `Failed to create teammate pane`）。本中间件**进入**即打 `diag >> #id …`，
+/// **退出**打 `diag << #id … {ms}ms`。楔死时日志里那条**只有 `>>` 没有 `<<`** 的请求即元凶
+/// handler——线程卡在它里面，连自己的 `<<` 和后续请求的 `>>` 都打不出来。落 `ridge.log`
+/// （target=ridge::teammate，线程名 ridge-teammate-http）。纯附加日志，零行为改动。
+async fn diag_trace(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REQ_SEQ: AtomicU64 = AtomicU64::new(0);
+    let id = REQ_SEQ.fetch_add(1, Ordering::Relaxed);
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    tracing::info!(target: "ridge::teammate", "diag >> #{id} {method} {path}");
+    let start = std::time::Instant::now();
+    let resp = next.run(req).await;
+    let ms = start.elapsed().as_millis();
+    let status = resp.status().as_u16();
+    // ≥3s 标 SLOW 并升 warn：对齐 route_split 自身 3s（ready_rx）上限，健康路径远低于此，
+    // 超过即可疑（楔死前兆 / 锁争用）。
+    if ms >= 3000 {
+        tracing::warn!(target: "ridge::teammate", "diag << #{id} {path} {status} {ms}ms SLOW");
+    } else {
+        tracing::info!(target: "ridge::teammate", "diag << #{id} {path} {status} {ms}ms");
+    }
+    resp
+}
+
 async fn run_server(
     handle: tauri::AppHandle,
     app_state: AppState,
@@ -305,7 +337,10 @@ async fn run_server(
         .route("/api/v1/tmux/summon", post(route_tmux_summon))
         .with_state(ctx)
         // All other native tmux routes are served by the shared engine crate.
-        .merge(ridge_tmux::http::native_router(native_ctx));
+        .merge(ridge_tmux::http::native_router(native_ctx))
+        // 楔死诊断埋点：`.layer` 挂在 `.merge` 之后 → 包住**全部**路由（含 native_router
+        // 里的 list-sessions 等）。见 `diag_trace`。
+        .layer(axum::middleware::from_fn(diag_trace));
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("[ridge] teammate server stopped: {e}");
@@ -1043,6 +1078,9 @@ async fn route_split(
         }
     }
 
+    // 楔死诊断 checkpoint①：进入重同步段（teammate_split_pane + ensure_pane_pty_workspace）。
+    // 若 diag `>> split-window` 有、此行无 → 卡在更早的选目标/取锁段。
+    tracing::info!(target: "ridge::teammate", "route_split: pre teammate_split_pane idx={idx} dir={direction}");
     match pane::teammate_split_pane(&ctx.state, wid, idx, direction) {
         Ok(new_id) => {
             // Seed the new pane's tree-level cwd so subsequent splits off of it
@@ -1130,6 +1168,9 @@ async fn route_split(
                 )
                     .into_response();
             }
+            // 楔死诊断 checkpoint②：ensure_pane_pty_workspace 已返回（PTY pending 已注册）。
+            // 若 checkpoint① 有、此行无 → 卡在 teammate_split_pane 或 ensure_pane_pty_workspace。
+            tracing::info!(target: "ridge::teammate", "route_split: post ensure_pane_pty_workspace trace={trace_id}");
             {
                 let mut map = ctx.state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
@@ -1222,6 +1263,10 @@ async fn route_split(
             // tokio::time::timeout wraps the recv future; the outer Result
             // is "did the timeout elapse"; the inner is "did the sender drop";
             // the innermost is the actual spawn outcome.
+            // 楔死诊断 checkpoint③：进入 ready_rx 的 3s 等待（此后最坏 3s 必返回）。
+            // 若 checkpoint② 有、diag `<< split-window` 无 → 卡在 await 前的记账/emit，或运行时
+            // 已被别的任务楔死（本任务排不上）。
+            tracing::info!(target: "ridge::teammate", "route_split: await ready_rx(3s) trace={trace_id}");
             match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
                 Ok(Ok(Ok(()))) => {
                     {
