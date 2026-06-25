@@ -13,6 +13,7 @@ pub mod glyph_rasterizer;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod gpu_context;
 pub mod renderer;
+pub mod wallpaper;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod surface_host;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
