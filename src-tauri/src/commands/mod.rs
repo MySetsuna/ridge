@@ -1,3 +1,4 @@
+pub mod clipboard_files;
 pub mod clipboard_image;
 pub mod cloud_http;
 pub mod cloud_pane;

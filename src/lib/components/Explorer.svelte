@@ -451,7 +451,17 @@
 	/** Paste clipboard into the target dir (selected dir, or parent of selected file). */
 	async function pasteClipboard(): Promise<void> {
 		if (!isTauri()) return;
-		const clip = get(explorerClipboard);
+		let clip = get(explorerClipboard);
+		// 内部剪贴板为空时，回退读系统剪贴板的文件列表（CF_HDROP）——支持在 Windows
+		// 资源管理器「复制」文件后粘进文件树。系统文件一律按复制处理（绝不移动）。
+		if (!clip || clip.paths.length === 0) {
+			try {
+				const sysFiles = await invoke<string[]>('read_clipboard_file_paths');
+				if (sysFiles && sysFiles.length > 0) clip = { paths: sysFiles, mode: 'copy' };
+			} catch (err) {
+				console.warn('[explorer] read system clipboard files failed', err);
+			}
+		}
 		if (!clip || clip.paths.length === 0) return;
 
 		const state = get(fileExplorerStore);
@@ -557,9 +567,16 @@
 				if (mode === 'copy' && isTauri()) {
 					void (async () => {
 						try {
-							await writeText(paths.join('\n'));
+							// Windows：一次写 CF_HDROP + 文本（资源管理器粘真实文件、终端/编辑器粘路径）。
+							// 返回 true 表示已连带写入文本，前端无需再 writeText。
+							const wroteText = await invoke<boolean>('write_clipboard_file_paths', { paths });
+							if (!wroteText) await writeText(paths.join('\n'));
 						} catch (err) {
-							console.warn('[explorer] clipboard writeText failed', err);
+							try {
+								await writeText(paths.join('\n'));
+							} catch (e) {
+								console.warn('[explorer] clipboard writeText failed', e);
+							}
 						}
 					})();
 				}
