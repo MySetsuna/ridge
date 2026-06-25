@@ -280,6 +280,9 @@ async fn run_server(
             token: token.clone(),
         });
     }
+    // 端点重发现：(re)bind 后用新端点刷新所有已记 sidecar。panic 自重启换了 ephemeral 端口时，
+    // 这一步让现存 shell 的垫片仍能从 sidecar 读到新端口（env 里的旧端口已失效）。
+    crate::teammate::endpoint::refresh_all(&base_url, &token);
     if let Some(tx) = ready {
         let _ = tx.send(());
     }

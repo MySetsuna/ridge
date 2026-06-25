@@ -123,25 +123,48 @@ fn main() {
     log_to_file(&format!("socket={} sub={sub}", socket()));
     // 按子命令设 HTTP 总超时：控制命令短超时，后端楔死时秒级失败而非干等满 60s。
     let _ = CLIENT_TIMEOUT.set(command_timeout(sub));
-    let r = match sub {
+    let mut r = dispatch(sub, rest, &url, &token);
+    // 端点重发现：首次以 env 端点失败且确实是**连接错误**（请求从未送达 → 重跑无重复副作用）
+    // → 后端可能 panic 自重启换了 ephemeral 端口。从 `$TMUX` socket 旁的 sidecar 读当前端点，
+    // 拿到**不同**的 url 就用它重跑一次该命令。无连接错误则此分支零开销、零探测。
+    if r.is_err() && LAST_CONNECT_ERR.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some((u2, t2)) = current_tmux_socket().and_then(|s| read_endpoint_sidecar(&s)) {
+            if u2 != url {
+                log_to_file(&format!(
+                    "rediscover: env {url} unreachable, retry via sidecar endpoint {u2}"
+                ));
+                r = dispatch(sub, rest, &u2, &t2);
+            }
+        }
+    }
+    log_to_file(&format!(
+        "exit subcommand={sub} status={}",
+        if r.is_ok() { "ok" } else { "err" }
+    ));
+    process::exit(if r.is_ok() { 0 } else { 1 });
+}
+
+/// 把子命令分发到各 `cmd_*`。抽成独立函数，便于端点重发现时用**不同** url/token 重跑一次。
+fn dispatch(sub: &str, rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    match sub {
         // ========== Pane Management ==========
-        "split-window" | "splitw" => cmd_split(rest, &url, &token),
-        "select-pane" | "selectp" => cmd_select_pane(rest, &url, &token),
-        "kill-pane" | "killp" => cmd_kill_pane(rest, &url, &token),
-        "resize-pane" | "resizep" => cmd_resize_pane(rest, &url, &token),
-        "last-pane" | "lastp" => cmd_last_pane(rest, &url, &token),
-        "swap-pane" | "swapp" => cmd_swap_pane(rest, &url, &token),
-        "break-pane" | "breakp" => cmd_break_pane(rest, &url, &token),
-        "join-pane" | "joinp" => cmd_join_pane(rest, &url, &token),
-        "respawn-pane" | "respawnp" => cmd_respawn_pane(rest, &url, &token),
+        "split-window" | "splitw" => cmd_split(rest, url, token),
+        "select-pane" | "selectp" => cmd_select_pane(rest, url, token),
+        "kill-pane" | "killp" => cmd_kill_pane(rest, url, token),
+        "resize-pane" | "resizep" => cmd_resize_pane(rest, url, token),
+        "last-pane" | "lastp" => cmd_last_pane(rest, url, token),
+        "swap-pane" | "swapp" => cmd_swap_pane(rest, url, token),
+        "break-pane" | "breakp" => cmd_break_pane(rest, url, token),
+        "join-pane" | "joinp" => cmd_join_pane(rest, url, token),
+        "respawn-pane" | "respawnp" => cmd_respawn_pane(rest, url, token),
         "pipe-pane" => cmd_pipe_pane(rest),
         "display-panes" | "displayp" => cmd_display_panes(rest),
 
         // ========== Window Management ==========
-        "new-window" | "neww" => cmd_new_window(rest, &url, &token),
-        "select-window" | "selectw" => cmd_select_window(rest, &url, &token),
-        "kill-window" | "killw" => cmd_kill_window(rest, &url, &token),
-        "rename-window" => cmd_rename_window(rest, &url, &token),
+        "new-window" | "neww" => cmd_new_window(rest, url, token),
+        "select-window" | "selectw" => cmd_select_window(rest, url, token),
+        "kill-window" | "killw" => cmd_kill_window(rest, url, token),
+        "rename-window" => cmd_rename_window(rest, url, token),
         "move-window" | "movew" => cmd_move_window(rest),
         "rotate-window" | "rotw" => cmd_rotate_window(rest),
         "select-layout" | "selel" => cmd_select_layout(rest),
@@ -151,29 +174,29 @@ fn main() {
         "last-window" | "lastw" => cmd_last_window(rest),
 
         // ========== Session Management ==========
-        "new-session" | "new" => cmd_new_session(rest, &url, &token),
-        "has-session" | "has" => cmd_has_session(rest, &url, &token),
-        "list-sessions" | "ls" => cmd_list_sessions(rest, &url, &token),
-        "attach-session" | "attach" => cmd_attach_session(rest, &url, &token),
+        "new-session" | "new" => cmd_new_session(rest, url, token),
+        "has-session" | "has" => cmd_has_session(rest, url, token),
+        "list-sessions" | "ls" => cmd_list_sessions(rest, url, token),
+        "attach-session" | "attach" => cmd_attach_session(rest, url, token),
         "detach-client" | "detach" => cmd_detach_client(rest),
-        "kill-session" => cmd_kill_session(rest, &url, &token),
-        "kill-server" => cmd_kill_server(&url, &token),
+        "kill-session" => cmd_kill_session(rest, url, token),
+        "kill-server" => cmd_kill_server(url, token),
         "switch-client" | "switchc" => cmd_switch_client(rest),
         "rename-session" => cmd_rename_session(rest),
         "lock-server" | "lock" => cmd_lock_server(),
         "start-server" | "start" => cmd_start_server(),
 
         // ========== List Commands ==========
-        "list-panes" | "lsp" => cmd_list_panes(rest, &url, &token),
-        "list-windows" | "lsw" => cmd_list_windows(rest, &url, &token),
+        "list-panes" | "lsp" => cmd_list_panes(rest, url, token),
+        "list-windows" | "lsw" => cmd_list_windows(rest, url, token),
         "list-clients" | "lsc" => cmd_list_clients(rest),
         "list-keys" | "lsk" => cmd_list_keys(rest),
         "list-commands" | "lscm" => cmd_list_commands(rest),
         "list-buffers" | "lsb" => cmd_list_buffers(),
 
         // ========== I/O Commands ==========
-        "send-keys" | "send" => cmd_send_keys(rest, &url, &token),
-        "capture-pane" | "capturep" => cmd_capture(rest, &url, &token),
+        "send-keys" | "send" => cmd_send_keys(rest, url, token),
+        "capture-pane" | "capturep" => cmd_capture(rest, url, token),
 
         // ========== Buffer Commands ==========
         "save-buffer" | "saveb" => cmd_save_buffer(rest),
@@ -183,7 +206,7 @@ fn main() {
         "show-buffer" | "showb" => cmd_show_buffer(rest),
 
         // ========== Other Commands ==========
-        "display-message" | "display" => cmd_display_message(rest, &url, &token),
+        "display-message" | "display" => cmd_display_message(rest, url, token),
         "display-menu" => cmd_display_menu(rest),
         "confirm-before" | "confirm" => cmd_confirm_before(rest),
         "command-prompt" | "prompt" => cmd_command_prompt(rest),
@@ -211,12 +234,7 @@ fn main() {
             // Still return success for unknown commands to avoid breaking tools
             Ok(())
         }
-    };
-    log_to_file(&format!(
-        "exit subcommand={sub} status={}",
-        if r.is_ok() { "ok" } else { "err" }
-    ));
-    process::exit(if r.is_ok() { 0 } else { 1 });
+    }
 }
 
 /// 本次调用的 HTTP 总超时（main 据 `command_timeout(sub)` 设入；OnceLock 沿用 `SOCKET` 模式）。
@@ -236,6 +254,43 @@ fn client() -> reqwest::blocking::Client {
         .build()
         .expect("client")
 }
+
+/// 把 socket 路径转成安全文件名片段：非 `[A-Za-z0-9]` 一律 `_`。
+/// **必须**与后端 `teammate::endpoint::sanitize_socket` 同实现，两端才能算出同一 sidecar 文件名。
+fn sanitize_socket(socket_path: &str) -> String {
+    socket_path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// sidecar 端点文件路径：`temp_dir()/ridge-teammate-endpoint-<sanitize>.json`。
+/// 写在 temp（用户私有、两端可算）而非 socket 路径旁，避免污染用户 repo 目录。
+fn endpoint_sidecar_path(socket_path: &str) -> PathBuf {
+    env::temp_dir().join(format!(
+        "ridge-teammate-endpoint-{}.json",
+        sanitize_socket(socket_path)
+    ))
+}
+
+/// 读 sidecar → (url, token)；不存在 / 损坏 / 字段缺失返回 None。
+fn read_endpoint_sidecar(socket_path: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(endpoint_sidecar_path(socket_path)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let url = v.get("url")?.as_str()?.trim().to_string();
+    let token = v.get("token")?.as_str()?.trim().to_string();
+    (!url.is_empty() && !token.is_empty()).then_some((url, token))
+}
+
+/// `$TMUX` 第一段 = teammate socket 逻辑路径（`<pane cwd>/teammate.sock`），用于定位 sidecar。
+fn current_tmux_socket() -> Option<String> {
+    let tmux = env::var("TMUX").ok()?;
+    let first = tmux.split(',').next()?.trim().to_string();
+    (!first.is_empty()).then_some(first)
+}
+
+/// `send_retry` 最终以**连接错误**失败时置位；`main` 据此触发 sidecar 端点重发现。
+static LAST_CONNECT_ERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 连接错误后第 `attempt` 次失败的退避时长（ms）；`None` = 不再重试。
 ///
@@ -264,7 +319,11 @@ fn send_retry(
     loop {
         let Some(this) = req.try_clone() else {
             // 流式 body 无法克隆重发 → 单次发送，结果如实返回。
-            return req.send();
+            let r = req.send();
+            if r.as_ref().err().is_some_and(|e| e.is_connect()) {
+                LAST_CONNECT_ERR.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            return r;
         };
         match this.send() {
             Ok(resp) => return Ok(resp),
@@ -277,7 +336,13 @@ fn send_retry(
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                     attempt += 1;
                 }
-                None => return Err(e),
+                None => {
+                    // 终败：连接错误置全局标志，让 main 触发 sidecar 端点重发现。
+                    if e.is_connect() {
+                        LAST_CONNECT_ERR.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    return Err(e);
+                }
             },
         }
     }
@@ -3067,6 +3132,18 @@ mod tests {
         // 风险(如重复 split 出两个 pane)。
         assert_eq!(retry_backoff_ms(false, 0), None);
         assert_eq!(retry_backoff_ms(false, 5), None);
+    }
+
+    #[test]
+    fn sanitize_socket_maps_nonalnum_to_underscore() {
+        // 两端(后端 endpoint.rs 与本垫片)必须算出**同一** sidecar 文件名,否则读写错位。
+        // 规则:非 [A-Za-z0-9] 一律 '_';确定性、与平台无关。
+        assert_eq!(
+            sanitize_socket("C:/code/wind/teammate.sock"),
+            "C__code_wind_teammate_sock"
+        );
+        assert_eq!(sanitize_socket("/ridge/teammate.sock"), "_ridge_teammate_sock");
+        assert_eq!(sanitize_socket("abc123"), "abc123");
     }
 
     #[test]
