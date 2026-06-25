@@ -721,9 +721,9 @@
 						<div class="explorer-section group/col border-t border-[var(--rg-border)]/50">
 							<!-- ── CWD 头：chevron + 路径 + pane 数 + 刷新 ── -->
 							<div
-								class="flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
-									? 'bg-[var(--rg-surface-2)]/60 hover:bg-[var(--rg-surface-2)]/80'
-									: 'bg-[var(--rg-surface)]/40 hover:bg-[var(--rg-surface)]/70'}"
+								class="sticky top-8 z-10 backdrop-blur-md flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
+									? 'bg-[var(--rg-surface-2)]/80 hover:bg-[var(--rg-surface-2)]/90'
+									: 'bg-[var(--rg-surface)]/70 hover:bg-[var(--rg-surface)]/90'}"
 								role="button"
 								tabindex="0"
 								title={col.cwd}
