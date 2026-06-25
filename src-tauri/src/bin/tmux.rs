@@ -1172,10 +1172,7 @@ fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         pane,
         lines
     );
-    let res = client()
-        .get(u)
-        .headers(auth_headers(token))
-        .send()
+    let res = send_retry(client().get(u).headers(auth_headers(token)))
         .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         eprintln!("tmux: capture-pane {}", res.status());
@@ -1483,11 +1480,7 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         }),
     };
     let u = format!("{}/api/v1/send-keys", url.trim_end_matches('/'));
-    let res = client()
-        .post(u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
         .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         eprintln!("tmux: send-keys {}", res.status());
@@ -1566,10 +1559,7 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     let u = format!("{}/api/v1/list-panes", url.trim_end_matches('/'));
-    let res = client()
-        .get(u)
-        .headers(auth_headers(token))
-        .send()
+    let res = send_retry(client().get(u).headers(auth_headers(token)))
         .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         eprintln!("tmux: list-panes {}", res.status());
@@ -1703,11 +1693,7 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         Some(idx) => serde_json::json!({ "pane_index": idx }),
         None => serde_json::json!({}),
     };
-    let res = client()
-        .post(&u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(&u).headers(auth_headers(token)).json(&body))
         .map_err(|e| {
             log_to_file(&format!("kill-pane HTTP error: {e}"));
         })?;
