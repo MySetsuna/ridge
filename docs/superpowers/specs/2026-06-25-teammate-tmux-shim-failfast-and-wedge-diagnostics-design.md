@@ -77,7 +77,38 @@ teammate HTTP server 跑在 **`new_current_thread()` 单线程 Tokio 运行时**
 - 复现脚手架：扩展 `scripts/teammate-tmux-smoke.*`，反复打 split 并记录每次耗时，
   配合上面中间件日志，等下次楔死被捕获后再做针对性死锁修复（后续 commit）。
 
-## 5. 显式不做（本轮）
+## 4b. 增补（用户追加裁决）：端点重发现，修掉「换端口后静默全断」
+
+### 问题
+
+teammate server panic 自重启时 `run_server` 走 `bind 127.0.0.1:0` → **换新 ephemeral 端口**，
+并更新 `teammate_binding`。但**现存 shell 的 shim 环境变量 `RIDGE_TEAMMATE_URL` 还是旧端口**，
+→ 所有 tmux 命令连不上（端口错了，连接重试也救不了），直到 shell 重启。这是 4/4a 修完后
+唯一剩余的「静默全断」，且罕见但全断。
+
+### 方案：sidecar 端点文件（两端可算出同一路径）
+
+- **位置**：`temp_dir()/ridge-teammate-endpoint-<sanitize(socket_path)>.json`，
+  内容 `{"url","token"}`。
+  - `socket_path` = `$TMUX` 第一段（`<pane cwd>/teammate.sock`），后端在注入 `$TMUX` 时已知、
+    shim 从自己的 `$TMUX` 也能拿到 → **同一字符串 → 同一文件名**。
+  - **不写**在 socket 路径旁：那会在用户 repo 目录落文件、污染工作区/被误提交。
+  - `sanitize` = 非 `[A-Za-z0-9]` 一律换 `_`（确定性，两端同实现）；按 socket 路径分键 →
+    dev（`C:/code/wind`）与 release（别的 cwd）天然不撞，多工作区各一份。
+- **后端**（`teammate/endpoint.rs` + 进程级全局 socket-path 集合）：
+  - PTY spawn（`ensure_pane_pty_workspace` 的 `Some(bind)` arm）：按该 socket 路径写 sidecar
+    （当前 {url,token}）+ 记下 socket 路径。
+  - server (re)bind（`run_server` 写完 `teammate_binding` 后）：用新 {url,token} **刷新所有**
+    已记的 sidecar。→ 重启换端口后，sidecar 立即指向新端口。
+- **shim**（`tmux.rs`）：`send_retry` 最终以**连接错误**失败时置全局标志；`main` 把分发包成
+  闭包，先用 env url/token 跑；若失败且标志置位 → 从 `$TMUX` 读 sidecar，**拿到不同的** url
+  就用它**重跑一次**该命令（连接错误 = 请求从未送达 → 重跑无重复副作用）。无连接错误则零开销，
+  不做任何探测。
+
+### 安全
+
+token 落 `temp_dir()`（用户私有目录，与既有 `tmux-shim.log` 同处）= 与「token 本就在 PTY env 里」
+**同一信任边界**（本地单用户桌面），不新增暴露面。
 
 - **不**把 teammate 运行时改多线程（option 2）——那是发布宿主依赖的引擎、风险更高，用户未选。
 - **不**在未拿到确凿根因前改后端锁 / handler 的并发结构。
