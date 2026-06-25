@@ -91,6 +91,13 @@ function createContextMenuStore() {
           // removal of the menu element — without this, the browser may
           // immediately re-steal focus to <body> after our .focus() call.
           setTimeout(() => {
+            // Skip restoration if a menu action already moved focus elsewhere
+            // (e.g. an inline create/rename <input> opened by the clicked item).
+            // Only restore when focus fell back to <body>/null — otherwise we'd
+            // steal focus from that fresh input and its blur handler would cancel
+            // the edit, producing the "new-file input flashes then vanishes" bug.
+            const ae = document.activeElement;
+            if (ae !== null && ae !== document.body) return;
             try { prev.focus(); } catch { /* element may have disconnected */ }
           }, 0);
         }
