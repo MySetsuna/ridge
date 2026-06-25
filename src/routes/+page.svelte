@@ -447,7 +447,17 @@ function expandSidebar() {
 
   // 键盘快捷键处理
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // 全局禁止页面刷新（F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R）
+    // Ctrl+Shift+R: 重置当前终端输入模式——清掉 TUI 崩溃残留的鼠标/焦点/bracketed/
+    // alt-screen 私有模式（滚轮 "[<…M" 乱码的标准 reset 救援）。必须放在下面「禁刷新」
+    // 块之前，否则会被它的 preventDefault+return 吞掉。走 host 全局快捷键，故卡死态下
+    // （pane 右键/快捷键被 TUI gate 压制时）仍可达。
+    if (e.ctrlKey && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      const pid = get(activePaneId);
+      if (pid) TerminalManager.tryInstance()?.resetInputModes(pid);
+      return;
+    }
+    // 全局禁止页面刷新（F5 / Ctrl+R / Cmd+R）
     if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {
       e.preventDefault();
       return;
