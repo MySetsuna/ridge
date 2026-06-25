@@ -19,6 +19,7 @@
   import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from './lib/wsRemote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
+  import { PaneScrollbackCache, PANE_BUF_CAP, bytesEndsWith } from './lib/paneScrollbackCache';
 
   let { ws }: { ws: RemoteLink } = $props();
   let panes = $state<PaneInfo[]>([]);
@@ -156,9 +157,12 @@
   // mirror the active pane to sessionStorage so a reload restores instantly
   // before the host reconnects. The host re-sends ≤64KB scrollback on
   // (re)subscribe; we tail-match it against the cache to avoid double-painting.
-  const PANE_BUF_CAP = 256 * 1024;
+  // §scrollback-cache: per-pane raw byte buffers + the prune (GC) and
+  // replay-reconcile DECISIONS live in the pure PaneScrollbackCache module
+  // (unit-tested without a host/DOM). This shell only drives its sessionStorage
+  // mirroring by the id sets the prune methods return.
   const SS_CAP = 48 * 1024;
-  const paneBuffers = new Map<string, Uint8Array>();
+  const paneCache = new PaneScrollbackCache(PANE_BUF_CAP);
   let subscribedPaneId: string | null = null;
   let expectReplayPane: string | null = null;
   let ssMirrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,21 +180,6 @@
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
   }
-  function bytesEndsWith(hay: Uint8Array, tail: Uint8Array): boolean {
-    if (tail.length === 0) return true;
-    if (tail.length > hay.length) return false;
-    const off = hay.length - tail.length;
-    for (let i = 0; i < tail.length; i++) if (hay[off + i] !== tail[i]) return false;
-    return true;
-  }
-  function appendPaneBuffer(id: string, data: Uint8Array): void {
-    const prev = paneBuffers.get(id);
-    let next: Uint8Array;
-    if (!prev) { next = data.slice(); }
-    else { next = new Uint8Array(prev.length + data.length); next.set(prev); next.set(data, prev.length); }
-    if (next.length > PANE_BUF_CAP) next = next.slice(next.length - PANE_BUF_CAP);
-    paneBuffers.set(id, next);
-  }
   function loadPaneFromSession(id: string): Uint8Array | null {
     try { const s = sessionStorage.getItem(ssKey(id)); return s ? b64ToBytes(s) : null; }
     catch { return null; }
@@ -199,7 +188,7 @@
     if (ssMirrorTimer) return;
     ssMirrorTimer = setTimeout(() => {
       ssMirrorTimer = null;
-      const buf = paneBuffers.get(id);
+      const buf = paneCache.get(id);
       if (!buf) return;
       try {
         const tail = buf.length > SS_CAP ? buf.subarray(buf.length - SS_CAP) : buf;
@@ -207,32 +196,56 @@
       } catch { /* quota exceeded / disabled — ignore */ }
     }, 600);
   }
+  function removeSessionMirror(id: string) {
+    try { sessionStorage.removeItem(ssKey(id)); } catch { /* disabled — ignore */ }
+  }
 
   // §cache-gc: a closed pane MUST release its caches. The PWA tab can live for
   // days (长期运行/长时间后台), so without this every terminal ever opened leaks
   // its scrollback into both the in-memory buffer map (≤256KB each) AND
   // sessionStorage (≤48KB each), plus the WS text buffer — eventually blowing the
   // mobile tab's memory budget / sessionStorage quota, so the page fails to
-  // (re)open until the user clears site data. Prune everything outside the host's
-  // authoritative live-pane set whenever a fresh `panes` list arrives (the host
-  // re-broadcasts it on every pane add/close/rename). Over-pruning is harmless:
-  // the host replays a pane's scrollback on (re)subscribe.
-  function pruneDeadPanes(liveIds: string[]) {
-    const live = new Set(liveIds);
-    for (const id of [...paneBuffers.keys()]) {
-      if (!live.has(id)) paneBuffers.delete(id);
-    }
+  // (re)open until the user clears site data.
+  //
+  // §cross-ws-prune（方案1，子方案 B）: the host's `list-panes` only returns the
+  // ACTIVE workspace's panes, so the old "delete everything not in this list"
+  // wrongly GC'd OTHER workspaces' caches the moment you switched workspace →
+  // switching back lost scrollback. We now release ONLY panes that vanished from
+  // their OWN workspace's list (truly closed — mobile can only close panes in the
+  // active workspace), keeping cross-workspace caches alive. The host re-broadcasts
+  // the list on every pane add/close/rename. `survivingIds` spans all workspaces so
+  // ws.pruneOutputs (same "not in set → delete" semantics) doesn't over-prune either.
+  function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
+    const before = new Set<string>();
+    for (const id of liveIds) before.add(id);
+    const { survivingIds } = paneCache.pruneCurrentWorkspace(activeWsId, liveIds);
+    // Mirror the in-memory GC to sessionStorage: drop any mirror whose pane is no
+    // longer cached (survivingIds is the authoritative kept set across all ws).
+    const survive = new Set(survivingIds);
     try {
       const stale: string[] = [];
       for (let i = 0; i < sessionStorage.length; i++) {
         const k = sessionStorage.key(i);
-        if (k && k.startsWith(SB_KEY_PREFIX) && !live.has(k.slice(SB_KEY_PREFIX.length))) {
+        if (k && k.startsWith(SB_KEY_PREFIX) && !survive.has(k.slice(SB_KEY_PREFIX.length))) {
           stale.push(k);
         }
       }
       for (const k of stale) sessionStorage.removeItem(k);
     } catch { /* sessionStorage disabled — nothing to prune */ }
-    ws.pruneOutputs(live);
+    ws.pruneOutputs(survive);
+  }
+
+  // §cross-ws-prune fallback（方案1）: when a whole workspace is closed (its id
+  // drops from list-workspaces), its panes can never reappear, so release their
+  // caches here — the per-list prune above never sees those panes again. Clears
+  // both the in-memory buffer and its sessionStorage mirror, and keeps the WS
+  // text buffers (pruneOutputs) in step with the surviving cached set.
+  function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
+    const removed = paneCache.pruneClosedWorkspaces(liveWorkspaceIds);
+    if (removed.length > 0) {
+      for (const id of removed) removeSessionMirror(id);
+      ws.pruneOutputs(new Set(paneCache.liveIds()));
+    }
   }
 
   // Defensive: the host's pane/workspace lists can briefly contain DUPLICATE ids
@@ -298,6 +311,8 @@
     try {
       const data = await ws.listWorkspaces();
       workspaces = dedupeById(data.workspaces || []);
+      // §cross-ws-prune fallback: drop caches of any workspace that's gone.
+      pruneCachesForClosedWorkspaces(workspaces.map(w => w.id));
       const hostActive = workspaces.find(w => w.active);
       // §persist-state: on the first list after (re)connect, if the user's last
       // viewed workspace still exists but the host is on a different one, switch
@@ -388,8 +403,11 @@
       if (msg.type === 'panes') {
         panes = dedupeById(msg.panes);
         const paneIds = panes.map(p => p.id);
-        // Release caches for panes the host no longer reports (memory/quota leak).
-        pruneDeadPanes(paneIds);
+        // Release caches for panes truly closed in THIS workspace (memory/quota
+        // leak); other workspaces' caches survive (§cross-ws-prune). The list
+        // belongs to the active workspace; skip pruning until we know which one
+        // (an empty id would mis-tag every pane).
+        if (activeWorkspaceId) pruneDeadPanes(activeWorkspaceId, paneIds);
         // §persist-state pane restore: keep a still-valid current selection
         // (no "莫名奇妙切换工作区"); otherwise prefer the remembered pane for the
         // current workspace (seeded from localStorage on boot), else the first
@@ -413,6 +431,10 @@
       }
       if (msg.type === 'workspaces') {
         workspaces = dedupeById(msg.workspaces);
+        // §cross-ws-prune fallback: a closed workspace's panes can never come
+        // back — release their caches so they don't leak (per-list prune never
+        // sees them again).
+        pruneCachesForClosedWorkspaces(workspaces.map(w => w.id));
         const active = workspaces.find(w => w.active);
         // Once the boot restore has run, follow the host's active workspace.
         // Before that, refreshWorkspaces() owns the restore decision, so a
@@ -443,16 +465,16 @@
         // → drop the redundant replay. Otherwise the pane changed while we were
         // away (or the cache was empty/short) → wipe + repaint authoritatively.
         expectReplayPane = null;
-        const cached = paneBuffers.get(paneId);
+        const cached = paneCache.get(paneId);
         if (cached && bytesEndsWith(cached, data)) return;
         canvasRef?.resetForSwitch();
         canvasRef?.feedUtf8(data);
-        paneBuffers.set(paneId, data.length > PANE_BUF_CAP ? data.slice(data.length - PANE_BUF_CAP) : data.slice());
+        paneCache.set(paneId, data, activeWorkspaceId || undefined);
         scheduleSessionMirror(paneId);
         return;
       }
       // Live output.
-      appendPaneBuffer(paneId, data);
+      paneCache.append(paneId, data, activeWorkspaceId || undefined);
       canvasRef?.feedUtf8(data);
       scheduleSessionMirror(paneId);
     });
@@ -511,7 +533,7 @@
       canvasRef?.resetForSwitch();
       const pid = activePaneId;
       if (pid) {
-        const cached = paneBuffers.get(pid);
+        const cached = paneCache.get(pid);
         if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
         expectReplayPane = pid;
         ws.subscribePane(pid);
@@ -559,10 +581,10 @@
       // §isolation: wipe the kernel so the previous pane can't bleed into this one.
       canvasRef?.resetForSwitch();
       // Instant pre-paint from cache (in-memory; else sessionStorage on reload).
-      let cached = paneBuffers.get(pid);
+      let cached = paneCache.get(pid);
       if (!cached) {
         const restored = loadPaneFromSession(pid);
-        if (restored) { paneBuffers.set(pid, restored); cached = restored; }
+        if (restored) { paneCache.set(pid, restored, activeWorkspaceId || undefined); cached = restored; }
       }
       if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
       // The host replays this pane's scrollback on subscribe — reconcile it
