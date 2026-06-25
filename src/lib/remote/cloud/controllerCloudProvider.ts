@@ -73,7 +73,7 @@ const WS_CONNECT_TIMEOUT_MS = 10_000;
 
 // ── 信令 error 帧分类（契约 §5 错误码 / §5.3 SUPERSEDED）──
 /** 终态错误：鉴权/计费/归属类，重连也无用 → 进 'error' 态、停止重连、提示用户。 */
-const TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
+export const TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
   'USERNAME_MISMATCH',
   'DEVICE_NOT_OWNED',
   'DEVICE_TOKEN_MISMATCH',
@@ -81,9 +81,13 @@ const TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
   'NOT_PREMIUM',
 ]);
 /** 被自己的新连接顶替：静默关闭、不报错、不重连本连接（换网/刷新预期事件）。 */
-const SUPERSEDED_CODE = 'SUPERSEDED';
-// 其余 code（CONTROLLER_LIMIT_REACHED / TOO_MANY_CONNECTIONS 等容量/瞬时类）= 可恢复：
-// 不进终态，交由 onclose/退避重连。顶替生效后基本不再触发，留作防御纵深。
+export const SUPERSEDED_CODE = 'SUPERSEDED';
+/** 可恢复错误（容量/瞬时）：不进终态，onclose 退避重连仍生效，仅上报用户。
+ *  注：classification 的 else 分支仍兜底「未知 code」→ 按可恢复处理（前向兼容的安全默认）。 */
+export const RECOVERABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  'CONTROLLER_LIMIT_REACHED',
+  'TOO_MANY_CONNECTIONS',
+]);
 
 // 信令类型来自生成的 SSOT（`./signaling` ← ridge-signaling ts-rs bindings）。入站统一经
 // {@link parseSignal} + {@link isInboundSignal} 收窄到 {@link SignalIn}（去掉 kick），出站以

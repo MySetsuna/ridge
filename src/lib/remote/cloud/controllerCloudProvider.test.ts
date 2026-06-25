@@ -498,14 +498,24 @@ describe('ControllerCloudProvider', () => {
     expect(provider.getState()).not.toBe('error');
   });
 
-  it('可恢复 error（CONTROLLER_LIMIT_REACHED）→ 不进 error 终态', async () => {
+  it('可恢复 error（CONTROLLER_LIMIT_REACHED）→ 不进 error 终态，但调用 onError 上报', async () => {
     const { ControllerCloudProvider } = await loadProvider();
-    const provider = new ControllerCloudProvider(CONFIG);
+    let errCode: string | undefined;
+    const provider = new ControllerCloudProvider(CONFIG, { onError: (_m, code) => (errCode = code) });
     await provider.connect(HOST_DEVICE);
     await flush();
     FakeWebSocket.instances[0].deliver({ t: 'error', code: 'CONTROLLER_LIMIT_REACHED', message: '已达上限' });
     await flush();
     expect(provider.getState()).not.toBe('error');
+    expect(errCode).toBe('CONTROLLER_LIMIT_REACHED');
+  });
+
+  it('RECOVERABLE_ERROR_CODES / TERMINAL_ERROR_CODES 成员集合（契约 Produces）', async () => {
+    const { RECOVERABLE_ERROR_CODES, TERMINAL_ERROR_CODES } = await import('./controllerCloudProvider');
+    expect(RECOVERABLE_ERROR_CODES.has('CONTROLLER_LIMIT_REACHED')).toBe(true);
+    expect(RECOVERABLE_ERROR_CODES.has('TOO_MANY_CONNECTIONS')).toBe(true);
+    expect(TERMINAL_ERROR_CODES.has('CONTROLLER_LIMIT_REACHED')).toBe(false);
+    expect(TERMINAL_ERROR_CODES.has('SUPERSEDED')).toBe(false);
   });
 
   it('connect 幂等：已连接中再次 connect 不新建 PeerConnection', async () => {
