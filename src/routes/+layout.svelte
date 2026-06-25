@@ -66,6 +66,12 @@
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
       return () => stopTotpSync();
     }
+    // §sw-early-register：进 web-remote 页即注册 service-worker，与鉴权解耦（对齐移动端
+    // main.ts 的 immediate 注册）。静态壳（_app/immutable，含 Monaco）的预缓存 +
+    // version-gate 自更新不依赖是否连上 host——未连上 / host 离线 / 卡登录时 `ready` 永不为
+    // true，此处若不提前注册则 SW 永不安装，缓存与自更新全失效。注册幂等，下游接线成功路径
+    // 不再重复调用。务必只在此 WEB_REMOTE 路径注册（Tauri 分支已早 return，不应有 SW）。
+    registerServiceWorker();
     // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
 //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
   //   2. 租户域名: `{device}-{username}.9527127.xyz`（自动从 hostname 解析）
@@ -132,7 +138,6 @@
               handle.verifyTotp(cached).then((ok) => {
                 if (ok) {
                   ready = true;
-                  registerServiceWorker();
                 } else {
                   try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
                   ready = false;
@@ -152,7 +157,6 @@
             handle.tryTrustGrant().then((trusted) => {
               if (trusted) {
                 ready = true;
-                registerServiceWorker();
               } else {
                 fallbackToTotp();
               }
@@ -222,7 +226,6 @@
       // DataProvider consumers (FS/git/search) ride the same shimmed invoke.
       setTransport(new TauriDataProvider());
       ready = true;
-      registerServiceWorker();
     };
 
     const connectWith = (token: string) => {
@@ -314,7 +317,6 @@
           code = '';
           ready = true;
           try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
-          registerServiceWorker();
         } else {
           code = '';
           try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
