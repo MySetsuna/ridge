@@ -313,7 +313,12 @@ impl SurfaceHost {
         // plain colour clear so the wallpaper is composited beneath every pane.
         // The wallpaper fragment always outputs alpha=1, so it fully replaces
         // any stale pixels and the `needs_initial_clear` semantics are preserved.
-        if self.needs_initial_clear {
+        // §wallpaper-fix: 壁纸激活时**每帧无条件**画全屏 quad（顶替 clear）；
+        // 无壁纸时维持原行为，仅在 needs_initial_clear 帧做普通 clear。把壁纸
+        // 绘制 gate 在 needs_initial_clear 之内会让非首帧（光标闪烁等局部重绘）
+        // 不重画壁纸，透明默认单元回放时透出双缓冲陈旧像素 → 鬼影
+        // （见 plan「核心正确性规则」）。
+        {
             let ctx = self.ctx.borrow();
             if ctx.has_wallpaper() {
                 // ── Wallpaper path ──────────────────────────────────────────
@@ -348,7 +353,8 @@ impl SurfaceHost {
                         view: &view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            // quad 不透明铺满整屏，等效 clear → Load 即可，省一次 clear。
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -360,7 +366,7 @@ impl SurfaceHost {
                 pass.set_bind_group(0, bg_group, &[]);
                 pass.draw(0..4, 0..1);
                 // pass dropped → render pass ends
-            } else {
+            } else if self.needs_initial_clear {
                 // ── Plain colour clear path ─────────────────────────────────
                 let mut _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ridge-host-clear-pass"),
