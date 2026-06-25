@@ -17,8 +17,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::commands::{
-    clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme,
-    watch, workspace,
+    clipboard_files, clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings,
+    terminal, theme, watch, workspace,
 };
 use crate::db::ProjectStore;
 use crate::state::AppState;
@@ -693,6 +693,8 @@ pub fn run() {
             clipboard_image::read_clipboard_image_to_temp,
             clipboard_image::save_clipboard_image_to_temp,
             clipboard_image::resolve_pasted_image_path,
+            clipboard_files::read_clipboard_file_paths,
+            clipboard_files::write_clipboard_file_paths,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
