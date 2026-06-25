@@ -36,7 +36,6 @@ import {
 	type InputBufferState,
 } from './inputBufferTracker';
 import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
-import { activeBgImage } from '$lib/stores/themes';
 import { getShells, changePaneShell, type ShellInfo } from '$lib/terminal/paneShell';
 import { Terminal } from 'lucide-svelte';
 
@@ -1799,17 +1798,6 @@ function captureBackspace(node: HTMLElement) {
 	onkeydown={onContainerKeyDown}
 	use:captureBackspace
 >
-	<!-- 终端背景图层：absolute z-index:0，必须是容器的首个子节点，
-	     才能稳定排在 wasm canvas（由 manager 后续 append）的 DOM 顺序之前、
-	     渲染在其下方。勿在它前面插入其它元素，否则层叠会错乱。 -->
-	{#if $activeBgImage.url}
-		<div
-			class="rg-pane-bgimg"
-			style="background-image: url('{$activeBgImage.url}'); opacity: {$activeBgImage.opacity};"
-			aria-hidden="true"
-		></div>
-	{/if}
-
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the
 	     textarea never enters the DOM — OS IME has no focusable input
@@ -2195,14 +2183,5 @@ function captureBackspace(node: HTMLElement) {
 	.rg-search-btn.active {
 		background: var(--rg-accent, #4a8cff);
 		color: #fff;
-	}
-	.rg-pane-bgimg {
-		position: absolute;
-		inset: 0;
-		background-size: cover;
-		background-position: center;
-		background-repeat: no-repeat;
-		pointer-events: none;
-		z-index: 0;
 	}
 </style>
