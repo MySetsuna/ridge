@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, Terminal } from 'lucide-svelte';
+	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, Terminal, File, Folder } from 'lucide-svelte';
 	import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
 	import {
 		fileExplorerStore,
@@ -37,6 +37,7 @@
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
 	import { overlayScroll } from '$lib/actions/overlayScroll';
 	import { t, tr } from '$lib/i18n';
+	import { showContextMenu } from '$lib/stores/contextMenu';
 
 	interface Props {
 		workspaceId: string;
@@ -288,6 +289,99 @@
 			out.delete(columnId);
 			refreshingColumns = out;
 		}
+	}
+
+	// ─── 列级（cwd 顶层）内联新建 ───────────────────────────────────────────
+	// FileTree 的内联新建只作用在某个文件夹「节点」上；cwd 根自身不作为节点渲染，
+	// 故「在 cwd 顶层 / 空白区新建」需要这一层列级状态：在 .explorer-body 顶部插一行
+	// 输入框，提交时对 col.cwd 调 create_file/create_directory。语义对齐 FileTree
+	// 的内联输入（Enter 提交 / Esc 取消 / blur 提交）。
+	let creatingColumnId = $state<string | null>(null);
+	let creatingKind = $state<'file' | 'folder'>('file');
+	let creatingValue = $state('');
+	let creatingCwd = $state('');
+	let createInput = $state<HTMLInputElement | undefined>();
+	let pendingColumnCreate = $state(false);
+
+	function joinChild(baseDir: string, child: string): string {
+		const sep = baseDir.includes('\\') && !baseDir.includes('/') ? '\\' : '/';
+		const cleanBase = baseDir.replace(/[\\/]+$/, '');
+		return `${cleanBase}${sep}${child}`;
+	}
+
+	function cancelColumnCreate(): void {
+		creatingColumnId = null;
+		creatingValue = '';
+	}
+
+	async function beginColumnCreate(columnId: string, cwd: string, kind: 'file' | 'folder'): Promise<void> {
+		// 折叠态先展开，否则 body（含输入框）不渲染。
+		if (get(collapsedColumns).has(columnId)) toggleColumnCollapsed(columnId);
+		creatingColumnId = columnId;
+		creatingCwd = cwd;
+		creatingKind = kind;
+		creatingValue = '';
+		await tick();
+		createInput?.focus();
+	}
+
+	async function commitColumnCreate(): Promise<void> {
+		if (!creatingColumnId || pendingColumnCreate) return;
+		const val = creatingValue.trim();
+		if (!val) { cancelColumnCreate(); return; }
+		if (!isTauri()) { cancelColumnCreate(); return; }
+		const columnId = creatingColumnId;
+		const isFile = creatingKind === 'file';
+		const target = joinChild(creatingCwd, val);
+		pendingColumnCreate = true;
+		try {
+			await invoke(isFile ? 'create_file' : 'create_directory', { path: target });
+			await fileExplorerStore.loadTree(columnId);
+			if (isFile) await fileEditorStore.openFile(target);
+			cancelColumnCreate();
+		} catch (e) {
+			await alertDialog({
+				title: tr('explorer.createFailed'),
+				message: isFile
+					? tr('explorer.createFileFailedMessage', { error: String(e) })
+					: tr('explorer.createDirFailedMessage', { error: String(e) }),
+				danger: true,
+			});
+		} finally {
+			pendingColumnCreate = false;
+		}
+	}
+
+	function onColumnCreateKeydown(e: KeyboardEvent): void {
+		if (e.isComposing) return;
+		if (e.key === 'Enter') { e.preventDefault(); void commitColumnCreate(); }
+		else if (e.key === 'Escape') { e.preventDefault(); cancelColumnCreate(); }
+	}
+
+	function onColumnCreateBlur(): void {
+		if (creatingColumnId && !pendingColumnCreate) void commitColumnCreate();
+	}
+
+	async function revealCwd(cwd: string): Promise<void> {
+		if (!isTauri()) return;
+		try {
+			await invoke('reveal_in_file_manager', { path: cwd });
+		} catch (e) {
+			await alertDialog({ title: tr('explorer.revealFailed'), message: tr('explorer.revealFailedMessage', { error: String(e) }), danger: true });
+		}
+	}
+
+	// cwd 头 / 文件树空白区右键：弹「新建文件 / 新建文件夹 / 刷新 / 在文件管理器显示」。
+	function showCwdContextMenu(e: MouseEvent, col: { id: string; cwd: string }): void {
+		e.preventDefault();
+		e.stopPropagation();
+		showContextMenu(e.clientX, e.clientY, [
+			{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => void beginColumnCreate(col.id, col.cwd, 'file') },
+			{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => void beginColumnCreate(col.id, col.cwd, 'folder') },
+			{ id: 'div1', divider: true },
+			{ id: 'refresh', label: tr('explorer.ctxRefresh'), action: () => void handleRefresh(col.id) },
+			{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealCwd(col.cwd) },
+		]);
 	}
 
 	/**
@@ -729,6 +823,7 @@
 								title={col.cwd}
 								onclick={() => toggleColumnCollapsed(col.id)}
 								onkeydown={(e) => e.key === 'Enter' && toggleColumnCollapsed(col.id)}
+								oncontextmenu={(e) => showCwdContextMenu(e, col)}
 							>
 								<ChevronRight
 									class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)] transition-transform duration-150 {isColCollapsed ? '' : 'rotate-90'}"
@@ -786,7 +881,29 @@
 								{/if}
 
 								<!-- File tree body: cwd 下文件平铺。 -->
-								<div class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto rg-scroll" : ""}">
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div
+										class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto rg-scroll" : ""}"
+										oncontextmenu={(e) => showCwdContextMenu(e, col)}
+									>
+										{#if creatingColumnId === col.id}
+											<!-- 列级（cwd 顶层）内联新建输入行 -->
+											<div class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--rg-accent)]/10">
+												<span class="w-4 h-4 shrink-0"></span>
+												<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-accent)]">
+													{#if creatingKind === 'file'}<File size={16} />{:else}<Folder size={16} />{/if}
+												</span>
+												<input
+													type="text"
+													bind:this={createInput}
+													bind:value={creatingValue}
+													placeholder={creatingKind === 'file' ? $t('explorer.newFileName') : $t('explorer.newFolderName')}
+													class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--rg-fg)]"
+													onkeydown={onColumnCreateKeydown}
+													onblur={onColumnCreateBlur}
+												/>
+											</div>
+										{/if}
 									{#if col.tree}
 										{#if (col.tree.children ?? []).length > 0}
 											{#each col.tree.children ?? [] as child (child.path)}
