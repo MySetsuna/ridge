@@ -190,14 +190,27 @@ async function decodeThemeBgRgba(t: ThemeEntry | undefined): Promise<ActiveWallp
   const url = await resolveThemeBgUrl(t);
   if (!url) return null;
   try {
-    const resp = await fetch(url);
-    const blob = await resp.blob();
-    const bmp = await createImageBitmap(blob);
-    const { width, height } = bmp;
-    const oc = new OffscreenCanvas(width, height);
-    const ctx2d = oc.getContext('2d')!;
-    ctx2d.drawImage(bmp, 0, 0);
-    bmp.close();
+    // §wallpaper-fix: 用 <img> 元素加载（走 CSP img-src——asset.localhost 在白名单，
+    // 旧 .rg-pane-bgimg 的 CSS background-image 即如此），而非 fetch（走 connect-src，
+    // asset.localhost 不在白名单 → "Failed to fetch" 被 CSP 拦）。crossOrigin='anonymous'
+    // 让 Tauri asset 协议（返回 ACAO:*）下 drawImage 不污染 canvas，getImageData 可读。
+    // 已 CDP 实测：带 crossOrigin 可读像素；不带则 canvas tainted → SecurityError。
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error(`image load failed: ${url}`));
+      im.src = url;
+    });
+    const width = img.naturalWidth;
+    const height = img.naturalHeight;
+    if (!width || !height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx2d = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx2d) return null;
+    ctx2d.drawImage(img, 0, 0);
     const imageData = ctx2d.getImageData(0, 0, width, height);
     return {
       rgba: new Uint8Array(imageData.data.buffer),
