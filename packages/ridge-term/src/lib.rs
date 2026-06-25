@@ -1637,6 +1637,35 @@ mod renderer_js {
         pub fn end_frame(&self) {
             self.host.borrow_mut().end_frame();
         }
+
+        /// Upload a wallpaper image to the GPU and enable the wallpaper
+        /// pass. `rgba` must be a packed RGBA byte slice
+        /// (`width * height * 4` bytes). `opacity` is in `[0.0, 1.0]`;
+        /// 0 = full theme background colour, 1 = fully opaque image.
+        ///
+        /// Forwards to `SurfaceHost::set_wallpaper`, which in turn
+        /// delegates to `GpuContext::set_wallpaper` (texture upload +
+        /// bind-group rebuild) and calls `invalidate()` so the change
+        /// takes effect on the next `beginFrame`.
+        ///
+        /// Only available under `#[cfg(feature = "webgpu")]` — the JS
+        /// side must guard accordingly.
+        #[wasm_bindgen(js_name = setWallpaper)]
+        pub fn set_wallpaper(&self, rgba: &[u8], w: u32, h: u32, opacity: f32) {
+            self.host.borrow_mut().set_wallpaper(rgba, w, h, opacity);
+        }
+
+        /// Remove the wallpaper and revert to plain theme-colour clear
+        /// on the next `beginFrame`. Idempotent — safe to call even
+        /// when no wallpaper is currently loaded.
+        ///
+        /// Forwards to `SurfaceHost::clear_wallpaper` → `GpuContext::
+        /// clear_wallpaper` (drops texture + bind group) and calls
+        /// `invalidate()`.
+        #[wasm_bindgen(js_name = clearWallpaper)]
+        pub fn clear_wallpaper(&self) {
+            self.host.borrow_mut().clear_wallpaper();
+        }
     }
 }
 
