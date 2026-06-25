@@ -120,6 +120,17 @@ pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 /// keeps the two backends visually identical.
 pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
+/// std140 size of `WallpaperUniform`: vec2(8) + vec2(8) + vec3-padded-to-vec4(16) = 32 bytes.
+pub const WALLPAPER_UNIFORM_SIZE: u64 = 32;
+
+/// Uploaded wallpaper image GPU resources (texture + view + original pixel dimensions).
+pub struct WallpaperTex {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub img_w: u32,
+    pub img_h: u32,
+}
+
 /// Per-process shared GPU resources. One instance for all panes.
 pub struct GpuContext {
     pub instance: wgpu::Instance,
@@ -131,6 +142,22 @@ pub struct GpuContext {
     pub cell_bind_group_layout: wgpu::BindGroupLayout,
     pub cell_pipeline: wgpu::RenderPipeline,
     pub sampler: wgpu::Sampler,
+
+    // ── 壁纸资源 ─────────────────────────────────────────────────────
+    /// 当前壁纸纹理（含原始像素尺寸）。`None` = 无壁纸。
+    pub wallpaper: Option<WallpaperTex>,
+    /// 壁纸不透明度 [0.0, 1.0]，由 `set_wallpaper` 写入，
+    /// `begin_frame` 读取后填入 uniform 并更新 GPU buffer。
+    pub wallpaper_opacity: f32,
+    /// 全屏 quad 渲染管线（TriangleStrip，无顶点 buffer）。
+    /// Task 3 (`surface_host.rs::begin_frame`) 从另一模块直接访问，故 `pub`。
+    pub wallpaper_pipeline: wgpu::RenderPipeline,
+    wallpaper_sampler: wgpu::Sampler,
+    /// 壁纸 uniform buffer（WALLPAPER_UNIFORM_SIZE 字节）。
+    pub wallpaper_uniform: wgpu::Buffer,
+    wallpaper_bgl: wgpu::BindGroupLayout,
+    /// 壁纸 bind group（含 uniform/texture/sampler）。上传图片后重建。
+    pub wallpaper_bind_group: Option<wgpu::BindGroup>,
 
     pub atlas: GlyphAtlas,
     pub atlas_texture: wgpu::Texture,
@@ -494,6 +521,99 @@ impl GpuContext {
             ..Default::default()
         });
 
+        // ── 壁纸管线（全屏 quad）──────────────────────────────────
+        let wallpaper_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ridge-wallpaper-shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "shaders/wallpaper.wgsl"
+            ))),
+        });
+        let wallpaper_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ridge-wallpaper-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let wallpaper_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ridge-wallpaper-pipeline-layout"),
+            bind_group_layouts: &[&wallpaper_bgl],
+            push_constant_ranges: &[],
+        });
+        let wallpaper_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ridge-wallpaper-pipeline"),
+            layout: Some(&wallpaper_pl_layout),
+            vertex: wgpu::VertexState {
+                module: &wallpaper_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[], // 全屏 quad 由 vertex_index 生成，无顶点 buffer
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &wallpaper_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SURFACE_FORMAT,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let wallpaper_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ridge-wallpaper-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let wallpaper_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ridge-wallpaper-uniform"),
+            size: WALLPAPER_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Initial atlas dimensions = slot floors. First per-pane
         // `begin_frame` will grow if real metrics demand it.
         let slot_w = ATLAS_SLOT_W_FLOOR;
@@ -547,6 +667,13 @@ impl GpuContext {
             cell_bind_group_layout,
             cell_pipeline,
             sampler,
+            wallpaper: None,
+            wallpaper_opacity: 1.0,
+            wallpaper_pipeline,
+            wallpaper_sampler,
+            wallpaper_uniform,
+            wallpaper_bgl,
+            wallpaper_bind_group: None,
             atlas: GlyphAtlas::new(atlas_capacity),
             atlas_texture,
             atlas_view,
@@ -615,6 +742,77 @@ impl GpuContext {
     /// layer indices are about to become stale). Bumps
     /// `atlas_generation` so per-pane backends know to rebuild their
     /// bind groups against the new `atlas_view`.
+    // ── 壁纸 API ─────────────────────────────────────────────────────────
+
+    /// 上传一张 RGBA 图像作为当前 workspace 壁纸。
+    /// 若 `w == 0 || h == 0` 则等同 `clear_wallpaper`。
+    /// `opacity` 被 clamp 到 [0, 1]。
+    pub fn set_wallpaper(&mut self, rgba: &[u8], w: u32, h: u32, opacity: f32) {
+        if w == 0 || h == 0 {
+            self.clear_wallpaper();
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ridge-wallpaper-tex"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let (packed, bytes_per_row) = super::wallpaper::pack_rows_to_alignment(rgba, w, h);
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &packed,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ridge-wallpaper-bg"),
+            layout: &self.wallpaper_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.wallpaper_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.wallpaper_sampler),
+                },
+            ],
+        });
+        self.wallpaper = Some(WallpaperTex { texture, view, img_w: w, img_h: h });
+        self.wallpaper_opacity = opacity.clamp(0.0, 1.0);
+        self.wallpaper_bind_group = Some(bind_group);
+    }
+
+    /// 清除壁纸，回退到纯色 clear pass。
+    pub fn clear_wallpaper(&mut self) {
+        self.wallpaper = None;
+        self.wallpaper_bind_group = None;
+    }
+
+    /// 当前是否有有效壁纸纹理 + bind group。
+    pub fn has_wallpaper(&self) -> bool {
+        self.wallpaper.is_some() && self.wallpaper_bind_group.is_some()
+    }
+
     /// Reset the per-frame written mask. Called at the start of every
     /// frame from `SurfaceHost::begin_frame` so each frame starts with
     /// all layers available for writing.
