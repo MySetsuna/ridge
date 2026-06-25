@@ -192,4 +192,12 @@ describe('PaneScrollbackCache.reconcileReplay — never shrink a longer local ca
     const r = c.reconcileReplay('p', bytes(50, 65));
     expect(r.action).toBe('keep');
   });
+
+  it('tags the workspace on repaint so cross-workspace prune protects it', () => {
+    const c = new PaneScrollbackCache();
+    c.reconcileReplay('p', bytes(20, 66), 'A'); // no cache → repaint, tag A
+    // Switching to B must not GC p (it belongs to A, not B).
+    c.pruneCurrentWorkspace('B', ['b1']);
+    expect(c.has('p')).toBe(true);
+  });
 });
