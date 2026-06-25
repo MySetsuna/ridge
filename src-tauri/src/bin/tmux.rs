@@ -121,6 +121,8 @@ fn main() {
     let sub = args[sub_idx].as_str();
     let rest = &args[sub_idx + 1..];
     log_to_file(&format!("socket={} sub={sub}", socket()));
+    // 按子命令设 HTTP 总超时：控制命令短超时，后端楔死时秒级失败而非干等满 60s。
+    let _ = CLIENT_TIMEOUT.set(command_timeout(sub));
     let r = match sub {
         // ========== Pane Management ==========
         "split-window" | "splitw" => cmd_split(rest, &url, &token),
@@ -217,11 +219,51 @@ fn main() {
     process::exit(if r.is_ok() { 0 } else { 1 });
 }
 
+/// 本次调用的 HTTP 总超时（main 据 `command_timeout(sub)` 设入；OnceLock 沿用 `SOCKET` 模式）。
+static CLIENT_TIMEOUT: OnceLock<std::time::Duration> = OnceLock::new();
+
 fn client() -> reqwest::blocking::Client {
+    // 总超时按子命令分级：未设时取保守的 10s（绝不再回到一刀切 60s）。
+    // 连接超时单列：真正不可达（无人监听 → 立即 refused / 防火墙丢包）时秒级失败，
+    // 不必等满总超时。注意后端楔死场景下连接其实建得起来，靠的是总超时兜底。
+    let timeout = CLIENT_TIMEOUT
+        .get()
+        .copied()
+        .unwrap_or_else(|| std::time::Duration::from_secs(10));
     reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(timeout)
         .build()
         .expect("client")
+}
+
+/// 按子命令分级的 HTTP 总超时。
+///
+/// 旧实现对**所有**命令一刀切 60s：后端 teammate HTTP server 楔死时，harness 发的每条
+/// tmux 命令都要干等满一分钟才失败（实测 split-window 卡 60.005s → `Failed to create
+/// teammate pane`）。控制类命令后端自身有界（`route_split` 最坏 `timeout(3s, ready_rx)`），
+/// 给 10s（~3× 余量）即可秒级失败。唯独 `send-keys` 可能触发 GUI pane 的人审（HITL），
+/// 审批期间请求合法地久等，保留 60s 避免误杀。
+fn command_timeout(sub: &str) -> std::time::Duration {
+    match sub {
+        "send-keys" | "send" => std::time::Duration::from_secs(60),
+        _ => std::time::Duration::from_secs(10),
+    }
+}
+
+/// 把 reqwest 传输错误翻成给 harness 看的一行人类可读原因。
+///
+/// 关键：超时（后端楔死最常见的表现）与连接失败各自单列，让宿主的
+/// `Failed to create teammate pane:` 后面**不再是空白**——空原因正是本次事故里
+/// 用户看到的样子。`detail` 是 `reqwest::Error` 的 Display 兜底文本。
+fn backend_error_message(is_timeout: bool, is_connect: bool, detail: &str) -> String {
+    if is_timeout {
+        "tmux: Ridge teammate backend unresponsive (request timed out); pane not created".to_string()
+    } else if is_connect {
+        "tmux: cannot reach Ridge teammate backend (connection failed)".to_string()
+    } else {
+        format!("tmux: teammate backend error: {detail}")
+    }
 }
 
 fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
@@ -988,6 +1030,12 @@ fn post_split(
         Ok(r) => r,
         Err(e) => {
             log_to_file(&format!("tmux: HTTP error: {e}"));
+            // 明确原因写 stderr：宿主把它接到 "Failed to create teammate pane:" 之后，
+            // 否则用户只看到冒号 + 空白（本次事故现象）。
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            );
             return Err(());
         }
     };
@@ -2938,5 +2986,40 @@ mod tests {
         assert_eq!(parse_pane_target("%2"), 2);
         assert_eq!(parse_pane_target("sess:1.3"), 3);
         assert_eq!(parse_pane_target("4"), 4);
+    }
+
+    #[test]
+    fn control_commands_fail_fast() {
+        // 控制类命令(split/list/display/capture/...)用短超时:后端楔死时秒级失败,
+        // 而非让 harness 干等满垫片旧的 60s。后端自身最坏 ~3s(route_split 的 ready_rx),
+        // 10s 是 ~3× 余量。
+        let ten = std::time::Duration::from_secs(10);
+        assert_eq!(command_timeout("split-window"), ten);
+        assert_eq!(command_timeout("list-sessions"), ten);
+        assert_eq!(command_timeout("list-panes"), ten);
+        assert_eq!(command_timeout("display-message"), ten);
+        assert_eq!(command_timeout("capture-pane"), ten);
+    }
+
+    #[test]
+    fn send_keys_keeps_long_timeout() {
+        // send-keys 可能触发 GUI pane 的人审(HITL),保留长超时,避免审批期间请求被误杀。
+        let sixty = std::time::Duration::from_secs(60);
+        assert_eq!(command_timeout("send-keys"), sixty);
+        assert_eq!(command_timeout("send"), sixty);
+    }
+
+    #[test]
+    fn timeout_error_message_names_unresponsive_backend() {
+        // 超时(后端楔死最常见表现)给明确原因,让 "Failed to create teammate pane:" 后不再空白。
+        let msg = backend_error_message(true, false, "operation timed out");
+        assert!(msg.contains("unresponsive"), "got: {msg}");
+        assert!(msg.to_lowercase().contains("timed out"), "got: {msg}");
+    }
+
+    #[test]
+    fn connect_error_message_names_unreachable_backend() {
+        let msg = backend_error_message(false, true, "connection refused");
+        assert!(msg.contains("cannot reach"), "got: {msg}");
     }
 }
