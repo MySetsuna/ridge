@@ -37,7 +37,8 @@ use std::rc::Rc;
 
 use web_sys::HtmlCanvasElement;
 
-use super::gpu_context::{GpuContext, CANVAS_FORMAT};
+use super::gpu_context::{GpuContext, CANVAS_FORMAT, WALLPAPER_UNIFORM_SIZE};
+use super::wallpaper::cover_uv_transform;
 
 /// Pane viewport rectangle in **host-canvas device-pixel coordinates**.
 /// `is_empty()` is true when the pane is parked-by-clip (pulled to zero
@@ -307,23 +308,76 @@ impl SurfaceHost {
                     label: Some("ridge-host-frame-encoder"),
                 });
 
-        // Perform a single global clear pass if needed
+        // Perform a single global seed pass if needed.
+        // When a wallpaper is active, draw the full-screen quad instead of a
+        // plain colour clear so the wallpaper is composited beneath every pane.
+        // The wallpaper fragment always outputs alpha=1, so it fully replaces
+        // any stale pixels and the `needs_initial_clear` semantics are preserved.
         if self.needs_initial_clear {
-            let mut _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ridge-host-clear-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.frame_clear_color),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            // Pass dropped here
+            let ctx = self.ctx.borrow();
+            if ctx.has_wallpaper() {
+                // ── Wallpaper path ──────────────────────────────────────────
+                // 1. Compute cover-UV so the image fills the surface at equal
+                //    aspect ratio, cropped and centred.
+                let (surf_w, surf_h) = (self.config.width, self.config.height);
+                let wp = ctx.wallpaper.as_ref().unwrap();
+                let uv = cover_uv_transform(surf_w, surf_h, wp.img_w, wp.img_h);
+
+                // 2. Build the 32-byte uniform buffer (std140):
+                //    bytes  0.. 8  uv_scale : vec2<f32>
+                //    bytes  8..16  uv_offset: vec2<f32>
+                //    bytes 16..28  bg_rgb   : vec3<f32>  (12 bytes)
+                //    bytes 28..32  opacity  : f32        (4-byte std140 pad is satisfied)
+                let mut bytes = [0u8; WALLPAPER_UNIFORM_SIZE as usize];
+                bytes[ 0.. 4].copy_from_slice(&uv.scale[0].to_le_bytes());
+                bytes[ 4.. 8].copy_from_slice(&uv.scale[1].to_le_bytes());
+                bytes[ 8..12].copy_from_slice(&uv.offset[0].to_le_bytes());
+                bytes[12..16].copy_from_slice(&uv.offset[1].to_le_bytes());
+                let bg = self.frame_clear_color;
+                bytes[16..20].copy_from_slice(&(bg.r as f32).to_le_bytes());
+                bytes[20..24].copy_from_slice(&(bg.g as f32).to_le_bytes());
+                bytes[24..28].copy_from_slice(&(bg.b as f32).to_le_bytes());
+                bytes[28..32].copy_from_slice(&ctx.wallpaper_opacity.to_le_bytes());
+                ctx.queue.write_buffer(&ctx.wallpaper_uniform, 0, &bytes);
+
+                // 3. Render full-screen TriangleStrip (4 vertices, no VB).
+                let bg_group = ctx.wallpaper_bind_group.as_ref().unwrap();
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ridge-host-wallpaper-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&ctx.wallpaper_pipeline);
+                pass.set_bind_group(0, bg_group, &[]);
+                pass.draw(0..4, 0..1);
+                // pass dropped → render pass ends
+            } else {
+                // ── Plain colour clear path ─────────────────────────────────
+                let mut _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ridge-host-clear-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(self.frame_clear_color),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                // pass dropped here
+            }
         }
         self.needs_initial_clear = false;
 
@@ -408,6 +462,22 @@ impl SurfaceHost {
             record(&mut pass);
         }
 
+    }
+
+    /// Upload a new wallpaper image and enable the wallpaper path in
+    /// `begin_frame`. `rgba` must be packed RGBA8, row-major. The call
+    /// also triggers `invalidate` so the next frame's seed pass redraws
+    /// the wallpaper immediately.
+    pub fn set_wallpaper(&mut self, rgba: &[u8], w: u32, h: u32, opacity: f32) {
+        self.ctx.borrow_mut().set_wallpaper(rgba, w, h, opacity);
+        self.invalidate();
+    }
+
+    /// Remove the active wallpaper and fall back to the plain colour
+    /// `LoadOp::Clear` path. Also triggers `invalidate`.
+    pub fn clear_wallpaper(&mut self) {
+        self.ctx.borrow_mut().clear_wallpaper();
+        self.invalidate();
     }
 
     /// Finish the encoder, submit, present. Resets transients so the
