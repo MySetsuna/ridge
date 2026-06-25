@@ -216,8 +216,6 @@
   // the list on every pane add/close/rename. `survivingIds` spans all workspaces so
   // ws.pruneOutputs (same "not in set → delete" semantics) doesn't over-prune either.
   function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
-    const before = new Set<string>();
-    for (const id of liveIds) before.add(id);
     const { survivingIds } = paneCache.pruneCurrentWorkspace(activeWsId, liveIds);
     // Mirror the in-memory GC to sessionStorage: drop any mirror whose pane is no
     // longer cached (survivingIds is the authoritative kept set across all ws).
