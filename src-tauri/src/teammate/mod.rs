@@ -1,4 +1,5 @@
 pub(crate) mod circuit;
+pub(crate) mod endpoint;
 pub(crate) mod hitl;
 pub(crate) mod layout_event;
 pub(crate) mod locks;

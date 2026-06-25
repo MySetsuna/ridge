@@ -684,7 +684,17 @@ pub fn ensure_pane_pty_workspace(
             cmd.env("Ridge_TERMINAL", "1");
             // Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
             let pane_slot = tmux_pane_index.unwrap_or(0);
-            cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
+            let tmux_val = tmux_env_value(pane_slot, cwd, state);
+            // 端点重发现：按本 PTY 的 socket 路径（`$TMUX` 第一段）写 sidecar，记录当前端点，
+            // 供 server 重启换端口后被 `refresh_all` 刷新、垫片连接失败时回退读取。
+            if let Some(sock) = tmux_val.split(',').next() {
+                crate::teammate::endpoint::write_sidecar(
+                    sock,
+                    bind.base_url.as_str(),
+                    bind.token.as_str(),
+                );
+            }
+            cmd.env("TMUX", tmux_val);
             // Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
             cmd.env("TMUX_PANE", format!("{pane_slot}"));
             // 发起方工作区身份：shim 继承后回传 `X-Ridge-Workspace`，让后端把 split/
