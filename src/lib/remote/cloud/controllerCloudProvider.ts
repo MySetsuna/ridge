@@ -71,6 +71,20 @@ const ICE_RESTART_DEADLINE_MS = 12_000;
 /** WebSocket 连接超时（ms）：超时未 open 则判失败重连。 */
 const WS_CONNECT_TIMEOUT_MS = 10_000;
 
+// ── 信令 error 帧分类（契约 §5 错误码 / §5.3 SUPERSEDED）──
+/** 终态错误：鉴权/计费/归属类，重连也无用 → 进 'error' 态、停止重连、提示用户。 */
+const TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
+  'USERNAME_MISMATCH',
+  'DEVICE_NOT_OWNED',
+  'DEVICE_TOKEN_MISMATCH',
+  'DEVICE_PARKED',
+  'NOT_PREMIUM',
+]);
+/** 被自己的新连接顶替：静默关闭、不报错、不重连本连接（换网/刷新预期事件）。 */
+const SUPERSEDED_CODE = 'SUPERSEDED';
+// 其余 code（CONTROLLER_LIMIT_REACHED / TOO_MANY_CONNECTIONS 等容量/瞬时类）= 可恢复：
+// 不进终态，交由 onclose/退避重连。顶替生效后基本不再触发，留作防御纵深。
+
 // 信令类型来自生成的 SSOT（`./signaling` ← ridge-signaling ts-rs bindings）。入站统一经
 // {@link parseSignal} + {@link isInboundSignal} 收窄到 {@link SignalIn}（去掉 kick），出站以
 // {@link SignalMsg} 收窄；不再手写副本（漂移由 signaling/conformance+drift 测试钉死）。
@@ -582,7 +596,17 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         break;
       }
       case 'error':
-        this.fail(msg.message || '信令错误', msg.code);
+        if (msg.code === SUPERSEDED_CODE) {
+          // 被本控制端的新连接顶替：静默收尾，不报错、不重连（新连接已接管）。
+          break;
+        }
+        if (msg.code && TERMINAL_ERROR_CODES.has(msg.code)) {
+          // 终态：进 'error'、停止重连、提示用户。
+          this.fail(msg.message || '信令错误', msg.code);
+        } else {
+          // 可恢复(容量/瞬时)：仅上报，不进终态；断开与重连交由 onclose 驱动。
+          this.cb.onError?.(msg.message || '信令错误', msg.code);
+        }
         break;
     }
   }

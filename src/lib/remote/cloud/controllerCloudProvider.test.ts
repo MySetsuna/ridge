@@ -474,18 +474,38 @@ describe('ControllerCloudProvider', () => {
     expect(provider.getState()).toBe('connected'); // 仍连着
   });
 
-  it('信令 error 帧 → onError(code) + state=error', async () => {
+  it('终态 error（NOT_PREMIUM）→ onError(code) + state=error', async () => {
     const { ControllerCloudProvider } = await loadProvider();
     let errCode: string | undefined;
-    const provider = new ControllerCloudProvider(CONFIG, {
-      onError: (_m, code) => (errCode = code),
-    });
+    const provider = new ControllerCloudProvider(CONFIG, { onError: (_m, code) => (errCode = code) });
     await provider.connect(HOST_DEVICE);
     await flush();
-    FakeWebSocket.instances[0].deliver({ t: 'error', code: 'REPLACED', message: '被新 controller 顶替' });
+    FakeWebSocket.instances[0].deliver({ t: 'error', code: 'NOT_PREMIUM', message: '需要会员' });
     await flush();
-    expect(errCode).toBe('REPLACED');
+    expect(errCode).toBe('NOT_PREMIUM');
     expect(provider.getState()).toBe('error');
+  });
+
+  it('被顶替 SUPERSEDED → 静默：不进 error 终态、不向用户报错', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    let errCalled = false;
+    const provider = new ControllerCloudProvider(CONFIG, { onError: () => (errCalled = true) });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    FakeWebSocket.instances[0].deliver({ t: 'error', code: 'SUPERSEDED', message: '被新连接顶替' });
+    await flush();
+    expect(errCalled).toBe(false);
+    expect(provider.getState()).not.toBe('error');
+  });
+
+  it('可恢复 error（CONTROLLER_LIMIT_REACHED）→ 不进 error 终态', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG);
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    FakeWebSocket.instances[0].deliver({ t: 'error', code: 'CONTROLLER_LIMIT_REACHED', message: '已达上限' });
+    await flush();
+    expect(provider.getState()).not.toBe('error');
   });
 
   it('connect 幂等：已连接中再次 connect 不新建 PeerConnection', async () => {
