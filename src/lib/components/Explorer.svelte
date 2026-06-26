@@ -34,6 +34,7 @@
 	import { tick } from 'svelte';
 	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
+	import { explorerBodyHeights, updateExplorerBodyHeight, persistExplorerBodyHeights } from '$lib/stores/explorerLayout';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
 
@@ -664,6 +665,36 @@
 		});
 	}
 
+	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；高度按 cwd 持久化）─────────────
+	// 分隔条 = body 与下方 header 之间那条线；拖它调整「上方本 cwd 文件区」高度。
+	// 设过高度的区用固定高度，其余 flex-1 自动平分；.explorer overflow-hidden 不出整体滚动条。
+	const MIN_BODY_H = 48;
+	let bodyResize: { cwd: string; startY: number; startH: number } | null = null;
+
+	function onBodyResizeMove(e: PointerEvent): void {
+		if (!bodyResize) return;
+		const h = Math.max(MIN_BODY_H, bodyResize.startH + (e.clientY - bodyResize.startY));
+		updateExplorerBodyHeight(bodyResize.cwd, h);
+	}
+	function onBodyResizeUp(): void {
+		bodyResize = null;
+		window.removeEventListener('pointermove', onBodyResizeMove);
+		document.body.classList.remove('rg-os-dragging');
+		persistExplorerBodyHeights();
+	}
+	/** 分隔条 pointerdown：取上方 body（分隔条的前一个兄弟元素）当前高度作基准开始拖。 */
+	function startBodyResize(e: PointerEvent, cwd: string): void {
+		e.preventDefault();
+		e.stopPropagation();
+		const handle = e.currentTarget as HTMLElement;
+		const bodyEl = handle.previousElementSibling as HTMLElement | null;
+		if (!bodyEl) return;
+		bodyResize = { cwd, startY: e.clientY, startH: bodyEl.getBoundingClientRect().height };
+		document.body.classList.add('rg-os-dragging');
+		window.addEventListener('pointermove', onBodyResizeMove);
+		window.addEventListener('pointerup', onBodyResizeUp, { once: true });
+	}
+
 	function getPaneLabel(paneId: string, paneTitles: Record<string, string>): string {
 		return paneTitles[paneId] || $terminalTitles[paneId] || tr('explorer.terminalFallback');
 	}
@@ -895,6 +926,7 @@
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
 										class="relative explorer-body py-0.5 min-h-0 flex-1 basis-0 overflow-y-auto rg-scroll"
+										style={$explorerBodyHeights[col.cwd] != null ? `flex:0 0 auto; height:${$explorerBodyHeights[col.cwd]}px` : ''}
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
@@ -940,7 +972,16 @@
 									{/if}
 								</div>
 
-								<!-- Plugin region: one instance per paneId for correct state scoping. -->
+								<!-- resize 分隔条：拖动调整本 cwd 文件区高度（= 下方 header 上边缘那条线），跨会话持久化。 -->
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div
+										class="shrink-0 h-1.5 cursor-row-resize hover:bg-[var(--rg-accent)]/40 transition-colors"
+										role="separator"
+										aria-orientation="horizontal"
+										onpointerdown={(e) => startBodyResize(e, col.cwd)}
+									></div>
+
+									<!-- Plugin region: one instance per paneId for correct state scoping. -->
 								{#each col.paneIds as pid (pid)}
 									<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
 								{/each}
