@@ -720,15 +720,15 @@
 />
 
 <!--
-  overlay 滚动条：host 不做 overflow，交给 overlayscrollbars；content 自然堆叠。
-  之前 `rg-scroll-overlay` + `overflow-y-auto` 会借助 `scrollbar-gutter: stable`
-  常驻 10px gutter —— 改用 overlayscrollbars 后滚动条绝对定位浮在上方，
-  "显示 / 隐藏" 不再改变内容宽度；hover/滚动时显形，空闲时淡出。
+  布局方案：.explorer 为 flex 列容器，自身做 overflow-y-auto（rg-scroll 原生滚动条）。
+  各工作区头（sticky top-0）和 cwd 头（sticky top-8）常驻视口顶部；
+  各 cwd body（.explorer-body）设 overflow-y-auto rg-scroll 实现内部独立滚动。
+  工作区与 cwd 的包裹层均为 display:contents，不产生额外盒子。
 -->
 <!-- tabindex=0 + onkeydown 让 Explorer 根节点可以接 ArrowUp/Down/Home/End —— 每个
      FileNode 按钮自己能聚焦，但跨节点导航需要一层 coordinator；这里承担这个角色。 -->
 <div
-	class="explorer flex h-full min-h-0 flex-col overflow-y-auto rg-scroll"
+	class="explorer flex h-full min-h-0 flex-col overflow-hidden"
 	data-testid="file-tree"
 	tabindex="-1"
 	onkeydown={handleRootKeydown}
@@ -745,12 +745,13 @@
 			</div>
 		</div>
 	{:else}
-		{#each $explorerWorkspaceGroups as group (group.workspaceId)}
+		{#each $explorerWorkspaceGroups as group, gi (group.workspaceId)}
 			{@const info = $workspaceSaveInfoStore[group.workspaceId]}
 			<!-- ══ Workspace header row ══ -->
 			<div class="explorer-workspace" style="display:contents">
 				<div
-					class="group/ws sticky top-0 z-20 flex items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
+					class="group/ws sticky top-0 z-20 flex shrink-0 items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
+						{gi > 0 ? 'border-t border-[var(--rg-border)]' : ''}
 						{group.workspaceId === $activeWorkspaceId
 							? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)]'
 							: 'bg-[var(--rg-surface-2)]/92 text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)]'}"
@@ -825,7 +826,7 @@
 						<div class="explorer-section" style="display:contents">
 							<!-- ── CWD 头：chevron + 路径 + pane 数 + 刷新 ── -->
 							<div
-								class="sticky top-8 z-10 backdrop-blur-md group/col border-t border-[var(--rg-border)]/50 flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
+								class="sticky top-8 z-10 backdrop-blur-md group/col border-t border-[var(--rg-border)]/50 flex shrink-0 items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
 									? 'bg-[var(--rg-surface-2)]/80 hover:bg-[var(--rg-surface-2)]/90'
 									: 'bg-[var(--rg-surface)]/70 hover:bg-[var(--rg-surface)]/90'}"
 								role="button"
@@ -866,7 +867,7 @@
 
 							<!-- ── pane 标签条：折叠时也显示，点击切 active pane ── -->
 							{#if col.paneIds.length > 0}
-								<div class="flex flex-wrap items-center gap-1 px-2 py-1 bg-[var(--rg-surface)]/20 border-t border-[var(--rg-border)]/30">
+								<div class="flex shrink-0 flex-wrap items-center gap-1 px-2 py-1 bg-[var(--rg-surface)]/20 border-t border-[var(--rg-border)]/30">
 									{#each col.paneIds as pid (pid)}
 										{@const isActive = $activePaneId === pid}
 										<button
@@ -887,13 +888,13 @@
 							{#if !isColCollapsed}
 								<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
 								{#if slowLoading.has(col.id)}
-									<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
+									<div class="explorer-progress shrink-0" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
 								{/if}
 
 								<!-- File tree body: cwd 下文件平铺。 -->
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
-										class="relative explorer-body py-0.5 min-h-[6rem] flex-1 basis-0 overflow-y-auto rg-scroll"
+										class="relative explorer-body py-0.5 min-h-0 flex-1 basis-0 overflow-y-auto rg-scroll"
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
