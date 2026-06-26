@@ -36,7 +36,7 @@
 	import FileTree from './FileTree.svelte';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
-	import { overlayScroll } from '$lib/actions/overlayScroll';
+
 	import { t, tr } from '$lib/i18n';
 	import { showContextMenu } from '$lib/stores/contextMenu';
 
@@ -728,10 +728,9 @@
 <!-- tabindex=0 + onkeydown 让 Explorer 根节点可以接 ArrowUp/Down/Home/End —— 每个
      FileNode 按钮自己能聚焦，但跨节点导航需要一层 coordinator；这里承担这个角色。 -->
 <div
-	class="explorer flex h-full flex-col"
+	class="explorer flex h-full min-h-0 flex-col overflow-y-auto rg-scroll"
 	data-testid="file-tree"
 	tabindex="-1"
-	use:overlayScroll
 	onkeydown={handleRootKeydown}
 	role="tree"
 >
@@ -749,9 +748,7 @@
 		{#each $explorerWorkspaceGroups as group (group.workspaceId)}
 			{@const info = $workspaceSaveInfoStore[group.workspaceId]}
 			<!-- ══ Workspace header row ══ -->
-			<div
-				class="explorer-workspace border-b border-[var(--rg-border)] last:border-b-0"
-			>
+			<div class="explorer-workspace" style="display:contents">
 				<div
 					class="group/ws sticky top-0 z-20 flex items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
 						{group.workspaceId === $activeWorkspaceId
@@ -825,10 +822,10 @@
 						{@const cwdLeaf = cwdSegments[cwdSegments.length - 1] ?? col.cwd}
 						{@const cwdParent = cwdSegments.slice(0, -1).join('/')}
 						<!-- T18：终端节点（cwd 卡片）— 工作区下的中间层，可折叠隐藏文件树 -->
-						<div class="explorer-section group/col border-t border-[var(--rg-border)]/50">
+						<div class="explorer-section" style="display:contents">
 							<!-- ── CWD 头：chevron + 路径 + pane 数 + 刷新 ── -->
 							<div
-								class="sticky top-8 z-10 backdrop-blur-md flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
+								class="sticky top-8 z-10 backdrop-blur-md group/col border-t border-[var(--rg-border)]/50 flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
 									? 'bg-[var(--rg-surface-2)]/80 hover:bg-[var(--rg-surface-2)]/90'
 									: 'bg-[var(--rg-surface)]/70 hover:bg-[var(--rg-surface)]/90'}"
 								role="button"
@@ -896,7 +893,7 @@
 								<!-- File tree body: cwd 下文件平铺。 -->
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
-										class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto rg-scroll" : ""}"
+										class="relative explorer-body py-0.5 min-h-[6rem] flex-1 basis-0 overflow-y-auto rg-scroll"
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
