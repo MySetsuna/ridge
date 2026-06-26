@@ -13,6 +13,7 @@
 		flattenVisiblePaths,
 		explorerClipboard,
 		setExplorerClipboard,
+		resolveActiveClipboard,
 		uniqueChildName,
 		refreshColumnsCovering,
 	} from '$lib/stores/fileExplorer';
@@ -448,30 +449,27 @@
 	// cross FileTree node boundaries; per-node keys (Enter/F2/Delete/Arrow Left/Right)
 	// stay on the node button in FileTree.svelte. See `handleRootKeydown` below.
 
-	/** Paste clipboard into the target dir (selected dir, or parent of selected file). */
-	async function pasteClipboard(): Promise<void> {
+	/** Paste clipboard into the target dir（右键传 target；Ctrl+V 不传，用当前选中）。 */
+	async function pasteClipboard(target?: { columnId?: string; targetPath?: string }): Promise<void> {
 		if (!isTauri()) return;
-		let clip = get(explorerClipboard);
-		// 内部剪贴板为空时，回退读系统剪贴板的文件列表（CF_HDROP）——支持在 Windows
-		// 资源管理器「复制」文件后粘进文件树。系统文件一律按复制处理（绝不移动）。
-		if (!clip || clip.paths.length === 0) {
-			try {
-				const sysFiles = await invoke<string[]>('read_clipboard_file_paths');
-				if (sysFiles && sysFiles.length > 0) clip = { paths: sysFiles, mode: 'copy' };
-			} catch (err) {
-				console.warn('[explorer] read system clipboard files failed', err);
-			}
-		}
+		// 读当前系统序列号 + 系统文件列表，交给纯函数判定该用内部还是系统剪贴板。
+		let curSeq = 0;
+		try { curSeq = await invoke<number>('read_clipboard_sequence'); } catch { /* 0 */ }
+		let sysFiles: string[] = [];
+		try { sysFiles = await invoke<string[]>('read_clipboard_file_paths'); }
+		catch (err) { console.warn('[explorer] read system clipboard files failed', err); }
+		const clip = resolveActiveClipboard(get(explorerClipboard), curSeq, sysFiles);
 		if (!clip || clip.paths.length === 0) return;
 
 		const state = get(fileExplorerStore);
-		// Find the active column & target dir.
-		let col = state.columns.find((c) => c.selectedPath);
+		// Find the active column & target dir（右键 target 优先，否则用当前选中/首个有树的列）。
+		let col = target?.columnId ? state.columns.find((c) => c.id === target.columnId) : undefined;
+		if (!col) col = state.columns.find((c) => c.selectedPath);
 		if (!col) col = state.columns.find((c) => c.tree);
 		if (!col) return;
 
 		let targetDir: string | null = null;
-		const primary = col.selectedPath;
+		const primary = target?.targetPath ?? col.selectedPath;
 		if (primary) {
 			// If primary is a dir, paste into it; if a file, paste into its parent.
 			// We detect dir by walking the cached tree — no extra IPC.
@@ -558,29 +556,26 @@
 				const paths = Array.from(col.selectedPaths);
 				if (paths.length === 0) return;
 				const mode: 'copy' | 'cut' = e.key.toLowerCase() === 'c' ? 'copy' : 'cut';
-				setExplorerClipboard({ paths, mode });
-				// Mirror to OS clipboard so Ctrl+V into a terminal / file manager
-				// pastes a usable list of paths. Only on copy (cut leaves OS
-				// clipboard alone because "cut" semantics don't map to shell
-				// clipboards and we don't want to accidentally move on external
-				// paste).
-				if (mode === 'copy' && isTauri()) {
-					void (async () => {
+				e.preventDefault();
+				void (async () => {
+					if (mode === 'copy' && isTauri()) {
 						try {
-							// Windows：一次写 CF_HDROP + 文本（资源管理器粘真实文件、终端/编辑器粘路径）。
-							// 返回 true 表示已连带写入文本，前端无需再 writeText。
+							// 一次写 CF_HDROP + 文本镜像；返回 true 表示已连带写文本。
 							const wroteText = await invoke<boolean>('write_clipboard_file_paths', { paths });
 							if (!wroteText) await writeText(paths.join('\n'));
 						} catch (err) {
-							try {
-								await writeText(paths.join('\n'));
-							} catch (e) {
-								console.warn('[explorer] clipboard writeText failed', e);
-							}
+							try { await writeText(paths.join('\n')); }
+							catch (e2) { console.warn('[explorer] clipboard writeText failed', e2); }
 						}
-					})();
-				}
-				e.preventDefault();
+					}
+					// 记录"设置此剪贴板时"的系统序列号：copy 在写完后读（含我们这次写入），
+					// cut 直接读当前值（cut 不写系统剪贴板）。
+					let seq = 0;
+					if (isTauri()) {
+						try { seq = await invoke<number>('read_clipboard_sequence'); } catch { /* 退化为 0 */ }
+					}
+					setExplorerClipboard({ paths, mode, seq });
+				})();
 				return;
 			}
 			if (e.key === 'v' || e.key === 'V') {

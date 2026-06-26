@@ -836,6 +836,8 @@ export const explorerWorkspaceGroups = derived(
 export interface ExplorerClipboard {
 	paths: string[];
 	mode: 'copy' | 'cut';
+	/** 设置该剪贴板时的系统剪贴板序列号（用于判定是否被外部改写而过期）。 */
+	seq: number;
 }
 
 const _clipboard = writable<ExplorerClipboard | null>(null);
@@ -843,6 +845,30 @@ export const explorerClipboard = { subscribe: _clipboard.subscribe };
 
 export function setExplorerClipboard(clip: ExplorerClipboard | null): void {
 	_clipboard.set(clip);
+}
+
+/**
+ * 判定本次粘贴该用内部剪贴板（ridge 自己 copy/cut）还是系统剪贴板（外部应用 copy 的文件）。
+ * 内部序列号与当前系统序列号一致 → 内部权威（外部未改写过，覆盖 copy/cut）；
+ * 否则内部已过期 → 优先用系统文件列表（一律 copy）；系统也为空才退回内部兜底。
+ * 纯函数便于单测；真正读序列号/文件列表的 IPC 留在组件层。
+ */
+export function resolveActiveClipboard(
+	internal: ExplorerClipboard | null,
+	currentSeq: number,
+	systemFiles: string[]
+): ExplorerClipboard | null {
+	if (internal && internal.paths.length > 0 && internal.seq === currentSeq) {
+		return internal;
+	}
+	const sys = systemFiles.map((p) => p.trim()).filter((p) => p.length > 0);
+	if (sys.length > 0) {
+		return { paths: sys, mode: 'copy', seq: currentSeq };
+	}
+	if (internal && internal.paths.length > 0) {
+		return internal;
+	}
+	return null;
 }
 
 /**
