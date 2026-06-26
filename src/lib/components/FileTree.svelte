@@ -32,6 +32,8 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import { activePaneId } from '$lib/stores/paneTree';
 	import { t, tr } from '$lib/i18n';
 	import FileTree from './FileTree.svelte';
+	import { TerminalManager } from '$lib/terminal/manager';
+	import { formatDroppedPathsForPaste } from '$lib/terminal/dropPaste';
 
 	interface Props {
 		columnId: string;
@@ -428,16 +430,13 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		}
 	}
 
-	// 落到终端 pane：把路径作为文本写入 PTY（带空格的路径加引号 + 末尾空格），
-	// 与「从系统资源管理器拖文件进终端」(+page.svelte insertDroppedPaths) 行为一致。
+	// 落到终端 pane：走 bracketed-paste（与 OS 拖放 insertDroppedPaths 行为统一）。
 	function pasteToTerminal(paneId: string, paths: string[]): void {
 		if (!isTauri() || paths.length === 0) return;
-		const quote = (s: string) => (/\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
-		const text = paths.map(quote).join(' ') + ' ';
+		const text = formatDroppedPathsForPaste(paths);
+		if (!text) return;
 		activePaneId.set(paneId);
-		void invoke('write_to_pty', { paneId, data: text }).catch((err) => {
-			console.error('write_to_pty (tree-drag) failed', err);
-		});
+		TerminalManager.instance().paste(paneId, text);
 	}
 
 	onDestroy(() => {

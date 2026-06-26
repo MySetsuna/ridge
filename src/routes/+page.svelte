@@ -188,6 +188,7 @@
   const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
   import { TerminalManager } from '$lib/terminal/manager';
   import { isTuiActive, snapshotLiveSignals } from '$lib/terminal/tuiGate';
+  import { formatDroppedPathsForPaste } from '$lib/terminal/dropPaste';
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
@@ -1102,12 +1103,11 @@ function expandSidebar() {
     const paneEl = el?.closest('[data-rg-pane-id]') as HTMLElement | null;
     const pid = paneEl?.getAttribute('data-rg-pane-id') || get(activePaneId);
     if (!pid) return;
-    const quote = (s: string) => (/\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
-    const text = paths.map(quote).join(' ') + ' ';
+    const text = formatDroppedPathsForPaste(paths);
+    if (!text) return;
     activePaneId.set(pid);
-    void invoke('write_to_pty', { paneId: pid, data: text }).catch((err) => {
-      console.error('write_to_pty (file-drop) failed', err);
-    });
+    // 走 bracketed-paste（而非 write_to_pty 原样写）：TUI 据此把图片路径识别为附件。
+    TerminalManager.instance().paste(pid, text);
   }
 
   onMount(() => {
