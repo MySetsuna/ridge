@@ -541,6 +541,18 @@ impl RenderBackend for WebGpuPaneBackend {
         // SurfaceHost's LoadOp::Clear.  When `tui_mode` is active the
         // quad uses `theme.tui_bg` instead of `theme.bg`, preventing
         // the theme accent background from polluting TUI apps.
+        //
+        // §wallpaper-fix: 壁纸激活且非 TUI 时，跳过这块不透明 seed。
+        // `SurfaceHost::begin_frame` 本帧已在所有 pane 之下铺满整屏壁纸
+        // quad；这里再压一块不透明 theme.bg 全视口 quad 会把 cell 区域的壁纸
+        // 整个盖掉，只剩 scissor 之外的 pane padding 透出壁纸 —— 正是「底部
+        // 一条壁纸、其余纯色」的现象。普通 shell 模式下默认背景单元已被
+        // `resolve_cell_colors` 解析为透明 [0,0,0,0]，字形与显式着色单元仍
+        // 正常叠加在壁纸之上。TUI 模式保留不透明 tui_bg seed：全屏 TUI 应用
+        // 独占画面、需要纯色背景，不应透出壁纸。
+        if !self.metrics.tui_mode && self.ctx.borrow().has_wallpaper() {
+            return;
+        }
         let bg_color = if self.metrics.tui_mode { self.theme.tui_bg } else { self.theme.bg };
         self.pending_instances.push(CellInstance {
             cell_xy: [0.0, 0.0],
