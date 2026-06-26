@@ -1518,6 +1518,18 @@ export async function dockPane(
   });
   await syncPaneLayoutFromBackend();
   activePaneId.set(sourcePaneId);
+  // §dock-swap-scissor (2026-06-26): 终端画面画在「全局共享 canvas」上，每个
+  // pane 的绘制位置由缓存 scissor 决定，仅在 resize / 切工作区 / attach-unpark
+  // / 容器 ResizeObserver 时由 `_recomputeViewport` 重算。dock 中心区换位（含
+  // 父子节点交换）是**等尺寸换槽**：Svelte keyed-move 把容器（header / 滚动条 /
+  // IME 等 DOM 子节点）正确搬到新槽，但因尺寸不变 → 不触发 ResizeObserver、也
+  // 不 remount RidgePane，scissor 仍指向旧槽 → 终端像素留在旧槽、与 header 错位
+  // （表现为「终端/滚动条没交换」，在 Pane1 滚轮却滚 Pane2 的画面）。split 路径
+  // 由 `scheduleForceFitAfterSplit` 补偿、teammate 路径由本函数补偿，唯独 dock
+  // 此前两者都没调。这里强制重 fit 当前工作区全部 pane：host 模式下 fitPane 必经
+  // `_recomputeViewport`（在 `!sizeChanged` 短路之前），等尺寸换位亦会把每个 pane
+  // 的 scissor 原点同步到移动后的容器。
+  scheduleForceFitActivePanes();
 }
 
 /** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一�?path）�?*/
