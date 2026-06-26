@@ -1092,10 +1092,11 @@ function expandSidebar() {
     }
   }
 
-  // §file-drop (desktop only): insert dropped absolute path(s) into the terminal
-  // under the drop point (else the active pane), quoting any path with whitespace
-  // and adding a trailing space — the classic "drag a file onto the terminal to get
-  // its path". Tauri intercepts native OS drops and hands us the absolute paths.
+  // §file-drop (desktop only): paste dropped absolute path(s) into the terminal
+  // under the drop point (else the active pane) via the bracketed-paste pipeline
+  // (TerminalManager.paste) — raw paths, space-joined, no quoting, no trailing space,
+  // so an image path is recognised as an attachment by TUIs like Claude Code.
+  // Tauri intercepts native OS drops and hands us the absolute paths.
   function insertDroppedPaths(paths: string[], position: { x: number; y: number }): void {
     if (!paths.length) return;
     const dpr = window.devicePixelRatio || 1;

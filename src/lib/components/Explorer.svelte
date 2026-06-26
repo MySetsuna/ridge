@@ -451,15 +451,20 @@
 	// cross FileTree node boundaries; per-node keys (Enter/F2/Delete/Arrow Left/Right)
 	// stay on the node button in FileTree.svelte. See `handleRootKeydown` below.
 
+	let pasting = false; // #6 pasteClipboard in-flight 护栏：避免并发重复粘贴
 	/** Paste clipboard into the target dir（右键传 target；Ctrl+V 不传，用当前选中）。 */
 	async function pasteClipboard(target?: { columnId?: string; targetPath?: string }): Promise<void> {
-		if (!isTauri()) return;
-		// 读当前系统序列号 + 系统文件列表，交给纯函数判定该用内部还是系统剪贴板。
-		let curSeq = 0;
-		try { curSeq = await invoke<number>('read_clipboard_sequence'); } catch { /* 0 */ }
-		let sysFiles: string[] = [];
-		try { sysFiles = await invoke<string[]>('read_clipboard_file_paths'); }
-		catch (err) { console.warn('[explorer] read system clipboard files failed', err); }
+		if (!isTauri() || pasting) return;
+		pasting = true;
+		try {
+		// 读当前系统序列号 + 系统文件列表（并发），交给纯函数判定该用内部还是系统剪贴板。
+		const [curSeq, sysFiles] = await Promise.all([
+			invoke<number>('read_clipboard_sequence').catch(() => 0),
+			invoke<string[]>('read_clipboard_file_paths').catch((err) => {
+				console.warn('[explorer] read system clipboard files failed', err);
+				return [] as string[];
+			}),
+		]);
 		const clip = resolveActiveClipboard(get(explorerClipboard), curSeq, sysFiles);
 		if (!clip || clip.paths.length === 0) return;
 
@@ -471,7 +476,9 @@
 		if (!col) return;
 
 		let targetDir: string | null = null;
-		const primary = target?.targetPath ?? col.selectedPath;
+		// #2 右键 target 存在但无 targetPath（cwd 头/空白区右键）→ 粘到 cwd 根，不回退到 selectedPath；
+		// 仅 Ctrl+V（无 target）才用当前选中项相对粘贴。
+		const primary = target ? target.targetPath : col.selectedPath;
 		if (primary) {
 			// If primary is a dir, paste into it; if a file, paste into its parent.
 			// We detect dir by walking the cached tree — no extra IPC.
@@ -539,6 +546,9 @@
 		if (errors.length > 0) {
 			await alertDialog({ title: tr('explorer.pasteFailed'), message: tr('explorer.pasteFailedMessage', { count: errors.length, details: errors.join('\n') }), danger: true });
 		}
+		} finally {
+			pasting = false;
+		}
 	}
 
 	function handleRootKeydown(e: KeyboardEvent): void {
@@ -559,6 +569,8 @@
 				if (paths.length === 0) return;
 				const mode: 'copy' | 'cut' = e.key.toLowerCase() === 'c' ? 'copy' : 'cut';
 				e.preventDefault();
+				// #1 先同步置内部剪贴板（cut 灰化即时显示 + 极快 Ctrl+V 可命中），随后异步补真实 seq。
+				setExplorerClipboard({ paths, mode, seq: 0 });
 				void (async () => {
 					if (mode === 'copy' && isTauri()) {
 						try {
@@ -679,6 +691,8 @@
 	function onBodyResizeUp(): void {
 		bodyResize = null;
 		window.removeEventListener('pointermove', onBodyResizeMove);
+		window.removeEventListener('pointerup', onBodyResizeUp);
+		window.removeEventListener('pointercancel', onBodyResizeUp);
 		document.body.classList.remove('rg-os-dragging');
 		persistExplorerBodyHeights();
 	}
@@ -692,8 +706,17 @@
 		bodyResize = { cwd, startY: e.clientY, startH: bodyEl.getBoundingClientRect().height };
 		document.body.classList.add('rg-os-dragging');
 		window.addEventListener('pointermove', onBodyResizeMove);
-		window.addEventListener('pointerup', onBodyResizeUp, { once: true });
+		window.addEventListener('pointerup', onBodyResizeUp);
+		window.addEventListener('pointercancel', onBodyResizeUp); // #3 Alt+Tab/系统弹窗取消也清理
 	}
+
+	onDestroy(() => {
+		// #3 卸载时清理可能残留的 resize 监听（拖拽中切工作区/关闭面板会导致 pointerup 不触发）。
+		window.removeEventListener('pointermove', onBodyResizeMove);
+		window.removeEventListener('pointerup', onBodyResizeUp);
+		window.removeEventListener('pointercancel', onBodyResizeUp);
+		if (bodyResize) document.body.classList.remove('rg-os-dragging');
+	});
 
 	function getPaneLabel(paneId: string, paneTitles: Record<string, string>): string {
 		return paneTitles[paneId] || $terminalTitles[paneId] || tr('explorer.terminalFallback');

@@ -850,7 +850,8 @@ export function setExplorerClipboard(clip: ExplorerClipboard | null): void {
 /**
  * 判定本次粘贴该用内部剪贴板（ridge 自己 copy/cut）还是系统剪贴板（外部应用 copy 的文件）。
  * 内部序列号与当前系统序列号一致 → 内部权威（外部未改写过，覆盖 copy/cut）；
- * 否则内部已过期 → 优先用系统文件列表（一律 copy）；系统也为空才退回内部兜底。
+ * 序列号不一致(外部改写过) → 内部过期：优先系统文件列表(copy)，系统空则 null（不执行过期 cut）；
+ * 仅当序列号不可读(命令失败=0)时才用内部兜底，避免命令故障丢失 ridge 内复制/剪切。
  * 纯函数便于单测；真正读序列号/文件列表的 IPC 留在组件层。
  */
 export function resolveActiveClipboard(
@@ -858,16 +859,20 @@ export function resolveActiveClipboard(
 	currentSeq: number,
 	systemFiles: string[]
 ): ExplorerClipboard | null {
-	if (internal && internal.paths.length > 0 && internal.seq === currentSeq) {
+	const sys = systemFiles.map((p) => p.trim()).filter((p) => p.length > 0);
+	// 1. 序列号可读(非 0)且与内部一致 → 外部未改写过，内部权威（覆盖 copy/cut）。
+	if (internal && internal.paths.length > 0 && currentSeq !== 0 && internal.seq === currentSeq) {
 		return internal;
 	}
-	const sys = systemFiles.map((p) => p.trim()).filter((p) => p.length > 0);
+	// 2. 系统剪贴板有文件 → 用系统（一律 copy）：覆盖外部复制，也覆盖序列号不可读时直接读系统。
 	if (sys.length > 0) {
 		return { paths: sys, mode: 'copy', seq: currentSeq };
 	}
-	if (internal && internal.paths.length > 0) {
+	// 3. 序列号不可读(0，命令失败)时，内部作兜底——命令失败不应丢失 ridge 内复制/剪切。
+	if (currentSeq === 0 && internal && internal.paths.length > 0) {
 		return internal;
 	}
+	// 4. 序列号可读但与内部不一致(外部改写过) + 系统无文件 → 内部已过期，不执行（避免误移动 cut）。
 	return null;
 }
 

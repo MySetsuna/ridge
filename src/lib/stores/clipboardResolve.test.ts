@@ -18,8 +18,11 @@ describe('resolveActiveClipboard', () => {
 			seq: 101,
 		});
 	});
-	it('序列号变了 + 系统为空 → 退回内部兜底', () => {
-		expect(resolveActiveClipboard(internalCut, 101, [])).toBe(internalCut);
+	it('序列号变了(外部改写) + 系统为空 → null（内部过期，不执行 cut）', () => {
+		expect(resolveActiveClipboard(internalCut, 101, [])).toBeNull();
+	});
+	it('序列号不可读(0) + 系统为空 → 内部兜底（命令失败不丢失复制/剪切）', () => {
+		expect(resolveActiveClipboard(internalCopy, 0, [])).toBe(internalCopy);
 	});
 	it('无内部 + 系统有文件 → 用系统', () => {
 		expect(resolveActiveClipboard(null, 5, [' C:\\a.txt ', ''])).toEqual({
