@@ -65,6 +65,8 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 			isDir: boolean,
 			modifiers?: { shift: boolean; ctrl: boolean; meta: boolean }
 		) => void;
+		/** 右键"粘贴"回调：把剪贴板内容粘到本节点（目录粘入其内，文件粘入其父目录）。 */
+		onPaste?: (targetPath: string) => void;
 	}
 
 	let {
@@ -78,6 +80,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		refreshNonce = 0,
 		inheritedIgnored = false,
 		onSelect,
+		onPaste,
 	}: Props = $props();
 
 	// 资源管理器现在按 depth=1 懒加载：根树只带一层直接子节点，子目录的
@@ -543,6 +546,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 					{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => beginCreate('folder') },
 					{ id: 'divider1', divider: true },
 			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
+					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu) },
 					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
 					{ id: 'search-in-folder', label: tr('explorer.ctxSearchInFolder'), action: () => searchInFolder(node.path) },
 					{ id: 'divider2', divider: true },
@@ -552,6 +556,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 			: [
 					{ id: 'open', label: tr('explorer.ctxOpen'), action: () => void fileEditorStore.openFile(pathAtMenu) },
 			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
+					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu) },
 					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
 					{ id: 'divider', divider: true },
 					{ id: 'rename', label: tr('explorer.ctxRename'), action: () => beginRename() },

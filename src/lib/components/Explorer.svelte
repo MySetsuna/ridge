@@ -379,6 +379,7 @@
 		showContextMenu(e.clientX, e.clientY, [
 			{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => void beginColumnCreate(col.id, col.cwd, 'file') },
 			{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => void beginColumnCreate(col.id, col.cwd, 'folder') },
+			{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => void pasteClipboard({ columnId: col.id }) },
 			{ id: 'div1', divider: true },
 			{ id: 'refresh', label: tr('explorer.ctxRefresh'), action: () => void handleRefresh(col.id) },
 			{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealCwd(col.cwd) },
@@ -932,6 +933,7 @@
 														: undefined}
 													onSelect={(path, isDir, mods) =>
 														handleFileSelect(path, col.id, isDir, mods)}
+													onPaste={(path) => void pasteClipboard({ columnId: col.id, targetPath: path })}
 												/>
 											{/each}
 										{:else}
