@@ -34,7 +34,7 @@
 	import { tick } from 'svelte';
 	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
-	import { explorerBodyHeights, updateExplorerBodyHeight, persistExplorerBodyHeights } from '$lib/stores/explorerLayout';
+	import { explorerBodyWeights, applyExplorerBodyWeights, persistExplorerBodyWeights } from '$lib/stores/explorerLayout';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
 
@@ -665,31 +665,46 @@
 		});
 	}
 
-	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；高度按 cwd 持久化）─────────────
-	// 分隔条 = body 与下方 header 之间那条线；拖它调整「上方本 cwd 文件区」高度。
-	// 设过高度的区用固定高度，其余 flex-1 自动平分；.explorer overflow-hidden 不出整体滚动条。
-	const MIN_BODY_H = 48;
-	let bodyResize: { cwd: string; startY: number; startH: number } | null = null;
+	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；按权重瓜分剩余空间，跨会话持久化）───
+	// flex-grow 权重制：拖动只在「当前所有展开区」之间重分配固定的剩余空间，
+	// 永不溢出、永不把别的工作区/cwd 头挤出可见区；窗口缩放由 flex 自动按比例重算。
+	const MIN_BODY_H = 40;
+	let bodyResize:
+		| { cwd: string; startY: number; startH: number; total: number; n: number; others: { cwd: string; h: number }[]; otherTotal: number }
+		| null = null;
 
 	function onBodyResizeMove(e: PointerEvent): void {
 		if (!bodyResize) return;
-		const h = Math.max(MIN_BODY_H, bodyResize.startH + (e.clientY - bodyResize.startY));
-		updateExplorerBodyHeight(bodyResize.cwd, h);
+		const { cwd, startY, startH, total, n, others, otherTotal } = bodyResize;
+		const minOthers = others.length * MIN_BODY_H;
+		// 目标像素高度：夹在 [MIN, 总空间-其余最小] 内，保证其余区有最小可视。
+		const desired = Math.max(MIN_BODY_H, Math.min(startH + (e.clientY - startY), total - minOthers));
+		const scale = otherTotal > 0 ? (total - desired) / otherTotal : 0;
+		// 权重 = 目标高度/均值 → sum≈n、均值≈1，新 cwd 默认权重 1 即接近平均份额。
+		const avg = total / n;
+		const changes: Record<string, number> = { [cwd]: desired / avg };
+		for (const o of others) changes[o.cwd] = (o.h * scale) / avg;
+		applyExplorerBodyWeights(changes);
 	}
 	function onBodyResizeUp(): void {
 		bodyResize = null;
 		window.removeEventListener('pointermove', onBodyResizeMove);
 		document.body.classList.remove('rg-os-dragging');
-		persistExplorerBodyHeights();
+		persistExplorerBodyWeights();
 	}
-	/** 分隔条 pointerdown：取上方 body（分隔条的前一个兄弟元素）当前高度作基准开始拖。 */
+	/** 分隔条 pointerdown：快照当前所有展开区高度，作为按比例重分配的基准。 */
 	function startBodyResize(e: PointerEvent, cwd: string): void {
 		e.preventDefault();
 		e.stopPropagation();
-		const handle = e.currentTarget as HTMLElement;
-		const bodyEl = handle.previousElementSibling as HTMLElement | null;
-		if (!bodyEl) return;
-		bodyResize = { cwd, startY: e.clientY, startH: bodyEl.getBoundingClientRect().height };
+		const bodies = Array.from(
+			document.querySelectorAll<HTMLElement>('.explorer-body[data-rg-cwd]')
+		).map((el) => ({ cwd: el.dataset.rgCwd ?? '', h: el.getBoundingClientRect().height }));
+		const me = bodies.find((b) => b.cwd === cwd);
+		if (!me) return;
+		const others = bodies.filter((b) => b.cwd !== cwd);
+		if (others.length === 0) return; // 仅一个展开区，无处分配
+		const total = bodies.reduce((s, b) => s + b.h, 0);
+		bodyResize = { cwd, startY: e.clientY, startH: me.h, total, n: bodies.length, others, otherTotal: total - me.h };
 		document.body.classList.add('rg-os-dragging');
 		window.addEventListener('pointermove', onBodyResizeMove);
 		window.addEventListener('pointerup', onBodyResizeUp, { once: true });
@@ -925,8 +940,9 @@
 								<!-- File tree body: cwd 下文件平铺。 -->
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
-										class="relative explorer-body py-0.5 min-h-0 flex-1 basis-0 overflow-y-auto rg-scroll"
-										style={$explorerBodyHeights[col.cwd] != null ? `flex:0 0 auto; height:${$explorerBodyHeights[col.cwd]}px` : ''}
+										class="relative explorer-body py-0.5 min-h-0 overflow-y-auto rg-scroll"
+										style={`flex: ${$explorerBodyWeights[col.cwd] ?? 1} 1 0`}
+										data-rg-cwd={col.cwd}
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
