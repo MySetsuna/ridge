@@ -42,7 +42,12 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 		startX = e.clientX;
 		startY = e.clientY;
 		dragging = false;
-		node.setPointerCapture(e.pointerId);
+		try {
+			node.setPointerCapture(e.pointerId);
+			console.log('[dockdrag] down captured', JSON.stringify({ pointerId: e.pointerId, type: e.pointerType, hasCap: node.hasPointerCapture(e.pointerId) }));
+		} catch (err) {
+			console.log('[dockdrag] setPointerCapture THREW', String(err));
+		}
 		node.addEventListener('pointermove', onPointerMove);
 		node.addEventListener('pointerup', onPointerUp);
 		node.addEventListener('pointercancel', onPointerCancel);
@@ -54,6 +59,7 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 			if (!passedDragThreshold(startX, startY, e.clientX, e.clientY)) return;
 			dragging = true;
 			paneDragSourceId.set(paneId);
+			console.log('[dockdrag] drag START');
 		}
 		const el = document.elementFromPoint(e.clientX, e.clientY);
 		const tab = (el as HTMLElement | null)?.closest('[data-ws-tab-id]') as HTMLElement | null;
@@ -85,6 +91,7 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 		pointerId = null;
 		const target = get(paneDockHover);
 		const wasDragging = dragging;
+		console.log('[dockdrag] finish', JSON.stringify({ commit, wasDragging, target, paneId }));
 		dragging = false;
 		clearHover();
 		paneDragSourceId.set(null);
@@ -94,9 +101,12 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 			return;
 		}
 		if (commit && target && target.paneId !== paneId) {
+			console.log('[dockdrag] calling dockPane', JSON.stringify({ source: paneId, target: target.paneId, region: target.region }));
 			try {
 				await dockPane(paneId, target.paneId, target.region);
+				console.log('[dockdrag] dockPane OK');
 			} catch (err) {
+				console.log('[dockdrag] dockPane THREW', String(err));
 				console.error('dockPane failed', err);
 				await alertDialog({
 					title: tr('workspace.opFailed'),
@@ -108,9 +118,11 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 	}
 
 	function onPointerUp() {
+		console.log('[dockdrag] pointerUP fired');
 		void finish(true);
 	}
 	function onPointerCancel() {
+		console.log('[dockdrag] pointerCANCEL fired');
 		void finish(false);
 	}
 
@@ -120,6 +132,7 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 			paneId = p.paneId;
 		},
 		destroy() {
+			if (pointerId !== null) console.log('[dockdrag] DESTROY mid-drag! dragging=' + dragging);
 			node.removeEventListener('pointerdown', onPointerDown);
 			// 若在拖拽中途被卸载（如 pane 关闭），释放 capture + 清监听器/拖拽态，
 			// 避免 WebView2 下 capture 泄漏致后续鼠标无响应。
