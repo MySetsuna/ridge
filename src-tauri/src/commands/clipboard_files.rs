@@ -70,3 +70,22 @@ fn write_clipboard_file_paths_impl(paths: &[String]) -> Result<bool, String> {
 fn write_clipboard_file_paths_impl(_paths: &[String]) -> Result<bool, String> {
     Ok(false)
 }
+
+/// 读 Windows 剪贴板序列号（内容每次变化即自增；无需打开剪贴板）。
+/// 用于判定 ridge 内部文件剪贴板是否已被外部应用改写而过期。
+/// 非 Windows / 取不到时返回 0。
+#[tauri::command]
+pub fn read_clipboard_sequence() -> u32 {
+    read_clipboard_sequence_impl()
+}
+
+#[cfg(windows)]
+fn read_clipboard_sequence_impl() -> u32 {
+    // clipboard_win::seq_num() -> Option<NonZeroU32>，包装 GetClipboardSequenceNumber。
+    clipboard_win::seq_num().map(|n| n.get()).unwrap_or(0)
+}
+
+#[cfg(not(windows))]
+fn read_clipboard_sequence_impl() -> u32 {
+    0
+}

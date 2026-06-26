@@ -695,6 +695,7 @@ pub fn run() {
             clipboard_image::resolve_pasted_image_path,
             clipboard_files::read_clipboard_file_paths,
             clipboard_files::write_clipboard_file_paths,
+            clipboard_files::read_clipboard_sequence,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
