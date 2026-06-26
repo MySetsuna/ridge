@@ -34,7 +34,7 @@
 	import { tick } from 'svelte';
 	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
-	import { explorerBodyWeights, applyExplorerBodyWeights, persistExplorerBodyWeights } from '$lib/stores/explorerLayout';
+	import { explorerBodyHeights, setExplorerBodyHeight, persistExplorerBodyHeights } from '$lib/stores/explorerLayout';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
 
@@ -665,46 +665,31 @@
 		});
 	}
 
-	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；按权重瓜分剩余空间，跨会话持久化）───
-	// flex-grow 权重制：拖动只在「当前所有展开区」之间重分配固定的剩余空间，
-	// 永不溢出、永不把别的工作区/cwd 头挤出可见区；窗口缩放由 flex 自动按比例重算。
+	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；像素高度，跨会话持久化）─────────────
+	// 默认 flex:1 1 0 填满；拖过的用 flex:0 1 Hpx —— 可缩小留空，shrink:1 在窗口变小/拖太大时
+	// 仍收缩，绝不溢出、所有工作区/cwd 头始终可见。
 	const MIN_BODY_H = 40;
-	let bodyResize:
-		| { cwd: string; startY: number; startH: number; total: number; n: number; others: { cwd: string; h: number }[]; otherTotal: number }
-		| null = null;
+	let bodyResize: { cwd: string; startY: number; startH: number } | null = null;
 
 	function onBodyResizeMove(e: PointerEvent): void {
 		if (!bodyResize) return;
-		const { cwd, startY, startH, total, n, others, otherTotal } = bodyResize;
-		const minOthers = others.length * MIN_BODY_H;
-		// 目标像素高度：夹在 [MIN, 总空间-其余最小] 内，保证其余区有最小可视。
-		const desired = Math.max(MIN_BODY_H, Math.min(startH + (e.clientY - startY), total - minOthers));
-		const scale = otherTotal > 0 ? (total - desired) / otherTotal : 0;
-		// 权重 = 目标高度/均值 → sum≈n、均值≈1，新 cwd 默认权重 1 即接近平均份额。
-		const avg = total / n;
-		const changes: Record<string, number> = { [cwd]: desired / avg };
-		for (const o of others) changes[o.cwd] = (o.h * scale) / avg;
-		applyExplorerBodyWeights(changes);
+		const h = Math.max(MIN_BODY_H, bodyResize.startH + (e.clientY - bodyResize.startY));
+		setExplorerBodyHeight(bodyResize.cwd, h);
 	}
 	function onBodyResizeUp(): void {
 		bodyResize = null;
 		window.removeEventListener('pointermove', onBodyResizeMove);
 		document.body.classList.remove('rg-os-dragging');
-		persistExplorerBodyWeights();
+		persistExplorerBodyHeights();
 	}
-	/** 分隔条 pointerdown：快照当前所有展开区高度，作为按比例重分配的基准。 */
+	/** 分隔条 pointerdown：取上方 body（分隔条容器的前一个兄弟）当前高度作基准开始拖。 */
 	function startBodyResize(e: PointerEvent, cwd: string): void {
 		e.preventDefault();
 		e.stopPropagation();
-		const bodies = Array.from(
-			document.querySelectorAll<HTMLElement>('.explorer-body[data-rg-cwd]')
-		).map((el) => ({ cwd: el.dataset.rgCwd ?? '', h: el.getBoundingClientRect().height }));
-		const me = bodies.find((b) => b.cwd === cwd);
-		if (!me) return;
-		const others = bodies.filter((b) => b.cwd !== cwd);
-		if (others.length === 0) return; // 仅一个展开区，无处分配
-		const total = bodies.reduce((s, b) => s + b.h, 0);
-		bodyResize = { cwd, startY: e.clientY, startH: me.h, total, n: bodies.length, others, otherTotal: total - me.h };
+		const handle = e.currentTarget as HTMLElement;
+		const bodyEl = handle.previousElementSibling as HTMLElement | null;
+		if (!bodyEl) return;
+		bodyResize = { cwd, startY: e.clientY, startH: bodyEl.getBoundingClientRect().height };
 		document.body.classList.add('rg-os-dragging');
 		window.addEventListener('pointermove', onBodyResizeMove);
 		window.addEventListener('pointerup', onBodyResizeUp, { once: true });
@@ -941,8 +926,7 @@
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
 										class="relative explorer-body py-0.5 min-h-0 overflow-y-auto rg-scroll"
-										style={`flex: ${$explorerBodyWeights[col.cwd] ?? 1} 1 0`}
-										data-rg-cwd={col.cwd}
+										style={$explorerBodyHeights[col.cwd] != null ? `flex: 0 1 ${$explorerBodyHeights[col.cwd]}px` : 'flex: 1 1 0'}
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
@@ -991,7 +975,7 @@
 								<!-- resize 分隔条：拖动调整本 cwd 文件区高度（= 下方 header 上边缘那条线），跨会话持久化。 -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
-										class="shrink-0 h-1.5 cursor-row-resize hover:bg-[var(--rg-accent)]/40 transition-colors"
+										class="shrink-0 h-[3px] cursor-row-resize bg-[var(--rg-border)]/30 hover:bg-[var(--rg-accent)]/50 transition-colors"
 										role="separator"
 										aria-orientation="horizontal"
 										onpointerdown={(e) => startBodyResize(e, col.cwd)}
