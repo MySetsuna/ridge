@@ -537,7 +537,7 @@ import {
             </div>
           {/if}
           <header
-            class="rg-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
+            class="rg-pane-header opacity-90 flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
           >
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
