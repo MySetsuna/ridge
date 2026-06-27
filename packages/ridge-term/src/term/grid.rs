@@ -395,6 +395,31 @@ impl Grid {
         self.frame_top_row as usize
     }
 
+    /// §delta-mirror-resize (2026-06-27) — blank every cell of the active
+    /// visible screen (also resetting each row's `wrapped` flag), leaving
+    /// scrollback, the cursor, the dimensions and the scroll region untouched.
+    ///
+    /// Used by the delta-mirror (`Terminal::apply_delta` on
+    /// `GridDelta::Resize`) AFTER it has run the authoritative reflow against
+    /// its own scrollback. The producer (`PaneParser`) resets its cell-diff
+    /// baseline to blank on resize and then re-sends only the NON-BLANK spans
+    /// of the new grid, so any cell it now considers blank is never re-sent.
+    /// The mirror's own reflow diverges from the producer's — the delta stream
+    /// carries neither row `wrapped` flags nor the inline-TUI frame state the
+    /// reflow keys off — so without this blank the divergent leftovers stay on
+    /// screen as resize residue. Blanking the visible grid here makes the
+    /// producer's col-range `Cells` deltas land on a clean canvas: every
+    /// visible cell then comes straight from the producer. `Cell::EMPTY`
+    /// (default attrs, space) matches the producer's `DeltaCell::blank()`
+    /// baseline, so a cell the producer treats as a *coloured* blank still
+    /// differs from the baseline and is re-sent.
+    pub fn blank_visible(&mut self) {
+        let screen = self.screen_mut();
+        for r in &mut screen.rows {
+            r.fill_blank(Cell::EMPTY);
+        }
+    }
+
     /// §A.4 (2026-05-08) — record an EL/ED/CUU/CUD dispatch. Only the
     /// timestamp is stored (no cursor snapshot): this is purely a "redraw
     /// activity is happening" hint that participates in
@@ -2744,6 +2769,54 @@ mod tests {
             s.pop();
         }
         s
+    }
+
+    #[test]
+    fn blank_visible_clears_active_screen_resets_wrapped_keeps_scrollback() {
+        // §delta-mirror-resize — blank_visible must wipe every visible cell
+        // (and reset `wrapped`) on the ACTIVE screen while leaving scrollback
+        // untouched. This is the primitive the delta-mirror uses after a
+        // Resize delta so the producer's col-range Cells land on a clean grid.
+        let mut g = Grid::new(2, 6, 100);
+        // Print enough to wrap a row AND push older rows into scrollback.
+        for ch in "AAAAAABBBBBBCCCCCC".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        let sb_before = g.scrollback.len();
+        assert!(sb_before > 0, "precondition: some content reached scrollback");
+        // At least one visible row carries content before the blank.
+        assert!(
+            (0..g.rows()).any(|r| !row_text(&g, r).is_empty()),
+            "precondition: visible grid has content",
+        );
+
+        g.blank_visible();
+
+        for r in 0..g.rows() {
+            assert_eq!(row_text(&g, r), "", "row {r} blanked");
+            assert!(!g.row(r).unwrap().wrapped, "row {r} wrapped flag reset");
+        }
+        assert_eq!(
+            g.scrollback.len(),
+            sb_before,
+            "blank_visible must not touch scrollback",
+        );
+    }
+
+    #[test]
+    fn blank_visible_only_touches_active_screen() {
+        // On the alt screen, blank_visible must clear ALT and leave the
+        // primary buffer's content intact (so leaving alt restores it).
+        let mut g = Grid::new(2, 6, 100);
+        g.print('P', Attrs::DEFAULT); // primary content
+        g.enter_alt_screen(false);
+        g.print('A', Attrs::DEFAULT); // alt content
+
+        g.blank_visible(); // active = alt
+
+        assert_eq!(row_text(&g, 0), "", "alt screen blanked");
+        g.leave_alt_screen();
+        assert_eq!(row_text(&g, 0), "P", "primary content survived alt blank");
     }
 
     #[test]

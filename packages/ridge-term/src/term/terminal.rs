@@ -271,6 +271,18 @@ impl Terminal {
             }
             GridDelta::Resize { rows, cols } => {
                 self.resize(*rows as usize, *cols as usize);
+                // §delta-mirror-resize (2026-06-27) — `resize()` above ran this
+                // mirror's OWN reflow (which keeps scroll-up history rewrapped),
+                // but that reflow diverges from the producer's authoritative one
+                // (the delta stream carries neither row `wrapped` flags nor the
+                // inline-TUI frame state the reflow keys off). The producer reset
+                // its cell-diff baseline to blank on resize and re-sends only the
+                // non-blank spans, so it never overwrites the divergent leftovers
+                // — they would stay on screen as resize residue (the "reflow 残留"
+                // in both shell and inline-TUI modes). Blank the visible grid so
+                // the col-range `Cells` deltas that follow are the sole source of
+                // visible content. Scrollback is left intact.
+                self.grid.blank_visible();
             }
             GridDelta::Title(t) => {
                 self.pending_events
@@ -764,6 +776,60 @@ mod tests {
         let newest = t.grid().scrollback.get(t.scrollback_len() - 1).unwrap();
         let newest_text: String = newest.cells.iter().map(|c| c.ch).collect();
         assert_eq!(newest_text, "BETA ");
+    }
+
+    #[test]
+    fn apply_delta_resize_blanks_visible_so_following_cells_are_authoritative() {
+        // §delta-mirror-resize (2026-06-27) — the producer (PaneParser) resets
+        // its cell-diff baseline to blank on resize and then re-sends only the
+        // NON-BLANK spans of the new grid. The mirror runs its own reflow on
+        // the Resize delta, but that reflow diverges from the producer's (the
+        // delta stream carries neither row `wrapped` flags nor the inline-TUI
+        // frame state the reflow keys off), so leftover cells the producer now
+        // treats as blank are never re-sent. A bare Resize delta must therefore
+        // leave the visible grid fully blank, so the col-range Cells that
+        // follow it are the sole source of visible content — no resize residue.
+        use crate::term::delta::GridDelta;
+        let mut t = Terminal::new(4, 20, 100);
+        // Fill the visible grid with content at the OLD width.
+        t.feed(b"alpha beta gamma\r\ndelta epsilon\r\nzeta eta theta");
+        assert!(
+            t.dump_visible_text().iter().any(|line| !line.is_empty()),
+            "precondition: visible grid has content before the resize",
+        );
+
+        // A bare Resize delta. In production the producer follows it with the
+        // authoritative col-range Cells; we omit those here to isolate the
+        // blank-the-canvas invariant this fix establishes.
+        t.apply_delta(&GridDelta::Resize { rows: 4, cols: 10 });
+
+        for (r, line) in t.dump_visible_text().iter().enumerate() {
+            assert_eq!(
+                line, "",
+                "visible row {r} must be blank after a Resize delta (residue otherwise)",
+            );
+        }
+    }
+
+    #[test]
+    fn apply_delta_resize_blanks_visible_but_keeps_scrollback() {
+        // The blank must NOT eat scrollback — scroll-up history survives a
+        // resize (the mirror's reflow above rewrapped it; blank_visible only
+        // touches the visible grid).
+        use crate::term::delta::GridDelta;
+        let mut t = Terminal::new(2, 6, 100);
+        // Push several lines so some land in scrollback.
+        t.feed(b"one\r\ntwo\r\nthree\r\nfour");
+        let sb_before = t.scrollback_len();
+        assert!(sb_before > 0, "precondition: expected non-zero scrollback");
+
+        t.apply_delta(&GridDelta::Resize { rows: 2, cols: 6 });
+
+        assert!(
+            t.scrollback_len() >= sb_before,
+            "resize must not drop scrollback rows (had {sb_before}, now {})",
+            t.scrollback_len(),
+        );
     }
 
     #[test]
