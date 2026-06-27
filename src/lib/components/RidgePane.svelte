@@ -118,6 +118,51 @@ const HISTORY_OVERLAY_MAX_WINDOW = 16;
 // push; 500 recent matches is far more than anyone scrolls through.
 const HISTORY_OVERLAY_MAX_ITEMS = 500;
 
+// §process-gate (2026-06-27) — suppress the shell-history overlay while a
+// foreground process is actually RUNNING in this pane's shell (e.g. `sleep`,
+// `npm run dev`, a build) instead of the shell idling at a command prompt.
+// The kernel TUI gate (`shouldAllowShellHistory`) already blocks vim / claude /
+// less etc. via their VT modes, but a plain non-TUI command sets no mode — so
+// without this, ArrowUp pops the history popup in the middle of a running
+// command. The backend `get_pane_foreground_process` returns the shell's
+// foreground child name (`Some`) while a command runs and `null` at an idle
+// prompt; we cache that as a boolean and refresh it on a light cadence while
+// this pane is the active one (the only pane where ArrowUp can open history).
+// Fail-open on error so a transient IPC failure never wedges history shut.
+const FG_POLL_INTERVAL_MS = 1000;
+let foregroundProcessRunning = false;
+let foregroundPollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function refreshForegroundRunning(): Promise<void> {
+	if (!alive || !isTauri()) return;
+	try {
+		const name = await invoke<string | null>('get_pane_foreground_process', {
+			workspaceId,
+			paneId,
+		});
+		// Polling may have been stopped (pane deactivated / destroyed) during
+		// the await — don't resurrect a stale value onto a now-idle pane.
+		if (foregroundPollTimer === null || !alive) return;
+		foregroundProcessRunning = name != null;
+	} catch {
+		foregroundProcessRunning = false;
+	}
+}
+
+function startForegroundPoll(): void {
+	if (foregroundPollTimer !== null || !isTauri()) return;
+	void refreshForegroundRunning();
+	foregroundPollTimer = setInterval(() => void refreshForegroundRunning(), FG_POLL_INTERVAL_MS);
+}
+
+function stopForegroundPoll(): void {
+	if (foregroundPollTimer !== null) {
+		clearInterval(foregroundPollTimer);
+		foregroundPollTimer = null;
+	}
+	foregroundProcessRunning = false;
+}
+
 function snapshotHistoryItems(query: string): string[] {
 	const all = dedupKeepFirst(get(terminalHistoryStore));
 	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ITEMS);
@@ -1201,6 +1246,8 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
+	// §process-gate — tear down the foreground-process poll for this pane.
+	stopForegroundPoll();
 	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
 	// unmounts mid-drag can't leave the whole app stuck at user-select:none.
 	if (scrollbarDragGuardActive) endScrollbarDrag();
@@ -1252,6 +1299,10 @@ $effect(() => {
 	// into another pane. Keystrokes already can't reach it (its container
 	// isn't focused), but the visual residue confuses.
 	if (!isActive && historyOverlayOpen) closeHistoryOverlay();
+	// §process-gate — only the active pane can open the history overlay, so
+	// only it runs the (slightly costly) foreground-process poll.
+	if (isActive) startForegroundPoll();
+	else stopForegroundPoll();
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -1360,6 +1411,10 @@ $effect(() => {
 			!historyOverlayOpen
 			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
 			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+			// §process-gate — no history popup while a command is actually
+			// running in the shell (non-TUI processes set no VT mode, so the
+			// kernel gate alone wouldn't catch them).
+			&& !foregroundProcessRunning
 			&& manager.shouldAllowShellHistory(paneId)
 		) {
 			if (openHistoryOverlay()) {
