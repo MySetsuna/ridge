@@ -89,12 +89,14 @@ if [[ -f \"$USER_ZDOTDIR/.zshrc\" ]]; then
 \tfi
 fi
 
-# Emit OSC 7 (cwd) before each prompt so the backend tracks interactive `cd`.
-# $PWD is emitted verbatim (not percent-encoded); Ridge's OSC 7 parser accepts
-# literal paths, so spaces/non-ASCII work despite deviating from RFC 3986 (a
-# conforming encoder would require an external tool).
+# Emit OSC 7 (cwd) + OSC 133;A (prompt start) before each prompt. OSC 7 lets the
+# backend track interactive `cd`; OSC 133;A drives the `pane-prompt` event the
+# frontend uses to bracket the shell-history \"command running\" window. $PWD is
+# emitted verbatim (not percent-encoded); Ridge's OSC 7 parser accepts literal
+# paths, so spaces/non-ASCII work despite deviating from RFC 3986 (a conforming
+# encoder would require an external tool).
 __ridge_emit_cwd() {
-\tprintf '\\033]7;file://%s\\a' \"$PWD\"
+\tprintf '\\033]7;file://%s\\a\\033]133;A\\a' \"$PWD\"
 }
 autoload -Uz add-zsh-hook 2>/dev/null
 if (( ${+functions[add-zsh-hook]} )); then
@@ -585,8 +587,12 @@ pub fn ensure_pane_pty_workspace(
     if !has_explicit_launch {
         match shell_kind {
             ShellKind::PowerShell => {
-                // PowerShell shell integration：在每次 prompt 渲染后打一条 OSC 7，让后端
-                // 实时拿到 cwd 变化（PowerShell 的 `cd` 不更新 PEB，`sysinfo` 那条路走不通）。
+                // PowerShell shell integration：在每次 prompt 渲染后打一条 OSC 7（让后端
+                // 实时拿到 cwd 变化，PowerShell 的 `cd` 不更新 PEB，`sysinfo` 那条路走不通），
+                // 外加一条 OSC 133;A（prompt start）。后者触发后端 find_prompt_osc →
+                // `pane-prompt-{ws}-{pane}` 事件，前端据此括出「命令运行中」窗口，把
+                // shell-history 门控扩展到进程内 cmdlet（Start-Sleep 等不 fork 子进程的命令）。
+                // 不覆写 PSReadLine 按键，只多发一条不可见 OSC。
                 //
                 // 用 `-EncodedCommand`（base64 UTF-16LE）传递脚本，彻底绕开
                 // portable-pty / CreateProcess 对 `$`、`&`、`{` 这类字符的引号处理 ——
@@ -597,6 +603,7 @@ pub fn ensure_pane_pty_workspace(
 					  $r = & $Global:__wind_origPrompt; \
 					  try { $c = $PWD.ProviderPath } catch { $c = (Get-Location).Path }; \
 					  try { [Console]::Write(([string][char]27) + ']7;file:///' + $c + ([string][char]7)) } catch {}; \
+					  try { [Console]::Write(([string][char]27) + ']133;A' + ([string][char]7)) } catch {}; \
 					  $r \
 					}";
                 let encoded = encode_powershell_utf16le_base64(PS_INIT);
@@ -606,12 +613,14 @@ pub fn ensure_pane_pty_workspace(
             }
             ShellKind::Bash => {
                 // Bash 在交互模式下每次显示 $PS1 前执行 PROMPT_COMMAND，所以 OSC 7 会跟上 cd。
-                // 用 printf 直接写 stdout，不改 IFS / set -e 行为。
+                // 同时发 OSC 133;A（prompt start）驱动 `pane-prompt` 事件，供前端 shell-history
+                // 门控括出命令运行窗口。用 printf 直接写 stdout，不改 IFS / set -e 行为。
                 let existing = std::env::var("PROMPT_COMMAND").unwrap_or_default();
+                let osc = r#"printf '\033]7;file://%s\a\033]133;A\a' "$PWD""#;
                 let pc = if existing.trim().is_empty() {
-                    r#"printf '\033]7;file://%s\a' "$PWD""#.to_string()
+                    osc.to_string()
                 } else {
-                    format!(r#"{existing}; printf '\033]7;file://%s\a' "$PWD""#)
+                    format!("{existing}; {osc}")
                 };
                 cmd.env("PROMPT_COMMAND", pc);
             }
