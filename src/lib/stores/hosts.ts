@@ -1,0 +1,109 @@
+// src/lib/stores/hosts.ts
+//
+// 「主机 / Hosts」侧边栏 tab 的状态 SSOT。承载所有「外部终端 provider」：
+//   - headless：本机无头会话（复用后端 list/summon/new/terminate native 命令）
+//   - remote / rdg：远端 ridge / rdg 主机（P3/P4 接入，此处先留类型与占位）
+//
+// 生命周期不变量（详见 docs/superpowers/specs/2026-06-30-...-hosts-design.md）：
+//   工作区里关闭 foreign pane = detach（会话保活）；**真正终止**只能在此面板里做。
+import { writable, get } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
+import { activeWorkspaceId } from '$lib/stores/paneTree';
+
+export type HostKind = 'headless' | 'remote' | 'rdg';
+export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
+
+/** 后端 `list_native_sessions` 回传的 native 会话摘要（与 ridge_tmux::NativeSessionInfo 对齐）。 */
+export interface NativeSessionInfo {
+  socket: string;
+  name: string;
+  windows: number;
+  panes: number;
+  width: number;
+  height: number;
+  attached: boolean;
+}
+
+/** 一台主机下的一个会话（provider 真正持有的 PTY）。 */
+export interface HostSession {
+  /** provider 域内会话键：headless 用 (socket, name)。 */
+  socket: string;
+  name: string;
+  windows: number;
+  panes: number;
+  width: number;
+  height: number;
+  /** 是否已被某工作区领养（attached=已接入）。 */
+  attached: boolean;
+}
+
+export interface Host {
+  id: string;
+  kind: HostKind;
+  label: string;
+  status: HostStatus;
+  sessions: HostSession[];
+}
+
+export const hostsStore = writable<Host[]>([]);
+export const hostsLoading = writable(false);
+/** 上次刷新错误（面板顶部提示用），空串=无错误。 */
+export const hostsError = writable('');
+
+const HEADLESS_HOST_ID = 'headless';
+
+/**
+ * 刷新主机/会话快照。当前聚合后端 native 会话为「本机（无头）」单一 host；
+ * 远端/rdg host 在 P3/P4 由各自连接推送后合并进 hostsStore。
+ */
+export async function refreshHosts(): Promise<void> {
+  hostsLoading.set(true);
+  try {
+    const sessions = await invoke<NativeSessionInfo[]>('list_native_sessions');
+    const headless: Host = {
+      id: HEADLESS_HOST_ID,
+      kind: 'headless',
+      label: '本机（无头）',
+      status: 'connected',
+      sessions: sessions ?? [],
+    };
+    // 远端/rdg host 合并：保留已连接的非 headless host（P3/P4 由连接层维护）。
+    hostsStore.update((prev) => [headless, ...prev.filter((h) => h.kind !== 'headless')]);
+    hostsError.set('');
+  } catch (e) {
+    // 列举失败不致命（非 Tauri 环境 / invoke 未就绪）：清空 headless 会话，保留其它 host。
+    hostsStore.update((prev) => prev.filter((h) => h.kind !== 'headless'));
+    hostsError.set(e instanceof Error ? e.message : String(e));
+  } finally {
+    hostsLoading.set(false);
+  }
+}
+
+/** 新建一个本机无头会话（仅创建、不接入）；返回会话名。 */
+export async function newHeadlessSession(name?: string, cwd?: string): Promise<string> {
+  const created = await invoke<string>('new_headless_session', {
+    name: name?.trim() || null,
+    cwd: cwd?.trim() || null,
+  });
+  await refreshHosts();
+  return created;
+}
+
+/**
+ * **真正终止**一个会话（杀进程）。这是唯一的真关闭入口。
+ * 若该会话当前被领养，后端经 reader-EOF 自动把工作区视图摘除。
+ */
+export async function terminateSession(socket: string, target: string): Promise<void> {
+  await invoke('terminate_native_session', { socket, target });
+  await refreshHosts();
+}
+
+/**
+ * 接入：把一个会话召唤进当前查看的工作区。P1 直接 summon（后端决定落点，通常拆分活动
+ * pane）；P2 在右键/拖拽场景下走 dock 区域选择的 attach_foreign_session 精确落点。
+ */
+export async function attachSession(socket: string, target: string): Promise<void> {
+  const wid = get(activeWorkspaceId);
+  await invoke('summon_native_session', { socket, target, workspaceId: wid ?? null });
+  await refreshHosts();
+}

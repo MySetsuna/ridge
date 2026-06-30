@@ -704,6 +704,8 @@ pub fn run() {
             terminal::get_pane_scrollback_before,
             terminal::list_native_sessions,
             terminal::summon_native_session,
+            terminal::new_headless_session,
+            terminal::terminate_native_session,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
