@@ -26,6 +26,7 @@
     type HostSession,
   } from '$lib/stores/hosts';
   import { confirmDialog, promptDialog, alertDialog } from '../RidgeDialog.svelte';
+  import { hostSessionDrag } from '$lib/actions/hostSessionDrag';
 
   const POLL_INTERVAL_MS = 5000;
   let poll: ReturnType<typeof setInterval> | undefined;
@@ -189,7 +190,9 @@
           {/if}
           {#each host.sessions as s (s.socket + ':' + s.name)}
             <div
-              class="group flex items-center gap-2 pl-9 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors"
+              use:hostSessionDrag={{ socket: s.socket, name: s.name }}
+              title="拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）"
+              class="group flex items-center gap-2 pl-9 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors cursor-grab active:cursor-grabbing"
             >
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-1.5">

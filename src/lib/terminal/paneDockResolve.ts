@@ -32,6 +32,27 @@ export function resolveDockTarget(
   return { paneId, region: regionAtPoint(clientX, clientY, wrapper) };
 }
 
+/** 接入落点方向：全 pane 无死区，取光标到四边的最近边（不含 center —— 见
+ *  dockRegionPicker：attach 是「新增相邻终端」，无 tab 堆叠故 center 无意义）。 */
+export function attachDirectionAt(
+  clientX: number,
+  clientY: number,
+  el: { getBoundingClientRect(): DOMRect }
+): DockRegion {
+  const r = el.getBoundingClientRect();
+  const x = (clientX - r.left) / Math.max(r.width, 1);
+  const y = (clientY - r.top) / Math.max(r.height, 1);
+  const dLeft = x;
+  const dRight = 1 - x;
+  const dTop = y;
+  const dBottom = 1 - y;
+  const m = Math.min(dLeft, dRight, dTop, dBottom);
+  if (m === dLeft) return 'left';
+  if (m === dRight) return 'right';
+  if (m === dTop) return 'top';
+  return 'bottom';
+}
+
 /** 起手位移是否超过阈值（避免点击被误判为拖拽）。 */
 export function passedDragThreshold(
   startX: number,

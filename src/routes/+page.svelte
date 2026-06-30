@@ -16,6 +16,7 @@
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
   import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
+  import DockRegionPicker from '$lib/components/hosts/DockRegionPicker.svelte';
   import { initTeammateBoot } from '$lib/teammate/teammateSettings';
   import { Smartphone, Server } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
@@ -2019,6 +2020,8 @@ function expandSidebar() {
 <WindToast />
 <!-- 全局右键菜单 -->
 <ContextMenu />
+<!-- 「接入终端」落点方向选择浮层（单例） -->
+<DockRegionPicker />
 
 <!-- §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P，VS Code 对齐）。openFile → 内置编辑器。 -->
 {#if quickOpenVisible}
