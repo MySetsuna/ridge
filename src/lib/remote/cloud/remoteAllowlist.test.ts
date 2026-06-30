@@ -74,7 +74,7 @@ describe('isMutatingMethod', () => {
 describe('mirror integrity (vs capability.rs)', () => {
   // If these counts change, update capability.rs ⇄ remoteAllowlist.ts together.
   it('allow-list has the expected size', () => {
-    expect(REMOTE_ALLOWLIST.length).toBe(89);
+    expect(REMOTE_ALLOWLIST.length).toBe(91);
   });
   it('mutating set has the expected size', () => {
     expect(MUTATING_METHODS.length).toBe(22);

@@ -3085,6 +3085,17 @@ async fn dispatch_invoke_request(
             opt_s(args, "workspaceId"),
         )
         .await),
+        // `new_headless_session` 起一个新无头会话（mutating）；`terminate_native_session`
+        // 真正杀掉会话（mutating，destructive）——两者经 MUTATING_METHODS 只读门控，
+        // 只读会话会被后端 pre-check 挡掉。
+        "new_headless_session" => val(terminal::new_headless_session(
+            opt_s(args, "name"),
+            opt_s(args, "cwd"),
+        )),
+        "terminate_native_session" => val(terminal::terminate_native_session(
+            s(args, "socket"),
+            s(args, "target"),
+        )),
 
         // ── Workspace (live) ──
         // `list_workspaces` is read-only and required by the desktop SPA

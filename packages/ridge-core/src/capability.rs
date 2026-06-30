@@ -192,6 +192,11 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // even in a read-only session, consistent with split/create/close pane.
     "list_native_sessions",
     "summon_native_session",
+    // `new_headless_session` 起一个新无头会话；`terminate_native_session` 真正终止
+    // 一个会话（杀子进程）。与 close_pane/summon 同属结构性 pane 操作（非 fs/git
+    // 写），故允许只读会话调用，不列入 MUTATING_METHODS。真关闭的危险确认在前端。
+    "new_headless_session",
+    "terminate_native_session",
     // ── Workspace (live) ──
     // 只读：远程控制器（桌面 SPA）连上后枚举 host 工作区列表（refreshWorkspaces →
     // list_workspaces）。漏了它会导致 controller 取不到工作区 → 兜底逻辑每次连接新建一个

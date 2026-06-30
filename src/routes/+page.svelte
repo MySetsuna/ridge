@@ -15,8 +15,9 @@
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
+  import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
   import { initTeammateBoot } from '$lib/teammate/teammateSettings';
-  import { Smartphone } from 'lucide-svelte';
+  import { Smartphone, Server } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
@@ -294,7 +295,7 @@
     });
   });
 
-  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote' | 'agents';
+  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote' | 'agents' | 'hosts';
   let sidebarTab = $state<SidebarTab>('files');
   // 智能体协同总开关（设置面板「智能体」分区）：关闭时隐藏指挥部 Tab 入口。
   const teammateEnabled = $derived($settingsStore.teammateEnabled);
@@ -1470,6 +1471,15 @@ function expandSidebar() {
       <Bot class="h-5 w-5" />
     </button>
     {/if}
+    <!-- 主机 / Hosts：外部终端来源（本机无头 + 远端 ridge/rdg）。会话真正关闭的唯一入口。 -->
+    <button
+      type="button"
+      class="{actBtn}{sidebarTab === 'hosts' ? actBtnOn : ''}"
+      title="主机"
+      onclick={() => { sidebarTab = 'hosts'; expandSidebar(); }}
+    >
+      <Server class="h-5 w-5" />
+    </button>
     <!-- Bottom-anchored extension manager — uses mt-auto so it stays at the
          rail's bottom regardless of how many tabs sit above. Click toggles
          the Claude Code extension. The icon flips between dim/Bot when off
@@ -1561,6 +1571,11 @@ function expandSidebar() {
           <AgentCenterPanel workspaceId={$activeWorkspaceId} />
         </div>
         {/if}
+
+        <!-- Hosts tab（主机）：本机无头会话 + 远端 ridge/rdg。始终挂载（桌面 + web-remote）。 -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'hosts' ? '' : 'hidden'}">
+          <HostsPanel />
+        </div>
 
         <!-- Files tab (default) -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'files' ? '' : 'hidden'}">

@@ -58,6 +58,10 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   // structural pane op (not in MUTATING_METHODS — allowed in read-only sessions).
   'list_native_sessions',
   'summon_native_session',
+  // `new_headless_session` 起新无头会话；`terminate_native_session` 真正终止会话。
+  // 同属结构性 pane 操作（非 MUTATING_METHODS）—— 真关闭的危险确认在前端。
+  'new_headless_session',
+  'terminate_native_session',
   // ── Workspace (live) ──
   // 只读：远程控制器连上后枚举 host 工作区（refreshWorkspaces → list_workspaces）。
   // 漏放行会导致 controller 工作区列表空 → 兜底逻辑每次连接新建一个工作区（连带 bug）。
