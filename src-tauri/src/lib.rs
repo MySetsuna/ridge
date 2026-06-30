@@ -809,6 +809,8 @@ pub fn run() {
             commands::teammate::resolve_hitl_request,
             commands::teammate::set_hitl_enabled,
             commands::teammate::classify_command_risk,
+            // 仅桌面本机 IPC：返回 MCP 端点 + token，刻意不入 REMOTE_ALLOWLIST（D6）。
+            commands::teammate::get_teammate_connection_info,
             // Domain D3 文件并发写锁（前端冲突仲裁视图用）
             teammate::locks::acquire_write_lock,
             teammate::locks::release_write_lock,
