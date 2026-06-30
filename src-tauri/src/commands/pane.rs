@@ -24,6 +24,20 @@ pub struct SplitPaneResult {
 /// `agent_state` 与 `agent_id` 在 Claude Code teammate 通过
 /// `/api/v1/register-agent` 记下某个 pane 为 Busy 时出现；前端据此在标题栏
 /// 画一个"运行中"指示，让 orchestrator 能一眼看出哪些 pane 有 sub-agent。
+/// 外部来源标识：pane 的底层 PTY 不归本地工作区持有时回传给前端（领养的
+/// 本地无头会话 / 远端 ridge / rdg）。与前端 `PaneOrigin`（`src/lib/types.ts`）
+/// 对齐 —— `kind` 作 serde tag，字段保持 snake_case。`None`（缺省）= 本地终端。
+/// P0 仅实现 `Headless`（由 `PtyHandle.native_ref` 派生）；远端/rdg 在 P3/P4 接入。
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PaneOriginDto {
+    Headless {
+        host_id: String,
+        host_label: String,
+        session_id: String,
+    },
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum LayoutNode {
@@ -42,6 +56,9 @@ pub enum LayoutNode {
         /// 若 pane 当前有注册的 agent，回传其 `agent_id`。
         #[serde(skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
+        /// 外部来源标识（无头/远端/rdg）；`None` = 本地持有的终端。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        origin: Option<PaneOriginDto>,
     },
     Split {
         id: String,
@@ -89,6 +106,17 @@ fn engine_node_to_layout(
                         .then(|| "pending...".to_string())
                 })
                 .or_else(|| Some("terminal".to_string()));
+            // 外部来源：领养的本地无头会话由 `PtyHandle.native_ref =
+            // (socket, global_id)` 派生（关闭=detach 路径已成立，见
+            // terminal.rs::kill_pty_if_present）。远端/rdg 在 P3/P4 由 remote_ref 扩展。
+            let origin = terminals
+                .get(id)
+                .and_then(|h| h.native_ref.as_ref())
+                .map(|(socket, gid)| PaneOriginDto::Headless {
+                    host_id: "headless".to_string(),
+                    host_label: socket.clone(),
+                    session_id: format!("{socket}:{gid}"),
+                });
             LayoutNode::Leaf {
                 id: id.to_string(),
                 title,
@@ -97,6 +125,7 @@ fn engine_node_to_layout(
                 shell_kind: panes.get(id).and_then(|p| p.shell_kind.clone()),
                 agent_state,
                 agent_id: agent_by_pane.get(id).cloned(),
+                origin,
             }
         }
         EnginePaneNode::Split {
@@ -424,6 +453,19 @@ pub(crate) fn teammate_pane_uuid_at_index(
         .get(pane_index)
         .copied()
         .ok_or_else(|| AppError::InvalidPaneId(format!("pane index {pane_index}")))
+}
+
+/// 校验 `pane_uuid` 是否为该工作区当前的一个**叶子** pane。
+///
+/// 与数字索引寻址 ([`teammate_pane_uuid_at_index`]) 同源（都基于
+/// `pane_tree.get_all_leaves()`），保证 MCP `target_pane_id` 经 Uuid 直投与经索引
+/// 投递落到同一组目标。用于缺口1 寻址自洽：花名册回传的 `paneId`(Uuid) 必须先
+/// 校验仍属当前工作区再注入，杜绝跨工作区 / 陈旧 Uuid 误投。
+pub(crate) fn teammate_pane_is_leaf(app: &AppState, workspace_id: Uuid, pane_uuid: Uuid) -> bool {
+    let map = app.workspaces.read();
+    map.get(&workspace_id)
+        .map(|ws| ws.pane_tree.get_all_leaves().contains(&pane_uuid))
+        .unwrap_or(false)
 }
 
 /// Frontend-accessible registration of a running teammate agent against a

@@ -20,6 +20,7 @@
   import PaneDiffPill from './PaneDiffPill.svelte';
   import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
   import PaneShellSwitcher from './PaneShellSwitcher.svelte';
+  import { paneOriginBadge } from '$lib/terminal/paneOrigin';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -559,6 +560,7 @@ import {
                 {@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
                 {@const agentState = node.type === 'leaf' ? node.agent_state : undefined}
                 {@const agentId = node.type === 'leaf' ? node.agent_id : undefined}
+                {@const origin = node.type === 'leaf' ? node.origin : undefined}
                 <span
                   class="flex items-center gap-1.5 text-[11px] font-mono tracking-wide truncate"
                 >
@@ -585,6 +587,17 @@ import {
                     >
                       <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"></span>
                       STARTING
+                    </span>
+                  {/if}
+                  {#if origin}
+                    <!-- 外部来源徽标：HEADLESS / LAN / rdg。紧跟 AGENT/STARTING 之后、
+                         proc·cwd 之前，让用户一眼分辨这个 pane 不归本地工作区持有。 -->
+                    {@const ob = paneOriginBadge(origin)}
+                    <span
+                      class="flex items-center shrink-0 rounded-full border px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider {ob.pillClass}"
+                      title={ob.title}
+                    >
+                      {ob.label}
                     </span>
                   {/if}
                   {#if proc}
@@ -633,7 +646,11 @@ import {
             {/if}
             <button
               type="button"
-              title={leafCount <= 1 ? $t('workspace.keepOnePane') : $t('workspace.closeThisPane')}
+              title={leafCount <= 1
+                ? $t('workspace.keepOnePane')
+                : node.type === 'leaf' && node.origin
+                  ? '断开此 pane（会话仍在「主机」面板运行，不会被终止）'
+                  : $t('workspace.closeThisPane')}
               disabled={leafCount <= 1}
               class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)] disabled:opacity-25 disabled:pointer-events-none"
               onclick={() => onClosePane(node.id)}
