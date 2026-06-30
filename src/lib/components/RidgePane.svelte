@@ -15,6 +15,7 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '$lib/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
@@ -166,6 +167,25 @@ function stopForegroundPoll(): void {
 	foregroundProcessRunning = false;
 }
 
+// §process-gate (2026-06-30) — extend the gate to IN-PROCESS commands (e.g.
+// PowerShell `Start-Sleep`, a pure-PS loop) that fork no OS child, so the
+// foreground-process poll above can't see them. The shell integration emits
+// OSC 133;A on every prompt → the backend fires a `pane-prompt-{ws}-{pane}`
+// event; we treat "Enter submitted at the shell" as command-start and the next
+// prompt event as command-end. `commandRunning` is only ARMED once we've
+// actually observed a prompt event (`hasShellIntegration`), so a shell that
+// never emits the marker (cmd.exe, or integration that failed) can never wedge
+// the gate closed — it just falls back to the foreground-process poll.
+let commandRunning = false;
+let hasShellIntegration = false;
+let promptUnlisten: UnlistenFn | null = null;
+
+/** Mark a command as submitted at the shell prompt (plain Enter, or executing a
+ *  history pick). No-op until shell integration is confirmed. */
+function markCommandSubmitted(): void {
+	if (hasShellIntegration) commandRunning = true;
+}
+
 function snapshotHistoryItems(query: string): string[] {
 	const all = dedupKeepFirst(get(terminalHistoryStore));
 	return filterByPrefix(all, query).slice(0, HISTORY_OVERLAY_MAX_ITEMS);
@@ -246,6 +266,8 @@ function commitHistorySelection(execute: boolean): void {
 	const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
 	if (replay) manager.write(paneId, replay);
 	manager.write(paneId, execute ? cmd + '\r' : cmd);
+	// §process-gate — executing a picked history command starts a run too.
+	if (execute) markCommandSubmitted();
 	currentInputBuffer = EMPTY_INPUT_BUFFER;
 	closeHistoryOverlay();
 	imeHelper?.focus();
@@ -378,6 +400,11 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			manager.markInputStart(paneId);
 			break;
 		case 'clear':
+			// §process-gate (2026-06-30): plain Enter submits the line — a
+			// command is now running until the next prompt marker resets it.
+			// No-op until shell integration is confirmed. Not in 'killLine'
+			// (Ctrl+U just clears the line, runs nothing).
+			markCommandSubmitted();
 			// §shell-history (2026-06-24): record the executed command
 			// into the in-memory store so commands typed this session
 			// appear in the history popup. Skip dirty buffers (Tab
@@ -1045,6 +1072,19 @@ onMount(() => {
 		return;
 	}
 
+	// §process-gate — subscribe to the backend's prompt marker (OSC 133;A,
+	// emitted by the shell integration on every prompt) BEFORE the
+	// attach/unpark branch so it's wired exactly once per mount. Each prompt
+	// means the shell is idle at its input line → clear `commandRunning` and
+	// confirm integration is live.
+	void listen(`pane-prompt-${workspaceId}-${paneId}`, () => {
+		hasShellIntegration = true;
+		commandRunning = false;
+	}).then((un) => {
+		if (alive) promptUnlisten = un;
+		else un();
+	});
+
 	void (async () => {
 		await manager.ready();
 		if (!alive) return;
@@ -1249,8 +1289,10 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
-	// §process-gate — tear down the foreground-process poll for this pane.
+	// §process-gate — tear down the foreground-process poll + prompt listener.
 	stopForegroundPoll();
+	promptUnlisten?.();
+	promptUnlisten = null;
 	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
 	// unmounts mid-drag can't leave the whole app stuck at user-select:none.
 	if (scrollbarDragGuardActive) endScrollbarDrag();
@@ -1415,9 +1457,13 @@ $effect(() => {
 			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
 			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
 			// §process-gate — no history popup while a command is actually
-			// running in the shell (non-TUI processes set no VT mode, so the
-			// kernel gate alone wouldn't catch them).
+			// running in the shell. `foregroundProcessRunning` catches external
+			// processes (any shell); `commandRunning` catches in-process
+			// commands (e.g. PowerShell Start-Sleep) via the OSC 133;A prompt
+			// bracket. Non-TUI processes set no VT mode, so the kernel gate
+			// alone wouldn't catch them.
 			&& !foregroundProcessRunning
+			&& !commandRunning
 			&& manager.shouldAllowShellHistory(paneId)
 		) {
 			if (openHistoryOverlay()) {
