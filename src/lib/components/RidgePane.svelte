@@ -37,7 +37,10 @@ import {
 } from './inputBufferTracker';
 import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
 import { getShells, changePaneShell, type ShellInfo } from '$lib/terminal/paneShell';
-import { Terminal } from 'lucide-svelte';
+import { hostsStore, refreshHosts, newHeadlessSession, attachSessionAt } from '$lib/stores/hosts';
+import { pickDockRegion } from '$lib/stores/dockRegionPicker';
+import type { ContextMenuItem } from '$lib/stores/contextMenu';
+import { Terminal, PlugZap } from 'lucide-svelte';
 
 interface Props {
 	paneId: string;
@@ -1530,10 +1533,68 @@ $effect(() => {
 	}
 
 
+// §接入终端 (hosts P2)：右键菜单「接入终端 ▸」把外部终端引入工作区。落点经
+// pickDockRegion 弹方向选择浮层 → attachSessionAt(summon + dock_pane)。会话数据
+// 取自 hostsStore（构建菜单时同步读，并 fire-and-forget 刷新供下次打开使用）。
+async function onAttachNewHeadless(targetPaneId: string): Promise<void> {
+	const region = await pickDockRegion(targetPaneId);
+	if (!region) return;
+	try {
+		const name = await newHeadlessSession();
+		await attachSessionAt('headless', name, targetPaneId, region);
+	} catch {
+		/* 失败静默：用户可在「主机」面板重试/排查 */
+	}
+}
+
+async function onAttachExisting(socket: string, name: string, targetPaneId: string): Promise<void> {
+	const region = await pickDockRegion(targetPaneId);
+	if (!region) return;
+	try {
+		await attachSessionAt(socket, name, targetPaneId, region);
+	} catch {
+		/* ignore */
+	}
+}
+
+function openHostsTab(): void {
+	window.dispatchEvent(new CustomEvent('ridge:open-sidebar-tab', { detail: 'hosts' }));
+}
+
+/** 构建「接入终端」子菜单项：新建无头 + 各主机会话（按主机分二级子菜单）+ 管理入口。 */
+function attachSubmenuChildren(targetPaneId: string): ContextMenuItem[] {
+	const items: ContextMenuItem[] = [
+		{
+			id: 'attach-new-headless',
+			label: '新建无头终端',
+			action: () => void onAttachNewHeadless(targetPaneId),
+		},
+	];
+	for (const host of get(hostsStore)) {
+		const sessions = host.sessions ?? [];
+		if (sessions.length === 0) continue;
+		items.push({
+			id: `attach-host-${host.id}`,
+			label: host.label,
+			children: sessions.map((s) => ({
+				id: `attach-${host.id}-${s.socket}-${s.name}`,
+				label: s.attached ? `${s.name}（已接入）` : s.name,
+				disabled: s.attached,
+				action: () => void onAttachExisting(s.socket, s.name, targetPaneId),
+			})),
+		});
+	}
+	items.push({ id: 'attach-manage-sep', divider: true });
+	items.push({ id: 'attach-open-hosts', label: '管理主机…', action: () => openHostsTab() });
+	return items;
+}
+
 function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
 	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
 	if (manager.isMouseReporting(paneId)) return;
+	// 异步刷新主机/会话快照（不阻塞本次菜单构建；供下次打开时已是最新）。
+	void refreshHosts();
 	// §TUI: refresh sticky timestamp BEFORE showing the context menu.
 	// While the menu is open no keyboard/wheel events reach the pane,
 	// so the inline-TUI heuristic (2 s decay) can expire during menu
@@ -1586,6 +1647,9 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-split-down', label: tr('workspace.ctxSplitDown'), action: () => {
 			void splitPane(paneId, 'vertical');
 		}},
+		// §接入终端 (hosts P2)：引入外部终端（本机无头 / 远端 ridge·rdg）。选中后弹
+		// 方向选择浮层确定落点。保持上面的 Split 简单不变，富功能收进此子菜单。
+		{ id: 'term-attach', label: '接入终端', icon: PlugZap, children: attachSubmenuChildren(paneId) },
 		...(shells.length > 0 ? [
 			{ id: 'term-sep-shell', divider: true },
 			{

@@ -8,7 +8,14 @@
 //   工作区里关闭 foreign pane = detach（会话保活）；**真正终止**只能在此面板里做。
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { activeWorkspaceId } from '$lib/stores/paneTree';
+import {
+  activeWorkspaceId,
+  paneTreeStore,
+  syncPaneLayoutFromBackend,
+  dockPane,
+} from '$lib/stores/paneTree';
+import type { PaneNode } from '$lib/types';
+import type { AttachRegion } from '$lib/stores/dockRegionPicker';
 
 export type HostKind = 'headless' | 'remote' | 'rdg';
 export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
@@ -107,3 +114,43 @@ export async function attachSession(socket: string, target: string): Promise<voi
   await invoke('summon_native_session', { socket, target, workspaceId: wid ?? null });
   await refreshHosts();
 }
+
+/** 在 pane 树里按 origin 会话键 `socket:gid` 找到刚领养的 foreign pane。 */
+function findPaneByOriginSession(node: PaneNode, sessionId: string): string | null {
+  if (node.type === 'leaf') {
+    return node.origin && node.origin.session_id === sessionId ? node.id : null;
+  }
+  for (const child of node.children) {
+    const hit = findPaneByOriginSession(child, sessionId);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * 区域精确接入：召唤会话后，把新领养的 pane 停靠到 `targetPaneId` 的指定方向。
+ * 复用既有且经测试的 summon + dock_pane 两个原语（无需新后端命令）：
+ *   1. summon 把会话领养进工作区（后端决定初始落点），返回其 native global_id；
+ *   2. 重新同步布局后按 origin 会话键 `socket:gid` 定位新 pane；
+ *   3. dock_pane 把它移动到目标方向半区。
+ */
+export async function attachSessionAt(
+  socket: string,
+  target: string,
+  targetPaneId: string,
+  region: AttachRegion
+): Promise<void> {
+  const wid = get(activeWorkspaceId);
+  const gid = await invoke<number>('summon_native_session', {
+    socket,
+    target,
+    workspaceId: wid ?? null,
+  });
+  await syncPaneLayoutFromBackend();
+  const newPaneId = findPaneByOriginSession(get(paneTreeStore), `${socket}:${gid}`);
+  if (newPaneId && newPaneId !== targetPaneId) {
+    await dockPane(newPaneId, targetPaneId, region);
+  }
+  await refreshHosts();
+}
+
