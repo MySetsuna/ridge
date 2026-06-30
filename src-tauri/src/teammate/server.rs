@@ -506,6 +506,28 @@ async fn route_register_agent(
 
 // ===== Domain B3: 高层 Teammate API（复用现有 HTTP + bearer 传输，非 UDS）=====
 
+/// 生成某工作区的花名册快照（`{roster, leaderId, edges}`，含 `paneId`+`paneIndex`）。
+///
+/// 有 typed 画像 → 跑 Leader 竞选返回真实角色；否则回退侧表映射。两路都带数字
+/// `paneIndex`（典型画像路径把当前叶子序列传入 `topology_for`），供 MCP 寻址自洽。
+/// 由 `route_get_team_profile`（HTTP）与 `ridge_get_team_profile`（MCP tool）共用。
+fn team_profile_snapshot(ctx: &TeammateCtx, wid: Uuid) -> serde_json::Value {
+    if super::profiles::has(wid) {
+        let leaves = {
+            let map = ctx.state.workspaces.read();
+            map.get(&wid)
+                .map(|ws| ws.pane_tree.get_all_leaves())
+                .unwrap_or_default()
+        };
+        super::profiles::topology_for(wid, &leaves)
+    } else {
+        let map = ctx.state.workspaces.read();
+        map.get(&wid)
+            .map(crate::commands::teammate::topology_json)
+            .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
+    }
+}
+
 /// 花名册快照（只读）：Leader 启动时「查兵马」。复用 D1 拓扑映射。
 async fn route_get_team_profile(
     State(ctx): State<TeammateCtx>,
@@ -518,15 +540,7 @@ async fn route_get_team_profile(
         Ok(w) => w,
         Err(r) => return workspace_reject_response(&ctx, r),
     };
-    // 有 typed 画像 → 跑 Leader 竞选返回真实角色；否则回退侧表映射。
-    let body = if super::profiles::has(wid) {
-        super::profiles::topology_for(wid)
-    } else {
-        let map = ctx.state.workspaces.read();
-        map.get(&wid)
-            .map(crate::commands::teammate::topology_json)
-            .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
-    };
+    let body = team_profile_snapshot(&ctx, wid);
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -537,6 +551,12 @@ struct DelegateBody {
     #[serde(default)]
     #[allow(dead_code)]
     max_steps: u32,
+    /// P3 —— 可选投递范围标注（前端「给组派任务」携带的编组 id）。**仅做审计透传**：
+    /// 不新建通信栈（D2），落点仍是写目标 pane stdin；带上时在响应里回显供调用方对账。
+    /// 前端 MVP 走 `write_to_pty` 广播、并不调用本路由，此字段是面向 MCP delegate 客户端的
+    /// 向后兼容审计位（缺省 None，旧调用方零影响）。
+    #[serde(default)]
+    group_id: Option<String>,
 }
 
 /// 向指定 Worker 派活：物理注入任务提示词唤醒目标 pane，标记 Working，返回 Task Ticket。
@@ -573,8 +593,14 @@ async fn route_delegate_task(
         format!("tsk_{}", pid.simple()),
         body.target_pane as u32,
     );
-    let payload =
+    let mut payload =
         serde_json::to_value(&ticket).unwrap_or_else(|_| serde_json::json!({ "status": "dispatched" }));
+    // P3 审计：带 group_id 时把投递范围标注回显进响应（不改变「写目标 pane stdin」的投递语义）。
+    if let Some(gid) = body.group_id.as_deref() {
+        if let serde_json::Value::Object(map) = &mut payload {
+            map.insert("groupId".to_string(), serde_json::Value::String(gid.to_string()));
+        }
+    }
     (StatusCode::OK, Json(payload)).into_response()
 }
 
@@ -696,18 +722,40 @@ async fn mcp_tools_call(
     let wid = *ctx.state.active_workspace.read();
     match name {
         "ridge_send_to_teammate" | "ridge_delegate_task" => {
-            let pane_idx = args
+            use ridge_core::mcp::addressing::{parse_pane_target, PaneTarget};
+            // 缺口1 寻址自洽：`target_pane_id` 同时接受花名册回传的 `paneId`(Uuid 串)
+            // 与 `paneIndex`(数字)。Uuid 直投前先校验它仍是当前工作区的叶子 pane，
+            // 数字则回退既有索引寻址，两路落到同一组目标。
+            let target = args
                 .get("target_pane_id")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let text = args
                 .get("message")
                 .or_else(|| args.get("objective"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane_idx) {
-                Ok(u) => u,
-                Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string()),
+            let pid = match parse_pane_target(&target) {
+                Ok(PaneTarget::Uuid(u)) => {
+                    if pane::teammate_pane_is_leaf(&ctx.state, wid, u) {
+                        u
+                    } else {
+                        return proto::mcp_error(
+                            id,
+                            proto::INVALID_PARAMS,
+                            &format!("pane {u} 不在当前活动工作区"),
+                        );
+                    }
+                }
+                Ok(PaneTarget::Index(idx)) => {
+                    match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
+                        Ok(u) => u,
+                        Err(e) => {
+                            return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string())
+                        }
+                    }
+                }
+                Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e),
             };
             let payload = format!("{text}\n");
             match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, payload.as_bytes()) {
@@ -725,6 +773,17 @@ async fn mcp_tools_call(
                 }
                 Err(e) => proto::mcp_error(id, proto::INTERNAL_ERROR, &e.to_string()),
             }
+        }
+        // 缺口3：只读返回花名册，让 agent「先发现目标再发消息」。复用 team-profile
+        // 生成逻辑，roster 同时带 paneId(Uuid)+paneIndex(数字)，与上面的寻址兼容闭环。
+        "ridge_get_team_profile" => {
+            let snapshot = team_profile_snapshot(ctx, wid);
+            proto::mcp_result(
+                id,
+                serde_json::json!({
+                    "content": [ { "type": "text", "text": snapshot.to_string() } ]
+                }),
+            )
         }
         other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("unknown tool: {other}")),
     }

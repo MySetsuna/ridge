@@ -20,6 +20,10 @@ use crate::teammate::hitl;
 /// 把一个工作区的 teammate 侧表映射为前端 `TopologySnapshot` JSON。
 /// `pub(crate)` 以便 teammate HTTP 路由 (`server.rs::route_get_team_profile`) 复用。
 pub(crate) fn topology_json(ws: &Workspace) -> Value {
+    // 叶子顺序 = MCP 数字索引寻址 (`teammate_pane_uuid_at_index`) 的同源序列。
+    // 据此为每个成员补出数字 `paneIndex`，让 agent 读 `active-panes` 后既能回传
+    // `paneId`(Uuid) 也能回传 `paneIndex`(数字)，两者都可寻址（缺口1 自洽）。
+    let leaves = ws.pane_tree.get_all_leaves();
     let roster: Vec<Value> = ws
         .teammate_agent_pane_map
         .iter()
@@ -33,10 +37,16 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
                 .get(pane)
                 .cloned()
                 .unwrap_or_else(|| agent_id.clone());
+            let pane_index = leaves
+                .iter()
+                .position(|p| p == pane)
+                .map(|i| json!(i))
+                .unwrap_or(Value::Null);
             json!({
                 "id": agent_id,
                 "name": name,
                 "paneId": pane.to_string(),
+                "paneIndex": pane_index,
                 "role": "Worker",
                 "status": status,
             })
@@ -56,8 +66,16 @@ pub async fn get_teammate_topology(
         None => *state.active_workspace.read(),
     };
     // 有 typed 画像 → 跑 Leader 竞选（真实角色/leader）；否则回退侧表映射。
+    // 两路都补 `paneIndex`：典型画像路径需把工作区当前叶子顺序传入 topology_for。
     if crate::teammate::profiles::has(wid) {
-        return Ok(crate::teammate::profiles::topology_for(wid));
+        let leaves = {
+            let workspaces = state.workspaces.read();
+            workspaces
+                .get(&wid)
+                .map(|ws| ws.pane_tree.get_all_leaves())
+                .unwrap_or_default()
+        };
+        return Ok(crate::teammate::profiles::topology_for(wid, &leaves));
     }
     let workspaces = state.workspaces.read();
     let ws = workspaces
@@ -88,4 +106,28 @@ pub fn set_hitl_enabled(enabled: bool) -> Result<(), String> {
 #[tauri::command]
 pub fn classify_command_risk(command: String) -> Result<Value, String> {
     serde_json::to_value(ridge_core::classify_shell_command(&command)).map_err(|e| e.to_string())
+}
+
+/// 功能2 —— 返回当前 teammate MCP 端点 + Bearer token，供指挥部「复制连接信息」按钮用。
+/// 先惰性拉起 teammate server（与首个 PTY 注入同一路径），再读运行态 `teammate_binding`。
+/// binding 为 None（服务尚未启动）时返回明确错误，前端据此提示「先打开一个终端分屏」。
+///
+/// **安全（设计文档 D6 硬约束）**：本命令返回**鉴权 token**，**仅限桌面本机 IPC 调用**——
+/// 绝不加入 `REMOTE_ALLOWLIST`（`packages/ridge-core/src/capability.rs`），不暴露给
+/// web-remote / LAN host / 云端控制面。否则任一远端控制器即可窃取本机 MCP 令牌、冒充队友。
+/// token 只在运行时动态返回，绝不写入任何静态文档或仓库文件。
+#[tauri::command]
+pub fn get_teammate_connection_info(state: State<'_, AppState>) -> Result<Value, String> {
+    crate::teammate::ensure_teammate_started(&state);
+    let binding = state
+        .teammate_binding
+        .read()
+        .clone()
+        .ok_or_else(|| "teammate 服务未启动：请先打开一个终端分屏".to_string())?;
+    // base_url 形如 http://127.0.0.1:<port>；只替换 scheme 前缀（replacen 限 1 次）。
+    let ws_endpoint = format!(
+        "{}/api/v1/mcp/ws",
+        binding.base_url.replacen("http", "ws", 1)
+    );
+    Ok(json!({ "wsEndpoint": ws_endpoint, "token": binding.token }))
 }

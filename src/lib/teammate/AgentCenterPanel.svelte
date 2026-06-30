@@ -13,9 +13,15 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
-  import { Crown, Bot, ZapOff, ShieldCheck } from 'lucide-svelte';
+  import { resolveResource } from '@tauri-apps/api/path';
+  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+  import { Crown, Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy } from 'lucide-svelte';
   import { settingsStore } from '$lib/stores/settings';
+  import { fileEditorStore } from '$lib/stores/fileEditor';
+  import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
+  import { alertDialog } from '$lib/components/RidgeDialog.svelte';
   import { setTeammateHitlEnabled } from './teammateSettings';
+  import TeammateGroups from './TeammateGroupsSection.svelte';
   import {
     parseTopologySnapshot,
     parseCircuitTripped,
@@ -43,6 +49,11 @@
   const leader = $derived(topology.roster.find((t) => t.id === topology.leaderId) ?? null);
   const workers = $derived(topology.roster.filter((t) => t.id !== topology.leaderId));
 
+  // 当前工作区的 .ridge 文件路径 → 编组的稳定持久化键（未保存为 null → 编组仅会话级，D1）。
+  const filePath = $derived(
+    (workspaceId ? $workspaceSaveInfoStore[workspaceId]?.file_path : null) ?? null
+  );
+
   function nameOf(paneId: string): string {
     return topology.roster.find((t) => t.paneId === paneId)?.name ?? paneId;
   }
@@ -53,6 +64,40 @@
       topology = parseTopologySnapshot(raw);
     } catch {
       topology = EMPTY_TOPOLOGY;
+    }
+  }
+
+  // 随应用打包的 MCP 接入引导文档（见 tauri.conf.json bundle.resources）。
+  const MCP_DOC_RESOURCE = 'static/docs/mcp-integration.md';
+
+  // 「MCP 接入引导」：取打包文档的磁盘绝对路径 → 内置编辑器打开（markdown 默认 preview 即只读查看，D5）。
+  async function openMcpGuide() {
+    try {
+      const path = await resolveResource(MCP_DOC_RESOURCE);
+      await fileEditorStore.openFile(path);
+    } catch (e) {
+      void alertDialog({
+        title: 'MCP 接入引导',
+        message: `打开引导文档失败：${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }
+
+  // 「复制连接信息」：动态取 MCP 端点 + token 写入剪贴板。token 仅运行时返回（D6），
+  // binding 为 None（未开终端）时后端给出友好错误，直接展示。
+  async function copyConnectionInfo() {
+    try {
+      const info = await invoke<{ wsEndpoint: string; token: string }>('get_teammate_connection_info');
+      await writeText(`endpoint: ${info.wsEndpoint}\ntoken: ${info.token}`);
+      void alertDialog({
+        title: '复制连接信息',
+        message: 'MCP 连接信息（端点 + token）已复制到剪贴板。',
+      });
+    } catch (e) {
+      void alertDialog({
+        title: '复制连接信息',
+        message: typeof e === 'string' ? e : `获取连接信息失败：${e instanceof Error ? e.message : String(e)}`,
+      });
     }
   }
 
@@ -69,6 +114,8 @@
 
   onMount(() => {
     refresh();
+    // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
+    void refreshWorkspaceSaveInfo();
     const timer = setInterval(refresh, POLL_MS);
     const unTrip = listen(CIRCUIT_EVENT, (e) => {
       const trip = parseCircuitTripped(e.payload);
@@ -90,18 +137,40 @@
     <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
       <Bot class="h-3.5 w-3.5" /> 智能体
     </span>
-    <button
-      type="button"
-      role="switch"
-      aria-checked={hitlOn}
-      title={hitlOn ? '安全审批已开：危险命令需你批准' : '安全审批已关：命令直接执行'}
-      onclick={() => setTeammateHitlEnabled(!hitlOn)}
-      class="flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors {hitlOn
-        ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
-        : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
-    >
-      <ShieldCheck class="h-3 w-3" /> 审批 {hitlOn ? '开' : '关'}
-    </button>
+    <div class="flex items-center gap-1">
+      <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
+      <button
+        type="button"
+        title="MCP 接入引导（打开接入文档）"
+        aria-label="MCP 接入引导"
+        onclick={openMcpGuide}
+        class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-fg)]"
+      >
+        <BookOpen class="h-3.5 w-3.5" />
+      </button>
+      <!-- 复制连接信息：动态取 MCP 端点 + token -->
+      <button
+        type="button"
+        title="复制 MCP 连接信息（端点 + token）"
+        aria-label="复制 MCP 连接信息"
+        onclick={copyConnectionInfo}
+        class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-fg)]"
+      >
+        <ClipboardCopy class="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={hitlOn}
+        title={hitlOn ? '安全审批已开：危险命令需你批准' : '安全审批已关：命令直接执行'}
+        onclick={() => setTeammateHitlEnabled(!hitlOn)}
+        class="flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors {hitlOn
+          ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
+          : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+      >
+        <ShieldCheck class="h-3 w-3" /> 审批 {hitlOn ? '开' : '关'}
+      </button>
+    </div>
   </header>
 
   <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
@@ -157,5 +226,8 @@
         {/if}
       </ul>
     </section>
+
+    <!-- 编组（手动协作，P3）：勾选成员建组 / 配色 / 改名 / 解散 / 给组派任务（广播） -->
+    <TeammateGroups roster={topology.roster} {workspaceId} {filePath} />
   </div>
 </div>

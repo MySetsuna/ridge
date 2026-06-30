@@ -232,4 +232,22 @@ mod tests {
         assert!(names.contains(&"target_pane_id"));
         assert!(names.contains(&"objective"));
     }
+
+    #[test]
+    fn routed_tools_are_advertised() {
+        // 缺口3 回归守卫：`tools/call`（src-tauri/teammate/server.rs::mcp_tools_call）
+        // 路由这三个工具。它们必须出现在 `tools/list` 里，否则 agent 发现得到却调用即
+        // "unknown tool"，自由交流链路断。
+        let reg = ToolRegistry::default();
+        for name in [
+            "ridge_send_to_teammate",
+            "ridge_delegate_task",
+            "ridge_get_team_profile",
+        ] {
+            assert!(
+                reg.get(name).is_some(),
+                "routed tool {name} missing from tools/list registry"
+            );
+        }
+    }
 }

@@ -51,7 +51,11 @@ pub fn has(wid: Uuid) -> bool {
 }
 
 /// 构建该工作区的花名册快照 JSON（`{roster, leaderId, edges}`）。leaderId 恒空（不竞选）。
-pub fn topology_for(wid: Uuid) -> Value {
+///
+/// `pane_order` 为该工作区当前叶子序列（`pane_tree.get_all_leaves()`，调用方持
+/// `AppState` 后读出传入）。据此为每个成员补出数字 `paneIndex`，与 MCP 数字索引
+/// 寻址同源，使花名册的 `paneId`(Uuid) 与 `paneIndex`(数字) 两键都可寻址（缺口1）。
+pub fn topology_for(wid: Uuid, pane_order: &[Uuid]) -> Value {
     let empty = json!({ "roster": [], "leaderId": Value::Null, "edges": [] });
     let Ok(g) = PROFILES.lock() else {
         return empty;
@@ -62,8 +66,12 @@ pub fn topology_for(wid: Uuid) -> Value {
 
     let mut graph = TopologyGraph::new();
     let mut pane_by_id: HashMap<String, String> = HashMap::new();
+    let mut pane_index_by_id: HashMap<String, usize> = HashMap::new();
     for (agent_id, e) in entries {
         pane_by_id.insert(agent_id.clone(), e.pane_uuid.to_string());
+        if let Some(idx) = pane_order.iter().position(|p| *p == e.pane_uuid) {
+            pane_index_by_id.insert(agent_id.clone(), idx);
+        }
         graph.add_teammate(e.teammate.clone());
     }
     let leader_id = graph.leader_id().map(|s| s.to_string());
@@ -72,10 +80,15 @@ pub fn topology_for(wid: Uuid) -> Value {
         .roster()
         .iter()
         .map(|t| {
+            let pane_index = pane_index_by_id
+                .get(&t.id)
+                .map(|i| json!(i))
+                .unwrap_or(Value::Null);
             json!({
                 "id": t.id,
                 "name": t.name,
                 "paneId": pane_by_id.get(&t.id).cloned().unwrap_or_default(),
+                "paneIndex": pane_index,
                 "role": role_str(t.role),
                 "status": status_str(t.status),
             })
