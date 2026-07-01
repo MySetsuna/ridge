@@ -1085,6 +1085,15 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('host-pane');
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('teammate-1');
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('teammate-2');
+    // §white-screen (2026-07-01): after fitting, force a full redraw across the
+    // whole active tree so a backend-created pane that attached at the already-
+    // correct size (fitPaneNow no-op → never wakes the render loop) still
+    // repaints its first frame instead of stranding blank (white).
+    expect(__mockManagerSpies.forceFullRedrawFor).toHaveBeenCalledWith([
+      'host-pane',
+      'teammate-1',
+      'teammate-2',
+    ]);
   });
 
   it('splitPane() end-to-end: backend split_pane → layout sync → deferred fit', async () => {

@@ -1488,9 +1488,23 @@ export function scheduleForceFitActivePanes(): void {
   if (typeof requestAnimationFrame === 'undefined') return;
   const fitAll = () => {
     const mgr = TerminalManager.instance();
-    for (const id of getAllPaneIds(get(paneTreeStore))) {
+    const ids = getAllPaneIds(get(paneTreeStore));
+    for (const id of ids) {
       mgr.fitPaneNow(id);
     }
+    // §white-screen (2026-07-01): a BACKEND-created pane (teammate split /
+    // auto_place) can mount + attach at the already-correct size, so
+    // `fitPaneNow` computes an unchanged rows×cols and short-circuits WITHOUT
+    // waking the render loop. When the pane also loses the attach-time first
+    // paint (rAF race / no further PTY output on an idle shell), it stays
+    // stranded blank — the reported white screen. The GUI `splitPane` path is
+    // driven by a live user gesture (focus/resize) that wakes the loop, which
+    // is why manual splits don't exhibit it. Force a full redraw across the
+    // tree after every backend-driven layout change: `forceFullRedrawFor`
+    // invalidates each pane's render cache and wakes the rAF loop once, is
+    // idempotent for panes already painting, and safely skips panes whose
+    // handle hasn't attached yet (picked up on the retry cadence below).
+    mgr.forceFullRedrawFor(ids);
   };
   requestAnimationFrame(() => {
     requestAnimationFrame(() => fitAll());
