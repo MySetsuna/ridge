@@ -143,7 +143,25 @@
 - **旧控制端兼容**：host 停推 replay 后，未升级的旧控制端（仍依赖 host replay 首屏）会短暂空屏到首个
   live 输出。cloud host+controller 同版本分发，影响窗口小；如需可保留一个**极小**（~1.5 屏）per-cid replay
   兜底（不广播），作为过渡。
-- **seam 竞态**：块级对齐下常态无重叠；忙碌 pane 订阅瞬间极端竞态 ≤1 块重复，自愈可接受。
+- **seam 空洞（审查 MEDIUM，已知取舍）**：实现取 path A 的「控制端先拉 tail 再挂 live」
+  而非 seq 边界拼接。**空闲/常态 pane 零空洞**；但**忙碌 pane 订阅瞬间**（如正在跑构建/
+  claude 流式输出）在 `tail 快照 seq` 与 `register live 完成` 之间的字节（≈一个 IPC 往返，
+  弱网下数十 ms）既不在 tail 也不在 live → 短暂丢一小段（下次重绘/prompt 自愈）。这是相对
+  「旧 host 单流内推回放（原子快照+发送，无空洞）」的**轻微回归**，换来的是**多控制端不再
+  互相冲屏**（旧广播回放会拿 2nd controller 的 RIS 冲掉 1st 的屏——更刺眼）。**彻底消除空洞的
+  正解 = per-sub 事件（每 controller 一条 `pane-raw-{sub_id}`，host 在该流内推小回放，恢复
+  原子快照无空洞且天然 per-controller）**；因需重排 race 敏感的订阅路径且本机无法 e2e 验，
+  留作**后续（配合真机验证）**，非本轮。`head_seq` 字段已就位，供该 per-sub 或未来 seq-tag
+  live 方案消费（当前 client 收到但未用 = 惰性，无害）。
+
+## 审查后修复（2026-07-02 code-reviewer adversarial pass）
+
+- **MEDIUM ①（已修 `6dea594`）**：`DESYNC_FLAGS` 按 pane 为键、两条移除路径（转发任务异步
+  收尾 + unsubscribe）无条件删 → 快速重订阅同 pane 时旧任务误删新订阅者条目 → 新订阅者背压
+  自愈失效。修 = 条目带 owning `sub_id`，仅匹配才移除（`remove_desync_if_owner`）。
+- **MEDIUM ②（gap，见上「seam 空洞」）**：已知取舍，per-sub 重构留作后续。
+- **LOW（head_seq client 未用）**：保留（供 per-sub/seq-tag 方案；无害）。
+- 安全 PASS：两只读命令无副作用；SSOT⇄镜像计数一致（93）；LAN 路径零改动。
 
 ## 提交粒度
 
