@@ -234,19 +234,22 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
     expect(paneOutputSource).toHaveBeenCalledOnce();
   });
 
-  // 初次订阅 → 立即请求不限频的历史回放（修复切 pane / 首连看到空屏）。
-  // 走 replay_pane_scrollback_raw（不限频、不依赖下一帧），而非限频的 resync_pane_raw。
-  it('requests an unthrottled initial scrollback replay on subscribe', () => {
+  // §history-pull（2026-07-02）：订阅只登记 **live** fan-out；host **不再**推初始回放。
+  // 历史由每个 controller 自己经 get_pane_scrollback_tail/before 拉（首屏小 + 滚顶分批），
+  // 天然多控制端隔离（host 不广播 RIS，不会冲掉其它 controller 的屏幕）。
+  it('does NOT push an initial scrollback replay on subscribe (history is controller-pulled)', () => {
     const invoke = vi.fn(async () => null);
     const paneOutputSource = vi.fn(() => () => {});
     const rig = makeRig({ invoke, paneOutputSource });
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1' } });
-    expect(invoke).toHaveBeenCalledWith('replay_pane_scrollback_raw', { paneId: 'pane-1' });
-    // 初次回放绝不走限频的背压自愈通道。
+    // Live source registered exactly once …
+    expect(paneOutputSource).toHaveBeenCalledOnce();
+    // … but the bridge itself pushes no replay/resync (controller pulls history).
+    expect(invoke).not.toHaveBeenCalledWith('replay_pane_scrollback_raw', { paneId: 'pane-1' });
     expect(invoke).not.toHaveBeenCalledWith('resync_pane_raw', { paneId: 'pane-1' });
   });
 
-  // 无 source（占位订阅）→ 不请求回放（host 端无流可放）。
+  // 无 source（占位订阅）→ 不碰 invoke（host 端无流可放）。
   it('does not request a replay when no paneOutputSource is wired', () => {
     const invoke = vi.fn(async () => null);
     const rig = makeRig({ invoke }); // no paneOutputSource

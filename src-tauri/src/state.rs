@@ -173,6 +173,11 @@ pub struct ScrollbackChunk {
     /// older data is available from the store (may still exist in xterm's
     /// own buffer if it's still mounted).
     pub at_oldest: bool,
+    /// Seq one past the newest retained byte at query time (the live/history
+    /// boundary). A remote controller seeds its grid from a tail read and then
+    /// streams live bytes; anything the store already has (`seq < head_seq`) is
+    /// pulled as history, so the seam is exact. Serialized as `head_seq`.
+    pub head_seq: u64,
 }
 
 /// Block size for completed scrollback pages (bytes). Chosen so a single
@@ -204,6 +209,14 @@ impl PaneScrollback {
         } else {
             self.current_start_seq
         }
+    }
+
+    /// Seq of the NEXT byte that will be written (one past the newest retained
+    /// byte). A remote controller uses this as the live/history boundary: bytes
+    /// with `seq < head_seq` are history (fetch via `_before`), bytes streamed
+    /// after subscribe are live — so the two never overlap or leave a gap.
+    pub fn head_seq(&self) -> u64 {
+        self.current_start_seq + self.current.len() as u64
     }
 
     /// Return the seq-sorted flat view of every retained byte. Used by the
@@ -716,10 +729,12 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: 0,
                 at_oldest: true,
+                head_seq: 0,
             };
         };
         let snapshot = entry.snapshot_blocks();
         let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
         drop(map);
 
         if snapshot.is_empty() || max_bytes == 0 {
@@ -727,6 +742,7 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: oldest_seq,
                 at_oldest: true,
+                head_seq,
             };
         }
 
@@ -771,6 +787,7 @@ impl AppState {
             bytes,
             start_seq,
             at_oldest: at_oldest && start_seq == oldest_seq,
+            head_seq,
         }
     }
 
@@ -789,10 +806,12 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: 0,
                 at_oldest: true,
+                head_seq: 0,
             };
         };
         let snapshot = entry.snapshot_blocks();
         let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
         drop(map);
 
         if snapshot.is_empty() || max_bytes == 0 {
@@ -800,6 +819,7 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: before_seq,
                 at_oldest: before_seq <= oldest_seq,
+                head_seq,
             };
         }
 
@@ -847,6 +867,7 @@ impl AppState {
             bytes,
             start_seq,
             at_oldest: start_seq <= oldest_seq,
+            head_seq,
         }
     }
 
