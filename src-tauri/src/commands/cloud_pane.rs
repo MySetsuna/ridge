@@ -64,14 +64,19 @@ pub fn subscribe_pane_raw(
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
     let ws = state.active_workspace_id();
 
-    // 幂等登记：已存在则不重复注册（避免双份 sub / 双份转发任务）。
+    // 引用计数登记：同一 WebView 内多个 controller 桥订阅同一 pane 时共用一条 live
+    // fan-out（emit `pane-raw-{pane}` 广播到所有订阅了该 pane 的桥）。已存在则 +1、
+    // 不重复注册（避免双份 sub / 双份转发任务）；仅首次订阅才真正注册 + 起转发任务。
     {
         let mut subs = state.cloud_pane_raw_subs.lock();
         match subs.entry(pane) {
-            Entry::Occupied(_) => return Ok(()),
+            Entry::Occupied(mut o) => {
+                o.get_mut().2 += 1;
+                return Ok(());
+            }
             Entry::Vacant(slot) => {
                 let sub_id = RemoteSubId::next();
-                slot.insert((ws, sub_id));
+                slot.insert((ws, sub_id, 1));
                 let (raw_tx, mut raw_rx) =
                     tokio::sync::mpsc::channel::<RemotePtyEvent>(RAW_CHAN_CAP);
                 // desync 标志：lib.rs fan-out（队列满）与 resync_pane_raw（JS 背压）共置位，
@@ -151,13 +156,28 @@ pub fn subscribe_pane_raw(
 #[tauri::command]
 pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
-    let removed = state.cloud_pane_raw_subs.lock().remove(&pane);
-    if let Some((ws, sub_id)) = removed {
+    // 引用计数递减：仅当最后一个 controller 退订（refcount → 0）才真正注销 fan-out，
+    // 否则保留（仍有其它 controller 在看该 pane，不能断它们的流）。
+    let teardown = {
+        let mut subs = state.cloud_pane_raw_subs.lock();
+        match subs.get_mut(&pane) {
+            Some(entry) => {
+                entry.2 = entry.2.saturating_sub(1);
+                if entry.2 == 0 {
+                    subs.remove(&pane) // Some((ws, sub_id, 0))
+                } else {
+                    None // 仍有订阅者，保留
+                }
+            }
+            None => None,
+        }
+    };
+    if let Some((ws, sub_id, _)) = teardown {
         // 丢弃 RemotePaneSub（唯一 raw_tx）→ 转发任务的 raw_rx 关闭 → 任务结束。
         state.unregister_remote_sub(ws, pane, sub_id);
+        // 转发任务结束时也会清理；此处显式移除以即时释放（双移除幂等）。
+        desync_flags().lock().unwrap().remove(&pane);
     }
-    // 转发任务结束时也会清理；此处显式移除以即时释放（双移除幂等）。
-    desync_flags().lock().unwrap().remove(&pane);
     Ok(())
 }
 
