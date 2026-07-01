@@ -36,6 +36,16 @@ pub enum PaneOriginDto {
         host_label: String,
         session_id: String,
     },
+    Remote {
+        host_id: String,
+        host_label: String,
+        session_id: String,
+    },
+    Rdg {
+        host_id: String,
+        host_label: String,
+        session_id: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -106,17 +116,36 @@ fn engine_node_to_layout(
                         .then(|| "pending...".to_string())
                 })
                 .or_else(|| Some("terminal".to_string()));
-            // 外部来源：领养的本地无头会话由 `PtyHandle.native_ref =
-            // (socket, global_id)` 派生（关闭=detach 路径已成立，见
-            // terminal.rs::kill_pty_if_present）。远端/rdg 在 P3/P4 由 remote_ref 扩展。
-            let origin = terminals
-                .get(id)
-                .and_then(|h| h.native_ref.as_ref())
-                .map(|(socket, gid)| PaneOriginDto::Headless {
-                    host_id: "headless".to_string(),
-                    host_label: socket.clone(),
-                    session_id: format!("{socket}:{gid}"),
-                });
+            // 外部来源：领养的本地无头会话由 `PtyHandle.native_ref = (socket,
+            // global_id)` 派生；远端/rdg 由 `remote_ref` 派生（P3/P4 基础层，当前恒
+            // None）。关闭=detach 路径见 terminal.rs::kill_pty_if_present。
+            let origin = terminals.get(id).and_then(|h| {
+                if let Some((socket, gid)) = h.native_ref.as_ref() {
+                    Some(PaneOriginDto::Headless {
+                        host_id: "headless".to_string(),
+                        host_label: socket.clone(),
+                        session_id: format!("{socket}:{gid}"),
+                    })
+                } else {
+                    h.remote_ref.as_ref().map(|rr| {
+                        let host_id = rr.host_id.clone();
+                        let host_label = rr.host_label.clone();
+                        let session_id = rr.remote_pane_id.clone();
+                        match rr.kind {
+                            crate::hosts::HostKind::Remote => PaneOriginDto::Remote {
+                                host_id,
+                                host_label,
+                                session_id,
+                            },
+                            crate::hosts::HostKind::Rdg => PaneOriginDto::Rdg {
+                                host_id,
+                                host_label,
+                                session_id,
+                            },
+                        }
+                    })
+                }
+            });
             LayoutNode::Leaf {
                 id: id.to_string(),
                 title,

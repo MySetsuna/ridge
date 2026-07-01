@@ -33,6 +33,10 @@ pub struct PtyHandle {
     pub native_ref: Option<(String, usize)>,
     /// 领养视图的 `BroadcastReader` 取消位：detach 时置位让 reader 线程 EOF 退出。
     pub native_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// `Some(..)` 表示这是一台远端 ridge / rdg 主机上某 pane 的本地 foreign 视图
+    /// （P3/P4 基础层字段）。live 传输里程会据此把前端 I/O 路由到对应 host 连接；
+    /// 当前无代码置位 → 恒 `None`，仅完成数据模型与 origin 徽标派生。
+    pub remote_ref: Option<crate::hosts::RemoteRef>,
     /// Resize-silence deadline in epoch milliseconds. When `> 0` and `now < deadline`,
     /// the PTY reader thread suppresses scrollback writes AND frontend emits to swallow
     /// ConPTY's viewport-replay byte storm. Cleared (set to 0) the moment a prompt OSC

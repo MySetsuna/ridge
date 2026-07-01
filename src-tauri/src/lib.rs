@@ -3,6 +3,7 @@ mod db;
 mod deep_root;
 mod engine;
 mod fs;
+mod hosts;
 mod lsp;
 pub mod remote;
 mod state;
@@ -706,6 +707,11 @@ pub fn run() {
             terminal::summon_native_session,
             terminal::new_headless_session,
             terminal::terminate_native_session,
+            // 「主机 / Hosts」远端主机登记（P3/P4 基础层，桌面本地命令，不入远程白名单）。
+            hosts::host_list_snapshot,
+            hosts::connect_host,
+            hosts::disconnect_host,
+            hosts::forget_host,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,

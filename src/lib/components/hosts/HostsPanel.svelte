@@ -22,11 +22,15 @@
     newHeadlessSession,
     terminateSession,
     attachSession,
+    forgetHost,
     type Host,
     type HostSession,
   } from '$lib/stores/hosts';
   import { confirmDialog, promptDialog, alertDialog } from '../RidgeDialog.svelte';
   import { hostSessionDrag } from '$lib/actions/hostSessionDrag';
+  import HostConnectDialog from './HostConnectDialog.svelte';
+
+  let connectOpen = $state(false);
 
   const POLL_INTERVAL_MS = 5000;
   let poll: ReturnType<typeof setInterval> | undefined;
@@ -108,12 +112,25 @@
     }
   }
 
-  async function onConnectHost() {
-    // P3/P4：远端 ridge / rdg 主机接入对话框（HostConnectDialog）将在此挂载。
-    await alertDialog({
-      title: '连接远端主机',
-      message: '远端 ridge / rdg 主机接入正在开发中（设计 P3/P4）。当前已支持本机无头会话。',
+  function onConnectHost() {
+    connectOpen = true;
+  }
+
+  async function onForgetHost(host: Host) {
+    const ok = await confirmDialog({
+      title: '忘记主机',
+      message: `确定要移除主机「${host.label}」的登记吗？`,
+      danger: true,
     });
+    if (!ok) return;
+    busy = true;
+    try {
+      await forgetHost(host.id);
+    } catch (e) {
+      await alertDialog({ title: '操作失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
   }
 </script>
 
@@ -166,26 +183,39 @@
       {@const Icon = hostIcon(host.kind)}
       {@const open = expanded[host.id]}
       <div class="select-none">
-        <button
-          type="button"
-          class="w-full flex items-center gap-1.5 py-1.5 px-2 text-left hover:bg-[var(--rg-surface)] transition-colors"
-          onclick={() => toggle(host.id)}
-        >
-          {#if open}
-            <ChevronDown class="h-3.5 w-3.5 shrink-0 text-[var(--rg-fg-muted)]" />
-          {:else}
-            <ChevronRight class="h-3.5 w-3.5 shrink-0 text-[var(--rg-fg-muted)]" />
+        <div class="group flex items-center hover:bg-[var(--rg-surface)] transition-colors">
+          <button
+            type="button"
+            class="flex-1 min-w-0 flex items-center gap-1.5 py-1.5 px-2 text-left"
+            onclick={() => toggle(host.id)}
+          >
+            {#if open}
+              <ChevronDown class="h-3.5 w-3.5 shrink-0 text-[var(--rg-fg-muted)]" />
+            {:else}
+              <ChevronRight class="h-3.5 w-3.5 shrink-0 text-[var(--rg-fg-muted)]" />
+            {/if}
+            <Icon class="h-4 w-4 shrink-0 text-[var(--rg-fg-muted)]" />
+            <span class="flex-1 min-w-0 truncate text-[12px] font-medium">{host.label}</span>
+            <span class="inline-block h-1.5 w-1.5 rounded-full {statusDotClass(host.status)}" title={host.status}></span>
+            <span class="text-[10px] text-[var(--rg-fg-muted)] tabular-nums">{host.sessions.length}</span>
+          </button>
+          {#if host.kind !== 'headless'}
+            <button
+              type="button"
+              title="忘记主机"
+              disabled={busy}
+              class="opacity-0 group-hover:opacity-100 mr-1 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300 transition-all disabled:opacity-40"
+              onclick={() => void onForgetHost(host)}
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+            </button>
           {/if}
-          <Icon class="h-4 w-4 shrink-0 text-[var(--rg-fg-muted)]" />
-          <span class="flex-1 min-w-0 truncate text-[12px] font-medium">{host.label}</span>
-          <span class="inline-block h-1.5 w-1.5 rounded-full {statusDotClass(host.status)}" title={host.status}></span>
-          <span class="text-[10px] text-[var(--rg-fg-muted)] tabular-nums">{host.sessions.length}</span>
-        </button>
+        </div>
 
         {#if open}
           {#if host.sessions.length === 0}
-            <p class="pl-9 pr-3 py-1.5 text-[11px] text-[var(--rg-fg-muted)]">
-              暂无会话{#if host.kind === 'headless'} —— 点击 ＋ 新建无头终端{/if}
+            <p class="pl-9 pr-3 py-1.5 text-[11px] text-[var(--rg-fg-muted)] leading-relaxed">
+              {#if host.kind === 'headless'}暂无会话 —— 点击 ＋ 新建无头终端{:else}{host.detail || '暂无会话'}{/if}
             </p>
           {/if}
           {#each host.sessions as s (s.socket + ':' + s.name)}
@@ -237,3 +267,5 @@
     {/each}
   </div>
 </div>
+
+<HostConnectDialog bind:open={connectOpen} />
