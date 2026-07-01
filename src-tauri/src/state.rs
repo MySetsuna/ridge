@@ -572,7 +572,10 @@ pub struct AppState {
     /// B2（D-GM-11）：cloud pane 裸字节订阅表 `pane_id → (workspace_id, sub_id)`。
     /// `subscribe_pane_raw` 登记一条 `RemotePaneSub`（把该 pane 的 RawBytes 经 Tauri
     /// event `pane-raw-{pane}` 转给本 WebView），`unsubscribe_pane_raw` 据此注销。
-    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<Uuid, (Uuid, u64)>>>,
+    /// value = `(ws, sub_id, refcount)`：同一 WebView 内多个 controller 桥订阅同一 pane 时
+    /// 共用一条 live fan-out（广播到所有订阅了该 pane 的桥），refcount 记订阅者数——
+    /// 只有降到 0 才真正注销，避免一个 controller 退订就把仍在看的其它 controller 断流。
+    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<Uuid, (Uuid, u64, u32)>>>,
 }
 
 impl AppState {
