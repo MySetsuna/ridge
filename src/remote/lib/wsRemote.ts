@@ -225,6 +225,13 @@ export interface RemoteLink {
   send(msg: Record<string, unknown>): void;
   listPanes(): void;
   subscribePane(paneId: string): void;
+  /**
+   * §history-pull（cloud-only）: fetch the next older batch of a pane's scrollback
+   * (seq-cursor paging via get_pane_scrollback_before) to PREPEND above the current
+   * buffer when the viewport nears the top. Returns the raw bytes, or null when
+   * there's nothing more to load. The LAN link omits it (optional) → no-op there.
+   */
+  fetchOlderScrollback?(paneId: string): Promise<Uint8Array | null>;
   sendStdin(paneId: string, data: string): void;
   refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;

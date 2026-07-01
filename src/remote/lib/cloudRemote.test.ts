@@ -71,6 +71,12 @@ beforeEach(() => {
           { id: 'dark1', type: 'dark', colors: { bg: '#000' } },
           { id: 'light1', type: 'light', colors: { bg: '#fff' } },
         ] };
+      // §history-pull: seq-cursor scrollback. tail seeds the first screen; before
+      // pages one batch older then reports at_oldest so paging stops.
+      case 'get_pane_scrollback_tail':
+        return { bytes: 'HIST', start_seq: 100, at_oldest: false, head_seq: 116 };
+      case 'get_pane_scrollback_before':
+        return { bytes: 'OLDER', start_seq: 60, at_oldest: true, head_seq: 116 };
       default: return undefined;
     }
   });
@@ -116,7 +122,7 @@ describe('CloudRemoteConnection panes', () => {
     expect(metas).toContainEqual(['pane-b', null, null]);
   });
 
-  it('subscribePane registers the delta channel and streams pty bytes to onRawBytes', async () => {
+  it('subscribePane seeds a scrollback tail (RIS + history) then streams live pty bytes', async () => {
     const conn = await connected();
     const got: Array<[string, Uint8Array]> = [];
     conn.onRawBytes((id, bytes) => got.push([id, bytes]));
@@ -124,19 +130,53 @@ describe('CloudRemoteConnection panes', () => {
     conn.subscribePane('pane-a');
     await flush();
 
-    // Host stream kicked off via register_pane_delta_channel (→ subscribe-pane notify).
+    // §history-pull: controller pulls its own ~1.5-screen tail first (no host dump)…
+    expect(invokeMock).toHaveBeenCalledWith(
+      'get_pane_scrollback_tail',
+      expect.objectContaining({ paneId: 'pane-a' }),
+    );
+    // …emitted as the RIS'd reconcile first-frame (\x1bc + history).
+    expect(got).toHaveLength(1);
+    expect(got[0][0]).toBe('pane-a');
+    expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
+
+    // Then the live stream is wired via register_pane_delta_channel (→ subscribe-pane).
     expect(invokeMock).toHaveBeenCalledWith(
       'register_pane_delta_channel',
       expect.objectContaining({ paneId: 'pane-a', workspaceId: 'ws1' }),
     );
-    // pty-output event name carries the active ws + pane.
     const evt = 'pty-output-ws1-pane-a';
     expect(handlers[evt]).toBeTypeOf('function');
 
     handlers[evt]({ payload: { data: 'hi' } });
-    expect(got).toHaveLength(1);
-    expect(got[0][0]).toBe('pane-a');
-    expect(new TextDecoder().decode(got[0][1])).toBe('hi');
+    expect(got).toHaveLength(2);
+    expect(new TextDecoder().decode(got[1][1])).toBe('hi');
+  });
+
+  it('fetchOlderScrollback pages one older batch, advances the cursor, then stops at oldest', async () => {
+    const conn = await connected();
+    conn.subscribePane('pane-a');
+    await flush();
+
+    // First scroll-up: pages older history (bytes < tail.start_seq) and returns it.
+    const older = await conn.fetchOlderScrollback('pane-a');
+    expect(invokeMock).toHaveBeenCalledWith(
+      'get_pane_scrollback_before',
+      expect.objectContaining({ paneId: 'pane-a', beforeSeq: 100 }),
+    );
+    expect(older && new TextDecoder().decode(older)).toBe('OLDER');
+
+    // The mock's page reported at_oldest → a further scroll-up is a no-op (null),
+    // and doesn't fire another before-fetch.
+    const before = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
+    expect(await conn.fetchOlderScrollback('pane-a')).toBeNull();
+    const after = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
+    expect(after).toBe(before); // stopped — no redundant fetch at oldest
+  });
+
+  it('fetchOlderScrollback returns null when the pane was never subscribed (no cursor)', async () => {
+    const conn = await connected();
+    expect(await conn.fetchOlderScrollback('pane-z')).toBeNull();
   });
 
   it('subscribePane is idempotent per pane', async () => {

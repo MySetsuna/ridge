@@ -547,6 +547,31 @@ export class TerminalController {
   scrollOffset(): number { return this.destroyed ? 0 : this.kernel.scrollOffset(); }
   scrollbackLen(): number { return this.destroyed ? 0 : this.kernel.scrollbackLen(); }
 
+  /**
+   * §history-pull lazy loading: prepend older PTY history bytes at the OLDEST end
+   * of the scrollback ring (the bytes fetched from the host via
+   * get_pane_scrollback_before). Goes through the kernel's sandbox prepend path so
+   * the live grid / cursor / viewport position (measured from the bottom) stay put
+   * — the user keeps looking at the same content with more history now above them.
+   */
+  prependScrollback(bytes: Uint8Array) {
+    if (this.destroyed || bytes.length === 0) return;
+    this.kernel.prependScrollback(bytes);
+    this.markDirty();
+  }
+
+  /**
+   * How many scrollback rows sit ABOVE the current viewport top (rows the user
+   * hasn't scrolled up to yet). `scrollOffset` is measured from the live grid
+   * (bottom); when the user scrolls all the way up it approaches `scrollbackLen`,
+   * so the remaining gap to the very top shrinks to 0. Used to trigger a lazy
+   * older-history fetch when the viewport nears the top of the in-kernel buffer.
+   */
+  rowsAboveViewport(): number {
+    if (this.destroyed) return 0;
+    return Math.max(0, this.kernel.scrollbackLen() - this.kernel.scrollOffset());
+  }
+
   // ── Coordinate mapping ──
 
   getCellSize(): { w: number; h: number } {

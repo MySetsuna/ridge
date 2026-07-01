@@ -92,6 +92,14 @@ const manager = TerminalManager.instance();
 // tauriShim/core.ts — browser-only surfaces gate on this flag, not isTauri().
 const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
 
+// §history-pull（2026-07-02）: a browser controller pulls scrollback over the
+// LAN-WS / cloud-WebRTC shim, so seed only ~1.5 screens on mount (fast first
+// paint, no multi-KiB parse stall) and page older history in smaller batches on
+// scroll-up. The local desktop keeps the larger local-invoke budgets. See
+// docs/superpowers/specs/2026-07-02-public-remote-smooth-scrollback-multi-controller-design.md
+const SCROLLBACK_TAIL_BYTES = WEB_REMOTE ? 32 * 1024 : 256 * 1024;
+const SCROLLBACK_OLDER_BYTES = WEB_REMOTE ? 64 * 1024 : 128 * 1024;
+
 // §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
 // ArrowLeft / Home / Delete / mid-line edits preserve the buffer
 // instead of clearing it. See `inputBufferTracker.ts` for the rules.
@@ -670,7 +678,7 @@ async function fetchOlderScrollback(): Promise<void> {
 		}>('get_pane_scrollback_before', {
 			paneId,
 			beforeSeq: oldestSeq,
-			maxBytes: 128 * 1024,
+			maxBytes: SCROLLBACK_OLDER_BYTES,
 		});
 		if (!alive) return;
 		if (chunk.bytes) {
@@ -1187,7 +1195,7 @@ onMount(() => {
 				bytes: string;
 				start_seq: number;
 				at_oldest: boolean;
-			}>('get_pane_scrollback_tail', { paneId, maxBytes: 256 * 1024 });
+			}>('get_pane_scrollback_tail', { paneId, maxBytes: SCROLLBACK_TAIL_BYTES });
 			if (alive && chunk.bytes) {
 				manager.feed(paneId, chunk.bytes);
 			}
