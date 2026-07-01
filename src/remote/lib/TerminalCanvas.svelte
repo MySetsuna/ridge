@@ -5,16 +5,31 @@
   import { anyMod, consumeMods } from './modState.svelte';
   import { keyboardShiftPx } from './keyboardOffset';
 
-  let { paneId, onStdin, onResize, onHostClipboard, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
+  let { paneId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     /** Mirror a copied selection onto the desktop host's clipboard (so the host's
      *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
     onHostClipboard?: (text: string) => void;
+    /** §history-pull: fired when the user scrolls the viewport near the top of the
+     *  in-kernel scrollback, so MainApp can lazily fetch + prepend older history. */
+    onNearTop?: () => void;
     selectionMode?: boolean;
     backendName?: string;
   } = $props();
+
+  /** Scroll-up rows-from-top threshold that triggers a lazy older-history fetch.
+   *  ~1.5 screens of headroom so the fetch lands before the user hits the very top. */
+  const NEAR_TOP_ROWS = 24;
+
+  /** Fire onNearTop when the viewport is within NEAR_TOP_ROWS of the buffer top.
+   *  Cheap + idempotent-safe: the fetch side (cloudRemote.fetchOlderScrollback)
+   *  dedups in-flight loads and stops at the oldest retained byte. */
+  function maybeLoadOlder() {
+    if (!ctrl || !onNearTop) return;
+    if (ctrl.rowsAboveViewport() <= NEAR_TOP_ROWS) onNearTop();
+  }
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let containerEl: HTMLDivElement | undefined = $state();
@@ -139,6 +154,9 @@
     if (ctrl) ctrl.feed(new TextEncoder().encode(data));
   }
   export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); }
+  /** §history-pull: prepend older PTY history (fetched via get_pane_scrollback_before)
+   *  at the oldest end of the scrollback ring, without disturbing the viewport. */
+  export function prependScrollback(bytes: Uint8Array) { ctrl?.prependScrollback(bytes); }
   export function applyDelta(bytes: Uint8Array) { ctrl?.applyDelta(bytes); }
   export function resizeKernel(rows: number, cols: number) {
     if (ctrl) {
@@ -183,7 +201,7 @@
       if (bytes.length > 0) onStdin(td.decode(bytes));
     } else {
       const lines = deltaY > 0 ? 3 : -3;
-      if (lines < 0) ctrl.scrollUp(-lines); else ctrl.scrollDown(lines);
+      if (lines < 0) { ctrl.scrollUp(-lines); maybeLoadOlder(); } else ctrl.scrollDown(lines);
     }
   }
 
@@ -607,7 +625,7 @@
     } else {
       e.preventDefault();
       const lines = e.deltaY > 0 ? 3 : -3;
-      if (lines < 0) ctrl.scrollUp(-lines); else ctrl.scrollDown(lines);
+      if (lines < 0) { ctrl.scrollUp(-lines); maybeLoadOlder(); } else ctrl.scrollDown(lines);
     }
   }
 

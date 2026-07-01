@@ -150,6 +150,18 @@
     } catch { /* clipboard blocked: no permission / insecure context */ }
   }
 
+  // §history-pull（2026-07-02）: the host no longer dumps full scrollback on
+  // subscribe — it seeds ~1.5 screens and we lazily page older history as the user
+  // scrolls up. TerminalCanvas fires onNearTop when the viewport nears the buffer
+  // top; fetch the next older batch (cloud link only) and prepend it. Guard against
+  // a pane switch mid-fetch so we never prepend one pane's history onto another.
+  async function loadOlderScrollback() {
+    const pid = activePaneId;
+    if (!pid || !canvasRef || !ws.fetchOlderScrollback) return;
+    const older = await ws.fetchOlderScrollback(pid);
+    if (older && older.length > 0 && activePaneId === pid) canvasRef.prependScrollback(older);
+  }
+
   // §terminal-isolation + scrollback-cache: the local kernel is a single shared
   // instance, so switching panes MUST wipe it (resetForSwitch) — otherwise the
   // previous pane's scrollback bleeds into the new one (上滚串台). We also keep
@@ -707,6 +719,7 @@
         {onStdin}
         {onResize}
         onHostClipboard={(text) => ws.setHostClipboard(text)}
+        onNearTop={loadOlderScrollback}
         bind:selectionMode
       />
     {/await}
