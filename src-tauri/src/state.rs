@@ -527,6 +527,9 @@ pub struct AppState {
     /// Persistent blacklist of devices/IPs barred from connecting. Loaded from
     /// `<app_data_dir>/remote-blacklist.json` at startup.
     pub remote_blacklist: Arc<RemoteBlacklist>,
+    /// 「主机 / Hosts」外部主机注册表（远端 ridge / rdg）。P3/P4 基础层：登记 +
+    /// 状态管理；live PTY 流传输为下一里程（见 crate::hosts）。
+    pub hosts: Arc<crate::hosts::HostRegistry>,
     /// When `true`, the remote `data-request` dispatcher rejects every mutating
     /// filesystem/git method (write/delete/rename/create/copy/move + git
     /// commit/push/pull/reset/checkout/clean/…). Reads stay allowed. Defaults to
@@ -624,6 +627,7 @@ impl AppState {
             remote_mdns: Arc::new(Mutex::new(None)),
             remote_client_registry: Arc::new(RemoteClientRegistry::default()),
             remote_blacklist: Arc::new(RemoteBlacklist::default()),
+            hosts: Arc::new(crate::hosts::HostRegistry::default()),
             remote_fs_readonly: Arc::new(AtomicBool::new(false)),
             remote_structural_tx: {
                 let (tx, _) = tokio::sync::broadcast::channel(64);

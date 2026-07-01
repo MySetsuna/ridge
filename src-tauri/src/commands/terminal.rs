@@ -955,6 +955,7 @@ pub(crate) fn activate_pane_pty_state(
         _child: Some(child),
         native_ref: None,
         native_cancel: None,
+        remote_ref: None,
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),

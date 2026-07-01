@@ -49,7 +49,20 @@ export interface Host {
   kind: HostKind;
   label: string;
   status: HostStatus;
+  /** 远端主机的状态说明（如「live 传输待接入」）；headless 无。 */
+  detail?: string;
   sessions: HostSession[];
+}
+
+/** 后端 `host_list_snapshot` 回传的远端主机记录（crate::hosts::HostRecord，不含凭据）。 */
+interface HostRecord {
+  id: string;
+  kind: 'remote' | 'rdg';
+  label: string;
+  addr: string;
+  status: HostStatus;
+  detail: string;
+  sessions: { id: string; title: string; attached: boolean }[];
 }
 
 export const hostsStore = writable<Host[]>([]);
@@ -65,25 +78,49 @@ const HEADLESS_HOST_ID = 'headless';
  */
 export async function refreshHosts(): Promise<void> {
   hostsLoading.set(true);
+  const next: Host[] = [];
+  let err = '';
+  // ① 本机（无头）：native 会话。
   try {
     const sessions = await invoke<NativeSessionInfo[]>('list_native_sessions');
-    const headless: Host = {
+    next.push({
       id: HEADLESS_HOST_ID,
       kind: 'headless',
       label: '本机（无头）',
       status: 'connected',
       sessions: sessions ?? [],
-    };
-    // 远端/rdg host 合并：保留已连接的非 headless host（P3/P4 由连接层维护）。
-    hostsStore.update((prev) => [headless, ...prev.filter((h) => h.kind !== 'headless')]);
-    hostsError.set('');
+    });
   } catch (e) {
-    // 列举失败不致命（非 Tauri 环境 / invoke 未就绪）：清空 headless 会话，保留其它 host。
-    hostsStore.update((prev) => prev.filter((h) => h.kind !== 'headless'));
-    hostsError.set(e instanceof Error ? e.message : String(e));
-  } finally {
-    hostsLoading.set(false);
+    err = e instanceof Error ? e.message : String(e);
   }
+  // ② 远端 ridge / rdg 主机（桌面本地命令；web-remote 无此授权 → 忽略，仅显示 headless）。
+  try {
+    const recs = await invoke<HostRecord[]>('host_list_snapshot');
+    for (const r of recs ?? []) {
+      next.push({
+        id: r.id,
+        kind: r.kind,
+        label: r.label,
+        status: r.status,
+        detail: r.detail,
+        // 远端会话（live 传输里程接入前恒为空）适配到 HostSession 形状。
+        sessions: (r.sessions ?? []).map((s) => ({
+          socket: r.id,
+          name: s.title || s.id,
+          windows: 0,
+          panes: 0,
+          width: 0,
+          height: 0,
+          attached: s.attached,
+        })),
+      });
+    }
+  } catch {
+    /* host_list_snapshot 不可用（如 web-remote 未授权）：仅忽略远端主机 */
+  }
+  hostsStore.set(next);
+  hostsError.set(err);
+  hostsLoading.set(false);
 }
 
 /** 新建一个本机无头会话（仅创建、不接入）；返回会话名。 */
@@ -151,6 +188,37 @@ export async function attachSessionAt(
   if (newPaneId && newPaneId !== targetPaneId) {
     await dockPane(newPaneId, targetPaneId, region);
   }
+  await refreshHosts();
+}
+
+/**
+ * 登记一台远端主机（ridge LAN / rdg）。凭据仅传给后端 live 传输里程使用，不落库。
+ * P3/P4 基础层：当前仅登记 + 展示，真正出站连接与 PTY 流为下一里程。
+ */
+export async function connectHost(
+  kind: 'remote' | 'rdg',
+  label: string,
+  addr: string,
+  token?: string
+): Promise<void> {
+  await invoke('connect_host', {
+    kind,
+    label: label.trim() || null,
+    addr: addr.trim(),
+    token: token?.trim() || null,
+  });
+  await refreshHosts();
+}
+
+/** 断开一台远端主机（保留登记）。 */
+export async function disconnectHost(hostId: string): Promise<void> {
+  await invoke('disconnect_host', { hostId });
+  await refreshHosts();
+}
+
+/** 忘记一台远端主机（移除登记）。 */
+export async function forgetHost(hostId: string): Promise<void> {
+  await invoke('forget_host', { hostId });
   await refreshHosts();
 }
 
