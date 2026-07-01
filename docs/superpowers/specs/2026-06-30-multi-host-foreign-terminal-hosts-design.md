@@ -316,3 +316,15 @@ terminateSession(hostId, sessionId)              // 真关闭（带确认）
 - 远端 host 的会话「真终止」是否需要远端授权额外确认（远端可能多人共享）？倾向：终止远端会话时弹更强确认 + 显示 host label。
 - detached 会话的 GC 策略：headless tmux 永久存活直至显式终止；远端会话由远端 host 决定，本地仅展示。是否提供「断开 host 时一并终止其本地领养 pane（仅 detach）」——是，仅 detach。
 - 同一会话跨工作区「移动」vs「拒绝」：默认拒绝 + 提供「移动到此」动作。
+
+---
+
+## 13. 实现状态 (2026-07-01)
+
+- **P0 · 抽象地基** ✅ `99255dc`：origin DTO（`PtyHandle.native_ref` 派生 headless）+ 前端 `PaneOrigin` + `paneOrigin.ts` 徽标 + SplitContainer 头部 HEADLESS/LAN/rdg 胶囊 + foreign pane `×` detach 语义提示。cargo/check 绿。
+- **P1 · Hosts tab + headless** ✅ `5feee9f`：侧边栏「主机」tab + `HostsPanel` + `hosts.ts`；后端 `new_headless_session`（专用 `headless` socket）/`terminate_native_session`（唯一真关闭）注册进 invoke_handler + 远程 dispatch + 白名单（89→91，含 TS 镜像与计数测试）。
+- **P2 · 菜单 + dock 选择 + 拖拽** ✅ `6b566b8`：RidgePane 右键「接入终端 ▸」子菜单 + `DockRegionPicker`（四向，无 center）+ `attachSessionAt`（summon+dock_pane 组合）+ `hostSessionDrag`（复用 SplitContainer 方向半区预览）。
+- **P3/P4 · 远端/rdg 基础层** ✅ `3815518`：`PtyHandle.remote_ref`（additive）+ `PaneOriginDto::Remote/Rdg` 派生 + `crate::hosts` 注册表（`HostRegistry`/`HostRecord`，凭据不落库）+ `host_list_snapshot`/`connect_host`/`disconnect_host`/`forget_host`（桌面本地命令）+ `HostConnectDialog`（LAN/rdg 参数录入）+ HostsPanel 合并远端主机/忘记按钮。
+- **⏳ 待下一里程（需 rebuild + 真实远端主机联调）**：远端/rdg 的 **live PTY 流传输** —— 本地 Rust 出站连接（LAN WS / rdg mux+TOTP）+ 把远端 pane 当本地 foreign pane 的 I/O 路由（write/resize→host 连接、远端 pane_raw→本地 delta channel）+ capability 灰置 + 断线重连。`remote_ref` 数据模型与 UI/命令面已就位，接线即可点亮。
+
+> 验证边界：P0–P3/P4 基础层均 `cargo check -p ridge` 0 警告新增 + `pnpm check` 0/0 + 相关 vitest 绿。headless 全链路（列举/新建/接入/detach/终止）为纯前端复用既有后端命令，可经 `pnpm tauri:dev:cdp` 真机 e2e；后端新增命令（headless new/terminate、host 注册）需 rebuild 本地 ridge 运行时后由用户真机确认。
