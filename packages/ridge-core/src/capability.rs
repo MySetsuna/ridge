@@ -186,6 +186,12 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "resize_pane",
     "detect_available_shells",
     "get_shell_history",
+    // Paged scrollback (seq-cursor) — read-only. Lets a cloud controller seed a
+    // pane with ~1.5 screens on subscribe and lazily page older history on
+    // scroll-up (get_pane_scrollback_before), instead of the host dumping the
+    // whole buffer at once. Same primitive the desktop RidgePane already uses.
+    "get_pane_scrollback_tail",
+    "get_pane_scrollback_before",
     // native (headless) tmux session discovery (desktop hosts). `list` is
     // read-only; `summon` is a structural pane op (adopts a session into the
     // caller's viewed workspace) — not a mutating fs/git method, so it is allowed

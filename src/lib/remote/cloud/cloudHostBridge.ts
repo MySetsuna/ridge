@@ -715,26 +715,13 @@ export class CloudHostBridge {
     });
     this.paneSubs.set(paneId, unsub);
 
-    // 初始历史回放：订阅刚建立时 host 只发新到的字节，历史不会自动重发。
-    // 用户主动订阅（首次连接 / 移动端切 pane 重订阅）走 replay_pane_scrollback_raw：
-    // 它**立即**补发 RIS + scrollback，**不限频、不依赖下一帧**——故快速切 pane、
-    // 1s 内切回、或切到无新输出的空闲 pane 都能立刻渲染历史（不会被 resync 的 1s
-    // 限频吞掉，也不会因空闲 pane 无「下一帧」而永远不补发）。背压自愈仍走限频的
-    // resync_pane_raw（见 onChannelDrained），二者正交。
-    // 重连时 reset() 会清空 paneSubs → 新 subscribe-pane 再次触发此路径，
-    // 所以重连后也能正确拿到历史（gate 已因 reset() 重置为 false，此处只在
-    // verified===true 时执行，语义自洽）。
-    // §replay-backpressure: DataChannel 已处于高背压时（缓冲量接近 8 MiB 高水位），
-    // 立即发起 256 KiB 的 replay 会直接溢出 → 把该 pane 标为待恢复，等 onChannelDrained
-    // 再走限频的 resync_pane_raw，而非在高压下再发一次大 replay。
-    if ((this.channel?.bufferedAmount() ?? 0) > BUFFERED_HIGH_WATERMARK) {
-      this.backpressuredPanes.add(paneId);
-      this.log('warn', `replay_pane_scrollback_raw(${paneId}) deferred: channel bufferedAmount high`);
-    } else {
-      void Promise.resolve(this.invoke('replay_pane_scrollback_raw', { paneId })).catch((e) =>
-        this.log('warn', `replay_pane_scrollback_raw(${paneId}) initial replay failed`, e),
-      );
-    }
+    // §history-pull（2026-07-02）：host **不再**在订阅时推 `RIS + 256KiB` 初始回放。
+    // 历史由**每个 controller 自己**经 seq 游标命令拉取（`get_pane_scrollback_tail`
+    // 首屏约 1.5 屏 + 滚顶 `get_pane_scrollback_before` 分批），在各自内核本地渲染。
+    // 好处：①首屏小（不卡死）；②切 pane 不重灌全量；③天然多控制端隔离——host 不再
+    // 广播 RIS，多个 controller 看同一 pane 不会互相冲屏（旧 replay 广播是主症结）。
+    // 本订阅只保留 **live 新字节** fan-out（各 bridge 只 listen 自己订阅的 pane 事件）。
+    // 背压自愈仍走 onChannelDrained → resync_pane_raw（限频），与首屏正交。
   }
 
   /**

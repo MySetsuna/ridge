@@ -18,6 +18,8 @@ describe('isRemoteAllowed', () => {
       'write_file',
       'get_pane_layout',
       'write_to_pty',
+      'get_pane_scrollback_tail',
+      'get_pane_scrollback_before',
       'list_workspaces',
       'switch_workspace',
       'get_active_theme_entry',
@@ -74,7 +76,7 @@ describe('isMutatingMethod', () => {
 describe('mirror integrity (vs capability.rs)', () => {
   // If these counts change, update capability.rs ⇄ remoteAllowlist.ts together.
   it('allow-list has the expected size', () => {
-    expect(REMOTE_ALLOWLIST.length).toBe(91);
+    expect(REMOTE_ALLOWLIST.length).toBe(93);
   });
   it('mutating set has the expected size', () => {
     expect(MUTATING_METHODS.length).toBe(22);
