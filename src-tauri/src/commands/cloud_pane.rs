@@ -44,13 +44,23 @@ const RESYNC_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// LAN 路径（server.rs）保持 64 KiB 不动（无分片层，直接过 WebSocket）。
 const RESYNC_SCROLLBACK_BYTES: usize = 262144;
 
-/// pane → 该 pane cloud sub 的 `desync` 标志（与 lib.rs fan-out / 转发任务持有的是
-/// **同一个** Arc）。`resync_pane_raw` 命令据此置位，触发转发任务在下一帧前补发
-/// RIS+scrollback。模块内自持，避免改动共享的 `AppState` 结构（减小撞文件面）。
-static DESYNC_FLAGS: OnceLock<Mutex<HashMap<Uuid, Arc<AtomicBool>>>> = OnceLock::new();
+/// pane → `(owning sub_id, desync 标志)`（Arc 与 lib.rs fan-out / 转发任务持有的是
+/// **同一个**）。`resync_pane_raw` 据此置位，转发任务读位后补发 RIS+scrollback。
+/// 条目**带 owning sub_id**：快速退订→重订阅同一 pane 时，旧转发任务异步收尾与旧
+/// unsubscribe 都只在 `sub_id` 匹配时才移除条目，避免误删新订阅者刚插入的条目
+/// （否则新订阅者的背压自愈会静默失效 —— 见 2026-07-02 审查 MEDIUM）。
+static DESYNC_FLAGS: OnceLock<Mutex<HashMap<Uuid, (u64, Arc<AtomicBool>)>>> = OnceLock::new();
 
-fn desync_flags() -> &'static Mutex<HashMap<Uuid, Arc<AtomicBool>>> {
+fn desync_flags() -> &'static Mutex<HashMap<Uuid, (u64, Arc<AtomicBool>)>> {
     DESYNC_FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 仅当 `pane` 的 desync 条目仍归属 `sub_id`（未被更晚的重订阅顶替）时移除。
+fn remove_desync_if_owner(pane: Uuid, sub_id: u64) {
+    let mut flags = desync_flags().lock().unwrap();
+    if flags.get(&pane).is_some_and(|(id, _)| *id == sub_id) {
+        flags.remove(&pane);
+    }
 }
 
 /// `invoke('subscribe_pane_raw', { paneId })`：开始把该 pane 的裸 PTY 字节经
@@ -85,7 +95,7 @@ pub fn subscribe_pane_raw(
                 desync_flags()
                     .lock()
                     .unwrap()
-                    .insert(pane, Arc::clone(&desync));
+                    .insert(pane, (sub_id, Arc::clone(&desync)));
                 state.register_remote_sub(
                     ws,
                     pane,
@@ -144,7 +154,8 @@ pub fn subscribe_pane_raw(
                         }
                     }
                     // 通道关闭（unsubscribe）：清理 desync 注册，防 map 随历史 pane 增长。
-                    desync_flags().lock().unwrap().remove(&pane);
+                    // 仅当条目仍属本 sub 才移除——快速重订阅已换主则不误删新条目。
+                    remove_desync_if_owner(pane, sub_id);
                 });
             }
         }
@@ -175,8 +186,9 @@ pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(
     if let Some((ws, sub_id, _)) = teardown {
         // 丢弃 RemotePaneSub（唯一 raw_tx）→ 转发任务的 raw_rx 关闭 → 任务结束。
         state.unregister_remote_sub(ws, pane, sub_id);
-        // 转发任务结束时也会清理；此处显式移除以即时释放（双移除幂等）。
-        desync_flags().lock().unwrap().remove(&pane);
+        // 转发任务结束时也会清理；此处显式移除以即时释放（双移除幂等）。仅当条目仍属
+        // 本 sub 才移除，避免与并发的同 pane 重订阅竞态误删新订阅者的条目。
+        remove_desync_if_owner(pane, sub_id);
     }
     Ok(())
 }
@@ -192,7 +204,7 @@ pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(
 #[tauri::command]
 pub fn resync_pane_raw(pane_id: String) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
-    if let Some(flag) = desync_flags().lock().unwrap().get(&pane) {
+    if let Some((_, flag)) = desync_flags().lock().unwrap().get(&pane) {
         flag.store(true, Ordering::Release);
     }
     Ok(())
