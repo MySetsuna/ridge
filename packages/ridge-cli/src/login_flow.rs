@@ -11,6 +11,7 @@
 //! 建立控制通道仍由云端按订阅门控（见 ridge-cloud ws/handler.rs）。
 
 use std::io::{self, Write};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -56,25 +57,60 @@ struct DeviceBind {
     public_entry: String,
 }
 
-/// 跑完整「登录 → 设用户名 → 绑定设备」流程，返回已持久化的设备凭据。
+/// `/auth/request` 返回（契约 §2.1）：host 据此打开浏览器并轮询。
+#[derive(Debug, Deserialize)]
+struct AuthRequestResp {
+    poll_token: String,
+    authorize_url: String,
+    expires_in: u64,
+    #[serde(default = "default_poll_interval")]
+    interval: u64,
+}
+
+fn default_poll_interval() -> u64 {
+    2
+}
+
+/// `/auth/poll` 结果（契约 §2.1）：untagged——含 `token` 即 approved，否则看 `status`
+/// 字段（pending / expired）。approved 一次性返回 user JWT + user 对象。
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum AuthPollResp {
+    Approved { token: String, user: UserBrief },
+    Status { status: String },
+}
+
+/// 账号密码（stdin）登录 + 激活本机，返回已持久化的设备凭据。无浏览器环境用。
 pub async fn run_login(client: &reqwest::Client) -> Result<AuthFile> {
     let api = config::api_base();
     print_login_banner();
+    let session = login_loop(client, &api).await?;
+    activate_device(client, &api, session).await
+}
 
-    // 1. 账号密码登录（最多 MAX_ATTEMPTS 次）。
-    let mut session = login_loop(client, &api).await?;
+/// 浏览器授权登录（契约 §2.1）+ 激活本机。**纯轮询**取 user JWT——token 不进 URL、
+/// 不依赖本机回调端口，因此在 WSL / 远端终端（浏览器与 CLI 不同主机）也能把登录结果
+/// 带回本终端（修复"浏览器登录了但结果没回 TUI"）。
+pub async fn run_browser_login(client: &reqwest::Client) -> Result<AuthFile> {
+    let api = config::api_base();
+    let session = browser_authorize(client, &api).await?;
+    activate_device(client, &api, session).await
+}
 
-    // 2. 设置用户名（若未设；试用用户也可设）。
+/// 拿到 user JWT 后的激活流程（stdin / 浏览器登录共用）：设用户名（若无）→ 绑定设备
+/// → 持久化 device 凭据（与设备码流同一文件 / 形状）。
+async fn activate_device(
+    client: &reqwest::Client,
+    api: &str,
+    mut session: TokenUser,
+) -> Result<AuthFile> {
     if session.user.username.as_deref().unwrap_or("").is_empty() {
-        session = set_username_loop(client, &api, &session.token).await?;
+        session = set_username_loop(client, api, &session.token).await?;
     }
     let username = session.user.username.clone().unwrap_or_default();
     print_logged_in(&session.user, &username);
 
-    // 3. 绑定设备 → device JWT。
-    let bound = bind_device_loop(client, &api, &session.token).await?;
-
-    // 4. 持久化（与设备码流同一文件 / 形状）。
+    let bound = bind_device_loop(client, api, &session.token).await?;
     let auth = AuthFile {
         token: bound.token,
         device_name: bound.device_name,
@@ -83,6 +119,59 @@ pub async fn run_login(client: &reqwest::Client) -> Result<AuthFile> {
     config::save_auth(&auth).context("failed to persist device credentials")?;
     print_bound_banner(&auth, &bound.public_entry, session.user.premium_active);
     Ok(auth)
+}
+
+/// 浏览器授权流（契约 §2.1）：`/auth/request` 取授权页 + poll_token → 引导用户在浏览器
+/// 批准 → 轮询 `/auth/poll` 直至 approved，返回 user JWT + user。
+async fn browser_authorize(client: &reqwest::Client, api: &str) -> Result<TokenUser> {
+    // 1. 取授权请求（client=cli）。
+    let body = client
+        .post(format!("{api}/auth/request"))
+        .json(&json!({ "client": "cli" }))
+        .send()
+        .await
+        .context("POST /auth/request request failed")?
+        .text()
+        .await
+        .context("reading /auth/request body failed")?;
+    let req: AuthRequestResp =
+        parse_envelope(&body).context("parsing /auth/request response failed")?;
+
+    // 2. 引导用户在浏览器打开授权页并批准。
+    print_authorize_banner(&req.authorize_url, req.expires_in);
+
+    // 3. 轮询直至 approved / expired / 超时。
+    let interval = Duration::from_secs(req.interval.max(1));
+    let deadline = Instant::now() + Duration::from_secs(req.expires_in);
+    loop {
+        if Instant::now() >= deadline {
+            bail!("授权超时（{}s 未完成），请重新登录。", req.expires_in);
+        }
+        tokio::time::sleep(interval).await;
+
+        let resp_body = client
+            .post(format!("{api}/auth/poll"))
+            .json(&json!({ "poll_token": req.poll_token }))
+            .send()
+            .await
+            .context("POST /auth/poll request failed")?
+            .text()
+            .await
+            .context("reading /auth/poll body failed")?;
+
+        match parse_envelope::<AuthPollResp>(&resp_body) {
+            Ok(AuthPollResp::Approved { token, user }) => return Ok(TokenUser { token, user }),
+            Ok(AuthPollResp::Status { status }) if status == "expired" => {
+                bail!("授权已过期，请重新发起登录。");
+            }
+            // pending（或其它中间态）→ 继续轮询。
+            Ok(AuthPollResp::Status { .. }) => {}
+            // 单次网络/解析瞬时错误不中断，继续轮询（落 tracing，TUI 模式写文件）。
+            Err(e) => {
+                tracing::debug!(target: "ridge_cli", error = %e, "auth poll transient error");
+            }
+        }
+    }
 }
 
 // ── 分步循环 ──────────────────────────────────────────────────────────
@@ -267,6 +356,23 @@ fn print_login_banner() {
     eprintln!("  {GREEN}{BOLD}{login_url}{RESET}");
     eprintln!();
     eprintln!("  {DIM}也可直接在下方输入邮箱 + 密码登录（无浏览器环境）。{RESET}");
+    eprintln!();
+}
+
+/// 浏览器授权登录引导（契约 §2.1）：打印授权页 URL，等待用户在浏览器批准。纯轮询，
+/// token 绝不进 URL、不依赖本机回调端口 → WSL / 远端终端友好。
+fn print_authorize_banner(authorize_url: &str, expires_in: u64) {
+    let minutes = expires_in / 60;
+    eprintln!();
+    eprintln!("{CYAN}{BOLD}  ╔══════════════════════════════════════════════╗{RESET}");
+    eprintln!("{CYAN}{BOLD}  ║          RIDGE · BROWSER LOGIN                ║{RESET}");
+    eprintln!("{CYAN}{BOLD}  ╚══════════════════════════════════════════════╝{RESET}");
+    eprintln!();
+    eprintln!("  {DIM}1.{RESET} 在【已登录】的浏览器打开授权页，批准本次登录：");
+    eprintln!("  {GREEN}{BOLD}{authorize_url}{RESET}");
+    eprintln!();
+    eprintln!("  {DIM}2.{RESET} 批准后本终端会自动继续（≈{minutes} 分钟内有效）。");
+    eprintln!("  {DIM}等待授权中… (Ctrl-C 取消){RESET}");
     eprintln!();
 }
 

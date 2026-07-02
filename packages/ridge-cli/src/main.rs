@@ -103,6 +103,10 @@ struct TuiArgs {
 
 #[derive(Args)]
 struct LoginArgs {
+    /// 用浏览器授权登录（纯轮询，WSL / 远端终端友好）替代 stdin 邮箱密码登录。
+    #[arg(long)]
+    browser: bool,
+
     /// 激活成功后直接进入守护（等价于随后再跑 `rdg remote --daemon`）。
     #[arg(long)]
     daemon: bool,
@@ -272,7 +276,11 @@ fn gen_token() -> String {
 /// 带 `--daemon` 则直接进入守护。
 async fn run_login(args: LoginArgs) -> Result<()> {
     let client = reqwest::Client::builder().build()?;
-    let auth = login_flow::run_login(&client).await?;
+    let auth = if args.browser {
+        login_flow::run_browser_login(&client).await?
+    } else {
+        login_flow::run_login(&client).await?
+    };
     if args.daemon {
         tracing::info!(target: "ridge_cli", device = %auth.device_name, "activation complete; entering daemon");
         return daemon::run(args.shell, args.cwd, args.root).await;
