@@ -41,6 +41,10 @@ struct UserBrief {
     premium_active: bool,
     #[serde(rename = "isTrial", default)]
     is_trial: bool,
+    /// 后端权威字段：真付费会员（非签到体验）。用它判定档位，避免 is_trial 残留标记
+    /// 把正式会员误判为体验会员（见 ridge-cloud dto.rs isRealPremium）。
+    #[serde(rename = "isRealPremium", default)]
+    is_real_premium: bool,
 }
 
 /// `/device/bind` 返回 `{token, device_name, username, public_entry}`（token 为 device JWT）。
@@ -266,16 +270,21 @@ fn print_login_banner() {
     eprintln!();
 }
 
-fn print_logged_in(user: &UserBrief, username: &str) {
-    let plan = if user.premium_active {
-        if user.is_trial {
-            "TRIAL"
-        } else {
-            "PREMIUM"
-        }
+/// 依后端权威字段推导展示用的会员档位标签。用 `isRealPremium`（真付费，非签到体验）
+/// 优先判定，避免 `isTrial` 残留标记把正式会员误判为 TRIAL；`premiumActive`（当前可用
+/// remote，含未过期体验）区分 TRIAL 与 FREE。
+fn plan_label(user: &UserBrief) -> &'static str {
+    if user.is_real_premium {
+        "PREMIUM"
+    } else if user.premium_active {
+        "TRIAL"
     } else {
         "FREE"
-    };
+    }
+}
+
+fn print_logged_in(user: &UserBrief, username: &str) {
+    let plan = plan_label(user);
     eprintln!();
     eprintln!("  {GREEN}{BOLD}✓ 已登录{RESET}  {DIM}{}{RESET}", user.email);
     eprintln!("    username : {BOLD}{username}{RESET}   plan: {BOLD}{plan}{RESET}");
@@ -309,13 +318,41 @@ mod tests {
     #[test]
     fn token_user_parses_username_and_plan_fields() {
         let body = r#"{"ok":true,"data":{"token":"JWT","user":{
-            "email":"a@b.com","username":"alice","premiumActive":true,"isTrial":true}}}"#;
+            "email":"a@b.com","username":"alice","premiumActive":true,"isTrial":true,"isRealPremium":true}}}"#;
         let session: TokenUser = parse_envelope(body).unwrap();
         assert_eq!(session.token, "JWT");
         assert_eq!(session.user.email, "a@b.com");
         assert_eq!(session.user.username.as_deref(), Some("alice"));
         assert!(session.user.premium_active);
         assert!(session.user.is_trial);
+        assert!(session.user.is_real_premium);
+    }
+
+    fn brief(premium_active: bool, is_trial: bool, is_real_premium: bool) -> UserBrief {
+        UserBrief {
+            username: None,
+            email: String::new(),
+            premium_active,
+            is_trial,
+            is_real_premium,
+        }
+    }
+
+    #[test]
+    fn plan_label_prefers_real_premium_over_trial_flag() {
+        // 正式会员即使 is_trial 残留为 true（后端签到污染），也应显示 PREMIUM（核心修复）。
+        assert_eq!(plan_label(&brief(true, true, true)), "PREMIUM");
+    }
+
+    #[test]
+    fn plan_label_trial_when_active_but_not_real() {
+        assert_eq!(plan_label(&brief(true, true, false)), "TRIAL");
+        assert_eq!(plan_label(&brief(true, false, false)), "TRIAL");
+    }
+
+    #[test]
+    fn plan_label_free_when_inactive() {
+        assert_eq!(plan_label(&brief(false, false, false)), "FREE");
     }
 
     #[test]
