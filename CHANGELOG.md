@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.14] — 2026-07-03
+
+远控架构统一（P1）：桌面 / rdg / 局域网远控下沉到共享 crate，`rdg` 命令行体验完善。
+
+### Added
+- **rdg 浏览器授权登录**：`rdg` 命令行接入纯轮询的浏览器授权登录（修复 WSL 下登录结果无法回传）。
+
+### Changed
+- **远控统一（P1）**：桌面 remote 下沉共享 crate `ridge-remote`，`rdg` 局域网 host 接入同一 `server_app`、消除私有协议；移除 `src-tauri/src/remote/`，`core_bridge` 移出顶层。
+
+### Fixed
+- **rdg 会员档位判定**：改用后端 `isRealPremium`，修正正式会员被误判为体验会员。
+- **rdg TUI 日志**：TUI 模式日志改写文件，不再冲刷界面。
+- **构建产物命名**：`post-build-rename` 只挑当前版本安装包，避免 bundle 目录旧版本残留覆盖成当前版本名。
+
+---
+
 ## [0.0.13] — 2026-07-02
 
 多主机「Hosts」侧边栏、智能体协同增强，以及公网远控丝滑化（懒加载 scrollback + 真·多控制端）。发布产物首次附带 `rdg` 命令行程序。
