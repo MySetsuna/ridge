@@ -138,6 +138,7 @@ impl App {
 }
 
 pub async fn run() -> Result<()> {
+    crate::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
@@ -251,6 +252,7 @@ pub async fn run() -> Result<()> {
     drop(terminal);
     stdout().execute(LeaveAlternateScreen)?;
     disable_raw_mode()?;
+    crate::TUI_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -292,7 +294,8 @@ fn handle_main_key(app: &mut App, code: KeyCode) {
                                 let root: Option<String> = None;
                                 tokio::spawn(async move {
                                     if let Err(e) = crate::daemon::run(shell, cwd, root).await {
-                                        eprintln!("Daemon exited with error: {e}");
+                                        // 不能 eprintln!（会糊 TUI）——落 tracing（TUI 模式写文件）。
+                                        tracing::error!(target: "ridge_cli::dashboard", error = %e, "daemon exited");
                                     }
                                 });
                                 app.log("Daemon task spawned".into());

@@ -111,6 +111,11 @@ pub fn auth_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("auth.json"))
 }
 
+/// `rdg.log` 完整路径。TUI 模式下 tracing 写此文件（而非 stderr），避免日志糊屏。
+pub fn log_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("rdg.log"))
+}
+
 /// 读取已持久化的凭据（不存在返回 `Ok(None)`）。
 pub fn load_auth() -> Result<Option<AuthFile>> {
     let path = auth_path()?;

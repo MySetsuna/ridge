@@ -39,6 +39,12 @@ mod totp;
 mod tui;
 
 use std::io::IsTerminal;
+use std::io::Write as _;
+
+/// TUI 活跃标志：进入 alternate screen 的仪表盘会置真，使在 TUI 内被 spawn 的
+/// daemon 会话跳过 stderr 的 TOTP banner（改由仪表盘 Status 区展示），避免糊屏。
+pub(crate) static TUI_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -179,9 +185,10 @@ struct TmuxArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
-
     let cli = Cli::parse();
+    // 日志初始化必须在解析出子命令之后：TUI 模式（进 alternate screen）要把日志写文件
+    // 而非 stderr，否则会糊住界面（问题：日志冲刷 TUI）。
+    init_tracing(is_tui_mode(&cli));
     match cli.command {
         Some(Command::Tui(args)) => {
             if args.sessions > 1 {
@@ -274,15 +281,71 @@ async fn run_login(args: LoginArgs) -> Result<()> {
     Ok(())
 }
 
-/// 初始化日志。`RUST_LOG` 控制级别，默认 info。守护场景下输出走 stderr，
-/// systemd 会把它收进 journald。
-fn init_tracing() {
+/// 是否为交互式 TUI 模式（会进 crossterm alternate screen + raw mode）。这些模式下
+/// 若把 tracing/日志写 stderr 会糊住界面，需改写日志文件（见 [`init_tracing`]）。
+/// headless（daemon/login/tmux/probe/非 tty）保持 stderr → systemd journald。
+fn is_tui_mode(cli: &Cli) -> bool {
+    match &cli.command {
+        // 单/多会话本地 shell TUI、连接控制端（run_lan 进 alt screen）。
+        Some(Command::Tui(_)) => true,
+        Some(Command::Connect(args)) => !args.probe,
+        // 无子命令：交互终端进仪表盘 TUI；非 tty 只打印用法。
+        None => std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        // login（stdin 引导，非 alt screen）/ remote 守护 / tmux 引擎：保持 stderr。
+        _ => false,
+    }
+}
+
+/// 初始化日志。`RUST_LOG` 控制级别，默认 info。
+///
+/// - **headless**（daemon/login/tmux/probe/非 tty）：走 stderr，systemd 收进 journald。
+/// - **TUI**（dashboard/tui/connect）：进 alternate screen，stderr 会糊屏 → 改写日志文件
+///   `~/.config/ridge/rdg.log`（含后台 LAN host / serve / TLS 的日志）；文件不可用时退回 stderr。
+fn init_tracing(tui: bool) {
     use tracing_subscriber::{fmt, EnvFilter};
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,ridge_cli=info"));
+    if tui {
+        if let Ok(path) = config::log_path() {
+            if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let writer = FileMakeWriter(std::sync::Arc::new(std::sync::Mutex::new(file)));
+                fmt()
+                    .with_env_filter(filter)
+                    .with_ansi(false)
+                    .with_target(false)
+                    .with_writer(writer)
+                    .init();
+                return;
+            }
+        }
+        // 日志文件不可用：退回 stderr（至少不 panic）。
+    }
     fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .with_target(false)
         .init();
+}
+
+/// TUI 模式的 tracing 文件 writer（零额外依赖）：把日志追加写到 `rdg.log`。
+#[derive(Clone)]
+struct FileMakeWriter(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FileMakeWriter {
+    type Writer = FileWriterGuard<'a>;
+    fn make_writer(&'a self) -> Self::Writer {
+        // 锁中毒时取回内部值：日志写入不因某次 panic 而全线中断。
+        FileWriterGuard(self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+struct FileWriterGuard<'a>(std::sync::MutexGuard<'a, std::fs::File>);
+
+impl std::io::Write for FileWriterGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
 }
