@@ -2,10 +2,10 @@
 //! 实现共享 `ridge_remote::host` 的 `HostMeta` / `HostAuth` / `WorkspaceProvider`
 //! + `RemoteHost::serve_websocket`，让桌面 LAN 远控经共享 `server_app::run` 驱动。
 //!
-//! 放在 src-tauri/src/ 顶层（不放进 `remote/`，因为该目录计划在下一阶段删除）。
-//! `serve_websocket` 里封装整段每连接 WS 会话（原 `server.rs::handle_ws` + 各
-//! dispatcher）；桌面保留 `crate::commands::*` 与 `ridge-core` 迁移双腿（D-GM-2）。
-//! core_bridge 依赖 `AppHandle`，仍留在 `crate::remote::core_bridge`。
+//! 放在 src-tauri/src/ 顶层。`serve_websocket` 里封装整段每连接 WS 会话（原
+//! `server.rs::handle_ws` + 各 dispatcher）；桌面保留 `crate::commands::*` 与
+//! `ridge-core` 迁移双腿（D-GM-2）。core_bridge 依赖 `AppHandle`，与本文件平级
+//! 放在 `crate::remote_bridge`。
 
 use std::future::Future;
 use std::io::Write;
@@ -2053,7 +2053,7 @@ async fn dispatch_invoke_request(
         | "path_exists"
         | "read_file"
         | "read_file_for_editor" => {
-            let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+            let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
             core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
         }
         "write_file" => unit(project::write_file(s(args, "path"), s(args, "content")).await),
@@ -2271,7 +2271,7 @@ async fn dispatch_invoke_request(
         // The core's `{code,message,data}` error maps onto the legacy
         // `{_result|_error}` WS envelope below — wire behaviour is unchanged.
         "get_theme_data" | "set_active_theme" | "set_user_default_cwd" => {
-            let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+            let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
             core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
         }
 
@@ -2279,7 +2279,7 @@ async fn dispatch_invoke_request(
         // Routes through the unified dispatch (the `search` alias shares the
         // same handler). camelCase arg keys are read by the core directly.
         "text_search" => {
-            let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+            let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
             core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
         }
         "filename_search" => {
@@ -2473,7 +2473,7 @@ async fn dispatch_invoke_jsonrpc(
         if is_mutating_invoke(cmd) && state.remote_fs_readonly.load(Ordering::Relaxed) {
             return Err(ridge_core::CoreError::ReadOnly.to_json_rpc());
         }
-        let ctx = crate::remote::core_bridge::remote_ctx(&handle, state, "remote");
+        let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
         return ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_json_rpc());
     }
 

@@ -3,14 +3,14 @@ use base64::Engine as _;
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::remote::mdns;
+use ridge_remote::mdns;
 use crate::state::AppState;
 
 #[tauri::command]
 pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, String> {
     let port = *state.remote_port.read();
-    let lan_ip = crate::remote::detect_lan_ip();
-    let lan_ips = crate::remote::detect_lan_ips();
+    let lan_ip = ridge_remote::net::detect_lan_ip();
+    let lan_ips = ridge_remote::net::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
     let enabled = state.remote_enabled.load(Ordering::Relaxed);
@@ -317,7 +317,7 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let auth = state.remote_auth.clone();
-    let handle = crate::remote::spawn_remote_server(state.clone(), auth, shutdown_rx)
+    let handle = crate::remote_bridge::spawn_remote_server(state.clone(), auth, shutdown_rx)
         .ok_or_else(|| "Failed to bind remote server port".to_string())?;
 
     // Start mDNS broadcast so mobile clients can discover the server.
