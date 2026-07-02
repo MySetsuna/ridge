@@ -13,6 +13,7 @@ pub mod qr_display;
 mod lan_proto;
 pub(crate) mod lan_session;
 pub mod lan_host;
+mod lan_host_impl;
 mod session;
 mod workspace;
 
