@@ -16,7 +16,9 @@ export const meta = {
     { title: '1-auth', detail: 'auth.rs(SessionStore/VerifyThrottle/RemoteAuth) 迁 ridge-remote' },
     { title: '2-mdns-net', detail: 'mdns.rs + detect_lan_ip(s) 迁 ridge-remote::{mdns,net}' },
     { title: '3-serve', detail: 'serve.rs 下沉：UaServeConfig 双产物 + UA 分流 + index/assets/spa_fallback/ca' },
-    { title: '4-trait-impls', detail: 'RemoteHost trait + server_app.rs + 桌面 remote_host_impl + rdg lan_host_impl（捆绑，编译绿）' },
+    { title: '4-trait-impls', detail: 'RemoteHost trait + server_app.rs（共享 crate 核心，已完成）' },
+    { title: '4b-desktop-impl', detail: '桌面 remote_host_impl + server.rs 切 server_app::run（搬 handle_ws/dispatch）' },
+    { title: '4c-rdg-impl', detail: 'rdg lan_host_impl + 重写 lan_host.rs（ridge-remote-ws + 真 SPA，删内联 HTML）' },
     { title: '5-delete', detail: '删除 src-tauri/src/remote/ + 改所有引用点（lib/commands/state/bin）' },
     { title: '6-cloud', detail: 'ridge-cloud ua.rs 改依赖 ridge_remote::ua（git crate），消除镜像' },
   ],
@@ -97,12 +99,56 @@ UaServeConfig 调 server_app::run，删除内联 LOGIN_HTML/TERMINAL_HTML 与手
 目录探测（缺失回退移动 SPA）。三处 cargo check 必须全绿，且 ridge-remote 零 Tauri 依赖。`,
   },
   {
+    key: '4b-desktop-impl',
+    check: 'cargo check -p ridge && cargo check -p ridge-cli && (cargo tree -p ridge-remote | grep -ci tauri)',
+    prompt: `阶段 4b（桌面 impl，承接阶段4 已建的 ridge_remote::host::RemoteHost + ridge_remote::server_app）。目标：让桌面
+改用 server_app::run，桌面 LAN 远控回归不破。按阶段4 agent 的 notesForNext 执行：
+1. 新建 **src-tauri/src/remote_host_impl.rs**（注意放 src-tauri/src/ 顶层，【不要】放进 src-tauri/src/remote/，因为该目录阶段5 要删）：
+   为 AppState 的包装器 struct DesktopHost{state, auth, port, lan_ip, machine_name, serve_cfg, tls_enabled} 实现
+   ridge_remote::host 的 HostMeta / HostAuth / WorkspaceProvider + RemoteHost::serve_websocket。
+   - HostAuth：verify_code=auth.verify；is_blacklisted/pre_verify_gate/post_verify_record/auto_blacklist_on_ban 逐字搬
+     server.rs:495-561，转发 ctx.state.remote_blacklist / remote_verify_throttle / remote_session_store。
+     create_session_token/validate_token* 转发 remote_session_store。
+   - WorkspaceProvider：搬 server.rs 的 workspace_list/switch/create/close_handler 主体 + allowed_file_roots(server.rs:348-364)。
+   - serve_websocket：把 server.rs 的 handle_ws(958-2175) + build_remote_pane_list + apply_pane_resize +
+     dispatch_data_request/dispatch_invoke_request/dispatch_invoke_jsonrpc + is_mutating_* + negotiate_hello +
+     常量(REMOTE_PROTOCOL_VERSION/HOST_CAPABILITIES/CORE_MIGRATED_METHODS/JSON_RPC_*) 搬进来；保留 crate::commands::*
+     与 CORE_MIGRATED 双腿（D-GM-2）。core_bridge 依赖 AppHandle，本阶段仍留 src-tauri（阶段5 再决定移哪）。
+2. 桌面 server.rs 的 run_remote_server 改：构造 Arc<DesktopHost>（含 UaServeConfig 的 resolve_ui_dirs + 多网卡 TLS
+   fail-closed 逻辑不变），bind_tcp(9527)+resolve_config_multi 后调 ridge_remote::server_app::run(host, listener,
+   tls_config, shutdown_rx, true)；删掉 server.rs 里已迁走的内联 handle_ws/dispatch/workspace handler。
+   spawn_remote_server 对外签名保持不变。src-tauri/src/lib.rs 加 mod remote_host_impl（若需要）。
+体量大（搬 ~1200 行 handle_ws），可多次编辑 + 多次 cargo check 迭代；本阶段结束前【必须】cargo check -p ridge 全绿、
+ridge-remote 仍零 Tauri。若确实一趟难绿，把已完成部分说清、blocked=true 并列出剩余，不要留下编译红。`,
+  },
+  {
+    key: '4c-rdg-impl',
+    check: 'cargo check -p ridge-cli && cargo check -p ridge-remote',
+    prompt: `阶段 4c（rdg impl，承接 ridge_remote::host + server_app）。按阶段4 notesForNext：
+1. 新建 packages/ridge-cli/src/tui/lan_host_impl.rs：为 rdg 的 SharedWorkspace（包装 struct）实现
+   ridge_remote::host::RemoteHost。陷阱：rdg 用 crate::totp::RemoteTotp（非 ridge_remote::auth::RemoteAuth），
+   无 SessionStore/throttle/blacklist —— verify_code=totp.verify；is_blacklisted/节流用 trait 默认实现；
+   create_session_token 让 rdg 自持一个 ridge_remote::auth::SessionStore（零 Tauri）。WorkspaceProvider 面向单
+   工作区（create 走 create_session、close 拒绝最后一个、switch 最小支持/no-op）。
+2. serve_websocket：重写现 lan_host.rs 的 run_ws 逻辑为讲 ridge-remote-ws（hello 的 protocol 字段从 'ridge-lan-ws'
+   改 'ridge-remote-ws'；pane 帧 16B UUID 前缀已一致）。这一步同时消除 P5 的协议分叉。
+3. 重写 packages/ridge-cli/src/tui/lan_host.rs：构造 Arc<dyn RemoteHost> + UaServeConfig（web-remote-dist 探测用
+   ridge_remote::serve::resolve_ui_dirs，缺失回退移动 SPA static/remote）调 ridge_remote::server_app::run；
+   删除内联 LOGIN_HTML/TERMINAL_HTML 与手写 assets_handler。dashboard.rs 对 lan_host::run 的调用签名尽量不变。
+cargo check -p ridge-cli 全绿。注意不要动 P2/P3/P4 已修的 main.rs/login_flow/dashboard 日志与登录逻辑。`,
+  },
+  {
     key: '5-delete',
     check: 'cargo check -p ridge && cargo check -p ridge-cli',
-    prompt: `阶段 5：迁移全绿后删除 src-tauri/src/remote/（server.rs/auth.rs/mdns.rs/core_bridge.rs/mod.rs 及内联
-mobile_page.html），改所有引用点：src-tauri/src/lib.rs（pub mod remote / forward_event / spawn_remote_server 接线）、
-commands/{remote,fs_watch,settings}.rs、state.rs、bin/remote-server.rs（陈旧 stub，优先删除该 bin）。forward_event /
-core_bridge::desktop_ctx 迁 src-tauri 新模块。tls re-export 改直接用 ridge_remote::tls。桌面 cargo check 全绿。`,
+    prompt: `阶段 5：桌面(4b)/rdg(4c) 均已切到 server_app 且全绿后，删除 src-tauri/src/remote/ 目录，改所有引用点：
+- core_bridge.rs 依赖 tauri AppHandle，不能进 ridge-remote：把它移到 src-tauri/src/remote_bridge.rs（或并入
+  remote_host_impl.rs），再删整个 src-tauri/src/remote/（server.rs/mod.rs/mobile_page.html 等已迁/无用）。
+- 引用点：src-tauri/src/lib.rs（pub mod remote / forward_event / spawn_remote_server 接线改指向新位置）、
+  commands/{remote,fs_watch,settings}.rs、state.rs（已用 ridge_remote::auth，确认无残留 crate::remote::auth）、
+  bin/remote-server.rs（陈旧 stub，优先删除该 bin 及 Cargo.toml 里的 [[bin]] 条目）。
+- mod.rs 里对 ridge_remote 的重导出（pub use ridge_remote::{auth,mdns,net,tls}）改为各调用点直接引用 ridge_remote::*，
+  然后删除 mod.rs。tls re-export 同理。
+cargo check -p ridge 与 -p ridge-cli 全绿；桌面 LAN 远控行为不变。`,
   },
   {
     key: '6-cloud',

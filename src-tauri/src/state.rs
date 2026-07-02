@@ -15,7 +15,7 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
-use crate::remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
+use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 

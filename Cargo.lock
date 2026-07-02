@@ -5382,12 +5382,16 @@ dependencies = [
  "axum-server",
  "base64 0.22.1",
  "dirs 5.0.1",
+ "getrandom 0.2.17",
+ "parking_lot",
  "rcgen",
+ "ridge-core",
  "rustls",
  "serde",
  "serde_json",
  "time",
  "tokio",
+ "tower-http",
  "tracing",
 ]
 

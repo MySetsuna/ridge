@@ -49,18 +49,12 @@ pub fn lan_port() -> u16 {
 }
 
 /// 检测本机 LAN IP（通过 UDP 连接获取主接口地址）。
+///
+/// 统一委托共享层 `ridge_remote::net::detect_lan_ip`，与桌面 LAN host / 云端
+/// 共用同一份实现，消除三形态间的探测逻辑漂移（P1 阶段 2）。保留此薄封装是为了
+/// 让 `config::detect_lan_ip` 调用点（dashboard / lan_host）无需改动。
 pub fn detect_lan_ip() -> String {
-    let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(_) => return "127.0.0.1".to_string(),
-    };
-    match socket.connect("8.8.8.8:80") {
-        Ok(()) => match socket.local_addr() {
-            Ok(addr) => addr.ip().to_string(),
-            Err(_) => "127.0.0.1".to_string(),
-        },
-        Err(_) => "127.0.0.1".to_string(),
-    }
+    ridge_remote::net::detect_lan_ip()
 }
 
 /// 持久化的设备凭据（契约 §3 device token + §4.4 绑定结果）。

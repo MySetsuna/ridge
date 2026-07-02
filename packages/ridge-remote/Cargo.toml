@@ -9,6 +9,8 @@ license = "MIT"
 # HTTP + WS server
 axum = { version = "0.7", features = ["ws", "macros"] }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+# 响应体压缩层（gzip/br，按 Accept-Encoding 协商）——前端 serve 装配用
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
 # TLS cert generation (ring backend — no cmake needed on Windows)
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "crypto"] }
@@ -25,6 +27,12 @@ anyhow = "1"
 tracing = "0.1"
 # Base64 decode for DER conversion
 base64 = "0.22"
+# TOTP auth engine (RemoteTotp) — shared, zero Tauri dependency
+ridge-core = { path = "../ridge-core" }
+# Interior mutability for session/throttle/auth state
+parking_lot = "0.12"
+# OS CSPRNG for unguessable session tokens (audit C2)
+getrandom = "0.2"
 
 [features]
 default = []
