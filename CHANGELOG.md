@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.13] — 2026-07-02
+
+多主机「Hosts」侧边栏、智能体协同增强，以及公网远控丝滑化（懒加载 scrollback + 真·多控制端）。发布产物首次附带 `rdg` 命令行程序。
+
+### Added
+- **「主机 / Hosts」侧边栏**：统一「外部来源终端」抽象——本机无头会话（headless）、局域网远端（LAN）、`rdg` 远端主机各带来源徽标；右键「接入终端」子菜单 + dock 区域选择 + 拖拽停靠，可把外部 pane 接入当前布局。远端主机注册表 + 连接对话框（凭据不落库）。
+- **智能体协同增强**：MCP 自由交流寻址、接入引导、手动编组。
+- **公网远控 · 真·多控制端**：cloud pane fan-out 引用计数——多个控制端查看同一 pane 不再互相断流。
+- **发布产物附带 `rdg` CLI**：Release 现同时提供桌面安装包与 `rdg` 命令行程序（Windows / Linux / macOS）。
+
+### Changed
+- **公网远控改懒加载 scrollback**：控制端首屏自拉约 1.5 屏、滚顶再分批拉历史，取代 host 端全量回放；桌面 in-browser 首屏预算收敛，连接更快、更省流量。
+
+### Fixed
+- **快速重订阅竞态**：desync 条目按 owning sub_id 精确移除，修复快速切/重订阅 pane 时的错乱。
+- **resize reflow 残留**：修复前端 delta 镜像自跑发散 reflow 在空白格残留镜像垃圾。
+- **shell-history 门控**：前台有进程运行时禁用历史弹层，并覆盖 shell 进程内命令（OSC 133;A prompt 标记）。
+- **teammate / auto_place 分屏白屏**：后端建 pane fit 后补一次强制全量重绘。
+
+---
+
 ## [0.0.8] — 2026-06-19
 
 公网远控稳定性与体验专项（切后台不掉线、TOTP 少重输、scrollback 完整、切 Pane 不丢/不断）。
