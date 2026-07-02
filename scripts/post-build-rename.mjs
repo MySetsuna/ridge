@@ -26,6 +26,11 @@ formats.forEach(folder => {
   if (fs.existsSync(folderPath)) {
     const files = fs.readdirSync(folderPath);
     files.forEach(file => {
+      // 只挑当前版本的安装包。bundle 目录从不清理，跨构建会积累旧版本产物
+      // （ridge_0.0.8_x64-setup.exe 等）；若不按版本过滤，会把每个旧 exe 都复制到
+      // 同一个 `ridge_<version>_x64-setup.exe` 目标名、后者覆盖前者 → release/ 里
+      // 的「当前版本」文件最终装的是某个旧版本的内容（曾把 0.0.13 写成 0.0.8）。
+      if (!file.includes(`_${version}_`)) return;
       if (file.endsWith(`.${folder === 'nsis' ? 'exe' : 'msi'}`)) {
         const sourcePath = path.join(folderPath, file);
         const newName = `${productName}_${version}_${arch}-setup${path.extname(file)}`;
