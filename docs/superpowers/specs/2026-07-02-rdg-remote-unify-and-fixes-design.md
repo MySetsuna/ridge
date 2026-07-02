@@ -5,7 +5,7 @@
 > 让 **tui lan（rdg）/ 桌面 lan（src-tauri）/ 云端 relay（ridge-cloud）** 三形态、以及**控制端两形态（手机浏览器 / 桌面浏览器）**都用同一份代码。
 > 用户倾向用工作流（多 agent 并行诊断 + 落地）推进。
 
-状态：活文档。诊断由后台工作流并行产出（membership 已确认；remote-unify/tui-logspam/browser-login/connect-fail 串行重跑中）。本文随诊断结果补全后再 commit、再实施。
+状态：**全部完成**（2026-07-02）。P2/P3/P4(CLI+后端)/P1/P5 均已修复并提交。P1 remote 统一经工作流分阶段执行、`src-tauri/src/remote/` 已删除、全局统一到 `packages/ridge-remote`。commit：P2 `10e304b`、P4-CLI `443e69b`、P3 `b20250d`、P4-后端 ridge-cloud `c8a8dcb`、P1 `5a415a6`+`8dd118e`+`297af69`+ridge-cloud `865f1cc`。三 crate cargo check 绿、ridge-remote 20 + ridge-cli 98 单测过。遗留：P4 后端需部署 ridge-cloud+迁移 0013 才对已污染账号生效（见 §1-P4）。
 
 ---
 
