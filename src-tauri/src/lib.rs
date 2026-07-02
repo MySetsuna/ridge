@@ -6,6 +6,9 @@ mod fs;
 mod hosts;
 mod lsp;
 pub mod remote;
+/// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）——放在顶层而非 `remote/`
+/// 内，因为 `remote/` 计划在下一阶段删除。
+mod remote_host_impl;
 mod state;
 mod teammate;
 mod tray;
