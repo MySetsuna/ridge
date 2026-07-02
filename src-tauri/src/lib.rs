@@ -5,9 +5,10 @@ mod engine;
 mod fs;
 mod hosts;
 mod lsp;
-pub mod remote;
-/// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）——放在顶层而非 `remote/`
-/// 内，因为 `remote/` 计划在下一阶段删除。
+/// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
+/// + `spawn_remote_server` 启动壳）——归并自已删除的 `remote/{mod,core_bridge,server}.rs`。
+mod remote_bridge;
+/// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
 mod remote_host_impl;
 mod state;
 mod teammate;
@@ -176,7 +177,7 @@ pub fn run() {
                             let payload: serde_json::Value =
                                 serde_json::from_str(event.payload())
                                     .unwrap_or(serde_json::Value::Null);
-                            crate::remote::forward_event(&fwd, name, payload);
+                            crate::remote_bridge::forward_event(&fwd, name, payload);
                         });
                     }
                 }

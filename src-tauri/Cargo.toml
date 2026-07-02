@@ -164,7 +164,3 @@ clipboard-win = "5"
 name = "tmux"
 path = "src/bin/tmux.rs"
 
-[[bin]]
-name = "remote-server"
-path = "src/bin/remote-server.rs"
-
