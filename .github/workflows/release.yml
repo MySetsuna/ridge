@@ -103,17 +103,47 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'Ridge __VERSION__'
           releaseBody: |
-            渲染：主题壁纸改由 WebGPU 终端渲染器自绘——真正显示在文字背后（取代此前从未生效的 DOM 壁纸方案）；壁纸纹理 / 采样器 / cover-UV 变换 + 每帧重绘消除鬼影，解码绕过 CSP 修壁纸完全不显示。
-            资源管理器：手风琴改 flex 布局，工作区 / cwd 顶层节点常驻、文件列表内部滚动、分隔条可拖拽 resize（权重制自适应 + 跨会话持久化）+ 两级粘性头；空白 / 顶层右键新建文件夹、文件与粘贴；文件树指针事件拖拽（多选 / 拖到终端粘路径）；CF_HDROP 与系统资源管理器互通；剪贴板序列号判过期修系统复制被旧内部剪贴板遮住。
-            终端：文件拖入改走 bracketed paste（OS 拖放与文件树拖拽统一，图片可被 TUI 识别为附件）；修复 TUI 崩溃后滚轮被识别为 SGR 鼠标乱码。
-            工作区：dock 换位后强制重 fit 全部 pane，修终端画面 / 滚动条停在旧槽。
-            公网远控：controller error 帧分类（终态 / 可恢复 / SUPERSEDED 静默）修永久卡死；移动端跨工作区切回不再丢 scrollback。
-            智能体：tmux 垫片端点重发现 + 健壮传输（有界重试 / 永不 panic / 分级超时 / 失败必有原因），修后端换端口后垫片静默全断。
+            多主机「Hosts」侧边栏：统一「外部来源终端」抽象——本机无头会话 / 局域网远端 / rdg 远端主机各带来源徽标；右键「接入终端」+ dock 区域选择 + 拖拽停靠可把外部 pane 接入当前布局；远端主机注册表 + 连接对话框（凭据不落库）。
+            智能体协同增强：MCP 自由交流寻址 + 接入引导 + 手动编组。
+            公网远控丝滑化：改懒加载 scrollback（首屏自拉约 1.5 屏、滚顶分批拉历史，取代 host 全量回放）+ 桌面 in-browser 首屏预算收敛；cloud pane fan-out 引用计数——多控制端看同一 pane 不再互相断流；修快速重订阅竞态（desync 按 owning sub_id 精确移除）。
+            终端修复：resize reflow 残留（delta 镜像发散 reflow）；前台有进程时禁用 shell-history 弹层并覆盖进程内命令（OSC 133;A）；teammate/auto_place 分屏白屏（建 pane fit 后补强制全量重绘）。
 
-            产物：Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）。
+            产物：桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；命令行程序 rdg（Windows / Linux / macOS-arm64）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # 发布产物附带 rdg CLI：tauri.conf 的 beforeBundleCommand 已 `pnpm build:cli` 把
+      # rdg 编到工作区根 target/release/。这里按平台重命名并上传到同一 Release（草稿）。
+      # 交叉编译的 Intel macOS 条目（rust_target≠''）跳过——build:cli 只按 host(arm64)
+      # 编、不会产出 x86_64 二进制，避免误标错架构。→ rdg 覆盖 win / linux / macos-arm64。
+      - name: Upload rdg CLI to release
+        if: matrix.rust_target == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REL_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          VER="${REL_TAG#v}"
+          case "${{ matrix.label }}" in
+            windows-x64) OS=windows; ARCH=x86_64;  EXT=.exe ;;
+            linux-x64)   OS=linux;   ARCH=x86_64;  EXT= ;;
+            macos-arm64) OS=macos;   ARCH=aarch64; EXT= ;;
+            *) echo "label ${{ matrix.label }} 无需上传 rdg，跳过"; exit 0 ;;
+          esac
+          SRC=""
+          for c in "target/release/rdg$EXT" "src-tauri/target/release/rdg$EXT"; do
+            if [ -f "$c" ]; then SRC="$c"; break; fi
+          done
+          if [ -z "$SRC" ]; then
+            echo "找不到 rdg 二进制（已查 target/release 与 src-tauri/target/release）" >&2
+            exit 1
+          fi
+          DST="rdg-${VER}-${ARCH}-${OS}${EXT}"
+          cp "$SRC" "$DST"
+          gh release upload "$REL_TAG" "$DST" --clobber
+          echo "已上传 $DST（源 $SRC）"
 
       # Linux 免费签名：用自管 GPG 私钥给 .deb / .AppImage 生成 detached 签名（.asc）并
       # 传到同一 Release。未配置 GPG_PRIVATE_KEY 时整步自跳过（现状 = 不签名，零影响）。
