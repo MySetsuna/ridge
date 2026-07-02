@@ -165,8 +165,9 @@ pub async fn run() -> Result<()> {
                     disable_raw_mode()?;
 
                     let client = reqwest::Client::builder().build().ok();
+                    // 用浏览器授权登录（纯轮询）——WSL / 远端终端下登录结果也能带回本端。
                     let result = if let Some(client) = client {
-                        login_flow::run_login(&client).await
+                        login_flow::run_browser_login(&client).await
                     } else {
                         Err(anyhow::anyhow!("无法创建 HTTP client"))
                     };
