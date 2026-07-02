@@ -39,7 +39,6 @@ mod totp;
 mod tui;
 
 use std::io::IsTerminal;
-use std::io::Write as _;
 
 /// TUI 活跃标志：进入 alternate screen 的仪表盘会置真，使在 TUI 内被 spawn 的
 /// daemon 会话跳过 stderr 的 TOTP banner（改由仪表盘 Status 区展示），避免糊屏。

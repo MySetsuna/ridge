@@ -903,7 +903,7 @@ mod tests {
         impl HostPeer for MockPeer {
             async fn answer(
                 &self,
-                _ice: Vec<String>,
+                _ice: Vec<crate::ice::IceServerConfig>,
                 mut inbound: mpsc::Receiver<PeerInbound>,
                 outbound: mpsc::Sender<PeerOutbound>,
             ) -> anyhow::Result<crate::rtc::DataChannelIo> {
