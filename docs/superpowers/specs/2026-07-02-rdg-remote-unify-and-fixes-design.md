@@ -68,7 +68,7 @@
 
 ### P5 rdg 连接失败 — 根因（inline 补诊断）
 - **协议分叉（核心，与 P1 同源）**：rdg 的 LAN host(`lan_host.rs`) 与 LAN controller(`lan_session.rs`) 都用私有 `ridge-lan-ws`（list-panes/subscribe-pane/stdin/claim-pane，text JSON + 16B 前缀二进制帧，`lan_proto.rs`），而桌面 host(`server.rs`) 用统一 `ridge-remote-ws`(mux+JSON-RPC)。rdg controller 连桌面 host 时协议不匹配（连上但无数据/黑屏）。**P1 统一后从根消除**。[实施 P1 前读 `server.rs` handle_ws 确认桌面是否也兼容 subscribe-pane 协议（移动 SPA 可能用它），以决定 controller 侧改动幅度]
-- **确定 bug（dev 端口不一致）**：`connect_lan`(`lan_session.rs:162-166`) 缺省端口硬编码 `9527`，但 dev 模式 `config::lan_port()=5002`（`config.rs:47`），rdg `lan_host` 在 5002 监听 → dev 下 `rdg connect <ip>`(无端口) 连 9527 失败。**修**：缺省端口用 `config::lan_port()`。
+- **端口（已核实非 bug，撤销原判断）**：`connect_lan`(`lan_session.rs:162-166`) 缺省端口 `9527` 是**对的**——`rdg connect` 连的是**桌面 host**（`main.rs:73` 明确），桌面 `bind_tcp(9527)` 固定（`src-tauri/.../server.rs:202`，dev/prod 都 9527）；`config::lan_port()`(dev=5002) 是 rdg 自身 lan_host 的端口，不适用于连桌面。故不改 `lan_session.rs`。
 - TLS 自签已接受（`AcceptAnyServerCert` `lan_session.rs:33-93`），wss 失败回退 ws；端口对了 TLS 不是障碍。
 - 云端连接(daemon/rtc/signaling)：daemon host 已用 mux/JSON-RPC 收敛桌面同款（见 main.rs 头注释）；若连接失败在云端，与订阅门控(P4——但 `can_use_remote()` 对未过期 trial 也 true，未必拒)相关，待真机验证。
 
@@ -79,8 +79,8 @@
 **阶段一：独立低风险修复（主 loop 即时落地，各单独 commit）**
 1. P2 日志分流（`init_tracing(tui)` + `config::log_path` + 收编 stray print）— 收益最大、最独立。
 2. P4 CLI 会员（`login_flow` UserBrief + `isRealPremium` 判定 + 单测）。
-3. P5 dev 端口 bug（`connect_lan` 缺省端口用 `config::lan_port()`）。
-4. P3 浏览器授权流（rdg 新增 `browser_login` 接入 `/auth/request`+`/auth/poll` 轮询 + 移除误导 banner）。
+3. P3 浏览器授权流（rdg 新增 `browser_login` 接入 `/auth/request`+`/auth/poll` 轮询）。
+   （P5 dev 端口经核实非 bug，已撤销；P5 随 P1 协议统一从根消除。）
 
 **阶段二：跨仓库（ridge-cloud）**
 5. P4 后端 `checkin_grant_2h` 修跳过分支 + 数据修复迁移（`UPDATE users SET is_trial=false WHERE plan='premium'`）。
