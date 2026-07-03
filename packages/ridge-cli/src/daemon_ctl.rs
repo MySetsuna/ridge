@@ -1,11 +1,13 @@
 //! 守护进程生命周期管理：PID 文件 + 信号。
 //!
 //! PID 文件存放在 `~/.config/ridge/daemon.pid`。
-//! Unix: `kill` 命令发 SIGTERM/SIGKILL；`ps` 检查存活。
-//! Windows: PID 文件语义相同，信号部分仅记录。
+//! Unix: 通过 `libc::kill` 系统调用发 SIGTERM/SIGKILL 与探测存活（不 shell 出
+//!   `kill` 命令，避免 procps 诊断泄漏到终端 stderr）。
+//! Windows: PID 文件语义相同，用 tasklist/taskkill。
 
 use std::fs;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 #[cfg(unix)]
 use std::time::Duration;
@@ -39,15 +41,21 @@ pub fn remove_pid() {
     let _ = fs::remove_file(pid_path());
 }
 
-/// Unix: `kill -0 <pid>` 检查进程存活。
+/// Unix: `kill(pid, 0)` 系统调用检查进程存活。
+///
+/// 直接走 libc，而非 shell 出 `kill -0`：procps 的 `kill` 在进程不存在时会把
+/// `kill: (<pid>): No such process` 打到继承来的终端 stderr（探测函数返回值本身是对的，
+/// 但这行噪音会漏出来，且 TUI 每帧探测时刷屏）。libc 直调既无输出也不 fork 进程。
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    // kill(pid, 0)：不发信号，仅做存在性/权限检查。
+    //   0            → 进程存在且可发信号 → 存活
+    //   -1 且 ESRCH  → 进程不存在         → 已退出
+    //   -1 且 EPERM  → 进程存在但无权限   → 仍算存活
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Windows: 用 `tasklist` 检查进程。
@@ -96,7 +104,7 @@ pub fn start_daemon() -> Result<()> {
     Ok(())
 }
 
-/// Unix: `kill -TERM <pid>` 优雅停止，超时后 SIGKILL。
+/// Unix: `SIGTERM` 优雅停止，超时后 `SIGKILL`（均经 `libc::kill` 直发）。
 #[cfg(unix)]
 pub fn stop_daemon() -> Result<()> {
     let pid = read_pid().context("未找到 PID 文件")?;
@@ -105,11 +113,10 @@ pub fn stop_daemon() -> Result<()> {
         anyhow::bail!("进程 {} 已不存在", pid);
     }
 
-    Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .status()
-        .context("kill -TERM 失败")?;
+    // SIGTERM 优雅停止（libc 直发，避免 shell 出 kill 泄漏 stderr）。
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
 
     // 等最多 5 秒。
     for _ in 0..50 {
@@ -121,11 +128,9 @@ pub fn stop_daemon() -> Result<()> {
     }
 
     // 超时 → SIGKILL。
-    Command::new("kill")
-        .arg("-KILL")
-        .arg(pid.to_string())
-        .status()
-        .ok();
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
     remove_pid();
     anyhow::bail!("进程 {} 未响应 SIGTERM，已 SIGKILL", pid)
 }
@@ -139,4 +144,23 @@ pub fn stop_daemon() -> Result<()> {
         .context("taskkill 失败")?;
     remove_pid();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_process_alive_reports_self() {
+        // 当前进程一定存活。
+        assert!(is_process_alive(std::process::id()));
+    }
+
+    #[test]
+    fn is_process_alive_rejects_dead_pid() {
+        // 一个远超系统 pid_max、几乎不可能被占用的 PID → 应判为已退出。
+        // 这正是用户遇到的 `kill: (694): No such process` 场景的最小复现：
+        // 修复前（shell 出 `kill -0`）此调用会把该诊断打到 stderr；修复后（libc）静默。
+        assert!(!is_process_alive(0x7FFF_FFF0));
+    }
 }
