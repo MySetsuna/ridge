@@ -113,6 +113,13 @@ axum = { version = "0.7", features = ["ws"] }
 # Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
 ridge-remote = { path = "../ridge-remote" }
 
+# 进程存活探测 / 守护进程停止走 `libc::kill` 系统调用（见 daemon_ctl.rs），而非
+# shell 出 `kill` 命令——后者会把 procps `kill` 的 "No such process" 诊断泄漏到
+# 继承来的终端 stderr，在 TUI 每帧探测存活时把面板刷屏。仅 unix 需要（Windows 走
+# tasklist/taskkill）。webrtc/ring 已间接引入 libc，此处仅提升为直接依赖，零额外编译负担。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["rtc"]
 # Real host-side WebRTC peer connection via the `webrtc` crate.
