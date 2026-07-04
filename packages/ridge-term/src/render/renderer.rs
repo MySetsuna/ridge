@@ -470,13 +470,15 @@ impl<B: RenderBackend> Renderer<B> {
             }
         }
 
-        // Cursor handling: only show the cursor when (a) the surface is
-        // focused, (b) the viewport is at the live grid (offset == 0),
-        // and (c) we're on the visible half of the blink phase. Scrolled-
-        // into-history view and unfocused panes both = no cursor (matches
-        // xterm behavior + multi-pane convention).
-        let new_cursor = if self.focused && offset == 0 && blink_phase {
-            self.compute_cursor_draw(terminal)
+        // Cursor handling: show the cursor when (a) the surface is
+        // focused and (b) we're on the visible half of the blink phase.
+        // When the viewport is scrolled into history the cursor is drawn
+        // at its shifted on-screen row (`cur.row + offset`) as long as it
+        // is still inside the viewport; `compute_cursor_draw` returns None
+        // once the cursor scrolls off the bottom. Unfocused panes = no
+        // cursor (matches xterm behavior + multi-pane convention).
+        let new_cursor = if self.focused && blink_phase {
+            self.compute_cursor_draw(terminal, offset)
         } else {
             None
         };
@@ -638,8 +640,8 @@ impl<B: RenderBackend> Renderer<B> {
 
         // Cursor moved (position / style / glyph beneath).
         let offset = terminal.scroll_offset();
-        let new_cursor = if self.focused && offset == 0 && blink_phase {
-            self.compute_cursor_draw(terminal)
+        let new_cursor = if self.focused && blink_phase {
+            self.compute_cursor_draw(terminal, offset)
         } else {
             None
         };
@@ -680,7 +682,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// Compute the cursor descriptor for this frame. Returns None when
     /// DECTCEM is off (cursor hidden) or terminal is on alt screen with
     /// inactive cursor mode (future).
-    fn compute_cursor_draw(&self, terminal: &Terminal) -> Option<CursorDraw> {
+    fn compute_cursor_draw(&self, terminal: &Terminal, offset: usize) -> Option<CursorDraw> {
         if !terminal.modes().cursor_visible {
             return None;
         }
@@ -689,8 +691,18 @@ impl<B: RenderBackend> Renderer<B> {
         let row = grid.row(cur.row)?;
         let cell = row.cells.get(cur.col).copied().unwrap_or_default();
         let cluster_text = row.cluster_at(cur.col).map(|c| c.text.as_ref().to_string());
+        // The cursor sits at live-grid row `cur.row`; the viewport shifts
+        // the live grid down by `offset` (see `Terminal::viewport_row`), so
+        // its on-screen row is `cur.row + offset`. Once that lands at or
+        // past the bottom of the viewport the cursor has scrolled out of
+        // sight — draw nothing. `terminal.rows()` is the same viewport row
+        // count `tick` uses (`rows_n`).
+        let vp_row = cur.row + offset;
+        if vp_row >= terminal.rows() {
+            return None;
+        }
         Some(CursorDraw {
-            row: cur.row,
+            row: vp_row,
             col: cur.col,
             // Honors DECSCUSR `CSI <n> SP q`. `Modes::cursor_shape` is the
             // single source of truth — set by the parser when an app emits
