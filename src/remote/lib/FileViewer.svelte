@@ -2,6 +2,7 @@
   import { X, FileText, GitBranch, Copy, Pencil, Eye, Save } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
   import type { SidebarProvider } from '../../shared/sidebar/types';
+  import { writeClipboard } from './clipboard';
 
   let { provider, kind, path, line, onClose }: {
     provider: SidebarProvider;
@@ -52,8 +53,19 @@
     return { rows: arr, truncated: false };
   }
 
-  async function copyPath() {
-    try { await navigator.clipboard.writeText(path); } catch { /* clipboard blocked */ }
+  // Copy the loaded FILE CONTENT (not the path) to the control device's system
+  // clipboard. For a diff view this copies the diff text. No-op while the file is
+  // still loading / errored / empty.
+  let copied = $state(false);
+  let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+  async function copyContent() {
+    if (loading || error || !content) return;
+    const ok = await writeClipboard(content);
+    if (ok) {
+      copied = true;
+      if (copyResetTimer) clearTimeout(copyResetTimer);
+      copyResetTimer = setTimeout(() => { copied = false; }, 1200);
+    }
   }
 
   async function load() {
@@ -141,7 +153,7 @@
         <button class="v-btn" onclick={() => editing = true} title={tr('mobile.viewerEdit')} tabindex="-1"><Pencil class="w-4 h-4" /></button>
       {/if}
     {/if}
-    <button class="v-btn" onclick={copyPath} title={tr('mobile.viewerCopyPath')} tabindex="-1"><Copy class="w-4 h-4" /></button>
+    <button class="v-btn" class:armed={copied} onclick={copyContent} disabled={loading || !!error || !content} title={tr('mobile.viewerCopyContent')} tabindex="-1"><Copy class="w-4 h-4" /></button>
     <button class="v-btn" onclick={requestClose} aria-label={tr('mobile.sidebarClose')} tabindex="-1"><X class="w-5 h-5" /></button>
   </div>
 

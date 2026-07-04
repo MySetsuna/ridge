@@ -4,6 +4,7 @@
   import { TerminalController } from './terminalController';
   import { anyMod, consumeMods } from './modState.svelte';
   import { keyboardShiftPx } from './keyboardOffset';
+  import { writeClipboard } from './clipboard';
 
   let { paneId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
@@ -203,29 +204,6 @@
       const lines = deltaY > 0 ? 3 : -3;
       if (lines < 0) { ctrl.scrollUp(-lines); maybeLoadOlder(); } else ctrl.scrollDown(lines);
     }
-  }
-
-  /** Write `text` to the control device's clipboard, with a legacy
-   *  `execCommand('copy')` fallback for mobile browsers that reject the async
-   *  Clipboard API (older WebViews / non-secure quirks). */
-  async function writeClipboard(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch { /* fall through to the legacy textarea path */ }
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.top = '0';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      // finally so a throwing execCommand can't leak the textarea into the DOM.
-      try { document.execCommand('copy'); }
-      finally { document.body.removeChild(ta); }
-    } catch { /* clipboard truly unavailable — nothing more we can do */ }
   }
 
   /** Copy the selection to the control device's clipboard, then clear it.
