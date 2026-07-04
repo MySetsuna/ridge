@@ -647,7 +647,17 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         // Drop any not-yet-activated PendingSpawn so a recycled pane_id
         // can't accidentally resurrect a dead PTY pair on next activate.
         ws.pending_spawns.remove(&pane_id);
-        ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
+        // For a native/foreign (headless / remote / rdg) pane, closing == detach:
+        // `terminal::kill_pty_if_present` above already removed the leaf from the
+        // tree (native branch), so the second `close` here legitimately finds it
+        // gone. Treat `PaneNotFound` as success — the leaf is already removed —
+        // while still propagating any other error. Local panes keep this as the
+        // single authoritative removal.
+        match ws.pane_tree.close(pane_id) {
+            Ok(()) => {}
+            Err(ridge_core::CoreError::PaneNotFound(_)) => {}
+            Err(e) => return Err(e.to_string()),
+        }
     }
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     // Broadcast pane tree change to remote clients and desktop frontend.
