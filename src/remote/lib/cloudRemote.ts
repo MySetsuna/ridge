@@ -210,6 +210,19 @@ export class CloudRemoteConnection implements RemoteLink {
     this.setState('error');
   }
 
+  /** Drop all per-pane subscription state — live `pty-output` listeners, in-flight
+   *  subscribe flags, and the lazy-scrollback seq cursors. Shared by disconnect()
+   *  and the reconnect path so a fresh transport re-subscribes from a clean slate. */
+  private _teardownSubscriptions(): void {
+    for (const [, unlisten] of this.ptyUnlisten) {
+      try { unlisten(); } catch { /* handle points at a dead transport — ignore */ }
+    }
+    this.ptyUnlisten.clear();
+    this.subscribing.clear();
+    this.scrollbackCursor.clear();
+    this.fetchingOlder.clear();
+  }
+
   private async _handleReconnect(): Promise<void> {
     if (this._reconnecting) return;
     this._reconnecting = true;
@@ -233,6 +246,14 @@ export class CloudRemoteConnection implements RemoteLink {
         this.setState('error');
         return;
       }
+      // §reconnect-resub（修复「重连接上 scrollback 但没接上实时渲染」）：重连后的
+      // 传输是一个**全新的 host 会话**，不持有任何 pane 订阅；但我们本地的
+      // ptyUnlisten/subscribing 条目仍是断连前的旧值。subscribePane() 在
+      // ptyUnlisten.has(paneId) 时会**提前返回**，导致 MainApp.onReconnect →
+      // subscribePane 被吞掉：pane 既不会重挂 live `pty-output` 监听，也不会重新
+      // register_pane_delta_channel → scrollback 从缓存重绘、但实时渲染不恢复。
+      // 先清掉旧订阅状态，后续 subscribePane 才会在新传输上真正重跑 _subscribe。
+      this._teardownSubscriptions();
       this.reconnectListeners.forEach((fn) => {
         try { fn(); } catch { /* listener owns its errors */ }
       });
@@ -272,9 +293,10 @@ export class CloudRemoteConnection implements RemoteLink {
     return () => this.stateListeners.delete(fn);
   }
   onReconnect(fn: () => void): () => void {
-    // The WebRTC adapter + bridge re-subscribe panes internally on a transport
-    // blip; we don't surface an explicit reconnect in v1 (no resync storm). Kept
-    // for interface parity so MainApp's listener registers harmlessly.
+    // Fired by _handleReconnect on a connected-after-down edge (after re-auth +
+    // _teardownSubscriptions). MainApp's listener wipes the kernel, repaints from
+    // cache, and re-subscribes the active pane so live rendering resumes on the
+    // fresh transport.
     this.reconnectListeners.add(fn);
     return () => this.reconnectListeners.delete(fn);
   }
@@ -600,13 +622,7 @@ export class CloudRemoteConnection implements RemoteLink {
   disconnect(): void {
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
-    for (const [, unlisten] of this.ptyUnlisten) {
-      try { unlisten(); } catch { /* already gone */ }
-    }
-    this.ptyUnlisten.clear();
-    this.subscribing.clear();
-    this.scrollbackCursor.clear();
-    this.fetchingOlder.clear();
+    this._teardownSubscriptions();
     if (this.treeUnlisten) {
       try { this.treeUnlisten(); } catch { /* already gone */ }
       this.treeUnlisten = null;

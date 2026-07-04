@@ -56,6 +56,14 @@
     viewer = { kind: 'diff', path };
     sidebarTab = null;
   }
+  // §close-to-terminal: closing the file/diff viewer must land on the TERMINAL,
+  // not the sidebar file listing it was opened from. The terminal renders only
+  // when BOTH overlays are null, so clear both — otherwise a surviving sidebarTab
+  // re-reveals the directory (the reported "关闭文件回到文件目录" bug).
+  function closeViewer() {
+    viewer = null;
+    sidebarTab = null;
+  }
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
   let createError = $state('');
@@ -367,6 +375,15 @@
     location.reload();
   }
 
+  // Compact a cwd for the header sub-line: keep the last two path segments so the
+  // meaningful tail (repo/dir) is visible on a narrow phone header; the full path
+  // is on the title attribute for a long-press tooltip.
+  function compactCwd(cwd: string): string {
+    const parts = cwd.split(/[/\\]+/).filter(Boolean);
+    if (parts.length <= 2) return cwd;
+    return '…/' + parts.slice(-2).join('/');
+  }
+
   function handleSidebarToggle(tab: 'files' | 'git' | 'search') {
     if (sidebarTab === tab) {
       sidebarTab = null;
@@ -634,6 +651,27 @@
     const p = panes.find((pp) => pp.id === activePaneId);
     if (p?.cwd) activeCwd = p.cwd;
   });
+
+  // §header-pin（虚拟键盘顶吸）: keep the header (which holds the virtual keyboard)
+  // glued to the VISIBLE viewport top so the soft IME can't push it off-screen /
+  // let it cover content. When a mobile browser scrolls the layout up to reveal the
+  // focused input above the IME, `visualViewport.offsetTop` grows by that scroll
+  // amount; translating the header DOWN by the same amount re-pins it to the visible
+  // top. When the browser keeps `position:fixed` still (offsetTop stays 0) this is a
+  // no-op, so it's safe on every viewport model. Bounded by the scroll distance.
+  let headerShift = $state(0);
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => { headerShift = Math.max(0, Math.round(vv.offsetTop)); };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  });
 </script>
 
 <div class="app-root">
@@ -673,7 +711,7 @@
       {#if createError}<p class="create-error">{createError}</p>{/if}
     </div>
   {:else if activePaneId}
-    <header class="mobile-header">
+    <header class="mobile-header" style="transform: translateY({headerShift}px)">
       <div class="header-row">
         <div class="header-nav">
           <button class="hdr-btn" class:active={sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
@@ -688,8 +726,13 @@
         </div>
         <div class="header-breadcrumb">
           {#if activePaneId}
-            <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
-            <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+            <div class="breadcrumb-line">
+              <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
+              <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+            </div>
+            {#if activeCwd}
+              <span class="breadcrumb-cwd" title={activeCwd}>{compactCwd(activeCwd)}</span>
+            {/if}
           {/if}
         </div>
         <div class="header-actions">
@@ -749,7 +792,7 @@
         kind={v.kind}
         path={v.path}
         line={v.line}
-        onClose={() => viewer = null}
+        onClose={closeViewer}
       />
     {/await}
   {/if}
@@ -785,8 +828,10 @@
   .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
   .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
   .header-nav{display:flex;gap:2px}
-  .header-breadcrumb{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;overflow:hidden}
+  .header-breadcrumb{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;min-width:0;overflow:hidden}
+  .breadcrumb-line{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%}
   .breadcrumb-text{font-size:13px;color:var(--rg-fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .breadcrumb-cwd{max-width:100%;font-size:10px;line-height:1.2;color:var(--rg-fg-muted);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .header-actions{display:flex;gap:2px}
   .hdr-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:8px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s}
   .hdr-btn:active{background:color-mix(in srgb,var(--rg-fg) 10%,transparent);color:var(--rg-fg)}

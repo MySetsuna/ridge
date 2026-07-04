@@ -760,8 +760,14 @@ async fn handle_ws(
                                     // stream. See the D10 SCAFFOLD block near `PaneSnapshotFrame`.
                                     // Today we ship raw scrollback only (a working precursor).
                                     //
-                                    // Send recent scrollback as raw bytes so the client
-                                    // kernel can replay history via feed().
+                                    // §history-pull（2026-07-02，LAN 对齐 cloud）: push a
+                                    // BOUNDED tail (via the seq-cursor scrollback store), not the
+                                    // legacy full replay, so the client paints ~1.5 screens
+                                    // immediately and pages OLDER history lazily on scroll-up
+                                    // (`scrollback-before`). The tail rides the SAME 16-byte
+                                    // pane-UUID-prefixed binary frame; a following
+                                    // `scrollback-meta` JSON frame seeds the client's paging
+                                    // cursor at the oldest byte currently shown.
                                     //
                                     // Ordering note: we register BEFORE snapshotting the
                                     // scrollback on purpose. This guarantees no GAP — every
@@ -772,19 +778,68 @@ async fn handle_ws(
                                     // for a mirror. True dedup would require coupling the PTY
                                     // reader's scrollback-append + fan-out under one lock — not
                                     // worth the hot-path cost.
-                                    let history = state.get_recent_scrollback_for(
+                                    let chunk = state.get_pty_scrollback_tail(
                                         active_ws_id, pane_id, 65536,
                                     );
-                                    if !history.is_empty() {
+                                    if !chunk.bytes.is_empty() {
+                                        let tail = chunk.bytes.as_bytes();
                                         let mut payload =
-                                            Vec::with_capacity(16 + history.len());
+                                            Vec::with_capacity(16 + tail.len());
                                         payload.extend_from_slice(pane_id.as_bytes());
-                                        payload.extend_from_slice(&history);
+                                        payload.extend_from_slice(tail);
                                         let _ =
                                             ws_tx.send(Message::Binary(payload.into())).await;
                                     }
+                                    // Seed the client's lazy "scroll up to load older" cursor at
+                                    // the oldest byte we just shipped. Sent even for an empty
+                                    // tail so a fresh pane still learns it's at-oldest.
+                                    let meta = serde_json::json!({
+                                        "type": "scrollback-meta",
+                                        "paneId": pane_id.to_string(),
+                                        "startSeq": chunk.start_seq,
+                                        "atOldest": chunk.at_oldest,
+                                    });
+                                    let _ = ws_tx
+                                        .send(Message::Text(meta.to_string()))
+                                        .await;
                                 }
                                 Ok(())
+                            }
+                            Some("scrollback-before") => {
+                                // §history-pull lazy paging: the client scrolled near the top and
+                                // wants the batch OLDER than what it currently shows (seq <
+                                // beforeSeq). Reply with the raw bytes + the new oldest seq /
+                                // at-oldest so the client advances its cursor and knows when to
+                                // stop. `_reqId` is opaque — echo it back for the client's
+                                // request/response matching. Always reply (never leave the client
+                                // hanging): a bad pane id → empty bytes + atOldest:true so paging
+                                // stops.
+                                let req_id = parsed["_reqId"].clone();
+                                let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
+                                let before_seq = parsed["beforeSeq"].as_u64().unwrap_or(0);
+                                let max_bytes =
+                                    parsed["maxBytes"].as_u64().unwrap_or(65536) as usize;
+                                let result = if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                                    let chunk = state.get_pty_scrollback_before(
+                                        active_ws_id, pane_id, before_seq, max_bytes,
+                                    );
+                                    serde_json::json!({
+                                        "type": "scrollback-before-result",
+                                        "_reqId": req_id,
+                                        "bytes": chunk.bytes,
+                                        "startSeq": chunk.start_seq,
+                                        "atOldest": chunk.at_oldest,
+                                    })
+                                } else {
+                                    serde_json::json!({
+                                        "type": "scrollback-before-result",
+                                        "_reqId": req_id,
+                                        "bytes": "",
+                                        "startSeq": before_seq,
+                                        "atOldest": true,
+                                    })
+                                };
+                                ws_tx.send(Message::Text(result.to_string())).await
                             }
                             Some("current-project") => {
                                 let path = state.current_project.read().clone()

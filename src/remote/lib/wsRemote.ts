@@ -287,6 +287,13 @@ export class RemoteConnection implements RemoteLink {
   private _messageQueue: WsMessage[] = [];
   private _isReconnecting = false;
 
+  // ── §history-pull（LAN 对齐 cloudRemote）──
+  // 每 pane 的 seq 游标：订阅时由 host 的 `scrollback-meta` 帧播种（首屏 tail 的最旧字节），
+  // 用户滚顶时经 `scrollback-before` 分批向更旧推进。atOldest 后停止分页。
+  private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
+  // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
+  private fetchingOlder = new Set<string>();
+
   // ── §perf: three-segment latency instrumentation (B 方案诊断埋点) ──
   // All marks are performance.now() (ms, monotonic). Mirrors the server's
   // `ridge::remote::perf` trace so a slow link can be split into upgrade /
@@ -514,6 +521,20 @@ export class RemoteConnection implements RemoteLink {
           return;
         }
 
+        // §history-pull: host seeds/refreshes this pane's lazy-scroll seq cursor at
+        // the oldest byte currently shown (sent right after the on-subscribe tail).
+        // fetchOlderScrollback() then pages older via `scrollback-before`.
+        if (type === 'scrollback-meta') {
+          // `scrollback-meta` isn't a WsMessage variant — read fields off the
+          // untyped `rec` (like the error-frame path above) instead of casting the
+          // union, which wouldn't overlap.
+          this.scrollbackCursor.set(String(rec.paneId), {
+            oldestSeq: Number(rec.startSeq),
+            atOldest: !!rec.atOldest,
+          });
+          return;
+        }
+
         // Route result-type responses to pending request promises.
         const isResult = type.endsWith('-result') || type === 'workspaces'
           || type === 'current-project' || type === 'workspace-panes';
@@ -726,6 +747,38 @@ export class RemoteConnection implements RemoteLink {
 
   listPanes() { this.send({ type: 'list-panes' }); }
   subscribePane(paneId: string) { this.send({ type: 'subscribe-pane', paneId }); }
+
+  /**
+   * §history-pull（LAN 对齐 cloudRemote）: fetch the next older batch of this
+   * pane's scrollback (bytes with `seq < cursor`) to PREPEND above the current
+   * buffer when the viewport nears the top. Returns the raw bytes, or `null`
+   * when there's nothing to load (no cursor yet, already at oldest, a fetch is
+   * in flight, or the host rejected/timed out). fetchingOlder dedup + atOldest
+   * stop keep it safe under rapid scroll-up. Mirrors
+   * CloudRemoteConnection.fetchOlderScrollback.
+   */
+  async fetchOlderScrollback(paneId: string): Promise<Uint8Array | null> {
+    const cursor = this.scrollbackCursor.get(paneId);
+    if (!cursor || cursor.atOldest || this.fetchingOlder.has(paneId)) return null;
+    this.fetchingOlder.add(paneId);
+    try {
+      const result = await this._sendAndWait(
+        { type: 'scrollback-before', paneId, beforeSeq: cursor.oldestSeq, maxBytes: 64 * 1024 },
+        'scrollback-before-result',
+      ) as { bytes?: string; startSeq?: number; atOldest?: boolean };
+      this.scrollbackCursor.set(paneId, {
+        oldestSeq: Number(result.startSeq),
+        atOldest: !!result.atOldest,
+      });
+      return result.bytes ? new TextEncoder().encode(String(result.bytes)) : null;
+    } catch {
+      // Timeout / reject: stop paging so we don't spam on every scroll-up.
+      this.scrollbackCursor.set(paneId, { oldestSeq: cursor.oldestSeq, atOldest: true });
+      return null;
+    } finally {
+      this.fetchingOlder.delete(paneId);
+    }
+  }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
   listGitStatus() { this.send({ type: 'list-git-status' }); }
   sendStdin(paneId: string, data: string) { this.send({ type: 'stdin', paneId, data }); }
@@ -833,6 +886,10 @@ export class RemoteConnection implements RemoteLink {
       pending.reject(new Error('disconnected'));
     }
     this._pendingRequests.clear();
+    // §history-pull: drop per-pane seq cursors + in-flight flags so a fresh
+    // transport re-seeds from the host's next `scrollback-meta`.
+    this.scrollbackCursor.clear();
+    this.fetchingOlder.clear();
   }
 
   private setState(s: ConnectionState) {

@@ -475,11 +475,12 @@ export class TerminalController {
   startSelection(row: number, col: number) {
     if (this.destroyed) return;
     this.isSelecting = true;
-    // 与 extendSelection 保持一致：anchor 也须换算为绝对行（scrollback 相对），
-    // 否则 setSelectionAbs 的 anchor/end 坐标系不同，scrolled 状态下选区永远偏移。
-    const absRow = this.kernel.scrollbackLen() > 0
-      ? row + (this.kernel.scrollOffset() > 0 ? this.kernel.scrollOffset() : 0)
-      : row;
+    // 绝对行 = viewport-relative row + 视口上方的 scrollback 行数
+    // （= scrollbackLen − scrollOffset）。与桌面 manager.ts 的 vpToAbsRow 完全一致。
+    // 旧实现用 `row + scrollOffset` 是**反向且缺 scrollbackLen 基底**的错公式（只有
+    // scrollbackLen=0 时凑巧对），一旦终端有历史并向上滚动，anchor/end 就落到别处——
+    // 手指在 A 区，却选中了 B 区。rowsAboveViewport() 已做 max(0,…) 兜底，避免下溢。
+    const absRow = this.rowsAboveViewport() + row;
     this.selAnchorRow = absRow;
     this.selAnchorCol = col;
     this.kernel.clearSelection();
@@ -488,9 +489,8 @@ export class TerminalController {
 
   extendSelection(row: number, col: number) {
     if (this.destroyed || !this.isSelecting) return;
-    const absRow = this.kernel.scrollbackLen() > 0
-      ? row + (this.kernel.scrollOffset() > 0 ? this.kernel.scrollOffset() : 0)
-      : row;
+    // 见 startSelection：绝对行 = rowsAboveViewport() + row（与桌面 vpToAbsRow 一致）。
+    const absRow = this.rowsAboveViewport() + row;
     this.kernel.setSelectionAbs(this.selAnchorRow, this.selAnchorCol, absRow, col);
     this.markDirty();
   }

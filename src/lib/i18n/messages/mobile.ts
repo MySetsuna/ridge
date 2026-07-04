@@ -91,7 +91,7 @@ export const zh: Record<string, string> = {
   emptyDir: '空目录',
 
   // FileViewer（文件 / diff 查看器，文件可编辑）
-  viewerCopyPath: '复制路径',
+  viewerCopyContent: '复制内容',
   viewerEmpty: '空文件',
   viewerNoChanges: '该文件无改动',
   viewerTruncated: '内容过长，仅显示前 {max} 行',
@@ -194,7 +194,7 @@ export const en: Record<string, string> = {
   emptyDir: 'Empty directory',
 
   // FileViewer (file / diff viewer, files editable)
-  viewerCopyPath: 'Copy path',
+  viewerCopyContent: 'Copy content',
   viewerEmpty: 'Empty file',
   viewerNoChanges: 'No changes in this file',
   viewerTruncated: 'Content too long — showing the first {max} lines',
