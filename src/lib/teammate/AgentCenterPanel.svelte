@@ -22,6 +22,7 @@
   import { alertDialog } from '$lib/components/RidgeDialog.svelte';
   import { setTeammateHitlEnabled } from './teammateSettings';
   import TeammateGroups from './TeammateGroupsSection.svelte';
+  import { teammateGroupStore, parseGroupAddMember } from './teammateGroups.svelte';
   import {
     parseTopologySnapshot,
     parseCircuitTripped,
@@ -33,6 +34,8 @@
 
   const TOPOLOGY_CMD = 'get_teammate_topology';
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
+  // 后端 MCP `ridge_join_group` → 前端编组「加成员」事件桥（见 teammate/layout_event.rs）。
+  const GROUP_ADD_MEMBER_EVENT = 'teammate://group-add-member';
   const POLL_MS = 3000;
   const TRIP_CAP = 20;
 
@@ -121,9 +124,33 @@
       const trip = parseCircuitTripped(e.payload);
       if (trip) trips = [trip, ...trips].slice(0, TRIP_CAP);
     });
+    // Agent 自助拉入：后端 `ridge_join_group` emit → 落到该工作区的编组 store。
+    // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
+    // 常态一致；仅在两者短暂不同步时才 mismatch。失败一律 warn（勿静默吞——评审 HIGH）。
+    const unJoin = listen(GROUP_ADD_MEMBER_EVENT, (e) => {
+      const payload = parseGroupAddMember(e.payload);
+      if (!payload) return;
+      // 工作区守卫：只在「确认不符」时丢弃（避免落到别的工作区的编组），并记日志。
+      if (payload.workspaceId && workspaceId && payload.workspaceId !== workspaceId) {
+        console.warn(
+          `[teammate-groups] join dropped: event workspace ${payload.workspaceId} !== focused ${workspaceId}`
+        );
+        return;
+      }
+      const store = teammateGroupStore();
+      store.setWorkspace(workspaceId, filePath); // 保证 store 键落在当前工作区
+      const ok = store.addMemberByGroupName(payload.groupName, payload.agentId);
+      if (!ok) {
+        // 组名不存在（区分大小写/空白/同名）或 store 键尚未就绪（.ridge 路径未解析）。
+        console.warn(
+          `[teammate-groups] join no-op: group "${payload.groupName}" not found in current workspace`
+        );
+      }
+    });
     return () => {
       clearInterval(timer);
       unTrip.then((f) => f()).catch(() => {});
+      unJoin.then((f) => f()).catch(() => {});
     };
   });
 </script>

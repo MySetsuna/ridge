@@ -6,9 +6,9 @@
 //! - [`classify_command_risk`] —— 暴露 D2 风险分级器供 UI/调试查询。
 //!
 //! 拓扑快照从现有 `Workspace` 侧表（`teammate_agent_pane_map` / `_pane_states` /
-//! `_pane_titles`）映射，pane 用真实 Uuid 字符串（非 core 内部的 u32）。能力/性格
-//! 数据需 register-agent 携带后才能填充 → 当前 role 一律 Worker、leader 为空（后续
-//! 接线 §8A）。
+//! `_pane_titles`）映射，pane 用真实 Uuid 字符串（非 core 内部的 u32）。这条回退路径
+//! （无 typed 画像时）按 agent 名/标题**被动识别**能力档并跑极简组长竞选
+//! （[`ridge_core::elect_leader`]），产出真实 `leaderId` + Leader 角色。
 
 use serde_json::{json, Value};
 use tauri::State;
@@ -24,6 +24,27 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
     // 据此为每个成员补出数字 `paneIndex`，让 agent 读 `active-panes` 后既能回传
     // `paneId`(Uuid) 也能回传 `paneIndex`(数字)，两者都可寻址（缺口1 自洽）。
     let leaves = ws.pane_tree.get_all_leaves();
+
+    // 侧表无 typed 能力档（program 未知）→ 仅凭 agent 名/标题被动识别，跑同一套竞选。
+    // 单 agent 平凡当选；空名册 leader 为 None。set_leader_static 不经此路（无 graph），
+    // 故这里直接以 leader_id 逐条判 role。
+    let name_of = |agent_id: &str, pane: &Uuid| -> String {
+        ws.teammate_pane_titles
+            .get(pane)
+            .cloned()
+            .unwrap_or_else(|| agent_id.to_string())
+    };
+    let teammates: Vec<ridge_core::Teammate> = ws
+        .teammate_agent_pane_map
+        .iter()
+        .map(|(agent_id, pane)| {
+            let name = name_of(agent_id, pane);
+            let cap = ridge_core::recognize_capability(&name, None);
+            ridge_core::Teammate::new(agent_id.clone(), name, 0).with_capability(cap)
+        })
+        .collect();
+    let leader_id = ridge_core::elect_leader(&teammates).map(|s| s.to_string());
+
     let roster: Vec<Value> = ws
         .teammate_agent_pane_map
         .iter()
@@ -32,27 +53,34 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
                 Some(PaneState::Busy) => "Working",
                 _ => "Idle",
             };
-            let name = ws
-                .teammate_pane_titles
-                .get(pane)
-                .cloned()
-                .unwrap_or_else(|| agent_id.clone());
+            let name = name_of(agent_id, pane);
+            let cap = ridge_core::recognize_capability(&name, None);
             let pane_index = leaves
                 .iter()
                 .position(|p| p == pane)
                 .map(|i| json!(i))
                 .unwrap_or(Value::Null);
+            let role = if leader_id.as_deref() == Some(agent_id.as_str()) {
+                "Leader"
+            } else {
+                "Worker"
+            };
             json!({
                 "id": agent_id,
                 "name": name,
                 "paneId": pane.to_string(),
                 "paneIndex": pane_index,
-                "role": "Worker",
+                "role": role,
                 "status": status,
+                "capability": serde_json::to_value(cap).unwrap_or(Value::Null),
             })
         })
         .collect();
-    json!({ "roster": roster, "leaderId": Value::Null, "edges": [] })
+    json!({
+        "roster": roster,
+        "leaderId": leader_id.map(Value::from).unwrap_or(Value::Null),
+        "edges": [],
+    })
 }
 
 /// D1 —— 返回某工作区（缺省=活动工作区）的团队拓扑快照。只读。

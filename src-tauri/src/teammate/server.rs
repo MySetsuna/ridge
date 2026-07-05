@@ -18,7 +18,7 @@ use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
 use super::hitl;
-use super::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
+use super::layout_event::{LayoutChange, TEAMMATE_GROUP_ADD_MEMBER, TEAMMATE_LAYOUT_CHANGED};
 use super::native::{self, NativeError};
 use crate::engine::pane_tree::SplitDirection;
 use crate::engine::parser::PaneParser;
@@ -455,6 +455,10 @@ struct RegisterAgentBody {
     /// 可选 agent 展示名（用于花名册）。
     #[serde(default)]
     name: Option<String>,
+    /// 可选启动程序名（如 "claude" / "codex"）。带上时参与能力档被动识别；
+    /// 缺省则仅凭 name/agent_id 关键字判档。shim 可选携带，旧调用方零影响。
+    #[serde(default)]
+    program: Option<String>,
 }
 
 async fn route_register_agent(
@@ -490,8 +494,11 @@ async fn route_register_agent(
     };
 
     register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
-    // Domain B1：落花名册条目（名 + Working 态）。
-    super::profiles::upsert(wid, &body.agent_id, pane_id, body.name.clone());
+    // Domain B1：落花名册条目（名 + 能力档 + Working 态）。能力档由 agent 名 / 可选启动
+    // 程序名被动识别（无重量级探测）；据此在 topology_for 里跑极简组长竞选。
+    let cap_name = body.name.as_deref().unwrap_or(&body.agent_id);
+    let capability = ridge_core::recognize_capability(cap_name, body.program.as_deref());
+    super::profiles::upsert(wid, &body.agent_id, pane_id, body.name.clone(), capability);
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
     let _ = ctx
@@ -783,6 +790,87 @@ async fn mcp_tools_call(
                 serde_json::json!({
                     "content": [ { "type": "text", "text": snapshot.to_string() } ]
                 }),
+            )
+        }
+        // 2026-07-04：把某成员加入按名字寻址的已有编组。编组是前端 localStorage SSOT，
+        // 后端不持有——校验成员在花名册后，emit 事件桥，前端 AgentCenterPanel 落地
+        // （一次写入·fire-and-forget，返回 dispatched 不代表组存在，见设计稿 §6）。
+        "ridge_join_group" => {
+            use ridge_core::mcp::addressing::{parse_pane_target, PaneTarget};
+            let group_name = args
+                .get("group_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if group_name.is_empty() {
+                return proto::mcp_error(id, proto::INVALID_PARAMS, "group_name 不能为空");
+            }
+            // 成员寻址：agent_id 直给，或 target_pane_id（Uuid/数字）反查 agent_id，二选一。
+            let agent_id: String = if let Some(a) =
+                args.get("agent_id").and_then(|v| v.as_str())
+            {
+                a.trim().to_string()
+            } else if let Some(target) = args.get("target_pane_id") {
+                let pid = match parse_pane_target(target) {
+                    Ok(PaneTarget::Uuid(u)) => {
+                        if pane::teammate_pane_is_leaf(&ctx.state, wid, u) {
+                            u
+                        } else {
+                            return proto::mcp_error(
+                                id,
+                                proto::INVALID_PARAMS,
+                                &format!("pane {u} 不在当前活动工作区"),
+                            );
+                        }
+                    }
+                    Ok(PaneTarget::Index(idx)) => {
+                        match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string())
+                            }
+                        }
+                    }
+                    Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e),
+                };
+                match super::profiles::agent_id_for_pane(wid, pid) {
+                    Some(a) => a,
+                    None => {
+                        return proto::mcp_error(
+                            id,
+                            proto::INVALID_PARAMS,
+                            &format!("pane {pid} 未注册为 teammate（无 agent_id）"),
+                        )
+                    }
+                }
+            } else {
+                return proto::mcp_error(
+                    id,
+                    proto::INVALID_PARAMS,
+                    "需提供 agent_id 或 target_pane_id",
+                );
+            };
+            if agent_id.is_empty() {
+                return proto::mcp_error(id, proto::INVALID_PARAMS, "agent_id 不能为空");
+            }
+            if !super::profiles::contains_agent(wid, &agent_id) {
+                return proto::mcp_error(
+                    id,
+                    proto::INVALID_PARAMS,
+                    &format!("agent_id {agent_id} 不在当前活动工作区花名册"),
+                );
+            }
+            let _ = ctx.handle.emit(
+                TEAMMATE_GROUP_ADD_MEMBER,
+                serde_json::json!({
+                    "workspaceId": wid.to_string(),
+                    "groupName": group_name,
+                    "agentId": agent_id,
+                }),
+            );
+            proto::mcp_result(
+                id,
+                serde_json::json!({ "content": [ { "type": "text", "text": "dispatched" } ] }),
             )
         }
         other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("unknown tool: {other}")),

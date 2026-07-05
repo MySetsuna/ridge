@@ -14,6 +14,9 @@ import {
   renameGroupIn,
   removeGroupIn,
   removeMemberIn,
+  addMemberIn,
+  findGroupByName,
+  parseGroupAddMember,
   buildTask,
   withTask,
   resolveMembers,
@@ -90,6 +93,59 @@ describe('group mutations are immutable', () => {
     const g = buildGroup('A', GROUP_COLORS[0], ['agent-a', 'agent-b']);
     const next = removeMemberIn([g], g.id, 'agent-a');
     expect(next[0].memberAgentIds).toEqual(['agent-b']);
+  });
+
+  it('addMemberIn appends to the target group only', () => {
+    const g1 = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
+    const g2 = buildGroup('B', GROUP_COLORS[1], ['agent-a']);
+    const next = addMemberIn([g1, g2], g1.id, 'agent-b');
+    expect(next[0].memberAgentIds).toEqual(['agent-a', 'agent-b']);
+    expect(next[1].memberAgentIds).toEqual(['agent-a']); // untouched
+    expect(g1.memberAgentIds).toEqual(['agent-a']); // source not mutated
+  });
+
+  it('addMemberIn dedupes an existing member (no-op)', () => {
+    const g = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
+    const next = addMemberIn([g], g.id, 'agent-a');
+    expect(next[0].memberAgentIds).toEqual(['agent-a']);
+  });
+
+  it('addMemberIn ignores blank agentId and unknown groupId', () => {
+    const g = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
+    expect(addMemberIn([g], g.id, '   ')[0].memberAgentIds).toEqual(['agent-a']);
+    expect(addMemberIn([g], 'no-such-group', 'agent-b')[0].memberAgentIds).toEqual(['agent-a']);
+  });
+});
+
+describe('findGroupByName (name addressing for the event bridge)', () => {
+  it('finds by exact trimmed name, first match on duplicates', () => {
+    const g1 = buildGroup('Ridge', GROUP_COLORS[0], ['agent-a']);
+    const g2 = buildGroup('Ridge', GROUP_COLORS[1], ['agent-b']);
+    expect(findGroupByName([g1, g2], '  Ridge  ')?.id).toBe(g1.id);
+  });
+
+  it('returns undefined for blank or missing name', () => {
+    const g = buildGroup('Ridge', GROUP_COLORS[0], []);
+    expect(findGroupByName([g], '   ')).toBeUndefined();
+    expect(findGroupByName([g], 'Nope')).toBeUndefined();
+  });
+});
+
+describe('parseGroupAddMember (defensive event payload parsing)', () => {
+  it('parses a well-formed payload and trims', () => {
+    expect(parseGroupAddMember({ groupName: ' Ridge ', agentId: ' a ', workspaceId: 'ws-1' })).toEqual({
+      groupName: 'Ridge',
+      agentId: 'a',
+      workspaceId: 'ws-1',
+    });
+  });
+
+  it('rejects missing/blank/non-object payloads', () => {
+    expect(parseGroupAddMember(null)).toBeNull();
+    expect(parseGroupAddMember('x')).toBeNull();
+    expect(parseGroupAddMember({ groupName: 'Ridge' })).toBeNull();
+    expect(parseGroupAddMember({ agentId: 'a' })).toBeNull();
+    expect(parseGroupAddMember({ groupName: '  ', agentId: 'a' })).toBeNull();
   });
 });
 

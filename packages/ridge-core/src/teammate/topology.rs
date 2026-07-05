@@ -4,15 +4,35 @@
 //! 边是正在进行的协同控制流 [`TaskEdge`]。刻意**不引 petgraph**——团队规模小，
 //! 手写邻接（`HashMap` 节点 + `Vec` 边）足矣，契合 ridge-core 的克制依赖原则。
 //!
-//! 底座化瘦身后**移除了 AI 自动竞选 Leader 与性格驱动分派**（详见
-//! specs/2026-06-20-team-agent-upgrade-plan-design.md）：Leader 只由人类静态钦定
-//! （[`set_leader_static`](TopologyGraph::set_leader_static)），派活由人/调用方显式发起。
+//! 底座化瘦身曾移除整套性格驱动分派与多维加权竞选；此处仅保留两条**极简**定 Leader 路径：
+//! 人类静态钦定 [`set_leader_static`](TopologyGraph::set_leader_static)，与依据能力档的
+//! 轻量自动竞选 [`elect_leader`]（档最高者当选，同档取 id 最小者，确定性）。派活仍由
+//! 人/调用方显式发起。详见 specs/2026-06-20-team-agent-upgrade-plan-design.md。
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::model::{AgentRole, Teammate, TeammateStatus};
+
+/// 极简 Leader 竞选：能力档（[`AgentTier::rank`](super::model::AgentTier::rank)）最高者当选，
+/// 同档以 **id 最小者**打破平局（确定性，避免 HashMap 迭代序抖动）。空名册返回 `None`。
+///
+/// 返回被选中 Teammate 的 `id`（借用自入参切片）。**注意**：`Teammate::id` 是 `String`
+/// （承 register-agent 携带的 `agent_id`，未必是 Uuid），故这里返回 `&str` 而非 `Uuid`，
+/// 直接可喂 [`set_leader_static`](TopologyGraph::set_leader_static)。纯函数、零副作用。
+pub fn elect_leader(teammates: &[Teammate]) -> Option<&str> {
+    teammates
+        .iter()
+        .max_by(|a, b| {
+            a.capability
+                .rank()
+                .cmp(&b.capability.rank())
+                // 同档：id 小者视为「更大」→ max_by 选出它，实现 smallest-id 平局裁决。
+                .then_with(|| b.id.cmp(&a.id))
+        })
+        .map(|t| t.id.as_str())
+}
 
 /// 一条任务委派边的载荷。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -176,9 +196,57 @@ impl TopologyGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::teammate::model::AgentTier;
 
     fn mate(id: &str) -> Teammate {
         Teammate::new(id, id, id.len() as u32)
+    }
+
+    fn tiered(id: &str, tier: AgentTier) -> Teammate {
+        mate(id).with_capability(tier)
+    }
+
+    #[test]
+    fn elect_leader_picks_highest_tier() {
+        let roster = vec![
+            tiered("a", AgentTier::Base),
+            tiered("b", AgentTier::Expert),
+            tiered("c", AgentTier::Skilled),
+        ];
+        assert_eq!(elect_leader(&roster), Some("b"));
+    }
+
+    #[test]
+    fn elect_leader_tiebreaks_on_smallest_id() {
+        let roster = vec![
+            tiered("bbb", AgentTier::Expert),
+            tiered("aaa", AgentTier::Expert),
+        ];
+        assert_eq!(elect_leader(&roster), Some("aaa"));
+    }
+
+    #[test]
+    fn elect_leader_single_agent_wins_trivially() {
+        let roster = vec![tiered("solo", AgentTier::Base)];
+        assert_eq!(elect_leader(&roster), Some("solo"));
+    }
+
+    #[test]
+    fn elect_leader_none_on_empty() {
+        assert_eq!(elect_leader(&[]), None);
+    }
+
+    #[test]
+    fn elected_leader_reflected_in_roster_roles() {
+        let mut g = TopologyGraph::new();
+        g.add_teammate(tiered("w", AgentTier::Skilled));
+        g.add_teammate(tiered("lead", AgentTier::Expert));
+        let roster: Vec<Teammate> = g.roster().into_iter().cloned().collect();
+        let winner = elect_leader(&roster).unwrap().to_string();
+        g.set_leader_static(&winner).unwrap();
+        assert_eq!(g.leader_id(), Some("lead"));
+        assert_eq!(g.get("lead").unwrap().role, AgentRole::Leader);
+        assert_eq!(g.get("w").unwrap().role, AgentRole::Worker);
     }
 
     #[test]
