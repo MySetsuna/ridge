@@ -75,6 +75,7 @@ Authorization: Bearer <RIDGE_TEAMMATE_TOKEN>
 | `ridge_split_pane` | 分屏，开一个新分屏给队友 | ⚙️ 已登记，`tools/call` 暂未路由 |
 | `ridge_stash_data` | 把数据暂存到内存 Stash，供 `ridge://cache/<id>` 读取 | ⚙️ 已登记，`tools/call` 暂未路由 |
 | `ridge_get_team_profile` | 取团队花名册（roster + leader + edges） | ✅ 已接线（`tools/call` 路由，只读返回花名册；也可走 `resources/read`） |
+| `ridge_join_group` | 把某成员（`agent_id` 或 pane）加入按名字寻址的已有编组 | ✅ 已接线（`tools/call` 路由，事件桥落前端编组；见 §3） |
 
 ### resources/list（约定）
 
@@ -113,6 +114,7 @@ Authorization: Bearer <RIDGE_TEAMMATE_TOKEN>
 - `ridge_send_to_teammate`：参数 `{ target_pane_id, message }`，向该分屏注入文本。
 - `ridge_delegate_task`：参数 `{ target_pane_id, objective }`，注入任务 + 把目标分屏标为「工作中」。
 - `ridge_get_team_profile`：无参数，只读返回当前活动工作区花名册（等价于 `resources/read` 的 active-panes，`content[].text` 内嵌 JSON）。**推荐先调它发现目标**，再据成员的 `paneId`/`paneIndex` 寻址发消息。
+- `ridge_join_group`：参数 `{ group_name, agent_id? , target_pane_id? }`——把某成员加入**按名字寻址**的已有编组（`group_name` 必填；成员用 `agent_id`（花名册 `id`）或 `target_pane_id`（后端反查 `agent_id`）二选一）。校验成员在花名册后 emit 事件桥，前端「智能体」面板落地到该工作区的编组。**编组是前端 localStorage SSOT，后端不持有**：故返回 `dispatched` 只表示「已投递」，不代表组存在或已加入（组名不存在则前端静默 no-op）；同名编组取首个匹配。成员不在花名册返回 `-32602`。
 - `target_pane_id` 支持两种寻址，二选一：
   - **`paneId`（Uuid 字符串，推荐）**——花名册里每个成员的 `paneId`。直投前服务端会校验它仍是当前活动工作区的叶子分屏，**伪造或已失效（陈旧）的 Uuid 会返回 `-32602 invalid params`（`pane <uuid> 不在当前活动工作区`），不会静默落到 0 号分屏**。
   - **`paneIndex`（数字索引，从 0 起）**——花名册里每个成员的 `paneIndex`，按当前活动工作区叶子顺序寻址；越界索引同样返回 `-32602`。
@@ -160,10 +162,11 @@ Authorization: Bearer <RIDGE_TEAMMATE_TOKEN>
 
 ## 6. 当前限制（诚实说明）
 
-- `tools/call` 目前路由 `ridge_send_to_teammate`、`ridge_delegate_task`、`ridge_get_team_profile`；`ridge_split_pane` / `ridge_stash_data` 已在 `tools/list` 中可见但调用返回 unknown。
+- `tools/call` 目前路由 `ridge_send_to_teammate`、`ridge_delegate_task`、`ridge_get_team_profile`、`ridge_join_group`；`ridge_split_pane` / `ridge_stash_data` 已在 `tools/list` 中可见但调用返回 unknown。
 - `resources/read` 目前只接 `ridge://workspace/active-panes`。
 - **`notifications/progress` 服务端推送暂未实现**（需要 WS split sink）；当前是请求-响应循环。
 - 所有动作落在**当前活动工作区**（暂不支持跨工作区寻址 pane）。
+- **`ridge_join_group` 是一次写入·fire-and-forget**：编组数据只在前端，后端无法同步确认组是否存在或是否加入成功；agent 想确认需人工看「智能体」面板（后续可加 `ridge://workspace/groups` 只读资源 + 前端→后端同步）。前端监听在「智能体」面板挂载时才生效。
 
 ---
 

@@ -19,7 +19,7 @@ pub struct ToolSpec {
 
 /// Ridge MCP 工具注册表。
 ///
-/// `Default::default()` 预注册五个内置工具。可调用 `register` 追加自定义工具。
+/// `Default::default()` 预注册六个内置工具。可调用 `register` 追加自定义工具。
 #[derive(Debug, Clone)]
 pub struct ToolRegistry {
     tools: Vec<ToolSpec>,
@@ -114,6 +114,29 @@ impl Default for ToolRegistry {
                     "required": []
                 }),
             },
+            ToolSpec {
+                name: "ridge_join_group".to_string(),
+                description:
+                    "把一个 teammate（按 agent_id 或 pane）加入某个按名字寻址的已有编组。"
+                        .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "group_name": {
+                            "type": "string",
+                            "description": "目标编组的名称（前端花名册里的组名，同名取首个）"
+                        },
+                        "agent_id": {
+                            "type": "string",
+                            "description": "要加入的成员 agent_id（花名册 id；与 target_pane_id 二选一）"
+                        },
+                        "target_pane_id": {
+                            "description": "要加入的成员 pane（Uuid 串或数字索引；后端反查其 agent_id）"
+                        }
+                    },
+                    "required": ["group_name"]
+                }),
+            },
         ];
         Self { tools }
     }
@@ -148,9 +171,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_registry_has_five_tools() {
+    fn default_registry_has_six_tools() {
         let reg = ToolRegistry::default();
-        assert_eq!(reg.tools().len(), 5);
+        assert_eq!(reg.tools().len(), 6);
     }
 
     #[test]
@@ -174,7 +197,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         });
-        assert_eq!(reg.tools().len(), 6);
+        assert_eq!(reg.tools().len(), 7);
         assert!(reg.get("custom_tool").is_some());
     }
 
@@ -183,7 +206,7 @@ mod tests {
         let reg = ToolRegistry::default();
         let v = reg.tools_list_result();
         assert!(v["tools"].is_array());
-        assert_eq!(v["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(v["tools"].as_array().unwrap().len(), 6);
     }
 
     #[test]
@@ -243,11 +266,25 @@ mod tests {
             "ridge_send_to_teammate",
             "ridge_delegate_task",
             "ridge_get_team_profile",
+            "ridge_join_group",
         ] {
             assert!(
                 reg.get(name).is_some(),
                 "routed tool {name} missing from tools/list registry"
             );
         }
+    }
+
+    #[test]
+    fn ridge_join_group_requires_group_name() {
+        let reg = ToolRegistry::default();
+        let spec = reg.get("ridge_join_group").unwrap();
+        let required = spec.input_schema["required"].as_array().unwrap();
+        let names: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(names, vec!["group_name"]);
+        // agent_id / target_pane_id 是二选一的可选项，不在 required 里。
+        let props = spec.input_schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("agent_id"));
+        assert!(props.contains_key("target_pane_id"));
     }
 }

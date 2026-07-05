@@ -149,6 +149,55 @@ export function removeMemberIn(
   );
 }
 
+/**
+ * 向已有组追加一个成员（2026-07-04「加成员」/ agent 自助拉入）。不可变：
+ * 空白 `agentId` 忽略；已在组内则原样返回该组（去重）；`groupId` 不存在则整体原样返回。
+ */
+export function addMemberIn(
+  groups: readonly TeammateGroup[],
+  groupId: string,
+  agentId: string
+): TeammateGroup[] {
+  const id = agentId.trim();
+  if (!id) return [...groups];
+  return groups.map((g) => {
+    if (g.id !== groupId || g.memberAgentIds.includes(id)) return g;
+    return { ...g, memberAgentIds: [...g.memberAgentIds, id] };
+  });
+}
+
+/** 按**名称**查找编组（后端事件桥只知组名，不知前端 group id）；同名取首个匹配。 */
+export function findGroupByName(
+  groups: readonly TeammateGroup[],
+  name: string
+): TeammateGroup | undefined {
+  const n = name.trim();
+  if (!n) return undefined;
+  return groups.find((g) => g.name === n);
+}
+
+// ── Agent 自助拉入：后端事件载荷 ──
+
+/** `teammate://group-add-member` 事件载荷（后端 `ridge_join_group` emit）。 */
+export interface GroupAddMemberEvent {
+  readonly groupName: string;
+  readonly agentId: string;
+  /** 发起工作区（前端可用作守卫；缺省时不校验）。 */
+  readonly workspaceId?: string;
+}
+
+/** 防御式解析事件载荷；字段缺失/非法一律返回 null（不信任外部数据）。 */
+export function parseGroupAddMember(raw: unknown): GroupAddMemberEvent | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  const groupName = typeof rec.groupName === 'string' ? rec.groupName.trim() : '';
+  const agentId = typeof rec.agentId === 'string' ? rec.agentId.trim() : '';
+  if (!groupName || !agentId) return null;
+  const wsRaw = typeof rec.workspaceId === 'string' ? rec.workspaceId.trim() : '';
+  const workspaceId = wsRaw || undefined;
+  return { groupName, agentId, workspaceId };
+}
+
 /** 构造一条组任务记录。 */
 export function buildTask(
   groupId: string,
@@ -335,6 +384,23 @@ class TeammateGroupStore {
   removeMember(groupId: string, agentId: string): void {
     this.groups = removeMemberIn(this.groups, groupId, agentId);
     this.persist();
+  }
+
+  /** 向已有组追加成员并落盘（「加成员」UI）。 */
+  addMember(groupId: string, agentId: string): void {
+    this.groups = addMemberIn(this.groups, groupId, agentId);
+    this.persist();
+  }
+
+  /**
+   * 按组名把 agent 加入（供后端 `teammate://group-add-member` 事件桥用）。
+   * 找不到该名字的组 → 返回 false（不新建）；成功加入 → true。
+   */
+  addMemberByGroupName(groupName: string, agentId: string): boolean {
+    const group = findGroupByName(this.groups, groupName);
+    if (!group) return false;
+    this.addMember(group.id, agentId);
+    return true;
   }
 
   /** 记录一条组任务历史并落盘。 */

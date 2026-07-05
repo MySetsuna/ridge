@@ -51,6 +51,19 @@ describe('parseTopologySnapshot', () => {
     expect(snap.roster[0].status).toBe('Idle');
   });
 
+  it('maps a valid capability tier and degrades unknown/absent to undefined', () => {
+    const snap = parseTopologySnapshot({
+      roster: [
+        { id: 'a', capability: 'Expert' },
+        { id: 'b', capability: 'Wizard' },
+        { id: 'c' },
+      ],
+    });
+    expect(snap.roster[0].capability).toBe('Expert');
+    expect(snap.roster[1].capability).toBeUndefined();
+    expect(snap.roster[2].capability).toBeUndefined();
+  });
+
   it('degrades to EMPTY_TOPOLOGY on garbage', () => {
     expect(parseTopologySnapshot(null)).toEqual(EMPTY_TOPOLOGY);
     expect(parseTopologySnapshot('nope')).toEqual(EMPTY_TOPOLOGY);

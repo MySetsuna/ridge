@@ -21,6 +21,8 @@
 export type AgentRole = 'Leader' | 'Worker' | 'Observer';
 export type TeammateStatus = 'Idle' | 'Working' | 'Disappeared';
 export type RiskLevel = 'ReadOnly' | 'WorkspaceWrite' | 'Dangerous';
+/** Minimal auto-detected capability tier (mirrors `ridge_core::AgentTier`). */
+export type AgentTier = 'Base' | 'Skilled' | 'Expert';
 
 /** L0 / L1 / L2 short label for a risk level (mirrors `RiskLevel::label`). */
 export function riskLabel(level: RiskLevel): 'L0' | 'L1' | 'L2' {
@@ -36,17 +38,6 @@ export function riskLabel(level: RiskLevel): 'L0' | 'L1' | 'L2' {
 
 // ── Roster / topology ──
 
-export interface AgentCapabilities {
-  readonly languageSkills: Record<string, number>;
-  readonly domainSkills: readonly string[];
-  readonly contextWindow: number;
-}
-
-export interface AgentPersonality {
-  readonly riskTolerance: number;
-  readonly thoroughness: number;
-}
-
 /** A roster entry — one teammate's front-end profile. */
 export interface TeammateProfile {
   readonly id: string;
@@ -55,8 +46,8 @@ export interface TeammateProfile {
   readonly paneId: string;
   readonly role: AgentRole;
   readonly status: TeammateStatus;
-  readonly capabilities?: AgentCapabilities;
-  readonly personality?: AgentPersonality;
+  /** Auto-detected capability tier the Leader was elected from (optional). */
+  readonly capability?: AgentTier;
 }
 
 export interface TopologyEdge {
@@ -114,9 +105,15 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 const ROLES: ReadonlySet<string> = new Set(['Leader', 'Worker', 'Observer']);
 const STATUSES: ReadonlySet<string> = new Set(['Idle', 'Working', 'Disappeared']);
 const RISKS: ReadonlySet<string> = new Set(['ReadOnly', 'WorkspaceWrite', 'Dangerous']);
+const TIERS: ReadonlySet<string> = new Set(['Base', 'Skilled', 'Expert']);
 
 function asRole(v: unknown): AgentRole {
   return typeof v === 'string' && ROLES.has(v) ? (v as AgentRole) : 'Worker';
+}
+
+/** Capability tier is optional metadata — absent/garbage degrades to undefined. */
+function asTier(v: unknown): AgentTier | undefined {
+  return typeof v === 'string' && TIERS.has(v) ? (v as AgentTier) : undefined;
 }
 
 function asStatus(v: unknown): TeammateStatus {
@@ -150,6 +147,7 @@ function parseProfile(v: unknown): TeammateProfile | null {
     paneId,
     role: asRole(rec.role),
     status: asStatus(rec.status),
+    capability: asTier(rec.capability),
   };
 }
 

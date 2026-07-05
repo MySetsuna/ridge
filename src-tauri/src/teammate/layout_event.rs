@@ -13,6 +13,12 @@ use serde::Serialize;
 /// Tauri event name for all teammate layout-change notifications.
 pub(crate) const TEAMMATE_LAYOUT_CHANGED: &str = "teammate-layout-changed";
 
+/// Tauri event name for the MCP `ridge_join_group` → front-end 编组 add-member
+/// bridge. Payload: `{ workspaceId, groupName, agentId }` (see `teammateGroups`
+/// `parseGroupAddMember`). Front-end `AgentCenterPanel` listens and applies the
+/// member to the localStorage-backed group store. 2026-07-04.
+pub(crate) const TEAMMATE_GROUP_ADD_MEMBER: &str = "teammate://group-add-member";
+
 /// A single teammate layout-change notification.
 ///
 /// Optional payload fields are omitted from the wire form when absent so the
@@ -96,6 +102,12 @@ mod tests {
     #[test]
     fn event_name_is_stable() {
         assert_eq!(TEAMMATE_LAYOUT_CHANGED, "teammate-layout-changed");
+    }
+
+    #[test]
+    fn group_add_member_event_name_is_stable() {
+        // 前端 AgentCenterPanel 监听同名字符串；改名会静默断掉编组「加成员」事件桥。
+        assert_eq!(TEAMMATE_GROUP_ADD_MEMBER, "teammate://group-add-member");
     }
 
     #[test]
