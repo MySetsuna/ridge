@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.15] — 2026-07-05
+
+智能体编组增强与 `rdg` 登录体验完善。
+
+### Added
+- **编组「加成员」+ Agent 经 MCP 自助拉入组**：新增 MCP 工具 `ridge_join_group{group_name, agent_id|target_pane_id}`，跑在分屏里的 agent 可按组名把自己或他人拉进已有编组（后端校验花名册 → Tauri 事件桥 → 前端即时落库）；`TeammateGroupsSection` 补齐人工「加成员」UI。
+
+### Fixed
+- **rdg 仪表盘保留邮箱密码登录**：交互式仪表盘 Login 恢复登录方式选择——默认邮箱 + 密码登录（无浏览器环境可用），浏览器授权登录仍作为可选项（WSL / 远端终端友好）。
+
+---
+
 ## [0.0.14] — 2026-07-03
 
 远控架构统一（P1）：桌面 / rdg / 局域网远控下沉到共享 crate，`rdg` 命令行体验完善。
