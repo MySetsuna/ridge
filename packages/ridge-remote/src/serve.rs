@@ -55,6 +55,12 @@ impl UaServeConfig {
         let mobile_dir = probe_ui_dir(&PathBuf::from("static").join("remote"))
             .unwrap_or_else(|| PathBuf::from("static").join("remote"));
         let desktop_dir = probe_ui_dir(&PathBuf::from("web-remote-dist"));
+        // §diagnostic: 记录 UI 目录解析结果
+        tracing::info!(target: "ridge::remote::serve",
+            mobile_dir = %mobile_dir.display(),
+            desktop_dir = desktop_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "None".to_string()),
+            "UI dirs resolved"
+        );
         Self {
             mobile_dir,
             desktop_dir,
@@ -102,9 +108,15 @@ fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
             .and_then(|p| Some(p.parent()?.parent()?.parent()?.parent()?.join(rel)))
             .unwrap_or_default(),
     ];
-    candidates
-        .into_iter()
-        .find(|p| p.join("index.html").exists())
+    // §diagnostic: 记录探测路径便于调试
+    for candidate in &candidates {
+        if candidate.join("index.html").exists() {
+            tracing::debug!(target: "ridge::remote::serve", path = %candidate.display(), "UI dir found");
+            return Some(candidate.clone());
+        }
+    }
+    tracing::warn!(target: "ridge::remote::serve", rel = %rel.display(), "UI dir not found in any candidate path");
+    None
 }
 
 /// serve 这批 handler 的 axum State：UI 目录配置 + TLS 门（HSTS 头）+ `remote_enabled`
