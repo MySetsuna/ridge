@@ -7,6 +7,14 @@
         "serve",
         "--mcp"
       ]
+    },
+    "notebooklm": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "tools/notebooklm-mcp-server.py"
+      ],
+      "description": "NotebookLM integration for AI-powered document management"
     }
   }
 }
