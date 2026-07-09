@@ -41,6 +41,9 @@
   let loading = $state(false);
   let inputEl: HTMLInputElement | undefined = $state();
   let showManual = $state(false);
+  // §connection-debug: 诊断连接状态，帮助用户理解问题
+  let connectionStatus = $state<'idle' | 'connecting' | 'connected' | 'failed'>('idle');
+  let connectionDetail = $state('');
 
   let unsubState: (() => void) | undefined;
   let connectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -87,12 +90,29 @@
     if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
     unsubState?.();
     unsubState = undefined;
-    const cat = ws.lastFailure()?.category;
+    const failure = ws.lastFailure();
+    const cat = failure?.category;
     ws.disconnect(); // §stop-retry: otherwise it keeps retrying forever
     if (cat === 'user') clearToken(); // 凭据无效才丢弃；通道类保留以便刷新自动重连
     loading = false;
     showManual = true;
-    error = tr('mobile.connectFail');
+    // 提供更详细的错误信息帮助用户诊断
+    if (cat === 'user') {
+      error = `认证失败: ${failure?.code || '请检查token是否有效'}`;
+    } else if (cat === 'parked') {
+      error = '设备已停用，请在控制台启用';
+    } else {
+      error = tr('mobile.connectFail');
+    }
+    // 更新连接状态显示
+    connectionStatus = 'failed';
+    if (failure?.message) {
+      connectionDetail = failure.message;
+    } else if (cat === 'user') {
+      connectionDetail = 'token无效或过期，请重新验证';
+    } else {
+      connectionDetail = '无法连接到主机，请检查网络和TLS证书';
+    }
   }
 
   function connectWithToken(host: string, port: number, token: string) {
@@ -100,23 +120,42 @@
     if (connectTimer) clearTimeout(connectTimer);
     let sawConnected = false;
     let disconnects = 0;
+    connectionStatus = 'connecting';
+    connectionDetail = `正在连接 ${host}:${port}...`;
     // Safety net: a connect that never reaches 'connected' (hung upgrade / rejected
     // token) falls back to manual entry instead of an endless "connecting" spinner.
-    connectTimer = setTimeout(fallbackToManual, AUTH_CONNECT_TIMEOUT_MS);
+    connectTimer = setTimeout(() => {
+      connectionDetail = '连接超时，请检查网络或TLS证书';
+      fallbackToManual();
+    }, AUTH_CONNECT_TIMEOUT_MS);
     unsubState = ws.onStateChange((s: ConnectionState) => {
       if (s === 'connected') {
         sawConnected = true;
         if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
         loading = false;
+        connectionStatus = 'connected';
+        connectionDetail = '';
         unsubState?.();
         onverified();
       } else if (s === 'error') {
+        const failure = ws.lastFailure();
+        connectionStatus = 'failed';
+        if (failure?.category === 'user') {
+          connectionDetail = `认证失败: ${failure.code || '未知错误'}`;
+        } else if (failure?.category === 'parked') {
+          connectionDetail = '设备已停用';
+        } else {
+          connectionDetail = `连接失败: ${failure?.message || '通道异常'}`;
+        }
         fallbackToManual();
       } else if (s === 'disconnected' && !sawConnected) {
         // The token auth keeps dropping before ever connecting (server rejected
         // the upgrade → wsRemote silently retries). Bail after a couple of tries
         // instead of spinning forever.
-        if (++disconnects >= 2) fallbackToManual();
+        if (++disconnects >= 2) {
+          connectionDetail = '连接被拒绝，请检查token是否有效';
+          fallbackToManual();
+        }
       }
     });
     ws.connect(host, port, token, 'token');
@@ -126,11 +165,14 @@
     const saved = readToken();
     if (!saved) {
       showManual = true;
+      connectionStatus = 'idle';
+      connectionDetail = '未找到保存的token，请输入验证码';
       return;
     }
     loading = true;
     const host = location.hostname;
     const port = parseInt(location.port) || (location.protocol === 'https:' ? 443 : 80);
+    connectionDetail = `使用已保存的token连接 ${host}:${port}...`;
     connectWithToken(host, port, saved);
   }
 
@@ -152,6 +194,12 @@
     </svg>
     <h1>Ridge Remote</h1>
     <p class="sub">{$t('mobile.authSubtitle')}</p>
+    {#if connectionStatus === 'failed' && connectionDetail}
+      <div class="connection-error">
+        <p class="error-detail">{connectionDetail}</p>
+        <p class="error-hint">请检查：TLS证书是否已信任、网络是否通畅、远控是否已启用</p>
+      </div>
+    {/if}
     <div class="card">
       <input
         bind:this={inputEl}
@@ -178,6 +226,9 @@
       <rect x="18" y="18" width="9.5" height="9.5" rx="2" fill="#d97757" fill-opacity="0.22"/>
     </svg>
     <p class="sub">{$t('mobile.connecting')}</p>
+    {#if connectionDetail}
+      <p class="connection-detail">{connectionDetail}</p>
+    {/if}
   </div>
 {/if}
 
@@ -192,6 +243,10 @@
   input.has-error{border-color:var(--rg-ansi-red)}
   input::placeholder{color:var(--rg-fg-muted);letter-spacing:2px;font-size:14px}
   .error-msg{color:var(--rg-ansi-red);font-size:13px;margin-top:8px}
+  .connection-error{background:var(--rg-surface);border:1px solid var(--rg-ansi-red);border-radius:8px;padding:12px;margin-bottom:16px;text-align:center}
+  .connection-error .error-detail{color:var(--rg-ansi-red);font-size:13px;margin:0 0 8px 0;font-weight:500}
+  .connection-error .error-hint{color:var(--rg-fg-muted);font-size:12px;margin:0;line-height:1.4}
+  .connection-detail{color:var(--rg-fg-muted);font-size:12px;margin-top:8px;text-align:center}
   button{width:100%;height:48px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .2s;margin-top:16px;background:var(--rg-ansi-green);color:#fff}
   button:disabled{opacity:.4;cursor:not-allowed}
   button:hover:not(:disabled){background:var(--rg-ansi-green)}

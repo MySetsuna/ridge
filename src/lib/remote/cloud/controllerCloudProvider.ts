@@ -204,12 +204,25 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.resetBinding();
     this.setState('connecting');
 
+    // §diagnostic: 记录连接开始
+    console.log('[cloud-controller] connecting', {
+      deviceId,
+      username: this.config.username,
+      baseDomain: this.config.baseDomain,
+    });
+
     // 1. 取 ICE servers（契约 §5.2：必须调接口，不硬编码 STUN）。
     let iceServers: IceServer[];
     try {
       const res = await getIceServers(this._token());
       iceServers = res.iceServers ?? [];
+      // §diagnostic: 记录 ICE 服务器获取结果
+      console.log('[cloud-controller] ice servers fetched', {
+        count: iceServers.length,
+        urls: iceServers.map(s => s.urls).flat(),
+      });
     } catch (e: unknown) {
+      console.error('[cloud-controller] failed to fetch ICE servers', e);
       this.fail(e instanceof Error ? e.message : '获取 ICE 服务器失败', 'NETWORK');
       return;
     }
@@ -499,15 +512,26 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   private openSignaling(hostDevice: string): void {
     const label = this.roomLabel(hostDevice);
+    const tokenPreview = this._token().substring(0, 8) + '...';
     const url =
       `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
       `?token=${encodeURIComponent(this._token())}&role=controller` +
       `&cli=${encodeURIComponent(getOrCreateCli())}`;
 
+    // §diagnostic: 记录信令连接信息便于调试
+    console.log('[cloud-signaling] connecting', {
+      hostDevice,
+      username: this.config.username,
+      baseDomain: this.config.baseDomain,
+      tokenPreview,
+      url: url.replace(/token=[^&]+/, 'token=<redacted>'),
+    });
+
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
     } catch (e: unknown) {
+      console.error('[cloud-signaling] WebSocket constructor failed', e);
       this.fail(e instanceof Error ? e.message : '信令连接失败', 'NETWORK');
       return;
     }
@@ -516,27 +540,32 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     ws.onmessage = (ev) => {
       void this.onSignal(ev.data);
     };
-    ws.onerror = () => {
+    ws.onerror = (ev) => {
+      // §diagnostic: 记录 WebSocket 错误详情
+      console.error('[cloud-signaling] WebSocket error', { event: ev, readyState: ws.readyState });
       // 仅上报；真正的断开与重连由 onclose 驱动（避免误置 error 终态）。
       if (!this.closed) this.cb.onError?.('信令 WebSocket 错误', 'NETWORK');
     };
     // 蜂窝弱网兜底：WS 连接超时（DNS/代理/防火墙慢→卡死遮挡）→ 触发退避重连。
     const wsConnectTimer = setTimeout(() => {
       if (ws.readyState !== WebSocket.OPEN && !this.closed) {
+        console.warn('[cloud-signaling] connection timeout', { readyState: ws.readyState });
         ws.close();
       }
     }, WS_CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
       clearTimeout(wsConnectTimer);
+      console.log('[cloud-signaling] connected', { label });
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       clearTimeout(wsConnectTimer);
+      console.log('[cloud-signaling] closed', { code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
       if (this.closed) return;
       // RTC 已连通：信令断开无害，且重开信令会在 relay 拿到新 cid → host 视作新 controller
       //（幽灵会话），故不主动重连信令；待 RTC 真断时再整体重建。
       if (this.pc?.connectionState === 'connected') return;
       // 尚未连通 / RTC 也不健康 → 退避重连（整体重建会重开信令）。
-      this.scheduleReconnect('信令连接已关闭');
+      this.scheduleReconnect(`信令连接已关闭 (code=${ev.code})`);
     };
   }
 
@@ -647,6 +676,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     const n = this.reconnectAttempts++;
     const base = Math.min(RECONNECT_BASE_MS * 2 ** n, RECONNECT_MAX_MS);
     const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
+    // §diagnostic: 记录重连调度
+    console.log('[cloud-controller] scheduleReconnect', { reason, attempt: n, delayMs: delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.reconnect();
