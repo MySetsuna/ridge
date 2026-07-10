@@ -204,10 +204,9 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.resetBinding();
     this.setState('connecting');
 
-    // §diagnostic: 记录连接开始
+    // §diagnostic: 记录连接开始（不打 username/token 等凭据，避免泄漏到浏览器 console）
     console.log('[cloud-controller] connecting', {
       deviceId,
-      username: this.config.username,
       baseDomain: this.config.baseDomain,
     });
 
@@ -512,18 +511,15 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   private openSignaling(hostDevice: string): void {
     const label = this.roomLabel(hostDevice);
-    const tokenPreview = this._token().substring(0, 8) + '...';
     const url =
       `${cloudWsScheme(this.config.baseDomain)}://${label}.${this.config.baseDomain}/ws` +
       `?token=${encodeURIComponent(this._token())}&role=controller` +
       `&cli=${encodeURIComponent(getOrCreateCli())}`;
 
-    // §diagnostic: 记录信令连接信息便于调试
+    // §diagnostic: 记录信令连接信息便于调试（不打 username/token 预览，避免凭据泄漏到 console）
     console.log('[cloud-signaling] connecting', {
       hostDevice,
-      username: this.config.username,
       baseDomain: this.config.baseDomain,
-      tokenPreview,
       url: url.replace(/token=[^&]+/, 'token=<redacted>'),
     });
 

@@ -49,6 +49,18 @@ export const zh: Record<string, string> = {
   connecting: '正在连接远程桌面...',
   reconnecting: '连接已断开，正在重连…',
   connectionLost: '连接已断开，请刷新页面重连',
+  // AuthScreen — 连接诊断（本地化，替代原硬编码中文）
+  authFailed: '认证失败：{detail}',
+  checkTokenValid: '请检查验证码是否有效',
+  authTokenInvalidHint: 'token 无效或过期，请重新验证',
+  deviceParked: '设备已停用，请在控制台启用',
+  connectHostFail: '无法连接到主机，请检查网络和 TLS 证书',
+  connectTimeout: '连接超时，请检查网络或 TLS 证书',
+  connectRejected: '连接被拒绝，请检查验证码是否有效',
+  connectingTo: '正在连接 {target}…',
+  connectingWithToken: '使用已保存的 token 连接 {target}…',
+  noSavedToken: '未找到保存的 token，请输入验证码',
+  connErrorHint: '请检查：TLS 证书是否已信任、网络是否通畅、远控是否已启用',
 
   // CertTrustGuide — toggle
   certToggleLabel: '浏览器提示「不安全」？安装证书消除警告',
@@ -152,6 +164,18 @@ export const en: Record<string, string> = {
   connecting: 'Connecting to remote desktop...',
   reconnecting: 'Connection lost — reconnecting…',
   connectionLost: 'Connection lost — refresh the page to reconnect',
+  // AuthScreen — connection diagnostics (localized, replacing hard-coded Chinese)
+  authFailed: 'Authentication failed: {detail}',
+  checkTokenValid: 'check that your code is valid',
+  authTokenInvalidHint: 'Token invalid or expired — please verify again',
+  deviceParked: 'Device disabled — enable it in the console',
+  connectHostFail: 'Cannot reach the host — check your network and TLS certificate',
+  connectTimeout: 'Connection timed out — check your network or TLS certificate',
+  connectRejected: 'Connection rejected — check that your code is valid',
+  connectingTo: 'Connecting to {target}…',
+  connectingWithToken: 'Connecting with the saved token to {target}…',
+  noSavedToken: 'No saved token — enter the code',
+  connErrorHint: 'Check: the TLS certificate is trusted, the network is reachable, and remote control is enabled',
 
   // CertTrustGuide — toggle
   certToggleLabel: 'Browser showing "Not secure"? Install the certificate to fix',
