@@ -130,8 +130,16 @@
     const unJoin = listen(GROUP_ADD_MEMBER_EVENT, (e) => {
       const payload = parseGroupAddMember(e.payload);
       if (!payload) return;
-      // 工作区守卫：只在「确认不符」时丢弃（避免落到别的工作区的编组），并记日志。
-      if (payload.workspaceId && workspaceId && payload.workspaceId !== workspaceId) {
+      // 工作区守卫（评审 #7）：焦点工作区未就绪就别落地——否则 setWorkspace('') 会把本属于
+      // 某工作区的加成员事件落到空/错的 store 键。之前 `workspaceId &&` 会在焦点为空时短路
+      // 跳过校验，导致误落；这里改为先丢弃空焦点，再对「带 workspaceId 却与焦点不符」丢弃。
+      if (!workspaceId) {
+        console.warn(
+          `[teammate-groups] join dropped: no focused workspace (event workspace ${payload.workspaceId ?? 'n/a'})`
+        );
+        return;
+      }
+      if (payload.workspaceId && payload.workspaceId !== workspaceId) {
         console.warn(
           `[teammate-groups] join dropped: event workspace ${payload.workspaceId} !== focused ${workspaceId}`
         );
