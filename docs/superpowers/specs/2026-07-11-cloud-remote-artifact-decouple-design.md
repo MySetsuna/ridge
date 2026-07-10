@@ -38,14 +38,14 @@ wind 构建产物 ──(sync-cloud-desktop-app.mjs / 手工拷贝)──▶ rid
 ```
 [wind] pnpm publish:remote-cloud
   1. pnpm build:desktop-web + build:remote      → web-remote-dist/ + static/remote/
-  2. 打成一个 tar.gz（顶层 manifest.json + desktop-app/ + mobile-app/）
+  2. 打成一个自描述 bundle（长度前缀框架，见 §5.1；无压缩/无 tar，两端零新依赖）
   3. HTTPS POST https://<cloud>/api/v1/remote-artifacts   (Authorization: Bearer $RIDGE_ARTIFACT_TOKEN)
                          │
                          ▼
 [ridge-cloud] POST /api/v1/remote-artifacts (新增 handler，专用 token 门控)
-  4. 校验 token → 大小上限 → 流式解压到卷 releases/.incoming-<ver>（路径穿越防护）
+  4. 校验 token → 大小上限 → 解析 bundle 头 → 逐文件落到卷 releases/.incoming-<ver>（路径穿越防护）
   5. 校验两个 app 目录都含 index.html（否则 400，不半换）
-  6. rename .incoming-<ver> → releases/<ver>；ln -sfn 原子换 desktop-app / mobile-app 两条 symlink
+  6. rename .incoming-<ver> → releases/<ver>；原子换 desktop-app / mobile-app 两条 current 指针
   7. 清理超出保留数（N=3）的旧 release；返回 {version, activatedAt, kept:[...]}
                          │
                          ▼
@@ -79,7 +79,11 @@ wind 构建产物 ──(sync-cloud-desktop-app.mjs / 手工拷贝)──▶ rid
 └── mobile-app  -> releases/0.0.16+gabc1234/mobile-app
 ```
 
-**原子性**：解压到 `.incoming-<ver>` → 校验全过 → `fs::rename` 成 `releases/<ver>` → 对两条 symlink 各做「建新临时 symlink + `rename` 覆盖」（POSIX `rename` 原子）。任一步失败**不动现有 symlink**，旧版继续服务。两条 symlink 顺序换（先 desktop 后 mobile），极短窗口内两端可能版本不一致——两端相互独立、无跨端引用，可接受。
+**原子性（`activate` 抽象，平台分叉）**：写到 `.incoming-<ver>` → 校验全过 → `fs::rename` 成 `releases/<ver>` → 换 `desktop-app`/`mobile-app` 两个 current 指针：
+- **unix（生产 = Linux/Dokku）**：`current` 是 symlink；「建临时 symlink + `rename` 覆盖」，POSIX `rename` 原子、零窗口。
+- **非 unix（Windows 本地开发/测试）**：symlink_dir 需特权 → 回退「`rename` 现目录到 `.prev` + `rename` release 目录到 current」（两次 rename 间有秒级窗口，`spa_handler` 缺目录时优雅 503），保证 Windows 也能编译+跑通 dev/e2e。
+
+任一步失败**不动现有 current**，旧版继续服务。两个 app 顺序换，极短窗口内两端可能版本不一致——两端相互独立、无跨端引用，可接受。涉及 symlink 语义的单测 `#[cfg(unix)]`（本机 Windows 跳过，CI/生产 Linux 覆盖）；bundle 解析/穿越防护/token 比较/prune 等纯逻辑跨平台全测。
 
 **版本命名**：`<pkgVersion>+g<shortSha>`（如 `0.0.15+g7caff68`），同 sha 重发覆盖同名目录。保留最近 `N=3` 个 release，多余按 mtime 清理。
 
@@ -89,11 +93,23 @@ wind 构建产物 ──(sync-cloud-desktop-app.mjs / 手工拷贝)──▶ rid
 
 ## 5. 上传端点契约
 
+### 5.1 Bundle 线格式（自描述、零依赖）
+
+```
+[u32 BE header_len][header_len 字节 UTF-8 JSON 头][文件体按序拼接]
+JSON 头 = {
+  "manifest": { "version": "0.0.15", "gitSha": "7caff68", "builtAt": "2026-07-11T…Z" },
+  "files":    [ { "path": "desktop-app/index.html", "size": 1234 }, … ]   // 相对路径，正斜杠
+}
+```
+- 两端零新依赖：wind 用 Node `Buffer` 拼；ridge-cloud 用 `serde_json`（已有）解头 + 按 `size` 顺序切 body。
+- 不压缩（SPA 资源多为已压缩二进制；发布低频，HTTPS 传几 MB 无碍），省掉 tar/flate2 依赖与 gzip 手写。
+
 ### `POST /api/v1/remote-artifacts`
-- **鉴权**：`Authorization: Bearer <RIDGE_ARTIFACT_TOKEN>`（新增配置项，env `RIDGE_ARTIFACT_TOKEN`；缺省未配 → 端点整体 503 关闭，避免裸奔）。**恒等时间比较** token。
-- **Body**：`application/gzip`，tar.gz 原始字节。顶层结构：`manifest.json` + `desktop-app/` + `mobile-app/`。
+- **鉴权**：`Authorization: Bearer <RIDGE_ARTIFACT_TOKEN>`（新增配置项，env `RIDGE_ARTIFACT_TOKEN`；缺省未配 → 端点整体 503 关闭，避免裸奔）。用 `subtle::ConstantTimeEq` **恒等时间比较** token。
+- **Body**：`application/octet-stream`，§5.1 bundle 原始字节。
 - **Body 上限**：单独放大到 `REMOTE_ARTIFACT_MAX_BYTES`（缺省 64 MiB；经 `DefaultBodyLimit` 覆盖该路由，不动全局 256 KiB）。
-- **校验顺序**：token → 大小 → gzip/tar 可解 → 每个 tar entry 路径穿越防护（拒 `..`/绝对路径，复用 `sanitize_path` 同源逻辑）→ 解压后 `desktop-app/index.html` 与 `mobile-app/index.html` 均存在（否则 `400`，不换手）。
+- **校验顺序**：token → 大小 → 头可解析且 `files[].size` 之和 + `4 + header_len` == body 总长 → 每个 `path` 穿越防护（拒 `..`/绝对路径/反斜杠，复用 `sanitize_path` 同源逻辑）→ 逐文件写入 `.incoming-<ver>` → `desktop-app/index.html` 与 `mobile-app/index.html` 均存在（否则 `400`，不换手）。
 - **响应**：`200 {ok:true, data:{version, activatedAt, kept:[...]}}`；`401`（token 错）、`400`（结构非法）、`413`（超限）、`503`（未配 token / 卷不可写）。
 - **挂载**：独立小 router 段，**不进** `/api/v1/admin`（那是 AdminAuth JWT 组），而是 `POST /api/v1/remote-artifacts` + 该路由 `DefaultBodyLimit` 覆盖 + 严格限流（`rate_limit_general` 已够；发布低频）。
 - **审计**：`tracing::info!` 记 version/gitSha/来源 IP/耗时；`warn!` 记拒绝原因。
@@ -110,9 +126,9 @@ wind 构建产物 ──(sync-cloud-desktop-app.mjs / 手工拷贝)──▶ rid
   1. （除 `--no-build`）`pnpm build:desktop-web && pnpm build:remote`。
   2. 校验 `web-remote-dist/index.html` 与 `static/remote/index.html` 存在。
   3. 生成 `manifest.json`：`{version: package.json.version, gitSha: <git rev-parse --short HEAD>, builtAt: <ISO>}`。
-  4. 用 Node 内置 `zlib` + tar 打包（顶层 manifest + `desktop-app/`←web-remote-dist + `mobile-app/`←static/remote）。tar 实现：优先复用仓库已有 tar 依赖；无则用极简 ustar 写入器（纯 Node，无新依赖）。
-  5. `fetch` POST（`--dry-run` 则落盘打印路径），打印服务端返回的 version/kept。
-- **纯函数抽出**便于单测：`buildManifest()`、`tarEntriesFor(dirs)`、`resolveConfig(env,args)`。
+  4. 遍历 `web-remote-dist/`（→`desktop-app/…`）与 `static/remote/`（→`mobile-app/…`）收集文件列表，按 §5.1 拼 bundle（`u32 头长 + JSON 头 + 文件体`），纯 Node `Buffer`，无新依赖。
+  5. `fetch` POST（`--dry-run` 则落盘 `build/remote-artifact-<ver>.bundle` 并打印路径），打印服务端返回的 version/kept。
+- **纯函数抽出**便于单测：`buildManifest()`、`collectFiles(dir, prefix)`、`packBundle(manifest, files)`、`resolveConfig(env,args)`。
 
 ## 7. ridge-cloud 一次性改动（本方案落地的**最后一次**"带 remote"的部署）
 
@@ -121,7 +137,7 @@ wind 构建产物 ──(sync-cloud-desktop-app.mjs / 手工拷贝)──▶ rid
 3. **config.rs**：加 `remote_artifact_token: Option<String>`（env `RIDGE_ARTIFACT_TOKEN`）、`remote_artifacts_root: String`（env `REMOTE_ARTIFACTS_ROOT`，缺省 `/data/remote-apps`）、`remote_artifact_max_bytes`（缺省 64 MiB）。`desktop_app_dir`/`mobile_app_dir` 无需改（部署时用 env 指到卷 symlink）。
 4. **Dockerfile**：删 `COPY desktop-app` / `COPY mobile-app`（`Dockerfile:44-55` 区域）。`web/build`、`admin-app/build` 保留（云端自有，不在本方案范围）。
 5. **仓库清理**：`git rm -r desktop-app mobile-app`（移除检入的 218+28 文件），`.gitignore` 加 `desktop-app/`、`mobile-app/`。
-6. **依赖**：tar/gzip 解压——优先用已有 `tokio`/`flate2`（若 Cargo.toml 已含）；tar 用轻量 `tar` crate 或手写 ustar 读取器（避免重依赖，决策留给实现计划按现有依赖定）。
+6. **依赖**：**零新增**。bundle 解析用已有 `serde_json`；token 恒等比较用已有 `subtle`；文件 IO 用 `tokio::fs`。不引 tar/flate2。
 
 ## 8. 割接 / 运维手册（用户执行，需主机权限）
 
