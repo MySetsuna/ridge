@@ -8,7 +8,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.{test,spec}.{ts,js}'],
+    include: ['src/**/*.{test,spec}.{ts,js}', 'scripts/**/*.{test,spec}.{ts,js,mjs}'],
     environment: 'node',
     globals: true,
     coverage: {
