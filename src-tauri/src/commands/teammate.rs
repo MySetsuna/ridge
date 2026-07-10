@@ -25,9 +25,11 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
     // `paneId`(Uuid) 也能回传 `paneIndex`(数字)，两者都可寻址（缺口1 自洽）。
     let leaves = ws.pane_tree.get_all_leaves();
 
-    // 侧表无 typed 能力档（program 未知）→ 仅凭 agent 名/标题被动识别，跑同一套竞选。
-    // 单 agent 平凡当选；空名册 leader 为 None。set_leader_static 不经此路（无 graph），
-    // 故这里直接以 leader_id 逐条判 role。
+    // 能力档识别只认**稳定标识 agent_id**：pane 标题受 shell 控制、可随终端标题转义序列
+    // 变动，若据它竞选组长会让 Leader 在轮询间跳变，也与 profiles 主路径（按注册身份定档）
+    // 口径不一致（评审 #4）。这里改用 agent_id 定档——与 profiles 同源、稳定、不可被标题
+    // 伪造；展示名 `name` 仍用 pane 标题。cap 每 agent 只识别一次，供竞选与 roster 复用。
+    let cap_of = |agent_id: &str| ridge_core::recognize_capability(agent_id, None);
     let name_of = |agent_id: &str, pane: &Uuid| -> String {
         ws.teammate_pane_titles
             .get(pane)
@@ -39,8 +41,7 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
         .iter()
         .map(|(agent_id, pane)| {
             let name = name_of(agent_id, pane);
-            let cap = ridge_core::recognize_capability(&name, None);
-            ridge_core::Teammate::new(agent_id.clone(), name, 0).with_capability(cap)
+            ridge_core::Teammate::new(agent_id.clone(), name, 0).with_capability(cap_of(agent_id))
         })
         .collect();
     let leader_id = ridge_core::elect_leader(&teammates).map(|s| s.to_string());
@@ -54,7 +55,7 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
                 _ => "Idle",
             };
             let name = name_of(agent_id, pane);
-            let cap = ridge_core::recognize_capability(&name, None);
+            let cap = cap_of(agent_id);
             let pane_index = leaves
                 .iter()
                 .position(|p| p == pane)
