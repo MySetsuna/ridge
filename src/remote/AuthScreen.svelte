@@ -86,7 +86,10 @@
   // USERNAME_MISMATCH / DEVICE_* / NOT_PREMIUM / 4403 等，ws.lastFailure().category
   // === 'user'）时才清 token。纯通道/网络抖动导致的失败保留 token，这样刷新页面仍能
   // autoReconnect，不会因为一次网络波动就把一个其实长期有效的登录态丢掉。
-  function fallbackToManual() {
+  // detailOverride：调用方给出的具体失败原因（超时 / 被拒等）。之前这些文案在调用
+  // fallbackToManual() 前写入 connectionDetail，却被本函数无条件覆盖成通用兜底 → 死代码；
+  // 现改为传参，优先级高于分类兜底，确保「连接超时 / 连接被拒绝」等能真正显示。
+  function fallbackToManual(detailOverride?: string) {
     if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
     unsubState?.();
     unsubState = undefined;
@@ -96,22 +99,24 @@
     if (cat === 'user') clearToken(); // 凭据无效才丢弃；通道类保留以便刷新自动重连
     loading = false;
     showManual = true;
-    // 提供更详细的错误信息帮助用户诊断
+    // 可见错误提示（本地化，随 locale 走）
     if (cat === 'user') {
-      error = `认证失败: ${failure?.code || '请检查token是否有效'}`;
+      error = tr('mobile.authFailed', { detail: failure?.code || tr('mobile.checkTokenValid') });
     } else if (cat === 'parked') {
-      error = '设备已停用，请在控制台启用';
+      error = tr('mobile.deviceParked');
     } else {
       error = tr('mobile.connectFail');
     }
-    // 更新连接状态显示
+    // 诊断细节：调用方具体原因 > 失败携带的 message > 分类兜底。
     connectionStatus = 'failed';
-    if (failure?.message) {
+    if (detailOverride) {
+      connectionDetail = detailOverride;
+    } else if (failure?.message) {
       connectionDetail = failure.message;
     } else if (cat === 'user') {
-      connectionDetail = 'token无效或过期，请重新验证';
+      connectionDetail = tr('mobile.authTokenInvalidHint');
     } else {
-      connectionDetail = '无法连接到主机，请检查网络和TLS证书';
+      connectionDetail = tr('mobile.connectHostFail');
     }
   }
 
@@ -121,13 +126,13 @@
     let sawConnected = false;
     let disconnects = 0;
     connectionStatus = 'connecting';
-    connectionDetail = `正在连接 ${host}:${port}...`;
+    connectionDetail = tr('mobile.connectingTo', { target: `${host}:${port}` });
     // Safety net: a connect that never reaches 'connected' (hung upgrade / rejected
     // token) falls back to manual entry instead of an endless "connecting" spinner.
-    connectTimer = setTimeout(() => {
-      connectionDetail = '连接超时，请检查网络或TLS证书';
-      fallbackToManual();
-    }, AUTH_CONNECT_TIMEOUT_MS);
+    connectTimer = setTimeout(
+      () => fallbackToManual(tr('mobile.connectTimeout')),
+      AUTH_CONNECT_TIMEOUT_MS
+    );
     unsubState = ws.onStateChange((s: ConnectionState) => {
       if (s === 'connected') {
         sawConnected = true;
@@ -138,24 +143,14 @@
         unsubState?.();
         onverified();
       } else if (s === 'error') {
-        const failure = ws.lastFailure();
-        connectionStatus = 'failed';
-        if (failure?.category === 'user') {
-          connectionDetail = `认证失败: ${failure.code || '未知错误'}`;
-        } else if (failure?.category === 'parked') {
-          connectionDetail = '设备已停用';
-        } else {
-          connectionDetail = `连接失败: ${failure?.message || '通道异常'}`;
-        }
+        // fallbackToManual 会据 ws.lastFailure() 统一算出可见提示与诊断细节；
+        // 这里不再重复赋值（原先那批 connectionDetail 都会被它覆盖，是死代码）。
         fallbackToManual();
       } else if (s === 'disconnected' && !sawConnected) {
         // The token auth keeps dropping before ever connecting (server rejected
         // the upgrade → wsRemote silently retries). Bail after a couple of tries
         // instead of spinning forever.
-        if (++disconnects >= 2) {
-          connectionDetail = '连接被拒绝，请检查token是否有效';
-          fallbackToManual();
-        }
+        if (++disconnects >= 2) fallbackToManual(tr('mobile.connectRejected'));
       }
     });
     ws.connect(host, port, token, 'token');
@@ -166,13 +161,13 @@
     if (!saved) {
       showManual = true;
       connectionStatus = 'idle';
-      connectionDetail = '未找到保存的token，请输入验证码';
+      connectionDetail = tr('mobile.noSavedToken');
       return;
     }
     loading = true;
     const host = location.hostname;
     const port = parseInt(location.port) || (location.protocol === 'https:' ? 443 : 80);
-    connectionDetail = `使用已保存的token连接 ${host}:${port}...`;
+    connectionDetail = tr('mobile.connectingWithToken', { target: `${host}:${port}` });
     connectWithToken(host, port, saved);
   }
 
@@ -197,7 +192,7 @@
     {#if connectionStatus === 'failed' && connectionDetail}
       <div class="connection-error">
         <p class="error-detail">{connectionDetail}</p>
-        <p class="error-hint">请检查：TLS证书是否已信任、网络是否通畅、远控是否已启用</p>
+        <p class="error-hint">{$t('mobile.connErrorHint')}</p>
       </div>
     {/if}
     <div class="card">
