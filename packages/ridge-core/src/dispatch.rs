@@ -41,7 +41,7 @@
 
 use serde_json::Value;
 
-use crate::commands::{git, settings, shell, theme};
+use crate::commands::{git, settings, shell, theme, workspace};
 use crate::ctx::Ctx;
 use crate::error::{CoreError, CoreResult};
 use crate::fs::commands as fs_commands;
@@ -182,6 +182,13 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         "set_user_default_cwd" => {
             settings::set_user_default_cwd(ctx, opt_s(&args, "path"))?;
             Ok(Value::Null)
+        }
+
+        // ── Workspace 快照（R0 内核化样板 B，2026-07-11）──
+        // 只读：经聚合 HostStateAccessor 的 WorkspaceReader 取宿主 pane 树 + git 仓库根。
+        // rdg 无头 host 借此拿到工作区快照（此前 MethodNotFound）。
+        "get_workspace_snapshot" => {
+            workspace::get_workspace_snapshot(ctx, &s(&args, "workspaceId"))
         }
 
         // ── Read-only filesystem (S5) ──
@@ -389,6 +396,12 @@ mod tests {
             *self.last.lock().unwrap() = Some(path);
         }
     }
+    // 聚合 HostState 要求同时实现 WorkspaceReader；本测试只走 cwd 端口 → 返回 None。
+    impl crate::commands::workspace::WorkspaceReader for FakeStore {
+        fn workspace_raw(&self, _id: &str) -> Option<crate::commands::workspace::WorkspaceRaw> {
+            None
+        }
+    }
 
     #[test]
     fn set_user_default_cwd_routes_through_state() {
@@ -494,6 +507,24 @@ mod tests {
         let err = dispatch("git_op_in_progress", serde_json::json!({ "repoRoot": "." }), &ctx)
             .unwrap_err();
         assert_eq!(err.kind_tag(), "capability_denied");
+    }
+
+    #[test]
+    fn get_workspace_snapshot_routed_via_aggregate_accessor() {
+        // FakeStore（聚合 HostStateAccessor）的 workspace_raw 返回 None → InvalidArgs，
+        // 证明 get_workspace_snapshot 已接进 dispatch 表、在远程能力集内、且经聚合 accessor
+        // 取到 WorkspaceReader（R0 样板 B 接线）。
+        let (ctx, _s) = ctx_with_state(
+            Arc::new(HostStateAccessor(Arc::new(FakeStore::default()))),
+            CapabilitySet::remote_default(),
+        );
+        let err = dispatch(
+            "get_workspace_snapshot",
+            serde_json::json!({ "workspaceId": "x" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
     }
 
     // ── Sandbox / root-scoping at the dispatch boundary (D8 / §5.6, R10) ──

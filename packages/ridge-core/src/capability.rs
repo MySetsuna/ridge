@@ -209,6 +209,9 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // 工作区（连带 bug），故与同组读/写命令一并放行。
     "list_workspaces",
     "get_active_workspace_id",
+    // 只读工作区快照（R0 内核化样板 B）：pane 树 + git 仓库根 + pane 标题。rdg 无头 host
+    // 经此拿到快照（此前 MethodNotFound）；由 ridge-core dispatch 直接服务。
+    "get_workspace_snapshot",
     "switch_workspace",
     "create_workspace",
     "close_workspace",
