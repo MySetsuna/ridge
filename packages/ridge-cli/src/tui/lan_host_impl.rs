@@ -257,14 +257,25 @@ fn handle_text(
 
         "subscribe-pane" => {
             let pane_id = v["paneId"].as_str().and_then(|s| Uuid::parse_str(s).ok())?;
-            // 取该 pane 的输出广播订阅（加锁范围极小，不跨 await）。
-            let rx = {
+            // 原子取 scrollback backlog + 实时订阅（同锁，加锁范围极小，不跨 await）。
+            let sub = {
                 let w = workspace.lock().unwrap();
-                w.find(pane_id).map(|s| s.subscribe())
+                w.find(pane_id).map(|s| s.subscribe_with_backlog())
             };
-            if let Some(mut rx) = rx {
+            if let Some((backlog, mut rx)) = sub {
                 let tx = out_tx.clone();
                 tokio::spawn(async move {
+                    // 先回放 scrollback 历史（与实时帧同款 16B-UUID 前缀），消除新连/
+                    // 重连时的黑屏；随后挂接实时流。backlog 与 live 接缝由发送侧同锁
+                    // 保证无重无漏（见 SessionHandle::subscribe_with_backlog）。
+                    if !backlog.is_empty() {
+                        let mut buf = Vec::with_capacity(16 + backlog.len());
+                        buf.extend_from_slice(pane_id.as_bytes());
+                        buf.extend_from_slice(&backlog);
+                        if tx.send(Message::Binary(buf)).is_err() {
+                            return;
+                        }
+                    }
                     while let Ok(bytes) = rx.recv().await {
                         // 16 字节二进制 UUID 前缀 + 原始 PTY 字节（与桌面一致）。
                         let mut buf = Vec::with_capacity(16 + bytes.len());

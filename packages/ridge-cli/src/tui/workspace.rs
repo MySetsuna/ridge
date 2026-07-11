@@ -5,6 +5,7 @@ use ridge_core::workspace::pane_tree::{Direction, PaneTree, SplitDirection};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use super::scrollback::{ScrollbackRing, DEFAULT_SCROLLBACK_CAP};
 use super::session::{LocalPtySession, Session};
 
 const BROADCAST_CAP: usize = 256;
@@ -16,11 +17,25 @@ pub struct SessionHandle {
     pub cwd: Option<String>,
     pub session: Arc<LocalPtySession>,
     output_tx: broadcast::Sender<Vec<u8>>,
+    /// 该 pane 的原始 PTY 输出环（#21）：subscribe 时回放历史消除新连/重连黑屏。
+    /// 写者任务与 [`subscribe_with_backlog`](Self::subscribe_with_backlog) 共用此锁，
+    /// 令每个输出块恰落 {backlog, live} 之一。
+    scrollback: Arc<Mutex<ScrollbackRing>>,
 }
 
 impl SessionHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
+    }
+
+    /// 原子快照该 pane 的 scrollback backlog 并订阅实时输出。两步在同一把 scrollback
+    /// 锁下完成，使 (backlog, live) 接缝无竞态：写者任务也在同一把锁下 append+send，
+    /// 故每个输出块恰好落入 {backlog, live} 之一，既不重也不漏。
+    pub fn subscribe_with_backlog(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
+        let ring = self.scrollback.lock().unwrap();
+        let backlog = ring.snapshot();
+        let rx = self.output_tx.subscribe();
+        (backlog, rx)
     }
 
     pub fn send_input(&self, data: &[u8]) -> Result<()> {
@@ -69,11 +84,17 @@ impl Workspace {
         let (session, rx) = LocalPtySession::spawn(shell, actual_cwd.as_deref())?;
 
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
+        let scrollback = Arc::new(Mutex::new(ScrollbackRing::new(DEFAULT_SCROLLBACK_CAP)));
         let tx2 = tx.clone();
+        let scrollback2 = scrollback.clone();
         tokio::spawn(async move {
             use tokio::sync::mpsc;
             let mut rx: mpsc::Receiver<Vec<u8>> = rx;
             while let Some(bytes) = rx.recv().await {
+                // 同锁 append + 广播 send，与 subscribe_with_backlog 串行化 → 接缝无
+                // 竞态。锁在本轮迭代内即取即放，绝不跨 await（下次 recv 前已释放）。
+                let mut ring = scrollback2.lock().unwrap();
+                ring.append(&bytes);
                 let _ = tx2.send(bytes);
             }
         });
@@ -107,6 +128,7 @@ impl Workspace {
             cwd: actual_cwd,
             session: Arc::new(session),
             output_tx: tx,
+            scrollback,
         });
         Ok(id)
     }
