@@ -86,6 +86,27 @@ impl ridge_core::commands::workspace::WorkspaceReader for AppState {
             pane_titles,
         })
     }
+
+    fn active_workspace(&self) -> String {
+        self.active_workspace_id().to_string()
+    }
+
+    fn workspaces_list(&self) -> Vec<ridge_core::commands::workspace::WorkspaceEntry> {
+        // 与 commands::workspace::list_workspaces 逐字一致（order + names + display_seq）。
+        let order = self.workspace_order.read();
+        let names = self.workspace_names.read();
+        let map = self.workspaces.read();
+        order
+            .iter()
+            .enumerate()
+            .map(|(i, id)| ridge_core::commands::workspace::WorkspaceEntry {
+                id: id.to_string(),
+                index: i,
+                name: names.get(id).cloned(),
+                display_seq: map.get(id).map(|w| w.display_seq).unwrap_or(0),
+            })
+            .collect()
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event

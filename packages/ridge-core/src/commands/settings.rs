@@ -101,6 +101,12 @@ mod tests {
         fn workspace_raw(&self, _id: &str) -> Option<super::super::workspace::WorkspaceRaw> {
             None
         }
+        fn active_workspace(&self) -> String {
+            String::new()
+        }
+        fn workspaces_list(&self) -> Vec<super::super::workspace::WorkspaceEntry> {
+            vec![]
+        }
     }
 
     #[test]
