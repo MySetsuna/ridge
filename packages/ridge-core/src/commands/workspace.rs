@@ -94,6 +94,18 @@ pub trait WorkspaceWriter: Send + Sync {
     ) -> Result<String, String>;
     /// 删该工作区关联的 .ridge 存档文件（**破坏性**，仅此文件）。非法 id → `Err`。
     fn delete_workspace_file(&self, workspace_id: &str) -> Result<(), String>;
+    /// resize **既有** pane 的 PTY（非 spawn/kill）+ 解析器 wipe/delta。pane/工作区 id
+    /// 非法或不存在 → `Err`。`is_alt`/`is_inline_tui` 影响 wipe 顺序（宿主内部再与解析器
+    /// 权威值 OR）。
+    fn resize_pane(
+        &self,
+        workspace_id: &str,
+        pane_id: &str,
+        rows: u16,
+        cols: u16,
+        is_alt: bool,
+        is_inline_tui: bool,
+    ) -> Result<(), String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -278,6 +290,26 @@ pub fn delete_workspace_file(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value>
     Ok(Value::Null)
 }
 
+/// handler：`resize_pane`。resize 既有 pane PTY（与桌面命令同语义）。pane 不存在/非法 →
+/// `InvalidArgs`。经 [`WorkspaceWriter`] 端口写。
+#[allow(clippy::too_many_arguments)]
+pub fn resize_pane(
+    ctx: &Ctx,
+    workspace_id: &str,
+    pane_id: &str,
+    rows: u16,
+    cols: u16,
+    is_alt: bool,
+    is_inline_tui: bool,
+) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .resize_pane(workspace_id, pane_id, rows, cols, is_alt, is_inline_tui)
+        .map_err(CoreError::InvalidArgs)?;
+    Ok(Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +483,20 @@ mod tests {
         fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
             Ok(())
         }
+        fn resize_pane(
+            &self,
+            _ws: &str,
+            _pane: &str,
+            _rows: u16,
+            _cols: u16,
+            _alt: bool,
+            _inline: bool,
+        ) -> Result<(), String> {
+            if !self.exists {
+                return Err("pane 不存在".into()); // 复用 exists 作错误开关
+            }
+            Ok(())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -481,6 +527,17 @@ mod tests {
             Ok(String::new())
         }
         fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn resize_pane(
+            &self,
+            _ws: &str,
+            _pane: &str,
+            _rows: u16,
+            _cols: u16,
+            _alt: bool,
+            _inline: bool,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -667,5 +724,20 @@ mod tests {
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let out = list_native_sessions(&ctx).unwrap();
         assert_eq!(out, serde_json::json!([{ "name": "bg-sess" }]));
+    }
+
+    #[test]
+    fn resize_pane_ok_and_pane_missing_is_invalid_args() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> =
+            Arc::new(HostStateAccessor(writer.clone()));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        resize_pane(&ctx, "ws-1", "p-1", 40, 120, false, false).unwrap();
+        // pane 不存在（FakeWriter.exists=false）→ InvalidArgs。
+        let w2 = fake_writer(false);
+        let acc2: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(w2));
+        let (ctx2, _s2) = ctx_with_state(acc2, CapabilitySet::allow_all());
+        let err = resize_pane(&ctx2, "ws-1", "nope", 40, 120, false, false).unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
     }
 }
