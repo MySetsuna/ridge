@@ -128,6 +128,9 @@ mod tests {
         fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
             Ok(())
         }
+        fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]

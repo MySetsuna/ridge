@@ -57,6 +57,8 @@ pub trait WorkspaceReader: Send + Sync {
 pub trait WorkspaceWriter: Send + Sync {
     /// 切换活动工作区。工作区不存在（或 id 非法）→ `Err(消息)`。宿主原子地校验+置位。
     fn set_active_workspace(&self, workspace_id: &str) -> Result<(), String>;
+    /// 重排工作区顺序：把 `from_index` 处的工作区移到 `to_index`。越界 → `Err`。
+    fn reorder_workspaces(&self, from_index: usize, to_index: usize) -> Result<(), String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -116,6 +118,17 @@ pub fn switch_workspace(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
     writer
         .0
         .set_active_workspace(workspace_id)
+        .map_err(CoreError::InvalidArgs)?;
+    Ok(Value::Null)
+}
+
+/// handler：`reorder_workspaces`。把 `fromIndex` 处工作区移到 `toIndex`（与桌面命令同
+/// 语义：越界 → `InvalidArgs`）。经 [`WorkspaceWriter`] 端口写。
+pub fn reorder_workspaces(ctx: &Ctx, from_index: usize, to_index: usize) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .reorder_workspaces(from_index, to_index)
         .map_err(CoreError::InvalidArgs)?;
     Ok(Value::Null)
 }
@@ -193,6 +206,7 @@ mod tests {
     struct FakeWriter {
         exists: bool,
         switched: std::sync::Mutex<Option<String>>,
+        reordered: std::sync::Mutex<Option<(usize, usize)>>,
     }
     impl WorkspaceReader for FakeWriter {
         fn workspace_raw(&self, _id: &str) -> Option<WorkspaceRaw> {
@@ -216,10 +230,20 @@ mod tests {
             *self.switched.lock().unwrap() = Some(id.to_string());
             Ok(())
         }
+        fn reorder_workspaces(&self, from: usize, to: usize) -> Result<(), String> {
+            if !self.exists {
+                return Err("无效的索引".into()); // 复用 exists 作「越界」开关
+            }
+            *self.reordered.lock().unwrap() = Some((from, to));
+            Ok(())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
         fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
             Ok(())
         }
     }
@@ -248,12 +272,17 @@ mod tests {
         assert_eq!(out["git_repos"], serde_json::json!([]));
     }
 
+    fn fake_writer(exists: bool) -> Arc<FakeWriter> {
+        Arc::new(FakeWriter {
+            exists,
+            switched: std::sync::Mutex::new(None),
+            reordered: std::sync::Mutex::new(None),
+        })
+    }
+
     #[test]
     fn switch_workspace_sets_active_via_writer() {
-        let writer = Arc::new(FakeWriter {
-            exists: true,
-            switched: std::sync::Mutex::new(None),
-        });
+        let writer = fake_writer(true);
         let accessor: Arc<dyn crate::ctx::CoreState> =
             Arc::new(HostStateAccessor(writer.clone()));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
@@ -263,13 +292,29 @@ mod tests {
 
     #[test]
     fn switch_workspace_missing_is_invalid_args() {
-        let writer = Arc::new(FakeWriter {
-            exists: false,
-            switched: std::sync::Mutex::new(None),
-        });
+        let writer = fake_writer(false);
         let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let err = switch_workspace(&ctx, "nope").unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
+    }
+
+    #[test]
+    fn reorder_workspaces_forwards_indices_via_writer() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> =
+            Arc::new(HostStateAccessor(writer.clone()));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        reorder_workspaces(&ctx, 2, 0).unwrap();
+        assert_eq!(*writer.reordered.lock().unwrap(), Some((2, 0)));
+    }
+
+    #[test]
+    fn reorder_workspaces_out_of_bounds_is_invalid_args() {
+        let writer = fake_writer(false);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let err = reorder_workspaces(&ctx, 9, 9).unwrap_err();
         assert_eq!(err.kind_tag(), "invalid_args");
     }
 }

@@ -196,6 +196,11 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
         "switch_workspace" => workspace::switch_workspace(ctx, &s(&args, "workspaceId")),
+        "reorder_workspaces" => {
+            let from = args.get("fromIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let to = args.get("toIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            workspace::reorder_workspaces(ctx, from, to)
+        }
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -478,6 +483,9 @@ mod tests {
     // 聚合 HostState 也要求 WorkspaceWriter；本测试只走 cwd 端口 → 记录切换目标。
     impl crate::commands::workspace::WorkspaceWriter for FakeStore {
         fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
             Ok(())
         }
     }

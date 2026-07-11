@@ -121,6 +121,17 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
         *self.active_workspace.write() = id;
         Ok(())
     }
+
+    fn reorder_workspaces(&self, from_index: usize, to_index: usize) -> Result<(), String> {
+        // 与 commands::workspace::reorder_workspaces 逐字一致（越界拒 → remove/insert）。
+        let mut order = self.workspace_order.write();
+        if from_index >= order.len() || to_index >= order.len() {
+            return Err("无效的索引".into());
+        }
+        let item = order.remove(from_index);
+        order.insert(to_index, item);
+        Ok(())
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event
