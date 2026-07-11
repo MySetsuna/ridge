@@ -73,7 +73,7 @@ Authorization: Bearer <RIDGE_TEAMMATE_TOKEN>
 | `ridge_send_to_teammate` | 向指定分屏的队友发一段文本/消息 | ✅ 已接线（落活动工作区） |
 | `ridge_delegate_task` | 给某个 Worker 派活（注入任务 + 标记 Working） | ✅ 已接线（落活动工作区） |
 | `ridge_split_pane` | 分屏，开一个新分屏给队友 | ⚙️ 已登记，`tools/call` 暂未路由 |
-| `ridge_stash_data` | 把数据暂存到内存 Stash，供 `ridge://cache/<id>` 读取 | ⚙️ 已登记，`tools/call` 暂未路由 |
+| `ridge_stash_data` | 把数据暂存到内存 Stash，供 `ridge://cache/<id>` 读取 | ✅ 已接线（`tools/call` 存 + `resources/read` 回读；FIFO 64 条/32 MiB） |
 | `ridge_get_team_profile` | 取团队花名册（roster + leader + edges） | ✅ 已接线（`tools/call` 路由，只读返回花名册；也可走 `resources/read`） |
 | `ridge_join_group` | 把某成员（`agent_id` 或 pane）加入按名字寻址的已有编组 | ✅ 已接线（`tools/call` 路由，事件桥落前端编组；见 §3） |
 
@@ -162,8 +162,8 @@ Authorization: Bearer <RIDGE_TEAMMATE_TOKEN>
 
 ## 6. 当前限制（诚实说明）
 
-- `tools/call` 目前路由 `ridge_send_to_teammate`、`ridge_delegate_task`、`ridge_get_team_profile`、`ridge_join_group`；`ridge_split_pane` / `ridge_stash_data` 已在 `tools/list` 中可见但调用返回 unknown。
-- `resources/read` 目前只接 `ridge://workspace/active-panes`。
+- `tools/call` 目前路由 `ridge_send_to_teammate`、`ridge_delegate_task`、`ridge_get_team_profile`、`ridge_join_group`、`ridge_stash_data`；仅 `ridge_split_pane` 尚未路由（`tools/list` 可见，调用返回 unknown——需前端分屏+spawn 落地，属 2-sided）。
+- `resources/read` 目前接 `ridge://workspace/active-panes` 与 `ridge://cache/<id>`（后者回读 `ridge_stash_data` 暂存内容）。
 - **`notifications/progress` 服务端推送暂未实现**（需要 WS split sink）；当前是请求-响应循环。
 - 所有动作落在**当前活动工作区**（暂不支持跨工作区寻址 pane）。
 - **`ridge_join_group` 是一次写入·fire-and-forget**：编组数据只在前端，后端无法同步确认组是否存在或是否加入成功；agent 想确认需人工看「智能体」面板（后续可加 `ridge://workspace/groups` 只读资源 + 前端→后端同步）。前端监听在「智能体」面板挂载时才生效。
