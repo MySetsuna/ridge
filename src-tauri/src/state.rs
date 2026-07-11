@@ -543,14 +543,6 @@ pub struct AppState {
     /// 「主机 / Hosts」外部主机注册表（远端 ridge / rdg）。P3/P4 基础层：登记 +
     /// 状态管理；live PTY 流传输为下一里程（见 crate::hosts）。
     pub hosts: Arc<crate::hosts::HostRegistry>,
-    /// When `true`, the remote `data-request` dispatcher rejects every mutating
-    /// filesystem/git method (write/delete/rename/create/copy/move + git
-    /// commit/push/pull/reset/checkout/clean/…). Reads stay allowed. Defaults to
-    /// `false` (writable) to preserve the existing remote file-editor behaviour;
-    /// the desktop "Remote Control" panel can flip it via `set_remote_fs_readonly`
-    /// for view-only sessions. NOTE: an authenticated remote already has shell
-    /// stdin, so this is defence-in-depth, not an isolation boundary.
-    pub remote_fs_readonly: Arc<AtomicBool>,
     /// Broadcast channel for structural changes (pane/workspace add/close/rename)
     /// that remote WS clients subscribe to. Late joiners skip stale events —
     /// they pull current state on connect or on demand.
@@ -644,7 +636,6 @@ impl AppState {
             remote_client_registry: Arc::new(RemoteClientRegistry::default()),
             remote_blacklist: Arc::new(RemoteBlacklist::default()),
             hosts: Arc::new(crate::hosts::HostRegistry::default()),
-            remote_fs_readonly: Arc::new(AtomicBool::new(false)),
             remote_structural_tx: {
                 let (tx, _) = tokio::sync::broadcast::channel(64);
                 tx

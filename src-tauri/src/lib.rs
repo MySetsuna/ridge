@@ -810,8 +810,6 @@ pub fn run() {
             commands::remote::totp_trust_revoke_all,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
-            commands::remote::set_remote_fs_readonly,
-            commands::remote::get_remote_fs_readonly,
             commands::remote::list_remote_sessions,
             commands::remote::disconnect_session,
             commands::remote::add_to_blacklist,
