@@ -192,6 +192,10 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         }
         "get_active_workspace_id" => workspace::get_active_workspace_id(ctx),
         "list_workspaces" => workspace::list_workspaces(ctx),
+        // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
+        // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
+        // 补齐远端工作区切换。
+        "switch_workspace" => workspace::switch_workspace(ctx, &s(&args, "workspaceId")),
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -469,6 +473,12 @@ mod tests {
         }
         fn workspaces_list(&self) -> Vec<crate::commands::workspace::WorkspaceEntry> {
             vec![]
+        }
+    }
+    // 聚合 HostState 也要求 WorkspaceWriter；本测试只走 cwd 端口 → 记录切换目标。
+    impl crate::commands::workspace::WorkspaceWriter for FakeStore {
+        fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 

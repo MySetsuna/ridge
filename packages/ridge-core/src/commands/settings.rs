@@ -53,8 +53,23 @@ pub fn set_user_default_cwd(ctx: &Ctx, path: Option<String>) -> CoreResult<()> {
 /// [`WorkspaceReader`](super::workspace::WorkspaceReader)），blanket impl 自动使其成为
 /// `HostState`。新增一个域端口时，把它加进这里的 bound，宿主补上对应 impl 即可——**不新增
 /// 第二个 accessor 类型**（避免 D4 下转目标分裂）。
-pub trait HostState: UserDefaultCwdStore + super::workspace::WorkspaceReader + Send + Sync {}
-impl<T: UserDefaultCwdStore + super::workspace::WorkspaceReader + Send + Sync> HostState for T {}
+pub trait HostState:
+    UserDefaultCwdStore
+    + super::workspace::WorkspaceReader
+    + super::workspace::WorkspaceWriter
+    + Send
+    + Sync
+{
+}
+impl<
+        T: UserDefaultCwdStore
+            + super::workspace::WorkspaceReader
+            + super::workspace::WorkspaceWriter
+            + Send
+            + Sync,
+    > HostState for T
+{
+}
 
 /// Internal accessor wrapper. Hosts register their state as
 /// `Arc<HostStateAccessor>`. 下转目标是 `ridge-core` 拥有的类型，跨 crate 可靠（下转外部
@@ -106,6 +121,12 @@ mod tests {
         }
         fn workspaces_list(&self) -> Vec<super::super::workspace::WorkspaceEntry> {
             vec![]
+        }
+    }
+    // 聚合 HostState 也要求 WorkspaceWriter；本测试不走该端口 → no-op Ok。
+    impl super::super::workspace::WorkspaceWriter for FakeStore {
+        fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 

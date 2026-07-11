@@ -109,6 +109,20 @@ impl ridge_core::commands::workspace::WorkspaceReader for AppState {
     }
 }
 
+/// R0 内核化：桌面 `AppState` 作为 `WorkspaceWriter` 端口。逻辑与
+/// `commands::workspace::switch_workspace` 逐字一致（解析 uuid → 校验存在 → 置活动）；
+/// 不触 PTY。远端 controller 的 `switch_workspace` 经 dispatch 落到此。
+impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
+    fn set_active_workspace(&self, workspace_id: &str) -> Result<(), String> {
+        let id = uuid::Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
+        if !self.workspaces.read().contains_key(&id) {
+            return Err("工作区不存在".into());
+        }
+        *self.active_workspace.write() = id;
+        Ok(())
+    }
+}
+
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event
 /// surfaces. `Broadcast` events go to both the native WebView (`AppHandle::
 /// emit`) and the desktop-browser remote clients (`remote_ui_event_tx`).
