@@ -63,6 +63,9 @@ pub trait WorkspaceWriter: Send + Sync {
     fn rename_workspace(&self, workspace_id: &str, name: &str) -> Result<(), String>;
     /// 新建根工作区（空终端表，不触 PTY），切为活动区并广播。返回新工作区 id 串。
     fn create_workspace(&self, name: Option<&str>) -> Result<String, String>;
+    /// 关闭工作区（从顺序表/映射移除→其终端表随之 drop）。剩最后一个 / 非法 id → `Err`。
+    /// **破坏性**：会 drop 该区 PTY 句柄；语义与桌面命令一致（远端亦可触发，允许列表已放行）。
+    fn close_workspace(&self, workspace_id: &str) -> Result<(), String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -154,6 +157,17 @@ pub fn create_workspace(ctx: &Ctx, name: Option<&str>) -> CoreResult<Value> {
     let writer = ctx.state::<super::settings::HostStateAccessor>()?;
     let id = writer.0.create_workspace(name).map_err(CoreError::internal)?;
     Ok(Value::String(id))
+}
+
+/// handler：`close_workspace`。关闭工作区（与桌面命令同语义：剩最后一个/非法 id →
+/// `InvalidArgs`）。经 [`WorkspaceWriter`] 端口写（破坏性，drop 该区 PTY）。
+pub fn close_workspace(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .close_workspace(workspace_id)
+        .map_err(CoreError::InvalidArgs)?;
+    Ok(Value::Null)
 }
 
 #[cfg(test)]
@@ -271,6 +285,12 @@ mod tests {
         fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok("ws-created".to_string())
         }
+        fn close_workspace(&self, _id: &str) -> Result<(), String> {
+            if !self.exists {
+                return Err("无法关闭最后一个工作区".into()); // 复用 exists 作错误开关
+            }
+            Ok(())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -285,6 +305,9 @@ mod tests {
         }
         fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok(String::new())
+        }
+        fn close_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -388,5 +411,22 @@ mod tests {
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let out = create_workspace(&ctx, Some("foo")).unwrap();
         assert_eq!(out, Value::String("ws-created".to_string()));
+    }
+
+    #[test]
+    fn close_workspace_ok_via_writer() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        close_workspace(&ctx, "ws-3").unwrap();
+    }
+
+    #[test]
+    fn close_workspace_last_or_invalid_is_invalid_args() {
+        let writer = fake_writer(false);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let err = close_workspace(&ctx, "ws-last").unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
     }
 }

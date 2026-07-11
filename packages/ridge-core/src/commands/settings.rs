@@ -137,6 +137,9 @@ mod tests {
         fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok(String::new())
         }
+        fn close_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]
