@@ -192,6 +192,15 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
         Ok(())
     }
+
+    fn save_workspace(&self, name: Option<&str>) -> Result<String, String> {
+        // 经进程级 AppHandle 解析 app 数据目录做历史文件 IO；复用桌面命令核心（DRY）。
+        let app = self
+            .app_handle
+            .get()
+            .ok_or_else(|| "app handle 未就绪".to_string())?;
+        crate::commands::workspace::save_workspace_core(app, self, name)
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event

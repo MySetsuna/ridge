@@ -66,6 +66,8 @@ pub trait WorkspaceWriter: Send + Sync {
     /// 关闭工作区（从顺序表/映射移除→其终端表随之 drop）。剩最后一个 / 非法 id → `Err`。
     /// **破坏性**：会 drop 该区 PTY 句柄；语义与桌面命令一致（远端亦可触发，允许列表已放行）。
     fn close_workspace(&self, workspace_id: &str) -> Result<(), String>;
+    /// 把当前活动工作区存进历史（宿主经 app 数据目录文件 IO）。返回 history id。
+    fn save_workspace(&self, name: Option<&str>) -> Result<String, String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -159,7 +161,7 @@ pub fn create_workspace(ctx: &Ctx, name: Option<&str>) -> CoreResult<Value> {
     Ok(Value::String(id))
 }
 
-/// handler：`close_workspace`。关闭工作区（与桌面命令同语义：剩最后一个/非法 id →
+/// handler：`close_workspace`。关闭工作区（与桌面命令同语义:剩最后一个/非法 id →
 /// `InvalidArgs`）。经 [`WorkspaceWriter`] 端口写（破坏性，drop 该区 PTY）。
 pub fn close_workspace(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
     let writer = ctx.state::<super::settings::HostStateAccessor>()?;
@@ -168,6 +170,15 @@ pub fn close_workspace(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
         .close_workspace(workspace_id)
         .map_err(CoreError::InvalidArgs)?;
     Ok(Value::Null)
+}
+
+/// handler：`save_workspace`。存当前工作区到历史（宿主文件 IO）。返回 history id 串。
+/// 注：`restore_workspace` **未**入 REMOTE_ALLOWLIST（远端还原工作区属安全面扩张，需显式
+/// 授权决策，故不下沉 dispatch）；桌面侧仍走 `commands::workspace::restore_workspace_core`。
+pub fn save_workspace(ctx: &Ctx, name: Option<&str>) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    let id = writer.0.save_workspace(name).map_err(CoreError::internal)?;
+    Ok(Value::String(id))
 }
 
 #[cfg(test)]
@@ -291,6 +302,9 @@ mod tests {
             }
             Ok(())
         }
+        fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok("hist-1".to_string())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -308,6 +322,9 @@ mod tests {
         }
         fn close_workspace(&self, _id: &str) -> Result<(), String> {
             Ok(())
+        }
+        fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok(String::new())
         }
     }
 
@@ -428,5 +445,14 @@ mod tests {
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let err = close_workspace(&ctx, "ws-last").unwrap_err();
         assert_eq!(err.kind_tag(), "invalid_args");
+    }
+
+    #[test]
+    fn save_workspace_returns_history_id_from_writer() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let out = save_workspace(&ctx, None).unwrap();
+        assert_eq!(out, Value::String("hist-1".to_string()));
     }
 }

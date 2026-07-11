@@ -52,11 +52,10 @@ pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Res
     Ok(())
 }
 
-/// 新建根工作区的核心逻辑（不带 Tauri `State` 包装）：独立分屏树与终端表，切换为活动区，
-/// 广播列表变更。抽出供**桌面命令**与 **ridge-core `WorkspaceWriter` 端口**（远端 controller
-/// 经 dispatch 新建工作区）共用——避免 `Workspace` 字面量在两处重复（DRY）。不触 PTY
-/// （新建工作区 terminals 为空）。返回新工作区 id 串。
-pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
+/// 插入一个带指定 `pane_tree` 的新根工作区，切为活动区，返回新 id。**不广播**（调用方按需）。
+/// `Workspace` 字面量的**唯一**产地——create（空树）与 restore（还原树）共用（DRY）。不触
+/// PTY（terminals 为空）。
+pub fn insert_new_workspace(state: &AppState, pane_tree: PaneTree, name: Option<&str>) -> String {
     let id = Uuid::new_v4();
     let seq = state.allocate_workspace_seq();
     {
@@ -64,7 +63,7 @@ pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
         map.insert(
             id,
             Workspace {
-                pane_tree: PaneTree::new(),
+                pane_tree,
                 terminals: std::collections::HashMap::new(),
                 teammate_tmux_pane_cursor: 0,
                 teammate_pane_titles: std::collections::HashMap::new(),
@@ -87,6 +86,13 @@ pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
     if let Some(name) = name.filter(|n| !n.is_empty()) {
         state.workspace_names.write().insert(id, name.to_string());
     }
+    id.to_string()
+}
+
+/// 新建根工作区的核心逻辑（不带 Tauri `State` 包装）：空分屏树 + 广播列表变更。抽出供
+/// **桌面命令**与 **ridge-core `WorkspaceWriter` 端口**（远端经 dispatch 新建）共用。返回新 id。
+pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
+    let id = insert_new_workspace(state, PaneTree::new(), name);
     // Broadcast workspace list change to remote clients and desktop frontend.
     let _ = state
         .remote_structural_tx
@@ -94,7 +100,7 @@ pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
     let _ = state
         .event_tx
         .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
-    id.to_string()
+    id
 }
 
 /// 新建根工作区：独立分屏树与终端表，并切换为当前活动区。
@@ -255,15 +261,14 @@ pub fn list_workspace_history(
     Ok(store.items)
 }
 
-#[tauri::command]
-pub fn save_workspace(
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
-    name: Option<String>,
+/// save_workspace 的核心（不带 Tauri wrapper）：把当前活动工作区的 pane 树存进历史文件。
+/// 抽出供桌面命令与 ridge-core WorkspaceWriter 端口（远端经 dispatch 保存）共用。返回 history id。
+pub fn save_workspace_core(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    name: Option<&str>,
 ) -> Result<String, String> {
     let history_id = Uuid::new_v4().to_string();
-
-    // Get current workspace pane tree
     let active_id = state.active_workspace_id();
     let (pane_tree_json, pane_count, workspace_name) = {
         let map = state.workspaces.read();
@@ -272,20 +277,15 @@ pub fn save_workspace(
             .map(|ws| {
                 let pane_count = ws.pane_tree.get_all_leaves().len();
                 let pane_tree_json = serde_json::to_string(&ws.pane_tree).unwrap_or_default();
-                // Use provided name, or fall back to saved workspace name, or auto-generate
-                let workspace_name = name.unwrap_or_else(|| {
+                let workspace_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
                     names.get(&active_id).cloned().unwrap_or_else(|| {
-                        format!(
-                            "Saved Workspace {}",
-                            chrono::Utc::now().format("%Y-%m-%d %H:%M")
-                        )
+                        format!("Saved Workspace {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"))
                     })
                 });
                 (pane_tree_json, pane_count, workspace_name)
             })
             .unwrap_or((String::new(), 0, "Unnamed Workspace".to_string()))
     };
-
     let item = WorkspaceHistoryItem {
         id: history_id.clone(),
         name: workspace_name,
@@ -294,12 +294,19 @@ pub fn save_workspace(
         is_pinned: false,
         pane_tree_json,
     };
-
-    let mut store = load_history_store(&app_handle);
+    let mut store = load_history_store(app_handle);
     store.items.push(item);
-    save_history_store(&app_handle, &store)?;
-
+    save_history_store(app_handle, &store)?;
     Ok(history_id)
+}
+
+#[tauri::command]
+pub fn save_workspace(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<String, String> {
+    save_workspace_core(&app_handle, &state, name.as_deref())
 }
 
 #[tauri::command]
@@ -312,53 +319,31 @@ pub fn delete_workspace_history(
     save_history_store(&app_handle, &store)
 }
 
+/// restore_workspace 的核心：按 history id 从历史文件还原 pane 树为新工作区。抽出供桌面命令
+/// 与 ridge-core WorkspaceWriter 端口共用；复用 [`insert_new_workspace`]（Workspace 字面量零重复）。
+pub fn restore_workspace_core(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    history_id: &str,
+) -> Result<String, String> {
+    let store = load_history_store(app_handle);
+    let item = store
+        .items
+        .iter()
+        .find(|i| i.id == history_id)
+        .ok_or("历史工作区不存在")?;
+    let pane_tree: PaneTree =
+        serde_json::from_str(&item.pane_tree_json).map_err(|e| e.to_string())?;
+    Ok(insert_new_workspace(state, pane_tree, None))
+}
+
 #[tauri::command]
 pub fn restore_workspace(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     history_id: String,
 ) -> Result<String, String> {
-    let store = load_history_store(&app_handle);
-    let item = store
-        .items
-        .iter()
-        .find(|i| i.id == history_id)
-        .ok_or("历史工作区不存在")?;
-
-    // Create new workspace with restored pane tree
-    let new_id = Uuid::new_v4();
-    let pane_tree: PaneTree =
-        serde_json::from_str(&item.pane_tree_json).map_err(|e| e.to_string())?;
-    let seq = state.allocate_workspace_seq();
-
-    {
-        let mut map = state.workspaces.write();
-        map.insert(
-            new_id,
-            Workspace {
-                pane_tree,
-                terminals: std::collections::HashMap::new(),
-                teammate_tmux_pane_cursor: 0,
-                teammate_pane_titles: std::collections::HashMap::new(),
-                pane_sizes: std::collections::HashMap::new(),
-                last_pane_index: None,
-                created_at: std::time::SystemTime::now(),
-                teammate_pane_states: std::collections::HashMap::new(),
-                teammate_agent_pane_map: std::collections::HashMap::new(),
-                teammate_owned_panes: std::collections::HashSet::new(),
-                associated_file_path: None,
-                pending_spawns: std::collections::HashMap::new(),
-                pty_generation: std::collections::HashMap::new(),
-                teammate_metrics: crate::state::TeammateMetrics::default(),
-                display_seq: seq,
-            },
-        );
-    }
-
-    state.workspace_order.write().push(new_id);
-    *state.active_workspace.write() = new_id;
-
-    Ok(new_id.to_string())
+    restore_workspace_core(&app_handle, &state, &history_id)
 }
 
 #[tauri::command]
