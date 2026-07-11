@@ -164,6 +164,34 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
         // 复用桌面命令核心（DRY：Workspace 字面量只在 create_workspace_core 一处）。
         Ok(crate::commands::workspace::create_workspace_core(self, name))
     }
+
+    fn close_workspace(&self, workspace_id: &str) -> Result<(), String> {
+        // 与 commands::workspace::close_workspace 语义一致：剩最后一个拒；否则从顺序表/
+        // 映射移除（其 terminals 随 Workspace drop 而清理 PTY），必要时改选活动区，并广播。
+        let id = uuid::Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
+        if self.workspace_order.read().len() <= 1 {
+            return Err("无法关闭最后一个工作区".into());
+        }
+        {
+            let mut order = self.workspace_order.write();
+            if let Some(pos) = order.iter().position(|&x| x == id) {
+                order.remove(pos);
+            }
+        }
+        self.workspaces.write().remove(&id);
+        if *self.active_workspace.read() == id {
+            if let Some(&first) = self.workspace_order.read().first() {
+                *self.active_workspace.write() = first;
+            }
+        }
+        let _ = self
+            .remote_structural_tx
+            .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
+        let _ = self
+            .event_tx
+            .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
+        Ok(())
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event
