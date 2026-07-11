@@ -131,6 +131,9 @@ mod tests {
         fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
             Ok(())
         }
+        fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]

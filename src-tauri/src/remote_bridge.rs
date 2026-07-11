@@ -132,6 +132,33 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
         order.insert(to_index, item);
         Ok(())
     }
+
+    fn rename_workspace(&self, workspace_id: &str, name: &str) -> Result<(), String> {
+        // 与 commands::workspace::rename_workspace 逐字一致：改名 + 落盘 + 广播。
+        let id = uuid::Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
+        self.workspace_names.write().insert(id, name.to_string());
+        // 立刻反映到 .ridge 文件（未保存工作区为 no-op）。
+        crate::commands::ridge_file::schedule_auto_save(self, id);
+        let display_name = self
+            .workspace_names
+            .read()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        let _ = self.remote_structural_tx.send(
+            crate::types::RemoteStructuralEvent::WorkspaceRenamed {
+                workspace_id: id,
+                name: display_name,
+            },
+        );
+        let _ = self
+            .remote_structural_tx
+            .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
+        let _ = self
+            .event_tx
+            .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
+        Ok(())
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event

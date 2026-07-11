@@ -201,6 +201,9 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             let to = args.get("toIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             workspace::reorder_workspaces(ctx, from, to)
         }
+        "rename_workspace" => {
+            workspace::rename_workspace(ctx, &s(&args, "workspaceId"), &s(&args, "name"))
+        }
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -486,6 +489,9 @@ mod tests {
             Ok(())
         }
         fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
+            Ok(())
+        }
+        fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
             Ok(())
         }
     }
