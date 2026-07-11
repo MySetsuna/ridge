@@ -201,6 +201,27 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             .ok_or_else(|| "app handle 未就绪".to_string())?;
         crate::commands::workspace::save_workspace_core(app, self, name)
     }
+
+    fn save_workspace_to_file(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        path: Option<&str>,
+    ) -> Result<String, String> {
+        let app = self
+            .app_handle
+            .get()
+            .ok_or_else(|| "app handle 未就绪".to_string())?;
+        crate::commands::ridge_file::save_workspace_to_file_core(app, self, workspace_id, name, path)
+    }
+
+    fn delete_workspace_file(&self, workspace_id: &str) -> Result<(), String> {
+        let app = self
+            .app_handle
+            .get()
+            .ok_or_else(|| "app handle 未就绪".to_string())?;
+        crate::commands::ridge_file::delete_workspace_file_core(app, self, workspace_id)
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event

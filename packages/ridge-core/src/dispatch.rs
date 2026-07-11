@@ -211,6 +211,15 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         "save_workspace" => {
             workspace::save_workspace(ctx, args.get("name").and_then(|v| v.as_str()))
         }
+        "save_workspace_to_file" => workspace::save_workspace_to_file(
+            ctx,
+            &s(&args, "workspaceId"),
+            &s(&args, "name"),
+            args.get("path").and_then(|v| v.as_str()),
+        ),
+        "delete_workspace_file" => {
+            workspace::delete_workspace_file(ctx, &s(&args, "workspaceId"))
+        }
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -509,6 +518,17 @@ mod tests {
         }
         fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok(String::new())
+        }
+        fn save_workspace_to_file(
+            &self,
+            _id: &str,
+            _name: &str,
+            _path: Option<&str>,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 

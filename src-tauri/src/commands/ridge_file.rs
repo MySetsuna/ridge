@@ -373,22 +373,23 @@ fn find_git_root(start: &Path) -> Option<PathBuf> {
 
 // ─── Commands ──────────────────────────────────────────────────────────────
 
-#[tauri::command]
-pub fn save_workspace_to_file(
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
-    workspace_id: String,
-    name: String,
-    path: Option<String>,
+/// save_workspace_to_file 的核心（不带 Tauri wrapper），供桌面命令与 ridge-core
+/// WorkspaceWriter 端口（远端经 dispatch 存盘）共用。非破坏：写 .ridge 存档文件。
+pub fn save_workspace_to_file_core(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    workspace_id: &str,
+    name: &str,
+    path: Option<&str>,
 ) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("工作区名不能为空".into());
     }
-    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
-    let target = resolve_target_path(trimmed, path);
+    let id = Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
+    let target = resolve_target_path(trimmed, path.map(|s| s.to_string()));
 
-    let wf = snapshot_workspace(&state, id, trimmed)?;
+    let wf = snapshot_workspace(state, id, trimmed)?;
     let json = serde_json::to_vec_pretty(&wf).map_err(|e| e.to_string())?;
     atomic_write(&target, &json).map_err(|e| e.to_string())?;
 
@@ -403,18 +404,30 @@ pub fn save_workspace_to_file(
         .workspace_names
         .write()
         .insert(id, trimmed.to_string());
-    set_last_opened(&app_handle, &target);
+    set_last_opened(app_handle, &target);
 
     Ok(target.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-pub fn delete_workspace_file(
+pub fn save_workspace_to_file(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     workspace_id: String,
+    name: String,
+    path: Option<String>,
+) -> Result<String, String> {
+    save_workspace_to_file_core(&app_handle, &state, &workspace_id, &name, path.as_deref())
+}
+
+/// delete_workspace_file 的核心，供桌面命令与 ridge-core WorkspaceWriter 端口共用。
+/// **破坏性**：删该工作区关联的 .ridge 存档文件（仅此文件，非任意路径）；语义与桌面命令一致。
+pub fn delete_workspace_file_core(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    workspace_id: &str,
 ) -> Result<(), String> {
-    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let id = Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
     let path_opt = {
         let mut map = state.workspaces.write();
         map.get_mut(&id)
@@ -425,7 +438,7 @@ pub fn delete_workspace_file(
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         }
         // 如果 last-opened 指向了这个文件，也要清理。
-        let ptr = last_opened_pointer_path(&app_handle);
+        let ptr = last_opened_pointer_path(app_handle);
         if let Ok(s) = std::fs::read_to_string(&ptr) {
             if PathBuf::from(s.trim()) == path {
                 let _ = std::fs::remove_file(&ptr);
@@ -435,6 +448,15 @@ pub fn delete_workspace_file(
     // 清除工作区的已保存名称，使其降级为默认名"工作区 N"。
     state.workspace_names.write().remove(&id);
     Ok(())
+}
+
+#[tauri::command]
+pub fn delete_workspace_file(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    delete_workspace_file_core(&app_handle, &state, &workspace_id)
 }
 
 #[tauri::command]
