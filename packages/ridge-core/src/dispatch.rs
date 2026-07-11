@@ -227,6 +227,7 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         "create_pane" => {
             workspace::create_pane(ctx, &s(&args, "paneId"), args.get("shell").and_then(|v| v.as_str()))
         }
+        "split_pane" => workspace::split_pane(ctx, &s(&args, "paneId"), &s(&args, "direction")),
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
@@ -596,6 +597,9 @@ mod tests {
         fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
             Ok(())
         }
+        fn split_pane(&self, _pane: &str, _direction: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
     }
 
     #[test]
@@ -619,11 +623,11 @@ mod tests {
     #[test]
     fn allowed_but_unmigrated_method_is_method_not_found() {
         let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
-        // `split_pane` is in the remote allow-list but not yet migrated — the
-        // pane / terminal / workspace domain commands still live in `src-tauri`
-        // (the fs read+write, search, theme/settings slices are migrated). A
+        // `close_pane` is in the remote allow-list but not yet migrated — the
+        // PTY-lifecycle **kill** pane writes still live in `src-tauri` (reads +
+        // workspace writes + resize/create/split pane writes are migrated). A
         // method that is allowed but absent from the table is MethodNotFound.
-        let err = dispatch("split_pane", serde_json::json!({"paneId": "x"}), &ctx).unwrap_err();
+        let err = dispatch("close_pane", serde_json::json!({"paneId": "x"}), &ctx).unwrap_err();
         assert_eq!(err.kind_tag(), "method_not_found");
     }
 

@@ -245,7 +245,7 @@ pub async fn split_pane(
     pane_id: String,
     direction: String,
 ) -> Result<SplitPaneResult, String> {
-    split_pane_inner(state, pane_id, direction).map_err(|e| e.to_string())
+    split_pane_inner(&state, pane_id, direction).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -414,8 +414,11 @@ pub async fn dock_pane(
     Ok(())
 }
 
-fn split_pane_inner(
-    state: State<'_, AppState>,
+/// split_pane 的核心（不带 Tauri wrapper）：分裂既有 pane（改 pane 树 + 继承 cwd + 起新 PTY）。
+/// `&AppState` 便于 ridge-core `WorkspaceWriter` 端口直调（远端分屏经 dispatch）。逻辑一字未改。
+/// **含 spawn 子进程**：端到端须真机验收。非 teammate route_split（无楔死路径）。
+pub fn split_pane_inner(
+    state: &AppState,
     pane_id: String,
     direction: String,
 ) -> Result<SplitPaneResult, AppError> {
