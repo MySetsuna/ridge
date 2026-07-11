@@ -299,6 +299,31 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
                 git::find_git_repos_below_sync(s(&args, "path"), opt_usize(&args, "maxDepth"));
             serde_json::to_value(repos).map_err(CoreError::internal)
         }
+        // 行级 blame / 本文件历史 / 单文件 diff（IDE 能力，只读；同走同步内核）。远程(#23)：
+        // 已加进 capability + 前端白名单，web-remote/cloud 也能用行注释与行历史。
+        "git_blame" => {
+            let lines = git::git_blame_sync(s(&args, "repoRoot"), s(&args, "path"))
+                .map_err(CoreError::internal)?;
+            serde_json::to_value(lines).map_err(CoreError::internal)
+        }
+        "git_file_log" => {
+            let commits = git::git_file_log_sync(
+                s(&args, "repoRoot"),
+                s(&args, "path"),
+                opt_usize(&args, "limit").map(|n| n as u32),
+            )
+            .map_err(CoreError::internal)?;
+            serde_json::to_value(commits).map_err(CoreError::internal)
+        }
+        "git_diff_file" => {
+            let diff = git::git_diff_file_sync(
+                s(&args, "repoRoot"),
+                s(&args, "path"),
+                opt_bool(&args, "cached"),
+            )
+            .map_err(CoreError::internal)?;
+            Ok(Value::String(diff))
+        }
 
         // ── Filesystem writes (S1 ledger §2.1) ──
         // Mutating — guarded above by the read-only gate, and by the traversal +
@@ -548,6 +573,33 @@ mod tests {
             if let Err(e) = dispatch(m, serde_json::json!({ "repoRoot": d.to_string_lossy() }), &ctx)
             {
                 assert_ne!(e.kind_tag(), "method_not_found", "{m} 应已路由");
+            }
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn blame_file_log_diff_are_routed_and_allowed() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("blame");
+        for (m, args) in [
+            (
+                "git_blame",
+                serde_json::json!({ "repoRoot": d.to_string_lossy(), "path": "x" }),
+            ),
+            (
+                "git_file_log",
+                serde_json::json!({ "repoRoot": d.to_string_lossy(), "path": "x" }),
+            ),
+            (
+                "git_diff_file",
+                serde_json::json!({ "repoRoot": d.to_string_lossy(), "path": "x" }),
+            ),
+        ] {
+            // 非 git 目录：底层 git 失败 → Internal；关键是既非 MethodNotFound 亦非 CapabilityDenied。
+            if let Err(e) = dispatch(m, args, &ctx) {
+                assert_ne!(e.kind_tag(), "method_not_found", "{m} 应已路由");
+                assert_ne!(e.kind_tag(), "capability_denied", "{m} 应在远程能力集内");
             }
         }
         std::fs::remove_dir_all(&d).ok();
