@@ -196,6 +196,15 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         // 远端 MethodNotFound。纯读、不触 PTY。
         "get_pane_layout" => workspace::get_pane_layout(ctx),
         "get_pane_layout_for" => workspace::get_pane_layout_for(ctx, &s(&args, "workspaceId")),
+        "get_pane_scrollback_tail" => {
+            let max = args.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            workspace::get_pane_scrollback_tail(ctx, &s(&args, "paneId"), max)
+        }
+        "get_pane_scrollback_before" => {
+            let before = args.get("beforeSeq").and_then(|v| v.as_u64()).unwrap_or(0);
+            let max = args.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            workspace::get_pane_scrollback_before(ctx, &s(&args, "paneId"), before, max)
+        }
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
@@ -503,6 +512,17 @@ mod tests {
             vec![]
         }
         fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn pane_scrollback_tail(&self, _pane: &str, _max: usize) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn pane_scrollback_before(
+            &self,
+            _pane: &str,
+            _before: u64,
+            _max: usize,
+        ) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
     }

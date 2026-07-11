@@ -53,6 +53,17 @@ pub trait WorkspaceReader: Send + Sync {
     /// 某工作区的 pane 布局（`get_pane_layout[_for]`）序列化为 JSON。纯读、不触 PTY。
     /// 工作区不存在 / id 非法 → `Err`。
     fn pane_layout(&self, workspace_id: &str) -> Result<Value, String>;
+    /// pane 的 scrollback 末尾最多 `max_bytes` 字节（`get_pane_scrollback_tail`）序列化为
+    /// JSON。纯读**已存字节**（非 live PTY）；pane_id 非法 → `Err`。
+    fn pane_scrollback_tail(&self, pane_id: &str, max_bytes: usize) -> Result<Value, String>;
+    /// pane 的 scrollback 中 `before_seq` 之前最多 `max_bytes` 字节（`get_pane_scrollback_before`，
+    /// 向上翻页）序列化为 JSON。纯读；pane_id 非法 → `Err`。
+    fn pane_scrollback_before(
+        &self,
+        pane_id: &str,
+        before_seq: u64,
+        max_bytes: usize,
+    ) -> Result<Value, String>;
 }
 
 /// 宿主暴露「写工作区元数据」的端口（R0 内核化，写命令下沉起点）。仅覆盖**不触 PTY
@@ -145,6 +156,29 @@ pub fn get_pane_layout_for(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
     reader
         .0
         .pane_layout(workspace_id)
+        .map_err(CoreError::InvalidArgs)
+}
+
+/// handler：`get_pane_scrollback_tail`。返回 pane scrollback 末尾块 JSON（纯读已存字节）。
+pub fn get_pane_scrollback_tail(ctx: &Ctx, pane_id: &str, max_bytes: usize) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    reader
+        .0
+        .pane_scrollback_tail(pane_id, max_bytes)
+        .map_err(CoreError::InvalidArgs)
+}
+
+/// handler：`get_pane_scrollback_before`。返回 pane scrollback 中 before_seq 前的块 JSON（翻页）。
+pub fn get_pane_scrollback_before(
+    ctx: &Ctx,
+    pane_id: &str,
+    before_seq: u64,
+    max_bytes: usize,
+) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    reader
+        .0
+        .pane_scrollback_before(pane_id, before_seq, max_bytes)
         .map_err(CoreError::InvalidArgs)
 }
 
@@ -302,6 +336,17 @@ mod tests {
         fn pane_layout(&self, _id: &str) -> Result<Value, String> {
             Ok(Value::Null)
         }
+        fn pane_scrollback_tail(&self, _pane: &str, _max: usize) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
+        fn pane_scrollback_before(
+            &self,
+            _pane: &str,
+            _before: u64,
+            _max: usize,
+        ) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
     }
     // 聚合 HostState 也要求 UserDefaultCwdStore；本测试只走 workspace 端口 → 空实现。
     impl crate::commands::settings::UserDefaultCwdStore for FakeReader {
@@ -327,6 +372,17 @@ mod tests {
         fn pane_layout(&self, id: &str) -> Result<Value, String> {
             // 回带 id 的可断言值（验证 handler 把 workspace_id 透传到端口）。
             Ok(serde_json::json!({ "for": id }))
+        }
+        fn pane_scrollback_tail(&self, pane: &str, max: usize) -> Result<Value, String> {
+            Ok(serde_json::json!({ "tail": pane, "max": max }))
+        }
+        fn pane_scrollback_before(
+            &self,
+            pane: &str,
+            before: u64,
+            max: usize,
+        ) -> Result<Value, String> {
+            Ok(serde_json::json!({ "pane": pane, "before": before, "max": max }))
         }
     }
     impl crate::commands::settings::UserDefaultCwdStore for FakeWriter {
@@ -573,5 +629,19 @@ mod tests {
         // active 版走 active_workspace()（FakeWriter 为空串）。
         let out2 = get_pane_layout(&ctx).unwrap();
         assert_eq!(out2, serde_json::json!({ "for": "" }));
+    }
+
+    #[test]
+    fn get_pane_scrollback_handlers_forward_args_to_reader() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let tail = get_pane_scrollback_tail(&ctx, "p-1", 4096).unwrap();
+        assert_eq!(tail, serde_json::json!({ "tail": "p-1", "max": 4096 }));
+        let before = get_pane_scrollback_before(&ctx, "p-1", 99, 2048).unwrap();
+        assert_eq!(
+            before,
+            serde_json::json!({ "pane": "p-1", "before": 99, "max": 2048 })
+        );
     }
 }

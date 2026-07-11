@@ -125,6 +125,17 @@ mod tests {
         fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
+        fn pane_scrollback_tail(&self, _pane: &str, _max: usize) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn pane_scrollback_before(
+            &self,
+            _pane: &str,
+            _before: u64,
+            _max: usize,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
     }
     // 聚合 HostState 也要求 WorkspaceWriter；本测试不走该端口 → no-op Ok。
     impl super::super::workspace::WorkspaceWriter for FakeStore {

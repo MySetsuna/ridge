@@ -113,6 +113,26 @@ impl ridge_core::commands::workspace::WorkspaceReader for AppState {
         let node = crate::commands::pane::get_pane_layout_for_inner(self, workspace_id)?;
         serde_json::to_value(node).map_err(|e| e.to_string())
     }
+
+    fn pane_scrollback_tail(&self, pane_id: &str, max_bytes: usize) -> Result<Value, String> {
+        // 与桌面 get_pane_scrollback_tail 逐字一致：pane_id→活动区→取已存 scrollback 尾块。
+        let pid = uuid::Uuid::parse_str(pane_id).map_err(|e| e.to_string())?;
+        let wid = self.active_workspace_id();
+        let chunk = self.get_pty_scrollback_tail(wid, pid, max_bytes);
+        serde_json::to_value(chunk).map_err(|e| e.to_string())
+    }
+
+    fn pane_scrollback_before(
+        &self,
+        pane_id: &str,
+        before_seq: u64,
+        max_bytes: usize,
+    ) -> Result<Value, String> {
+        let pid = uuid::Uuid::parse_str(pane_id).map_err(|e| e.to_string())?;
+        let wid = self.active_workspace_id();
+        let chunk = self.get_pty_scrollback_before(wid, pid, before_seq, max_bytes);
+        serde_json::to_value(chunk).map_err(|e| e.to_string())
+    }
 }
 
 /// R0 内核化：桌面 `AppState` 作为 `WorkspaceWriter` 端口。逻辑与
