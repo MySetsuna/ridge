@@ -192,6 +192,10 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         }
         "get_active_workspace_id" => workspace::get_active_workspace_id(ctx),
         "list_workspaces" => workspace::list_workspaces(ctx),
+        // pane 只读布局：远端 SPA boot 预取每个工作区布局（§4a keep-alive）。此前无 arm →
+        // 远端 MethodNotFound。纯读、不触 PTY。
+        "get_pane_layout" => workspace::get_pane_layout(ctx),
+        "get_pane_layout_for" => workspace::get_pane_layout_for(ctx, &s(&args, "workspaceId")),
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
@@ -497,6 +501,9 @@ mod tests {
         }
         fn workspaces_list(&self) -> Vec<crate::commands::workspace::WorkspaceEntry> {
             vec![]
+        }
+        fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
         }
     }
     // 聚合 HostState 也要求 WorkspaceWriter；本测试只走 cwd 端口 → 记录切换目标。

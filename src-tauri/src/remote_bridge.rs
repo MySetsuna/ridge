@@ -107,6 +107,12 @@ impl ridge_core::commands::workspace::WorkspaceReader for AppState {
             })
             .collect()
     }
+
+    fn pane_layout(&self, workspace_id: &str) -> Result<Value, String> {
+        // 纯读：复用桌面 get_pane_layout_for_inner 构造 LayoutNode，序列化为 JSON。
+        let node = crate::commands::pane::get_pane_layout_for_inner(self, workspace_id)?;
+        serde_json::to_value(node).map_err(|e| e.to_string())
+    }
 }
 
 /// R0 内核化：桌面 `AppState` 作为 `WorkspaceWriter` 端口。逻辑与
