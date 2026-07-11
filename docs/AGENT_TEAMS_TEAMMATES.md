@@ -47,7 +47,7 @@ src-tauri/src/commands/pane.rs::teammate_split_pane
 | `split-window`        | `cmd_split`                | `/api/v1/split-window`      | ✓ 真分屏，新 pane 携带 cwd + 命令、标记 Busy        |
 | `new-session` / `new` | `cmd_new_session`          | (无，shim 内 stub 应付探针) | ⚠ 不真创建 session，shim 模拟"已存在"语义           |
 | `select-pane`         | `cmd_select_pane`          | `/api/v1/select-pane`       | ✓ 更新 `teammate_tmux_pane_cursor`                  |
-| `kill-pane`           | `cmd_kill_pane`            | (shim 内 noop + log)        | ⚠ 不真关 pane（怕误关用户活动 pane）                |
+| `kill-pane`           | `cmd_kill_pane`            | `/api/v1/kill-pane`         | ✓ 真关 pane；会话限定/自定义 socket 先走 native kill，避免误关 GUI 活动 pane |
 | `send-keys`           | `cmd_send_keys`            | `/api/v1/send-keys` 或 `/api/v1/spawn-process` | ✓ 写到目标 pane 的 PTY；含 spawn-process 短路       |
 | `list-panes`          | `cmd_list_panes`           | `/api/v1/list-panes`        | ✓ 返回真实 leaves 数量 + tmux-兼容格式              |
 | `display-message -p`  | `cmd_display_message`      | (shim 内 render)            | ✓ 用 `TMUX_PANE` env + `tmux_replacements` 模板渲染 |
@@ -108,10 +108,10 @@ re-sync，`SplitContainer.svelte` 重新递归 render，新 pane 出现，
    Code 实际依赖独立 session 的工作流——若依赖，会出现"两个
    teammates 共享一个 cursor"的现象。
 
-2. **`kill-pane` 故意 no-op** — 怕误关用户的 pane。Claude Code
-   teammate 退出时新 pane 不会自动关；只是 `agent_state` 从 Busy
-   变回 Idle（通过 `release_pane` 调用）。**用户可见影响**：
-   teammates 退出后窗格留白，用户需手动关。
+2. **`kill-pane` 已真实关闭**（2026-06 起，此前为 no-op）— `cmd_kill_pane`
+   路由到 `/api/v1/kill-pane` 真关 pane；会话限定 / 自定义 socket 目标先走
+   native kill-pane，避免误关用户 GUI 工作区里的活动 pane。teammate 退出时
+   仍会通过 `release_pane` 把 `agent_state` 从 Busy 复位 Idle。
 
 3. **`resize-pane` no-op** — Ridge 用户用 splitpanes 拖拽控制大小，
    不允许 agent 调整。**用户可见影响**：teammate 用 `resize-pane
@@ -129,8 +129,9 @@ re-sync，`SplitContainer.svelte` 重新递归 render，新 pane 出现，
    需要持续追踪上游 Claude Code 用了哪些新格式。
 
 6. **`window_name` / pane title** — `route_split` 接收 `window_name`
-   存到 `teammate_pane_titles`，前端 SplitContainer 已渲染。但
-   Claude Code 改名（`rename-window`）目前没有路由。
+   存到 `teammate_pane_titles`，前端 SplitContainer 已渲染。Claude Code
+   改名（`rename-window`）**已路由**（2026-06 起）：`cmd_rename_window`
+   → 更新该 pane 的 `teammate_pane_titles` 显示名。
 
 ---
 
@@ -170,8 +171,8 @@ PTY env，回到 CLAUDE.md "Claude Code Agent Teams (TmuxBackend)" 段
 | 视觉 busy 标记            | ✓ FULL                    |
 | 空闲 pane 复用            | ✓ FULL                    |
 | 多窗口 / new-session      | ⚠ stub（不影响主流程）    |
-| 自动关 pane               | ⚠ 故意不关（设计选择）     |
-| resize/rename             | ⚠ noop（Ridge 设计取舍）    |
+| 自动关 pane               | ✓ 已接线（kill-pane 真关，护栏防误关 GUI pane）|
+| resize / rename           | resize ⚠ noop（设计取舍）；rename ✓ 已路由 |
 | 模板渲染完整性             | ⚠ 维护成本（追上游）       |
 
 **直接答用户**：是，**Ridge 已经真正支持 Claude Code Agent Teams
