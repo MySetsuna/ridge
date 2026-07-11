@@ -106,6 +106,9 @@ pub trait WorkspaceWriter: Send + Sync {
         is_alt: bool,
         is_inline_tui: bool,
     ) -> Result<(), String>;
+    /// 为既有 pane 起 shell PTY（`create_pane`，在活动工作区）。**spawn 子进程**——语义与
+    /// 桌面命令一致。pane 非法/不存在或起进程失败 → `Err`。
+    fn create_pane(&self, pane_id: &str, shell: Option<&str>) -> Result<(), String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -310,6 +313,17 @@ pub fn resize_pane(
     Ok(Value::Null)
 }
 
+/// handler：`create_pane`。为既有 pane 起 shell PTY（与桌面命令同语义）。失败 → `Internal`
+/// （起进程失败等）。经 [`WorkspaceWriter`] 端口写。
+pub fn create_pane(ctx: &Ctx, pane_id: &str, shell: Option<&str>) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .create_pane(pane_id, shell)
+        .map_err(CoreError::internal)?;
+    Ok(Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +511,12 @@ mod tests {
             }
             Ok(())
         }
+        fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
+            if !self.exists {
+                return Err("起进程失败".into());
+            }
+            Ok(())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -538,6 +558,9 @@ mod tests {
             _alt: bool,
             _inline: bool,
         ) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
             Ok(())
         }
     }
@@ -739,5 +762,19 @@ mod tests {
         let (ctx2, _s2) = ctx_with_state(acc2, CapabilitySet::allow_all());
         let err = resize_pane(&ctx2, "ws-1", "nope", 40, 120, false, false).unwrap_err();
         assert_eq!(err.kind_tag(), "invalid_args");
+    }
+
+    #[test]
+    fn create_pane_ok_and_spawn_failure_is_internal() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        create_pane(&ctx, "p-1", Some("bash")).unwrap();
+        // 起进程失败（FakeWriter.exists=false）→ Internal。
+        let w2 = fake_writer(false);
+        let acc2: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(w2));
+        let (ctx2, _s2) = ctx_with_state(acc2, CapabilitySet::allow_all());
+        let err = create_pane(&ctx2, "p-1", None).unwrap_err();
+        assert_eq!(err.kind_tag(), "internal");
     }
 }

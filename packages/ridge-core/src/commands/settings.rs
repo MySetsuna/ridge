@@ -182,6 +182,9 @@ mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
+        fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]

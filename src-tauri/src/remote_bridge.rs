@@ -281,6 +281,16 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
         )
         .map_err(|e| e.to_string())
     }
+
+    fn create_pane(&self, pane_id: &str, shell: Option<&str>) -> Result<(), String> {
+        // spawn 既有 pane 的 shell PTY：复用桌面 create_pane_inner（逻辑一字未改）。
+        crate::commands::terminal::create_pane_inner(
+            self,
+            pane_id.to_string(),
+            shell.map(String::from),
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event
