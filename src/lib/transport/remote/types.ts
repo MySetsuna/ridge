@@ -88,6 +88,19 @@ export type PaneBytesListener = (paneId: string, bytes: Uint8Array) => void;
 export type StateListener = (state: TransportState) => void;
 export type Unsubscribe = () => void;
 
+// ── Auth readiness (FIX-4, D3: transport-agnostic auth convergence) ──────────
+// One readiness signal the controller UI gates on, REGARDLESS of leg — replacing
+// the per-transport `ready` branching. Each adapter satisfies it with its own
+// real mechanism (auth strength unchanged, see protocol-alignment design D3):
+//   • LAN-WS      : token is verified at the WS upgrade → `authorized` the moment
+//                   the socket is `connected`; no in-band deny/lockout concept.
+//   • cloud-WebRTC: E2EE `connected` → `pending` (drives the 0x12 TOTP handshake)
+//                   → `totp-result{ok:true}` (or `totp-trust-result{trusted}`)
+//                   → `authorized`; `{ok:false,locked}` → `denied`. A retryable
+//                   wrong code (`{ok:false}` w/o lockout) stays `pending`.
+export type AuthState = 'pending' | 'authorized' | 'denied';
+export type AuthListener = (auth: AuthState) => void;
+
 // ── L1: channel primitives (each adapter implements) ────────────────────────
 // Adapters own wire framing, mux, auth handshake and (for the LAN-WS host that
 // predates JSON-RPC) any envelope translation. L2 only ever sees parsed control
@@ -112,6 +125,12 @@ export interface ChannelTransport {
   state(): TransportState;
   /** Subscribe to lifecycle/reconnect transitions. */
   onStateChange(cb: StateListener): Unsubscribe;
+
+  /** Transport-agnostic auth readiness (FIX-4/D3). The controller UI gates on a
+   *  single `authorized` signal instead of branching per leg. */
+  authState(): AuthState;
+  /** Subscribe to auth-state transitions. Fires on change only. */
+  onAuthChange(cb: AuthListener): Unsubscribe;
 }
 
 // ── L2: shared RPC client surface ───────────────────────────────────────────

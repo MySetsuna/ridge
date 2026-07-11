@@ -29,6 +29,8 @@
 import { RemoteConnection, type ConnectionState } from '../../../remote/lib/wsRemote';
 import { JSON_RPC_ERRORS, makeError } from './jsonRpc';
 import {
+  type AuthListener,
+  type AuthState,
   type ChannelTransport,
   type ControlFrame,
   type ControlListener,
@@ -53,6 +55,12 @@ export class LanWsAdapter implements ChannelTransport {
   private readonly conn: RemoteConnection;
   private controlListeners = new Set<ControlListener>();
   private paneListeners = new Set<PaneBytesListener>();
+  private stateListeners = new Set<StateListener>();
+  private authListeners = new Set<AuthListener>();
+  // Last emitted authState, for edge-deduped `onAuthChange` fan-out. On the LAN
+  // leg auth tracks the socket: `connected` ⇒ authorized (token already verified
+  // at the WS upgrade), anything else ⇒ pending.
+  private lastAuth: AuthState;
   private detachers: Unsubscribe[] = [];
   // §S3 negotiated upgrade: starts in legacy-translation mode so requests ride
   // the old `invoke-request`/`invoke-result` envelope (byte-for-byte unchanged).
@@ -66,10 +74,46 @@ export class LanWsAdapter implements ChannelTransport {
 
   constructor(conn: RemoteConnection) {
     this.conn = conn;
+    this.lastAuth = this.deriveAuth(mapState(conn.state()));
     this.detachers.push(
       conn.onMessage((msg) => this.handleInbound(msg as ControlFrame)),
     );
     this.detachers.push(conn.onRawBytes((paneId, bytes) => this.emitPaneBytes(paneId, bytes)));
+    // Single upstream state subscription fans out to BOTH state and auth
+    // listeners (mirrors CloudWebrtcAdapter). Owning our own listener Sets means
+    // several consumers (L2 RpcClient + the UI) can subscribe independently
+    // rather than clobbering one upstream slot.
+    this.detachers.push(conn.onStateChange((s: ConnectionState) => this.handleConnState(s)));
+  }
+
+  /** LAN auth derivation: `connected` ⇒ authorized (token verified at upgrade),
+   *  else pending. The LAN leg has no in-band deny/lockout, so `denied` never
+   *  occurs — a bad token fails the WS upgrade and surfaces as error/disconnected. */
+  private deriveAuth(s: TransportState): AuthState {
+    return s === 'connected' ? 'authorized' : 'pending';
+  }
+
+  /** Upstream state event → state listeners (verbatim) + edge-deduped auth. */
+  private handleConnState(s: ConnectionState): void {
+    const mapped = mapState(s);
+    for (const cb of this.stateListeners) {
+      try {
+        cb(mapped);
+      } catch (e) {
+        console.error('[lanWsAdapter] state listener threw', e);
+      }
+    }
+    const auth = this.deriveAuth(mapped);
+    if (auth !== this.lastAuth) {
+      this.lastAuth = auth;
+      for (const cb of this.authListeners) {
+        try {
+          cb(auth);
+        } catch (e) {
+          console.error('[lanWsAdapter] auth listener threw', e);
+        }
+      }
+    }
   }
 
   /** Expose the wrapped connection for boot code that still drives it directly
@@ -115,7 +159,18 @@ export class LanWsAdapter implements ChannelTransport {
   }
 
   onStateChange(cb: StateListener): Unsubscribe {
-    return this.conn.onStateChange((s: ConnectionState) => cb(mapState(s)));
+    this.stateListeners.add(cb);
+    return () => this.stateListeners.delete(cb);
+  }
+
+  // ── L1: auth readiness (FIX-4) ──────────────────────────────────────────────
+  authState(): AuthState {
+    return this.deriveAuth(mapState(this.conn.state()));
+  }
+
+  onAuthChange(cb: AuthListener): Unsubscribe {
+    this.authListeners.add(cb);
+    return () => this.authListeners.delete(cb);
   }
 
   // ── translation ─────────────────────────────────────────────────────────────
@@ -237,6 +292,8 @@ export class LanWsAdapter implements ChannelTransport {
     this.detachers = [];
     this.controlListeners.clear();
     this.paneListeners.clear();
+    this.stateListeners.clear();
+    this.authListeners.clear();
   }
 }
 

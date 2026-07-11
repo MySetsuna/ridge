@@ -52,6 +52,10 @@ class FakeRemoteConnection {
   deliverRaw(paneId: string, bytes: Uint8Array): void {
     this.rawCb?.(paneId, bytes);
   }
+  setState(s: ConnectionState): void {
+    this._state = s;
+    this.stateCb?.(s);
+  }
   last(): Record<string, unknown> | undefined {
     return this.sent[this.sent.length - 1];
   }
@@ -211,5 +215,45 @@ describe('LanWsAdapter — pane bytes + lifecycle', () => {
     const { conn, adapter } = makeAdapter();
     adapter.close();
     expect(conn.disconnected).toBe(true);
+  });
+
+  it('fans state changes out to multiple independent subscribers', () => {
+    // Regression: the adapter owns a listener Set (one upstream subscription), so
+    // two consumers (e.g. L2 RpcClient + the UI) both see transitions instead of
+    // the second clobbering the first's upstream slot.
+    const { conn, adapter } = makeAdapter();
+    const a: string[] = [];
+    const b: string[] = [];
+    adapter.onStateChange((s) => a.push(s));
+    adapter.onStateChange((s) => b.push(s));
+    conn.setState('disconnected');
+    expect(a).toContain('disconnected');
+    expect(b).toContain('disconnected');
+  });
+});
+
+describe('LanWsAdapter — authState (FIX-4)', () => {
+  it('reports authorized while connected (token verified at WS upgrade)', () => {
+    const { adapter } = makeAdapter(); // fake starts `connected`
+    expect(adapter.authState()).toBe('authorized');
+  });
+
+  it('reports pending when not yet connected', () => {
+    const conn = new FakeRemoteConnection();
+    conn.setState('connecting');
+    const adapter = new LanWsAdapter(conn as unknown as RemoteConnection);
+    expect(adapter.authState()).toBe('pending');
+  });
+
+  it('emits authorized/pending on the connect edge, deduped', () => {
+    const conn = new FakeRemoteConnection();
+    conn.setState('connecting');
+    const adapter = new LanWsAdapter(conn as unknown as RemoteConnection);
+    const seen: string[] = [];
+    adapter.onAuthChange((auth) => seen.push(auth));
+    conn.setState('connected'); // → authorized
+    conn.setState('connected'); // same → deduped (no emit)
+    conn.setState('disconnected'); // → pending
+    expect(seen).toEqual(['authorized', 'pending']);
   });
 });
