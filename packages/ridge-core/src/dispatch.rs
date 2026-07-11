@@ -41,7 +41,7 @@
 
 use serde_json::Value;
 
-use crate::commands::{settings, shell, theme};
+use crate::commands::{git, settings, shell, theme};
 use crate::ctx::Ctx;
 use crate::error::{CoreError, CoreResult};
 use crate::fs::commands as fs_commands;
@@ -258,6 +258,25 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             serde_json::to_value(listing).map_err(CoreError::internal)
         }
 
+        // ── Git 只读（R0 内核化样板 A，2026-07-11）──
+        // 复用 ridge-core `commands::git` 已有的**同步**纯函数，方法名/arg 对齐 legacy
+        // dispatcher。`dispatch` 是同步的，故本刀只接同步 git 读；`get_git_info_with_cwd`
+        // 走同步 `git_info_for_path`（避开 async `get_git_info_with_cwd` 包装，等价结果）。
+        // async 的 get_scm_status / git_diff_summary / git_list_branches 等留下一刀
+        // （需 dispatch 走 async 或宿主 spawn_blocking 包装），此前继续经宿主桥回退。
+        "find_git_repo_root" => Ok(match git::find_git_repo_root(s(&args, "path")) {
+            Some(root) => Value::String(root),
+            None => Value::Null,
+        }),
+        "git_op_in_progress" => {
+            let st = git::git_op_in_progress(s(&args, "repoRoot"));
+            serde_json::to_value(st).map_err(CoreError::internal)
+        }
+        "get_git_info_with_cwd" => {
+            let info = git::git_info_for_path(std::path::Path::new(&s(&args, "cwd")));
+            serde_json::to_value(info).map_err(CoreError::internal)
+        }
+
         // ── Filesystem writes (S1 ledger §2.1) ──
         // Mutating — guarded above by the read-only gate, and by the traversal +
         // sandbox guards. The handlers' exact (Chinese) error strings are wrapped
@@ -412,6 +431,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, serde_json::Value::Bool(false));
+    }
+
+    // ── Git 只读收口（R0 样板 A）──
+
+    fn tmp_nonrepo(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!("ridge_dispatch_git_{tag}_{nanos}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn git_op_in_progress_migrated_false_on_non_repo() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("op");
+        let out = dispatch(
+            "git_op_in_progress",
+            serde_json::json!({ "repoRoot": d.to_string_lossy() }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out["merge"], Value::Bool(false));
+        assert_eq!(out["rebase"], Value::Bool(false));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn find_git_repo_root_null_for_non_repo() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("root");
+        let out = dispatch(
+            "find_git_repo_root",
+            serde_json::json!({ "path": d.to_string_lossy() }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out, Value::Null);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn get_git_info_with_cwd_migrated_non_repo() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("info");
+        let out = dispatch(
+            "get_git_info_with_cwd",
+            serde_json::json!({ "cwd": d.to_string_lossy() }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out["is_git_repo"], Value::Bool(false));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn git_read_denied_when_not_in_caps() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::from_methods(["read_file"]));
+        let err = dispatch("git_op_in_progress", serde_json::json!({ "repoRoot": "." }), &ctx)
+            .unwrap_err();
+        assert_eq!(err.kind_tag(), "capability_denied");
     }
 
     // ── Sandbox / root-scoping at the dispatch boundary (D8 / §5.6, R10) ──
