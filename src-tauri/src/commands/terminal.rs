@@ -1079,8 +1079,8 @@ pub async fn resize_pane(
     #[allow(non_snake_case)] isInlineTui: Option<bool>,
 ) -> Result<(), String> {
     resize_pane_inner(
-        state,
-        app,
+        &state,
+        &app,
         workspace_id,
         pane_id,
         rows,
@@ -1091,9 +1091,12 @@ pub async fn resize_pane(
     .map_err(|e| e.to_string())
 }
 
-fn resize_pane_inner(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
+/// resize_pane 的核心（不带 Tauri wrapper）：resize **既有** PTY（非 spawn/kill）+ 解析器
+/// wipe/delta。`&AppState`/`&AppHandle` 便于 ridge-core `WorkspaceWriter` 端口直调（远端 resize
+/// 经 dispatch）。逻辑与原样一字未改——仅签名改（State→&，机械），行为保持。
+pub fn resize_pane_inner(
+    state: &AppState,
+    app: &tauri::AppHandle,
     workspace_id: String,
     pane_id: String,
     rows: u16,

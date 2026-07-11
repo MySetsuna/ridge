@@ -254,6 +254,33 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             .ok_or_else(|| "app handle 未就绪".to_string())?;
         crate::commands::ridge_file::delete_workspace_file_core(app, self, workspace_id)
     }
+
+    fn resize_pane(
+        &self,
+        workspace_id: &str,
+        pane_id: &str,
+        rows: u16,
+        cols: u16,
+        is_alt: bool,
+        is_inline_tui: bool,
+    ) -> Result<(), String> {
+        // resize 既有 PTY：复用桌面 resize_pane_inner（逻辑一字未改），经 app_handle 供事件。
+        let app = self
+            .app_handle
+            .get()
+            .ok_or_else(|| "app handle 未就绪".to_string())?;
+        crate::commands::terminal::resize_pane_inner(
+            self,
+            app,
+            workspace_id.to_string(),
+            pane_id.to_string(),
+            rows,
+            cols,
+            is_alt,
+            is_inline_tui,
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event

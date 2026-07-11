@@ -171,6 +171,17 @@ mod tests {
         fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
             Ok(())
         }
+        fn resize_pane(
+            &self,
+            _ws: &str,
+            _pane: &str,
+            _rows: u16,
+            _cols: u16,
+            _alt: bool,
+            _inline: bool,
+        ) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]

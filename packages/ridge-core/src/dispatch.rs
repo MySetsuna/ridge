@@ -206,6 +206,23 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             workspace::get_pane_scrollback_before(ctx, &s(&args, "paneId"), before, max)
         }
         "list_native_sessions" => workspace::list_native_sessions(ctx),
+        // pane 写：resize 既有 pane 的 PTY（非 spawn/kill）。此前无 arm → 远端 resize
+        // 收 MethodNotFound（SPA 改不了远端 pane 尺寸）。逻辑复用桌面 resize_pane_inner。
+        "resize_pane" => {
+            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let cols = args.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+            let is_alt = args.get("isAlt").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_inline_tui = args.get("isInlineTui").and_then(|v| v.as_bool()).unwrap_or(false);
+            workspace::resize_pane(
+                ctx,
+                &s(&args, "workspaceId"),
+                &s(&args, "paneId"),
+                rows,
+                cols,
+                is_alt,
+                is_inline_tui,
+            )
+        }
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
@@ -559,6 +576,17 @@ mod tests {
             Ok(String::new())
         }
         fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn resize_pane(
+            &self,
+            _ws: &str,
+            _pane: &str,
+            _rows: u16,
+            _cols: u16,
+            _alt: bool,
+            _inline: bool,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
