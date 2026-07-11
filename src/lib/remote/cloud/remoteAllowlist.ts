@@ -116,6 +116,10 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'git_diff_summary',
   'git_get_file_versions',
   'git_op_in_progress',
+  // 行级 blame / 本文件历史 / 单文件 diff（IDE 只读能力，#23：web-remote/cloud 也放行）。
+  'git_blame',
+  'git_file_log',
+  'git_diff_file',
   'git_fetch',
   // ── Git (mutating) ──
   'git_stage',

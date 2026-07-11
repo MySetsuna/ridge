@@ -1827,7 +1827,7 @@ pub async fn git_diff_file(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_diff_file_sync(
+pub fn git_diff_file_sync(
     repo_root: String,
     path: String,
     cached: Option<bool>,
@@ -1915,7 +1915,7 @@ pub async fn git_blame(repo_root: String, path: String) -> Result<Vec<BlameLine>
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_blame_sync(repo_root: String, path: String) -> Result<Vec<BlameLine>, String> {
+pub fn git_blame_sync(repo_root: String, path: String) -> Result<Vec<BlameLine>, String> {
     let repo = Path::new(&repo_root);
     let out = git_cmd()
         // `-w` 忽略空白改动归因；`--line-porcelain` 每行重复完整头便于解析。
@@ -1951,7 +1951,7 @@ pub struct FileCommit {
     pub summary: String,
 }
 
-fn git_file_log_sync(
+pub fn git_file_log_sync(
     repo_root: String,
     path: String,
     limit: Option<u32>,
