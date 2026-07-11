@@ -1439,7 +1439,7 @@ pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, Strin
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
+pub fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
     let repo = Path::new(&repo_root);
     let out = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "HEAD", "--"])
@@ -1751,7 +1751,7 @@ fn git_reset_sync(repo_root: String, hash: String, mode: String) -> Result<(), S
     Ok(())
 }
 
-fn git_get_file_versions_sync(
+pub fn git_get_file_versions_sync(
     repo_root: String,
     path: String,
     cached: Option<bool>,

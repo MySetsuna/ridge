@@ -324,6 +324,19 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             .map_err(CoreError::internal)?;
             Ok(Value::String(diff))
         }
+        "git_diff_summary" => {
+            let sum = git::git_diff_summary_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            serde_json::to_value(sum).map_err(CoreError::internal)
+        }
+        "git_get_file_versions" => {
+            let versions = git::git_get_file_versions_sync(
+                s(&args, "repoRoot"),
+                s(&args, "path"),
+                opt_bool(&args, "cached"),
+            )
+            .map_err(CoreError::internal)?;
+            serde_json::to_value(versions).map_err(CoreError::internal)
+        }
 
         // ── Filesystem writes (S1 ledger §2.1) ──
         // Mutating — guarded above by the read-only gate, and by the traversal +
