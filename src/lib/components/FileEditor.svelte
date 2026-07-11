@@ -130,6 +130,17 @@
   }
   let blameVisible = $state(false);
   let blameDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  // §IDE 本文件 Git 历史（#23）：Alt+H / 右键「本文件 Git 历史」拉 git_file_log，浮层列出
+  // 触碰该文件的提交（sha / 作者 / 相对时间 / 摘要）。切文件时在模型切换处（下方）关闭浮层，
+  // 避免显示陈旧历史。
+  interface FileCommit {
+    sha: string;
+    author: string;
+    timestamp: number;
+    summary: string;
+  }
+  let fileHistoryOpen = $state(false);
+  let fileHistory = $state<FileCommit[]>([]);
   // §IDE LSP 文档同步状态：已 didOpen 的路径集 + 单调递增的 didChange 版本号。
   const lspOpenedPaths = new Set<string>();
   let lspVersion = 1;
@@ -614,6 +625,17 @@
         blameVisible = !blameVisible; // 同步由下方 $effect(refreshBlame) 处理
       },
     });
+    // §IDE 本文件 Git 历史（#23）：Alt+H + 右键「本文件 Git 历史」→ git_file_log 浮层。
+    editor.addAction({
+      id: 'rg.fileHistory',
+      label: '本文件 Git 历史',
+      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyH],
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.6,
+      run: () => {
+        void openFileHistory();
+      },
+    });
     // §IDE LSP P2 — F12 / 右键「转到定义」（与 Ctrl+Click 同走 gotoDefinitionAt）。
     editor.addAction({
       id: 'rg.gotoDefinition',
@@ -725,6 +747,26 @@
     if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
     const d = new Date(unixSec * 1000);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** 拉当前文件的 Git 提交历史（git_file_log）并打开浮层。#23。 */
+  async function openFileHistory(): Promise<void> {
+    const repoRoot = get(projectStore).currentPath;
+    if (!repoRoot || !currentModelPath) return;
+    const reqPath = currentModelPath;
+    fileHistory = [];
+    fileHistoryOpen = true;
+    try {
+      const commits = await invoke<FileCommit[]>('git_file_log', {
+        repoRoot,
+        path: reqPath,
+        limit: 50,
+      });
+      // stale guard：await 期间可能切了文件 / 关了浮层。
+      if (fileHistoryOpen && currentModelPath === reqPath) fileHistory = commits;
+    } catch (err) {
+      console.warn('[file-history] git_file_log failed', reqPath, err);
+    }
   }
 
   /** 清除 blame 行注释（切文件 / 关闭时）。 */
@@ -899,6 +941,7 @@
 
       // —— 2) 切模型 + 还原 view state。
       currentModelPath = c.path;
+      fileHistoryOpen = false; // 切文件即关本文件历史浮层（避免显示陈旧文件的历史，#23）。
       editor.setModel(model);
       const vs = viewStateCache.get(c.path);
       if (vs) editor.restoreViewState(vs);
@@ -1933,6 +1976,49 @@
       <div class="absolute inset-0 flex items-center justify-center p-6">
         <div class="max-w-[420px] text-center text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3 font-mono whitespace-pre-wrap">
           {diffError}
+        </div>
+      </div>
+    {/if}
+
+    <!-- §IDE 本文件 Git 历史浮层（#23）：Alt+H / 右键触发；git_file_log 提交列表。
+         切文件时在模型切换处置 fileHistoryOpen=false → 不显示陈旧历史。 -->
+    {#if fileHistoryOpen}
+      <div
+        class="absolute top-2 right-2 z-[9990] flex max-h-[70%] w-72 flex-col rounded-lg border border-[var(--rg-border)] bg-[var(--rg-surface-2)] text-[12px] shadow-xl"
+        role="dialog"
+        aria-label="本文件 Git 历史"
+      >
+        <div class="flex items-center gap-2 border-b border-[var(--rg-border)] px-2 py-1">
+          <span class="min-w-0 flex-1 truncate font-medium text-[var(--rg-fg)]">本文件 Git 历史</span>
+          <span class="shrink-0 font-mono text-[10px] text-[var(--rg-fg-muted)]">{fileHistory.length}</span>
+          <button
+            type="button"
+            class="rg-no-drag flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]"
+            title="关闭"
+            aria-label="关闭历史"
+            onclick={() => (fileHistoryOpen = false)}
+          >
+            ✕
+          </button>
+        </div>
+        <div class="min-h-0 flex-1 overflow-y-auto rg-scroll py-1">
+          {#if fileHistory.length === 0}
+            <p class="px-2 py-2 text-[11px] text-[var(--rg-fg-muted)]">暂无提交历史（新文件 / 非 Git 仓库 / 加载中）</p>
+          {:else}
+            {#each fileHistory as c (c.sha)}
+              <div class="flex flex-col gap-0.5 px-2 py-1 hover:bg-[var(--rg-surface)]">
+                <div class="flex items-center gap-1.5">
+                  <span class="shrink-0 font-mono text-[10px] text-[var(--rg-accent)]">{c.sha.slice(0, 8)}</span>
+                  <span class="min-w-0 flex-1 truncate text-[var(--rg-fg)]" title={c.summary}>{c.summary}</span>
+                </div>
+                <div class="flex items-center gap-1.5 text-[10px] text-[var(--rg-fg-muted)]">
+                  <span class="min-w-0 truncate">{c.author}</span>
+                  <span class="shrink-0">·</span>
+                  <span class="shrink-0">{relTime(c.timestamp)}</span>
+                </div>
+              </div>
+            {/each}
+          {/if}
         </div>
       </div>
     {/if}
