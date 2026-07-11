@@ -134,6 +134,9 @@ mod tests {
         fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
             Ok(())
         }
+        fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok(String::new())
+        }
     }
 
     #[test]
