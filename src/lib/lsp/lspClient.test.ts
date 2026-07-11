@@ -1,5 +1,75 @@
-import { describe, it, expect } from 'vitest';
-import { pathToUri, uriToPath, lspLanguageId, parseDefinition, parseHover } from './lspClient';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import {
+  pathToUri,
+  uriToPath,
+  lspLanguageId,
+  parseDefinition,
+  parseHover,
+  classifyLspError,
+  notifyLspError,
+  setLspErrorSink,
+  resetLspErrorNotices,
+} from './lspClient';
+
+describe('classifyLspError — 供给检测 (P4)', () => {
+  // Rust host 格式（src-tauri/src/lsp/mod.rs）：
+  //   TS  : 启动语言服务器失败（请全局安装：npm i -g typescript-language-server typescript）：<spawn err>
+  //   Rust: 启动语言服务器失败（请安装 rust-analyzer（rustup ...）或...PATH）...）：<spawn err>
+  it('detects a missing TS server and extracts the install hint', () => {
+    const err = new Error(
+      '启动语言服务器失败（请全局安装：npm i -g typescript-language-server typescript）：程序未找到',
+    );
+    expect(classifyLspError(err)).toEqual({
+      missingServer: true,
+      hint: '请全局安装：npm i -g typescript-language-server typescript',
+    });
+  });
+
+  it('extracts a hint that itself contains full-width parens (rust-analyzer)', () => {
+    const hint = '请安装 rust-analyzer（rustup component add rust-analyzer 或下载二进制并加入 PATH）';
+    const err = new Error(`启动语言服务器失败（${hint}）：No such file`);
+    expect(classifyLspError(err)).toEqual({ missingServer: true, hint });
+  });
+
+  it('classifies a non-spawn error as not-missing', () => {
+    expect(classifyLspError(new Error('LSP 写入失败: broken pipe'))).toEqual({
+      missingServer: false,
+      hint: '',
+    });
+    expect(classifyLspError('some string error')).toEqual({ missingServer: false, hint: '' });
+    expect(classifyLspError(null)).toEqual({ missingServer: false, hint: '' });
+  });
+});
+
+describe('notifyLspError — 去重提示 (P4)', () => {
+  beforeEach(() => resetLspErrorNotices());
+
+  it('surfaces the install hint once per unique hint (deduped across keystrokes)', () => {
+    const sink = vi.fn();
+    setLspErrorSink(sink);
+    const err = new Error('启动语言服务器失败（装 X）：nope');
+    expect(notifyLspError(err)).toBe(true); // first → toast
+    expect(notifyLspError(err)).toBe(false); // repeat → deduped
+    expect(notifyLspError(err)).toBe(false);
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(sink).toHaveBeenCalledWith('装 X');
+  });
+
+  it('does not surface a non-missing error', () => {
+    const sink = vi.fn();
+    setLspErrorSink(sink);
+    expect(notifyLspError(new Error('definition 超时'))).toBe(false);
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a second, different missing-server hint separately', () => {
+    const sink = vi.fn();
+    setLspErrorSink(sink);
+    expect(notifyLspError(new Error('启动语言服务器失败（装 TS）：x'))).toBe(true);
+    expect(notifyLspError(new Error('启动语言服务器失败（装 Rust）：y'))).toBe(true);
+    expect(sink).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('lspClient URI helpers', () => {
   it('pathToUri: windows path', () => {

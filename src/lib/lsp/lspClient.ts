@@ -9,6 +9,47 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { showToast } from '../stores/toast';
+
+// ── 供给检测（P4）：语言服务器缺失 → 分类 + 去重 + 用户提示 ──────────────────
+// Rust host 起进程失败时返回 `启动语言服务器失败（<install_hint>）：<spawn error>`
+// （src-tauri/src/lsp/mod.rs），此前前端仅 console.warn 静默吞掉——用户不知道
+// 「跳转/悬浮没反应」是因为 server 没装。P4 把它分类出来、按语言去重地提示一次。
+const LSP_SPAWN_FAIL_MARKER = '启动语言服务器失败';
+
+/** 分类一个 LSP 命令错误：是否「语言服务器未安装/起不来」，并提取安装提示。
+ *  纯函数、可离线测。提示自身可能含全角括号（rust-analyzer 的提示就有），故非贪婪
+ *  锚定到收尾的 `）：` 提取，避免被内层括号截断；提取不到时回退整条消息。 */
+export function classifyLspError(err: unknown): { missingServer: boolean; hint: string } {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (!msg.includes(LSP_SPAWN_FAIL_MARKER)) return { missingServer: false, hint: '' };
+  const m = msg.match(/启动语言服务器失败（([\s\S]*?)）：/);
+  return { missingServer: true, hint: m?.[1] ?? msg };
+}
+
+/** 提示 sink：默认接真实 toast，生产开箱即用；测试经 [`setLspErrorSink`] 注入 spy。 */
+let errorSink: (hint: string) => void = (hint) => showToast(hint, 'error');
+/** 已提示过的安装提示集合，去重（避免每次 didChange/definition 刷屏）。 */
+const shownHints = new Set<string>();
+
+/** 覆盖缺失提示 sink（测试注入 spy；也可用于自定义 UI）。 */
+export function setLspErrorSink(sink: (hint: string) => void): void {
+  errorSink = sink;
+}
+
+/** 清空「已提示」去重集（测试用；server 重装后想再次提示也可调）。 */
+export function resetLspErrorNotices(): void {
+  shownHints.clear();
+}
+
+/** 若 err 表示语言服务器缺失，按提示去重地提示一次。返回是否本次触发了提示。 */
+export function notifyLspError(err: unknown): boolean {
+  const { missingServer, hint } = classifyLspError(err);
+  if (!missingServer || shownHints.has(hint)) return false;
+  shownHints.add(hint);
+  errorSink(hint);
+  return true;
+}
 
 /** LSP 跳转目标（已转成前端口径：path + 1-based line/column）。 */
 export interface LspTarget {
@@ -128,6 +169,7 @@ export async function lspDidOpen(
     });
   } catch (err) {
     console.warn('[lsp] did_open failed', path, err);
+    notifyLspError(err);
   }
 }
 
@@ -147,6 +189,7 @@ export async function lspDidChange(
     });
   } catch (err) {
     console.warn('[lsp] did_change failed', path, err);
+    notifyLspError(err);
   }
 }
 
@@ -168,6 +211,7 @@ export async function lspDefinition(
     return parseDefinition(raw);
   } catch (err) {
     console.warn('[lsp] definition failed', path, err);
+    notifyLspError(err);
     return [];
   }
 }
@@ -190,6 +234,7 @@ export async function lspReferences(
     return parseDefinition(raw);
   } catch (err) {
     console.warn('[lsp] references failed', path, err);
+    notifyLspError(err);
     return [];
   }
 }
@@ -246,6 +291,7 @@ export async function lspHover(
     return parseHover(raw);
   } catch (err) {
     console.warn('[lsp] hover failed', path, err);
+    notifyLspError(err);
     return null;
   }
 }
