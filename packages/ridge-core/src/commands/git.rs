@@ -2055,7 +2055,7 @@ pub async fn get_git_commits_paginated(
 }
 
 /// `get_git_log` 的分页变种 —— 多一个 `--skip` 参数。其它格式 / 解析与原函数完全一致。
-fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<CommitNode> {
+pub fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<CommitNode> {
     let pretty = format!(
         "--pretty=format:%H{0}%P{0}%an{0}%at{0}%D{0}%s{1}",
         FIELD_SEP, RECORD_SEP

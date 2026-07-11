@@ -337,6 +337,13 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             .map_err(CoreError::internal)?;
             serde_json::to_value(versions).map_err(CoreError::internal)
         }
+        "get_git_commits_paginated" => {
+            let repo = s(&args, "repoRoot");
+            let offset = opt_usize(&args, "offset").unwrap_or(0);
+            let limit = opt_usize(&args, "limit").unwrap_or(100);
+            let commits = git::get_git_log_with_skip(std::path::Path::new(&repo), offset, limit);
+            serde_json::to_value(commits).map_err(CoreError::internal)
+        }
 
         // ── Filesystem writes (S1 ledger §2.1) ──
         // Mutating — guarded above by the read-only gate, and by the traversal +
