@@ -20,6 +20,7 @@
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
   import { alertDialog } from '$lib/components/RidgeDialog.svelte';
+  import { showToast } from '$lib/stores/toast';
   import { setTeammateHitlEnabled } from './teammateSettings';
   import TeammateGroups from './TeammateGroupsSection.svelte';
   import { teammateGroupStore, parseGroupAddMember } from './teammateGroups.svelte';
@@ -148,11 +149,16 @@
       const store = teammateGroupStore();
       store.setWorkspace(workspaceId, filePath); // 保证 store 键落在当前工作区
       const ok = store.addMemberByGroupName(payload.groupName, payload.agentId);
-      if (!ok) {
+      if (ok) {
+        // Agent 自助拉入成功 → 轻提示，让在看面板的用户知道有成员被加进了组。
+        showToast(`已加入编组「${payload.groupName}」`, 'info');
+      } else {
         // 组名不存在（区分大小写/空白/同名）或 store 键尚未就绪（.ridge 路径未解析）。
+        // 评审 #17：此前仅 console.warn 静默，用户不知加组为何没生效——补一条 error toast。
         console.warn(
           `[teammate-groups] join no-op: group "${payload.groupName}" not found in current workspace`
         );
+        showToast(`加入编组「${payload.groupName}」失败：未找到该组`, 'error');
       }
     });
     return () => {
