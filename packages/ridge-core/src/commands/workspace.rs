@@ -52,6 +52,13 @@ pub trait WorkspaceReader: Send + Sync {
     fn workspaces_list(&self) -> Vec<WorkspaceEntry>;
 }
 
+/// 宿主暴露「写工作区元数据」的端口（R0 内核化，写命令下沉起点）。仅覆盖**不触 PTY
+/// 生命周期**的纯元数据写（切换活动区等）；建/关/分屏这类会动 PTY 的留在宿主运行时。
+pub trait WorkspaceWriter: Send + Sync {
+    /// 切换活动工作区。工作区不存在（或 id 非法）→ `Err(消息)`。宿主原子地校验+置位。
+    fn set_active_workspace(&self, workspace_id: &str) -> Result<(), String>;
+}
+
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
 #[derive(Debug, Serialize, PartialEq)]
 pub struct WorkspaceSnapshot {
@@ -100,6 +107,17 @@ pub fn get_active_workspace_id(ctx: &Ctx) -> CoreResult<Value> {
 pub fn list_workspaces(ctx: &Ctx) -> CoreResult<Value> {
     let reader = ctx.state::<super::settings::HostStateAccessor>()?;
     serde_json::to_value(reader.0.workspaces_list()).map_err(CoreError::internal)
+}
+
+/// handler：`switch_workspace`。切换活动工作区（与桌面命令同语义：校验存在→置活动，
+/// 不存在/非法 id → `InvalidArgs`）。经聚合 accessor 的 [`WorkspaceWriter`] 端口写。
+pub fn switch_workspace(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .set_active_workspace(workspace_id)
+        .map_err(CoreError::InvalidArgs)?;
+    Ok(Value::Null)
 }
 
 #[cfg(test)]
@@ -171,6 +189,40 @@ mod tests {
     impl crate::commands::settings::UserDefaultCwdStore for FakeReader {
         fn set_user_default_cwd(&self, _path: Option<std::path::PathBuf>) {}
     }
+    // 聚合 HostState 也要求 WorkspaceWriter；记录/返回可控结果供 switch 测试断言。
+    struct FakeWriter {
+        exists: bool,
+        switched: std::sync::Mutex<Option<String>>,
+    }
+    impl WorkspaceReader for FakeWriter {
+        fn workspace_raw(&self, _id: &str) -> Option<WorkspaceRaw> {
+            None
+        }
+        fn active_workspace(&self) -> String {
+            String::new()
+        }
+        fn workspaces_list(&self) -> Vec<WorkspaceEntry> {
+            vec![]
+        }
+    }
+    impl crate::commands::settings::UserDefaultCwdStore for FakeWriter {
+        fn set_user_default_cwd(&self, _path: Option<std::path::PathBuf>) {}
+    }
+    impl WorkspaceWriter for FakeWriter {
+        fn set_active_workspace(&self, id: &str) -> Result<(), String> {
+            if !self.exists {
+                return Err(format!("workspace {id} 不存在"));
+            }
+            *self.switched.lock().unwrap() = Some(id.to_string());
+            Ok(())
+        }
+    }
+    // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
+    impl WorkspaceWriter for FakeReader {
+        fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn handler_missing_workspace_is_invalid_args() {
@@ -194,5 +246,30 @@ mod tests {
         let out = get_workspace_snapshot(&ctx, "ws1").unwrap();
         assert_eq!(out["pane_tree"], serde_json::json!({ "a": 1 }));
         assert_eq!(out["git_repos"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn switch_workspace_sets_active_via_writer() {
+        let writer = Arc::new(FakeWriter {
+            exists: true,
+            switched: std::sync::Mutex::new(None),
+        });
+        let accessor: Arc<dyn crate::ctx::CoreState> =
+            Arc::new(HostStateAccessor(writer.clone()));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        switch_workspace(&ctx, "ws-42").unwrap();
+        assert_eq!(*writer.switched.lock().unwrap(), Some("ws-42".to_string()));
+    }
+
+    #[test]
+    fn switch_workspace_missing_is_invalid_args() {
+        let writer = Arc::new(FakeWriter {
+            exists: false,
+            switched: std::sync::Mutex::new(None),
+        });
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let err = switch_workspace(&ctx, "nope").unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
     }
 }
