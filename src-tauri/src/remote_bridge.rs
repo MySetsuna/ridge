@@ -54,6 +54,40 @@ impl UserDefaultCwdStore for AppState {
     }
 }
 
+/// R0 内核化样板 B：桌面 `AppState` 作为 `WorkspaceReader` 端口，向 `ridge_core` 供给
+/// 某工作区的**原始**快照数据（pane 树 JSON + 各 pane cwd + pane 标题）。加工（git 仓库根
+/// 去重）归 core 的 `build_workspace_snapshot`。逻辑与 `commands/ridge_file.rs::
+/// snapshot_workspace` 一致（此处只取原料、不落盘）。连同 `UserDefaultCwdStore`，`AppState`
+/// 经 blanket impl 自动成为 `ridge_core` 的聚合 `HostState`（`desktop_ctx`/`remote_ctx` 注册）。
+impl ridge_core::commands::workspace::WorkspaceReader for AppState {
+    fn workspace_raw(
+        &self,
+        workspace_id: &str,
+    ) -> Option<ridge_core::commands::workspace::WorkspaceRaw> {
+        let wid = uuid::Uuid::parse_str(workspace_id).ok()?;
+        let map = self.workspaces.read();
+        let ws = map.get(&wid)?;
+        let pane_tree = serde_json::to_value(&ws.pane_tree).ok()?;
+        let pane_cwds = ws
+            .pane_tree
+            .panes
+            .values()
+            .filter_map(|p| p.cwd.as_ref())
+            .map(|c| c.to_string_lossy().to_string())
+            .collect();
+        let pane_titles = ws
+            .teammate_pane_titles
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        Some(ridge_core::commands::workspace::WorkspaceRaw {
+            pane_tree,
+            pane_cwds,
+            pane_titles,
+        })
+    }
+}
+
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event
 /// surfaces. `Broadcast` events go to both the native WebView (`AppHandle::
 /// emit`) and the desktop-browser remote clients (`remote_ui_event_tx`).

@@ -47,13 +47,20 @@ pub fn set_user_default_cwd(ctx: &Ctx, path: Option<String>) -> CoreResult<()> {
     Ok(())
 }
 
+/// **聚合宿主状态契约**（R0 内核化，2026-07-11）：一个 `Ctx` 只有一个 state，故所有
+/// 迁入的 handler 共用同一个 accessor。宿主的真实 state（桌面 `AppState` / rdg daemon）
+/// 实现本 super-trait 需要的每个域端口（当前：[`UserDefaultCwdStore`] +
+/// [`WorkspaceReader`](super::workspace::WorkspaceReader)），blanket impl 自动使其成为
+/// `HostState`。新增一个域端口时，把它加进这里的 bound，宿主补上对应 impl 即可——**不新增
+/// 第二个 accessor 类型**（避免 D4 下转目标分裂）。
+pub trait HostState: UserDefaultCwdStore + super::workspace::WorkspaceReader + Send + Sync {}
+impl<T: UserDefaultCwdStore + super::workspace::WorkspaceReader + Send + Sync> HostState for T {}
+
 /// Internal accessor wrapper. Hosts register their state as
-/// `Arc<HostStateAccessor>` (or implement [`crate::ctx::CoreState`] directly on
-/// a type that derefs to a `UserDefaultCwdStore`). This indirection keeps the
-/// downcast target a `ridge-core`-owned type, which is reliable across crate
-/// boundaries (downcasting a foreign concrete type would require the host's
-/// type to be nameable here, which defeats D4).
-pub struct HostStateAccessor(pub std::sync::Arc<dyn UserDefaultCwdStore>);
+/// `Arc<HostStateAccessor>`. 下转目标是 `ridge-core` 拥有的类型，跨 crate 可靠（下转外部
+/// 具体类型需宿主类型在此可命名，违背 D4）。持有聚合 [`HostState`]，故同一 accessor 能同时
+/// 供 settings / workspace 等多域 handler 取用。
+pub struct HostStateAccessor(pub std::sync::Arc<dyn HostState>);
 
 impl crate::ctx::CoreState for HostStateAccessor {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -87,6 +94,12 @@ mod tests {
     impl UserDefaultCwdStore for FakeStore {
         fn set_user_default_cwd(&self, path: Option<PathBuf>) {
             *self.last.lock().unwrap() = Some(path);
+        }
+    }
+    // 聚合 HostState 要求同时实现 WorkspaceReader；本测试只关心 cwd 端口，故返回 None。
+    impl super::super::workspace::WorkspaceReader for FakeStore {
+        fn workspace_raw(&self, _id: &str) -> Option<super::super::workspace::WorkspaceRaw> {
+            None
         }
     }
 

@@ -12,7 +12,6 @@
 //! （一个 `Ctx` 只有一个 state；同时服务两域的宿主需聚合，R0 spec 风险项）。
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -66,7 +65,9 @@ pub fn build_workspace_snapshot(raw: WorkspaceRaw) -> WorkspaceSnapshot {
 /// handler：`get_workspace_snapshot`。经 [`WorkspaceAccessor`] 取宿主原始数据 → 加工 →
 /// JSON。工作区不存在 → [`CoreError::InvalidArgs`]。
 pub fn get_workspace_snapshot(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
-    let reader = ctx.state::<WorkspaceAccessor>()?;
+    // 经**聚合** accessor 取宿主的 WorkspaceReader（R0：一个 Ctx 一个 state，settings 与
+    // workspace 等多域共用 `super::settings::HostStateAccessor`，见 `settings::HostState`）。
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
     let raw = reader
         .0
         .workspace_raw(workspace_id)
@@ -74,22 +75,13 @@ pub fn get_workspace_snapshot(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value
     serde_json::to_value(build_workspace_snapshot(raw)).map_err(CoreError::internal)
 }
 
-/// `Ctx` 状态访问包装（镜像 [`super::settings::HostStateAccessor`]）。宿主注册
-/// `Arc<WorkspaceAccessor>` 作为 `Ctx` state；handler 下转回本 ridge-core 拥有的类型
-/// （跨 crate 下转可靠）。见模块头关于「聚合 host-state trait」的下一刀说明。
-pub struct WorkspaceAccessor(pub Arc<dyn WorkspaceReader>);
-
-impl crate::ctx::CoreState for WorkspaceAccessor {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capability::CapabilitySet;
+    use crate::commands::settings::HostStateAccessor;
     use crate::ctx::test_support::ctx_with_state;
+    use std::sync::Arc;
 
     fn tmp_git_repo(tag: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -137,11 +129,15 @@ mod tests {
             self.0.clone()
         }
     }
+    // 聚合 HostState 也要求 UserDefaultCwdStore；本测试只走 workspace 端口 → 空实现。
+    impl crate::commands::settings::UserDefaultCwdStore for FakeReader {
+        fn set_user_default_cwd(&self, _path: Option<std::path::PathBuf>) {}
+    }
 
     #[test]
     fn handler_missing_workspace_is_invalid_args() {
         let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(WorkspaceAccessor(Arc::new(FakeReader(None))));
+            Arc::new(HostStateAccessor(Arc::new(FakeReader(None))));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let err = get_workspace_snapshot(&ctx, "nope").unwrap_err();
         assert_eq!(err.kind_tag(), "invalid_args");
@@ -155,7 +151,7 @@ mod tests {
             pane_titles: HashMap::new(),
         };
         let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(WorkspaceAccessor(Arc::new(FakeReader(Some(raw)))));
+            Arc::new(HostStateAccessor(Arc::new(FakeReader(Some(raw)))));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let out = get_workspace_snapshot(&ctx, "ws1").unwrap();
         assert_eq!(out["pane_tree"], serde_json::json!({ "a": 1 }));
