@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::{
     extract::{Query, State},
@@ -23,6 +23,11 @@ use super::native::{self, NativeError};
 use crate::engine::pane_tree::SplitDirection;
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle};
+use ridge_core::mcp::resource::StashStore;
+
+/// 进程级内存 Stash 中转站（MCP `ridge_stash_data` 存、`ridge://cache/<id>` 读）。仿
+/// `super::profiles` 的 LazyLock 全局；纯数据 `Mutex`，不在请求处理线程链上，与楔死无关。
+static STASH: LazyLock<Mutex<StashStore>> = LazyLock::new(|| Mutex::new(StashStore::with_defaults()));
 
 #[derive(Clone)]
 struct TeammateCtx {
@@ -873,11 +878,24 @@ async fn mcp_tools_call(
                 serde_json::json!({ "content": [ { "type": "text", "text": "dispatched" } ] }),
             )
         }
+        // 把一段文本存进内存 Stash，返回 `ridge://cache/<id>`，供 resources/read 回读
+        // （agent 间传大块中间产物用；FIFO 淘汰，默认 64 条/32 MiB）。#14。
+        "ridge_stash_data" => {
+            let data = args.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            if data.is_empty() {
+                return proto::mcp_error(id, proto::INVALID_PARAMS, "data 不能为空");
+            }
+            let uri = STASH.lock().unwrap().stash_uri(data.as_bytes().to_vec());
+            proto::mcp_result(
+                id,
+                serde_json::json!({ "content": [ { "type": "text", "text": uri } ] }),
+            )
+        }
         other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("unknown tool: {other}")),
     }
 }
 
-/// resources/read：当前支持 `ridge://workspace/active-panes`（活动工作区花名册）。
+/// resources/read：`ridge://workspace/active-panes`（花名册）+ `ridge://cache/<id>`（Stash）。
 fn mcp_resources_read(
     id: serde_json::Value,
     params: &serde_json::Value,
@@ -904,6 +922,23 @@ fn mcp_resources_read(
                     } ]
                 }),
             )
+        }
+        Ok(RidgeUri::Cache(cache_id)) => {
+            // #14：回读 ridge_stash_data 存的内存 Stash 内容（不存在/已淘汰 → INVALID_PARAMS）。
+            let text = STASH
+                .lock()
+                .unwrap()
+                .read(&cache_id)
+                .map(|b| String::from_utf8_lossy(b).to_string());
+            match text {
+                Some(t) => proto::mcp_result(
+                    id,
+                    serde_json::json!({
+                        "contents": [ { "uri": uri, "mimeType": "text/plain", "text": t } ]
+                    }),
+                ),
+                None => proto::mcp_error(id, proto::INVALID_PARAMS, "cache 项不存在或已淘汰"),
+            }
         }
         Ok(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "resource not yet available"),
         Err(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "invalid ridge:// uri"),
