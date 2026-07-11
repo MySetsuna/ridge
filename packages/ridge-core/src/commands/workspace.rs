@@ -59,6 +59,8 @@ pub trait WorkspaceWriter: Send + Sync {
     fn set_active_workspace(&self, workspace_id: &str) -> Result<(), String>;
     /// 重排工作区顺序：把 `from_index` 处的工作区移到 `to_index`。越界 → `Err`。
     fn reorder_workspaces(&self, from_index: usize, to_index: usize) -> Result<(), String>;
+    /// 重命名工作区。宿主负责落盘 + 向远端/前端广播（不触 PTY）。非法 id → `Err`。
+    fn rename_workspace(&self, workspace_id: &str, name: &str) -> Result<(), String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -129,6 +131,17 @@ pub fn reorder_workspaces(ctx: &Ctx, from_index: usize, to_index: usize) -> Core
     writer
         .0
         .reorder_workspaces(from_index, to_index)
+        .map_err(CoreError::InvalidArgs)?;
+    Ok(Value::Null)
+}
+
+/// handler：`rename_workspace`。重命名工作区（宿主落盘+广播，与桌面命令同语义）。经
+/// [`WorkspaceWriter`] 端口写；非法 id → `InvalidArgs`。
+pub fn rename_workspace(ctx: &Ctx, workspace_id: &str, name: &str) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .rename_workspace(workspace_id, name)
         .map_err(CoreError::InvalidArgs)?;
     Ok(Value::Null)
 }
@@ -207,6 +220,7 @@ mod tests {
         exists: bool,
         switched: std::sync::Mutex<Option<String>>,
         reordered: std::sync::Mutex<Option<(usize, usize)>>,
+        renamed: std::sync::Mutex<Option<(String, String)>>,
     }
     impl WorkspaceReader for FakeWriter {
         fn workspace_raw(&self, _id: &str) -> Option<WorkspaceRaw> {
@@ -237,6 +251,13 @@ mod tests {
             *self.reordered.lock().unwrap() = Some((from, to));
             Ok(())
         }
+        fn rename_workspace(&self, id: &str, name: &str) -> Result<(), String> {
+            if !self.exists {
+                return Err(format!("workspace {id} 不存在"));
+            }
+            *self.renamed.lock().unwrap() = Some((id.to_string(), name.to_string()));
+            Ok(())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -244,6 +265,9 @@ mod tests {
             Ok(())
         }
         fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
+            Ok(())
+        }
+        fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
             Ok(())
         }
     }
@@ -277,6 +301,7 @@ mod tests {
             exists,
             switched: std::sync::Mutex::new(None),
             reordered: std::sync::Mutex::new(None),
+            renamed: std::sync::Mutex::new(None),
         })
     }
 
@@ -315,6 +340,28 @@ mod tests {
         let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let err = reorder_workspaces(&ctx, 9, 9).unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
+    }
+
+    #[test]
+    fn rename_workspace_forwards_id_and_name_via_writer() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> =
+            Arc::new(HostStateAccessor(writer.clone()));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        rename_workspace(&ctx, "ws-7", "新名字").unwrap();
+        assert_eq!(
+            *writer.renamed.lock().unwrap(),
+            Some(("ws-7".to_string(), "新名字".to_string()))
+        );
+    }
+
+    #[test]
+    fn rename_workspace_invalid_id_is_invalid_args() {
+        let writer = fake_writer(false);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let err = rename_workspace(&ctx, "bad", "x").unwrap_err();
         assert_eq!(err.kind_tag(), "invalid_args");
     }
 }
