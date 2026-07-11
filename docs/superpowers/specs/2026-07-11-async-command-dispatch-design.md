@@ -81,3 +81,27 @@
 本会话已把 #19 全部 sync 命令迁 core（端口-适配器 + dispatch arm + fake 单测范式生产级，
 ridge-core 327 测）。本设计只补最后 async 两条的路由机制；范式、端口聚合、fake 测试样板
 均已就位，按上表施工即可。相关：`docs/plans/s1-migration-ledger.md`、[[project_remote_lsp_task_ledger]]。
+
+## 最终决定（2026-07-12）：**方案 C 收官，不做 A**
+
+上文步骤 1 定的「option A（async dispatch + async-trait）」在 2026-07-12 复盘后**撤销**，
+理由是两项事实改变了成本/收益：
+
+1. **read-only 已整体移除**（commit `b334b46`）。让 async 命令经 `dispatch` 的**主要收益**
+   本是「统一走 dispatch 的只读门 + 能力门」——只读门已不存在，能力准入 async 命令经
+   legacy allowlist 本就有；故经 dispatch 对 `close_pane`/`write_to_pty` 的净收益近零。
+2. **可迁的逻辑其实都已在 core**：git 写逻辑全在 `ridge-core/src/commands/git.rs`
+   （`git_commit`/`git_push`/`git_reset`/…），`src-tauri` 仅 `ridge_core::commands::git::*`
+   薄委派；workspace/sync-pane 命令 phase-2 已迁+路由。**唯一没迁的 = `close_pane`/
+   `write_to_pty`**，而它们本质是**宿主 PTY 生命周期**操作（碰 `AppState` 的 PTY 注册表），
+   要下沉须经 async 端口（= 那笔 async-trait 重构本身）。
+
+**决定**：`close_pane`/`write_to_pty`（及未来同类 async PTY 命令）**按 option C 留在宿主
+专用 async arm**——与 `write_to_pty` 原设计一致，async PTY 生命周期命令**不强塞进同步值
+路由 `dispatch`**。为把一台**同步值路由**改成 async + 加 `async-trait` 依赖、触及全部 24 条
+命令签名，仅为统一 1-2 条本就工作的 async PTY 命令，**不成比例**（尤其收益已随 read-only
+移除消失）。
+
+**结论**：#19 的内核化目标（逻辑下沉 ridge-core + 可测 + sync 命令经 dispatch 统一）**已达成**；
+async PTY 命令按 C 就位是**正确终态而非缺口**。除非日后有新的、需经 dispatch 统一 async 命令
+的硬理由（届时再排期 A + 全命令真机回归），本设计到此收官。
