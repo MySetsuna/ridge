@@ -143,6 +143,17 @@ mod tests {
         fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok(String::new())
         }
+        fn save_workspace_to_file(
+            &self,
+            _id: &str,
+            _name: &str,
+            _path: Option<&str>,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]

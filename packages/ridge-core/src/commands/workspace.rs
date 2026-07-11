@@ -68,6 +68,15 @@ pub trait WorkspaceWriter: Send + Sync {
     fn close_workspace(&self, workspace_id: &str) -> Result<(), String>;
     /// 把当前活动工作区存进历史（宿主经 app 数据目录文件 IO）。返回 history id。
     fn save_workspace(&self, name: Option<&str>) -> Result<String, String>;
+    /// 把工作区存为 .ridge 存档文件（宿主文件 IO）。名空/非法 id → `Err`。返回文件路径串。
+    fn save_workspace_to_file(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        path: Option<&str>,
+    ) -> Result<String, String>;
+    /// 删该工作区关联的 .ridge 存档文件（**破坏性**，仅此文件）。非法 id → `Err`。
+    fn delete_workspace_file(&self, workspace_id: &str) -> Result<(), String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -179,6 +188,32 @@ pub fn save_workspace(ctx: &Ctx, name: Option<&str>) -> CoreResult<Value> {
     let writer = ctx.state::<super::settings::HostStateAccessor>()?;
     let id = writer.0.save_workspace(name).map_err(CoreError::internal)?;
     Ok(Value::String(id))
+}
+
+/// handler：`save_workspace_to_file`。存工作区为 .ridge 文件（宿主文件 IO）。名空 →
+/// `InvalidArgs`；其余失败 → `Internal`。返回文件路径串。
+pub fn save_workspace_to_file(
+    ctx: &Ctx,
+    workspace_id: &str,
+    name: &str,
+    path: Option<&str>,
+) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    let p = writer
+        .0
+        .save_workspace_to_file(workspace_id, name, path)
+        .map_err(CoreError::internal)?;
+    Ok(Value::String(p))
+}
+
+/// handler：`delete_workspace_file`。删工作区关联的 .ridge 文件（破坏性，宿主文件 IO）。
+pub fn delete_workspace_file(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .delete_workspace_file(workspace_id)
+        .map_err(CoreError::internal)?;
+    Ok(Value::Null)
 }
 
 #[cfg(test)]
@@ -305,6 +340,20 @@ mod tests {
         fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok("hist-1".to_string())
         }
+        fn save_workspace_to_file(
+            &self,
+            _id: &str,
+            name: &str,
+            _path: Option<&str>,
+        ) -> Result<String, String> {
+            if name.trim().is_empty() {
+                return Err("工作区名不能为空".into());
+            }
+            Ok(format!("/saved/{name}.ridge"))
+        }
+        fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -325,6 +374,17 @@ mod tests {
         }
         fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
             Ok(String::new())
+        }
+        fn save_workspace_to_file(
+            &self,
+            _id: &str,
+            _name: &str,
+            _path: Option<&str>,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -454,5 +514,26 @@ mod tests {
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let out = save_workspace(&ctx, None).unwrap();
         assert_eq!(out, Value::String("hist-1".to_string()));
+    }
+
+    #[test]
+    fn save_workspace_to_file_returns_path_and_rejects_empty_name() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> =
+            Arc::new(HostStateAccessor(writer.clone()));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let out = save_workspace_to_file(&ctx, "ws-1", "proj", None).unwrap();
+        assert_eq!(out, Value::String("/saved/proj.ridge".to_string()));
+        // 名空 → 底层 Err → Internal（映射自宿主消息）。
+        let err = save_workspace_to_file(&ctx, "ws-1", "  ", None).unwrap_err();
+        assert_eq!(err.kind_tag(), "internal");
+    }
+
+    #[test]
+    fn delete_workspace_file_ok_via_writer() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        delete_workspace_file(&ctx, "ws-1").unwrap();
     }
 }
