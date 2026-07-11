@@ -2493,6 +2493,39 @@ const CORE_MIGRATED_METHODS: &[&str] = &[
     "read_file_for_editor",
     "text_search",
     "search",
+    // ── #19 phase-2 activation（2026-07-11，用户授权 + 真机验收）──────────────
+    // 本会话已把这些命令迁入 ridge-core（core handler + dispatch arm + 端口，ridge-core
+    // 单测过）。加入本表 → 远端 JSON-RPC 路由改经 ridge_core::dispatch（统一实现），
+    // 不再走 legacy 直连 arm。dispatch 内部仍强制 allowlist（能力门不变）。
+    // **批 1：只读**（幂等、低后果，先上供真机验证等价；写批随后）。
+    // 搜索/shell 只读
+    "filename_search",
+    "text_search_diagnostics",
+    "detect_available_shells",
+    "get_shell_history",
+    "browse_directory",
+    // 工作区/pane/terminal 只读
+    "get_workspace_snapshot",
+    "get_active_workspace_id",
+    "list_workspaces",
+    "get_pane_layout",
+    "get_pane_layout_for",
+    "get_pane_scrollback_tail",
+    "get_pane_scrollback_before",
+    "list_native_sessions",
+    // git 只读
+    "git_op_in_progress",
+    "get_git_info_with_cwd",
+    "get_scm_status",
+    "git_list_branches",
+    "find_git_repos_below",
+    "find_git_repo_root",
+    "git_blame",
+    "git_file_log",
+    "git_diff_file",
+    "git_diff_summary",
+    "git_get_file_versions",
+    "get_git_commits_paginated",
 ];
 
 /// Dispatch one **JSON-RPC** invoke. Returns `Ok(result_value)` or
