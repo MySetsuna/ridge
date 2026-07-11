@@ -31,10 +31,25 @@ pub struct WorkspaceRaw {
     pub pane_titles: HashMap<String, String>,
 }
 
-/// 宿主暴露「读某工作区原始数据」的端口（D4：core 不认桌面 `AppState`）。
+/// 工作区列表的一项（`list_workspaces`）。序列化为前端 camelCase 形状，与桌面
+/// `commands::workspace::WorkspaceInfo` 逐字一致（id / index / name / displaySeq）。
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntry {
+    pub id: String,
+    pub index: usize,
+    pub name: Option<String>,
+    pub display_seq: u64,
+}
+
+/// 宿主暴露「读工作区」的端口（D4：core 不认桌面 `AppState`）。
 pub trait WorkspaceReader: Send + Sync {
     /// 返回该工作区的原始快照数据；工作区不存在 → `None`。
     fn workspace_raw(&self, workspace_id: &str) -> Option<WorkspaceRaw>;
+    /// 活动工作区 id 字符串（`get_active_workspace_id`）。
+    fn active_workspace(&self) -> String;
+    /// 工作区列表快照（`list_workspaces`）：按顺序 + 名 + display_seq。
+    fn workspaces_list(&self) -> Vec<WorkspaceEntry>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -73,6 +88,18 @@ pub fn get_workspace_snapshot(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value
         .workspace_raw(workspace_id)
         .ok_or_else(|| CoreError::InvalidArgs(format!("workspace {workspace_id} 不存在")))?;
     serde_json::to_value(build_workspace_snapshot(raw)).map_err(CoreError::internal)
+}
+
+/// handler：`get_active_workspace_id`。返回活动工作区 id 字符串（与桌面命令同形）。
+pub fn get_active_workspace_id(ctx: &Ctx) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    Ok(Value::String(reader.0.active_workspace()))
+}
+
+/// handler：`list_workspaces`。返回工作区列表（camelCase，与桌面 `WorkspaceInfo` 同形）。
+pub fn list_workspaces(ctx: &Ctx) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    serde_json::to_value(reader.0.workspaces_list()).map_err(CoreError::internal)
 }
 
 #[cfg(test)]
@@ -127,6 +154,17 @@ mod tests {
     impl WorkspaceReader for FakeReader {
         fn workspace_raw(&self, _id: &str) -> Option<WorkspaceRaw> {
             self.0.clone()
+        }
+        fn active_workspace(&self) -> String {
+            "ws-active".to_string()
+        }
+        fn workspaces_list(&self) -> Vec<WorkspaceEntry> {
+            vec![WorkspaceEntry {
+                id: "ws-active".into(),
+                index: 0,
+                name: Some("W".into()),
+                display_seq: 1,
+            }]
         }
     }
     // 聚合 HostState 也要求 UserDefaultCwdStore；本测试只走 workspace 端口 → 空实现。

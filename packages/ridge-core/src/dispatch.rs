@@ -190,6 +190,8 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         "get_workspace_snapshot" => {
             workspace::get_workspace_snapshot(ctx, &s(&args, "workspaceId"))
         }
+        "get_active_workspace_id" => workspace::get_active_workspace_id(ctx),
+        "list_workspaces" => workspace::list_workspaces(ctx),
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -462,6 +464,12 @@ mod tests {
         fn workspace_raw(&self, _id: &str) -> Option<crate::commands::workspace::WorkspaceRaw> {
             None
         }
+        fn active_workspace(&self) -> String {
+            "ws-x".to_string()
+        }
+        fn workspaces_list(&self) -> Vec<crate::commands::workspace::WorkspaceEntry> {
+            vec![]
+        }
     }
 
     #[test]
@@ -623,6 +631,22 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn workspace_reads_routed_via_aggregate_accessor() {
+        let (ctx, _s) = ctx_with_state(
+            Arc::new(HostStateAccessor(Arc::new(FakeStore::default()))),
+            CapabilitySet::remote_default(),
+        );
+        assert_eq!(
+            dispatch("get_active_workspace_id", Value::Null, &ctx).unwrap(),
+            Value::String("ws-x".to_string())
+        );
+        assert_eq!(
+            dispatch("list_workspaces", Value::Null, &ctx).unwrap(),
+            serde_json::json!([])
+        );
     }
 
     #[test]
