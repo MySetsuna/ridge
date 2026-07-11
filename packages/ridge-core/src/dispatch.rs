@@ -283,6 +283,22 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             let info = git::git_info_for_path(std::path::Path::new(&s(&args, "cwd")));
             serde_json::to_value(info).map_err(CoreError::internal)
         }
+        // 这几个桌面侧是 async(spawn_git_blocking)，但都薄包一个同步内核；dispatch 是同步的，
+        // 故直接调其**同步内核**（git.rs:9 明许「直接跑同款逻辑」，与 fs 只读同为阻塞式路由）。
+        "get_scm_status" => {
+            let st = git::get_scm_status_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            serde_json::to_value(st).map_err(CoreError::internal)
+        }
+        "git_list_branches" => {
+            let branches =
+                git::git_list_branches_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            serde_json::to_value(branches).map_err(CoreError::internal)
+        }
+        "find_git_repos_below" => {
+            let repos =
+                git::find_git_repos_below_sync(s(&args, "path"), opt_usize(&args, "maxDepth"));
+            serde_json::to_value(repos).map_err(CoreError::internal)
+        }
 
         // ── Filesystem writes (S1 ledger §2.1) ──
         // Mutating — guarded above by the read-only gate, and by the traversal +
@@ -507,6 +523,34 @@ mod tests {
         let err = dispatch("git_op_in_progress", serde_json::json!({ "repoRoot": "." }), &ctx)
             .unwrap_err();
         assert_eq!(err.kind_tag(), "capability_denied");
+    }
+
+    #[test]
+    fn find_git_repos_below_routed_returns_array() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("below");
+        let out = dispatch(
+            "find_git_repos_below",
+            serde_json::json!({ "path": d.to_string_lossy(), "maxDepth": 1 }),
+            &ctx,
+        )
+        .unwrap();
+        assert!(out.is_array());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn scm_status_and_list_branches_are_routed_not_method_not_found() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("scm");
+        // 非 git 目录：底层 git 可能 Ok(空) 或 Err(git 失败)；关键是**不是 MethodNotFound**（证明已路由）。
+        for m in ["get_scm_status", "git_list_branches"] {
+            if let Err(e) = dispatch(m, serde_json::json!({ "repoRoot": d.to_string_lossy() }), &ctx)
+            {
+                assert_ne!(e.kind_tag(), "method_not_found", "{m} 应已路由");
+            }
+        }
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
