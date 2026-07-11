@@ -393,7 +393,7 @@ pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec
         .unwrap_or_default()
 }
 
-fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
+pub fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
     // Directories we never descend into. Grouped roughly by ecosystem so future
     // additions land in the right bucket. Keep this list tight — each entry
     // short-circuits a potentially huge subtree scan. If a project does
@@ -671,7 +671,7 @@ pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> 
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
+pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let path = Path::new(&repo_root);
     let repo_path = path
         .ancestors()
@@ -914,7 +914,7 @@ pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, Str
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
+pub fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args([
