@@ -64,6 +64,9 @@ pub trait WorkspaceReader: Send + Sync {
         before_seq: u64,
         max_bytes: usize,
     ) -> Result<Value, String>;
+    /// 所有 native tmux 后台会话列表（`list_native_sessions`）序列化为 JSON。全局纯读、
+    /// 不触 PTY——供远端运维发现后台 agent 会话。
+    fn native_sessions(&self) -> Value;
 }
 
 /// 宿主暴露「写工作区元数据」的端口（R0 内核化，写命令下沉起点）。仅覆盖**不触 PTY
@@ -180,6 +183,12 @@ pub fn get_pane_scrollback_before(
         .0
         .pane_scrollback_before(pane_id, before_seq, max_bytes)
         .map_err(CoreError::InvalidArgs)
+}
+
+/// handler：`list_native_sessions`。返回所有 native tmux 后台会话（全局纯读）。
+pub fn list_native_sessions(ctx: &Ctx) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    Ok(reader.0.native_sessions())
 }
 
 /// handler：`switch_workspace`。切换活动工作区（与桌面命令同语义：校验存在→置活动，
@@ -347,6 +356,9 @@ mod tests {
         ) -> Result<Value, String> {
             Ok(Value::Null)
         }
+        fn native_sessions(&self) -> Value {
+            Value::Array(vec![])
+        }
     }
     // 聚合 HostState 也要求 UserDefaultCwdStore；本测试只走 workspace 端口 → 空实现。
     impl crate::commands::settings::UserDefaultCwdStore for FakeReader {
@@ -383,6 +395,9 @@ mod tests {
             max: usize,
         ) -> Result<Value, String> {
             Ok(serde_json::json!({ "pane": pane, "before": before, "max": max }))
+        }
+        fn native_sessions(&self) -> Value {
+            serde_json::json!([{ "name": "bg-sess" }])
         }
     }
     impl crate::commands::settings::UserDefaultCwdStore for FakeWriter {
@@ -643,5 +658,14 @@ mod tests {
             before,
             serde_json::json!({ "pane": "p-1", "before": 99, "max": 2048 })
         );
+    }
+
+    #[test]
+    fn list_native_sessions_returns_reader_value() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let out = list_native_sessions(&ctx).unwrap();
+        assert_eq!(out, serde_json::json!([{ "name": "bg-sess" }]));
     }
 }

@@ -136,6 +136,9 @@ mod tests {
         ) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
+        fn native_sessions(&self) -> serde_json::Value {
+            serde_json::Value::Array(vec![])
+        }
     }
     // 聚合 HostState 也要求 WorkspaceWriter；本测试不走该端口 → no-op Ok。
     impl super::super::workspace::WorkspaceWriter for FakeStore {

@@ -205,6 +205,7 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             let max = args.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             workspace::get_pane_scrollback_before(ctx, &s(&args, "paneId"), before, max)
         }
+        "list_native_sessions" => workspace::list_native_sessions(ctx),
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
@@ -524,6 +525,9 @@ mod tests {
             _max: usize,
         ) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
+        }
+        fn native_sessions(&self) -> serde_json::Value {
+            serde_json::Value::Array(vec![])
         }
     }
     // 聚合 HostState 也要求 WorkspaceWriter；本测试只走 cwd 端口 → 记录切换目标。

@@ -133,6 +133,12 @@ impl ridge_core::commands::workspace::WorkspaceReader for AppState {
         let chunk = self.get_pty_scrollback_before(wid, pid, before_seq, max_bytes);
         serde_json::to_value(chunk).map_err(|e| e.to_string())
     }
+
+    fn native_sessions(&self) -> Value {
+        // 全局纯读：复用桌面 list_native_sessions（native::list_all_sessions），序列化。
+        serde_json::to_value(crate::commands::terminal::list_native_sessions())
+            .unwrap_or_else(|_| Value::Array(Vec::new()))
+    }
 }
 
 /// R0 内核化：桌面 `AppState` 作为 `WorkspaceWriter` 端口。逻辑与
