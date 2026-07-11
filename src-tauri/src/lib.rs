@@ -171,7 +171,17 @@ pub fn run() {
                 tracing::info!(target: "ridge::init", phase = 2, "setup: registering web-remote event listeners");
                 {
                     use tauri::Listener;
-                    for name in ["teammate-layout-changed", "teammate-active-pane-changed"] {
+                    // §IDE LSP P4：`lsp://diagnostics` 也镜像给桌面浏览器远控——host 跑
+                    // 语言服务器、把 publishDiagnostics 经此 event 推前端（lsp/mod.rs），
+                    // 远端 controller 的 `onLspDiagnostics`（lspClient.ts）订阅同名 event，
+                    // 故加入白名单即让 web-remote 编辑器也显示红/黄波浪线。payload = LSP
+                    // 诊断参数对象，随 `{type:'event'}` 帧转发，controller `listen()` shim 按
+                    // 名分发（bridge.ts）。无反馈环：转发只发广播总线，不回 `emit`。
+                    for name in [
+                        "teammate-layout-changed",
+                        "teammate-active-pane-changed",
+                        "lsp://diagnostics",
+                    ] {
                         let fwd = handle.clone();
                         app.listen_any(name, move |event| {
                             let payload: serde_json::Value =
