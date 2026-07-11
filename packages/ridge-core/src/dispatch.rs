@@ -223,6 +223,10 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
                 is_inline_tui,
             )
         }
+        // pane 写：为既有 pane 起 shell PTY（spawn 子进程，逻辑复用桌面 create_pane_inner）。
+        "create_pane" => {
+            workspace::create_pane(ctx, &s(&args, "paneId"), args.get("shell").and_then(|v| v.as_str()))
+        }
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
         // 补齐远端工作区切换。
@@ -587,6 +591,9 @@ mod tests {
             _alt: bool,
             _inline: bool,
         ) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
             Ok(())
         }
     }

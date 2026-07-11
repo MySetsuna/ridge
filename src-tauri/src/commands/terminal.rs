@@ -160,7 +160,7 @@ pub async fn create_pane(
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), String> {
-    create_pane_inner(state, pane_id, shell).map_err(|e| e.to_string())
+    create_pane_inner(&state, pane_id, shell).map_err(|e| e.to_string())
 }
 
 /// T14：检索系统可用 shell。返回 `(id, label, program)` 三元组列表。
@@ -239,8 +239,11 @@ pub async fn change_pane_shell(
     .map_err(|e| e.to_string())
 }
 
-fn create_pane_inner(
-    state: State<'_, AppState>,
+/// create_pane 的核心（不带 Tauri wrapper）：为既有 pane 起 shell PTY。`&AppState` 便于
+/// ridge-core `WorkspaceWriter` 端口直调（远端建 pane 经 dispatch）。逻辑一字未改——仅签名
+/// 机械改（State→&），spawn 行为保持。**spawn 子进程**：端到端（含输出订阅）须真机验收。
+pub fn create_pane_inner(
+    state: &AppState,
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), AppError> {
