@@ -109,6 +109,9 @@ pub trait WorkspaceWriter: Send + Sync {
     /// 为既有 pane 起 shell PTY（`create_pane`，在活动工作区）。**spawn 子进程**——语义与
     /// 桌面命令一致。pane 非法/不存在或起进程失败 → `Err`。
     fn create_pane(&self, pane_id: &str, shell: Option<&str>) -> Result<(), String>;
+    /// 分裂既有 pane（`split_pane`：改 pane 树 + 继承 cwd + **起新 PTY**）。返回分裂结果
+    /// （新 pane 等）序列化 JSON。pane 非法/不存在或失败 → `Err`。
+    fn split_pane(&self, pane_id: &str, direction: &str) -> Result<Value, String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -324,6 +327,16 @@ pub fn create_pane(ctx: &Ctx, pane_id: &str, shell: Option<&str>) -> CoreResult<
     Ok(Value::Null)
 }
 
+/// handler：`split_pane`。分裂既有 pane（与桌面命令同语义），返回分裂结果 JSON。失败 →
+/// `Internal`。经 [`WorkspaceWriter`] 端口写。
+pub fn split_pane(ctx: &Ctx, pane_id: &str, direction: &str) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    writer
+        .0
+        .split_pane(pane_id, direction)
+        .map_err(CoreError::internal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +530,12 @@ mod tests {
             }
             Ok(())
         }
+        fn split_pane(&self, pane: &str, direction: &str) -> Result<Value, String> {
+            if !self.exists {
+                return Err("pane 不存在".into());
+            }
+            Ok(serde_json::json!({ "split": pane, "dir": direction }))
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -562,6 +581,9 @@ mod tests {
         }
         fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
             Ok(())
+        }
+        fn split_pane(&self, _pane: &str, _direction: &str) -> Result<Value, String> {
+            Ok(Value::Null)
         }
     }
 
@@ -775,6 +797,20 @@ mod tests {
         let acc2: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(w2));
         let (ctx2, _s2) = ctx_with_state(acc2, CapabilitySet::allow_all());
         let err = create_pane(&ctx2, "p-1", None).unwrap_err();
+        assert_eq!(err.kind_tag(), "internal");
+    }
+
+    #[test]
+    fn split_pane_returns_result_and_failure_is_internal() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let out = split_pane(&ctx, "p-1", "horizontal").unwrap();
+        assert_eq!(out, serde_json::json!({ "split": "p-1", "dir": "horizontal" }));
+        let w2 = fake_writer(false);
+        let acc2: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(w2));
+        let (ctx2, _s2) = ctx_with_state(acc2, CapabilitySet::allow_all());
+        let err = split_pane(&ctx2, "p-1", "vertical").unwrap_err();
         assert_eq!(err.kind_tag(), "internal");
     }
 }

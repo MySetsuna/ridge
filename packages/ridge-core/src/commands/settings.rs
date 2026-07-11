@@ -185,6 +185,9 @@ mod tests {
         fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
             Ok(())
         }
+        fn split_pane(&self, _pane: &str, _direction: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
     }
 
     #[test]

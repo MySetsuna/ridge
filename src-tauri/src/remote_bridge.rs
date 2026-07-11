@@ -291,6 +291,17 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
         )
         .map_err(|e| e.to_string())
     }
+
+    fn split_pane(&self, pane_id: &str, direction: &str) -> Result<Value, String> {
+        // 分裂 pane（改树 + 起新 PTY）：复用桌面 split_pane_inner（逻辑一字未改）+ 序列化结果。
+        let res = crate::commands::pane::split_pane_inner(
+            self,
+            pane_id.to_string(),
+            direction.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+        serde_json::to_value(res).map_err(|e| e.to_string())
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event
