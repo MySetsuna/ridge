@@ -122,6 +122,9 @@ mod tests {
         fn workspaces_list(&self) -> Vec<super::super::workspace::WorkspaceEntry> {
             vec![]
         }
+        fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
     }
     // 聚合 HostState 也要求 WorkspaceWriter；本测试不走该端口 → no-op Ok。
     impl super::super::workspace::WorkspaceWriter for FakeStore {

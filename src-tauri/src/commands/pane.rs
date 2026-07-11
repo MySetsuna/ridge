@@ -209,8 +209,11 @@ pub fn get_pane_layout_for(
     get_pane_layout_for_inner(&state, &workspace_id)
 }
 
-fn get_pane_layout_for_inner(
-    state: &State<'_, AppState>,
+/// pane 布局读取核心（不带 Tauri `State` 包装）：供桌面命令与 ridge-core `WorkspaceReader`
+/// 端口（远端经 dispatch 取布局）共用。纯读（不触 PTY）。`&AppState` 便于端口直接调用；
+/// `State` 调用方经 Deref 强转。
+pub fn get_pane_layout_for_inner(
+    state: &AppState,
     workspace_id: &str,
 ) -> Result<LayoutNode, String> {
     let wid =

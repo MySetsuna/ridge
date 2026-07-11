@@ -50,6 +50,9 @@ pub trait WorkspaceReader: Send + Sync {
     fn active_workspace(&self) -> String;
     /// 工作区列表快照（`list_workspaces`）：按顺序 + 名 + display_seq。
     fn workspaces_list(&self) -> Vec<WorkspaceEntry>;
+    /// 某工作区的 pane 布局（`get_pane_layout[_for]`）序列化为 JSON。纯读、不触 PTY。
+    /// 工作区不存在 / id 非法 → `Err`。
+    fn pane_layout(&self, workspace_id: &str) -> Result<Value, String>;
 }
 
 /// 宿主暴露「写工作区元数据」的端口（R0 内核化，写命令下沉起点）。仅覆盖**不触 PTY
@@ -127,6 +130,22 @@ pub fn get_active_workspace_id(ctx: &Ctx) -> CoreResult<Value> {
 pub fn list_workspaces(ctx: &Ctx) -> CoreResult<Value> {
     let reader = ctx.state::<super::settings::HostStateAccessor>()?;
     serde_json::to_value(reader.0.workspaces_list()).map_err(CoreError::internal)
+}
+
+/// handler：`get_pane_layout`。返回**活动**工作区的 pane 布局 JSON（与桌面命令同形）。
+pub fn get_pane_layout(ctx: &Ctx) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    let wid = reader.0.active_workspace();
+    reader.0.pane_layout(&wid).map_err(CoreError::InvalidArgs)
+}
+
+/// handler：`get_pane_layout_for`。返回指定工作区的 pane 布局 JSON（§4a keep-alive 预取）。
+pub fn get_pane_layout_for(ctx: &Ctx, workspace_id: &str) -> CoreResult<Value> {
+    let reader = ctx.state::<super::settings::HostStateAccessor>()?;
+    reader
+        .0
+        .pane_layout(workspace_id)
+        .map_err(CoreError::InvalidArgs)
 }
 
 /// handler：`switch_workspace`。切换活动工作区（与桌面命令同语义：校验存在→置活动，
@@ -280,6 +299,9 @@ mod tests {
                 display_seq: 1,
             }]
         }
+        fn pane_layout(&self, _id: &str) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
     }
     // 聚合 HostState 也要求 UserDefaultCwdStore；本测试只走 workspace 端口 → 空实现。
     impl crate::commands::settings::UserDefaultCwdStore for FakeReader {
@@ -301,6 +323,10 @@ mod tests {
         }
         fn workspaces_list(&self) -> Vec<WorkspaceEntry> {
             vec![]
+        }
+        fn pane_layout(&self, id: &str) -> Result<Value, String> {
+            // 回带 id 的可断言值（验证 handler 把 workspace_id 透传到端口）。
+            Ok(serde_json::json!({ "for": id }))
         }
     }
     impl crate::commands::settings::UserDefaultCwdStore for FakeWriter {
@@ -535,5 +561,17 @@ mod tests {
         let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         delete_workspace_file(&ctx, "ws-1").unwrap();
+    }
+
+    #[test]
+    fn get_pane_layout_for_forwards_workspace_id_to_reader() {
+        let writer = fake_writer(true); // FakeWriter.pane_layout 回带 id 的值
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let out = get_pane_layout_for(&ctx, "ws-77").unwrap();
+        assert_eq!(out, serde_json::json!({ "for": "ws-77" }));
+        // active 版走 active_workspace()（FakeWriter 为空串）。
+        let out2 = get_pane_layout(&ctx).unwrap();
+        assert_eq!(out2, serde_json::json!({ "for": "" }));
     }
 }
