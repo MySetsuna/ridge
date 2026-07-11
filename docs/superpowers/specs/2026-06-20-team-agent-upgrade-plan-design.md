@@ -47,6 +47,8 @@
 | Leader 竞选 + 性格分派 | `ridge-core/teammate/topology.rs`(elect_leader)、`model.rs`(Personality) | 删竞选/性格；topology 收缩为扁平 roster 或并入 model |
 | DAG / Objective / 协作审计 | `AgentCenterPanel.svelte` 三区 | 删 |
 
+> **裁决更正（2026-07-11，任务 #18）**：上表「Leader 竞选」这一行**只部分执行**——**重物已删**（多维加权 `Personality`/语言技能/上下文窗口/细致度矩阵、TML、stream_cleaner、broadcast、`set_tml_stream_enabled` 均已 0 命中）；但 2026-07 的**编组功能**又**刻意重新引入了一个极简版 `elect_leader`**（`model.rs::AgentTier` 关键字被动识别 Base/Skilled/Expert 三档，`topology.rs::elect_leader` 档高者当选、同档取 id 最小，确定性），用来支撑「给组派任务 → **只发给组长**」。**决定：保留该极简版**——它与被摒弃的「会萎缩的 AI 自治竞选」本质不同（零探测、零握手、纯被动识别 + 确定性排序），是编组派活的依据，且 2026-07-11 评审已把它的能力来源稳定化（改用 agent_id 而非可被 shell 伪造的 pane 标题）。故 `elect_leader` **不再删**；本行的「删竞选」仅指删除已退场的**加权矩阵**竞选。
+
 ### ➕ 唯一新增 —— 终端原语「会话/工作永不丢」
 持久化做成 append-only 日志（符合极简、与 scrollback 同气质，不依赖任何被摒弃层）。**技能复利仅以 `.ridge/skills/*.md` 文件约定起步、列入观望，不在本计划内建子系统。**
 
