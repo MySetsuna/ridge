@@ -204,6 +204,9 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         "rename_workspace" => {
             workspace::rename_workspace(ctx, &s(&args, "workspaceId"), &s(&args, "name"))
         }
+        "create_workspace" => {
+            workspace::create_workspace(ctx, args.get("name").and_then(|v| v.as_str()))
+        }
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -493,6 +496,9 @@ mod tests {
         }
         fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
             Ok(())
+        }
+        fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok(String::new())
         }
     }
 

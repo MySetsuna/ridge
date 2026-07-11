@@ -52,12 +52,11 @@ pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Res
     Ok(())
 }
 
-/// 新建根工作区：独立分屏树与终端表，并切换为当前活动区。
-#[tauri::command]
-pub fn create_workspace(
-    state: State<'_, AppState>,
-    name: Option<String>,
-) -> Result<String, String> {
+/// 新建根工作区的核心逻辑（不带 Tauri `State` 包装）：独立分屏树与终端表，切换为活动区，
+/// 广播列表变更。抽出供**桌面命令**与 **ridge-core `WorkspaceWriter` 端口**（远端 controller
+/// 经 dispatch 新建工作区）共用——避免 `Workspace` 字面量在两处重复（DRY）。不触 PTY
+/// （新建工作区 terminals 为空）。返回新工作区 id 串。
+pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
     let id = Uuid::new_v4();
     let seq = state.allocate_workspace_seq();
     {
@@ -86,7 +85,7 @@ pub fn create_workspace(
     state.workspace_order.write().push(id);
     *state.active_workspace.write() = id;
     if let Some(name) = name.filter(|n| !n.is_empty()) {
-        state.workspace_names.write().insert(id, name);
+        state.workspace_names.write().insert(id, name.to_string());
     }
     // Broadcast workspace list change to remote clients and desktop frontend.
     let _ = state
@@ -95,7 +94,16 @@ pub fn create_workspace(
     let _ = state
         .event_tx
         .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
-    Ok(id.to_string())
+    id.to_string()
+}
+
+/// 新建根工作区：独立分屏树与终端表，并切换为当前活动区。
+#[tauri::command]
+pub fn create_workspace(
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<String, String> {
+    Ok(create_workspace_core(&state, name.as_deref()))
 }
 
 #[tauri::command]

@@ -159,6 +159,11 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
         Ok(())
     }
+
+    fn create_workspace(&self, name: Option<&str>) -> Result<String, String> {
+        // 复用桌面命令核心（DRY：Workspace 字面量只在 create_workspace_core 一处）。
+        Ok(crate::commands::workspace::create_workspace_core(self, name))
+    }
 }
 
 /// Event sink that mirrors `ridge_core` emits onto the desktop's event

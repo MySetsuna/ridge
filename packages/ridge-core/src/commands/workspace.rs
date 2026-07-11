@@ -61,6 +61,8 @@ pub trait WorkspaceWriter: Send + Sync {
     fn reorder_workspaces(&self, from_index: usize, to_index: usize) -> Result<(), String>;
     /// 重命名工作区。宿主负责落盘 + 向远端/前端广播（不触 PTY）。非法 id → `Err`。
     fn rename_workspace(&self, workspace_id: &str, name: &str) -> Result<(), String>;
+    /// 新建根工作区（空终端表，不触 PTY），切为活动区并广播。返回新工作区 id 串。
+    fn create_workspace(&self, name: Option<&str>) -> Result<String, String>;
 }
 
 /// 加工后的工作区快照（`git_repos`/`pane_titles` 语义与桌面 `snapshot_workspace` 一致）。
@@ -144,6 +146,14 @@ pub fn rename_workspace(ctx: &Ctx, workspace_id: &str, name: &str) -> CoreResult
         .rename_workspace(workspace_id, name)
         .map_err(CoreError::InvalidArgs)?;
     Ok(Value::Null)
+}
+
+/// handler：`create_workspace`。新建根工作区（与桌面命令同语义）。经 [`WorkspaceWriter`]
+/// 端口写，返回新工作区 id 串。
+pub fn create_workspace(ctx: &Ctx, name: Option<&str>) -> CoreResult<Value> {
+    let writer = ctx.state::<super::settings::HostStateAccessor>()?;
+    let id = writer.0.create_workspace(name).map_err(CoreError::internal)?;
+    Ok(Value::String(id))
 }
 
 #[cfg(test)]
@@ -258,6 +268,9 @@ mod tests {
             *self.renamed.lock().unwrap() = Some((id.to_string(), name.to_string()));
             Ok(())
         }
+        fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok("ws-created".to_string())
+        }
     }
     // FakeReader 也须实现 WorkspaceWriter 才能装配成 HostState（读测试不走写端口）。
     impl WorkspaceWriter for FakeReader {
@@ -269,6 +282,9 @@ mod tests {
         }
         fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
             Ok(())
+        }
+        fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok(String::new())
         }
     }
 
@@ -363,5 +379,14 @@ mod tests {
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let err = rename_workspace(&ctx, "bad", "x").unwrap_err();
         assert_eq!(err.kind_tag(), "invalid_args");
+    }
+
+    #[test]
+    fn create_workspace_returns_new_id_from_writer() {
+        let writer = fake_writer(true);
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
+        let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
+        let out = create_workspace(&ctx, Some("foo")).unwrap();
+        assert_eq!(out, Value::String("ws-created".to_string()));
     }
 }
