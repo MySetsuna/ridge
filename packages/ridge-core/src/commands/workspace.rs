@@ -51,8 +51,8 @@ pub struct WorkspaceSnapshot {
 pub fn build_workspace_snapshot(raw: WorkspaceRaw) -> WorkspaceSnapshot {
     let git_repos: Vec<String> = raw
         .pane_cwds
-        .iter()
-        .filter_map(|cwd| crate::commands::git::find_git_repo_root(cwd.clone()))
+        .into_iter()
+        .filter_map(crate::commands::git::find_git_repo_root)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
