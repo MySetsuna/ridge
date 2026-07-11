@@ -5,6 +5,8 @@ import {
   RpcReconnectError,
   RpcRemoteError,
   RpcTimeoutError,
+  type AuthListener,
+  type AuthState,
   type ChannelTransport,
   type ControlFrame,
   type ControlListener,
@@ -43,6 +45,12 @@ class FakeTransport implements ChannelTransport {
   onStateChange(cb: StateListener): Unsubscribe {
     this.stateListeners.add(cb);
     return () => this.stateListeners.delete(cb);
+  }
+  authState(): AuthState {
+    return 'authorized';
+  }
+  onAuthChange(_cb: AuthListener): Unsubscribe {
+    return () => {};
   }
 
   // ── test drivers ──

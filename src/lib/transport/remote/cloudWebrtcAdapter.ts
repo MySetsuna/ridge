@@ -37,6 +37,8 @@ import type {
   RemoteConnectionProvider,
 } from '../../remote/cloud/connectionProvider';
 import {
+  type AuthListener,
+  type AuthState,
   type ChannelTransport,
   type ControlFrame,
   type ControlListener,
@@ -78,6 +80,13 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   private controlListeners = new Set<ControlListener>();
   private paneListeners = new Set<PaneBytesListener>();
   private stateListeners = new Set<StateListener>();
+  private authListeners = new Set<AuthListener>();
+  // FIX-4/D3 transport-agnostic auth. E2EE `connected` is NOT yet business-ready
+  // on the cloud leg — the 0x12 TOTP handshake must pass first — so this starts
+  // `pending` and is driven `authorized`/`denied` by the session-control frames
+  // this adapter already demuxes (see interpretAuthFrame). Any non-connected
+  // transport state resets it to `pending` (a fresh connect re-runs TOTP).
+  private auth: AuthState = 'pending';
   /**
    * Listeners for the 0x12 session-CONTROL channel (contract §4 TOTP handshake).
    * Kept separate from {@link controlListeners} (the 0x11 JSON-RPC business
@@ -174,6 +183,49 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     return () => this.stateListeners.delete(cb);
   }
 
+  // ── L1: auth readiness (FIX-4) ──────────────────────────────────────────────
+  authState(): AuthState {
+    return this.auth;
+  }
+
+  onAuthChange(cb: AuthListener): Unsubscribe {
+    this.authListeners.add(cb);
+    return () => this.authListeners.delete(cb);
+  }
+
+  private setAuth(next: AuthState): void {
+    if (next === this.auth) return;
+    this.auth = next;
+    for (const cb of this.authListeners) {
+      try {
+        cb(next);
+      } catch (e) {
+        console.error('[cloudWebrtcAdapter] auth listener threw', e);
+      }
+    }
+  }
+
+  /**
+   * Derive the transport-agnostic authState from a 0x12 session-control frame
+   * (auto-observed — the boot's own `onSessionControl` consumers still receive
+   * the frame; this does not intercept it). Only the auth-bearing frames matter:
+   *   • `totp-result{ok:true}`            → authorized
+   *   • `totp-result{ok:false,locked}`    → denied (host lockout)
+   *   • `totp-trust-result{trusted:true}` → authorized (§7.4 免密直通)
+   * A retryable `totp-result{ok:false}` (wrong code, no lockout) leaves authState
+   * `pending` so the user can re-enter the code.
+   */
+  private interpretAuthFrame(frame: Record<string, unknown>): void {
+    if (frame.t === 'totp-result') {
+      if (frame.ok === true) this.setAuth('authorized');
+      else if (frame.locked === true) this.setAuth('denied');
+      return;
+    }
+    if (frame.t === 'totp-trust-result' && frame.trusted === true) {
+      this.setAuth('authorized');
+    }
+  }
+
   // ── inbound demux ────────────────────────────────────────────────────────────
   /** One decrypted DataChannel plaintext frame → control frame or pane bytes. */
   private handleInboundFrame(plaintext: Uint8Array): void {
@@ -198,7 +250,11 @@ export class CloudWebrtcAdapter implements ChannelTransport {
       case 'control':
         // The 0x12 channel is the §4 session-control envelope (TOTP handshake).
         if (result.json !== null && typeof result.json === 'object') {
-          this.emitSessionControl(result.json as Record<string, unknown>);
+          const frame = result.json as Record<string, unknown>;
+          // Derive the unified authState BEFORE fan-out (FIX-4); consumers still
+          // receive the frame verbatim.
+          this.interpretAuthFrame(frame);
+          this.emitSessionControl(frame);
         }
         return;
       case 'pane':
@@ -212,6 +268,10 @@ export class CloudWebrtcAdapter implements ChannelTransport {
 
   private handleProviderState(s: CloudConnectionState): void {
     const mapped = mapState(s);
+    // Auth can only hold on a live `connected` transport; any other state resets
+    // to pending so a reconnect re-runs the 0x12 TOTP handshake (setAuth is
+    // idempotent, so repeated non-connected events are harmless).
+    if (mapped !== 'connected') this.setAuth('pending');
     if (mapped === this.lastState) return; // collapse handshaking→connecting churn
     this.lastState = mapped;
     for (const cb of this.stateListeners) {
@@ -259,6 +319,7 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     this.paneListeners.clear();
     this.stateListeners.clear();
     this.sessionControlListeners.clear();
+    this.authListeners.clear();
   }
 }
 

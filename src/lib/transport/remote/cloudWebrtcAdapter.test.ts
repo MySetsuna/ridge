@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CloudWebrtcAdapter, createCloudWebrtcTransportWith } from './cloudWebrtcAdapter';
-import { CHANNEL, demuxFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
+import { CHANNEL, demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
 import { RpcClient } from './rpcClient';
 import { RpcRemoteError, RpcReconnectError } from './types';
 import type {
@@ -209,6 +209,56 @@ describe('CloudWebrtcAdapter — state mapping', () => {
     const { provider, adapter } = wire();
     adapter.close();
     expect(provider.disconnected).toBe(true);
+  });
+});
+
+describe('CloudWebrtcAdapter — authState (FIX-4)', () => {
+  it('starts pending on a connected transport (E2EE up, TOTP not yet passed)', () => {
+    const { adapter } = wire('connected');
+    expect(adapter.authState()).toBe('pending');
+  });
+
+  it('becomes authorized on totp-result{ok:true}, emitting once', () => {
+    const { provider, adapter } = wire();
+    const seen: string[] = [];
+    adapter.onAuthChange((a) => seen.push(a));
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-result', ok: true }));
+    expect(adapter.authState()).toBe('authorized');
+    expect(seen).toEqual(['authorized']);
+  });
+
+  it('becomes denied on totp-result{ok:false, locked:true}', () => {
+    const { provider, adapter } = wire();
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-result', ok: false, locked: true }));
+    expect(adapter.authState()).toBe('denied');
+  });
+
+  it('stays pending on a retryable totp-result{ok:false} (wrong code, no lockout)', () => {
+    const { provider, adapter } = wire();
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-result', ok: false }));
+    expect(adapter.authState()).toBe('pending');
+  });
+
+  it('authorizes a trusted controller via totp-trust-result{trusted:true} (§7.4)', () => {
+    const { provider, adapter } = wire();
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-trust-result', trusted: true }));
+    expect(adapter.authState()).toBe('authorized');
+  });
+
+  it('resets to pending when the transport leaves connected (reconnect re-auths)', () => {
+    const { provider, adapter } = wire();
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-result', ok: true }));
+    expect(adapter.authState()).toBe('authorized');
+    provider.setState('disconnected'); // connected → disconnected
+    expect(adapter.authState()).toBe('pending');
+  });
+
+  it('still delivers the totp-result frame to onSessionControl (no interception)', () => {
+    const { provider, adapter } = wire();
+    const frames: unknown[] = [];
+    adapter.onSessionControl((f) => frames.push(f));
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-result', ok: true }));
+    expect(frames).toEqual([{ t: 'totp-result', ok: true }]);
   });
 });
 
