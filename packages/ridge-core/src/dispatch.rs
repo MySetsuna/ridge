@@ -32,12 +32,6 @@
 //!    during the migration window the host bridge keeps serving those from the
 //!    legacy dispatcher (see `s1-migration-ledger.md`), so this never regresses
 //!    desktop behaviour.
-//!
-//! The read-only gate (mutating-invoke rejection) is host-policy that depends
-//! on host state; it is applied by the host before/around `dispatch` for now
-//! (the desktop wrapper preserves its existing `is_mutating_invoke` check) and
-//! is a candidate to fold into the capability layer in a later slice — noted in
-//! the ledger.
 
 use serde_json::Value;
 
@@ -147,17 +141,6 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
     if !ctx.capabilities().is_allowed(method) {
         tracing::warn!(target: "ridge::core::dispatch", method, "capability denied");
         return Err(CoreError::CapabilityDenied(method.to_string()));
-    }
-
-    // 1.5 Read-only session gate (D-GM-9 / S1 ledger §3.1). A read-only
-    // capability set refuses any mutating method up front, mirroring the legacy
-    // `server.rs::is_mutating_invoke` + `remote_fs_readonly` pre-check — but now
-    // enforced inside `dispatch`, so the headless host (which bypasses
-    // `server.rs`) is covered too. No-op when the set is writable (the default),
-    // so existing hosts are unaffected.
-    if ctx.capabilities().is_readonly() && crate::capability::is_mutating(method) {
-        tracing::warn!(target: "ridge::core::dispatch", method, "rejected mutating method: read-only");
-        return Err(CoreError::ReadOnly);
     }
 
     // 2. Path-traversal guard.
@@ -912,41 +895,6 @@ mod tests {
         }
     }
 
-    // ── Read-only session gate (D-GM-9 / S1 ledger §3.1) ──
-
-    #[test]
-    fn readonly_session_rejects_mutating_method() {
-        let (ctx, _sink) = ctx_with_state(
-            Arc::new(EmptyState),
-            CapabilitySet::remote_default().with_readonly(true),
-        );
-        let err = dispatch(
-            "write_file",
-            serde_json::json!({ "path": "x.txt", "content": "y" }),
-            &ctx,
-        )
-        .unwrap_err();
-        assert_eq!(err.kind_tag(), "read_only");
-        // Same message the legacy desktop read-only gate returned.
-        assert_eq!(err.to_command_string(), "remote filesystem is read-only");
-    }
-
-    #[test]
-    fn readonly_session_still_allows_reads() {
-        let (ctx, _sink) = ctx_with_state(
-            Arc::new(EmptyState),
-            CapabilitySet::remote_default().with_readonly(true),
-        );
-        // A non-mutating read is NOT gated: it reaches the handler (missing file
-        // ⇒ internal), proving read-only only blocks mutations.
-        let err = dispatch(
-            "read_file",
-            serde_json::json!({ "path": "definitely/nope/xyz.txt" }),
-            &ctx,
-        )
-        .unwrap_err();
-        assert_eq!(err.kind_tag(), "internal");
-    }
 
     #[test]
     fn writable_session_runs_write_file_and_round_trips() {

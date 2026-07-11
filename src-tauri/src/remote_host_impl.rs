@@ -1717,18 +1717,9 @@ async fn dispatch_data_request(
 ) -> serde_json::Value {
     use crate::commands::{git, project};
 
-    // §read-only gate: defence-in-depth for view-only remote sessions. (An
-    // authenticated remote already has shell stdin, so this is a convenience
-    // guard, not an isolation boundary.)
+    // §audit: record every remote mutation so a trust-but-verify operator has a
+    // trail. (Remote sessions are always read-write — there is no read-only mode.)
     if is_mutating_method(method) {
-        if state.remote_fs_readonly.load(Ordering::Relaxed) {
-            tracing::warn!(
-                target: "ridge::remote::fs", method,
-                "rejected mutating data-request: remote is read-only"
-            );
-            return serde_json::json!({ "_error": "remote filesystem is read-only" });
-        }
-        // §audit: record every mutation so a trust-but-verify operator has a trail.
         tracing::info!(target: "ridge::remote::fs", method, "remote mutating data-request");
     }
 
@@ -1954,22 +1945,9 @@ async fn search_files_result(state: &AppState, query: String, path: String) -> s
     }
 }
 
-/// FS/git-write commands gated by the remote read-only toggle **on the legacy
-/// invoke leg only**. This list is intentionally FS/git-only.
-///
-/// NOTE (post-#19 phase-2): it does NOT cover the workspace/pane structural
-/// writes (`switch_workspace`, `resize_pane`, `create_pane`, `split_pane`,
-/// `close_workspace`, `save_workspace`, `save_workspace_to_file`,
-/// `delete_workspace_file`, `rename_workspace`, `reorder_workspaces`,
-/// `create_workspace`). Those are migrated into `ridge-core` and routed through
-/// `dispatch` (see `CORE_MIGRATED_METHODS`), where a read-only session is
-/// refused them by dispatch's **own** gate against `capability::MUTATING_METHODS`
-/// (D-GM-9) — so they ARE blocked in read-only, just at the other gate, not here.
-/// The only interactive ops still ungated in a read-only session are the
-/// still-legacy `close_pane` / `write_to_pty`; whether read-only should mean
-/// "FS-only" (leave those open) or "full host-state lockdown" (block them too)
-/// is an open coherence question tracked in the S1 ledger — do not "fix" the
-/// asymmetry by editing either list without resolving that first.
+/// FS/git-write commands, used only to tag remote mutations for the audit log.
+/// Remote sessions are always read-write (there is no read-only session mode),
+/// so this is purely a mutation-audit predicate, not an access gate.
 fn is_mutating_invoke(cmd: &str) -> bool {
     is_mutating_method(cmd) || matches!(cmd, "replace_in_files" | "apply_file_edits")
 }
@@ -1991,12 +1969,9 @@ async fn dispatch_invoke_request(
     use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
     use tauri::Manager;
 
-    // §read-only gate (defence-in-depth for view-only sessions).
+    // §audit: record every remote mutation so a trust-but-verify operator has a
+    // trail. (Remote sessions are always read-write — there is no read-only mode.)
     if is_mutating_invoke(cmd) {
-        if state.remote_fs_readonly.load(Ordering::Relaxed) {
-            tracing::warn!(target: "ridge::remote::fs", cmd, "rejected mutating invoke: remote is read-only");
-            return serde_json::json!({ "_error": "remote filesystem is read-only" });
-        }
         tracing::info!(target: "ridge::remote::fs", cmd, "remote mutating invoke");
     }
     // §traversal guard: reject `..` in any path-bearing field.
@@ -2586,10 +2561,6 @@ async fn dispatch_invoke_jsonrpc(
                 }))
             }
         };
-        // Defence-in-depth read-only gate, identical to the legacy leg.
-        if is_mutating_invoke(cmd) && state.remote_fs_readonly.load(Ordering::Relaxed) {
-            return Err(ridge_core::CoreError::ReadOnly.to_json_rpc());
-        }
         let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
         return ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_json_rpc());
     }
