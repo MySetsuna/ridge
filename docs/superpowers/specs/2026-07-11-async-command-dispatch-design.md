@@ -49,10 +49,21 @@
   上下文；若都在可 `spawn_blocking` 隔离的边界，用 B（改面最小、不动签名）；若线程模型不
   允许安全 `blocking_recv`，则排期 A（专注会话 + 全命令真机回归）。
 
-## 实施顺序（专注会话）
+## 步骤 1 核实结论（2026-07-11，本会话已做）
 
-1. **核实**：列出 `ridge_core::dispatch` 全部 caller 及其线程上下文（async 任务 vs 阻塞线程）。
-   —— 决定 B 是否可行的唯一前提。
+**caller 线程上下文已查：远控命令 handler 是 async → B 不安全 → 定 A。**
+- `src-tauri/src/remote_host_impl.rs` 的命令 match（~2098）是 **async fn**：同批 arm 内多处
+  `.await`（如 2114 `project::write_file(...).await`），而 `ridge_core::dispatch(cmd,args,&ctx)`
+  （2112）就在此 async 上下文内被调。
+- 故在 dispatch arm 内 `blocking_recv`（方案 B）会**阻塞该 async worker**（deadlock/panic），
+  与 #13 楔死同类。**B 对远控路径不成立。**
+- rdg `fs_reuse.rs` 亦在 async fn 内调 dispatch（同理）。
+- **结论**：close_pane（非热 async 命令）**须走 A（async dispatch + async-trait）**；write_to_pty
+  仍归 C（每键热路径专用异步通道，不进 dispatch）。A 是唯一正确解，须专注会话 + 全命令真机回归。
+
+## 实施顺序（专注会话，方案 A）
+
+1. ~~核实 caller 线程上下文~~ ——**已完成（上）**：远控/rdg caller 均 async → 定 A。
 2. 若 B 可行：端口加 `close_pane`（sync 签名，内部经 spawner+oneshot 驱动 async kill）；
    dispatch 加 arm；AppState 实现委派现有 `kill_pty_if_present`；单测（fake 端口）+ **真机验**
    远端关 pane 的 PTY 清理无泄漏/无楔死。
