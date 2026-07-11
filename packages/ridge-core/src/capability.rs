@@ -311,6 +311,20 @@ pub const MUTATING_METHODS: &[&str] = &[
     "git_create_tag",
     "git_discard",
     "git_clean_untracked",
+    // ── Workspace / pane writes（#19 迁入 core；phase-2 前置：只读会话不得执行）──
+    // 破坏性尤须（close_workspace 杀 PTY、delete_workspace_file 删档），故列 MUTATING 让
+    // dispatch 只读门（D-GM-9）在只读远端会话下拒之。非只读会话不受影响。
+    "switch_workspace",
+    "reorder_workspaces",
+    "rename_workspace",
+    "create_workspace",
+    "close_workspace",
+    "save_workspace",
+    "save_workspace_to_file",
+    "delete_workspace_file",
+    "resize_pane",
+    "create_pane",
+    "split_pane",
 ];
 
 /// True if `method` mutates host state (see [`MUTATING_METHODS`]). The read-only

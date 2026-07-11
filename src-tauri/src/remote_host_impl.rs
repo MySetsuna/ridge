@@ -2526,6 +2526,22 @@ const CORE_MIGRATED_METHODS: &[&str] = &[
     "git_diff_summary",
     "git_get_file_versions",
     "get_git_commits_paginated",
+    // ── #19 phase-2 批2：写命令（sync 迁入 core；已列 MUTATING_METHODS，只读会话被
+    // dispatch 门拒）。远端 JSON-RPC 改经 dispatch → 我方 handler（逐字对齐桌面逻辑）。
+    // 破坏性（close/delete）与 spawn（create/split）尤须**真机验收**远端行为等价 +
+    // PTY 生命周期/文件删除正确、无泄漏。close_pane/write_to_pty 属 async，仍走 legacy
+    // （见 async-dispatch 设计，待 async dispatch 后并入）。──
+    "switch_workspace",
+    "reorder_workspaces",
+    "rename_workspace",
+    "create_workspace",
+    "close_workspace",
+    "save_workspace",
+    "save_workspace_to_file",
+    "delete_workspace_file",
+    "resize_pane",
+    "create_pane",
+    "split_pane",
 ];
 
 /// Dispatch one **JSON-RPC** invoke. Returns `Ok(result_value)` or
