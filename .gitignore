@@ -41,3 +41,8 @@ plotforge.db
 # Playwright remote-GC e2e artifacts (throwaway)
 .pw-remote-profile/
 gc-e2e-*.png
+
+# Local env / tooling artifacts
+.env.local
+.mimocode/
+scripts/tmp-*.mjs
