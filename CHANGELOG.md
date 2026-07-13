@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.16] — 2026-07-14
+
+命令内核化收官（#19）：桌面与远端的读写命令统一下沉到共享内核 `ridge-core` dispatch，消除双端逻辑分叉。同时完成局域网远控安全加固、远端恒为完全读写，并新增本文件 Git 历史浮层。
+
+### Added
+- **本文件 Git 历史浮层**：编辑器内查看当前文件的提交列表（`git_file_log`），快速回溯单文件变更历史（#23）。
+- **LSP 诊断经 web-remote 中继**：语言服务器诊断（`lsp://diagnostics`）纳入远控白名单，浏览器 / 远端也能看到实时诊断；语言服务器缺失时改为 toast 提示（去重）（P4）。
+- **rdg 局域网 host scrollback**：LAN host 增加 scrollback 环 + 订阅即回放，接入远端 pane 首屏不再黑屏（#21）。
+- **MCP 缓存资源**：`tools/call` 路由 `ridge_stash_data`，`ridge://cache` 作为可回读资源暴露（#14）。
+- **编组事件反馈**：teammate 加组成功 / 失败向用户 toast 提示（#17）。
+- **Remote 产物部署解耦**：新增 `publish-remote-cloud` CLI 与产物 bundle 打包纯函数（零依赖长度前缀框架 + 跨平台 activate），Remote 前端产物与 ridge-cloud 解耦发布。
+
+### Changed
+- **命令内核化（#19）**：workspace / pane / git / 原生会话等只读与写命令统一经 `ridge-core` dispatch 路由——桌面与远端共用同一权威实现（含 workspace 五件套、pane spawn / resize / layout / scrollback、git blame / diff / file_log / 分页提交等）。
+- **远端恒为完全读写**：移除远端只读会话模式，远控接入即拥有与桌面一致的读写能力。
+- **远控鉴权抽象收敛**：authState 抽为传输无关抽象，LAN / 公网各 transport 复用同一鉴权状态机（FIX-4）。
+
+### Fixed
+- **LAN 远控安全加固**：`/verify` 增加爆破节流、密钥 / 令牌改用 `OsRng` 生成（C1 / C2）；`/workspace` 补齐鉴权（H3）；`/file` 收敛到根目录内、防路径穿越（C4）。
+- **远控连接诊断**：新增连接诊断日志与状态指示器，日志脱敏、复活失效文案、连接提示补齐 i18n。
+- **teammate 评审修复**：组长竞选源稳定化，「加成员」补工作区守卫。
+- **仓库清理**：清除误提交的 `ridge-code` gitlink 与 `.mcp.json` 悬空条目。
+
+---
+
 ## [0.0.15] — 2026-07-05
 
 智能体编组增强与 `rdg` 登录体验完善。
