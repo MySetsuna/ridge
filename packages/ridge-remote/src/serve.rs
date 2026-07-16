@@ -43,11 +43,9 @@ pub struct UaServeConfig {
 
 impl UaServeConfig {
     /// 运行时候选目录探测：泛化桌面 `server.rs` 里对 `static/remote` 与
-    /// `web-remote-dist` 的候选路径探测。按顺序尝试：
-    /// 1. `CWD/<rel>`——dev（`cargo tauri dev`，CWD 为工程根）。
-    /// 2. `exe_dir/<rel>`——生产（NSIS 安装把资源拷到 exe 旁）。
-    /// 3. `exe_dir/../../../../<rel>`——直接从 `target/release/` 跑 exe 时
-    ///    （parent→target→src-tauri→工程根）。
+    /// `web-remote-dist` 的候选路径探测。候选顺序见 [`probe_ui_dir`]：
+    /// `RIDGE_REMOTE_UI_ROOT` 覆盖 → CWD → exe 目录逐级上溯（兼容桌面 exe 与更浅的
+    /// `rdg` exe，无需按二进制标定级数）。
     ///
     /// 移动目录探测不到时回退到 `static/remote`（serve_index 会给出"未构建"提示页）；
     /// 桌面目录探测不到时为 `None`。
@@ -94,20 +92,33 @@ impl UaServeConfig {
     }
 }
 
-/// 探测某个 UI 产物目录：依次尝试 CWD / exe 旁 / exe 上溯四级，返回首个含
-/// `index.html` 的候选；都不存在则 `None`。
+/// 探测某个 UI 产物目录，返回首个含 `index.html` 的候选；都不存在则 `None`。候选顺序：
+/// 0. `RIDGE_REMOTE_UI_ROOT/<rel>`——显式覆盖，真·无头部署（资产不在 exe 附近）时设它；
+/// 1. `CWD/<rel>`——dev（从工程根 `cargo run`）；
+/// 2..N. 从 exe 目录**逐级上溯**（最多 6 级）找 `<ancestor>/<rel>`。
+///
+/// 上溯替代旧的「固定 parent×4」：桌面 exe 在 `src-tauri/target/release`（工程根深 4 级），
+/// 而 `rdg` 是 workspace 成员，exe 落 `target/release`（工程根深 2 级）——固定 4 级对 rdg
+/// 会过冲到工程根之外。逐级上溯取**最靠近 exe 的命中**（最正确），一份代码兼容两种深度，
+/// 且 `exe 旁`（深 1 级，NSIS/打包把资源拷到 exe 旁）也被覆盖。
 fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = vec![
-        rel.to_path_buf(),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(rel)))
-            .unwrap_or_default(),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| Some(p.parent()?.parent()?.parent()?.parent()?.join(rel)))
-            .unwrap_or_default(),
-    ];
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(root) = std::env::var_os("RIDGE_REMOTE_UI_ROOT") {
+        candidates.push(PathBuf::from(root).join(rel));
+    }
+    candidates.push(rel.to_path_buf());
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent();
+        let mut hops = 0;
+        while let Some(d) = dir {
+            candidates.push(d.join(rel));
+            hops += 1;
+            if hops >= 6 {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
     // §diagnostic: 记录探测路径便于调试
     for candidate in &candidates {
         if candidate.join("index.html").exists() {
