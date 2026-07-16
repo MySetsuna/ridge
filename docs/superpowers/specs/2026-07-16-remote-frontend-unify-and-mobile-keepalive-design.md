@@ -511,7 +511,8 @@ R3.2 那句"moved cloud 文件须逐符号改相对"**又是过度估计**。**�
 **P1（传输 + cloud + auth）整层迁移完成并验证**（6892d0c/5ddb47a/a1deb85/b1e8515）。贯穿教训：**凡纯逻辑（vitest 覆盖）或纯搬迁（svelte-check 认解析）皆 headless 可验、应做**；本会话数次把可验工作误判为"太险/太大"，均被纠正。
 
 余下 gated on 跑 app（**这次是真限制**）：
-- **P2 终端核心**（`src/lib/terminal` → `shared/terminal` + `SettingsPort`/`CwdPort` 注入）：迁移可 svelte-check 验，**但端口注入正确性**（字号/连字/主题是否仍正确送达 GPU 渲染）**无 headless 测试**——manager 核心是 keep-alive/scissor 渲染行为，vitest 测不到，与 cloud 纯 crypto（vitest 兜底）本质不同。
+- **P2 终端核心**（`src/lib/terminal` → `shared/terminal`）：**实测(2026-07-17)修正 §4.1 端口清单**——terminal 34 文件对主 app 的上行依赖**不止 Settings/Cwd**，实为 **4 个响应式 store**：`$lib/stores/paneTree`(×3)、`$lib/stores/settings`(×3)、`$lib/stores/themes`(×2)、`$lib/stores/termSettings`(×1)，另加 `$lib/utils/cssColor`(叶子,随迁)、`$lib/types`、`$lib/components/inputBufferTracker`(类型,内联)。故端口须 **SettingsPort/CwdPort/ThemesPort/TermSettingsPort 四个**(§4.1 漏了后两个)。
+  - **为何真 gated on 跑 app**：这 4 个 store 是**响应式**的(改字号/连字/主题 → manager 重渲染)。端口注入即使做成透明 store 包装、行为"构造上守恒"，其**响应式接线正确性**(改设置/主题是否真的触发 GPU 重绘)**无 headless 测试覆盖**——terminal 的 13 个单测测的是 protocol/解析/焦点等逻辑单元，测不到"改主题→重绘 scissor"。svelte-check 只验类型/解析。∴ 与 P4 保活同属"改了只有跑 app 才知对不对"，且正是用户所苦的渲染核心，**不可盲改**。
 - **P3 手机传输切换**（MainApp wsRemote → L1/L2）：行为改写，须跑 app 验连接/pane 流。
 - **P4/P4b 渲染切换**（单例→多 kernel 保活）：**正是白屏/scrollback 根因修复**，保活行为验不了，必须跑 app。
 - **P5 手机壳/面板迁移**：.svelte 关联 P2/P3，宜其后。
