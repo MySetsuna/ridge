@@ -4,7 +4,7 @@
 // （登录→账号专属种子；登出→默认种子）。只在真实桌面 host 启用（见 +layout 守卫），
 // 绝不在 web-remote controller 跑——否则会把「控制端」的登录态隧道到 host，污染 host 种子。
 
-import type { CloudAuthState } from './cloud/auth';
+import type { CloudAuthState } from '@ridge/remote/shared/cloud/auth';
 
 type InvokeFn = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 type StoreLike = { subscribe: (run: (s: CloudAuthState) => void) => () => void };

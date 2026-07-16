@@ -20,7 +20,7 @@
   import { initTeammateBoot } from '$lib/teammate/teammateSettings';
   import { Smartphone, Server } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
-  import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
+  import { cloudAuth, logout as cloudLogout } from '@ridge/remote/shared/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SaveWorkspaceDialog from '$lib/components/SaveWorkspaceDialog.svelte';
   import QuickOpen from '$lib/components/QuickOpen.svelte';

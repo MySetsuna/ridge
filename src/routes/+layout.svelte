@@ -11,8 +11,8 @@
   import { t, tr } from '$lib/i18n';
   import { invoke } from '@tauri-apps/api/core';
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
-  import { cloudAuth as cloudAuthStore } from '$lib/remote/cloud/auth';
-  import { BASE_DOMAIN, cloudHttpScheme } from '$lib/remote/cloud/apiClient';
+  import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
+  import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -94,7 +94,7 @@
     // 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：用父域 `ridge_sso` cookie
     // 换短 access token、seed 登录态（替代旧 `#token` 跨子域握手）。失败仅返回 false，由下方
     // boot 失败回退（租户子域回主域登录 / 主域回退 LAN）统一处理。
-    const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
+    const { bootstrapFromCookie } = await import('@ridge/remote/shared/cloud/auth');
     // 返回值 = 父域 ridge_sso cookie 是否有效（成功换出 access token）。失败 = cookie 缺失/失效。
     const hadSession = await bootstrapFromCookie();
     // §fast-fail-A: 租户子域 + 无有效会话 → 立即跳登录，不等 WebRTC 超时（避免用户看到长时间
