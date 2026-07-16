@@ -1,7 +1,7 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { REMOTE_TERM_FONT, withEmojiFallback } from '$lib/terminal/fontStack';
-import { ensureFlagFont } from '$lib/terminal/flagEmojiSupport';
+import { REMOTE_TERM_FONT, withEmojiFallback } from '@ridge/remote/shared/terminal/fontStack';
+import { ensureFlagFont } from '@ridge/remote/shared/terminal/flagEmojiSupport';
 
 export interface TermOpts {
   fontSize?: number;

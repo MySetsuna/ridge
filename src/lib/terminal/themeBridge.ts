@@ -32,8 +32,8 @@ import { hex8, hex8WithAlpha } from '$lib/utils/cssColor';
 import { activeBgImage } from '$lib/stores/themes';
 import { get } from 'svelte/store';
 import { TerminalManager } from './manager';
-import { withEmojiFallback } from './fontStack';
-import { ensureFlagFont } from './flagEmojiSupport';
+import { withEmojiFallback } from '@ridge/remote/shared/terminal/fontStack';
+import { ensureFlagFont } from '@ridge/remote/shared/terminal/flagEmojiSupport';
 
 // Color normalization moved to $lib/utils/cssColor — shared with
 // $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the

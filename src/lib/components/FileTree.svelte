@@ -33,7 +33,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import { t, tr } from '$lib/i18n';
 	import FileTree from './FileTree.svelte';
 	import { TerminalManager } from '$lib/terminal/manager';
-	import { formatDroppedPathsForPaste } from '$lib/terminal/dropPaste';
+	import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
 
 	interface Props {
 		columnId: string;
