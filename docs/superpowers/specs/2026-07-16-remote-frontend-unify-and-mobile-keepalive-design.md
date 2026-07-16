@@ -471,3 +471,19 @@ R2 判"本会话可安全验证∩有效=空集"是**保守错判**——遗漏�
 2. **`signaling/` 是 vendored SSOT 基建**：`ridgeCloudProvider` 依赖 `./signaling`；该子目录对同级 `ridge-signaling` repo 有 `scripts/sync-signaling.mjs`（硬编码路径）+ `drift.test.ts` 守卫（**当前 3 例失败**——vendored fixture 与源漂移，需 `pnpm sync:signaling`）。移它=改构建基建 + 动 drift 路径，非机械搬迁，且 drift 已红无法验证。
 
 **下一会话 cloud 迁移序**：先 `pnpm sync:signaling` 消 drift（或确认漂移原因）→ 建 3 端口 → signaling + 13 干净文件随端口注入一并迁 → 2 胶水文件改用端口 → auth `totpIdentitySync` 收尾（P1c）。之后才进 P2 终端渲染（须跑 app 验保活）。
+
+### R3.2（2026-07-17 追加）：cloud-core 实为**机械可迁**，无需先建端口
+
+进一步核实推翻了 R3.1「须先建 3 端口」的前置——**端口非必需**。关键洞察：`cloudControllerBoot`（组合根）与 `cloudHostStore`（i18n/store 桥）这 2 个胶水文件**留在 app 即可**——app 本就合法 import `$lib` 与 `@ridge/remote` 双向；只要它们**不迁进包**，就不产生反向依赖，`I18nPort`/`RemoteStatusPort`/`TauriBridgePort` 全部**不需要**（端口留到"确实想把胶水也迁进包"时再说，可能永远不必）。
+
+**cloud-core 机械迁移配方**（全程 `svelte-check` + `vitest` 可验，revert-on-fail 保底）：
+
+1. **移**：`src/lib/remote/cloud/` 下**除** `cloudControllerBoot.{ts,test.ts}`、`cloudHostStore.{ts,test.ts}`、`CheckinGateCard.svelte`、`CloudProModal.svelte` **之外全部**（13 源 + 各测试 + `signaling/` 整个子目录 + `__cloudE2eHarness`）→ `packages/remote/src/shared/cloud/`。剩下的 2 胶水 + 2 UI 留 app（正确的 app 侧组合/UI 残留）。
+2. **signaling 基建**（仅 2 处一行改）：`scripts/sync-signaling.mjs` 的 `DEST`（第 32 行）→ `join(root,'packages','remote','src','shared','cloud','signaling')`；`signaling/drift.test.ts` 的 `windRoot`（第 19 行）`..` 层数 5→6（signaling 移到 shared/cloud/signaling 后深一层）。`conformance.test`/fixtures 用 `here`-相对，随迁不改。providers 的 `./signaling` 不变（signaling 仍在 cloud 下）。
+3. **循环规避（关键）**：移入的 cloud 文件对 `@ridge/remote`（顶层桶）的 import **可保留不改**——因为顶层 `index.ts` 的 `export *` **顺序**是 transport 在前、cloud 在后，cloud 模块加载时 `RpcClient`/`RemoteConnection` 等值已定义;且 cloud 只在 provider **构造/运行时**用它们（非模块顶层），TDZ 不触发。**先按此低改动跑 vitest**；仅当 vitest 报 TDZ/循环再把**该文件**的 `@ridge/remote` 改成相对（`../transport/*` 或建 `shared/transport/index.ts` 子桶后 `../transport`）。
+4. **桶**：顶层 `index.ts` 追加 cloud 公共面。`export *` 若报**撞名**（cloud 各模块间、或与 transport 的 `PaneInfo` 等），svelte-check 会精确指出，改成显式命名 re-export 即可。
+5. **留守胶水改 import**：`cloudControllerBoot`/`cloudHostStore` 对已迁兄弟的 `./apiClient` 等 → `@ridge/remote`。
+6. **app 消费者**（`CloudAuthScreen.svelte`/`cloudRemote.ts`/`+layout`/`+page`/`HostConnectDialog.svelte`/2 UI）对 `$lib/remote/cloud/*` → `@ridge/remote`。
+7. **auth**（P1c）`src/lib/remote/totpIdentitySync.{ts,test.ts}` 零 `$lib`，同法迁 `shared/auth/`。
+
+∴ cloud+auth 迁移**不再 gated on 端口或运行时**，是与已落地 3 个传输切片同性质的 headless-可验机械搬迁；只因单会话预算/体量（~45 文件）未在本会话续做，配方已在此可直接执行。真正 gated on 跑 app 的仅剩 **P2/P4 终端渲染保活**。
