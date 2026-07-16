@@ -384,3 +384,35 @@ pane 数据面**未收口到共享 `server_app`**（只有元信息/鉴权/works
 ### B.4 结论
 
 rdg host 接入的**增量成本很低**：协议同源、`server_app` 已共享、增量 replay 基础设施（`Ring::since`）反而领先桌面。实质工作 = 补 LAN `scrollback-before` 分页（一次补，双 host 同时受益）+ 核对 workspace/meta/theme 完整度 + 前端能力降级。全部纳入 **P4b**（可与 P4 并行）。
+
+---
+
+## 修订 R1（2026-07-17）：真实依赖图纠正 §9 相序
+
+**动因**：着手 P1 前用 `grep` 实测依赖，发现 §9 的一处**前提错误**——把 `src/lib/transport/remote/*` 当成"完全自包含、可最先独立迁"。实测不成立。
+
+### R1.1 实测依赖（git 权威）
+
+- `transport/remote/lanWsAdapter.ts` **运行时** `import { RemoteConnection, type ConnectionState } from '../../../remote/lib/wsRemote'`——依赖手机壳 `src/remote/lib/wsRemote.ts`（901 行，仅依赖 `./deviceId`）里的**底层 WS 连接类**。
+- `transport/remote/cloudWebrtcAdapter.ts` → `../../remote/cloud/connectionProvider`。
+- `wsRemote` 是**真正的共享基座**：被手机壳（`App/MainApp/AuthScreen/BottomTabBar`）+ 桌面主 app（`src/routes/+layout.svelte`）+ transport 层 + cloud 层（`connectionProvider/controllerCloudProvider`）+ `transport/ws.ts` 共 12 处引用，rdg 侧 `lan_proto.rs` 说同一方言。
+
+### R1.2 §9 P1 为何会破护栏
+
+按 §9 原文先迁 `transport/remote` 而 `wsRemote` 留在 `src/remote/lib`（§9 排到 P5 才迁），迁后 `packages/remote/shared/transport → src/remote/lib/wsRemote` = **包反向依赖主 app**，直接违反 §4.2 / `index.ts` 边界护栏，`no-restricted-paths` 会红。∴ P1「纯移动 + 改 import」在当前形态下**跑不通**。
+
+### R1.3 纠正：正确迁移序 = 自底向上，先抽 WS 原语
+
+`wsRemote.ts` 混了两层：**(a) 底层 `RemoteConnection` WS 连接类 + `ConnectionState`**（真·传输原语）、**(b) 高层 client API**（`listPanes/sendStdin/...`，§6 计划最终由 L2 `RpcClient` 取代）。纠正后的 P1 拆为：
+
+- **P1-0（新增前置）**：把 `RemoteConnection` / `ConnectionState`（+ `deviceId`）从 `wsRemote.ts` 抽入 `shared/transport/` 作为 WS 原语层；`wsRemote.ts` 原地 re-export 保持 12 处引用不断。仅此步做完，`transport/remote` 才真正无上行依赖。
+- **P1-a**：`transport/remote/*` → `shared/transport/`（此时其 import 落到已迁入包的 WS 原语，不再反向）。
+- **P1-b**：`remote/cloud/*` → `shared/cloud/`（依赖已在包内的 wsRemote 原语 + transport）。
+- **P1-c**：`auth`（`totpIdentitySync`）→ `shared/auth/`。
+- **顺序不可颠倒**：cloud 依赖 transport、transport 依赖 WS 原语，必须自底向上。§9 表格 P1 行以此为准（原"transport+cloud+auth 一步"改为 P1-0→a→b→c 四小步）。
+
+### R1.4 落地进度与诚实交代
+
+- **已落地**：设计文档（c9386b1）+ `packages/remote` 三文件空骨架 + root `package.json`/vite/svelte alias（混在 21c5c0d 里，该 commit message 名不副实、且夹带了无关 Rust 改动，**未做任何迁移**）。
+- **未落地**：P1 起全部代码迁移。上一会话摘要所述"P1a/b/c ~100 文件已迁、6 clean commits"与 git 权威状态**不符**，实际 `packages/remote` 下无 `shared/`。
+- **为何此处收尾**：真正的基座 `wsRemote` 是运行时类且牵连**桌面**主 app 的 `+layout.svelte`——盲迁只有 `svelte-check` 能验类型、**验不了保活/渲染这一核心行为**（正是用户报的白屏/scrollback），在无法跑 app 的环境属高风险盲改。∴ 本轮只推进"可安全验证"的文档纠正（R1），代码迁移待能跑 app 的环境按 R1.3 相序执行。
