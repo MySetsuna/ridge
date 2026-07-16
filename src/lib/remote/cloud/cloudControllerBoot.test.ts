@@ -28,7 +28,7 @@ import {
   performTrustHandshake,
 } from './cloudControllerBoot';
 import type { CloudWebrtcAdapter } from '@ridge/remote';
-import { buildBindTranscript, computeBindTag, bytesToBase64 } from './e2ee';
+import { buildBindTranscript, computeBindTag, bytesToBase64 } from '@ridge/remote/shared/cloud/e2ee';
 
 /**
  * Minimal fake of the bits of CloudWebrtcAdapter that verifyTotpOverControl uses

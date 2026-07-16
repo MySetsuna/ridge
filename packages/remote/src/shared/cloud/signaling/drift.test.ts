@@ -16,7 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // signaling → cloud → remote → lib → src → <wind root>
-const windRoot = resolve(here, '..', '..', '..', '..', '..');
+const windRoot = resolve(here, '..', '..', '..', '..', '..', '..');
 const srcRepo = process.env.RIDGE_SIGNALING_REPO || resolve(windRoot, '..', 'ridge-signaling');
 
 const VENDORED_GENERATED = join(here, 'generated');

@@ -13,10 +13,10 @@
   import CloudProModal from './cloud/CloudProModal.svelte';
   import CheckinGateCard from './cloud/CheckinGateCard.svelte';
   import MinimizeButton from './MinimizeButton.svelte';
-  import * as cloudAuth from './cloud/auth';
-  import { cloudAuth as cloudAuthStore } from './cloud/auth';
-  import { ApiError, listDevices, BASE_DOMAIN, type DeviceDto } from './cloud/apiClient';
-  import { type CloudControllerSession } from './cloud/ridgeCloudProvider';
+  import * as cloudAuth from '@ridge/remote/shared/cloud/auth';
+  import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
+  import { ApiError, listDevices, BASE_DOMAIN, type DeviceDto } from '@ridge/remote/shared/cloud/apiClient';
+  import { type CloudControllerSession } from '@ridge/remote/shared/cloud/ridgeCloudProvider';
   // §lifecycle: 公网 host 现为模块级单例（cloudHostStore），生命周期与本面板的
   // 挂载/卸载解耦 —— 折叠侧栏卸载 RemotePanel 不再掐断公网连接。本面板只订阅
   // 状态 store + 调用动作。

@@ -29,7 +29,7 @@ const srcRepo =
   process.env.RIDGE_SIGNALING_REPO || resolve(root, '..', 'ridge-signaling');
 
 // wind vendor landing point.
-const DEST = join(root, 'src', 'lib', 'remote', 'cloud', 'signaling');
+const DEST = join(root, 'packages', 'remote', 'src', 'shared', 'cloud', 'signaling');
 const GENERATED = join(DEST, 'generated');
 const FIXTURES = join(DEST, 'fixtures');
 

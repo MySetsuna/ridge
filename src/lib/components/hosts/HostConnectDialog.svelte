@@ -9,7 +9,7 @@
   import { portal } from '$lib/actions/portal';
   import { connectHost } from '$lib/stores/hosts';
   import { alertDialog } from '../RidgeDialog.svelte';
-  import { cloudAuth, isLoggedIn, login as cloudLogin, loginViaBrowser } from '$lib/remote/cloud/auth';
+  import { cloudAuth, isLoggedIn, login as cloudLogin, loginViaBrowser } from '@ridge/remote/shared/cloud/auth';
 
   interface Props {
     open: boolean;

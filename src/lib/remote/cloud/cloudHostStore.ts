@@ -15,10 +15,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { tr } from '$lib/i18n';
 import { cloudHostOnline } from '$lib/stores/remoteStatus';
-import * as cloudAuth from './auth';
-import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from './ridgeCloudProvider';
-import { CloudHostBridge } from './cloudHostBridge';
-import { makeCloudHostPaneSource } from './cloudHostPaneSource';
+import * as cloudAuth from '@ridge/remote/shared/cloud/auth';
+import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from '@ridge/remote/shared/cloud/ridgeCloudProvider';
+import { CloudHostBridge } from '@ridge/remote/shared/cloud/cloudHostBridge';
+import { makeCloudHostPaneSource } from '@ridge/remote/shared/cloud/cloudHostPaneSource';
 
 // ── 公开响应式状态（组件用 `$hostState` 等订阅）─────────────────────────────
 export const hostState = writable<HostSignalState>('offline');

@@ -10,9 +10,9 @@
 
   import { Zap, X, KeyRound, LogIn, ExternalLink, Loader2, Globe, CalendarCheck, Mail, ArrowLeft } from 'lucide-svelte';
   import { portal } from '$lib/actions/portal';
-  import * as auth from './auth';
-  import { cloudAuth } from './auth';
-  import { ApiError, BASE_DOMAIN } from './apiClient';
+  import * as auth from '@ridge/remote/shared/cloud/auth';
+  import { cloudAuth } from '@ridge/remote/shared/cloud/auth';
+  import { ApiError, BASE_DOMAIN } from '@ridge/remote/shared/cloud/apiClient';
   import { t, tr, locale, billingRegion } from '$lib/i18n';
 
   interface Props {

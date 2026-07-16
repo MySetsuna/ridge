@@ -43,7 +43,7 @@
 
   async function boot() {
     const mod = await import('$lib/remote/cloud/cloudControllerBoot');
-    const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
+    const { bootstrapFromCookie } = await import('@ridge/remote/shared/cloud/auth');
 
     // Defensive: App.svelte routed us here on a loose hostname heuristic. If the
     // strict §1.1/§1.2 tenant parse says this is NOT a tenant host (and there's no
@@ -57,7 +57,7 @@
     // §fast-fail-A（移动端）: 租户域名 + 无有效会话 → 立即跳登录，不等 WebRTC 超时。
     // 同样走 bounce-guard 防止 apex⇄子域死循环。
     if (!hadSession) {
-      const { BASE_DOMAIN, cloudHttpScheme } = await import('$lib/remote/cloud/apiClient');
+      const { BASE_DOMAIN, cloudHttpScheme } = await import('@ridge/remote/shared/cloud/apiClient');
       let bounced = 0;
       try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
       if (bounced >= 1) {
@@ -126,7 +126,7 @@
       // bootCloudControllerFromUrl returns null only when user token / username is
       // missing (cookie invalid). Redirect to the main-domain login (bounce-guarded
       // so a stuck session doesn't loop apex⇄subdomain forever).
-      const { BASE_DOMAIN, cloudHttpScheme } = await import('$lib/remote/cloud/apiClient');
+      const { BASE_DOMAIN, cloudHttpScheme } = await import('@ridge/remote/shared/cloud/apiClient');
       let bounced = 0;
       try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
       if (bounced >= 1 || hadSession) {

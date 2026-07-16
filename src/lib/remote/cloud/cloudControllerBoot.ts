@@ -31,12 +31,12 @@ import {
   createCloudWebrtcTransportWith,
   type CloudWebrtcAdapter,
 } from '@ridge/remote';
-import { ControllerCloudProvider } from './controllerCloudProvider';
+import { ControllerCloudProvider } from '@ridge/remote/shared/cloud/controllerCloudProvider';
 import type { CloudConnectionCallbacks, CloudConnectionState } from '@ridge/remote';
-import { snapshot as authSnapshot, cloudAuth, refreshAccess } from './auth';
+import { snapshot as authSnapshot, cloudAuth, refreshAccess } from '@ridge/remote/shared/cloud/auth';
 import { get } from 'svelte/store';
-import { computeBindTag, bytesToBase64, base64ToBytes } from './e2ee';
-import { getControllerPub, signTrust } from './controllerIdentity';
+import { computeBindTag, bytesToBase64, base64ToBytes } from '@ridge/remote/shared/cloud/e2ee';
+import { getControllerPub, signTrust } from '@ridge/remote/shared/cloud/controllerIdentity';
 
 /** URL query 参数名（cloud-controller 模式触发 + 目标）。 */
 export const CLOUD_HOST_PARAM = 'cloudHost'; // 目标 host 的 device_name
