@@ -481,7 +481,11 @@ R2 判"本会话可安全验证∩有效=空集"是**保守错判**——遗漏�
 1. **移**：`src/lib/remote/cloud/` 下**除** `cloudControllerBoot.{ts,test.ts}`、`cloudHostStore.{ts,test.ts}`、`CheckinGateCard.svelte`、`CloudProModal.svelte` **之外全部**（13 源 + 各测试 + `signaling/` 整个子目录 + `__cloudE2eHarness`）→ `packages/remote/src/shared/cloud/`。剩下的 2 胶水 + 2 UI 留 app（正确的 app 侧组合/UI 残留）。
 2. **signaling 基建**（仅 2 处一行改）：`scripts/sync-signaling.mjs` 的 `DEST`（第 32 行）→ `join(root,'packages','remote','src','shared','cloud','signaling')`；`signaling/drift.test.ts` 的 `windRoot`（第 19 行）`..` 层数 5→6（signaling 移到 shared/cloud/signaling 后深一层）。`conformance.test`/fixtures 用 `here`-相对，随迁不改。providers 的 `./signaling` 不变（signaling 仍在 cloud 下）。
 3. **循环规避（关键）**：移入的 cloud 文件对 `@ridge/remote`（顶层桶）的 import **可保留不改**——因为顶层 `index.ts` 的 `export *` **顺序**是 transport 在前、cloud 在后，cloud 模块加载时 `RpcClient`/`RemoteConnection` 等值已定义;且 cloud 只在 provider **构造/运行时**用它们（非模块顶层），TDZ 不触发。**先按此低改动跑 vitest**；仅当 vitest 报 TDZ/循环再把**该文件**的 `@ridge/remote` 改成相对（`../transport/*` 或建 `shared/transport/index.ts` 子桶后 `../transport`）。
-4. **桶**：顶层 `index.ts` 追加 cloud 公共面。`export *` 若报**撞名**（cloud 各模块间、或与 transport 的 `PaneInfo` 等），svelte-check 会精确指出，改成显式命名 re-export 即可。
+4. **桶**：顶层 `index.ts` 追加 cloud 公共面。⚠️ **实测教训（2026-07-17 一次尝试并回滚）**：cloud 用 flat `export *` 桶**不成立**——svelte-check 报 21 错，根因两类：
+   - **跨模块导出名重叠**：`login`/`checkin`/`activateKey`/`forgotPassword`/`resetPassword`（`apiClient` 与 `auth` 都有）、`CHANNEL`（`cloudMux` 与 `cloudHostBridge`）、`Unsubscribe`（`types` 与 cloud）、`InvokeFn`、`base64ToBytes`（`e2ee` 与他处）。flat 桶把它们并到同一命名空间即 ambiguous。
+   - **命名空间导入**：`import * as auth from './cloud/auth'`（CloudProModal）、`import * as cloudAuth from './auth'`（cloudHostStore）——`import * as X from '@ridge/remote'` 会抓**整个桶**而非该模块，语义错、方法签名对不上。
+   ∴ **cloud 必须走深子路径导入**（`@ridge/remote/shared/cloud/auth` 等，保模块粒度、零撞名），而非并入 flat 桶。这需要**解析基建**：`packages/remote/package.json` 加 `exports` 子路径（`"./shared/*": "./src/shared/*.ts"`）+ 确保 app 侧 svelte-check（SvelteKit 生成的 tsconfig paths）与 vite alias 认 `@ridge/remote/*`。**这是一步深思熟虑的基建改动，不要在预算紧张时仓促做**——本会话据此回滚了 cloud 迁移，只保留已验证的传输层里程碑。
+   - 传输层能用 flat 桶是因其导出**无重叠、无命名空间导入**;cloud 不同，故策略必须分化。
 5. **留守胶水改 import**：`cloudControllerBoot`/`cloudHostStore` 对已迁兄弟的 `./apiClient` 等 → `@ridge/remote`。
 6. **app 消费者**（`CloudAuthScreen.svelte`/`cloudRemote.ts`/`+layout`/`+page`/`HostConnectDialog.svelte`/2 UI）对 `$lib/remote/cloud/*` → `@ridge/remote`。
 7. **auth**（P1c）`src/lib/remote/totpIdentitySync.{ts,test.ts}` 零 `$lib`，同法迁 `shared/auth/`。
