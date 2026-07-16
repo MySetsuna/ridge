@@ -1163,6 +1163,23 @@ mod tests {
         );
     }
 
+    // §wsl-resize-silence — prompt OSC 133;A 应把 pane 标记为"有 shell-integration"。
+    // 无此标记的 pane（WSL/cmd）在 resize 时跳过 silence 窗口以免吞掉 SIGWINCH 重绘。
+    #[test]
+    fn shell_integration_flag_tracks_prompt_osc() {
+        let mut t = Terminal::new(2, 5, 100);
+        assert!(!t.has_shell_integration(), "默认：无集成");
+        t.feed(b"\x1b]633;A\x07"); // VS Code 633;A（非 prompt-start 也可，A 即 prompt start）
+        assert!(t.has_shell_integration(), "prompt OSC 633;A 后应标记有集成");
+    }
+
+    #[test]
+    fn shell_integration_flag_stays_false_without_prompt_osc() {
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"hello\r\nworld\r\n"); // 纯输出，无 prompt OSC（模拟 WSL/cmd）
+        assert!(!t.has_shell_integration(), "无 prompt OSC 的 pane 应恒判无集成");
+    }
+
     #[test]
     fn clear_scrollback_api_drops_history_and_resets_offset() {
         // §B.2 — direct JS-facing API.
