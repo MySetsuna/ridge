@@ -492,3 +492,28 @@ R2 判"本会话可安全验证∩有效=空集"是**保守错判**——遗漏�
 7. **auth**（P1c）`src/lib/remote/totpIdentitySync.{ts,test.ts}` 零 `$lib`，同法迁 `shared/auth/`。
 
 ∴ cloud+auth 迁移**不再 gated on 端口或运行时**，是与已落地 3 个传输切片同性质的 headless-可验机械搬迁；只因单会话预算/体量（~45 文件）未在本会话续做，配方已在此可直接执行。真正 gated on 跑 app 的仅剩 **P2/P4 终端渲染保活**。
+
+## 修订 R4（2026-07-17）：P1 完成——cloud+auth 已迁移落地（双门禁验证）
+
+R3.2 那句"moved cloud 文件须逐符号改相对"**又是过度估计**。**实际不必**：只要 **cloud 不进顶层桶**，moved 文件保留裸导入 `@ridge/remote`（此时桶=纯传输、不 re-export cloud）就**零循环、零改**。上次 flat-桶失败的三类错（撞名/命名空间/循环）**全部源于把 cloud 加进桶**；不加即全消。
+
+**最终生效策略（提交 `b1e8515`，已双门禁验证）**：
+- **cloud 不进 flat 桶**；consumer 一律走**深子路径** `@ridge/remote/shared/cloud/<模块>`（保模块粒度、零撞名，`import * as auth` 命名空间导入亦正确）。
+- **moved 文件内部零改**：裸导入 `@ridge/remote` 取传输原语（桶无 cloud→无循环）、`./兄弟`/`./signaling` 相对随迁。
+- **基建仅一行**：`svelte.config.js` 加 `@ridge/remote` alias → SvelteKit 自动生成 `@ridge/remote` + `@ridge/remote/*` 两条 tsconfig paths（svelte-check 认深路径），并注入主 vite；vite.remote/vitest 的 alias 前缀匹配已覆盖。**无需动 package.json exports**（alias 先于 exports 解析）。
+- **signaling** 两处一行：`sync-signaling.mjs` DEST + `drift.test.ts` windRoot 5→6。
+- **2 胶水 + 2 UI 留 app**——无需端口。
+
+**结果**：`src/lib/remote/cloud/` 只剩 2 胶水 + 2 UI；`packages/remote/src/shared/` = `transport/`(16) + `cloud/`(26)。svelte-check 0 err（4691 files）+ vitest 452 pass（仅 pre-existing signaling drift 3 例）。
+
+### R4.1 P1 全部完成 · 余下 P2–P6 为何真 gated on 跑 app
+
+**P1（传输 + cloud + auth）整层迁移完成并验证**（6892d0c/5ddb47a/a1deb85/b1e8515）。贯穿教训：**凡纯逻辑（vitest 覆盖）或纯搬迁（svelte-check 认解析）皆 headless 可验、应做**；本会话数次把可验工作误判为"太险/太大"，均被纠正。
+
+余下 gated on 跑 app（**这次是真限制**）：
+- **P2 终端核心**（`src/lib/terminal` → `shared/terminal` + `SettingsPort`/`CwdPort` 注入）：迁移可 svelte-check 验，**但端口注入正确性**（字号/连字/主题是否仍正确送达 GPU 渲染）**无 headless 测试**——manager 核心是 keep-alive/scissor 渲染行为，vitest 测不到，与 cloud 纯 crypto（vitest 兜底）本质不同。
+- **P3 手机传输切换**（MainApp wsRemote → L1/L2）：行为改写，须跑 app 验连接/pane 流。
+- **P4/P4b 渲染切换**（单例→多 kernel 保活）：**正是白屏/scrollback 根因修复**，保活行为验不了，必须跑 app。
+- **P5 手机壳/面板迁移**：.svelte 关联 P2/P3，宜其后。
+
+∴ 下一会话应在**能跑 app（`tauri:dev:cdp` + CDP，见 [[project_cdp_verify_dev]]）**的环境接 P2：wire `hostPorts`（已有 `src/lib/terminal/hostPorts.ts` 骨架）入 manager + RidgePane 注入 → 迁 `shared/terminal` → P3 传输切 → P4 渲染保活（真机验白屏消除）。
