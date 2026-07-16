@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
-  import { RemoteConnection, type ConnectionState } from './lib/wsRemote';
-  import { getRemoteDeviceId } from './lib/deviceId';
+  import { RemoteConnection, type ConnectionState } from '@ridge/remote';
+  import { getRemoteDeviceId } from '@ridge/remote';
   import CertTrustGuide from './CertTrustGuide.svelte';
 
   const TOKEN_KEY = 'ridge_remote_token';

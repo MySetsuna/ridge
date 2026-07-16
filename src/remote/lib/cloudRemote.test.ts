@@ -20,7 +20,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { CloudRemoteConnection } from './cloudRemote';
 import type { PaneNode } from '$lib/types';
-import type { WsMessage } from './wsRemote';
+import type { WsMessage } from '@ridge/remote';
 
 // Captured listen() handlers keyed by event name, so tests can fire host events.
 let handlers: Record<string, (e: { payload: unknown }) => void>;

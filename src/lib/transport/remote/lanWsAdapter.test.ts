@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LanWsAdapter } from './lanWsAdapter';
-import type { ConnectionState } from '../../../remote/lib/wsRemote';
-import type { RemoteConnection } from '../../../remote/lib/wsRemote';
+import type { ConnectionState } from '@ridge/remote';
+import type { RemoteConnection } from '@ridge/remote';
 import type { ControlFrame } from '@ridge/remote';
 
 /**

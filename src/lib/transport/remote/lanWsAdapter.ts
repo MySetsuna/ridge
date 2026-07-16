@@ -26,7 +26,7 @@
 // pass-through; L2 and the bridge never change. Behavior on the wire today is
 // byte-for-byte identical to the pre-refactor bridge.
 
-import { RemoteConnection, type ConnectionState } from '../../../remote/lib/wsRemote';
+import { RemoteConnection, type ConnectionState } from '@ridge/remote';
 import { JSON_RPC_ERRORS, makeError } from '@ridge/remote';
 import {
   type AuthListener,

@@ -16,7 +16,7 @@
   // FileViewer (read-only file / git-diff overlay) loaded on first open.
   const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from './lib/wsRemote';
+  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
   import { PaneScrollbackCache, PANE_BUF_CAP } from './lib/paneScrollbackCache';

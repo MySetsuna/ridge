@@ -2,7 +2,7 @@
   import AuthScreen from './AuthScreen.svelte';
   import CloudAuthScreen from './CloudAuthScreen.svelte';
   import MainApp from './MainApp.svelte';
-  import { RemoteConnection, type RemoteLink } from './lib/wsRemote';
+  import { RemoteConnection, type RemoteLink } from '@ridge/remote';
   import { setTransport } from '$lib/transport';
   import { WsDataProvider } from '$lib/transport/ws';
 
