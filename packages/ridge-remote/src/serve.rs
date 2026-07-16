@@ -107,17 +107,10 @@ fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
         candidates.push(PathBuf::from(root).join(rel));
     }
     candidates.push(rel.to_path_buf());
+    // 从 exe 目录逐级上溯（最多 6 级）：`ancestors()` 首项是 exe 自身，`skip(1)` 起于其
+    // 所在目录，`take(6)` 封顶；顺序即「exe 旁 → 更上层」，取最靠近 exe 的命中。
     if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent();
-        let mut hops = 0;
-        while let Some(d) = dir {
-            candidates.push(d.join(rel));
-            hops += 1;
-            if hops >= 6 {
-                break;
-            }
-            dir = d.parent();
-        }
+        candidates.extend(exe.ancestors().skip(1).take(6).map(|d| d.join(rel)));
     }
     // §diagnostic: 记录探测路径便于调试
     for candidate in &candidates {
