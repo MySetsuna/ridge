@@ -1866,6 +1866,19 @@ impl Grid {
                 for r in &mut self.screen_mut().rows {
                     r.fill_blank(bce);
                 }
+                // §clear-scrollback-parity (2026-07-16) — 让 shell 的 `clear`/`cls`/
+                // `Clear-Host` 与右键"清理"行为一致：整屏擦除(ED 2)在**主屏且非
+                // inline-TUI** 时连带丢弃 scrollback（等价于额外收到一个 `\x1b[3J`）。
+                // 缘由：右键"清理"恒物理丢 scrollback，而 PowerShell 5.1 的 Clear-Host
+                // 只发 `\x1b[2J`(不发 `\x1b[3J`)，靠 SavedLines 分支清 scrollback 那条路
+                // 走不通 → 两者不一致。此处把主屏全屏擦除统一成"连 scrollback 一起清"。
+                // 门控 `!is_alt && !inline_tui_sticky`：alt 屏无 scrollback；inline-TUI
+                // 程序(sticky latch)用 2J 只是重画自己的画布，用户历史须保留，不误伤。
+                // ponytail: 门槛=不发 alt 且未被 latch 为 inline-TUI 的"裸主屏全屏重绘"
+                //   程序(罕见)会连带清 scrollback；若真命中再收窄(要求紧跟 CUP-home 等)。
+                if !self.is_alt && !self.inline_tui_sticky {
+                    self.scrollback.clear();
+                }
             }
             EraseMode::SavedLines => {
                 // §B.2 (2026-05-08) — xterm `CSI 3 J` extension. Drops
@@ -2563,6 +2576,53 @@ mod tests {
         // Should have scrolled '1' into scrollback.
         assert_eq!(g.scrollback.len(), 1);
         assert_eq!(g.scrollback.get(0).unwrap().cells[0].ch, '1');
+    }
+
+    // §clear-scrollback-parity — 主屏 ED 2 连带清 scrollback，使 PowerShell 5.1 的
+    // `Clear-Host`(只发 \x1b[2J，不发 \x1b[3J) 与右键"清理"一致。
+    #[test]
+    fn ed_all_on_primary_drops_scrollback_for_clear_parity() {
+        let mut g = Grid::new(2, 5, 10);
+        for _ in 0..4 {
+            g.print('x', Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
+        }
+        assert!(g.scrollback.len() > 0, "precondition: scrollback 已填充");
+        g.erase_in_display(EraseMode::All);
+        assert_eq!(g.scrollback.len(), 0, "主屏 ED 2 必须连带丢弃 scrollback");
+    }
+
+    // inline-TUI 程序用 2J 重画自己画布，用户 scrollback 须保留（sticky latch 门控）。
+    #[test]
+    fn ed_all_preserves_scrollback_when_inline_tui_sticky() {
+        let mut g = Grid::new(2, 5, 10);
+        for _ in 0..4 {
+            g.print('x', Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
+        }
+        let before = g.scrollback.len();
+        assert!(before > 0);
+        g.mark_inline_tui_sticky();
+        g.erase_in_display(EraseMode::All);
+        assert_eq!(g.scrollback.len(), before, "inline-TUI 的 2J 不得清 scrollback");
+    }
+
+    // alt 屏的 ED 2 不得动主屏 scrollback（alt 本无 scrollback，且返回主屏须完好）。
+    #[test]
+    fn ed_all_on_alt_screen_keeps_primary_scrollback() {
+        let mut g = Grid::new(2, 5, 10);
+        for _ in 0..4 {
+            g.print('x', Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
+        }
+        let before = g.scrollback.len();
+        assert!(before > 0);
+        g.enter_alt_screen(true);
+        g.erase_in_display(EraseMode::All);
+        assert_eq!(g.scrollback.len(), before, "alt 屏 2J 不得清主屏 scrollback");
     }
 
     #[test]

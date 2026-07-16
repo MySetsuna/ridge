@@ -1139,19 +1139,22 @@ mod tests {
     }
 
     #[test]
-    fn ed_2_does_not_touch_scrollback() {
-        // §B.2 — sanity: ED 2 (clear screen) must leave scrollback
-        // intact. Only ED 3 reaches the saved lines.
+    fn ed_2_drops_scrollback_on_primary_for_clear_parity() {
+        // §clear-scrollback-parity (2026-07-16) — 覆盖旧的 §B.2 "仅 ED 3 清 scrollback"
+        // 不变量：主屏且非 inline-TUI 的 ED 2 现在**连带清 scrollback**，让 shell 的
+        // `clear`/`cls`/`Clear-Host` 与右键"清理"一致（PowerShell 5.1 的 Clear-Host 只发
+        // \x1b[2J，不发 \x1b[3J，靠 ED 3 那条路清不掉）。inline-TUI 重绘的保留分支见
+        // grid.rs::ed_all_preserves_scrollback_when_inline_tui_sticky。
         let mut t = Terminal::new(2, 5, 100);
-        t.feed(b"a\r\nb\r\nc\r\nd");
-        let sb_before = t.scrollback_len();
+        t.feed(b"a\r\nb\r\nc\r\nd"); // 'a'/'b' 溢入 scrollback
+        assert!(t.scrollback_len() >= 2);
 
         t.feed(b"\x1b[2J");
 
         assert_eq!(
             t.scrollback_len(),
-            sb_before,
-            "ED 2 must NOT touch scrollback"
+            0,
+            "主屏 ED 2 应连带清 scrollback（clear 一致性）"
         );
     }
 
