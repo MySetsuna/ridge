@@ -168,6 +168,13 @@ impl PaneParser {
         self.terminal.is_inline_tui_resize_at(now_ms)
     }
 
+    /// §wsl-resize-silence — 本 pane 是否发过 shell-integration prompt OSC（有=能早
+    /// 释放 silence）。false ⇒ 无集成（WSL/cmd/explicit-launch），resize 应跳过 silence
+    /// 窗口，否则那 80ms 窗口会吞掉 SIGWINCH 重绘（实测 ~25ms 落在窗口内）。
+    pub fn has_shell_integration(&self) -> bool {
+        self.terminal.has_shell_integration()
+    }
+
     /// Feed PTY bytes and return the resulting delta frame.
     ///
     /// The frame's `pane_seq` is the new value (post-increment from the

@@ -654,6 +654,11 @@ impl Terminal {
     pub fn is_alt_screen(&self) -> bool {
         self.grid.is_alt_screen()
     }
+    /// §wsl-resize-silence — 本 pane 是否发过 shell-integration 的 prompt OSC
+    /// （133/633;A）。false ⇒ 无早释放 resize-silence 的手段（WSL/cmd/explicit-launch）。
+    pub fn has_shell_integration(&self) -> bool {
+        self.grid.has_seen_prompt_osc()
+    }
     /// §1.35 — force-leave alt screen without going through CSI dispatch.
     /// Used when the PTY process exits while the kernel is still in alt
     /// screen mode (e.g. TUI crash or pane kill). Without this the new

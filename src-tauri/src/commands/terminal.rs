@@ -1154,16 +1154,25 @@ pub fn resize_pane_inner(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let (parser_is_alt, parser_is_inline_tui) = {
+    // §wsl-resize-silence — `parser_has_integration` = 本 pane 发过 prompt OSC 133/633;A
+    // （PowerShell/bash 等有 shell-integration）。无集成的 pane（WSL 带 args / cmd /
+    // explicit-launch）没有 prompt 标记去早释放 silence 窗口，那 80ms 窗口会吞掉它
+    // SIGWINCH 重绘的字节（实测 ~25ms 落在窗口内）→ 画面冻在旧内容 + reflow 错位。
+    // 默认 true：拿不到 parser（pending/legacy）时按"有集成"处理，保持既有 silence 行为。
+    let (parser_is_alt, parser_is_inline_tui, parser_has_integration) = {
         let map = state.workspaces.read();
         map.get(&wid)
             .and_then(|ws| ws.terminals.get(&pane_id))
             .filter(|h| h.delta_mode.load(Ordering::Acquire))
             .map(|h| {
                 let p = h.parser.lock();
-                (p.is_alt_screen(), p.is_inline_tui_resize_at(flag_now_ms))
+                (
+                    p.is_alt_screen(),
+                    p.is_inline_tui_resize_at(flag_now_ms),
+                    p.has_shell_integration(),
+                )
             })
-            .unwrap_or((false, false))
+            .unwrap_or((false, false, true))
     };
     let is_alt = is_alt || parser_is_alt;
     let is_inline_tui = is_inline_tui || parser_is_inline_tui;
@@ -1218,7 +1227,11 @@ pub fn resize_pane_inner(
             // redraw bytes the same way it dropped lazygit's. The kernel's
             // §A.3 primary-visible wipe ran first (above), so the canvas is
             // blank when Ink's redraw lands.
-            let skip_silence = is_alt || is_inline_tui;
+            // §wsl-resize-silence — 无 shell-integration 的 pane（WSL/cmd/explicit-launch）
+            // 也跳过 silence：它们的 SIGWINCH 重绘无 prompt OSC 早释放，会被窗口整段吞掉。
+            // 代价=ConPTY viewport replay 会漏进来（与 alt/inline-TUI 跳过 silence 同款权衡），
+            // 但重绘落在其后覆盖掉，远优于"冻在旧尺寸"。
+            let skip_silence = is_alt || is_inline_tui || !parser_has_integration;
             if res.is_ok() && !skip_silence {
                 let deadline = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
