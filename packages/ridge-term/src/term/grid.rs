@@ -278,6 +278,12 @@ pub struct Grid {
     /// / iTerm2 / VTE standard behaviour. Parser keeps this in sync
     /// via `set_pen` after every SGR / DECSTR / RIS.
     pen: Attrs,
+    /// §wsl-resize-silence (2026-07-16) — 第一次见到 shell-integration 的 prompt OSC
+    /// （133;A / 633;A prompt-start）即置 true。从不发 prompt OSC 的 pane（WSL 带 args
+    /// 启动 / cmd.exe / explicit-launch）没有 prompt 标记去**早释放** resize-silence
+    /// 窗口，那 80ms 窗口就会吞掉它 SIGWINCH 重绘的字节（实测 ~25ms，落在窗口内）→
+    /// 画面冻在旧内容。`resize_pane_inner` 据此对无集成的 pane 跳过 silence 窗口。
+    seen_prompt_osc: bool,
 }
 
 impl Grid {
@@ -301,6 +307,7 @@ impl Grid {
             inline_tui_sticky: false,
             frame_top_row: 0,
             pen: Attrs::DEFAULT,
+            seen_prompt_osc: false,
         }
     }
 
@@ -387,6 +394,18 @@ impl Grid {
     /// for `is_inline_tui_for_resize_at`.
     pub fn is_inline_tui_sticky(&self) -> bool {
         self.inline_tui_sticky
+    }
+
+    /// §wsl-resize-silence — 记录见过 shell-integration 的 prompt OSC（133/633;A）。
+    /// 从 parser 处理 prompt-start 时调用（与 `clear_inline_tui_sticky` 同点）。
+    pub fn mark_prompt_osc_seen(&mut self) {
+        self.seen_prompt_osc = true;
+    }
+
+    /// §wsl-resize-silence — 该 pane 是否发过 prompt OSC（= 有 shell-integration）。
+    /// false ⇒ 无早释放 silence 的手段，resize 时应跳过 silence 窗口。
+    pub fn has_seen_prompt_osc(&self) -> bool {
+        self.seen_prompt_osc
     }
 
     /// §sticky-inline-tui — the current render burst's top row (see
