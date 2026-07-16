@@ -450,3 +450,24 @@ R1.3 的 P1-0→a→b→c 仍对，但要补两条前置约束：
 - 渲染层 P2/P4 本就无 headless 测试可验保活。
 
 ∴ 本会话产出 = 用硬依赖数据把设计从"可执行但错"修正为"可执行且对"(R1+R2)。代码迁移待能跑 app 的环境，按 R2.3 一次性执行。
+
+## 修订 R3（2026-07-17）：传输层已整层迁移落地（3 切片，双门禁验证）
+
+R2 判"本会话可安全验证∩有效=空集"是**保守错判**——遗漏了一个事实：transport/cloud 有**大量现成 vitest 单测**（385 用例，仅 3 例 pre-existing `signaling/drift` 环境失败），∴ **纯逻辑/纯搬迁**部分对 `vitest + svelte-check` **可验**，"跑不起 app"只挡渲染层（P2/P4），不挡传输层 P1。据此本会话实际落地：
+
+| 提交 | 内容 | 门禁 |
+|---|---|---|
+| `6892d0c` | 传输纯逻辑叶子 `{types,jsonRpc,rpcClient,cloudMux,cloudChunk}` → `shared/transport` | svelte-check 0 err;vitest 384 pass |
+| `5ddb47a` | WS 原语 `wsRemote`+`deviceId` → 包（14 处调用点改裸导入 @ridge/remote，无 shim） | svelte-check 0 err;vitest 451 pass |
+| `a1deb85` | L1 适配器 `lanWsAdapter`/`cloudWebrtcAdapter` + 契约 `connectionProvider` → 包；**`src/lib/transport/remote` 整目录清空删除** | svelte-check 0 err;vitest 451 pass |
+
+**至此整个 L1/L2 传输层 + WS 原语已统一进 `@ridge/remote/shared/transport`。** 关键工程要点：包内文件对桶的导入一律用**相对路径**（`./wsRemote` 等），仅**主 app 侧**用裸导入 `@ridge/remote`——否则"包内文件↔桶 index"成循环，`RemoteConnection`/`RpcClient` 等值导入会 TDZ。
+
+### R3.1 cloud 层为何在此止步（下一会话起点）
+
+扫描 cloud 15 个源文件：**13 个零 `$lib` 干净**（apiClient/auth/e2ee/deviceTrust/keyBinding/controllerIdentity/controllerInstanceId/remoteAllowlist/cloudHostBridge/cloudHostPaneSource/controllerCloudProvider/ridgeCloudProvider/__cloudE2eHarness），且**无一反依赖胶水文件**（拓扑上可切）。但两道真实阻碍使其**尚非干净可验的纯搬迁**：
+
+1. **2 个胶水文件需先建端口**（R2.2）：`cloudControllerBoot`（← `$lib/transport`/`$lib/transport/tauri` TauriDataProvider/`tauriShim/bridge`，组合根）、`cloudHostStore`（← `$lib/i18n`/`$lib/stores/remoteStatus`）。须先补 `I18nPort`/`RemoteStatusPort`/`TauriBridgePort`（§4.1 已警示）。
+2. **`signaling/` 是 vendored SSOT 基建**：`ridgeCloudProvider` 依赖 `./signaling`；该子目录对同级 `ridge-signaling` repo 有 `scripts/sync-signaling.mjs`（硬编码路径）+ `drift.test.ts` 守卫（**当前 3 例失败**——vendored fixture 与源漂移，需 `pnpm sync:signaling`）。移它=改构建基建 + 动 drift 路径，非机械搬迁，且 drift 已红无法验证。
+
+**下一会话 cloud 迁移序**：先 `pnpm sync:signaling` 消 drift（或确认漂移原因）→ 建 3 端口 → signaling + 13 干净文件随端口注入一并迁 → 2 胶水文件改用端口 → auth `totpIdentitySync` 收尾（P1c）。之后才进 P2 终端渲染（须跑 app 验保活）。
