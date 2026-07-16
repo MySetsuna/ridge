@@ -1,0 +1,386 @@
+# Remote 前端统一 + 手机端多 kernel 保活 — 设计文档
+
+- **日期**: 2026-07-16
+- **状态**: 设计定稿（待评审 → 分阶段实施）
+- **关联**:
+  - [[2026-06-25-mobile-remote-scrollback-pane-switch-design]]（当前手机端"单例 kernel + 旁路字节缓存"方案的来源，本文推翻其架构假设）
+  - [[2026-07-02-public-remote-smooth-scrollback-multi-controller-design]]（cloud 平滑 scrollback / 多控制方）
+  - [[2026-07-02-rdg-remote-unify-and-fixes-design]]（**后端** remote 统一到 `packages/ridge-remote`，已完成；本文是它的前端对偶）
+  - [[2026-07-11-R0-core-kernelization-sample-design]]（端口/内核化范式：`Ctx` + Reader 端口注入——本文前端照搬此范式）
+
+---
+
+## 0. 决策摘要（TL;DR）
+
+| 决策点 | 结论 | 已确认 |
+|---|---|---|
+| 手机端终端渲染 | **并入桌面 `manager.ts` 的「多 kernel + 共享 host canvas + scissor + keep-alive」**，不引入 xterm.js | ✅ 用户已选 |
+| 统一包边界 | **整套远控前端全迁 `packages/remote/`**：`mobile/`(手机 SPA+entry) + `panel/`(PC host 面板) + `shared/`(transport/terminal/cloud/auth) | ✅ 用户已选 |
+| 终端核心解耦方式 | manager 对主 app 的 store 依赖 → **端口注入**（`settings`/`cwd` 两个端口 + `onData` 回调），invoke 走既有 shim | 本文定 |
+| host 订阅模型 | **保留单订阅**（host 只推 active pane）。后台 pane kernel 保活但静止（零流量），切回本地即显示 + 增量对账 | 本文定 |
+| 内存兜底 | **LRU 上限保活**（默认 N=8），逐出者序列化冻结进旁路缓存，切回 rehydrate | 本文定 |
+| **rdg CLI Host 接入** | **同契约天然覆盖**：rdg 与桌面共用同一套 LAN 方言 + 已接入共享 `server_app`；唯一缺口 `scrollback-before` 分页（LAN 通病，非 rdg 独有）。rdg `Ring::since(cursor)` 反成增量 replay 样板 | ✅ 用户已要求（详见 §附录 B） |
+| 交付节奏 | P0→P6 串行分阶段，每阶段 `svelte-check` + `cargo check`（若涉后端）门禁绿 → 单独 commit；**每个前端阶段在桌面 host 与 rdg host 双轨验证** | 项目规范 |
+
+**一句话**：白屏、scrollback 丢失、双端割裂是**同一个病根**——手机端从桌面统一核心分叉出了一个「单例 kernel + 自研传输」的退化实现。本文把它并回主干，载体是新的 `packages/remote` 共享包。
+
+---
+
+## 1. 背景与现状
+
+### 1.1 后端已统一 ✅
+
+`packages/ridge-remote/`（Rust）：`server_app.rs` / `server.rs` / `ua.rs` / `auth.rs` / `tls.rs` / `mdns.rs` / `host.rs` / `serve.rs`。桌面 / rdg / 云端共用。`src-tauri/src/remote` 已删。
+
+### 1.2 前端三处割裂 ❌
+
+| 位置 | 职责 | 传输 | 终端渲染 |
+|---|---|---|---|
+| `src/remote/`（手机 SPA，`vite.remote.config.js` → `static/remote/`） | 手机端整套 UI + 逻辑 | **自研 `wsRemote.ts`**（`{type:'subscribe-pane'}` 自定义 msg，**非 JSON-RPC**）+ `cloudRemote.ts` | **单例共享 kernel**（`TerminalCanvas.svelte` + `terminalController.ts`，全 App 仅一个 `TerminalController`） |
+| `src/lib/remote/` | PC host 面板 + cloud 控制/宿主逻辑 | — | — |
+| `src/lib/transport/remote/` | **已统一的传输抽象** L1 `ChannelTransport` + L2 `RpcClient`（JSON-RPC 2.0），`lanWsAdapter` / `cloudWebrtcAdapter` | ✅ | PC 浏览器远控复用桌面 `manager.ts` |
+
+**核心矛盾**：`src/lib/transport/remote/` 已经把 PC/桌面浏览器远控的传输统一成 L1/L2 + JSON-RPC，但**手机 SPA 完全没用它**，自带一套 message-based 传输 → 双端传输实现重复、协议方言分叉。终端渲染同理：PC 浏览器远控用 `manager.ts` 多 kernel，手机端用退化单例。
+
+---
+
+## 2. 根因分析：三症一因
+
+手机端 `MainApp.svelte` 全 App 只有一个 `canvasRef`（一个 wasm `TerminalKernel` + 一块 canvas）。切 pane 的既有流程（`$effect` on `activePaneId`）：
+
+```
+resetForSwitch()            // ① RIS 清屏 + clearScrollback —— 画面此刻变空
+  → feedUtf8(cache ≤256KB)  // ② 把旁路字节重新喂 parser 重画（分帧，CPU 尖峰）
+  → 150ms debounce
+  → subscribePane(pid)      // ③ host replay ≤64KB → reconcileReplay keep/repaint
+```
+
+| 症状 | 根因 |
+|---|---|
+| **切换白屏** | ① 清屏那一刻 → ② 重放画完之间的空窗；缓存未命中还要等 ③ 的 150ms + 网络 RTT。大缓冲重 parse 要好几帧，肉眼可见空屏/逐步填充。 |
+| **scrollback 脆弱/丢失** | pane 历史不活在 kernel（被 `clearScrollback` 抹掉），只活在 ≤256KB 旁路 `PaneScrollbackCache` + host 每次 replay ≤64KB，靠字节 `tail-match` 对账；delta / 主题变化打断 tail-match 即丢。更早历史（>256KB）彻底没有。 |
+| **弱网易断连** | 快速切 pane 连发多次 `replay_pane_scrollback_raw`（每次可达 256KiB）→ 打爆 WebRTC DataChannel 8MiB `BUFFERED_HIGH_WATERMARK` → 断连。现靠 150ms 去抖硬扛。 |
+| **双端割裂** | 手机端是另写的传输 + 渲染，与桌面统一核心分叉，同一 bug 要修两遍。 |
+
+**对照**：桌面端（含 PC 浏览器远控 web-remote-dist）用 `manager.ts` 的 **多 kernel + 单 host canvas + scissor 分区 + `§4a workspace keep-alive`** —— 每 pane 一个常驻内核，切换只挪 scissor 矩形，**天生无以上四症**。
+
+> **结论**：不是"给手机端修补切换逻辑"，而是"删掉退化分叉，并回主干"。
+
+---
+
+## 3. 目标架构
+
+```
+                         packages/remote/  (新 TS workspace 包, @ridge/remote)
+        ┌────────────────────────────────────────────────────────────────┐
+        │  shared/                                                          │
+        │    transport/   L1 ChannelTransport + L2 RpcClient (JSON-RPC)     │
+        │                 lanWsAdapter / cloudWebrtcAdapter / cloudMux      │
+        │    terminal/    manager.ts (多 kernel + scissor + keep-alive)     │
+        │                 + workerRendererBridge/imeAnchor/fontStack/…      │
+        │                 + ports: SettingsPort / CwdPort (依赖注入)         │
+        │    cloud/       WebRTC / E2EE / signaling / apiClient / provider  │
+        │    auth/        TOTP / deviceTrust / totpIdentitySync             │
+        │  mobile/        手机 SPA 整壳 + entry (触屏/软键盘/IME 适配层)      │
+        │  panel/         PC host 面板 (RemotePanel 及其 cloud host 逻辑)    │
+        └───────────────┬───────────────────────────────┬─────────────────┘
+                        │ import                         │ import
+              ┌─────────▼─────────┐            ┌─────────▼──────────┐
+              │ 手机 entry (vite)  │            │ 主 SvelteKit app    │
+              │ static/remote/     │            │ (桌面 + web-remote) │
+              │  仅 mount 挂载点    │            │  仅 mount + 注入端口 │
+              └───────────────────┘            └────────────────────┘
+```
+
+**三条统一线**：
+
+1. **传输统一**：手机端废弃 `src/remote/lib/wsRemote.ts` + `cloudRemote.ts`，改吃 `shared/transport` 的 L1/L2（与 PC 端同一份）。
+2. **渲染统一**：手机端废弃 `TerminalCanvas.svelte` 的单例 `TerminalController`，改用 `shared/terminal/manager.ts`（与 PC 端同一份，多 kernel 保活）。手机专属的触屏/软键盘/IME/keyboardOffset 逻辑抽成 `mobile/` 里的**输入适配层**，喂给 manager。
+3. **目录统一**：`src/remote/` + `src/lib/remote/` + `src/lib/transport/remote/` + `src/lib/terminal/`（共享部分）→ 迁入 `packages/remote/`，主 app 与手机 entry 反向 import。
+
+---
+
+## 4. 依赖边界拆解（最硬的骨头）
+
+`manager.ts` 对主 app 的 23 处耦合，分类如下：
+
+| 类别 | 具体 | 迁移策略 |
+|---|---|---|
+| **A. 同族 terminal 子模块** | `workerRendererBridge` / `workerRendererSingleton` / `shellInputSnapshot` / `imeAnchor` / `linkSpans` / `fontStack` / `themeBridge` / `perfTrace` | **整体随 manager 迁入** `shared/terminal/`（它们本就在 `src/lib/terminal/`） |
+| **B. 主 app store（运行时耦合）** | `settingsStore`（`get(settingsStore)` 读终端配置，2 处）、`paneCwdStore`（`_currentPaneCwd`/`_knownCwds` 读 cwd 供 link 解析，2 处） | **端口注入**（见下） |
+| **C. Tauri invoke** | `invoke('write_to_pty')` 1 处，位于 debug 比较分支；主输出路径是 `onData` 回调（RidgePane 接后 invoke） | 端口化为可选 `HostBackendPort.writePty?`，远控端不实现（走 `onData`）。既有 tauriShim 已覆盖 |
+| **D. 纯类型** | `InputBufferState`（`$lib/components/inputBufferTracker`）、`ActiveWallpaperGpu`（`../stores/themes`） | 类型定义搬入 `shared/terminal/types.ts`，主 app re-export 保持兼容 |
+| **E. worker 渲染** | `isWorkerRenderingEnabled` / `getWorkerRenderer`（OffscreenCanvas 性能优化） | 保留，靠 feature flag `__RIDGE_USE_WORKER`；手机端默认 **off**（主线程渲染，避免移动端 worker/OffscreenCanvas 兼容坑） |
+
+### 4.1 端口接口（类别 B）
+
+照搬 R0 内核化范式（`Ctx` + Reader 端口）：manager 构造时接收端口，不再直接 import store。
+
+```ts
+// packages/remote/shared/terminal/ports.ts
+export interface TerminalSettings {
+  fontFamily: string; fontSize: number; paddingPx: number;
+  // …manager 实际读的字段（迁移时以 get(settingsStore) 的用处为准精确枚举）
+}
+export interface SettingsPort {
+  get(): TerminalSettings;
+  subscribe(cb: (s: TerminalSettings) => void): () => void;  // manager 内部 $effect 等价
+}
+
+/** link 解析用的 cwd 查询；手机端可给空实现（link 解析非关键路径）。 */
+export interface CwdPort {
+  current(workspaceId: string, paneId: string): string | undefined;
+  all(): string[];
+}
+```
+
+- **主 app 实现**：包装现有 `settingsStore` / `paneCwdStore`（薄适配，行为不变）。
+- **手机端实现**：settings 来自远控推送的主题 + 本地字号；cwd 由 `pty-meta` 的 cwd 提供（`CwdPort` 可返回 active pane 的 cwd，其余空）。
+
+> **验证事实**：`get(settingsStore)` 的两处都在 `try{}catch{}` 里（manager.ts L1229-1231），说明 manager 已容忍 store 缺失 → 端口化风险低。
+
+### 4.2 依赖方向自检
+
+`packages/remote` **不得** import 主 app（`src/`）任何东西。迁移后：
+- terminal/cloud/transport/auth 的所有依赖闭合在包内或第三方；
+- 主 app 特有状态（settings/cwd/wallpaper）经端口从外部注入。
+
+P0 阶段用 `madge` / `eslint-plugin-import` 的 `no-restricted-paths` 建立"包不得依赖 app"的护栏。
+
+---
+
+## 5. `packages/remote` 包结构与构建接线
+
+### 5.1 目录
+
+```
+packages/remote/
+  package.json          # name: "@ridge/remote", type: module, exports map
+  tsconfig.json         # extends 根 tsconfig；paths 指回 @ridge/term-wasm
+  src/
+    shared/
+      transport/        # ← src/lib/transport/remote/* 全量
+      terminal/         # ← src/lib/terminal/* 中的共享渲染核心 + ports.ts
+      cloud/            # ← src/lib/remote/cloud/*
+      auth/             # ← totpIdentitySync / deviceTrust 等
+      types.ts
+    mobile/             # ← src/remote/* 全量（App/MainApp/AuthScreen/BottomTabBar/lib/*）
+      main.ts           # entry（vite.remote.config 指向此）
+      input/            # 触屏/软键盘/IME/keyboardOffset 适配层（从 TerminalCanvas 抽出）
+    panel/              # ← src/lib/remote/RemotePanel.svelte + cloud host 接线
+  index.ts              # 桶文件：re-export 主 app 需要的公共面
+```
+
+### 5.2 构建接线改动
+
+- `pnpm-workspace.yaml`：`packages/*` 已覆盖 `packages/remote`，无需改。
+- **手机 entry**：`vite.remote.config.js` 的 `root`/`input` 从 `src/remote/` 改指 `packages/remote/src/mobile/`；产物仍落 `static/remote/`（后端 `ua.rs` 分流路径不变）。
+- **主 app**：`scripts/build-desktop-web.mjs`（`build:desktop-web`）与主 `vite.config` 无需改产物路径，只是 import 源从 `$lib/remote/*` / `$lib/terminal/*` 改成 `@ridge/remote`。
+- **alias**：根 `vite.config` + `tsconfig` 增 `@ridge/remote` → `packages/remote/src`（dev 直接源码，免预编译）。`@ridge/term-wasm` alias 两端共用。
+- **tauriShim**：优先把 manager 那 1 处 invoke 端口化 → 手机 entry 无需挂 `@tauri-apps/api/*` shim（更干净）；否则手机 entry 也挂 shim alias（现仅 desktop-web 挂）。
+
+---
+
+## 6. 传输层统一：手机 `wsRemote` → L1/L2 映射
+
+手机 `MainApp` 依赖的 `wsRemote` 接口面（已盘点）→ 落到 L1/L2 的映射：
+
+| 手机 `wsRemote` 方法 | 统一层落点 |
+|---|---|
+| `connect/disconnect/state/onStateChange/onReconnect` | L1 `ChannelTransport.connect/close/state/onStateChange` |
+| `onRawBytes` | L1 `onPaneBytes` |
+| `sendStdin` | L1 `sendPaneBytes` / 或 L2 notify（视 host 契约） |
+| `subscribePane` | L2 `rpc('subscribe-pane')` 或 notify |
+| `listPanes/listWorkspaces/switchWorkspace/createPane/closePane/createWorkspace/closeWorkspace/listWorkspacePanes` | L2 `RpcClient.request(...)`（JSON-RPC，一次写对 reqId/timeout/cancel） |
+| `claimPane/refreshPane` | L2 request |
+| `fetchOlderScrollback` | L2 request `scrollback-before`（现仅 cloud leg；P4b 扩到 LAN） |
+| `onMetadata/onPtyResize/onTheme/cycleTheme/lastTheme` | L1 `onControl` 上的 typed notification |
+| `getPaneOutput/pruneOutputs` | **移除**——多 kernel 保活后，pane 输出活在各自 kernel，不再需要 App 层字节 buffer（连同 `PaneScrollbackCache` 一并退役，见 §7.3） |
+
+> **注意**：LAN-WS host 目前不说 JSON-RPC（`server.rs` / rdg `lan_proto.rs`）。L1 `lanWsAdapter` 已在边界做 legacy 翻译（见 `types.ts` 注释 D7），所以手机端切到 L1/L2 **不要求后端立即改协议**——翻译层吸收差异。后端转 JSON-RPC 是独立、可延后的工作。
+
+---
+
+## 7. 终端渲染统一：单例 → 多 kernel 保活
+
+### 7.1 手机端接入 manager 的形态
+
+手机端也是"一次显示一个 pane"，但要**保活所有（受 LRU 限制的）pane 的 kernel**。manager 的 scissor 架构天然支持：
+
+- `attachHost(canvas)`：手机端提供**一块全屏 host canvas**（取代现 `TerminalCanvas` 的单 canvas）。
+- 每个 pane：`attach(paneId, container, workspaceId)` 创建常驻 kernel；手机端为每个 pane 造一个**零尺寸/隐藏的 container 占位**，只有 active pane 的 container 占满视口 → scissor 只渲染它。
+- 切 pane：把 active container 切到可见（CSS），manager 下一帧 RAF 用新 scissor 渲染 active kernel。**不 reset、不重放、不销毁** → 零白屏。
+- 后台 pane：kernel 常驻内存但不订阅、不渲染（scissor 不覆盖）。
+
+### 7.2 手机输入适配层（`mobile/input/`）
+
+现 `TerminalCanvas.svelte` 里与「单例」无关、但与「手机交互」强相关的逻辑，抽成独立适配层，作用于 manager 的 active pane：
+
+- 触摸滚动 / tap-focus / 选择模拟鼠标（`handleTouch*`）
+- 软键盘 offset（`computeKeyboardOffset` / `keyboardOffset` / `visualViewport` 监听 / `§kb-stable`）
+- 隐藏 textarea IME（`handleComposition*` / `handleInput` 去重 / `insertReplacementText` 丢弃）
+- 虚拟键盘 / 修饰键 chord（`handleVirtualKey` / `modState`）
+
+这些改为调用 `manager.write(activePaneId, bytes)` / `manager.paste(...)` / `manager.setPreedit(...)` / `manager.setSelection(...)`，而非单例 `ctrl.*`。manager 已有等价 API（RidgePane 在用）。
+
+### 7.3 退役清单（"移除其他地方代码"）
+
+多 kernel 保活后，以下**整体删除**（其存在理由就是为了绕过单例的缺陷）：
+
+- `src/remote/lib/terminalController.ts` + `.test.ts`（被 manager 取代）
+- `src/remote/lib/paneScrollbackCache.ts` + `.test.ts`（scrollback 活在 kernel，旁路缓存不再需要；LRU 冻结用轻量序列化替代，见 §8.3）
+- `MainApp.svelte` 中 `PaneScrollbackCache` / sessionStorage 镜像 / `reconcileReplay` / `expectReplayPane` / `pruneDeadPanes` 等整块逻辑
+- `TerminalCanvas.svelte` 的渲染部分（保留输入适配层，迁 `mobile/input/`）
+
+### 7.4 host 单订阅 + 保活的对账
+
+切回一个"离开期间可能有新输出"的 pane：
+
+1. 立即显示本地保活 kernel（**0 网络，0 白屏**）。
+2. `subscribePane(pid)` → host replay。
+3. **对账**：kernel 记录"本地已消费到的字节水位"。理想：host 支持"从水位增量 replay"（§8.4，rdg `Ring::since(cursor)` 已具备，见附录 B）。退化：host 发 ≤64KB tail，kernel 用现有 delta / 幂等重放对齐尾部（不清屏，只追加差异）。
+
+---
+
+## 8. 负载与带宽预算（回应"手机端扛得住吗 / 网速"）
+
+### 8.1 GPU/CPU：基本不变
+
+- **单 host canvas + scissor** → 无论多少 kernel，**GPU context 恒为 1**，不碰移动端 WebGPU/WebGL 上下文硬限（8~16）。
+- RAF 只渲染 active pane（scissor）；后台 kernel 不渲染、且（单订阅下）不收数据 → **后台零 CPU**。
+- 切换省掉了单例方案的"重放 256KB 重 parse"CPU 尖峰。
+
+### 8.2 内存：唯一真实成本，LRU 兜底
+
+- 单 kernel 粗估 5~10MB（80×24 + 5000 行 scrollback，ridge-term 有 attr 去重；**P2 实测校准**）。
+- 对照：现方案本就在内存存 N×256KB 旁路 + N×48KB sessionStorage —— 多 kernel 是"死字节 → 活状态"的等量替换。
+- **LRU 上限**（默认 N=8，低端机可调小）：超出的 pane kernel 序列化冻结 → 逐出内存；切回 rehydrate（≈现方案重建成本，仅"很久没碰"的 pane 才付）。
+
+### 8.3 冻结/rehydrate 的轻量表示
+
+逐出 pane 不保留完整 kernel，只存**可重建的最小字节**（当前屏 + 有限 scrollback tail，≤64KB）到 sessionStorage。rehydrate = 新建 kernel + feed 这段。等于把现 `PaneScrollbackCache` 的价值收敛成"LRU 冷层"，而非"所有 pane 的常规路径"。
+
+### 8.4 带宽：只减不增
+
+| 场景 | 现状 | 保活后 |
+|---|---|---|
+| 后台 pane | 单订阅，零流量 | **不变**（零流量） |
+| 切回近期看过的 pane | host replay ≤64KB | 本地即显示，replay 仅对账差异（→ 0 或极小） |
+| 弱网快速切换 | 连发大 replay 打爆 DataChannel → 断连 | 不触发大 replay → **断连风险消失** |
+| 更旧历史 | `fetchOlderScrollback` 分页 | 不变（按需分页；可见历史已在本地 kernel） |
+
+**可选增量优化**（需后端配合，独立 PR）：host 记"每控制端每 pane 水位"，切回只发 delta。**rdg `Ring::since(cursor)` 已是该能力的现成实现**（附录 B），桌面 host 对齐即可。不做也不比现状差。
+
+---
+
+## 9. 分阶段实施计划
+
+> 原则：串行；每阶段 `pnpm svelte-check`（+ 涉后端时 `cargo check -p ridge-remote`/`-p ridge-cli`）绿 → 单独 commit；每阶段自身可独立回滚。参考 [[2026-07-02-rdg-remote-unify-and-fixes-design]] 的分阶段门禁法。
+
+| 阶段 | 目标 | 关键改动 | 门禁 / 验证 |
+|---|---|---|---|
+| **P0 骨架 + 护栏** | 建 `packages/remote` 空包 + 依赖护栏 + alias | `package.json`/`tsconfig`/vite alias `@ridge/remote`；`no-restricted-paths`（包禁 import `src/`） | `svelte-check` 绿；空包可被主 app import |
+| **P1 传输迁移** | `src/lib/transport/remote/*` + `src/lib/remote/cloud/*` + `auth` → `shared/`；主 app 改 import | 纯移动 + import 重写；无逻辑改 | `svelte-check` + 现有传输/cloud 单测全绿 |
+| **P2 终端核心迁移 + 端口化** | `src/lib/terminal/*` 共享部分 → `shared/terminal/`；抽 `SettingsPort`/`CwdPort`；主 app 注入 | 端口接口 + 主 app 适配器；manager 去 store 直依赖 | 桌面 app 手测终端正常；`manager`/`workerRendererBridge` 单测绿；**内存/pane 实测校准 §8.2** |
+| **P3 手机传输切换** | 手机端废 `wsRemote`/`cloudRemote`，接 L1/L2（§6 映射） | `MainApp` 传输调用改写；LAN legacy 翻译在 L1 | 手机端连 LAN + cloud 双 leg 手测：连接/输入/输出/切 workspace |
+| **P4 手机渲染切换（核心）** | 手机端单例 → manager 多 kernel 保活；抽 `mobile/input/` | 删 `terminalController`/`paneScrollbackCache`/`TerminalCanvas` 渲染；接 manager；LRU 冻结层 | **白屏/scrollback 验收**：快速切 N pane 零白屏、scrollback 不丢；弱网（丢包/限速）切换不断连 |
+| **P4b rdg host 对接**（后端，可与 P4 并行） | 核对 rdg pane 数据面契约完整度；补 `scrollback-before` 分页（LAN 通病）；以 rdg `Ring::since` 为样板统一增量 replay；前端按 host 宣告能力降级 | `packages/ridge-cli`（`lan_proto`/`lan_session`/`scrollback`）+ 桌面 `remote_bridge` 对齐同一 LAN 契约 | `cargo check -p ridge-cli`；**rdg 作 host 时**手机/PC 远控：连接/切 pane/scrollback 分页/弱网 全绿（对照桌面 host） |
+| **P5 手机壳全迁 + PC 面板迁** | `src/remote/*` → `mobile/`；`RemotePanel` → `panel/`；主 app/entry 仅 mount | entry 挪 `vite.remote.config`；主 app import `@ridge/remote` | `build:remote` + `build:desktop-web` 产物一致；双端 e2e |
+| **P6 清理** | 删空 `src/remote`/`src/lib/remote`/`src/lib/transport/remote`；文档/记忆刷新 | 死代码删除；`AGENTS.md`/CLAUDE 指向新包 | 全量 `svelte-check` + 单测 + 双端 e2e 绿；grep 无残留旧路径 |
+
+**里程碑**：P4/P4b 结束 = 用户三个痛点（白屏 / scrollback / 弱网断连）**全部消除**且双端渲染核心归一、rdg 与桌面 host 同契约；P6 结束 = 目录完全统一到 `packages/remote`。
+
+---
+
+## 10. 风险登记
+
+| 风险 | 等级 | 缓解 |
+|---|---|---|
+| manager 迁移触发主 app 大面积 import 改动 | 中 | P1/P2 只移动 + 改 import，逻辑零改；每步 `svelte-check` 门禁 |
+| `SettingsPort` 漏枚举 manager 实读字段 | 中 | P2 以 `get(settingsStore)` 两处的实际用处为准精确枚举；`try/catch` 已容错 |
+| 移动端多 kernel 内存超预算（低端机） | 中 | LRU 上限（N 可配）+ 冻结冷层；P2/P4 真机实测；[[feedback_workspace_keep_alive]] 已授权"付内存代价" |
+| 手机 worker/OffscreenCanvas 兼容坑 | 低 | 手机端 `__RIDGE_USE_WORKER` 默认 off，主线程渲染 |
+| host 单订阅下切回"离开期间输出"对账不齐 | 中 | 退化用现 delta/幂等尾部对齐；理想增量 replay（rdg `Ring::since` 样板） |
+| LAN host 非 JSON-RPC | 低 | L1 `lanWsAdapter` legacy 翻译已存在，后端转协议可延后 |
+| 手机 entry 打包边界（tauriShim/manager 透传 invoke） | 低 | 优先把那 1 处 invoke 端口化，手机端免挂 tauriShim |
+| rdg host 与桌面 host 的 workspace/pane 语义差异（rdg 可能单 workspace / tmux-native 模型） | 中 | 前端按 host **宣告能力降级**（缺 create-workspace 等则隐藏对应 UI）；P4b 逐项核对 §附录 B |
+| pane 数据面尚未收口到共享层（rdg 与桌面各写 WS leg，靠约定对齐） | 中 | 本文只要求两端满足**同一 LAN 契约**（已基本一致）；正式收口到共享 trait 是独立后续（承接 host.rs "WS leg 逐步收口"注释） |
+
+---
+
+## 11. 验证矩阵
+
+| 维度 | 手段 | 通过标准 |
+|---|---|---|
+| 切换白屏 | CDP 模拟移动端，快速切 8 个 pane，逐帧截图 | 无空屏帧；切换 < 1 帧出内容 |
+| scrollback 保真 | 切走 → 大量输出 → 切回 → 上滚 | 历史完整；`fetchOlderScrollback` 分页可达更旧 |
+| 弱网 | CDP network throttle（3G/丢包）+ 快速切换 | 不断连；无 DataChannel 溢出 |
+| 内存 | 真机 / DevTools heap，开 N+2 个 pane | ≤ 预算；LRU 逐出生效 |
+| 双端一致 | 同一 workspace，桌面 vs 手机远控 | 渲染/主题/IME 行为一致（同一 manager） |
+| **双 host 一致** | 同一手机/PC 前端，分别连桌面 host 与 rdg host | 连接/切 pane/scrollback/弱网 行为一致（能力差异按宣告降级） |
+| 回归 | 现有 `*.test.ts`（transport/cloud/manager/imeAnchor…） | 全绿 |
+
+---
+
+## 12. 与既有设计的关系
+
+- **推翻**：[[2026-06-25-mobile-remote-scrollback-pane-switch-design]] 的"单例 kernel + `PaneScrollbackCache` 旁路 + reconcile"——那是单例约束下的最优解，本文移除约束本身。
+- **对偶**：[[2026-07-02-rdg-remote-unify-and-fixes-design]] 统一了**后端** remote 到 `packages/ridge-remote`；本文统一**前端**到 `packages/remote`，并把 rdg host 一并纳入同一前端契约（附录 B）。
+- **复用范式**：[[2026-07-11-R0-core-kernelization-sample-design]] 的端口注入（`Ctx`/Reader）→ 前端 `SettingsPort`/`CwdPort`。
+- **承接**：[[2026-07-02-public-remote-smooth-scrollback-multi-controller-design]] 的 cloud 平滑 scrollback / 多控制方在统一后自动惠及手机端（同一传输 + 渲染核心）。
+
+---
+
+## 附录 A：本文引用的关键代码坐标（2026-07-16 核对）
+
+- 单例切换：`src/remote/MainApp.svelte` L596-630（pane switch `$effect`）、L486-508（`onRawBytes` reconcile）、L556-582（reconnect）
+- 单例内核：`src/remote/lib/terminalController.ts`（`TerminalController`，`resetForSwitch` L292-300）
+- 旁路缓存：`src/remote/lib/paneScrollbackCache.ts`（`PANE_BUF_CAP=256KB`）
+- 桌面多 kernel：`src/lib/terminal/manager.ts`（`TerminalManager`，`attachHost` L763 / `attach` L1142 / `§4a keep-alive` L958-973 / scissor L1032-1073）
+- 统一传输抽象：`src/lib/transport/remote/types.ts`（L1 `ChannelTransport` L108 / L2 `RpcClient`）
+- manager 耦合点：`settingsStore` L37/L1230、`paneCwdStore` L84/L558/L566、`invoke` L1886、worker L39-40/L2069+/L4388+
+- rdg host 契约：`packages/ridge-cli/src/tui/lan_proto.rs`（LAN 消息，与 wsRemote 同源）、`scrollback.rs`（`Ring::snapshot` L91 / `since(cursor)` L97）、`lan_host_impl.rs`（`RemoteHost` impl L52/L73/L94/L146）；共享 `packages/ridge-remote/src/host.rs`（`RemoteHost` trait L134）
+
+---
+
+## 附录 B：rdg CLI Host 对接（双 Host 契约核对）
+
+### B.1 现状：rdg 与桌面共用同一套 LAN 方言
+
+pane 数据面**未收口到共享 `server_app`**（只有元信息/鉴权/workspace-list 经 `RemoteHost` 伞状 trait），而是各 host 的 WS leg 各自实现：
+
+- **桌面**：`src-tauri/src/remote_bridge.rs` / `remote_host_impl.rs`
+- **rdg**：`packages/ridge-cli/src/tui/lan_proto.rs`（协议）+ `lan_session.rs`（会话）+ `scrollback.rs`（Ring）
+
+**但两者说的是同一套 message**（rdg `lan_proto.rs` 注释："与 wsRemote 一致"）。因此前端统一到 L1/L2 后，一份 `lanWsAdapter` legacy 翻译**同时驱动桌面 host 与 rdg host** —— rdg 接入是"契约天然覆盖"，不需要第三套适配。
+
+### B.2 能力核对表（新前端所需 host 能力 × rdg 现状）
+
+| 能力 | LAN 消息 | 桌面 host | rdg host | 备注 |
+|---|---|---|---|---|
+| list-panes | `list-panes` | ✅ | ✅ `lan_proto::list_panes` | |
+| subscribe-pane | `subscribe-pane` | ✅ | ✅ `subscribe_pane` | |
+| stdin 回送 | `stdin` | ✅ | ✅ `stdin` | |
+| claim-pane（视口 reflow 真 PTY） | `claim-pane{seq}` | ✅ | ✅ `claim_pane` | |
+| create-pane | `create-pane` | ✅ | ✅ `create_pane` | |
+| pty 字节流（16B paneId + 负载 二进制帧） | binary frame | ✅ | ✅ `parse_binary_frame` | |
+| 订阅时 scrollback replay（全量快照） | replay | ✅ | ✅ `Ring::snapshot()` | |
+| **scrollback-before 分页（懒加载旧历史）** | — | ⚠️ 仅 cloud | ❌ **缺** | **LAN 通病**；P4b 补，rdg `Ring::since` 可支撑 |
+| **增量 replay（游标水位对账）** | — | ❌ 未实现 | ✅ **`Ring::since(cursor)`** 已具备（seq 游标 + gap 检测） | **rdg 是样板**，桌面反向对齐 |
+| list-workspaces | trait `list_workspaces_json` | ✅ | ✅ `WorkspaceProvider` | |
+| switch/create/close-workspace | ? | ✅ | ⚠️ 待核（rdg 可能单 ws） | 前端按能力降级 |
+| pty-meta（title/cwd 推送） | pty-meta | ✅ | ⚠️ 待核 | 影响 `CwdPort` |
+| theme push / cycle | theme | ✅ | ⚠️ 待核 | 缺则前端用本地/默认主题 |
+| ping/pong 心跳 | `ping` | ✅ | ✅ `ping` | |
+
+### B.3 P4b 任务清单
+
+1. **核对**上表 ⚠️ 项：rdg 的 workspace 多操作 / pty-meta / theme 推送完整度（读 `lan_session.rs` + `workspace.rs`）。
+2. **补 `scrollback-before` 分页**：LAN 侧新增消息，host 用 rdg `Ring::since(cursor)` / 桌面等价实现返回旧历史批次；前端 `fetchOlderScrollback` 从"cloud only"扩到 LAN。**一次补，rdg 与桌面 LAN host 同时受益**。
+3. **增量 replay 统一**：以 rdg `Ring::since(cursor)` 为样板，切回 pane 时按控制端水位只发增量（§8.4）。桌面 host 对齐同一游标语义。
+4. **前端能力降级**：L2 握手时读取 host 宣告的能力集（或探测），缺失的 workspace/theme 操作在 UI 隐藏，避免手机端对 rdg host 发无效请求。
+5. **serve 产物**：确认 rdg host 的 UI 目录探测仍指向统一后不变的 `static/remote`（手机）+ `web-remote-dist`（PC）产物路径（承接 [[2026-07-02-rdg-remote-unify-and-fixes-design]] 的 UI 目录上溯 + 环境覆盖）。产物路径不变 → serve 不受影响。
+
+### B.4 结论
+
+rdg host 接入的**增量成本很低**：协议同源、`server_app` 已共享、增量 replay 基础设施（`Ring::since`）反而领先桌面。实质工作 = 补 LAN `scrollback-before` 分页（一次补，双 host 同时受益）+ 核对 workspace/meta/theme 完整度 + 前端能力降级。全部纳入 **P4b**（可与 P4 并行）。
