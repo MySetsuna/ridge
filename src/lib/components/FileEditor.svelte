@@ -51,6 +51,7 @@
   } from '$lib/stores/fileEditor';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import MarkdownPreview from './MarkdownPreview.svelte';
+  import ImagePreviewOverlay from './ImagePreviewOverlay.svelte';
   import { isMarkdownPath } from '$lib/utils/markdown';
   // §IDE Ctrl/Cmd+Click 路径跳转：复用 linkResolver（解析相对/绝对路径 + 工程内
   // 判定）+ pathToken（提取光标下路径 token 与 :line:col 后缀）。
@@ -212,6 +213,10 @@
   let inPreviewMode = $derived(!!current && isMarkdownFile && current.viewMode === 'preview');
   let isImageFile = $derived(!!current && current.isImage);
   let isDiffTab = $derived(!!current?.diffArgs);
+
+  // 全窗口图片/流程图预览层的状态（null = 不显示）。图片文件、markdown 嵌入图、
+  // mermaid 流程图点击后写入。
+  let previewImage = $state<{ src: string; alt: string } | null>(null);
 
   // ─── Monaco lifecycle ──────────────────────────────────────────────────────
   // Monaco is intentionally used without web workers here (same as Pane.svelte's
@@ -2045,6 +2050,7 @@
             editor.revealLineInCenter(targetLine);
             editor.setPosition({ lineNumber: targetLine, column: 1 });
           }}
+          onImagePreview={(src, alt) => (previewImage = { src, alt })}
         />
       </div>
     {/if}
@@ -2055,13 +2061,32 @@
   <img
     src={current.imageUrl}
     alt={current.name}
-    class="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+    class="max-w-full max-h-full object-contain rounded-lg shadow-lg cursor-zoom-in"
+    role="button"
+    tabindex="0"
+    title="点击全窗口预览（缩放/旋转）"
+    onclick={() => { if (current?.imageUrl) previewImage = { src: current.imageUrl, alt: current.name }; }}
+    onkeydown={(e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && current?.imageUrl) {
+        e.preventDefault();
+        previewImage = { src: current.imageUrl, alt: current.name };
+      }
+    }}
     onerror={(e) => {
       const img = e.currentTarget as HTMLImageElement;
       console.warn('[FileEditor] image failed to load', current!.path, img.src);
     }}
   />
 </div>
+{/if}
+
+<!-- 全窗口图片/流程图预览层（缩放/旋转/平移）。self-portal 到 body。 -->
+{#if previewImage}
+  <ImagePreviewOverlay
+    src={previewImage.src}
+    alt={previewImage.alt}
+    onClose={() => (previewImage = null)}
+  />
 {/if}
 
     <!-- Preview ↔ Source 切换按钮：右上角浮动 pill，半透明玻璃态。
