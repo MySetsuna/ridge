@@ -23,16 +23,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LanWsAdapter } from './lanWsAdapter';
 import { createCloudWebrtcTransportWith } from './cloudWebrtcAdapter';
-import { demuxFrame, encodeJsonFrame, encodePaneFrame } from '@ridge/remote';
-import { RpcClient, CLIENT_CAPABILITIES } from '@ridge/remote';
-import type { ConnectionState, RemoteConnection } from '@ridge/remote';
+import { demuxFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
+import { RpcClient, CLIENT_CAPABILITIES } from './rpcClient';
+import type { ConnectionState, RemoteConnection } from './wsRemote';
 import type {
   CloudConnectionCallbacks,
   CloudConnectionState,
   RemoteConnectionProvider,
-} from '../../remote/cloud/connectionProvider';
-import type { ChannelTransport } from '@ridge/remote';
-import { RpcRemoteError } from '@ridge/remote';
+} from './connectionProvider';
+import type { ChannelTransport } from './types';
+import { RpcRemoteError } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport-agnostic host behaviour (the bit that MUST be identical across legs)

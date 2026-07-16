@@ -211,7 +211,7 @@
   async function startWebRemoteBoot() {
     const { RemoteConnection } = await import('@ridge/remote');
     const { bridge } = await import('$lib/transport/tauriShim/bridge');
-    const { createLanWsTransport } = await import('$lib/transport/remote/lanWsAdapter');
+    const { createLanWsTransport } = await import('@ridge/remote');
     const TOKEN_KEY = 'ridge_remote_token';
     const conn = new RemoteConnection();
 

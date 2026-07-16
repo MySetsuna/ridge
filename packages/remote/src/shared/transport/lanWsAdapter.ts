@@ -26,8 +26,8 @@
 // pass-through; L2 and the bridge never change. Behavior on the wire today is
 // byte-for-byte identical to the pre-refactor bridge.
 
-import { RemoteConnection, type ConnectionState } from '@ridge/remote';
-import { JSON_RPC_ERRORS, makeError } from '@ridge/remote';
+import { RemoteConnection, type ConnectionState } from './wsRemote';
+import { JSON_RPC_ERRORS, makeError } from './jsonRpc';
 import {
   type AuthListener,
   type AuthState,
@@ -40,7 +40,7 @@ import {
   type StateListener,
   type TransportState,
   type Unsubscribe,
-} from '@ridge/remote';
+} from './types';
 
 function mapState(s: ConnectionState): TransportState {
   // RemoteConnection has no distinct `reconnecting`; its reconnect path goes

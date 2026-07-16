@@ -10,14 +10,14 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CloudWebrtcAdapter, createCloudWebrtcTransportWith } from './cloudWebrtcAdapter';
-import { CHANNEL, demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from '@ridge/remote';
-import { RpcClient } from '@ridge/remote';
-import { RpcRemoteError, RpcReconnectError } from '@ridge/remote';
+import { CHANNEL, demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
+import { RpcClient } from './rpcClient';
+import { RpcRemoteError, RpcReconnectError } from './types';
 import type {
   CloudConnectionCallbacks,
   CloudConnectionState,
   RemoteConnectionProvider,
-} from '../../remote/cloud/connectionProvider';
+} from './connectionProvider';
 
 /**
  * Fake cloud provider: the role-agnostic transport primitive the adapter wraps.

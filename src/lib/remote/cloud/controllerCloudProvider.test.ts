@@ -24,7 +24,7 @@ import {
 } from './e2ee';
 import { demuxFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
-import type { CloudConnectionState } from './connectionProvider';
+import type { CloudConnectionState } from '@ridge/remote';
 
 // ── 传输层分片测试帮手（握手后业务帧都经 cloudChunk 封装：单帧 = 0x00||ciphertext）──
 /** 把单帧密文包成 provider 期望的 SINGLE 线消息（用于 dc.deliver 模拟入站业务帧）。 */

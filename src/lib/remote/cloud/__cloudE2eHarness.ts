@@ -18,7 +18,7 @@
 import { RidgeCloudHost } from './ridgeCloudProvider';
 import { ControllerCloudProvider } from './controllerCloudProvider';
 import { CloudHostBridge } from './cloudHostBridge';
-import { createCloudWebrtcTransportWith } from '../../transport/remote/cloudWebrtcAdapter';
+import { createCloudWebrtcTransportWith } from '@ridge/remote';
 import { RpcClient } from '@ridge/remote';
 import type { KeyBindingMode } from './keyBinding';
 import { makeCloudHostPaneSource } from './cloudHostPaneSource';
