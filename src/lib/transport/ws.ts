@@ -1,5 +1,5 @@
 import type { DataProvider, GitStatusResult, SearchResult } from './types';
-import type { RemoteConnection } from '../../remote/lib/wsRemote';
+import type { RemoteConnection } from '@ridge/remote';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
 type PendingRequest = {

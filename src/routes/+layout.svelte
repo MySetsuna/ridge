@@ -209,7 +209,7 @@
   }
 
   async function startWebRemoteBoot() {
-    const { RemoteConnection } = await import('../remote/lib/wsRemote');
+    const { RemoteConnection } = await import('@ridge/remote');
     const { bridge } = await import('$lib/transport/tauriShim/bridge');
     const { createLanWsTransport } = await import('$lib/transport/remote/lanWsAdapter');
     const TOKEN_KEY = 'ridge_remote_token';

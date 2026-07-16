@@ -42,7 +42,7 @@ import {
   type PtyResizeListener,
   type ThemeListener,
   type ThemeSnapshot,
-} from './wsRemote';
+} from '@ridge/remote';
 
 /** Backend `list_workspaces` row (subset we use). */
 interface BackendWorkspace {

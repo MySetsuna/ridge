@@ -13,3 +13,8 @@ export * from './shared/transport/jsonRpc';
 export * from './shared/transport/rpcClient';
 export * from './shared/transport/cloudMux';
 export * from './shared/transport/cloudChunk';
+// WS 原语层：LAN WebSocket 连接类 RemoteConnection（+ 契约类型 RemoteLink/
+// PaneInfo/WorkspaceInfo/ConnectionState…）与设备身份 deviceId。手机壳、桌面
+// +layout、transport/cloud 各 leg 共用；lanWsAdapter 即包装 RemoteConnection。
+export * from './shared/transport/wsRemote';
+export * from './shared/transport/deviceId';

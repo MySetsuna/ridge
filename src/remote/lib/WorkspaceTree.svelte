@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { ListTree, Plus, X, FolderOpen, ChevronRight } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
-  import type { PaneInfo, WorkspaceInfo, RemoteLink } from './wsRemote';
+  import type { PaneInfo, WorkspaceInfo, RemoteLink } from '@ridge/remote';
   import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
