@@ -27,7 +27,7 @@
 // byte-for-byte identical to the pre-refactor bridge.
 
 import { RemoteConnection, type ConnectionState } from '../../../remote/lib/wsRemote';
-import { JSON_RPC_ERRORS, makeError } from './jsonRpc';
+import { JSON_RPC_ERRORS, makeError } from '@ridge/remote';
 import {
   type AuthListener,
   type AuthState,
@@ -40,7 +40,7 @@ import {
   type StateListener,
   type TransportState,
   type Unsubscribe,
-} from './types';
+} from '@ridge/remote';
 
 function mapState(s: ConnectionState): TransportState {
   // RemoteConnection has no distinct `reconnecting`; its reconnect path goes

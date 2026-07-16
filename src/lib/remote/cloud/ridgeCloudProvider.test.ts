@@ -31,7 +31,7 @@ import {
   type EphemeralKeyPair,
 } from './e2ee';
 import type { CloudHostBridgeLike } from './ridgeCloudProvider';
-import { ChunkReassembler } from '../../transport/remote/cloudChunk';
+import { ChunkReassembler } from '@ridge/remote';
 
 /** 传输层分片测试帮手：从 host 发出的（单条）线消息还原出密文（剥掉 SINGLE tag）。 */
 function unwrapSingle(wire: Uint8Array): Uint8Array {

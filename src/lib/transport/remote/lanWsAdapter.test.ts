@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { LanWsAdapter } from './lanWsAdapter';
 import type { ConnectionState } from '../../../remote/lib/wsRemote';
 import type { RemoteConnection } from '../../../remote/lib/wsRemote';
-import type { ControlFrame } from './types';
+import type { ControlFrame } from '@ridge/remote';
 
 /**
  * Minimal structural stub of RemoteConnection — only the surface the adapter

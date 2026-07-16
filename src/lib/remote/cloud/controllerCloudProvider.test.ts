@@ -22,8 +22,8 @@ import {
   BYE_REASON_SIGNATURE_INVALID,
   type EphemeralKeyPair,
 } from './e2ee';
-import { demuxFrame } from '../../transport/remote/cloudMux';
-import { encodeChunks, ChunkReassembler } from '../../transport/remote/cloudChunk';
+import { demuxFrame } from '@ridge/remote';
+import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { CloudConnectionState } from './connectionProvider';
 
 // ── 传输层分片测试帮手（握手后业务帧都经 cloudChunk 封装：单帧 = 0x00||ciphertext）──
