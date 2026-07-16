@@ -17,7 +17,7 @@ import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '$lib/terminal/clipboardImage';
+import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/remote/shared/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '$lib/terminal/manager';
@@ -28,7 +28,7 @@ import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '$lib/terminal/manager';
-import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '$lib/terminal/tuiGate';
+import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,

@@ -36,11 +36,11 @@ import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsStore } from '../stores/settings';
 import type { ActiveWallpaperGpu } from '../stores/themes';
-import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
-import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
-import { perfMark } from './perfTrace';
-import { DEFAULT_TERM_FONT } from './fontStack';
-import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
+import { workerRendererBridge, workerLifecycleOnFit } from '@ridge/remote/shared/terminal/workerRendererBridge';
+import { getWorkerRenderer, isWorkerRenderingEnabled } from '@ridge/remote/shared/terminal/workerRendererSingleton';
+import { perfMark } from '@ridge/remote/shared/terminal/perfTrace';
+import { DEFAULT_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
+import { imeHelperCssPosition, type ImeAnchorInput } from '@ridge/remote/shared/terminal/imeAnchor';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -65,7 +65,7 @@ function quantizeCellSize(raw: number, dpr: number): number {
 // in node_modules/.vite/deps/, and 404s when init() tries to fetch the
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { LinkSpanIndex } from '$lib/terminal/linkSpans';
+import { LinkSpanIndex } from '@ridge/remote/shared/terminal/linkSpans';
 // §1.32 Wave F: PTY-prompt suffix snapshot — reads shell-input from
 // kernel cells instead of mirroring keystrokes. See module docstring.
 
@@ -73,7 +73,7 @@ import type { InputBufferState } from '$lib/components/inputBufferTracker';
 // §1.32 Wave F: pure shell-input reconstruction from kernel cells. The
 // kernel reads + pane-level start marker live here; the reconstruction
 // math is the tested pure function in `shellInputSnapshot`.
-import { reconstructInputSnapshot } from './shellInputSnapshot';
+import { reconstructInputSnapshot } from '@ridge/remote/shared/terminal/shellInputSnapshot';
 // §1.32 (2026-05-20): `linkResolver` transitively imports `monaco-editor`
 // via `$lib/stores/fileEditor → $lib/utils/markdown`. Keeping it as a
 // static top-level import drags monaco into every consumer of `manager.ts`,

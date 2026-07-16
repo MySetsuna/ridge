@@ -1,7 +1,7 @@
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
   import { t, tr } from '$lib/i18n';
-  import { focusActiveTerminal, ownsTabKey } from '$lib/terminal/terminalFocus';
+  import { focusActiveTerminal, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -189,8 +189,8 @@
   // ARE the remote) and the native window controls (no OS window to drive).
   const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
   import { TerminalManager } from '$lib/terminal/manager';
-  import { isTuiActive, snapshotLiveSignals } from '$lib/terminal/tuiGate';
-  import { formatDroppedPathsForPaste } from '$lib/terminal/dropPaste';
+  import { isTuiActive, snapshotLiveSignals } from '@ridge/remote/shared/terminal/tuiGate';
+  import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);

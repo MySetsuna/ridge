@@ -100,11 +100,11 @@ vi.mock('@ridge/term-wasm', () => {
 vi.mock('@ridge/term-wasm/ridge_term_bg.wasm?url', () => ({ default: '/fake.wasm' }));
 
 // ── mock $lib imports ──────────────────────────────────────────────────────────
-vi.mock('$lib/terminal/fontStack', () => ({
+vi.mock('@ridge/remote/shared/terminal/fontStack', () => ({
   REMOTE_TERM_FONT: 'monospace',
   withEmojiFallback: (f: string) => f || 'monospace',
 }));
-vi.mock('$lib/terminal/flagEmojiSupport', () => ({
+vi.mock('@ridge/remote/shared/terminal/flagEmojiSupport', () => ({
   ensureFlagFont: () => false,
 }));
 
