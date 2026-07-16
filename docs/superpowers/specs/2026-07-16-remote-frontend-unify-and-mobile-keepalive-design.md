@@ -137,6 +137,8 @@ export interface CwdPort {
 - **主 app 实现**：包装现有 `settingsStore` / `paneCwdStore`（薄适配，行为不变）。
 - **手机端实现**：settings 来自远控推送的主题 + 本地字号；cwd 由 `pty-meta` 的 cwd 提供（`CwdPort` 可返回 active pane 的 cwd，其余空）。
 
+> **⚠️ 端口面不完整**（见 修订 R2）：上表只覆盖 terminal 层。**cloud 层**（`remote/cloud/*`）另有一组未枚举的主 app 依赖——`$lib/stores/remoteStatus`(`cloudHostOnline`)、`$lib/i18n`、`$lib/transport/tauriShim/bridge`、`$lib/transport/tauri`(`TauriDataProvider`)、`$lib/actions/portal`。这些同样要端口化，否则 cloud 迁不进包。P1 前必须先补齐本节端口清单。
+
 > **验证事实**：`get(settingsStore)` 的两处都在 `try{}catch{}` 里（manager.ts L1229-1231），说明 manager 已容忍 store 缺失 → 端口化风险低。
 
 ### 4.2 依赖方向自检
@@ -416,3 +418,35 @@ rdg host 接入的**增量成本很低**：协议同源、`server_app` 已共享
 - **已落地**：设计文档（c9386b1）+ `packages/remote` 三文件空骨架 + root `package.json`/vite/svelte alias（混在 21c5c0d 里，该 commit message 名不副实、且夹带了无关 Rust 改动，**未做任何迁移**）。
 - **未落地**：P1 起全部代码迁移。上一会话摘要所述"P1a/b/c ~100 文件已迁、6 clean commits"与 git 权威状态**不符**，实际 `packages/remote` 下无 `shared/`。
 - **为何此处收尾**：真正的基座 `wsRemote` 是运行时类且牵连**桌面**主 app 的 `+layout.svelte`——盲迁只有 `svelte-check` 能验类型、**验不了保活/渲染这一核心行为**（正是用户报的白屏/scrollback），在无法跑 app 的环境属高风险盲改。∴ 本轮只推进"可安全验证"的文档纠正（R1），代码迁移待能跑 app 的环境按 R1.3 相序执行。
+
+## 修订 R2（2026-07-17）：cloud 层是 SCC 且深耦主 app —— 真正的 P1 阻塞点
+
+R1 只揭示了 wsRemote 基座层的相序问题；进一步 `grep` cloud 目录，发现更深的阻塞——**这才是"P1 纯搬迁不存在"的根因**：
+
+### R2.1 cloud ⇄ transport 成环（一个 SCC）
+
+- **cloud → transport**：`remote/cloud/*` import `transport/remote` 的 `RpcClient`/`cloudMux`/`cloudChunk`/`cloudWebrtcAdapter`。
+- **transport → cloud**：`transport/remote/cloudWebrtcAdapter.ts` import `remote/cloud/connectionProvider`。
+- ∴ 二者是**同一强连通分量**，无法 R1.3 说的"先 transport 再 cloud"顺序拆——**必须同一步搬**。
+
+### R2.2 cloud 深耦主 app（§4.1 未枚举的端口面）
+
+cloud 目录运行时 import 主 app：`$lib/stores/remoteStatus`(`cloudHostOnline` store)、`$lib/i18n`(`t/tr/locale/billingRegion`)、`$lib/transport/tauriShim/bridge`、`$lib/transport/tauri`(`TauriDataProvider`)、`$lib/actions/portal`。
+
+∴ 把 cloud 搬进包 **不是"纯移动 + 改 import"**，而要为 store/i18n/tauri/portal 各补一个端口(照 §4.1 SettingsPort 范式)。这是 **P2 级端口工作**，且端口实现的行为正确性(尤其 tauriShim/TauriDataProvider 的数据面)**盲改无法验证**。
+
+### R2.3 修正后的真实 P1 形态
+
+R1.3 的 P1-0→a→b→c 仍对，但要补两条前置约束：
+
+1. **先补端口**（原 §4.1 只有 Settings/Cwd，须加 `RemoteStatusPort`/`I18nPort`/`TauriBridgePort`/`PortalPort`）——否则 transport+cloud SCC 搬不动。
+2. **transport+cloud 作为一个 SCC 原子搬迁**（含 wsRemote 原语），一步 `git mv` + 全量改 import + `svelte-check` + `vitest`(transport/cloud 现有单测) 一次门禁；失败则整体 `git checkout` 回滚,无半迁状态。
+
+### R2.4 本会话终判
+
+用户"有可推进就推进,没有就收尾"。核实后:**"可安全验证" ∩ "本会话有效"= 空集**——
+- 唯一纯净可搬的 WS 原语(wsRemote+deviceId)孤立无下游可接(下游全在被卡的 SCC 里)，搬它只是加 re-export barrel 的 churn，不解锁任何东西 → 按 ponytail 第 1 阶不做。
+- 一切有效的迁移(transport+cloud SCC)被 R2.2 的未列端口卡住，属需跑 app 验证的 P2 级工作。
+- 渲染层 P2/P4 本就无 headless 测试可验保活。
+
+∴ 本会话产出 = 用硬依赖数据把设计从"可执行但错"修正为"可执行且对"(R1+R2)。代码迁移待能跑 app 的环境，按 R2.3 一次性执行。
