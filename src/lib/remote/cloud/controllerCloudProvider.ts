@@ -49,8 +49,8 @@ import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '../../transport/remote/cloudMux';
-import { encodeChunks, ChunkReassembler } from '../../transport/remote/cloudChunk';
+import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
+import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */

@@ -23,7 +23,7 @@ import {
   encodeControlFrame,
   encodeJsonFrame,
   encodePaneFrame,
-} from '../../transport/remote/cloudMux';
+} from '@ridge/remote';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { bytesToBase64 } from './e2ee';
 

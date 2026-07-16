@@ -5,7 +5,11 @@
 // 主 app 特有状态（settings / cwd / wallpaper）一律经端口注入（SettingsPort /
 // CwdPort，见 §4.1）。依赖方向永远是 主 app → @ridge/remote，绝不反向。
 //
-// P0 骨架：空桶占位。后续 P1 迁 shared/transport、P2 迁 shared/terminal、
-// P5 迁 mobile/ + panel/，再从此处 re-export 主 app 需要的公共面。
-
-export {};
+// P1 进行中：传输原语（L1/L2 契约类型 + JSON-RPC + cloud 帧编解码）已迁入
+// shared/transport，从此处桶 re-export 主 app 需要的公共面（裸导入 @ridge/remote，
+// 与 @ridge/split 同机制，无需 alias）。后续 P2 迁 shared/terminal、P5 迁 mobile/panel。
+export * from './shared/transport/types';
+export * from './shared/transport/jsonRpc';
+export * from './shared/transport/rpcClient';
+export * from './shared/transport/cloudMux';
+export * from './shared/transport/cloudChunk';

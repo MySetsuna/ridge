@@ -32,7 +32,7 @@ import {
   encodeControlFrame,
   encodeJsonFrame,
   encodePaneFrame,
-} from '../../transport/remote/cloudMux';
+} from '@ridge/remote';
 import { base64ToBytes, bytesToBase64 } from './e2ee';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { isRemoteAllowed } from './remoteAllowlist';
