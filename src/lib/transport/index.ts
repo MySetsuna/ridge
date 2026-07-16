@@ -20,10 +20,10 @@ export {
   RpcRemoteError,
 } from '@ridge/remote';
 export { RpcClient } from '@ridge/remote';
-export { LanWsAdapter, createLanWsTransport } from './remote/lanWsAdapter';
+export { LanWsAdapter, createLanWsTransport } from '@ridge/remote';
 export {
   CloudWebrtcAdapter,
   createCloudWebrtcTransport,
   createCloudWebrtcTransportWith,
-} from './remote/cloudWebrtcAdapter';
+} from '@ridge/remote';
 export { CHANNEL, encodeJsonFrame, encodePaneFrame, demuxFrame } from '@ridge/remote';

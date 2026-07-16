@@ -30,12 +30,12 @@
 //   • The host onFrame pipeline + Rust WebRTC migration — that is S4-host
 //     runtime work; this is the pure-TS client leg.
 
-import { demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from '@ridge/remote';
+import { demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
 import type {
   CloudConnectionCallbacks,
   CloudConnectionState,
   RemoteConnectionProvider,
-} from '../../remote/cloud/connectionProvider';
+} from './connectionProvider';
 import {
   type AuthListener,
   type AuthState,
@@ -47,7 +47,7 @@ import {
   type StateListener,
   type TransportState,
   type Unsubscribe,
-} from '@ridge/remote';
+} from './types';
 
 /**
  * Map the provider's connection state to the L1 transport state.

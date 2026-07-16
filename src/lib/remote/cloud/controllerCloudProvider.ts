@@ -27,7 +27,7 @@ import {
   type RemoteConnectionProvider,
   type CloudConnectionState,
   type CloudConnectionCallbacks,
-} from './connectionProvider';
+} from '@ridge/remote';
 import { parseSignal, isInboundSignal } from './signaling';
 import type { SignalMsg, SignalIn, JsonValue } from './signaling';
 import {

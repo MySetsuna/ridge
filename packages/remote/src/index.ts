@@ -18,3 +18,9 @@ export * from './shared/transport/cloudChunk';
 // +layout、transport/cloud 各 leg 共用；lanWsAdapter 即包装 RemoteConnection。
 export * from './shared/transport/wsRemote';
 export * from './shared/transport/deviceId';
+// L1 适配器：LAN-WS(lanWsAdapter，包装 RemoteConnection + legacy 方言翻译)与
+// cloud WebRTC(cloudWebrtcAdapter)；connectionProvider 为 cloud leg 的连接契约。
+// 至此 transport/remote 整目录已并入本包，src/lib/transport/remote 清空。
+export * from './shared/transport/connectionProvider';
+export * from './shared/transport/lanWsAdapter';
+export * from './shared/transport/cloudWebrtcAdapter';

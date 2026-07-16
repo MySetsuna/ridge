@@ -30,9 +30,9 @@ import { TauriDataProvider } from '$lib/transport/tauri';
 import {
   createCloudWebrtcTransportWith,
   type CloudWebrtcAdapter,
-} from '$lib/transport/remote/cloudWebrtcAdapter';
+} from '@ridge/remote';
 import { ControllerCloudProvider } from './controllerCloudProvider';
-import type { CloudConnectionCallbacks, CloudConnectionState } from './connectionProvider';
+import type { CloudConnectionCallbacks, CloudConnectionState } from '@ridge/remote';
 import { snapshot as authSnapshot, cloudAuth, refreshAccess } from './auth';
 import { get } from 'svelte/store';
 import { computeBindTag, bytesToBase64, base64ToBytes } from './e2ee';

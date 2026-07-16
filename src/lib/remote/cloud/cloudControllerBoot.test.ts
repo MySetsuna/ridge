@@ -27,7 +27,7 @@ import {
   verifyTotpOverControl,
   performTrustHandshake,
 } from './cloudControllerBoot';
-import type { CloudWebrtcAdapter } from '$lib/transport/remote/cloudWebrtcAdapter';
+import type { CloudWebrtcAdapter } from '@ridge/remote';
 import { buildBindTranscript, computeBindTag, bytesToBase64 } from './e2ee';
 
 /**
