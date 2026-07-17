@@ -1,15 +1,19 @@
 // src/lib/terminal/hostPorts.ts
 //
-// 主 app 侧 HostPorts 实现：把 manager（现居 @ridge/remote/shared/terminal）对
-// 主 app 的运行时依赖（终端设置 / pane cwd / 链接点击路由）包装成端口，app 启动
-// 时经 TerminalManager.setHostPorts(makeHostPorts()) 注入。行为与迁移前逐字守恒：
-//   - settings.get()  ← 原 manager L1230 get(settingsStore)
-//   - cwd.current/all ← 原 static _currentPaneCwd/_knownCwds 的 get(paneCwdStore)
-//   - openTextLink    ← 原 L1505 动态 import('$lib/utils/linkResolver')（保留懒加载，
-//                        把 linkResolver + monaco 传递依赖留在 app 侧、离开 manager 图）
+// 主 app 侧 HostPorts 实现：把 manager / themeBridge（现居 @ridge/remote/shared/
+// terminal）对主 app 的运行时依赖包装成端口，app 启动时经
+// TerminalManager.setHostPorts(makeHostPorts()) 注入。行为与迁移前逐字守恒：
+//   - settings.get/subscribe ← settingsStore（scrollback + fontFamily + 变更订阅）
+//   - termSettings           ← termFontSize store（字号 + 变更订阅）
+//   - themes                 ← activeBgImage（背景图 URL + 变更订阅）
+//   - cwd.current/all        ← paneCwdStore
+//   - openTextLink           ← 动态 import('$lib/utils/linkResolver')（保留懒加载，
+//                              把 linkResolver + monaco 传递依赖留在 app 侧、离开包图）
 
 import { get } from 'svelte/store';
 import { settingsStore } from '$lib/stores/settings';
+import { termFontSize } from '$lib/stores/termSettings';
+import { activeBgImage } from '$lib/stores/themes';
 import { paneCwdStore } from '$lib/stores/paneTree';
 import type { HostPorts } from '@ridge/remote/shared/terminal/ports';
 
@@ -18,7 +22,35 @@ export function makeHostPorts(): HostPorts {
 		settings: {
 			get() {
 				const s = get(settingsStore);
-				return { terminalScrollbackLines: s.terminalScrollbackLines };
+				return {
+					terminalScrollbackLines: s.terminalScrollbackLines,
+					terminalFontFamily: s.terminalFontFamily,
+				};
+			},
+			subscribe(cb) {
+				// Svelte store：订阅即同步触发一次，themeBridge 依赖此初次推送。
+				return settingsStore.subscribe((s) =>
+					cb({
+						terminalScrollbackLines: s.terminalScrollbackLines,
+						terminalFontFamily: s.terminalFontFamily,
+					}),
+				);
+			},
+		},
+		termSettings: {
+			fontSize() {
+				return get(termFontSize);
+			},
+			subscribe(cb) {
+				return termFontSize.subscribe(cb);
+			},
+		},
+		themes: {
+			activeBgImageUrl() {
+				return get(activeBgImage).url;
+			},
+			subscribe(cb) {
+				return activeBgImage.subscribe(() => cb());
 			},
 		},
 		cwd: {

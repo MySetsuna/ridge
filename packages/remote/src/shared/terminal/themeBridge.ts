@@ -26,14 +26,10 @@
 //   - Re-callable: subsequent calls are no-ops if a subscription is
 //     already active.
 
-import { settingsStore } from '$lib/stores/settings';
-import { termFontSize } from '$lib/stores/termSettings';
-import { hex8, hex8WithAlpha } from '@ridge/remote/shared/terminal/cssColor';
-import { activeBgImage } from '$lib/stores/themes';
-import { get } from 'svelte/store';
-import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-import { withEmojiFallback } from '@ridge/remote/shared/terminal/fontStack';
-import { ensureFlagFont } from '@ridge/remote/shared/terminal/flagEmojiSupport';
+import { hex8, hex8WithAlpha } from './cssColor';
+import { TerminalManager } from './manager';
+import { withEmojiFallback } from './fontStack';
+import { ensureFlagFont } from './flagEmojiSupport';
 
 // Color normalization moved to $lib/utils/cssColor — shared with
 // $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the
@@ -75,7 +71,7 @@ function readRidgeTheme(): Record<string, string> {
 	const accent = v('--rg-accent');
 	const tuiBg = v('--rg-tui-bg');
 
-	const bgImageActive = get(activeBgImage).url !== null;
+	const bgImageActive = TerminalManager.hostPorts()?.themes?.activeBgImageUrl() != null;
 
 	const out: Record<string, string> = {};
 	if (bg) {
@@ -186,37 +182,31 @@ export function setupTerminalThemeBridge(): () => void {
 	// Initial push: the store fires immediately on subscribe. settings.ts's
 	// `applyTheme` runs synchronously during `initSettingsBoot` so by the
 	// time +page.svelte onMount fires the CSS vars are already correct.
-	const unsubscribeTheme = settingsStore.subscribe((settings) => {
-		// settings.ts's setTheme calls applyTheme BEFORE persisting + fanning
-		// the store update, so by the time the subscriber fires, the
-		// `<html data-rg-theme>` attribute (and thus computed CSS vars)
-		// reflect the new theme. Push synchronously.
+	// §P2：settings/font/bg-image 的响应式来源经 HostPorts 注入（themeBridge 迁入
+	// @ridge/remote 后不再直接 import 主 app store）。缺注入则订阅为 no-op，主题保持默认。
+	const ports = TerminalManager.hostPorts();
+	const unsubscribeTheme = ports?.settings?.subscribe((settings) => {
+		// 由 hostPorts 包装 settingsStore.subscribe，Svelte 语义订阅即同步触发一次；
+		// 此刻 CSS 变量已随 applyTheme 生效，可同步 push。
 		push();
-		
-		// Also sync font-family updates
 		let size = _lastFontSize;
-		// If termFontSize hasn't fired yet, try to read it now or fallback to 15
 		if (size === null) {
-			let currentSize = 15;
-			termFontSize.subscribe(v => { currentSize = v; })();
-			size = currentSize;
+			size = ports?.termSettings?.fontSize() ?? 15;
 		}
 		pushFont(settings.terminalFontFamily, size);
-	});
+	}) ?? (() => {});
 
-	const unsubscribeFont = termFontSize.subscribe((size) => {
+	const unsubscribeFont = ports?.termSettings?.subscribe((size) => {
 		let family = _lastFontFamily;
 		if (family === null) {
-			let currentSettings = { terminalFontFamily: '' };
-			settingsStore.subscribe(v => { currentSettings = v; })();
-			family = currentSettings.terminalFontFamily;
+			family = ports?.settings?.get().terminalFontFamily ?? '';
 		}
 		pushFont(family, size);
-	});
+	}) ?? (() => {});
 
-	const unsubscribeBgImage = activeBgImage.subscribe(() => {
+	const unsubscribeBgImage = ports?.themes?.subscribe(() => {
 		push();
-	});
+	}) ?? (() => {});
 
 	return () => {
 		unsubscribeTheme();

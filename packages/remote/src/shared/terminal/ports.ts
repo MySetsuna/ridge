@@ -1,20 +1,42 @@
 // @ridge/remote — shared/terminal 端口接口（R0 内核化范式：Ctx + Reader 端口注入）。
 //
-// manager 迁入本包后不得再直接 import 主 app 的 store / util。它对主 app 的
-// 运行时依赖（终端设置、pane cwd、链接点击路由）经这组端口从外部注入：
+// manager / themeBridge / ptyBridge / paneShell 迁入本包后不得再直接 import 主 app 的
+// store / util。它们对主 app 的运行时依赖（终端设置、字号、壁纸、pane cwd、workspace、
+// 链接路由、Tauri 后端）经这组端口从外部注入：
 //   主 app 侧 src/lib/terminal/hostPorts.ts 实现 HostPorts（包装 settingsStore /
-//   paneCwdStore / linkResolver），app 启动时 TerminalManager.setHostPorts() 注入。
-// 手机端可注入部分实现或全缺省——所有成员可选，缺失时 manager 优雅降级。
+//   termFontSize / activeBgImage / paneCwdStore / activeWorkspaceId / linkResolver /
+//   @tauri-apps），app 启动时经 TerminalManager.setHostPorts() 注入；模块内经
+//   TerminalManager.hostPorts() 读回。手机端可注入部分实现或全缺省——所有成员可选，
+//   缺失时各模块优雅降级。
 
-/** manager 读取的终端相关设置子集。SSOT: src/lib/stores/settings.ts `Settings`。 */
+/** manager / themeBridge 读取的终端相关设置子集。SSOT: src/lib/stores/settings.ts。 */
 export interface TerminalSettingsSnapshot {
   /** 新 pane attach 时按此设 kernel scrollback 容量（SettingsPanel 滑块 100..10000）。 */
   terminalScrollbackLines: number;
+  /** 终端字体族（themeBridge pushFont 用）。 */
+  terminalFontFamily: string;
 }
 
 export interface SettingsPort {
-  /** 读当前终端设置快照。缺省 / 未 hydrate 时由 manager 回退到 opts 默认。 */
+  /** 读当前终端设置快照。缺省 / 未 hydrate 时由消费方回退到默认。 */
   get(): TerminalSettingsSnapshot;
+  /** 订阅设置变更（themeBridge：主题 / 字体变即重推）。Svelte store 语义：
+   *  订阅即同步触发一次。返回 unsubscribe。 */
+  subscribe(cb: (s: TerminalSettingsSnapshot) => void): () => void;
+}
+
+/** 终端字号（独立于 settings 的 termFontSize store）。 */
+export interface TermSettingsPort {
+  fontSize(): number;
+  subscribe(cb: (size: number) => void): () => void;
+}
+
+/** 壁纸/背景图信号（themeBridge：bg 图激活时终端背景透明化 + 变更重推）。 */
+export interface ThemesPort {
+  /** 当前激活背景图 URL；无则 null。 */
+  activeBgImageUrl(): string | null;
+  /** 订阅背景图变更。返回 unsubscribe。 */
+  subscribe(cb: () => void): () => void;
 }
 
 /** 链接解析所需的 pane cwd 查询（OSC 7 报告值）。手机端可给空实现。 */
@@ -28,6 +50,8 @@ export interface CwdPort {
 /** manager 注入的主 app 能力集合。全部可选：SSR / 手机端 / 预启动期缺失即降级。 */
 export interface HostPorts {
   settings?: SettingsPort;
+  termSettings?: TermSettingsPort;
+  themes?: ThemesPort;
   cwd?: CwdPort;
   /** 纯文本路径 / URL 点击路由（CWD 内文件→ridge 编辑器、外链→系统浏览器、
    *  外部路径/目录→资源管理器）。经此避免 manager 直接 import $lib/utils/linkResolver

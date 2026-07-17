@@ -22,7 +22,7 @@ import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
-import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
+import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
