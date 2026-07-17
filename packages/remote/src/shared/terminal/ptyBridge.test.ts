@@ -57,27 +57,18 @@ vi.mock('@tauri-apps/api/event', () => ({
 	listen: (name: string, cb: (e: unknown) => void) => listenMock(name, cb),
 }));
 
-// Settings store is consulted on `pane-pty-closed`; the bridge reads
-// `defaultShell` to rebuild a PTY. None of these tests fire that branch,
-// but the import has to succeed.
-vi.mock('$lib/stores/settings', () => ({
-	settingsStore: { subscribe: vi.fn(), set: vi.fn(), update: vi.fn() },
-}));
-
-vi.mock('svelte/store', () => ({
-	get: () => ({ defaultShell: 'pwsh' }),
-}));
-
-// TerminalManager singleton mock — capture feed / applyDeltaFrame /
-// rows / cols calls so tests can assert dispatch.
+// TerminalManager singleton mock — capture feed / applyDeltaFrame / rows /
+// cols calls so tests can assert dispatch. `hostPorts` returns null: the
+// `pane-pty-closed` rebuild branch reads `defaultShell` via it, but no test
+// fires that branch — null degrades gracefully through `?.`.
 const managerStub = {
 	feed: vi.fn(),
 	applyDeltaFrame: vi.fn(),
 	rows: vi.fn(() => 24),
 	cols: vi.fn(() => 80),
 };
-vi.mock('@ridge/remote/shared/terminal/manager', () => ({
-	TerminalManager: { instance: () => managerStub },
+vi.mock('./manager', () => ({
+	TerminalManager: { instance: () => managerStub, hostPorts: () => null },
 }));
 
 // ---------------------------------------------------------------------------

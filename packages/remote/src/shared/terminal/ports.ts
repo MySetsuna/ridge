@@ -15,6 +15,8 @@ export interface TerminalSettingsSnapshot {
   terminalScrollbackLines: number;
   /** 终端字体族（themeBridge pushFont 用）。 */
   terminalFontFamily: string;
+  /** 默认 shell 程序（ptyBridge 重建 PTY 时用）。 */
+  defaultShell: string;
 }
 
 export interface SettingsPort {
@@ -39,6 +41,11 @@ export interface ThemesPort {
   subscribe(cb: () => void): () => void;
 }
 
+/** 当前活动 workspace 查询（paneShell 切 shell 时定位 workspace）。 */
+export interface WorkspacePort {
+  activeId(): string | undefined;
+}
+
 /** 链接解析所需的 pane cwd 查询（OSC 7 报告值）。手机端可给空实现。 */
 export interface CwdPort {
   /** 指定 pane 的当前 cwd；无则 undefined。 */
@@ -52,6 +59,7 @@ export interface HostPorts {
   settings?: SettingsPort;
   termSettings?: TermSettingsPort;
   themes?: ThemesPort;
+  workspace?: WorkspacePort;
   cwd?: CwdPort;
   /** 纯文本路径 / URL 点击路由（CWD 内文件→ridge 编辑器、外链→系统浏览器、
    *  外部路径/目录→资源管理器）。经此避免 manager 直接 import $lib/utils/linkResolver

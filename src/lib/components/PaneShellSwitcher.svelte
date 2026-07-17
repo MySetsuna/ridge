@@ -7,7 +7,7 @@
     changePaneShell,
     paneShellSelection,
     type ShellInfo,
-  } from '$lib/terminal/paneShell';
+  } from '@ridge/remote/shared/terminal/paneShell';
 
   interface Props {
     paneId: string;

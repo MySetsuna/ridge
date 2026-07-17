@@ -1,7 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { get, writable } from 'svelte/store';
-import { activeWorkspaceId } from '$lib/stores/paneTree';
-import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+import { writable } from 'svelte/store';
+import { TerminalManager } from './manager';
 
 export interface ShellInfo {
   id: string;
@@ -61,7 +60,7 @@ export async function getShells(): Promise<ShellInfo[]> {
 /** 原地切换某 pane 的 shell（拆 PTY → 带 args 重建）。 */
 export async function changePaneShell(paneId: string, shell: ShellInfo): Promise<void> {
   if (!isTauri()) return;
-  const wsId = get(activeWorkspaceId);
+  const wsId = TerminalManager.hostPorts()?.workspace?.activeId();
   if (!wsId) return;
   const manager = TerminalManager.instance();
   manager.clearScrollback(paneId);

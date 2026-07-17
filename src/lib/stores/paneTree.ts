@@ -10,7 +10,7 @@ export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-import { teardownPtyBridge } from '$lib/terminal/ptyBridge';
+import { teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
@@ -1616,7 +1616,7 @@ export async function closePane(paneId: string) {
   });
   // §I-2: drop this pane's selected-shell entry on genuine close (dynamic
   // import avoids a static cycle — paneShell.ts imports from this module).
-  void import('$lib/terminal/paneShell').then((m) => m.clearPaneShellSelection(paneId));
+  void import('@ridge/remote/shared/terminal/paneShell').then((m) => m.clearPaneShellSelection(paneId));
   await syncPaneLayoutFromBackend();
 }
 
