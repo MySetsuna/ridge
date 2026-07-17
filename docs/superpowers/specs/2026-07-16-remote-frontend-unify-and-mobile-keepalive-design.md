@@ -550,3 +550,16 @@ R4.1 判「余 6 层真 gated on 跑 app」正确；本会话在能跑 app 的�
 ### R5.4 余下
 
 P3（手机传输 wsRemote→L1/L2）、P4/P4b（单例→多 kernel 保活，白屏/scrollback 根因修复）、P5（手机壳/RemotePanel 迁 mobile/panel）、P6（清理死路径 + 文档）。P4 保活行为仍须真机验。
+
+## 修订 R6（2026-07-17）：P3 折叠——§6 直改判为低收益高风险，手机已在 RemoteLink 层统一
+
+着手 P3 前先读真实线上协议（`wsRemote.ts` + host `remote_host_impl.rs` + `cloudRemote.ts`），发现 §6 的映射表（手机方法 → L2 `RpcClient`）与线上现实不符，属 R1–R3 同类的「设计 vs wire」缺口。**判 §6 直改不做**，P3 折叠，直接进 P4。
+
+**核查三点（决定性）**：
+1. **返回形状**：LAN 控制协议响应有稳定形状（`{type:'panes',panes}`/`{type:'workspaces',workspaces}`/`{type:'switch-workspace-result',success,workspaceId}`/`{type:'create-pane-result',success,paneId}`/`scrollback-before-result`）；走 RPC(`invoke-request` 白名单，下划线 Tauri 命令名)拿到的是 **Tauri 命令原始返回值**，字段不同，须逐个重映射 MainApp 解析——`svelte-check` 查不出，只有真机暴露。
+2. **流式拆分**：绝大多数是 host 主动推（PTY 字节/`pty-meta`/`theme`/`pty-resized`/`panes`/`workspaces`/`workspace-renamed`，MainApp 经 `ws.onMessage` 收），本就走 L1，无需动；真正 req/resp 仅 4 个 promise 方法（`listWorkspaces`/`switchWorkspace`/`createPane`/`fetchOlderScrollback`）。
+3. **cloud 腿**：`cloudRemote.ts` 头注释明写 `invoke(...) → bridge.invoke → rpc.request (allow-list gated)`——**cloud 腿内部本就走 RPC**，且和 LAN `RemoteConnection` **同实现 `RemoteLink` 接口**。
+
+**关键结论**：手机端**已经统一在 `RemoteLink`**——LAN 腿(控制消息)+cloud 腿(RPC)都实现同一接口、都在 P1 迁入包；MainApp 对协议无感。§6 要 MainApp 抛开 `RemoteLink` 直接用 L1/L2，等于拆掉正确抽象，把 C 类 4 方法从「稳定控制协议响应」切到「Tauri 返回值」逐个重映射，**低收益（少一层抽象）+ 高风险（形状重映射）+ 无 headless 验（只能真机）**。设计 §43 抱怨的「双端传输重复」实已被 P1 解决（两腿共享 `RemoteConnection`/`CloudRemoteConnection`）。真正统一 LAN 到 JSON-RPC 是独立后端活（§202 已延后），非本前端序列必需。
+
+∴ **P3 折叠**（RemoteLink 即统一点，无前端直改）。进 **P4**：让手机复用桌面 `manager` 多 kernel 保活（白屏/scrollback 根因修复），跑在现有 `RemoteLink.onRawBytes → manager.feed` 上，不碰协议问题，正是用户痛点。§6 的 mobile→L2 直改，待后端把 LAN 转 JSON-RPC 后再议（可能永不必）。
