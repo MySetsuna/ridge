@@ -21,7 +21,7 @@ import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/r
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
-import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
+import { ensurePtyBridge, enableDeltaModeThenFit } from '@ridge/remote/shared/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
@@ -37,7 +37,7 @@ import {
 	type InputBufferState,
 } from './inputBufferTracker';
 import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
-import { getShells, changePaneShell, type ShellInfo } from '$lib/terminal/paneShell';
+import { getShells, changePaneShell, type ShellInfo } from '@ridge/remote/shared/terminal/paneShell';
 import { hostsStore, refreshHosts, newHeadlessSession, attachSessionAt } from '$lib/stores/hosts';
 import { pickDockRegion } from '$lib/stores/dockRegionPicker';
 import type { ContextMenuItem } from '$lib/stores/contextMenu';
@@ -76,7 +76,7 @@ $effect(() => {
 // to switch to.
 
 // PTY listener subscriptions used to live here as ptyUnlisten /
-// ptyClosedUnlisten. Both moved to `$lib/terminal/ptyBridge` (TASKS §5.1)
+// ptyClosedUnlisten. Both moved to `@ridge/remote/shared/terminal/ptyBridge` (TASKS §5.1)
 // so listener lifetime tracks the wasm kernel lifetime (manager.attach →
 // manager.detach) rather than this Svelte component's mount cycle —
 // otherwise PTY bytes emitted during the unmount window of a split /

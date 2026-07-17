@@ -66,11 +66,11 @@ vi.mock('@ridge/remote/shared/terminal/manager', () => ({
   },
 }));
 
-// ─── Mock $lib/terminal/ptyBridge ────────────────────────────────────────────
+// ─── Mock @ridge/remote/shared/terminal/ptyBridge ────────────────────────────────────────────
 // Only `teardownPtyBridge` is imported by paneTree.ts; stubbing it keeps
 // closePane / detach from reaching into the real Tauri-only PTY bridge
 // during tests that exercise pane-mutation code paths.
-vi.mock('$lib/terminal/ptyBridge', () => ({
+vi.mock('@ridge/remote/shared/terminal/ptyBridge', () => ({
   teardownPtyBridge: vi.fn(),
 }));
 

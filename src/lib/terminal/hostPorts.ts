@@ -14,7 +14,7 @@ import { get } from 'svelte/store';
 import { settingsStore } from '$lib/stores/settings';
 import { termFontSize } from '$lib/stores/termSettings';
 import { activeBgImage } from '$lib/stores/themes';
-import { paneCwdStore } from '$lib/stores/paneTree';
+import { paneCwdStore, activeWorkspaceId } from '$lib/stores/paneTree';
 import type { HostPorts } from '@ridge/remote/shared/terminal/ports';
 
 export function makeHostPorts(): HostPorts {
@@ -25,6 +25,7 @@ export function makeHostPorts(): HostPorts {
 				return {
 					terminalScrollbackLines: s.terminalScrollbackLines,
 					terminalFontFamily: s.terminalFontFamily,
+					defaultShell: s.defaultShell,
 				};
 			},
 			subscribe(cb) {
@@ -33,8 +34,14 @@ export function makeHostPorts(): HostPorts {
 					cb({
 						terminalScrollbackLines: s.terminalScrollbackLines,
 						terminalFontFamily: s.terminalFontFamily,
+						defaultShell: s.defaultShell,
 					}),
 				);
+			},
+		},
+		workspace: {
+			activeId() {
+				return get(activeWorkspaceId);
 			},
 		},
 		termSettings: {

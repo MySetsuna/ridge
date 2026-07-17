@@ -28,10 +28,8 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { get } from 'svelte/store';
-import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-import { settingsStore } from '$lib/stores/settings';
-import { perfMark } from '@ridge/remote/shared/terminal/perfTrace';
+import { TerminalManager } from './manager';
+import { perfMark } from './perfTrace';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
@@ -137,7 +135,7 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 			try {
 				await invoke('create_pane', {
 					paneId,
-					shell: get(settingsStore).defaultShell || null,
+					shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
 				});
 			} catch (err) {
 				console.error('create_pane (rebuild) failed', err);
