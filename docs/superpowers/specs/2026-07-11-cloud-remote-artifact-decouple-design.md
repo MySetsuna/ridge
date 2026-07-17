@@ -1,6 +1,6 @@
 # Remote 产物部署与 ridge-cloud 部署解耦 设计稿
 
-> 日期：2026-07-11 · 状态：已批准，待实现
+> 日期：2026-07-11 · 状态：**代码已落地**（2026-07-17 核实：ridge-cloud `api/remote_artifacts.rs` upload/rollback/activate/prune + `router.rs:105-106` 二端点 + `config.rs` remote_artifacts_root + `Dockerfile:49` 已删 `COPY desktop-app`/`COPY mobile-app`；wind `scripts/publish-remote-cloud.mjs` 就位）。**余 §8 dokku ops 割接（挂卷 + config:set + 部署 + 首次 publish）须主机权限执行/确认**——代码不可确证生产是否已割接；割接验证后方可删 wind 旧 `scripts/sync-cloud-desktop-app.mjs` + `package.json` `sync:cloud-controller`。
 > 关联：`2026-06-13-web-remote-perf-and-stale-bundle-design.md`（§待部署）、`2026-07-02-rdg-remote-unify-and-fixes-design.md`（§P1 步骤8 ua SSOT）、`docs/contracts/ridge-cloud-protocol.md`（§10 静态托管）
 > 跨仓库：`C:\code\wind`（发布端）+ `C:\code\ridge-cloud`（接收端）
 
