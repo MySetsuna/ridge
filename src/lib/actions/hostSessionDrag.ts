@@ -8,7 +8,7 @@
 // 落在按钮上的事件，以免劫持会话行内 [接入]/[终止] 按钮的点击。
 import { get } from 'svelte/store';
 import { paneDragSourceId, paneDockHover } from '$lib/stores/paneTree';
-import { attachDirectionAt } from '$lib/terminal/paneDockResolve';
+import { attachDirectionAt } from '@ridge/remote/shared/terminal/paneDockResolve';
 import { attachSessionAt } from '$lib/stores/hosts';
 import type { AttachRegion } from '$lib/stores/dockRegionPicker';
 

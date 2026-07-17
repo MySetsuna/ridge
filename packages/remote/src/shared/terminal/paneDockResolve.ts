@@ -1,4 +1,4 @@
-import type { DockRegion } from '$lib/stores/paneTree';
+import type { DockRegion } from './types';
 
 /** 与旧 SplitContainer.regionAtPoint 同语义：边带 18% 命中四向，否则 center。 */
 export function regionAtPoint(

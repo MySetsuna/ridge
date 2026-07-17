@@ -17,7 +17,7 @@
     CORE_COLOR_GROUPS, COLOR_LABEL, ANSI_COLOR_KEYS, ALPHA_COLOR_KEYS,
     previewStyle, buildThemeEntry, type ThemeFormState,
   } from './customTheme';
-  import { hex8WithAlpha, hex8 } from '$lib/utils/cssColor';
+  import { hex8WithAlpha, hex8 } from '@ridge/remote/shared/terminal/cssColor';
 
   interface Props {
     open: boolean;

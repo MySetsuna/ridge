@@ -8,7 +8,7 @@ import {
 	activePaneId,
 	activeWorkspaceId,
 } from '$lib/stores/paneTree';
-import { resolveDockTarget, passedDragThreshold } from '$lib/terminal/paneDockResolve';
+import { resolveDockTarget, passedDragThreshold } from '@ridge/remote/shared/terminal/paneDockResolve';
 import { alertDialog } from '$lib/components/RidgeDialog.svelte';
 import { tr } from '$lib/i18n';
 
