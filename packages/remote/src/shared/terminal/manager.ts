@@ -32,15 +32,14 @@
 //   mgr.detach(paneId);                 // on pane unmount
 
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
-import { get } from 'svelte/store';
+import type { HostPorts } from './ports';
 import { invoke } from '@tauri-apps/api/core';
-import { settingsStore } from '../stores/settings';
-import type { ActiveWallpaperGpu } from '../stores/themes';
-import { workerRendererBridge, workerLifecycleOnFit } from '@ridge/remote/shared/terminal/workerRendererBridge';
-import { getWorkerRenderer, isWorkerRenderingEnabled } from '@ridge/remote/shared/terminal/workerRendererSingleton';
-import { perfMark } from '@ridge/remote/shared/terminal/perfTrace';
-import { DEFAULT_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
-import { imeHelperCssPosition, type ImeAnchorInput } from '@ridge/remote/shared/terminal/imeAnchor';
+import type { ActiveWallpaperGpu, InputBufferState } from './types';
+import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
+import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
+import { perfMark } from './perfTrace';
+import { DEFAULT_TERM_FONT } from './fontStack';
+import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -65,15 +64,14 @@ function quantizeCellSize(raw: number, dpr: number): number {
 // in node_modules/.vite/deps/, and 404s when init() tries to fetch the
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { LinkSpanIndex } from '@ridge/remote/shared/terminal/linkSpans';
+import { LinkSpanIndex } from './linkSpans';
 // §1.32 Wave F: PTY-prompt suffix snapshot — reads shell-input from
 // kernel cells instead of mirroring keystrokes. See module docstring.
 
-import type { InputBufferState } from '$lib/components/inputBufferTracker';
 // §1.32 Wave F: pure shell-input reconstruction from kernel cells. The
 // kernel reads + pane-level start marker live here; the reconstruction
 // math is the tested pure function in `shellInputSnapshot`.
-import { reconstructInputSnapshot } from '@ridge/remote/shared/terminal/shellInputSnapshot';
+import { reconstructInputSnapshot } from './shellInputSnapshot';
 // §1.32 (2026-05-20): `linkResolver` transitively imports `monaco-editor`
 // via `$lib/stores/fileEditor → $lib/utils/markdown`. Keeping it as a
 // static top-level import drags monaco into every consumer of `manager.ts`,
@@ -81,7 +79,6 @@ import { reconstructInputSnapshot } from '@ridge/remote/shared/terminal/shellInp
 // monaco's `window.js` when running in Vitest's node env. The functions
 // are only needed inside a click handler — lazy-import them at the use
 // site (around line 1185 below) instead.
-import { paneCwdStore } from '$lib/stores/paneTree';
 
 /** §A.4 — concatenate two Uint8Arrays without allocating a JS array. Used
  *  by the inline-TUI feed coalescer to grow `entry.feedBuffer` across
@@ -394,6 +391,12 @@ const RESIZE_SETTLE_MS = 500;
  * Singleton. Created lazily on first `instance()` call. Held by the
  * `<RidgeTerminalRoot>` Svelte component for the entire app lifetime.
  */
+
+/** §P2 端口注入（R0 范式）：manager 迁入 @ridge/remote 后不再直接 import 主 app 的
+ *  store/util，改由主 app 启动时经 setHostPorts 注入。模块级单持有者，static 与实例
+ *  方法共读；缺失（SSR / 手机未注入 / 预启动期）时 manager 优雅降级。 */
+let _hostPorts: HostPorts | null = null;
+
 export class TerminalManager {
 	private static _instance: TerminalManager | null = null;
 
@@ -553,17 +556,22 @@ export class TerminalManager {
 		return TerminalManager._instance;
 	}
 
+	/** §P2 注入主 app 能力（settings/cwd/链接路由）。app 启动时调用一次（+page
+	 *  onMount），须早于首个 pane attach 与链接点击。手机端可注入部分或不注入。 */
+	static setHostPorts(ports: HostPorts | null): void {
+		_hostPorts = ports;
+	}
+
 	/** 终端链接路由器需要的 ctx：当前 pane 的 cwd（OSC 7 报告值）。 */
 	static _currentPaneCwd(entry: PaneEntry): string | undefined {
-		const map = get(paneCwdStore);
-		return map[`${entry.workspaceId}:${entry.paneId}`];
+		return _hostPorts?.cwd?.current(entry.workspaceId, entry.paneId);
 	}
 
 	/** 终端链接路由器需要的 ctx：所有 pane 当前 cwd 集合，用于"是否属于
 	 *  任意 cwd 树"判断（多 workspace 多 pane 同时活跃时，落在任一 pane
 	 *  CWD 内的文件都视为可在 ridge 编辑器打开）。 */
 	static _knownCwds(): string[] {
-		return Object.values(get(paneCwdStore)).filter((s): s is string => !!s);
+		return _hostPorts?.cwd?.all() ?? [];
 	}
 
 	static instance(opts?: ManagerOptions): TerminalManager {
@@ -1225,13 +1233,7 @@ export class TerminalManager {
 		// back to `this.opts.scrollbackLines` (constructor default 2000)
 		// when the settings store hasn't been hydrated yet (SSR boot or
 		// pre-first-attach).
-		const settings = (() => {
-			try {
-				return get(settingsStore);
-			} catch {
-				return null;
-			}
-		})();
+		const settings = _hostPorts?.settings?.get() ?? null;
 		const scrollbackLines =
 			settings && Number.isFinite(settings.terminalScrollbackLines)
 				? settings.terminalScrollbackLines
@@ -1498,14 +1500,10 @@ export class TerminalManager {
 					const cwd = TerminalManager._currentPaneCwd(ent);
 					const known = TerminalManager._knownCwds();
 					const spanText = span.text;
-					// §1.32: dynamic import keeps linkResolver (and its
-					// transitive monaco-editor dependency) out of this
-					// module's load graph. Click handlers tolerate the
-					// extra microtask; tests in node env no longer crash.
-					void import('$lib/utils/linkResolver').then(({ resolveLink, executeAction }) => {
-						const action = resolveLink(spanText, { cwd, knownCwds: known });
-						void executeAction(action);
-					});
+						// §P2：链接路由经 HostPorts.openTextLink 注入。app 侧 hostPorts
+						// 保留 §1.32 的 linkResolver 动态 import，使其 monaco 传递依赖不
+						// 进 manager 图；手机端可不实现此能力。
+						_hostPorts?.openTextLink?.(spanText, { cwd, knownCwds: known });
 					e.preventDefault();
 					return;
 				}

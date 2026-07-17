@@ -188,9 +188,15 @@
   // being served to a remote browser: the "remote control" sidebar entry (you
   // ARE the remote) and the native window controls (no OS window to drive).
   const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
-  import { TerminalManager } from '$lib/terminal/manager';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { isTuiActive, snapshotLiveSignals } from '@ridge/remote/shared/terminal/tuiGate';
   import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
+  import { makeHostPorts } from '$lib/terminal/hostPorts';
+
+  // §P2：app 启动即注入 manager 的 HostPorts（settings/cwd/链接路由）。置于模块顶层，
+  // 早于任何 RidgePane 子组件 onMount 的 pane attach（读 scrollback 设置）与全局 canvas
+  // action，确保首个 pane 即能读到用户设置、点击链接可路由。缺注入时 manager 优雅降级。
+  TerminalManager.setHostPorts(makeHostPorts());
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);

@@ -51,7 +51,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: createMockListen(),
 }));
 
-// ─── Mock $lib/terminal/manager ──────────────────────────────────────────────
+// ─── Mock @ridge/remote/shared/terminal/manager ──────────────────────────────────────────────
 // Captured spies for the post-split forced-fit invariant. Tests reset
 // them via `mockReset()` in their own `beforeEach` block — the module
 // singleton is reused across tests because vi.mock hoists once per file.
@@ -60,7 +60,7 @@ const __mockManagerSpies = {
   detach: vi.fn(),
   forceFullRedrawFor: vi.fn(),
 };
-vi.mock('$lib/terminal/manager', () => ({
+vi.mock('@ridge/remote/shared/terminal/manager', () => ({
   TerminalManager: {
     instance: () => __mockManagerSpies,
   },

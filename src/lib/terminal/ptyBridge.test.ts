@@ -76,7 +76,7 @@ const managerStub = {
 	rows: vi.fn(() => 24),
 	cols: vi.fn(() => 80),
 };
-vi.mock('./manager', () => ({
+vi.mock('@ridge/remote/shared/terminal/manager', () => ({
 	TerminalManager: { instance: () => managerStub },
 }));
 
