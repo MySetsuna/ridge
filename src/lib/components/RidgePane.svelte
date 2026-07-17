@@ -20,14 +20,14 @@ import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/remote/shared/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
-import type { KernelEvent } from '$lib/terminal/manager';
+import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
-import { TerminalManager } from '$lib/terminal/manager';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
 	deriveBufferEvent,

@@ -13,14 +13,14 @@
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
   import { isTauri, invoke } from '@tauri-apps/api/core';
   import { settingsStore } from '$lib/stores/settings';
-  import { TerminalManager } from '$lib/terminal/manager';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { alertDialog } from './RidgeDialog.svelte';
   import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
   import PaneGitPill from './PaneGitPill.svelte';
   import PaneDiffPill from './PaneDiffPill.svelte';
   import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
   import PaneShellSwitcher from './PaneShellSwitcher.svelte';
-  import { paneOriginBadge } from '$lib/terminal/paneOrigin';
+  import { paneOriginBadge } from '@ridge/remote/shared/terminal/paneOrigin';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,

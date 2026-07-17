@@ -29,7 +29,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
-import { TerminalManager } from './manager';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { settingsStore } from '$lib/stores/settings';
 import { perfMark } from '@ridge/remote/shared/terminal/perfTrace';
 

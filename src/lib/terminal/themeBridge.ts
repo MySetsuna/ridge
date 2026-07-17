@@ -28,10 +28,10 @@
 
 import { settingsStore } from '$lib/stores/settings';
 import { termFontSize } from '$lib/stores/termSettings';
-import { hex8, hex8WithAlpha } from '$lib/utils/cssColor';
+import { hex8, hex8WithAlpha } from '@ridge/remote/shared/terminal/cssColor';
 import { activeBgImage } from '$lib/stores/themes';
 import { get } from 'svelte/store';
-import { TerminalManager } from './manager';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { withEmojiFallback } from '@ridge/remote/shared/terminal/fontStack';
 import { ensureFlagFont } from '@ridge/remote/shared/terminal/flagEmojiSupport';
 

@@ -9,7 +9,7 @@ import type { PaneNode } from '$lib/types';
 export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
-import { TerminalManager } from '$lib/terminal/manager';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { teardownPtyBridge } from '$lib/terminal/ptyBridge';
 
 function normalizeSplitRatios(sizes: number[]): number[] {

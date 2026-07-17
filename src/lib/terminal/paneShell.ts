@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { get, writable } from 'svelte/store';
 import { activeWorkspaceId } from '$lib/stores/paneTree';
-import { TerminalManager } from '$lib/terminal/manager';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 
 export interface ShellInfo {
   id: string;
