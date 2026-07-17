@@ -7,7 +7,7 @@
 // kernel needs hex, so the kernel palette is normalized via `hex8` — the same
 // path the desktop's themeBridge uses.
 
-import { hex8 } from '$lib/utils/cssColor';
+import { hex8 } from '@ridge/remote/shared/terminal/cssColor';
 
 /** Set every theme color as a `--rg-*` custom property on :root. */
 export function applyThemeVars(colors: Record<string, string>): void {

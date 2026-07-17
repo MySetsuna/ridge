@@ -3,7 +3,7 @@
 // 外部来源 pane 的标识徽标渲染助手（DRY）：工作区 pane 头部（SplitContainer）与
 // Explorer/侧边栏的 pane chip 共用，保证「HEADLESS / LAN / rdg」徽标在两处一致。
 // 配色沿用 pane 头部既有 AGENT/STARTING pill 的 token 风格。
-import type { PaneOrigin } from '$lib/types';
+import type { PaneOrigin } from './types';
 
 export interface PaneOriginBadge {
   /** 显示在头部胶囊里的短标签。 */

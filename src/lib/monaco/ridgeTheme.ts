@@ -16,7 +16,7 @@
 // editor and any active diff editor.
 
 import * as monaco from 'monaco-editor';
-import { hex8, hex8WithAlpha } from '$lib/utils/cssColor';
+import { hex8, hex8WithAlpha } from '@ridge/remote/shared/terminal/cssColor';
 // ThemeId is now a plain string — themes are loaded dynamically from ridge.theme
 
 /**
