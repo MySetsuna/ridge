@@ -519,3 +519,34 @@ R3.2 那句"moved cloud 文件须逐符号改相对"**又是过度估计**。**�
 - **P5 手机壳/面板迁移**：.svelte 关联 P2/P3，宜其后。
 
 ∴ 下一会话应在**能跑 app（`tauri:dev:cdp` + CDP，见 [[project_cdp_verify_dev]]）**的环境接 P2：wire `hostPorts`（已有 `src/lib/terminal/hostPorts.ts` 骨架）入 manager + RidgePane 注入 → 迁 `shared/terminal` → P3 传输切 → P4 渲染保活（真机验白屏消除）。
+
+## 修订 R5（2026-07-17）：P2 完成——六层全迁 + 端口注入 + CDP 实测通过
+
+R4.1 判「余 6 层真 gated on 跑 app」正确；本会话在能跑 app 的环境把 6 层全部迁完并 CDP 实测。**P2 收官**：`src/lib/terminal` 仅余 `hostPorts.ts`（app 侧端口实现），其余全在 `@ridge/remote/shared/terminal`，包内**零 `$lib`/`$app` 依赖**（静态+动态 grep 双验）。
+
+**注**：R4.1 说的 `hostPorts.ts` 骨架实为不存在，本会话新建。
+
+### R5.1 分四切片（每片独立 commit + 双门禁 + CDP 验）
+
+| 切片 | 内容 | 门禁 |
+|---|---|---|
+| 2a `14d7db3`(+`7bd6357` 补漏) | 纯类型/纯函数下沉：`types.ts` 内联 4 类型 + `git mv` cssColor/paneOrigin/paneDockResolve | svelte-check 0 + vitest 18 |
+| 2b `bfa4bbf` | manager 迁移 + 端口化：`ports.ts`（SettingsPort/CwdPort/HostPorts + openTextLink）；`get(store)` 读一次 → 端口；static `_currentPaneCwd/_knownCwds` 读 `_hostPorts.cwd`；动态 `import('$lib/utils/linkResolver')` → `openTextLink` 端口；`+page` 模块顶层 `setHostPorts(makeHostPorts())` 注入 | svelte-check 0 + vitest 233 + CDP：manager 存活/pane grid 47×175 |
+| 2c `a66e5de` | themeBridge 迁移：SettingsPort 加 subscribe/fontFamily；新增 TermSettingsPort/ThemesPort；三响应式订阅 → `TerminalManager.hostPorts()` 端口 | svelte-check 0 + CDP：改字号 15→30 终端实时重渲染（截图对比） |
+| 2d `0dd67ff` | ptyBridge+paneShell 迁移：SettingsSnapshot 加 defaultShell；新增 WorkspacePort；两 `$lib` 依赖端口化 | svelte-check 0 + vitest 69 + CDP：`workspace.activeId()`=真 UUID + 终端输入回显/运行 |
+
+**端口面终稿**（`shared/terminal/ports.ts`）：`SettingsPort`(get+subscribe: scrollback/fontFamily/defaultShell)、`TermSettingsPort`(fontSize)、`ThemesPort`(activeBgImageUrl)、`WorkspacePort`(activeId)、`CwdPort`(current/all)、`openTextLink`。holder 在 manager（`_hostPorts` + static `setHostPorts`/`hostPorts()`），全模块经 `TerminalManager.hostPorts()` 读回。
+
+### R5.2 关键架构判定（偏离 R4.1 粗表述处，均本会话核实）
+
+- **manager 内 store 读取本为 `get()` 读一次（非响应式订阅）**——响应式订阅在消费方(`RidgePane $effect`)与 themeBridge。故 manager 端口化风险低于 R4.1 所估（读取替换非接线改）。
+- **themeBridge/ptyBridge/paneShell 迁包但保留第三方 `@tauri-apps/api`**：边界规则只禁 `$lib/$app/src`，`@tauri-apps` 是第三方依赖可留包内（各 entry 有 tauriShim alias）。**不建 HostBackendPort**——手机端不用这仨（自有传输），单实现端口属过度抽象（ponytail）。cssColor(纯函数,与 monaco 共享)随 themeBridge 需求迁包，monaco 反向 import 包。
+- **manager 单实例已实测确证**：`window.__rt.constructor.hostPorts()` 非空 + `+page` 裸导入注入被 themeBridge 经 `./manager` 读回 → 裸导入与相对 `./` 由 Vite 去重为同一模块，无重复。
+
+### R5.3 CDP 环境修复（重要可复用教训，更新 [[project_cdp_verify_dev]]）
+
+**WebView2 运行时升到 150 后，`tauri:dev:cdp` 的 CDP 端口对提权(elevated)进程失效**（MicrosoftEdge/WebView2Feedback#5640：150 新增 trusted-origin 校验，High Integrity 进程 DevTools loopback socket 不开；149 正常）。会话宿主提权 → dev 继承提权 → 无 `DevToolsActivePort`。**唯一免下载解法=非提权启动 dev**：计划任务 `RidgeDevCdp`（`New-ScheduledTaskPrincipal -RunLevel Limited -LogonType Interactive` → 中完整性、可见窗口）跑 `pnpm tauri:dev:cdp`。CDP 恢复后：`chrome-devtools-mcp` 硬编码 9222 连不上动态端口 → 改 **Playwright `connectOverCDP` over ws url**（`ws://127.0.0.1:<port><line2>` 取自 `DevToolsActivePort`；HTTP `/json` REST 对 IP Host 头拒答但 node http 可、Playwright HTTP 校验拒需走 ws）。CDP-smoke（node http）仍可用。
+
+### R5.4 余下
+
+P3（手机传输 wsRemote→L1/L2）、P4/P4b（单例→多 kernel 保活，白屏/scrollback 根因修复）、P5（手机壳/RemotePanel 迁 mobile/panel）、P6（清理死路径 + 文档）。P4 保活行为仍须真机验。
