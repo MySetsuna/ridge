@@ -31,7 +31,7 @@
   import '$lib/plugins';
   import { initThemeSystem, activeWallpaperGpu } from '$lib/stores/themes';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { setupTerminalThemeBridge } from '$lib/terminal/themeBridge';
+  import { setupTerminalThemeBridge } from '@ridge/remote/shared/terminal/themeBridge';
   import {
     Terminal,
     FolderOpen,

@@ -562,6 +562,12 @@ export class TerminalManager {
 		_hostPorts = ports;
 	}
 
+	/** 读回已注入的 HostPorts（themeBridge/ptyBridge/paneShell 经此取 settings/
+	 *  termSettings/themes 等端口）。未注入时 null。 */
+	static hostPorts(): HostPorts | null {
+		return _hostPorts;
+	}
+
 	/** 终端链接路由器需要的 ctx：当前 pane 的 cwd（OSC 7 报告值）。 */
 	static _currentPaneCwd(entry: PaneEntry): string | undefined {
 		return _hostPorts?.cwd?.current(entry.workspaceId, entry.paneId);
