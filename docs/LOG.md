@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-21 — iteration 3
+
+- 完成：建立 Controller provider→adapter→RpcClient 与 Host 背压的确定性 fault-injection 门禁；100 周期验证无 pending RPC、重复恢复或 timer 泄漏。
+- 修复：L2 原先在 E2EE connected 但 TOTP 未授权时提前发送 hello/pane recovery，Host 丢弃后不补发；现以 connected + authorized 为 business-ready。
+- 验证：修复前新门禁稳定红灯；修复后 fault 5/5、Cloud 定向回归 161/161、增量 svelte-check 70 files/0 errors、Remote build 均 exit 0。
+- 下一步：iteration 4 做 iOS Safari/Android Chrome 真机换网与后台生命周期 smoke；短前置补 watchdog/deadline 两条升级时序和外置证据模板。
+- 驳回：不新增已存在的 watchdog/deadline；不为 smoke 加产品遥测；Not-ready 排队和 Agent roster 不夹带进入本轮。
+
 ## 2026-07-21 — iteration 2
 
 - 完成：建立 Controller-facing 最小 capability→RPC 合同与跨入口测试；补齐 rdg `get_file_tree/read_file/text_search` 实际路由；Remote Files/Git/Search、workspace 管理与 theme UI 按 D9 能力协商隐藏/收敛。
