@@ -31,6 +31,7 @@ import {
   RpcReconnectError,
   RpcRemoteError,
   RpcTimeoutError,
+  type AuthState,
   type ChannelTransport,
   type ControlFrame,
   type JsonRpcId,
@@ -104,21 +105,25 @@ export class RpcClient {
   private resyncHooks = new Set<ResyncHook>();
   private seq = 0;
   private prevState: TransportState;
+  private ready: boolean;
   private disposers: Unsubscribe[] = [];
 
   // ── D9 handshake state ──
   private negotiated: NegotiatedProtocol | null = null;
   private negotiatedListeners = new Set<(p: NegotiatedProtocol) => void>();
   private helloSent = false;
+  private helloRequested = false;
 
   constructor(transport: ChannelTransport, opts: RpcClientOptions = {}) {
     this.transport = transport;
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.nextId = opts.nextId ?? (() => ++this.seq);
     this.prevState = transport.state();
+    this.ready = this.prevState === 'connected' && transport.authState() === 'authorized';
 
     this.disposers.push(transport.onControl((f) => this.handleControl(f)));
     this.disposers.push(transport.onStateChange((s) => this.handleStateChange(s)));
+    this.disposers.push(transport.onAuthChange((auth) => this.handleAuthChange(auth)));
     // D9 handshake is initiated explicitly by the boot code via `hello()` (so
     // ordering vs. the initial control frames is well-defined), then re-run
     // automatically after each reconnect in `handleStateChange`.
@@ -202,7 +207,8 @@ export class RpcClient {
    *  the boot code after the transport is attached; reconnects re-handshake
    *  automatically. */
   hello(): void {
-    this.sendHello();
+    this.helloRequested = true;
+    if (this.ready) this.sendHello();
   }
 
   /** The negotiated protocol (capabilities + version), or `null` until the host
@@ -339,21 +345,35 @@ export class RpcClient {
       (state === 'reconnecting' || state === 'disconnected' || state === 'error') &&
       prev === 'connected'
     ) {
+      this.ready = false;
       this.rejectAllInFlight((m) => new RpcReconnectError(m));
     }
 
-    // Re-established → D9 re-handshake (the SPA may have been updated
-    // independently of the host, so re-negotiate), then run resync hooks
-    // (re-subscribe + re-pull D10 snapshots).
-    if (state === 'connected' && prev !== 'connected') {
-      this.helloSent = false;
-      this.sendHello();
-      for (const hook of this.resyncHooks) {
-        try {
-          hook();
-        } catch (e) {
-          console.error('[rpcClient] resync hook threw', e);
-        }
+    // Cloud WebRTC reaches transport connected before its in-band TOTP gate is
+    // authorized. Do not send business frames on that intermediate edge: the
+    // host correctly drops them and there would otherwise be no post-auth retry.
+    if (state === 'connected' && this.transport.authState() === 'authorized') this.becomeReady();
+  }
+
+  private handleAuthChange(auth: AuthState): void {
+    if (auth !== 'authorized') {
+      this.ready = false;
+      return;
+    }
+    if (this.transport.state() === 'connected') this.becomeReady();
+  }
+
+  /** Enter business-ready exactly once per connection/auth cycle. */
+  private becomeReady(): void {
+    if (this.ready) return;
+    this.ready = true;
+    this.helloSent = false;
+    if (this.helloRequested) this.sendHello();
+    for (const hook of this.resyncHooks) {
+      try {
+        hook();
+      } catch (e) {
+        console.error('[rpcClient] resync hook threw', e);
       }
     }
   }
