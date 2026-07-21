@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   REMOTE_ALLOWLIST,
   MUTATING_METHODS,
@@ -6,9 +7,22 @@ import {
   isMutatingMethod,
 } from './remoteAllowlist';
 
+const capabilitySource = readFileSync(
+  new URL('../../../../ridge-core/src/capability.rs', import.meta.url),
+  'utf8',
+);
+
+function rustStringArray(name: string): string[] {
+  const body = capabilitySource.match(
+    new RegExp(`pub const ${name}: &\\[&str\\] = &\\[([\\s\\S]*?)\\];`),
+  )?.[1];
+  if (!body) throw new Error(`missing Rust string array: ${name}`);
+  return [...body.matchAll(/^\s*"([^"]+)",/gm)].map((m) => m[1]);
+}
+
 // Security property (audit ①-1): the cloud host must admit only remote-safe
-// commands. These tests pin the host-privileged exclusions + the mirror counts
-// so an accidental divergence from capability.rs is caught locally.
+// commands. These tests pin the host-privileged exclusions and compare both TS
+// mirrors item-for-item with capability.rs so any divergence is caught locally.
 
 describe('isRemoteAllowed', () => {
   it('admits the legitimate remote commands', () => {
@@ -21,6 +35,7 @@ describe('isRemoteAllowed', () => {
       'get_pane_scrollback_tail',
       'get_pane_scrollback_before',
       'list_workspaces',
+      'get_workspace_snapshot',
       'switch_workspace',
       'get_active_theme_entry',
       'text_search',
@@ -74,12 +89,11 @@ describe('isMutatingMethod', () => {
 });
 
 describe('mirror integrity (vs capability.rs)', () => {
-  // If these counts change, update capability.rs ⇄ remoteAllowlist.ts together.
-  it('allow-list has the expected size', () => {
-    expect(REMOTE_ALLOWLIST.length).toBe(93);
+  it('matches the canonical Rust allow-list item-for-item', () => {
+    expect(REMOTE_ALLOWLIST).toEqual(rustStringArray('REMOTE_ALLOWLIST'));
   });
-  it('mutating set has the expected size', () => {
-    expect(MUTATING_METHODS.length).toBe(22);
+  it('matches the canonical Rust mutating set item-for-item', () => {
+    expect(MUTATING_METHODS).toEqual(rustStringArray('MUTATING_METHODS'));
   });
   it('has no duplicate entries', () => {
     expect(new Set(REMOTE_ALLOWLIST).size).toBe(REMOTE_ALLOWLIST.length);

@@ -73,6 +73,8 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   // 漏放行会导致 controller 工作区列表空 → 兜底逻辑每次连接新建一个工作区（连带 bug）。
   'list_workspaces',
   'get_active_workspace_id',
+  // ridge-core aggregate read model used by headless/desktop remote hosts.
+  'get_workspace_snapshot',
   'switch_workspace',
   'create_workspace',
   'close_workspace',
@@ -137,7 +139,11 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'git_clean_untracked',
 ];
 
-/** Mirror of `ridge_core::capability::MUTATING_METHODS` (capability.rs). */
+/**
+ * Mirror of `ridge_core::capability::MUTATING_METHODS` (capability.rs).
+ * This is risk-classification data, not an access gate: remote sessions are
+ * read-write. Keep it synchronized for consumers that grade command impact.
+ */
 export const MUTATING_METHODS: readonly string[] = [
   // ── Filesystem writes ──
   'write_file',
@@ -163,6 +169,18 @@ export const MUTATING_METHODS: readonly string[] = [
   'git_create_tag',
   'git_discard',
   'git_clean_untracked',
+  // ── Workspace / pane writes ──
+  'switch_workspace',
+  'reorder_workspaces',
+  'rename_workspace',
+  'create_workspace',
+  'close_workspace',
+  'save_workspace',
+  'save_workspace_to_file',
+  'delete_workspace_file',
+  'resize_pane',
+  'create_pane',
+  'split_pane',
 ];
 
 const ALLOW_SET: ReadonlySet<string> = new Set(REMOTE_ALLOWLIST);
