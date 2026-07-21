@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LanWsAdapter } from './lanWsAdapter';
 import { createCloudWebrtcTransportWith } from './cloudWebrtcAdapter';
-import { demuxFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
+import { demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
 import { RpcClient, CLIENT_CAPABILITIES } from './rpcClient';
 import type { ConnectionState, RemoteConnection } from './wsRemote';
 import type {
@@ -193,6 +193,10 @@ function makeCloudHarness(): Harness {
     cb = callbacks;
     return provider;
   });
+  // Shared protocol conformance starts from a business-ready transport. Cloud
+  // reaches RTC `connected` before its in-band TOTP authorization, so drive the
+  // latter explicitly instead of relying on the old pre-auth send behaviour.
+  cb.onFrame?.(encodeControlFrame({ t: 'totp-result', ok: true }));
   const rpc = new RpcClient(adapter);
   return {
     rpc,
@@ -204,6 +208,9 @@ function makeCloudHarness(): Harness {
     setState: (s) => {
       cloudState = toCloudState(s);
       cb.onState?.(cloudState);
+      if (cloudState === 'connected') {
+        cb.onFrame?.(encodeControlFrame({ t: 'totp-result', ok: true }));
+      }
     },
   };
 }

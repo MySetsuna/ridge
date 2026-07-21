@@ -269,6 +269,7 @@ describe('CloudWebrtcAdapter + L2 RpcClient — end to end', () => {
 
   beforeEach(() => {
     ({ provider, adapter } = wire());
+    provider.deliverFrame(encodeControlFrame({ t: 'totp-result', ok: true }));
     rpc = new RpcClient(adapter);
   });
 
