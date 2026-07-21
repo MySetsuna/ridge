@@ -5,12 +5,14 @@
   import SidebarGitPanel from '../../shared/sidebar/SidebarGitPanel.svelte';
   import SidebarSearch from '../../shared/sidebar/SidebarSearch.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
+  import type { RemotePanel } from '@ridge/remote';
 
-  let { tab = 'files', cwd = '', onClose, onTabChange, onOpenFile, onOpenDiff }: {
-    tab?: 'files' | 'git' | 'search';
+  let { tab = 'files', cwd = '', available, onClose, onTabChange, onOpenFile, onOpenDiff }: {
+    tab?: RemotePanel;
     cwd?: string;
+    available: Readonly<Record<RemotePanel, boolean>>;
     onClose: () => void;
-    onTabChange?: (t: 'files' | 'git' | 'search') => void;
+    onTabChange?: (t: RemotePanel) => void;
     /** Open a file in the read-only viewer (file tree row / search hit). */
     onOpenFile?: (path: string, line?: number) => void;
     /** Open a changed file's git diff in the viewer (git panel row). */
@@ -21,21 +23,29 @@
   // Recreated (and the panel remounted via {#key}) when the pane cwd changes.
   const provider = $derived(createWsSidebarProvider(cwd));
 
-  function setTab(t: 'files' | 'git' | 'search') { onTabChange?.(t); }
+  function setTab(t: RemotePanel) {
+    if (available[t]) onTabChange?.(t);
+  }
 </script>
 
 <div class="sidebar" role="dialog" aria-label="Sidebar">
   <div class="sb-header">
     <div class="tabs">
-      <button class="tab" class:active={tab === 'files'} onclick={() => setTab('files')} title={$t('mobile.sidebarFilesTitle')} tabindex="-1">
-        <Folder class="w-4 h-4" />
-      </button>
-      <button class="tab" class:active={tab === 'git'} onclick={() => setTab('git')} title="Git" tabindex="-1">
-        <GitBranch class="w-4 h-4" />
-      </button>
-      <button class="tab" class:active={tab === 'search'} onclick={() => setTab('search')} title={$t('mobile.sidebarSearchTitle')} tabindex="-1">
-        <Search class="w-4 h-4" />
-      </button>
+      {#if available.files}
+        <button class="tab" class:active={tab === 'files'} onclick={() => setTab('files')} title={$t('mobile.sidebarFilesTitle')} tabindex="-1">
+          <Folder class="w-4 h-4" />
+        </button>
+      {/if}
+      {#if available.git}
+        <button class="tab" class:active={tab === 'git'} onclick={() => setTab('git')} title="Git" tabindex="-1">
+          <GitBranch class="w-4 h-4" />
+        </button>
+      {/if}
+      {#if available.search}
+        <button class="tab" class:active={tab === 'search'} onclick={() => setTab('search')} title={$t('mobile.sidebarSearchTitle')} tabindex="-1">
+          <Search class="w-4 h-4" />
+        </button>
+      {/if}
     </div>
     <span class="cwd" title={cwd}>{cwd || '/'}</span>
     <button class="close" onclick={onClose} aria-label={$t('mobile.sidebarClose')} tabindex="-1"><X class="w-5 h-5" /></button>

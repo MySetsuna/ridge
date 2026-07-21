@@ -103,6 +103,15 @@ class TauriBridge {
     return this.rpc?.hasCapability(capability) ?? true;
   }
 
+  /** Observe D9 hello/bye results so the Svelte shell can remove stale panels. */
+  onCapabilitiesChanged(cb: () => void): UnlistenFn {
+    if (!this.rpc) {
+      cb();
+      return () => {};
+    }
+    return this.rpc.onNegotiated(() => cb());
+  }
+
   // ── invoke ────────────────────────────────────────────────────────────────
   invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
     const rpc = this.rpc;

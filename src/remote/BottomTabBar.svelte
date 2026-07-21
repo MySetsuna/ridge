@@ -13,6 +13,8 @@
     onRefresh,
     onPaste,
     onThemeToggle,
+    canUseTheme = true,
+    canManageWorkspaces = true,
     selectionMode = $bindable(false),
     backendName = 'Canvas2D',
     panes = [],
@@ -25,6 +27,8 @@
     onRefresh?: () => void;
     onPaste?: () => void;
     onThemeToggle?: () => void;
+    canUseTheme?: boolean;
+    canManageWorkspaces?: boolean;
     selectionMode?: boolean;
     backendName?: string;
     panes?: PaneInfo[];
@@ -49,9 +53,11 @@
     <button class="ctrl-btn" onclick={onPaste} title={$t('mobile.pasteFromRemote')} tabindex="-1">
       <Clipboard class="w-4 h-4" />
     </button>
-    <button class="ctrl-btn" onclick={onThemeToggle} title={$t('mobile.themeToggle')} tabindex="-1">
-      <Palette class="w-4 h-4" />
-    </button>
+    {#if canUseTheme}
+      <button class="ctrl-btn" onclick={onThemeToggle} title={$t('mobile.themeToggle')} tabindex="-1">
+        <Palette class="w-4 h-4" />
+      </button>
+    {/if}
     <button class="ctrl-btn" onclick={() => setLocale(currentLocale === 'zh' ? 'en' : 'zh')} title={$t('mobile.langToggle')} tabindex="-1">
       <Globe class="w-4 h-4" />
       <span class="lang-label">{currentLocale === 'zh' ? 'EN' : '中'}</span>
@@ -67,6 +73,7 @@
     {ws}
     {backendName}
     {onWorkspacesChanged}
+    {canManageWorkspaces}
   />
 </div>
 

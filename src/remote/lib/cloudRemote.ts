@@ -29,6 +29,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { PaneNode } from '$lib/types';
 import type { CloudControllerHandle } from '$lib/remote/cloud/cloudControllerBoot';
+import { bridge } from '$lib/transport/tauriShim/bridge';
 import {
   classifyFailure,
   type RemoteLink,
@@ -134,6 +135,14 @@ export class CloudRemoteConnection implements RemoteLink {
 
   constructor(handle: CloudControllerHandle) {
     this.handle = handle;
+  }
+
+  hasCapability(capability: string): boolean {
+    return bridge.hasCapability(capability);
+  }
+
+  onCapabilitiesChanged(fn: () => void): () => void {
+    return bridge.onCapabilitiesChanged(fn);
   }
 
   /**

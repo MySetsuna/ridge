@@ -760,6 +760,19 @@ impl RemoteSession {
                     }
                 }
             }
+            Method::CoreInvoke { method, params } => {
+                let ctx = crate::core_host::headless_ctx(roots);
+                match ridge_core::dispatch(&method, params, &ctx) {
+                    Ok(value) => {
+                        Self::send_json(crypto, tx, &rpc::result_response(id, value)).await
+                    }
+                    Err(e) => {
+                        let err =
+                            RpcError::new(rpc::JSON_RPC_INTERNAL_ERROR, e.to_command_string());
+                        Self::send_json(crypto, tx, &rpc::error_response(id, &err)).await
+                    }
+                }
+            }
             Method::Unsupported(name) => {
                 // cli 不服务的 IDE 命令：回 METHOD_NOT_FOUND（controller 已经因 $/hello
                 // 灰掉这些面板，正常不会发；防御性回错而非悬挂）。

@@ -11,6 +11,7 @@
 export * from './shared/transport/types';
 export * from './shared/transport/jsonRpc';
 export * from './shared/transport/rpcClient';
+export * from './shared/transport/capabilityContract';
 export * from './shared/transport/cloudMux';
 export * from './shared/transport/cloudChunk';
 // WS 原语层：LAN WebSocket 连接类 RemoteConnection（+ 契约类型 RemoteLink/

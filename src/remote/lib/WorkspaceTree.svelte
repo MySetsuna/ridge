@@ -18,6 +18,7 @@
     activeWorkspaceId = $bindable(),
     ws,
     backendName = 'Canvas2D',
+    canManageWorkspaces = true,
     onWorkspacesChanged,
   }: {
     panes: PaneInfo[];
@@ -26,6 +27,7 @@
     activeWorkspaceId?: string;
     ws?: RemoteLink;
     backendName?: string;
+    canManageWorkspaces?: boolean;
     // 工作区列表发生增删后通知上层刷新（create/close-workspace-result 被
     // _sendAndWait 消费，不会触发 MainApp.onMessage，故需显式回调拉取新列表）。
     onWorkspacesChanged?: () => void;
@@ -152,7 +154,7 @@
   }
 
   async function newWorkspace() {
-    if (!ws || busy) return;
+    if (!ws || busy || !canManageWorkspaces) return;
     busy = true;
     err = '';
     let id: string | null = null;
@@ -186,7 +188,7 @@
 
   async function closeWorkspace(e: Event, id: string) {
     e.stopPropagation();
-    if (!ws || busy) return;
+    if (!ws || busy || !canManageWorkspaces) return;
     busy = true;
     err = '';
     try {
@@ -227,7 +229,7 @@
   }
 
   async function newPane() {
-    if (!ws || busy) return;
+    if (!ws || busy || !canManageWorkspaces) return;
     busy = true;
     err = '';
     try {
@@ -247,7 +249,7 @@
 
   async function closePaneRow(e: Event, id: string) {
     e.stopPropagation();
-    if (!ws || busy) return;
+    if (!ws || busy || !canManageWorkspaces) return;
     const idx = panes.findIndex((p) => p.id === id);
     busy = true;
     err = '';
@@ -286,9 +288,11 @@
           {$t('mobile.treeTitle')}
           {#if busy}<span class="tree-spin" aria-hidden="true"></span>{/if}
         </span>
-        <button class="tree-add" onclick={newWorkspace} title={$t('mobile.treeNewWorkspace')} disabled={busy} tabindex="-1">
-          <Plus class="w-3.5 h-3.5" />
-        </button>
+        {#if canManageWorkspaces}
+          <button class="tree-add" onclick={newWorkspace} title={$t('mobile.treeNewWorkspace')} disabled={busy} tabindex="-1">
+            <Plus class="w-3.5 h-3.5" />
+          </button>
+        {/if}
       </div>
 
       {#if err}<div class="tree-err">{err}</div>{/if}
@@ -319,7 +323,7 @@
               ><ChevronRight class="w-3.5 h-3.5 shrink-0" /></span>
               <span class="ws-ico"><FolderOpen class="w-4 h-4 shrink-0" /></span>
               <span class="ws-name">{wsp.name || $t('mobile.workspaceDefault')}</span>
-              {#if workspaces.length > 1}
+              {#if canManageWorkspaces && workspaces.length > 1}
                 <span
                   class="row-close"
                   role="button"
@@ -348,7 +352,7 @@
                       <span class="pane-name">{pane.title || $t('mobile.terminalDefault')}</span>
                       {#if pane.cwd}<span class="pane-cwd">{pane.cwd}</span>{/if}
                     </span>
-                    {#if isActiveWs && wsPanes.length > 1}
+                    {#if canManageWorkspaces && isActiveWs && wsPanes.length > 1}
                       <span
                         class="row-close"
                         role="button"
@@ -365,7 +369,7 @@
                 {#if wsPanes.length === 0}
                   <div class="pane-empty">{loadingPeek ? $t('mobile.loading') : $t('mobile.treeNoTerminal')}</div>
                 {/if}
-                {#if isActiveWs}
+                {#if canManageWorkspaces && isActiveWs}
                   <button class="pane-new" onclick={newPane} disabled={busy}>
                     <Plus class="w-3.5 h-3.5 shrink-0" />
                     <span>{$t('mobile.treeNewTerminal')}</span>
